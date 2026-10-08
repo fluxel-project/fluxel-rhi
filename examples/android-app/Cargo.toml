@@ -1,0 +1,16 @@
+[package]
+name = "fluxel-android-triangle"
+version.workspace = true
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = ["vulkan"]
+vulkan = ["fluxel-rhi/vulkan"]
+
+[dependencies]
+fluxel-host = { git = "https://github.com/fluxel-project/fluxel-host", rev = "34616e7258830b7e52be5d7bd7a793629bbbf07b", features = ["winit-runtime"] }
+fluxel-rhi = { path = "../..", default-features = false, features = ["naga"] }
