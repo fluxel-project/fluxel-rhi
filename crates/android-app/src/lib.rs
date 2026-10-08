@@ -1,6 +1,6 @@
 #![cfg(target_os = "android")]
 
-#[path = "../../01_triangle.rs"]
+#[path = "../../rhi/examples/01_triangle.rs"]
 pub mod triangle;
 
 pub use triangle::common;

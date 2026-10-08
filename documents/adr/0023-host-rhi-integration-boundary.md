@@ -52,10 +52,10 @@ manager, render graph, or native GPU object into `api`.
 
 ## Consequences
 
-- `tests/common` contains one portable workload per contract and
+- Each backend crate's `tests/common` contains one portable workload per contract and
   `tests/harness` owns async terminal/outcome policy. Native host
   setup belongs to adapter fixtures, not to backend-local test bodies.
-- `examples/` may use the adapter so examples do not name
+- `crates/rhi/examples/` may use the adapter so examples do not name
   HWND, `ANativeWindow`, UIKit, DOM canvas, Vulkan surfaces, or DXGI objects.
 - Windows, Android, iOS, and browser adapters can mature independently; a
   platform without a host adapter is `Skipped`, not a reason to weaken an RHI

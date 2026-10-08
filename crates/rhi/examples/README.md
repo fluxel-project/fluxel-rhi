@@ -18,12 +18,12 @@ On Android, the Vulkan NativeActivity can be built, packaged, installed, and
 launched on an attached x86_64 emulator with:
 
 ```powershell
-.\examples\android\run.ps1 -Serial emulator-5554
+.\crates\rhi\examples\android\run.ps1 -Serial emulator-5554
 ```
 
 The Android adapter and NativeActivity entry point are in
 `common/android.rs` and `common/mod.rs`; the package manifest and runner are in
-`examples/android/`. The verified Android run used the Vulkan 1.3 emulator and
+`crates/rhi/examples/android/`. The verified Android run used the Vulkan 1.3 emulator and
 presented the reference triangle. Other backends remain future adapter work.
 
 The framework parses `--backend`, `--width`, and `--height`, then routes

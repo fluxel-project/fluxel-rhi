@@ -1144,6 +1144,12 @@ fn choose_composite_alpha(
         CompositeAlphaMode::PreMultiplied => Some(vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED),
         CompositeAlphaMode::PostMultiplied => Some(vk::CompositeAlphaFlagsKHR::POST_MULTIPLIED),
         CompositeAlphaMode::Inherit => Some(vk::CompositeAlphaFlagsKHR::INHERIT),
+        _ => {
+            return Err(RhiError::new(
+                RhiErrorKind::Unsupported,
+                "the requested composite-alpha mode is not supported by this Vulkan backend",
+            ));
+        }
     };
     requested
         .filter(|mode| supported.contains(*mode))
@@ -1221,6 +1227,12 @@ fn choose_extent(
                 "a Vulkan target with configurable extent requires PresentationExtent::Exact",
             ));
         }
+        _ => {
+            return Err(RhiError::new(
+                RhiErrorKind::InvalidUsage,
+                "the requested presentation extent is not supported by this Vulkan backend",
+            ));
+        }
     };
     Ok(vk::Extent2D {
         width: extent
@@ -1239,6 +1251,12 @@ fn choose_mode(
         PresentMode::Automatic | PresentMode::Fifo => vk::PresentModeKHR::FIFO,
         PresentMode::Mailbox => vk::PresentModeKHR::MAILBOX,
         PresentMode::Immediate => vk::PresentModeKHR::IMMEDIATE,
+        _ => {
+            return Err(RhiError::new(
+                RhiErrorKind::Unsupported,
+                "the requested present mode is not supported by this Vulkan backend",
+            ));
+        }
     };
     if modes.contains(&desired) {
         Ok(desired)

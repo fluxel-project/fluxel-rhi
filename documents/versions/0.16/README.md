@@ -1,5 +1,8 @@
 # Fluxel RHI 0.16
 
+This is the historical release record from before the seven-crate workspace
+split. Paths and commands below describe that earlier layout.
+
 ## Completed in this release
 
 0.16 keeps the v13 public RHI contract frozen. The main work in this release

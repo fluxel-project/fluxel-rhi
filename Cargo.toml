@@ -1,63 +1,15 @@
 [workspace]
 resolver = "2"
 members = [
-    "examples/android-app",
+    "crates/android-app",
     "crates/core",
     "crates/dx12",
     "crates/vulkan",
     "crates/gl",
     "crates/webgpu",
     "crates/metal",
+    "crates/rhi",
 ]
 
 [workspace.package]
 version = "0.16.0"
-
-[package]
-name = "fluxel-rhi"
-version.workspace = true
-edition = "2024"
-rust-version = "1.87"
-license = "MIT OR Apache-2.0"
-description = "Fluxel's portable RHI: capability-layered GPU execution for native and browser backends"
-repository = "https://github.com/fluxel-project/fluxel-rhi"
-
-[features]
-default = ["dx12", "vulkan", "naga"]
-dx12 = ["dep:fluxel-rhi-dx12", "fluxel-rhi-core/dx12"]
-vulkan = ["dep:fluxel-rhi-vulkan", "fluxel-rhi-vulkan/vulkan", "fluxel-rhi-core/vulkan"]
-naga = ["fluxel-rhi-core/naga", "fluxel-rhi-vulkan?/naga"]
-android-wsi-evidence = ["vulkan", "fluxel-rhi-core/android-wsi-evidence"]
-gl-family = ["fluxel-rhi-core/gl-family"]
-native-gl-wgl = ["gl-family", "dep:fluxel-rhi-gl", "fluxel-rhi-gl/native-gl-wgl"]
-native-gles-egl = ["gl-family", "dep:fluxel-rhi-gl", "fluxel-rhi-gl/native-gles-egl"]
-webgl2 = ["gl-family", "dep:fluxel-rhi-gl", "fluxel-rhi-gl/webgl2"]
-webgpu = ["dep:fluxel-rhi-webgpu", "fluxel-rhi-core/webgpu"]
-metal = ["dep:fluxel-rhi-metal", "fluxel-rhi-core/metal"]
-test-support = ["fluxel-rhi-core/test-support", "fluxel-rhi-vulkan?/test-support", "fluxel-rhi-gl?/test-support"]
-examples = []
-
-[dependencies]
-fluxel-rhi-core = { path = "crates/core", default-features = false }
-fluxel-rhi-gl = { path = "crates/gl", optional = true, default-features = false }
-
-[dev-dependencies]
-fluxel-host = { git = "https://github.com/fluxel-project/fluxel-host", rev = "34616e7258830b7e52be5d7bd7a793629bbbf07b", features = ["winit-runtime"] }
-raw-window-handle = "=0.6.2"
-
-[target.'cfg(windows)'.dependencies]
-fluxel-rhi-dx12 = { path = "crates/dx12", optional = true }
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-fluxel-rhi-vulkan = { path = "crates/vulkan", optional = true, default-features = false }
-
-[target.'cfg(target_vendor = "apple")'.dependencies]
-fluxel-rhi-metal = { path = "crates/metal", optional = true }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-fluxel-rhi-webgpu = { path = "crates/webgpu", optional = true }
-
-[[example]]
-name = "01_triangle"
-path = "examples/01_triangle.rs"
-required-features = ["examples", "vulkan"]

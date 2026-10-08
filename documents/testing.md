@@ -100,4 +100,4 @@ Metal fixtures compile cross-target on Windows but execute only on an Apple
 host.
 
 Result labels and the distinction between portable, headless, and presentation
-evidence are fixed by [ADR-0022](../documents/adr/0022-hardware-conformance-evidence.md).
+evidence are fixed by [ADR-0022](adr/0022-hardware-conformance-evidence.md).

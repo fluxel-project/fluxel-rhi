@@ -30,8 +30,8 @@ cargo test -p fluxel-rhi-core --no-default-features --lib
 The workspace has seven library crates. `fluxel-rhi-core` owns the portable
 API, validation, and backend contracts. `fluxel-rhi-dx12`,
 `fluxel-rhi-vulkan`, `fluxel-rhi-gl`, `fluxel-rhi-webgpu`, and
-`fluxel-rhi-metal` own platform implementations. The root `fluxel-rhi` crate
-is a compatibility facade that reexports the API and enabled provider
+`fluxel-rhi-metal` own platform implementations. The `fluxel-rhi` crate in
+`crates/rhi` is a compatibility facade that reexports the API and enabled provider
 constructors. Backend features on the facade select their corresponding crate.
 
 The Vulkan example can be checked with:
@@ -234,10 +234,10 @@ freeze descriptor ABI.
 
 ## Examples and further reading
 
-- [`tests/`](tests/) is the real-adapter conformance baseline: focused
+- [Backend testing](documents/testing.md) describes the real-adapter conformance baseline in each backend crate: focused
   readback assertions are distinct from portable unit tests and from visible
   surface smoke tests.
-- [`examples/`](examples/) contains the numbered `fluxel-host` lifecycle
+- [`crates/rhi/examples/`](crates/rhi/examples/) contains the numbered `fluxel-host` lifecycle
   examples. `01_triangle` currently runs on Windows Vulkan; its demo logic uses
   portable RHI calls while the shared adapter owns the host window and target.
 - [`fluxel-rendering` RenderGraph examples](https://github.com/fluxel-project/fluxel-rendering/tree/main/crates/rendergraph/examples)

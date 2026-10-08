@@ -3,7 +3,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$workspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
+$workspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "../../../..")).Path
 $sdkRoot = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { $env:ANDROID_SDK_ROOT }
 if (-not $sdkRoot) { throw "Set ANDROID_HOME or ANDROID_SDK_ROOT." }
 
