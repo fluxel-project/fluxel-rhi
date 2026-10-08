@@ -1,0 +1,22 @@
+[package]
+name = "fluxel-rhi-webgpu"
+version.workspace = true
+edition = "2024"
+rust-version = "1.87"
+license = "MIT OR Apache-2.0"
+description = "WebGPU backend for Fluxel RHI"
+repository = "https://github.com/fluxel-project/fluxel-rhi"
+
+[dependencies]
+fluxel-rhi-core = { path = "../core", features = ["webgpu"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "=0.3.105"
+wasm-bindgen = "=0.2.128"
+web-sys = { version = "=0.3.105", features = [
+    "Document", "HtmlCanvasElement", "Performance", "Gpu", "Window", "console",
+] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3.50"
+wasm-bindgen-futures = "0.4.55"

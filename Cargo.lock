@@ -323,25 +323,86 @@ dependencies = [
 name = "fluxel-rhi"
 version = "0.16.0"
 dependencies = [
- "ash",
- "block2 0.6.2",
  "fluxel-host",
+ "fluxel-rhi-core",
+ "fluxel-rhi-dx12",
+ "fluxel-rhi-gl",
+ "fluxel-rhi-metal",
+ "fluxel-rhi-vulkan",
+ "fluxel-rhi-webgpu",
+ "raw-window-handle",
+]
+
+[[package]]
+name = "fluxel-rhi-core"
+version = "0.16.0"
+dependencies = [
+ "naga",
+ "raw-window-handle",
+ "web-sys",
+]
+
+[[package]]
+name = "fluxel-rhi-dx12"
+version = "0.16.0"
+dependencies = [
+ "fluxel-host",
+ "fluxel-rhi-core",
+ "raw-window-handle",
+ "windows",
+]
+
+[[package]]
+name = "fluxel-rhi-gl"
+version = "0.16.0"
+dependencies = [
+ "fluxel-host",
+ "fluxel-rhi-core",
  "glow",
  "glutin_wgl_sys",
  "js-sys",
  "khronos-egl",
- "naga",
+ "raw-window-handle",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
+]
+
+[[package]]
+name = "fluxel-rhi-metal"
+version = "0.16.0"
+dependencies = [
+ "block2 0.6.2",
+ "fluxel-rhi-core",
  "objc2 0.6.3",
  "objc2-foundation 0.3.2",
  "objc2-metal 0.3.2",
  "objc2-quartz-core 0.3.2",
  "raw-window-handle",
  "raw-window-metal",
+]
+
+[[package]]
+name = "fluxel-rhi-vulkan"
+version = "0.16.0"
+dependencies = [
+ "ash",
+ "fluxel-host",
+ "fluxel-rhi-core",
+ "raw-window-handle",
+]
+
+[[package]]
+name = "fluxel-rhi-webgpu"
+version = "0.16.0"
+dependencies = [
+ "fluxel-rhi-core",
+ "js-sys",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "web-sys",
- "windows",
 ]
 
 [[package]]

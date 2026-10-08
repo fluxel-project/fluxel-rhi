@@ -1,0 +1,25 @@
+[package]
+name = "fluxel-rhi-metal"
+version.workspace = true
+edition = "2024"
+rust-version = "1.87"
+license = "MIT OR Apache-2.0"
+description = "Metal backend for Fluxel RHI"
+repository = "https://github.com/fluxel-project/fluxel-rhi"
+
+[features]
+# These tests need an Apple GPU and the shared hardware conformance harness.
+# They are kept opt-in while that harness is moved out of the former monolith.
+hardware-tests = []
+
+[dependencies]
+fluxel-rhi-core = { path = "../core", features = ["metal"] }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+block2 = "=0.6.2"
+objc2 = "=0.6.3"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSError", "NSRange", "NSString"] }
+objc2-metal = { version = "=0.3.2", default-features = false, features = ["std", "block2", "MTLBlitCommandEncoder", "MTLAllocation", "MTLArgument", "MTLBuffer", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLComputeCommandEncoder", "MTLComputePipeline", "MTLDepthStencil", "MTLDevice", "MTLDrawable", "MTLEvent", "MTLLibrary", "MTLPipeline", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLSampler", "MTLTexture", "MTLTypes", "MTLVertexDescriptor"] }
+objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "CAMetalLayer", "objc2-metal"] }
+raw-window-handle = "=0.6.2"
+raw-window-metal = "=1.0.0"

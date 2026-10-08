@@ -24,11 +24,25 @@ standalone checkout:
 
 ```sh
 cargo check --workspace --all-targets
-cargo test --lib --no-default-features
+cargo test -p fluxel-rhi-core --no-default-features --lib
 ```
 
-Default-feature tests also exercise native DX12 and Vulkan devices where
-available; their result depends on the local GPU and driver.
+The workspace has seven library crates. `fluxel-rhi-core` owns the portable
+API, validation, and backend contracts. `fluxel-rhi-dx12`,
+`fluxel-rhi-vulkan`, `fluxel-rhi-gl`, `fluxel-rhi-webgpu`, and
+`fluxel-rhi-metal` own platform implementations. The root `fluxel-rhi` crate
+is a compatibility facade that reexports the API and enabled provider
+constructors. Backend features on the facade select their corresponding crate.
+
+The Vulkan example can be checked with:
+
+```sh
+cargo check -p fluxel-rhi --example 01_triangle --features examples,vulkan
+```
+
+Vulkan tests exercise a native device where available. DX12's real-device
+conformance suite is opt-in with `cargo test -p fluxel-rhi-dx12 --features
+hardware-tests`; its result depends on the local GPU and driver.
 
 ## Public API
 

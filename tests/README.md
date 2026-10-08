@@ -1,14 +1,15 @@
 # RHI hardware conformance cases
 
-This directory owns Fluxel RHI's real-hardware baseline. Every portable
-workload has exactly one implementation under `common/`; a backend test is
+Each backend crate keeps a copy of Fluxel RHI's real-hardware baseline under
+`crates/<backend>/tests/`. Every portable workload has one shared case
+implementation per backend test suite under `common/`; a backend test is
 only a fixture that supplies code-form-specific shader artifacts, selects a
 compatible lane, or owns native surface-host glue. Public applications and
 examples construct process-owned providers through `create_*_provider`; only
 the in-crate hardware fixture may use the backend-private constructor when it
 needs a deliberately controlled native surface/context.
 
-`common/mod.rs` and `harness/` are included by the library's native test build
+The backend crate's `tests/common/mod.rs` and `tests/harness/` are included by its test build
 so they can accept backend-injected shader/surface fixtures while still using
 the same public provider/device API. `harness` owns async completion/readback policy and the
 Pass/Unsupported/Skipped/Failure vocabulary; it never contains a native handle
@@ -80,9 +81,9 @@ On Windows, DX12 and Vulkan headless cases are ordinary crate tests. The exact
 filters evolve with the suite, so start with:
 
 ```powershell
-cargo test -p fluxel-rhi --all-features backend::dx12 -- --nocapture
-cargo test -p fluxel-rhi --all-features backend::vulkan -- --nocapture
-cargo test -p fluxel-rhi --features native-gl-wgl backend::gl::native::wgl_core_conformance -- --nocapture
+cargo test -p fluxel-rhi-dx12 --features hardware-tests -- --nocapture
+cargo test -p fluxel-rhi-vulkan -- --nocapture
+cargo test -p fluxel-rhi-gl --features native-gl-wgl -- --nocapture
 ```
 
 The WGL fixture is intentionally an adopted-context case: it creates its Host
@@ -91,15 +92,12 @@ device boundary into `common`. GLES and WebGL2 must use the same fixture shape
 through their respective owner (EGL / browser canvas); they must not obtain
 coverage by exporting an EGL context or `WebGl2RenderingContext` from RHI.
 
-The release evidence gate is [`../../../scripts/conformance.ps1`](../../../scripts/conformance.ps1).
-It records the commit, target, adapter and driver; use it for a claim of
-hardware evidence rather than treating a local green unit-test run as one.
-
-Android and browser fixtures require their respective host adapters. See
-`../../../examples/android-vulkan-wsi/`, `../../../scripts/android_*_evidence.py`,
-and `../../../scripts/browser/`; a desktop result does not substitute for them.
+Hardware evidence records the commit, target, adapter, driver, case, expected
+result and actual result. A local green unit-test run alone is not hardware
+evidence. Android and browser fixtures require their respective host adapters;
+a desktop result does not substitute for them.
 Metal fixtures compile cross-target on Windows but execute only on an Apple
 host.
 
 Result labels and the distinction between portable, headless, and presentation
-evidence are fixed by [ADR-0022](../../../documents/adr/0022-hardware-conformance-evidence.md).
+evidence are fixed by [ADR-0022](../documents/adr/0022-hardware-conformance-evidence.md).

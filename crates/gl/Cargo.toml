@@ -1,0 +1,61 @@
+[package]
+name = "fluxel-rhi-gl"
+version.workspace = true
+edition = "2024"
+rust-version = "1.87"
+license = "MIT OR Apache-2.0"
+description = "OpenGL, OpenGL ES, and WebGL2 backend for Fluxel RHI"
+repository = "https://github.com/fluxel-project/fluxel-rhi"
+
+[features]
+default = []
+native-gl-wgl = ["fluxel-rhi-core/native-gl-wgl", "dep:glow", "dep:glutin_wgl_sys", "dep:raw-window-handle"]
+native-gles-egl = ["fluxel-rhi-core/native-gles-egl", "dep:glow", "dep:khronos-egl", "dep:raw-window-handle"]
+webgl2 = ["fluxel-rhi-core/webgl2", "dep:glow", "dep:js-sys", "dep:wasm-bindgen", "dep:web-sys"]
+test-support = []
+
+[dependencies]
+fluxel-rhi-core = { path = "../core" }
+glow = { version = "=0.18.0", optional = true }
+raw-window-handle = { version = "=0.6.2", optional = true }
+
+[dev-dependencies]
+fluxel-host = { git = "https://github.com/fluxel-project/fluxel-host", rev = "34616e7258830b7e52be5d7bd7a793629bbbf07b", features = ["winit-runtime"] }
+raw-window-handle = "=0.6.2"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+khronos-egl = { version = "=6.0.0", features = ["dynamic"], optional = true }
+
+[target.'cfg(windows)'.dependencies]
+glutin_wgl_sys = { version = "=0.6.1", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = { version = "=0.3.105", optional = true }
+wasm-bindgen = { version = "=0.2.128", optional = true }
+web-sys = { version = "=0.3.105", optional = true, features = [
+    "Document",
+    "HtmlCanvasElement",
+    "Performance",
+    "WebGl2RenderingContext",
+    "WebGlActiveInfo",
+    "WebGlBuffer",
+    "WebGlContextAttributes",
+    "WebGlContextEvent",
+    "WebGlFramebuffer",
+    "WebGlProgram",
+    "WebGlQuery",
+    "WebGlRenderbuffer",
+    "WebGlSampler",
+    "WebGlShader",
+    "WebGlSync",
+    "WebGlTexture",
+    "WebGlUniformLocation",
+    "WebGlVertexArrayObject",
+    "Gpu",
+    "Window",
+    "console",
+] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3.50"
+wasm-bindgen-futures = "0.4.55"

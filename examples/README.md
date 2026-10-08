@@ -18,7 +18,7 @@ On Android, the Vulkan NativeActivity can be built, packaged, installed, and
 launched on an attached x86_64 emulator with:
 
 ```powershell
-.\crates\rhi\examples\android\run.ps1 -Serial emulator-5554
+.\examples\android\run.ps1 -Serial emulator-5554
 ```
 
 The Android adapter and NativeActivity entry point are in

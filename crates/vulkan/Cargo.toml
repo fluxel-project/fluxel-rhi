@@ -1,0 +1,24 @@
+[package]
+name = "fluxel-rhi-vulkan"
+version.workspace = true
+edition = "2024"
+rust-version = "1.87"
+license = "MIT OR Apache-2.0"
+description = "Vulkan backend for Fluxel RHI"
+repository = "https://github.com/fluxel-project/fluxel-rhi"
+
+[features]
+default = ["naga", "vulkan"]
+naga = ["fluxel-rhi-core/naga"]
+vulkan = []
+test-support = ["fluxel-rhi-core/test-support"]
+
+[dependencies]
+fluxel-rhi-core = { path = "../core", features = ["vulkan"] }
+raw-window-handle = "=0.6.2"
+
+[dev-dependencies]
+fluxel-host = { git = "https://github.com/fluxel-project/fluxel-host", rev = "34616e7258830b7e52be5d7bd7a793629bbbf07b", features = ["winit-runtime"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ash = { version = "=0.38.0", default-features = false, features = ["loaded", "std"] }
