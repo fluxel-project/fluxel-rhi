@@ -102,6 +102,10 @@ pub use fluxel_rhi_dx12::create_provider as create_dx12_provider;
 #[cfg(all(feature = "vulkan", not(target_arch = "wasm32")))]
 pub use fluxel_rhi_vulkan::create_provider as create_vulkan_provider;
 
+/// Opens the native desktop OpenGL WGL provider for a live Windows host window.
+#[cfg(all(windows, feature = "native-gl-wgl"))]
+pub use fluxel_rhi_gl::{WglProvider, create_wgl_provider};
+
 /// Opens the native Metal provider.
 #[cfg(all(feature = "metal", target_vendor = "apple"))]
 pub use fluxel_rhi_metal::create_provider as create_metal_provider;

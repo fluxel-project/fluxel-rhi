@@ -15,7 +15,7 @@ use ash::vk;
 
 use crate::api::pipeline::ComputePipelineDescriptor;
 use crate::api::pipeline::backend::ComputePipelineBackend;
-use crate::backend::vulkan::binding::layout_bindings;
+use crate::backend::vulkan::binding::{layout_binding_flags, layout_bindings};
 use crate::backend::vulkan::failure::VulkanFailure;
 use crate::backend::vulkan::ffi;
 use crate::backend::vulkan::pipeline::cache::native_cache;
@@ -93,8 +93,15 @@ pub(in crate::backend::vulkan) fn create_compute_pipeline(
 
     let mut set_layouts = Vec::with_capacity(descriptor.interface.descriptor().groups.len());
     for group in &descriptor.interface.descriptor().groups {
-        let bindings = layout_bindings(group.descriptor())?;
-        let info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
+        let bindings = layout_bindings(group.descriptor(), shared.max_runtime_sampled_descriptors)?;
+        let mut info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
+        let binding_flags = layout_binding_flags(group.descriptor())?;
+        let mut binding_flags_info = binding_flags.as_ref().map(|flags| {
+            vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(flags)
+        });
+        if let Some(binding_flags_info) = binding_flags_info.as_mut() {
+            info = info.push_next(binding_flags_info);
+        }
         match unsafe { shared.device.create_descriptor_set_layout(&info, None) } {
             Ok(layout) => set_layouts.push(layout),
             Err(result) => {

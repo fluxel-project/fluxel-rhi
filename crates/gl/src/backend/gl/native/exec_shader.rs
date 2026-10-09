@@ -135,6 +135,7 @@ impl GlShaderApi for NativeGlProvider {
                 generation: id.generation,
                 raw,
                 descriptor: descriptor.clone(),
+                reflection: reflection.clone(),
             },
         );
         Ok((id, reflection))
@@ -351,35 +352,53 @@ impl NativeGlProvider {
             // sampler groups receive consecutive units in layout order.
             let mut assignments = Vec::new();
             let mut next_unit = 0u32;
+            let mut paired_texture_units = std::collections::BTreeMap::new();
             let max_units = self.discovery.limits().max_combined_texture_image_units;
             // Image units are their own namespace, so this counter starts at
             // zero independently of the sampler one above.
             let mut next_image_unit = 0u32;
             let max_image_units = self.discovery.limits().max_image_units;
-            for binding in &descriptor.layout.bindings {
+            for (logical_index, binding) in descriptor.layout.bindings.iter().enumerate() {
                 match binding.kind {
                     GlShaderResourceKind::UniformBuffer => {
-                        let Some(position) =
-                            blocks.iter().position(|(_, name)| *name == binding.name)
-                        else {
-                            return Err(Self::validation(
-                                op,
-                                "declared uniform block is missing from the linked program",
-                            ));
-                        };
-                        let (index, _) = blocks.remove(position);
+                        let point = u32::try_from(logical_index)
+                            .map_err(|_| GlError::OutOfMemory { operation: op })?;
+                        let mut first = None;
+                        for name in &binding.names {
+                            let Some(position) = blocks.iter().position(|(_, found)| found == name)
+                            else {
+                                return Err(Self::validation(
+                                    op,
+                                    "declared uniform block is missing from the linked program",
+                                ));
+                            };
+                            let (index, _) = blocks.remove(position);
+                            self.gl.uniform_block_binding(program, index, point);
+                            first.get_or_insert(index);
+                        }
                         assignments.push(GlExecutableBindingAssignment {
                             logical: binding.location,
-                            executable: GlExecutableBindingLocation::UniformBlock(index),
+                            executable: GlExecutableBindingLocation::UniformBlock(point),
                         });
                     }
                     GlShaderResourceKind::Sampler
                     | GlShaderResourceKind::Texture
                     | GlShaderResourceKind::CombinedTextureSampler => {
                         let declared_size = binding.array_count.max(1);
+                        let name = binding.names.first().expect("nonempty GL ABI names");
+                        if let Some(pair) = binding.pair
+                            && let Some(&unit) = paired_texture_units.get(&pair)
+                        {
+                            paired_texture_units.insert(binding.location, unit);
+                            assignments.push(GlExecutableBindingAssignment {
+                                logical: binding.location,
+                                executable: GlExecutableBindingLocation::TextureUnit(unit),
+                            });
+                            continue;
+                        }
                         let found = samplers
                             .iter()
-                            .find(|(name, _)| name == &binding.name)
+                            .find(|(found, _)| found == name)
                             .map(|&(_, size)| size);
                         let Some(active_size) = found else {
                             return Err(Self::validation(
@@ -405,9 +424,9 @@ impl NativeGlProvider {
                         }
                         for element in 0..active_size {
                             let element_name = if active_size == 1 {
-                                binding.name.clone()
+                                name.clone()
                             } else {
-                                format!("{}[{element}]", binding.name)
+                                format!("{name}[{element}]")
                             };
                             let Some(location) =
                                 self.gl.get_uniform_location(program, &element_name)
@@ -424,8 +443,11 @@ impl NativeGlProvider {
                             logical: binding.location,
                             executable: GlExecutableBindingLocation::TextureUnit(unit),
                         });
-                        let Some(position) =
-                            samplers.iter().position(|(name, _)| *name == binding.name)
+                        paired_texture_units.insert(binding.location, unit);
+                        if let Some(pair) = binding.pair {
+                            paired_texture_units.insert(pair, unit);
+                        }
+                        let Some(position) = samplers.iter().position(|(found, _)| found == name)
                         else {
                             return Err(Self::validation(
                                 op,
@@ -463,18 +485,23 @@ impl NativeGlProvider {
                         // layout" check below has no storage counterpart, so a
                         // compute shader declaring a storage block the layout
                         // does not mention is not caught here.
-                        let Some(index) = self
-                            .gl
-                            .get_shader_storage_block_index(program, &binding.name)
-                        else {
-                            return Err(Self::validation(
-                                op,
-                                "declared storage block is missing from the linked program",
-                            ));
-                        };
+                        let point = u32::try_from(logical_index)
+                            .map_err(|_| GlError::OutOfMemory { operation: op })?;
+                        let mut first = None;
+                        for name in &binding.names {
+                            let Some(index) = self.gl.get_shader_storage_block_index(program, name)
+                            else {
+                                return Err(Self::validation(
+                                    op,
+                                    "declared storage block is missing from the linked program",
+                                ));
+                            };
+                            self.gl.shader_storage_block_binding(program, index, point);
+                            first.get_or_insert(index);
+                        }
                         assignments.push(GlExecutableBindingAssignment {
                             logical: binding.location,
-                            executable: GlExecutableBindingLocation::StorageBlock(index),
+                            executable: GlExecutableBindingLocation::StorageBlock(point),
                         });
                     }
                     GlShaderResourceKind::StorageImage(_) => {
@@ -499,8 +526,8 @@ impl NativeGlProvider {
                                 "storage image assignments exceed the discovered image unit count",
                             ));
                         }
-                        let Some(location) = self.gl.get_uniform_location(program, &binding.name)
-                        else {
+                        let name = binding.names.first().expect("nonempty GL ABI names");
+                        let Some(location) = self.gl.get_uniform_location(program, name) else {
                             return Err(GlError::Driver {
                                 operation: op,
                                 message: "storage image uniform has no location".into(),

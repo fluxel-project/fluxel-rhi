@@ -21,7 +21,7 @@ use crate::api::resource::sampler::CompareFunction;
 
 /// How vertices are assembled into primitives.
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PrimitiveTopology {
     /// Isolated points.
     PointList,
@@ -562,7 +562,7 @@ impl DepthStencilState {
 /// Both are checked where the targets are known — the raster pipeline and the
 /// render pass — because this type has no target to compare against.
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MultisampleState {
     /// The number of samples per pixel.
     pub count: u32,
@@ -576,6 +576,12 @@ pub struct MultisampleState {
 
     /// Whether alpha-to-coverage is enabled.
     pub alpha_to_coverage_enabled: bool,
+
+    /// Minimum fraction of samples that run the fragment shader.
+    ///
+    /// `None` keeps ordinary per-fragment shading. `Some(fraction)` enables
+    /// sample-rate shading and requires [`OptionalFeature::MultisampledShading`](crate::api::platform::OptionalFeature::MultisampledShading).
+    pub sample_shading: Option<f32>,
 }
 
 impl MultisampleState {
@@ -588,6 +594,7 @@ impl MultisampleState {
             count,
             mask: u32::MAX,
             alpha_to_coverage_enabled: false,
+            sample_shading: None,
         }
     }
 
@@ -600,6 +607,12 @@ impl MultisampleState {
     /// Enables or disables alpha-to-coverage.
     pub fn with_alpha_to_coverage(mut self, enabled: bool) -> Self {
         self.alpha_to_coverage_enabled = enabled;
+        self
+    }
+
+    /// Enables sample-rate shading for at least `minimum_fraction` of samples.
+    pub fn with_sample_shading(mut self, minimum_fraction: f32) -> Self {
+        self.sample_shading = Some(minimum_fraction);
         self
     }
 }

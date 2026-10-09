@@ -96,6 +96,9 @@ pub(super) struct NativeProgram {
     pub(super) generation: u32,
     pub(super) raw: glow::NativeProgram,
     pub(super) descriptor: GlProgramDescriptor,
+    /// Link-time logical-to-native assignments.  Binding flushes must consult
+    /// this instead of treating a RHI slot as a GL binding point.
+    pub(super) reflection: crate::backend::gl::api::GlProgramReflection,
 }
 
 /// A created VAO with its structural layout and last recorded index binding.
@@ -135,7 +138,9 @@ pub(super) struct ActivePass {
     pub(super) samples: u32,
     /// Per color attachment; `true` when `end_render_pass` must invalidate.
     pub(super) discard_color: Vec<bool>,
-    pub(super) discard_depth_stencil: Option<bool>,
+    /// `(depth, stencil)` discard decisions. The planes stay independent: a
+    /// depth-stencil view may retain one plane while making the other undefined.
+    pub(super) discard_depth_stencil: Option<(bool, bool)>,
 }
 
 /// The raster pipeline installed for the active pass.

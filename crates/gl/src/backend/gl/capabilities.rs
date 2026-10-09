@@ -140,6 +140,49 @@ impl GlCapabilitySnapshot {
                     RouteSupport::Supported(RouteCapabilities::new(None, None)),
                 );
             }
+            // A blit source needs COPY_SRC and its destination needs COPY_DST;
+            // neither resource has to carry both bits. Record the Cartesian
+            // product so capability lookup agrees with the command contract.
+            for source in &self.textures {
+                let source = &source.query;
+                if source.sample_count() != 1
+                    || !source.usage().contains(TextureUsage::COPY_SRC)
+                    || !crate::api::format::format_aspects(source.format())
+                        .contains(crate::api::resource::TextureAspects::COLOR)
+                {
+                    continue;
+                }
+                for destination in &self.textures {
+                    let destination = &destination.query;
+                    if destination.sample_count() != 1
+                        || !destination.usage().contains(TextureUsage::COPY_DST)
+                        || !crate::api::format::format_aspects(destination.format())
+                            .contains(crate::api::resource::TextureAspects::COLOR)
+                    {
+                        continue;
+                    }
+                    // GL framebuffer blits require matching color format
+                    // classes for the portable route we publish here.
+                    if source.format() != destination.format() {
+                        continue;
+                    }
+                    for filter in [
+                        crate::api::command::BlitFilter::Nearest,
+                        crate::api::command::BlitFilter::Linear,
+                    ] {
+                        facts.record_route(
+                            RouteQuery::Blit {
+                                src_dimension: source.dimension(),
+                                src_format: source.format(),
+                                dst_dimension: destination.dimension(),
+                                dst_format: destination.format(),
+                                filter,
+                            },
+                            RouteSupport::Supported(RouteCapabilities::new(None, None)),
+                        );
+                    }
+                }
+            }
         }
         // Texture uploads use this route key even though GL supplies client
         // memory directly. A texture support row with COPY_DST is emitted only

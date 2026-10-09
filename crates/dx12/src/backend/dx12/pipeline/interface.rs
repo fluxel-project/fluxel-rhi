@@ -10,11 +10,12 @@ use std::slice;
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
 use windows::Win32::Graphics::Direct3D12::{
     D3D_ROOT_SIGNATURE_VERSION_1, D3D12_DESCRIPTOR_RANGE, D3D12_ROOT_CONSTANTS,
-    D3D12_ROOT_DESCRIPTOR_TABLE, D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0,
-    D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
-    D3D12_ROOT_SIGNATURE_DESC, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
-    D3D12_ROOT_SIGNATURE_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL, D3D12SerializeRootSignature,
-    ID3D12Device, ID3D12RootSignature,
+    D3D12_ROOT_DESCRIPTOR, D3D12_ROOT_DESCRIPTOR_TABLE, D3D12_ROOT_PARAMETER,
+    D3D12_ROOT_PARAMETER_0, D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+    D3D12_ROOT_PARAMETER_TYPE_CBV, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+    D3D12_ROOT_PARAMETER_TYPE_SRV, D3D12_ROOT_PARAMETER_TYPE_UAV, D3D12_ROOT_SIGNATURE_DESC,
+    D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12_ROOT_SIGNATURE_FLAG_NONE,
+    D3D12_SHADER_VISIBILITY_ALL, D3D12SerializeRootSignature, ID3D12Device, ID3D12RootSignature,
 };
 
 use crate::api::binding::BindGroupLayout;
@@ -32,6 +33,7 @@ pub(crate) struct Dx12RootSignature {
     handle: ID3D12RootSignature,
     view_parameters: Vec<Option<u32>>,
     sampler_parameters: Vec<Option<u32>>,
+    dynamic_parameters: Vec<Vec<u32>>,
     /// One contiguous root-constant block backs the portable byte address
     /// space. Splitting ranges into native parameters would turn byte offsets
     /// into HLSL register numbers and can collide with a group-0 CBV.
@@ -55,6 +57,11 @@ impl Dx12RootSignature {
             .get(group as usize)
             .copied()
             .flatten()
+    }
+    pub(crate) fn dynamic_parameters(&self, group: u32) -> Option<&[u32]> {
+        self.dynamic_parameters
+            .get(group as usize)
+            .map(Vec::as_slice)
     }
     pub(crate) fn immediate_parameter(&self, offset: u32, size: u32) -> Option<(u32, u32)> {
         self.immediate_ranges
@@ -89,6 +96,8 @@ pub(crate) fn build_root_signature(
     let mut parameters = Vec::with_capacity(groups.len());
     let mut view_parameters = Vec::with_capacity(groups.len());
     let mut sampler_parameters = Vec::with_capacity(groups.len());
+    let mut dynamic_parameters = Vec::with_capacity(groups.len());
+    let mut root_descriptor_count = 0usize;
 
     for (group_index, group) in groups.iter().enumerate() {
         let plan = crate::backend::dx12::binding::layout::TablePlan::of(group.descriptor())?;
@@ -126,46 +135,84 @@ pub(crate) fn build_root_signature(
         }
         if plan.samplers().is_empty() {
             sampler_parameters.push(None);
-            continue;
-        }
-        let table_ranges: Vec<D3D12_DESCRIPTOR_RANGE> = plan
-            .samplers()
-            .iter()
-            .map(|range| D3D12_DESCRIPTOR_RANGE {
-                RangeType: range.class.range_type(),
-                NumDescriptors: range.count,
-                BaseShaderRegister: range.slot.get(),
-                RegisterSpace: group_index as u32,
-                OffsetInDescriptorsFromTableStart: range.first,
-            })
-            .collect();
-        ranges.push(table_ranges);
-        let table = ranges
-            .last()
-            .expect("a non-empty table range vector was just pushed");
-        let parameter_index = parameters.len() as u32;
-        parameters.push(D3D12_ROOT_PARAMETER {
-            ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
-            Anonymous: D3D12_ROOT_PARAMETER_0 {
-                DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
-                    NumDescriptorRanges: table.len() as u32,
-                    pDescriptorRanges: table.as_ptr(),
+        } else {
+            let table_ranges: Vec<D3D12_DESCRIPTOR_RANGE> = plan
+                .samplers()
+                .iter()
+                .map(|range| D3D12_DESCRIPTOR_RANGE {
+                    RangeType: range.class.range_type(),
+                    NumDescriptors: range.count,
+                    BaseShaderRegister: range.slot.get(),
+                    RegisterSpace: group_index as u32,
+                    OffsetInDescriptorsFromTableStart: range.first,
+                })
+                .collect();
+            ranges.push(table_ranges);
+            let table = ranges
+                .last()
+                .expect("a non-empty table range vector was just pushed");
+            let parameter_index = parameters.len() as u32;
+            parameters.push(D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                        NumDescriptorRanges: table.len() as u32,
+                        pDescriptorRanges: table.as_ptr(),
+                    },
                 },
-            },
-            // D3D12 has no compute-only visibility enum; ALL includes compute.
-            ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
-        });
-        sampler_parameters.push(Some(parameter_index));
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+            });
+            sampler_parameters.push(Some(parameter_index));
+        }
+
+        let mut group_dynamic_parameters = Vec::new();
+        for dynamic in plan.dynamics() {
+            let parameter_type = match dynamic.class {
+                crate::backend::dx12::binding::vocabulary::RegisterClass::ConstantBuffer => {
+                    D3D12_ROOT_PARAMETER_TYPE_CBV
+                }
+                crate::backend::dx12::binding::vocabulary::RegisterClass::ShaderResource => {
+                    D3D12_ROOT_PARAMETER_TYPE_SRV
+                }
+                crate::backend::dx12::binding::vocabulary::RegisterClass::UnorderedAccess => {
+                    D3D12_ROOT_PARAMETER_TYPE_UAV
+                }
+                crate::backend::dx12::binding::vocabulary::RegisterClass::Sampler => {
+                    unreachable!("dynamic offsets are buffers")
+                }
+            };
+            for element in 0..dynamic.count {
+                let parameter_index = parameters.len() as u32;
+                parameters.push(D3D12_ROOT_PARAMETER {
+                    ParameterType: parameter_type,
+                    Anonymous: D3D12_ROOT_PARAMETER_0 {
+                        Descriptor: D3D12_ROOT_DESCRIPTOR {
+                            ShaderRegister: dynamic.slot.get() + element,
+                            RegisterSpace: group_index as u32,
+                        },
+                    },
+                    ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+                });
+                group_dynamic_parameters.push(parameter_index);
+                root_descriptor_count += 1;
+            }
+        }
+        dynamic_parameters.push(group_dynamic_parameters);
     }
     let immediate_dwords = immediate_ranges
         .last()
         .map_or(0, |range| (range.offset + range.size) / 4);
-    // A root signature has one shared 64-DWORD budget.  DX12 reserves the
-    // first half for the portable immediate ABI; descriptor tables consume one
-    // DWORD each from the other half.  The public fact therefore reports 128
-    // bytes, not the theoretical 256 bytes available to a signature with no
-    // resource bindings at all.
-    if immediate_dwords > 32 || parameters.len().saturating_add(immediate_dwords as usize) > 64 {
+    // A root signature has one shared 64-DWORD budget. Descriptor tables cost
+    // one DWORD and root CBV/SRV/UAV descriptors cost two; the immediate ABI is
+    // capped at 32 DWORDs. The public immediate-data fact therefore reports 128
+    // bytes rather than the theoretical 256-byte empty-signature maximum.
+    if immediate_dwords > 32
+        || parameters
+            .len()
+            .saturating_add(root_descriptor_count)
+            .saturating_add(immediate_dwords as usize)
+            > 64
+    {
         return Err(Dx12Failure::Unsupported {
             what: "a pipeline interface that exceeds the DX12 root-signature budget",
             why: "immediate data is limited to 32 DWORDs and shares DX12's 64-DWORD root-signature budget with descriptor tables",
@@ -249,6 +296,7 @@ pub(crate) fn build_root_signature(
         handle,
         view_parameters,
         sampler_parameters,
+        dynamic_parameters,
         immediate_parameter,
         immediate_ranges: immediate_ranges.to_vec(),
     })

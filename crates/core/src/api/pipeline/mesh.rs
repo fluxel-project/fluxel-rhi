@@ -237,6 +237,14 @@ pub(crate) fn validate_mesh_fixed_state(
             "a non-default multisample mask is not enabled on this device",
         ));
     }
+    if desc.multisample.sample_shading.is_some()
+        && !feature_supported(OptionalFeature::MultisampledShading)
+    {
+        return Err(RhiError::new(
+            RhiErrorKind::Unsupported,
+            "sample-rate shading is not enabled on this device",
+        ));
+    }
     if let Some(mask) = desc.multiview_mask {
         if mask == 0 {
             return Err(RhiError::new(
@@ -561,6 +569,20 @@ fn validate_mesh_targets(
             RhiErrorKind::InvalidUsage,
             "alpha-to-coverage requires multisampling",
         ));
+    }
+    if let Some(fraction) = desc.multisample.sample_shading {
+        if desc.multisample.count <= 1 {
+            return Err(RhiError::new(
+                RhiErrorKind::InvalidUsage,
+                "sample-rate shading requires multisampling",
+            ));
+        }
+        if !fraction.is_finite() || !(0.0..=1.0).contains(&fraction) {
+            return Err(RhiError::new(
+                RhiErrorKind::InvalidUsage,
+                "sample-rate shading requires a finite minimum fraction in 0.0..=1.0",
+            ));
+        }
     }
     Ok(())
 }

@@ -495,7 +495,8 @@ impl SemanticObserver for CaptureQueue {
             SemanticEvent::ReadbackDefined { request, .. } => {
                 let ticket = match request {
                     CapturedReadbackRequest::Buffer { ticket, .. }
-                    | CapturedReadbackRequest::Texture { ticket, .. } => *ticket,
+                    | CapturedReadbackRequest::Texture { ticket, .. }
+                    | CapturedReadbackRequest::Frame { ticket, .. } => *ticket,
                 };
                 if let Ok(mut list) = self.readbacks.lock() {
                     list.push(ticket);
@@ -1158,6 +1159,7 @@ fn objects_named_by(work: &CapturedRecordedWork) -> Vec<ObjectId> {
                     touched.push(*ticket);
                     touched.push(*src);
                 }
+                CapturedReadbackRequest::Frame { ticket, .. } => touched.push(*ticket),
             },
             PortableCommand::CopyExternalImage(copy) => {
                 touched.push(copy.source);
@@ -1196,6 +1198,7 @@ fn objects_named_by(work: &CapturedRecordedWork) -> Vec<ObjectId> {
                 touched.push(*destination);
             }
             PortableCommand::EndRaster
+            | PortableCommand::ClearRasterAttachments(_)
             | PortableCommand::EndCompute
             | PortableCommand::BeginCompute { .. }
             | PortableCommand::BeginRayTracing { .. }

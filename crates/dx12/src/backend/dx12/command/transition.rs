@@ -45,6 +45,27 @@ impl Transitions {
         before: D3D12_RESOURCE_STATES,
         after: D3D12_RESOURCE_STATES,
     ) {
+        self.push_subresource(
+            resource,
+            D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+            before,
+            after,
+        );
+    }
+
+    /// Adds a transition for one native texture subresource.
+    ///
+    /// Most lowerings intentionally round-trip whole resources.  Shader mip
+    /// generation reads one level while writing another level of the same
+    /// texture, so an all-subresource barrier would incorrectly claim the
+    /// destination had already left `COMMON` with the source.
+    pub(super) fn push_subresource(
+        &mut self,
+        resource: &ID3D12Resource,
+        subresource: u32,
+        before: D3D12_RESOURCE_STATES,
+        after: D3D12_RESOURCE_STATES,
+    ) {
         self.barriers.push(D3D12_RESOURCE_BARRIER {
             Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
             Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
@@ -56,7 +77,7 @@ impl Transitions {
                     // a buffer has one subresource. The constant is Direct3D 12's
                     // own "all of them", which is the honest value for a resource
                     // that has exactly one.
-                    Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                    Subresource: subresource,
                     StateBefore: before,
                     StateAfter: after,
                 }),

@@ -28,7 +28,11 @@ fluxel-rhi-gl = { path = "../gl", optional = true, default-features = false }
 
 [dev-dependencies]
 fluxel-host = { git = "https://github.com/fluxel-project/fluxel-host", rev = "34616e7258830b7e52be5d7bd7a793629bbbf07b", features = ["winit-runtime"] }
+naga = { version = "=27.0.3", default-features = false, features = ["wgsl-in", "glsl-out", "hlsl-out"] }
 raw-window-handle = "=0.6.2"
+serde_json = "1"
+base64 = "0.22"
+png = "0.17"
 
 [target.'cfg(windows)'.dependencies]
 fluxel-rhi-dx12 = { path = "../dx12", optional = true }
@@ -45,4 +49,74 @@ fluxel-rhi-webgpu = { path = "../webgpu", optional = true }
 [[example]]
 name = "01_triangle"
 path = "examples/01_triangle.rs"
-required-features = ["examples", "vulkan"]
+required-features = ["examples"]
+
+[[example]]
+name = "02_texture"
+path = "examples/02_texture.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "03_instancing"
+path = "examples/03_instancing.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "04_dynamic_uniform_buffer"
+path = "examples/04_dynamic_uniform_buffer.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "05_push_constants"
+path = "examples/05_push_constants.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "06_compute"
+path = "examples/06_compute.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "07_offscreen"
+path = "examples/07_offscreen.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "08_msaa"
+path = "examples/08_msaa.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "09_texture_mipmap"
+path = "examples/09_texture_mipmap.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "10_indirect_draw"
+path = "examples/10_indirect_draw.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "11_occlusion_query"
+path = "examples/11_occlusion_query.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "12_screenshot"
+path = "examples/12_screenshot.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "13_multithreaded_recording"
+path = "examples/13_multithreaded_recording.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "14_descriptor_indexing"
+path = "examples/14_descriptor_indexing.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "15_multiview"
+path = "examples/15_multiview.rs"
+required-features = ["examples"]

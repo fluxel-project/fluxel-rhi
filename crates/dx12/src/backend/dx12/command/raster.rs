@@ -34,7 +34,8 @@ use crate::api::command::attachment::{
     ColorAttachmentView, DepthAttachmentMode, StencilAttachmentMode,
 };
 use crate::api::command::geometry::{ColorClearValue, LoadOp};
-use crate::api::command::record::{RasterBegin, RasterDraw, RasterIndirect};
+use crate::api::command::record::{RasterBegin, RasterDraw, RasterIndirect, SecondaryRasterWork};
+use crate::api::command::RasterAttachmentClear;
 use crate::api::command::{AccessMask, IndexFormat, ResourceUse, TextureUseIntent};
 use crate::api::identity::ObjectId;
 use crate::api::pipeline::PrimitiveTopology;
@@ -42,8 +43,9 @@ use crate::api::presentation::FrameAttachment;
 use crate::api::resource::buffer::Buffer;
 use crate::api::resource::texture::{Extent3d, Texture, TextureDimension};
 use crate::api::resource::view::{TextureView, TextureViewDimension};
+use crate::backend::dx12::binding::vocabulary::RegisterClass;
 use crate::backend::dx12::binding::Dx12BindGroup;
-use crate::backend::dx12::failure::{Dx12Failure, ref_native};
+use crate::backend::dx12::failure::{ref_native, Dx12Failure};
 use crate::backend::dx12::pipeline::Dx12RasterPipeline;
 use crate::backend::dx12::platform::facts::dxgi_format;
 use crate::backend::dx12::presentation::Dx12FrameAttachment;
@@ -54,6 +56,9 @@ use super::{dx12_buffer, dx12_texture};
 
 pub(super) struct RasterScopeState {
     colors: Vec<Dx12RenderAttachment>,
+    /// Portable color views remain available while the scope is open so an
+    /// ordered clear can create an RTV over exactly the requested layer range.
+    clear_colors: Vec<(u32, ColorAttachmentView, Option<u32>)>,
     /// CPU RTV heaps backing the null descriptors that fill sparse-MRT holes.
     /// A null RTV has no resource, so these are the only thing keeping the
     /// descriptor alive through the scope; dropped with the scope.  Never read —
@@ -75,8 +80,11 @@ pub(super) struct RasterScopeState {
     /// plain render target.
     color_resolves: Vec<bool>,
     depth_view: Option<TextureView>,
+    depth_handle: Option<D3D12_CPU_DESCRIPTOR_HANDLE>,
     depth_heap: Option<ID3D12DescriptorHeap>,
     depth_read_only: bool,
+    depth_mode: Option<DepthAttachmentMode>,
+    stencil_mode: Option<StencilAttachmentMode>,
     attachment_extent: Extent3d,
 }
 
@@ -86,6 +94,9 @@ struct Dx12ColorResolve {
     dst: windows::Win32::Graphics::Direct3D12::ID3D12Resource,
     dst_subresource: u32,
     format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
+    dst_enter_state: D3D12_RESOURCE_STATES,
+    dst_leave_state: D3D12_RESOURCE_STATES,
+    frame: Option<FrameAttachment>,
 }
 
 /// The DX12-native shape shared by ordinary texture attachments and swapchain
@@ -116,6 +127,11 @@ pub(super) fn lower_raster_begin(
 ) -> Result<RasterScopeState, Dx12Failure> {
     let mut entering = Transitions::default();
     let mut color_attachments = Vec::with_capacity(begin.colors.len());
+    let clear_colors = begin
+        .colors
+        .iter()
+        .map(|(location, color)| (*location, color.view.clone(), color.depth_slice))
+        .collect();
     let mut resolves = Vec::new();
     let mut color_resolves = Vec::with_capacity(begin.colors.len());
     for (_, color) in &begin.colors {
@@ -126,19 +142,50 @@ pub(super) fn lower_raster_begin(
         // end. Resolve is only meaningful alongside a multisampled source.
         if let Some(target) = &color.resolve {
             let src = attachment.resource.clone();
-            let ColorAttachmentView::Texture(target_view) = target else {
-                return Err(unsupported(
-                    "a resolve target that is not a texture view",
-                    "only texture resolves are lowered on this backend",
-                ));
+            let (dst, format, dst_enter_state, dst_leave_state, frame) = match target {
+                ColorAttachmentView::Texture(target_view) => (
+                    dx12_texture(target_view.texture())?.resource().clone(),
+                    dxgi_format(target_view.format()).ok_or_else(|| {
+                        unsupported(
+                            "a resolve target whose format has no DXGI mapping",
+                            "DX12 cannot resolve into it",
+                        )
+                    })?,
+                    D3D12_RESOURCE_STATE_COMMON,
+                    D3D12_RESOURCE_STATE_COMMON,
+                    None,
+                ),
+                ColorAttachmentView::Frame(frame) => {
+                    let native = frame
+                        .native()
+                        .as_any()
+                        .downcast_ref::<Dx12FrameAttachment>()
+                        .ok_or_else(|| {
+                            unsupported(
+                                "a resolve frame this device did not acquire",
+                                "its native drawable belongs to another backend",
+                            )
+                        })?;
+                    (
+                        native.resource().clone(),
+                        dxgi_format(frame.format()).ok_or_else(|| {
+                            unsupported(
+                                "a presentation resolve format without DXGI mapping",
+                                "DX12 cannot resolve into it",
+                            )
+                        })?,
+                        D3D12_RESOURCE_STATE_PRESENT,
+                        D3D12_RESOURCE_STATE_PRESENT,
+                        Some(frame.clone()),
+                    )
+                }
+                _ => {
+                    return Err(unsupported(
+                        "a resolve attachment introduced after this DX12 backend",
+                        "the backend has no verified resolve lowering for it",
+                    ));
+                }
             };
-            let dst = dx12_texture(target_view.texture())?.resource().clone();
-            let format = dxgi_format(target_view.format()).ok_or_else(|| {
-                unsupported(
-                    "a resolve target whose format has no DXGI mapping",
-                    "DX12 cannot resolve into it",
-                )
-            })?;
             // Whole-subresource resolve for the common single-layer, base-mip
             // single-sample target. A layered/resolved-mip target would need a
             // subresource index derived from the view.
@@ -147,6 +194,9 @@ pub(super) fn lower_raster_begin(
                 dst,
                 dst_subresource: 0,
                 format,
+                dst_enter_state,
+                dst_leave_state,
+                frame,
             });
         }
         entering.push(
@@ -297,12 +347,16 @@ pub(super) fn lower_raster_begin(
         })?;
     Ok(RasterScopeState {
         colors: color_attachments,
+        clear_colors,
         null_rtv_heaps,
         resolves,
         color_resolves,
         depth_view,
+        depth_handle: depth_stencil,
         depth_heap,
         depth_read_only,
+        depth_mode: begin.depth_stencil.as_ref().and_then(|depth| depth.depth),
+        stencil_mode: begin.depth_stencil.as_ref().and_then(|depth| depth.stencil),
         attachment_extent,
     })
 }
@@ -390,12 +444,180 @@ fn create_frame_rtv(
     Ok((heap, handle))
 }
 
+/// Clears selected attachments without ending their raster scope.
+///
+/// The native clear commands operate on RTV/DSV descriptors directly, so this
+/// deliberately does not rebind `OMSetRenderTargets`: the scope's attachments
+/// remain current for the draw that follows.  That preserves the recorded
+/// `query end → clear → draw` order used by the occlusion example.
+pub(super) fn lower_raster_clear(
+    device: &ID3D12Device,
+    list: &ID3D12GraphicsCommandList,
+    clear: &RasterAttachmentClear,
+    scope: &RasterScopeState,
+    committed: &mut CommittedBatch,
+) -> Result<(), Dx12Failure> {
+    let rect = clear_rect(clear)?;
+    for (location, value) in &clear.colors {
+        let index = scope
+            .clear_colors
+            .iter()
+            .position(|(candidate, _, _)| candidate == location)
+            .ok_or_else(|| {
+                unsupported(
+                    "a raster clear color location absent from the DX12 scope",
+                    "portable validation must reject unattached locations before lowering",
+                )
+            })?;
+        let (_, view, depth_slice) = &scope.clear_colors[index];
+        let (handle, extra_heap) = match view {
+            ColorAttachmentView::Texture(view) => {
+                let (heap, handle) = create_rtv_range(
+                    device,
+                    view,
+                    *depth_slice,
+                    clear.base_layer,
+                    clear.layer_count,
+                )?;
+                (handle, Some(heap))
+            }
+            ColorAttachmentView::Frame(_) => {
+                if clear.base_layer != 0 || clear.layer_count != 1 {
+                    return Err(unsupported(
+                        "a layered clear of a presentation attachment",
+                        "an acquired DX12 frame has exactly one layer",
+                    ));
+                }
+                (scope.colors[index].handle, None)
+            }
+            _ => {
+                return Err(unsupported(
+                    "a color attachment introduced after this DX12 backend",
+                    "the DX12 raster clear lowerer has no native descriptor for it",
+                ));
+            }
+        };
+        unsafe { list.ClearRenderTargetView(handle, &clear_color(*value), Some(&[rect])) };
+        if let Some(heap) = extra_heap {
+            committed.raster_descriptor_heaps.push(heap);
+        }
+    }
+
+    if clear.depth.is_some() || clear.stencil.is_some() {
+        let view = scope.depth_view.as_ref().ok_or_else(|| {
+            unsupported(
+                "a depth/stencil clear without a DX12 depth attachment",
+                "portable validation must reject it before lowering",
+            )
+        })?;
+        let (handle, extra_heap) = if clear.base_layer == 0 && clear.layer_count == 1 {
+            (
+                scope.depth_handle.ok_or_else(|| {
+                    unsupported(
+                        "a DX12 depth attachment without a DSV",
+                        "raster-scope construction must create its DSV",
+                    )
+                })?,
+                None,
+            )
+        } else {
+            let (heap, handle) = create_dsv_range(
+                device,
+                view,
+                scope.depth_mode,
+                scope.stencil_mode,
+                clear.base_layer,
+                clear.layer_count,
+            )?;
+            (handle, Some(heap))
+        };
+        let mut flags = D3D12_CLEAR_FLAGS(0);
+        if clear.depth.is_some() {
+            flags |= D3D12_CLEAR_FLAG_DEPTH;
+        }
+        if clear.stencil.is_some() {
+            flags |= D3D12_CLEAR_FLAG_STENCIL;
+        }
+        unsafe {
+            list.ClearDepthStencilView(
+                handle,
+                flags,
+                clear.depth.unwrap_or(1.0),
+                clear.stencil.unwrap_or(0) as u8,
+                Some(&[rect]),
+            )
+        };
+        if let Some(heap) = extra_heap {
+            committed.raster_descriptor_heaps.push(heap);
+        }
+    }
+    Ok(())
+}
+
+fn clear_rect(
+    clear: &RasterAttachmentClear,
+) -> Result<windows::Win32::Foundation::RECT, Dx12Failure> {
+    let right = clear.rect.right().ok_or_else(|| {
+        unsupported(
+            "a raster clear rectangle whose right edge overflows",
+            "portable validation must reject an overflowing rectangle",
+        )
+    })?;
+    let bottom = clear.rect.bottom().ok_or_else(|| {
+        unsupported(
+            "a raster clear rectangle whose bottom edge overflows",
+            "portable validation must reject an overflowing rectangle",
+        )
+    })?;
+    Ok(windows::Win32::Foundation::RECT {
+        left: i32::try_from(clear.rect.x).map_err(|_| {
+            unsupported(
+                "a raster clear rectangle wider than i32",
+                "D3D12 RECT uses LONG",
+            )
+        })?,
+        top: i32::try_from(clear.rect.y).map_err(|_| {
+            unsupported(
+                "a raster clear rectangle taller than i32",
+                "D3D12 RECT uses LONG",
+            )
+        })?,
+        right: i32::try_from(right).map_err(|_| {
+            unsupported(
+                "a raster clear rectangle wider than i32",
+                "D3D12 RECT uses LONG",
+            )
+        })?,
+        bottom: i32::try_from(bottom).map_err(|_| {
+            unsupported(
+                "a raster clear rectangle taller than i32",
+                "D3D12 RECT uses LONG",
+            )
+        })?,
+    })
+}
+
 pub(super) fn lower_raster_draw(
     list: &ID3D12GraphicsCommandList,
     draw: &RasterDraw,
     uses: &[ResourceUse],
     scope: &RasterScopeState,
     committed: &mut CommittedBatch,
+) -> Result<(), Dx12Failure> {
+    lower_raster_draw_inner(list, draw, uses, scope, committed, true, true)
+}
+
+/// Writes a draw's state and geometry.  A D3D12 bundle cannot contain resource
+/// barriers, so inherited raster work uses this same encoder with transitions
+/// disabled and emits them on the parent direct list around `ExecuteBundle`.
+fn lower_raster_draw_inner(
+    list: &ID3D12GraphicsCommandList,
+    draw: &RasterDraw,
+    uses: &[ResourceUse],
+    scope: &RasterScopeState,
+    committed: &mut CommittedBatch,
+    record_transitions: bool,
+    set_descriptor_heaps: bool,
 ) -> Result<(), Dx12Failure> {
     let pipeline = draw
         .pipeline
@@ -410,12 +632,6 @@ pub(super) fn lower_raster_draw(
         })?;
     let mut groups = Vec::with_capacity(draw.groups.len());
     for bound in &draw.groups {
-        if !bound.dynamic_offsets.is_empty() {
-            return Err(unsupported(
-                "a raster bind group with dynamic offsets",
-                "DX12 root-descriptor dynamic-offset lowering is not implemented",
-            ));
-        }
         let group = bound
             .group
             .native()
@@ -529,7 +745,9 @@ pub(super) fn lower_raster_draw(
             },
         ));
     }
-    entering.record(list);
+    if record_transitions {
+        entering.record(list);
+    }
     unsafe {
         list.SetGraphicsRootSignature(pipeline.root_signature());
         list.SetPipelineState(pipeline.pipeline_state());
@@ -554,14 +772,16 @@ pub(super) fn lower_raster_draw(
                 destination,
             );
         }
-        if let Some((_, group)) = groups.first() {
-            // D3D12 permits precisely one CBV/SRV/UAV and one sampler heap to
-            // be active. A group's table addresses are offsets in these shared
-            // device heaps, so bind both before setting graphics roots.
-            list.SetDescriptorHeaps(&[
-                Some(group.view_heap().clone()),
-                Some(group.sampler_heap().clone()),
-            ]);
+        if set_descriptor_heaps {
+            if let Some((_, group)) = groups.first() {
+                // D3D12 permits precisely one CBV/SRV/UAV and one sampler heap to
+                // be active. A group's table addresses are offsets in these shared
+                // device heaps, so bind both before setting graphics roots.
+                list.SetDescriptorHeaps(&[
+                    Some(group.view_heap().clone()),
+                    Some(group.sampler_heap().clone()),
+                ]);
+            }
         }
         for (bound, group) in &groups {
             if let Some(parameter) = pipeline.view_root_parameter(bound.index.get()) {
@@ -570,6 +790,12 @@ pub(super) fn lower_raster_draw(
             if let Some(parameter) = pipeline.sampler_root_parameter(bound.index.get()) {
                 list.SetGraphicsRootDescriptorTable(parameter, group.sampler_table());
             }
+            bind_graphics_dynamic_root_descriptors(
+                list,
+                pipeline.dynamic_root_parameters(bound.index.get()),
+                group,
+                &bound.dynamic_offsets,
+            )?;
         }
         list.IASetPrimitiveTopology(primitive_topology(
             draw.pipeline.descriptor().primitive.topology,
@@ -636,12 +862,205 @@ pub(super) fn lower_raster_draw(
             );
         }
     }
-    leaving.record(list);
+    if record_transitions {
+        leaving.record(list);
+    }
     committed.raster_pipelines.push(draw.pipeline.clone());
     committed
         .bind_groups
         .extend(draw.groups.iter().map(|group| group.group.clone()));
     Ok(())
+}
+
+fn bind_graphics_dynamic_root_descriptors(
+    list: &ID3D12GraphicsCommandList,
+    parameters: Option<&[u32]>,
+    group: &Dx12BindGroup,
+    offsets: &[u32],
+) -> Result<(), Dx12Failure> {
+    let parameters = parameters.unwrap_or_default();
+    let buffers = group.dynamic_buffers();
+    if parameters.len() != buffers.len() || buffers.len() != offsets.len() {
+        return Err(unsupported(
+            "a raster dynamic binding layout that disagrees with its bind group",
+            "portable validation establishes one dynamic offset per buffer element",
+        ));
+    }
+    for ((parameter, buffer), offset) in parameters.iter().zip(buffers).zip(offsets) {
+        let address = buffer.address(*offset)?;
+        unsafe {
+            match buffer.class() {
+                RegisterClass::ConstantBuffer => {
+                    list.SetGraphicsRootConstantBufferView(*parameter, address)
+                }
+                RegisterClass::ShaderResource => {
+                    list.SetGraphicsRootShaderResourceView(*parameter, address)
+                }
+                RegisterClass::UnorderedAccess => {
+                    list.SetGraphicsRootUnorderedAccessView(*parameter, address)
+                }
+                RegisterClass::Sampler => unreachable!("dynamic offsets are buffer bindings"),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Lowers a finished inherited raster packet into D3D12 bundles.  Resource
+/// barriers and descriptor-heap selection belong to the parent direct list:
+/// D3D12 forbids barriers in a bundle and bundles inherit the parent's heaps.
+pub(super) fn lower_secondary_raster_work(
+    device: &ID3D12Device,
+    parent: &ID3D12GraphicsCommandList,
+    work: &SecondaryRasterWork,
+    scope: &RasterScopeState,
+    committed: &mut CommittedBatch,
+) -> Result<(), Dx12Failure> {
+    for command in work.commands() {
+        let crate::api::command::record::RecordedPayload::RasterDraw(draw) = &command.payload
+        else {
+            return Err(unsupported(
+                "a non-draw command in secondary raster work",
+                "portable validation must retain direct raster draws only",
+            ));
+        };
+
+        // Establish shader-visible resource states on the direct list before
+        // the bundle runs, then restore the batch invariant afterwards.
+        let leaving = secondary_draw_transitions(parent, &command.uses, committed)?;
+        bind_secondary_descriptor_heaps(parent, draw)?;
+
+        let allocator = unsafe {
+            device
+                .CreateCommandAllocator::<ID3D12CommandAllocator>(D3D12_COMMAND_LIST_TYPE_BUNDLE)
+                .map_err(|error| ref_native(&error))?
+        };
+        let bundle = unsafe {
+            device
+                .CreateCommandList::<_, _, ID3D12GraphicsCommandList>(
+                    0,
+                    D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                    &allocator,
+                    None::<&ID3D12PipelineState>,
+                )
+                .map_err(|error| ref_native(&error))?
+        };
+        lower_raster_draw_inner(&bundle, draw, &command.uses, scope, committed, false, false)?;
+        unsafe {
+            bundle.Close().map_err(|error| ref_native(&error))?;
+            parent.ExecuteBundle(&bundle);
+        }
+        leaving.record(parent);
+        committed.secondary_bundles.push((allocator, bundle));
+    }
+    Ok(())
+}
+
+/// Selects the descriptor heaps on the direct list for a bundle.  Root tables
+/// are set by the bundle itself, but heap selection is explicitly disallowed in
+/// bundle command streams.
+fn bind_secondary_descriptor_heaps(
+    parent: &ID3D12GraphicsCommandList,
+    draw: &RasterDraw,
+) -> Result<(), Dx12Failure> {
+    let Some(bound) = draw.groups.first() else {
+        return Ok(());
+    };
+    let group = bound
+        .group
+        .native()
+        .as_any()
+        .downcast_ref::<Dx12BindGroup>()
+        .ok_or_else(|| {
+            unsupported(
+                "a secondary-raster bind group this device did not create",
+                "its descriptor table belongs to another backend",
+            )
+        })?;
+    unsafe {
+        parent.SetDescriptorHeaps(&[
+            Some(group.view_heap().clone()),
+            Some(group.sampler_heap().clone()),
+        ]);
+    }
+    Ok(())
+}
+
+/// Emits the parent-side state transitions for one bundle and returns the
+/// matching restoration barriers.  Keep this intentionally parallel to the
+/// direct draw encoder: a bundle inherits resource state but cannot carry a
+/// `ResourceBarrier` command of its own.
+fn secondary_draw_transitions(
+    parent: &ID3D12GraphicsCommandList,
+    uses: &[ResourceUse],
+    committed: &mut CommittedBatch,
+) -> Result<Transitions, Dx12Failure> {
+    let mut entering = Transitions::default();
+    let mut leaving = Transitions::default();
+    let mut buffers = HashMap::<ObjectId, (Buffer, D3D12_RESOURCE_STATES)>::new();
+    let mut textures = HashMap::<ObjectId, (Texture, D3D12_RESOURCE_STATES)>::new();
+    for resource_use in uses {
+        match resource_use {
+            ResourceUse::Buffer(use_) => {
+                let state = buffer_state(use_.access);
+                buffers
+                    .entry(use_.buffer.id())
+                    .and_modify(|(_, prior)| *prior |= state)
+                    .or_insert_with(|| (use_.buffer.clone(), state));
+            }
+            ResourceUse::Texture(use_) => match use_.intent {
+                TextureUseIntent::ColorAttachment
+                | TextureUseIntent::DepthStencilRead
+                | TextureUseIntent::DepthStencilWrite => {}
+                TextureUseIntent::ShaderRead | TextureUseIntent::ShaderReadWrite => {
+                    let state = texture_state(use_.access);
+                    textures
+                        .entry(use_.texture.id())
+                        .and_modify(|(_, prior)| *prior |= state)
+                        .or_insert_with(|| (use_.texture.clone(), state));
+                }
+                _ => {
+                    return Err(unsupported(
+                        "a secondary raster texture use outside shader bindings",
+                        "copy and resolve uses have separate lowerings",
+                    ));
+                }
+            },
+            ResourceUse::Frame(_) => {
+                return Err(unsupported(
+                    "a presentation frame used by secondary raster work",
+                    "presentation attachment lowering is not implemented",
+                ));
+            }
+            ResourceUse::AccelerationStructure(_) => {
+                return Err(unsupported(
+                    "an acceleration structure used by secondary raster work",
+                    "DX12 acceleration-structure binding lowering is not enabled",
+                ));
+            }
+            ResourceUse::Query(_) => {}
+            _ => {
+                return Err(unsupported(
+                    "a resource use introduced after this DX12 backend",
+                    "the backend has no verified raster transition for it",
+                ));
+            }
+        }
+    }
+    for (buffer, state) in buffers.values() {
+        let native = dx12_buffer(buffer)?;
+        entering.push(native.resource(), D3D12_RESOURCE_STATE_COMMON, *state);
+        leaving.push(native.resource(), *state, D3D12_RESOURCE_STATE_COMMON);
+        committed.raster_buffers.push(buffer.clone());
+    }
+    for (texture, state) in textures.values() {
+        let native = dx12_texture(texture)?;
+        entering.push(native.resource(), D3D12_RESOURCE_STATE_COMMON, *state);
+        leaving.push(native.resource(), *state, D3D12_RESOURCE_STATE_COMMON);
+        committed.raster_textures.push(texture.clone());
+    }
+    entering.record(parent);
+    Ok(leaving)
 }
 
 /// Executes one native draw signature after reusing the ordinary raster state
@@ -788,7 +1207,7 @@ pub(super) fn lower_raster_end(
             );
             resolve_transitions.push(
                 &op.dst,
-                D3D12_RESOURCE_STATE_COMMON,
+                op.dst_enter_state,
                 D3D12_RESOURCE_STATE_RESOLVE_DEST,
             );
         }
@@ -820,7 +1239,7 @@ pub(super) fn lower_raster_end(
         leaving.push(
             &op.dst,
             D3D12_RESOURCE_STATE_RESOLVE_DEST,
-            D3D12_RESOURCE_STATE_COMMON,
+            op.dst_leave_state,
         );
     }
     if let Some(view) = &depth_view {
@@ -844,6 +1263,11 @@ pub(super) fn lower_raster_end(
             AttachmentRetention::Frame(frame) => committed.raster_frames.push(frame),
         }
     }
+    for op in resolves {
+        if let Some(frame) = op.frame {
+            committed.raster_frames.push(frame);
+        }
+    }
     if let Some(view) = depth_view {
         committed.raster_views.push(view);
     }
@@ -856,6 +1280,19 @@ fn create_rtv(
     device: &ID3D12Device,
     view: &TextureView,
     depth_slice: Option<u32>,
+) -> Result<(ID3D12DescriptorHeap, D3D12_CPU_DESCRIPTOR_HANDLE), Dx12Failure> {
+    create_rtv_range(device, view, depth_slice, 0, 1)
+}
+
+/// Creates an RTV selecting a consecutive range relative to a texture view.
+/// Scope begin uses the first layer only; `RasterAttachmentClear` is allowed to
+/// name any validated subset and therefore needs this explicit range form.
+fn create_rtv_range(
+    device: &ID3D12Device,
+    view: &TextureView,
+    depth_slice: Option<u32>,
+    relative_base_layer: u32,
+    layer_count: u32,
 ) -> Result<(ID3D12DescriptorHeap, D3D12_CPU_DESCRIPTOR_HANDLE), Dx12Failure> {
     let texture = dx12_texture(view.texture())?;
     let descriptor = view.descriptor();
@@ -871,12 +1308,27 @@ fn create_rtv(
     })?;
     let heap = cpu_heap(device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV)?;
     let handle = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
+    let base_layer = descriptor
+        .base_layer
+        .checked_add(relative_base_layer)
+        .ok_or_else(|| {
+            unsupported(
+                "a raster clear layer index overflow",
+                "validated layer ranges must fit the native RTV",
+            )
+        })?;
     // A portable D2 view selects one array layer. D3D12 requires the ARRAY
     // descriptor form whenever the resource has multiple layers; TEXTURE2D
     // would silently target layer zero and ignore `base_layer`.
     let desc = if matches!(view.texture().descriptor().dimension, TextureDimension::D3)
         && matches!(descriptor.dimension, TextureViewDimension::D3)
     {
+        if relative_base_layer != 0 || layer_count != 1 {
+            return Err(unsupported(
+                "a layered clear of a 3D color attachment",
+                "the DX12 3D RTV path selects one explicit W slice",
+            ));
+        }
         let slice = depth_slice.ok_or_else(|| {
             unsupported(
                 "a 3D color attachment without a depth slice",
@@ -908,8 +1360,8 @@ fn create_rtv(
             Anonymous: D3D12_RENDER_TARGET_VIEW_DESC_0 {
                 Texture2DArray: D3D12_TEX2D_ARRAY_RTV {
                     MipSlice: descriptor.base_mip,
-                    FirstArraySlice: descriptor.base_layer,
-                    ArraySize: 1,
+                    FirstArraySlice: base_layer,
+                    ArraySize: layer_count,
                     PlaneSlice: 0,
                 },
             },
@@ -917,10 +1369,10 @@ fn create_rtv(
     } else if matches!(view.texture().descriptor().dimension, TextureDimension::D2)
         && matches!(descriptor.dimension, TextureViewDimension::D2)
     {
-        if depth_slice.is_some() {
+        if depth_slice.is_some() || relative_base_layer != 0 || layer_count != 1 {
             return Err(unsupported(
-                "a depth slice on a 2D color attachment",
-                "only a 3D RTV accepts a depth slice",
+                "a layered clear of a non-array 2D color attachment",
+                "only a 2D-array RTV can select several attachment layers",
             ));
         }
         D3D12_RENDER_TARGET_VIEW_DESC {
@@ -948,6 +1400,17 @@ fn create_dsv(
     view: &TextureView,
     depth: Option<DepthAttachmentMode>,
     stencil: Option<StencilAttachmentMode>,
+) -> Result<(ID3D12DescriptorHeap, D3D12_CPU_DESCRIPTOR_HANDLE), Dx12Failure> {
+    create_dsv_range(device, view, depth, stencil, 0, 1)
+}
+
+fn create_dsv_range(
+    device: &ID3D12Device,
+    view: &TextureView,
+    depth: Option<DepthAttachmentMode>,
+    stencil: Option<StencilAttachmentMode>,
+    relative_base_layer: u32,
+    layer_count: u32,
 ) -> Result<(ID3D12DescriptorHeap, D3D12_CPU_DESCRIPTOR_HANDLE), Dx12Failure> {
     let texture = dx12_texture(view.texture())?;
     let descriptor = view.descriptor();
@@ -981,6 +1444,15 @@ fn create_dsv(
     }
     let heap = cpu_heap(device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV)?;
     let handle = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
+    let base_layer = descriptor
+        .base_layer
+        .checked_add(relative_base_layer)
+        .ok_or_else(|| {
+            unsupported(
+                "a depth/stencil clear layer index overflow",
+                "validated layer ranges must fit the native DSV",
+            )
+        })?;
     let desc = if view.texture().descriptor().array_layers > 1
         || matches!(descriptor.dimension, TextureViewDimension::D2Array)
     {
@@ -991,12 +1463,18 @@ fn create_dsv(
             Anonymous: D3D12_DEPTH_STENCIL_VIEW_DESC_0 {
                 Texture2DArray: D3D12_TEX2D_ARRAY_DSV {
                     MipSlice: descriptor.base_mip,
-                    FirstArraySlice: descriptor.base_layer,
-                    ArraySize: 1,
+                    FirstArraySlice: base_layer,
+                    ArraySize: layer_count,
                 },
             },
         }
     } else {
+        if relative_base_layer != 0 || layer_count != 1 {
+            return Err(unsupported(
+                "a layered clear of a non-array 2D depth attachment",
+                "only a 2D-array DSV can select several attachment layers",
+            ));
+        }
         D3D12_DEPTH_STENCIL_VIEW_DESC {
             Format: format,
             ViewDimension: D3D12_DSV_DIMENSION_TEXTURE2D,

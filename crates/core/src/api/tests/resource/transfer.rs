@@ -354,7 +354,9 @@ fn a_readback_request_names_a_buffer_range_or_a_texture_region() {
     };
     match &buffer_request {
         ReadbackRequest::Buffer { range, .. } => assert_eq!(*range, BufferRange::new(0, 16)),
-        ReadbackRequest::Texture { .. } => panic!("this request names a buffer"),
+        ReadbackRequest::Texture { .. } | ReadbackRequest::Frame { .. } => {
+            panic!("this request names a buffer")
+        }
     }
 
     let texture_request = ReadbackRequest::Texture {
@@ -376,7 +378,9 @@ fn a_readback_request_names_a_buffer_range_or_a_texture_region() {
     };
     match &texture_request {
         ReadbackRequest::Texture { extent, .. } => assert_eq!(*extent, Extent3d::d2(4, 2)),
-        ReadbackRequest::Buffer { .. } => panic!("this request names a texture"),
+        ReadbackRequest::Buffer { .. } | ReadbackRequest::Frame { .. } => {
+            panic!("this request names a texture")
+        }
     }
 }
 

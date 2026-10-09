@@ -380,4 +380,12 @@ pub enum CapturedReadbackRequest {
         /// How large the region is.
         extent: Extent3d,
     },
+
+    /// A readback of the complete acquired presentation frame.
+    Frame {
+        /// The ticket this request was encoded as.
+        ticket: ObjectId,
+        /// The acquired frame identity.
+        src: AcquiredFrameId,
+    },
 }

@@ -169,6 +169,16 @@ fn capture_command(command: &crate::api::command::record::RecordedCommand) -> Ve
         P::RasterBegin(begin) => vec![action(PortableCommand::BeginRaster(capture_raster_scope(
             begin,
         )))],
+        P::RasterClear(clear) => vec![action(PortableCommand::ClearRasterAttachments(
+            clear.clone(),
+        ))],
+        // Secondary raster work inherits this scope's attachments. Capture
+        // expands its draw-only packet at the execution point, preserving the
+        // parent command sequence without exposing an extra native concept to
+        // replay consumers.
+        P::RasterExecuteSecondary(work) => {
+            work.commands().iter().flat_map(capture_command).collect()
+        }
         P::RasterEnd => vec![action(PortableCommand::EndRaster)],
         P::ComputeBegin(begin) => vec![action(PortableCommand::BeginCompute {
             label: begin.label.clone(),
@@ -536,6 +546,12 @@ fn capture_readback(
             origin: *origin,
             extent: *extent,
         },
+        crate::api::resource::transfer::ReadbackRequest::Frame { src, .. } => {
+            CapturedReadbackRequest::Frame {
+                ticket: ticket.id(),
+                src: src.frame_id(),
+            }
+        }
     }
 }
 
@@ -596,6 +612,9 @@ fn capture_use(use_: &crate::api::command::ResourceUse) -> CapturedResourceUse {
 pub enum PortableCommand {
     /// A raster scope opened, with its attachment set.
     BeginRaster(CapturedRasterScope),
+
+    /// Selected attachments were cleared inside the current raster scope.
+    ClearRasterAttachments(crate::api::command::RasterAttachmentClear),
 
     /// The raster scope closed.
     EndRaster,

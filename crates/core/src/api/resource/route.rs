@@ -21,7 +21,8 @@
 //!
 //! A backend may not, without the caller knowing, lower a blit into a fullscreen
 //! shader, a copy into a staging CPU round-trip, or a resolve into a compute
-//! shader. If a caller wants a fallback, the caller queries the route and
+//! shader. A route may explicitly report its blit execution method; otherwise a
+//! caller that needs a particular implementation queries the route and
 //! selects another explicit graph pass or command route. The payoff is that
 //! capture, statistics, and the performance model describe what was actually
 //! executed instead of what was nominally requested — which is exactly what a
@@ -384,6 +385,20 @@ impl TexelCopyLayoutLimits {
 pub struct RouteCapabilities {
     buffer_copy_layout: Option<BufferCopyLayoutLimits>,
     texel_copy_layout: Option<TexelCopyLayoutLimits>,
+    blit_execution: Option<BlitExecution>,
+}
+
+/// The implementation a supported filtered blit executes.
+///
+/// This is a route fact rather than a backend-private detail: a shader blit is
+/// valid only when the capability answer told the caller that it will run one.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlitExecution {
+    /// A native transfer/blit command performs the operation.
+    Native,
+    /// A backend-owned graphics or compute shader performs the operation.
+    Shader,
 }
 
 impl RouteCapabilities {
@@ -406,6 +421,7 @@ impl RouteCapabilities {
         Self {
             buffer_copy_layout,
             texel_copy_layout,
+            blit_execution: None,
         }
     }
 
@@ -417,6 +433,18 @@ impl RouteCapabilities {
     /// The texel-copy alignment, when this route transfers texels.
     pub fn texel_copy_layout(&self) -> Option<TexelCopyLayoutLimits> {
         self.texel_copy_layout
+    }
+
+    /// Records the execution method for a supported blit route.
+    #[doc(hidden)]
+    pub fn with_blit_execution(mut self, execution: BlitExecution) -> Self {
+        self.blit_execution = Some(execution);
+        self
+    }
+
+    /// The disclosed execution method for this blit route.
+    pub fn blit_execution(&self) -> Option<BlitExecution> {
+        self.blit_execution
     }
 }
 
@@ -576,6 +604,11 @@ impl RouteSupport {
                         out.extend_from_slice(&layout.buffer_offset_alignment.to_le_bytes());
                         out.extend_from_slice(&layout.bytes_per_row_alignment.to_le_bytes());
                     }
+                }
+                match capabilities.blit_execution {
+                    None => out.push(0),
+                    Some(BlitExecution::Native) => out.push(1),
+                    Some(BlitExecution::Shader) => out.push(2),
                 }
             }
         }

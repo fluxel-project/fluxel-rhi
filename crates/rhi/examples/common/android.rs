@@ -31,6 +31,7 @@ use fluxel_rhi::{
             ConfiguredPresentation, Extent2d, PresentationConfiguration, PresentationExtent,
             PresentationExtentControl,
         },
+        resource::TextureUsage,
     },
     create_vulkan_provider,
 };
@@ -73,6 +74,7 @@ pub struct AndroidVulkanSession {
     format: fluxel_rhi::api::format::TextureFormat,
     extent_control: PresentationExtentControl,
     extent: Extent2d,
+    presentation_usage: TextureUsage,
 }
 
 impl AndroidVulkanSession {
@@ -99,11 +101,9 @@ impl AndroidVulkanSession {
     }
 
     fn presentation_configuration(&self, width: u32, height: u32) -> PresentationConfiguration {
-        PresentationConfiguration::new(self.format).with_extent(presentation_extent(
-            self.extent_control,
-            width,
-            height,
-        ))
+        PresentationConfiguration::new(self.format)
+            .with_extent(presentation_extent(self.extent_control, width, height))
+            .with_usage(self.presentation_usage)
     }
 
     fn close(mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -142,6 +142,7 @@ impl NativePlatform for AndroidVulkanPlatform {
         window: &HostWindow,
         width: u32,
         height: u32,
+        presentation_usage: TextureUsage,
     ) -> Result<Self::Session, Box<dyn Error + Send + Sync>> {
         if backend != NativeBackend::Vulkan {
             return Err(AdapterError::WrongBackend(backend).into());
@@ -173,9 +174,13 @@ impl NativePlatform for AndroidVulkanPlatform {
             } => current,
             _ => Extent2d { width, height },
         };
-        let configuration = PresentationConfiguration::new(format).with_extent(
-            presentation_extent(extent_control, extent.width, extent.height),
-        );
+        let configuration = PresentationConfiguration::new(format)
+            .with_extent(presentation_extent(
+                extent_control,
+                extent.width,
+                extent.height,
+            ))
+            .with_usage(presentation_usage);
         let presentation = block_on(device.configure_presentation(&target, &configuration))?;
 
         Ok(AndroidVulkanSession {
@@ -186,6 +191,7 @@ impl NativePlatform for AndroidVulkanPlatform {
             format,
             extent_control,
             extent,
+            presentation_usage,
         })
     }
 

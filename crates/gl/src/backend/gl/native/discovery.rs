@@ -59,10 +59,10 @@ pub(crate) fn v13_capability_snapshot(
         else {
             continue;
         };
-        // `NativeGlProvider::create_texture_resource` currently owns only
-        // single-sample 2D texture storage.  Do not advertise array, 3D, or
-        // multisample forms merely because the discovery table contains a
-        // driver fact for a related GL object class.
+        // Native allocation owns 2D texture storage.  The discovery table
+        // separately proves each admitted sample count, so a multisample fact
+        // is published only when that exact texture class can later be used
+        // as a render attachment and resolved through an FBO blit.
         let depth_or_stencil = matches!(
             format,
             TextureFormat::Depth16Unorm
@@ -78,51 +78,88 @@ pub(crate) fn v13_capability_snapshot(
             storage_write: false,
             storage_read_write: false,
             color_attachment: evidence.renderable && !depth_or_stencil,
-            // Native v13 raster lowering currently owns the offscreen color
-            // route only. The lower GL framebuffer layer can represent depth
-            // and stencil, but Phase A deliberately refuses those attachments;
-            // capability facts must follow that executable closure.
-            depth_attachment: false,
-            stencil_attachment: false,
+            // Phase A lowers real texture-backed depth and stencil attachments
+            // into the owned FBO route.  Keep the two facts independent: a
+            // depth-only or stencil-only format must not acquire the other
+            // attachment role merely because both use the same GL FBO slot.
+            depth_attachment: evidence.renderable
+                && crate::api::format::format_aspects(format)
+                    .contains(crate::api::resource::TextureAspects::DEPTH),
+            stencil_attachment: evidence.renderable
+                && crate::api::format::format_aspects(format)
+                    .contains(crate::api::resource::TextureAspects::STENCIL),
             blendable: evidence.blendable,
             filterable: evidence.filterable,
             storage_atomic: false,
         });
-        for usage in TextureUsage::all() {
-            if usage.is_empty() || usage.contains(TextureUsage::STORAGE) {
+        for sample_count in [1, 2, 4, 8, 16] {
+            let Some(sample_evidence) =
+                discovery
+                    .formats()
+                    .get_for(GlFormatResourceKind::Texture, gl_format, sample_count)
+            else {
+                continue;
+            };
+            // Multisample allocations are attachment-only in this lowering.
+            // They cannot be sampled, copied, or used as storage images; the
+            // only read is the explicit framebuffer resolve below.
+            if sample_count > 1 && !evidence.renderable {
                 continue;
             }
-            let rgba8 = matches!(
-                format,
-                TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb
-            );
-            let compressed = crate::backend::gl::translate::is_compressed_texture_format(format);
-            // COPY_SRC includes the public readback route, whose current GL
-            // lowering is deliberately RGBA8-only.  Do not let broader native
-            // copy-image support advertise an operation the execution driver
-            // will reject.  Compressed COPY_DST is the strict whole-mip upload
-            // path and remains independently admissible.
-            if usage.contains(TextureUsage::COPY_SRC) && (!rgba8 || !evidence.copy_source) {
-                continue;
+            for usage in TextureUsage::all() {
+                if usage.is_empty() || usage.contains(TextureUsage::STORAGE) {
+                    continue;
+                }
+                if sample_count > 1 {
+                    let attachment_usage = if depth_or_stencil {
+                        TextureUsage::DEPTH_STENCIL_ATTACHMENT
+                    } else {
+                        TextureUsage::COLOR_ATTACHMENT
+                    };
+                    if usage != attachment_usage {
+                        continue;
+                    }
+                }
+                let rgba8 = matches!(
+                    format,
+                    TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb
+                );
+                let compressed =
+                    crate::backend::gl::translate::is_compressed_texture_format(format);
+                // COPY_SRC includes the public readback route, whose current GL
+                // lowering is deliberately RGBA8-only.  Do not let broader native
+                // copy-image support advertise an operation the execution driver
+                // will reject.  Compressed COPY_DST is the strict whole-mip upload
+                // path and remains independently admissible.
+                if usage.contains(TextureUsage::COPY_SRC) && (!rgba8 || !evidence.copy_source) {
+                    continue;
+                }
+                if usage.contains(TextureUsage::COPY_DST)
+                    && !(rgba8 && evidence.copy_destination)
+                    && !compressed
+                {
+                    continue;
+                }
+                if usage.contains(TextureUsage::COLOR_ATTACHMENT)
+                    && (!sample_evidence.renderable || depth_or_stencil)
+                {
+                    continue;
+                }
+                if usage.contains(TextureUsage::DEPTH_STENCIL_ATTACHMENT)
+                    && (!sample_evidence.renderable || !depth_or_stencil)
+                {
+                    continue;
+                }
+                textures.push(GlTextureEvidence {
+                    query: TextureSupportQuery::new(
+                        TextureDimension::D2,
+                        format,
+                        usage,
+                        sample_count,
+                    ),
+                    limits: texture_limits,
+                });
             }
-            if usage.contains(TextureUsage::COPY_DST)
-                && !(rgba8 && evidence.copy_destination)
-                && !compressed
-            {
-                continue;
-            }
-            if usage.contains(TextureUsage::COLOR_ATTACHMENT)
-                && (!evidence.renderable || depth_or_stencil)
-            {
-                continue;
-            }
-            if usage.contains(TextureUsage::DEPTH_STENCIL_ATTACHMENT) {
-                continue;
-            }
-            textures.push(GlTextureEvidence {
-                query: TextureSupportQuery::new(TextureDimension::D2, format, usage, 1),
-                limits: texture_limits,
-            });
         }
     }
     let mut feature_probe = GlFeatureProbe::new(discovery.context().profile());
@@ -167,6 +204,14 @@ pub(crate) fn v13_capability_snapshot(
             feature_probe.report_extension(GlExtension::ArbComputeShader);
         }
     }
+    // The native owner lowers the whole baseline occlusion lifecycle:
+    // begin/end, a blocking result read on the owner thread, and ordered
+    // little-endian u64 upload into the caller's QUERY_RESOLVE buffer.  The
+    // read can stall, but it preserves the public command ordering and is a
+    // complete route rather than an optimistic GL entry-point claim.
+    feature_probe.report_function(GlFunction::BeginQuery);
+    feature_probe.report_function(GlFunction::EndQuery);
+    feature_probe.report_function(GlFunction::GetQueryObject);
     for (known, feature) in [
         (
             GlKnownExtension::ExtTextureCompressionS3tc,
@@ -234,11 +279,10 @@ pub(crate) fn v13_capability_snapshot(
             // multi/count variants remain closed because their extension
             // entry points are not part of the common glow route.
             raster_indirect: true,
-            // GL query objects can record measurements, but baseline GL4 / ES3
-            // has no portable asynchronous query-result-to-buffer command.
-            // Do not publish a query feature until QueryResolve can preserve
-            // v13 submission ordering without a CPU stall.
-            occlusion_query: false,
+            // Query resolve obtains the result on the owner thread and writes
+            // its u64 result to the destination buffer before the submission
+            // completion is accepted. This is synchronous, but fully ordered.
+            occlusion_query: true,
             timestamp_query: false,
             sampler_anisotropy: limits
                 .max_texture_anisotropy

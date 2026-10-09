@@ -41,6 +41,9 @@ impl Dx12RasterPipeline {
     pub(crate) fn sampler_root_parameter(&self, group: u32) -> Option<u32> {
         self.root_signature.sampler_parameter(group)
     }
+    pub(crate) fn dynamic_root_parameters(&self, group: u32) -> Option<&[u32]> {
+        self.root_signature.dynamic_parameters(group)
+    }
     pub(crate) fn immediate_root_parameter(&self, offset: u32, size: u32) -> Option<(u32, u32)> {
         self.root_signature.immediate_parameter(offset, size)
     }
@@ -56,6 +59,12 @@ pub(crate) fn create_raster_pipeline(
     device: &ID3D12Device,
     descriptor: &RasterPipelineDescriptor,
 ) -> Result<Dx12RasterPipeline, Dx12Failure> {
+    if descriptor.multisample.sample_shading.is_some() {
+        return Err(Dx12Failure::Unsupported {
+            what: "DX12 sample-rate shading",
+            why: "D3D12 exposes sample-frequency execution through shader semantics, but has no pipeline state equivalent to Vulkan's minimum sample-shading fraction",
+        });
+    }
     let root_signature = super::interface::build_root_signature(
         device,
         &descriptor.interface.descriptor().groups,

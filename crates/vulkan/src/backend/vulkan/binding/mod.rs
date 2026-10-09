@@ -12,4 +12,4 @@ mod layout;
 pub(in crate::backend::vulkan) use group::{
     VulkanBindGroup, create_bind_group, descriptor_image_layout,
 };
-pub(in crate::backend::vulkan) use layout::layout_bindings;
+pub(in crate::backend::vulkan) use layout::{layout_binding_flags, layout_bindings};

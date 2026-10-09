@@ -17,6 +17,7 @@ use core::ffi::{c_char, c_int, c_void};
 use core::marker::PhantomData;
 use std::ffi::CString;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use raw_window_handle::{DisplayHandle, RawDisplayHandle, RawWindowHandle, WindowHandle};
 
@@ -228,6 +229,38 @@ pub(crate) struct WglWorkerDescriptor {
     extent: [u32; 2],
 }
 
+/// Narrow control route for the WGL drawable owned by a native provider.
+///
+/// It carries no WGL or OpenGL handle. Calls are synchronously marshalled to
+/// the one thread that owns those handles.
+#[derive(Clone)]
+pub(crate) struct WglResizeHandle {
+    worker: Arc<super::NativeOwnerWorker<super::driver::NativeOwnedProvider<WglContextSurface>>>,
+}
+
+impl WglResizeHandle {
+    /// Records the host's latest drawable extent on the WGL owner thread.
+    pub(crate) fn resize(&self, extent: [u32; 2]) -> crate::api::error::RhiResult<()> {
+        self.worker
+            .call(move |owner| {
+                owner.context.resize(extent).map_err(|error| {
+                    crate::api::error::RhiError::new(
+                        crate::api::error::RhiErrorKind::InvalidUsage,
+                        format!("WGL resize rejected the host drawable: {error:?}"),
+                    )
+                    .at("WglResizeHandle::resize")
+                })
+            })
+            .map_err(|_| {
+                crate::api::error::RhiError::new(
+                    crate::api::error::RhiErrorKind::DeviceLost,
+                    "the WGL owner thread exited before recording the drawable extent",
+                )
+                .at("WglResizeHandle::resize")
+            })?
+    }
+}
+
 impl WglWorkerDescriptor {
     /// Validates Host handles on the caller thread and produces the owned
     /// scalar descriptor that may cross to the GL worker.
@@ -254,36 +287,67 @@ pub(crate) fn spawn_provider(
     instance: crate::api::identity::DeviceInstanceId,
     descriptor: WglWorkerDescriptor,
 ) -> crate::api::error::RhiResult<crate::backend::gl::platform::GlProvider> {
-    let (worker, (facts, name)) = super::NativeOwnerWorker::spawn_with_info(move || {
-        let surface = WglContextSurface::open_from_hwnd(
-            descriptor.stamp,
-            descriptor.hwnd as Hwnd,
-            descriptor.extent,
-            None,
-        )
-        .map_err(|error| format!("WGL context creation failed: {error:?}"))?;
-        let facts = surface.v13_capability_facts();
-        let name = format!("OpenGL ({})", surface.snapshot.context().renderer());
-        let provider = surface
-            .into_owned_provider()
-            .map_err(|error| format!("WGL provider creation failed: {error:?}"))?;
-        Ok((provider, (facts, name)))
-    })
-    .map_err(|error| {
-        crate::api::error::RhiError::new(
-            crate::api::error::RhiErrorKind::BackendFailure,
-            format!("WGL owner worker could not start: {error:?}"),
-        )
-    })?;
-    let owner: std::sync::Arc<dyn super::driver::NativeGlOwner> =
-        std::sync::Arc::new(super::driver::NativeProviderOwner::new(worker));
-    super::driver::NativeGlDriver::adopt(
+    Ok(spawn_provider_with_control(instance, descriptor)?.0)
+}
+
+/// Creates a WGL provider together with its host-extent control route.
+pub(crate) fn spawn_provider_with_control(
+    instance: crate::api::identity::DeviceInstanceId,
+    descriptor: WglWorkerDescriptor,
+) -> crate::api::error::RhiResult<(
+    crate::backend::gl::platform::GlProvider,
+    WglResizeHandle,
+    crate::GlShaderTarget,
+)> {
+    let (worker, (facts, name, shader_target)) =
+        super::NativeOwnerWorker::spawn_with_info(move || {
+            let surface = WglContextSurface::open_from_hwnd(
+                descriptor.stamp,
+                descriptor.hwnd as Hwnd,
+                descriptor.extent,
+                None,
+            )
+            .map_err(|error| format!("WGL context creation failed: {error:?}"))?;
+            let facts = surface.v13_capability_facts();
+            let name = format!("OpenGL ({})", surface.snapshot.context().renderer());
+            let shader_target = match surface.snapshot.context().profile() {
+                crate::backend::gl::api::GlFamilyProfile::Desktop { major: 4, minor } => {
+                    crate::GlShaderTarget::Desktop {
+                        version: 400 + u16::from(minor) * 10,
+                    }
+                }
+                profile => {
+                    return Err(format!(
+                        "WGL discovery returned non-desktop profile {profile:?}"
+                    ));
+                }
+            };
+            let provider = surface
+                .into_owned_provider()
+                .map_err(|error| format!("WGL provider creation failed: {error:?}"))?;
+            Ok((provider, (facts, name, shader_target)))
+        })
+        .map_err(|error| {
+            crate::api::error::RhiError::new(
+                crate::api::error::RhiErrorKind::BackendFailure,
+                format!("WGL owner worker could not start: {error:?}"),
+            )
+        })?;
+    let worker = Arc::new(worker);
+    let resize = WglResizeHandle {
+        worker: Arc::clone(&worker),
+    };
+    let owner: Arc<dyn super::driver::NativeGlOwner> = Arc::new(
+        super::driver::NativeProviderOwner::from_shared_worker(worker),
+    );
+    let provider = super::driver::NativeGlDriver::adopt(
         instance,
         crate::api::platform::BackendKind::OpenGl,
         name,
         facts,
         owner,
-    )
+    )?;
+    Ok((provider, resize, shader_target))
 }
 
 impl WglContextSurface {

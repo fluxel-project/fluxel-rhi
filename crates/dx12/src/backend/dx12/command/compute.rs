@@ -17,15 +17,17 @@ use windows::Win32::Graphics::Direct3D12::{
 };
 
 use crate::api::command::record::{ComputeDispatch, ComputeIndirect};
-use crate::api::command::{AccessMask, ResourceUse};
-use crate::api::resource::Buffer;
+use crate::api::command::{AccessMask, ResourceUse, TextureUseIntent};
+use crate::api::identity::ObjectId;
+use crate::api::resource::{Buffer, Texture};
 use crate::backend::dx12::binding::Dx12BindGroup;
+use crate::backend::dx12::binding::vocabulary::RegisterClass;
 use crate::backend::dx12::failure::Dx12Failure;
 use crate::backend::dx12::pipeline::Dx12ComputePipeline;
 
-use super::dx12_buffer;
 use super::transfer::CommittedBatch;
 use super::transition::Transitions;
+use super::{dx12_buffer, dx12_texture};
 
 /// Records one dispatch and retains every native object it references until the
 /// batch's completion fence passes.
@@ -47,12 +49,6 @@ pub(super) fn lower_compute_dispatch(
 
     let mut native_groups = Vec::with_capacity(dispatch.groups.len());
     for bound in &dispatch.groups {
-        if !bound.dynamic_offsets.is_empty() {
-            return Err(Dx12Failure::Unsupported {
-                what: "a compute bind group with dynamic offsets",
-                why: "the DX12 root-signature lowering currently exposes descriptor tables only",
-            });
-        }
         let native = bound
             .group
             .native()
@@ -65,18 +61,43 @@ pub(super) fn lower_compute_dispatch(
         native_groups.push((bound, native));
     }
 
-    let mut buffers: HashMap<_, (Buffer, AccessMask)> = HashMap::new();
+    let mut buffers = HashMap::<ObjectId, (Buffer, AccessMask)>::new();
+    let mut textures = HashMap::<ObjectId, (Texture, AccessMask)>::new();
     for resource_use in uses {
-        let ResourceUse::Buffer(buffer_use) = resource_use else {
-            return Err(Dx12Failure::Unsupported {
-                what: "a compute dispatch that touches a texture or presentation frame",
-                why: "the DX12 texture and presentation resource lowering is not implemented",
-            });
-        };
-        buffers
-            .entry(buffer_use.buffer.id())
-            .and_modify(|(_, access)| *access = access.union(buffer_use.access))
-            .or_insert_with(|| (buffer_use.buffer.clone(), buffer_use.access));
+        match resource_use {
+            ResourceUse::Buffer(buffer_use) => {
+                buffers
+                    .entry(buffer_use.buffer.id())
+                    .and_modify(|(_, access)| *access = access.union(buffer_use.access))
+                    .or_insert_with(|| (buffer_use.buffer.clone(), buffer_use.access));
+            }
+            ResourceUse::Texture(texture_use) => match texture_use.intent {
+                TextureUseIntent::ShaderRead | TextureUseIntent::ShaderReadWrite => {
+                    textures
+                        .entry(texture_use.texture.id())
+                        .and_modify(|(_, access)| *access = access.union(texture_use.access))
+                        .or_insert_with(|| (texture_use.texture.clone(), texture_use.access));
+                }
+                _ => {
+                    return Err(Dx12Failure::Unsupported {
+                        what: "a compute texture use outside shader bindings",
+                        why: "copy, resolve, and attachment texture uses have separate DX12 lowerings",
+                    });
+                }
+            },
+            ResourceUse::Frame(_) => {
+                return Err(Dx12Failure::Unsupported {
+                    what: "a compute dispatch that touches a presentation frame",
+                    why: "DX12 does not expose swapchain images as compute shader resources",
+                });
+            }
+            _ => {
+                return Err(Dx12Failure::Unsupported {
+                    what: "a compute resource use introduced after this DX12 backend",
+                    why: "the backend has no verified compute transition for it",
+                });
+            }
+        }
     }
 
     let mut entering = Transitions::default();
@@ -84,6 +105,12 @@ pub(super) fn lower_compute_dispatch(
     for (buffer, access) in buffers.values() {
         let native = dx12_buffer(buffer)?;
         let state = shader_state(*access);
+        entering.push(native.resource(), D3D12_RESOURCE_STATE_COMMON, state);
+        leaving.push(native.resource(), state, D3D12_RESOURCE_STATE_COMMON);
+    }
+    for (texture, access) in textures.values() {
+        let native = dx12_texture(texture)?;
+        let state = texture_shader_state(*access);
         entering.push(native.resource(), D3D12_RESOURCE_STATE_COMMON, state);
         leaving.push(native.resource(), state, D3D12_RESOURCE_STATE_COMMON);
     }
@@ -128,6 +155,12 @@ pub(super) fn lower_compute_dispatch(
             if let Some(parameter) = pipeline.sampler_root_parameter(bound.index.get()) {
                 list.SetComputeRootDescriptorTable(parameter, native.sampler_table());
             }
+            bind_compute_dynamic_root_descriptors(
+                list,
+                pipeline.dynamic_root_parameters(bound.index.get()),
+                native,
+                &bound.dynamic_offsets,
+            )?;
         }
         let (x, y, z) = dispatch.workgroups;
         list.Dispatch(x, y, z);
@@ -162,12 +195,6 @@ pub(super) fn lower_compute_indirect(
         })?;
     let mut native_groups = Vec::with_capacity(dispatch.groups.len());
     for bound in &dispatch.groups {
-        if !bound.dynamic_offsets.is_empty() {
-            return Err(Dx12Failure::Unsupported {
-                what: "a compute bind group with dynamic offsets",
-                why: "DX12 root-descriptor dynamic-offset lowering is not implemented",
-            });
-        }
         let native = bound
             .group
             .native()
@@ -179,24 +206,55 @@ pub(super) fn lower_compute_indirect(
             })?;
         native_groups.push((bound, native));
     }
-    let mut buffers: HashMap<_, (Buffer, AccessMask)> = HashMap::new();
+    let mut buffers = HashMap::<ObjectId, (Buffer, AccessMask)>::new();
+    let mut textures = HashMap::<ObjectId, (Texture, AccessMask)>::new();
     for resource_use in uses {
-        let ResourceUse::Buffer(buffer_use) = resource_use else {
-            return Err(Dx12Failure::Unsupported {
-                what: "an indirect compute dispatch that touches a texture or presentation frame",
-                why: "the DX12 texture and presentation resource lowering is not implemented",
-            });
-        };
-        buffers
-            .entry(buffer_use.buffer.id())
-            .and_modify(|(_, access)| *access = access.union(buffer_use.access))
-            .or_insert_with(|| (buffer_use.buffer.clone(), buffer_use.access));
+        match resource_use {
+            ResourceUse::Buffer(buffer_use) => {
+                buffers
+                    .entry(buffer_use.buffer.id())
+                    .and_modify(|(_, access)| *access = access.union(buffer_use.access))
+                    .or_insert_with(|| (buffer_use.buffer.clone(), buffer_use.access));
+            }
+            ResourceUse::Texture(texture_use) => match texture_use.intent {
+                TextureUseIntent::ShaderRead | TextureUseIntent::ShaderReadWrite => {
+                    textures
+                        .entry(texture_use.texture.id())
+                        .and_modify(|(_, access)| *access = access.union(texture_use.access))
+                        .or_insert_with(|| (texture_use.texture.clone(), texture_use.access));
+                }
+                _ => {
+                    return Err(Dx12Failure::Unsupported {
+                        what: "an indirect compute texture use outside shader bindings",
+                        why: "copy, resolve, and attachment texture uses have separate DX12 lowerings",
+                    });
+                }
+            },
+            ResourceUse::Frame(_) => {
+                return Err(Dx12Failure::Unsupported {
+                    what: "an indirect compute dispatch that touches a presentation frame",
+                    why: "DX12 does not expose swapchain images as compute shader resources",
+                });
+            }
+            _ => {
+                return Err(Dx12Failure::Unsupported {
+                    what: "an indirect compute resource use introduced after this DX12 backend",
+                    why: "the backend has no verified compute transition for it",
+                });
+            }
+        }
     }
     let mut entering = Transitions::default();
     let mut leaving = Transitions::default();
     for (buffer, access) in buffers.values() {
         let native = dx12_buffer(buffer)?;
         let state = shader_state(*access);
+        entering.push(native.resource(), D3D12_RESOURCE_STATE_COMMON, state);
+        leaving.push(native.resource(), state, D3D12_RESOURCE_STATE_COMMON);
+    }
+    for (texture, access) in textures.values() {
+        let native = dx12_texture(texture)?;
+        let state = texture_shader_state(*access);
         entering.push(native.resource(), D3D12_RESOURCE_STATE_COMMON, state);
         leaving.push(native.resource(), state, D3D12_RESOURCE_STATE_COMMON);
     }
@@ -249,6 +307,12 @@ pub(super) fn lower_compute_indirect(
             if let Some(parameter) = pipeline.sampler_root_parameter(bound.index.get()) {
                 list.SetComputeRootDescriptorTable(parameter, native.sampler_table());
             }
+            bind_compute_dynamic_root_descriptors(
+                list,
+                pipeline.dynamic_root_parameters(bound.index.get()),
+                native,
+                &bound.dynamic_offsets,
+            )?;
         }
         list.ExecuteIndirect(
             &signature,
@@ -269,6 +333,40 @@ pub(super) fn lower_compute_indirect(
     Ok(())
 }
 
+fn bind_compute_dynamic_root_descriptors(
+    list: &ID3D12GraphicsCommandList,
+    parameters: Option<&[u32]>,
+    group: &Dx12BindGroup,
+    offsets: &[u32],
+) -> Result<(), Dx12Failure> {
+    let parameters = parameters.unwrap_or_default();
+    let buffers = group.dynamic_buffers();
+    if parameters.len() != buffers.len() || buffers.len() != offsets.len() {
+        return Err(Dx12Failure::Unsupported {
+            what: "a compute dynamic binding layout that disagrees with its bind group",
+            why: "portable validation establishes one dynamic offset per buffer element",
+        });
+    }
+    for ((parameter, buffer), offset) in parameters.iter().zip(buffers).zip(offsets) {
+        let address = buffer.address(*offset)?;
+        unsafe {
+            match buffer.class() {
+                RegisterClass::ConstantBuffer => {
+                    list.SetComputeRootConstantBufferView(*parameter, address)
+                }
+                RegisterClass::ShaderResource => {
+                    list.SetComputeRootShaderResourceView(*parameter, address)
+                }
+                RegisterClass::UnorderedAccess => {
+                    list.SetComputeRootUnorderedAccessView(*parameter, address)
+                }
+                RegisterClass::Sampler => unreachable!("dynamic offsets are buffer bindings"),
+            }
+        }
+    }
+    Ok(())
+}
+
 fn shader_state(access: AccessMask) -> D3D12_RESOURCE_STATES {
     if access.contains(AccessMask::INDIRECT_READ) {
         D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT
@@ -277,5 +375,17 @@ fn shader_state(access: AccessMask) -> D3D12_RESOURCE_STATES {
     } else {
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
             | D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER
+    }
+}
+
+/// Compute textures are never IA/CBV resources: a read-only storage texture
+/// needs the non-pixel SRV state, while any storage write requires UAV.  UAV
+/// also permits shader reads, so a portable read-write storage binding stays in
+/// that one state rather than attempting D3D12's invalid SRV|UAV combination.
+fn texture_shader_state(access: AccessMask) -> D3D12_RESOURCE_STATES {
+    if access.contains(AccessMask::SHADER_WRITE) {
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+    } else {
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
     }
 }

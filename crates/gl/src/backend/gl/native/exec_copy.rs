@@ -341,6 +341,76 @@ impl GlCopyDomainApi for NativeGlProvider {
     }
 }
 
+impl NativeGlProvider {
+    /// Reads the authenticated WGL/EGL default framebuffer of an acquired
+    /// frame. The default framebuffer remains an external drawable: it is
+    /// bound only for this owner-thread operation and never enters the owned
+    /// framebuffer or texture tables.
+    pub(super) fn read_default_framebuffer(
+        &mut self,
+        target: crate::backend::gl::api::GlDefaultFramebufferTarget,
+    ) -> Result<GlReadback, GlError> {
+        use glow::HasContext as _;
+        const OP: &str = "read-default-framebuffer";
+        self.assert_ready(OP)?;
+        if target.context != self.context_stamp()
+            || target.width == 0
+            || target.height == 0
+            || target.width > i32::MAX as u32
+            || target.height > i32::MAX as u32
+            || target.sample_count != 1
+            || !matches!(
+                target.color_format,
+                crate::backend::gl::api::GlFormat::Rgba8Unorm
+                    | crate::backend::gl::api::GlFormat::Rgba8Srgb
+            )
+        {
+            return Err(Self::validation(
+                OP,
+                "unsupported acquired default framebuffer target",
+            ));
+        }
+        let bytes_per_row = target
+            .width
+            .checked_mul(4)
+            .ok_or(GlError::OutOfMemory { operation: OP })?;
+        let total = u64::from(bytes_per_row)
+            .checked_mul(u64::from(target.height))
+            .ok_or(GlError::OutOfMemory { operation: OP })?;
+        let len = usize::try_from(total).map_err(|_| GlError::OutOfMemory { operation: OP })?;
+        let layout = GlPixelLayout {
+            format: GlPixelFormat::Rgba8,
+            bytes_per_row,
+            rows_per_image: target.height,
+            offset: 0,
+            alignment: 4,
+            repack: GlRepackPolicy::Disallow,
+        };
+        let mut bytes = vec![0; len];
+        let saved = self.pixel_store;
+        // SAFETY: Phase A authenticated the live acquired frame for this
+        // owner context. PACK state is restored before this method returns.
+        unsafe {
+            self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
+            self.apply_pack(layout);
+            self.gl.read_pixels(
+                0,
+                0,
+                target.width as i32,
+                target.height as i32,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::Slice(Some(&mut bytes)),
+            );
+            let result = self.driver_error(OP);
+            self.restore_pixel_store(UnpackDirection::Pack, saved);
+            self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
+            result?;
+        }
+        Ok(GlReadback { layout, bytes })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum UnpackDirection {
     Unpack,

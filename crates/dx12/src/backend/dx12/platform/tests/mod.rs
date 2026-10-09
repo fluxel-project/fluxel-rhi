@@ -1783,8 +1783,8 @@ fn a_real_device_answers_the_binding_questions_a_renderer_asks() {
          and refusing it would refuse every array-typed layout"
     );
 
-    // Dynamic offsets require root descriptors; this backend currently lowers
-    // static descriptor tables only and must not advertise the missing path.
+    // Dynamic offsets use root descriptors, so the same buffer families are
+    // available in their dynamic form.
     let dynamic = binding_query(
         ShaderStages::VERTEX,
         BindingKind::StorageBuffer {
@@ -1794,7 +1794,7 @@ fn a_real_device_answers_the_binding_questions_a_renderer_asks() {
         BindingCount::One,
         true,
     );
-    assert!(!capabilities.binding_support(&dynamic).is_supported());
+    assert!(capabilities.binding_support(&dynamic).is_supported());
 
     // Every stage must be answered, including the compute stage a dispatch uses.
     for visibility in [
@@ -1922,7 +1922,7 @@ fn every_binding_shape_matches_the_current_dx12_lowering() {
         ShaderStages::FRAGMENT,
         ShaderStages::COMPUTE,
     ] {
-        // Static buffer tables are implemented; dynamic offsets are not.
+        // Static buffer tables and dynamic root descriptors are both implemented.
         for kind in [
             BindingKind::UniformBuffer { min_size: 64 },
             BindingKind::StorageBuffer {
@@ -1938,10 +1938,9 @@ fn every_binding_shape_matches_the_current_dx12_lowering() {
                 for dynamic_offset in [false, true] {
                     let query = binding_query(visibility, kind.clone(), count, dynamic_offset);
                     seen += 1;
-                    assert_eq!(
+                    assert!(
                         capabilities.binding_support(&query).is_supported(),
-                        !dynamic_offset,
-                        "capability must match the descriptor-table lowering: \
+                        "capability must match the buffer-binding lowering: \
                          {visibility:?} {kind:?} {count:?} dynamic={dynamic_offset}"
                     );
                 }

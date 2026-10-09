@@ -33,17 +33,30 @@ use fluxel_host::{
 pub mod android;
 #[cfg(target_vendor = "apple")]
 pub mod apple;
+pub mod shader;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
-#[cfg(all(windows, feature = "vulkan"))]
+#[cfg(all(
+    windows,
+    any(feature = "dx12", feature = "vulkan", feature = "native-gl-wgl")
+))]
 pub mod windows;
+#[cfg(all(
+    windows,
+    any(feature = "dx12", feature = "vulkan", feature = "native-gl-wgl")
+))]
+#[allow(unused_imports)]
+pub use windows::{WindowsPlatform, WindowsSession};
 #[cfg(all(windows, feature = "vulkan"))]
 #[allow(unused_imports)]
 pub use windows::{WindowsVulkanPlatform, WindowsVulkanSession};
 
 /// Runs a platform-independent demo through the adapter selected for this target.
 pub fn run_example<D: Example + 'static>(title: &str, demo: D) -> Result<(), Box<dyn Error>> {
-    #[cfg(all(windows, feature = "vulkan"))]
+    #[cfg(all(
+        windows,
+        any(feature = "dx12", feature = "vulkan", feature = "native-gl-wgl")
+    ))]
     {
         return windows::run_example(title, demo);
     }
@@ -53,7 +66,10 @@ pub fn run_example<D: Example + 'static>(title: &str, demo: D) -> Result<(), Box
         Err("Android examples are started by the NativeActivity entry point".into())
     }
     #[cfg(not(any(
-        all(windows, feature = "vulkan"),
+        all(
+            windows,
+            any(feature = "dx12", feature = "vulkan", feature = "native-gl-wgl")
+        ),
         all(target_os = "android", feature = "vulkan")
     )))]
     {
@@ -158,6 +174,8 @@ pub struct RunnerOptions {
     pub width: NonZeroU32,
     /// Initial host client extent.
     pub height: NonZeroU32,
+    /// Optional frame count for a finite native smoke run.
+    pub frames: Option<NonZeroU32>,
     /// Window title supplied to `fluxel-host`.
     pub title: String,
 }
@@ -169,11 +187,13 @@ impl RunnerOptions {
             backend,
             width: NonZeroU32::new(1280).expect("literal is non-zero"),
             height: NonZeroU32::new(720).expect("literal is non-zero"),
+            frames: None,
             title: format!("{}: {}", backend.as_str(), title.into()),
         }
     }
 
-    /// Parses `--backend NAME`, `--width PIXELS`, and `--height PIXELS`.
+    /// Parses `--backend NAME`, `--width PIXELS`, `--height PIXELS`, and
+    /// optional `--frames COUNT`.
     ///
     /// The application supplies its own title so all examples retain a clear
     /// identity in screenshots and automated desktop runs.
@@ -184,6 +204,7 @@ impl RunnerOptions {
         let mut backend = None;
         let mut width = NonZeroU32::new(1280).expect("literal is non-zero");
         let mut height = NonZeroU32::new(720).expect("literal is non-zero");
+        let mut frames = None;
         let mut arguments = arguments.into_iter();
 
         while let Some(argument) = arguments.next() {
@@ -196,6 +217,7 @@ impl RunnerOptions {
                 }
                 "--width" => width = parse_dimension("--width", arguments.next())?,
                 "--height" => height = parse_dimension("--height", arguments.next())?,
+                "--frames" => frames = Some(parse_dimension("--frames", arguments.next())?),
                 "--help" | "-h" => return Err(FrameworkError::HelpRequested),
                 _ => return Err(FrameworkError::UnknownArgument(argument)),
             }
@@ -209,13 +231,14 @@ impl RunnerOptions {
             backend,
             width,
             height,
+            frames,
             title: title.into(),
         })
     }
 
     /// Usage text shared by every native RHI example binary.
     pub const fn usage() -> &'static str {
-        "--backend <dx12|vulkan|gl4|gles3|metal> [--width PIXELS] [--height PIXELS]"
+        "--backend <dx12|vulkan|gl4|gles3|metal> [--width PIXELS] [--height PIXELS] [--frames COUNT]"
     }
 
     fn window_config(&self) -> Result<WindowConfig, WindowError> {
@@ -282,6 +305,15 @@ impl Error for LifecycleError {}
 /// They must not receive a raw handle, WebGL object, Metal object, or Vulkan/
 /// DX12 object.
 pub trait Example {
+    /// Texture uses required from every acquired presentation frame.
+    ///
+    /// Raster examples retain the default color-attachment configuration.
+    /// A demo that reads an acquired frame back may add `COPY_SRC`; the native
+    /// adapter retains this request when it reconfigures after a resize.
+    fn presentation_usage(&self) -> fluxel_rhi::api::resource::TextureUsage {
+        fluxel_rhi::api::resource::TextureUsage::COLOR_ATTACHMENT
+    }
+
     /// Performs one-time portable RHI setup after the adapter opened a session.
     fn init(
         &mut self,
@@ -365,6 +397,7 @@ pub trait NativePlatform {
         window: &HostWindow,
         width: u32,
         height: u32,
+        presentation_usage: fluxel_rhi::api::resource::TextureUsage,
     ) -> Result<Self::Session, Box<dyn Error + Send + Sync>>;
 
     /// Reports device loss without exposing backend-native loss values.
@@ -399,6 +432,7 @@ pub struct NativeExampleRunner<P: NativePlatform, D> {
     demo: D,
     session: Option<P::Session>,
     closing: bool,
+    rendered_frames: u32,
 }
 
 impl<P, D> NativeExampleRunner<P, D>
@@ -415,6 +449,7 @@ where
             demo,
             session: None,
             closing: false,
+            rendered_frames: 0,
         }
     }
 
@@ -460,11 +495,13 @@ where
             return Ok(());
         }
         let window = host.window().ok_or(FrameworkError::SurfaceWithoutWindow)?;
+        let presentation_usage = self.demo.presentation_usage();
         let mut session = self.platform.open(
             self.options.backend,
             window,
             self.options.width.get(),
             self.options.height.get(),
+            presentation_usage,
         )?;
         let init_result = {
             let mut context = self.platform.example_context(&mut session);
@@ -513,6 +550,15 @@ where
         }
         #[cfg(target_os = "android")]
         eprintln!("FLUXEL_AFTER_RENDER");
+        self.rendered_frames = self.rendered_frames.saturating_add(1);
+        if self
+            .options
+            .frames
+            .is_some_and(|limit| self.rendered_frames >= limit.get())
+        {
+            host.exit();
+            return Ok(());
+        }
         if let Some(window) = host.window() {
             window.request_redraw();
         }

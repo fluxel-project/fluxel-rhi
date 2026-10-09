@@ -43,6 +43,9 @@ pub(crate) struct TablePlan {
     view_descriptors: u32,
     samplers: Vec<RangePlan>,
     sampler_descriptors: u32,
+    /// Dynamic buffer bindings are root descriptors rather than descriptor-table
+    /// ranges.  Their order is the portable dynamic-offset consumption order.
+    dynamics: Vec<RangePlan>,
 }
 
 /// One slot's range in one of the two tables.
@@ -60,6 +63,7 @@ pub(crate) struct RangePlan {
     pub(crate) first: u32,
     /// How many descriptors it covers: one per array element.
     pub(crate) count: u32,
+    pub(crate) dynamic: bool,
 }
 
 impl TablePlan {
@@ -75,16 +79,13 @@ impl TablePlan {
     ///
     /// # Errors
     ///
-    /// [`Dx12Failure::Unsupported`] for the two slot shapes this ABI cannot
-    /// express: a dynamic offset, and a sampler. Both are refusals about a
-    /// *lowering that is not written* rather than about the request being
-    /// illegal, which is why they are `Unsupported` and not `InvalidUsage`.
     pub(crate) fn of(layout: &BindGroupLayoutDescriptor) -> Result<Self, Dx12Failure> {
         let mut plan = Self {
             views: Vec::with_capacity(layout.entries.len()),
             view_descriptors: 0,
             samplers: Vec::with_capacity(layout.entries.len()),
             sampler_descriptors: 0,
+            dynamics: Vec::new(),
         };
         for entry in &layout.entries {
             plan.push(entry)?;
@@ -94,21 +95,24 @@ impl TablePlan {
 
     /// Places one supported slot in the view table.
     fn push(&mut self, entry: &BindingSlot) -> Result<(), Dx12Failure> {
-        // Checked before the class, because a dynamic offset is a property of the
-        // *slot* and would have to change the root parameter's type rather than
-        // its contents: a dynamic offset is byte-granular and a descriptor table
-        // is not, so the lowering for one is a root descriptor and not a table
-        // range. Refusing here means the pipeline is never created, so no legal
-        // packet can reach a dispatch that would read the wrong bytes.
-        if entry.dynamic_offset {
-            return Err(Dx12Failure::Unsupported {
-                what: "a binding slot with a dynamic offset",
-                why: "this backend builds descriptor tables only, and a table is \
-                      addressed in whole descriptors: a byte-granular offset needs \
-                      a root CBV/SRV/UAV parameter, whose lowering is not written",
-            });
-        }
         let class = class_of(&entry.kind);
+        if entry.dynamic_offset {
+            if matches!(class, RegisterClass::Sampler) {
+                return Err(Dx12Failure::Unsupported {
+                    what: "a dynamic sampler binding",
+                    why: "portable validation only permits dynamic buffer bindings",
+                });
+            }
+            self.dynamics.push(RangePlan {
+                slot: entry.slot,
+                kind: entry.kind.clone(),
+                class,
+                first: self.dynamics.len() as u32,
+                count: entry.count.elements(),
+                dynamic: true,
+            });
+            return Ok(());
+        }
         let count = entry.count.elements();
         let (ranges, descriptors) = match class {
             RegisterClass::Sampler => (&mut self.samplers, &mut self.sampler_descriptors),
@@ -122,6 +126,7 @@ impl TablePlan {
             class,
             first: *descriptors,
             count,
+            dynamic: false,
         };
         *descriptors += count;
         ranges.push(range);
@@ -146,11 +151,17 @@ impl TablePlan {
         self.sampler_descriptors
     }
 
+    /// Dynamic root descriptors, in portable dynamic-offset order.
+    pub(crate) fn dynamics(&self) -> &[RangePlan] {
+        &self.dynamics
+    }
+
     /// The range serving one slot, if this layout has it.
     pub(crate) fn range_for(&self, slot: BindingSlotId) -> Option<&RangePlan> {
         self.views
             .iter()
             .chain(&self.samplers)
+            .chain(&self.dynamics)
             .find(|range| range.slot == slot)
     }
 }

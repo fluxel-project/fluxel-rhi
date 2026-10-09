@@ -263,7 +263,10 @@ pub(crate) trait NativePlatformContext: 'static {
 /// platform context still exists; then the WGL/EGL owner tears down its handles.
 pub(crate) struct NativeOwnedProvider<C: NativePlatformContext> {
     provider: NativeGlProvider,
-    context: C,
+    /// Platform owner retained beside the GL executor so WGL/EGL lifetime and
+    /// currentness outlive every GL object. Platform control routes may use it
+    /// only through the owner worker.
+    pub(crate) context: C,
     texture_formats: BTreeMap<u32, crate::api::format::TextureFormat>,
     /// v13 object carriers are table slots, never raw GL names.  The typed IDs
     /// retain the context epoch, making a carrier from a lost context fail
@@ -281,7 +284,7 @@ pub(crate) struct NativeOwnedProvider<C: NativePlatformContext> {
     pipeline_blocks: RasterPipelineBlockInterner,
     geometry_blocks: HashMap<NativeGeometryKey, CanonicalBlockId>,
     context_state: ContextState,
-    active_raster_framebuffer: Option<crate::backend::gl::api::FramebufferId>,
+    active_raster_framebuffer: Option<ActiveRasterFramebuffer>,
     next_completion: u64,
     completions: BTreeMap<u64, NativeCompletion>,
     presentation: NativePresentationState,
@@ -377,6 +380,32 @@ struct NativeRasterBeginAction {
     framebuffer: Option<crate::backend::gl::api::GlFramebufferDescriptor>,
     descriptor: crate::backend::gl::api::GlRenderPassDescriptor,
     pass: PassPacket,
+    presentation_depth: Option<NativePresentationDepthPass>,
+    resolve_framebuffer: Option<crate::backend::gl::api::GlFramebufferDescriptor>,
+    resolve_region: Option<crate::backend::gl::api::GlBlitRegion>,
+}
+
+struct NativePresentationDepthPass {
+    target: crate::backend::gl::api::GlDefaultFramebufferTarget,
+    color: crate::backend::gl::api::GlColorAttachment,
+    depth_stencil: crate::backend::gl::api::GlDepthStencilAttachment,
+}
+
+enum ActiveRasterFramebuffer {
+    Offscreen {
+        framebuffer: crate::backend::gl::api::FramebufferId,
+        resolve: Option<ActiveColorResolve>,
+    },
+    PresentationDepth {
+        framebuffer: crate::backend::gl::api::FramebufferId,
+        color: crate::backend::gl::api::TextureId,
+        target: crate::backend::gl::api::GlDefaultFramebufferTarget,
+    },
+}
+
+struct ActiveColorResolve {
+    framebuffer: crate::backend::gl::api::FramebufferId,
+    region: crate::backend::gl::api::GlBlitRegion,
 }
 
 struct NativeRasterDrawAction {
@@ -404,6 +433,24 @@ struct NativeRasterIndirectAction {
     command: crate::backend::gl::api::GlIndirectCommandRange,
 }
 
+/// A typed clear value after the raster scope's color locations have been
+/// resolved to GL draw-buffer indices.
+enum NativeRasterClearColor {
+    Float([f32; 4]),
+    Sint([i32; 4]),
+    Uint([u32; 4]),
+}
+
+/// An in-pass attachment clear.  It deliberately carries no framebuffer
+/// identity: GL's active render pass remains bound from `RasterBegin` until
+/// `RasterEnd`, and changing it here would break query and draw ordering.
+struct NativeRasterClearAction {
+    rect: crate::api::command::Rect,
+    colors: Vec<(u32, NativeRasterClearColor)>,
+    depth: Option<f32>,
+    stencil: Option<u32>,
+}
+
 /// Fully owned Phase-B work.  It contains only generation-safe provider IDs
 /// and scalars; public recording handles never cross the owner-thread seam.
 enum NativePhaseBAction {
@@ -414,6 +461,12 @@ enum NativePhaseBAction {
     CopyTexture {
         source: crate::backend::gl::api::GlTextureRegion,
         destination: crate::backend::gl::api::GlTextureRegion,
+    },
+    TextureBlit {
+        source: crate::backend::gl::api::GlTextureView,
+        destination: crate::backend::gl::api::GlTextureView,
+        region: crate::backend::gl::api::GlBlitRegion,
+        filter: crate::backend::gl::api::GlFilterMode,
     },
     UploadBuffer {
         destination: crate::backend::gl::api::GlBufferRange,
@@ -433,10 +486,18 @@ enum NativePhaseBAction {
         layout: crate::backend::gl::api::GlPixelLayout,
         ticket: crate::api::resource::transfer::ReadbackTicket,
     },
+    ReadFrame {
+        target: crate::backend::gl::api::GlDefaultFramebufferTarget,
+        ticket: crate::api::resource::transfer::ReadbackTicket,
+    },
     RasterBegin(NativeRasterBeginAction),
+    RasterClear(NativeRasterClearAction),
     RasterDraw(NativeRasterDrawAction),
     RasterIndirect(NativeRasterIndirectAction),
     RasterEnd,
+    /// Visibility made necessary by a preceding shader write. This is emitted
+    /// after that writer, before a later command can consume its result.
+    MemoryBarrier(crate::backend::gl::api::GlMemoryBarrier),
     /// Native GL4 compute is admitted only after the complete program and
     /// binding packet has been resolved during phase A.
     ComputeDispatch {
@@ -454,6 +515,10 @@ enum NativePhaseBAction {
         ty: crate::api::query::QueryType,
     },
     Timestamp(QueryId),
+    QueryResolve {
+        queries: Vec<QueryId>,
+        destination: crate::backend::gl::api::GlBufferRange,
+    },
 }
 
 impl<C: NativePlatformContext> NativeOwnedProvider<C> {
@@ -683,6 +748,12 @@ impl<C: NativePlatformContext> NativeOwnedProvider<C> {
                     .provider
                     .copy_texture_region(source, destination)
                     .map_err(|error| map_gl(error, "NativeProviderOwner::submit copy-texture"))?,
+                NativePhaseBAction::TextureBlit {
+                    source,
+                    destination,
+                    region,
+                    filter,
+                } => self.execute_texture_blit(source, destination, region, filter)?,
                 NativePhaseBAction::UploadBuffer { destination, bytes } => self
                     .provider
                     .upload_buffer(destination, &bytes)
@@ -726,12 +797,34 @@ impl<C: NativePlatformContext> NativeOwnedProvider<C> {
                         bytes: result.bytes,
                     });
                 }
+                NativePhaseBAction::ReadFrame { target, ticket } => {
+                    let result = self
+                        .provider
+                        .read_default_framebuffer(target)
+                        .map_err(|error| map_gl(error, "NativeProviderOwner::submit read-frame"))?;
+                    readbacks.push(PendingReadback {
+                        ticket,
+                        layout: Some(crate::api::resource::transfer::ReadbackTexelLayout {
+                            bytes_per_row: result.layout.bytes_per_row,
+                            rows_per_image: result.layout.rows_per_image,
+                            total_size: result.bytes.len() as u64,
+                        }),
+                        bytes: result.bytes,
+                    });
+                }
                 NativePhaseBAction::RasterBegin(action) => self.execute_raster_begin(action)?,
+                NativePhaseBAction::RasterClear(action) => self.execute_raster_clear(action)?,
                 NativePhaseBAction::RasterDraw(action) => self.execute_raster_draw(action)?,
                 NativePhaseBAction::RasterIndirect(action) => {
                     self.execute_raster_indirect(action)?
                 }
                 NativePhaseBAction::RasterEnd => self.execute_raster_end()?,
+                NativePhaseBAction::MemoryBarrier(barriers) => {
+                    use crate::backend::gl::api::GlSyncApi as _;
+                    self.provider.memory_barrier(barriers).map_err(|error| {
+                        map_gl(error, "NativeProviderOwner::submit memory-barrier")
+                    })?;
+                }
                 NativePhaseBAction::ComputeDispatch {
                     program,
                     program_key,
@@ -745,6 +838,10 @@ impl<C: NativePlatformContext> NativeOwnedProvider<C> {
                 } => self.execute_query_begin(query, ty, state_key)?,
                 NativePhaseBAction::QueryEnd { ty } => self.execute_query_end(ty)?,
                 NativePhaseBAction::Timestamp(query) => self.execute_timestamp(query)?,
+                NativePhaseBAction::QueryResolve {
+                    queries,
+                    destination,
+                } => self.execute_query_resolve(queries, destination)?,
             }
         }
         let mut outcome = self.accept_submission(serial, readbacks)?;
@@ -783,13 +880,95 @@ impl<C: NativePlatformContext> NativeOwnedProvider<C> {
     }
 
     fn execute_raster_begin(&mut self, mut action: NativeRasterBeginAction) -> RhiResult<()> {
-        use crate::backend::gl::api::GlFramebufferApi as _;
+        use crate::backend::gl::api::{GlFramebufferApi as _, GlResourceApi as _};
         const OP: &str = "NativeProviderOwner::submit raster-begin";
+        if let Some(presentation) = action.presentation_depth.take() {
+            let color = self
+                .provider
+                .create_texture_resource(crate::backend::gl::api::GlTextureDesc {
+                    dimension: crate::backend::gl::api::GlTextureDimension::D2,
+                    extent: crate::backend::gl::api::GlExtent3d {
+                        width: presentation.target.width,
+                        height: presentation.target.height,
+                        depth_or_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    format: presentation.target.color_format,
+                    usage: crate::backend::gl::api::GlTextureUsage::RENDER_ATTACHMENT,
+                })
+                .map_err(|error| map_gl(error, OP))?;
+            let color_view = crate::backend::gl::api::GlTextureView {
+                target: crate::backend::gl::api::GlAttachmentTarget::Texture(color),
+                format: presentation.target.color_format,
+                mip_level: 0,
+                array_layer: 0,
+                layer_count: 1,
+                width: presentation.target.width,
+                height: presentation.target.height,
+                sample_count: 1,
+            };
+            let framebuffer_descriptor = crate::backend::gl::api::GlFramebufferDescriptor {
+                color_attachments: vec![color_view],
+                depth_stencil_attachment: Some(presentation.depth_stencil.view),
+                draw_buffers: vec![0],
+            };
+            let framebuffer = match self.provider.create_framebuffer(&framebuffer_descriptor) {
+                Ok(framebuffer) => framebuffer,
+                Err(error) => {
+                    let _ = self.provider.destroy_texture_resource(color);
+                    return Err(map_gl(error, OP));
+                }
+            };
+            action.descriptor = crate::backend::gl::api::GlRenderPassDescriptor {
+                target: crate::backend::gl::api::GlRenderTarget::Offscreen(framebuffer),
+                color_attachments: vec![crate::backend::gl::api::GlColorAttachment {
+                    view: crate::backend::gl::api::GlPassAttachmentView::Allocated(color_view),
+                    ..presentation.color
+                }],
+                depth_stencil_attachment: Some(presentation.depth_stencil),
+            };
+            let _ = self.context_state.prepare_pass(action.pass);
+            if let Err(error) = self.provider.begin_render_pass(&action.descriptor) {
+                self.context_state.pass_failed();
+                let _ = self.provider.destroy_framebuffer(framebuffer);
+                let _ = self.provider.destroy_texture_resource(color);
+                return Err(map_gl(error, OP));
+            }
+            self.context_state.commit_pass(action.pass);
+            self.active_raster_framebuffer = Some(ActiveRasterFramebuffer::PresentationDepth {
+                framebuffer,
+                color,
+                target: presentation.target,
+            });
+            return Ok(());
+        }
         let framebuffer = if let Some(framebuffer_descriptor) = action.framebuffer.take() {
             let framebuffer = self
                 .provider
                 .create_framebuffer(&framebuffer_descriptor)
                 .map_err(|e| map_gl(e, OP))?;
+            let resolve = if let Some(resolve_descriptor) = action.resolve_framebuffer.take() {
+                let region = action.resolve_region.take().ok_or_else(|| {
+                    RhiError::new(
+                        RhiErrorKind::BackendFailure,
+                        "native GL MSAA resolve framebuffer lacks its blit region",
+                    )
+                    .at(OP)
+                })?;
+                match self.provider.create_framebuffer(&resolve_descriptor) {
+                    Ok(resolve) => Some(ActiveColorResolve {
+                        framebuffer: resolve,
+                        region,
+                    }),
+                    Err(error) => {
+                        let _ = self.provider.destroy_framebuffer(framebuffer);
+                        return Err(map_gl(error, OP));
+                    }
+                }
+            } else {
+                None
+            };
             action.descriptor.target =
                 crate::backend::gl::api::GlRenderTarget::Offscreen(framebuffer);
             for (attachment, view) in action
@@ -812,7 +991,7 @@ impl<C: NativePlatformContext> NativeOwnedProvider<C> {
                             .at(OP)
                         })?;
             }
-            Some(framebuffer)
+            Some((framebuffer, resolve))
         } else {
             // The typed GlDefaultFramebufferTarget in the descriptor is the
             // only authority for FBO 0; it is never an owned FramebufferId.
@@ -821,29 +1000,156 @@ impl<C: NativePlatformContext> NativeOwnedProvider<C> {
         let _ = self.context_state.prepare_pass(action.pass);
         if let Err(error) = self.provider.begin_render_pass(&action.descriptor) {
             self.context_state.pass_failed();
-            if let Some(framebuffer) = framebuffer {
+            if let Some((framebuffer, resolve)) = framebuffer {
+                if let Some(resolve) = resolve {
+                    let _ = self.provider.destroy_framebuffer(resolve.framebuffer);
+                }
                 let _ = self.provider.destroy_framebuffer(framebuffer);
             }
             return Err(map_gl(error, OP));
         }
         self.context_state.commit_pass(action.pass);
-        self.active_raster_framebuffer = framebuffer;
+        self.active_raster_framebuffer =
+            framebuffer.map(
+                |(framebuffer, resolve)| ActiveRasterFramebuffer::Offscreen {
+                    framebuffer,
+                    resolve,
+                },
+            );
         Ok(())
     }
 
     fn execute_raster_end(&mut self) -> RhiResult<()> {
-        use crate::backend::gl::api::GlFramebufferApi as _;
+        use crate::backend::gl::api::{GlFramebufferApi as _, GlResourceApi as _};
         const OP: &str = "NativeProviderOwner::submit raster-end";
-        self.provider.end_render_pass().map_err(|e| {
+        let end_result = self.provider.end_render_pass().map_err(|e| {
             self.context_state.pass_failed();
             map_gl(e, OP)
-        })?;
+        });
         if let Some(framebuffer) = self.active_raster_framebuffer.take() {
-            self.provider
-                .destroy_framebuffer(framebuffer)
-                .map_err(|e| map_gl(e, OP))?;
+            match framebuffer {
+                ActiveRasterFramebuffer::Offscreen {
+                    framebuffer,
+                    resolve,
+                } => {
+                    let blit = if end_result.is_ok() {
+                        resolve.as_ref().map_or(Ok(()), |resolve| {
+                            self.provider.blit_framebuffer(
+                                framebuffer,
+                                resolve.framebuffer,
+                                resolve.region,
+                                crate::backend::gl::api::GlFilterMode::Nearest,
+                                crate::backend::gl::api::GlBlitMask {
+                                    color: true,
+                                    depth: false,
+                                    stencil: false,
+                                },
+                            )
+                        })
+                    } else {
+                        Ok(())
+                    };
+                    let destroy_resolve = resolve.map_or(Ok(()), |resolve| {
+                        self.provider.destroy_framebuffer(resolve.framebuffer)
+                    });
+                    let destroy_source = self.provider.destroy_framebuffer(framebuffer);
+                    if let Err(error) = blit.or(destroy_resolve).or(destroy_source) {
+                        return Err(map_gl(error, OP));
+                    }
+                }
+                ActiveRasterFramebuffer::PresentationDepth {
+                    framebuffer,
+                    color,
+                    target,
+                } => {
+                    let blit = if end_result.is_ok() {
+                        self.provider
+                            .blit_framebuffer_to_default(framebuffer, target)
+                    } else {
+                        Ok(())
+                    };
+                    let destroy_framebuffer = self.provider.destroy_framebuffer(framebuffer);
+                    let destroy_color = self.provider.destroy_texture_resource(color);
+                    if let Err(error) = blit.or(destroy_framebuffer).or(destroy_color) {
+                        return Err(map_gl(error, OP));
+                    }
+                }
+            }
         }
+        end_result?;
         self.context_state.end_pass();
+        Ok(())
+    }
+
+    fn execute_raster_clear(&mut self, action: NativeRasterClearAction) -> RhiResult<()> {
+        use glow::HasContext as _;
+        const OP: &str = "NativeProviderOwner::submit raster-clear";
+        if self.provider.pass.is_none() {
+            return Err(RhiError::new(
+                RhiErrorKind::BackendFailure,
+                "native GL raster clear reached phase B without an active render pass",
+            )
+            .at(OP));
+        }
+
+        // `glClearBuffer*` honors scissor state.  The RHI clear rectangle is
+        // therefore installed directly for this command; the cached pipeline
+        // domain is invalidated afterwards so the next draw restores its own
+        // dynamic scissor and every other raster-state leaf.
+        unsafe {
+            self.provider.gl.enable(glow::SCISSOR_TEST);
+            self.provider.gl.scissor(
+                action.rect.x as i32,
+                action.rect.y as i32,
+                action.rect.width as i32,
+                action.rect.height as i32,
+            );
+            for (draw_buffer, value) in action.colors {
+                match value {
+                    NativeRasterClearColor::Float(value) => {
+                        self.provider
+                            .gl
+                            .clear_buffer_f32_slice(glow::COLOR, draw_buffer, &value);
+                    }
+                    NativeRasterClearColor::Sint(value) => {
+                        self.provider
+                            .gl
+                            .clear_buffer_i32_slice(glow::COLOR, draw_buffer, &value);
+                    }
+                    NativeRasterClearColor::Uint(value) => {
+                        self.provider
+                            .gl
+                            .clear_buffer_u32_slice(glow::COLOR, draw_buffer, &value);
+                    }
+                }
+            }
+            match (action.depth, action.stencil) {
+                (Some(depth), Some(stencil)) => {
+                    self.provider.gl.clear_buffer_depth_stencil(
+                        glow::DEPTH_STENCIL,
+                        0,
+                        depth,
+                        stencil as i32,
+                    );
+                }
+                (Some(depth), None) => {
+                    self.provider
+                        .gl
+                        .clear_buffer_f32_slice(glow::DEPTH, 0, &[depth]);
+                }
+                (None, Some(stencil)) => {
+                    self.provider
+                        .gl
+                        .clear_buffer_u32_slice(glow::STENCIL, 0, &[stencil]);
+                }
+                (None, None) => {}
+            }
+        }
+        self.provider
+            .driver_error(OP)
+            .map_err(|error| map_gl(error, OP))?;
+        self.context_state
+            .event(StateEvent::DomainFailed(StateDomain::RasterPipeline));
         Ok(())
     }
 
@@ -881,11 +1187,12 @@ impl<C: NativePlatformContext> NativeOwnedProvider<C> {
         }
         let flush = self.context_state.binding_flush();
         if !flush.is_empty() {
-            self.flush_bindings(&flush).map_err(|e| {
-                self.context_state
-                    .event(StateEvent::DomainFailed(StateDomain::Bindings));
-                e
-            })?;
+            self.flush_bindings(action.pipeline.program, &flush)
+                .map_err(|e| {
+                    self.context_state
+                        .event(StateEvent::DomainFailed(StateDomain::Bindings));
+                    e
+                })?;
             self.context_state.acknowledge_bindings(&flush);
         }
         if self.context_state.prepare_geometry(action.geometry_key) {
@@ -946,7 +1253,7 @@ impl<C: NativePlatformContext> NativeOwnedProvider<C> {
         }
         let flush = self.context_state.binding_flush();
         if !flush.is_empty() {
-            self.flush_bindings(&flush).map_err(|error| {
+            self.flush_bindings(program, &flush).map_err(|error| {
                 self.context_state
                     .event(StateEvent::DomainFailed(StateDomain::Bindings));
                 error
@@ -1035,7 +1342,80 @@ impl<C: NativePlatformContext> NativeOwnedProvider<C> {
         })
     }
 
-    fn flush_bindings(&mut self, flush: &crate::backend::gl::state::BindingFlush) -> RhiResult<()> {
+    fn execute_query_resolve(
+        &mut self,
+        queries: Vec<QueryId>,
+        destination: crate::backend::gl::api::GlBufferRange,
+    ) -> RhiResult<()> {
+        use crate::backend::gl::api::GlCopyDomainApi as _;
+        const OP: &str = "NativeProviderOwner::submit query-resolve";
+        let mut bytes = Vec::with_capacity(queries.len() * core::mem::size_of::<u64>());
+        for query in queries {
+            let value = self
+                .provider
+                .resolve_query_result_blocking(query)
+                .map_err(|error| map_gl(error, OP))?;
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        self.provider
+            .upload_buffer(destination, &bytes)
+            .map_err(|error| map_gl(error, OP))
+    }
+
+    fn execute_texture_blit(
+        &mut self,
+        source: crate::backend::gl::api::GlTextureView,
+        destination: crate::backend::gl::api::GlTextureView,
+        region: crate::backend::gl::api::GlBlitRegion,
+        filter: crate::backend::gl::api::GlFilterMode,
+    ) -> RhiResult<()> {
+        use crate::backend::gl::api::GlFramebufferApi as _;
+        const OP: &str = "NativeProviderOwner::submit texture-blit";
+        let source = self
+            .provider
+            .create_framebuffer(&crate::backend::gl::api::GlFramebufferDescriptor {
+                color_attachments: vec![source],
+                depth_stencil_attachment: None,
+                draw_buffers: vec![0],
+            })
+            .map_err(|error| map_gl(error, OP))?;
+        let destination = match self.provider.create_framebuffer(
+            &crate::backend::gl::api::GlFramebufferDescriptor {
+                color_attachments: vec![destination],
+                depth_stencil_attachment: None,
+                draw_buffers: vec![0],
+            },
+        ) {
+            Ok(destination) => destination,
+            Err(error) => {
+                let _ = self.provider.destroy_framebuffer(source);
+                return Err(map_gl(error, OP));
+            }
+        };
+        let blit = self.provider.blit_framebuffer(
+            source,
+            destination,
+            region,
+            filter,
+            crate::backend::gl::api::GlBlitMask {
+                color: true,
+                depth: false,
+                stencil: false,
+            },
+        );
+        let destroy_destination = self.provider.destroy_framebuffer(destination);
+        let destroy_source = self.provider.destroy_framebuffer(source);
+        if let Err(error) = blit.or(destroy_destination).or(destroy_source) {
+            return Err(map_gl(error, OP));
+        }
+        Ok(())
+    }
+
+    fn flush_bindings(
+        &mut self,
+        program: ProgramId,
+        flush: &crate::backend::gl::state::BindingFlush,
+    ) -> RhiResult<()> {
         use crate::backend::gl::api::GlBindingApi as _;
         use crate::backend::gl::platform::GlBindingResource;
         for group in &flush.groups {
@@ -1051,16 +1431,21 @@ impl<C: NativePlatformContext> NativeOwnedProvider<C> {
                 })?;
             let mut offsets = group.dynamic_offsets.iter();
             for entry in &bindings.entries {
+                let logical = crate::backend::gl::api::GlBindingLocation {
+                    group: group.index,
+                    binding: entry.slot,
+                };
+                let executable = self.executable_binding(program, logical)?;
                 match &entry.resource {
                     GlBindingResource::Buffer {
                         buffer,
                         offset,
                         size,
-                    } => self.flush_uniform(entry.slot, *buffer, *offset, *size, &mut offsets)?,
+                    } => self.flush_buffer(executable, *buffer, *offset, *size, &mut offsets)?,
                     GlBindingResource::BufferArray(values) => {
                         for (i, (buffer, offset, size)) in values.iter().enumerate() {
-                            self.flush_uniform(
-                                entry.slot + i as u32,
+                            self.flush_buffer(
+                                executable_array_element(executable, i as u32)?,
                                 *buffer,
                                 *offset,
                                 *size,
@@ -1068,16 +1453,22 @@ impl<C: NativePlatformContext> NativeOwnedProvider<C> {
                             )?;
                         }
                     }
-                    GlBindingResource::Texture(view) => self.flush_texture(entry.slot, *view)?,
+                    GlBindingResource::Texture(view) => self.flush_texture(executable, *view)?,
                     GlBindingResource::TextureArray(values) => {
                         for (i, view) in values.iter().enumerate() {
-                            self.flush_texture(entry.slot + i as u32, *view)?;
+                            self.flush_texture(
+                                executable_array_element(executable, i as u32)?,
+                                *view,
+                            )?;
                         }
                     }
-                    GlBindingResource::Sampler(value) => self.flush_sampler(entry.slot, *value)?,
+                    GlBindingResource::Sampler(value) => self.flush_sampler(executable, *value)?,
                     GlBindingResource::SamplerArray(values) => {
                         for (i, value) in values.iter().enumerate() {
-                            self.flush_sampler(entry.slot + i as u32, *value)?;
+                            self.flush_sampler(
+                                executable_array_element(executable, i as u32)?,
+                                *value,
+                            )?;
                         }
                     }
                 }
@@ -1090,6 +1481,49 @@ impl<C: NativePlatformContext> NativeOwnedProvider<C> {
             }
         }
         Ok(())
+    }
+
+    fn executable_binding(
+        &self,
+        program: ProgramId,
+        logical: crate::backend::gl::api::GlBindingLocation,
+    ) -> RhiResult<crate::backend::gl::api::GlExecutableBindingLocation> {
+        self.provider
+            .program("native GL binding route", program)
+            .map_err(|error| map_gl(error, "native GL binding route"))?
+            .reflection
+            .assignments
+            .iter()
+            .find(|assignment| assignment.logical == logical)
+            .map(|assignment| assignment.executable)
+            .ok_or_else(|| {
+                RhiError::new(
+                    RhiErrorKind::InvalidUsage,
+                    "bind group resource is absent from the active GL program layout",
+                )
+            })
+    }
+
+    fn flush_buffer(
+        &mut self,
+        executable: crate::backend::gl::api::GlExecutableBindingLocation,
+        buffer: GlBufferRef,
+        offset: u64,
+        size: u64,
+        offsets: &mut std::slice::Iter<'_, u32>,
+    ) -> RhiResult<()> {
+        match executable {
+            crate::backend::gl::api::GlExecutableBindingLocation::UniformBlock(point) => {
+                self.flush_uniform(point, buffer, offset, size, offsets)
+            }
+            crate::backend::gl::api::GlExecutableBindingLocation::StorageBlock(point) => {
+                self.flush_storage_buffer(point, buffer, offset, size, offsets)
+            }
+            _ => Err(RhiError::new(
+                RhiErrorKind::InvalidUsage,
+                "GL program binding kind disagrees with buffer resource",
+            )),
+        }
     }
 
     fn flush_uniform(
@@ -1136,9 +1570,63 @@ impl<C: NativePlatformContext> NativeOwnedProvider<C> {
         Ok(())
     }
 
+    fn flush_storage_buffer(
+        &mut self,
+        point: u32,
+        buffer: GlBufferRef,
+        offset: u64,
+        size: u64,
+        offsets: &mut std::slice::Iter<'_, u32>,
+    ) -> RhiResult<()> {
+        use crate::backend::gl::api::GlStorageBufferApi as _;
+        const OP: &str = "NativeProviderOwner::submit bind storage buffer";
+        let offset = offset
+            .checked_add(u64::from(*offsets.next().unwrap_or(&0)))
+            .ok_or_else(|| {
+                RhiError::new(
+                    RhiErrorKind::InvalidUsage,
+                    "native GL dynamic buffer offset overflow",
+                )
+                .at(OP)
+            })?;
+        let id = self.buffer_id(buffer.name, OP)?;
+        let key = CanonicalBlockId::uniform_range(
+            id,
+            u32::try_from(offset).map_err(|_| {
+                RhiError::new(
+                    RhiErrorKind::Unsupported,
+                    "native GL storage offset exceeds u32",
+                )
+                .at(OP)
+            })?,
+            u32::try_from(size).map_err(|_| {
+                RhiError::new(
+                    RhiErrorKind::Unsupported,
+                    "native GL storage range exceeds u32",
+                )
+                .at(OP)
+            })?,
+        );
+        if self.context_state.prepare_storage_slot(point, key) {
+            self.provider
+                .bind_storage_buffer(
+                    point,
+                    crate::backend::gl::api::GlStorageBufferRange {
+                        buffer: id,
+                        offset,
+                        size,
+                        usage: crate::backend::gl::api::GlStorageBufferUsage::ReadWrite,
+                    },
+                )
+                .map_err(|error| map_gl(error, OP))?;
+            self.context_state.commit_storage_slot(point, key);
+        }
+        Ok(())
+    }
+
     fn flush_texture(
         &mut self,
-        unit: u32,
+        executable: crate::backend::gl::api::GlExecutableBindingLocation,
         view: crate::backend::gl::platform::GlTextureViewRef,
     ) -> RhiResult<()> {
         use crate::backend::gl::api::GlBindingApi as _;
@@ -1151,6 +1639,38 @@ impl<C: NativePlatformContext> NativeOwnedProvider<C> {
             )
             .at(OP)
         })?;
+        let unit = match executable {
+            crate::backend::gl::api::GlExecutableBindingLocation::TextureUnit(unit) => unit,
+            crate::backend::gl::api::GlExecutableBindingLocation::ImageUnit(unit) => {
+                use crate::backend::gl::api::GlStorageImageApi as _;
+                let key = CanonicalBlockId::new(u64::from(view_ref.name.raw()));
+                if self.context_state.prepare_image_slot(unit, key) {
+                    self.provider
+                        .bind_storage_image(
+                            unit,
+                            crate::backend::gl::api::GlStorageImageBinding {
+                                texture: view.texture,
+                                level: view.mip_level,
+                                sample_count: 1,
+                                layered: view.layer_count > 1,
+                                layer: (view.layer_count == 1).then_some(view.base_layer),
+                                format: view.format,
+                                access: crate::backend::gl::api::GlStorageImageAccess::ReadWrite,
+                            },
+                        )
+                        .map_err(|error| map_gl(error, OP))?;
+                    self.context_state.commit_image_slot(unit, key);
+                }
+                return Ok(());
+            }
+            _ => {
+                return Err(RhiError::new(
+                    RhiErrorKind::InvalidUsage,
+                    "GL program binding kind disagrees with texture resource",
+                )
+                .at(OP));
+            }
+        };
         // Do not reduce a view to its base texture identity.  Native texture
         // views (when installed) can have distinct target/range/format state.
         let key = CanonicalBlockId::new(u64::from(view_ref.name.raw()));
@@ -1173,11 +1693,21 @@ impl<C: NativePlatformContext> NativeOwnedProvider<C> {
 
     fn flush_sampler(
         &mut self,
-        unit: u32,
+        executable: crate::backend::gl::api::GlExecutableBindingLocation,
         sampler: crate::backend::gl::platform::GlSamplerRef,
     ) -> RhiResult<()> {
         use crate::backend::gl::api::GlBindingApi as _;
         const OP: &str = "NativeProviderOwner::submit bind sampler";
+        let unit = match executable {
+            crate::backend::gl::api::GlExecutableBindingLocation::TextureUnit(unit) => unit,
+            _ => {
+                return Err(RhiError::new(
+                    RhiErrorKind::InvalidUsage,
+                    "GL program binding kind disagrees with sampler resource",
+                )
+                .at(OP));
+            }
+        };
         let id = SamplerId::new(
             self.provider.context_stamp(),
             Self::slot(sampler.name, OP)?,
@@ -1276,15 +1806,202 @@ impl<C: NativePlatformContext> NativeOwnedProvider<C> {
     }
 }
 
+fn executable_array_element(
+    executable: crate::backend::gl::api::GlExecutableBindingLocation,
+    element: u32,
+) -> RhiResult<crate::backend::gl::api::GlExecutableBindingLocation> {
+    use crate::backend::gl::api::GlExecutableBindingLocation::*;
+    let add = |base: u32| {
+        base.checked_add(element).ok_or_else(|| {
+            RhiError::new(
+                RhiErrorKind::OutOfMemory,
+                "GL binding array element overflows native binding point",
+            )
+        })
+    };
+    match executable {
+        UniformBlock(base) => Ok(UniformBlock(add(base)?)),
+        TextureUnit(base) => Ok(TextureUnit(add(base)?)),
+        StorageBlock(base) => Ok(StorageBlock(add(base)?)),
+        ImageUnit(base) => Ok(ImageUnit(add(base)?)),
+    }
+}
+
 pub(crate) struct NativeProviderOwner<C: NativePlatformContext> {
     worker: Arc<NativeOwnerWorker<NativeOwnedProvider<C>>>,
     completion_monitor_active: Arc<AtomicBool>,
 }
 
 impl<C: NativePlatformContext> NativeProviderOwner<C> {
+    /// Resolves one direct raster draw into owner-thread work. Secondary raster
+    /// packets use this same route: GL has no executable secondary command
+    /// buffer, so their already validated draw-only body is replayed in order
+    /// while the parent framebuffer remains bound.
+    fn lower_raster_draw(
+        &self,
+        draw: &crate::api::command::record::RasterDraw,
+    ) -> RhiResult<NativePhaseBAction> {
+        let scalars = crate::backend::gl::translate_raster::raster_draw_scalars(draw)?;
+        scalars
+            .draw
+            .validate(crate::backend::gl::api::GlAdvancedRasterCapabilities {
+                base_vertex: false,
+                first_instance: false,
+            })
+            .map_err(|_| {
+                RhiError::new(
+                    RhiErrorKind::Unsupported,
+                    "native GL baseline raster route has no base-vertex or first-instance lowering",
+                )
+                .at("NativeProviderOwner::submit phase A")
+            })?;
+        let pipeline =
+            crate::backend::gl::platform::GlDevice::raster_pipeline_ref(&draw.pipeline)?.name;
+        let vertices = draw
+            .vertex_buffers
+            .iter()
+            .map(|(slot, binding)| {
+                Ok((
+                    *slot,
+                    crate::backend::gl::platform::GlDevice::buffer_ref(&binding.buffer)?.name,
+                    binding.range.offset,
+                ))
+            })
+            .collect::<RhiResult<Vec<_>>>()?;
+        let index = draw
+            .index
+            .as_ref()
+            .map(|index| {
+                Ok((
+                    crate::backend::gl::platform::GlDevice::buffer_ref(&index.binding.buffer)?.name,
+                    index.format,
+                    index.binding.range.offset,
+                ))
+            })
+            .transpose()?;
+        let groups = draw
+            .groups
+            .iter()
+            .map(|group| {
+                Ok((
+                    group.index.get(),
+                    group.group.id(),
+                    crate::backend::gl::platform::GlDevice::bind_group_ref(&group.group)?.name,
+                    group.dynamic_offsets.clone(),
+                ))
+            })
+            .collect::<RhiResult<Vec<_>>>()?;
+        self.worker
+            .call(move |owner| -> RhiResult<_> {
+                const OP: &str = "NativeProviderOwner::submit phase A raster-draw";
+                owner.ready(OP)?;
+                let stored = owner
+                    .raster_pipelines
+                    .get(&pipeline.raw())
+                    .cloned()
+                    .ok_or_else(|| {
+                        RhiError::new(
+                            RhiErrorKind::WrongDevice,
+                            "native GL raster pipeline backing is not live",
+                        )
+                        .at(OP)
+                    })?;
+                let mut pipeline = stored.pipeline;
+                let has_dynamic_state = scalars.viewport.is_some()
+                    || pipeline.state.scissor != scalars.scissor
+                    || pipeline.state.blend_constant != scalars.blend_constant
+                    || pipeline
+                        .state
+                        .depth_stencil
+                        .is_some_and(|value| value.stencil_reference != scalars.stencil_reference);
+                if let Some(viewport) = scalars.viewport {
+                    pipeline.state.viewport = viewport;
+                }
+                pipeline.state.scissor = scalars.scissor;
+                pipeline.state.blend_constant = scalars.blend_constant;
+                if let Some(depth) = &mut pipeline.state.depth_stencil {
+                    depth.stencil_reference = scalars.stencil_reference;
+                }
+                let geometry = vertices
+                    .into_iter()
+                    .map(|(slot, name, offset)| {
+                        Ok(crate::backend::gl::api::GlVertexBufferBinding {
+                            slot,
+                            buffer: owner.buffer_id(name, OP)?,
+                            offset,
+                        })
+                    })
+                    .collect::<RhiResult<Vec<_>>>()?;
+                let index = index
+                    .map(|(name, format, offset)| {
+                        Ok(crate::backend::gl::api::GlIndexBinding {
+                            buffer: owner.buffer_id(name, OP)?,
+                            format: match format {
+                                crate::api::command::IndexFormat::Uint16 => {
+                                    crate::backend::gl::api::GlIndexFormat::Uint16
+                                }
+                                crate::api::command::IndexFormat::Uint32 => {
+                                    crate::backend::gl::api::GlIndexFormat::Uint32
+                                }
+                            },
+                            offset,
+                        })
+                    })
+                    .transpose()?;
+                let mut bound = Vec::with_capacity(groups.len());
+                for (index, group, name, dynamic_offsets) in groups {
+                    if !owner.bind_groups.contains_key(&name.raw()) {
+                        return Err(RhiError::new(
+                            RhiErrorKind::WrongDevice,
+                            "native GL bind group backing is not live",
+                        )
+                        .at(OP));
+                    }
+                    bound.push(NativeBoundGroup {
+                        packet: BoundGroupPacket {
+                            group,
+                            name,
+                            index,
+                            dynamic_offsets,
+                            program_identity: CanonicalBlockId::object(pipeline.program),
+                            dependencies: std::collections::BTreeSet::new(),
+                        },
+                    });
+                }
+                let geometry_key = owner.geometry_canonical(
+                    NativeGeometryKey {
+                        vertex_array: pipeline.vertex_array,
+                        vertices: geometry.clone(),
+                        index,
+                    },
+                    OP,
+                )?;
+                Ok(NativePhaseBAction::RasterDraw(NativeRasterDrawAction {
+                    pipeline,
+                    packet: stored.packet,
+                    has_dynamic_state,
+                    draw: scalars.draw.draw,
+                    geometry,
+                    index,
+                    geometry_key,
+                    bind_groups: bound,
+                }))
+            })
+            .map_err(worker_error)??
+    }
+
     pub(crate) fn new(worker: NativeOwnerWorker<NativeOwnedProvider<C>>) -> Self {
+        Self::from_shared_worker(Arc::new(worker))
+    }
+
+    /// Composes an owner from a worker shared with a narrow platform-control
+    /// route. The control route may update only platform state; native GL work
+    /// remains exclusively behind this owner.
+    pub(crate) fn from_shared_worker(
+        worker: Arc<NativeOwnerWorker<NativeOwnedProvider<C>>>,
+    ) -> Self {
         Self {
-            worker: Arc::new(worker),
+            worker,
             completion_monitor_active: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -1607,20 +2324,13 @@ impl<C: NativePlatformContext> NativeGlOwner for NativeProviderOwner<C> {
         // here proves that no native command was accepted.
         let mut actions = Vec::new();
         let mut points = Vec::with_capacity(plan.batches.len());
+        // The core recorder fixes raster attachments at RasterBegin.  Retain
+        // only their color-location ordering while resolving in-pass clears to
+        // GL's draw-buffer indices; no native framebuffer is touched in phase A.
+        let mut raster_color_locations: Option<Vec<u32>> = None;
         for batch in plan.batches {
             points.push(batch.point);
             for command in batch.commands {
-                // ResourceUse is an execution input.  The current native GL
-                // binding ABI has no storage-buffer/image packet yet, hence a
-                // shader write cannot be lowered honestly even on a context
-                // exposing glMemoryBarrier.  Reject before phase B rather than
-                // accepting visibility the backend cannot establish.
-                if command.uses.iter().any(native_gl_unlowered_shader_write) {
-                    return Err(RhiError::new(
-                        RhiErrorKind::Unsupported,
-                        "native GL storage-write visibility requires a complete storage-binding and memory-barrier lowering",
-                    ).at("NativeProviderOwner::submit phase A resource visibility"));
-                }
                 match &command.payload {
                     crate::api::command::record::RecordedPayload::Copy(crate::api::command::record::CopyRecord::Buffer(copy)) => {
                         let source = crate::backend::gl::platform::GlDevice::buffer_ref(&copy.src)?.name;
@@ -1651,6 +2361,40 @@ impl<C: NativePlatformContext> NativeGlOwner for NativeProviderOwner<C> {
                             Ok(NativePhaseBAction::CopyTexture {
                                 source: texture_region(owner, source, source_layers, source_origin, extent, OP)?,
                                 destination: texture_region(owner, destination, destination_layers, destination_origin, extent, OP)?,
+                            })
+                        }).map_err(worker_error)??;
+                        actions.push(action);
+                    }
+                    crate::api::command::record::RecordedPayload::Copy(crate::api::command::record::CopyRecord::Blit(blit)) => {
+                        let source = crate::backend::gl::platform::GlDevice::texture_ref(&blit.src)?.name;
+                        let destination = crate::backend::gl::platform::GlDevice::texture_ref(&blit.dst)?.name;
+                        let source_layers = blit.src_subresource;
+                        let destination_layers = blit.dst_subresource;
+                        let source_origin = blit.src_origin;
+                        let destination_origin = blit.dst_origin;
+                        let source_extent = blit.src_extent;
+                        let destination_extent = blit.dst_extent;
+                        let filter = blit.filter;
+                        let action = self.worker.call(move |owner| -> RhiResult<_> {
+                            const OP: &str = "NativeProviderOwner::submit phase A texture-blit";
+                            owner.ready(OP)?;
+                            let source = texture_attachment_view(owner, source, source_layers, OP)?;
+                            let destination = texture_attachment_view(owner, destination, destination_layers, OP)?;
+                            let filter = match filter {
+                                crate::api::command::BlitFilter::Nearest => crate::backend::gl::api::GlFilterMode::Nearest,
+                                crate::api::command::BlitFilter::Linear => crate::backend::gl::api::GlFilterMode::Linear,
+                                _ => return Err(RhiError::new(RhiErrorKind::Unsupported, "unknown native GL texture blit filter").at(OP)),
+                            };
+                            Ok(NativePhaseBAction::TextureBlit {
+                                source,
+                                destination,
+                                region: crate::backend::gl::api::GlBlitRegion {
+                                    src_offset: [source_origin.x, source_origin.y],
+                                    src_extent: [source_extent.width, source_extent.height],
+                                    dst_offset: [destination_origin.x, destination_origin.y],
+                                    dst_extent: [destination_extent.width, destination_extent.height],
+                                },
+                                filter,
                             })
                         }).map_err(worker_error)??;
                         actions.push(action);
@@ -1742,10 +2486,52 @@ impl<C: NativePlatformContext> NativeGlOwner for NativeProviderOwner<C> {
                             }).map_err(worker_error)??;
                             actions.push(action);
                         },
+                        crate::api::resource::transfer::ReadbackRequest::Frame { src, .. } => {
+                            let acquired = crate::backend::gl::platform::framebuffer_ref(src)?;
+                            let extent = src.extent();
+                            if extent.depth != 1 || src.sample_count() != 1
+                                || extent.width != acquired.extent.width
+                                || extent.height != acquired.extent.height
+                            {
+                                return Err(RhiError::new(RhiErrorKind::InvalidUsage, "native GL frame facts changed after acquisition").at("NativeProviderOwner::submit phase A read-frame"));
+                            }
+                            let format = crate::backend::gl::translate::texture_format(src.format())?;
+                            let ticket = ticket.clone();
+                            let action = self.worker.call(move |owner| -> RhiResult<_> {
+                                const OP: &str = "NativeProviderOwner::submit phase A read-frame";
+                                owner.ready(OP)?;
+                                let Some(Some((serial, native_lease))) = owner.presentation.leases.get(&acquired.lease.0).copied() else {
+                                    return Err(RhiError::new(RhiErrorKind::InvalidUsage, "native GL frame lease is not currently acquired").at(OP));
+                                };
+                                if serial != acquired.serial || acquired.framebuffer != 0
+                                    || native_lease.size.width != acquired.extent.width
+                                    || native_lease.size.height != acquired.extent.height
+                                {
+                                    return Err(RhiError::new(RhiErrorKind::InvalidUsage, "native GL acquired frame is stale or names a foreign default framebuffer").at(OP));
+                                }
+                                if owner.context.drawable_extent()? != Some(acquired.extent) {
+                                    return Err(RhiError::new(RhiErrorKind::InvalidUsage, "native GL drawable extent changed after acquisition").at(OP));
+                                }
+                                Ok(NativePhaseBAction::ReadFrame {
+                                    target: crate::backend::gl::api::GlDefaultFramebufferTarget {
+                                        frame_serial: acquired.serial,
+                                        context: owner.provider.context_stamp(),
+                                        width: extent.width,
+                                        height: extent.height,
+                                        sample_count: 1,
+                                        color_format: format,
+                                    },
+                                    ticket,
+                                })
+                            }).map_err(worker_error)??;
+                            actions.push(action);
+                        },
                         _ => return Err(RhiError::new(RhiErrorKind::Unsupported, "native GL cannot lower this readback request").at("NativeProviderOwner::submit phase A")),
                     },
                     crate::api::command::record::RecordedPayload::RasterBegin(begin) => {
-                        if begin.depth_stencil.is_some() { return Err(RhiError::new(RhiErrorKind::Unsupported, "native GL raster depth/stencil Phase-A lowering is not admitted yet").at("NativeProviderOwner::submit phase A")); }
+                        raster_color_locations = Some(
+                            begin.colors.iter().map(|(location, _)| *location).collect(),
+                        );
                         // A presentation attachment remains a typed acquired
                         // framebuffer throughout lowering.  It is never
                         // coerced into a TextureView merely because native GL
@@ -1772,6 +2558,13 @@ impl<C: NativePlatformContext> NativeGlOwner for NativeProviderOwner<C> {
                                 let format = crate::backend::gl::translate::texture_format(frame.format())?;
                                 let load = color.load;
                                 let store = color.store;
+                                let depth_stencil = begin.depth_stencil.as_ref().map(|attachment| {
+                                    Ok((
+                                        crate::backend::gl::platform::GlDevice::view_ref(&attachment.view)?.name,
+                                        attachment.depth,
+                                        attachment.stencil,
+                                    ))
+                                }).transpose()?;
                                 let action = self.worker.call(move |owner| -> RhiResult<_> {
                                     use crate::api::command::geometry::{ColorClearValue, LoadOp, StoreOp};
                                     const OP: &str = "NativeProviderOwner::submit phase A raster-begin-default";
@@ -1793,7 +2586,12 @@ impl<C: NativePlatformContext> NativeGlOwner for NativeProviderOwner<C> {
                                     let target = crate::backend::gl::api::GlDefaultFramebufferTarget { frame_serial: acquired.serial, context: owner.provider.context_stamp(), width: extent.width, height: extent.height, sample_count: 1, color_format: format };
                                     let clear = gl_color_clear(load)?;
                                     let pass = PassPacket { draw_framebuffer: owner.canonical(OP)?, read_framebuffer: owner.canonical(OP)?, draw_buffers: owner.canonical(OP)? };
-                                    Ok(NativePhaseBAction::RasterBegin(NativeRasterBeginAction { framebuffer: None, descriptor: crate::backend::gl::api::GlRenderPassDescriptor { target: crate::backend::gl::api::GlRenderTarget::Default(target), color_attachments: vec![crate::backend::gl::api::GlColorAttachment { view: crate::backend::gl::api::GlPassAttachmentView::DefaultColor(target), resolve_target: None, load: if matches!(load, LoadOp::Clear(_)) { crate::backend::gl::api::GlLoadOp::Clear } else { crate::backend::gl::api::GlLoadOp::Load }, store: if store == StoreOp::Discard { crate::backend::gl::api::GlStoreOp::Discard } else { crate::backend::gl::api::GlStoreOp::Store }, clear }], depth_stencil_attachment: None }, pass }))
+                                    let color = crate::backend::gl::api::GlColorAttachment { view: crate::backend::gl::api::GlPassAttachmentView::DefaultColor(target), resolve_target: None, load: if matches!(load, LoadOp::Clear(_)) { crate::backend::gl::api::GlLoadOp::Clear } else { crate::backend::gl::api::GlLoadOp::Load }, store: if store == StoreOp::Discard { crate::backend::gl::api::GlStoreOp::Discard } else { crate::backend::gl::api::GlStoreOp::Store }, clear };
+                                    let presentation_depth = depth_stencil.map(|(name, depth, stencil)| {
+                                        let view = attachment_view(owner, name, OP)?;
+                                        Ok(NativePresentationDepthPass { target, color, depth_stencil: gl_depth_stencil_attachment(view, depth, stencil) })
+                                    }).transpose()?;
+                                Ok(NativePhaseBAction::RasterBegin(NativeRasterBeginAction { framebuffer: None, descriptor: crate::backend::gl::api::GlRenderPassDescriptor { target: crate::backend::gl::api::GlRenderTarget::Default(target), color_attachments: vec![color], depth_stencil_attachment: None }, pass, presentation_depth, resolve_framebuffer: None, resolve_region: None }))
                                 }).map_err(worker_error)??;
                                 actions.push(action);
                                 continue;
@@ -1802,24 +2600,141 @@ impl<C: NativePlatformContext> NativeGlOwner for NativeProviderOwner<C> {
                         let mut colors = Vec::with_capacity(begin.colors.len());
                         for (location, color) in &begin.colors {
                             let crate::api::command::attachment::ColorAttachmentView::Texture(view) = &color.view else { return Err(RhiError::new(RhiErrorKind::Unsupported, "native GL default framebuffer raster passes require presentation lowering").at("NativeProviderOwner::submit phase A")); };
-                            if color.resolve.is_some() { return Err(RhiError::new(RhiErrorKind::Unsupported, "native GL raster resolve Phase-A lowering is not admitted yet").at("NativeProviderOwner::submit phase A")); }
-                            colors.push((*location, crate::backend::gl::platform::GlDevice::view_ref(view)?.name, color.load, color.store));
+                            let resolve = color.resolve.as_ref().map(|resolve| match resolve {
+                                crate::api::command::attachment::ColorAttachmentView::Texture(view) => Ok(crate::backend::gl::platform::GlDevice::view_ref(view)?.name),
+                                crate::api::command::attachment::ColorAttachmentView::Frame(_) => Err(RhiError::new(RhiErrorKind::Unsupported, "native GL offscreen MSAA resolves require a texture target").at("NativeProviderOwner::submit phase A raster-begin")),
+                                _ => Err(RhiError::new(RhiErrorKind::Unsupported, "unknown native GL MSAA resolve target").at("NativeProviderOwner::submit phase A raster-begin")),
+                            }).transpose()?;
+                            colors.push((*location, crate::backend::gl::platform::GlDevice::view_ref(view)?.name, resolve, color.load, color.store));
                         }
+                        let depth_stencil = begin
+                            .depth_stencil
+                            .as_ref()
+                            .map(|attachment| {
+                                Ok((
+                                    crate::backend::gl::platform::GlDevice::view_ref(&attachment.view)?.name,
+                                    attachment.depth,
+                                    attachment.stencil,
+                                ))
+                            })
+                            .transpose()?;
                         let action = self.worker.call(move |owner| -> RhiResult<_> {
                             use crate::api::command::geometry::{ColorClearValue, LoadOp, StoreOp};
                             const OP: &str = "NativeProviderOwner::submit phase A raster-begin"; owner.ready(OP)?;
-                            let mut views = Vec::with_capacity(colors.len()); let mut attachments = Vec::with_capacity(colors.len()); let mut locations = Vec::with_capacity(colors.len());
-                            for (location, name, load, store) in colors {
-                                let view = attachment_view(owner, name, OP)?; locations.push(location); views.push(view);
-                                let clear = gl_color_clear(load)?;
-                                attachments.push(crate::backend::gl::api::GlColorAttachment { view: crate::backend::gl::api::GlPassAttachmentView::Allocated(view), resolve_target: None, load: if matches!(load, LoadOp::Clear(_)) { crate::backend::gl::api::GlLoadOp::Clear } else { crate::backend::gl::api::GlLoadOp::Load }, store: if store == StoreOp::Discard { crate::backend::gl::api::GlStoreOp::Discard } else { crate::backend::gl::api::GlStoreOp::Store }, clear });
+                            let resolve_count = colors.iter().filter(|(_, _, resolve, _, _)| resolve.is_some()).count();
+                            if resolve_count > 1 || (resolve_count == 1 && colors.len() != 1) {
+                                return Err(RhiError::new(RhiErrorKind::Unsupported, "native GL MSAA lowering currently resolves one color attachment at location zero").at(OP));
                             }
-                            let framebuffer = crate::backend::gl::api::GlFramebufferDescriptor { color_attachments: views, depth_stencil_attachment: None, draw_buffers: locations };
+                            let mut views = Vec::with_capacity(colors.len()); let mut attachments = Vec::with_capacity(colors.len()); let mut locations = Vec::with_capacity(colors.len()); let mut resolve_framebuffer = None; let mut resolve_region = None;
+                            for (location, name, resolve, load, store) in colors {
+                                let view = attachment_view(owner, name, OP)?; locations.push(location); views.push(view);
+                                let resolve_target = resolve.map(|name| attachment_view(owner, name, OP)).transpose()?;
+                                if let Some(resolve_target) = resolve_target {
+                                    if location != 0 {
+                                        return Err(RhiError::new(RhiErrorKind::Unsupported, "native GL MSAA resolve requires color location zero").at(OP));
+                                    }
+                                    resolve_region = Some(crate::backend::gl::api::GlBlitRegion { src_offset: [0, 0], src_extent: [view.width, view.height], dst_offset: [0, 0], dst_extent: [resolve_target.width, resolve_target.height] });
+                                    resolve_framebuffer = Some(crate::backend::gl::api::GlFramebufferDescriptor { color_attachments: vec![resolve_target], depth_stencil_attachment: None, draw_buffers: vec![0] });
+                                }
+                                let clear = gl_color_clear(load)?;
+                                attachments.push(crate::backend::gl::api::GlColorAttachment { view: crate::backend::gl::api::GlPassAttachmentView::Allocated(view), resolve_target, load: if matches!(load, LoadOp::Clear(_)) { crate::backend::gl::api::GlLoadOp::Clear } else { crate::backend::gl::api::GlLoadOp::Load }, store: if store == StoreOp::Discard { crate::backend::gl::api::GlStoreOp::Discard } else { crate::backend::gl::api::GlStoreOp::Store }, clear });
+                            }
+                            let depth_stencil_attachment = depth_stencil
+                                .map(|(name, depth, stencil)| {
+                                    let view = attachment_view(owner, name, OP)?;
+                                    let attachment = gl_depth_stencil_attachment(view, depth, stencil);
+                                    Ok((view, attachment))
+                                })
+                                .transpose()?;
+                            let framebuffer = crate::backend::gl::api::GlFramebufferDescriptor {
+                                color_attachments: views,
+                                depth_stencil_attachment: depth_stencil_attachment.map(|(view, _)| view),
+                                draw_buffers: locations,
+                            };
+                            let depth_stencil_attachment = depth_stencil_attachment.map(|(_, attachment)| attachment);
                             let pass = PassPacket { draw_framebuffer: owner.canonical(OP)?, read_framebuffer: owner.canonical(OP)?, draw_buffers: owner.canonical(OP)? };
-                            Ok(NativePhaseBAction::RasterBegin(NativeRasterBeginAction { framebuffer: Some(framebuffer), descriptor: crate::backend::gl::api::GlRenderPassDescriptor { target: crate::backend::gl::api::GlRenderTarget::Offscreen(crate::backend::gl::api::FramebufferId::new(owner.provider.context_stamp(), 0, 0)), color_attachments: attachments, depth_stencil_attachment: None }, pass }))
+                            Ok(NativePhaseBAction::RasterBegin(NativeRasterBeginAction { framebuffer: Some(framebuffer), descriptor: crate::backend::gl::api::GlRenderPassDescriptor { target: crate::backend::gl::api::GlRenderTarget::Offscreen(crate::backend::gl::api::FramebufferId::new(owner.provider.context_stamp(), 0, 0)), color_attachments: attachments, depth_stencil_attachment }, pass, presentation_depth: None, resolve_framebuffer, resolve_region }))
                         }).map_err(worker_error)??; actions.push(action);
                     }
-                    crate::api::command::record::RecordedPayload::RasterEnd => actions.push(NativePhaseBAction::RasterEnd),
+                    crate::api::command::record::RecordedPayload::RasterClear(clear) => {
+                        if clear.base_layer != 0 || clear.layer_count != 1 {
+                            return Err(RhiError::new(
+                                RhiErrorKind::Unsupported,
+                                "native GL in-pass attachment clears currently require layer zero with layer_count one",
+                            )
+                            .at("NativeProviderOwner::submit phase A raster-clear"));
+                        }
+                        let color_locations = raster_color_locations.as_ref().ok_or_else(|| {
+                            RhiError::new(
+                                RhiErrorKind::BackendFailure,
+                                "native GL raster clear was recorded outside an active raster scope",
+                            )
+                            .at("NativeProviderOwner::submit phase A raster-clear")
+                        })?;
+                        let colors = clear
+                            .colors
+                            .iter()
+                            .map(|(location, value)| {
+                                let draw_buffer = color_locations
+                                    .iter()
+                                    .position(|candidate| candidate == location)
+                                    .ok_or_else(|| {
+                                        RhiError::new(
+                                            RhiErrorKind::BackendFailure,
+                                            "native GL raster clear names a color attachment absent from its active pass",
+                                        )
+                                        .at("NativeProviderOwner::submit phase A raster-clear")
+                                    })? as u32;
+                                let value = match value {
+                                    crate::api::command::ColorClearValue::Float(value) => {
+                                        NativeRasterClearColor::Float(*value)
+                                    }
+                                    crate::api::command::ColorClearValue::Sint(value) => {
+                                        NativeRasterClearColor::Sint(*value)
+                                    }
+                                    crate::api::command::ColorClearValue::Uint(value) => {
+                                        NativeRasterClearColor::Uint(*value)
+                                    }
+                                    _ => {
+                                        return Err(RhiError::new(
+                                            RhiErrorKind::Unsupported,
+                                            "native GL raster clear received an unknown color clear value class",
+                                        )
+                                        .at("NativeProviderOwner::submit phase A raster-clear"));
+                                    }
+                                };
+                                Ok((draw_buffer, value))
+                            })
+                            .collect::<RhiResult<Vec<_>>>()?;
+                        actions.push(NativePhaseBAction::RasterClear(NativeRasterClearAction {
+                            rect: clear.rect,
+                            colors,
+                            depth: clear.depth,
+                            stencil: clear.stencil,
+                        }));
+                    }
+                    crate::api::command::record::RecordedPayload::RasterEnd => {
+                        actions.push(NativePhaseBAction::RasterEnd);
+                        raster_color_locations = None;
+                    }
+                    crate::api::command::record::RecordedPayload::RasterExecuteSecondary(work) => {
+                        if raster_color_locations.is_none() {
+                            return Err(RhiError::new(
+                                RhiErrorKind::BackendFailure,
+                                "native GL secondary raster work was recorded outside an active raster scope",
+                            ).at("NativeProviderOwner::submit phase A secondary-raster"));
+                        }
+                        // The core packet has already proved that its target
+                        // signature and command shape inherit this scope. GL
+                        // executes its draw body sequentially on the context
+                        // owner thread, preserving the parent pass exactly.
+                        for child in work.commands() {
+                            let crate::api::command::record::RecordedPayload::RasterDraw(draw) = &child.payload else {
+                                return Err(RhiError::new(RhiErrorKind::InvalidUsage, "secondary raster work contains a non-draw command").at("NativeProviderOwner::submit phase A secondary-raster"));
+                            };
+                            actions.push(self.lower_raster_draw(draw.as_ref())?);
+                        }
+                    }
                     crate::api::command::record::RecordedPayload::RasterDraw(draw) => {
                         let scalars = crate::backend::gl::translate_raster::raster_draw_scalars(draw.as_ref())?;
                         scalars.draw.validate(crate::backend::gl::api::GlAdvancedRasterCapabilities { base_vertex: false, first_instance: false }).map_err(|_| RhiError::new(RhiErrorKind::Unsupported, "native GL baseline raster route has no base-vertex or first-instance lowering").at("NativeProviderOwner::submit phase A"))?;
@@ -1995,10 +2910,31 @@ impl<C: NativePlatformContext> NativeGlOwner for NativeProviderOwner<C> {
                         }).map_err(worker_error)??;
                         actions.push(action);
                     }
-                    crate::api::command::record::RecordedPayload::QueryResolve(_) => return Err(RhiError::new(
-                        RhiErrorKind::Unsupported,
-                        "native GL baseline has no query-result-to-buffer route; query-buffer support is not universal across GL4/GLES3",
-                    ).at("NativeProviderOwner::submit phase A query-resolve")),
+                    crate::api::command::record::RecordedPayload::QueryResolve(resolve) => {
+                        let set = crate::backend::gl::platform::GlDevice::query_set_ref(&resolve.set)?.name;
+                        let count = resolve.query_count;
+                        let first = resolve.first_query;
+                        let destination = crate::backend::gl::platform::GlDevice::buffer_ref(&resolve.destination)?.name;
+                        let destination_offset = resolve.destination_offset;
+                        let destination_size = resolve.destination.descriptor().size;
+                        let action = self.worker.call(move |owner| -> RhiResult<_> {
+                            const OP: &str = "NativeProviderOwner::submit phase A query-resolve";
+                            owner.ready(OP)?;
+                            let mut queries = Vec::with_capacity(count as usize);
+                            for index in first..first.checked_add(count).ok_or_else(|| RhiError::new(RhiErrorKind::InvalidUsage, "query resolve range overflows").at(OP))? {
+                                let (query, ty) = owner.query_id(set, index, Some(crate::api::query::QueryType::Occlusion), OP)?;
+                                if !matches!(ty, crate::api::query::QueryType::Occlusion) {
+                                    return Err(RhiError::new(RhiErrorKind::Unsupported, "native GL query resolve supports occlusion queries only").at(OP));
+                                }
+                                queries.push(query);
+                            }
+                            let size = u64::from(count).checked_mul(8).ok_or_else(|| RhiError::new(RhiErrorKind::OutOfMemory, "query resolve byte count overflows").at(OP))?;
+                            let end = destination_offset.checked_add(size).ok_or_else(|| RhiError::new(RhiErrorKind::OutOfMemory, "query resolve destination range overflows").at(OP))?;
+                            if end > destination_size { return Err(RhiError::new(RhiErrorKind::InvalidUsage, "query resolve destination buffer is too small").at(OP)); }
+                            Ok(NativePhaseBAction::QueryResolve { queries, destination: crate::backend::gl::api::GlBufferRange { buffer: owner.buffer_id(destination, OP)?, offset: destination_offset, size } })
+                        }).map_err(worker_error)??;
+                        actions.push(action);
+                    }
                     crate::api::command::record::RecordedPayload::DebugPush(_)
                     | crate::api::command::record::RecordedPayload::DebugPop
                     | crate::api::command::record::RecordedPayload::DebugMarker(_) => return Err(RhiError::new(
@@ -2009,6 +2945,16 @@ impl<C: NativePlatformContext> NativeGlOwner for NativeProviderOwner<C> {
                         RhiErrorKind::Unsupported,
                         "native GL v13 Phase A has no complete owned action for this recorded payload",
                     ).at("NativeProviderOwner::submit phase A")),
+                }
+                if command.uses.iter().any(native_gl_shader_write) {
+                    // GL barriers are producer-side. A conservative complete
+                    // mask immediately after every shader writer establishes
+                    // visibility for the next recorded command regardless of
+                    // whether it reads through a sampler, image, SSBO, vertex
+                    // fetch, copy, or framebuffer path.
+                    actions.push(NativePhaseBAction::MemoryBarrier(
+                        native_gl_shader_write_barrier(),
+                    ));
                 }
             }
         }
@@ -2854,7 +3800,7 @@ fn preflight_submission(plan: &GlSubmissionPlan<'_>) -> RhiResult<()> {
     Ok(())
 }
 
-fn native_gl_unlowered_shader_write(use_: &crate::api::command::ResourceUse) -> bool {
+fn native_gl_shader_write(use_: &crate::api::command::ResourceUse) -> bool {
     use crate::api::command::{AccessMask, ResourceUse};
     match use_ {
         ResourceUse::Buffer(value) => value.access.contains(AccessMask::SHADER_WRITE),
@@ -2864,6 +3810,25 @@ fn native_gl_unlowered_shader_write(use_: &crate::api::command::ResourceUse) -> 
         }
         _ => true,
     }
+}
+
+fn native_gl_shader_write_barrier() -> crate::backend::gl::api::GlMemoryBarrier {
+    use crate::backend::gl::api::GlMemoryBarrier as B;
+    B::VERTEX_ATTRIB_ARRAY
+        .union(B::ELEMENT_ARRAY)
+        .union(B::UNIFORM)
+        .union(B::TEXTURE_FETCH)
+        .union(B::SHADER_IMAGE_ACCESS)
+        .union(B::COMMAND)
+        .union(B::PIXEL_BUFFER)
+        .union(B::TEXTURE_UPDATE)
+        .union(B::BUFFER_UPDATE)
+        .union(B::FRAMEBUFFER)
+        .union(B::TRANSFORM_FEEDBACK)
+        .union(B::ATOMIC_COUNTER)
+        .union(B::SHADER_STORAGE)
+        .union(B::CLIENT_MAPPED_BUFFER)
+        .union(B::QUERY_BUFFER)
 }
 
 /// Extracts every readback sink before Phase B consumes its action vector.
@@ -2877,7 +3842,8 @@ fn native_readback_tickets(
         .iter()
         .filter_map(|action| match action {
             NativePhaseBAction::ReadBuffer { ticket, .. }
-            | NativePhaseBAction::ReadTexture { ticket, .. } => Some(ticket.clone()),
+            | NativePhaseBAction::ReadTexture { ticket, .. }
+            | NativePhaseBAction::ReadFrame { ticket, .. } => Some(ticket.clone()),
             _ => None,
         })
         .collect()
@@ -3031,6 +3997,48 @@ fn texture_region<C: NativePlatformContext>(
     })
 }
 
+/// Builds the one-layer color attachment used by a direct texture blit.
+/// Direct blits are a 2D color-only route, and their rectangles are carried by
+/// `GlBlitRegion`; the FBO views therefore name the complete selected mip.
+fn texture_attachment_view<C: NativePlatformContext>(
+    owner: &NativeOwnedProvider<C>,
+    name: GlObjectName,
+    layers: crate::api::resource::TextureSubresourceLayers,
+    operation: &'static str,
+) -> RhiResult<crate::backend::gl::api::GlTextureView> {
+    if !matches!(layers.aspect, crate::api::resource::TextureAspect::Color)
+        || layers.layer_count != 1
+    {
+        return Err(RhiError::new(
+            RhiErrorKind::Unsupported,
+            "native GL direct texture blit requires one color layer",
+        )
+        .at(operation));
+    }
+    let texture = owner.texture_id(name, operation)?;
+    let (_, descriptor) = owner
+        .provider
+        .texture(operation, texture)
+        .map_err(|error| map_gl(error, operation))?;
+    let extent = descriptor.mip_extent(layers.mip_level).ok_or_else(|| {
+        RhiError::new(
+            RhiErrorKind::InvalidUsage,
+            "native GL texture blit mip is outside its allocation",
+        )
+        .at(operation)
+    })?;
+    Ok(crate::backend::gl::api::GlTextureView {
+        target: crate::backend::gl::api::GlAttachmentTarget::Texture(texture),
+        format: descriptor.format,
+        mip_level: layers.mip_level,
+        array_layer: layers.base_layer,
+        layer_count: 1,
+        width: extent.width,
+        height: extent.height,
+        sample_count: descriptor.sample_count,
+    })
+}
+
 fn gl_color_clear(
     load: crate::api::command::geometry::LoadOp<crate::api::command::geometry::ColorClearValue>,
 ) -> RhiResult<crate::backend::gl::api::GlColorClearValue> {
@@ -3070,6 +4078,80 @@ fn gl_color_clear(
             RhiErrorKind::Unsupported,
             "unknown color clear value",
         )),
+    }
+}
+
+/// Converts the portable independent depth/stencil plane modes into the GL
+/// render-pass packet. Read-only planes keep their contents, while read-write
+/// planes retain their exact load/store decisions and clear values.
+fn gl_depth_stencil_attachment(
+    view: crate::backend::gl::api::GlTextureView,
+    depth: Option<crate::api::command::attachment::DepthAttachmentMode>,
+    stencil: Option<crate::api::command::attachment::StencilAttachmentMode>,
+) -> crate::backend::gl::api::GlDepthStencilAttachment {
+    use crate::api::command::attachment::{DepthAttachmentMode, StencilAttachmentMode};
+    use crate::api::command::geometry::{LoadOp, StoreOp};
+
+    let (depth_load, depth_store, clear_depth) = match depth {
+        Some(DepthAttachmentMode::ReadWrite { load, store }) => (
+            if matches!(load, LoadOp::Clear(_)) {
+                crate::backend::gl::api::GlLoadOp::Clear
+            } else {
+                crate::backend::gl::api::GlLoadOp::Load
+            },
+            if store == StoreOp::Discard {
+                crate::backend::gl::api::GlStoreOp::Discard
+            } else {
+                crate::backend::gl::api::GlStoreOp::Store
+            },
+            match load {
+                LoadOp::Clear(value) => value.to_bits(),
+                LoadOp::Load => 0.0f32.to_bits(),
+                _ => 0.0f32.to_bits(),
+            },
+        ),
+        Some(DepthAttachmentMode::ReadOnly) | None => (
+            crate::backend::gl::api::GlLoadOp::Load,
+            crate::backend::gl::api::GlStoreOp::Store,
+            0.0f32.to_bits(),
+        ),
+        _ => unreachable!("unknown depth attachment mode from pinned RHI vocabulary"),
+    };
+    let (stencil_load, stencil_store, clear_stencil) = match stencil {
+        Some(StencilAttachmentMode::ReadWrite { load, store }) => (
+            if matches!(load, LoadOp::Clear(_)) {
+                crate::backend::gl::api::GlLoadOp::Clear
+            } else {
+                crate::backend::gl::api::GlLoadOp::Load
+            },
+            if store == StoreOp::Discard {
+                crate::backend::gl::api::GlStoreOp::Discard
+            } else {
+                crate::backend::gl::api::GlStoreOp::Store
+            },
+            match load {
+                LoadOp::Clear(value) => value,
+                LoadOp::Load => 0,
+                _ => 0,
+            },
+        ),
+        Some(StencilAttachmentMode::ReadOnly) | None => (
+            crate::backend::gl::api::GlLoadOp::Load,
+            crate::backend::gl::api::GlStoreOp::Store,
+            0,
+        ),
+        _ => unreachable!("unknown stencil attachment mode from pinned RHI vocabulary"),
+    };
+    crate::backend::gl::api::GlDepthStencilAttachment {
+        view,
+        depth_load,
+        depth_store,
+        stencil_load,
+        stencil_store,
+        clear: crate::backend::gl::api::GlDepthStencilClearValue {
+            depth: clear_depth,
+            stencil: clear_stencil,
+        },
     }
 }
 

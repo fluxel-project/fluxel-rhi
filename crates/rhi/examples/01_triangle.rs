@@ -296,12 +296,10 @@ impl TriangleWorkload {
         ]))?;
         let interface = device
             .create_pipeline_interface(&PipelineInterfaceDescriptor::new(vec![layout.clone()]))?;
-        let vertex_shader = device
-            .create_shader(&vertex_artifact(hashes.vertex))
-            .await?;
-        let fragment_shader = device
-            .create_shader(&fragment_artifact(hashes.fragment))
-            .await?;
+        let vertex_shader =
+            common::shader::create_shader(device, &vertex_artifact(hashes.vertex)).await?;
+        let fragment_shader =
+            common::shader::create_shader(device, &fragment_artifact(hashes.fragment)).await?;
 
         let vertex_input = VertexInputState::new().with_buffer(
             VertexBufferLayout::new(24, VertexStepMode::Vertex)

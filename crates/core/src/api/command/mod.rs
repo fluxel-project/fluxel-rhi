@@ -87,8 +87,8 @@ pub use copy::{
     BlitFilter, BufferCopy, BufferTextureCopy, TextureBlit, TextureCopy, TextureResolve,
 };
 pub use geometry::{Color, ColorClearValue, LoadOp, Rect, StoreOp, Viewport};
-pub use raster::RasterScope;
-pub use record::RecordedWork;
+pub use raster::{RasterAttachmentClear, RasterScope};
+pub use record::{RecordedWork, SecondaryRasterWork};
 pub use uses::{
     AccelerationStructureUse, AccessMask, BufferUse, FrameAttachmentUse, PipelineScope,
     QueryAccess, QueryUse, ResourceUse, TextureUse, TextureUseIntent,
@@ -116,7 +116,7 @@ use self::copy::{
     validate_texture_blit, validate_texture_copy, validate_texture_resolve,
 };
 use self::record::{CopyRecord, QueryResolve, RecordedCommand, RecordedPayload};
-use self::uses::copy_uses;
+use self::uses::{copy_uses, frame_use};
 
 /// The index element type a strip topology is cut with.
 ///
@@ -769,6 +769,16 @@ impl CommandRecorder {
         Ok(work)
     }
 
+    /// Finishes one independently recorded, draw-only raster scope.
+    ///
+    /// The input recording still uses the ordinary raster API, so its pipeline,
+    /// binding, and draw validation is identical to a primary scope.  Its
+    /// attachments become inheritance metadata only; executing the returned work
+    /// never begins or clears another pass.
+    pub fn finish_secondary_raster(self) -> RhiResult<SecondaryRasterWork> {
+        record::SecondaryRasterWork::from_recorded(self.finish()?)
+    }
+
     /// Copies a byte range between two buffers.
     ///
     /// Validated against section 34.1's list, then against the one question that is
@@ -919,6 +929,9 @@ impl CommandRecorder {
                     "the readback texture",
                 )?;
             }
+            ReadbackRequest::Frame { src, .. } => {
+                require_readback_device(src.device_identity(), self.device, "the readback frame")?;
+            }
         }
 
         let uses = match &request {
@@ -957,6 +970,16 @@ impl CommandRecorder {
                     access: AccessMask::COPY_READ,
                     intent: TextureUseIntent::CopySrc,
                 })]
+            }
+            ReadbackRequest::Frame { src, .. } => {
+                if src.sample_count() != 1 || src.extent().depth != 1 {
+                    return Err(RhiError::new(
+                        RhiErrorKind::InvalidUsage,
+                        "an acquired-frame readback requires a single-sampled 2D frame",
+                    )
+                    .at("encode_readback"));
+                }
+                vec![frame_use(src, PipelineScope::COPY, AccessMask::COPY_READ)]
             }
         };
 

@@ -4,3 +4,5 @@
 *.profraw
 __pycache__/
 *.py[cod]
+/crates/rhi/examples/assets/models/
+/crates/rhi/examples/assets/textures/

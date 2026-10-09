@@ -43,9 +43,10 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_BUFFER_SRV, D3D12_BUFFER_SRV_FLAG_RAW, D3D12_BUFFER_UAV, D3D12_BUFFER_UAV_FLAG_RAW,
     D3D12_CONSTANT_BUFFER_VIEW_DESC, D3D12_CPU_DESCRIPTOR_HANDLE,
     D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, D3D12_GPU_DESCRIPTOR_HANDLE,
-    D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0, D3D12_SRV_DIMENSION_BUFFER,
-    D3D12_TEX1D_UAV, D3D12_TEX2D_ARRAY_UAV, D3D12_TEX2D_UAV, D3D12_TEX3D_UAV,
-    D3D12_UAV_DIMENSION_BUFFER, D3D12_UAV_DIMENSION_TEXTURE1D, D3D12_UAV_DIMENSION_TEXTURE2D,
+    D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT, D3D12_SHADER_RESOURCE_VIEW_DESC,
+    D3D12_SHADER_RESOURCE_VIEW_DESC_0, D3D12_SRV_DIMENSION_BUFFER, D3D12_TEX1D_UAV,
+    D3D12_TEX2D_ARRAY_UAV, D3D12_TEX2D_UAV, D3D12_TEX3D_UAV, D3D12_UAV_DIMENSION_BUFFER,
+    D3D12_UAV_DIMENSION_TEXTURE1D, D3D12_UAV_DIMENSION_TEXTURE2D,
     D3D12_UAV_DIMENSION_TEXTURE2DARRAY, D3D12_UAV_DIMENSION_TEXTURE3D,
     D3D12_UNORDERED_ACCESS_VIEW_DESC, D3D12_UNORDERED_ACCESS_VIEW_DESC_0, ID3D12DescriptorHeap,
     ID3D12Device, ID3D12Resource,
@@ -99,6 +100,37 @@ pub(crate) struct Dx12BindGroup {
     _buffers: Vec<Buffer>,
     _textures: Vec<TextureView>,
     _samplers: Vec<Sampler>,
+    /// One native root-descriptor base address per dynamic buffer element.
+    /// The command lowering adds the packet's matching dynamic byte offset.
+    dynamic_buffers: Vec<DynamicBuffer>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct DynamicBuffer {
+    address: u64,
+    class: RegisterClass,
+    alignment: u32,
+}
+
+impl DynamicBuffer {
+    pub(crate) fn address(self, dynamic_offset: u32) -> Result<u64, Dx12Failure> {
+        if dynamic_offset % self.alignment != 0 {
+            return Err(Dx12Failure::Unsupported {
+                what: "a dynamic buffer offset that does not meet DX12 alignment",
+                why: "root descriptors require the same placement alignment recorded in the device capabilities",
+            });
+        }
+        self.address
+            .checked_add(u64::from(dynamic_offset))
+            .ok_or(Dx12Failure::Unsupported {
+                what: "a dynamic buffer address that overflows DX12's GPU address space",
+                why: "portable validation keeps the logical range in bounds; this guards the native address addition",
+            })
+    }
+
+    pub(crate) fn class(self) -> RegisterClass {
+        self.class
+    }
 }
 
 /// An uncommitted descriptor run.
@@ -174,6 +206,10 @@ impl Dx12BindGroup {
     pub(crate) fn sampler_heap(&self) -> &ID3D12DescriptorHeap {
         self.sampler_heap.handle()
     }
+
+    pub(crate) fn dynamic_buffers(&self) -> &[DynamicBuffer] {
+        &self.dynamic_buffers
+    }
 }
 
 impl BindGroupBackend for Dx12BindGroup {
@@ -236,6 +272,7 @@ pub(crate) fn create_bind_group(
     let mut buffers = Vec::with_capacity(descriptor.entries.len());
     let mut textures = Vec::with_capacity(descriptor.entries.len());
     let mut samplers = Vec::with_capacity(descriptor.entries.len());
+    let mut dynamic_buffers = Vec::with_capacity(plan.dynamics().len());
     write_entries(
         device,
         heap,
@@ -247,6 +284,7 @@ pub(crate) fn create_bind_group(
         &mut buffers,
         &mut textures,
         &mut samplers,
+        &mut dynamic_buffers,
     )?;
 
     // Committing is deliberately the final fallible-operation boundary.  Until
@@ -265,6 +303,7 @@ pub(crate) fn create_bind_group(
         _buffers: buffers,
         _textures: textures,
         _samplers: samplers,
+        dynamic_buffers,
     })
 }
 
@@ -280,6 +319,7 @@ fn write_entries(
     buffers: &mut Vec<Buffer>,
     textures: &mut Vec<TextureView>,
     samplers: &mut Vec<Sampler>,
+    dynamic_buffers: &mut Vec<DynamicBuffer>,
 ) -> Result<(), Dx12Failure> {
     for entry in &descriptor.entries {
         // A lookup rather than an index by position: the plan's order is the
@@ -300,7 +340,11 @@ fn write_entries(
         };
         match &entry.resource {
             BindingResource::Buffer(binding) => {
-                write_element(device, heap, start + range.first, range, binding)?;
+                if range.dynamic {
+                    dynamic_buffers.push(dynamic_buffer(range, binding)?);
+                } else {
+                    write_element(device, heap, start + range.first, range, binding)?;
+                }
                 buffers.push(binding.buffer.clone());
             }
             BindingResource::BufferArray(bindings) => {
@@ -312,13 +356,17 @@ fn write_entries(
                     });
                 }
                 for (element, binding) in bindings.iter().enumerate() {
-                    write_element(
-                        device,
-                        heap,
-                        start + range.first + element as u32,
-                        range,
-                        binding,
-                    )?;
+                    if range.dynamic {
+                        dynamic_buffers.push(dynamic_buffer(range, binding)?);
+                    } else {
+                        write_element(
+                            device,
+                            heap,
+                            start + range.first + element as u32,
+                            range,
+                            binding,
+                        )?;
+                    }
                     buffers.push(binding.buffer.clone());
                 }
             }
@@ -377,6 +425,38 @@ fn write_entries(
         }
     }
     Ok(())
+}
+
+fn dynamic_buffer(
+    range: &RangePlan,
+    binding: &BufferBinding,
+) -> Result<DynamicBuffer, Dx12Failure> {
+    let native = binding
+        .buffer
+        .native()
+        .as_any()
+        .downcast_ref::<Dx12Buffer>()
+        .ok_or(Dx12Failure::Unsupported {
+            what: "a dynamic buffer this device did not allocate",
+            why: "its native allocation belongs to another backend",
+        })?;
+    let address = unsafe { native.resource().GetGPUVirtualAddress() }
+        .checked_add(binding.range.offset)
+        .ok_or(Dx12Failure::Unsupported {
+            what: "a dynamic buffer binding address that overflows DX12's GPU address space",
+            why: "the buffer range offset cannot be represented by a root descriptor",
+        })?;
+    Ok(DynamicBuffer {
+        address,
+        class: range.class,
+        alignment: match range.class {
+            RegisterClass::ConstantBuffer => CONSTANT_BUFFER_ALIGNMENT as u32,
+            RegisterClass::ShaderResource | RegisterClass::UnorderedAccess => {
+                D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT
+            }
+            RegisterClass::Sampler => unreachable!("dynamic offsets are buffers"),
+        },
+    })
 }
 
 /// Writes one descriptor: one buffer binding, into one slot.

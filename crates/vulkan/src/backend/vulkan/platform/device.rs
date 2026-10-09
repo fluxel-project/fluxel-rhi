@@ -91,6 +91,12 @@ pub(crate) struct VulkanShared {
     /// authoritative route even on drivers that also promote it in Vulkan 1.2.
     pub(crate) draw_indirect_count: Option<ash::khr::draw_indirect_count::Device>,
     pub(crate) max_draw_indirect_count: u32,
+    pub(crate) min_uniform_buffer_offset_alignment: u64,
+    pub(crate) min_storage_buffer_offset_alignment: u64,
+    /// Maximum declared count for a variable sampled-image descriptor binding.
+    /// Pipeline and bind-group layouts use this same upper bound; allocation
+    /// supplies the packet's active descriptor count separately.
+    pub(crate) max_runtime_sampled_descriptors: u32,
     liveness: Mutex<Liveness>,
     completed_serial: AtomicU64,
     next_mapping_waiter: AtomicU64,
@@ -112,6 +118,9 @@ impl VulkanDevice {
         non_coherent_atom_size: vk::DeviceSize,
         draw_indirect_count: Option<ash::khr::draw_indirect_count::Device>,
         max_draw_indirect_count: u32,
+        min_uniform_buffer_offset_alignment: u64,
+        min_storage_buffer_offset_alignment: u64,
+        max_runtime_sampled_descriptors: u32,
         facts: CapabilityFacts,
         submission: SubmissionCapabilities,
         presentation_enabled: bool,
@@ -130,6 +139,9 @@ impl VulkanDevice {
             non_coherent_atom_size,
             draw_indirect_count,
             max_draw_indirect_count,
+            min_uniform_buffer_offset_alignment,
+            min_storage_buffer_offset_alignment,
+            max_runtime_sampled_descriptors,
             liveness: Mutex::new(Liveness {
                 status: DeviceStatus::Active,
                 info: None,

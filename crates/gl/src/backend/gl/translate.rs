@@ -7,6 +7,9 @@
 //! object: an error here is therefore an `Unsupported` refusal before native
 //! work has been accepted.
 
+use std::collections::BTreeMap;
+
+use crate::api::binding::BindingKind;
 use crate::api::command::IndexFormat;
 use crate::api::error::{RhiError, RhiErrorKind, RhiResult};
 use crate::api::format::{TextureFormat, format_aspects};
@@ -608,26 +611,171 @@ pub(crate) fn shader_source(artifact: &ShaderArtifact) -> RhiResult<GlShaderSour
     })
 }
 
-/// Lowers the portable resource portion of one pipeline interface to the GL
-/// program-layout vocabulary.
+/// One helper-emitted GL reflection declaration.
 ///
-/// `GlLogicalBinding::name` is deliberately a *native reflection name*, not a
-/// public binding identity.  The GL providers use it to find uniform blocks and
-/// uniforms after linking; substituting a guessed spelling would make a valid
-/// portable `(group, slot)` silently bind whichever GLSL declaration happened to
-/// have that spelling.  ABI 1.0 does not define such a spelling, and
-/// `ShaderArtifact` carries no backend-private reflection-name table.  Therefore
-/// this lowering is intentionally fail-closed for every resource-bearing
-/// pipeline until a future GL ABI revision supplies that table.
-///
-/// Keeping this verdict here, before a program descriptor is handed to either
-/// provider, is important: an empty `GlPipelineLayout` is valid only when the
-/// artifacts genuinely declare no resources.  It must never be used as a
-/// placeholder for bindings that the submission path later claims it can bind.
+/// The source comment is an artifact ABI adjunct: GLSL has no group/slot
+/// namespace, and Naga gives UBO/SSBO blocks generated names. Keeping the
+/// exact post-lowering reflection name in the source lets the provider verify
+/// it after link without guessing from a user WGSL identifier.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct GlAbiManifestEntry {
+    kind: String,
+    name: String,
+    pair: Option<GlBindingLocation>,
+}
+
+fn gl_abi_manifest(
+    artifact: &ShaderArtifact,
+) -> RhiResult<BTreeMap<GlBindingLocation, GlAbiManifestEntry>> {
+    let source = match &artifact.code {
+        ShaderCode::Glsl { source, .. } | ShaderCode::GlslEs { source, .. } => source.as_ref(),
+        _ => {
+            return Err(unsupported(
+                "GL::pipeline_layout_from_artifacts",
+                "GL ABI manifest needs GLSL source",
+            ));
+        }
+    };
+    let mut result = BTreeMap::new();
+    for line in source.lines() {
+        let Some(rest) = line.trim().strip_prefix("// fluxel-gl-abi-v1 ") else {
+            continue;
+        };
+        let mut values = BTreeMap::new();
+        for field in rest.split_ascii_whitespace() {
+            let Some((key, value)) = field.split_once('=') else {
+                return Err(unsupported(
+                    "GL::pipeline_layout_from_artifacts",
+                    "malformed fluxel GL ABI manifest field",
+                ));
+            };
+            values.insert(key, value);
+        }
+        let parse = |key: &str| {
+            values
+                .get(key)
+                .ok_or_else(|| {
+                    unsupported(
+                        "GL::pipeline_layout_from_artifacts",
+                        format!("GL ABI manifest misses {key}"),
+                    )
+                })
+                .and_then(|value| {
+                    value.parse::<u32>().map_err(|_| {
+                        unsupported(
+                            "GL::pipeline_layout_from_artifacts",
+                            format!("GL ABI manifest {key} is not u32"),
+                        )
+                    })
+                })
+        };
+        let location = GlBindingLocation {
+            group: parse("group")?,
+            binding: parse("slot")?,
+        };
+        let kind = values
+            .get("kind")
+            .ok_or_else(|| {
+                unsupported(
+                    "GL::pipeline_layout_from_artifacts",
+                    "GL ABI manifest misses kind",
+                )
+            })?
+            .to_string();
+        let name = values
+            .get("name")
+            .ok_or_else(|| {
+                unsupported(
+                    "GL::pipeline_layout_from_artifacts",
+                    "GL ABI manifest misses name",
+                )
+            })?
+            .to_string();
+        let pair = match (values.get("pair_group"), values.get("pair_slot")) {
+            (None, None) => None,
+            (Some(group), Some(binding)) => Some(GlBindingLocation {
+                group: group.parse().map_err(|_| {
+                    unsupported(
+                        "GL::pipeline_layout_from_artifacts",
+                        "GL ABI pair_group is not u32",
+                    )
+                })?,
+                binding: binding.parse().map_err(|_| {
+                    unsupported(
+                        "GL::pipeline_layout_from_artifacts",
+                        "GL ABI pair_slot is not u32",
+                    )
+                })?,
+            }),
+            _ => {
+                return Err(unsupported(
+                    "GL::pipeline_layout_from_artifacts",
+                    "GL ABI pair requires both pair_group and pair_slot",
+                ));
+            }
+        };
+        if result
+            .insert(location, GlAbiManifestEntry { kind, name, pair })
+            .is_some()
+        {
+            return Err(unsupported(
+                "GL::pipeline_layout_from_artifacts",
+                "GL ABI manifest repeats a logical binding",
+            ));
+        }
+    }
+    Ok(result)
+}
+
+fn gl_resource_kind(kind: &BindingKind, manifest: &str) -> RhiResult<GlShaderResourceKind> {
+    match (kind, manifest) {
+        (BindingKind::UniformBuffer { .. }, "uniform") => Ok(GlShaderResourceKind::UniformBuffer),
+        (BindingKind::StorageBuffer { access, .. }, "storage-buffer") => {
+            Ok(GlShaderResourceKind::StorageBuffer(match access {
+                crate::api::binding::BufferBindingAccess::ReadOnly => {
+                    GlStorageBufferUsage::ReadOnly
+                }
+                crate::api::binding::BufferBindingAccess::ReadWrite => {
+                    GlStorageBufferUsage::ReadWrite
+                }
+                _ => {
+                    return Err(unsupported(
+                        "GL::pipeline_layout_from_artifacts",
+                        "unknown storage-buffer access",
+                    ));
+                }
+            }))
+        }
+        (BindingKind::SampledTexture { .. }, "sampled-texture") => {
+            Ok(GlShaderResourceKind::Texture)
+        }
+        (BindingKind::Sampler { .. }, "sampler") => Ok(GlShaderResourceKind::Sampler),
+        (BindingKind::StorageTexture { access, .. }, "storage-texture") => {
+            Ok(GlShaderResourceKind::StorageImage(match access {
+                crate::api::binding::StorageAccess::ReadOnly => GlStorageImageAccess::ReadOnly,
+                crate::api::binding::StorageAccess::WriteOnly => GlStorageImageAccess::WriteOnly,
+                crate::api::binding::StorageAccess::ReadWrite => GlStorageImageAccess::ReadWrite,
+                _ => {
+                    return Err(unsupported(
+                        "GL::pipeline_layout_from_artifacts",
+                        "unknown storage-texture access",
+                    ));
+                }
+            }))
+        }
+        _ => Err(unsupported(
+            "GL::pipeline_layout_from_artifacts",
+            "GL ABI manifest kind disagrees with ShaderInterface binding kind",
+        )),
+    }
+}
+
+/// Lowers helper-manifested GLSL resource names into the GL program layout.
 pub(crate) fn pipeline_layout_from_artifacts(
     interface: &PipelineInterface,
     artifacts: &[&ShaderArtifact],
 ) -> RhiResult<GlPipelineLayout> {
+    let mut bindings = BTreeMap::new();
     for artifact in artifacts {
         if artifact.abi_version != IMPLEMENTED_ABI {
             return Err(unsupported(
@@ -641,6 +789,7 @@ pub(crate) fn pipeline_layout_from_artifacts(
                 ),
             ));
         }
+        let manifest = gl_abi_manifest(artifact)?;
         for resource in artifact.interface.resources() {
             // Read the interface as part of the lowering boundary rather than
             // treating an artifact's logical location as a GL binding point.
@@ -651,7 +800,7 @@ pub(crate) fn pipeline_layout_from_artifacts(
             let declared = interface
                 .group(resource.group)
                 .and_then(|group| group.slot(resource.slot));
-            if declared.is_none() {
+            let Some(declared) = declared else {
                 return Err(unsupported(
                     "GL::pipeline_layout_from_artifacts",
                     format!(
@@ -660,22 +809,60 @@ pub(crate) fn pipeline_layout_from_artifacts(
                         resource.slot.get(),
                     ),
                 ));
+            };
+            let location = GlBindingLocation {
+                group: resource.group.get(),
+                binding: resource.slot.get(),
+            };
+            let entry = manifest.get(&location).ok_or_else(|| {
+                unsupported(
+                    "GL::pipeline_layout_from_artifacts",
+                    format!(
+                        "GL ABI manifest has no entry for group {} slot {}",
+                        location.group, location.binding
+                    ),
+                )
+            })?;
+            if resource.kind != declared.kind {
+                return Err(unsupported(
+                    "GL::pipeline_layout_from_artifacts",
+                    "shader resource disagrees with pipeline-interface declaration",
+                ));
             }
-            return Err(unsupported(
-                "GL::pipeline_layout_from_artifacts",
-                format!(
-                    "GL ABI {}.{} has no reflection-name mapping for logical group {} slot {}; \
-                     ShaderArtifact records logical resources but no GLSL uniform/block name",
-                    IMPLEMENTED_ABI.major,
-                    IMPLEMENTED_ABI.minor,
-                    resource.group.get(),
-                    resource.slot.get(),
-                ),
-            ));
+            let binding = GlLogicalBinding {
+                names: vec![entry.name.clone()],
+                location,
+                kind: gl_resource_kind(&resource.kind, &entry.kind)?,
+                array_count: resource.count.elements(),
+                pair: entry.pair,
+            };
+            if binding.array_count == 0 {
+                return Err(unsupported(
+                    "GL::pipeline_layout_from_artifacts",
+                    "GL ABI does not lower runtime-sized binding arrays",
+                ));
+            }
+            if let Some(previous) = bindings.get_mut(&location) {
+                if previous.location != binding.location
+                    || previous.kind != binding.kind
+                    || previous.array_count != binding.array_count
+                    || previous.pair != binding.pair
+                {
+                    return Err(unsupported(
+                        "GL::pipeline_layout_from_artifacts",
+                        "shader stages disagree on GL ABI manifest binding",
+                    ));
+                }
+                if !previous.names.contains(&entry.name) {
+                    previous.names.push(entry.name.clone());
+                }
+            } else {
+                bindings.insert(location, binding);
+            }
         }
     }
     Ok(GlPipelineLayout {
-        bindings: Vec::new(),
+        bindings: bindings.into_values().collect(),
     })
 }
 

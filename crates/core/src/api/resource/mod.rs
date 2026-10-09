@@ -97,7 +97,8 @@ pub use buffer::{
 };
 pub use mapping::{MapBufferFuture, MapMode, MappedRange, MappedRangeMut};
 pub use route::{
-    BufferCopyLayoutLimits, RouteCapabilities, RouteQuery, RouteSupport, TexelCopyLayoutLimits,
+    BlitExecution, BufferCopyLayoutLimits, RouteCapabilities, RouteQuery, RouteSupport,
+    TexelCopyLayoutLimits,
 };
 pub use sampler::{AddressMode, CompareFunction, FilterMode, Sampler, SamplerDescriptor};
 pub use subresource::{

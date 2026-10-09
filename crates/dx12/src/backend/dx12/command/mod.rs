@@ -28,6 +28,7 @@
 //! for a plan that already passed both, so every refusal it produces is one only
 //! Direct3D 12 could know.
 
+mod blit;
 mod compute;
 mod copy;
 mod query;

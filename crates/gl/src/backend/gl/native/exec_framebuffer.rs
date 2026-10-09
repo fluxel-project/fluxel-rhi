@@ -205,10 +205,16 @@ impl GlFramebufferApi for NativeGlProvider {
             .iter()
             .map(|attachment| attachment.store == GlStoreOp::Discard)
             .collect();
-        let discard_depth_stencil = descriptor
-            .depth_stencil_attachment
-            .as_ref()
-            .map(|attachment| attachment.depth_store == GlStoreOp::Discard);
+        let discard_depth_stencil =
+            descriptor
+                .depth_stencil_attachment
+                .as_ref()
+                .map(|attachment| {
+                    (
+                        attachment.depth_store == GlStoreOp::Discard,
+                        attachment.stencil_store == GlStoreOp::Discard,
+                    )
+                });
 
         // SAFETY: current-context contract; the framebuffer is live and the
         // clears are total (scissor disabled) exactly once per pass begin.
@@ -303,8 +309,13 @@ impl GlFramebufferApi for NativeGlProvider {
             .filter(|(_, discard)| **discard)
             .map(|(index, _)| draw_buffer_constant(index as u32))
             .collect();
-        if pass.discard_depth_stencil == Some(true) {
-            invalidate.push(glow::DEPTH_ATTACHMENT);
+        if let Some((discard_depth, discard_stencil)) = pass.discard_depth_stencil {
+            if discard_depth {
+                invalidate.push(glow::DEPTH_ATTACHMENT);
+            }
+            if discard_stencil {
+                invalidate.push(glow::STENCIL_ATTACHMENT);
+            }
         }
         // SAFETY: current-context contract; glInvalidateFramebuffer is issued
         // only where the profile's core supplies it (ES 3.x, desktop 4.3+);
@@ -446,6 +457,60 @@ fn supports_framebuffer_invalidate(profile: crate::backend::gl::api::GlFamilyPro
 }
 
 impl NativeGlProvider {
+    /// Copies a complete single-sampled owned color framebuffer into the
+    /// authenticated WGL/EGL default framebuffer. The default target remains a
+    /// typed acquired-frame fact; it is never entered into the owned FBO table.
+    pub(super) fn blit_framebuffer_to_default(
+        &mut self,
+        source: FramebufferId,
+        target: crate::backend::gl::api::GlDefaultFramebufferTarget,
+    ) -> Result<(), GlError> {
+        use glow::HasContext as _;
+        const OP: &str = "blit-framebuffer-to-default";
+        self.assert_ready(OP)?;
+        if target.context != self.context_stamp()
+            || target.width == 0
+            || target.height == 0
+            || target.sample_count != 1
+        {
+            return Err(Self::validation(
+                OP,
+                "invalid acquired default framebuffer target",
+            ));
+        }
+        let record = self.framebuffer(OP, source)?;
+        let (width, height, samples) = framebuffer_shape(&record.descriptor);
+        if width != target.width || height != target.height || samples != 1 {
+            return Err(Self::validation(
+                OP,
+                "owned color framebuffer does not match the acquired default framebuffer",
+            ));
+        }
+        // SAFETY: both bindings are valid for this owner context. FBO zero is
+        // selected only after the acquired frame was authenticated by Phase A.
+        unsafe {
+            self.gl
+                .bind_framebuffer(glow::READ_FRAMEBUFFER, Some(record.raw));
+            self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
+            self.gl.blit_framebuffer(
+                0,
+                0,
+                width as i32,
+                height as i32,
+                0,
+                0,
+                width as i32,
+                height as i32,
+                glow::COLOR_BUFFER_BIT,
+                glow::NEAREST,
+            );
+            let result = self.driver_error(OP);
+            self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
+            self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
+            result
+        }
+    }
+
     /// Attaches every validated view of a descriptor to one fresh FBO.
     fn attach_all(
         &self,

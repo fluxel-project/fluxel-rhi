@@ -321,10 +321,13 @@ impl VulkanCommandSpine {
             let serial = first_serial + index as u64;
             let command_buffers = [buffer];
             let batch_presentation = &presentation[index];
-            let wait_stages = vec![
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT;
-                batch_presentation.waits.len()
-            ];
+            // A frame can be first touched by either a raster attachment or an
+            // acquired-frame readback. `ALL_COMMANDS` makes the acquire
+            // semaphore cover both the color-output and transfer stages; using
+            // only COLOR_ATTACHMENT_OUTPUT would let a transfer-only frame
+            // readback start before image acquisition completed.
+            let wait_stages =
+                vec![vk::PipelineStageFlags::ALL_COMMANDS; batch_presentation.waits.len()];
             let submit = vk::SubmitInfo::default()
                 .command_buffers(&command_buffers)
                 .wait_semaphores(&batch_presentation.waits)
@@ -597,11 +600,17 @@ impl VulkanCommandSpine {
                         }
                         let shader_texture_uses =
                             collect_raster_shader_texture_uses(batch, work_index, command_index)?;
+                        let multiview_mask =
+                            collect_raster_multiview_mask(batch, work_index, command_index)?;
+                        let secondary_contents =
+                            collect_raster_has_secondary(batch, work_index, command_index)?;
                         raster_scope = Some(raster::lower_raster_begin(
                             Arc::clone(&self.inner.shared),
                             command_buffer,
                             begin,
                             &shader_texture_uses,
+                            multiview_mask,
+                            secondary_contents,
                             retention,
                         )?);
                     }
@@ -610,30 +619,95 @@ impl VulkanCommandSpine {
                             what: "a Vulkan raster draw outside a render pass",
                             why: "portable recording should emit RasterBegin first",
                         })?;
-                        let draw_retention = raster::lower_raster_draw(
+                        let draw_retention = if scope.uses_secondary() {
+                            let (secondary, retained) = raster::lower_secondary_draw(
+                                Arc::clone(&self.inner.shared),
+                                scope.info(),
+                                draw,
+                                &command.uses,
+                            )?;
+                            unsafe {
+                                self.inner
+                                    .shared
+                                    .device
+                                    .cmd_execute_commands(command_buffer, &[secondary])
+                            };
+                            retained
+                        } else {
+                            raster::lower_raster_draw(
+                                &self.inner.shared,
+                                command_buffer,
+                                draw,
+                                &command.uses,
+                                &scope.info(),
+                                retention,
+                            )?
+                        };
+                        retention.retain_raster(draw_retention);
+                    }
+                    RecordedPayload::RasterClear(clear) => {
+                        let scope = raster_scope.as_ref().ok_or(VulkanFailure::Unsupported {
+                            what: "a Vulkan raster attachment clear outside a render pass",
+                            why: "portable recording should emit RasterBegin first",
+                        })?;
+                        raster::lower_raster_clear(
                             &self.inner.shared,
                             command_buffer,
-                            draw,
-                            &command.uses,
+                            clear,
                             scope,
-                            retention,
                         )?;
-                        retention.retain_raster(draw_retention);
                     }
                     RecordedPayload::RasterIndirect(draw) => {
                         let scope = raster_scope.as_ref().ok_or(VulkanFailure::Unsupported {
                             what: "a Vulkan raster indirect draw outside a render pass",
                             why: "portable recording should emit RasterBegin first",
                         })?;
+                        if scope.uses_secondary() {
+                            return Err(VulkanFailure::Unsupported {
+                                what: "a Vulkan indirect draw in a secondary-command-buffer raster scope",
+                                why: "this initial secondary lowering records portable direct draws only",
+                            });
+                        }
                         let draw_retention = raster::lower_raster_indirect(
                             &self.inner.shared,
                             command_buffer,
                             draw,
                             &command.uses,
-                            scope,
+                            &scope.info(),
                             retention,
                         )?;
                         retention.retain_raster(draw_retention);
+                    }
+                    RecordedPayload::RasterExecuteSecondary(work) => {
+                        let scope = raster_scope.as_ref().ok_or(VulkanFailure::Unsupported {
+                            what: "secondary Vulkan raster work outside a render pass",
+                            why: "portable recording should emit RasterBegin first",
+                        })?;
+                        // The portable child contains draw packets only.  The
+                        // Vulkan command-buffer implementation is deliberately
+                        // kept behind this execution point so the parent owns
+                        // attachment transitions and render-pass lifetime.
+                        for child in work.commands() {
+                            let RecordedPayload::RasterDraw(draw) = &child.payload else {
+                                return Err(VulkanFailure::Unsupported {
+                                    what: "a non-draw secondary raster command",
+                                    why: "the portable secondary recorder admits direct draws only",
+                                });
+                            };
+                            let (secondary, draw_retention) = raster::lower_secondary_draw(
+                                Arc::clone(&self.inner.shared),
+                                scope.info(),
+                                draw,
+                                &child.uses,
+                            )?;
+                            unsafe {
+                                self.inner
+                                    .shared
+                                    .device
+                                    .cmd_execute_commands(command_buffer, &[secondary])
+                            };
+                            retention.retain_raster(draw_retention);
+                        }
                     }
                     RecordedPayload::RasterEnd => {
                         let scope = raster_scope.take().ok_or(VulkanFailure::Unsupported {
@@ -781,6 +855,14 @@ impl VulkanCommandSpine {
                             retention,
                         )?;
                     }
+                    RecordedPayload::Copy(CopyRecord::Blit(blit)) => {
+                        transfer::lower_texture_blit(
+                            &self.inner.shared,
+                            command_buffer,
+                            &blit,
+                            retention,
+                        )?;
+                    }
                     RecordedPayload::Upload(job) => match job.descriptor() {
                         crate::api::resource::transfer::UploadDescriptor::Buffer(_) => {
                             transfer::lower_upload(
@@ -816,6 +898,14 @@ impl VulkanCommandSpine {
                         }
                         crate::api::resource::transfer::ReadbackRequest::Texture { .. } => {
                             transfer::lower_texture_readback(
+                                &self.inner.shared,
+                                command_buffer,
+                                &ticket,
+                                retention,
+                            )?
+                        }
+                        crate::api::resource::transfer::ReadbackRequest::Frame { .. } => {
+                            transfer::lower_frame_readback(
                                 &self.inner.shared,
                                 command_buffer,
                                 &ticket,
@@ -1277,6 +1367,106 @@ fn frame_present_sync(_: &FrameAttachment) -> Result<VulkanPresentSync, VulkanFa
     })
 }
 
+/// Finds the one view mask a native legacy Vulkan render pass must carry.
+/// Portable recording validates every pipeline against the attachment layer
+/// count, but Vulkan additionally bakes the mask into the subpass itself. A
+/// scope with several pipeline binds is therefore legal only when every draw
+/// selected the same mask; reject the mismatch before beginning the pass.
+fn collect_raster_multiview_mask(
+    batch: &PlanBatch,
+    begin_work: usize,
+    begin_command: usize,
+) -> Result<Option<u32>, VulkanFailure> {
+    let mut selected = None;
+    let mut record = |mask: Option<u32>| -> Result<(), VulkanFailure> {
+        if let Some(previous) = selected {
+            if previous != mask {
+                return Err(VulkanFailure::Unsupported {
+                    what: "several multiview masks in one Vulkan raster scope",
+                    why: "legacy Vulkan render-pass lowering requires every draw in a scope to use one view mask",
+                });
+            }
+        } else {
+            selected = Some(mask);
+        }
+        Ok(())
+    };
+    for (work_index, work) in batch.work.iter().enumerate().skip(begin_work) {
+        let first_command = if work_index == begin_work {
+            begin_command + 1
+        } else {
+            0
+        };
+        for command in work.commands().iter().skip(first_command) {
+            match &command.payload {
+                RecordedPayload::RasterEnd => return Ok(selected.flatten()),
+                RecordedPayload::RasterBegin(_) => {
+                    return Err(VulkanFailure::Unsupported {
+                        what: "nested Vulkan raster scopes",
+                        why: "portable recording should keep raster scopes linear",
+                    });
+                }
+                RecordedPayload::RasterDraw(draw) => {
+                    record(draw.pipeline.descriptor().multiview_mask)?;
+                }
+                RecordedPayload::RasterIndirect(draw) => {
+                    record(draw.pipeline.descriptor().multiview_mask)?;
+                }
+                RecordedPayload::RasterExecuteSecondary(work) => {
+                    for child in work.commands() {
+                        let RecordedPayload::RasterDraw(draw) = &child.payload else {
+                            return Err(VulkanFailure::Unsupported {
+                                what: "a non-draw secondary raster command",
+                                why: "the portable secondary recorder admits direct draws only",
+                            });
+                        };
+                        record(draw.pipeline.descriptor().multiview_mask)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Err(VulkanFailure::Unsupported {
+        what: "an unterminated Vulkan raster scope",
+        why: "portable recording should emit RasterEnd before finish",
+    })
+}
+
+/// Legacy render passes choose one contents mode for the entire subpass.  If
+/// one portable child is executed, ordinary parent draws are lowered as native
+/// secondaries too, preserving their recorded order.
+fn collect_raster_has_secondary(
+    batch: &PlanBatch,
+    begin_work: usize,
+    begin_command: usize,
+) -> Result<bool, VulkanFailure> {
+    for (work_index, work) in batch.work.iter().enumerate().skip(begin_work) {
+        let first = if work_index == begin_work {
+            begin_command + 1
+        } else {
+            0
+        };
+        for command in work.commands().iter().skip(first) {
+            match &command.payload {
+                RecordedPayload::RasterEnd => return Ok(false),
+                RecordedPayload::RasterExecuteSecondary(_) => return Ok(true),
+                RecordedPayload::RasterBegin(_) => {
+                    return Err(VulkanFailure::Unsupported {
+                        what: "nested Vulkan raster scopes",
+                        why: "portable recording should keep raster scopes linear",
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+    Err(VulkanFailure::Unsupported {
+        what: "an unterminated Vulkan raster scope",
+        why: "portable recording should emit RasterEnd before finish",
+    })
+}
+
 /// Collects exactly the shader image uses in one linear raster scope before it
 /// is begun natively. Vulkan synchronization commands are invalid inside a
 /// render pass, so raster lowering establishes descriptor layouts at the scope
@@ -1384,6 +1574,7 @@ fn payload_name(payload: &RecordedPayload) -> &'static str {
         RecordedPayload::AccelerationStructure(_) => "an acceleration-structure command",
         RecordedPayload::RasterBegin(_) => "a raster scope",
         RecordedPayload::RasterDraw(_) => "a raster draw",
+        RecordedPayload::RasterClear(_) => "a raster attachment clear",
         RecordedPayload::RasterEnd => "a raster-scope end",
         RecordedPayload::ComputeBegin(_) => "a compute scope",
         RecordedPayload::ComputeDispatch(_) => "a compute dispatch",

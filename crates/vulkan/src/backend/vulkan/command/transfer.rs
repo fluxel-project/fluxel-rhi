@@ -11,11 +11,12 @@ use std::sync::Arc;
 use ash::vk;
 
 use crate::api::binding::BindGroup;
-use crate::api::command::copy::{BufferCopy, BufferTextureCopy, TextureCopy};
+use crate::api::command::copy::{BufferCopy, BufferTextureCopy, TextureBlit, TextureCopy};
 use crate::api::command::{AccessMask, TextureUse, TextureUseIntent};
 use crate::api::format::{block_extent, logical_bytes_per_block};
 use crate::api::identity::ObjectId;
 use crate::api::pipeline::ComputePipeline;
+use crate::api::presentation::FrameAttachment;
 use crate::api::query::QuerySet;
 use crate::api::resource::buffer::Buffer;
 use crate::api::resource::buffer::BufferRange;
@@ -499,6 +500,72 @@ pub(super) fn lower_texture_copy(
     Ok(())
 }
 
+/// Lowers one filtered image blit. The source and destination subresources are
+/// transitioned independently, so the mip-chain case (one image, successive
+/// source/destination levels) keeps every predecessor available for the next
+/// command rather than collapsing the image to one global layout.
+pub(super) fn lower_texture_blit(
+    shared: &VulkanShared,
+    command_buffer: vk::CommandBuffer,
+    blit: &TextureBlit,
+    retention: &mut TransferRetention,
+) -> Result<(), VulkanFailure> {
+    let source = native_texture(&blit.src)?;
+    let destination = native_texture(&blit.dst)?;
+    transition_image(
+        shared,
+        command_buffer,
+        source.image(),
+        &blit.src,
+        blit.src_subresource,
+        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        vk::PipelineStageFlags::TRANSFER,
+        vk::AccessFlags::TRANSFER_READ,
+        retention,
+    );
+    transition_image(
+        shared,
+        command_buffer,
+        destination.image(),
+        &blit.dst,
+        blit.dst_subresource,
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        vk::PipelineStageFlags::TRANSFER,
+        vk::AccessFlags::TRANSFER_WRITE,
+        retention,
+    );
+
+    let region = vk::ImageBlit::default()
+        .src_subresource(image_layers(blit.src_subresource))
+        .src_offsets([
+            image_offset(blit.src_origin),
+            image_end(blit.src_origin, blit.src_extent)?,
+        ])
+        .dst_subresource(image_layers(blit.dst_subresource))
+        .dst_offsets([
+            image_offset(blit.dst_origin),
+            image_end(blit.dst_origin, blit.dst_extent)?,
+        ]);
+    unsafe {
+        shared.device.cmd_blit_image(
+            command_buffer,
+            source.image(),
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            destination.image(),
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            std::slice::from_ref(&region),
+            match blit.filter {
+                crate::api::command::BlitFilter::Nearest => vk::Filter::NEAREST,
+                crate::api::command::BlitFilter::Linear => vk::Filter::LINEAR,
+                _ => crate::unknown_portable_variant(),
+            },
+        );
+    }
+    retention.textures.push(blit.src.clone());
+    retention.textures.push(blit.dst.clone());
+    Ok(())
+}
+
 pub(super) fn lower_texture_upload(
     shared: &Arc<VulkanShared>,
     command_buffer: vk::CommandBuffer,
@@ -667,6 +734,110 @@ pub(super) fn lower_texture_readback(
     Ok(())
 }
 
+/// Copies the complete acquired presentation image into host-visible staging.
+///
+/// A presentation frame deliberately has no portable `Texture` identity.  Its
+/// native image is therefore lowered here rather than pretending that it is a
+/// texture readback.  Raster lowering leaves an acquired frame in
+/// `PRESENT_SRC_KHR`; retain that contract around the copy so the queued
+/// `vkQueuePresentKHR` still observes the layout required by the swapchain.
+pub(super) fn lower_frame_readback(
+    shared: &Arc<VulkanShared>,
+    command_buffer: vk::CommandBuffer,
+    ticket: &ReadbackTicket,
+    retention: &mut TransferRetention,
+) -> Result<(), VulkanFailure> {
+    let ReadbackRequest::Frame { src, .. } = ticket.request() else {
+        return Err(VulkanFailure::Unsupported {
+            what: "a non-frame readback",
+            why: "the Vulkan acquired-frame path only lowers presentation frames",
+        });
+    };
+    let extent = src.extent();
+    let bytes_per_texel =
+        logical_bytes_per_block(src.format()).ok_or(VulkanFailure::Unsupported {
+            what: "a Vulkan presentation-frame readback format",
+            why: "the configured frame format has no fixed host byte layout",
+        })?;
+    let bytes_per_row =
+        extent
+            .width
+            .checked_mul(bytes_per_texel)
+            .ok_or(VulkanFailure::Unsupported {
+                what: "a Vulkan presentation-frame readback",
+                why: "the frame row pitch overflows u32",
+            })?;
+    let size = u64::from(bytes_per_row)
+        .checked_mul(u64::from(extent.height))
+        .ok_or(VulkanFailure::Unsupported {
+            what: "a Vulkan presentation-frame readback",
+            why: "the frame staging size overflows u64",
+        })?;
+    let staging =
+        create_staging_buffer(Arc::clone(shared), size, vk::BufferUsageFlags::TRANSFER_DST)
+            .map_err(native(
+                "Vulkan presentation-frame readback staging allocation",
+            ))?;
+    let image = native_frame_image(src)?;
+
+    transition_frame_for_readback(
+        shared,
+        command_buffer,
+        image,
+        vk::ImageLayout::PRESENT_SRC_KHR,
+        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        vk::PipelineStageFlags::TRANSFER,
+        vk::AccessFlags::TRANSFER_READ,
+    );
+    let region = vk::BufferImageCopy::default()
+        .image_subresource(
+            vk::ImageSubresourceLayers::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .mip_level(0)
+                .base_array_layer(0)
+                .layer_count(1),
+        )
+        .image_offset(vk::Offset3D::default())
+        .image_extent(vk::Extent3D {
+            width: extent.width,
+            height: extent.height,
+            depth: 1,
+        });
+    // SAFETY: `src` is a currently acquired Vulkan frame validated by the
+    // portable frame-use path. The staging allocation is retained through this
+    // batch's fence, and the preceding barrier makes the rendered image a
+    // transfer source.
+    unsafe {
+        shared.device.cmd_copy_image_to_buffer(
+            command_buffer,
+            image,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            staging.buffer(),
+            &[region],
+        );
+    }
+    transfer_write_to_host_read(shared, command_buffer, staging.buffer());
+    transition_frame_for_readback(
+        shared,
+        command_buffer,
+        image,
+        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        vk::ImageLayout::PRESENT_SRC_KHR,
+        vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+        vk::AccessFlags::empty(),
+    );
+    retention.readbacks.push(ReadbackRetention {
+        staging,
+        ticket: ticket.clone(),
+        layout: Some(ReadbackTexelLayout {
+            bytes_per_row,
+            rows_per_image: extent.height,
+            total_size: size,
+        }),
+    });
+    Ok(())
+}
+
 /// Turns a fence-complete staging allocation into the ticket's RAII-readable
 /// bytes. A terminal map/invalidate failure is returned to the device loss
 /// authority; a non-terminal mapping failure terminates only this ticket.
@@ -719,6 +890,80 @@ fn native_texture(texture: &Texture) -> Result<&VulkanTexture, VulkanFailure> {
         })
 }
 
+#[cfg(any(windows, target_os = "android"))]
+fn native_frame_image(frame: &FrameAttachment) -> Result<vk::Image, VulkanFailure> {
+    frame
+        .native()
+        .as_any()
+        .downcast_ref::<crate::backend::vulkan::presentation::VulkanFrameAttachment>()
+        .ok_or(VulkanFailure::Unsupported {
+            what: "a Vulkan presentation frame",
+            why: "its native drawable belongs to another backend",
+        })
+        .and_then(|frame| {
+            if frame.supports_copy_src() {
+                Ok(frame.image())
+            } else {
+                Err(VulkanFailure::Unsupported {
+                    what: "an acquired-frame readback without COPY_SRC presentation usage",
+                    why: "configure the presentation surface with TextureUsage::COPY_SRC before acquiring the frame",
+                })
+            }
+        })
+}
+
+#[cfg(not(any(windows, target_os = "android")))]
+fn native_frame_image(_: &FrameAttachment) -> Result<vk::Image, VulkanFailure> {
+    Err(VulkanFailure::Unsupported {
+        what: "a Vulkan presentation frame",
+        why: "this platform has no Vulkan presentation lowering",
+    })
+}
+
+/// A presentation image has no portable texture identity, so it cannot join
+/// the ordinary texture layout tracker. Its lifecycle is one acquire/use/present
+/// lease, and each lowering records both explicit layout transitions inside
+/// that one command buffer.
+fn transition_frame_for_readback(
+    shared: &VulkanShared,
+    command_buffer: vk::CommandBuffer,
+    image: vk::Image,
+    old_layout: vk::ImageLayout,
+    new_layout: vk::ImageLayout,
+    destination_stage: vk::PipelineStageFlags,
+    destination_access: vk::AccessFlags,
+) {
+    let barrier = vk::ImageMemoryBarrier::default()
+        .src_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)
+        .dst_access_mask(destination_access)
+        .old_layout(old_layout)
+        .new_layout(new_layout)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        });
+    // SAFETY: `image` is an acquired swapchain image retained by the frame in
+    // the readback ticket. This command buffer is recording on its owner
+    // device, and the image remains in the frame's single acquire/present lease.
+    unsafe {
+        shared.device.cmd_pipeline_barrier(
+            command_buffer,
+            vk::PipelineStageFlags::ALL_COMMANDS,
+            destination_stage,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[barrier],
+        );
+    }
+}
+
 fn image_layers(value: TextureSubresourceLayers) -> vk::ImageSubresourceLayers {
     vk::ImageSubresourceLayers::default()
         .aspect_mask(match value.aspect {
@@ -740,6 +985,26 @@ fn image_offset(value: crate::api::resource::subresource::Origin3d) -> vk::Offse
         y: value.y as i32,
         z: value.z as i32,
     }
+}
+
+fn image_end(
+    origin: crate::api::resource::subresource::Origin3d,
+    extent: crate::api::resource::texture::Extent3d,
+) -> Result<vk::Offset3D, VulkanFailure> {
+    let component = |origin: u32, extent: u32| {
+        origin
+            .checked_add(extent)
+            .and_then(|value| i32::try_from(value).ok())
+            .ok_or(VulkanFailure::Unsupported {
+                what: "a Vulkan image blit extent",
+                why: "the source or destination endpoint exceeds Vulkan's signed offset range",
+            })
+    };
+    Ok(vk::Offset3D {
+        x: component(origin.x, extent.width)?,
+        y: component(origin.y, extent.height)?,
+        z: component(origin.z, extent.depth)?,
+    })
 }
 fn image_extent(value: crate::api::resource::texture::Extent3d) -> vk::Extent3D {
     vk::Extent3D {

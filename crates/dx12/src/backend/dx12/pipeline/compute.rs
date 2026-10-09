@@ -51,6 +51,9 @@ impl Dx12ComputePipeline {
     pub(crate) fn sampler_root_parameter(&self, group: u32) -> Option<u32> {
         self.root_signature.sampler_parameter(group)
     }
+    pub(crate) fn dynamic_root_parameters(&self, group: u32) -> Option<&[u32]> {
+        self.root_signature.dynamic_parameters(group)
+    }
     pub(crate) fn immediate_root_parameter(&self, offset: u32, size: u32) -> Option<(u32, u32)> {
         self.root_signature.immediate_parameter(offset, size)
     }

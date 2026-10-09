@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::task::{Context, Poll, Waker};
 
-/// A readback request: one buffer range, or one texture region.
+/// A readback request: one buffer range, texture region, or acquired frame.
 ///
 /// The label lives inside each variant rather than on the enum because the two
 /// requests describe different things, and a single label would have to mean
@@ -45,6 +45,18 @@ pub enum ReadbackRequest {
         origin: Origin3d,
         /// Size of the region in texels.
         extent: Extent3d,
+    },
+
+    /// Read the complete color image of an acquired presentation frame.
+    ///
+    /// A frame is not represented as a texture because several backends expose
+    /// only a drawable/default framebuffer. The command must be recorded after
+    /// rendering and before the frame is presented or abandoned.
+    Frame {
+        /// Diagnostic label. Excluded from every canonical hash.
+        label: Label,
+        /// The acquired drawable whose complete color image is read.
+        src: crate::api::presentation::FrameAttachment,
     },
 }
 /// Where a readback request is in its life.

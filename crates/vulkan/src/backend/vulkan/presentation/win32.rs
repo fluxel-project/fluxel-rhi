@@ -139,6 +139,10 @@ struct SwapchainOwner {
     loader: ash::khr::swapchain::Device,
     swapchain: vk::SwapchainKHR,
     extent: vk::Extent2D,
+    /// Whether this generation was created with `VK_IMAGE_USAGE_TRANSFER_SRC_BIT`.
+    /// Frame readback must refuse a configuration that did not explicitly ask
+    /// the surface for that usage instead of issuing an invalid image copy.
+    copy_src: bool,
     images: Vec<vk::Image>,
     // A present wait semaphore cannot be destroyed when vkQueuePresentKHR
     // returns: presentation may still be waiting on it.  The same image coming
@@ -401,6 +405,9 @@ impl VulkanFrameAttachment {
     }
     pub(crate) fn sync(&self) -> VulkanPresentSync {
         self.sync
+    }
+    pub(crate) fn supports_copy_src(&self) -> bool {
+        self.swapchain.copy_src
     }
 }
 
@@ -860,13 +867,11 @@ fn create_swapchain_with_old(
             "the selected Vulkan graphics queue cannot present to this Win32 surface",
         ));
     }
-    if !caps
-        .supported_usage_flags
-        .contains(vk::ImageUsageFlags::COLOR_ATTACHMENT)
-    {
+    let image_usage = image_usage(config.usage());
+    if !caps.supported_usage_flags.contains(image_usage) {
         return Err(RhiError::new(
             RhiErrorKind::Unsupported,
-            "the Vulkan surface does not allow swapchain images as color attachments",
+            "the Vulkan surface does not allow the requested swapchain image usages",
         ));
     }
     let formats = unsafe {
@@ -897,7 +902,7 @@ fn create_swapchain_with_old(
         .image_color_space(format.color_space)
         .image_extent(extent)
         .image_array_layers(1)
-        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+        .image_usage(image_usage)
         .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
         .pre_transform(caps.current_transform)
         .composite_alpha(choose_composite_alpha(
@@ -921,6 +926,7 @@ fn create_swapchain_with_old(
         loader: loader.clone(),
         swapchain,
         extent,
+        copy_src: config.usage().contains(TextureUsage::COPY_SRC),
         retired_semaphores: Mutex::new((0..images.len()).map(|_| Vec::new()).collect()),
         images,
         _surface: target,
@@ -1002,11 +1008,8 @@ fn surface_capabilities(
     Ok(
         PresentationTargetCapabilities::new(Vec::new(), modes, extent)
             .with_format_color_spaces(pairs)
-            // The current frame attachment lowering only consumes a final color
-            // render target.  Other Vulkan image-usage bits are not advertised until
-            // the corresponding FrameAttachment command lowering exists.
             .with_surface_details(
-                TextureUsage::COLOR_ATTACHMENT,
+                surface_usage(caps.supported_usage_flags),
                 composite_alpha_modes(caps.supported_composite_alpha),
                 Some(FrameLatencyRange {
                     min: caps.min_image_count,
@@ -1016,6 +1019,28 @@ fn surface_capabilities(
             )
             .with_timing_and_hdr(PresentationTimingCapabilities { timestamps: false }, None),
     )
+}
+
+/// Maps the portable presentation usages currently lowered by this Vulkan WSI
+/// slice. Configuration validation already requires COLOR_ATTACHMENT; keeping
+/// the mapping here makes the requested COPY_SRC bit reach vkCreateSwapchainKHR.
+fn image_usage(usage: TextureUsage) -> vk::ImageUsageFlags {
+    let mut native = vk::ImageUsageFlags::empty();
+    if usage.contains(TextureUsage::COLOR_ATTACHMENT) {
+        native |= vk::ImageUsageFlags::COLOR_ATTACHMENT;
+    }
+    if usage.contains(TextureUsage::COPY_SRC) {
+        native |= vk::ImageUsageFlags::TRANSFER_SRC;
+    }
+    native
+}
+
+fn surface_usage(native: vk::ImageUsageFlags) -> TextureUsage {
+    let mut usage = TextureUsage::COLOR_ATTACHMENT;
+    if native.contains(vk::ImageUsageFlags::TRANSFER_SRC) {
+        usage = usage.union(TextureUsage::COPY_SRC);
+    }
+    usage
 }
 
 fn choose_format(

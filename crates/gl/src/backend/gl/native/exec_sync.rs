@@ -245,6 +245,34 @@ impl GlQueryObjectsApi for NativeGlProvider {
     }
 }
 
+impl NativeGlProvider {
+    /// Reads one completed query result through GL's blocking `QUERY_RESULT`
+    /// route. This is used only by the portable query-resolve command: its
+    /// completion is therefore honest even on GL profiles without query-buffer
+    /// objects.
+    pub(super) fn resolve_query_result_blocking(&mut self, query: QueryId) -> Result<u64, GlError> {
+        use glow::HasContext as _;
+        const OP: &str = "resolve-query-result";
+        self.assert_ready(OP)?;
+        let entry = self.query(OP, query)?;
+        if self.active_query == Some(query) {
+            return Err(Self::validation(OP, "cannot resolve an active query"));
+        }
+        let target = self
+            .queries
+            .get(&query)
+            .and_then(|value| value.target)
+            .ok_or_else(|| Self::validation(OP, "query has no recorded measurement"))?;
+        let _ = target;
+        // SAFETY: the query is live, inactive, and belongs to this current
+        // context. QUERY_RESULT blocks until the GPU has made it available.
+        Ok(unsafe {
+            self.gl
+                .get_query_parameter_u64(entry.raw, glow::QUERY_RESULT)
+        })
+    }
+}
+
 impl GlOcclusionQueryApi for NativeGlProvider {
     fn begin_occlusion_query(&mut self, query: QueryId) -> Result<(), GlError> {
         use glow::HasContext as _;

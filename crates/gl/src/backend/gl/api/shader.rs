@@ -92,10 +92,16 @@ pub(crate) enum GlShaderResourceKind {
 /// A logical RHI resource declaration, independent of program-link results.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct GlLogicalBinding {
-    pub name: String,
+    /// All stage-local GLSL declarations generated for this logical binding.
+    /// A shared RHI UBO can legitimately have different generated names in
+    /// the vertex and fragment sources.
+    pub names: Vec<String>,
     pub location: GlBindingLocation,
     pub kind: GlShaderResourceKind,
     pub array_count: u32,
+    /// The other logical half of a WGSL texture/sampler pair. Both entries
+    /// resolve to one GLSL sampler uniform and therefore one texture unit.
+    pub pair: Option<GlBindingLocation>,
 }
 /// An executable GL assignment selected after program link.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -277,16 +283,20 @@ impl GlProgramReflection {
             .iter()
             .map(|binding| binding.location)
             .collect();
-        let mut assigned_logical = BTreeSet::new();
-        let mut executable = BTreeSet::new();
+        let mut executable = std::collections::BTreeMap::new();
         for assignment in &self.assignments {
-            if !logical.contains(&assignment.logical)
-                || !assigned_logical.insert(assignment.logical)
-            {
+            if !logical.contains(&assignment.logical) {
                 return Err(GlShaderValidationError::DuplicateLogicalAssignment);
             }
-            if !executable.insert(assignment.executable) {
-                return Err(GlShaderValidationError::DuplicateExecutableAssignment);
+            if let Some(previous) = executable.insert(assignment.executable, assignment.logical) {
+                let paired = layout
+                    .bindings
+                    .iter()
+                    .find(|binding| binding.location == assignment.logical)
+                    .is_some_and(|binding| binding.pair == Some(previous));
+                if previous != assignment.logical && !paired {
+                    return Err(GlShaderValidationError::DuplicateExecutableAssignment);
+                }
             }
         }
         let mut inputs = BTreeSet::new();
@@ -334,10 +344,11 @@ mod tests {
             binding: 0,
         };
         let binding = GlLogicalBinding {
-            name: "a".into(),
+            names: vec!["a".into()],
             location,
             kind: GlShaderResourceKind::UniformBuffer,
             array_count: 1,
+            pair: None,
         };
         let layout = GlPipelineLayout {
             bindings: vec![binding.clone(), binding],
@@ -463,16 +474,18 @@ mod tests {
         let layout = GlPipelineLayout {
             bindings: vec![
                 GlLogicalBinding {
-                    name: "a".into(),
+                    names: vec!["a".into()],
                     location: a,
                     kind: GlShaderResourceKind::UniformBuffer,
                     array_count: 1,
+                    pair: None,
                 },
                 GlLogicalBinding {
-                    name: "b".into(),
+                    names: vec!["b".into()],
                     location: b,
                     kind: GlShaderResourceKind::UniformBuffer,
                     array_count: 1,
+                    pair: None,
                 },
             ],
         };

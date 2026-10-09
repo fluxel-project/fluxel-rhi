@@ -451,6 +451,11 @@ pub(crate) fn validate_raster_pipeline_descriptor(
         "a non-default multisample mask",
     )?;
     require_feature(
+        desc.multisample.sample_shading.is_some(),
+        OptionalFeature::MultisampledShading,
+        "sample-rate shading",
+    )?;
+    require_feature(
         desc.primitive.conservative,
         OptionalFeature::ConservativeRasterization,
         "conservative rasterization",
@@ -899,6 +904,20 @@ pub(crate) fn validate_raster_pipeline_descriptor(
             RhiErrorKind::InvalidUsage,
             "alpha-to-coverage is valid only when the sample count is greater than one",
         ));
+    }
+    if let Some(fraction) = desc.multisample.sample_shading {
+        if desc.multisample.count <= 1 {
+            return Err(RhiError::new(
+                RhiErrorKind::InvalidUsage,
+                "sample-rate shading requires a sample count greater than one",
+            ));
+        }
+        if !fraction.is_finite() || !(0.0..=1.0).contains(&fraction) {
+            return Err(RhiError::new(
+                RhiErrorKind::InvalidUsage,
+                "sample-rate shading requires a finite minimum fraction in 0.0..=1.0",
+            ));
+        }
     }
 
     // Section 27.3's alpha-to-coverage block, which is about the fragment stage

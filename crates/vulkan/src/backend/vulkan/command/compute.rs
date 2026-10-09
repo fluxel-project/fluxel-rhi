@@ -105,14 +105,7 @@ where
         })?;
 
     let mut sets = Vec::with_capacity(groups.len());
-    let mut first_sets = Vec::with_capacity(groups.len());
     for bound in groups {
-        if !bound.dynamic_offsets.is_empty() {
-            return Err(VulkanFailure::Unsupported {
-                what: "a Vulkan compute bind group with dynamic offsets",
-                why: "this slice has no dynamic-offset command lowering",
-            });
-        }
         let native = bound
             .group
             .native()
@@ -122,8 +115,12 @@ where
                 what: "a bind group this Vulkan device did not create",
                 why: "its descriptor set belongs to another backend",
             })?;
-        first_sets.push(bound.index.get());
-        sets.push(native.set());
+        native.validate_dynamic_offsets(&bound.dynamic_offsets)?;
+        sets.push((
+            bound.index.get(),
+            native.set(),
+            bound.dynamic_offsets.as_slice(),
+        ));
     }
 
     // Buffer barriers remain conservative until buffer-range state tracking is
@@ -209,14 +206,14 @@ where
         // The recorder stores groups by their logical index.  Vulkan permits
         // sparse binding here, but its API binds contiguous ranges, so emit one
         // one-set bind per group and preserve that index exactly.
-        for (first_set, set) in first_sets.into_iter().zip(sets) {
+        for (first_set, set, dynamic_offsets) in sets {
             shared.device.cmd_bind_descriptor_sets(
                 command_buffer,
                 vk::PipelineBindPoint::COMPUTE,
                 pipeline.layout(),
                 first_set,
                 &[set],
-                &[],
+                dynamic_offsets,
             );
         }
         for immediate in immediates {

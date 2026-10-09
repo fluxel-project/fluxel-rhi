@@ -105,19 +105,19 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::Waker;
 
+use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAG_NONE,
-    D3D12_COMMAND_QUEUE_PRIORITY_NORMAL, D3D12_FENCE_FLAG_NONE, ID3D12CommandAllocator,
-    ID3D12CommandList, ID3D12CommandQueue, ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList,
-    ID3D12PipelineState,
+    ID3D12CommandAllocator, ID3D12CommandList, ID3D12CommandQueue, ID3D12Device, ID3D12Fence,
+    ID3D12GraphicsCommandList, ID3D12PipelineState, D3D12_COMMAND_LIST_TYPE_DIRECT,
+    D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMMAND_QUEUE_PRIORITY_NORMAL,
+    D3D12_FENCE_FLAG_NONE,
 };
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
-use windows::core::PCWSTR;
 
 use crate::api::command::{
-    ResourceUse,
     record::{CopyRecord, RecordedPayload},
+    ResourceUse,
 };
 use crate::api::error::{RhiError, RhiErrorKind, RhiResult};
 use crate::api::identity::Label;
@@ -131,6 +131,7 @@ use crate::api::submission::{CompletionFailure, CompletionState};
 use crate::backend::dx12::ffi;
 use crate::backend::dx12::platform::device::Dx12LossState;
 
+use super::blit::lower_texture_blit;
 use super::compute::{lower_compute_dispatch, lower_compute_indirect};
 use super::copy::lower_buffer_copy;
 use super::dx12_buffer;
@@ -138,15 +139,15 @@ use super::query::{
     begin as lower_query_begin, end as lower_query_end, resolve as lower_query_resolve,
 };
 use super::raster::{
-    RasterScopeState, lower_raster_begin, lower_raster_draw, lower_raster_end,
-    lower_raster_indirect,
+    lower_raster_begin, lower_raster_clear, lower_raster_draw, lower_raster_end,
+    lower_raster_indirect, lower_secondary_raster_work, RasterScopeState,
 };
 use super::transfer::lower_texture_clear;
 use super::transfer::{
-    CommittedBatch, lower_buffer_clear, lower_buffer_texture_copy, lower_readback,
-    lower_texture_copy, lower_upload, publish_readback,
+    lower_buffer_clear, lower_buffer_texture_copy, lower_readback, lower_texture_copy,
+    lower_upload, publish_readback, CommittedBatch,
 };
-use crate::backend::dx12::failure::{Dx12Failure, ref_native};
+use crate::backend::dx12::failure::{ref_native, Dx12Failure};
 
 use crate::backend::dx12::resource::{self, Dx12Buffer, Dx12BufferHeap};
 
@@ -701,10 +702,14 @@ impl Dx12CommandSpine {
                     raster_frames: Vec::new(),
                     raster_textures: Vec::new(),
                     raster_descriptor_heaps: Vec::new(),
+                    blit_root_signatures: Vec::new(),
+                    blit_pipeline_states: Vec::new(),
+                    blit_resources: Vec::new(),
                     bind_groups: Vec::new(),
                     query_sets: Vec::new(),
                     indirect_buffers: Vec::new(),
                     command_signatures: Vec::new(),
+                    secondary_bundles: Vec::new(),
                     resource_uses: Vec::new(),
                 };
                 self.record_batch(&slot.list, batch, &mut committed)?;
@@ -882,6 +887,15 @@ impl Dx12CommandSpine {
                         };
                         lower_raster_draw(list, draw, &command.uses, scope, committed)?;
                     }
+                    RecordedPayload::RasterClear(clear) => {
+                        let Some(scope) = raster.as_ref() else {
+                            return Err(Dx12Failure::Unsupported {
+                                what: "a raster attachment clear outside a raster scope",
+                                why: "the portable recorder never emits it",
+                            });
+                        };
+                        lower_raster_clear(&self.device, list, clear, scope, committed)?;
+                    }
                     RecordedPayload::RasterIndirect(draw) => {
                         let Some(scope) = raster.as_ref() else {
                             return Err(Dx12Failure::Unsupported {
@@ -897,6 +911,15 @@ impl Dx12CommandSpine {
                             scope,
                             committed,
                         )?;
+                    }
+                    RecordedPayload::RasterExecuteSecondary(work) => {
+                        let Some(scope) = raster.as_ref() else {
+                            return Err(Dx12Failure::Unsupported {
+                                what: "secondary raster work outside a raster scope",
+                                why: "the portable recorder never emits it",
+                            });
+                        };
+                        lower_secondary_raster_work(&self.device, list, work, scope, committed)?;
                     }
                     RecordedPayload::RasterEnd => {
                         let Some(scope) = raster.take() else {
@@ -921,6 +944,9 @@ impl Dx12CommandSpine {
                     }
                     RecordedPayload::Copy(CopyRecord::Texture(copy)) => {
                         lower_texture_copy(list, copy)?;
+                    }
+                    RecordedPayload::Copy(CopyRecord::Blit(blit)) => {
+                        lower_texture_blit(&self.device, list, blit, committed)?;
                     }
                     RecordedPayload::Copy(CopyRecord::BufferToTexture(copy)) => {
                         lower_buffer_texture_copy(&self.device, list, copy, true)?;
@@ -1520,7 +1546,9 @@ fn payload_name(payload: &RecordedPayload) -> &'static str {
         RecordedPayload::AccelerationStructure(_) => "an acceleration-structure operation",
         RecordedPayload::RasterBegin(_) => "a raster scope",
         RecordedPayload::RasterDraw(_) => "a draw",
+        RecordedPayload::RasterClear(_) => "a raster attachment clear",
         RecordedPayload::RasterEnd => "the end of a raster scope",
+        RecordedPayload::RasterExecuteSecondary(_) => "secondary raster work",
         RecordedPayload::ComputeBegin(_) => "a compute scope",
         RecordedPayload::ComputeDispatch(_) => "a dispatch",
         RecordedPayload::RasterIndirect(_) => "an indirect raster draw",

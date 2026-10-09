@@ -55,6 +55,7 @@ pub(super) struct VulkanCapabilityLimits {
     /// Core `VkPhysicalDeviceFeatures` bits which must be enabled on the
     /// logical device before their portable raster semantics are published.
     pub(super) depth_bias_clamp: bool,
+    pub(super) sample_rate_shading: bool,
     pub(super) dual_src_blend: bool,
     pub(super) independent_blend: bool,
     pub(super) pipeline_statistics_query: bool,
@@ -68,6 +69,14 @@ pub(super) struct VulkanCapabilityLimits {
     /// and will be enabled on the logical device. The baseline creates a 1.0
     /// instance, so even Vulkan 1.2 implementations use this extension route.
     pub(super) draw_indirect_count: bool,
+    /// The three descriptor-indexing feature bits required for Fluxel's
+    /// runtime-sized sampled-texture arrays were jointly queried and will be
+    /// jointly enabled on the logical device.
+    pub(super) runtime_sampled_descriptor_array: bool,
+    /// `VK_KHR_multiview` was advertised, its feature was queried through
+    /// properties2 and will be enabled on the logical device. The value is the
+    /// native `maxMultiviewViewCount` promised by that same feature path.
+    pub(super) max_multiview_view_count: Option<u32>,
     /// Native `maxDrawIndirectCount`; checked again by lowering because the
     /// public vocabulary has no separate capability-limit key for it yet.
     pub(super) max_draw_indirect_count: u32,
@@ -78,6 +87,8 @@ pub(super) struct VulkanCapabilityLimits {
     pub(super) max_per_stage_sampled_images: u32,
     pub(super) max_per_stage_storage_images: u32,
     pub(super) max_per_stage_samplers: u32,
+    pub(super) max_dynamic_uniform_buffers: u32,
+    pub(super) max_dynamic_storage_buffers: u32,
     pub(super) min_uniform_buffer_offset_alignment: u64,
     pub(super) min_storage_buffer_offset_alignment: u64,
     pub(super) max_compute_work_group_invocations: u32,
@@ -185,9 +196,8 @@ pub(super) fn probe(
             }
         }
         // These routes are only published after the exact native format has
-        // reported the matching optimal-tiling transfer feature.  The command
-        // spine has real `vkCmdCopy*` lowering for this subset; resolve and
-        // blit deliberately remain absent until their own conformance slices.
+        // reported the matching optimal-tiling transfer feature. The command
+        // spine lowers copies directly and blits with `vkCmdBlitImage`.
         let texel_limits = Some(TexelCopyLayoutLimits::new(4, 4).with_image_layout(1, false));
         for dimension in [
             TextureDimension::D1,
@@ -233,6 +243,30 @@ pub(super) fn probe(
                     },
                     RouteSupport::Supported(RouteCapabilities::new(None, None)),
                 );
+                for filter in [
+                    crate::api::command::BlitFilter::Nearest,
+                    crate::api::command::BlitFilter::Linear,
+                ] {
+                    if filter == crate::api::command::BlitFilter::Linear
+                        && !features.contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR)
+                    {
+                        continue;
+                    }
+                    facts.record_route(
+                        RouteQuery::Blit {
+                            src_dimension: dimension,
+                            src_format: format,
+                            dst_dimension: dimension,
+                            dst_format: format,
+                            filter,
+                        },
+                        RouteSupport::Supported(
+                            RouteCapabilities::new(None, None).with_blit_execution(
+                                crate::api::resource::route::BlitExecution::Native,
+                            ),
+                        ),
+                    );
+                }
             }
         }
         for dimension in [
@@ -273,12 +307,7 @@ pub(super) fn probe(
                     // native image tuple once and returns its whole sample-mask.
                     // The RHI key then selects a member from that mask; querying
                     // the driver again for each member would be identical work.
-                    // Keep the published raster slice at 1x until its Vulkan
-                    // render-pass lowering includes resolve attachments. The
-                    // portable scope can request resolve whenever an MSAA color
-                    // attachment exists, so advertising native MSAA creation
-                    // ahead of that lowering would leave a capability hole.
-                    for sample_count in [1] {
+                    for sample_count in [1, 2, 4, 8, 16, 32, 64] {
                         // Keep requirements queries inside the public P0
                         // descriptor domain too: only 2D images may be
                         // multisampled, and cube-compatible images must be 1x.
@@ -321,10 +350,11 @@ fn record_pipeline_and_binding(facts: &mut CapabilityFacts, limits: VulkanCapabi
     facts.record_feature(OptionalFeature::Compute);
     facts.record_feature(OptionalFeature::BaseVertex);
     facts.record_feature(OptionalFeature::BaseInstance);
-    // VkPipelineMultisampleStateCreateInfo always carries pSampleMask. Sample
-    // shading remains separate because it needs the sampleRateShading device
-    // feature and this backend currently keeps sampleShadingEnable false.
+    // VkPipelineMultisampleStateCreateInfo always carries pSampleMask.
     facts.record_feature(OptionalFeature::MultisampleMask);
+    if limits.sample_rate_shading {
+        facts.record_feature(OptionalFeature::MultisampledShading);
+    }
     // `firstInstance` is GPU-provided indirect data, so it cannot be checked
     // by portable recording. Do not publish even one raster indirect draw
     // unless the native feature guarantees that field is honored.
@@ -340,6 +370,13 @@ fn record_pipeline_and_binding(facts: &mut CapabilityFacts, limits: VulkanCapabi
         if limits.draw_indirect_count {
             facts.record_feature(OptionalFeature::MultiDrawIndirectCount);
         }
+    }
+    if let Some(max_views) = limits.max_multiview_view_count.filter(|count| *count != 0) {
+        // Vulkan view masks are arbitrary bitmasks, so the KHR feature covers
+        // Fluxel's baseline contiguous masks and its selective-mask extension.
+        facts.record_feature(OptionalFeature::Multiview);
+        facts.record_feature(OptionalFeature::SelectiveMultiview);
+        facts.record_limit(LimitKey::MaxMultiviewViewCount, u64::from(max_views));
     }
     // vkCmdDispatchIndirect is core and has no analogous optional feature bit.
     facts.record_feature(OptionalFeature::IndirectDispatch);
@@ -402,6 +439,10 @@ fn record_pipeline_and_binding(facts: &mut CapabilityFacts, limits: VulkanCapabi
     // arrays, partial binding and descriptor indexing are intentionally not
     // implied by this feature and stay unavailable without VK_EXT_descriptor_indexing.
     facts.record_feature(OptionalFeature::BindingArrays);
+    if limits.runtime_sampled_descriptor_array {
+        facts.record_feature(OptionalFeature::RuntimeSizedBindingArrays);
+        facts.record_feature(OptionalFeature::NonUniformSampledTextureAndStorageBufferIndexing);
+    }
     facts.record_limit(
         LimitKey::MaxBindingArrayElementsPerShaderStage,
         u64::from(
@@ -444,8 +485,14 @@ fn record_pipeline_and_binding(facts: &mut CapabilityFacts, limits: VulkanCapabi
         LimitKey::MaxBindingsPerGroup,
         u64::from(limits.max_bindings_per_group),
     );
-    facts.record_limit(LimitKey::MaxDynamicUniformBuffersPerPipelineLayout, 0);
-    facts.record_limit(LimitKey::MaxDynamicStorageBuffersPerPipelineLayout, 0);
+    facts.record_limit(
+        LimitKey::MaxDynamicUniformBuffersPerPipelineLayout,
+        u64::from(limits.max_dynamic_uniform_buffers),
+    );
+    facts.record_limit(
+        LimitKey::MaxDynamicStorageBuffersPerPipelineLayout,
+        u64::from(limits.max_dynamic_storage_buffers),
+    );
     facts.record_limit(
         LimitKey::MinUniformBufferOffsetAlignment,
         limits.min_uniform_buffer_offset_alignment,
@@ -535,9 +582,9 @@ fn record_pipeline_and_binding(facts: &mut CapabilityFacts, limits: VulkanCapabi
             limits.max_per_stage_samplers,
         );
     }
-    // Both scalar and fixed-size packets lower to core Vulkan descriptor sets.
-    // Runtime-sized arrays remain absent: their declared count is not known at
-    // VkDescriptorSetLayout creation without descriptor-indexing semantics.
+    // Scalar and fixed-size packets lower to core Vulkan descriptor sets.
+    // Descriptor-indexed runtime arrays are additionally recorded for sampled
+    // textures when the matching feature trio was enabled at device creation.
     for visibility in crate::api::capability::visibilities() {
         for array in [false, true] {
             facts.record_binding_support(
@@ -550,6 +597,18 @@ fn record_pipeline_and_binding(facts: &mut CapabilityFacts, limits: VulkanCapabi
                 },
                 BindingSupport::Supported,
             );
+            if limits.max_dynamic_uniform_buffers != 0 {
+                facts.record_binding_support(
+                    BindingSupportKey {
+                        visibility,
+                        kind: BindableKind::UniformBuffer,
+                        array,
+                        runtime_sized: false,
+                        dynamic_offset: true,
+                    },
+                    BindingSupport::Supported,
+                );
+            }
             for access in [
                 BufferBindingAccess::ReadOnly,
                 BufferBindingAccess::ReadWrite,
@@ -564,6 +623,34 @@ fn record_pipeline_and_binding(facts: &mut CapabilityFacts, limits: VulkanCapabi
                     },
                     BindingSupport::Supported,
                 );
+                if limits.max_dynamic_storage_buffers != 0 {
+                    facts.record_binding_support(
+                        BindingSupportKey {
+                            visibility,
+                            kind: BindableKind::StorageBuffer { access },
+                            array,
+                            runtime_sized: false,
+                            dynamic_offset: true,
+                        },
+                        BindingSupport::Supported,
+                    );
+                    if limits.runtime_sampled_descriptor_array {
+                        facts.record_binding_support(
+                            BindingSupportKey {
+                                visibility,
+                                kind: BindableKind::SampledTexture {
+                                    dimension,
+                                    sample_type,
+                                    multisampled: false,
+                                },
+                                array: true,
+                                runtime_sized: true,
+                                dynamic_offset: false,
+                            },
+                            BindingSupport::Supported,
+                        );
+                    }
+                }
             }
 
             for dimension in [

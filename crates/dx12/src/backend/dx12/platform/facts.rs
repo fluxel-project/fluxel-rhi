@@ -72,7 +72,7 @@
 //!   and [`record_limits`] for why the missing limits are a *mapping* problem
 //!   rather than a probing one.
 //!
-//! # The route table, and the one operation it refuses
+//! # The route table, and the shader blit baseline
 //!
 //! [`record_format_routes`] and [`record_buffer_route`] fill
 //! [`crate::api::resource::route::RouteQuery`]'s table. The key is not one a
@@ -89,11 +89,10 @@
 //! the negative because there is nothing to record. A **filtered blit** is the
 //! other kind and the more important one: Direct3D 12 has `CopyBufferRegion`,
 //! `CopyTextureRegion`, `CopyResource`, `CopyTiles` and `ResolveSubresource`, and
-//! no filtered or scaled blit at any of them. Recording `Unsupported` for every
-//! blit key would be recording nothing, so the walk records none — and the refusal
-//! is structural, which is what makes it safe to reach by absence. A test asserts
-//! it on a real device so that a later change cannot quietly start promising a
-//! lowering section 9.4 forbids.
+//! no filtered or scaled blit at any of them. The backend consequently records
+//! only the narrow RGBA8 2D baseline it lowers through its embedded fullscreen
+//! shader; every other filtered-blit key remains absent rather than promising a
+//! native operation D3D12 does not provide.
 //!
 //! # Which texture keys can be asked and which cannot
 //!
@@ -182,6 +181,7 @@ use crate::api::binding::{
     BindingSupport, BufferBindingAccess, SamplerKind, StorageAccess, TextureSampleType,
 };
 use crate::api::capability::{BindingSupportKey, CapabilityFacts, visibilities};
+use crate::api::command::BlitFilter;
 use crate::api::error::RhiResult;
 use crate::api::format::{
     FormatFacts, StorageAccessSupport, TextureFormat, TextureSupport, TextureSupportLimits,
@@ -190,7 +190,8 @@ use crate::api::format::{
 use crate::api::platform::{LimitKey, OptionalFeature};
 use crate::api::resource::buffer::{BufferSupport, BufferSupportLimits, BufferUsage};
 use crate::api::resource::route::{
-    BufferCopyLayoutLimits, RouteCapabilities, RouteQuery, RouteSupport, TexelCopyLayoutLimits,
+    BlitExecution, BufferCopyLayoutLimits, RouteCapabilities, RouteQuery, RouteSupport,
+    TexelCopyLayoutLimits,
 };
 use crate::api::resource::subresource::{TextureAspect, TextureAspects, aspect_bits};
 use crate::api::resource::texture::{
@@ -272,11 +273,9 @@ pub(super) fn probe(device: &ID3D12Device) -> RhiResult<CapabilityFacts> {
 
         let support = format_support(device, dxgi)?;
 
-        // The quality levels per sample count are still queried even though this
-        // correctness baseline deliberately refuses multisampled textures below.
-        // Keeping the probe here makes the eventual MSAA lowering change local;
-        // it must add RTV/DSV/resolve lowering and conformance coverage before
-        // this table may publish a non-1x texture again.
+        // MSAA texture support is driven by the queried quality level for each
+        // sample count. Raster attachment and scope-end resolve lowering consume
+        // those allocations directly.
         let quality = quality_levels(device, dxgi)?;
 
         record_format_facts(format, &support, &mut facts);
@@ -355,10 +354,10 @@ fn record_features(device: &ID3D12Device, facts: &mut CapabilityFacts) {
     facts.record_feature(OptionalFeature::DepthBiasClamp);
     facts.record_feature(OptionalFeature::DualSourceBlending);
     facts.record_feature(OptionalFeature::IndependentBlend);
-    // The raster PSO carries SampleMask verbatim, and D3D12 pixel-shader
-    // sample interpolation has no separate device-enable bit.
+    // The raster PSO carries SampleMask verbatim. D3D12 has sample-frequency
+    // shader semantics, but no pipeline state for Vulkan-style minimum sample
+    // shading, so the portable per-sample shading feature is not recorded.
     facts.record_feature(OptionalFeature::MultisampleMask);
-    facts.record_feature(OptionalFeature::MultisampledShading);
     // Every D3D12 direct command list exposes occlusion query begin/end and a
     // query heap is an ordinary device allocation. Timestamp/statistics are
     // intentionally separate: their portable result conversion is not implied
@@ -505,15 +504,14 @@ fn record_buffer_support(facts: &mut CapabilityFacts) {
 /// Fills the binding-support table for the families no format decides.
 ///
 /// Capability records what this backend can lower end to end, rather than every
-/// shape the native API could theoretically express. Static buffer descriptor
-/// tables are implemented. Dynamic offsets need root descriptors.
+/// shape the native API could theoretically express. Static buffer bindings
+/// lower through descriptor tables. Dynamic buffer
+/// bindings lower through root CBV/SRV/UAV descriptors, so their byte offsets
+/// remain an execute-time value rather than becoming a second static view.
 ///
-/// Texture descriptor writing exists, but compute command lowering currently
-/// refuses texture uses. Raster lowering can consume texture descriptor tables.
-/// Sampler descriptor writing and both compute and graphics sampler-table binding
-/// exist. The visibility-sensitive texture answers below make the remaining
-/// compute-texture boundary part of the immutable device contract instead of
-/// discovering it after native work was accepted.
+/// Texture descriptor writing and command lowering cover both compute and raster
+/// texture bindings. Sampler descriptor writing and both compute and graphics
+/// sampler-table binding exist.
 ///
 /// Two limitations this API does have are recorded as the negatives they are, and
 /// both come from the header rather than from a driver reading:
@@ -534,11 +532,7 @@ fn record_buffer_support(facts: &mut CapabilityFacts) {
 /// silent refusal of a legal binding.
 fn record_binding_support(facts: &mut CapabilityFacts) {
     for dynamic_offset in [false, true] {
-        let answer = if dynamic_offset {
-            BindingSupport::Unsupported
-        } else {
-            BindingSupport::Supported
-        };
+        let answer = BindingSupport::Supported;
         record_bindable(facts, BindableKind::UniformBuffer, dynamic_offset, answer);
         for access in [
             BufferBindingAccess::ReadOnly,
@@ -698,13 +692,9 @@ fn record_storage_texture_bindings(
     }
 }
 
-/// Records a texture binding only where its command lowering exists today.
-///
-/// The binding packet itself is stage-agnostic, but the recorded command is not:
-/// `lower_compute_dispatch` explicitly refuses `ResourceUse::Texture`, whereas
-/// raster lowering transitions and retains sampled/storage textures. A capability
-/// answer that ignored that distinction would let a compute pipeline pass all
-/// public validation only to be rejected during submission.
+/// Records texture binding support for every shader stage where the descriptor
+/// shape and command lowering exist. Compute and raster both transition sampled
+/// and storage textures; the binding packet itself is stage-agnostic.
 fn record_texture_bindable(
     facts: &mut CapabilityFacts,
     kind: BindableKind,
@@ -712,11 +702,6 @@ fn record_texture_bindable(
     answer: BindingSupport,
 ) {
     for visibility in visibilities() {
-        let answer = if visibility.contains(crate::api::shader::ShaderStages::COMPUTE) {
-            BindingSupport::Unsupported
-        } else {
-            answer
-        };
         for array in [false, true] {
             facts.record_binding_support(
                 BindingSupportKey {
@@ -1474,6 +1459,29 @@ fn record_format_routes(format: TextureFormat, facts: &mut CapabilityFacts) {
             }
         }
     }
+
+    // D3D12 itself has no filtered-copy command, but the command spine owns a
+    // fullscreen DXIL lowering for this one baseline.  Keeping the row narrow
+    // matters: that shader names `Texture2D`, so advertising an array/cube/3D
+    // route would promise sampling semantics it cannot encode.  RGBA8 UNORM is
+    // the portable KTX mip-generation format used by the example suite and is
+    // a required D3D12 render-target and shader-sample format.
+    if format == TextureFormat::Rgba8Unorm {
+        for filter in [BlitFilter::Nearest, BlitFilter::Linear] {
+            facts.record_route(
+                RouteQuery::Blit {
+                    src_dimension: TextureDimension::D2,
+                    src_format: TextureFormat::Rgba8Unorm,
+                    dst_dimension: TextureDimension::D2,
+                    dst_format: TextureFormat::Rgba8Unorm,
+                    filter,
+                },
+                RouteSupport::Supported(
+                    RouteCapabilities::new(None, None).with_blit_execution(BlitExecution::Shader),
+                ),
+            );
+        }
+    }
 }
 
 /// Planes whose route facts have an exact counterpart in
@@ -1672,8 +1680,7 @@ mod tests {
                 0
             )
             .is_supported(),
-            "the baseline must not advertise native MSAA allocation before its raster \
-             attachment and resolve lowering are implemented"
+            "a sample count the device reports no quality level for does not exist"
         );
 
         assert!(
@@ -1989,21 +1996,14 @@ mod tests {
         enabled_from(facts).route(query).is_supported()
     }
 
-    /// Section 9.4's refusal, exercised on the one operation Direct3D 12 has no
-    /// path for at all.
-    ///
-    /// This is the case the route table exists for, and it is a *structural*
-    /// negative rather than a probed one: Direct3D 12 has `CopyBufferRegion`,
-    /// `CopyTextureRegion`, `CopyResource`, `CopyTiles` and `ResolveSubresource`,
-    /// and no filtered or scaled blit at any of them. A backend that answered
-    /// `Supported` here would be promising a lowering section 9.4 forbids it to
-    /// perform silently, so the negative is the only honest answer and the walk
-    /// records nothing — every blit key falls to the refusal.
+    /// The shader-backed RGBA8 2D baseline must be advertised only after its
+    /// command lowering exists.  Its route fact exposes that this is shader work
+    /// rather than a non-existent native D3D12 blit command.
     #[test]
-    fn a_filtered_blit_has_no_direct_route_and_the_walk_records_none() {
+    fn rgba8_blit_route_discloses_shader_execution() {
         for filter in [BlitFilter::Nearest, BlitFilter::Linear] {
             assert!(
-                !routed(
+                routed(
                     TextureFormat::Rgba8Unorm,
                     &RouteQuery::Blit {
                         src_dimension: TextureDimension::D2,
@@ -2013,7 +2013,7 @@ mod tests {
                         filter,
                     },
                 ),
-                "Direct3D 12 has no blit for {filter:?} to lower onto"
+                "the DX12 shader lowering must be exposed for {filter:?}"
             );
         }
     }

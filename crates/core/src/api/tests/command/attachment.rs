@@ -118,13 +118,10 @@ fn a_color_attachment_needs_color_attachment_usage() {
 }
 
 #[test]
-fn a_frame_is_not_a_proven_resolve_target() {
-    // Section 46.1 permits the direct multisampled resolve into a presented frame
-    // only once the active presentation and route facts prove it, and the portable
-    // layer holds no such facts. A frame therefore answers `false` to the resolve
-    // question while still answering `true` to the color-attachment one — the
-    // reason the two questions are separate predicates is that one bool answering
-    // both let this route through unconditionally.
+fn a_multisampled_attachment_may_resolve_into_a_frame() {
+    // A frame is a single-sampled acquired color attachment. Backend lowering
+    // owns the native presentation-route proof and rejects unsupported routes
+    // before native work is accepted.
     let source = multisampled_renderable(TextureFormat::Rgba8Unorm, 4);
     let scope = RasterScopeDescriptor::new().with_color(
         ShaderLocation::new(0),
@@ -139,12 +136,7 @@ fn a_frame_is_not_a_proven_resolve_target() {
         },
     );
 
-    // The *kind* is the assertion, not merely that it failed. `InvalidUsage` would
-    // say the caller built a malformed attachment set; `Unsupported` says the route
-    // is not proven on this device. A test that only checked `is_err` would keep
-    // passing if the refusal were folded back into `InvalidUsage`, which is exactly
-    // the distinction section 46.1 turns on.
-    assert_kind(validate_raster_scope(&scope), RhiErrorKind::Unsupported);
+    validate_raster_scope(&scope).expect("a multisampled attachment resolves into a frame");
 }
 
 #[test]

@@ -15,22 +15,21 @@
 //! exists for that reason.
 
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_BOX, D3D12_CLEAR_FLAG_DEPTH, D3D12_CLEAR_FLAG_STENCIL, D3D12_CLEAR_FLAGS,
-    D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DEPTH_STENCIL_VIEW_DESC, D3D12_DEPTH_STENCIL_VIEW_DESC_0,
-    D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
-    D3D12_DSV_DIMENSION_TEXTURE2D, D3D12_DSV_DIMENSION_TEXTURE2DARRAY, D3D12_DSV_FLAG_NONE,
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT, D3D12_RESOURCE_STATE_COMMON,
-    D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE,
-    D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_TEX2D_ARRAY_DSV, D3D12_TEX2D_DSV,
-    D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
+    ID3D12CommandAllocator, ID3D12CommandSignature, ID3D12DescriptorHeap, ID3D12Device,
+    ID3D12GraphicsCommandList, ID3D12Resource, D3D12_BOX, D3D12_CLEAR_FLAGS,
+    D3D12_CLEAR_FLAG_DEPTH, D3D12_CLEAR_FLAG_STENCIL, D3D12_CPU_DESCRIPTOR_HANDLE,
+    D3D12_DEPTH_STENCIL_VIEW_DESC, D3D12_DEPTH_STENCIL_VIEW_DESC_0, D3D12_DESCRIPTOR_HEAP_DESC,
+    D3D12_DESCRIPTOR_HEAP_FLAG_NONE, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, D3D12_DSV_DIMENSION_TEXTURE2D,
+    D3D12_DSV_DIMENSION_TEXTURE2DARRAY, D3D12_DSV_FLAG_NONE, D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
+    D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE,
+    D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PRESENT, D3D12_TEX2D_ARRAY_DSV,
+    D3D12_TEX2D_DSV, D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
     D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-    ID3D12CommandSignature, ID3D12DescriptorHeap, ID3D12Device, ID3D12GraphicsCommandList,
-    ID3D12Resource,
 };
 
 use crate::api::binding::BindGroup;
-use crate::api::command::ResourceUse;
 use crate::api::command::copy::{BufferTextureCopy, TextureCopy};
+use crate::api::command::ResourceUse;
 use crate::api::format::{block_extent, logical_bytes_per_block};
 use crate::api::pipeline::{ComputePipeline, RasterPipeline};
 use crate::api::presentation::FrameAttachment;
@@ -39,7 +38,7 @@ use crate::api::resource::buffer::Buffer;
 use crate::api::resource::subresource::{
     TextureAspect, TextureAspects, TextureSubresourceLayers, TextureSubresourceRange,
 };
-use crate::api::resource::texture::{Texture, TextureDimension, mip_extent};
+use crate::api::resource::texture::{mip_extent, Texture, TextureDimension};
 use crate::api::resource::transfer::{
     ReadbackRequest, ReadbackStatus, ReadbackTexelLayout, ReadbackTicket, UploadDescriptor,
     UploadJob,
@@ -47,11 +46,12 @@ use crate::api::resource::transfer::{
 use crate::api::resource::view::TextureView;
 use crate::backend::dx12::ffi;
 use crate::backend::dx12::platform::facts::dxgi_format;
-use crate::backend::dx12::resource::{Dx12Buffer, StagingHeap, create_staging, readback_bytes};
+use crate::backend::dx12::presentation::Dx12FrameAttachment;
+use crate::backend::dx12::resource::{create_staging, readback_bytes, Dx12Buffer, StagingHeap};
 
 use super::transition::Transitions;
 use super::{dx12_buffer, dx12_texture};
-use crate::backend::dx12::failure::{Dx12Failure, ref_native};
+use crate::backend::dx12::failure::{ref_native, Dx12Failure};
 
 /// A batch that has been committed, and the host-visible memory its command list
 /// reads or writes.
@@ -91,6 +91,12 @@ pub(super) struct CommittedBatch {
     pub(super) raster_frames: Vec<FrameAttachment>,
     pub(super) raster_textures: Vec<Texture>,
     pub(super) raster_descriptor_heaps: Vec<ID3D12DescriptorHeap>,
+    /// Backend-private shader-blit objects.  Unlike ordinary raster pipelines
+    /// these have no portable owner, so their COM references must stay live
+    /// through the fence that protects the command list using them.
+    pub(super) blit_root_signatures: Vec<windows::Win32::Graphics::Direct3D12::ID3D12RootSignature>,
+    pub(super) blit_pipeline_states: Vec<windows::Win32::Graphics::Direct3D12::ID3D12PipelineState>,
+    pub(super) blit_resources: Vec<ID3D12Resource>,
     pub(super) bind_groups: Vec<BindGroup>,
     /// Query heaps and indirect-argument buffers referenced by native commands.
     /// D3D12 command lists retain neither COM query heaps nor portable buffer
@@ -100,6 +106,10 @@ pub(super) struct CommittedBatch {
     /// `ExecuteIndirect` only borrows its command signature. Retain the COM
     /// object until the submission fence reports completion.
     pub(super) command_signatures: Vec<ID3D12CommandSignature>,
+    /// Worker-recorded D3D12 bundles and the allocators backing them.  A bundle
+    /// may be executed asynchronously by the direct list, so both COM objects
+    /// remain live until this batch's fence reaches `serial`.
+    pub(super) secondary_bundles: Vec<(ID3D12CommandAllocator, ID3D12GraphicsCommandList)>,
     /// Every portable resource use named by the accepted work.
     ///
     /// D3D12 command lists do not make the application's portable resource
@@ -520,7 +530,13 @@ pub(super) fn lower_readback(
     committed: &mut CommittedBatch,
 ) -> Result<(), Dx12Failure> {
     let ReadbackRequest::Buffer { src, range, .. } = ticket.request() else {
-        return lower_texture_readback(device, list, ticket, committed);
+        return match ticket.request() {
+            ReadbackRequest::Texture { .. } => {
+                lower_texture_readback(device, list, ticket, committed)
+            }
+            ReadbackRequest::Frame { .. } => lower_frame_readback(device, list, ticket, committed),
+            _ => unreachable!("readback request has a known variant"),
+        };
     };
     let source = dx12_buffer(src)?;
 
@@ -562,6 +578,91 @@ pub(super) fn lower_readback(
         size: range.size,
         layout: None,
     });
+    Ok(())
+}
+
+/// Copies the complete acquired DXGI backbuffer before its plan presents it.
+///
+/// A presentation attachment deliberately is not a public `Texture`: on DX12
+/// it is a swapchain resource that must return to `PRESENT` before the later
+/// present relation runs.  The ordinary texture path therefore cannot be
+/// reused, even though both routes end in a placed-footprint readback buffer.
+fn lower_frame_readback(
+    device: &ID3D12Device,
+    list: &ID3D12GraphicsCommandList,
+    ticket: &ReadbackTicket,
+    committed: &mut CommittedBatch,
+) -> Result<(), Dx12Failure> {
+    let ReadbackRequest::Frame { src, .. } = ticket.request() else {
+        unreachable!()
+    };
+    let native = src
+        .native()
+        .as_any()
+        .downcast_ref::<Dx12FrameAttachment>()
+        .ok_or_else(|| Dx12Failure::Unsupported {
+            what: "a presentation-frame readback from another backend",
+            why: "the acquired drawable has no Direct3D 12 backbuffer",
+        })?;
+    let extent = src.extent();
+    let resource = native.resource();
+    let (footprint, rows, row_bytes) = frame_footprint(device, resource, src.format(), extent)?;
+    let row_pitch = u64::from(footprint.Footprint.RowPitch);
+    let total_size = row_pitch.checked_mul(u64::from(rows)).ok_or_else(|| {
+        Dx12Failure::Native(ffi::NativeError::driver_contract_violation(
+            "presentation-frame readback footprint overflowed",
+            "Dx12Device::submit",
+        ))
+    })?;
+    let staging =
+        create_staging(device, total_size, StagingHeap::Readback).map_err(Dx12Failure::Native)?;
+
+    let mut entering = Transitions::default();
+    entering.push(
+        resource,
+        D3D12_RESOURCE_STATE_PRESENT,
+        D3D12_RESOURCE_STATE_COPY_SOURCE,
+    );
+    entering.record(list);
+    let mut target = footprint_location(staging.resource(), footprint);
+    let mut source = texture_location(resource, 0);
+    // SAFETY: `Frame` validation admits only the complete single-sampled 2D
+    // image.  The acquired backbuffer is in COPY_SOURCE and the placed
+    // footprint was queried from that exact native resource.
+    unsafe {
+        list.CopyTextureRegion(&target, 0, 0, 0, &source, None);
+        drop_copy_location(&mut target);
+        drop_copy_location(&mut source);
+    }
+    let mut leaving = Transitions::default();
+    leaving.push(
+        resource,
+        D3D12_RESOURCE_STATE_COPY_SOURCE,
+        D3D12_RESOURCE_STATE_PRESENT,
+    );
+    leaving.record(list);
+
+    committed.readbacks.push(ReadbackRetention {
+        staging,
+        ticket: ticket.clone(),
+        size: total_size,
+        layout: Some(ReadbackTexelLayout {
+            bytes_per_row: u32::try_from(row_pitch).map_err(|_| {
+                Dx12Failure::Native(ffi::NativeError::driver_contract_violation(
+                    "presentation-frame readback row pitch exceeds u32",
+                    "Dx12Device::submit",
+                ))
+            })?,
+            rows_per_image: rows,
+            total_size,
+        }),
+    });
+    // The generic resource-use retention already holds `src`, but retain the
+    // attachment explicitly as well: its native backbuffer must outlive this
+    // command list even if future command accounting stops treating a frame as
+    // a generic resource use.
+    committed.raster_frames.push(src.clone());
+    debug_assert!(row_bytes <= row_pitch);
     Ok(())
 }
 
@@ -718,6 +819,64 @@ fn region_footprint(
             ),
         ));
     }
+    Ok((placed, rows, row_bytes))
+}
+
+/// Queries the one full-image placed footprint used by an acquired frame.
+///
+/// Swapchain images have no portable `Texture` descriptor, so this mirrors the
+/// checked part of [`region_footprint`] from the resource's native descriptor.
+/// `ReadbackRequest::Frame` names the whole base image, hence subresource zero
+/// and no source box are intentional here.
+fn frame_footprint(
+    device: &ID3D12Device,
+    resource: &ID3D12Resource,
+    format: crate::api::format::TextureFormat,
+    extent: crate::api::resource::texture::Extent3d,
+) -> Result<(D3D12_PLACED_SUBRESOURCE_FOOTPRINT, u32, u64), Dx12Failure> {
+    let description = unsafe { resource.GetDesc() };
+    let mut placed = D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default();
+    let mut rows = 0;
+    let mut row_size = 0;
+    let mut total_size = 0;
+    // SAFETY: the frame resource stays live through the recorded batch, the
+    // descriptor is read-only, and all output pointers refer to initialized
+    // local storage.
+    unsafe {
+        device.GetCopyableFootprints(
+            &description,
+            0,
+            1,
+            0,
+            Some(&mut placed),
+            Some(&mut rows),
+            Some(&mut row_size),
+            Some(&mut total_size),
+        );
+    }
+    let row_bytes = block_row_bytes(format, extent.width)?;
+    if row_bytes > u64::from(placed.Footprint.RowPitch) {
+        return Err(Dx12Failure::Native(
+            ffi::NativeError::driver_contract_violation(
+                "presentation-frame footprint has a row pitch smaller than its color row",
+                "Dx12Device::submit",
+            ),
+        ));
+    }
+    if rows != extent.height {
+        return Err(Dx12Failure::Native(
+            ffi::NativeError::driver_contract_violation(
+                "presentation-frame footprint row count differs from the acquired frame extent",
+                "Dx12Device::submit",
+            ),
+        ));
+    }
+    // DX12's total byte count includes the same padded rows described by the
+    // footprint. It is intentionally not used as the allocation size here:
+    // `row_pitch * rows` is the portable layout we publish and is checked for
+    // overflow by the caller. Reading it still makes the native query complete
+    // and documents that no hidden trailing allocation is relied on.
+    let _ = (row_size, total_size);
     Ok((placed, rows, row_bytes))
 }
 

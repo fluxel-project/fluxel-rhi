@@ -33,11 +33,11 @@ use crate::api::command::attachment::{
     RasterScopeDescriptor, StencilAttachmentMode,
 };
 use crate::api::command::geometry::{
-    Color, LoadOp, Rect, Viewport, validate_rect, validate_viewport,
+    Color, ColorClearValue, LoadOp, Rect, Viewport, validate_rect, validate_viewport,
 };
 use crate::api::command::record::{
     BoundGroup, BoundIndexBuffer, ImmediateWrite, MeshDispatch, MeshIndirect, RasterBegin,
-    RasterDraw, RasterIndirect, RecordedPayload,
+    RasterDraw, RasterIndirect, RecordedPayload, SecondaryRasterWork,
 };
 use crate::api::command::uses::{
     bound_group_uses, buffer_use, frame_use, query_use, require_valid_dynamic_offsets,
@@ -200,6 +200,43 @@ pub struct RasterScope<'a> {
     ended: bool,
 }
 
+/// Values and coverage for one attachment clear inside an open raster scope.
+///
+/// The attachment set is fixed by [`RasterScopeDescriptor`], so this descriptor
+/// names its color targets by their existing color locations rather than by
+/// resource handles. `base_layer` and `layer_count` select a non-empty subset
+/// of that attachment set's common layer range.
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub struct RasterAttachmentClear {
+    /// Rectangle, in the raster scope's framebuffer coordinates.
+    pub rect: Rect,
+    /// First attachment array layer to clear.
+    pub base_layer: u32,
+    /// Number of consecutive attachment array layers to clear.
+    pub layer_count: u32,
+    /// Color values keyed by attached color location.
+    pub colors: Vec<(u32, ColorClearValue)>,
+    /// Depth value, when the scope's depth attachment is writable.
+    pub depth: Option<f32>,
+    /// Stencil value, when the scope's stencil attachment is writable.
+    pub stencil: Option<u32>,
+}
+
+impl RasterAttachmentClear {
+    /// Starts a clear over a rectangle and a non-empty attachment layer range.
+    pub fn new(rect: Rect, base_layer: u32, layer_count: u32) -> Self {
+        Self {
+            rect,
+            base_layer,
+            layer_count,
+            colors: Vec::new(),
+            depth: None,
+            stencil: None,
+        }
+    }
+}
+
 /// Identity of the query bracket currently open in one raster scope.
 #[derive(Clone, Copy)]
 struct ActiveQuery {
@@ -208,6 +245,189 @@ struct ActiveQuery {
 }
 
 impl RasterScope<'_> {
+    /// Clears selected current raster attachments without ending the scope.
+    ///
+    /// This records one ordered attachment-clear operation. It neither opens nor
+    /// closes a query, so a query may intentionally end before this clear and a
+    /// later draw remains in the same raster scope.
+    pub fn clear_attachments(&mut self, clear: &RasterAttachmentClear) -> RhiResult<()> {
+        validate_rect(clear.rect, "the raster attachment clear rect")?;
+        let right = clear.rect.right().expect("validated rect has a right edge");
+        let bottom = clear
+            .rect
+            .bottom()
+            .expect("validated rect has a bottom edge");
+        if right > self.extent.width || bottom > self.extent.height {
+            return Err(RhiError::new(
+                RhiErrorKind::InvalidUsage,
+                "the raster attachment clear rect extends beyond the current raster attachments",
+            )
+            .at("RasterScope::clear_attachments"));
+        }
+        if clear.layer_count == 0 {
+            return Err(RhiError::new(
+                RhiErrorKind::InvalidUsage,
+                "a raster attachment clear needs a non-zero layer_count",
+            )
+            .at("RasterScope::clear_attachments"));
+        }
+        let end_layer = clear
+            .base_layer
+            .checked_add(clear.layer_count)
+            .ok_or_else(|| {
+                RhiError::new(
+                    RhiErrorKind::InvalidUsage,
+                    "the raster attachment clear layer range overflows u32",
+                )
+                .at("RasterScope::clear_attachments")
+            })?;
+        if end_layer > self.layer_count {
+            return Err(RhiError::new(
+                RhiErrorKind::InvalidUsage,
+                "the raster attachment clear layer range is outside the current raster attachments",
+            )
+            .at("RasterScope::clear_attachments"));
+        }
+        if clear.colors.is_empty() && clear.depth.is_none() && clear.stencil.is_none() {
+            return Err(RhiError::new(
+                RhiErrorKind::InvalidUsage,
+                "a raster attachment clear needs at least one color, depth, or stencil value",
+            )
+            .at("RasterScope::clear_attachments"));
+        }
+
+        let mut uses = Vec::new();
+        let mut seen_locations = std::collections::HashSet::new();
+        for (location, value) in &clear.colors {
+            if !seen_locations.insert(*location) {
+                return Err(RhiError::new(
+                    RhiErrorKind::InvalidUsage,
+                    format!(
+                        "raster attachment clear names color location {location} more than once"
+                    ),
+                )
+                .at("RasterScope::clear_attachments"));
+            }
+            let attachment = self
+                .colors
+                .iter()
+                .find(|(candidate, _)| candidate == location)
+                .map(|(_, attachment)| attachment)
+                .ok_or_else(|| {
+                    RhiError::new(
+                        RhiErrorKind::InvalidUsage,
+                        format!(
+                            "raster attachment clear names unattached color location {location}"
+                        ),
+                    )
+                    .at("RasterScope::clear_attachments")
+                })?;
+            if let Some(class) =
+                crate::api::command::attachment::color_clear_class(attachment.view.format())
+                && class != value.class()
+            {
+                return Err(RhiError::new(
+                    RhiErrorKind::InvalidUsage,
+                    format!(
+                        "raster attachment clear uses a {} value for color location {location}, but its format requires {}",
+                        value.class_name(),
+                        class.as_str()
+                    ),
+                )
+                .at("RasterScope::clear_attachments"));
+            }
+            uses.extend(color_use(
+                &attachment.view,
+                AccessMask::COLOR_WRITE,
+                TextureUseIntent::ColorAttachment,
+            ));
+        }
+
+        let mut depth_stencil_access: Option<AccessMask> = None;
+        if let Some(value) = clear.depth {
+            if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                return Err(RhiError::new(
+                    RhiErrorKind::InvalidUsage,
+                    "the raster attachment clear depth value must be finite and in 0.0..=1.0",
+                )
+                .at("RasterScope::clear_attachments"));
+            }
+            let Some(DepthStencilAttachment {
+                depth: Some(DepthAttachmentMode::ReadWrite { .. }),
+                ..
+            }) = self.depth_stencil.as_ref()
+            else {
+                return Err(RhiError::new(
+                    RhiErrorKind::InvalidUsage,
+                    "the raster attachment clear requests depth, but this scope has no writable depth attachment",
+                )
+                .at("RasterScope::clear_attachments"));
+            };
+            depth_stencil_access = Some(AccessMask::DEPTH_WRITE);
+        }
+        if clear.stencil.is_some() {
+            let Some(DepthStencilAttachment {
+                stencil: Some(StencilAttachmentMode::ReadWrite { .. }),
+                ..
+            }) = self.depth_stencil.as_ref()
+            else {
+                return Err(RhiError::new(
+                    RhiErrorKind::InvalidUsage,
+                    "the raster attachment clear requests stencil, but this scope has no writable stencil attachment",
+                )
+                .at("RasterScope::clear_attachments"));
+            };
+            depth_stencil_access = Some(match depth_stencil_access {
+                Some(access) => access.union(AccessMask::STENCIL_WRITE),
+                None => AccessMask::STENCIL_WRITE,
+            });
+        }
+        if let Some(access) = depth_stencil_access {
+            let depth_stencil = self.depth_stencil.as_ref().expect("validated above");
+            uses.push(texture_use_of_view(
+                &depth_stencil.view,
+                PipelineScope::FRAGMENT,
+                access,
+                TextureUseIntent::DepthStencilWrite,
+            ));
+        }
+
+        self.recorder.record_command(
+            RecordedPayload::RasterClear(clear.clone()),
+            uses,
+            RASTER_DOMAIN,
+        );
+        Ok(())
+    }
+
+    /// Executes draw-only work recorded independently against this scope's
+    /// render-target signature.
+    ///
+    /// The child owns its draw resources; its uses are attached to this command
+    /// so submission hazard analysis sees the same accesses as inline draws.
+    pub fn execute_secondary(&mut self, work: SecondaryRasterWork) -> RhiResult<()> {
+        require_device(
+            work.device_identity(),
+            self.recorder.device_identity(),
+            "secondary raster work",
+        )?;
+        if work.signature() != &self.signature {
+            return Err(RhiError::new(
+                RhiErrorKind::IncompatibleInterface,
+                "secondary raster work target signature does not match this raster scope",
+            )
+            .at("RasterScope::execute_secondary"));
+        }
+        let uses = work.uses().to_vec();
+        self.recorder.record_command(
+            RecordedPayload::RasterExecuteSecondary(Box::new(work)),
+            // Clone the fully validated child use list into this parent's
+            // command-ordered stream before native lowering.
+            uses,
+            RASTER_DOMAIN,
+        );
+        Ok(())
+    }
     /// Writes immediate bytes declared by the currently bound raster interface.
     pub fn set_immediates(&mut self, offset: u32, bytes: &[u8]) -> RhiResult<()> {
         let pipeline = self.pipeline.as_ref().ok_or_else(|| {

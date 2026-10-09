@@ -347,6 +347,14 @@ impl VulkanProvider {
                 CStr::from_ptr(property.extension_name.as_ptr())
                     == ash::khr::draw_indirect_count::NAME
             });
+            let multiview_extension_supported = extensions.iter().any(|property| unsafe {
+                CStr::from_ptr(property.extension_name.as_ptr()) == ash::khr::multiview::NAME
+            });
+            let descriptor_indexing_extension_supported =
+                extensions.iter().any(|property| unsafe {
+                    CStr::from_ptr(property.extension_name.as_ptr())
+                        == ash::ext::descriptor_indexing::NAME
+                });
             let astc_hdr_extension_supported = extensions.iter().any(|property| unsafe {
                 CStr::from_ptr(property.extension_name.as_ptr())
                     == ash::ext::texture_compression_astc_hdr::NAME
@@ -369,6 +377,59 @@ impl VulkanProvider {
                     (properties2.fp().get_physical_device_features2_khr)(physical, &mut features2)
                 };
                 astc_hdr.texture_compression_astc_hdr == vk::TRUE
+            } else {
+                false
+            };
+            // The provider keeps a Vulkan 1.0 instance/device baseline, so
+            // KHR_multiview and KHR_get_physical_device_properties2 are both
+            // required even when a driver also promotes these interfaces in a
+            // newer API version. Query feature and property together before
+            // publishing a fact that device creation cannot later enable.
+            let max_multiview_view_count = if multiview_extension_supported
+                && self.instance.physical_device_properties2
+            {
+                let properties2 = ash::khr::get_physical_device_properties2::Instance::new(
+                    &self.instance.entry,
+                    &self.instance.instance,
+                );
+                let mut multiview_features = vk::PhysicalDeviceMultiviewFeatures::default();
+                let mut features2 =
+                    vk::PhysicalDeviceFeatures2::default().push_next(&mut multiview_features);
+                unsafe {
+                    (properties2.fp().get_physical_device_features2_khr)(physical, &mut features2)
+                };
+                let mut multiview_properties = vk::PhysicalDeviceMultiviewProperties::default();
+                let mut properties2_query =
+                    vk::PhysicalDeviceProperties2::default().push_next(&mut multiview_properties);
+                unsafe {
+                    (properties2.fp().get_physical_device_properties2_khr)(
+                        physical,
+                        &mut properties2_query,
+                    )
+                };
+                (multiview_features.multiview == vk::TRUE
+                    && multiview_properties.max_multiview_view_count != 0)
+                    .then_some(multiview_properties.max_multiview_view_count)
+            } else {
+                None
+            };
+            let runtime_sampled_descriptor_array = if descriptor_indexing_extension_supported
+                && self.instance.physical_device_properties2
+            {
+                let properties2 = ash::khr::get_physical_device_properties2::Instance::new(
+                    &self.instance.entry,
+                    &self.instance.instance,
+                );
+                let mut descriptor_indexing =
+                    vk::PhysicalDeviceDescriptorIndexingFeatures::default();
+                let mut features2 =
+                    vk::PhysicalDeviceFeatures2::default().push_next(&mut descriptor_indexing);
+                unsafe {
+                    (properties2.fp().get_physical_device_features2_khr)(physical, &mut features2)
+                };
+                descriptor_indexing.shader_sampled_image_array_non_uniform_indexing == vk::TRUE
+                    && descriptor_indexing.runtime_descriptor_array == vk::TRUE
+                    && descriptor_indexing.descriptor_binding_variable_descriptor_count == vk::TRUE
             } else {
                 false
             };
@@ -412,6 +473,7 @@ impl VulkanProvider {
                             .then_some(properties.limits.max_sampler_anisotropy as u32)
                     },
                     depth_bias_clamp: features.depth_bias_clamp == vk::TRUE,
+                    sample_rate_shading: features.sample_rate_shading == vk::TRUE,
                     dual_src_blend: features.dual_src_blend == vk::TRUE,
                     independent_blend: features.independent_blend == vk::TRUE,
                     pipeline_statistics_query: features.pipeline_statistics_query == vk::TRUE,
@@ -425,6 +487,8 @@ impl VulkanProvider {
                     draw_indirect_first_instance: features.draw_indirect_first_instance == vk::TRUE,
                     multi_draw_indirect: features.multi_draw_indirect == vk::TRUE,
                     draw_indirect_count: draw_indirect_count_supported,
+                    runtime_sampled_descriptor_array,
+                    max_multiview_view_count,
                     max_draw_indirect_count: properties.limits.max_draw_indirect_count,
                     max_bindings_per_group: properties.limits.max_per_stage_resources,
                     max_bound_descriptor_sets: properties.limits.max_bound_descriptor_sets,
@@ -459,6 +523,12 @@ impl VulkanProvider {
                         .max_per_stage_descriptor_samplers
                         .min(properties.limits.max_descriptor_set_samplers)
                         .min(properties.limits.max_per_stage_resources / 5),
+                    max_dynamic_uniform_buffers: properties
+                        .limits
+                        .max_descriptor_set_uniform_buffers_dynamic,
+                    max_dynamic_storage_buffers: properties
+                        .limits
+                        .max_descriptor_set_storage_buffers_dynamic,
                     min_uniform_buffer_offset_alignment: properties
                         .limits
                         .min_uniform_buffer_offset_alignment,
@@ -586,12 +656,23 @@ impl VulkanProvider {
         if candidate.draw_indirect_count_supported {
             device_extensions.push(ash::khr::draw_indirect_count::NAME.as_ptr());
         }
+        if candidate
+            .capability_limits
+            .max_multiview_view_count
+            .is_some()
+        {
+            device_extensions.push(ash::khr::multiview::NAME.as_ptr());
+        }
+        if candidate.capability_limits.runtime_sampled_descriptor_array {
+            device_extensions.push(ash::ext::descriptor_indexing::NAME.as_ptr());
+        }
         if candidate.astc_hdr_supported {
             device_extensions.push(ash::ext::texture_compression_astc_hdr::NAME.as_ptr());
         }
         let enabled_features = vk::PhysicalDeviceFeatures::default()
             .sampler_anisotropy(candidate.capability_limits.max_sampler_anisotropy.is_some())
             .depth_bias_clamp(candidate.capability_limits.depth_bias_clamp)
+            .sample_rate_shading(candidate.capability_limits.sample_rate_shading)
             .dual_src_blend(candidate.capability_limits.dual_src_blend)
             .independent_blend(candidate.capability_limits.independent_blend)
             .pipeline_statistics_query(candidate.capability_limits.pipeline_statistics_query);
@@ -600,12 +681,36 @@ impl VulkanProvider {
             .multi_draw_indirect(candidate.capability_limits.multi_draw_indirect);
         let mut astc_hdr = vk::PhysicalDeviceTextureCompressionASTCHDRFeaturesEXT::default()
             .texture_compression_astc_hdr(candidate.astc_hdr_supported);
+        let mut multiview = vk::PhysicalDeviceMultiviewFeatures::default().multiview(
+            candidate
+                .capability_limits
+                .max_multiview_view_count
+                .is_some(),
+        );
+        let mut descriptor_indexing = vk::PhysicalDeviceDescriptorIndexingFeatures::default()
+            .shader_sampled_image_array_non_uniform_indexing(
+                candidate.capability_limits.runtime_sampled_descriptor_array,
+            )
+            .runtime_descriptor_array(candidate.capability_limits.runtime_sampled_descriptor_array)
+            .descriptor_binding_variable_descriptor_count(
+                candidate.capability_limits.runtime_sampled_descriptor_array,
+            );
         let mut create = vk::DeviceCreateInfo::default()
             .queue_create_infos(std::slice::from_ref(&queue))
             .enabled_extension_names(&device_extensions)
             .enabled_features(&enabled_features);
         if candidate.astc_hdr_supported {
             create = create.push_next(&mut astc_hdr);
+        }
+        if candidate
+            .capability_limits
+            .max_multiview_view_count
+            .is_some()
+        {
+            create = create.push_next(&mut multiview);
+        }
+        if candidate.capability_limits.runtime_sampled_descriptor_array {
+            create = create.push_next(&mut descriptor_indexing);
         }
         let device = unsafe {
             self.instance
@@ -644,6 +749,13 @@ impl VulkanProvider {
             candidate.non_coherent_atom_size,
             draw_indirect_count,
             candidate.capability_limits.max_draw_indirect_count,
+            candidate
+                .capability_limits
+                .min_uniform_buffer_offset_alignment,
+            candidate
+                .capability_limits
+                .min_storage_buffer_offset_alignment,
+            candidate.capability_limits.max_per_stage_sampled_images,
             facts,
             submission,
             candidate.swapchain_supported,

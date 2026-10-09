@@ -21,7 +21,7 @@ use crate::api::pipeline::{
     RasterPipelineDescriptor, StencilFaceState, StencilOperation, VertexFormat, VertexStepMode,
 };
 use crate::api::resource::sampler::CompareFunction;
-use crate::backend::vulkan::binding::layout_bindings;
+use crate::backend::vulkan::binding::{layout_binding_flags, layout_bindings};
 use crate::backend::vulkan::failure::VulkanFailure;
 use crate::backend::vulkan::ffi;
 use crate::backend::vulkan::format::vk_format;
@@ -41,6 +41,10 @@ pub(crate) struct VulkanRasterPipeline {
     layout: vk::PipelineLayout,
     set_layouts: Vec<vk::DescriptorSetLayout>,
     render_pass: vk::RenderPass,
+    /// The subpass view mask encoded into `render_pass`. The command lowerer
+    /// checks it against the raster scope before binding this pipeline: Vulkan
+    /// render-pass compatibility includes multiview state.
+    multiview_mask: Option<u32>,
     uses_blend_constant: bool,
 }
 
@@ -58,6 +62,10 @@ impl VulkanRasterPipeline {
     /// state cache avoid the call for pipelines that cannot observe it.
     pub(crate) fn uses_blend_constant(&self) -> bool {
         self.uses_blend_constant
+    }
+
+    pub(crate) fn multiview_mask(&self) -> Option<u32> {
+        self.multiview_mask
     }
 }
 
@@ -156,6 +164,7 @@ pub(in crate::backend::vulkan) fn create_raster_pipeline(
         layout,
         set_layouts,
         render_pass,
+        multiview_mask: descriptor.multiview_mask,
         uses_blend_constant,
     })
 }
@@ -166,8 +175,15 @@ fn create_set_layouts(
 ) -> Result<Vec<vk::DescriptorSetLayout>, VulkanFailure> {
     let mut layouts = Vec::with_capacity(descriptor.interface.descriptor().groups.len());
     for group in &descriptor.interface.descriptor().groups {
-        let bindings = layout_bindings(group.descriptor())?;
-        let info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
+        let bindings = layout_bindings(group.descriptor(), shared.max_runtime_sampled_descriptors)?;
+        let mut info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
+        let binding_flags = layout_binding_flags(group.descriptor())?;
+        let mut binding_flags_info = binding_flags.as_ref().map(|flags| {
+            vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(flags)
+        });
+        if let Some(binding_flags_info) = binding_flags_info.as_mut() {
+            info = info.push_next(binding_flags_info);
+        }
         match unsafe { shared.device.create_descriptor_set_layout(&info, None) } {
             Ok(layout) => layouts.push(layout),
             Err(result) => {
@@ -235,9 +251,16 @@ fn create_render_pass(
     if let Some(reference) = depth_reference.as_ref() {
         subpass = subpass.depth_stencil_attachment(reference);
     }
-    let info = vk::RenderPassCreateInfo::default()
+    let mut info = vk::RenderPassCreateInfo::default()
         .attachments(&attachments)
         .subpasses(std::slice::from_ref(&subpass));
+    let view_masks = descriptor.multiview_mask.map(|mask| [mask]);
+    let mut multiview = view_masks
+        .as_ref()
+        .map(|masks| vk::RenderPassMultiviewCreateInfo::default().view_masks(masks));
+    if let Some(multiview) = multiview.as_mut() {
+        info = info.push_next(multiview);
+    }
     unsafe { shared.device.create_render_pass(&info, None) }
         .map_err(|result| native(result, "vkCreateRenderPass for raster pipeline"))
 }
@@ -303,8 +326,8 @@ fn create_graphics_pipeline(
         .line_width(1.0);
     let multisample = vk::PipelineMultisampleStateCreateInfo::default()
         .rasterization_samples(samples(descriptor.multisample.count)?)
-        .sample_shading_enable(false)
-        .min_sample_shading(0.0)
+        .sample_shading_enable(descriptor.multisample.sample_shading.is_some())
+        .min_sample_shading(descriptor.multisample.sample_shading.unwrap_or(0.0))
         .sample_mask(std::slice::from_ref(&descriptor.multisample.mask))
         .alpha_to_coverage_enable(descriptor.multisample.alpha_to_coverage_enabled)
         .alpha_to_one_enable(false);

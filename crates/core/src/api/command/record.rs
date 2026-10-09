@@ -31,15 +31,18 @@
 
 use crate::api::binding::{BindGroup, BindGroupIndex};
 use crate::api::command::RayTracingShaderTable;
-use crate::api::command::attachment::{ColorAttachment, DepthStencilAttachment};
+use crate::api::command::attachment::{
+    ColorAttachment, DepthAttachmentMode, DepthStencilAttachment, StencilAttachmentMode,
+};
 use crate::api::command::copy::{
     BufferCopy, BufferTextureCopy, TextureBlit, TextureCopy, TextureResolve,
 };
-use crate::api::command::geometry::{Color, Rect, Viewport};
+use crate::api::command::geometry::{Color, LoadOp, Rect, StoreOp, Viewport};
+use crate::api::command::raster::RasterAttachmentClear;
 use crate::api::command::{IndexFormat, ResourceUse};
 use crate::api::external::ExternalImageCopyDescriptor;
 use crate::api::identity::{DeviceIdentity, Label, ObjectId};
-use crate::api::pipeline::{ComputePipeline, RasterPipeline};
+use crate::api::pipeline::{ComputePipeline, RasterPipeline, RenderTargetSignature};
 use crate::api::pipeline::{MeshPipeline, RayTracingPipeline};
 use crate::api::query::QuerySet;
 use crate::api::resource::buffer::BufferBinding;
@@ -98,8 +101,12 @@ pub enum RecordedPayload {
     RasterBegin(RasterBegin),
     /// A draw inside the open raster scope.
     RasterDraw(Box<RasterDraw>),
+    /// Clears selected attachments inside the open raster scope.
+    RasterClear(RasterAttachmentClear),
     /// The raster scope ended.
     RasterEnd,
+    /// Executes draw-only work recorded independently for this raster scope.
+    RasterExecuteSecondary(Box<SecondaryRasterWork>),
     /// A compute scope began.
     #[allow(
         dead_code,
@@ -278,6 +285,173 @@ pub struct RasterDraw {
     pub base_vertex: i32,
     /// Immediate writes current at this draw.
     pub immediates: Vec<ImmediateWrite>,
+}
+
+/// Draw-only raster commands which inherit a parent raster scope's attachments.
+///
+/// This is deliberately an opaque, finished packet: it owns every pipeline,
+/// binding and buffer used by its draws, but never owns a second attachment set.
+/// A parent [`RasterScope`](crate::api::command::RasterScope) validates the
+/// stored target signature before it records the execute command.
+pub struct SecondaryRasterWork {
+    device: DeviceIdentity,
+    signature: RenderTargetSignature,
+    commands: Vec<RecordedCommand>,
+    uses: Vec<ResourceUse>,
+}
+
+impl SecondaryRasterWork {
+    /// Converts a completed single-scope recording into inherited raster work.
+    pub(crate) fn from_recorded(work: RecordedWork) -> crate::api::error::RhiResult<Self> {
+        let RecordedWork {
+            device, commands, ..
+        } = work;
+        let mut commands = commands.into_iter();
+        let Some(RecordedCommand {
+            payload: RecordedPayload::RasterBegin(begin),
+            ..
+        }) = commands.next()
+        else {
+            return Err(crate::api::error::RhiError::new(
+                crate::api::error::RhiErrorKind::InvalidUsage,
+                "secondary raster work needs exactly one raster scope",
+            ));
+        };
+        validate_secondary_begin(begin)?;
+        let inherited_signature = signature_from_begin(begin);
+        let mut body = Vec::new();
+        let mut uses = Vec::new();
+        let mut ended = false;
+        for command in commands {
+            match &command.payload {
+                RecordedPayload::RasterDraw(draw) => {
+                    let candidate = draw.pipeline.descriptor().target_signature();
+                    if candidate != &inherited_signature {
+                        return Err(crate::api::error::RhiError::new(
+                            crate::api::error::RhiErrorKind::IncompatibleInterface,
+                            "a secondary raster draw does not match its inherited target signature",
+                        ));
+                    }
+                    uses.extend(command.uses.iter().cloned());
+                    body.push(command);
+                }
+                RecordedPayload::RasterEnd if !ended => ended = true,
+                _ => {
+                    return Err(crate::api::error::RhiError::new(
+                        crate::api::error::RhiErrorKind::InvalidUsage,
+                        "secondary raster work currently admits direct raster draws only",
+                    ));
+                }
+            }
+        }
+        if !ended || body.is_empty() {
+            return Err(crate::api::error::RhiError::new(
+                crate::api::error::RhiErrorKind::InvalidUsage,
+                "secondary raster work needs one or more draws followed by raster end",
+            ));
+        }
+        Ok(Self {
+            device,
+            signature: inherited_signature,
+            commands: body,
+            uses,
+        })
+    }
+
+    pub(crate) fn device_identity(&self) -> DeviceIdentity {
+        self.device
+    }
+    /// Returns the inherited attachment signature checked at packet creation.
+    ///
+    /// Backend replay uses this only to verify that the currently open raster
+    /// scope is the scope the child recording was made for.
+    pub fn signature(&self) -> &RenderTargetSignature {
+        &self.signature
+    }
+    /// Returns the draw-only command sequence owned by this packet.
+    pub fn commands(&self) -> &[RecordedCommand] {
+        &self.commands
+    }
+    /// Returns the command resource uses retained by this packet.
+    pub fn uses(&self) -> &[ResourceUse] {
+        &self.uses
+    }
+}
+
+/// Refuses pass-begin effects in a recording that will instead inherit the
+/// parent's already-open raster scope.  The attachments are used only to fix a
+/// target signature for pipeline validation; they never become native work.
+fn validate_secondary_begin(begin: &RasterBegin) -> crate::api::error::RhiResult<()> {
+    for (location, color) in &begin.colors {
+        if !matches!(color.load, LoadOp::Load)
+            || color.store != StoreOp::Store
+            || color.resolve.is_some()
+        {
+            return Err(crate::api::error::RhiError::new(
+                crate::api::error::RhiErrorKind::InvalidUsage,
+                format!(
+                    "secondary raster attachment {location} must inherit with Load, Store, and no resolve"
+                ),
+            )
+            .at("CommandRecorder::finish_secondary_raster"));
+        }
+    }
+    if let Some(depth_stencil) = &begin.depth_stencil {
+        let depth_inherits = matches!(
+            depth_stencil.depth,
+            None | Some(DepthAttachmentMode::ReadOnly)
+                | Some(DepthAttachmentMode::ReadWrite {
+                    load: LoadOp::Load,
+                    store: StoreOp::Store,
+                })
+        );
+        let stencil_inherits = matches!(
+            depth_stencil.stencil,
+            None | Some(StencilAttachmentMode::ReadOnly)
+                | Some(StencilAttachmentMode::ReadWrite {
+                    load: LoadOp::Load,
+                    store: StoreOp::Store,
+                })
+        );
+        if !depth_inherits || !stencil_inherits {
+            return Err(crate::api::error::RhiError::new(
+                crate::api::error::RhiErrorKind::InvalidUsage,
+                "secondary raster depth/stencil attachments must inherit with Load and Store",
+            )
+            .at("CommandRecorder::finish_secondary_raster"));
+        }
+    }
+    Ok(())
+}
+
+/// Reconstructs exactly the target signature that a raster begin fixed before
+/// its commands were serialized into a secondary packet.
+fn signature_from_begin(begin: &RasterBegin) -> RenderTargetSignature {
+    let mut color_formats = Vec::new();
+    for (location, color) in &begin.colors {
+        color_formats.resize(*location as usize + 1, None);
+        color_formats[*location as usize] = Some(color.view.format());
+    }
+    let sample_count = begin
+        .colors
+        .first()
+        .map(|(_, color)| color.view.sample_count())
+        .or_else(|| {
+            begin
+                .depth_stencil
+                .as_ref()
+                .map(|depth_stencil| depth_stencil.view.sample_count())
+        })
+        .unwrap_or(1);
+    RenderTargetSignature {
+        color_formats,
+        depth_stencil_format: begin
+            .depth_stencil
+            .as_ref()
+            .map(|depth_stencil| depth_stencil.view.format()),
+        sample_count,
+    }
+    .canonicalized()
 }
 
 /// A compute scope's beginning, as recorded.

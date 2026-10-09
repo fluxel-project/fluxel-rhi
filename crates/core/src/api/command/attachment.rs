@@ -16,13 +16,11 @@
 //!   portable half: the texture's own `COLOR_ATTACHMENT` /
 //!   `DEPTH_STENCIL_ATTACHMENT` usage bit, the clear value's numeric class, and
 //!   the resolve pairing's own consistency.
-//! - Whether a *frame* may be the target of a direct multisampled resolve.
-//!   Section 46.1 permits that route "only when the active presentation facts and
-//!   the resolved route facts prove that target, format, sample count, and resolve
-//!   route", and those are device facts. This module answers the portable half —
-//!   [`ColorAttachmentView::allows_resolve_into`] — and refuses a frame, so the
-//!   permission belongs to the device façade; without that split the one route the
-//!   gate exists for would be allowed unconditionally.
+//! - Whether an executable backend can lower a direct multisampled resolve into
+//!   an acquired *frame*. Section 46.1 makes presentation compatibility a device
+//!   fact. This module validates the portable attachment pairing and lets a frame
+//!   name the target; the active backend remains responsible for rejecting a
+//!   presentation route it cannot lower.
 //! - The pipeline's view of the same set. A pipeline carries a
 //!   [`RenderTargetSignature`] and the scope carries the attachments; comparing
 //!   them is [`crate::api::command::raster`]'s `set_pipeline`.
@@ -146,25 +144,15 @@ impl ColorAttachmentView {
     /// same one and the difference is a route the specification gates: section
     /// 46.1 makes the *unconditional* P0 route a single-sample raster write to a
     /// frame, and permits a direct multisampled `RasterScope` resolve into it
-    /// "only when the active presentation facts and the resolved route facts prove
-    /// that target, format, sample count, and resolve route". When they are not
-    /// proved, the required portable route is an intermediate single-sample
-    /// texture resolved into, followed by a final single-sample raster write.
+    /// only when the active presentation facts and resolved route facts prove
+    /// the target, format, sample count, and resolve route. The portable
+    /// recorder validates the pairing; native lowering owns those active facts.
     ///
-    /// ```text
-    /// Texture   allowed, when its texture may be a color attachment at all
-    /// Frame     refused here
-    /// ```
-    ///
-    /// The facts that would permit a frame are device facts — the active
-    /// presentation route and what the acquired image's configuration proved about
-    /// resolving into it — and a portable check has none of them. Answering `true`
-    /// for a frame, as one bool answering *both* questions did, is a **fail open**
-    /// on the one route this gate exists to hold; a frame therefore answers `false`
-    /// and the permission belongs to the device façade, which is the only layer
-    /// that holds the facts. That is the same division of labour
-    /// [`Self::allows_color_attachment`]'s own documentation states for the format
-    /// half of section 31.1.
+    /// A frame is an acquired single-sampled color attachment with the same
+    /// format and extent checks as the source performed by raster-scope
+    /// validation. Backends that own a native presentable image can therefore
+    /// lower a direct resolve into it; backends that cannot do so reject the
+    /// route before accepting native work.
     ///
     /// A texture view answers through [`Self::allows_color_attachment`], because
     /// section 31.1's resolve target is an ordinary single-sampled color
@@ -174,7 +162,7 @@ impl ColorAttachmentView {
     pub(crate) fn allows_resolve_into(&self) -> bool {
         match self {
             Self::Texture(_) => self.allows_color_attachment(),
-            Self::Frame(_) => false,
+            Self::Frame(_) => true,
         }
     }
 }
@@ -597,26 +585,18 @@ fn validate_resolve(
     // the standalone resolve command, and that it does *not* require
     // COPY_SRC/COPY_DST on either side. That is why the target check above is
     // exactly `allows_resolve_into` — the COLOR_ATTACHMENT half of section 31.1
-    // plus section 46.1's frame route gate — and no further usage bit.
+    // plus the portable half of section 46.1's frame route — and no further
+    // usage bit. Native presentation compatibility is established by lowering.
     Ok(())
 }
 
 /// The refusal for a resolve target [`ColorAttachmentView::allows_resolve_into`]
 /// turned down.
 ///
-/// The two variants are refused for different reasons, so they carry different
-/// kinds and different sentences rather than one message covering both:
-///
-/// - A **texture** target fails the portable half of section 31.1 — its texture
-///   was not created with `COLOR_ATTACHMENT` usage — which is the caller's own
-///   descriptor, so it is [`RhiErrorKind::InvalidUsage`].
-/// - A **frame** target is not a caller mistake at all. Section 46.1 permits the
-///   direct multisampled resolve into a frame only once the active presentation
-///   and route facts prove it, and this layer holds no such facts; the route is
-///   therefore *not supported* here, which is [`RhiErrorKind::Unsupported`], the
-///   kind the error module reserves for an unsupported route. The message names
-///   the route the caller can use instead, because the refusal is about which
-///   route is lawful and not about the frame being unusable.
+/// At present, only a **texture** target can be refused here: it fails the
+/// portable half of section 31.1 when its texture lacks `COLOR_ATTACHMENT`
+/// usage. A frame is a valid portable target, while its backend-specific
+/// presentation compatibility is checked during lowering.
 fn resolve_target_refusal(location: u32, resolve: &ColorAttachmentView) -> RhiError {
     match resolve {
         ColorAttachmentView::Texture(_) => RhiError::new(
@@ -627,15 +607,9 @@ fn resolve_target_refusal(location: u32, resolve: &ColorAttachmentView) -> RhiEr
                 location
             ),
         ),
-        ColorAttachmentView::Frame(_) => RhiError::new(
-            RhiErrorKind::Unsupported,
-            format!(
-                "color attachment {} resolves directly into a frame attachment, which is legal \
-                 only when the active presentation and route facts prove it; resolve into an \
-                 intermediate single-sample texture and write that to the frame instead",
-                location
-            ),
-        ),
+        ColorAttachmentView::Frame(_) => {
+            unreachable!("a frame always permits the portable resolve-target check")
+        }
     }
 }
 
