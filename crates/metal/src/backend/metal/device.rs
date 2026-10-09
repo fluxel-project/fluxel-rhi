@@ -26,8 +26,7 @@ pub(super) struct MetalShared {
     pub(super) queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     /// Whether this execution domain may invoke the extended direct-draw
     /// selectors carrying base vertex/base instance.  It mirrors the fact gate;
-    /// command lowering still checks it because replayed packets are a native
-    /// trust boundary.
+    /// command lowering still checks it as a native trust boundary.
     pub(super) base_vertex_instance: bool,
     /// Lazy because many devices never record a standalone resolve. Pipeline
     /// creation is backend-private and is serialized with this one tiny cache.
@@ -125,6 +124,24 @@ impl DeviceBackend for MetalDevice {
     }
     fn loss_info(&self) -> Option<DeviceLossInfo> {
         self.command.loss_info()
+    }
+    fn create_command_encoder(
+        &self,
+        _descriptor: &crate::api::command::RecorderDescriptor,
+    ) -> RhiResult<Box<dyn crate::api::command::backend::CommandEncoderBackend>> {
+        super::command::native::MetalNativeEncoder::new(Arc::clone(&self.shared)).map(|encoder| {
+            Box::new(encoder) as Box<dyn crate::api::command::backend::CommandEncoderBackend>
+        })
+    }
+    fn create_secondary_raster_encoder(
+        &self,
+        _descriptor: &crate::api::command::RecorderDescriptor,
+    ) -> RhiResult<Box<dyn crate::api::command::backend::CommandEncoderBackend>> {
+        Err(RhiError::new(
+            RhiErrorKind::Unsupported,
+            "Metal does not support secondary raster command buffers",
+        )
+        .at("MetalDevice::create_secondary_raster_encoder"))
     }
     fn poll(&self) -> RhiResult<()> {
         self.command.poll()

@@ -13,7 +13,7 @@
 //! ```text
 //! platform      capability    format        resource      shader
 //! binding       pipeline      command       submission    presentation
-//! statistics    diagnostics   tooling (doc-hidden)
+//! statistics    diagnostics
 //! ```
 //!
 //! and the backend tree it names is `crate::backend::{dx12, vulkan, metal,
@@ -70,20 +70,6 @@ pub mod submission;
 // Portable implementation details shared by more than one public API domain.
 // These are deliberately not part of the exported contract.
 pub(crate) mod internal;
-
-// The capture and diagnostic tooling SPI. Doc-hidden because it is an
-// audience statement rather than a stability one: this is what a capture tool
-// consumes, not what a rendering caller learns. The semver rule for its types is
-// fixed by its own semver policy.
-//
-// Written as a plain comment rather than an outer doc comment on purpose. Rustdoc
-// merges an outer doc on a module declaration with the module's own `//!` doc and
-// then resolves every link in the merged block against *this* module — so a bare
-// link to SemanticEventId written in `tooling.rs` is looked up in `api` and fails,
-// with no source location in the warning. The text that used to live here is in
-// `tooling.rs`'s module note.
-#[doc(hidden)]
-pub mod tooling;
 
 // Each public family keeps positive, refusal, and boundary conformance tests
 // adjacent to this contract.

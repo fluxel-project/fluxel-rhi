@@ -312,7 +312,7 @@ impl MetalBindingAbi {
     /// Reifies the portable dynamic-offset sequence into named ABI elements.
     /// The recorder has already checked this contract, but native lowering
     /// repeats the bounded arithmetic at its trust boundary: otherwise a
-    /// malformed replay/capture packet could move a Metal buffer binding beyond
+    /// malformed binding packet could move a Metal buffer binding beyond
     /// the range the bind group owns.
     pub(super) fn dynamic_offsets(
         &self,

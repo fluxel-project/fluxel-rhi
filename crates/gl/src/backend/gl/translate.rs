@@ -775,7 +775,7 @@ pub(crate) fn pipeline_layout_from_artifacts(
     interface: &PipelineInterface,
     artifacts: &[&ShaderArtifact],
 ) -> RhiResult<GlPipelineLayout> {
-    let mut bindings = BTreeMap::new();
+    let mut bindings: BTreeMap<GlBindingLocation, GlLogicalBinding> = BTreeMap::new();
     for artifact in artifacts {
         if artifact.abi_version != IMPLEMENTED_ABI {
             return Err(unsupported(
@@ -788,6 +788,12 @@ pub(crate) fn pipeline_layout_from_artifacts(
                     artifact.abi_version.minor,
                 ),
             ));
+        }
+        // GLSL carries the Fluxel ABI manifest only for resource names. A
+        // resource-free shader has no names to map, so it can lower without a
+        // GLSL artifact (for example while validating a portable artifact).
+        if artifact.interface.resources().is_empty() {
+            continue;
         }
         let manifest = gl_abi_manifest(artifact)?;
         for resource in artifact.interface.resources() {
@@ -918,59 +924,6 @@ pub(crate) fn index_format(value: IndexFormat) -> GlIndexFormat {
     match value {
         IndexFormat::Uint16 => GlIndexFormat::Uint16,
         IndexFormat::Uint32 => GlIndexFormat::Uint32,
-    }
-}
-
-/// Classifies a captured command before an executor resolves its object IDs.
-///
-/// This is deliberately a *preflight* classification, not a lowering: object
-/// lookup, pass-state validation, and the exact copy region remain execution
-/// responsibilities.  It makes unsupported mesh/ray commands transactional --
-/// an executor can reject a complete submission before issuing any GL work.
-pub(crate) fn preflight_portable_command(
-    command: &crate::api::tooling::PortableCommand,
-) -> RhiResult<()> {
-    use crate::api::tooling::PortableCommand;
-    match command {
-        PortableCommand::SetMeshPipeline(_)
-        | PortableCommand::DispatchMesh { .. }
-        | PortableCommand::DispatchMeshIndirect { .. }
-        | PortableCommand::SetRayTracingPipeline(_)
-        | PortableCommand::BeginRayTracing { .. }
-        | PortableCommand::EndRayTracing
-        | PortableCommand::TraceRays { .. }
-        | PortableCommand::BuildAccelerationStructure { .. }
-        | PortableCommand::CopyAccelerationStructure { .. }
-        | PortableCommand::WriteAccelerationStructureCompactedSize { .. } => Err(unsupported(
-            "GL::submit",
-            "mesh and ray-tracing command is not representable by GL-family lowering",
-        )),
-        // Everything else has a typed GL vocabulary. Context capability and
-        // exact object/route validation are intentionally deferred until the
-        // owner-context executor has its discovery snapshot and object table.
-        _ => Ok(()),
-    }
-}
-
-/// Equivalent transactional gate for the actual recorder payload consumed by
-/// `GlExecutionDriver::submit`.  Capture tooling uses `PortableCommand`, while
-/// submit owns `RecordedCommand`; keeping both gates here makes the distinction
-/// explicit and prevents one path from accidentally accepting mesh/ray work.
-pub(crate) fn preflight_recorded_command(
-    command: &crate::api::command::record::RecordedCommand,
-) -> RhiResult<()> {
-    use crate::api::command::record::RecordedPayload;
-    match &command.payload {
-        RecordedPayload::MeshDispatch(_)
-        | RecordedPayload::MeshIndirect(_)
-        | RecordedPayload::RayTracingBegin(_)
-        | RecordedPayload::RayTracingDispatch(_)
-        | RecordedPayload::RayTracingEnd
-        | RecordedPayload::AccelerationStructure(_) => Err(unsupported(
-            "GL::submit",
-            "mesh, ray-tracing, and acceleration-structure recording is not representable by GL-family lowering",
-        )),
-        _ => Ok(()),
     }
 }
 

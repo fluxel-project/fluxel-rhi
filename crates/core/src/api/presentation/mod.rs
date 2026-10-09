@@ -116,7 +116,7 @@ impl PresentationTarget {
     /// This target's process-local identity.
     ///
     /// The only thing a caller may read from a target. It is what a diagnostic or
-    /// capture tool names when it reports which surface a frame went to, and what
+    /// diagnostic tool names when it reports which surface a frame went to, and what
     /// a lease conflict is reported against.
     pub fn id(&self) -> ObjectId {
         self.id

@@ -142,7 +142,7 @@ pub enum GlslProfile {
 /// family can therefore answer differently about the same value.
 ///
 /// The payloads are reference-counted and immutable so that an artifact can be
-/// cloned, cached, and handed to capture without copying shader text or bytecode,
+/// cloned and cached without copying shader text or bytecode,
 /// and so that nothing here can be mutated after an artifact's content hash was
 /// computed from it.
 ///

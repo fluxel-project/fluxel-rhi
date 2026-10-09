@@ -28,8 +28,11 @@ pub(crate) enum GlFramebufferCarrier {
 
 /// Converts the attachment shape of a recorded raster begin. `resolve_view`
 /// returns `None` only for a FrameAttachment, which becomes the default
-/// framebuffer carrier. Mixing frame and texture attachments is refused before
-/// a framebuffer is allocated or bound.
+/// framebuffer carrier. Mixing frame and texture *color* attachments is
+/// refused before a framebuffer is allocated or bound. Native GL can pair the
+/// default color target with an owned depth/stencil attachment by rendering
+/// through its presentation-depth intermediary; capability-specific callers
+/// validate that route after this structural check.
 pub(crate) fn raster_begin_carrier(
     begin: &crate::api::command::record::RasterBegin,
     mut resolve_view: impl FnMut(
@@ -52,10 +55,10 @@ pub(crate) fn raster_begin_carrier(
         }
     }
     if has_default {
-        if !views.is_empty() || begin.depth_stencil.is_some() || locations.len() != 1 {
+        if !views.is_empty() || locations.len() != 1 {
             return Err(RhiError::new(
                 RhiErrorKind::Unsupported,
-                "a default framebuffer cannot be mixed with texture/depth attachments",
+                "a default framebuffer cannot be mixed with texture color attachments",
             )
             .at("GL::begin_raster"));
         }
@@ -76,10 +79,25 @@ pub(crate) fn raster_begin_carrier(
     }))
 }
 
-/// Scalar state from one recorded draw after object-backed pipeline/bind-group
-/// lowering has been selected.  Buffer object lookup stays with the owner
-/// driver, but ranges, offsets and dynamic state cannot be reconstructed there
-/// and are therefore preserved in this CPU packet.
+/// Borrowed state for one direct draw while its encoder still owns bindings.
+/// Buffer object lookup stays with the owner driver; this input is consumed
+/// synchronously and is never retained by a finished command buffer.
+pub(crate) struct GlRasterDrawInput<'a> {
+    pub(crate) pipeline: &'a crate::api::pipeline::RasterPipeline,
+    pub(crate) groups: &'a [crate::api::command::record::BoundGroup],
+    pub(crate) vertex_buffers: &'a [(u32, crate::api::resource::buffer::BufferBinding)],
+    pub(crate) index: Option<&'a crate::api::command::record::BoundIndexBuffer>,
+    pub(crate) viewport: Option<crate::api::command::Viewport>,
+    pub(crate) scissor: Option<crate::api::command::Rect>,
+    pub(crate) blend_constant: crate::api::command::Color,
+    pub(crate) stencil_reference: u32,
+    pub(crate) range: core::ops::Range<u32>,
+    pub(crate) instances: core::ops::Range<u32>,
+    pub(crate) base_vertex: i32,
+}
+
+/// Scalar state from one direct draw after object-backed pipeline/bind-group
+/// lowering has been selected.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct GlRasterDrawScalars {
     pub viewport: Option<GlViewport>,
@@ -90,9 +108,7 @@ pub(crate) struct GlRasterDrawScalars {
     pub bind_groups: Vec<(u32, crate::api::identity::ObjectId, Vec<u32>)>,
 }
 
-pub(crate) fn raster_draw_scalars(
-    draw: &crate::api::command::record::RasterDraw,
-) -> RhiResult<GlRasterDrawScalars> {
+pub(crate) fn raster_draw_scalars(draw: &GlRasterDrawInput<'_>) -> RhiResult<GlRasterDrawScalars> {
     let count = draw
         .range
         .end

@@ -2,9 +2,8 @@
 //!
 //! A Fluxel submission has a stronger contract than Vulkan's incremental queue
 //! API: returning `Err` proves that no work from the plan was accepted.  Vulkan
-//! callers normally record and submit command buffers incrementally, but doing
-//! that would make a later lowering failure ambiguous.  We therefore record,
-//! begin and end every batch before the first `vkQueueSubmit`.
+//! native encoders finish command buffers before submission, so all fallible
+//! lowering has already completed before the first `vkQueueSubmit`.
 //!
 //! Once that first submit is made, failure is execution-domain state, never the
 //! return value of `submit`: a Vulkan implementation may have accepted part of
@@ -12,15 +11,14 @@
 //! portable caller.  The spine poisons the accepted serial range and reports
 //! `Failed` (or `DeviceLost`) from completion instead.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::Waker;
 
 use ash::vk;
 
-use crate::api::command::record::{CopyRecord, RecordedPayload};
-use crate::api::command::{ResourceUse, TextureUse, TextureUseIntent};
+use crate::api::command::ResourceUse;
 use crate::api::platform::DeviceLossInfo;
 use crate::api::presentation::{FrameAttachment, PresentState};
 use crate::api::resource::transfer::ReadbackStatus;
@@ -32,9 +30,7 @@ use crate::backend::vulkan::ffi;
 use crate::backend::vulkan::platform::device::VulkanShared;
 use crate::backend::vulkan::resource::{VulkanBuffer, VulkanQuerySet};
 
-use super::compute;
-use super::raster;
-use super::transfer::{self, ImageLayoutState, TransferRetention};
+use super::transfer::{self, TransferRetention};
 
 #[cfg(any(windows, target_os = "android"))]
 use crate::backend::vulkan::presentation::{VulkanFrameAttachment, VulkanPresentSync};
@@ -54,7 +50,6 @@ pub(in crate::backend::vulkan) struct VulkanCommandSpine {
 /// Queue-local native objects retained by completion waiter threads.
 struct SpineInner {
     shared: Arc<VulkanShared>,
-    command_pool: vk::CommandPool,
     state: Mutex<SpineState>,
     pending_changed: Condvar,
     shutdown: AtomicBool,
@@ -78,25 +73,18 @@ struct SpineState {
     /// One fence per accepted batch.  Per-batch fences preserve v13's finer
     /// completion without exposing a Vulkan fence as a public token.
     pending: BTreeMap<u64, PendingBatch>,
-    /// Last queue-accepted layout of every transferred texture subresource.
-    /// ObjectId never aliases a later texture, unlike a recycled VkImage handle.
-    /// Entries may outlive the logical texture; retirement is a bounded-memory
-    /// optimization and must not weaken cross-submit layout correctness.
-    image_layouts: Vec<ImageLayoutState>,
 }
 
 struct PendingBatch {
     fence: vk::Fence,
-    command_buffer: vk::CommandBuffer,
+    /// A directly encoded recorder owns its own pool. Keeping these finished
+    /// buffers here keeps both that pool and every native list alive through the
+    /// fence, without making the submission spine responsible for them.
+    _native_buffers: Vec<super::native::FinishedBuffer>,
     /// Portable buffer handles and backend staging allocations referenced by
     /// the accepted command buffer.  Native Vulkan handles alone do not extend
     /// Fluxel resource lifetime, so releasing this only after the fence is
     /// terminal is part of the v13 ownership contract.
-    retention: TransferRetention,
-}
-
-struct RecordedBatch {
-    command_buffer: vk::CommandBuffer,
     retention: TransferRetention,
 }
 
@@ -109,36 +97,17 @@ struct BatchPresentation {
 
 /// A fence wait is deliberately bounded even though the normal completion path
 /// has no deadline.  `VulkanCommandSpine::drop` must be able to join its sole
-/// waiter before it destroys the command pool, and Vulkan has no operation that
+/// waiter before it destroys pending native objects, and Vulkan has no operation that
 /// cancels an in-progress `vkWaitForFences`.  A finite wait is therefore the
 /// shutdown observation point; it is *not* a completion timeout.
 const FENCE_WAITER_POLL_NS: u64 = 50_000_000;
 
 impl VulkanCommandSpine {
-    /// Creates the private command pool for the device's selected graphics
-    /// family.  The pool is reset only after its fence reaches completion; the
-    /// initial implementation destroys completed command buffers instead of
-    /// pooling them. This is deliberately a correctness baseline: a production
-    /// command-buffer arena may replace it after measurements, without changing
-    /// the transactional submission contract.
     pub(in crate::backend::vulkan) fn new(
         shared: Arc<VulkanShared>,
     ) -> Result<Self, VulkanFailure> {
-        let create = vk::CommandPoolCreateInfo::default()
-            .queue_family_index(shared.graphics_family)
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-        // SAFETY: the queue family was selected while this VkDevice was created;
-        // the create-info borrows only this stack value for the duration of call.
-        let command_pool =
-            unsafe { shared.device.create_command_pool(&create, None) }.map_err(|result| {
-                VulkanFailure::Native(ffi::NativeError::new(
-                    result,
-                    "VulkanCommandSpine::create_command_pool",
-                ))
-            })?;
         let inner = Arc::new(SpineInner {
             shared: Arc::clone(&shared),
-            command_pool,
             pending_changed: Condvar::new(),
             shutdown: AtomicBool::new(false),
             state: Mutex::new(SpineState {
@@ -147,7 +116,6 @@ impl VulkanCommandSpine {
                 finished: BTreeSet::new(),
                 poison: None,
                 pending: BTreeMap::new(),
-                image_layouts: Vec::new(),
             }),
         });
         let worker = Arc::clone(&inner);
@@ -232,7 +200,7 @@ impl VulkanCommandSpine {
         &self,
         request: &SubmissionRequest<'_>,
     ) -> Result<SubmissionOutcome, VulkanFailure> {
-        let mut state = self.lock();
+        let state = self.lock();
         if self.inner.shared.loss_info().is_some() {
             return Err(VulkanFailure::Native(ffi::NativeError::new(
                 vk::Result::ERROR_DEVICE_LOST,
@@ -251,10 +219,14 @@ impl VulkanCommandSpine {
             });
         }
 
-        let recorded = self.allocate_and_record(request.batches, &state.image_layouts)?;
-        // Presentation synchronization is part of Phase A. A foreign/non-Vulkan
-        // frame must be refused before the first vkQueueSubmit, preserving the
-        // portable `Err == zero native work accepted` contract.
+        self.submit_native_locked(request, state)
+    }
+
+    fn submit_native_locked(
+        &self,
+        request: &SubmissionRequest<'_>,
+        mut state: MutexGuard<'_, SpineState>,
+    ) -> Result<SubmissionOutcome, VulkanFailure> {
         let presentation = prepare_presentations(request)?;
         let first_serial = state
             .issued
@@ -264,77 +236,97 @@ impl VulkanCommandSpine {
                 why: "the backend completion serial space is exhausted",
             })?;
         let last_serial = first_serial
-            .checked_add(recorded.len() as u64)
-            .and_then(|serial| serial.checked_sub(1))
+            .checked_add(request.batches.len() as u64)
+            .and_then(|value| value.checked_sub(1))
             .ok_or(VulkanFailure::Unsupported {
                 what: "a submission with too many batches",
                 why: "the backend completion serial space is exhausted",
             })?;
-
-        // Allocate every completion fence before Phase B.  Failure here still
-        // leaves the queue untouched, so it is an honest `Err`.
-        let mut fences = Vec::with_capacity(recorded.len());
-        for _ in &recorded {
-            let create = vk::FenceCreateInfo::default();
-            // SAFETY: the device remains alive through `shared`; no pointer is
-            // retained by Vulkan beyond this creation call.
-            let fence = match unsafe { self.inner.shared.device.create_fence(&create, None) } {
-                Ok(fence) => fence,
+        // Refuse non-Vulkan, already-consumed, and duplicate buffers before
+        // allocating fences or handing any work to the queue.
+        let mut seen = HashSet::new();
+        for batch in request.batches {
+            for work in &batch.work {
+                let native = work
+                    .native()
+                    .as_any()
+                    .downcast_ref::<super::native::VulkanNativeCommandBuffer>()
+                    .ok_or(VulkanFailure::Unsupported {
+                        what: "a command buffer from another backend",
+                        why: "a Vulkan queue can execute only Vulkan command buffers",
+                    })?;
+                if !native.is_available() {
+                    return Err(VulkanFailure::Unsupported {
+                        what: "a command buffer submitted more than once",
+                        why: "a Vulkan command buffer may be submitted only once by this RHI backend",
+                    });
+                }
+                if !seen.insert(native as *const super::native::VulkanNativeCommandBuffer) {
+                    return Err(VulkanFailure::Unsupported {
+                        what: "the same Vulkan command buffer more than once in one submission",
+                        why: "a command buffer has one ownership transfer to one queue submission",
+                    });
+                }
+            }
+        }
+        let mut fences = Vec::with_capacity(request.batches.len());
+        for _ in request.batches {
+            let info = vk::FenceCreateInfo::default();
+            match unsafe { self.inner.shared.device.create_fence(&info, None) } {
+                Ok(fence) => fences.push(fence),
                 Err(result) => {
-                    for fence in fences.drain(..) {
+                    for fence in fences {
                         unsafe { self.inner.shared.device.destroy_fence(fence, None) };
                     }
-                    unsafe {
-                        self.inner.shared.device.free_command_buffers(
-                            self.inner.command_pool,
-                            &recorded
-                                .iter()
-                                .map(|batch| batch.command_buffer)
-                                .collect::<Vec<_>>(),
-                        )
-                    };
                     return Err(VulkanFailure::Native(ffi::NativeError::new(
                         result,
-                        "VulkanCommandSpine::create_fence",
+                        "VulkanCommandSpine::create_fence for native command buffers",
                     )));
                 }
-            };
-            fences.push(fence);
+            }
         }
-
-        // Phase B: submit one batch at a time so each has an exact completion
-        // fence.  Queue order supplies all same-queue and explicit-plan order;
-        // multi-queue waits are intentionally not advertised yet.
+        let mut recorded = Vec::with_capacity(request.batches.len());
+        for batch in request.batches {
+            let mut buffers = Vec::with_capacity(batch.work.len());
+            let mut retention = TransferRetention::default();
+            for work in &batch.work {
+                let native = work
+                    .native()
+                    .as_any()
+                    .downcast_ref::<super::native::VulkanNativeCommandBuffer>()
+                    .expect("native buffers were preflighted");
+                let mut finished = native
+                    .take()
+                    .expect("preflighted native buffer was consumed once");
+                retention.append(std::mem::take(&mut finished.retention));
+                buffers.push(finished);
+            }
+            recorded.push((buffers, retention));
+        }
         state.issued = last_serial;
         let mut poisoned = None;
         let mut presented = vec![false; request.presents.len()];
         let mut recorded = recorded.into_iter();
         let mut fences = fences.into_iter();
         for index in 0..request.batches.len() {
-            let batch_recording = recorded
+            let (buffers, retention) = recorded
                 .next()
-                .expect("Phase A allocated one buffer per batch");
-            let buffer = batch_recording.command_buffer;
+                .expect("native command buffers were preflighted");
             let fence = fences
                 .next()
-                .expect("Phase A allocated one fence per batch");
+                .expect("native completion fences were allocated");
             let serial = first_serial + index as u64;
-            let command_buffers = [buffer];
-            let batch_presentation = &presentation[index];
-            // A frame can be first touched by either a raster attachment or an
-            // acquired-frame readback. `ALL_COMMANDS` makes the acquire
-            // semaphore cover both the color-output and transfer stages; using
-            // only COLOR_ATTACHMENT_OUTPUT would let a transfer-only frame
-            // readback start before image acquisition completed.
-            let wait_stages =
-                vec![vk::PipelineStageFlags::ALL_COMMANDS; batch_presentation.waits.len()];
+            let command_buffers = buffers
+                .iter()
+                .map(|buffer| buffer.command_buffer)
+                .collect::<Vec<_>>();
+            let presentation = &presentation[index];
+            let wait_stages = vec![vk::PipelineStageFlags::ALL_COMMANDS; presentation.waits.len()];
             let submit = vk::SubmitInfo::default()
                 .command_buffers(&command_buffers)
-                .wait_semaphores(&batch_presentation.waits)
+                .wait_semaphores(&presentation.waits)
                 .wait_dst_stage_mask(&wait_stages)
-                .signal_semaphores(&batch_presentation.signals);
-            // SAFETY: the command buffer was ended in Phase A, belongs to this
-            // device/pool, and the fence is fresh and unsignalled.
+                .signal_semaphores(&presentation.signals);
             let result = unsafe {
                 let _queue = self.inner.shared.queue_guard();
                 self.inner.shared.device.queue_submit(
@@ -343,96 +335,54 @@ impl VulkanCommandSpine {
                     fence,
                 )
             };
-            match result {
-                Ok(()) => {
-                    mark_batch_buffer_uses(&request.batches[index], serial);
-                    let readbacks = batch_recording.retention.readback_tickets();
-                    state.image_layouts = batch_recording.retention.image_layouts();
-                    state.pending.insert(
-                        serial,
-                        PendingBatch {
-                            fence,
-                            command_buffer: buffer,
-                            retention: batch_recording.retention,
-                        },
-                    );
-                    self.inner.shared.register_readbacks(&readbacks);
-                    self.inner.pending_changed.notify_one();
-                    for &present_index in &batch_presentation.presents {
-                        let present = &request.presents[present_index];
-                        present.attachment.present(present.receipt);
-                        presented[present_index] = true;
-                    }
-                    // vkQueuePresentKHR may be the first native call to report
-                    // device loss. Do not feed later batches to a terminal
-                    // queue; their receipts are completed below as DeviceLost.
-                    if self.inner.shared.loss_info().is_some() {
-                        let remaining_buffers = recorded
-                            .by_ref()
-                            .map(|batch| batch.command_buffer)
-                            .collect::<Vec<_>>();
-                        if !remaining_buffers.is_empty() {
-                            unsafe {
-                                self.inner.shared.device.free_command_buffers(
-                                    self.inner.command_pool,
-                                    &remaining_buffers,
-                                )
-                            };
-                        }
-                        for fence in fences.by_ref() {
-                            unsafe { self.inner.shared.device.destroy_fence(fence, None) };
-                        }
-                        break;
-                    }
-                }
-                Err(result) => {
-                    // Do not return an error after queue submission was attempted.
-                    // Retain the fence: a driver that accepted work despite the
-                    // error may still use it, and destroying it early is unsafe.
-                    let readbacks = batch_recording.retention.readback_tickets();
-                    state.pending.insert(
-                        serial,
-                        PendingBatch {
-                            fence,
-                            command_buffer: buffer,
-                            retention: batch_recording.retention,
-                        },
-                    );
-                    self.inner.shared.register_readbacks(&readbacks);
-                    let failure = VulkanFailure::Native(ffi::NativeError::new(
-                        result,
-                        "VulkanCommandSpine::queue_submit",
-                    ));
-                    let completion = CompletionFailure::new(failure.message());
-                    state.poison = Some((serial, completion));
-                    // Vulkan gives no portable proof that a failing submission
-                    // accepted zero work. Fluxel's transactional API therefore
-                    // cannot return Err here; poison this DeviceIdentity even
-                    // for a non-DEVICE_LOST VkResult, wake every pending future,
-                    // and require a fresh request_device for further work.
-                    poisoned = Some(DeviceLossInfo::new(format!(
-                        "Vulkan queue submission failed after work may have been accepted: {}",
-                        failure.message()
-                    )));
-                    // No later batch was submitted. Its command buffers and
-                    // fences are ordinary host-owned objects and can be freed
-                    // immediately; their logical serials remain poisoned.
-                    let remaining_buffers = recorded
-                        .map(|batch| batch.command_buffer)
-                        .collect::<Vec<_>>();
-                    if !remaining_buffers.is_empty() {
-                        unsafe {
-                            self.inner
-                                .shared
-                                .device
-                                .free_command_buffers(self.inner.command_pool, &remaining_buffers)
-                        };
-                    }
-                    for fence in fences {
-                        unsafe { self.inner.shared.device.destroy_fence(fence, None) };
-                    }
-                    break;
-                }
+            if let Err(result) = result {
+                let failure = VulkanFailure::Native(ffi::NativeError::new(
+                    result,
+                    "VulkanCommandSpine::queue_submit native command buffers",
+                ));
+                state.poison = Some((serial, CompletionFailure::new(failure.message())));
+                poisoned = Some(DeviceLossInfo::new(format!(
+                    "Vulkan queue submission failed after work may have been accepted: {}",
+                    failure.message()
+                )));
+                // A failing queue submit can still have accepted this batch.
+                // Retain its native objects through execution-domain teardown;
+                // never feed later batches to a queue whose state is unknown.
+                let readbacks = retention.readback_tickets();
+                state.pending.insert(
+                    serial,
+                    PendingBatch {
+                        fence,
+                        _native_buffers: buffers,
+                        retention,
+                    },
+                );
+                self.inner.shared.register_readbacks(&readbacks);
+                self.inner.pending_changed.notify_one();
+                break;
+            }
+            mark_batch_buffer_uses(&request.batches[index], serial);
+            let readbacks = retention.readback_tickets();
+            state.pending.insert(
+                serial,
+                PendingBatch {
+                    fence,
+                    _native_buffers: buffers,
+                    retention,
+                },
+            );
+            self.inner.shared.register_readbacks(&readbacks);
+            self.inner.pending_changed.notify_one();
+            for &present_index in &presentation.presents {
+                let present = &request.presents[present_index];
+                present.attachment.present(present.receipt);
+                presented[present_index] = true;
+            }
+            // Presentation can be the first native operation that discovers
+            // loss. Later command buffers were never submitted and their
+            // frame receipts are terminated below.
+            if self.inner.shared.loss_info().is_some() {
+                break;
             }
         }
         let points = request
@@ -459,501 +409,6 @@ impl VulkanCommandSpine {
             completion: last_serial,
             points,
         })
-    }
-
-    /// Performs all native allocation, recording and close work in Phase A.
-    fn allocate_and_record(
-        &self,
-        batches: &[PlanBatch],
-        initial_image_layouts: &[ImageLayoutState],
-    ) -> Result<Vec<RecordedBatch>, VulkanFailure> {
-        let allocation = vk::CommandBufferAllocateInfo::default()
-            .command_pool(self.inner.command_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(u32::try_from(batches.len()).map_err(|_| {
-                VulkanFailure::Unsupported {
-                    what: "a submission with too many batches",
-                    why: "Vulkan command-buffer count is u32",
-                }
-            })?);
-        // SAFETY: the pool is private to this spine and locked across this Phase
-        // A allocation; Vulkan writes handles into Ash-owned storage only.
-        let buffers = unsafe {
-            self.inner
-                .shared
-                .device
-                .allocate_command_buffers(&allocation)
-        }
-        .map_err(|result| {
-            VulkanFailure::Native(ffi::NativeError::new(
-                result,
-                "VulkanCommandSpine::allocate_command_buffers",
-            ))
-        })?;
-        let mut recorded = Vec::with_capacity(buffers.len());
-        // The plan's command buffers are submitted in this exact queue order.
-        // Seed from the queue's accepted cross-submit state, then carry changes
-        // across Phase-A batches. Phase B publishes a batch's final table only
-        // after vkQueueSubmit accepts that batch.
-        let mut plan_image_layouts = initial_image_layouts.to_vec();
-        for (buffer, batch) in buffers.iter().copied().zip(batches) {
-            let begin = vk::CommandBufferBeginInfo::default()
-                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-            // SAFETY: each newly allocated primary buffer is in initial state.
-            if let Err(result) = unsafe {
-                self.inner
-                    .shared
-                    .device
-                    .begin_command_buffer(buffer, &begin)
-            } {
-                unsafe {
-                    self.inner
-                        .shared
-                        .device
-                        .free_command_buffers(self.inner.command_pool, &buffers)
-                };
-                return Err(VulkanFailure::Native(ffi::NativeError::new(
-                    result,
-                    "VulkanCommandSpine::begin_command_buffer",
-                )));
-            }
-            let mut retention = TransferRetention::default();
-            retention.seed_image_layouts(&plan_image_layouts);
-            if let Err(error) = self.record_batch(buffer, batch, &mut retention) {
-                unsafe {
-                    self.inner
-                        .shared
-                        .device
-                        .free_command_buffers(self.inner.command_pool, &buffers)
-                };
-                return Err(error);
-            }
-            // SAFETY: every lowered Vulkan command was recorded above; a
-            // successful end makes the buffer immutable before Phase B.
-            if let Err(result) = unsafe { self.inner.shared.device.end_command_buffer(buffer) } {
-                unsafe {
-                    self.inner
-                        .shared
-                        .device
-                        .free_command_buffers(self.inner.command_pool, &buffers)
-                };
-                return Err(VulkanFailure::Native(ffi::NativeError::new(
-                    result,
-                    "VulkanCommandSpine::end_command_buffer",
-                )));
-            }
-            recorded.push(RecordedBatch {
-                command_buffer: buffer,
-                retention,
-            });
-            plan_image_layouts = recorded
-                .last()
-                .expect("the just-recorded batch exists")
-                .retention
-                .image_layouts();
-        }
-        Ok(recorded)
-    }
-
-    /// Refuses unimplemented payloads explicitly.  Matching every variant is a
-    /// compile-time tripwire: adding a portable command cannot silently become a
-    /// no-op on Vulkan.
-    fn record_batch(
-        &self,
-        command_buffer: vk::CommandBuffer,
-        batch: &PlanBatch,
-        retention: &mut TransferRetention,
-    ) -> Result<(), VulkanFailure> {
-        // Legacy vkCmdResetQueryPool is forbidden inside a render pass. Reset
-        // every slot used by this batch before replay can enter a raster scope;
-        // reset is idempotent for duplicate references and preserves the
-        // recorder's command order for begin/end/write operations themselves.
-        for work in &batch.work {
-            for command in work.commands() {
-                let query = match &command.payload {
-                    RecordedPayload::QueryBegin { set, index }
-                    | RecordedPayload::TimestampWrite { set, index } => Some((set, *index)),
-                    _ => None,
-                };
-                if let Some((set, index)) = query {
-                    unsafe {
-                        self.inner.shared.device.cmd_reset_query_pool(
-                            command_buffer,
-                            native_query_pool(set)?,
-                            index,
-                            1,
-                        );
-                    }
-                }
-            }
-        }
-        let mut raster_scope = None;
-        for (work_index, work) in batch.work.iter().enumerate() {
-            for (command_index, command) in work.commands().iter().enumerate() {
-                match &command.payload {
-                    RecordedPayload::RasterBegin(begin) => {
-                        if raster_scope.is_some() {
-                            return Err(VulkanFailure::Unsupported {
-                                what: "nested Vulkan raster scopes",
-                                why: "portable recording should keep raster scopes linear",
-                            });
-                        }
-                        let shader_texture_uses =
-                            collect_raster_shader_texture_uses(batch, work_index, command_index)?;
-                        let multiview_mask =
-                            collect_raster_multiview_mask(batch, work_index, command_index)?;
-                        let secondary_contents =
-                            collect_raster_has_secondary(batch, work_index, command_index)?;
-                        raster_scope = Some(raster::lower_raster_begin(
-                            Arc::clone(&self.inner.shared),
-                            command_buffer,
-                            begin,
-                            &shader_texture_uses,
-                            multiview_mask,
-                            secondary_contents,
-                            retention,
-                        )?);
-                    }
-                    RecordedPayload::RasterDraw(draw) => {
-                        let scope = raster_scope.as_ref().ok_or(VulkanFailure::Unsupported {
-                            what: "a Vulkan raster draw outside a render pass",
-                            why: "portable recording should emit RasterBegin first",
-                        })?;
-                        let draw_retention = if scope.uses_secondary() {
-                            let (secondary, retained) = raster::lower_secondary_draw(
-                                Arc::clone(&self.inner.shared),
-                                scope.info(),
-                                draw,
-                                &command.uses,
-                            )?;
-                            unsafe {
-                                self.inner
-                                    .shared
-                                    .device
-                                    .cmd_execute_commands(command_buffer, &[secondary])
-                            };
-                            retained
-                        } else {
-                            raster::lower_raster_draw(
-                                &self.inner.shared,
-                                command_buffer,
-                                draw,
-                                &command.uses,
-                                &scope.info(),
-                                retention,
-                            )?
-                        };
-                        retention.retain_raster(draw_retention);
-                    }
-                    RecordedPayload::RasterClear(clear) => {
-                        let scope = raster_scope.as_ref().ok_or(VulkanFailure::Unsupported {
-                            what: "a Vulkan raster attachment clear outside a render pass",
-                            why: "portable recording should emit RasterBegin first",
-                        })?;
-                        raster::lower_raster_clear(
-                            &self.inner.shared,
-                            command_buffer,
-                            clear,
-                            scope,
-                        )?;
-                    }
-                    RecordedPayload::RasterIndirect(draw) => {
-                        let scope = raster_scope.as_ref().ok_or(VulkanFailure::Unsupported {
-                            what: "a Vulkan raster indirect draw outside a render pass",
-                            why: "portable recording should emit RasterBegin first",
-                        })?;
-                        if scope.uses_secondary() {
-                            return Err(VulkanFailure::Unsupported {
-                                what: "a Vulkan indirect draw in a secondary-command-buffer raster scope",
-                                why: "this initial secondary lowering records portable direct draws only",
-                            });
-                        }
-                        let draw_retention = raster::lower_raster_indirect(
-                            &self.inner.shared,
-                            command_buffer,
-                            draw,
-                            &command.uses,
-                            &scope.info(),
-                            retention,
-                        )?;
-                        retention.retain_raster(draw_retention);
-                    }
-                    RecordedPayload::RasterExecuteSecondary(work) => {
-                        let scope = raster_scope.as_ref().ok_or(VulkanFailure::Unsupported {
-                            what: "secondary Vulkan raster work outside a render pass",
-                            why: "portable recording should emit RasterBegin first",
-                        })?;
-                        // The portable child contains draw packets only.  The
-                        // Vulkan command-buffer implementation is deliberately
-                        // kept behind this execution point so the parent owns
-                        // attachment transitions and render-pass lifetime.
-                        for child in work.commands() {
-                            let RecordedPayload::RasterDraw(draw) = &child.payload else {
-                                return Err(VulkanFailure::Unsupported {
-                                    what: "a non-draw secondary raster command",
-                                    why: "the portable secondary recorder admits direct draws only",
-                                });
-                            };
-                            let (secondary, draw_retention) = raster::lower_secondary_draw(
-                                Arc::clone(&self.inner.shared),
-                                scope.info(),
-                                draw,
-                                &child.uses,
-                            )?;
-                            unsafe {
-                                self.inner
-                                    .shared
-                                    .device
-                                    .cmd_execute_commands(command_buffer, &[secondary])
-                            };
-                            retention.retain_raster(draw_retention);
-                        }
-                    }
-                    RecordedPayload::RasterEnd => {
-                        let scope = raster_scope.take().ok_or(VulkanFailure::Unsupported {
-                            what: "a Vulkan raster-scope end without a begin",
-                            why: "portable recording should keep raster scopes balanced",
-                        })?;
-                        let mut raster_retention = raster::RasterRetention::default();
-                        raster::lower_raster_end(
-                            command_buffer,
-                            scope,
-                            &mut raster_retention,
-                            retention,
-                        )?;
-                        retention.retain_raster(raster_retention);
-                    }
-                    RecordedPayload::ComputeBegin(_) | RecordedPayload::ComputeEnd => {}
-                    RecordedPayload::ComputeDispatch(dispatch) => {
-                        let compute = compute::lower_compute_dispatch(
-                            &self.inner.shared,
-                            command_buffer,
-                            dispatch,
-                            &command.uses,
-                            retention,
-                        )?;
-                        retention.retain_compute(compute);
-                    }
-                    RecordedPayload::ComputeIndirect(dispatch) => {
-                        let compute = compute::lower_compute_indirect(
-                            &self.inner.shared,
-                            command_buffer,
-                            dispatch,
-                            &command.uses,
-                            retention,
-                        )?;
-                        retention.retain_compute(compute);
-                        retention.buffers.push(dispatch.arguments.clone());
-                    }
-                    RecordedPayload::QueryBegin { set, index } => {
-                        let pool = native_query_pool(set)?;
-                        unsafe {
-                            self.inner.shared.device.cmd_begin_query(
-                                command_buffer,
-                                pool,
-                                *index,
-                                vk::QueryControlFlags::empty(),
-                            );
-                        }
-                        retention.query_sets.push(set.clone());
-                    }
-                    RecordedPayload::QueryEnd { set, index } => {
-                        unsafe {
-                            self.inner.shared.device.cmd_end_query(
-                                command_buffer,
-                                native_query_pool(set)?,
-                                *index,
-                            );
-                        }
-                        retention.query_sets.push(set.clone());
-                    }
-                    RecordedPayload::TimestampWrite { set, index } => {
-                        let pool = native_query_pool(set)?;
-                        unsafe {
-                            self.inner.shared.device.cmd_write_timestamp(
-                                command_buffer,
-                                vk::PipelineStageFlags::ALL_COMMANDS,
-                                pool,
-                                *index,
-                            );
-                        }
-                        retention.query_sets.push(set.clone());
-                    }
-                    RecordedPayload::QueryResolve(resolve) => {
-                        unsafe {
-                            self.inner.shared.device.cmd_copy_query_pool_results(
-                                command_buffer,
-                                native_query_pool(&resolve.set)?,
-                                resolve.first_query,
-                                resolve.query_count,
-                                native_buffer(&resolve.destination)?,
-                                resolve.destination_offset,
-                                query_result_stride(&resolve.set)?,
-                                // Timestamp facts explicitly say this slice
-                                // does not promise non-blocking availability.
-                                // WAIT turns the result copy into a defined
-                                // producer/consumer dependency rather than
-                                // exposing stale slots.
-                                vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT,
-                            );
-                        }
-                        retention.query_sets.push(resolve.set.clone());
-                        retention.buffers.push(resolve.destination.clone());
-                    }
-                    RecordedPayload::Copy(CopyRecord::Buffer(copy)) => {
-                        transfer::lower_buffer_copy(
-                            &self.inner.shared,
-                            command_buffer,
-                            &copy,
-                            retention,
-                        )?;
-                    }
-                    RecordedPayload::Copy(CopyRecord::ClearBuffer { buffer, range }) => {
-                        transfer::lower_clear_buffer(
-                            &self.inner.shared,
-                            command_buffer,
-                            &buffer,
-                            *range,
-                            retention,
-                        )?;
-                    }
-                    RecordedPayload::Copy(CopyRecord::ClearTexture {
-                        texture,
-                        subresources,
-                    }) => {
-                        transfer::lower_clear_texture(
-                            &self.inner.shared,
-                            command_buffer,
-                            &texture,
-                            *subresources,
-                            retention,
-                        )?;
-                    }
-                    RecordedPayload::Copy(CopyRecord::BufferToTexture(copy)) => {
-                        transfer::lower_buffer_texture_copy(
-                            &self.inner.shared,
-                            command_buffer,
-                            &copy,
-                            true,
-                            retention,
-                        )?;
-                    }
-                    RecordedPayload::Copy(CopyRecord::TextureToBuffer(copy)) => {
-                        transfer::lower_buffer_texture_copy(
-                            &self.inner.shared,
-                            command_buffer,
-                            &copy,
-                            false,
-                            retention,
-                        )?;
-                    }
-                    RecordedPayload::Copy(CopyRecord::Texture(copy)) => {
-                        transfer::lower_texture_copy(
-                            &self.inner.shared,
-                            command_buffer,
-                            &copy,
-                            retention,
-                        )?;
-                    }
-                    RecordedPayload::Copy(CopyRecord::Blit(blit)) => {
-                        transfer::lower_texture_blit(
-                            &self.inner.shared,
-                            command_buffer,
-                            &blit,
-                            retention,
-                        )?;
-                    }
-                    RecordedPayload::Upload(job) => match job.descriptor() {
-                        crate::api::resource::transfer::UploadDescriptor::Buffer(_) => {
-                            transfer::lower_upload(
-                                &self.inner.shared,
-                                command_buffer,
-                                &job,
-                                retention,
-                            )?
-                        }
-                        crate::api::resource::transfer::UploadDescriptor::Texture(_) => {
-                            transfer::lower_texture_upload(
-                                &self.inner.shared,
-                                command_buffer,
-                                &job,
-                                retention,
-                            )?
-                        }
-                        _ => {
-                            return Err(VulkanFailure::Unsupported {
-                                what: "an unsupported Vulkan upload descriptor",
-                                why: "this Vulkan backend does not implement the newer portable upload variant",
-                            });
-                        }
-                    },
-                    RecordedPayload::Readback(ticket) => match ticket.request() {
-                        crate::api::resource::transfer::ReadbackRequest::Buffer { .. } => {
-                            transfer::lower_readback(
-                                &self.inner.shared,
-                                command_buffer,
-                                &ticket,
-                                retention,
-                            )?
-                        }
-                        crate::api::resource::transfer::ReadbackRequest::Texture { .. } => {
-                            transfer::lower_texture_readback(
-                                &self.inner.shared,
-                                command_buffer,
-                                &ticket,
-                                retention,
-                            )?
-                        }
-                        crate::api::resource::transfer::ReadbackRequest::Frame { .. } => {
-                            transfer::lower_frame_readback(
-                                &self.inner.shared,
-                                command_buffer,
-                                &ticket,
-                                retention,
-                            )?
-                        }
-                        _ => {
-                            return Err(VulkanFailure::Unsupported {
-                                what: "an unsupported Vulkan readback request",
-                                why: "this Vulkan backend does not implement the newer portable readback variant",
-                            });
-                        }
-                    },
-                    // Debug markup has no execution semantics, but silently
-                    // dropping a recorded command would violate Fluxel's
-                    // no-hidden-fallback rule. Until VK_EXT_debug_utils is
-                    // enabled for this device slice, Phase A rejects it before
-                    // any native work is accepted.
-                    //
-                    // TODO(tooling): enable VK_EXT_debug_utils when the instance
-                    // advertises it and lower these three payloads (plus scope
-                    // labels) to vkCmdBegin/End/InsertDebugUtilsLabelEXT. Keep
-                    // the structured refusal for loaders without the
-                    // extension.
-                    RecordedPayload::DebugPush(_)
-                    | RecordedPayload::DebugPop
-                    | RecordedPayload::DebugMarker(_) => {
-                        return Err(VulkanFailure::Unsupported {
-                            what: "a Vulkan debug-marker command",
-                            why: "VK_EXT_debug_utils command lowering is not enabled by this device slice",
-                        });
-                    }
-                    other => {
-                        return Err(VulkanFailure::Unsupported {
-                            what: payload_name(other),
-                            why: "Vulkan command lowering for this payload has not been implemented",
-                        });
-                    }
-                }
-            }
-        }
-        if raster_scope.is_some() {
-            return Err(VulkanFailure::Unsupported {
-                what: "an unterminated Vulkan raster scope",
-                why: "portable recording should emit RasterEnd before finish",
-            });
-        }
-        Ok(())
     }
 
     /// Non-blocking completion query.  This path never waits for the GPU.
@@ -1009,7 +464,7 @@ impl VulkanCommandSpine {
     }
 }
 
-fn query_result_stride(set: &crate::api::query::QuerySet) -> Result<u64, VulkanFailure> {
+pub(super) fn query_result_stride(set: &crate::api::query::QuerySet) -> Result<u64, VulkanFailure> {
     use crate::api::query::{PipelineStatistics, QueryType};
     let values = match set.descriptor().ty {
         QueryType::Occlusion | QueryType::Timestamp => 1,
@@ -1046,7 +501,7 @@ impl Drop for VulkanCommandSpine {
 
 impl Drop for SpineInner {
     fn drop(&mut self) {
-        // Unlike COM-backed APIs, Vulkan command buffers and their pool may not
+        // Unlike COM-backed APIs, Vulkan command buffers and their pools may not
         // be destroyed while submitted work still uses them. The last public
         // Device owner can disappear without the caller awaiting its receipt,
         // so destruction itself must close that native lifetime. A lost device
@@ -1063,17 +518,7 @@ impl Drop for SpineInner {
         // cleanup and does not turn a destructor into a recovery operation.
         for (_, pending) in std::mem::take(&mut state.pending) {
             unsafe { self.shared.device.destroy_fence(pending.fence, None) };
-            unsafe {
-                self.shared
-                    .device
-                    .free_command_buffers(self.command_pool, &[pending.command_buffer])
-            };
         }
-        unsafe {
-            self.shared
-                .device
-                .destroy_command_pool(self.command_pool, None)
-        };
     }
 }
 
@@ -1169,24 +614,12 @@ fn finish_waited_batch(inner: &SpineInner, serial: u64, result: Result<(), vk::R
                     for readback in &pending.retention.readbacks {
                         readback.ticket.set_status(ReadbackStatus::DeviceLost);
                     }
-                    unsafe {
-                        inner.shared.device.destroy_fence(pending.fence, None);
-                        inner
-                            .shared
-                            .device
-                            .free_command_buffers(inner.command_pool, &[pending.command_buffer]);
-                    }
+                    unsafe { inner.shared.device.destroy_fence(pending.fence, None) };
                     drop(state);
                     return;
                 }
             };
-            unsafe {
-                inner.shared.device.destroy_fence(pending.fence, None);
-                inner
-                    .shared
-                    .device
-                    .free_command_buffers(inner.command_pool, &[pending.command_buffer]);
-            }
+            unsafe { inner.shared.device.destroy_fence(pending.fence, None) };
             if let Some(message) = terminal_loss {
                 for other in state.pending.values() {
                     for readback in &other.retention.readbacks {
@@ -1285,17 +718,15 @@ fn completion_from_state(state: &SpineState, serial: u64) -> CompletionState {
 /// keeps the greatest serial.
 fn mark_batch_buffer_uses(batch: &PlanBatch, serial: u64) {
     for work in &batch.work {
-        for command in work.commands() {
-            for use_ in &command.uses {
-                if let ResourceUse::Buffer(buffer) = use_ {
-                    if let Some(native) = buffer
-                        .buffer
-                        .native()
-                        .as_any()
-                        .downcast_ref::<VulkanBuffer>()
-                    {
-                        native.mark_accepted(serial);
-                    }
+        for use_ in work.resource_uses() {
+            if let ResourceUse::Buffer(buffer) = use_ {
+                if let Some(native) = buffer
+                    .buffer
+                    .native()
+                    .as_any()
+                    .downcast_ref::<VulkanBuffer>()
+                {
+                    native.mark_accepted(serial);
                 }
             }
         }
@@ -1367,234 +798,9 @@ fn frame_present_sync(_: &FrameAttachment) -> Result<VulkanPresentSync, VulkanFa
     })
 }
 
-/// Finds the one view mask a native legacy Vulkan render pass must carry.
-/// Portable recording validates every pipeline against the attachment layer
-/// count, but Vulkan additionally bakes the mask into the subpass itself. A
-/// scope with several pipeline binds is therefore legal only when every draw
-/// selected the same mask; reject the mismatch before beginning the pass.
-fn collect_raster_multiview_mask(
-    batch: &PlanBatch,
-    begin_work: usize,
-    begin_command: usize,
-) -> Result<Option<u32>, VulkanFailure> {
-    let mut selected = None;
-    let mut record = |mask: Option<u32>| -> Result<(), VulkanFailure> {
-        if let Some(previous) = selected {
-            if previous != mask {
-                return Err(VulkanFailure::Unsupported {
-                    what: "several multiview masks in one Vulkan raster scope",
-                    why: "legacy Vulkan render-pass lowering requires every draw in a scope to use one view mask",
-                });
-            }
-        } else {
-            selected = Some(mask);
-        }
-        Ok(())
-    };
-    for (work_index, work) in batch.work.iter().enumerate().skip(begin_work) {
-        let first_command = if work_index == begin_work {
-            begin_command + 1
-        } else {
-            0
-        };
-        for command in work.commands().iter().skip(first_command) {
-            match &command.payload {
-                RecordedPayload::RasterEnd => return Ok(selected.flatten()),
-                RecordedPayload::RasterBegin(_) => {
-                    return Err(VulkanFailure::Unsupported {
-                        what: "nested Vulkan raster scopes",
-                        why: "portable recording should keep raster scopes linear",
-                    });
-                }
-                RecordedPayload::RasterDraw(draw) => {
-                    record(draw.pipeline.descriptor().multiview_mask)?;
-                }
-                RecordedPayload::RasterIndirect(draw) => {
-                    record(draw.pipeline.descriptor().multiview_mask)?;
-                }
-                RecordedPayload::RasterExecuteSecondary(work) => {
-                    for child in work.commands() {
-                        let RecordedPayload::RasterDraw(draw) = &child.payload else {
-                            return Err(VulkanFailure::Unsupported {
-                                what: "a non-draw secondary raster command",
-                                why: "the portable secondary recorder admits direct draws only",
-                            });
-                        };
-                        record(draw.pipeline.descriptor().multiview_mask)?;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    Err(VulkanFailure::Unsupported {
-        what: "an unterminated Vulkan raster scope",
-        why: "portable recording should emit RasterEnd before finish",
-    })
-}
-
-/// Legacy render passes choose one contents mode for the entire subpass.  If
-/// one portable child is executed, ordinary parent draws are lowered as native
-/// secondaries too, preserving their recorded order.
-fn collect_raster_has_secondary(
-    batch: &PlanBatch,
-    begin_work: usize,
-    begin_command: usize,
-) -> Result<bool, VulkanFailure> {
-    for (work_index, work) in batch.work.iter().enumerate().skip(begin_work) {
-        let first = if work_index == begin_work {
-            begin_command + 1
-        } else {
-            0
-        };
-        for command in work.commands().iter().skip(first) {
-            match &command.payload {
-                RecordedPayload::RasterEnd => return Ok(false),
-                RecordedPayload::RasterExecuteSecondary(_) => return Ok(true),
-                RecordedPayload::RasterBegin(_) => {
-                    return Err(VulkanFailure::Unsupported {
-                        what: "nested Vulkan raster scopes",
-                        why: "portable recording should keep raster scopes linear",
-                    });
-                }
-                _ => {}
-            }
-        }
-    }
-    Err(VulkanFailure::Unsupported {
-        what: "an unterminated Vulkan raster scope",
-        why: "portable recording should emit RasterEnd before finish",
-    })
-}
-
-/// Collects exactly the shader image uses in one linear raster scope before it
-/// is begun natively. Vulkan synchronization commands are invalid inside a
-/// render pass, so raster lowering establishes descriptor layouts at the scope
-/// boundary rather than when each draw is replayed.
-fn collect_raster_shader_texture_uses(
-    batch: &PlanBatch,
-    begin_work: usize,
-    begin_command: usize,
-) -> Result<Vec<TextureUse>, VulkanFailure> {
-    let mut result = Vec::new();
-    // A Vulkan 1.0 render pass cannot insert a pipeline barrier between two
-    // draws. Sample-only reuse is safe, but any storage-image use shared with
-    // another draw would need an in-pass visibility dependency this baseline
-    // does not create. Keep that shape out of the advertised/lowered subset.
-    let mut prior_draw_images = Vec::new();
-    let mut prior_draw_storage_images = Vec::new();
-    for (work_index, work) in batch.work.iter().enumerate().skip(begin_work) {
-        let first_command = if work_index == begin_work {
-            begin_command + 1
-        } else {
-            0
-        };
-        for command in work.commands().iter().skip(first_command) {
-            match &command.payload {
-                RecordedPayload::RasterEnd => return Ok(result),
-                RecordedPayload::RasterBegin(_) => {
-                    return Err(VulkanFailure::Unsupported {
-                        what: "nested Vulkan raster scopes",
-                        why: "portable recording should keep raster scopes linear",
-                    });
-                }
-                RecordedPayload::RasterDraw(_) | RecordedPayload::RasterIndirect(_) => {
-                    let shader_uses: Vec<_> = command
-                        .uses
-                        .iter()
-                        .filter_map(|use_| match use_ {
-                            ResourceUse::Texture(texture)
-                                if matches!(
-                                    texture.intent,
-                                    TextureUseIntent::ShaderRead
-                                        | TextureUseIntent::ShaderReadWrite
-                                ) =>
-                            {
-                                Some(texture.clone())
-                            }
-                            _ => None,
-                        })
-                        .collect();
-                    let current_images: Vec<_> = shader_uses
-                        .iter()
-                        .map(|texture| texture.texture.id())
-                        .collect();
-                    let current_storage_images: Vec<_> = shader_uses
-                        .iter()
-                        .filter(|texture| texture.intent == TextureUseIntent::ShaderReadWrite)
-                        .map(|texture| texture.texture.id())
-                        .collect();
-                    let current_sampled_images: Vec<_> = shader_uses
-                        .iter()
-                        .filter(|texture| texture.intent == TextureUseIntent::ShaderRead)
-                        .map(|texture| texture.texture.id())
-                        .collect();
-                    if current_storage_images
-                        .iter()
-                        .any(|id| current_sampled_images.contains(id))
-                    {
-                        return Err(VulkanFailure::Unsupported {
-                            what: "one Vulkan raster draw binding the same texture as sampled and storage",
-                            why: "one image cannot satisfy SHADER_READ_ONLY_OPTIMAL and GENERAL descriptors simultaneously",
-                        });
-                    }
-                    if current_storage_images
-                        .iter()
-                        .any(|id| prior_draw_images.contains(id))
-                        || prior_draw_storage_images
-                            .iter()
-                            .any(|id| current_images.contains(id))
-                    {
-                        return Err(VulkanFailure::Unsupported {
-                            what: "a Vulkan raster storage image shared across draws in one render pass",
-                            why: "this baseline has no in-render-pass shader memory barrier lowering",
-                        });
-                    }
-                    prior_draw_images.extend(current_images);
-                    prior_draw_storage_images.extend(current_storage_images);
-                    result.extend(shader_uses);
-                }
-                _ => {}
-            }
-        }
-    }
-    Err(VulkanFailure::Unsupported {
-        what: "an unterminated Vulkan raster scope",
-        why: "portable recording should emit RasterEnd before finish",
-    })
-}
-
-fn payload_name(payload: &RecordedPayload) -> &'static str {
-    match payload {
-        RecordedPayload::MeshDispatch(_) => "a mesh dispatch",
-        RecordedPayload::MeshIndirect(_) => "an indirect mesh dispatch",
-        RecordedPayload::RayTracingBegin(_) => "a ray-tracing scope",
-        RecordedPayload::RayTracingDispatch(_) => "a ray dispatch",
-        RecordedPayload::RayTracingEnd => "a ray-tracing scope end",
-        RecordedPayload::AccelerationStructure(_) => "an acceleration-structure command",
-        RecordedPayload::RasterBegin(_) => "a raster scope",
-        RecordedPayload::RasterDraw(_) => "a raster draw",
-        RecordedPayload::RasterClear(_) => "a raster attachment clear",
-        RecordedPayload::RasterEnd => "a raster-scope end",
-        RecordedPayload::ComputeBegin(_) => "a compute scope",
-        RecordedPayload::ComputeDispatch(_) => "a compute dispatch",
-        RecordedPayload::RasterIndirect(_) => "an indirect raster draw",
-        RecordedPayload::ComputeIndirect(_) => "an indirect compute dispatch",
-        RecordedPayload::QueryBegin { .. } => "a query begin",
-        RecordedPayload::QueryEnd { .. } => "a query end",
-        RecordedPayload::TimestampWrite { .. } => "a timestamp write",
-        RecordedPayload::QueryResolve(_) => "a query resolve",
-        RecordedPayload::ComputeEnd => "a compute-scope end",
-        RecordedPayload::Copy(_) => "a copy command",
-        RecordedPayload::Upload(_) => "an upload command",
-        RecordedPayload::Readback(_) => "a readback command",
-        RecordedPayload::DebugPush(_) => "a debug-group push",
-        RecordedPayload::DebugPop => "a debug-group pop",
-        RecordedPayload::DebugMarker(_) => "a debug marker",
-    }
-}
-
-fn native_query_pool(set: &crate::api::query::QuerySet) -> Result<vk::QueryPool, VulkanFailure> {
+pub(super) fn native_query_pool(
+    set: &crate::api::query::QuerySet,
+) -> Result<vk::QueryPool, VulkanFailure> {
     set.native()
         .as_any()
         .downcast_ref::<VulkanQuerySet>()
@@ -1605,7 +811,9 @@ fn native_query_pool(set: &crate::api::query::QuerySet) -> Result<vk::QueryPool,
         })
 }
 
-fn native_buffer(buffer: &crate::api::resource::Buffer) -> Result<vk::Buffer, VulkanFailure> {
+pub(super) fn native_buffer(
+    buffer: &crate::api::resource::Buffer,
+) -> Result<vk::Buffer, VulkanFailure> {
     buffer
         .native()
         .as_any()

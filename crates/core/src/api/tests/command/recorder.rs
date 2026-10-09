@@ -44,12 +44,12 @@ fn a_recorder_prints_its_identity_and_progress_only() {
     // device-side handle.
     let mut recorder = recorder();
     recorder
-        .insert_debug_marker("one command")
+        .insert_debug_marker("one marker")
         .expect("an open recorder accepts a marker");
 
     let printed = format!("{recorder:?}");
     assert!(printed.contains("CommandRecorder"), "{printed}");
-    assert!(printed.contains("commands: 1"), "{printed}");
+    assert!(printed.contains("work_domains: Some"), "{printed}");
     assert!(printed.contains("phase: Open"), "{printed}");
 }
 

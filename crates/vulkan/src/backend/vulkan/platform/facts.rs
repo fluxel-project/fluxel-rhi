@@ -634,22 +634,6 @@ fn record_pipeline_and_binding(facts: &mut CapabilityFacts, limits: VulkanCapabi
                         },
                         BindingSupport::Supported,
                     );
-                    if limits.runtime_sampled_descriptor_array {
-                        facts.record_binding_support(
-                            BindingSupportKey {
-                                visibility,
-                                kind: BindableKind::SampledTexture {
-                                    dimension,
-                                    sample_type,
-                                    multisampled: false,
-                                },
-                                array: true,
-                                runtime_sized: true,
-                                dynamic_offset: false,
-                            },
-                            BindingSupport::Supported,
-                        );
-                    }
                 }
             }
 
@@ -682,6 +666,22 @@ fn record_pipeline_and_binding(facts: &mut CapabilityFacts, limits: VulkanCapabi
                         },
                         BindingSupport::Supported,
                     );
+                    if limits.runtime_sampled_descriptor_array {
+                        facts.record_binding_support(
+                            BindingSupportKey {
+                                visibility,
+                                kind: BindableKind::SampledTexture {
+                                    dimension,
+                                    sample_type,
+                                    multisampled: false,
+                                },
+                                array: true,
+                                runtime_sized: true,
+                                dynamic_offset: false,
+                            },
+                            BindingSupport::Supported,
+                        );
+                    }
                 }
             }
 

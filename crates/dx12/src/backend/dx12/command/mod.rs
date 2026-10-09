@@ -31,12 +31,14 @@
 mod blit;
 mod compute;
 mod copy;
+mod native;
 mod query;
 mod raster;
 mod spine;
 mod transfer;
 mod transition;
 
+pub(crate) use native::{Dx12NativeCommandBuffer, Dx12NativeEncoder};
 pub(crate) use spine::Dx12CommandSpine;
 
 use crate::api::resource::buffer::Buffer;

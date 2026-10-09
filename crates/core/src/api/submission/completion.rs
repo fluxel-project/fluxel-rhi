@@ -27,7 +27,6 @@
 //! ```
 
 use crate::api::command::ResourceUse;
-use crate::api::command::record::RecordedPayload;
 use crate::api::error::{RhiError, RhiErrorKind, RhiResult};
 use crate::api::identity::DeviceIdentity;
 use crate::api::platform::{Device, DeviceLossInfo, DeviceStatus};
@@ -515,10 +514,7 @@ impl Device {
                 .map(|(_, completion)| *completion)
                 .unwrap_or(overall);
             for work in &batch.work {
-                for command in work.commands() {
-                    let RecordedPayload::Readback(ticket) = &command.payload else {
-                        continue;
-                    };
+                for ticket in work.readbacks() {
                     // The order is `set_completion`'s own contract: the point
                     // first, so a caller that observes `Pending` also observes
                     // the point that covers it.

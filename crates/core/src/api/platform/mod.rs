@@ -27,8 +27,12 @@ pub mod backend;
 
 pub use device::{Device, DeviceLossInfo, DeviceStatus};
 #[cfg(any(
-    all(windows, any(feature = "dx12", feature = "vulkan")),
-    all(target_os = "android", feature = "vulkan")
+    all(
+        windows,
+        any(feature = "dx12", feature = "vulkan", feature = "native-gl-wgl")
+    ),
+    all(target_os = "android", feature = "vulkan"),
+    all(target_vendor = "apple", feature = "metal")
 ))]
 pub use provider::PresentationTargetRegistration;
 pub use provider::{AdapterId, AdapterInfo, AdapterSelection, BackendKind, PlatformProvider};

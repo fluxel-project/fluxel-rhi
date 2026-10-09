@@ -29,6 +29,8 @@ mod probes;
 mod provider;
 mod surface;
 mod surface_facts;
+mod typed_compute;
+mod typed_copy;
 #[cfg(all(windows, feature = "native-gl-wgl"))]
 pub(crate) mod wgl;
 mod worker;

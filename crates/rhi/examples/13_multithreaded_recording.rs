@@ -421,7 +421,8 @@ impl Workload {
                         o.pos[1] = (o.delta * std::f32::consts::TAU).sin() * 2.5;
                         let m = model(o);
                         let push = push(mul(vp, m), o.color);
-                        let mut r = d.create_recorder(&RecorderDescriptor::new())?;
+                        let mut r =
+                            d.create_secondary_raster_recorder(&RecorderDescriptor::new())?;
                         let mut s = r.begin_raster(&desc)?;
                         s.set_viewport(Viewport::new(
                             0.,

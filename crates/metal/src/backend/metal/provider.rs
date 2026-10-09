@@ -8,6 +8,8 @@ use objc2_metal::MTLCopyAllDevices;
 use objc2_metal::MTLCreateSystemDefaultDevice;
 use objc2_metal::MTLDevice;
 use objc2_quartz_core::CAMetalLayer;
+use raw_window_handle::RawWindowHandle;
+use raw_window_metal::Layer;
 
 use crate::api::capability::AvailableCapabilities;
 use crate::api::error::{RhiError, RhiErrorKind, RhiResult};
@@ -47,6 +49,34 @@ impl MetalProvider {
         layer: Retained<CAMetalLayer>,
     ) -> PresentationTarget {
         self.targets.register_layer_target(layer)
+    }
+
+    fn register_window_target(&self, window: RawWindowHandle) -> RhiResult<PresentationTarget> {
+        let layer = match window {
+            RawWindowHandle::AppKit(handle) => {
+                // Registration runs from the host's AppKit callback while the
+                // borrowed view remains live on its main thread.
+                unsafe { Layer::from_ns_view(handle.ns_view) }
+            }
+            RawWindowHandle::UiKit(handle) => {
+                // UIKit has the same host-owned main-thread lifetime rule.
+                unsafe { Layer::from_ui_view(handle.ui_view) }
+            }
+            _ => {
+                return Err(RhiError::new(
+                    RhiErrorKind::InvalidUsage,
+                    "Metal presentation requires an AppKit or UIKit window handle",
+                )
+                .at("MetalProvider::register_presentation_target"));
+            }
+        };
+        // `Layer` transfers a +1 retain to the registry. It remains valid until
+        // the portable registration guard retires its opaque target.
+        let layer = unsafe {
+            Retained::from_raw(layer.into_raw().cast().as_ptr())
+                .expect("Layer always owns a CAMetalLayer")
+        };
+        Ok(self.register_layer_target(layer))
     }
 
     fn candidates(&self) -> RhiResult<Vec<Candidate>> {
@@ -117,6 +147,18 @@ fn no_adapter() -> RhiError {
 }
 
 impl ProviderBackend for MetalProvider {
+    fn register_presentation_target(
+        &self,
+        window: RawWindowHandle,
+    ) -> RhiResult<PresentationTarget> {
+        self.register_window_target(window)
+    }
+
+    fn retire_presentation_target(&self, target: &PresentationTarget) -> RhiResult<()> {
+        self.targets.retire(target.id());
+        Ok(())
+    }
+
     fn enumerate_adapters(&self) -> RhiResult<Option<Vec<AdapterInfo>>> {
         Ok(Some(
             self.candidates()?

@@ -552,8 +552,8 @@ fn two_buffers_from_one_device_have_different_ids() {
 
     // `ObjectId`'s own contract is "globally unique within the process", and the
     // counter behind it is process-global rather than per-backend for exactly
-    // this: `RhiError::object` and every tooling definition name an object by
-    // this id, so a collision would make a diagnostic name the wrong object.
+    // this: `RhiError::object` and diagnostic reports name an object by this
+    // id, so a collision would make a diagnostic name the wrong object.
     assert_ne!(first.id(), second.id());
     assert_ne!(first.id().as_u64(), 0);
 }

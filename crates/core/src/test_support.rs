@@ -76,7 +76,7 @@ pub struct NativeGlContextReport {
     pub owner_thread: String,
 }
 
-/// Per-state-domain traffic captured from one fixture execution.
+/// Per-state-domain traffic observed during one fixture execution.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DomainTally {
     pub domain: String,

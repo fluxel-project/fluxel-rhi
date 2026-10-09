@@ -22,4 +22,4 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = ["
 objc2-metal = { version = "=0.3.2", default-features = false, features = ["std", "block2", "MTLBlitCommandEncoder", "MTLAllocation", "MTLArgument", "MTLBuffer", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLComputeCommandEncoder", "MTLComputePipeline", "MTLDepthStencil", "MTLDevice", "MTLDrawable", "MTLEvent", "MTLLibrary", "MTLPipeline", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLSampler", "MTLTexture", "MTLTypes", "MTLVertexDescriptor"] }
 objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "CAMetalLayer", "objc2-metal"] }
 raw-window-handle = "=0.6.2"
-raw-window-metal = "=1.0.0"
+raw-window-metal = "=1.1.0"

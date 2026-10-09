@@ -435,23 +435,18 @@ fn write_images(
 /// The layout recorded in an immutable image descriptor.
 ///
 /// Command lowering must use this exact rule before binding the descriptor.
-/// In particular, depth/stencil sampled views need Vulkan's depth/stencil
-/// read-only layout rather than the color-image shader-read layout.  Keeping
-/// the mapping here prevents descriptor metadata and image barriers from
-/// quietly drifting apart as more command paths are added.
+/// Ordinary Vulkan textures live in `GENERAL` for their whole lifetime.  This
+/// deliberately trades optimal-layout performance for command-buffer
+/// independence: direct encoders can be recorded and submitted in either
+/// order without baking a predecessor's optimal layout into a barrier.
+/// Presentation images are not portable textures and retain their dedicated
+/// PRESENT/COLOR_ATTACHMENT transitions.
 pub(crate) fn descriptor_image_layout(
     descriptor_type: vk::DescriptorType,
-    aspects: TextureAspects,
+    _aspects: TextureAspects,
 ) -> vk::ImageLayout {
     match descriptor_type {
-        vk::DescriptorType::SAMPLED_IMAGE => {
-            if aspects.contains(TextureAspects::DEPTH) || aspects.contains(TextureAspects::STENCIL)
-            {
-                vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL
-            } else {
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
-            }
-        }
+        vk::DescriptorType::SAMPLED_IMAGE => vk::ImageLayout::GENERAL,
         vk::DescriptorType::STORAGE_IMAGE => vk::ImageLayout::GENERAL,
         _ => unreachable!("image-layout mapping only receives portable image descriptor types"),
     }

@@ -7,7 +7,7 @@
 use super::*;
 use crate::api::shader::{PassthroughShaderProvenance, ShaderImmediateRequirement};
 
-/// Trusted passthrough carries capture provenance, not an opaque escape hatch.
+/// Trusted passthrough carries diagnostic provenance, not an opaque escape hatch.
 /// The unsafe marker is only meaningful when both fields identify who established
 /// the exact-code/interface correspondence and how they did it.
 #[test]

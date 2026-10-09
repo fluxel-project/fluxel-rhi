@@ -36,8 +36,7 @@ use crate::api::command::geometry::{
     Color, ColorClearValue, LoadOp, Rect, Viewport, validate_rect, validate_viewport,
 };
 use crate::api::command::record::{
-    BoundGroup, BoundIndexBuffer, ImmediateWrite, MeshDispatch, MeshIndirect, RasterBegin,
-    RasterDraw, RasterIndirect, RecordedPayload, SecondaryRasterWork,
+    BoundGroup, BoundIndexBuffer, ImmediateWrite, RasterBegin, SecondaryRasterWork,
 };
 use crate::api::command::uses::{
     bound_group_uses, buffer_use, frame_use, query_use, require_valid_dynamic_offsets,
@@ -48,7 +47,7 @@ use crate::api::command::{
     TextureUseIntent, require_device,
 };
 use crate::api::error::{RhiError, RhiErrorKind, RhiResult};
-use crate::api::identity::{Label, ObjectId};
+use crate::api::identity::ObjectId;
 use crate::api::pipeline::{MeshPipeline, RasterPipeline, RenderTargetSignature, VertexStepMode};
 use crate::api::query::OcclusionQueryBinding;
 use crate::api::query::{QuerySet, QueryType, validate_query};
@@ -112,7 +111,10 @@ impl CommandRecorder {
             depth_stencil: desc.depth_stencil.clone(),
             occlusion_query_set: desc.occlusion_query_set.clone(),
         };
-        self.record_command(RecordedPayload::RasterBegin(begin), uses, RASTER_DOMAIN);
+        self.encode_native(uses.clone(), RASTER_DOMAIN, |native| {
+            native.raster_begin(&begin, &uses)
+        })?;
+        self.note_native_secondary_begin(&begin);
         self.set_phase(RecorderPhase::RasterScopeOpen);
 
         Ok(RasterScope {
@@ -392,11 +394,10 @@ impl RasterScope<'_> {
             ));
         }
 
-        self.recorder.record_command(
-            RecordedPayload::RasterClear(clear.clone()),
-            uses,
-            RASTER_DOMAIN,
-        );
+        self.recorder
+            .encode_native(uses.clone(), RASTER_DOMAIN, |native| {
+                native.raster_clear(clear, &uses)
+            })?;
         Ok(())
     }
 
@@ -419,13 +420,10 @@ impl RasterScope<'_> {
             .at("RasterScope::execute_secondary"));
         }
         let uses = work.uses().to_vec();
-        self.recorder.record_command(
-            RecordedPayload::RasterExecuteSecondary(Box::new(work)),
-            // Clone the fully validated child use list into this parent's
-            // command-ordered stream before native lowering.
-            uses,
-            RASTER_DOMAIN,
-        );
+        self.recorder
+            .encode_native(uses.clone(), RASTER_DOMAIN, |native| {
+                native.raster_execute_secondary(work, &uses)
+            })?;
         Ok(())
     }
     /// Writes immediate bytes declared by the currently bound raster interface.
@@ -445,6 +443,10 @@ impl RasterScope<'_> {
             "RasterScope::set_immediates",
         )?;
         self.immediates.retain(|existing| existing.offset != offset);
+        self.recorder
+            .encode_native(Vec::new(), RASTER_DOMAIN, |native| {
+                native.raster_set_immediates(&write)
+            })?;
         self.immediates.push(write);
         Ok(())
     }
@@ -473,6 +475,10 @@ impl RasterScope<'_> {
             )
             .at("RasterScope::set_mesh_pipeline"));
         }
+        self.recorder
+            .encode_native(Vec::new(), RASTER_DOMAIN, |native| {
+                native.raster_set_mesh_pipeline(pipeline)
+            })?;
         self.mesh_pipeline = Some(pipeline.clone());
         Ok(())
     }
@@ -507,15 +513,10 @@ impl RasterScope<'_> {
         }
         validate_bound_groups(&pipeline.descriptor().interface, &self.groups)?;
         let uses = self.draw_uses(false)?;
-        self.recorder.record_command(
-            RecordedPayload::MeshDispatch(Box::new(MeshDispatch {
-                pipeline,
-                groups: self.groups.clone(),
-                workgroups: (x, y, z),
-            })),
-            uses,
-            RASTER_DOMAIN,
-        );
+        self.recorder
+            .encode_native(uses.clone(), RASTER_DOMAIN, |native| {
+                native.raster_dispatch_mesh(x, y, z, &uses)
+            })?;
         Ok(())
     }
     pub(crate) fn dispatch_mesh_indirect_inner(
@@ -619,17 +620,17 @@ impl RasterScope<'_> {
                 AccessMask::INDIRECT_READ,
             ));
         }
-        self.recorder.record_command(
-            RecordedPayload::MeshIndirect(Box::new(MeshIndirect {
-                pipeline,
-                groups: self.groups.clone(),
-                arguments: arguments.clone(),
-                offset,
-                count_buffer: count,
-            })),
-            uses,
-            RASTER_DOMAIN,
-        );
+        self.recorder
+            .encode_native(uses.clone(), RASTER_DOMAIN, |native| {
+                native.raster_dispatch_mesh_indirect(
+                    arguments,
+                    offset,
+                    count.as_ref().map(|(buffer, count_offset, max_count)| {
+                        (buffer, *count_offset, *max_count)
+                    }),
+                    &uses,
+                )
+            })?;
         Ok(())
     }
     /// Issues one non-indexed indirect draw from `arguments_offset`.
@@ -645,7 +646,7 @@ impl RasterScope<'_> {
             crate::api::platform::requirements::OptionalFeature::IndirectDraw,
             "RasterScope::draw_indirect",
         )?;
-        self.record_indirect(arguments, arguments_offset, 1, 16, 16, false)
+        self.encode_indirect(arguments, arguments_offset, 1, 16, 16, false)
     }
 
     /// Issues one indexed indirect draw from `arguments_offset`.
@@ -661,7 +662,7 @@ impl RasterScope<'_> {
             crate::api::platform::requirements::OptionalFeature::IndirectDraw,
             "RasterScope::draw_indexed_indirect",
         )?;
-        self.record_indirect(arguments, arguments_offset, 1, 20, 20, true)
+        self.encode_indirect(arguments, arguments_offset, 1, 20, 20, true)
     }
 
     /// Issues `draw_count` non-indexed indirect draws with `stride` bytes between arguments.
@@ -680,7 +681,7 @@ impl RasterScope<'_> {
             16,
             "RasterScope::multi_draw_indirect",
         )?;
-        self.record_indirect(arguments, arguments_offset, draw_count, stride, 16, false)
+        self.encode_indirect(arguments, arguments_offset, draw_count, stride, 16, false)
     }
 
     /// Issues `draw_count` indexed indirect draws with `stride` bytes between arguments.
@@ -699,7 +700,7 @@ impl RasterScope<'_> {
             20,
             "RasterScope::multi_draw_indexed_indirect",
         )?;
-        self.record_indirect(arguments, arguments_offset, draw_count, stride, 20, true)
+        self.encode_indirect(arguments, arguments_offset, draw_count, stride, 20, true)
     }
 
     /// Issues non-indexed indirect draws whose GPU count is clamped by `max_count`.
@@ -711,7 +712,7 @@ impl RasterScope<'_> {
         count_offset: u64,
         max_count: u32,
     ) -> RhiResult<()> {
-        self.record_indirect_count(
+        self.encode_indirect_count(
             arguments,
             arguments_offset,
             count_buffer,
@@ -732,7 +733,7 @@ impl RasterScope<'_> {
         count_offset: u64,
         max_count: u32,
     ) -> RhiResult<()> {
-        self.record_indirect_count(
+        self.encode_indirect_count(
             arguments,
             arguments_offset,
             count_buffer,
@@ -744,7 +745,7 @@ impl RasterScope<'_> {
         )
     }
 
-    fn record_indirect_count(
+    fn encode_indirect_count(
         &mut self,
         arguments: &crate::api::resource::Buffer,
         offset: u64,
@@ -788,7 +789,7 @@ impl RasterScope<'_> {
         )?;
         let pipeline = self.bound_pipeline()?;
         self.validate_groups(&pipeline)?;
-        self.validate_vertex_buffers(&pipeline, &(0..0), &(0..0))?;
+        self.validate_vertex_buffers(&pipeline, None, &(0..0))?;
         if indexed && self.index.is_none() {
             return Err(RhiError::new(
                 RhiErrorKind::InvalidUsage,
@@ -819,31 +820,25 @@ impl RasterScope<'_> {
             PipelineScope::VERTEX,
             AccessMask::INDIRECT_READ,
         ));
-        self.recorder.record_command(
-            RecordedPayload::RasterIndirect(Box::new(RasterIndirect {
-                pipeline,
-                groups: self.groups.clone(),
-                vertex_buffers: self.vertex_buffers.clone(),
-                index: indexed.then(|| self.index.clone()).flatten(),
-                viewport: self.viewport,
-                scissor: self.scissor,
-                blend_constant: self.blend_constant,
-                stencil_reference: self.stencil_reference,
-                arguments: arguments.clone(),
-                arguments_offset: offset,
-                draw_count: max_count,
-                stride: argument_size as u32,
-                count: Some((count_buffer.clone(), count_offset, max_count)),
-            })),
-            uses,
-            RASTER_DOMAIN,
-        );
+        self.recorder
+            .encode_native(uses.clone(), RASTER_DOMAIN, |native| {
+                native.raster_draw_indirect(
+                    arguments,
+                    offset,
+                    max_count,
+                    argument_size as u32,
+                    Some((count_buffer, count_offset, max_count)),
+                    indexed,
+                    &uses,
+                )
+            })?;
+        self.recorder.note_native_secondary_draw(&uses);
         Ok(())
     }
 
     /// Validates one indirect command route. Native lowering is deliberately
     /// capability-gated: no backend is allowed to accept a command it cannot
-    /// replay transactionally.
+    /// encode transactionally.
     fn validate_indirect(
         &mut self,
         arguments: &crate::api::resource::Buffer,
@@ -924,11 +919,9 @@ impl RasterScope<'_> {
         )
     }
 
-    /// Captures the complete draw state after the argument route has passed
-    /// portable validation. Native support is a submission Phase-A decision;
-    /// recording must not turn an advertised capability into an unconditional
-    /// `Unsupported` result.
-    fn record_indirect(
+    /// Encodes an indirect draw after the argument route has passed portable
+    /// validation.
+    fn encode_indirect(
         &mut self,
         arguments: &crate::api::resource::Buffer,
         arguments_offset: u64,
@@ -943,7 +936,7 @@ impl RasterScope<'_> {
         // The GPU-provided argument record determines vertex/index counts, so
         // host validation cannot derive byte bounds. It can and must still prove
         // that every declared vertex slot and the indexed route are bound.
-        self.validate_vertex_buffers(&pipeline, &(0..0), &(0..0))?;
+        self.validate_vertex_buffers(&pipeline, None, &(0..0))?;
         if indexed && self.index.is_none() {
             return Err(RhiError::new(
                 RhiErrorKind::InvalidUsage,
@@ -984,25 +977,19 @@ impl RasterScope<'_> {
             PipelineScope::VERTEX,
             AccessMask::INDIRECT_READ,
         ));
-        self.recorder.record_command(
-            RecordedPayload::RasterIndirect(Box::new(RasterIndirect {
-                pipeline,
-                groups: self.groups.clone(),
-                vertex_buffers: self.vertex_buffers.clone(),
-                index: indexed.then(|| self.index.clone()).flatten(),
-                viewport: self.viewport,
-                scissor: self.scissor,
-                blend_constant: self.blend_constant,
-                stencil_reference: self.stencil_reference,
-                arguments: arguments.clone(),
-                arguments_offset,
-                draw_count,
-                stride,
-                count: None,
-            })),
-            uses,
-            RASTER_DOMAIN,
-        );
+        self.recorder
+            .encode_native(uses.clone(), RASTER_DOMAIN, |native| {
+                native.raster_draw_indirect(
+                    arguments,
+                    arguments_offset,
+                    draw_count,
+                    stride,
+                    None,
+                    indexed,
+                    &uses,
+                )
+            })?;
+        self.recorder.note_native_secondary_draw(&uses);
         Ok(())
     }
     /// Begins an occlusion or pipeline-statistics query in this raster scope.
@@ -1063,20 +1050,16 @@ impl RasterScope<'_> {
         }
         self.recorder
             .mark_query_written(set, index, "RasterScope::begin_query")?;
-        self.recorder.record_command(
-            RecordedPayload::QueryBegin {
-                set: set.clone(),
-                index,
-            },
-            vec![query_use(
-                set,
-                index,
-                1,
-                PipelineScope::VERTEX.union(PipelineScope::FRAGMENT),
-                crate::api::command::QueryAccess::Write,
-            )],
-            RASTER_DOMAIN,
-        );
+        let uses = vec![query_use(
+            set,
+            index,
+            1,
+            PipelineScope::VERTEX.union(PipelineScope::FRAGMENT),
+            crate::api::command::QueryAccess::Write,
+        )];
+        self.recorder.encode_native(uses, RASTER_DOMAIN, |native| {
+            native.raster_begin_query(set, index)
+        })?;
         self.active_query = Some(ActiveQuery {
             set: set.id(),
             index,
@@ -1119,14 +1102,10 @@ impl RasterScope<'_> {
             }
             Some(_) => {}
         }
-        self.recorder.record_command(
-            RecordedPayload::QueryEnd {
-                set: set.clone(),
-                index,
-            },
-            Vec::new(),
-            RASTER_DOMAIN,
-        );
+        self.recorder
+            .encode_native(Vec::new(), RASTER_DOMAIN, |native| {
+                native.raster_end_query(set, index)
+            })?;
         self.active_query = None;
         Ok(())
     }
@@ -1157,20 +1136,16 @@ impl RasterScope<'_> {
         )?;
         self.recorder
             .mark_query_written(set, index, "RasterScope::write_timestamp")?;
-        self.recorder.record_command(
-            RecordedPayload::TimestampWrite {
-                set: set.clone(),
-                index,
-            },
-            vec![query_use(
-                set,
-                index,
-                1,
-                PipelineScope::VERTEX.union(PipelineScope::FRAGMENT),
-                crate::api::command::QueryAccess::Write,
-            )],
-            RASTER_DOMAIN,
-        );
+        let uses = vec![query_use(
+            set,
+            index,
+            1,
+            PipelineScope::VERTEX.union(PipelineScope::FRAGMENT),
+            crate::api::command::QueryAccess::Write,
+        )];
+        self.recorder.encode_native(uses, RASTER_DOMAIN, |native| {
+            native.raster_write_timestamp(set, index)
+        })?;
         Ok(())
     }
     /// Binds a pipeline, if it matches this scope's attachment set.
@@ -1193,6 +1168,10 @@ impl RasterScope<'_> {
             ));
         }
         self.validate_multiview_mask(pipeline.descriptor().multiview_mask)?;
+        self.recorder
+            .encode_native(Vec::new(), RASTER_DOMAIN, |native| {
+                native.raster_set_pipeline(pipeline)
+            })?;
         self.pipeline = Some(pipeline.clone());
         self.immediates.clear();
         Ok(())
@@ -1237,6 +1216,10 @@ impl RasterScope<'_> {
             Some(existing) => *existing = bound,
             None => self.groups.push(bound),
         }
+        self.recorder
+            .encode_native(Vec::new(), RASTER_DOMAIN, |native| {
+                native.raster_set_bind_group(index, group, dynamic_offsets)
+            })?;
         Ok(())
     }
 
@@ -1274,6 +1257,10 @@ impl RasterScope<'_> {
             Some(existing) => existing.1 = binding.clone(),
             None => self.vertex_buffers.push((slot, binding.clone())),
         }
+        self.recorder
+            .encode_native(Vec::new(), RASTER_DOMAIN, |native| {
+                native.raster_set_vertex_buffer(slot, binding)
+            })?;
         Ok(())
     }
 
@@ -1306,6 +1293,10 @@ impl RasterScope<'_> {
         }
         validate_buffer_range(binding.range, binding.buffer.descriptor().size)?;
 
+        self.recorder
+            .encode_native(Vec::new(), RASTER_DOMAIN, |native| {
+                native.raster_set_index_buffer(binding, format)
+            })?;
         self.index = Some(BoundIndexBuffer {
             binding: binding.clone(),
             format,
@@ -1316,6 +1307,10 @@ impl RasterScope<'_> {
     /// Sets the viewport, or leaves the portable default in force.
     pub fn set_viewport(&mut self, viewport: Viewport) -> RhiResult<()> {
         validate_viewport(viewport)?;
+        self.recorder
+            .encode_native(Vec::new(), RASTER_DOMAIN, |native| {
+                native.raster_set_viewport(viewport)
+            })?;
         self.viewport = Some(viewport);
         Ok(())
     }
@@ -1323,6 +1318,10 @@ impl RasterScope<'_> {
     /// Sets the scissor rect, or leaves the portable default in force.
     pub fn set_scissor(&mut self, rect: Rect) -> RhiResult<()> {
         validate_rect(rect, "the scissor rect")?;
+        self.recorder
+            .encode_native(Vec::new(), RASTER_DOMAIN, |native| {
+                native.raster_set_scissor(rect)
+            })?;
         self.scissor = Some(rect);
         Ok(())
     }
@@ -1334,12 +1333,20 @@ impl RasterScope<'_> {
     /// value outside `0.0..=1.0` is a caller's choice and not a portable error.
     /// Refusing it here would make a legal native command illegal.
     pub fn set_blend_constant(&mut self, color: Color) -> RhiResult<()> {
+        self.recorder
+            .encode_native(Vec::new(), RASTER_DOMAIN, |native| {
+                native.raster_set_blend_constant(color)
+            })?;
         self.blend_constant = color;
         Ok(())
     }
 
     /// Sets the stencil reference value.
     pub fn set_stencil_reference(&mut self, value: u32) -> RhiResult<()> {
+        self.recorder
+            .encode_native(Vec::new(), RASTER_DOMAIN, |native| {
+                native.raster_set_stencil_reference(value)
+            })?;
         self.stencil_reference = value;
         Ok(())
     }
@@ -1358,28 +1365,14 @@ impl RasterScope<'_> {
         self.validate_first_instance(&instances, "RasterScope::draw")?;
         let pipeline = self.bound_pipeline()?;
         self.validate_groups(&pipeline)?;
-        self.validate_vertex_buffers(&pipeline, &vertices, &instances)?;
+        self.validate_vertex_buffers(&pipeline, Some(&vertices), &instances)?;
 
         let uses = self.draw_uses(false)?;
-        let draw = RasterDraw {
-            pipeline,
-            groups: self.groups.clone(),
-            vertex_buffers: self.vertex_buffers.clone(),
-            index: None,
-            viewport: self.viewport,
-            scissor: self.scissor,
-            blend_constant: self.blend_constant,
-            stencil_reference: self.stencil_reference,
-            range: vertices,
-            instances,
-            base_vertex: 0,
-            immediates: self.immediates.clone(),
-        };
-        self.recorder.record_command(
-            RecordedPayload::RasterDraw(Box::new(draw)),
-            uses,
-            RASTER_DOMAIN,
-        );
+        self.recorder
+            .encode_native(uses.clone(), RASTER_DOMAIN, |native| {
+                native.raster_draw(vertices, instances, &uses)
+            })?;
+        self.recorder.note_native_secondary_draw(&uses);
         Ok(())
     }
 
@@ -1458,28 +1451,17 @@ impl RasterScope<'_> {
             }
         }
 
-        self.validate_vertex_buffers(&pipeline, &indices, &instances)?;
+        // Index values, rather than the number of indices, determine the
+        // highest vertex fetched. Keep validating the binding and per-instance
+        // bounds, but do not mistake an index count for a vertex count.
+        self.validate_vertex_buffers(&pipeline, None, &instances)?;
 
         let uses = self.draw_uses(true)?;
-        let draw = RasterDraw {
-            pipeline,
-            groups: self.groups.clone(),
-            vertex_buffers: self.vertex_buffers.clone(),
-            index: Some(index),
-            viewport: self.viewport,
-            scissor: self.scissor,
-            blend_constant: self.blend_constant,
-            stencil_reference: self.stencil_reference,
-            range: indices,
-            instances,
-            base_vertex,
-            immediates: self.immediates.clone(),
-        };
-        self.recorder.record_command(
-            RecordedPayload::RasterDraw(Box::new(draw)),
-            uses,
-            RASTER_DOMAIN,
-        );
+        self.recorder
+            .encode_native(uses.clone(), RASTER_DOMAIN, |native| {
+                native.raster_draw_indexed(indices, base_vertex, instances, &uses)
+            })?;
+        self.recorder.note_native_secondary_draw(&uses);
         Ok(())
     }
 
@@ -1510,12 +1492,11 @@ impl RasterScope<'_> {
     /// and this one describes the pass's interior; the two nest in the recording
     /// but never in each other.
     pub fn push_debug_group(&mut self, label: &str) -> RhiResult<()> {
+        self.recorder
+            .encode_native(Vec::new(), RASTER_DOMAIN, |native| {
+                native.raster_push_debug_group(label)
+            })?;
         self.debug_stack.push(label.to_owned());
-        self.recorder.record_command(
-            RecordedPayload::DebugPush(Label(Some(label.to_owned()))),
-            Vec::new(),
-            RASTER_DOMAIN,
-        );
         Ok(())
     }
 
@@ -1532,18 +1513,18 @@ impl RasterScope<'_> {
             ));
         }
         self.recorder
-            .record_command(RecordedPayload::DebugPop, Vec::new(), RASTER_DOMAIN);
+            .encode_native(Vec::new(), RASTER_DOMAIN, |native| {
+                native.raster_pop_debug_group()
+            })?;
         Ok(())
     }
 
     /// Inserts a marker without changing the stack.
     pub fn insert_debug_marker(&mut self, label: &str) -> RhiResult<()> {
-        self.recorder.record_command(
-            RecordedPayload::DebugMarker(Label(Some(label.to_owned()))),
-            Vec::new(),
-            RASTER_DOMAIN,
-        );
-        Ok(())
+        self.recorder
+            .encode_native(Vec::new(), RASTER_DOMAIN, |native| {
+                native.raster_insert_debug_marker(label)
+            })
     }
 
     /// Ends the scope and returns the recorder to the open state.
@@ -1572,7 +1553,7 @@ impl RasterScope<'_> {
 
         let uses = self.end_uses();
         self.recorder
-            .record_command(RecordedPayload::RasterEnd, uses, RASTER_DOMAIN);
+            .encode_native(uses, RASTER_DOMAIN, |native| native.raster_end())?;
         self.recorder.set_phase(RecorderPhase::Open);
         self.ended = true;
         Ok(())
@@ -1662,18 +1643,17 @@ impl RasterScope<'_> {
     ///
     /// Two of section 32.3's three vertex items. The `VERTEX` usage bit was checked
     /// when the buffer was bound, because it is a property of the buffer; what is
-    /// checked here is the *access bound*, which needs the vertex or index range. A
+    /// checked here is the *access bound*, when the vertex range is known. A
     /// slot the input state declares with no attributes reads nothing and needs no
     /// binding.
     ///
-    /// The element count comes from the step mode: a per-vertex binding advances
-    /// once per vertex or index, a per-instance binding once per instance. That is
-    /// section 32.3's "per-vertex/instance access does not exceed the buffer range",
-    /// and it is why the bound is a stride-times-count product rather than a count.
+    /// An indexed draw's index count does not reveal its highest vertex index;
+    /// `None` leaves that bound to native indexed fetching while still checking
+    /// the binding, attribute layout, and any per-instance range.
     fn validate_vertex_buffers(
         &self,
         pipeline: &RasterPipeline,
-        elements: &core::ops::Range<u32>,
+        elements: Option<&core::ops::Range<u32>>,
         instances: &core::ops::Range<u32>,
     ) -> RhiResult<()> {
         for (slot, layout) in pipeline
@@ -1719,7 +1699,7 @@ impl RasterScope<'_> {
             }
 
             let count = match layout.step_mode {
-                VertexStepMode::Vertex => u64::from(elements.end),
+                VertexStepMode::Vertex => elements.map_or(0, |range| u64::from(range.end)),
                 VertexStepMode::Instance => u64::from(instances.end),
             };
             let needed = count.saturating_mul(layout.stride);

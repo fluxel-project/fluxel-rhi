@@ -158,6 +158,12 @@ impl MetalTargetRegistry {
         lock(&self.targets).contains_key(&target)
     }
 
+    /// Retires a host-owned layer after every presentation lease and device
+    /// that may refer to it has been released.
+    pub(crate) fn retire(&self, target: ObjectId) {
+        lock(&self.targets).remove(&target);
+    }
+
     fn layer(&self, target: ObjectId) -> RhiResult<Retained<CAMetalLayer>> {
         lock(&self.targets).get(&target).cloned().ok_or_else(|| {
             RhiError::new(

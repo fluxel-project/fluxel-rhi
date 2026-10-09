@@ -190,7 +190,7 @@ impl SubmissionLaneId {
         not(test),
         expect(
             dead_code,
-            reason = "read by the backend ports and capture tooling as lanes become observable"
+            reason = "read by backend ports and diagnostics as lanes become observable"
         )
     )]
     pub(crate) fn device(&self) -> DeviceIdentity {

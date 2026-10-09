@@ -14,14 +14,18 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::*;
 
+use crate::api::command::{BufferCopy, RecorderDescriptor};
 use crate::api::format::{TextureFormat, TextureSupportQuery};
-use crate::api::identity::DeviceInstanceId;
+use crate::api::identity::{DeviceInstanceId, Label};
 use crate::api::pipeline::{ComputePipelineDescriptor, PipelineInterfaceDescriptor};
 use crate::api::platform::{
     AdapterSelection, BackendKind, DeviceRequestDescriptor, DeviceRequirements, DeviceStatus,
     PlatformProvider,
 };
-use crate::api::resource::{BufferDescriptor, BufferUsage};
+use crate::api::resource::{
+    BufferDescriptor, BufferRange, BufferUploadDescriptor, BufferUsage, ReadbackRequest,
+    ReadbackViewData,
+};
 use crate::api::resource::{
     TextureAspects, TextureDescriptor, TextureUsage, TextureViewDescriptor, TextureViewDimension,
 };
@@ -29,6 +33,7 @@ use crate::api::shader::{
     ArtifactHash, ArtifactProducerVersion, ComputeWorkgroupSize, ShaderAbiVersion, ShaderArtifact,
     ShaderCode, ShaderInterface, ShaderRequirements, ShaderStage,
 };
+use crate::api::submission::{LaneWorkDomains, SubmissionPlanBuilder};
 
 use super::{WebGpuProvider, js, registry};
 
@@ -246,4 +251,92 @@ async fn provider_request_creates_a_healthy_webgpu_device() {
         }
     }
     device.poll().expect("new WebGPU device remains healthy");
+}
+
+/// Typed WebGPU encoder calls must preserve bytes across an upload, native
+/// buffer copy, and asynchronous browser readback. This reaches the immediate
+/// encoder path; submit receives only a finished native command buffer.
+#[wasm_bindgen_test(async)]
+async fn typed_upload_copy_and_readback_round_trip() {
+    let instance = DeviceInstanceId::new(0x5747_5056);
+    let provider = PlatformProvider::new(
+        BackendKind::WebGpu,
+        instance,
+        Box::new(WebGpuProvider::new(instance)),
+    );
+    let device = provider
+        .request_device(DeviceRequestDescriptor::new(
+            AdapterSelection::Default,
+            DeviceRequirements::new(),
+        ))
+        .await
+        .expect("portable WebGPU device request");
+    let lane = device
+        .capabilities()
+        .submission()
+        .lanes()
+        .iter()
+        .find(|lane| lane.domains().contains(LaneWorkDomains::COPY))
+        .map(|lane| lane.id())
+        .expect("WebGPU baseline exposes a copy submission lane");
+    let usage = BufferUsage::COPY_SRC.union(BufferUsage::COPY_DST);
+    let source = device
+        .create_buffer(&BufferDescriptor::new(16, usage).with_label("WebGPU typed upload source"))
+        .expect("create upload source buffer");
+    let destination = device
+        .create_buffer(
+            &BufferDescriptor::new(16, usage).with_label("WebGPU typed copy destination"),
+        )
+        .expect("create copy destination buffer");
+    let expected: [u8; 16] = [
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xf0,
+        0x0f,
+    ];
+    let upload = device
+        .create_buffer_upload(BufferUploadDescriptor::new(source.clone(), 0, expected))
+        .expect("prepare upload");
+    let mut recorder = device
+        .create_recorder(&RecorderDescriptor::new())
+        .expect("create typed command encoder");
+    recorder
+        .encode_upload(&upload)
+        .expect("encode typed upload");
+    recorder
+        .copy_buffer(&BufferCopy {
+            src: source,
+            src_offset: 0,
+            dst: destination.clone(),
+            dst_offset: 0,
+            size: expected.len() as u64,
+        })
+        .expect("encode typed buffer copy");
+    let ticket = recorder
+        .encode_readback(ReadbackRequest::Buffer {
+            label: Label::default(),
+            src: destination,
+            range: BufferRange::new(0, expected.len() as u64),
+        })
+        .expect("encode readback");
+    let work = recorder.finish().expect("finish typed command encoder");
+    let mut plan = SubmissionPlanBuilder::new(&device);
+    plan.add_batch(lane, vec![work])
+        .expect("add copy batch to submission");
+    let receipt = device
+        .submit(plan.build().expect("build copy submission"))
+        .expect("submit typed copy work");
+    device
+        .wait_completion(receipt.completion())
+        .await
+        .expect("browser copy submission completes");
+    let bytes = match ticket
+        .read()
+        .await
+        .expect("browser readback completes")
+        .data()
+    {
+        ReadbackViewData::Buffer { bytes } => bytes.to_vec(),
+        ReadbackViewData::Texture { .. } => panic!("buffer readback returned texture data"),
+        _ => panic!("buffer readback returned an unknown view kind"),
+    };
+    assert_eq!(bytes, expected);
 }

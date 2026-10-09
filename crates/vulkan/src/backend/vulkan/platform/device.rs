@@ -18,6 +18,7 @@ use crate::api::resource::transfer::{ReadbackStatus, ReadbackTicket};
 use crate::api::submission::{CompletionState, SubmissionCapabilities};
 
 use crate::backend::vulkan::binding;
+use crate::backend::vulkan::command::native::VulkanNativeEncoder;
 use crate::backend::vulkan::command::spine::VulkanCommandSpine;
 use crate::backend::vulkan::failure::VulkanFailure;
 use crate::backend::vulkan::ffi;
@@ -472,6 +473,28 @@ impl Drop for VulkanShared {
 impl DeviceBackend for VulkanDevice {
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn create_command_encoder(
+        &self,
+        _descriptor: &crate::api::command::RecorderDescriptor,
+    ) -> RhiResult<Box<dyn crate::api::command::backend::CommandEncoderBackend>> {
+        VulkanNativeEncoder::new(Arc::clone(&self.shared))
+            .map(|encoder| {
+                Box::new(encoder) as Box<dyn crate::api::command::backend::CommandEncoderBackend>
+            })
+            .map_err(|failure| self.observe_failure(failure))
+    }
+
+    fn create_secondary_raster_encoder(
+        &self,
+        _descriptor: &crate::api::command::RecorderDescriptor,
+    ) -> RhiResult<Box<dyn crate::api::command::backend::CommandEncoderBackend>> {
+        VulkanNativeEncoder::new_secondary(Arc::clone(&self.shared))
+            .map(|encoder| {
+                Box::new(encoder) as Box<dyn crate::api::command::backend::CommandEncoderBackend>
+            })
+            .map_err(|failure| self.observe_failure(failure))
     }
 
     fn backend_kind(&self) -> BackendKind {

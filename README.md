@@ -1,7 +1,7 @@
 # Fluxel RHI
 
 `fluxel-rhi` is Fluxel's portable GPU execution layer.  It gives a renderer one
-vocabulary for devices, resources, shader artifacts, recorded commands,
+vocabulary for devices, resources, shader artifacts, command encoding,
 submission, completion, and presentation, while keeping DX12, Vulkan, Metal,
 WebGPU, and the GL family behind the backend seam.
 
@@ -55,7 +55,7 @@ Most callers use these public modules:
 | Create buffers, textures, views, samplers, uploads, and readbacks | `api::resource` |
 | Describe shader artifacts and interfaces | `api::shader` |
 | Define bind-group layouts, bind groups, and pipeline interfaces | `api::binding`, `api::pipeline` |
-| Record raster, compute, copy, resolve, upload, and readback work | `api::command` |
+| Encode raster, compute, copy, resolve, upload, and readback work | `api::command` |
 | Build a dependency-aware submission and observe completion | `api::submission` |
 | Configure a target, acquire a frame, and observe presentation | `api::presentation` |
 | Use query sets | `api::query` |
@@ -96,7 +96,7 @@ async fn submit_work(
         ))
         .await?;
 
-    // Resource, layout, bind-group, recorder, and command calls are synchronous
+    // Resource, layout, bind-group, encoder, and command calls are synchronous
     // logical operations. Shader and raster/compute pipeline creation may await
     // backend compilation.
     let lane = device.capabilities().submission().lanes()[0].id();
@@ -114,7 +114,7 @@ In normal code the `RecordedWork` above comes from this shape:
 
 ```text
 Device::create_recorder
-  -> CommandRecorder
+  -> command encoder
   -> begin_raster / begin_compute / copy / encode_upload / encode_readback
   -> CommandRecorder::finish
   -> RecordedWork
@@ -171,7 +171,7 @@ Only operations that wait for an external or GPU event are async:
 - buffer mapping and `ReadbackTicket::read()`.
 
 Logical object construction (`create_buffer`, `create_texture`, views, samplers,
-bind groups, layouts, pipeline interfaces, recorders) is synchronous.  This is
+bind groups, layouts, pipeline interfaces, command encoders) is synchronous.  This is
 intentional: thread-safe construction is not by itself a future-producing
 operation.
 
@@ -187,7 +187,9 @@ trying to revive old resources.
 
 ## Submission and transient resources
 
-`RecordedWork` contains the command-derived `command::ResourceUse` summary.
+`RecordedWork` owns the backend command buffer and its command-derived
+`command::ResourceUse` summary. Command calls encode directly into that native
+buffer; submission transfers the finished buffer to the GPU.
 The submission builder uses that actual use to validate lane compatibility and
 unordered write hazards.  There is no render-graph declared-use contract in the
 RHI; graph scheduling remains an upper-layer responsibility.

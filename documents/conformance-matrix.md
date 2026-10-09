@@ -2,7 +2,7 @@
 
 > Baseline: commit `54b846c` (`docs: separate graph plans from RHI bindings`), RHI API freeze v13.
 > Purpose: freeze the actual observed capability of every backend **before** the 0.17 B3
-> (native recording / submit separation) refactor, so that "green after refactor" cannot
+> (direct native encoding / submission separation) refactor, so that "green after refactor" cannot
 > be claimed without knowing what was lost. Scope: this repository.
 >
 > Cell states are restricted to: `HardwarePass` · `Unsupported` · `Skipped` · `Failure` · `NotCovered`.

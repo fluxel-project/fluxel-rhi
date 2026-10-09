@@ -411,8 +411,7 @@ fn a_device_reports_backend_facts() {
     assert!(device.poll().is_ok());
     assert!(device.wait_idle_blocking().is_ok());
 
-    // Section 7.1 asks tooling to describe what it observes by a process-local
-    // object ID, and this is where a device says what its own is.
+    // A device exposes its process-local object ID for diagnostics.
     let first = device.object_id();
     let (other, _native) = live_device();
     assert_ne!(

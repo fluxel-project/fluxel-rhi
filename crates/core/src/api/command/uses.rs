@@ -44,8 +44,10 @@
 use crate::api::binding::{
     BindGroup, BindGroupIndex, BindingKind, BindingResource, BufferBindingAccess, StorageAccess,
 };
-use crate::api::command::copy::BufferTextureCopy;
-use crate::api::command::record::{BoundGroup, CopyRecord};
+use crate::api::command::copy::{
+    BufferCopy, BufferTextureCopy, TextureBlit, TextureCopy, TextureResolve,
+};
+use crate::api::command::record::BoundGroup;
 use crate::api::error::{RhiError, RhiErrorKind, RhiResult};
 use crate::api::format::{block_extent, logical_bytes_per_block};
 use crate::api::pipeline::PipelineInterface;
@@ -872,32 +874,29 @@ pub(crate) fn validate_bound_groups(
 /// section 37 keeps attachment compatibility and copy compatibility separate: a
 /// texture that may be a copy destination is not thereby an attachment, and the
 /// intent is what a later check reads to tell them apart.
-pub(crate) fn copy_uses(copy: &CopyRecord) -> Vec<ResourceUse> {
+/// A borrowed copy operation used to derive resource uses without cloning its
+/// descriptor for a native encoder.
+pub(crate) enum CopyOpRef<'a> {
+    ExternalImage(&'a crate::api::external::ExternalImageCopyDescriptor),
+    Buffer(&'a BufferCopy),
+    BufferToTexture(&'a BufferTextureCopy),
+    TextureToBuffer(&'a BufferTextureCopy),
+    Texture(&'a TextureCopy),
+    Resolve(&'a TextureResolve),
+    Blit(&'a TextureBlit),
+}
+
+/// Derives resource uses from a borrowed copy operation.
+pub(crate) fn copy_uses_ref(copy: &CopyOpRef<'_>) -> Vec<ResourceUse> {
     match copy {
-        CopyRecord::ClearBuffer { buffer, range } => vec![ResourceUse::Buffer(BufferUse {
-            buffer: buffer.clone(),
-            range: *range,
-            stages: PipelineScope::COPY,
-            access: AccessMask::COPY_WRITE,
-        })],
-        CopyRecord::ExternalImage(copy) => vec![texture_use(
+        CopyOpRef::ExternalImage(copy) => vec![texture_use(
             &copy.destination,
             subresource_of(&copy.destination_subresource),
             PipelineScope::COPY,
             AccessMask::COPY_WRITE,
             TextureUseIntent::CopyDst,
         )],
-        CopyRecord::ClearTexture {
-            texture,
-            subresources,
-        } => vec![ResourceUse::Texture(TextureUse {
-            texture: texture.clone(),
-            subresources: *subresources,
-            stages: PipelineScope::COPY,
-            access: AccessMask::COPY_WRITE,
-            intent: TextureUseIntent::CopyDst,
-        })],
-        CopyRecord::Buffer(copy) => vec![
+        CopyOpRef::Buffer(copy) => vec![
             buffer_use(
                 &copy.src,
                 BufferRange::new(copy.src_offset, copy.size),
@@ -912,7 +911,7 @@ pub(crate) fn copy_uses(copy: &CopyRecord) -> Vec<ResourceUse> {
             ),
         ],
 
-        CopyRecord::BufferToTexture(copy) => vec![
+        CopyOpRef::BufferToTexture(copy) => vec![
             buffer_use(
                 &copy.buffer,
                 BufferRange::new(copy.buffer_offset, texel_copy_span(copy)),
@@ -928,7 +927,7 @@ pub(crate) fn copy_uses(copy: &CopyRecord) -> Vec<ResourceUse> {
             ),
         ],
 
-        CopyRecord::TextureToBuffer(copy) => vec![
+        CopyOpRef::TextureToBuffer(copy) => vec![
             texture_use(
                 &copy.texture,
                 subresource_of(&copy.texture_subresource),
@@ -944,7 +943,7 @@ pub(crate) fn copy_uses(copy: &CopyRecord) -> Vec<ResourceUse> {
             ),
         ],
 
-        CopyRecord::Texture(copy) => vec![
+        CopyOpRef::Texture(copy) => vec![
             texture_use(
                 &copy.src,
                 subresource_of(&copy.src_subresource),
@@ -961,7 +960,7 @@ pub(crate) fn copy_uses(copy: &CopyRecord) -> Vec<ResourceUse> {
             ),
         ],
 
-        CopyRecord::Resolve(resolve) => vec![
+        CopyOpRef::Resolve(resolve) => vec![
             texture_use(
                 &resolve.src,
                 subresource_of(&resolve.src_subresource),
@@ -978,7 +977,7 @@ pub(crate) fn copy_uses(copy: &CopyRecord) -> Vec<ResourceUse> {
             ),
         ],
 
-        CopyRecord::Blit(blit) => vec![
+        CopyOpRef::Blit(blit) => vec![
             texture_use(
                 &blit.src,
                 subresource_of(&blit.src_subresource),

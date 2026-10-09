@@ -559,7 +559,7 @@ impl Buffer {
 
     /// The descriptor this buffer was created from.
     ///
-    /// Section 18.8 requires a descriptor to be recoverable for capture, which is
+    /// Section 18.8 requires a descriptor to be recoverable for diagnostics, which is
     /// why the buffer retains it rather than only its effects.
     pub fn descriptor(&self) -> &BufferDescriptor {
         &self.inner.descriptor

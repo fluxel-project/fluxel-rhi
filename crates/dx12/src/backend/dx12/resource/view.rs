@@ -23,19 +23,19 @@ use windows::Win32::Graphics::Direct3D12::{
 
 use super::Dx12Texture;
 use crate::api::resource::backend::TextureViewBackend;
-use crate::api::resource::texture::TextureDescriptor;
+use crate::api::resource::texture::{TextureDescriptor, TextureUsage};
 use crate::api::resource::view::{TextureViewDescriptor, TextureViewDimension};
 use crate::backend::dx12::{ffi, platform::facts::dxgi_format};
 
 /// An owned, CPU-visible SRV descriptor. The heap is intentionally retained:
 /// D3D12 descriptor handles are addresses, not references.
 pub(crate) struct Dx12TextureView {
-    _heap: ID3D12DescriptorHeap,
-    cpu: D3D12_CPU_DESCRIPTOR_HANDLE,
+    _heap: Option<ID3D12DescriptorHeap>,
+    cpu: Option<D3D12_CPU_DESCRIPTOR_HANDLE>,
 }
 
 impl Dx12TextureView {
-    pub(crate) fn cpu(&self) -> D3D12_CPU_DESCRIPTOR_HANDLE {
+    pub(crate) fn cpu(&self) -> Option<D3D12_CPU_DESCRIPTOR_HANDLE> {
         self.cpu
     }
 }
@@ -52,6 +52,17 @@ pub(crate) fn create_texture_view(
     base: &TextureDescriptor,
     descriptor: &TextureViewDescriptor,
 ) -> Result<Dx12TextureView, ffi::NativeError> {
+    // Raster attachment views do not need an SRV. Creating one anyway is not
+    // harmless: typed DSV formats such as D32_FLOAT are illegal SRV formats,
+    // and CreateShaderResourceView is void so the driver can report the bad
+    // descriptor only at a later, unrelated call. A view may only carry an SRV
+    // when its texture declared the sampled route.
+    if !base.usage.contains(TextureUsage::SAMPLED) {
+        return Ok(Dx12TextureView {
+            _heap: None,
+            cpu: None,
+        });
+    }
     let format = dxgi_format(descriptor.format.unwrap_or(base.format)).ok_or_else(|| {
         ffi::NativeError::driver_contract_violation(
             "DX12 has no exact DXGI representation for this texture view format",
@@ -74,7 +85,10 @@ pub(crate) fn create_texture_view(
     // SAFETY: `texture` and `srv` live across the call, and `cpu` points at the
     // sole slot of the retained CPU-visible CBV/SRV/UAV heap.
     unsafe { device.CreateShaderResourceView(texture.resource(), Some(&srv), cpu) };
-    Ok(Dx12TextureView { _heap: heap, cpu })
+    Ok(Dx12TextureView {
+        _heap: Some(heap),
+        cpu: Some(cpu),
+    })
 }
 
 fn srv_desc(

@@ -17,7 +17,7 @@ use super::command::WebGpuCommandSpine;
 use super::presentation::WebGpuPresentation;
 use super::registry::{self, WebGpuAdapterMetadata, WebGpuDriver, WebGpuRegistration};
 
-pub(super) struct WebGpuDevice {
+pub(crate) struct WebGpuDevice {
     driver: WebGpuDriver,
     adapter: AdapterInfo,
     facts: CapabilityFacts,
@@ -116,6 +116,24 @@ impl DeviceBackend for WebGpuDevice {
             "WebGPU cannot synchronously block the browser owner thread for queue completion",
         )
         .at("WebGpuDevice::wait_idle"))
+    }
+
+    fn create_command_encoder(
+        &self,
+        _descriptor: &crate::api::command::RecorderDescriptor,
+    ) -> RhiResult<Box<dyn crate::api::command::backend::CommandEncoderBackend>> {
+        super::native::create_native_encoder(&self.driver)
+    }
+
+    fn create_secondary_raster_encoder(
+        &self,
+        _descriptor: &crate::api::command::RecorderDescriptor,
+    ) -> RhiResult<Box<dyn crate::api::command::backend::CommandEncoderBackend>> {
+        Err(RhiError::new(
+            RhiErrorKind::Unsupported,
+            "WebGPU does not support secondary render command buffers",
+        )
+        .at("WebGpuDevice::create_secondary_raster_encoder"))
     }
 
     fn create_buffer(
@@ -242,6 +260,24 @@ impl DeviceBackend for WebGpuDevice {
     ) -> CompletionState {
         self.command.completion_or_register_waker(serial, waker)
     }
+}
+
+pub(crate) fn register_canvas(
+    device: &crate::api::platform::Device,
+    canvas: web_sys::HtmlCanvasElement,
+) -> RhiResult<crate::api::presentation::PresentationTarget> {
+    let native = device
+        .native()
+        .as_any()
+        .downcast_ref::<WebGpuDevice>()
+        .ok_or_else(|| {
+            RhiError::new(
+                RhiErrorKind::WrongDevice,
+                "the supplied device was not created by the WebGPU backend",
+            )
+            .at("WebGPU canvas registration")
+        })?;
+    Ok(super::presentation::register_canvas(&native.driver, canvas))
 }
 
 fn adapter_name(metadata: &WebGpuAdapterMetadata) -> String {

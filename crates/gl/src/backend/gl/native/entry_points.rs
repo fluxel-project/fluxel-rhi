@@ -83,7 +83,7 @@ impl NativeEntryPoints {
     /// string is deliberately insufficient.
     ///
     /// This method does not manufacture extension evidence.  It checks family
-    /// legality so a platform adapter cannot accidentally replay a WebGL-only
+    /// legality so a platform adapter cannot accidentally use a WebGL-only
     /// or desktop-only ledger row against a native context.
     pub(crate) const fn admits(
         self,

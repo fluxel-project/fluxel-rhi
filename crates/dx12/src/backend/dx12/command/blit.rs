@@ -10,9 +10,7 @@
 use std::{mem::ManuallyDrop, slice};
 
 use windows::Win32::Foundation::{FALSE, TRUE};
-use windows::Win32::Graphics::Direct3D::{
-    D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, D3D_ROOT_SIGNATURE_VERSION_1,
-};
+use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 

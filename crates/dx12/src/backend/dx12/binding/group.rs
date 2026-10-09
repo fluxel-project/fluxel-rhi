@@ -562,7 +562,10 @@ fn write_texture(
             device.CopyDescriptorsSimple(
                 1,
                 destination,
-                native.cpu(),
+                native.cpu().ok_or(Dx12Failure::Unsupported {
+                    what: "a texture view without an SRV descriptor",
+                    why: "the texture was created without sampled usage",
+                })?,
                 windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
             );
             Ok(())

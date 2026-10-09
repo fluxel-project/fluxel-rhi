@@ -20,7 +20,6 @@ RHI conformance evidence. Renderer and RenderGraph decisions remain in the
 - [ADR-0015: Freeze plan-scoped transient lifetimes with dedicated fallback](0015-plan-scoped-transient-allocation.md)
 - [ADR-0016: Publish capabilities only with lowering closure](0016-capability-claims-require-lowering-closure.md)
 - [ADR-0017: Keep presentation frames separate from textures and completion](0017-presentation-is-not-a-texture-view.md)
-- [ADR-0018: Preserve RHI observability without owning capture runtime](0018-capture-observability-without-capture-ownership.md)
 - [ADR-0019: Define statistics as logical observation, not profiling](0019-portable-logical-statistics.md)
 - [ADR-0020: Admit optional feature families as complete portable contracts](0020-optional-feature-family-admission.md)
 - [ADR-0021: Make executable shaders own immediate-data ABI](0021-shader-owned-immediate-abi.md)

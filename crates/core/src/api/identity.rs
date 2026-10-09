@@ -32,8 +32,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 /// Process-global rather than one per backend, because "globally unique within
 /// the process" is the type's own contract and a counter per backend cannot
 /// satisfy it: DX12's device counter and a mock device's would each start at 1,
-/// and the collision is not cosmetic — [`super::RhiError::object`] and every
-/// tooling definition describe an object by this id, so two objects sharing one
+/// and the collision is not cosmetic — [`super::RhiError::object`] and
+/// diagnostic reports describe an object by this id, so two objects sharing one
 /// would make a diagnostic name the wrong object.
 ///
 /// Reached only from inside the crate, and only through [`ObjectId::next`]; a
@@ -102,12 +102,11 @@ impl DeviceIdentity {
 ///
 /// - Not equal to a native handle.
 /// - Globally unique within the process.
-/// - Cross-process stability is not guaranteed; capture artifacts reassign
-///   their own capture-local typed IDs (section 52.1).
+/// - Cross-process stability is not guaranteed; IDs are valid only within
+///   their creating process.
 ///
-/// This is the identifier carried by [`super::RhiError::object`] and by every
-/// tooling definition, so it is the one identity that appears in both the
-/// ordinary and the tooling surface.
+/// This is the identifier carried by [`super::RhiError::object`] and diagnostic
+/// reports, so all public object references use the same identity.
 ///
 /// ```compile_fail
 /// use fluxel_rhi::api::ObjectId;
@@ -152,8 +151,8 @@ impl ObjectId {
 /// Human-facing diagnostic text attached to an object or a descriptor.
 ///
 /// A label carries no semantics: it is excluded from canonical hashing
-/// (section 19.8), it never participates in identity comparison, and capture
-/// does not reconstruct it as correctness-relevant state.
+/// (section 19.8), it never participates in identity comparison, and diagnostic
+/// tools do not reconstruct it as correctness-relevant state.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Label(pub Option<String>);
 

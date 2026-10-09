@@ -15,7 +15,7 @@
 //! # Canonicalization (section 48.1)
 //!
 //! Section 48.1 states a rule that reaches across the whole specification: every
-//! descriptor that participates in a compatibility id, a fingerprint, a capture
+//! descriptor that participates in a compatibility id or fingerprint
 //! definition, or a statistics identity comparison must be canonicalized first,
 //! and it splits descriptors into two classes that must not be treated alike.
 //!
@@ -110,8 +110,8 @@ pub struct AllocatorReport {
 ///
 /// Three levels, not five. The RHI has no `Fatal` — device loss is a state a
 /// caller reads from [`crate::api::platform::device::Device::status`], not a
-/// severity a message may declare — and no `Trace`, because per-command tracing
-/// is what the tooling surface is for.
+/// severity a message may declare — and no `Trace`, because the RHI exposes no
+/// per-command tracing facility.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiagnosticSeverity {

@@ -26,9 +26,7 @@
 //! section 4 forbids.
 
 use crate::api::binding::{BindGroup, BindGroupIndex};
-use crate::api::command::record::{
-    BoundGroup, ComputeBegin, ComputeDispatch, ComputeIndirect, ImmediateWrite, RecordedPayload,
-};
+use crate::api::command::record::{BoundGroup, ComputeBegin, ImmediateWrite};
 use crate::api::command::uses::{
     bound_group_uses, query_use, require_valid_dynamic_offsets, validate_bound_groups,
 };
@@ -48,7 +46,7 @@ const COMPUTE_DOMAIN: crate::api::submission::LaneWorkDomains =
 /// A descriptor rather than a bare `begin_compute()`, because a compute pass has no
 /// attachment to carry a label and section 29.2's state machine still puts a
 /// `ComputeScopeOpen` node in the recording. Without a descriptor that node would be
-/// the one unnameable step in a capture or a log.
+/// the one unnameable step in diagnostics.
 #[non_exhaustive]
 #[derive(Clone)]
 pub struct ComputeScopeDescriptor {
@@ -121,11 +119,9 @@ impl CommandRecorder {
         let begin = ComputeBegin {
             label: desc.label.clone(),
         };
-        self.record_command(
-            RecordedPayload::ComputeBegin(begin),
-            Vec::new(),
-            COMPUTE_DOMAIN,
-        );
+        self.encode_native(Vec::new(), COMPUTE_DOMAIN, |native| {
+            native.compute_begin(&begin)
+        })?;
         self.set_phase(RecorderPhase::ComputeScopeOpen);
 
         Ok(ComputeScope {
@@ -192,6 +188,10 @@ impl ComputeScope<'_> {
             "ComputeScope::set_immediates",
         )?;
         self.immediates.retain(|existing| existing.offset != offset);
+        self.recorder
+            .encode_native(Vec::new(), COMPUTE_DOMAIN, |native| {
+                native.compute_set_immediates(&write)
+            })?;
         self.immediates.push(write);
         Ok(())
     }
@@ -248,16 +248,10 @@ impl ComputeScope<'_> {
             stages: crate::api::command::PipelineScope::COMPUTE,
             access: crate::api::command::AccessMask::INDIRECT_READ,
         }));
-        self.recorder.record_command(
-            RecordedPayload::ComputeIndirect(Box::new(ComputeIndirect {
-                pipeline,
-                groups: self.groups.clone(),
-                arguments: arguments.clone(),
-                arguments_offset: offset,
-            })),
-            uses,
-            COMPUTE_DOMAIN,
-        );
+        self.recorder
+            .encode_native(uses.clone(), COMPUTE_DOMAIN, |native| {
+                native.compute_dispatch_indirect(arguments, offset, &uses)
+            })?;
         Ok(())
     }
     /// Begins a pipeline-statistics query in this compute scope.
@@ -284,20 +278,17 @@ impl ComputeScope<'_> {
         }
         self.recorder
             .mark_query_written(set, index, "ComputeScope::begin_query")?;
-        self.recorder.record_command(
-            RecordedPayload::QueryBegin {
-                set: set.clone(),
-                index,
-            },
-            vec![query_use(
-                set,
-                index,
-                1,
-                crate::api::command::PipelineScope::COMPUTE,
-                crate::api::command::QueryAccess::Write,
-            )],
-            COMPUTE_DOMAIN,
-        );
+        let uses = vec![query_use(
+            set,
+            index,
+            1,
+            crate::api::command::PipelineScope::COMPUTE,
+            crate::api::command::QueryAccess::Write,
+        )];
+        self.recorder
+            .encode_native(uses, COMPUTE_DOMAIN, |native| {
+                native.compute_begin_query(set, index)
+            })?;
         self.active_query = Some(ActiveQuery {
             set: set.id(),
             index,
@@ -336,14 +327,10 @@ impl ComputeScope<'_> {
             }
             Some(_) => {}
         }
-        self.recorder.record_command(
-            RecordedPayload::QueryEnd {
-                set: set.clone(),
-                index,
-            },
-            Vec::new(),
-            COMPUTE_DOMAIN,
-        );
+        self.recorder
+            .encode_native(Vec::new(), COMPUTE_DOMAIN, |native| {
+                native.compute_end_query(set, index)
+            })?;
         self.active_query = None;
         Ok(())
     }
@@ -373,20 +360,17 @@ impl ComputeScope<'_> {
         )?;
         self.recorder
             .mark_query_written(set, index, "ComputeScope::write_timestamp")?;
-        self.recorder.record_command(
-            RecordedPayload::TimestampWrite {
-                set: set.clone(),
-                index,
-            },
-            vec![query_use(
-                set,
-                index,
-                1,
-                crate::api::command::PipelineScope::COMPUTE,
-                crate::api::command::QueryAccess::Write,
-            )],
-            COMPUTE_DOMAIN,
-        );
+        let uses = vec![query_use(
+            set,
+            index,
+            1,
+            crate::api::command::PipelineScope::COMPUTE,
+            crate::api::command::QueryAccess::Write,
+        )];
+        self.recorder
+            .encode_native(uses, COMPUTE_DOMAIN, |native| {
+                native.compute_write_timestamp(set, index)
+            })?;
         Ok(())
     }
     /// Binds a compute pipeline.
@@ -400,6 +384,10 @@ impl ComputeScope<'_> {
             self.recorder.device_identity(),
             "the pipeline",
         )?;
+        self.recorder
+            .encode_native(Vec::new(), COMPUTE_DOMAIN, |native| {
+                native.compute_set_pipeline(pipeline)
+            })?;
         self.pipeline = Some(pipeline.clone());
         self.immediates.clear();
         Ok(())
@@ -443,6 +431,10 @@ impl ComputeScope<'_> {
             Some(existing) => *existing = bound,
             None => self.groups.push(bound),
         }
+        self.recorder
+            .encode_native(Vec::new(), COMPUTE_DOMAIN, |native| {
+                native.compute_set_bind_group(index, group, dynamic_offsets)
+            })?;
         Ok(())
     }
 
@@ -490,17 +482,10 @@ impl ComputeScope<'_> {
         }
 
         let uses = self.dispatch_uses()?;
-        let dispatch = ComputeDispatch {
-            pipeline,
-            groups: self.groups.clone(),
-            workgroups: (x, y, z),
-            immediates: self.immediates.clone(),
-        };
-        self.recorder.record_command(
-            RecordedPayload::ComputeDispatch(Box::new(dispatch)),
-            uses,
-            COMPUTE_DOMAIN,
-        );
+        self.recorder
+            .encode_native(uses.clone(), COMPUTE_DOMAIN, |native| {
+                native.compute_dispatch(x, y, z, &uses)
+            })?;
 
         Ok(())
     }
@@ -512,12 +497,11 @@ impl ComputeScope<'_> {
     /// describes the pass's interior, and the two nest in the recording but never in
     /// each other.
     pub fn push_debug_group(&mut self, label: &str) -> RhiResult<()> {
+        self.recorder
+            .encode_native(Vec::new(), COMPUTE_DOMAIN, |native| {
+                native.compute_push_debug_group(label)
+            })?;
         self.debug_stack.push(label.to_owned());
-        self.recorder.record_command(
-            RecordedPayload::DebugPush(Label(Some(label.to_owned()))),
-            Vec::new(),
-            COMPUTE_DOMAIN,
-        );
         Ok(())
     }
 
@@ -533,18 +517,18 @@ impl ComputeScope<'_> {
             ));
         }
         self.recorder
-            .record_command(RecordedPayload::DebugPop, Vec::new(), COMPUTE_DOMAIN);
+            .encode_native(Vec::new(), COMPUTE_DOMAIN, |native| {
+                native.compute_pop_debug_group()
+            })?;
         Ok(())
     }
 
     /// Inserts a marker without changing the stack.
     pub fn insert_debug_marker(&mut self, label: &str) -> RhiResult<()> {
-        self.recorder.record_command(
-            RecordedPayload::DebugMarker(Label(Some(label.to_owned()))),
-            Vec::new(),
-            COMPUTE_DOMAIN,
-        );
-        Ok(())
+        self.recorder
+            .encode_native(Vec::new(), COMPUTE_DOMAIN, |native| {
+                native.compute_insert_debug_marker(label)
+            })
     }
 
     /// Ends the scope and returns the recorder to the open state.
@@ -570,7 +554,7 @@ impl ComputeScope<'_> {
         }
 
         self.recorder
-            .record_command(RecordedPayload::ComputeEnd, Vec::new(), COMPUTE_DOMAIN);
+            .encode_native(Vec::new(), COMPUTE_DOMAIN, |native| native.compute_end())?;
         self.recorder.set_phase(RecorderPhase::Open);
         self.ended = true;
         Ok(())

@@ -207,8 +207,6 @@ pub enum OptionalFeature {
     PipelineCache,
     /// Pipeline-cache serialization and restoration.
     PipelineCacheSerialization,
-    /// Integration with a native graphics debugger capture.
-    NativeGraphicsCapture,
     /// Native allocator/memory diagnostics.
     AllocatorReport,
     /// Import of platform external-memory handles through the extension SPI.

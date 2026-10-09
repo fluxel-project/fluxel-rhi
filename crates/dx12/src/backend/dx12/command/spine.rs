@@ -105,20 +105,16 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::Waker;
 
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Direct3D12::{
-    ID3D12CommandAllocator, ID3D12CommandList, ID3D12CommandQueue, ID3D12Device, ID3D12Fence,
-    ID3D12GraphicsCommandList, ID3D12PipelineState, D3D12_COMMAND_LIST_TYPE_DIRECT,
-    D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMMAND_QUEUE_PRIORITY_NORMAL,
-    D3D12_FENCE_FLAG_NONE,
+    D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAG_NONE,
+    D3D12_COMMAND_QUEUE_PRIORITY_NORMAL, D3D12_FENCE_FLAG_NONE, ID3D12CommandQueue, ID3D12Device,
+    ID3D12Fence, ID3D12GraphicsCommandList,
 };
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+use windows::core::PCWSTR;
 
-use crate::api::command::{
-    record::{CopyRecord, RecordedPayload},
-    ResourceUse,
-};
+use crate::api::command::ResourceUse;
 use crate::api::error::{RhiError, RhiErrorKind, RhiResult};
 use crate::api::identity::Label;
 use crate::api::platform::DeviceLossInfo;
@@ -126,28 +122,13 @@ use crate::api::resource::backend::{MappedBufferBackend, MappingRequestBackend};
 use crate::api::resource::transfer::ReadbackStatus;
 use crate::api::resource::{BufferRange, MapMode};
 use crate::api::submission::backend::{SubmissionOutcome, SubmissionRequest};
-use crate::api::submission::plan::PlanBatch;
 use crate::api::submission::{CompletionFailure, CompletionState};
 use crate::backend::dx12::ffi;
 use crate::backend::dx12::platform::device::Dx12LossState;
 
-use super::blit::lower_texture_blit;
-use super::compute::{lower_compute_dispatch, lower_compute_indirect};
-use super::copy::lower_buffer_copy;
 use super::dx12_buffer;
-use super::query::{
-    begin as lower_query_begin, end as lower_query_end, resolve as lower_query_resolve,
-};
-use super::raster::{
-    lower_raster_begin, lower_raster_clear, lower_raster_draw, lower_raster_end,
-    lower_raster_indirect, lower_secondary_raster_work, RasterScopeState,
-};
-use super::transfer::lower_texture_clear;
-use super::transfer::{
-    lower_buffer_clear, lower_buffer_texture_copy, lower_readback, lower_texture_copy,
-    lower_upload, publish_readback, CommittedBatch,
-};
-use crate::backend::dx12::failure::{ref_native, Dx12Failure};
+use super::transfer::{CommittedBatch, publish_readback};
+use crate::backend::dx12::failure::Dx12Failure;
 
 use crate::backend::dx12::resource::{self, Dx12Buffer, Dx12BufferHeap};
 
@@ -219,8 +200,6 @@ pub(crate) struct Dx12CommandSpine {
 
 /// The mutable half of a spine.
 struct SpineState {
-    /// Command-list slots, in creation order.
-    slots: Vec<Slot>,
     /// The highest serial handed to `Signal` so far, or zero before the first
     /// submission.
     ///
@@ -401,84 +380,6 @@ impl Drop for Dx12DeferredMapping {
     }
 }
 
-impl SpineState {
-    /// Claims a slot free to record into, creating one if none is.
-    ///
-    /// `claimed` names the slots this submission has already taken, so one plan
-    /// never records two batches into the same list — a list is closed before the
-    /// next batch is recorded, and resetting it again would be a second recording
-    /// into a list already on the queue.
-    fn claim(
-        &mut self,
-        device: &ID3D12Device,
-        completed: u64,
-        claimed: &[usize],
-    ) -> Result<usize, ffi::NativeError> {
-        let free = (0..self.slots.len()).find(|index| {
-            self.slots[*index].in_flight_until <= completed && !claimed.contains(index)
-        });
-        match free {
-            Some(index) => Ok(index),
-            None => {
-                self.slots.push(Slot::new(device)?);
-                Ok(self.slots.len() - 1)
-            }
-        }
-    }
-}
-
-/// One command allocator and the command list recorded into it.
-///
-/// Paired rather than pooled separately because Direct3D 12 ties them: a list may
-/// only be reset against an allocator that is itself free to reset, so a free
-/// list with a busy allocator is not a reusable slot.
-struct Slot {
-    allocator: ID3D12CommandAllocator,
-    list: ID3D12GraphicsCommandList,
-    /// The serial of the last submission that recorded into this slot. The slot
-    /// may be reused once the fence has reached it.
-    in_flight_until: u64,
-}
-
-impl Slot {
-    /// Creates an allocator and the list recorded into it, closed.
-    ///
-    /// The list is closed immediately, which is the pattern Direct3D 12's own
-    /// samples use and not a formality: `CreateCommandList` hands back a list in
-    /// the *recording* state, and this spine's first act on a slot is always a
-    /// `Reset`. Leaving it open would make every slot's life begin in a state
-    /// nothing here expects.
-    ///
-    /// The initial pipeline state is null, which is the documented way to say
-    /// "no pipeline is bound".
-    fn new(device: &ID3D12Device) -> Result<Self, ffi::NativeError> {
-        // SAFETY: both calls write one interface pointer into the out-parameter
-        // the binding owns and convert only on success. The command list type is
-        // a plain enum value, the allocator outlives the call, and the null
-        // initial state is the documented "none".
-        unsafe {
-            let allocator = device
-                .CreateCommandAllocator::<ID3D12CommandAllocator>(D3D12_COMMAND_LIST_TYPE_DIRECT)
-                .map_err(|error| ffi::NativeError::new(&error, "Dx12Device::submit"))?;
-            let list = device
-                .CreateCommandList::<_, _, ID3D12GraphicsCommandList>(
-                    0,
-                    D3D12_COMMAND_LIST_TYPE_DIRECT,
-                    &allocator,
-                    None::<&ID3D12PipelineState>,
-                )
-                .map_err(|error| ffi::NativeError::new(&error, "Dx12Device::submit"))?;
-            list.Close()
-                .map_err(|error| ffi::NativeError::new(&error, "Dx12Device::submit"))?;
-            Ok(Self {
-                allocator,
-                list,
-                in_flight_until: 0,
-            })
-        }
-    }
-}
-
 /// An event handle that closes itself.
 ///
 /// `wait_idle` is the only thing in this backend that needs one, and it needs it
@@ -567,7 +468,6 @@ impl Dx12CommandSpine {
                 .CreateFence::<ID3D12Fence>(0, D3D12_FENCE_FLAG_NONE)
                 .map_err(|error| ffi::NativeError::new(&error, "Dx12Provider::request_device"))?;
             let state = Arc::new(Mutex::new(SpineState {
-                slots: Vec::new(),
                 issued: 0,
                 completed: 0,
                 unobservable: None,
@@ -646,7 +546,7 @@ impl Dx12CommandSpine {
     ) -> Result<SubmissionOutcome, Dx12Failure> {
         // Read before taking the state lock: observing the removal sentinel also
         // terminates retained readbacks, which needs that lock.
-        let completed = self.completed_value()?;
+        self.completed_value()?;
         let mut state = self.lock();
 
         // An empty plan is a legal portable no-op.  In particular, do not let
@@ -659,119 +559,99 @@ impl Dx12CommandSpine {
             });
         }
 
-        // Phase A. Every batch is recorded into its own list before a single
-        // list is executed, so a refusal below leaves the queue untouched — which
-        // is what makes "an `Err` from submit proves nothing was accepted"
-        // (section 41.3) true rather than merely intended.
-        let mut claimed: Vec<usize> = Vec::with_capacity(request.batches.len());
-        for _ in request.batches {
-            let index = state
-                .claim(&self.device, completed, &claimed)
-                .map_err(Dx12Failure::Native)?;
-            claimed.push(index);
+        // Every portable verb was lowered when its recorder received it.  The
+        // only pre-acceptance work left here is proving that each work item has
+        // one finished DX12 list and taking that list for this one submission.
+        // No draw, dispatch, copy, or binding state is reconstructed here.
+        let first_serial = state.issued + 1;
+        for batch in request.batches {
+            for work in &batch.work {
+                let Some(native) = work
+                    .native()
+                    .as_any()
+                    .downcast_ref::<super::Dx12NativeCommandBuffer>()
+                else {
+                    return Err(Dx12Failure::Unsupported {
+                        what: "a command buffer from another backend",
+                        why: "a Direct3D 12 queue can execute only Direct3D 12 command lists",
+                    });
+                };
+                if !native.is_available() {
+                    return Err(Dx12Failure::Unsupported {
+                        what: "a command buffer submitted more than once",
+                        why: "a Direct3D 12 command allocator cannot be reused until the original submission retires",
+                    });
+                }
+            }
         }
 
-        let first_serial = state.issued + 1;
-        let phase_a = (|| {
-            let mut recorded: Vec<(ID3D12CommandList, CommittedBatch)> =
-                Vec::with_capacity(request.batches.len());
-            for (offset, batch) in request.batches.iter().enumerate() {
-                let serial = first_serial + offset as u64;
-                let slot = &mut state.slots[claimed[offset]];
-                // SAFETY: the slot was claimed as free — the fence has passed the
-                // batch last recorded into it — so this reset touches neither an
-                // allocator nor a list the GPU can still be reading. `Reset` on the
-                // list returns it to the recording state it must be in before
-                // commands are appended, and the null initial state means no pipeline
-                // is bound.
-                unsafe {
-                    slot.allocator.Reset().map_err(|error| ref_native(&error))?;
-                    slot.list
-                        .Reset(&slot.allocator, None::<&ID3D12PipelineState>)
-                        .map_err(|error| ref_native(&error))?;
-                }
-
-                let mut committed = CommittedBatch {
-                    serial,
-                    staging: Vec::new(),
-                    readbacks: Vec::new(),
-                    compute_pipelines: Vec::new(),
-                    raster_pipelines: Vec::new(),
-                    raster_buffers: Vec::new(),
-                    raster_views: Vec::new(),
-                    raster_frames: Vec::new(),
-                    raster_textures: Vec::new(),
-                    raster_descriptor_heaps: Vec::new(),
-                    blit_root_signatures: Vec::new(),
-                    blit_pipeline_states: Vec::new(),
-                    blit_resources: Vec::new(),
-                    bind_groups: Vec::new(),
-                    query_sets: Vec::new(),
-                    indirect_buffers: Vec::new(),
-                    command_signatures: Vec::new(),
-                    secondary_bundles: Vec::new(),
-                    resource_uses: Vec::new(),
-                };
-                self.record_batch(&slot.list, batch, &mut committed)?;
-
-                // SAFETY: closing a list in the recording state is always valid and
-                // is what makes it executable; the list is not executed until the
-                // loop below.
-                unsafe { slot.list.Close() }.map_err(|error| ref_native(&error))?;
-                recorded.push((ID3D12CommandList::from(slot.list.clone()), committed));
+        let mut recorded = Vec::with_capacity(request.batches.len());
+        for batch in request.batches {
+            let mut lists = Vec::with_capacity(batch.work.len());
+            for work in &batch.work {
+                let native = work
+                    .native()
+                    .as_any()
+                    .downcast_ref::<super::Dx12NativeCommandBuffer>()
+                    .expect("DX12 native command buffer was preflighted above");
+                lists.push(
+                    native
+                        .take()
+                        .expect("a preflighted command buffer was consumed once"),
+                );
             }
-            Ok::<_, Dx12Failure>(recorded)
-        })();
-
-        let recorded = match phase_a {
-            Ok(recorded) => recorded,
-            Err(error) => {
-                // No list reached ExecuteCommandLists, therefore no native work
-                // retains any of these allocators/lists.  Dropping every claimed
-                // slot (rather than trying to Close an unknown recording state)
-                // is the transactional rollback: a failed Reset/record/Close
-                // cannot poison the next otherwise-valid submission.
-                rollback_claimed_slots(&mut state, &claimed);
-                return Err(error);
-            }
-        };
+            recorded.push(lists);
+        }
 
         // Phase B. From the first execute onward this may not fail: section 41.3
         // forbids telling a caller nothing happened once a queue has been fed.
         state.issued = first_serial + request.batches.len() as u64 - 1;
-        for (offset, slot_index) in claimed.iter().enumerate() {
-            state.slots[*slot_index].in_flight_until = first_serial + offset as u64;
-        }
         let mut signals_intact = true;
         let mut terminal_signal_loss = None;
-        for (offset, (list, mut committed)) in recorded.into_iter().enumerate() {
+        for (offset, lists) in recorded.into_iter().enumerate() {
             let serial = first_serial + offset as u64;
+            let mut committed_batches = Vec::with_capacity(lists.len().max(1));
+            let native_lists = lists
+                .iter()
+                .map(super::native::FinishedList::command_list)
+                .collect::<Vec<_>>();
             // SAFETY: the list was closed above and is executed exactly once. The
             // binding copies the slice's pointers into the queue's own array for
             // the duration of the call, and the queue holds its own reference to
             // every list it is given.
-            unsafe { self.queue.ExecuteCommandLists(&[Some(list)]) };
+            if !native_lists.is_empty() {
+                unsafe {
+                    self.queue.ExecuteCommandLists(
+                        &native_lists.into_iter().map(Some).collect::<Vec<_>>(),
+                    )
+                };
+            }
 
-            // ExecuteCommandLists is the acceptance boundary. Only after this
-            // call may a mapping request wait on this serial; doing it while
-            // Phase A records would leave a failed transactional submit with a
-            // phantom GPU dependency.
-            for resource_use in request.batches[offset]
-                .work
-                .iter()
-                .flat_map(|work| work.resource_uses())
-            {
-                // The plan is consumed as soon as `submit` returns, whereas
-                // D3D12 may still execute this list. Keep every portable
-                // resource named by its actual work alive until `serial`
-                // completes; transfer-only textures otherwise have no bind
-                // group or raster scope that happens to retain them.
-                committed.resource_uses.push(resource_use.clone());
-                if let ResourceUse::Buffer(buffer_use) = resource_use {
-                    if let Ok(native) = dx12_buffer(&buffer_use.buffer) {
-                        native.mark_accepted(serial);
+            for (work, mut finished) in request.batches[offset].work.iter().zip(lists) {
+                finished.committed.serial = serial;
+                finished
+                    .committed
+                    .primary_lists
+                    .push((finished.allocator, finished.list));
+                for resource_use in work.resource_uses() {
+                    // The plan is consumed as soon as `submit` returns, whereas
+                    // D3D12 may still execute this list. Keep every portable
+                    // resource named by its actual work alive until `serial`
+                    // completes; transfer-only textures otherwise have no bind
+                    // group or raster scope that happens to retain them.
+                    finished.committed.resource_uses.push(resource_use.clone());
+                    if let ResourceUse::Buffer(buffer_use) = resource_use {
+                        if let Ok(native) = dx12_buffer(&buffer_use.buffer) {
+                            native.mark_accepted(serial);
+                        }
                     }
                 }
+                committed_batches.push(finished.committed);
+            }
+            if committed_batches.is_empty() {
+                let mut empty = CommittedBatch::pending();
+                empty.serial = serial;
+                committed_batches.push(empty);
             }
 
             // DXGI Present transfers ownership after the batch its plan point
@@ -822,7 +702,7 @@ impl Dx12CommandSpine {
             // observable completion may still be reading its upload staging, and
             // freeing host memory the GPU is copying out of is a use-after-free
             // rather than a leak.
-            state.pending.push_back(committed);
+            state.pending.extend(committed_batches);
         }
 
         // `Signal` is Phase B: its failure cannot become a submit error, but a
@@ -847,164 +727,6 @@ impl Dx12CommandSpine {
                 .map(|(offset, batch)| (batch.point, first_serial + offset as u64))
                 .collect(),
         })
-    }
-
-    /// Records one batch's work into `list`.
-    ///
-    /// Every payload this spine cannot lower is refused here, before the list is
-    /// closed and long before it is executed — which is what keeps section 41.3's
-    /// Phase A honest for a plan whose first batch is a copy and whose second is a
-    /// draw.
-    ///
-    /// The `device` each lowering takes is this spine's own rather than a
-    /// parameter a caller supplies, which is the one reason this stays a method
-    /// while the three lowerings are free functions.
-    fn record_batch(
-        &self,
-        list: &ID3D12GraphicsCommandList,
-        batch: &PlanBatch,
-        committed: &mut CommittedBatch,
-    ) -> Result<(), Dx12Failure> {
-        let mut raster = None::<RasterScopeState>;
-        for work in &batch.work {
-            for command in work.commands() {
-                match &command.payload {
-                    RecordedPayload::RasterBegin(begin) => {
-                        if raster.is_some() {
-                            return Err(Dx12Failure::Unsupported {
-                                what: "nested raster scopes",
-                                why: "the portable recorder never emits them",
-                            });
-                        }
-                        raster = Some(lower_raster_begin(&self.device, list, begin, committed)?);
-                    }
-                    RecordedPayload::RasterDraw(draw) => {
-                        let Some(scope) = raster.as_ref() else {
-                            return Err(Dx12Failure::Unsupported {
-                                what: "a raster draw outside a raster scope",
-                                why: "the portable recorder never emits it",
-                            });
-                        };
-                        lower_raster_draw(list, draw, &command.uses, scope, committed)?;
-                    }
-                    RecordedPayload::RasterClear(clear) => {
-                        let Some(scope) = raster.as_ref() else {
-                            return Err(Dx12Failure::Unsupported {
-                                what: "a raster attachment clear outside a raster scope",
-                                why: "the portable recorder never emits it",
-                            });
-                        };
-                        lower_raster_clear(&self.device, list, clear, scope, committed)?;
-                    }
-                    RecordedPayload::RasterIndirect(draw) => {
-                        let Some(scope) = raster.as_ref() else {
-                            return Err(Dx12Failure::Unsupported {
-                                what: "an indirect raster draw outside a raster scope",
-                                why: "the portable recorder never emits it",
-                            });
-                        };
-                        lower_raster_indirect(
-                            &self.device,
-                            list,
-                            draw,
-                            &command.uses,
-                            scope,
-                            committed,
-                        )?;
-                    }
-                    RecordedPayload::RasterExecuteSecondary(work) => {
-                        let Some(scope) = raster.as_ref() else {
-                            return Err(Dx12Failure::Unsupported {
-                                what: "secondary raster work outside a raster scope",
-                                why: "the portable recorder never emits it",
-                            });
-                        };
-                        lower_secondary_raster_work(&self.device, list, work, scope, committed)?;
-                    }
-                    RecordedPayload::RasterEnd => {
-                        let Some(scope) = raster.take() else {
-                            return Err(Dx12Failure::Unsupported {
-                                what: "a raster-scope end without a scope",
-                                why: "the portable recorder never emits it",
-                            });
-                        };
-                        lower_raster_end(list, scope, committed);
-                    }
-                    RecordedPayload::Copy(CopyRecord::Buffer(copy)) => {
-                        lower_buffer_copy(list, copy)?;
-                    }
-                    RecordedPayload::Copy(CopyRecord::ClearBuffer { buffer, range }) => {
-                        lower_buffer_clear(&self.device, list, buffer, *range, committed)?;
-                    }
-                    RecordedPayload::Copy(CopyRecord::ClearTexture {
-                        texture,
-                        subresources,
-                    }) => {
-                        lower_texture_clear(&self.device, list, texture, *subresources, committed)?;
-                    }
-                    RecordedPayload::Copy(CopyRecord::Texture(copy)) => {
-                        lower_texture_copy(list, copy)?;
-                    }
-                    RecordedPayload::Copy(CopyRecord::Blit(blit)) => {
-                        lower_texture_blit(&self.device, list, blit, committed)?;
-                    }
-                    RecordedPayload::Copy(CopyRecord::BufferToTexture(copy)) => {
-                        lower_buffer_texture_copy(&self.device, list, copy, true)?;
-                    }
-                    RecordedPayload::Copy(CopyRecord::TextureToBuffer(copy)) => {
-                        lower_buffer_texture_copy(&self.device, list, copy, false)?;
-                    }
-                    RecordedPayload::Upload(job) => {
-                        lower_upload(&self.device, list, job, committed)?;
-                    }
-                    RecordedPayload::Readback(ticket) => {
-                        lower_readback(&self.device, list, ticket, committed)?;
-                    }
-                    RecordedPayload::ComputeBegin(_) | RecordedPayload::ComputeEnd => {}
-                    RecordedPayload::ComputeDispatch(dispatch) => {
-                        lower_compute_dispatch(list, dispatch, &command.uses, committed)?;
-                    }
-                    RecordedPayload::ComputeIndirect(dispatch) => {
-                        lower_compute_indirect(
-                            &self.device,
-                            list,
-                            dispatch,
-                            &command.uses,
-                            committed,
-                        )?;
-                    }
-                    RecordedPayload::QueryBegin { set, index } => {
-                        lower_query_begin(list, set, *index, committed)?;
-                    }
-                    RecordedPayload::QueryEnd { set, index } => {
-                        lower_query_end(list, set, *index, committed)?;
-                    }
-                    RecordedPayload::QueryResolve(query) => {
-                        lower_query_resolve(list, query, committed)?;
-                    }
-                    // D3D12's event methods copy the marker payload during the
-                    // call. They are legal on every command list and carry no
-                    // capability bit, so refusing a valid portable debug command
-                    // here would make otherwise supported recordings fail.
-                    RecordedPayload::DebugPush(label) => lower_debug_push(list, label),
-                    RecordedPayload::DebugPop => lower_debug_pop(list),
-                    RecordedPayload::DebugMarker(label) => lower_debug_marker(list, label),
-                    other => {
-                        return Err(Dx12Failure::Unsupported {
-                            what: payload_name(other),
-                            why: NOT_LOWERED,
-                        });
-                    }
-                }
-            }
-        }
-        if raster.is_some() {
-            return Err(Dx12Failure::Unsupported {
-                what: "an unterminated raster scope",
-                why: "the portable recorder never emits it",
-            });
-        }
-        Ok(())
     }
 
     /// Reports one serial's state, without blocking.
@@ -1237,19 +959,19 @@ fn debug_label_bytes(label: &Label) -> (*const core::ffi::c_void, u32) {
     (bytes.as_ptr().cast(), size)
 }
 
-fn lower_debug_push(list: &ID3D12GraphicsCommandList, label: &Label) {
+pub(super) fn lower_debug_push(list: &ID3D12GraphicsCommandList, label: &Label) {
     let (data, size) = debug_label_bytes(label);
     // SAFETY: `data` points into `label`, which lives for this call; D3D12
     // copies marker data synchronously and retains no pointer afterwards.
     unsafe { list.BeginEvent(0, Some(data), size) };
 }
 
-fn lower_debug_pop(list: &ID3D12GraphicsCommandList) {
+pub(super) fn lower_debug_pop(list: &ID3D12GraphicsCommandList) {
     // SAFETY: closes the event opened by the recorder-validated debug stack.
     unsafe { list.EndEvent() };
 }
 
-fn lower_debug_marker(list: &ID3D12GraphicsCommandList, label: &Label) {
+pub(super) fn lower_debug_marker(list: &ID3D12GraphicsCommandList, label: &Label) {
     let (data, size) = debug_label_bytes(label);
     // SAFETY: identical synchronous-copy argument as `lower_debug_push`.
     unsafe { list.SetMarker(0, Some(data), size) };
@@ -1266,30 +988,6 @@ fn wake_serial(waiters: &Mutex<CompletionWaiters>, serial: u64) {
     for waker in registered {
         waker.wake();
     }
-}
-
-/// Drops all list/allocator pairs that Phase A reserved but never committed.
-///
-/// A command list whose lowering failed may still be open; calling `Close` as a
-/// cleanup operation would itself have an error path and leaves the next reset
-/// dependent on undocumented list state.  No queue owns these lists yet, so
-/// removing their slots is both simpler and stronger: COM releases the old pair,
-/// and the next submission creates a known-closed replacement when it needs one.
-fn rollback_claimed_slots(state: &mut SpineState, claimed: &[usize]) {
-    for index in rollback_indices(claimed) {
-        state.slots.remove(index);
-    }
-}
-
-/// The stable removal order for a Phase-A transaction.  Removing from the end
-/// keeps every still-to-remove slot index valid, including when a future claim
-/// implementation happens to return duplicates.
-fn rollback_indices(claimed: &[usize]) -> Vec<usize> {
-    let mut indices = claimed.to_vec();
-    indices.sort_unstable();
-    indices.dedup();
-    indices.reverse();
-    indices
 }
 
 /// The sole fence-to-waker bridge for one device.
@@ -1527,66 +1225,18 @@ fn drain(state: &mut SpineState, reached: u64) -> Option<DeviceLossInfo> {
     None
 }
 
-/// The reason every unlifted payload reports.
-const NOT_LOWERED: &str = "this recorded operation has no Direct3D 12 lowering yet, and \
-                           section 9.4 forbids executing a plan while silently dropping it";
-
-/// What an unlifted payload asked for, for the refusal's first clause.
-///
-/// Exhaustive rather than a catch-all, so adding a payload to
-/// [`RecordedPayload`] is a compile error here instead of a refusal that names
-/// the wrong thing.
-fn payload_name(payload: &RecordedPayload) -> &'static str {
-    match payload {
-        RecordedPayload::MeshDispatch(_) => "a mesh dispatch",
-        RecordedPayload::MeshIndirect(_) => "an indirect mesh dispatch",
-        RecordedPayload::RayTracingBegin(_) => "a ray-tracing scope",
-        RecordedPayload::RayTracingDispatch(_) => "a ray dispatch",
-        RecordedPayload::RayTracingEnd => "the end of a ray-tracing scope",
-        RecordedPayload::AccelerationStructure(_) => "an acceleration-structure operation",
-        RecordedPayload::RasterBegin(_) => "a raster scope",
-        RecordedPayload::RasterDraw(_) => "a draw",
-        RecordedPayload::RasterClear(_) => "a raster attachment clear",
-        RecordedPayload::RasterEnd => "the end of a raster scope",
-        RecordedPayload::RasterExecuteSecondary(_) => "secondary raster work",
-        RecordedPayload::ComputeBegin(_) => "a compute scope",
-        RecordedPayload::ComputeDispatch(_) => "a dispatch",
-        RecordedPayload::RasterIndirect(_) => "an indirect raster draw",
-        RecordedPayload::ComputeIndirect(_) => "an indirect compute dispatch",
-        RecordedPayload::QueryBegin { .. } => "a query begin",
-        RecordedPayload::QueryEnd { .. } => "a query end",
-        RecordedPayload::TimestampWrite { .. } => "a timestamp write",
-        RecordedPayload::QueryResolve(_) => "a query resolve",
-        RecordedPayload::ComputeEnd => "the end of a compute scope",
-        RecordedPayload::Copy(_) => "a copy this spine has no lowering for",
-        RecordedPayload::Upload(_) => "an upload",
-        RecordedPayload::Readback(_) => "a readback",
-        RecordedPayload::DebugPush(_) => "a debug group",
-        RecordedPayload::DebugPop => "the end of a debug group",
-        RecordedPayload::DebugMarker(_) => "a debug marker",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::api::submission::CompletionState;
     use crate::backend::dx12::failure::Dx12Failure;
 
-    use super::{completion_answer, is_removed_fence_value, rollback_indices};
+    use super::{completion_answer, is_removed_fence_value};
 
     #[test]
     fn dx12_removal_fence_sentinel_is_never_a_completed_serial() {
         assert!(is_removed_fence_value(u64::MAX));
         assert!(!is_removed_fence_value(u64::MAX - 1));
         assert!(!is_removed_fence_value(0));
-    }
-
-    #[test]
-    fn phase_a_rollback_removes_claimed_slots_back_to_front() {
-        // This is the index discipline the live transaction depends on: if an
-        // early batch records and a later batch refuses, all claimed pairs are
-        // dropped without shifting an index that is still waiting to be removed.
-        assert_eq!(rollback_indices(&[1, 4, 2, 4]), vec![4, 2, 1]);
     }
 
     #[test]

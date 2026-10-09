@@ -1201,25 +1201,27 @@ fn a_real_device_answers_the_routes_a_renderer_asks() {
         "a single-sampled source has nothing to resolve"
     );
 
-    // And the refusal. Direct3D 12 has CopyBufferRegion, CopyTextureRegion,
-    // CopyResource, CopyTiles and ResolveSubresource, and no filtered blit at any
-    // of them.
+    // The DX12 spine implements a narrow shader-backed 2D RGBA8 baseline;
+    // other format pairs remain absent because D3D12 itself has no filtered
+    // copy instruction.
     for filter in [BlitFilter::Nearest, BlitFilter::Linear] {
         for (src, dst) in [
             (TextureFormat::Rgba8Unorm, TextureFormat::Rgba8Unorm),
             (TextureFormat::Rgba8Unorm, TextureFormat::Rgba8Uint),
         ] {
-            assert!(
-                !capabilities
-                    .route(&RouteQuery::Blit {
-                        src_dimension: TextureDimension::D2,
-                        src_format: src,
-                        dst_dimension: TextureDimension::D2,
-                        dst_format: dst,
-                        filter,
-                    })
-                    .is_supported(),
-                "there is no {filter:?} blit for Direct3D 12 to lower onto"
+            let supported = capabilities
+                .route(&RouteQuery::Blit {
+                    src_dimension: TextureDimension::D2,
+                    src_format: src,
+                    dst_dimension: TextureDimension::D2,
+                    dst_format: dst,
+                    filter,
+                })
+                .is_supported();
+            assert_eq!(
+                supported,
+                src == TextureFormat::Rgba8Unorm && dst == TextureFormat::Rgba8Unorm,
+                "DX12 exposes only its shader-backed RGBA8 {filter:?} blit baseline"
             );
         }
     }
@@ -1814,8 +1816,8 @@ fn a_real_device_answers_the_binding_questions_a_renderer_asks() {
         );
         assert_eq!(
             capabilities.binding_support(&query).is_supported(),
-            visibility != ShaderStages::COMPUTE,
-            "compute texture uses remain unsupported until command lowering can transition them"
+            true,
+            "compute lowering transitions texture bindings before dispatch"
         );
     }
 
@@ -1961,10 +1963,9 @@ fn every_binding_shape_matches_the_current_dx12_lowering() {
                     false,
                 );
                 seen += 1;
-                let expected = visibility != ShaderStages::COMPUTE
-                    && capabilities
-                        .format(TextureFormat::Rgba8Unorm)
-                        .is_some_and(|facts| facts.storage_access().supports(access));
+                let expected = capabilities
+                    .format(TextureFormat::Rgba8Unorm)
+                    .is_some_and(|facts| facts.storage_access().supports(access));
                 assert_eq!(
                     capabilities.binding_support(&query).is_supported(),
                     expected

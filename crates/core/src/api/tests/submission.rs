@@ -33,6 +33,7 @@
 //! readback before this chapter is closed.
 
 use crate::api::command::RecordedWork;
+use crate::api::command::backend::CommandBufferBackend;
 use crate::api::command::{
     AccessMask, BufferUse, FrameAttachmentUse, PipelineScope, ResourceUse, TextureUse,
     TextureUseIntent,
@@ -260,6 +261,7 @@ fn a_batch_may_contain_several_domains_at_once() {
             .union(LaneWorkDomains::COPY)
             .union(LaneWorkDomains::COMPUTE),
         Vec::new(),
+        Box::new(TestNativeCommandBuffer),
         Vec::new(),
     );
 
@@ -2207,6 +2209,15 @@ fn batch(
     }
 }
 
+/// Opaque finished command buffer for submission-plan validation tests.
+struct TestNativeCommandBuffer;
+
+impl CommandBufferBackend for TestNativeCommandBuffer {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 /// A recording that rasterizes.
 fn raster_work(device: DeviceIdentity, uses: Vec<ResourceUse>) -> RecordedWork {
     RecordedWork::new(
@@ -2214,6 +2225,7 @@ fn raster_work(device: DeviceIdentity, uses: Vec<ResourceUse>) -> RecordedWork {
         device,
         LaneWorkDomains::RASTER,
         uses,
+        Box::new(TestNativeCommandBuffer),
         Vec::new(),
     )
 }
@@ -2225,6 +2237,7 @@ fn compute_work(device: DeviceIdentity, uses: Vec<ResourceUse>) -> RecordedWork 
         device,
         LaneWorkDomains::COMPUTE,
         uses,
+        Box::new(TestNativeCommandBuffer),
         Vec::new(),
     )
 }

@@ -1,199 +1,23 @@
-//! Recorded work: the internal command sequence and the opaque
-//! [`RecordedWork`] a recorder produces (specification section 38.1 and 38.2).
-//!
-//! This module owns two things:
-//!
-//! 1. **The internal command sequence.** What a recorder actually recorded, in
-//!    command order, with each command carrying the resource uses it produced.
-//!    Section 37.1 keeps that sequence internal *on purpose*: the merged
-//!    summary is the public answer, and a caller may not read a
-//!    [`ResourceUse`] as proof that a write covered the whole range (section
-//!    37.4).
-//! 2. **The mapped [`RecordedWork`] summary.** One merged use list, one domain
-//!    set, and the identity of the recording.
-//!
-//! # What this module does not own
-//!
-//! - Whether a lane accepts the work. Section 40.1's
-//!   `lane.domains().contains(work.work_domains())` is the submission plan's
-//!   check; this module only reports the domains.
-//! - Copy, upload, and readback *validation*. Those verbs live in
-//!   [`crate::api::command::copy`]; this module only stores what they recorded.
-//!
-//! # Strong ownership (section 38.2)
-//!
-//! A `RecordedWork` holds the logical objects it needs for execution — buffers,
-//! textures, views, bind groups, pipelines, the upload payload, and the readback
-//! state — by clone. The requirement is section 38.2's: a caller that drops its
-//! own handle after recording must not change what is submitted. Every payload
-//! below therefore owns its handles rather than borrowing them, and `finish()`
-//! consumes the recorder rather than lending from it.
+//! Finished native command work and typed descriptors used while an encoder is
+//! open.  It deliberately contains no portable command stream.
 
 use crate::api::binding::{BindGroup, BindGroupIndex};
-use crate::api::command::RayTracingShaderTable;
+use crate::api::command::IndexFormat;
+use crate::api::command::ResourceUse;
 use crate::api::command::attachment::{
     ColorAttachment, DepthAttachmentMode, DepthStencilAttachment, StencilAttachmentMode,
 };
-use crate::api::command::copy::{
-    BufferCopy, BufferTextureCopy, TextureBlit, TextureCopy, TextureResolve,
-};
-use crate::api::command::geometry::{Color, LoadOp, Rect, StoreOp, Viewport};
-use crate::api::command::raster::RasterAttachmentClear;
-use crate::api::command::{IndexFormat, ResourceUse};
-use crate::api::external::ExternalImageCopyDescriptor;
+use crate::api::command::backend::CommandBufferBackend;
+use crate::api::command::geometry::{LoadOp, StoreOp};
 use crate::api::identity::{DeviceIdentity, Label, ObjectId};
-use crate::api::pipeline::{ComputePipeline, RasterPipeline, RenderTargetSignature};
-use crate::api::pipeline::{MeshPipeline, RayTracingPipeline};
+use crate::api::pipeline::RenderTargetSignature;
 use crate::api::query::QuerySet;
 use crate::api::resource::buffer::BufferBinding;
-use crate::api::resource::transfer::{ReadbackTicket, UploadJob};
-use crate::api::resource::{
-    AccelerationStructure, AccelerationStructureBuildMode, AccelerationStructureCopyMode,
-};
+use crate::api::resource::transfer::ReadbackTicket;
 use crate::api::submission::LaneWorkDomains;
 
-/// One recording command, with the uses it produced.
-///
-/// The pairing is the point: section 37.1's command-level sequence is what makes
-/// "this draw consumed that binding" answerable, and a flat use list cannot say
-/// which command produced a use or in what order.
-///
-pub struct RecordedCommand {
-    /// What the command was.
-    ///
-    /// `Device::submit` walks this sequence to bind readback tickets to their
-    /// completion points, and backends replay it in command order.
-    pub payload: RecordedPayload,
-    /// The actual uses this command produced.
-    ///
-    /// A command that reads nothing in particular — `set_viewport`, a debug
-    /// marker — has an empty list, because section 32.4 generates actual use at
-    /// draw and dispatch rather than at the state-setting verbs.
-    pub uses: Vec<ResourceUse>,
-}
-
-/// What a recorded command was.
-///
-/// Every variant exists so that a recording can be replayed in command order by a
-/// lowering backend.
-#[cfg_attr(
-    all(not(test), not(feature = "dx12")),
-    allow(
-        dead_code,
-        reason = "a build without a lowering backend retains command data for a backend selected by an embedding"
-    )
-)]
-#[doc(hidden)]
-pub enum RecordedPayload {
-    /// A mesh/task dispatch inside a raster scope.
-    MeshDispatch(Box<MeshDispatch>),
-    /// A mesh/task dispatch whose workgroup count is read from an argument buffer.
-    MeshIndirect(Box<MeshIndirect>),
-    /// A ray-tracing scope began.
-    RayTracingBegin(RayTracingBegin),
-    /// A ray dispatch inside the open ray-tracing scope.
-    RayTracingDispatch(Box<RayTracingDispatch>),
-    /// The ray-tracing scope ended.
-    RayTracingEnd,
-    /// An acceleration-structure build, update, clone, or compaction operation.
-    AccelerationStructure(AccelerationStructureCommand),
-    /// A raster scope began, with its attachment set.
-    RasterBegin(RasterBegin),
-    /// A draw inside the open raster scope.
-    RasterDraw(Box<RasterDraw>),
-    /// Clears selected attachments inside the open raster scope.
-    RasterClear(RasterAttachmentClear),
-    /// The raster scope ended.
-    RasterEnd,
-    /// Executes draw-only work recorded independently for this raster scope.
-    RasterExecuteSecondary(Box<SecondaryRasterWork>),
-    /// A compute scope began.
-    #[allow(
-        dead_code,
-        reason = "compute scope labels are retained for backend debug-marker lowering"
-    )]
-    ComputeBegin(ComputeBegin),
-    /// A dispatch inside the open compute scope.
-    ComputeDispatch(Box<ComputeDispatch>),
-    /// A raster indirect or multi-indirect invocation.
-    RasterIndirect(Box<RasterIndirect>),
-    /// A compute indirect invocation.
-    ComputeIndirect(Box<ComputeIndirect>),
-    /// A query begins in the current scope.
-    QueryBegin { set: QuerySet, index: u32 },
-    /// A query ends in the current scope.
-    QueryEnd { set: QuerySet, index: u32 },
-    /// A timestamp write.
-    TimestampWrite { set: QuerySet, index: u32 },
-    /// Query results are copied to a query-resolve buffer.
-    QueryResolve(QueryResolve),
-    /// The compute scope ended.
-    ComputeEnd,
-    /// One copy-family command.
-    Copy(CopyRecord),
-    /// An upload job was encoded.
-    Upload(UploadJob),
-    /// A readback was encoded.
-    Readback(ReadbackTicket),
-    /// A debug group was opened.
-    ///
-    /// Recorded rather than kept only in the scope's own stack, because a backend
-    /// lowers a debug group as native debug-utils markup and needs to see where it
-    /// began relative to the commands inside it.
-    #[allow(
-        dead_code,
-        reason = "debug-group lowering is backend-specific and not implemented by every backend"
-    )]
-    DebugPush(Label),
-    /// A debug group was closed.
-    DebugPop,
-    /// A debug marker was inserted.
-    #[allow(
-        dead_code,
-        reason = "debug-marker lowering is backend-specific and not implemented by every backend"
-    )]
-    DebugMarker(Label),
-}
-
-/// State retained for a mesh/task dispatch.
-pub struct MeshDispatch {
-    pub pipeline: MeshPipeline,
-    pub groups: Vec<BoundGroup>,
-    pub workgroups: (u32, u32, u32),
-}
-/// State retained for indirect mesh dispatch.
-pub struct MeshIndirect {
-    pub pipeline: MeshPipeline,
-    pub groups: Vec<BoundGroup>,
-    pub arguments: crate::api::resource::Buffer,
-    pub offset: u64,
-    pub count_buffer: Option<(crate::api::resource::Buffer, u64, u32)>,
-}
-
-/// Ray scope diagnostic state.
-pub struct RayTracingBegin {
-    pub label: Label,
-}
-
-/// State retained for one ray dispatch.
-pub struct RayTracingDispatch {
-    pub pipeline: RayTracingPipeline,
-    pub groups: Vec<BoundGroup>,
-    /// Checked SBT data retained verbatim; native lowering must never invent a
-    /// table or substitute backend-private records for caller-provided ranges.
-    pub table: RayTracingShaderTable,
-    pub dimensions: (u32, u32, u32),
-    /// Immediate byte writes active for this dispatch.  The declaration's
-    /// visibility travels with every packet so native lowering never has to
-    /// infer ray-stage flags from backend conventions.
-    pub immediates: Vec<ImmediateWrite>,
-}
-
-/// One validated write into a pipeline interface's immediate-data address space.
-///
-/// This stays a command packet rather than a resource: immediate data has no
-/// lifetime, identity, or `ResourceUse`; it is retained only so replay/capture
-/// observes the exact state current at each dispatch.
+/// One validated write into a pipeline interface's immediate-data address
+/// space. It is forwarded to the native encoder and not retained after finish.
 #[derive(Clone)]
 pub struct ImmediateWrite {
     pub offset: u32,
@@ -201,186 +25,80 @@ pub struct ImmediateWrite {
     pub visibility: crate::api::shader::ShaderStages,
 }
 
-/// Portable acceleration-structure command packet.
-pub enum AccelerationStructureCommand {
-    Build {
-        destination: AccelerationStructure,
-        scratch: crate::api::resource::Buffer,
-        mode: AccelerationStructureBuildMode,
-    },
-    Copy {
-        source: AccelerationStructure,
-        destination: AccelerationStructure,
-        mode: AccelerationStructureCopyMode,
-    },
-    /// Writes the native compacted-size result as one little-endian `u64`.
-    /// The destination becomes meaningful only when the enclosing submission's
-    /// completion is terminal; it is not a synchronous size oracle.
-    WriteCompactedSize {
-        source: AccelerationStructure,
-        destination: crate::api::resource::Buffer,
-        destination_offset: u64,
-    },
-}
-
-/// One query-result resolve command.
-#[doc(hidden)]
-pub struct QueryResolve {
-    pub set: QuerySet,
-    pub first_query: u32,
-    pub query_count: u32,
-    pub destination: crate::api::resource::Buffer,
-    pub destination_offset: u64,
-}
-
-/// A raster scope's beginning, as recorded.
-#[doc(hidden)]
+/// The validated data needed to begin a native raster pass.
+#[derive(Clone)]
 pub struct RasterBegin {
-    /// The scope's diagnostic label.
     pub label: Label,
-    /// The canonicalized attachment set, by location.
     pub colors: Vec<(u32, ColorAttachment)>,
-    /// The depth/stencil attachment, if any.
     pub depth_stencil: Option<DepthStencilAttachment>,
-    /// Set bound at pass creation for fixed-set occlusion profiles.
     pub occlusion_query_set: Option<QuerySet>,
 }
 
-/// One raster draw, with the state that was current when it was issued.
-///
-/// The whole state is copied into the command rather than read from the scope at
-/// end-of-scope time, because a draw is lowered with the state that was bound
-/// when it was recorded; a later `set_pipeline` must not retroactively change an
-/// earlier draw.
-#[cfg_attr(
-    all(not(test), not(feature = "dx12")),
-    allow(
-        dead_code,
-        reason = "a build without a lowering backend retains draw state for a backend selected by an embedding"
-    )
-)]
-#[doc(hidden)]
-pub struct RasterDraw {
-    /// The pipeline that was bound. Section 32.3 requires one.
-    pub pipeline: RasterPipeline,
-    /// The bind groups that were bound.
-    pub groups: Vec<BoundGroup>,
-    /// The vertex buffers that were bound, by slot.
-    pub vertex_buffers: Vec<(u32, BufferBinding)>,
-    /// The index buffer and format, for an indexed draw.
-    pub index: Option<BoundIndexBuffer>,
-    /// The viewport, or `None` for the portable default.
-    pub viewport: Option<Viewport>,
-    /// The scissor rect, or `None` for the portable default.
-    pub scissor: Option<Rect>,
-    /// The blend constant in force.
-    pub blend_constant: Color,
-    /// The stencil reference in force.
-    pub stencil_reference: u32,
-    /// The vertex or index range drawn.
-    pub range: core::ops::Range<u32>,
-    /// The instance range drawn.
-    pub instances: core::ops::Range<u32>,
-    /// The base vertex of an indexed draw, or `0`.
-    pub base_vertex: i32,
-    /// Immediate writes current at this draw.
-    pub immediates: Vec<ImmediateWrite>,
+/// The validated data needed to begin a native compute pass.
+pub struct ComputeBegin {
+    pub label: Label,
 }
 
-/// Draw-only raster commands which inherit a parent raster scope's attachments.
-///
-/// This is deliberately an opaque, finished packet: it owns every pipeline,
-/// binding and buffer used by its draws, but never owns a second attachment set.
-/// A parent [`RasterScope`](crate::api::command::RasterScope) validates the
-/// stored target signature before it records the execute command.
+/// Binding state retained only while a scope is open, so a later draw can
+/// report its actual resource uses before issuing its native call.
+#[derive(Clone)]
+pub struct BoundGroup {
+    pub index: BindGroupIndex,
+    pub group: BindGroup,
+    pub dynamic_offsets: Vec<u32>,
+}
+
+/// Index binding state retained while a raster scope is open.
+#[derive(Clone)]
+pub struct BoundIndexBuffer {
+    pub binding: BufferBinding,
+    pub format: IndexFormat,
+}
+
+/// Draw-only work encoded into a backend secondary command buffer.
 pub struct SecondaryRasterWork {
     device: DeviceIdentity,
     signature: RenderTargetSignature,
-    commands: Vec<RecordedCommand>,
     uses: Vec<ResourceUse>,
+    native: Box<dyn CommandBufferBackend>,
 }
 
 impl SecondaryRasterWork {
-    /// Converts a completed single-scope recording into inherited raster work.
-    pub(crate) fn from_recorded(work: RecordedWork) -> crate::api::error::RhiResult<Self> {
-        let RecordedWork {
-            device, commands, ..
-        } = work;
-        let mut commands = commands.into_iter();
-        let Some(RecordedCommand {
-            payload: RecordedPayload::RasterBegin(begin),
-            ..
-        }) = commands.next()
-        else {
+    pub(crate) fn from_native(
+        work: RecordedWork,
+        begin: RasterBegin,
+        uses: Vec<ResourceUse>,
+        draw_count: usize,
+    ) -> crate::api::error::RhiResult<Self> {
+        validate_secondary_begin(&begin)?;
+        if draw_count == 0 {
             return Err(crate::api::error::RhiError::new(
                 crate::api::error::RhiErrorKind::InvalidUsage,
-                "secondary raster work needs exactly one raster scope",
-            ));
-        };
-        validate_secondary_begin(begin)?;
-        let inherited_signature = signature_from_begin(begin);
-        let mut body = Vec::new();
-        let mut uses = Vec::new();
-        let mut ended = false;
-        for command in commands {
-            match &command.payload {
-                RecordedPayload::RasterDraw(draw) => {
-                    let candidate = draw.pipeline.descriptor().target_signature();
-                    if candidate != &inherited_signature {
-                        return Err(crate::api::error::RhiError::new(
-                            crate::api::error::RhiErrorKind::IncompatibleInterface,
-                            "a secondary raster draw does not match its inherited target signature",
-                        ));
-                    }
-                    uses.extend(command.uses.iter().cloned());
-                    body.push(command);
-                }
-                RecordedPayload::RasterEnd if !ended => ended = true,
-                _ => {
-                    return Err(crate::api::error::RhiError::new(
-                        crate::api::error::RhiErrorKind::InvalidUsage,
-                        "secondary raster work currently admits direct raster draws only",
-                    ));
-                }
-            }
-        }
-        if !ended || body.is_empty() {
-            return Err(crate::api::error::RhiError::new(
-                crate::api::error::RhiErrorKind::InvalidUsage,
-                "secondary raster work needs one or more draws followed by raster end",
+                "secondary raster work needs at least one draw",
             ));
         }
         Ok(Self {
-            device,
-            signature: inherited_signature,
-            commands: body,
+            device: work.device,
+            signature: signature_from_begin(&begin),
             uses,
+            native: work.native,
         })
     }
 
     pub(crate) fn device_identity(&self) -> DeviceIdentity {
         self.device
     }
-    /// Returns the inherited attachment signature checked at packet creation.
-    ///
-    /// Backend replay uses this only to verify that the currently open raster
-    /// scope is the scope the child recording was made for.
     pub fn signature(&self) -> &RenderTargetSignature {
         &self.signature
     }
-    /// Returns the draw-only command sequence owned by this packet.
-    pub fn commands(&self) -> &[RecordedCommand] {
-        &self.commands
+    pub fn native(&self) -> &dyn CommandBufferBackend {
+        self.native.as_ref()
     }
-    /// Returns the command resource uses retained by this packet.
     pub fn uses(&self) -> &[ResourceUse] {
         &self.uses
     }
 }
 
-/// Refuses pass-begin effects in a recording that will instead inherit the
-/// parent's already-open raster scope.  The attachments are used only to fix a
-/// target signature for pipeline validation; they never become native work.
 fn validate_secondary_begin(begin: &RasterBegin) -> crate::api::error::RhiResult<()> {
     for (location, color) in &begin.colors {
         if !matches!(color.load, LoadOp::Load)
@@ -389,11 +107,8 @@ fn validate_secondary_begin(begin: &RasterBegin) -> crate::api::error::RhiResult
         {
             return Err(crate::api::error::RhiError::new(
                 crate::api::error::RhiErrorKind::InvalidUsage,
-                format!(
-                    "secondary raster attachment {location} must inherit with Load, Store, and no resolve"
-                ),
-            )
-            .at("CommandRecorder::finish_secondary_raster"));
+                format!("secondary raster attachment {location} must inherit with Load, Store, and no resolve"),
+            ).at("CommandRecorder::finish_secondary_raster"));
         }
     }
     if let Some(depth_stencil) = &begin.depth_stencil {
@@ -402,7 +117,7 @@ fn validate_secondary_begin(begin: &RasterBegin) -> crate::api::error::RhiResult
             None | Some(DepthAttachmentMode::ReadOnly)
                 | Some(DepthAttachmentMode::ReadWrite {
                     load: LoadOp::Load,
-                    store: StoreOp::Store,
+                    store: StoreOp::Store
                 })
         );
         let stencil_inherits = matches!(
@@ -410,7 +125,7 @@ fn validate_secondary_begin(begin: &RasterBegin) -> crate::api::error::RhiResult
             None | Some(StencilAttachmentMode::ReadOnly)
                 | Some(StencilAttachmentMode::ReadWrite {
                     load: LoadOp::Load,
-                    store: StoreOp::Store,
+                    store: StoreOp::Store
                 })
         );
         if !depth_inherits || !stencil_inherits {
@@ -424,8 +139,6 @@ fn validate_secondary_begin(begin: &RasterBegin) -> crate::api::error::RhiResult
     Ok(())
 }
 
-/// Reconstructs exactly the target signature that a raster begin fixed before
-/// its commands were serialized into a secondary packet.
 fn signature_from_begin(begin: &RasterBegin) -> RenderTargetSignature {
     let mut color_formats = Vec::new();
     for (location, color) in &begin.colors {
@@ -436,226 +149,66 @@ fn signature_from_begin(begin: &RasterBegin) -> RenderTargetSignature {
         .colors
         .first()
         .map(|(_, color)| color.view.sample_count())
-        .or_else(|| {
-            begin
-                .depth_stencil
-                .as_ref()
-                .map(|depth_stencil| depth_stencil.view.sample_count())
-        })
+        .or_else(|| begin.depth_stencil.as_ref().map(|d| d.view.sample_count()))
         .unwrap_or(1);
     RenderTargetSignature {
         color_formats,
-        depth_stencil_format: begin
-            .depth_stencil
-            .as_ref()
-            .map(|depth_stencil| depth_stencil.view.format()),
+        depth_stencil_format: begin.depth_stencil.as_ref().map(|d| d.view.format()),
         sample_count,
     }
     .canonicalized()
 }
 
-/// A compute scope's beginning, as recorded.
-pub struct ComputeBegin {
-    /// The scope's diagnostic label.
-    pub label: Label,
-}
-
-/// One dispatch, with the state that was current when it was issued.
-// This record is consumed by backend command lowerers.  Feature-minimal API
-// builds have no lowerer, so keep the portable record without manufacturing a
-// second feature-specific representation.
-#[allow(dead_code)]
-#[doc(hidden)]
-pub struct ComputeDispatch {
-    /// The pipeline that was bound. Section 33 requires one.
-    pub pipeline: ComputePipeline,
-    /// The bind groups that were bound.
-    pub groups: Vec<BoundGroup>,
-    /// The workgroup counts.
-    pub workgroups: (u32, u32, u32),
-    /// Immediate writes current at this dispatch.
-    pub immediates: Vec<ImmediateWrite>,
-}
-
-/// Raster state plus indirect argument metadata retained for replay/capture.
-#[doc(hidden)]
-pub struct RasterIndirect {
-    pub pipeline: RasterPipeline,
-    pub groups: Vec<BoundGroup>,
-    pub vertex_buffers: Vec<(u32, BufferBinding)>,
-    pub index: Option<BoundIndexBuffer>,
-    pub viewport: Option<Viewport>,
-    pub scissor: Option<Rect>,
-    pub blend_constant: Color,
-    pub stencil_reference: u32,
-    pub arguments: crate::api::resource::Buffer,
-    pub arguments_offset: u64,
-    pub draw_count: u32,
-    pub stride: u32,
-    /// Optional GPU count source and portable maximum draw count.
-    pub count: Option<(crate::api::resource::Buffer, u64, u32)>,
-}
-
-/// Compute state plus indirect argument metadata retained for replay/capture.
-#[doc(hidden)]
-pub struct ComputeIndirect {
-    pub pipeline: ComputePipeline,
-    pub groups: Vec<BoundGroup>,
-    pub arguments: crate::api::resource::Buffer,
-    pub arguments_offset: u64,
-}
-
-/// A bind group bound at an index, with its dynamic offsets.
-#[derive(Clone)]
-pub struct BoundGroup {
-    /// The slot it was bound to.
-    pub index: BindGroupIndex,
-    /// The group itself.
-    pub group: BindGroup,
-    /// The dynamic offsets consumed by this binding.
-    pub dynamic_offsets: Vec<u32>,
-}
-
-/// An index buffer bound with the format it is cut with.
-#[derive(Clone)]
-pub struct BoundIndexBuffer {
-    /// The buffer and the range of it that is bound.
-    pub binding: BufferBinding,
-    /// The index element type.
-    pub format: IndexFormat,
-}
-
-/// One copy-family command, as recorded.
-#[doc(hidden)]
-pub enum CopyRecord {
-    /// Opaque host image copied into a portable texture.
-    ExternalImage(ExternalImageCopyDescriptor),
-    /// Zeroes a buffer range through the backend's native clear route.
-    ClearBuffer {
-        buffer: crate::api::resource::Buffer,
-        range: crate::api::resource::BufferRange,
-    },
-    /// Clears a texture subresource range through a backend-native clear route.
-    ClearTexture {
-        texture: crate::api::resource::Texture,
-        subresources: crate::api::resource::TextureSubresourceRange,
-    },
-    /// Buffer to buffer.
-    Buffer(BufferCopy),
-    /// Buffer to texture.
-    BufferToTexture(BufferTextureCopy),
-    /// Texture to buffer.
-    TextureToBuffer(BufferTextureCopy),
-    /// Texture to texture.
-    Texture(TextureCopy),
-    /// Multisampled to single-sampled resolve.
-    Resolve(TextureResolve),
-    /// Filtered blit.
-    Blit(TextureBlit),
-}
-
-/// The result of a successful [`crate::api::command::CommandRecorder::finish`].
-///
-/// Opaque, and single-device by construction: every object that entered the
-/// recording was identity-checked against the recorder's device, so a
-/// `RecordedWork` cannot name more than one device and section 3.3's
-/// cross-device rule has nothing left to refuse.
-///
-/// The two accessors that carry the interesting answers are
-/// [`RecordedWork::work_domains`] and [`RecordedWork::resource_uses`]. The first
-/// decides which lanes may accept the work (section 40.1); the second is the
-/// merged actual-use summary consumed by submission validation and tooling.
-/// Neither is a correctness proof of its own: section 37.4 is
-/// explicit that a `SHADER_WRITE` use does not claim the shader filled the
-/// range, so a caller may read coverage here only as a hazard statement.
+/// Completed work: one native command buffer plus portable submission facts.
 pub struct RecordedWork {
-    /// Process-local identity.
     id: ObjectId,
-    /// The device every recorded object belongs to.
     device: DeviceIdentity,
-    /// Which execution domains the recording actually contains.
     domains: LaneWorkDomains,
-    /// The merged actual-use summary.
     uses: Vec<ResourceUse>,
-    /// The command-ordered sequence, with per-command uses.
-    commands: Vec<RecordedCommand>,
+    native: Box<dyn CommandBufferBackend>,
+    readbacks: Vec<ReadbackTicket>,
 }
 
 impl RecordedWork {
-    /// Assembles the result of a finished recording.
-    ///
-    /// Crate-private for the reason every other constructor in this tree is:
-    /// only a `CommandRecorder` that has just finished a recording can state
-    /// these facts, and a caller-built `RecordedWork` would describe work that
-    /// does not exist.
-    pub fn new(
+    pub(crate) fn new(
         id: ObjectId,
         device: DeviceIdentity,
         domains: LaneWorkDomains,
         uses: Vec<ResourceUse>,
-        commands: Vec<RecordedCommand>,
+        native: Box<dyn CommandBufferBackend>,
+        readbacks: Vec<ReadbackTicket>,
     ) -> Self {
         Self {
             id,
             device,
             domains,
             uses,
-            commands,
+            native,
+            readbacks,
         }
     }
 
-    /// The process-local identity of this recording.
+    pub fn native(&self) -> &dyn CommandBufferBackend {
+        self.native.as_ref()
+    }
+    pub fn readbacks(&self) -> &[ReadbackTicket] {
+        &self.readbacks
+    }
     pub fn id(&self) -> ObjectId {
         self.id
     }
-
-    /// The device every recorded object belongs to.
     pub fn device_identity(&self) -> DeviceIdentity {
         self.device
     }
-
-    /// Execution domains actually contained.
-    ///
-    /// Reported, not granted: section 40.1 requires a lane to contain these
-    /// domains, and section 38.1 turns each of the recording's commands into one
-    /// of `RASTER`, `COMPUTE`, or `COPY`. Several bits may be set at once, which
-    /// is the ordinary case — a frame's recording rasterizes, copies, and
-    /// uploads.
     pub fn work_domains(&self) -> LaneWorkDomains {
         self.domains
     }
-
-    /// Merged actual-use summary.
     pub fn resource_uses(&self) -> &[ResourceUse] {
         &self.uses
-    }
-
-    /// The command-ordered sequence, with each command's own uses.
-    ///
-    /// Crate-private: section 37.1 keeps the command-level sequence *internal*,
-    /// and it is read by the declared-versus-actual check, which needs to know
-    /// not only that a use happened but which command produced it.
-    ///
-    /// The reader that arrived first is the DX12 command spine, which walks this
-    /// slice to lower each payload and refuses the plan rather than skipping one
-    /// it cannot lower, and the readback walk in `Device::submit`, which is how a
-    /// ticket learns which point of the plan covers it. The declared-versus-actual
-    /// comparison named in the old expectation is still unbuilt, and it is now the
-    /// only reader missing — which is why there is no gate here at all: the two
-    /// readers that arrived are portable code, compiled in every configuration.
-    pub fn commands(&self) -> &[RecordedCommand] {
-        &self.commands
     }
 }
 
 impl core::fmt::Debug for RecordedWork {
-    /// Prints the recording's portable identity and its size, not its contents.
-    ///
-    /// Hand-written rather than derived, per adjudication A16: a derived `Debug`
-    /// would print every cloned device-side handle, which is the one thing the
-    /// portable surface may not expose. What is printed is what a caller can
-    /// already read — the identity, the device, the domains, and how many uses
-    /// and commands were recorded.
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
             .debug_struct("RecordedWork")
@@ -663,7 +216,6 @@ impl core::fmt::Debug for RecordedWork {
             .field("device", &self.device)
             .field("work_domains", &self.domains)
             .field("resource_uses", &self.uses.len())
-            .field("commands", &self.commands.len())
             .finish_non_exhaustive()
     }
 }

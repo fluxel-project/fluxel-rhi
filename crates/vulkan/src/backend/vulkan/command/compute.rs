@@ -10,7 +10,7 @@
 use ash::vk;
 
 use crate::api::binding::BindGroup;
-use crate::api::command::record::{BoundGroup, ComputeDispatch, ComputeIndirect};
+use crate::api::command::record::{BoundGroup, ImmediateWrite};
 use crate::api::command::{AccessMask, ResourceUse};
 use crate::api::pipeline::ComputePipeline;
 use crate::backend::vulkan::binding::VulkanBindGroup;
@@ -30,40 +30,54 @@ pub(super) struct ComputeRetention {
     pub(super) bind_groups: Vec<BindGroup>,
 }
 
-/// Records one validated compute dispatch into a command buffer.
+/// Borrowed state consumed by one immediate direct dispatch.
 ///
-/// The caller must merge the returned retention into its accepted-batch
-/// retention before queue submission.  Keeping that ownership explicit makes
-/// Phase A allocation/recording failure leave no accepted-work side effects.
-pub(super) fn lower_compute_dispatch(
+/// The typed encoder owns this state for the lifetime of its native command
+/// buffer. Lowering borrows it only until `vkCmdDispatch` has been emitted.
+pub(super) struct ComputeDispatchView<'a> {
+    pub(super) pipeline: &'a ComputePipeline,
+    pub(super) groups: &'a [BoundGroup],
+    pub(super) workgroups: (u32, u32, u32),
+    pub(super) immediates: &'a [ImmediateWrite],
+}
+
+/// Borrowed state consumed by one immediate indirect dispatch.
+pub(super) struct ComputeIndirectView<'a> {
+    pub(super) pipeline: &'a ComputePipeline,
+    pub(super) groups: &'a [BoundGroup],
+    pub(super) arguments: &'a crate::api::resource::buffer::Buffer,
+    pub(super) arguments_offset: u64,
+    pub(super) immediates: &'a [ImmediateWrite],
+}
+
+/// Records one typed direct dispatch from encoder-owned binding state.
+pub(super) fn lower_compute_dispatch_view(
     shared: &VulkanShared,
     command_buffer: vk::CommandBuffer,
-    dispatch: &ComputeDispatch,
+    dispatch: &ComputeDispatchView<'_>,
     uses: &[ResourceUse],
     transfer_retention: &mut TransferRetention,
 ) -> Result<ComputeRetention, VulkanFailure> {
     lower_compute(
         shared,
         command_buffer,
-        &dispatch.pipeline,
-        &dispatch.groups,
+        dispatch.pipeline,
+        dispatch.groups,
         uses,
         transfer_retention,
         |device, command_buffer, _pipeline| unsafe {
             let (x, y, z) = dispatch.workgroups;
             device.cmd_dispatch(command_buffer, x, y, z);
         },
-        &dispatch.immediates,
+        dispatch.immediates,
     )
 }
 
-/// Records core `vkCmdDispatchIndirect` using the same binding/state path as a
-/// direct dispatch. The argument buffer is already present in `uses`, so the
-/// common barrier path retains it and establishes INDIRECT_COMMAND_READ.
-pub(super) fn lower_compute_indirect(
+/// Records one typed indirect dispatch from encoder-owned binding state.
+pub(super) fn lower_compute_indirect_view(
     shared: &VulkanShared,
     command_buffer: vk::CommandBuffer,
-    dispatch: &ComputeIndirect,
+    dispatch: &ComputeIndirectView<'_>,
     uses: &[ResourceUse],
     transfer_retention: &mut TransferRetention,
 ) -> Result<ComputeRetention, VulkanFailure> {
@@ -71,14 +85,14 @@ pub(super) fn lower_compute_indirect(
     lower_compute(
         shared,
         command_buffer,
-        &dispatch.pipeline,
-        &dispatch.groups,
+        dispatch.pipeline,
+        dispatch.groups,
         uses,
         transfer_retention,
         |device, command_buffer, _| unsafe {
             device.cmd_dispatch_indirect(command_buffer, arguments, dispatch.arguments_offset);
         },
-        &[],
+        dispatch.immediates,
     )
 }
 
@@ -90,7 +104,7 @@ fn lower_compute<F>(
     uses: &[ResourceUse],
     transfer_retention: &mut TransferRetention,
     emit: F,
-    immediates: &[crate::api::command::record::ImmediateWrite],
+    immediates: &[ImmediateWrite],
 ) -> Result<ComputeRetention, VulkanFailure>
 where
     F: FnOnce(&ash::Device, vk::CommandBuffer, &VulkanComputePipeline),

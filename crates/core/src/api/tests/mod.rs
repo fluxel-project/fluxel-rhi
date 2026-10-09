@@ -31,7 +31,6 @@ mod diagnostics;
 mod presentation;
 mod statistics;
 mod submission;
-mod tooling;
 
 pub(crate) mod mock;
 

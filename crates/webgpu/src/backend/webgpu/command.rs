@@ -2,9 +2,8 @@
 //!
 //! Browser WebGPU has no fence object.  `queue.onSubmittedWorkDone()` is its
 //! completion primitive, so a submitted RHI serial owns the corresponding
-//! promise in this spine.  Importantly, promise creation is *after* the whole
-//! plan passed [`preflight`]: an `Err` from `submit` consequently means that no
-//! command encoder, queue submit, or browser promise was created for the plan.
+//! promise. Native command buffers are fully encoded before this spine sees
+//! them; it only submits those finished buffers and observes completion.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -13,21 +12,16 @@ use std::task::Waker;
 use js_sys::{Array, Function, Object, Promise, Reflect};
 use wasm_bindgen::{JsCast, JsValue};
 
-use crate::api::command::copy::{BufferCopy, BufferTextureCopy, TextureCopy};
-use crate::api::command::record::{
-    ComputeDispatch, ComputeIndirect, CopyRecord, RasterBegin, RasterDraw, RasterIndirect,
-    RecordedPayload,
-};
+use crate::api::command::copy::{BufferTextureCopy, TextureCopy};
+use crate::api::command::record::RasterBegin;
 use crate::api::error::{RhiError, RhiErrorKind, RhiResult};
 use crate::api::format::{block_extent, logical_bytes_per_block};
-use crate::api::query::{QuerySet, QueryType};
+use crate::api::query::QuerySet;
 use crate::api::resource::{ReadbackRequest, ReadbackTexelLayout};
 use crate::api::submission::backend::{SubmissionOutcome, SubmissionRequest};
 use crate::api::submission::{CompletionFailure, CompletionState};
 
-use super::binding::WebGpuBindGroup;
 use super::js;
-use super::pipeline::{WebGpuComputePipeline, WebGpuRasterPipeline};
 use super::registry::{
     self, PromisePoll, WebGpuDriver, WebGpuObjectId, WebGpuRegistration, WebGpuRequestId,
 };
@@ -54,16 +48,16 @@ struct State {
 /// Registry-only state for one submitted map-read staging allocation.  Keeping
 /// an object ID rather than a `JsValue` is what lets `WebGpuCommandSpine`
 /// remain `Send + Sync` even though browser handles themselves are affine.
-struct PendingReadback {
-    ticket: crate::api::resource::ReadbackTicket,
-    staging: WebGpuObjectId,
-    bytes: u64,
-    layout: Option<ReadbackTexelLayout>,
-    map: Option<WebGpuRequestId>,
+pub(crate) struct PendingReadback {
+    pub(crate) ticket: crate::api::resource::ReadbackTicket,
+    pub(crate) staging: WebGpuObjectId,
+    pub(crate) bytes: u64,
+    pub(crate) layout: Option<ReadbackTexelLayout>,
+    pub(crate) map: Option<WebGpuRequestId>,
     /// The submitted-work promise for this plan. A plan completion cannot be
     /// published Complete until every ticket attached to it has been copied
     /// into CPU-owned bytes and published.
-    completion: Option<WebGpuRequestId>,
+    pub(crate) completion: Option<WebGpuRequestId>,
 }
 
 /// The browser-side execution timeline for one WebGPU device registration.
@@ -84,136 +78,12 @@ impl WebGpuCommandSpine {
         self.driver.registration()
     }
 
-    /// Does the pure, whole-plan half of submission.
-    ///
-    /// This deliberately does not merely check the first command: all batches
-    /// are walked before any WebGPU call.  A newly added portable payload must
-    /// be admitted here *and* have a Phase-B lowering below; otherwise it is a
-    /// fail-closed `Unsupported`, never an accidental partial submit.
-    fn preflight(&self, request: &SubmissionRequest<'_>) -> RhiResult<()> {
+    pub(crate) fn submit(&self, request: &SubmissionRequest<'_>) -> RhiResult<SubmissionOutcome> {
         if registry::device_status(self.registration())
             != Some(crate::api::platform::DeviceStatus::Active)
         {
             return Err(lost("WebGpuCommandSpine::submit"));
         }
-        for present in request.presents {
-            // Backend ownership is checked before Phase B; this only reads the
-            // registry-owned acquired view and never creates a JS object.
-            super::presentation::frame_view(&present.attachment)?;
-        }
-        for batch in request.batches {
-            for work in &batch.work {
-                for command in work.commands() {
-                    match &command.payload {
-                        RecordedPayload::Copy(CopyRecord::Buffer(copy)) => {
-                            buffer(copy.src.native(), self.registration(), "copy source")?;
-                            buffer(copy.dst.native(), self.registration(), "copy destination")?;
-                        }
-                        RecordedPayload::Copy(CopyRecord::BufferToTexture(copy))
-                        | RecordedPayload::Copy(CopyRecord::TextureToBuffer(copy)) => {
-                            buffer(
-                                copy.buffer.native(),
-                                self.registration(),
-                                "buffer/texture copy buffer",
-                            )?;
-                            texture(
-                                copy.texture.native(),
-                                self.registration(),
-                                "buffer/texture copy texture",
-                            )?;
-                        }
-                        RecordedPayload::Copy(CopyRecord::Texture(copy)) => {
-                            texture(
-                                copy.src.native(),
-                                self.registration(),
-                                "texture copy source",
-                            )?;
-                            texture(
-                                copy.dst.native(),
-                                self.registration(),
-                                "texture copy destination",
-                            )?;
-                        }
-                        RecordedPayload::Copy(CopyRecord::ClearBuffer {
-                            buffer: value, ..
-                        }) => {
-                            buffer(value.native(), self.registration(), "clear buffer")?;
-                        }
-                        // These are metadata-only on all WebGPU encoders and are
-                        // therefore supported as part of the baseline.
-                        RecordedPayload::DebugPush(_)
-                        | RecordedPayload::DebugPop
-                        | RecordedPayload::DebugMarker(_) => {}
-                        // WebGPU exposes parts of the query API, but not the
-                        // stronger portable recording contract. A render pass
-                        // fixes one occlusionQuerySet in its descriptor, while
-                        // RasterScope permits several sequentially; its
-                        // timestamp descriptors denote boundaries rather than
-                        // TimestampWrite's exact command position. This is an
-                        // intentional fail-closed Phase-A refusal, not a
-                        // missing method wrapper.
-                        RecordedPayload::RasterBegin(begin) => {
-                            preflight_raster_begin(begin, self.registration())?
-                        }
-                        RecordedPayload::QueryBegin { set, .. }
-                        | RecordedPayload::QueryEnd { set, .. } => {
-                            query_set(set, self.registration(), "occlusion query")?;
-                            if set.descriptor().ty != QueryType::Occlusion {
-                                return Err(unsupported("non-occlusion query"));
-                            }
-                        }
-                        RecordedPayload::QueryResolve(resolve) => {
-                            query_set(&resolve.set, self.registration(), "query resolve")?;
-                            buffer(
-                                resolve.destination.native(),
-                                self.registration(),
-                                "query resolve destination",
-                            )?;
-                            if resolve.set.descriptor().ty != QueryType::Occlusion {
-                                return Err(unsupported("non-occlusion query resolve"));
-                            }
-                        }
-                        RecordedPayload::RasterDraw(draw) => {
-                            preflight_raster_draw(draw, self.registration())?
-                        }
-                        RecordedPayload::RasterIndirect(draw) => {
-                            preflight_raster_indirect(draw, self.registration())?
-                        }
-                        RecordedPayload::RasterEnd
-                        | RecordedPayload::ComputeBegin(_)
-                        | RecordedPayload::ComputeEnd => {}
-                        RecordedPayload::ComputeDispatch(dispatch) => {
-                            preflight_compute_draw(dispatch, self.registration())?
-                        }
-                        RecordedPayload::ComputeIndirect(dispatch) => {
-                            preflight_compute_indirect(dispatch, self.registration())?
-                        }
-                        RecordedPayload::Upload(job) => preflight_upload(job, self.registration())?,
-                        RecordedPayload::Readback(ticket) => {
-                            preflight_readback(ticket, self.registration())?
-                        }
-                        RecordedPayload::Copy(CopyRecord::ClearTexture { .. })
-                        | RecordedPayload::Copy(CopyRecord::Resolve(_))
-                        | RecordedPayload::Copy(CopyRecord::Blit(_))
-                        | RecordedPayload::Copy(CopyRecord::ExternalImage(_))
-                        | RecordedPayload::TimestampWrite { .. }
-                        | RecordedPayload::MeshDispatch(_)
-                        | RecordedPayload::MeshIndirect(_)
-                        | RecordedPayload::RayTracingBegin(_)
-                        | RecordedPayload::RayTracingDispatch(_)
-                        | RecordedPayload::RayTracingEnd
-                        | RecordedPayload::AccelerationStructure(_) => {
-                            return Err(unsupported(payload_name(&command.payload)));
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    pub(crate) fn submit(&self, request: &SubmissionRequest<'_>) -> RhiResult<SubmissionOutcome> {
-        self.preflight(request)?;
         if request.batches.is_empty() {
             let issued = self.state.lock().unwrap_or_else(|p| p.into_inner()).issued;
             return Ok(SubmissionOutcome {
@@ -222,16 +92,46 @@ impl WebGpuCommandSpine {
             });
         }
 
-        // Phase B begins here.  From this point a browser exception cannot be
-        // returned as `Err`: no matter whether `queue.submit` accepted prior
-        // commands before reporting an error, the RHI must expose a terminal
-        // completion instead of lying that nothing happened.
-        let phase_b = self.encode(request);
+        // Each work item has already closed its native GPUCommandBuffer.  Check
+        // every object before touching the queue so a wrong backend or an
+        // incomplete direct recording still means zero accepted work.
+        let mut buffers = Vec::new();
+        for batch in request.batches {
+            for work in &batch.work {
+                let buffer = work
+                    .native()
+                    .as_any()
+                    .downcast_ref::<super::native::WebGpuCommandBuffer>()
+                    .ok_or_else(|| {
+                        RhiError::new(
+                            RhiErrorKind::WrongDevice,
+                            "submission contains a command buffer from another backend",
+                        )
+                        .at("WebGpuCommandSpine::submit")
+                    })?;
+                if buffer.registration() != self.registration() {
+                    return Err(RhiError::new(
+                        RhiErrorKind::WrongDevice,
+                        "submission contains a command buffer from another WebGPU device",
+                    )
+                    .at("WebGpuCommandSpine::submit"));
+                }
+                buffers.push(buffer);
+            }
+        }
+        for present in request.presents {
+            super::presentation::frame_view(&present.attachment)?;
+        }
+
+        // Queue submission is the only browser operation performed here.  All
+        // draw, dispatch, copy, upload, and readback encoding occurred while
+        // the caller owned its recorder.
+        let native_submission = self.submit_native(&buffers, request);
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let first = state.issued + 1;
         let last = first + request.batches.len() as u64 - 1;
         state.issued = last;
-        match phase_b {
+        match native_submission {
             Ok((promise, mut readbacks)) => {
                 let request_id = registry::start_device_promise(self.registration(), promise);
                 for serial in first..=last {
@@ -275,181 +175,26 @@ impl WebGpuCommandSpine {
         })
     }
 
-    fn encode(
+    fn submit_native(
         &self,
+        buffers: &[&super::native::WebGpuCommandBuffer],
         request: &SubmissionRequest<'_>,
     ) -> Result<(Promise, Vec<PendingReadback>), String> {
-        let (device, queue) = registry::with_device_handles(self.registration(), |h| {
-            (h.device.clone(), h.queue.clone())
-        })
-        .ok_or_else(|| "WebGPU device registration was retired".to_owned())?;
-        let encoder = call0(&device, "createCommandEncoder")?;
-        let mut raster_pass = None;
-        let mut compute_pass = None;
-        let mut readbacks = Vec::new();
-        for batch in request.batches {
-            for work in &batch.work {
-                for command in work.commands() {
-                    match &command.payload {
-                        RecordedPayload::RasterBegin(begin) => {
-                            if raster_pass.is_some() || compute_pass.is_some() {
-                                return Err(
-                                    "portable command scope nesting reached WebGPU lowering".into(),
-                                );
-                            }
-                            raster_pass = Some(begin_raster(&encoder, begin, self.registration())?);
-                        }
-                        RecordedPayload::QueryBegin { index, .. } => {
-                            let pass = raster_pass.as_ref().ok_or_else(|| {
-                                "occlusion query begin outside render pass".to_owned()
-                            })?;
-                            call1(pass, "beginOcclusionQuery", &num(*index as u64))?;
-                        }
-                        RecordedPayload::QueryEnd { .. } => {
-                            let pass = raster_pass.as_ref().ok_or_else(|| {
-                                "occlusion query end outside render pass".to_owned()
-                            })?;
-                            call0(pass, "endOcclusionQuery")?;
-                        }
-                        RecordedPayload::QueryResolve(resolve) => {
-                            let set = object(
-                                query_set(&resolve.set, self.registration(), "query resolve")
-                                    .map_err(|error| error.to_string())?,
-                            )
-                            .ok_or_else(|| "query set was retired".to_owned())?;
-                            let destination = object(
-                                buffer(
-                                    resolve.destination.native(),
-                                    self.registration(),
-                                    "query resolve destination",
-                                )
-                                .map_err(|error| error.to_string())?,
-                            )
-                            .ok_or_else(|| "query resolve destination was retired".to_owned())?;
-                            call5(
-                                &encoder,
-                                "resolveQuerySet",
-                                &set,
-                                &num(resolve.first_query as u64),
-                                &num(resolve.query_count as u64),
-                                &destination,
-                                &num(resolve.destination_offset),
-                            )?;
-                        }
-                        RecordedPayload::RasterDraw(draw) => {
-                            let pass = raster_pass
-                                .as_ref()
-                                .ok_or_else(|| "raster draw without render pass".to_owned())?;
-                            lower_raster_draw(pass, draw, self.registration())?;
-                        }
-                        RecordedPayload::RasterIndirect(draw) => {
-                            let pass = raster_pass
-                                .as_ref()
-                                .ok_or_else(|| "raster indirect outside render pass".to_owned())?;
-                            lower_raster_indirect(pass, draw, self.registration())?;
-                        }
-                        RecordedPayload::RasterEnd => {
-                            let pass = raster_pass
-                                .take()
-                                .ok_or_else(|| "render pass end without begin".to_owned())?;
-                            call0(&pass, "end")?;
-                        }
-                        RecordedPayload::ComputeBegin(_) => {
-                            if raster_pass.is_some() || compute_pass.is_some() {
-                                return Err(
-                                    "portable command scope nesting reached WebGPU lowering".into(),
-                                );
-                            }
-                            compute_pass =
-                                Some(call1(&encoder, "beginComputePass", &Object::new().into())?);
-                        }
-                        RecordedPayload::ComputeDispatch(draw) => {
-                            let pass = compute_pass.as_ref().ok_or_else(|| {
-                                "compute dispatch without compute pass".to_owned()
-                            })?;
-                            lower_compute_dispatch(pass, draw, self.registration())?;
-                        }
-                        RecordedPayload::ComputeIndirect(draw) => {
-                            let pass = compute_pass.as_ref().ok_or_else(|| {
-                                "compute indirect outside compute pass".to_owned()
-                            })?;
-                            lower_compute_indirect(pass, draw, self.registration())?;
-                        }
-                        RecordedPayload::ComputeEnd => {
-                            let pass = compute_pass
-                                .take()
-                                .ok_or_else(|| "compute pass end without begin".to_owned())?;
-                            call0(&pass, "end")?;
-                        }
-                        RecordedPayload::Upload(job) => {
-                            lower_upload(&queue, job, self.registration())?
-                        }
-                        RecordedPayload::Readback(ticket) => {
-                            lower_readback(&encoder, ticket, self.registration(), &mut readbacks)?
-                        }
-                        RecordedPayload::Copy(CopyRecord::Buffer(copy)) => {
-                            lower_buffer_copy(&encoder, copy)?
-                        }
-                        RecordedPayload::Copy(CopyRecord::BufferToTexture(copy)) => {
-                            lower_buffer_texture_copy(&encoder, copy, true)?
-                        }
-                        RecordedPayload::Copy(CopyRecord::TextureToBuffer(copy)) => {
-                            lower_buffer_texture_copy(&encoder, copy, false)?
-                        }
-                        RecordedPayload::Copy(CopyRecord::Texture(copy)) => {
-                            lower_texture_copy(&encoder, copy)?
-                        }
-                        RecordedPayload::Copy(CopyRecord::ClearBuffer {
-                            buffer: value,
-                            range,
-                        }) => {
-                            let native =
-                                buffer(value.native(), self.registration(), "clear buffer")
-                                    .map_err(|e| e.to_string())?;
-                            let value = object(native)
-                                .ok_or_else(|| "clear buffer object retired".to_owned())?;
-                            call3(
-                                &encoder,
-                                "clearBuffer",
-                                &value,
-                                &num(range.offset),
-                                &num(range.size),
-                            )?;
-                        }
-                        RecordedPayload::DebugPush(label) => {
-                            let _ = call1(
-                                &encoder,
-                                "pushDebugGroup",
-                                &JsValue::from_str(&label.to_string()),
-                            )?;
-                        }
-                        RecordedPayload::DebugPop => {
-                            call0(&encoder, "popDebugGroup")?;
-                        }
-                        RecordedPayload::DebugMarker(label) => {
-                            let _ = call1(
-                                &encoder,
-                                "insertDebugMarker",
-                                &JsValue::from_str(&label.to_string()),
-                            )?;
-                        }
-                        _ => return Err("Phase-A admitted an unsupported WebGPU payload".into()),
-                    }
-                }
-            }
-        }
-        if raster_pass.is_some() || compute_pass.is_some() {
-            return Err("portable recorder emitted an unterminated scope".into());
-        }
-        let commands = call0(&encoder, "finish")?;
+        let queue =
+            registry::with_device_handles(self.registration(), |handles| handles.queue.clone())
+                .ok_or_else(|| "WebGPU device registration was retired".to_owned())?;
         let list = Array::new();
-        list.push(&commands);
+        let mut readbacks = Vec::new();
+        for buffer in buffers {
+            let native = buffer
+                .take()
+                .ok_or_else(|| "finished WebGPU command buffer was already consumed".to_owned())?;
+            list.push(&native);
+            readbacks.extend(buffer.take_readbacks());
+        }
         let list: JsValue = list.into();
         call1(&queue, "submit", &list)?;
         for present in request.presents {
-            // WebGPU has no explicit swapchain Present: submitting work that
-            // references the current canvas view transfers the acquired frame
-            // to the browser compositor.
             present.attachment.present(present.receipt);
         }
         for pending in &mut readbacks {
@@ -465,9 +210,6 @@ impl WebGpuCommandSpine {
         }
         let completion = call0(&queue, "onSubmittedWorkDone")
             .map(Promise::from)
-            // `queue.submit` is already the acceptance boundary. Preserve the
-            // v13 `submit Err => zero accepted work` rule by converting a later
-            // completion-observation failure into a rejected completion future.
             .unwrap_or_else(|message| Promise::reject(&JsValue::from_str(&message)));
         Ok((completion, readbacks))
     }
@@ -669,7 +411,7 @@ impl WebGpuCommandSpine {
     }
 }
 
-fn buffer<'a>(
+pub(crate) fn buffer<'a>(
     value: &'a dyn crate::api::resource::backend::BufferBackend,
     registration: WebGpuRegistration,
     what: &'static str,
@@ -687,7 +429,7 @@ fn buffer<'a>(
             )
         })
 }
-fn texture<'a>(
+pub(crate) fn texture<'a>(
     value: &'a dyn crate::api::resource::backend::TextureBackend,
     registration: WebGpuRegistration,
     what: &'static str,
@@ -705,7 +447,7 @@ fn texture<'a>(
             )
         })
 }
-fn texture_view<'a>(
+pub(crate) fn texture_view<'a>(
     value: &'a dyn crate::api::resource::backend::TextureViewBackend,
     registration: WebGpuRegistration,
     what: &'static str,
@@ -723,7 +465,7 @@ fn texture_view<'a>(
             )
         })
 }
-fn query_set<'a>(
+pub(crate) fn query_set<'a>(
     value: &'a QuerySet,
     registration: WebGpuRegistration,
     what: &'static str,
@@ -742,64 +484,13 @@ fn query_set<'a>(
             )
         })
 }
-fn bind_group<'a>(
-    value: &'a dyn crate::api::binding::backend::BindGroupBackend,
-    registration: WebGpuRegistration,
-) -> RhiResult<&'a WebGpuBindGroup> {
-    let value = value
-        .as_any()
-        .downcast_ref::<WebGpuBindGroup>()
-        .ok_or_else(|| unsupported("bind group"))?;
-    (value.registration() == registration)
-        .then_some(value)
-        .ok_or_else(|| {
-            RhiError::new(
-                RhiErrorKind::WrongDevice,
-                "bind group belongs to another WebGPU device",
-            )
-        })
-}
-fn raster_pipeline<'a>(
-    value: &'a dyn crate::api::pipeline::backend::RasterPipelineBackend,
-    registration: WebGpuRegistration,
-) -> RhiResult<&'a WebGpuRasterPipeline> {
-    let value = value
-        .as_any()
-        .downcast_ref::<WebGpuRasterPipeline>()
-        .ok_or_else(|| unsupported("raster pipeline"))?;
-    (value.registration() == registration)
-        .then_some(value)
-        .ok_or_else(|| {
-            RhiError::new(
-                RhiErrorKind::WrongDevice,
-                "raster pipeline belongs to another WebGPU device",
-            )
-        })
-}
-fn compute_pipeline<'a>(
-    value: &'a dyn crate::api::pipeline::backend::ComputePipelineBackend,
-    registration: WebGpuRegistration,
-) -> RhiResult<&'a WebGpuComputePipeline> {
-    let value = value
-        .as_any()
-        .downcast_ref::<WebGpuComputePipeline>()
-        .ok_or_else(|| unsupported("compute pipeline"))?;
-    (value.registration() == registration)
-        .then_some(value)
-        .ok_or_else(|| {
-            RhiError::new(
-                RhiErrorKind::WrongDevice,
-                "compute pipeline belongs to another WebGPU device",
-            )
-        })
-}
-fn object<T>(value: &T) -> Option<JsValue>
+pub(crate) fn object<T>(value: &T) -> Option<JsValue>
 where
     T: Registered,
 {
     registry::with_object(value.registration(), value.object(), Clone::clone)
 }
-trait Registered {
+pub(crate) trait Registered {
     fn registration(&self) -> WebGpuRegistration;
     fn object(&self) -> super::registry::WebGpuObjectId;
 }
@@ -835,55 +526,6 @@ impl Registered for WebGpuQuerySet {
         self.object()
     }
 }
-impl Registered for WebGpuBindGroup {
-    fn registration(&self) -> WebGpuRegistration {
-        self.registration()
-    }
-    fn object(&self) -> super::registry::WebGpuObjectId {
-        self.object()
-    }
-}
-impl Registered for WebGpuRasterPipeline {
-    fn registration(&self) -> WebGpuRegistration {
-        self.registration()
-    }
-    fn object(&self) -> super::registry::WebGpuObjectId {
-        self.object()
-    }
-}
-impl Registered for WebGpuComputePipeline {
-    fn registration(&self) -> WebGpuRegistration {
-        self.registration()
-    }
-    fn object(&self) -> super::registry::WebGpuObjectId {
-        self.object()
-    }
-}
-
-fn lower_buffer_copy(encoder: &JsValue, copy: &BufferCopy) -> Result<(), String> {
-    let registration = buffer_registration(&copy.src).map_err(|e| e.to_string())?;
-    let src =
-        object(buffer(copy.src.native(), registration, "copy source").map_err(|e| e.to_string())?)
-            .ok_or_else(|| "copy source retired".to_owned())?;
-    let dst = object(
-        buffer(
-            copy.dst.native(),
-            buffer_registration(&copy.dst).map_err(|e| e.to_string())?,
-            "copy destination",
-        )
-        .map_err(|e| e.to_string())?,
-    )
-    .ok_or_else(|| "copy destination retired".to_owned())?;
-    call5(
-        encoder,
-        "copyBufferToBuffer",
-        &src,
-        &num(copy.src_offset),
-        &dst,
-        &num(copy.dst_offset),
-        &num(copy.size),
-    )
-}
 fn buffer_registration(value: &crate::api::resource::Buffer) -> RhiResult<WebGpuRegistration> {
     value
         .native()
@@ -901,7 +543,7 @@ fn texture_registration(value: &crate::api::resource::Texture) -> RhiResult<WebG
         .ok_or_else(|| unsupported("texture"))
 }
 
-fn lower_buffer_texture_copy(
+pub(crate) fn lower_buffer_texture_copy(
     encoder: &JsValue,
     copy: &BufferTextureCopy,
     to_texture: bool,
@@ -954,7 +596,7 @@ fn lower_buffer_texture_copy(
     }
 }
 
-fn lower_texture_copy(encoder: &JsValue, copy: &TextureCopy) -> Result<(), String> {
+pub(crate) fn lower_texture_copy(encoder: &JsValue, copy: &TextureCopy) -> Result<(), String> {
     let registration = texture_registration(&copy.src).map_err(|e| e.to_string())?;
     if texture_registration(&copy.dst).map_err(|e| e.to_string())? != registration {
         return Err("texture copy crosses WebGPU devices".into());
@@ -989,139 +631,7 @@ fn lower_texture_copy(encoder: &JsValue, copy: &TextureCopy) -> Result<(), Strin
     )
 }
 
-fn preflight_raster_begin(begin: &RasterBegin, registration: WebGpuRegistration) -> RhiResult<()> {
-    if let Some(set) = &begin.occlusion_query_set {
-        query_set(set, registration, "raster occlusion query set")?;
-        if set.descriptor().ty != QueryType::Occlusion {
-            return Err(unsupported("non-occlusion raster query set"));
-        }
-    }
-    for (_, attachment) in &begin.colors {
-        match &attachment.view {
-            crate::api::command::attachment::ColorAttachmentView::Texture(view) => {
-                texture_view(view.native(), registration, "raster color attachment")?;
-            }
-            crate::api::command::attachment::ColorAttachmentView::Frame(frame) => {
-                // `frame_view` owns the acquired lease check. It does not touch
-                // JS; acquisition happened before recording/submission.
-                super::presentation::frame_view(frame)?;
-            }
-            _ => return Err(unsupported("unknown raster color attachment")),
-        }
-        if let Some(crate::api::command::attachment::ColorAttachmentView::Texture(view)) =
-            &attachment.resolve
-        {
-            texture_view(view.native(), registration, "raster resolve attachment")?;
-        } else if attachment.resolve.is_some() {
-            return Err(unsupported("a frame resolve attachment"));
-        }
-    }
-    if let Some(depth) = &begin.depth_stencil {
-        texture_view(
-            depth.view.native(),
-            registration,
-            "depth/stencil attachment",
-        )?;
-    }
-    Ok(())
-}
-
-fn preflight_raster_draw(draw: &RasterDraw, registration: WebGpuRegistration) -> RhiResult<()> {
-    raster_pipeline(draw.pipeline.native(), registration)?;
-    preflight_groups(&draw.groups, registration)?;
-    for (_, binding) in &draw.vertex_buffers {
-        buffer(binding.buffer.native(), registration, "vertex buffer")?;
-    }
-    if let Some(index) = &draw.index {
-        buffer(index.binding.buffer.native(), registration, "index buffer")?;
-    }
-    if !draw.immediates.is_empty() {
-        return Err(unsupported("immediate data"));
-    }
-    Ok(())
-}
-fn preflight_compute_draw(
-    draw: &ComputeDispatch,
-    registration: WebGpuRegistration,
-) -> RhiResult<()> {
-    compute_pipeline(draw.pipeline.native(), registration)?;
-    preflight_groups(&draw.groups, registration)?;
-    if !draw.immediates.is_empty() {
-        return Err(unsupported("immediate data"));
-    }
-    Ok(())
-}
-fn preflight_raster_indirect(
-    draw: &RasterIndirect,
-    registration: WebGpuRegistration,
-) -> RhiResult<()> {
-    raster_pipeline(draw.pipeline.native(), registration)?;
-    preflight_groups(&draw.groups, registration)?;
-    for (_, binding) in &draw.vertex_buffers {
-        buffer(binding.buffer.native(), registration, "vertex buffer")?;
-    }
-    if let Some(index) = &draw.index {
-        buffer(index.binding.buffer.native(), registration, "index buffer")?;
-    }
-    buffer(
-        draw.arguments.native(),
-        registration,
-        "indirect argument buffer",
-    )?;
-    if draw.count.is_some() {
-        return Err(unsupported("multi-draw indirect count buffer"));
-    }
-    Ok(())
-}
-fn preflight_compute_indirect(
-    draw: &ComputeIndirect,
-    registration: WebGpuRegistration,
-) -> RhiResult<()> {
-    compute_pipeline(draw.pipeline.native(), registration)?;
-    preflight_groups(&draw.groups, registration)?;
-    buffer(
-        draw.arguments.native(),
-        registration,
-        "indirect argument buffer",
-    )?;
-    Ok(())
-}
-fn preflight_upload(
-    job: &crate::api::resource::UploadJob,
-    registration: WebGpuRegistration,
-) -> RhiResult<()> {
-    match job.descriptor() {
-        crate::api::resource::UploadDescriptor::Buffer(value) => {
-            buffer(value.dst.native(), registration, "upload destination")?;
-        }
-        crate::api::resource::UploadDescriptor::Texture(value) => {
-            texture(value.dst.native(), registration, "upload destination")?;
-        }
-        _ => return Err(unsupported("unknown upload descriptor")),
-    }
-    Ok(())
-}
-fn preflight_readback(
-    ticket: &crate::api::resource::ReadbackTicket,
-    registration: WebGpuRegistration,
-) -> RhiResult<()> {
-    match ticket.request() {
-        crate::api::resource::ReadbackRequest::Buffer { src, .. } => {
-            buffer(src.native(), registration, "readback source")?;
-            Ok(())
-        }
-        crate::api::resource::ReadbackRequest::Texture { .. } => {
-            let ReadbackRequest::Texture { src, .. } = ticket.request() else {
-                unreachable!();
-            };
-            texture(src.native(), registration, "readback texture source")?;
-            texture_readback_layout(ticket).map(|_| ())
-        }
-        _ => Err(unsupported("unknown readback request")),
-    }
-}
-
-fn lower_readback(
+pub(crate) fn lower_readback(
     encoder: &JsValue,
     ticket: &crate::api::resource::ReadbackTicket,
     registration: WebGpuRegistration,
@@ -1224,7 +734,7 @@ fn texture_readback_layout(
     })
 }
 
-fn lower_texture_readback(
+pub(crate) fn lower_texture_readback(
     encoder: &JsValue,
     ticket: &crate::api::resource::ReadbackTicket,
     registration: WebGpuRegistration,
@@ -1330,17 +840,7 @@ fn lower_texture_readback(
     });
     Ok(())
 }
-fn preflight_groups(
-    groups: &[crate::api::command::record::BoundGroup],
-    registration: WebGpuRegistration,
-) -> RhiResult<()> {
-    for group in groups {
-        bind_group(group.group.native(), registration)?;
-    }
-    Ok(())
-}
-
-fn begin_raster(
+pub(crate) fn begin_raster(
     encoder: &JsValue,
     begin: &RasterBegin,
     registration: WebGpuRegistration,
@@ -1406,6 +906,19 @@ fn begin_raster(
         set(&descriptor, "occlusionQuerySet", &native_set)?;
     }
     call1(encoder, "beginRenderPass", &descriptor.into())
+}
+
+/// Opens a native WebGPU render pass for the direct encoder.  The direct
+/// encoder owns its pass lifetime; this helper only translates the portable
+/// attachment descriptor into the browser descriptor.
+pub(crate) fn native_begin_raster(
+    encoder: &JsValue,
+    begin: &RasterBegin,
+    registration: WebGpuRegistration,
+) -> RhiResult<JsValue> {
+    begin_raster(encoder, begin, registration).map_err(|message| {
+        RhiError::new(RhiErrorKind::BackendFailure, message).at("WebGpuNativeEncoder::raster_begin")
+    })
 }
 
 fn color_view(
@@ -1517,370 +1030,6 @@ fn depth_attachment(
     Ok(out)
 }
 
-fn lower_raster_draw(
-    pass: &JsValue,
-    draw: &RasterDraw,
-    registration: WebGpuRegistration,
-) -> Result<(), String> {
-    call1(
-        pass,
-        "setPipeline",
-        &object(raster_pipeline(draw.pipeline.native(), registration).map_err(|e| e.to_string())?)
-            .ok_or_else(|| "raster pipeline retired".to_owned())?,
-    )?;
-    lower_groups(pass, &draw.groups, registration)?;
-    for (slot, binding) in &draw.vertex_buffers {
-        let native = object(
-            buffer(binding.buffer.native(), registration, "vertex buffer")
-                .map_err(|e| e.to_string())?,
-        )
-        .ok_or_else(|| "vertex buffer retired".to_owned())?;
-        call4(
-            pass,
-            "setVertexBuffer",
-            &num(*slot as u64),
-            &native,
-            &num(binding.range.offset),
-            &num(binding.range.size),
-        )?;
-    }
-    if let Some(index) = &draw.index {
-        let native = object(
-            buffer(index.binding.buffer.native(), registration, "index buffer")
-                .map_err(|e| e.to_string())?,
-        )
-        .ok_or_else(|| "index buffer retired".to_owned())?;
-        let format = match index.format {
-            crate::api::command::IndexFormat::Uint16 => "uint16",
-            crate::api::command::IndexFormat::Uint32 => "uint32",
-        };
-        call4(
-            pass,
-            "setIndexBuffer",
-            &native,
-            &JsValue::from_str(format),
-            &num(index.binding.range.offset),
-            &num(index.binding.range.size),
-        )?;
-    }
-    if let Some(v) = draw.viewport {
-        call6(
-            pass,
-            "setViewport",
-            &JsValue::from_f64(v.x as f64),
-            &JsValue::from_f64(v.y as f64),
-            &JsValue::from_f64(v.width as f64),
-            &JsValue::from_f64(v.height as f64),
-            &JsValue::from_f64(v.min_depth as f64),
-            &JsValue::from_f64(v.max_depth as f64),
-        )?;
-    }
-    if let Some(s) = draw.scissor {
-        call4(
-            pass,
-            "setScissorRect",
-            &num(s.x as u64),
-            &num(s.y as u64),
-            &num(s.width as u64),
-            &num(s.height as u64),
-        )?;
-    }
-    let blend = Object::new();
-    set(
-        &blend,
-        "r",
-        &JsValue::from_f64(draw.blend_constant.r as f64),
-    )?;
-    set(
-        &blend,
-        "g",
-        &JsValue::from_f64(draw.blend_constant.g as f64),
-    )?;
-    set(
-        &blend,
-        "b",
-        &JsValue::from_f64(draw.blend_constant.b as f64),
-    )?;
-    set(
-        &blend,
-        "a",
-        &JsValue::from_f64(draw.blend_constant.a as f64),
-    )?;
-    let blend: JsValue = blend.into();
-    call1(pass, "setBlendConstant", &blend)?;
-    call1(
-        pass,
-        "setStencilReference",
-        &num(draw.stencil_reference as u64),
-    )?;
-    if draw.index.is_some() {
-        call5(
-            pass,
-            "drawIndexed",
-            &num((draw.range.end - draw.range.start) as u64),
-            &num((draw.instances.end - draw.instances.start) as u64),
-            &num(draw.range.start as u64),
-            &JsValue::from_f64(draw.base_vertex as f64),
-            &num(draw.instances.start as u64),
-        )?;
-    } else {
-        call4(
-            pass,
-            "draw",
-            &num((draw.range.end - draw.range.start) as u64),
-            &num((draw.instances.end - draw.instances.start) as u64),
-            &num(draw.range.start as u64),
-            &num(draw.instances.start as u64),
-        )?;
-    }
-    Ok(())
-}
-fn bind_raster_state(
-    pass: &JsValue,
-    draw: &RasterDraw,
-    registration: WebGpuRegistration,
-) -> Result<(), String> {
-    call1(
-        pass,
-        "setPipeline",
-        &object(raster_pipeline(draw.pipeline.native(), registration).map_err(|e| e.to_string())?)
-            .ok_or_else(|| "raster pipeline retired".to_owned())?,
-    )?;
-    lower_groups(pass, &draw.groups, registration)?;
-    for (slot, binding) in &draw.vertex_buffers {
-        let native = object(
-            buffer(binding.buffer.native(), registration, "vertex buffer")
-                .map_err(|e| e.to_string())?,
-        )
-        .ok_or_else(|| "vertex buffer retired".to_owned())?;
-        call4(
-            pass,
-            "setVertexBuffer",
-            &num(*slot as u64),
-            &native,
-            &num(binding.range.offset),
-            &num(binding.range.size),
-        )?;
-    }
-    if let Some(index) = &draw.index {
-        let native = object(
-            buffer(index.binding.buffer.native(), registration, "index buffer")
-                .map_err(|e| e.to_string())?,
-        )
-        .ok_or_else(|| "index buffer retired".to_owned())?;
-        let format = match index.format {
-            crate::api::command::IndexFormat::Uint16 => "uint16",
-            crate::api::command::IndexFormat::Uint32 => "uint32",
-        };
-        call4(
-            pass,
-            "setIndexBuffer",
-            &native,
-            &JsValue::from_str(format),
-            &num(index.binding.range.offset),
-            &num(index.binding.range.size),
-        )?;
-    }
-    if let Some(v) = draw.viewport {
-        call6(
-            pass,
-            "setViewport",
-            &JsValue::from_f64(v.x as f64),
-            &JsValue::from_f64(v.y as f64),
-            &JsValue::from_f64(v.width as f64),
-            &JsValue::from_f64(v.height as f64),
-            &JsValue::from_f64(v.min_depth as f64),
-            &JsValue::from_f64(v.max_depth as f64),
-        )?;
-    }
-    if let Some(s) = draw.scissor {
-        call4(
-            pass,
-            "setScissorRect",
-            &num(s.x as u64),
-            &num(s.y as u64),
-            &num(s.width as u64),
-            &num(s.height as u64),
-        )?;
-    }
-    Ok(())
-}
-fn lower_compute_dispatch(
-    pass: &JsValue,
-    draw: &ComputeDispatch,
-    registration: WebGpuRegistration,
-) -> Result<(), String> {
-    call1(
-        pass,
-        "setPipeline",
-        &object(compute_pipeline(draw.pipeline.native(), registration).map_err(|e| e.to_string())?)
-            .ok_or_else(|| "compute pipeline retired".to_owned())?,
-    )?;
-    lower_groups(pass, &draw.groups, registration)?;
-    call3(
-        pass,
-        "dispatchWorkgroups",
-        &num(draw.workgroups.0 as u64),
-        &num(draw.workgroups.1 as u64),
-        &num(draw.workgroups.2 as u64),
-    )
-}
-fn lower_raster_indirect(
-    pass: &JsValue,
-    draw: &RasterIndirect,
-    registration: WebGpuRegistration,
-) -> Result<(), String> {
-    let full = RasterDraw {
-        pipeline: draw.pipeline.clone(),
-        groups: draw.groups.clone(),
-        vertex_buffers: draw.vertex_buffers.clone(),
-        index: draw.index.clone(),
-        viewport: draw.viewport,
-        scissor: draw.scissor,
-        blend_constant: draw.blend_constant,
-        stencil_reference: draw.stencil_reference,
-        range: 0..0,
-        instances: 0..0,
-        base_vertex: 0,
-        immediates: Vec::new(),
-    };
-    bind_raster_state(pass, &full, registration)?;
-    let args = object(
-        buffer(
-            draw.arguments.native(),
-            registration,
-            "indirect argument buffer",
-        )
-        .map_err(|e| e.to_string())?,
-    )
-    .ok_or_else(|| "indirect argument buffer retired".to_owned())?;
-    if draw.index.is_some() {
-        call2(
-            pass,
-            "drawIndexedIndirect",
-            &args,
-            &num(draw.arguments_offset),
-        )?;
-    } else {
-        call2(pass, "drawIndirect", &args, &num(draw.arguments_offset))?;
-    }
-    Ok(())
-}
-fn lower_compute_indirect(
-    pass: &JsValue,
-    draw: &ComputeIndirect,
-    registration: WebGpuRegistration,
-) -> Result<(), String> {
-    call1(
-        pass,
-        "setPipeline",
-        &object(compute_pipeline(draw.pipeline.native(), registration).map_err(|e| e.to_string())?)
-            .ok_or_else(|| "compute pipeline retired".to_owned())?,
-    )?;
-    lower_groups(pass, &draw.groups, registration)?;
-    let args = object(
-        buffer(
-            draw.arguments.native(),
-            registration,
-            "indirect argument buffer",
-        )
-        .map_err(|e| e.to_string())?,
-    )
-    .ok_or_else(|| "indirect argument buffer retired".to_owned())?;
-    call2(
-        pass,
-        "dispatchWorkgroupsIndirect",
-        &args,
-        &num(draw.arguments_offset),
-    )
-}
-fn lower_groups(
-    pass: &JsValue,
-    groups: &[crate::api::command::record::BoundGroup],
-    registration: WebGpuRegistration,
-) -> Result<(), String> {
-    for group in groups {
-        let native =
-            object(bind_group(group.group.native(), registration).map_err(|e| e.to_string())?)
-                .ok_or_else(|| "bind group retired".to_owned())?;
-        let offsets = Array::new();
-        for offset in &group.dynamic_offsets {
-            offsets.push(&num(*offset as u64));
-        }
-        let offsets: JsValue = offsets.into();
-        call3(
-            pass,
-            "setBindGroup",
-            &num(group.index.get() as u64),
-            &native,
-            &offsets,
-        )?;
-    }
-    Ok(())
-}
-fn lower_upload(
-    queue: &JsValue,
-    job: &crate::api::resource::UploadJob,
-    registration: WebGpuRegistration,
-) -> Result<(), String> {
-    match job.descriptor() {
-        crate::api::resource::UploadDescriptor::Buffer(value) => {
-            let dst = object(
-                buffer(value.dst.native(), registration, "upload destination")
-                    .map_err(|e| e.to_string())?,
-            )
-            .ok_or_else(|| "upload destination retired".to_owned())?;
-            let bytes = js_sys::Uint8Array::from(value.bytes.as_ref());
-            call3(
-                queue,
-                "writeBuffer",
-                &dst,
-                &num(value.dst_offset),
-                &bytes.into(),
-            )?;
-        }
-        crate::api::resource::UploadDescriptor::Texture(value) => {
-            let dst = object(
-                texture(value.dst.native(), registration, "upload destination")
-                    .map_err(|e| e.to_string())?,
-            )
-            .ok_or_else(|| "upload destination retired".to_owned())?;
-            let destination = texture_copy_desc(
-                &dst,
-                value.subresource.mip_level,
-                value.subresource.base_layer,
-                value.subresource.aspect,
-                value.origin,
-            )?;
-            let layout = Object::new();
-            set(&layout, "offset", &num(0))?;
-            set(
-                &layout,
-                "bytesPerRow",
-                &num(value.source_layout.bytes_per_row as u64),
-            )?;
-            set(
-                &layout,
-                "rowsPerImage",
-                &num(value.source_layout.rows_per_image as u64),
-            )?;
-            let bytes = js_sys::Uint8Array::from(value.bytes.as_ref());
-            let destination: JsValue = destination.into();
-            let layout: JsValue = layout.into();
-            call4(
-                queue,
-                "writeTexture",
-                &destination,
-                &bytes.into(),
-                &layout,
-                &extent(value.extent),
-            )?;
-        }
-        _ => return Err("unknown upload descriptor".into()),
-    }
-    Ok(())
-}
-
 fn texture_copy_desc(
     texture: &JsValue,
     mip: u32,
@@ -1931,42 +1080,12 @@ fn unsupported(what: &'static str) -> RhiError {
         RhiErrorKind::Unsupported,
         format!("WebGPU command lowering does not support {what}"),
     )
-    .at("WebGpuCommandSpine::preflight")
+    .at("WebGpuCommandSpine::native_encode")
 }
-fn payload_name(value: &RecordedPayload) -> &'static str {
-    match value {
-        RecordedPayload::MeshDispatch(_) => "mesh dispatch",
-        RecordedPayload::MeshIndirect(_) => "mesh indirect",
-        RecordedPayload::RayTracingBegin(_)
-        | RecordedPayload::RayTracingDispatch(_)
-        | RecordedPayload::RayTracingEnd => "ray tracing",
-        RecordedPayload::AccelerationStructure(_) => "acceleration structure",
-        RecordedPayload::RasterBegin(_)
-        | RecordedPayload::RasterDraw(_)
-        | RecordedPayload::RasterIndirect(_)
-        | RecordedPayload::RasterEnd => "raster command",
-        RecordedPayload::ComputeBegin(_)
-        | RecordedPayload::ComputeDispatch(_)
-        | RecordedPayload::ComputeIndirect(_)
-        | RecordedPayload::ComputeEnd => "compute command",
-        RecordedPayload::QueryBegin { .. }
-        | RecordedPayload::QueryEnd { .. }
-        | RecordedPayload::TimestampWrite { .. }
-        | RecordedPayload::QueryResolve(_) => "query command",
-        RecordedPayload::Copy(CopyRecord::ClearTexture { .. }) => "clear texture",
-        RecordedPayload::Copy(CopyRecord::Resolve(_)) => "texture resolve",
-        RecordedPayload::Copy(CopyRecord::Blit(_)) => "texture blit",
-        RecordedPayload::Copy(CopyRecord::ExternalImage(_)) => "external image copy",
-        RecordedPayload::Upload(_) => "upload",
-        RecordedPayload::Readback(_) => "readback",
-        _ => "command",
-    }
-}
-
-fn num(value: u64) -> JsValue {
+pub(crate) fn num(value: u64) -> JsValue {
     JsValue::from_f64(value as f64)
 }
-fn clear_color(value: crate::api::command::ColorClearValue) -> Object {
+pub(crate) fn clear_color(value: crate::api::command::ColorClearValue) -> Object {
     let out = Object::new();
     match value {
         crate::api::command::ColorClearValue::Float([r, g, b, a]) => {
@@ -1991,7 +1110,7 @@ fn clear_color(value: crate::api::command::ColorClearValue) -> Object {
     }
     out
 }
-fn set(object: &Object, name: &str, value: &JsValue) -> Result<(), String> {
+pub(crate) fn set(object: &Object, name: &str, value: &JsValue) -> Result<(), String> {
     Reflect::set(object, &JsValue::from_str(name), value)
         .map_err(|e| js::message(&e))
         .and_then(|ok| {
@@ -1999,28 +1118,22 @@ fn set(object: &Object, name: &str, value: &JsValue) -> Result<(), String> {
                 .ok_or_else(|| "WebGPU descriptor field rejected".into())
         })
 }
-fn set_rhi(object: &Object, name: &str, value: JsValue) -> RhiResult<()> {
+pub(crate) fn set_rhi(object: &Object, name: &str, value: JsValue) -> RhiResult<()> {
     set(object, name, &value).map_err(|message| {
         RhiError::new(RhiErrorKind::BackendFailure, message).at("WebGPU render-pass descriptor")
     })
 }
-fn call0(receiver: &JsValue, name: &str) -> Result<JsValue, String> {
+pub(crate) fn call0(receiver: &JsValue, name: &str) -> Result<JsValue, String> {
     function(receiver, name)?
         .call0(receiver)
         .map_err(|e| js::message(&e))
 }
-fn call1(receiver: &JsValue, name: &str, a: &JsValue) -> Result<JsValue, String> {
+pub(crate) fn call1(receiver: &JsValue, name: &str, a: &JsValue) -> Result<JsValue, String> {
     function(receiver, name)?
         .call1(receiver, a)
         .map_err(|e| js::message(&e))
 }
-fn call2(receiver: &JsValue, name: &str, a: &JsValue, b: &JsValue) -> Result<(), String> {
-    function(receiver, name)?
-        .call2(receiver, a, b)
-        .map(|_| ())
-        .map_err(|e| js::message(&e))
-}
-fn call3(
+pub(crate) fn call3(
     receiver: &JsValue,
     name: &str,
     a: &JsValue,
@@ -2032,7 +1145,7 @@ fn call3(
         .map(|_| ())
         .map_err(|e| js::message(&e))
 }
-fn call3_value(
+pub(crate) fn call3_value(
     receiver: &JsValue,
     name: &str,
     a: &JsValue,
@@ -2043,20 +1156,7 @@ fn call3_value(
         .call3(receiver, a, b, c)
         .map_err(|e| js::message(&e))
 }
-fn call4(
-    receiver: &JsValue,
-    name: &str,
-    a: &JsValue,
-    b: &JsValue,
-    c: &JsValue,
-    d: &JsValue,
-) -> Result<(), String> {
-    function(receiver, name)?
-        .call4(receiver, a, b, c, d)
-        .map(|_| ())
-        .map_err(|e| js::message(&e))
-}
-fn call5(
+pub(crate) fn call5(
     receiver: &JsValue,
     name: &str,
     a: &JsValue,
@@ -2070,48 +1170,19 @@ fn call5(
         .map(|_| ())
         .map_err(|e| js::message(&e))
 }
-fn call6(
-    receiver: &JsValue,
-    name: &str,
-    a: &JsValue,
-    b: &JsValue,
-    c: &JsValue,
-    d: &JsValue,
-    e: &JsValue,
-    f: &JsValue,
-) -> Result<(), String> {
-    function(receiver, name)?
-        .call6(receiver, a, b, c, d, e, f)
-        .map(|_| ())
-        .map_err(|e| js::message(&e))
-}
-fn function(receiver: &JsValue, name: &str) -> Result<Function, String> {
+pub(crate) fn function(receiver: &JsValue, name: &str) -> Result<Function, String> {
     js::property(receiver, name)
         .map_err(|e| js::message(&e))?
         .dyn_into::<Function>()
         .map_err(|e| js::message(&e))
 }
-fn read_mapped_bytes(buffer: &JsValue, bytes: u64) -> Option<Vec<u8>> {
+pub(crate) fn read_mapped_bytes(buffer: &JsValue, bytes: u64) -> Option<Vec<u8>> {
     let get = function(buffer, "getMappedRange").ok()?;
     let range = get.call2(buffer, &num(0), &num(bytes)).ok()?;
     Some(js_sys::Uint8Array::new(&range).to_vec())
 }
-fn unmap_buffer(buffer: &JsValue) {
+pub(crate) fn unmap_buffer(buffer: &JsValue) {
     if let Ok(unmap) = function(buffer, "unmap") {
         let _ = unmap.call0(buffer);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    // Browser-native objects cannot be constructed on the host. The invariant
-    // above is intentionally structural: unsupported variants are exhausted in
-    // preflight before `encode`, whose first operation is createCommandEncoder.
-    #[test]
-    fn unsupported_payload_names_are_never_empty() {
-        assert_ne!(
-            super::payload_name(&crate::api::command::record::RecordedPayload::ComputeEnd),
-            ""
-        );
     }
 }

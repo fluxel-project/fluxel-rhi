@@ -25,7 +25,7 @@ use super::vocabulary::{ArtifactAcceptance, ShaderAbiVersion, ShaderCode, Shader
 ///
 /// This is deliberately descriptive rather than an authority token.  The authority
 /// boundary is [`ShaderArtifact::assume_trusted_passthrough`], which is `unsafe`:
-/// strings supplied here are retained for diagnostics and capture, but cannot make
+/// strings supplied here are retained for diagnostics, but cannot make
 /// arbitrary DXIL, SPIR-V, Metallib, or source code safe by themselves.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -207,7 +207,7 @@ impl ShaderArtifact {
         self
     }
 
-    /// Returns capture-visible provenance when this artifact uses the explicit
+    /// Returns diagnostic provenance when this artifact uses the explicit
     /// trusted-passthrough boundary.
     pub fn passthrough_provenance(&self) -> Option<&PassthroughShaderProvenance> {
         self.passthrough_provenance.as_ref()

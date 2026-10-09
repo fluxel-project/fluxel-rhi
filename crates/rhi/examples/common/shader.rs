@@ -31,8 +31,14 @@ static GL_TARGET: Mutex<Option<ExampleShaderTarget>> = Mutex::new(None);
 pub enum ExampleShaderTarget {
     Vulkan,
     Dx12,
-    Glsl { version: u16 },
-    GlslEs { version: u16 },
+    /// Browser WebGPU consumes the authored WGSL directly.
+    WebGpu,
+    Glsl {
+        version: u16,
+    },
+    GlslEs {
+        version: u16,
+    },
 }
 
 /// Registers the actual GL dialect observed when an example session opens.
@@ -76,7 +82,9 @@ pub fn artifact(
     let entry_point = entry_point.into();
     let wgsl = wgsl.as_ref();
     let code = match target {
-        ExampleShaderTarget::Vulkan => ShaderCode::Wgsl(Arc::from(wgsl)),
+        ExampleShaderTarget::Vulkan | ExampleShaderTarget::WebGpu => {
+            ShaderCode::Wgsl(Arc::from(wgsl))
+        }
         ExampleShaderTarget::Dx12 => ShaderCode::Dxil(Arc::from(compile_dxil(
             stage,
             &entry_point,
@@ -137,6 +145,10 @@ pub fn artifact_for_device(
     let target = match device.backend() {
         BackendKind::Vulkan => ExampleShaderTarget::Vulkan,
         BackendKind::Dx12 => ExampleShaderTarget::Dx12,
+        // WebGPU consumes WGSL directly.  Keeping it in this shared helper
+        // lets browser examples use the same authored artifact as the native
+        // runners without involving a desktop compiler.
+        BackendKind::WebGpu => ExampleShaderTarget::WebGpu,
         BackendKind::OpenGl | BackendKind::WebGl2 => (*GL_TARGET
             .lock()
             .unwrap_or_else(|poison| poison.into_inner()))

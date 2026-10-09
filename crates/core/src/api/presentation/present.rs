@@ -225,14 +225,22 @@ pub struct PresentReceipt {
 #[doc(hidden)]
 pub struct PresentOutcome {
     device: DeviceIdentity,
-    state: std::sync::Mutex<PresentState>,
+    state: std::sync::Mutex<PresentOutcomeState>,
+}
+
+struct PresentOutcomeState {
+    value: PresentState,
+    waiters: Vec<std::task::Waker>,
 }
 
 impl PresentOutcome {
     pub(crate) fn new(device: DeviceIdentity) -> Self {
         Self {
             device,
-            state: std::sync::Mutex::new(PresentState::Pending),
+            state: std::sync::Mutex::new(PresentOutcomeState {
+                value: PresentState::Pending,
+                waiters: Vec::new(),
+            }),
         }
     }
 
@@ -244,10 +252,17 @@ impl PresentOutcome {
     /// lowering an accepted present for this receipt's id.
     #[doc(hidden)]
     pub fn set(&self, state: PresentState) {
-        *self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = state;
+        let waiters = {
+            let mut outcome = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            outcome.value = state;
+            std::mem::take(&mut outcome.waiters)
+        };
+        for waiter in waiters {
+            waiter.wake();
+        }
     }
 
     /// Reads the current published state.
@@ -256,7 +271,23 @@ impl PresentOutcome {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .value
             .clone()
+    }
+
+    fn poll_or_register(&self, waker: &std::task::Waker) -> std::task::Poll<PresentState> {
+        let mut outcome = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if matches!(outcome.value, PresentState::Pending) {
+            if !outcome.waiters.iter().any(|saved| saved.will_wake(waker)) {
+                outcome.waiters.push(waker.clone());
+            }
+            std::task::Poll::Pending
+        } else {
+            std::task::Poll::Ready(outcome.value.clone())
+        }
     }
 }
 
@@ -404,7 +435,7 @@ impl Device {
 
     /// Waits for presentation ownership to reach a terminal outcome.
     pub async fn wait_present(&self, receipt: PresentReceiptId) -> RhiResult<PresentState> {
-        std::future::poll_fn(|_| {
+        std::future::poll_fn(|cx| {
             if receipt.device_identity() != self.identity() {
                 return std::task::Poll::Ready(Err(RhiError::new(
                     RhiErrorKind::WrongDevice,
@@ -413,10 +444,7 @@ impl Device {
                 .at("Device::wait_present")));
             }
             match crate::api::presentation::present::live_outcome(receipt) {
-                Some(outcome) => match outcome.get() {
-                    PresentState::Pending => std::task::Poll::Pending,
-                    terminal => std::task::Poll::Ready(Ok(terminal)),
-                },
+                Some(outcome) => outcome.poll_or_register(cx.waker()).map(Ok),
                 None => std::task::Poll::Ready(Err(RhiError::new(
                     RhiErrorKind::InvalidUsage,
                     "this present receipt is no longer live; every holder has been dropped",
@@ -425,5 +453,38 @@ impl Device {
             }
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Poll, Wake, Waker};
+
+    struct CountWake(AtomicUsize);
+
+    impl Wake for CountWake {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn present_outcome_wakes_waiter_after_async_completion() {
+        let outcome = PresentOutcome::new(DeviceIdentity::new(
+            crate::api::identity::DeviceInstanceId::new(1),
+        ));
+        let wake = Arc::new(CountWake(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&wake));
+
+        assert!(matches!(outcome.poll_or_register(&waker), Poll::Pending));
+        outcome.set(PresentState::Accepted);
+        assert_eq!(wake.0.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            outcome.poll_or_register(&waker),
+            Poll::Ready(PresentState::Accepted)
+        ));
     }
 }

@@ -1,6 +1,7 @@
 use super::memory::memory_type;
 use crate::api::resource::{
     backend::TextureBackend,
+    subresource::TextureAspects,
     texture::{TextureDescriptor, TextureDimension, TextureUsage, TextureViewCompatibility},
 };
 use crate::backend::vulkan::format::vk_format;
@@ -102,12 +103,122 @@ pub(crate) fn create_texture(
         }
         return Err(error);
     }
+    // Direct encoders must be freely recordable before their eventual queue
+    // order is known.  Vulkan otherwise requires each encoder to predict a
+    // predecessor's optimal layout. Establish GENERAL once, synchronously,
+    // before the image escapes; all normal texture commands then use GENERAL
+    // and only carry access/stage dependencies. This is intentionally a
+    // correctness baseline and can cost optimal-layout performance.
+    if let Err(error) = initialize_general_layout(&shared, image, desc) {
+        unsafe {
+            shared.device.free_memory(memory, None);
+            shared.device.destroy_image(image, None);
+        }
+        return Err(error);
+    }
     Ok(VulkanTexture {
         shared,
         image,
         memory,
         format,
     })
+}
+
+fn initialize_general_layout(
+    shared: &VulkanShared,
+    image: vk::Image,
+    desc: &TextureDescriptor,
+) -> Result<(), vk::Result> {
+    let pool_info = vk::CommandPoolCreateInfo::default()
+        .queue_family_index(shared.graphics_family)
+        .flags(vk::CommandPoolCreateFlags::TRANSIENT);
+    let pool = unsafe { shared.device.create_command_pool(&pool_info, None) }?;
+    let allocation = vk::CommandBufferAllocateInfo::default()
+        .command_pool(pool)
+        .level(vk::CommandBufferLevel::PRIMARY)
+        .command_buffer_count(1);
+    let buffer = match unsafe { shared.device.allocate_command_buffers(&allocation) } {
+        Ok(mut values) => values.pop().expect("one initialization command buffer"),
+        Err(error) => {
+            unsafe { shared.device.destroy_command_pool(pool, None) };
+            return Err(error);
+        }
+    };
+    let begin =
+        vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+    if let Err(error) = unsafe { shared.device.begin_command_buffer(buffer, &begin) } {
+        unsafe { shared.device.destroy_command_pool(pool, None) };
+        return Err(error);
+    }
+    let barrier = vk::ImageMemoryBarrier::default()
+        .src_access_mask(vk::AccessFlags::empty())
+        .dst_access_mask(vk::AccessFlags::empty())
+        .old_layout(vk::ImageLayout::UNDEFINED)
+        .new_layout(vk::ImageLayout::GENERAL)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image)
+        .subresource_range(
+            vk::ImageSubresourceRange::default()
+                .aspect_mask(aspects(desc))
+                .base_mip_level(0)
+                .level_count(desc.mip_levels)
+                .base_array_layer(0)
+                .layer_count(desc.array_layers),
+        );
+    unsafe {
+        shared.device.cmd_pipeline_barrier(
+            buffer,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::ALL_COMMANDS,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[barrier],
+        );
+    }
+    if let Err(error) = unsafe { shared.device.end_command_buffer(buffer) } {
+        unsafe { shared.device.destroy_command_pool(pool, None) };
+        return Err(error);
+    }
+    let fence_info = vk::FenceCreateInfo::default();
+    let fence = match unsafe { shared.device.create_fence(&fence_info, None) } {
+        Ok(fence) => fence,
+        Err(error) => {
+            unsafe { shared.device.destroy_command_pool(pool, None) };
+            return Err(error);
+        }
+    };
+    let submit = vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&buffer));
+    let result = {
+        let _queue = shared.queue_guard();
+        unsafe {
+            shared
+                .device
+                .queue_submit(shared.graphics_queue, &[submit], fence)
+        }
+    }
+    .and_then(|()| unsafe { shared.device.wait_for_fences(&[fence], true, u64::MAX) });
+    unsafe {
+        shared.device.destroy_fence(fence, None);
+        shared.device.destroy_command_pool(pool, None);
+    }
+    result
+}
+
+fn aspects(desc: &TextureDescriptor) -> vk::ImageAspectFlags {
+    let aspects = crate::api::format::format_aspects(desc.format);
+    let mut result = vk::ImageAspectFlags::empty();
+    if aspects.contains(TextureAspects::COLOR) {
+        result |= vk::ImageAspectFlags::COLOR;
+    }
+    if aspects.contains(TextureAspects::DEPTH) {
+        result |= vk::ImageAspectFlags::DEPTH;
+    }
+    if aspects.contains(TextureAspects::STENCIL) {
+        result |= vk::ImageAspectFlags::STENCIL;
+    }
+    result
 }
 fn usage(value: TextureUsage) -> vk::ImageUsageFlags {
     let mut flags = vk::ImageUsageFlags::empty();

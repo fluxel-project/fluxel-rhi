@@ -63,6 +63,10 @@ pub(crate) struct GlLoweringClosure {
     pub(crate) textures: bool,
     pub(crate) buffer_copy: bool,
     pub(crate) texture_copy: bool,
+    /// Texture blit lowering is intentionally separate from exact texture
+    /// copies: a backend may expose `copyTex*` while lacking the framebuffer
+    /// scaling/filter route required by `TextureBlit`.
+    pub(crate) texture_blit: bool,
     /// Scalar UBO, sampled-texture, and sampler packet lowering, including a
     /// trustworthy shader-artifact mapping from logical `(group, slot)` pairs
     /// to native GL reflection names. Fixed/runtime arrays and dynamic offsets
@@ -143,65 +147,85 @@ impl GlCapabilitySnapshot {
             // A blit source needs COPY_SRC and its destination needs COPY_DST;
             // neither resource has to carry both bits. Record the Cartesian
             // product so capability lookup agrees with the command contract.
-            for source in &self.textures {
-                let source = &source.query;
-                if source.sample_count() != 1
-                    || !source.usage().contains(TextureUsage::COPY_SRC)
-                    || !crate::api::format::format_aspects(source.format())
-                        .contains(crate::api::resource::TextureAspects::COLOR)
-                {
-                    continue;
-                }
-                for destination in &self.textures {
-                    let destination = &destination.query;
-                    if destination.sample_count() != 1
-                        || !destination.usage().contains(TextureUsage::COPY_DST)
-                        || !crate::api::format::format_aspects(destination.format())
+            if self.lowering.texture_blit {
+                for source in &self.textures {
+                    let source = &source.query;
+                    if source.sample_count() != 1
+                        || !source.usage().contains(TextureUsage::COPY_SRC)
+                        || !crate::api::format::format_aspects(source.format())
                             .contains(crate::api::resource::TextureAspects::COLOR)
                     {
                         continue;
                     }
-                    // GL framebuffer blits require matching color format
-                    // classes for the portable route we publish here.
-                    if source.format() != destination.format() {
-                        continue;
-                    }
-                    for filter in [
-                        crate::api::command::BlitFilter::Nearest,
-                        crate::api::command::BlitFilter::Linear,
-                    ] {
-                        facts.record_route(
-                            RouteQuery::Blit {
-                                src_dimension: source.dimension(),
-                                src_format: source.format(),
-                                dst_dimension: destination.dimension(),
-                                dst_format: destination.format(),
-                                filter,
-                            },
-                            RouteSupport::Supported(RouteCapabilities::new(None, None)),
-                        );
+                    for destination in &self.textures {
+                        let destination = &destination.query;
+                        if destination.sample_count() != 1
+                            || !destination.usage().contains(TextureUsage::COPY_DST)
+                            || !crate::api::format::format_aspects(destination.format())
+                                .contains(crate::api::resource::TextureAspects::COLOR)
+                        {
+                            continue;
+                        }
+                        // GL framebuffer blits require matching color format
+                        // classes for the portable route we publish here.
+                        if source.format() != destination.format() {
+                            continue;
+                        }
+                        for filter in [
+                            crate::api::command::BlitFilter::Nearest,
+                            crate::api::command::BlitFilter::Linear,
+                        ] {
+                            facts.record_route(
+                                RouteQuery::Blit {
+                                    src_dimension: source.dimension(),
+                                    src_format: source.format(),
+                                    dst_dimension: destination.dimension(),
+                                    dst_format: destination.format(),
+                                    filter,
+                                },
+                                RouteSupport::Supported(RouteCapabilities::new(None, None)),
+                            );
+                        }
                     }
                 }
             }
         }
-        // Texture uploads use this route key even though GL supplies client
-        // memory directly. A texture support row with COPY_DST is emitted only
-        // when the matching Phase-A packet can lower it.
-        if self.lowering.textures {
+        // Buffer/texture copies use a synchronous owner-context staging path
+        // on WebGL2 and direct pixel transfers on native GL.  Both currently
+        // admit only uncompressed RGBA8 color images; uploads of compressed
+        // whole mips are a distinct operation and must not publish this route.
+        if self.lowering.texture_copy {
             for texture in &self.textures {
                 let query = &texture.query;
                 if query.sample_count() == 1
                     && query.usage().contains(TextureUsage::COPY_DST)
-                    && (is_compressed(query.format())
-                        || matches!(
-                            query.format(),
-                            TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb
-                        ))
+                    && matches!(
+                        query.format(),
+                        TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb
+                    )
                     && crate::api::format::format_aspects(query.format())
                         .contains(crate::api::resource::TextureAspects::COLOR)
                 {
                     facts.record_route(
                         RouteQuery::BufferToTexture {
+                            dimension: query.dimension(),
+                            format: query.format(),
+                            aspect: crate::api::resource::TextureAspect::Color,
+                        },
+                        RouteSupport::Supported(RouteCapabilities::new(None, None)),
+                    );
+                }
+                if query.sample_count() == 1
+                    && query.usage().contains(TextureUsage::COPY_SRC)
+                    && matches!(
+                        query.format(),
+                        TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb
+                    )
+                    && crate::api::format::format_aspects(query.format())
+                        .contains(crate::api::resource::TextureAspects::COLOR)
+                {
+                    facts.record_route(
+                        RouteQuery::TextureToBuffer {
                             dimension: query.dimension(),
                             format: query.format(),
                             aspect: crate::api::resource::TextureAspect::Color,
@@ -446,6 +470,14 @@ impl GlCapabilitySnapshot {
             }
         }
 
+        // A stage-local block count alone does not make a UBO bindable.  GL
+        // binds uniform blocks through the shared indexed binding-point table,
+        // and the block must also have a representable range.  Keep those
+        // three facts together here so a malformed/incomplete limit snapshot
+        // cannot advertise an interface that `bind_buffer_range` will reject.
+        let uniform_route_available = l.max_uniform_buffer_bindings != 0
+            && l.max_uniform_block_size != 0
+            && l.max_combined_uniform_blocks != 0;
         for visibility in crate::api::capability::visibilities() {
             if visibility.contains(ShaderStages::COMPUTE) && !self.lowering.compute {
                 continue;
@@ -458,7 +490,7 @@ impl GlCapabilitySnapshot {
                     _ => 0,
                 }) != 0
             });
-            if stages_have_uniforms {
+            if uniform_route_available && stages_have_uniforms {
                 facts.record_binding_support(
                     BindingSupportKey {
                         visibility,
@@ -848,6 +880,67 @@ mod tests {
             BindingCount::One,
             false,
         )
+    }
+
+    fn uniform_binding_query(visibility: ShaderStages) -> BindingSupportQuery {
+        BindingSupportQuery::new(
+            visibility,
+            BindingKind::UniformBuffer { min_size: 192 },
+            BindingCount::One,
+            false,
+        )
+    }
+
+    fn enable_scalar_ubo_lowering(snapshot: &mut GlCapabilitySnapshot) {
+        snapshot.lowering.bindings = true;
+        snapshot.limits.max_uniform_buffer_bindings = 1;
+        snapshot.limits.max_uniform_block_size = 16_384;
+        snapshot.limits.max_combined_uniform_blocks = 1;
+        snapshot.limits.max_vertex_uniform_blocks = 1;
+    }
+
+    #[test]
+    fn scalar_ubo_support_requires_the_complete_native_binding_route() {
+        let mut snapshot = baseline(GlFamilyProfile::Desktop { major: 4, minor: 6 });
+        enable_scalar_ubo_lowering(&mut snapshot);
+        let facts = AvailableCapabilities::from_facts(snapshot.clone().into_facts());
+        assert_eq!(
+            facts.binding_support(&uniform_binding_query(ShaderStages::VERTEX)),
+            BindingSupport::Supported
+        );
+
+        // A stage count cannot stand in for the shared indexed binding-point
+        // table.  This also protects discovery failures that otherwise look
+        // like a valid vertex-only UBO capability.
+        snapshot.limits.max_uniform_buffer_bindings = 0;
+        let facts = AvailableCapabilities::from_facts(snapshot.into_facts());
+        assert_eq!(
+            facts.binding_support(&uniform_binding_query(ShaderStages::VERTEX)),
+            BindingSupport::Unsupported
+        );
+    }
+
+    #[test]
+    fn scalar_ubo_visibility_needs_each_declared_stage() {
+        let mut snapshot = baseline(GlFamilyProfile::Desktop { major: 4, minor: 6 });
+        enable_scalar_ubo_lowering(&mut snapshot);
+        snapshot.limits.max_fragment_uniform_blocks = 1;
+        let facts = AvailableCapabilities::from_facts(snapshot.clone().into_facts());
+        assert_eq!(
+            facts.binding_support(&uniform_binding_query(
+                ShaderStages::VERTEX.union(ShaderStages::FRAGMENT)
+            )),
+            BindingSupport::Supported
+        );
+
+        snapshot.limits.max_fragment_uniform_blocks = 0;
+        let facts = AvailableCapabilities::from_facts(snapshot.into_facts());
+        assert_eq!(
+            facts.binding_support(&uniform_binding_query(
+                ShaderStages::VERTEX.union(ShaderStages::FRAGMENT)
+            )),
+            BindingSupport::Unsupported
+        );
     }
 
     #[test]

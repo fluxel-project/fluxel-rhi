@@ -16,6 +16,7 @@ pub(crate) use device::{
     GlComputePipelinePacket, GlComputePipelineRef, GlDevice, GlExecutionDriver, GlLossSink,
     GlObjectKind, GlObjectName, GlQuerySetRef, GlRasterPipelinePacket, GlRasterPipelineRef,
     GlSamplerRef, GlShaderRef, GlSubmissionBatch, GlSubmissionPlan, GlTextureRef, GlTextureViewRef,
+    GlTypedCommand,
 };
 pub(crate) use presentation::{GlAcquiredFramebuffer, GlPresentationLease, framebuffer_ref};
 #[allow(unused_imports, reason = "host glue is the future external caller")]

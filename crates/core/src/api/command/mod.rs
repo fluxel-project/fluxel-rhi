@@ -1,10 +1,9 @@
 //! Recording and actual resource uses (specification sections 29 through 38).
 //!
-//! This is the chapter that turns a caller's intent into a portable recording: a
-//! [`CommandRecorder`] is a CPU-side command builder that accepts copy, raster,
-//! compute, upload, and readback commands in sequence and produces a
-//! [`RecordedWork`] carrying the commands it recorded, the domains they belong to,
-//! and the resources they actually touched.
+//! This chapter turns validated caller intent into native command buffers. A
+//! [`CommandRecorder`] owns an open backend encoder; copy, raster, compute,
+//! upload, and readback calls encode immediately, and [`RecordedWork`] owns the
+//! finalized native buffer plus its resource-use summary.
 //!
 //! ```text
 //! Device::create_recorder        -> CommandRecorder          (29.1)
@@ -38,7 +37,7 @@
 //! raster      RasterScope and the draw verbs                      (32)
 //! compute     ComputeScope and dispatch                           (33)
 //! copy        copy/resolve/blit descriptors and validators        (34)
-//! record      the internal command sequence and RecordedWork      (38)
+//! record      typed encoder descriptors and RecordedWork          (38)
 //! uses        which resource a command actually touched           (34.6, 37)
 //! ```
 //!
@@ -59,12 +58,13 @@
 //! scope holds the recorder mutably, so two scopes cannot be open at once and no
 //! command can land outside a scope's interior. The other half is the phase field:
 //! a recorder that a dropped scope left unclosed is *poisoned* rather than
-//! repaired, because a recording with a hole in it cannot be lowered and pretending
-//! otherwise would put a malformed command sequence in front of a driver.
+//! repaired, because its native encoder has an incomplete pass.
 
 pub(crate) mod advanced;
 #[doc(hidden)]
 pub mod attachment;
+#[doc(hidden)]
+pub mod backend;
 pub(crate) mod compute;
 #[doc(hidden)]
 pub mod copy;
@@ -115,8 +115,7 @@ use self::copy::{
     texture_to_buffer_route, validate_buffer_copy, validate_buffer_texture_copy,
     validate_texture_blit, validate_texture_copy, validate_texture_resolve,
 };
-use self::record::{CopyRecord, QueryResolve, RecordedCommand, RecordedPayload};
-use self::uses::{copy_uses, frame_use};
+use self::uses::{CopyOpRef, copy_uses_ref, frame_use};
 
 /// The index element type a strip topology is cut with.
 ///
@@ -198,17 +197,8 @@ pub(crate) enum RecorderPhase {
 /// recorded, so a recording cannot name more than one device and section 3.3's
 /// cross-device rule has nothing left for a later stage to refuse.
 ///
-/// The recorder holds no native encoder. That is deliberate and is what makes
-/// section 29.2's "Drop does not perform a backend finalize that may fail" true:
-/// there is nothing to finalize, so a dropped scope can only mark the recording
-/// unusable, never leave a half-written native command list behind.
-///
-/// It retains its creating [`Device`] as one ownership-domain handle. This is not
-/// a native encoder and does not authorize lowering: the recorder only queries
-/// the immutable capability contract through its narrow [`Self::capabilities`]
-/// helper. Keeping the device handle avoids a second `Arc` solely for its
-/// capability snapshot and keeps the recorder alive in the same execution domain
-/// as the resources it records.
+/// It owns an open native encoder, closed only by [`Self::finish`]. It also
+/// retains its creating [`Device`] for capability validation and ownership.
 pub struct CommandRecorder {
     /// Process-local identity.
     id: ObjectId,
@@ -216,14 +206,21 @@ pub struct CommandRecorder {
     device: DeviceIdentity,
     /// One clone of the creating device's ownership domain.
     owner: Device,
-    /// The descriptor's label, kept for diagnostics and capture.
+    /// The descriptor's label, kept for diagnostics.
     label: Label,
     /// Which part of the state machine this recorder is in.
     phase: RecorderPhase,
     /// Why the recording was poisoned, if it was.
     poison_reason: Option<RhiError>,
-    /// The command-ordered interior of the recording.
-    commands: Vec<RecordedCommand>,
+    /// The backend encoder receives every operation immediately.
+    native: Box<dyn backend::CommandEncoderBackend>,
+    /// Merged uses retained without draw-state snapshots.
+    native_uses: Vec<ResourceUse>,
+    native_readbacks: Vec<ReadbackTicket>,
+    secondary: bool,
+    secondary_begin: Option<record::RasterBegin>,
+    secondary_draw_uses: Vec<ResourceUse>,
+    secondary_draw_count: usize,
     /// The domains recorded so far.
     ///
     /// `None` until the first command, because [`LaneWorkDomains`] has no way to
@@ -324,13 +321,10 @@ impl CommandRecorder {
             copy.destination_origin,
             copy.extent,
         )?;
-        let uses = copy_uses(&CopyRecord::ExternalImage(copy.clone()));
-        self.record_command(
-            RecordedPayload::Copy(CopyRecord::ExternalImage(copy)),
-            uses,
-            crate::api::submission::LaneWorkDomains::COPY,
-        );
-        Ok(())
+        let uses = copy_uses_ref(&CopyOpRef::ExternalImage(&copy));
+        self.encode_native(uses.clone(), LaneWorkDomains::COPY, |native| {
+            native.copy_external_image_to_texture(&copy, &uses)
+        })
     }
     /// Clears a buffer range to zero.
     ///
@@ -378,15 +372,9 @@ impl CommandRecorder {
             stages: PipelineScope::COPY,
             access: AccessMask::COPY_WRITE,
         })];
-        self.record_command(
-            RecordedPayload::Copy(CopyRecord::ClearBuffer {
-                buffer: buffer.clone(),
-                range,
-            }),
-            uses,
-            crate::api::submission::LaneWorkDomains::COPY,
-        );
-        Ok(())
+        self.encode_native(uses.clone(), LaneWorkDomains::COPY, |native| {
+            native.clear_buffer(buffer, range, &uses)
+        })
     }
 
     /// Clears every texel in `subresources` to the backend-defined zero value.
@@ -492,15 +480,9 @@ impl CommandRecorder {
             access: AccessMask::COPY_WRITE,
             intent: TextureUseIntent::CopyDst,
         })];
-        self.record_command(
-            RecordedPayload::Copy(CopyRecord::ClearTexture {
-                texture: texture.clone(),
-                subresources,
-            }),
-            uses,
-            crate::api::submission::LaneWorkDomains::COPY,
-        );
-        Ok(())
+        self.encode_native(uses.clone(), LaneWorkDomains::COPY, |native| {
+            native.clear_texture(texture, subresources, &uses)
+        })
     }
     /// Writes a timestamp outside a pass scope.
     pub fn write_timestamp(&mut self, set: &QuerySet, index: u32) -> RhiResult<()> {
@@ -523,21 +505,16 @@ impl CommandRecorder {
         }
         validate_query(set, index, self.device, "CommandRecorder::write_timestamp")?;
         self.mark_query_written(set, index, "CommandRecorder::write_timestamp")?;
-        self.record_command(
-            RecordedPayload::TimestampWrite {
-                set: set.clone(),
-                index,
-            },
-            vec![uses::query_use(
-                set,
-                index,
-                1,
-                PipelineScope::COPY,
-                QueryAccess::Write,
-            )],
-            crate::api::submission::LaneWorkDomains::COPY,
-        );
-        Ok(())
+        let uses = vec![uses::query_use(
+            set,
+            index,
+            1,
+            PipelineScope::COPY,
+            QueryAccess::Write,
+        )];
+        self.encode_native(uses.clone(), LaneWorkDomains::COPY, |native| {
+            native.encoder_write_timestamp(set, index, &uses)
+        })
     }
 
     /// Resolves a contiguous query range into a buffer.
@@ -641,18 +618,16 @@ impl CommandRecorder {
                 access: AccessMask::QUERY_RESOLVE_WRITE,
             }),
         ];
-        self.record_command(
-            RecordedPayload::QueryResolve(QueryResolve {
-                set: set.clone(),
+        self.encode_native(uses.clone(), LaneWorkDomains::COPY, |native| {
+            native.resolve_query_set(
+                set,
                 first_query,
                 query_count,
-                destination: destination.clone(),
+                destination,
                 destination_offset,
-            }),
-            uses,
-            crate::api::submission::LaneWorkDomains::COPY,
-        );
-        Ok(())
+                &uses,
+            )
+        })
     }
     /// Assembles a recorder.
     ///
@@ -660,7 +635,13 @@ impl CommandRecorder {
     /// only [`Device::create_recorder`] may produce one, and a caller-built
     /// recorder would describe a device that never agreed to record.
     ///
-    pub(crate) fn new(id: ObjectId, owner: Device, label: Label) -> Self {
+    pub(crate) fn new(
+        id: ObjectId,
+        owner: Device,
+        label: Label,
+        native: Box<dyn backend::CommandEncoderBackend>,
+        secondary: bool,
+    ) -> Self {
         let device = owner.identity();
         Self {
             id,
@@ -669,7 +650,13 @@ impl CommandRecorder {
             label,
             phase: RecorderPhase::Open,
             poison_reason: None,
-            commands: Vec::new(),
+            native,
+            native_uses: Vec::new(),
+            native_readbacks: Vec::new(),
+            secondary,
+            secondary_begin: None,
+            secondary_draw_uses: Vec::new(),
+            secondary_draw_count: 0,
             domains: None,
             debug_stack: Vec::new(),
             written_queries: HashSet::new(),
@@ -710,7 +697,7 @@ impl CommandRecorder {
     /// Finishes the recording and produces the work it describes.
     ///
     /// Section 38.1's mapping: one [`RecordedWork`] carrying the command
-    /// sequence, the merged actual-use summary, and the domains the recording
+    /// native buffer, the merged actual-use summary, and the domains the recording
     /// contains. The recorder is consumed, which is section 38.2's strong
     /// ownership — a caller that drops its own handles after recording cannot
     /// change what is submitted, because nothing here borrows from the caller.
@@ -758,15 +745,16 @@ impl CommandRecorder {
             ));
         };
 
-        let uses = self
-            .commands
-            .iter()
-            .flat_map(|command| command.uses.iter().cloned())
-            .collect();
-        let work = RecordedWork::new(self.id, self.device, domains, uses, self.commands);
-        self.owner
-            .retain_captured_work(crate::api::tooling::work::capture_recorded_work(&work));
-        Ok(work)
+        let uses = std::mem::take(&mut self.native_uses);
+        let native = self.native.finish()?;
+        Ok(RecordedWork::new(
+            self.id,
+            self.device,
+            domains,
+            uses,
+            native,
+            self.native_readbacks,
+        ))
     }
 
     /// Finishes one independently recorded, draw-only raster scope.
@@ -775,8 +763,22 @@ impl CommandRecorder {
     /// binding, and draw validation is identical to a primary scope.  Its
     /// attachments become inheritance metadata only; executing the returned work
     /// never begins or clears another pass.
-    pub fn finish_secondary_raster(self) -> RhiResult<SecondaryRasterWork> {
-        record::SecondaryRasterWork::from_recorded(self.finish()?)
+    pub fn finish_secondary_raster(mut self) -> RhiResult<SecondaryRasterWork> {
+        if !self.secondary {
+            return Err(RhiError::new(
+                RhiErrorKind::InvalidUsage,
+                "secondary work requires create_secondary_raster_recorder",
+            ));
+        }
+        let begin = self.secondary_begin.take().ok_or_else(|| {
+            RhiError::new(
+                RhiErrorKind::InvalidUsage,
+                "secondary work has no raster scope",
+            )
+        })?;
+        let draw_count = self.secondary_draw_count;
+        let uses = std::mem::take(&mut self.secondary_draw_uses);
+        record::SecondaryRasterWork::from_native(self.finish()?, begin, uses, draw_count)
     }
 
     /// Copies a byte range between two buffers.
@@ -791,12 +793,13 @@ impl CommandRecorder {
         self.route_pending(
             buffer_copy_route(),
             "copy_buffer",
-            CopyRecord::Buffer(copy.clone()),
             Alignment::Buffer {
                 src_offset: copy.src_offset,
                 dst_offset: copy.dst_offset,
                 size: copy.size,
             },
+            CopyOpRef::Buffer(copy),
+            |native, uses| native.copy_buffer(copy, uses),
         )
     }
 
@@ -807,8 +810,9 @@ impl CommandRecorder {
         self.route_pending(
             buffer_texture_route(copy, true),
             "copy_buffer_to_texture",
-            CopyRecord::BufferToTexture(copy.clone()),
             texel_alignment(copy),
+            CopyOpRef::BufferToTexture(copy),
+            |native, uses| native.copy_buffer_to_texture(copy, uses),
         )
     }
 
@@ -819,8 +823,9 @@ impl CommandRecorder {
         self.route_pending(
             buffer_texture_route(copy, false),
             "copy_texture_to_buffer",
-            CopyRecord::TextureToBuffer(copy.clone()),
             texel_alignment(copy),
+            CopyOpRef::TextureToBuffer(copy),
+            |native, uses| native.copy_texture_to_buffer(copy, uses),
         )
     }
 
@@ -831,8 +836,9 @@ impl CommandRecorder {
         self.route_pending(
             texture_copy_route(copy),
             "copy_texture",
-            CopyRecord::Texture(copy.clone()),
             Alignment::None,
+            CopyOpRef::Texture(copy),
+            |native, uses| native.copy_texture(copy, uses),
         )
     }
 
@@ -843,8 +849,9 @@ impl CommandRecorder {
         self.route_pending(
             resolve_route(resolve),
             "resolve_texture",
-            CopyRecord::Resolve(resolve.clone()),
             Alignment::None,
+            CopyOpRef::Resolve(resolve),
+            |native, uses| native.resolve_texture(resolve, uses),
         )
     }
 
@@ -860,8 +867,9 @@ impl CommandRecorder {
         self.route_pending(
             self::copy::blit_route(blit),
             "blit_texture",
-            CopyRecord::Blit(blit.clone()),
             Alignment::None,
+            CopyOpRef::Blit(blit),
+            |native, uses| native.blit_texture(blit, uses),
         )
     }
 
@@ -884,12 +892,9 @@ impl CommandRecorder {
         }
 
         let uses = upload_uses(upload);
-        self.record_command(
-            RecordedPayload::Upload(upload.clone()),
-            uses,
-            LaneWorkDomains::COPY,
-        );
-        Ok(())
+        self.encode_native(uses.clone(), LaneWorkDomains::COPY, |native| {
+            native.encode_upload(upload, &uses)
+        })
     }
 
     /// Encodes a readback request and returns the ticket that will report it.
@@ -985,15 +990,13 @@ impl CommandRecorder {
 
         // The ticket is minted with this device's identity, so a caller that loses
         // the recorder still holds something that reports its own state. It is
-        // recorded as well, because a readback is GPU work in the recording's
-        // command order: a lowering backend has to see where the read of this
-        // source happens relative to everything that wrote it.
+        // It is retained separately because submission binds it to the native
+        // command buffer's completion point.
         let ticket = ReadbackTicket::new(ObjectId::next(), self.device, request);
-        self.record_command(
-            RecordedPayload::Readback(ticket.clone()),
-            uses,
-            LaneWorkDomains::COPY,
-        );
+        self.encode_native(uses.clone(), LaneWorkDomains::COPY, |native| {
+            native.encode_readback(&ticket, &uses)
+        })?;
+        self.native_readbacks.push(ticket.clone());
         Ok(ticket)
     }
 
@@ -1083,12 +1086,10 @@ impl CommandRecorder {
     /// P0 debug groups do not span the boundary.
     pub fn push_debug_group(&mut self, label: &str) -> RhiResult<()> {
         self.require_open("push_debug_group")?;
+        self.encode_native(Vec::new(), LaneWorkDomains::COPY, |native| {
+            native.encoder_push_debug_group(label)
+        })?;
         self.debug_stack.push(label.to_owned());
-        self.record_command(
-            RecordedPayload::DebugPush(Label(Some(label.to_owned()))),
-            Vec::new(),
-            LaneWorkDomains::COPY,
-        );
         Ok(())
     }
 
@@ -1101,19 +1102,17 @@ impl CommandRecorder {
                 "pop_debug_group has no matching push_debug_group on this recorder",
             ));
         }
-        self.record_command(RecordedPayload::DebugPop, Vec::new(), LaneWorkDomains::COPY);
-        Ok(())
+        self.encode_native(Vec::new(), LaneWorkDomains::COPY, |native| {
+            native.encoder_pop_debug_group()
+        })
     }
 
     /// Inserts a marker without changing the stack.
     pub fn insert_debug_marker(&mut self, label: &str) -> RhiResult<()> {
         self.require_open("insert_debug_marker")?;
-        self.record_command(
-            RecordedPayload::DebugMarker(Label(Some(label.to_owned()))),
-            Vec::new(),
-            LaneWorkDomains::COPY,
-        );
-        Ok(())
+        self.encode_native(Vec::new(), LaneWorkDomains::COPY, |native| {
+            native.encoder_insert_debug_marker(label)
+        })
     }
 
     /// Refuses a recorder verb that requires no scope to be open.
@@ -1151,18 +1150,44 @@ impl CommandRecorder {
         self.poison_reason = Some(RhiError::new(RhiErrorKind::InvalidUsage, reason));
     }
 
-    /// Appends one command, its uses, and its execution domain.
-    pub(crate) fn record_command(
+    /// Encodes a validated operation while the backend encoder is still open.
+    /// Resource uses become part of the finished work only after encoding succeeds.
+    pub(crate) fn encode_native<F>(
         &mut self,
-        payload: RecordedPayload,
         uses: Vec<ResourceUse>,
         domain: LaneWorkDomains,
-    ) {
+        encode: F,
+    ) -> RhiResult<()>
+    where
+        F: FnOnce(&mut dyn backend::CommandEncoderBackend) -> RhiResult<()>,
+    {
+        if let Err(error) = encode(self.native.as_mut()) {
+            self.phase = RecorderPhase::Poisoned;
+            self.poison_reason = Some(RhiError::new(
+                RhiErrorKind::InvalidUsage,
+                format!("native command encoding failed: {error}"),
+            ));
+            return Err(error);
+        }
         self.domains = Some(match self.domains {
             Some(existing) => existing.union(domain),
             None => domain,
         });
-        self.commands.push(RecordedCommand { payload, uses });
+        self.native_uses.extend(uses);
+        Ok(())
+    }
+
+    pub(crate) fn note_native_secondary_draw(&mut self, uses: &[ResourceUse]) {
+        if self.secondary {
+            self.secondary_draw_count += 1;
+            self.secondary_draw_uses.extend_from_slice(uses);
+        }
+    }
+
+    pub(crate) fn note_native_secondary_begin(&mut self, begin: &record::RasterBegin) {
+        if self.secondary {
+            self.secondary_begin = Some(begin.clone());
+        }
     }
 
     /// Answers the device half of a copy-family verb's rule list, then records it.
@@ -1181,13 +1206,17 @@ impl CommandRecorder {
     ///
     /// The route key is built and passed rather than derived here so that a reader
     /// sees exactly which question each verb asks.
-    fn route_pending(
+    fn route_pending<'a, F>(
         &mut self,
         route: crate::api::resource::route::RouteQuery,
         what: &'static str,
-        record: CopyRecord,
         alignment: Alignment,
-    ) -> RhiResult<()> {
+        copy: CopyOpRef<'a>,
+        encode: F,
+    ) -> RhiResult<()>
+    where
+        F: FnOnce(&mut dyn backend::CommandEncoderBackend, &[ResourceUse]) -> RhiResult<()>,
+    {
         self.require_route(route, what)?;
 
         // The alignment half of section 12.4. A route that exists but reports no
@@ -1228,9 +1257,10 @@ impl CommandRecorder {
             }
         }
 
-        let uses = copy_uses(&record);
-        self.record_command(RecordedPayload::Copy(record), uses, LaneWorkDomains::COPY);
-        Ok(())
+        let uses = copy_uses_ref(&copy);
+        self.encode_native(uses.clone(), LaneWorkDomains::COPY, |native| {
+            encode(native, &uses)
+        })
     }
 }
 
@@ -1290,8 +1320,8 @@ impl core::fmt::Debug for CommandRecorder {
     /// Prints the recorder's portable identity and how far it got.
     ///
     /// Hand-written rather than derived (adjudication A16): a derived `Debug` would
-    /// walk every recorded command and print every cloned device-side handle, which
-    /// is the one thing the portable surface may not expose. What is printed is what
+    /// walk every device-side handle, which is the one thing the portable surface
+    /// may not expose. What is printed is what
     /// a caller can already read — the identity, the device, the phase, and how many
     /// commands were recorded.
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -1301,7 +1331,6 @@ impl core::fmt::Debug for CommandRecorder {
             .field("device", &self.device)
             .field("label", &self.label)
             .field("phase", &self.phase)
-            .field("commands", &self.commands.len())
             .field("work_domains", &self.domains)
             .finish_non_exhaustive()
     }
@@ -1320,19 +1349,35 @@ impl Device {
     /// a label, and the device's identity is already decided by the object this is
     /// called on, so there is no caller-supplied value here that could be wrong.
     ///
-    /// No backend is reached, and that is not an omission: this chapter's recorder
-    /// holds no native encoder (see its documentation), so there is no native
-    /// command builder to create here and none is created. A backend is first
-    /// reached where the recording is submitted, exactly as the submission chapter
-    /// records — the same shape, one chapter earlier in the caller's hands.
+    /// The backend opens the native encoder here. Submission later receives only
+    /// its already finalized command buffer.
     pub fn create_recorder(&self, desc: &RecorderDescriptor) -> RhiResult<CommandRecorder> {
         // Section 6.5 lists `Recorder` among the handles a lost device refuses.
         self.require_active()?;
 
+        let native = self.native().create_command_encoder(desc)?;
         Ok(CommandRecorder::new(
             ObjectId::next(),
             self.clone(),
             desc.label.clone(),
+            native,
+            false,
+        ))
+    }
+
+    /// Opens a draw-only secondary raster encoder explicitly.
+    pub fn create_secondary_raster_recorder(
+        &self,
+        desc: &RecorderDescriptor,
+    ) -> RhiResult<CommandRecorder> {
+        self.require_active()?;
+        let native = self.native().create_secondary_raster_encoder(desc)?;
+        Ok(CommandRecorder::new(
+            ObjectId::next(),
+            self.clone(),
+            desc.label.clone(),
+            native,
+            true,
         ))
     }
 }

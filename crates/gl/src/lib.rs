@@ -15,9 +15,15 @@ pub use fluxel_rhi_core::api;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GlShaderTarget {
     /// Desktop core GLSL, for example version `460` for OpenGL 4.6.
-    Desktop { version: u16 },
+    Desktop {
+        /// GLSL version encoded without the decimal point, such as `460`.
+        version: u16,
+    },
     /// GLSL ES, for example version `310` for OpenGL ES 3.1.
-    Embedded { version: u16 },
+    Embedded {
+        /// GLSL ES version encoded without the decimal point, such as `310`.
+        version: u16,
+    },
     /// The WebGL 2 GLSL ES 3.00 target.
     WebGl2,
 }

@@ -4,7 +4,6 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST, ID3D12GraphicsCommandList,
 };
 
-use crate::api::command::record::QueryResolve;
 use crate::api::query::QuerySet;
 use crate::backend::dx12::failure::Dx12Failure;
 use crate::backend::dx12::resource::Dx12QuerySet;
@@ -47,13 +46,17 @@ pub(super) fn end(
     Ok(())
 }
 
-pub(super) fn resolve(
+pub(super) fn resolve_parts(
     list: &ID3D12GraphicsCommandList,
-    query: &QueryResolve,
+    query_set: &QuerySet,
+    first_query: u32,
+    query_count: u32,
+    destination_buffer: &crate::api::resource::Buffer,
+    destination_offset: u64,
     committed: &mut CommittedBatch,
 ) -> Result<(), Dx12Failure> {
-    let set = native(&query.set)?;
-    let destination = dx12_buffer(&query.destination)?;
+    let set = native(query_set)?;
+    let destination = dx12_buffer(destination_buffer)?;
     let mut entering = Transitions::default();
     entering.push(
         destination.resource(),
@@ -65,10 +68,10 @@ pub(super) fn resolve(
         list.ResolveQueryData(
             set.heap(),
             set.query_type(),
-            query.first_query,
-            query.query_count,
+            first_query,
+            query_count,
             destination.resource(),
-            query.destination_offset,
+            destination_offset,
         );
     }
     let mut leaving = Transitions::default();
@@ -78,7 +81,7 @@ pub(super) fn resolve(
         D3D12_RESOURCE_STATE_COMMON,
     );
     leaving.record(list);
-    committed.query_sets.push(query.set.clone());
-    committed.indirect_buffers.push(query.destination.clone());
+    committed.query_sets.push(query_set.clone());
+    committed.indirect_buffers.push(destination_buffer.clone());
     Ok(())
 }

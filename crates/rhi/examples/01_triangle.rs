@@ -16,6 +16,74 @@ pub fn create_example() -> TriangleExample {
     }
 }
 
+/// Runs the portable triangle workload on a browser-owned WebGPU canvas.
+///
+/// This is a real wasm entry point rather than a native runner fallback: it
+/// creates the browser device and presentation lease asynchronously, records
+/// the same [`TriangleWorkload`] used by `main`, and waits for each of the
+/// requested presentation receipts before returning to JavaScript.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn run_webgpu_triangle(
+    canvas: web_sys::HtmlCanvasElement,
+    frames: u32,
+) -> Result<(), wasm_bindgen::JsValue> {
+    use fluxel_rhi::api::submission::LaneWorkDomains;
+
+    if frames == 0 {
+        return Err(wasm_bindgen::JsValue::from_str(
+            "run_webgpu_triangle requires at least one frame",
+        ));
+    }
+    let mut session = common::web::open_webgpu_session(
+        canvas,
+        fluxel_rhi::api::resource::TextureUsage::COLOR_ATTACHMENT,
+    )
+    .await
+    .map_err(js_error)?;
+    let device = session.device().clone();
+    let lane = device
+        .capabilities()
+        .submission()
+        .lanes()
+        .iter()
+        .find(|lane| {
+            lane.domains()
+                .contains(LaneWorkDomains::RASTER.union(LaneWorkDomains::COPY))
+        })
+        .map(|lane| lane.id())
+        .ok_or_else(|| wasm_bindgen::JsValue::from_str("device has no COPY|RASTER lane"))?;
+    let extent = session.extent();
+    let extent3d = Extent3d::d2(extent.width, extent.height);
+    let format = session.presentation_mut().configuration().format();
+    let hashes = TriangleShaderHashes {
+        vertex: ArtifactHash([0x01; 32]),
+        fragment: ArtifactHash([0x02; 32]),
+    };
+    let mut workload = TriangleWorkload::new(&device, format, extent3d, hashes, lane)
+        .await
+        .map_err(js_error)?;
+    for _ in 0..frames {
+        let frame = session
+            .presentation_mut()
+            .acquire()
+            .await
+            .map_err(js_error)?;
+        let matrices = TriangleMatrices::reference_for_extent(frame.attachment().extent())
+            .ok_or_else(|| wasm_bindgen::JsValue::from_str("browser canvas has a zero extent"))?;
+        workload
+            .render(&device, lane, frame, matrices)
+            .await
+            .map_err(js_error)?;
+    }
+    Ok(())
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+fn js_error(error: impl std::fmt::Display) -> wasm_bindgen::JsValue {
+    wasm_bindgen::JsValue::from_str(&error.to_string())
+}
+
 pub struct TriangleExample {
     workload: Option<TriangleWorkload>,
     lane: Option<fluxel_rhi::api::submission::SubmissionLaneId>,

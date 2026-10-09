@@ -26,15 +26,15 @@ use crate::api::presentation::{
 };
 use crate::api::submission::{CompletionFailure, CompletionState};
 use crate::backend::gl::api::{
-    BufferId, ContextStamp, GlBindingApi, GlContextLifecycle, GlFamilyApi, GlFramebufferApi,
-    GlQueryObjectsApi, GlRasterCommandApi, GlResourceApi, GlSamplerApi, GlShaderApi,
-    GlSurfaceAcquire, GlSurfaceLease, GlSurfacePresentationApi, GlSyncApi, GlVertexApi, QueryId,
-    SamplerId, ShaderId, TextureId,
+    BufferId, ContextStamp, GlBindingApi, GlContextLifecycle, GlCopyDomainApi, GlFamilyApi,
+    GlFramebufferApi, GlQueryObjectsApi, GlRasterCommandApi, GlResourceApi, GlSamplerApi,
+    GlShaderApi, GlSurfaceAcquire, GlSurfaceLease, GlSurfacePresentationApi, GlSyncApi,
+    GlVertexApi, QueryId, SamplerId, ShaderId, TextureId,
 };
 use crate::backend::gl::platform::{
     GlAcquiredFramebuffer, GlBindGroupPacket, GlComputePipelinePacket, GlExecutionDriver,
     GlLossSink, GlObjectKind, GlObjectName, GlPresentationLease, GlRasterPipelinePacket,
-    GlTextureRef,
+    GlTextureRef, GlTypedCommand,
 };
 use crate::backend::gl::state::{
     BoundGroupPacket, CanonicalBlockId, ContextState, DerivedCacheKey, DerivedCacheKind,
@@ -45,8 +45,8 @@ use crate::backend::gl::translate;
 
 use super::discovery::WebGl2BrowserDiscovery;
 use super::v13_submit::{
-    BrowserV13ActionPacket, BrowserV13CopyPacket, BrowserV13ObjectResolver, BrowserV13PhaseBAction,
-    BrowserV13QueryPacket, BrowserV13ReadbackPacket, BrowserV13UploadPacket,
+    BrowserCopyInput, BrowserImmediateAction, BrowserObjectResolver, BrowserV13ActionPacket,
+    BrowserV13CopyPacket, BrowserV13QueryPacket, BrowserV13ReadbackPacket, BrowserV13UploadPacket,
 };
 
 /// Per-context metadata which must remain on the WebGL owner thread along
@@ -88,6 +88,37 @@ pub(super) struct BrowserDriverState {
     readback_sinks: RefCell<BTreeMap<u64, crate::api::resource::transfer::ReadbackTicket>>,
     pending_readbacks: Vec<BrowserPendingReadback>,
     presentation: BrowserPresentationState,
+    typed_raster: BrowserTypedRasterState,
+}
+
+/// Current portable raster bindings for WebGL's immediate stream.  They live
+/// only until the next draw is issued; no completed command buffer retains a
+/// draw snapshot for later submission.
+struct BrowserTypedRasterState {
+    pipeline: Option<crate::api::pipeline::RasterPipeline>,
+    groups: Vec<crate::api::command::record::BoundGroup>,
+    vertices: Vec<(u32, crate::api::resource::buffer::BufferBinding)>,
+    index: Option<crate::api::command::record::BoundIndexBuffer>,
+    viewport: Option<crate::api::command::geometry::Viewport>,
+    scissor: Option<crate::api::command::geometry::Rect>,
+    blend_constant: crate::api::command::geometry::Color,
+    stencil_reference: u32,
+    immediates: Vec<crate::api::command::record::ImmediateWrite>,
+}
+impl Default for BrowserTypedRasterState {
+    fn default() -> Self {
+        Self {
+            pipeline: None,
+            groups: Vec::new(),
+            vertices: Vec::new(),
+            index: None,
+            viewport: None,
+            scissor: None,
+            blend_constant: crate::api::command::geometry::Color::new(0.0, 0.0, 0.0, 0.0),
+            stencil_reference: 0,
+            immediates: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -126,7 +157,7 @@ struct BrowserBoundGroup {
 
 /// Fully resolved basic raster work.  It deliberately contains no public RHI
 /// handle and no JS value: Phase A copies the immutable browser ids and scalar
-/// draw command, while Phase B reaches the owner-thread executor only through
+/// draw command, while execution reaches the owner-thread executor only through
 /// `BrowserDriverState`'s single state authority.
 struct BrowserRasterDrawAction {
     pipeline: crate::backend::gl::api::GlRasterPipeline,
@@ -146,7 +177,7 @@ struct BrowserRasterBeginAction {
     descriptor: crate::backend::gl::api::GlRenderPassDescriptor,
     /// Offscreen descriptors become real browser framebuffer objects only on
     /// the owner thread.  Keeping the structural descriptor in the action
-    /// makes Phase A entirely JS-free while allowing Phase B to cache the
+    /// makes construction entirely JS-free while allowing execution to cache the
     /// typed executor object by its immutable attachment facts.
     framebuffer: Option<crate::backend::gl::api::GlFramebufferDescriptor>,
     pass: PassPacket,
@@ -252,7 +283,7 @@ fn bind_group_dependencies(
     Ok(dependencies)
 }
 
-impl BrowserV13PhaseBAction for BrowserRasterBeginAction {
+impl BrowserImmediateAction for BrowserRasterBeginAction {
     fn execute(self: Box<Self>, owner: &mut BrowserDriverState) -> RhiResult<()> {
         let mut descriptor = self.descriptor.clone();
         if let Some(framebuffer) = self.framebuffer.as_ref() {
@@ -268,7 +299,7 @@ impl BrowserV13PhaseBAction for BrowserRasterBeginAction {
         Ok(())
     }
 }
-impl BrowserV13PhaseBAction for BrowserRasterEndAction {
+impl BrowserImmediateAction for BrowserRasterEndAction {
     fn execute(self: Box<Self>, owner: &mut BrowserDriverState) -> RhiResult<()> {
         if let Err(error) = owner.executor.end_render_pass() {
             owner.context_state.pass_failed();
@@ -279,7 +310,7 @@ impl BrowserV13PhaseBAction for BrowserRasterEndAction {
     }
 }
 
-impl BrowserV13PhaseBAction for BrowserRasterDrawAction {
+impl BrowserImmediateAction for BrowserRasterDrawAction {
     fn execute(self: Box<Self>, owner: &mut BrowserDriverState) -> RhiResult<()> {
         if self.has_dynamic_state {
             owner.context_state.event(StateEvent::DomainFailed(
@@ -385,6 +416,179 @@ impl BrowserPresentationState {
 }
 
 impl BrowserDriverState {
+    /// Lowers one typed raster draw while the encoder still owns its bindings.
+    fn typed_raster_draw(
+        &mut self,
+        range: core::ops::Range<u32>,
+        instances: core::ops::Range<u32>,
+        base_vertex: i32,
+        indexed: bool,
+    ) -> RhiResult<()> {
+        let pipeline = self.typed_raster.pipeline.clone().ok_or_else(|| {
+            RhiError::new(
+                RhiErrorKind::InvalidUsage,
+                "WebGL2 typed draw requires a raster pipeline",
+            )
+            .at("WebGl2ExecutionDriver::encode_typed")
+        })?;
+        if indexed && self.typed_raster.index.is_none() {
+            return Err(RhiError::new(
+                RhiErrorKind::InvalidUsage,
+                "WebGL2 typed indexed draw requires an index buffer",
+            )
+            .at("WebGl2ExecutionDriver::encode_typed"));
+        }
+        let draw = crate::backend::gl::translate_raster::GlRasterDrawInput {
+            pipeline: &pipeline,
+            groups: &self.typed_raster.groups,
+            vertex_buffers: &self.typed_raster.vertices,
+            index: self.typed_raster.index.as_ref(),
+            viewport: self.typed_raster.viewport,
+            scissor: self.typed_raster.scissor,
+            blend_constant: self.typed_raster.blend_constant,
+            stencil_reference: self.typed_raster.stencil_reference,
+            range,
+            instances,
+            base_vertex,
+        };
+        self.raster_draw(&draw)?.execute(self)
+    }
+
+    fn typed_raster_begin(
+        &mut self,
+        begin: &crate::api::command::record::RasterBegin,
+    ) -> RhiResult<()> {
+        self.typed_raster = BrowserTypedRasterState::default();
+        self.raster_begin(begin)?.execute(self)
+    }
+
+    fn typed_raster_end(&mut self) -> RhiResult<()> {
+        self.raster_end()?.execute(self)
+    }
+
+    /// WebGL2 lacks a portable PBO transfer route in `web-sys`, so the
+    /// advertised buffer/texture copy family is lowered synchronously through
+    /// the owner context.  The bytes are transient CPU staging data, never a
+    /// recorded payload: the source is read and the destination is written
+    /// before this encoder callback returns.
+    fn typed_buffer_texture_copy(
+        &mut self,
+        copy: &crate::api::command::copy::BufferTextureCopy,
+        to_texture: bool,
+    ) -> RhiResult<()> {
+        use crate::backend::gl::api::{
+            GlBufferRange, GlExtent3d, GlPixelFormat, GlPixelLayout, GlRepackPolicy,
+            GlTextureAspect, GlTextureRegion, GlTextureSubresource,
+        };
+
+        if !matches!(
+            copy.texture.descriptor().format,
+            crate::api::format::TextureFormat::Rgba8Unorm
+                | crate::api::format::TextureFormat::Rgba8UnormSrgb
+        ) || !matches!(
+            copy.texture_subresource.aspect,
+            crate::api::resource::TextureAspect::Color
+        ) {
+            return Err(RhiError::new(
+                RhiErrorKind::Unsupported,
+                "WebGL2 buffer/texture copies require an RGBA8 color texture",
+            )
+            .at("WebGl2ExecutionDriver::encode_typed"));
+        }
+        let buffer_name = crate::backend::gl::platform::GlDevice::buffer_ref(&copy.buffer)?.name;
+        let buffer_slot = buffer_name.raw().checked_sub(1).ok_or_else(|| {
+            RhiError::new(
+                RhiErrorKind::BackendFailure,
+                "WebGL buffer carrier was zero",
+            )
+        })?;
+        let buffer = self.executor.buffers.get(&buffer_slot).ok_or_else(|| {
+            RhiError::new(RhiErrorKind::WrongDevice, "WebGL copy buffer is not live")
+        })?;
+        let texture_name = crate::backend::gl::platform::GlDevice::texture_ref(&copy.texture)?.name;
+        let texture_slot = texture_name.raw().checked_sub(1).ok_or_else(|| {
+            RhiError::new(
+                RhiErrorKind::BackendFailure,
+                "WebGL texture carrier was zero",
+            )
+        })?;
+        let texture = self.executor.textures.get(&texture_slot).ok_or_else(|| {
+            RhiError::new(RhiErrorKind::WrongDevice, "WebGL copy texture is not live")
+        })?;
+        let region = GlTextureRegion {
+            subresource: GlTextureSubresource {
+                texture: TextureId::new(
+                    self.executor.context_stamp(),
+                    texture_slot,
+                    texture.generation,
+                ),
+                aspect: GlTextureAspect::Color,
+                mip_level: copy.texture_subresource.mip_level,
+                base_layer: copy.texture_subresource.base_layer,
+                layer_count: copy.texture_subresource.layer_count,
+            },
+            origin: [
+                copy.texture_origin.x,
+                copy.texture_origin.y,
+                copy.texture_origin.z,
+            ],
+            extent: GlExtent3d {
+                width: copy.extent.width,
+                height: copy.extent.height,
+                depth_or_layers: copy.extent.depth,
+            },
+        };
+        let alignment = if copy.bytes_per_row.is_multiple_of(8) {
+            8
+        } else if copy.bytes_per_row.is_multiple_of(4) {
+            4
+        } else if copy.bytes_per_row.is_multiple_of(2) {
+            2
+        } else {
+            1
+        };
+        let layout = GlPixelLayout {
+            format: GlPixelFormat::Rgba8,
+            bytes_per_row: copy.bytes_per_row,
+            rows_per_image: copy.rows_per_image,
+            offset: 0,
+            alignment,
+            repack: GlRepackPolicy::Disallow,
+        };
+        let bytes = layout.required_bytes(region).map_err(|_| {
+            RhiError::new(
+                RhiErrorKind::InvalidUsage,
+                "WebGL buffer/texture copy layout is invalid",
+            )
+        })?;
+        let range = GlBufferRange {
+            buffer: BufferId::new(
+                self.executor.context_stamp(),
+                buffer_slot,
+                buffer.generation,
+            ),
+            offset: copy.buffer_offset,
+            size: bytes,
+        };
+        if to_texture {
+            let bytes = self
+                .executor
+                .read_buffer(range)
+                .map_err(|error| map_gl_error(error, "read WebGL copy buffer"))?;
+            self.executor
+                .upload_texture(region, layout, &bytes)
+                .map_err(|error| map_gl_error(error, "write WebGL copy texture"))
+        } else {
+            let readback = self
+                .executor
+                .read_texture(region, layout)
+                .map_err(|error| map_gl_error(error, "read WebGL copy texture"))?;
+            self.executor
+                .upload_buffer(range, &readback.bytes)
+                .map_err(|error| map_gl_error(error, "write WebGL copy buffer"))
+        }
+    }
+
     fn framebuffer(
         &mut self,
         descriptor: &crate::backend::gl::api::GlFramebufferDescriptor,
@@ -616,6 +820,7 @@ impl BrowserDriverState {
             readback_sinks: RefCell::new(BTreeMap::new()),
             pending_readbacks: Vec::new(),
             presentation: BrowserPresentationState::new(),
+            typed_raster: BrowserTypedRasterState::default(),
         }
     }
 
@@ -1127,7 +1332,7 @@ impl BrowserDriverState {
         Ok(serial)
     }
 
-    /// Inserts a completion only after Phase B has entered the browser stream.
+    /// Inserts a completion only after work has entered the browser stream.
     /// Its serial is reserved before the first fence call, so a create/flush
     /// failure can still become a terminal receipt rather than `submit(Err)`.
     /// It is a Fluxel logical serial, never a WebGL object identity.
@@ -1158,7 +1363,7 @@ impl BrowserDriverState {
     }
 
     /// Publishes the terminal receipt for a stream which already entered
-    /// WebGL but could not complete its Phase-B/fence protocol.  This preserves
+    /// WebGL but could not complete its fence protocol. This preserves
     /// the public meaning of `submit Err`: no native work was accepted.
     fn publish_post_commit_failure(&mut self, serial: u64, error: &RhiError) {
         self.fail_current_readbacks(if error.kind() == RhiErrorKind::DeviceLost {
@@ -1180,17 +1385,11 @@ impl BrowserDriverState {
     }
 }
 
-impl BrowserV13ObjectResolver for BrowserDriverState {
-    fn phase_a_aborted(&self) {
-        // Phase A has not entered WebGL and therefore has not accepted the
-        // submission; leave tickets NotSubmitted so the portable layer may
-        // report the preflight error or retry a later valid submission.
-        self.readback_sinks.borrow_mut().clear();
-    }
+impl BrowserObjectResolver for BrowserDriverState {
     fn readback(
         &self,
         ticket: &crate::api::resource::transfer::ReadbackTicket,
-    ) -> RhiResult<Box<dyn BrowserV13PhaseBAction>> {
+    ) -> RhiResult<Box<dyn BrowserImmediateAction>> {
         use crate::api::resource::transfer::ReadbackRequest;
         use crate::backend::gl::api::{
             GlBufferRange, GlExtent3d, GlPixelFormat, GlPixelLayout, GlRepackPolicy,
@@ -1307,11 +1506,7 @@ impl BrowserV13ObjectResolver for BrowserDriverState {
             BrowserV13ActionPacket::Readback(packet),
         )))
     }
-    fn copy(
-        &self,
-        copy: &crate::api::command::record::CopyRecord,
-    ) -> RhiResult<Box<dyn BrowserV13PhaseBAction>> {
-        use crate::api::command::record::CopyRecord;
+    fn copy(&self, copy: BrowserCopyInput<'_>) -> RhiResult<Box<dyn BrowserImmediateAction>> {
         use crate::backend::gl::api::{
             GlBufferRange, GlExtent3d, GlTextureAspect, GlTextureRegion, GlTextureSubresource,
         };
@@ -1391,7 +1586,7 @@ impl BrowserV13ObjectResolver for BrowserDriverState {
             })
         };
         let packet = match copy {
-            CopyRecord::Buffer(value) => BrowserV13CopyPacket::Buffer {
+            BrowserCopyInput::Buffer(value) => BrowserV13CopyPacket::Buffer {
                 source: GlBufferRange {
                     buffer: buffer(&value.src)?,
                     offset: value.src_offset,
@@ -1403,7 +1598,7 @@ impl BrowserV13ObjectResolver for BrowserDriverState {
                     size: value.size,
                 },
             },
-            CopyRecord::Texture(value) => BrowserV13CopyPacket::Texture {
+            BrowserCopyInput::Texture(value) => BrowserV13CopyPacket::Texture {
                 source: region(
                     &value.src,
                     value.src_subresource,
@@ -1417,19 +1612,6 @@ impl BrowserV13ObjectResolver for BrowserDriverState {
                     value.extent,
                 )?,
             },
-            CopyRecord::BufferToTexture(_)
-            | CopyRecord::TextureToBuffer(_)
-            | CopyRecord::ClearBuffer { .. }
-            | CopyRecord::ClearTexture { .. }
-            | CopyRecord::ExternalImage(_)
-            | CopyRecord::Resolve(_)
-            | CopyRecord::Blit(_) => {
-                return Err(RhiError::new(
-                    RhiErrorKind::Unsupported,
-                    "WebGL2 v13 has no Phase-A packet for this copy operation",
-                )
-                .at("WebGL2::submit phase A"));
-            }
         };
         Ok(Box::new(super::v13_submit::BrowserV13PacketAction(
             BrowserV13ActionPacket::Copy(packet),
@@ -1438,7 +1620,7 @@ impl BrowserV13ObjectResolver for BrowserDriverState {
     fn upload(
         &self,
         upload: &crate::api::resource::transfer::UploadJob,
-    ) -> RhiResult<Box<dyn BrowserV13PhaseBAction>> {
+    ) -> RhiResult<Box<dyn BrowserImmediateAction>> {
         use crate::api::resource::transfer::UploadDescriptor;
         use crate::backend::gl::api::{
             GlBufferRange, GlExtent3d, GlPixelFormat, GlPixelLayout, GlRepackPolicy,
@@ -1569,7 +1751,7 @@ impl BrowserV13ObjectResolver for BrowserDriverState {
         &self,
         set: &crate::api::query::QuerySet,
         index: u32,
-    ) -> RhiResult<Box<dyn BrowserV13PhaseBAction>> {
+    ) -> RhiResult<Box<dyn BrowserImmediateAction>> {
         let id = self.query_set_query(set, index)?;
         let packet = match set.descriptor().ty {
             crate::api::query::QueryType::Occlusion => BrowserV13QueryPacket::BeginOcclusion(id),
@@ -1596,7 +1778,7 @@ impl BrowserV13ObjectResolver for BrowserDriverState {
         &self,
         set: &crate::api::query::QuerySet,
         index: u32,
-    ) -> RhiResult<Box<dyn BrowserV13PhaseBAction>> {
+    ) -> RhiResult<Box<dyn BrowserImmediateAction>> {
         let _ = self.query_set_query(set, index)?;
         let packet = match set.descriptor().ty {
             crate::api::query::QueryType::Occlusion => BrowserV13QueryPacket::EndOcclusion,
@@ -1623,7 +1805,7 @@ impl BrowserV13ObjectResolver for BrowserDriverState {
         &self,
         set: &crate::api::query::QuerySet,
         index: u32,
-    ) -> RhiResult<Box<dyn BrowserV13PhaseBAction>> {
+    ) -> RhiResult<Box<dyn BrowserImmediateAction>> {
         if !matches!(set.descriptor().ty, crate::api::query::QueryType::Timestamp) {
             return Err(RhiError::new(
                 RhiErrorKind::InvalidUsage,
@@ -1639,7 +1821,7 @@ impl BrowserV13ObjectResolver for BrowserDriverState {
     fn raster_begin(
         &self,
         begin: &crate::api::command::record::RasterBegin,
-    ) -> RhiResult<Box<dyn BrowserV13PhaseBAction>> {
+    ) -> RhiResult<Box<dyn BrowserImmediateAction>> {
         use crate::api::command::attachment::{
             ColorAttachmentView, DepthAttachmentMode, StencilAttachmentMode,
         };
@@ -1943,13 +2125,13 @@ impl BrowserV13ObjectResolver for BrowserDriverState {
             },
         }))
     }
-    fn raster_end(&self) -> RhiResult<Box<dyn BrowserV13PhaseBAction>> {
+    fn raster_end(&self) -> RhiResult<Box<dyn BrowserImmediateAction>> {
         Ok(Box::new(BrowserRasterEndAction))
     }
     fn raster_draw(
         &self,
-        draw: &crate::api::command::record::RasterDraw,
-    ) -> RhiResult<Box<dyn BrowserV13PhaseBAction>> {
+        draw: &crate::backend::gl::translate_raster::GlRasterDrawInput<'_>,
+    ) -> RhiResult<Box<dyn BrowserImmediateAction>> {
         let scalars = crate::backend::gl::translate_raster::raster_draw_scalars(draw)?;
         scalars
             .draw
@@ -2019,7 +2201,7 @@ impl BrowserV13ObjectResolver for BrowserDriverState {
             })
             .transpose()?;
         let mut bind_groups = Vec::with_capacity(draw.groups.len());
-        for group in &draw.groups {
+        for group in draw.groups {
             let name = crate::backend::gl::platform::GlDevice::bind_group_ref(&group.group)?.name;
             let bindings = self.bind_groups.get(&name.raw()).cloned().ok_or_else(|| {
                 RhiError::new(
@@ -2701,7 +2883,7 @@ impl WebGl2BrowserDiscovery {
                 // gate, including ASTC HDR's separately observed profile.
                 compressed_upload: true,
                 // Upload/copy/query v13 actions are connected separately; no
-                // feature may become public before that Phase-A/Phase-B route.
+                // feature may become public before that direct route.
                 ..Default::default()
             },
         }
@@ -2723,55 +2905,155 @@ impl GlExecutionDriver for WebGl2ExecutionDriver {
 
     fn submit(
         &self,
-        plan: crate::backend::gl::platform::GlSubmissionPlan<'_>,
+        plan: crate::backend::gl::platform::GlSubmissionPlan,
     ) -> RhiResult<crate::api::submission::backend::SubmissionOutcome> {
-        // Phase A is deliberately complete before the first browser call.
-        let submission = self.with_state("WebGl2ExecutionDriver::submit phase A", |state| {
-            super::v13_submit::BrowserV13Submission::phase_a(plan, state)
-        })?;
+        // WebGL has no command-buffer object. Typed encoder callbacks have
+        // already reached the owner context; submit only installs the fence
+        // and publishes each completed work token's plan point.
+        let points = plan
+            .batches
+            .iter()
+            .filter_map(|batch| batch.point)
+            .collect::<Vec<_>>();
         let mut post_commit_loss = None;
-        let outcome = self.with_state("WebGl2ExecutionDriver::submit phase B", |state| {
+        let outcome = self.with_state("WebGl2ExecutionDriver::submit fence", |state| {
             // Exhaustion is still a true submit rejection: no browser call has
             // occurred yet. Every later failure is represented by this serial.
             let completion = state.reserve_completion_serial()?;
-            match submission.phase_b(state) {
-                Ok(entered) => {
-                    if let Err(error) = state.accept_fence(completion) {
-                        if error.kind() == RhiErrorKind::DeviceLost {
-                            post_commit_loss = Some(DeviceLossInfo::new(error.to_string()));
-                        }
-                        state.publish_post_commit_failure(completion, &error);
-                    }
-                    Ok(crate::api::submission::backend::SubmissionOutcome {
-                        completion,
-                        points: entered
-                            .into_iter()
-                            .map(|point| (point, completion))
-                            .collect(),
-                    })
+            if let Err(error) = state.accept_fence(completion) {
+                if error.kind() == RhiErrorKind::DeviceLost {
+                    post_commit_loss = Some(DeviceLossInfo::new(error.to_string()));
                 }
-                Err(failure) => {
-                    // Browser calls may already have changed state.  Publish a
-                    // terminal receipt rather than returning a false rollback.
-                    if failure.error.kind() == RhiErrorKind::DeviceLost {
-                        post_commit_loss = Some(DeviceLossInfo::new(failure.error.to_string()));
-                    }
-                    state.publish_post_commit_failure(completion, &failure.error);
-                    Ok(crate::api::submission::backend::SubmissionOutcome {
-                        completion,
-                        points: failure
-                            .entered_batches
-                            .into_iter()
-                            .map(|point| (point, completion))
-                            .collect(),
-                    })
-                }
+                state.publish_post_commit_failure(completion, &error);
             }
+            Ok(crate::api::submission::backend::SubmissionOutcome {
+                completion,
+                points: points
+                    .iter()
+                    .copied()
+                    .map(|point| (point, completion))
+                    .collect(),
+            })
         })?;
         if let Some(info) = post_commit_loss {
             self.report_context_loss(info);
         }
         Ok(outcome)
+    }
+
+    fn encode_typed(&self, command: GlTypedCommand<'_>) -> RhiResult<()> {
+        self.with_state(
+            "WebGl2ExecutionDriver::encode_typed",
+            |state| match command {
+                GlTypedCommand::RasterBegin { begin, .. } => state.typed_raster_begin(begin),
+                GlTypedCommand::RasterSetPipeline(pipeline) => {
+                    state.typed_raster.pipeline = Some(pipeline.clone());
+                    Ok(())
+                }
+                GlTypedCommand::RasterSetBindGroup {
+                    index,
+                    group,
+                    dynamic_offsets,
+                } => {
+                    state
+                        .typed_raster
+                        .groups
+                        .retain(|bound| bound.index != index);
+                    state
+                        .typed_raster
+                        .groups
+                        .push(crate::api::command::record::BoundGroup {
+                            index,
+                            group: group.clone(),
+                            dynamic_offsets: dynamic_offsets.to_vec(),
+                        });
+                    Ok(())
+                }
+                GlTypedCommand::RasterSetVertexBuffer { slot, binding } => {
+                    state
+                        .typed_raster
+                        .vertices
+                        .retain(|(bound, _)| *bound != slot);
+                    state.typed_raster.vertices.push((slot, binding.clone()));
+                    Ok(())
+                }
+                GlTypedCommand::RasterSetIndexBuffer { binding, format } => {
+                    state.typed_raster.index =
+                        Some(crate::api::command::record::BoundIndexBuffer {
+                            binding: binding.clone(),
+                            format,
+                        });
+                    Ok(())
+                }
+                GlTypedCommand::RasterSetViewport(value) => {
+                    state.typed_raster.viewport = Some(value);
+                    Ok(())
+                }
+                GlTypedCommand::RasterSetScissor(value) => {
+                    state.typed_raster.scissor = Some(value);
+                    Ok(())
+                }
+                GlTypedCommand::RasterSetBlendConstant(value) => {
+                    state.typed_raster.blend_constant = value;
+                    Ok(())
+                }
+                GlTypedCommand::RasterSetStencilReference(value) => {
+                    state.typed_raster.stencil_reference = value;
+                    Ok(())
+                }
+                GlTypedCommand::RasterSetImmediates(write) => {
+                    state
+                        .typed_raster
+                        .immediates
+                        .retain(|current| current.offset != write.offset);
+                    state.typed_raster.immediates.push(write.clone());
+                    Ok(())
+                }
+                GlTypedCommand::RasterDraw {
+                    vertices,
+                    instances,
+                    ..
+                } => state.typed_raster_draw(vertices, instances, 0, false),
+                GlTypedCommand::RasterDrawIndexed {
+                    indices,
+                    base_vertex,
+                    instances,
+                    ..
+                } => state.typed_raster_draw(indices, instances, base_vertex, true),
+                GlTypedCommand::RasterBeginQuery { set, index } => {
+                    state.query_begin(set, index)?.execute(state)
+                }
+                GlTypedCommand::RasterEndQuery { set, index } => {
+                    state.query_end(set, index)?.execute(state)
+                }
+                GlTypedCommand::RasterWriteTimestamp { set, index } => {
+                    state.timestamp_write(set, index)?.execute(state)
+                }
+                GlTypedCommand::RasterEnd => state.typed_raster_end(),
+                GlTypedCommand::CopyBuffer { copy, .. } => {
+                    state.copy(BrowserCopyInput::Buffer(copy))?.execute(state)
+                }
+                GlTypedCommand::CopyBufferToTexture { copy, .. } => {
+                    state.typed_buffer_texture_copy(copy, true)
+                }
+                GlTypedCommand::CopyTextureToBuffer { copy, .. } => {
+                    state.typed_buffer_texture_copy(copy, false)
+                }
+                GlTypedCommand::CopyTexture { copy, .. } => {
+                    state.copy(BrowserCopyInput::Texture(copy))?.execute(state)
+                }
+                GlTypedCommand::Upload { upload, .. } => state.upload(upload)?.execute(state),
+                GlTypedCommand::Readback { ticket, .. } => state.readback(ticket)?.execute(state),
+                GlTypedCommand::EncoderWriteTimestamp { set, index, .. } => {
+                    state.timestamp_write(set, index)?.execute(state)
+                }
+                _ => Err(RhiError::new(
+                    RhiErrorKind::Unsupported,
+                    "this typed command has no WebGL2 lowering",
+                )
+                .at("WebGl2ExecutionDriver::encode_typed")),
+            },
+        )
     }
 
     fn create_buffer(
@@ -3457,7 +3739,10 @@ impl GlExecutionDriver for WebGl2ExecutionDriver {
                     error.to_string(),
                 )),
             };
-            state.presentation.presents.insert(receipt, outcome);
+            state.presentation.presents.insert(receipt, outcome.clone());
+            if let Some(live) = crate::api::presentation::present::live_outcome(receipt) {
+                live.set(outcome);
+            }
             if let Some(wakers) = state.presentation.present_wakers.get_mut(&receipt) {
                 BrowserDriverState::wake(wakers);
             }
@@ -3473,7 +3758,10 @@ impl GlExecutionDriver for WebGl2ExecutionDriver {
     ) {
         let _ = self.with_state("WebGl2ExecutionDriver::terminate_present", |driver| {
             let _ = driver.finish_frame(frame.lease, frame.serial, false);
-            driver.presentation.presents.insert(receipt, state);
+            driver.presentation.presents.insert(receipt, state.clone());
+            if let Some(live) = crate::api::presentation::present::live_outcome(receipt) {
+                live.set(state);
+            }
             if let Some(wakers) = driver.presentation.present_wakers.get_mut(&receipt) {
                 BrowserDriverState::wake(wakers);
             }

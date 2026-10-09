@@ -23,7 +23,12 @@
 //! support remains subject to the selected adapter's actual driver/device
 //! capabilities, which the adapter reports when it opens the session.
 
-use std::{error::Error, fmt, num::NonZeroU32};
+use std::{
+    error::Error,
+    fmt,
+    num::NonZeroU32,
+    sync::{Arc, Mutex},
+};
 
 use fluxel_host::{
     HostApplication, HostContext, HostWindow, WindowConfig, WindowError, WindowEvent,
@@ -33,6 +38,9 @@ use fluxel_host::{
 pub mod android;
 #[cfg(target_vendor = "apple")]
 pub mod apple;
+#[cfg(target_os = "macos")]
+#[allow(unused_imports)]
+pub use apple::{ApplePlatform, AppleSession};
 pub mod shader;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
@@ -65,12 +73,17 @@ pub fn run_example<D: Example + 'static>(title: &str, demo: D) -> Result<(), Box
         let _ = (title, demo);
         Err("Android examples are started by the NativeActivity entry point".into())
     }
+    #[cfg(all(target_os = "macos", feature = "metal"))]
+    {
+        return apple::run_example(title, demo);
+    }
     #[cfg(not(any(
         all(
             windows,
             any(feature = "dx12", feature = "vulkan", feature = "native-gl-wgl")
         ),
-        all(target_os = "android", feature = "vulkan")
+        all(target_os = "android", feature = "vulkan"),
+        all(target_os = "macos", feature = "metal")
     )))]
     {
         let _ = (title, demo);
@@ -433,6 +446,7 @@ pub struct NativeExampleRunner<P: NativePlatform, D> {
     session: Option<P::Session>,
     closing: bool,
     rendered_frames: u32,
+    failure: Option<Arc<Mutex<Option<String>>>>,
 }
 
 impl<P, D> NativeExampleRunner<P, D>
@@ -450,11 +464,30 @@ where
             session: None,
             closing: false,
             rendered_frames: 0,
+            failure: None,
         }
     }
 
-    fn fail(host: &HostContext<'_>, error: impl fmt::Display) {
-        eprintln!("Fluxel RHI example failed: {error}");
+    /// Makes a platform entry point observe callback failures after its host
+    /// event loop has stopped.
+    pub fn with_failure_slot(mut self, failure: Arc<Mutex<Option<String>>>) -> Self {
+        self.failure = Some(failure);
+        self
+    }
+
+    fn fail(&mut self, host: &HostContext<'_>, error: impl fmt::Display) {
+        let message = error.to_string();
+        eprintln!("Fluxel RHI example failed: {message}");
+        if let Some(failure) = &self.failure {
+            if let Ok(mut failure) = failure.lock() {
+                if failure.is_none() {
+                    *failure = Some(message);
+                }
+            }
+        }
+        if let Err(cleanup) = self.close_once() {
+            eprintln!("Fluxel RHI example cleanup failed: {cleanup}");
+        }
         host.exit();
     }
 
@@ -585,7 +618,7 @@ where
             .window_config()
             .and_then(|config| host.create_window(config).map(|_| ()));
         if let Err(error) = result {
-            Self::fail(host, error);
+            self.fail(host, error);
         }
     }
 
@@ -617,7 +650,7 @@ where
             _ => Ok(()),
         };
         if let Err(error) = result {
-            Self::fail(host, error);
+            self.fail(host, error);
         }
     }
 }

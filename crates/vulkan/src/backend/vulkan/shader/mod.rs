@@ -58,7 +58,7 @@ pub(crate) enum ShaderCreationError {
 ///
 /// SPIR-V is passed directly to Vulkan. With the optional Naga feature, WGSL
 /// is lowered to SPIR-V here; no converted code form is exposed in the public
-/// artifact or substituted into its capture identity.
+/// artifact or substituted into its stable identity.
 pub(crate) fn create_shader(
     shared: Arc<VulkanShared>,
     artifact: &ShaderArtifact,

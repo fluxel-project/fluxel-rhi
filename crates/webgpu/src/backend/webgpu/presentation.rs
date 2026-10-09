@@ -583,7 +583,10 @@ impl FrameAttachmentBackend for WebGpuFrameAttachment {
             None => PresentState::Accepted,
         };
         let mut presentation = lock(&self.state);
-        presentation.receipts.insert(receipt, state);
+        presentation.receipts.insert(receipt, state.clone());
+        if let Some(outcome) = crate::api::presentation::present::live_outcome(receipt) {
+            outcome.set(state);
+        }
         if presentation.acquired.get(&self.target) == Some(&self.serial) {
             presentation.acquired.remove(&self.target);
         }
@@ -591,7 +594,10 @@ impl FrameAttachmentBackend for WebGpuFrameAttachment {
 
     fn terminate_present(&self, receipt: PresentReceiptId, state: PresentState) {
         let mut presentation = lock(&self.state);
-        presentation.receipts.insert(receipt, state);
+        presentation.receipts.insert(receipt, state.clone());
+        if let Some(outcome) = crate::api::presentation::present::live_outcome(receipt) {
+            outcome.set(state);
+        }
         if presentation.acquired.get(&self.target) == Some(&self.serial) {
             presentation.acquired.remove(&self.target);
         }

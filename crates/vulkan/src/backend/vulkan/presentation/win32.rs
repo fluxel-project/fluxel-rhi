@@ -144,10 +144,13 @@ struct SwapchainOwner {
     /// the surface for that usage instead of issuing an invalid image copy.
     copy_src: bool,
     images: Vec<vk::Image>,
+    // The first use of each swapchain image starts from UNDEFINED.  Later
+    // acquisitions reuse the layout encoded for its preceding presentation.
+    image_layouts: Vec<Mutex<vk::ImageLayout>>,
     // A present wait semaphore cannot be destroyed when vkQueuePresentKHR
-    // returns: presentation may still be waiting on it.  The same image coming
-    // back through acquire proves that wait is complete, which is the earliest
-    // no-stall retirement point available to this baseline.
+    // returns: presentation may still be waiting on it. Reacquiring the same
+    // image identifies the oldest semaphores eligible for retirement; their
+    // destruction still waits for the graphics queue to become idle.
     retired_semaphores: Mutex<Vec<Vec<vk::Semaphore>>>,
     _surface: Arc<SurfaceOwner>,
 }
@@ -155,9 +158,10 @@ struct SwapchainOwner {
 /// Native WSI objects whose safe lifetime cannot be proven by queue idle.
 ///
 /// Without present fences (`VK_EXT_swapchain_maintenance1`) or present IDs,
-/// only reacquiring the same image proves that an individual present wait has
-/// released its semaphore. Old generations are never reacquired, so this
-/// record is intentionally retained by `VulkanShared` until device teardown.
+/// this baseline has no non-blocking, portable proof that presentation has
+/// released an individual wait semaphore. The record is retained by
+/// `VulkanShared` until device teardown, where `device_wait_idle` establishes
+/// the required completion boundary.
 pub(crate) struct VulkanSwapchainRetirement {
     loader: ash::khr::swapchain::Device,
     swapchain: vk::SwapchainKHR,
@@ -167,6 +171,11 @@ pub(crate) struct VulkanSwapchainRetirement {
 
 impl VulkanSwapchainRetirement {
     pub(crate) unsafe fn destroy(self, device: &ash::Device) {
+        // `vkQueuePresentKHR` may still be waiting on a render-finished
+        // semaphore after it returns. The retirement domain is reached only at
+        // device teardown, so this one conservative wait is both sufficient
+        // and avoids destroying a semaphore still referenced by the queue.
+        let _ = unsafe { device.device_wait_idle() };
         for semaphore in self.semaphores {
             if semaphore != vk::Semaphore::null() {
                 unsafe { device.destroy_semaphore(semaphore, None) };
@@ -177,6 +186,18 @@ impl VulkanSwapchainRetirement {
 }
 
 impl SwapchainOwner {
+    fn initial_image_layout(&self, image: u32) -> vk::ImageLayout {
+        *self.image_layouts[image as usize]
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn publish_present_layout(&self, image: u32) {
+        *self.image_layouts[image as usize]
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = vk::ImageLayout::PRESENT_SRC_KHR;
+    }
+
     fn retire_after_present(&self, image: u32, semaphores: [vk::Semaphore; 2]) {
         self.retired_semaphores
             .lock()
@@ -185,6 +206,17 @@ impl SwapchainOwner {
     }
 
     fn reclaim_image_semaphores(&self, shared: &VulkanShared, image: u32) {
+        // `vkAcquireNextImageKHR` gives this image back only after presentation
+        // no longer owns it, but validation correctly rejects destruction while
+        // a queue operation is still recorded as using its semaphores. Make the
+        // queue completion boundary explicit before reclaiming this image's
+        // prior acquire/render-finished pair. This bounds the live semaphore
+        // count to the swapchain image count without relying on an optional
+        // presentation-fence extension.
+        let _queue = shared.queue_guard();
+        if unsafe { shared.device.queue_wait_idle(shared.graphics_queue) }.is_err() {
+            return;
+        }
         let retired = std::mem::take(
             &mut self
                 .retired_semaphores
@@ -390,6 +422,10 @@ pub(crate) struct VulkanFrameAttachment {
     image: vk::Image,
     image_index: u32,
     sync: VulkanPresentSync,
+    // This is deliberately per acquisition. Work can be dropped after it has
+    // encoded transitions but before its command buffer reaches the queue.
+    // Only `present` publishes the terminal layout back to the swapchain.
+    layout: Arc<Mutex<vk::ImageLayout>>,
     state: Arc<Mutex<SwapchainState>>,
     swapchain: Arc<SwapchainOwner>,
     swapchain_loader: ash::khr::swapchain::Device,
@@ -406,6 +442,12 @@ impl VulkanFrameAttachment {
     pub(crate) fn sync(&self) -> VulkanPresentSync {
         self.sync
     }
+    /// Returns the layout established by the preceding encoded use and makes
+    /// `new_layout` visible to later raster scopes for this acquired image.
+    pub(crate) fn transition_layout(&self, new_layout: vk::ImageLayout) -> vk::ImageLayout {
+        let mut layout = self.layout.lock().unwrap_or_else(|p| p.into_inner());
+        std::mem::replace(&mut *layout, new_layout)
+    }
     pub(crate) fn supports_copy_src(&self) -> bool {
         self.swapchain.copy_src
     }
@@ -416,6 +458,9 @@ impl FrameAttachmentBackend for VulkanFrameAttachment {
         self
     }
     fn present(&self, receipt: PresentReceiptId) {
+        // The caller invokes this only after the rendering submission has been
+        // accepted, so its final transition is now durable for a later acquire.
+        self.swapchain.publish_present_layout(self.image_index);
         let state = if let Some(info) = self.shared.loss_info() {
             PresentState::DeviceLost(info)
         } else {
@@ -460,7 +505,10 @@ impl FrameAttachmentBackend for VulkanFrameAttachment {
         self.presents
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(receipt, state);
+            .insert(receipt, state.clone());
+        if let Some(outcome) = crate::api::presentation::present::live_outcome(receipt) {
+            outcome.set(state);
+        }
         self.return_state.store(1, Ordering::Release);
         self.swapchain.retire_after_present(
             self.image_index,
@@ -476,7 +524,10 @@ impl FrameAttachmentBackend for VulkanFrameAttachment {
         self.presents
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(receipt, state);
+            .insert(receipt, state.clone());
+        if let Some(outcome) = crate::api::presentation::present::live_outcome(receipt) {
+            outcome.set(state);
+        }
         // No native present can be issued after terminal device loss. Retain
         // both semaphores with the swapchain generation until teardown: a
         // prior acquire signal or accepted queue wait may still own them.
@@ -633,6 +684,7 @@ impl ConfiguredPresentationBackend for VulkanConfiguredPresentation {
                 current.reclaim_image_semaphores(&self.shared, index);
                 let serial = self.serial.fetch_add(1, Ordering::Relaxed);
                 let return_state = Arc::new(AtomicU8::new(0));
+                let layout = Arc::new(Mutex::new(current.initial_image_layout(index)));
                 state.acquired = Some(AcquiredImage {
                     image_index: index,
                     swapchain: Arc::clone(&current),
@@ -653,6 +705,7 @@ impl ConfiguredPresentationBackend for VulkanConfiguredPresentation {
                             acquire_wait: semaphore,
                             render_finished,
                         },
+                        layout,
                         state: Arc::clone(&self.state),
                         swapchain: current,
                         swapchain_loader: self.swapchain_loader.clone(),
@@ -928,6 +981,9 @@ fn create_swapchain_with_old(
         extent,
         copy_src: config.usage().contains(TextureUsage::COPY_SRC),
         retired_semaphores: Mutex::new((0..images.len()).map(|_| Vec::new()).collect()),
+        image_layouts: (0..images.len())
+            .map(|_| Mutex::new(vk::ImageLayout::UNDEFINED))
+            .collect(),
         images,
         _surface: target,
     }))

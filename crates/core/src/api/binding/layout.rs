@@ -145,7 +145,7 @@ impl BindGroupLayoutCompatibilityId {
     }
 }
 
-/// Canonical descriptor fingerprint for cache, diagnostics, and Capture provenance.
+/// Canonical descriptor fingerprint for cache keys and diagnostics.
 ///
 /// The field is public because section 21.1 declares it so, and that is
 /// deliberate rather than an oversight: a fingerprint is *not* an identity, so
@@ -294,7 +294,7 @@ impl BindGroupLayout {
 
     /// The canonical descriptor fingerprint.
     ///
-    /// A cache, diagnostics, and Capture-provenance hint. Section 21.1 is explicit
+    /// A cache and diagnostics hint. Section 21.1 is explicit
     /// that it cannot alone replace correctness validation, which is why
     /// compatibility is decided by [`Self::compatibility_id`] and by comparing the
     /// complete canonical descriptors.

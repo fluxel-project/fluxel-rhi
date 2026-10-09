@@ -25,3 +25,16 @@ pub fn create_provider() -> api::RhiResult<api::platform::PlatformProvider> {
         Box::new(native),
     ))
 }
+
+/// Registers a browser canvas as a presentation target for a WebGPU device.
+///
+/// The canvas must belong to the browser thread that owns the device. The
+/// returned target is a portable handle; the browser object remains private to
+/// this backend.
+#[cfg(target_arch = "wasm32")]
+pub fn register_canvas(
+    device: &api::platform::Device,
+    canvas: web_sys::HtmlCanvasElement,
+) -> api::RhiResult<api::presentation::PresentationTarget> {
+    backend::webgpu::register_canvas(device, canvas)
+}

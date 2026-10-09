@@ -21,6 +21,6 @@ while their facts stay disabled.
 
 `Unsupported` is a correct result, not an API omission. Current TODO families
 include physical aliasing, mesh/task and ray paths, cooperative matrices,
-external interop, multiplanar routes, native debug capture, HDR/timing, and
+external interop, multiplanar routes, native debugging tools, HDR/timing, and
 advanced descriptor indexing. A reachable path must never use a placeholder
 success or panic.

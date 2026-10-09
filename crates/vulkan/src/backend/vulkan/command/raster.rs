@@ -21,9 +21,10 @@ use crate::api::command::attachment::{
     ColorAttachmentView, DepthAttachmentMode, StencilAttachmentMode,
 };
 use crate::api::command::geometry::{ColorClearValue, LoadOp, StoreOp};
-use crate::api::command::raster::RasterAttachmentClear;
-use crate::api::command::record::{RasterBegin, RasterDraw, RasterIndirect};
-use crate::api::command::{IndexFormat, ResourceUse, TextureUse, TextureUseIntent};
+use crate::api::command::record::RasterBegin;
+use crate::api::command::{
+    IndexFormat, RasterAttachmentClear, ResourceUse, TextureUse, TextureUseIntent,
+};
 use crate::api::pipeline::RasterPipeline;
 use crate::api::presentation::FrameAttachment;
 use crate::api::resource::buffer::Buffer;
@@ -38,6 +39,42 @@ use crate::backend::vulkan::presentation::VulkanFrameAttachment;
 use crate::backend::vulkan::resource::{VulkanBuffer, VulkanTextureView};
 
 use super::transfer;
+
+/// The mutable binding state of an immediate encoder, borrowed only while one
+/// draw is emitted.  Keeping references here avoids materializing a portable
+/// draw packet (and its full binding snapshot) for every native draw.
+pub(super) struct RasterDrawView<'a> {
+    pub(super) pipeline: &'a RasterPipeline,
+    pub(super) groups: &'a [crate::api::command::record::BoundGroup],
+    pub(super) vertex_buffers: &'a [(u32, crate::api::resource::buffer::BufferBinding)],
+    pub(super) index: Option<&'a crate::api::command::record::BoundIndexBuffer>,
+    pub(super) viewport: Option<crate::api::command::Viewport>,
+    pub(super) scissor: Option<crate::api::command::Rect>,
+    pub(super) blend_constant: crate::api::command::Color,
+    pub(super) stencil_reference: u32,
+    pub(super) range: core::ops::Range<u32>,
+    pub(super) instances: core::ops::Range<u32>,
+    pub(super) base_vertex: i32,
+    pub(super) immediates: &'a [crate::api::command::record::ImmediateWrite],
+}
+
+/// Borrowed indirect-draw state from an immediate encoder.  This mirrors the
+/// portable packet without cloning the complete graphics binding state.
+pub(super) struct RasterIndirectView<'a> {
+    pub(super) pipeline: &'a RasterPipeline,
+    pub(super) groups: &'a [crate::api::command::record::BoundGroup],
+    pub(super) vertex_buffers: &'a [(u32, crate::api::resource::buffer::BufferBinding)],
+    pub(super) index: Option<&'a crate::api::command::record::BoundIndexBuffer>,
+    pub(super) viewport: Option<crate::api::command::Viewport>,
+    pub(super) scissor: Option<crate::api::command::Rect>,
+    pub(super) blend_constant: crate::api::command::Color,
+    pub(super) stencil_reference: u32,
+    pub(super) arguments: &'a Buffer,
+    pub(super) arguments_offset: u64,
+    pub(super) draw_count: u32,
+    pub(super) stride: u32,
+    pub(super) count: Option<(&'a Buffer, u64, u32)>,
+}
 
 /// Native/portable ownership retained for a raster command buffer until its
 /// fence completes.  The spine merges this with its batch retention; native
@@ -85,10 +122,35 @@ pub(super) struct RasterScopeState {
 
 #[derive(Clone, Copy)]
 pub(super) struct RasterScopeInfo {
-    render_pass: vk::RenderPass,
+    pub(super) render_pass: vk::RenderPass,
     framebuffer: vk::Framebuffer,
     extent: vk::Extent2D,
     multiview_mask: Option<u32>,
+}
+
+/// Compatibility-only render-pass state for a secondary command buffer.  A
+/// secondary inherits attachments from the primary, so it owns no framebuffer;
+/// Vulkan nevertheless requires a render pass compatible with the parent while
+/// the buffer is recorded.
+pub(super) struct SecondaryRasterScope {
+    info: RasterScopeInfo,
+    shared: Arc<VulkanShared>,
+}
+
+impl SecondaryRasterScope {
+    pub(super) fn info(&self) -> RasterScopeInfo {
+        self.info
+    }
+}
+
+impl Drop for SecondaryRasterScope {
+    fn drop(&mut self) {
+        unsafe {
+            self.shared
+                .device
+                .destroy_render_pass(self.info.render_pass, None)
+        };
+    }
 }
 impl RasterScopeState {
     pub(super) fn info(&self) -> RasterScopeInfo {
@@ -102,6 +164,152 @@ impl RasterScopeState {
     pub(super) fn uses_secondary(&self) -> bool {
         self.secondary_contents
     }
+}
+
+/// Builds the compatibility render pass and inheritance data for a finished
+/// secondary recorder.  No attachment transitions or framebuffer are created:
+/// those remain the primary pass's responsibility.
+pub(super) fn secondary_scope(
+    shared: Arc<VulkanShared>,
+    begin: &RasterBegin,
+) -> Result<SecondaryRasterScope, VulkanFailure> {
+    let mut attachments = Vec::new();
+    let mut color_refs = Vec::with_capacity(begin.colors.len());
+    let mut resolve_refs = Vec::with_capacity(begin.colors.len());
+    let mut width = None;
+    let mut height = None;
+    for (location, color) in &begin.colors {
+        while color_refs.len() < *location as usize {
+            color_refs.push(vk::AttachmentReference {
+                attachment: vk::ATTACHMENT_UNUSED,
+                layout: vk::ImageLayout::UNDEFINED,
+            });
+            resolve_refs.push(vk::AttachmentReference {
+                attachment: vk::ATTACHMENT_UNUSED,
+                layout: vk::ImageLayout::UNDEFINED,
+            });
+        }
+        check_extent(&mut width, &mut height, color.view.extent())?;
+        let color_layout = match color.view {
+            ColorAttachmentView::Texture(_) => vk::ImageLayout::GENERAL,
+            ColorAttachmentView::Frame(_) => vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            _ => {
+                return Err(VulkanFailure::Unsupported {
+                    what: "a Vulkan secondary color attachment view",
+                    why: "this backend does not implement the newer portable attachment-view variant",
+                });
+            }
+        };
+        let index = attachments.len() as u32;
+        attachments.push(vk::AttachmentDescription {
+            flags: vk::AttachmentDescriptionFlags::empty(),
+            format: vk_format(color.view.format()).ok_or(VulkanFailure::Unsupported {
+                what: "a Vulkan secondary color attachment format",
+                why: "the attachment format has no Vulkan mapping",
+            })?,
+            samples: vk::SampleCountFlags::from_raw(color.view.sample_count()),
+            load_op: color_load(color.load),
+            store_op: color_store(color.store),
+            stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
+            stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+            initial_layout: color_layout,
+            final_layout: color_layout,
+        });
+        color_refs.push(vk::AttachmentReference {
+            attachment: index,
+            layout: color_layout,
+        });
+        if let Some(resolve) = &color.resolve {
+            let resolve_layout = match resolve {
+                ColorAttachmentView::Texture(_) => vk::ImageLayout::GENERAL,
+                ColorAttachmentView::Frame(_) => vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                _ => {
+                    return Err(VulkanFailure::Unsupported {
+                        what: "a Vulkan secondary resolve attachment view",
+                        why: "this backend does not implement the newer portable attachment-view variant",
+                    });
+                }
+            };
+            let resolve_index = attachments.len() as u32;
+            attachments.push(vk::AttachmentDescription {
+                flags: vk::AttachmentDescriptionFlags::empty(),
+                format: vk_format(resolve.format()).ok_or(VulkanFailure::Unsupported {
+                    what: "a Vulkan secondary resolve attachment format",
+                    why: "the attachment format has no Vulkan mapping",
+                })?,
+                samples: vk::SampleCountFlags::TYPE_1,
+                load_op: vk::AttachmentLoadOp::DONT_CARE,
+                store_op: vk::AttachmentStoreOp::STORE,
+                stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
+                stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+                initial_layout: resolve_layout,
+                final_layout: resolve_layout,
+            });
+            resolve_refs.push(vk::AttachmentReference {
+                attachment: resolve_index,
+                layout: resolve_layout,
+            });
+        } else {
+            resolve_refs.push(vk::AttachmentReference {
+                attachment: vk::ATTACHMENT_UNUSED,
+                layout: vk::ImageLayout::UNDEFINED,
+            });
+        }
+    }
+    let mut depth_ref = None;
+    if let Some(attachment) = &begin.depth_stencil {
+        check_extent(&mut width, &mut height, attachment.view.extent())?;
+        let layout = vk::ImageLayout::GENERAL;
+        let index = attachments.len() as u32;
+        attachments.push(vk::AttachmentDescription {
+            flags: vk::AttachmentDescriptionFlags::empty(),
+            format: vk_format(attachment.view.format()).ok_or(VulkanFailure::Unsupported {
+                what: "a Vulkan secondary depth attachment format",
+                why: "the attachment format has no Vulkan mapping",
+            })?,
+            samples: vk::SampleCountFlags::from_raw(attachment.view.sample_count()),
+            load_op: depth_load(attachment.depth),
+            store_op: depth_store(attachment.depth),
+            stencil_load_op: stencil_load(attachment.stencil),
+            stencil_store_op: stencil_store(attachment.stencil),
+            initial_layout: layout,
+            final_layout: layout,
+        });
+        depth_ref = Some(vk::AttachmentReference {
+            attachment: index,
+            layout,
+        });
+    }
+    let (width, height) = width.zip(height).ok_or(VulkanFailure::Unsupported {
+        what: "a Vulkan secondary raster scope without attachments",
+        why: "portable validation should reject an empty attachment set",
+    })?;
+    let mut subpass = vk::SubpassDescription::default()
+        .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+        .color_attachments(&color_refs);
+    if resolve_refs
+        .iter()
+        .any(|reference| reference.attachment != vk::ATTACHMENT_UNUSED)
+    {
+        subpass = subpass.resolve_attachments(&resolve_refs);
+    }
+    if let Some(reference) = depth_ref.as_ref() {
+        subpass = subpass.depth_stencil_attachment(reference);
+    }
+    let pass_info = vk::RenderPassCreateInfo::default()
+        .attachments(&attachments)
+        .subpasses(std::slice::from_ref(&subpass));
+    let render_pass = unsafe { shared.device.create_render_pass(&pass_info, None) }
+        .map_err(native("vkCreateRenderPass for secondary raster scope"))?;
+    Ok(SecondaryRasterScope {
+        info: RasterScopeInfo {
+            render_pass,
+            framebuffer: vk::Framebuffer::null(),
+            extent: vk::Extent2D { width, height },
+            multiview_mask: None,
+        },
+        shared,
+    })
 }
 
 /// Render-pass/framebuffer handles are command-buffer references, so they may
@@ -162,7 +370,7 @@ pub(super) fn lower_raster_begin(
     // Vulkan forbids vkCmdPipelineBarrier inside a render pass. The spine
     // therefore gathers this scope's draw uses before calling us, allowing the
     // shared image-state authority to establish every descriptor layout before
-    // vkCmdBeginRenderPass. Do not move this into `lower_raster_draw`.
+    // vkCmdBeginRenderPass. Do not defer this until a draw call.
     for use_ in shader_texture_uses {
         transfer::transition_shader_texture(
             &shared,
@@ -201,28 +409,30 @@ pub(super) fn lower_raster_begin(
             });
         }
         check_extent(&mut width, &mut height, color.view.extent())?;
-        let native_attachment_view = match &color.view {
+        let (native_attachment_view, attachment_layout) = match &color.view {
             ColorAttachmentView::Texture(view) => {
                 transfer::transition_raster_attachment(
                     &shared,
                     command_buffer,
                     view,
-                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    vk::ImageLayout::GENERAL,
                     vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
                     vk::AccessFlags::COLOR_ATTACHMENT_READ
                         | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
                     transfer_retention,
                 )?;
                 colors.push(view.clone());
-                native_view(view)?.view()
+                (native_view(view)?.view(), vk::ImageLayout::GENERAL)
             }
             ColorAttachmentView::Frame(frame) => {
                 let image = native_frame_image(frame)?;
+                let old_layout =
+                    native_frame_layout(frame, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)?;
                 transition_frame(
                     &shared,
                     command_buffer,
                     image,
-                    vk::ImageLayout::PRESENT_SRC_KHR,
+                    old_layout,
                     vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                     vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
                     vk::AccessFlags::COLOR_ATTACHMENT_READ
@@ -247,7 +457,7 @@ pub(super) fn lower_raster_begin(
                     .map_err(native("vkCreateImageView for presentation frame"))?;
                 frame_views.views.push(view);
                 frames.push(frame.clone());
-                view
+                (view, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             }
             _ => {
                 return Err(VulkanFailure::Unsupported {
@@ -268,38 +478,40 @@ pub(super) fn lower_raster_begin(
             store_op: color_store(color.store),
             stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
             stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
-            initial_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            final_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            initial_layout: attachment_layout,
+            final_layout: attachment_layout,
         });
         color_refs.push(vk::AttachmentReference {
             attachment: index,
-            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            layout: attachment_layout,
         });
         attachment_views.push(native_attachment_view);
         clears.push(clear_color(color.load));
 
         let resolve_ref = if let Some(resolve) = &color.resolve {
-            let native_resolve_view = match resolve {
+            let (native_resolve_view, resolve_layout) = match resolve {
                 ColorAttachmentView::Texture(view) => {
                     transfer::transition_raster_attachment(
                         &shared,
                         command_buffer,
                         view,
-                        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                        vk::ImageLayout::GENERAL,
                         vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
                         vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
                         transfer_retention,
                     )?;
                     colors.push(view.clone());
-                    native_view(view)?.view()
+                    (native_view(view)?.view(), vk::ImageLayout::GENERAL)
                 }
                 ColorAttachmentView::Frame(frame) => {
                     let image = native_frame_image(frame)?;
+                    let old_layout =
+                        native_frame_layout(frame, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)?;
                     transition_frame(
                         &shared,
                         command_buffer,
                         image,
-                        vk::ImageLayout::PRESENT_SRC_KHR,
+                        old_layout,
                         vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                         vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
                         vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
@@ -323,7 +535,7 @@ pub(super) fn lower_raster_begin(
                         .map_err(native("vkCreateImageView for resolve presentation frame"))?;
                     frame_views.views.push(view);
                     frames.push(frame.clone());
-                    view
+                    (view, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                 }
                 _ => {
                     return Err(VulkanFailure::Unsupported {
@@ -344,14 +556,14 @@ pub(super) fn lower_raster_begin(
                 store_op: vk::AttachmentStoreOp::STORE,
                 stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
                 stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
-                initial_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                final_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                initial_layout: resolve_layout,
+                final_layout: resolve_layout,
             });
             attachment_views.push(native_resolve_view);
             clears.push(vk::ClearValue::default());
             vk::AttachmentReference {
                 attachment: resolve_index,
-                layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                layout: resolve_layout,
             }
         } else {
             vk::AttachmentReference {
@@ -368,11 +580,9 @@ pub(super) fn lower_raster_begin(
         let view = attachment.view.clone();
         check_extent(&mut width, &mut height, view.extent())?;
         let write = depth_writes(attachment.depth) || stencil_writes(attachment.stencil);
-        let layout = if write {
-            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-        } else {
-            vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL
-        };
+        // Ordinary Fluxel textures stay in GENERAL across the native encoder;
+        // presentation frames are handled separately above.
+        let layout = vk::ImageLayout::GENERAL;
         let access = if write {
             vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
                 | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE
@@ -429,41 +639,9 @@ pub(super) fn lower_raster_begin(
     if let Some(reference) = depth_ref.as_ref() {
         subpass = subpass.depth_stencil_attachment(reference);
     }
-    let dependencies = [
-        vk::SubpassDependency::default()
-            .src_subpass(vk::SUBPASS_EXTERNAL)
-            .dst_subpass(0)
-            .src_stage_mask(vk::PipelineStageFlags::ALL_COMMANDS)
-            .dst_stage_mask(
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
-                    | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
-                    | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-            )
-            .src_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)
-            .dst_access_mask(
-                vk::AccessFlags::COLOR_ATTACHMENT_READ
-                    | vk::AccessFlags::COLOR_ATTACHMENT_WRITE
-                    | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
-                    | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-            ),
-        vk::SubpassDependency::default()
-            .src_subpass(0)
-            .dst_subpass(vk::SUBPASS_EXTERNAL)
-            .src_stage_mask(
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
-                    | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-            )
-            .dst_stage_mask(vk::PipelineStageFlags::ALL_COMMANDS)
-            .src_access_mask(
-                vk::AccessFlags::COLOR_ATTACHMENT_WRITE
-                    | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-            )
-            .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE),
-    ];
     let mut pass_info = vk::RenderPassCreateInfo::default()
         .attachments(&attachments)
-        .subpasses(std::slice::from_ref(&subpass))
-        .dependencies(&dependencies);
+        .subpasses(std::slice::from_ref(&subpass));
     let view_masks = multiview_mask.map(|mask| [mask]);
     let mut multiview = view_masks
         .as_ref()
@@ -600,11 +778,10 @@ pub(super) fn lower_raster_clear(
     Ok(())
 }
 
-/// Lowers one draw with its recorded state.
-pub(super) fn lower_raster_draw(
+pub(super) fn lower_raster_draw_view(
     shared: &VulkanShared,
     command_buffer: vk::CommandBuffer,
-    draw: &RasterDraw,
+    draw: &RasterDrawView<'_>,
     uses: &[ResourceUse],
     scope: &RasterScopeInfo,
     transfer_retention: &mut transfer::TransferRetention,
@@ -677,7 +854,7 @@ pub(super) fn lower_raster_draw(
         }
     }
     let mut sets = Vec::with_capacity(draw.groups.len());
-    for bound in &draw.groups {
+    for bound in draw.groups {
         let group = bound
             .group
             .native()
@@ -696,7 +873,7 @@ pub(super) fn lower_raster_draw(
         retention.bind_groups.push(bound.group.clone());
     }
     let mut vertex_buffers = Vec::with_capacity(draw.vertex_buffers.len());
-    for (slot, binding) in &draw.vertex_buffers {
+    for (slot, binding) in draw.vertex_buffers {
         vertex_buffers.push((
             *slot,
             native_buffer(&binding.buffer)?.buffer(),
@@ -782,7 +959,7 @@ pub(super) fn lower_raster_draw(
             vk::StencilFaceFlags::FRONT_AND_BACK,
             draw.stencil_reference,
         );
-        for immediate in &draw.immediates {
+        for immediate in draw.immediates {
             shared.device.cmd_push_constants(
                 command_buffer,
                 pipeline.layout(),
@@ -823,99 +1000,10 @@ pub(super) fn lower_raster_draw(
     Ok(retention)
 }
 
-/// Records one draw packet in a worker-owned secondary command buffer.  The
-/// parent has already established image layouts for the complete scope; the
-/// inherited render pass/framebuffer make this buffer executable only there.
-pub(super) fn lower_secondary_draw(
-    shared: Arc<VulkanShared>,
-    scope: RasterScopeInfo,
-    draw: &RasterDraw,
-    uses: &[ResourceUse],
-) -> Result<(vk::CommandBuffer, RasterRetention), VulkanFailure> {
-    std::thread::scope(|workers| {
-        workers
-            .spawn(|| {
-                let pool_info = vk::CommandPoolCreateInfo::default()
-                    .queue_family_index(shared.graphics_family)
-                    .flags(vk::CommandPoolCreateFlags::TRANSIENT);
-                let pool = unsafe { shared.device.create_command_pool(&pool_info, None) }.map_err(
-                    |result| {
-                        VulkanFailure::Native(crate::backend::vulkan::ffi::NativeError::new(
-                            result,
-                            "secondary Vulkan command-pool creation",
-                        ))
-                    },
-                )?;
-                let secondary_pool = SecondaryPool {
-                    shared: Arc::clone(&shared),
-                    pool,
-                };
-                let allocation = vk::CommandBufferAllocateInfo::default()
-                    .command_pool(pool)
-                    .level(vk::CommandBufferLevel::SECONDARY)
-                    .command_buffer_count(1);
-                let buffer = match unsafe { shared.device.allocate_command_buffers(&allocation) } {
-                    Ok(buffers) => buffers[0],
-                    Err(result) => {
-                        return Err(VulkanFailure::Native(
-                            crate::backend::vulkan::ffi::NativeError::new(
-                                result,
-                                "secondary Vulkan command-buffer allocation",
-                            ),
-                        ));
-                    }
-                };
-                let inheritance = vk::CommandBufferInheritanceInfo::default()
-                    .render_pass(scope.render_pass)
-                    .subpass(0)
-                    .framebuffer(scope.framebuffer);
-                let begin = vk::CommandBufferBeginInfo::default()
-                    .flags(
-                        vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT
-                            | vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE,
-                    )
-                    .inheritance_info(&inheritance);
-                if let Err(result) = unsafe { shared.device.begin_command_buffer(buffer, &begin) } {
-                    return Err(VulkanFailure::Native(
-                        crate::backend::vulkan::ffi::NativeError::new(
-                            result,
-                            "secondary Vulkan command-buffer begin",
-                        ),
-                    ));
-                }
-                let mut transfer = transfer::TransferRetention::default();
-                let mut retention =
-                    lower_raster_draw(&shared, buffer, draw, uses, &scope, &mut transfer)?;
-                if let Err(result) = unsafe { shared.device.end_command_buffer(buffer) } {
-                    return Err(VulkanFailure::Native(
-                        crate::backend::vulkan::ffi::NativeError::new(
-                            result,
-                            "secondary Vulkan command-buffer end",
-                        ),
-                    ));
-                }
-                retention.secondary_pools.push(secondary_pool);
-                Ok((buffer, retention))
-            })
-            .join()
-            .map_err(|_| VulkanFailure::Unsupported {
-                what: "a Vulkan secondary-recording worker",
-                why: "the host worker thread panicked",
-            })?
-    })
-}
-
-/// Lowers one raster indirect draw without manufacturing a direct draw first.
-///
-/// `firstInstance` is data owned by the GPU, rather than portable recorder
-/// state.  The capability gate therefore only publishes this operation when
-/// the selected Vulkan device enabled `drawIndirectFirstInstance`; reaching
-/// this lowering otherwise is an API/backend contract violation, not a place
-/// to silently discard the field.
-pub(super) fn lower_raster_indirect(
+pub(super) fn lower_raster_indirect_view(
     shared: &VulkanShared,
     command_buffer: vk::CommandBuffer,
-    draw: &RasterIndirect,
+    draw: &RasterIndirectView<'_>,
     uses: &[ResourceUse],
     scope: &RasterScopeInfo,
     transfer_retention: &mut transfer::TransferRetention,
@@ -938,8 +1026,7 @@ pub(super) fn lower_raster_indirect(
     let arguments = native_buffer(&draw.arguments)?.buffer();
     let count = draw
         .count
-        .as_ref()
-        .map(|(buffer, offset, maximum)| Ok((native_buffer(buffer)?.buffer(), *offset, *maximum)))
+        .map(|(buffer, offset, maximum)| Ok((native_buffer(buffer)?.buffer(), offset, maximum)))
         .transpose()?;
     if draw.draw_count > shared.max_draw_indirect_count {
         return Err(VulkanFailure::Unsupported {
@@ -964,7 +1051,7 @@ pub(super) fn lower_raster_indirect(
     let mut retention = RasterRetention {
         pipelines: vec![draw.pipeline.clone()],
         bind_groups: Vec::new(),
-        buffers: vec![draw.arguments.clone()],
+        buffers: vec![(*draw.arguments).clone()],
         views: Vec::new(),
         frames: Vec::new(),
         objects: Vec::new(),
@@ -1012,7 +1099,7 @@ pub(super) fn lower_raster_indirect(
         }
     }
     let mut sets = Vec::with_capacity(draw.groups.len());
-    for bound in &draw.groups {
+    for bound in draw.groups {
         let group = bound
             .group
             .native()
@@ -1031,7 +1118,7 @@ pub(super) fn lower_raster_indirect(
         retention.bind_groups.push(bound.group.clone());
     }
     let mut vertex_buffers = Vec::with_capacity(draw.vertex_buffers.len());
-    for (slot, binding) in &draw.vertex_buffers {
+    for (slot, binding) in draw.vertex_buffers {
         vertex_buffers.push((
             *slot,
             native_buffer(&binding.buffer)?.buffer(),
@@ -1144,7 +1231,7 @@ pub(super) fn lower_raster_indirect(
                     );
                 retention
                     .buffers
-                    .push(draw.count.as_ref().expect("count tuple exists").0.clone());
+                    .push(draw.count.expect("count tuple exists").0.clone());
             } else {
                 shared.device.cmd_draw_indexed_indirect(
                     command_buffer,
@@ -1171,7 +1258,7 @@ pub(super) fn lower_raster_indirect(
                     );
                 retention
                     .buffers
-                    .push(draw.count.as_ref().expect("count tuple exists").0.clone());
+                    .push(draw.count.expect("count tuple exists").0.clone());
             } else {
                 shared.device.cmd_draw_indirect(
                     command_buffer,
@@ -1268,11 +1355,12 @@ pub(super) fn lower_raster_end(
     }
     for frame in scope.frames.drain(..) {
         let image = native_frame_image(&frame)?;
+        let old_layout = native_frame_layout(&frame, vk::ImageLayout::PRESENT_SRC_KHR)?;
         transition_frame(
             &scope.objects.shared,
             command_buffer,
             image,
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            old_layout,
             vk::ImageLayout::PRESENT_SRC_KHR,
             vk::PipelineStageFlags::BOTTOM_OF_PIPE,
             vk::AccessFlags::empty(),
@@ -1310,6 +1398,33 @@ fn native_frame_image(frame: &FrameAttachment) -> Result<vk::Image, VulkanFailur
 
 #[cfg(not(any(windows, target_os = "android")))]
 fn native_frame_image(_: &FrameAttachment) -> Result<vk::Image, VulkanFailure> {
+    Err(VulkanFailure::Unsupported {
+        what: "a Vulkan presentation frame",
+        why: "this platform has no Vulkan presentation lowering",
+    })
+}
+
+#[cfg(any(windows, target_os = "android"))]
+fn native_frame_layout(
+    frame: &FrameAttachment,
+    new_layout: vk::ImageLayout,
+) -> Result<vk::ImageLayout, VulkanFailure> {
+    frame
+        .native()
+        .as_any()
+        .downcast_ref::<VulkanFrameAttachment>()
+        .map(|native| native.transition_layout(new_layout))
+        .ok_or(VulkanFailure::Unsupported {
+            what: "a Vulkan presentation frame",
+            why: "its native drawable belongs to another backend",
+        })
+}
+
+#[cfg(not(any(windows, target_os = "android")))]
+fn native_frame_layout(
+    _: &FrameAttachment,
+    _: vk::ImageLayout,
+) -> Result<vk::ImageLayout, VulkanFailure> {
     Err(VulkanFailure::Unsupported {
         what: "a Vulkan presentation frame",
         why: "this platform has no Vulkan presentation lowering",

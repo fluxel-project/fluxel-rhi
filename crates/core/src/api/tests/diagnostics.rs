@@ -46,7 +46,7 @@ fn event_about_an_object() -> DiagnosticEvent {
 /// `Device::status` rather than a severity a message may declare — a message that
 /// could declare the device dead would let a backend announce a state transition
 /// through a channel that is not a state machine. There is no `Trace`, because
-/// per-command tracing is the tooling surface's job.
+/// the RHI exposes no per-command tracing facility.
 #[test]
 fn there_are_three_severities_and_none_of_them_is_fatal() {
     let levels = [

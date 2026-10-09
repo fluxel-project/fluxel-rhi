@@ -355,6 +355,9 @@ impl VulkanProvider {
                     CStr::from_ptr(property.extension_name.as_ptr())
                         == ash::ext::descriptor_indexing::NAME
                 });
+            let maintenance3_extension_supported = extensions.iter().any(|property| unsafe {
+                CStr::from_ptr(property.extension_name.as_ptr()) == ash::khr::maintenance3::NAME
+            });
             let astc_hdr_extension_supported = extensions.iter().any(|property| unsafe {
                 CStr::from_ptr(property.extension_name.as_ptr())
                     == ash::ext::texture_compression_astc_hdr::NAME
@@ -414,6 +417,7 @@ impl VulkanProvider {
                 None
             };
             let runtime_sampled_descriptor_array = if descriptor_indexing_extension_supported
+                && maintenance3_extension_supported
                 && self.instance.physical_device_properties2
             {
                 let properties2 = ash::khr::get_physical_device_properties2::Instance::new(
@@ -664,6 +668,7 @@ impl VulkanProvider {
             device_extensions.push(ash::khr::multiview::NAME.as_ptr());
         }
         if candidate.capability_limits.runtime_sampled_descriptor_array {
+            device_extensions.push(ash::khr::maintenance3::NAME.as_ptr());
             device_extensions.push(ash::ext::descriptor_indexing::NAME.as_ptr());
         }
         if candidate.astc_hdr_supported {

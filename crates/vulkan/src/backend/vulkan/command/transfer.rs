@@ -69,6 +69,20 @@ pub(super) struct ImageLayoutState {
 }
 
 impl TransferRetention {
+    /// Merges ownership from another independently recorded native command
+    /// buffer into this submission batch.  Submission retires a whole batch at
+    /// one fence, so every portable owner must follow that same fence.
+    pub(super) fn append(&mut self, mut other: Self) {
+        self.buffers.append(&mut other.buffers);
+        self.textures.append(&mut other.textures);
+        self.staging.append(&mut other.staging);
+        self.readbacks.append(&mut other.readbacks);
+        self.compute_pipelines.append(&mut other.compute_pipelines);
+        self.bind_groups.append(&mut other.bind_groups);
+        self.query_sets.append(&mut other.query_sets);
+        self.raster.append(&mut other.raster);
+        self.merge_image_layouts(std::mem::take(&mut other.image_layouts));
+    }
     pub(super) fn readback_tickets(&self) -> Vec<ReadbackTicket> {
         self.readbacks
             .iter()
@@ -77,11 +91,30 @@ impl TransferRetention {
     }
 
     pub(super) fn seed_image_layouts(&mut self, layouts: &[ImageLayoutState]) {
-        self.image_layouts.extend_from_slice(layouts);
+        self.merge_image_layouts(layouts.iter().copied());
     }
 
     pub(super) fn image_layouts(&self) -> Vec<ImageLayoutState> {
         self.image_layouts.clone()
+    }
+
+    /// Applies a later command buffer's image states over this batch's known
+    /// state.  Two native buffers in one queue batch may both carry their
+    /// creation-time seed, so a raw append would leave stale duplicate entries
+    /// and cause the next transition to read the wrong prior layout.
+    fn merge_image_layouts(&mut self, layouts: impl IntoIterator<Item = ImageLayoutState>) {
+        for layout in layouts {
+            if let Some(existing) = self.image_layouts.iter_mut().find(|known| {
+                known.texture == layout.texture
+                    && known.aspect == layout.aspect
+                    && known.mip_level == layout.mip_level
+                    && known.array_layer == layout.array_layer
+            }) {
+                *existing = layout;
+            } else {
+                self.image_layouts.push(layout);
+            }
+        }
     }
 
     pub(super) fn retain_compute(&mut self, compute: super::compute::ComputeRetention) {
@@ -203,7 +236,7 @@ pub(super) fn lower_clear_texture(
                     base_layer: range.base_layer,
                     layer_count: range.layer_count,
                 },
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::GENERAL,
                 vk::PipelineStageFlags::TRANSFER,
                 vk::AccessFlags::TRANSFER_WRITE,
                 retention,
@@ -218,7 +251,7 @@ pub(super) fn lower_clear_texture(
             shared.device.cmd_clear_color_image(
                 command_buffer,
                 native.image(),
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::GENERAL,
                 &vk::ClearColorValue { uint32: [0; 4] },
                 &[native_range.aspect_mask(vk::ImageAspectFlags::COLOR)],
             );
@@ -248,7 +281,7 @@ pub(super) fn lower_clear_texture(
             shared.device.cmd_clear_depth_stencil_image(
                 command_buffer,
                 native.image(),
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::GENERAL,
                 &vk::ClearDepthStencilValue {
                     depth: 0.0,
                     stencil: 0,
@@ -355,10 +388,10 @@ pub(super) fn lower_readback(
     Ok(())
 }
 
-/// Lowers direct image transfer commands. Layouts are keyed by the portable
-/// texture `ObjectId` plus subresource and persist across accepted submissions;
-/// using a recycled `VkImage` handle as identity, or restarting every submit at
-/// `UNDEFINED`, would allow Vulkan to discard live texture contents.
+/// Lowers direct image transfer commands. Ordinary Vulkan textures are
+/// initialized to `GENERAL` at creation and remain there. The per-subresource
+/// tracker therefore records access/stage hazards, rather than imposing an
+/// optimal-layout ordering dependency between independently encoded buffers.
 ///
 /// This remains a transfer-only correctness tracker. Before raster or
 /// texture-backed compute is advertised it must become one backend-private
@@ -374,11 +407,7 @@ pub(super) fn lower_buffer_texture_copy(
 ) -> Result<(), VulkanFailure> {
     let buffer = native_buffer(&copy.buffer)?;
     let texture = native_texture(&copy.texture)?;
-    let layout = if to_texture {
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL
-    } else {
-        vk::ImageLayout::TRANSFER_SRC_OPTIMAL
-    };
+    let layout = vk::ImageLayout::GENERAL;
     transition_image(
         shared,
         command_buffer,
@@ -463,7 +492,7 @@ pub(super) fn lower_texture_copy(
         source.image(),
         &copy.src,
         copy.src_subresource,
-        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        vk::ImageLayout::GENERAL,
         vk::PipelineStageFlags::TRANSFER,
         vk::AccessFlags::TRANSFER_READ,
         retention,
@@ -474,7 +503,7 @@ pub(super) fn lower_texture_copy(
         destination.image(),
         &copy.dst,
         copy.dst_subresource,
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        vk::ImageLayout::GENERAL,
         vk::PipelineStageFlags::TRANSFER,
         vk::AccessFlags::TRANSFER_WRITE,
         retention,
@@ -489,9 +518,9 @@ pub(super) fn lower_texture_copy(
         shared.device.cmd_copy_image(
             command_buffer,
             source.image(),
-            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            vk::ImageLayout::GENERAL,
             destination.image(),
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::GENERAL,
             &[region],
         );
     }
@@ -518,7 +547,7 @@ pub(super) fn lower_texture_blit(
         source.image(),
         &blit.src,
         blit.src_subresource,
-        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        vk::ImageLayout::GENERAL,
         vk::PipelineStageFlags::TRANSFER,
         vk::AccessFlags::TRANSFER_READ,
         retention,
@@ -529,7 +558,7 @@ pub(super) fn lower_texture_blit(
         destination.image(),
         &blit.dst,
         blit.dst_subresource,
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        vk::ImageLayout::GENERAL,
         vk::PipelineStageFlags::TRANSFER,
         vk::AccessFlags::TRANSFER_WRITE,
         retention,
@@ -550,9 +579,9 @@ pub(super) fn lower_texture_blit(
         shared.device.cmd_blit_image(
             command_buffer,
             source.image(),
-            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            vk::ImageLayout::GENERAL,
             destination.image(),
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::GENERAL,
             std::slice::from_ref(&region),
             match blit.filter {
                 crate::api::command::BlitFilter::Nearest => vk::Filter::NEAREST,
@@ -624,7 +653,7 @@ pub(super) fn lower_texture_upload(
         texture.image(),
         &desc.dst,
         desc.subresource,
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        vk::ImageLayout::GENERAL,
         vk::PipelineStageFlags::TRANSFER,
         vk::AccessFlags::TRANSFER_WRITE,
         retention,
@@ -638,7 +667,7 @@ pub(super) fn lower_texture_upload(
             command_buffer,
             staging.buffer(),
             texture.image(),
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::GENERAL,
             &[region],
         );
     }
@@ -702,7 +731,7 @@ pub(super) fn lower_texture_readback(
         texture.image(),
         src,
         *subresource,
-        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        vk::ImageLayout::GENERAL,
         vk::PipelineStageFlags::TRANSFER,
         vk::AccessFlags::TRANSFER_READ,
         retention,
@@ -715,7 +744,7 @@ pub(super) fn lower_texture_readback(
         shared.device.cmd_copy_image_to_buffer(
             command_buffer,
             texture.image(),
-            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            vk::ImageLayout::GENERAL,
             staging.buffer(),
             &[region],
         );
@@ -1032,15 +1061,25 @@ pub(super) fn transition_image(
                 && known.mip_level == layers.mip_level
                 && known.array_layer == array_layer
         });
+        // `VulkanTexture::create_texture` completes one synchronous
+        // UNDEFINED->GENERAL initialization before exposing the texture. A
+        // recorder may therefore start without a queue snapshot and still use
+        // the correct old layout when it first touches a subresource.
         let old_layout = existing
             .as_ref()
-            .map_or(vk::ImageLayout::UNDEFINED, |known| known.layout);
+            .map_or(vk::ImageLayout::GENERAL, |known| known.layout);
+        // A direct encoder can be recorded before the command buffers that
+        // precede it on the queue are even finished. With no local entry, use
+        // a conservative queue-wide dependency rather than assuming TOP_OF_PIPE
+        // and losing visibility from such a predecessor. Once this encoder has
+        // touched the subresource, its narrower state is retained normally.
         let src_stage = existing
             .as_ref()
-            .map_or(vk::PipelineStageFlags::TOP_OF_PIPE, |known| known.stage);
-        let src_access = existing
-            .as_ref()
-            .map_or(vk::AccessFlags::empty(), |known| known.access);
+            .map_or(vk::PipelineStageFlags::ALL_COMMANDS, |known| known.stage);
+        let src_access = existing.as_ref().map_or(
+            vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+            |known| known.access,
+        );
         if old_layout == new_layout && src_stage == dst_stage && src_access == dst_access {
             continue;
         }

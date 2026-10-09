@@ -131,12 +131,233 @@ pub(crate) enum GlBindingResource {
 
 /// Platform-side lowering view. The GL driver receives this rather than the
 /// generic submission seam; command detail remains crate-private to this crate.
-pub(crate) struct GlSubmissionPlan<'a> {
-    pub(crate) batches: Vec<GlSubmissionBatch<'a>>,
+pub(crate) struct GlSubmissionPlan {
+    pub(crate) batches: Vec<GlSubmissionBatch>,
 }
-pub(crate) struct GlSubmissionBatch<'a> {
-    pub(crate) point: crate::api::submission::PlanPoint,
-    pub(crate) commands: Vec<&'a crate::api::command::record::RecordedCommand>,
+pub(crate) struct GlSubmissionBatch {
+    /// All GL commands have already reached the context owner while their
+    /// encoder was open. Submit only associates this completed native work
+    /// token with its portable plan point and establishes a completion fence.
+    pub(crate) point: Option<crate::api::submission::PlanPoint>,
+}
+
+/// One validated command delivered to the context owner at recorder time.
+///
+/// This intentionally carries only the semantic operands. GL has no native
+/// command list, so it applies every command while the caller still owns the
+/// open encoder state.
+pub(crate) enum GlTypedCommand<'a> {
+    RasterBegin {
+        begin: &'a crate::api::command::record::RasterBegin,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    RasterClear {
+        clear: &'a crate::api::command::RasterAttachmentClear,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    RasterExecuteSecondary {
+        work: crate::api::command::SecondaryRasterWork,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    RasterSetPipeline(&'a crate::api::pipeline::RasterPipeline),
+    RasterSetBindGroup {
+        index: crate::api::binding::BindGroupIndex,
+        group: &'a crate::api::binding::BindGroup,
+        dynamic_offsets: &'a [u32],
+    },
+    RasterSetVertexBuffer {
+        slot: u32,
+        binding: &'a crate::api::resource::buffer::BufferBinding,
+    },
+    RasterSetIndexBuffer {
+        binding: &'a crate::api::resource::buffer::BufferBinding,
+        format: crate::api::command::IndexFormat,
+    },
+    RasterSetViewport(crate::api::command::geometry::Viewport),
+    RasterSetScissor(crate::api::command::geometry::Rect),
+    RasterSetBlendConstant(crate::api::command::geometry::Color),
+    RasterSetStencilReference(u32),
+    RasterSetImmediates(&'a crate::api::command::record::ImmediateWrite),
+    RasterDraw {
+        vertices: core::ops::Range<u32>,
+        instances: core::ops::Range<u32>,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    RasterDrawIndexed {
+        indices: core::ops::Range<u32>,
+        base_vertex: i32,
+        instances: core::ops::Range<u32>,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    RasterDrawIndirect {
+        arguments: &'a crate::api::resource::Buffer,
+        offset: u64,
+        draw_count: u32,
+        stride: u32,
+        count: Option<(&'a crate::api::resource::Buffer, u64, u32)>,
+        indexed: bool,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    RasterBeginQuery {
+        set: &'a crate::api::query::QuerySet,
+        index: u32,
+    },
+    RasterEndQuery {
+        set: &'a crate::api::query::QuerySet,
+        index: u32,
+    },
+    RasterWriteTimestamp {
+        set: &'a crate::api::query::QuerySet,
+        index: u32,
+    },
+    RasterPushDebugGroup(&'a str),
+    RasterPopDebugGroup,
+    RasterInsertDebugMarker(&'a str),
+    RasterEnd,
+    CopyExternalImageToTexture {
+        copy: &'a crate::api::external::ExternalImageCopyDescriptor,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    ClearBuffer {
+        buffer: &'a crate::api::resource::Buffer,
+        range: crate::api::resource::BufferRange,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    ClearTexture {
+        texture: &'a crate::api::resource::Texture,
+        subresources: crate::api::resource::subresource::TextureSubresourceRange,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    CopyBuffer {
+        copy: &'a crate::api::command::copy::BufferCopy,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    CopyBufferToTexture {
+        copy: &'a crate::api::command::copy::BufferTextureCopy,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    CopyTextureToBuffer {
+        copy: &'a crate::api::command::copy::BufferTextureCopy,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    CopyTexture {
+        copy: &'a crate::api::command::copy::TextureCopy,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    ResolveTexture {
+        resolve: &'a crate::api::command::copy::TextureResolve,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    BlitTexture {
+        blit: &'a crate::api::command::copy::TextureBlit,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    Upload {
+        upload: &'a crate::api::resource::transfer::UploadJob,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    Readback {
+        ticket: &'a crate::api::resource::transfer::ReadbackTicket,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    EncoderWriteTimestamp {
+        set: &'a crate::api::query::QuerySet,
+        index: u32,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    ResolveQuerySet {
+        set: &'a crate::api::query::QuerySet,
+        first_query: u32,
+        query_count: u32,
+        destination: &'a crate::api::resource::Buffer,
+        destination_offset: u64,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    EncoderPushDebugGroup(&'a str),
+    EncoderPopDebugGroup,
+    EncoderInsertDebugMarker(&'a str),
+    ComputeBegin(&'a crate::api::command::record::ComputeBegin),
+    ComputeSetPipeline(&'a crate::api::pipeline::ComputePipeline),
+    ComputeSetBindGroup {
+        index: crate::api::binding::BindGroupIndex,
+        group: &'a crate::api::binding::BindGroup,
+        dynamic_offsets: &'a [u32],
+    },
+    ComputeSetImmediates(&'a crate::api::command::record::ImmediateWrite),
+    ComputeDispatch {
+        x: u32,
+        y: u32,
+        z: u32,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    ComputeDispatchIndirect {
+        arguments: &'a crate::api::resource::Buffer,
+        offset: u64,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    ComputeBeginQuery {
+        set: &'a crate::api::query::QuerySet,
+        index: u32,
+    },
+    ComputeEndQuery {
+        set: &'a crate::api::query::QuerySet,
+        index: u32,
+    },
+    ComputeWriteTimestamp {
+        set: &'a crate::api::query::QuerySet,
+        index: u32,
+    },
+    ComputePushDebugGroup(&'a str),
+    ComputePopDebugGroup,
+    ComputeInsertDebugMarker(&'a str),
+    ComputeEnd,
+    RasterSetMeshPipeline(&'a crate::api::pipeline::MeshPipeline),
+    RasterDispatchMesh {
+        x: u32,
+        y: u32,
+        z: u32,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    RasterDispatchMeshIndirect {
+        arguments: &'a crate::api::resource::Buffer,
+        offset: u64,
+        count: Option<(&'a crate::api::resource::Buffer, u64, u32)>,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    AccelerationBuild {
+        destination: &'a crate::api::resource::AccelerationStructure,
+        scratch: &'a crate::api::resource::Buffer,
+        mode: crate::api::resource::AccelerationStructureBuildMode,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    AccelerationCopy {
+        source: &'a crate::api::resource::AccelerationStructure,
+        destination: &'a crate::api::resource::AccelerationStructure,
+        mode: crate::api::resource::AccelerationStructureCopyMode,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    AccelerationWriteCompactedSize {
+        source: &'a crate::api::resource::AccelerationStructure,
+        destination: &'a crate::api::resource::Buffer,
+        destination_offset: u64,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    RayBegin(&'a crate::api::command::RayTracingScopeDescriptor),
+    RaySetPipeline(&'a crate::api::pipeline::RayTracingPipeline),
+    RaySetBindGroup {
+        index: crate::api::binding::BindGroupIndex,
+        group: &'a crate::api::binding::BindGroup,
+        dynamic_offsets: &'a [u32],
+    },
+    RaySetImmediates(&'a crate::api::command::record::ImmediateWrite),
+    RayDispatch {
+        table: &'a crate::api::command::RayTracingShaderTable,
+        width: u32,
+        height: u32,
+        depth: u32,
+        uses: &'a [crate::api::command::ResourceUse],
+    },
+    RayEnd,
 }
 
 /// Backend-private one-way notification from a context owner to the v13
@@ -216,9 +437,13 @@ pub(crate) trait GlExecutionDriver: Send + Sync + 'static {
     }
     fn submit(
         &self,
-        _: GlSubmissionPlan<'_>,
+        _: GlSubmissionPlan,
     ) -> RhiResult<crate::api::submission::backend::SubmissionOutcome> {
         unsupported("submit")
+    }
+
+    fn encode_typed(&self, _: GlTypedCommand<'_>) -> RhiResult<()> {
+        unsupported("typed command encoding")
     }
     fn completion(&self, serial: u64) -> CompletionState {
         CompletionState::Failed(CompletionFailure::new(format!(
@@ -519,6 +744,388 @@ pub(crate) struct GlDevice {
     driver: Arc<dyn GlExecutionDriver>,
     liveness: Arc<Mutex<Liveness>>,
     loss_sink: Arc<dyn GlLossSink>,
+    immediate_order: Arc<Mutex<GlImmediateOrder>>,
+}
+
+/// GL calls are committed while recording.  One open encoder at a time keeps
+/// that physical order representable by the later portable submission plan.
+struct GlImmediateOrder {
+    open: bool,
+    next_encode: u64,
+    next_submit: u64,
+}
+
+/// GL's finished command-buffer token.
+///
+/// OpenGL executes against the current context while a recorder is being
+/// encoded. Submit therefore only advances the completion token;
+/// this token only proves that those owner-thread calls completed and makes the
+/// resulting work single-submit like every other backend command buffer.
+struct GlImmediateCommandBuffer {
+    available: Mutex<bool>,
+    order: u64,
+}
+
+impl GlImmediateCommandBuffer {
+    fn new(order: u64) -> Self {
+        Self {
+            available: Mutex::new(true),
+            order,
+        }
+    }
+
+    fn take(&self) -> RhiResult<()> {
+        let mut available = self
+            .available
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if !*available {
+            return Err(RhiError::new(
+                RhiErrorKind::InvalidUsage,
+                "an immediate GL command buffer may be submitted only once",
+            )
+            .at("GlDevice::submit"));
+        }
+        *available = false;
+        Ok(())
+    }
+}
+
+impl crate::api::command::backend::CommandBufferBackend for GlImmediateCommandBuffer {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Bridges the portable recorder to GL's context-affine immediate stream.
+/// The driver synchronously marshals every `encode` call to the context owner;
+/// no command payload is retained by this encoder or by the finished token.
+struct GlImmediateEncoder {
+    driver: Arc<dyn GlExecutionDriver>,
+    order: u64,
+    state: Arc<Mutex<GlImmediateOrder>>,
+}
+
+impl Drop for GlImmediateEncoder {
+    fn drop(&mut self) {
+        // `finish` normally clears this lease.  A poisoned or abandoned
+        // recorder must not permanently prevent a later encoder from using
+        // the immediate context.
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        state.open = false;
+    }
+}
+
+impl crate::api::command::backend::CommandEncoderBackend for GlImmediateEncoder {
+    fn raster_begin(
+        &mut self,
+        begin: &crate::api::command::record::RasterBegin,
+        uses: &[crate::api::command::ResourceUse],
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::RasterBegin { begin, uses })
+    }
+    fn raster_clear(
+        &mut self,
+        clear: &crate::api::command::RasterAttachmentClear,
+        uses: &[crate::api::command::ResourceUse],
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::RasterClear { clear, uses })
+    }
+    fn raster_execute_secondary(
+        &mut self,
+        work: crate::api::command::SecondaryRasterWork,
+        uses: &[crate::api::command::ResourceUse],
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::RasterExecuteSecondary { work, uses })
+    }
+    fn raster_set_pipeline(
+        &mut self,
+        pipeline: &crate::api::pipeline::RasterPipeline,
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::RasterSetPipeline(pipeline))
+    }
+    fn raster_set_bind_group(
+        &mut self,
+        index: crate::api::binding::BindGroupIndex,
+        group: &crate::api::binding::BindGroup,
+        dynamic_offsets: &[u32],
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::RasterSetBindGroup {
+                index,
+                group,
+                dynamic_offsets,
+            })
+    }
+    fn raster_set_vertex_buffer(
+        &mut self,
+        slot: u32,
+        binding: &crate::api::resource::buffer::BufferBinding,
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::RasterSetVertexBuffer { slot, binding })
+    }
+    fn raster_set_index_buffer(
+        &mut self,
+        binding: &crate::api::resource::buffer::BufferBinding,
+        format: crate::api::command::IndexFormat,
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::RasterSetIndexBuffer { binding, format })
+    }
+    fn raster_set_viewport(
+        &mut self,
+        value: crate::api::command::geometry::Viewport,
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::RasterSetViewport(value))
+    }
+    fn raster_set_scissor(&mut self, value: crate::api::command::geometry::Rect) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::RasterSetScissor(value))
+    }
+    fn raster_set_blend_constant(
+        &mut self,
+        value: crate::api::command::geometry::Color,
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::RasterSetBlendConstant(value))
+    }
+    fn raster_set_stencil_reference(&mut self, value: u32) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::RasterSetStencilReference(value))
+    }
+    fn raster_set_immediates(
+        &mut self,
+        write: &crate::api::command::record::ImmediateWrite,
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::RasterSetImmediates(write))
+    }
+    fn raster_draw(
+        &mut self,
+        vertices: core::ops::Range<u32>,
+        instances: core::ops::Range<u32>,
+        uses: &[crate::api::command::ResourceUse],
+    ) -> RhiResult<()> {
+        self.driver.encode_typed(GlTypedCommand::RasterDraw {
+            vertices,
+            instances,
+            uses,
+        })
+    }
+    fn raster_draw_indexed(
+        &mut self,
+        indices: core::ops::Range<u32>,
+        base_vertex: i32,
+        instances: core::ops::Range<u32>,
+        uses: &[crate::api::command::ResourceUse],
+    ) -> RhiResult<()> {
+        self.driver.encode_typed(GlTypedCommand::RasterDrawIndexed {
+            indices,
+            base_vertex,
+            instances,
+            uses,
+        })
+    }
+    fn raster_draw_indirect(
+        &mut self,
+        arguments: &crate::api::resource::Buffer,
+        arguments_offset: u64,
+        draw_count: u32,
+        stride: u32,
+        count: Option<(&crate::api::resource::Buffer, u64, u32)>,
+        indexed: bool,
+        uses: &[crate::api::command::ResourceUse],
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::RasterDrawIndirect {
+                arguments,
+                offset: arguments_offset,
+                draw_count,
+                stride,
+                count,
+                indexed,
+                uses,
+            })
+    }
+    fn raster_begin_query(
+        &mut self,
+        set: &crate::api::query::QuerySet,
+        index: u32,
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::RasterBeginQuery { set, index })
+    }
+    fn raster_end_query(&mut self, set: &crate::api::query::QuerySet, index: u32) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::RasterEndQuery { set, index })
+    }
+    fn raster_write_timestamp(
+        &mut self,
+        set: &crate::api::query::QuerySet,
+        index: u32,
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::RasterWriteTimestamp { set, index })
+    }
+    fn raster_push_debug_group(&mut self, label: &str) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::RasterPushDebugGroup(label))
+    }
+    fn raster_pop_debug_group(&mut self) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::RasterPopDebugGroup)
+    }
+    fn raster_insert_debug_marker(&mut self, label: &str) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::RasterInsertDebugMarker(label))
+    }
+    fn raster_end(&mut self) -> RhiResult<()> {
+        self.driver.encode_typed(GlTypedCommand::RasterEnd)
+    }
+
+    fn copy_external_image_to_texture(
+        &mut self,
+        copy: &crate::api::external::ExternalImageCopyDescriptor,
+        uses: &[crate::api::command::ResourceUse],
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::CopyExternalImageToTexture { copy, uses })
+    }
+    fn clear_buffer(
+        &mut self,
+        buffer: &crate::api::resource::Buffer,
+        range: crate::api::resource::BufferRange,
+        uses: &[crate::api::command::ResourceUse],
+    ) -> RhiResult<()> {
+        self.driver.encode_typed(GlTypedCommand::ClearBuffer {
+            buffer,
+            range,
+            uses,
+        })
+    }
+    fn clear_texture(
+        &mut self,
+        texture: &crate::api::resource::Texture,
+        subresources: crate::api::resource::subresource::TextureSubresourceRange,
+        uses: &[crate::api::command::ResourceUse],
+    ) -> RhiResult<()> {
+        self.driver.encode_typed(GlTypedCommand::ClearTexture {
+            texture,
+            subresources,
+            uses,
+        })
+    }
+    fn copy_buffer(
+        &mut self,
+        copy: &crate::api::command::copy::BufferCopy,
+        uses: &[crate::api::command::ResourceUse],
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::CopyBuffer { copy, uses })
+    }
+    fn copy_buffer_to_texture(
+        &mut self,
+        copy: &crate::api::command::copy::BufferTextureCopy,
+        uses: &[crate::api::command::ResourceUse],
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::CopyBufferToTexture { copy, uses })
+    }
+    fn copy_texture_to_buffer(
+        &mut self,
+        copy: &crate::api::command::copy::BufferTextureCopy,
+        uses: &[crate::api::command::ResourceUse],
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::CopyTextureToBuffer { copy, uses })
+    }
+    fn copy_texture(
+        &mut self,
+        copy: &crate::api::command::copy::TextureCopy,
+        uses: &[crate::api::command::ResourceUse],
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::CopyTexture { copy, uses })
+    }
+    fn resolve_texture(
+        &mut self,
+        resolve: &crate::api::command::copy::TextureResolve,
+        uses: &[crate::api::command::ResourceUse],
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::ResolveTexture { resolve, uses })
+    }
+    fn blit_texture(
+        &mut self,
+        blit: &crate::api::command::copy::TextureBlit,
+        uses: &[crate::api::command::ResourceUse],
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::BlitTexture { blit, uses })
+    }
+    fn encode_upload(
+        &mut self,
+        upload: &crate::api::resource::transfer::UploadJob,
+        uses: &[crate::api::command::ResourceUse],
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::Upload { upload, uses })
+    }
+    fn encode_readback(
+        &mut self,
+        ticket: &crate::api::resource::transfer::ReadbackTicket,
+        uses: &[crate::api::command::ResourceUse],
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::Readback { ticket, uses })
+    }
+    fn encoder_write_timestamp(
+        &mut self,
+        set: &crate::api::query::QuerySet,
+        index: u32,
+        uses: &[crate::api::command::ResourceUse],
+    ) -> RhiResult<()> {
+        self.driver
+            .encode_typed(GlTypedCommand::EncoderWriteTimestamp { set, index, uses })
+    }
+    fn resolve_query_set(
+        &mut self,
+        set: &crate::api::query::QuerySet,
+        first_query: u32,
+        query_count: u32,
+        destination: &crate::api::resource::Buffer,
+        destination_offset: u64,
+        uses: &[crate::api::command::ResourceUse],
+    ) -> RhiResult<()> {
+        self.driver.encode_typed(GlTypedCommand::ResolveQuerySet {
+            set,
+            first_query,
+            query_count,
+            destination,
+            destination_offset,
+            uses,
+        })
+    }
+
+    fn finish(
+        self: Box<Self>,
+    ) -> RhiResult<Box<dyn crate::api::command::backend::CommandBufferBackend>> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        state.open = false;
+        Ok(Box::new(GlImmediateCommandBuffer::new(self.order)))
+    }
 }
 
 impl GlDevice {
@@ -533,6 +1140,11 @@ impl GlDevice {
             info: None,
             waiters: Vec::new(),
         }));
+        let immediate_order = Arc::new(Mutex::new(GlImmediateOrder {
+            open: false,
+            next_encode: 1,
+            next_submit: 1,
+        }));
         let loss_sink: Arc<dyn GlLossSink> = Arc::new(GlLossAuthority {
             liveness: Arc::clone(&liveness),
         });
@@ -545,6 +1157,7 @@ impl GlDevice {
             driver,
             liveness,
             loss_sink,
+            immediate_order,
         }
     }
 
@@ -716,23 +1329,61 @@ impl GlDevice {
         }).collect::<RhiResult<_>>()?;
         Ok(GlBindGroupPacket { entries })
     }
-    fn submission_plan<'a>(
-        request: &'a crate::api::submission::backend::SubmissionRequest<'a>,
-    ) -> GlSubmissionPlan<'a> {
-        GlSubmissionPlan {
-            batches: request
-                .batches
-                .iter()
-                .map(|batch| GlSubmissionBatch {
-                    point: batch.point,
-                    commands: batch
-                        .work
-                        .iter()
-                        .flat_map(|work| work.commands().iter())
-                        .collect(),
-                })
-                .collect(),
+    fn submission_plan(
+        &self,
+        request: &crate::api::submission::backend::SubmissionRequest<'_>,
+    ) -> RhiResult<GlSubmissionPlan> {
+        let mut batches = Vec::with_capacity(request.batches.len());
+        for batch in request.batches {
+            // Native GL work has already reached the context owner.
+            // Consume only its completion token here; lowering a
+            // portable command sequence at submit would execute every
+            // draw/copy/dispatch twice.
+            let all_immediate = batch.work.iter().all(|work| {
+                work.native()
+                    .as_any()
+                    .downcast_ref::<GlImmediateCommandBuffer>()
+                    .is_some()
+            });
+            if all_immediate {
+                let mut order = self
+                    .immediate_order
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner());
+                for work in &batch.work {
+                    let token = work
+                        .native()
+                        .as_any()
+                        .downcast_ref::<GlImmediateCommandBuffer>()
+                        .expect("immediate GL work was type-checked above");
+                    if token.order != order.next_submit {
+                        return Err(RhiError::new(
+                            RhiErrorKind::InvalidUsage,
+                            "GL immediate work must be submitted in the order it was encoded",
+                        )
+                        .at("GlDevice::submit"));
+                    }
+                    token.take()?;
+                    order.next_submit = order.next_submit.checked_add(1).ok_or_else(|| {
+                        RhiError::new(
+                            RhiErrorKind::BackendFailure,
+                            "GL command order space exhausted",
+                        )
+                        .at("GlDevice::submit")
+                    })?;
+                }
+            } else {
+                return Err(RhiError::new(
+                    RhiErrorKind::InvalidUsage,
+                    "GL submission accepts only immediate native command buffers",
+                )
+                .at("GlDevice::submit"));
+            }
+            batches.push(GlSubmissionBatch {
+                point: Some(batch.point),
+            });
         }
+        Ok(GlSubmissionPlan { batches })
     }
 }
 
@@ -740,6 +1391,53 @@ impl DeviceBackend for GlDevice {
     fn as_any(&self) -> &dyn Any {
         self
     }
+
+    fn create_command_encoder(
+        &self,
+        _: &crate::api::command::RecorderDescriptor,
+    ) -> RhiResult<Box<dyn crate::api::command::backend::CommandEncoderBackend>> {
+        self.active("GlDevice::create_command_encoder")?;
+        let order = {
+            let mut state = self
+                .immediate_order
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            if state.open {
+                return Err(RhiError::new(
+                    RhiErrorKind::InvalidUsage,
+                    "GL immediate encoding permits only one open command recorder per device",
+                )
+                .at("GlDevice::create_command_encoder"));
+            }
+            state.open = true;
+            let order = state.next_encode;
+            state.next_encode = state.next_encode.checked_add(1).ok_or_else(|| {
+                RhiError::new(
+                    RhiErrorKind::BackendFailure,
+                    "GL command order space exhausted",
+                )
+                .at("GlDevice::create_command_encoder")
+            })?;
+            order
+        };
+        Ok(Box::new(GlImmediateEncoder {
+            driver: Arc::clone(&self.driver),
+            order,
+            state: Arc::clone(&self.immediate_order),
+        }))
+    }
+
+    fn create_secondary_raster_encoder(
+        &self,
+        _: &crate::api::command::RecorderDescriptor,
+    ) -> RhiResult<Box<dyn crate::api::command::backend::CommandEncoderBackend>> {
+        Err(RhiError::new(
+            RhiErrorKind::Unsupported,
+            "GL does not expose secondary raster command buffers",
+        )
+        .at("GlDevice::create_secondary_raster_encoder"))
+    }
+
     fn backend_kind(&self) -> BackendKind {
         self.backend
     }
@@ -994,10 +1692,18 @@ impl DeviceBackend for GlDevice {
         request: &crate::api::submission::backend::SubmissionRequest<'_>,
     ) -> RhiResult<crate::api::submission::backend::SubmissionOutcome> {
         self.active("GlDevice::submit")?;
-        self.observe(
-            self.driver.submit(Self::submission_plan(request)),
+        let outcome = self.observe(
+            self.driver.submit(self.submission_plan(request)?),
             "GlDevice::submit",
-        )
+        )?;
+        // The driver has now accepted the ordered GL stream and published its
+        // completion fence. Presentation is consequently post-acceptance: a
+        // browser/WGL failure must complete the receipt terminally through the
+        // attachment rather than turn this accepted submission into `Err`.
+        for present in request.presents {
+            present.attachment.native().present(present.receipt);
+        }
+        Ok(outcome)
     }
     fn completion(&self, serial: u64) -> CompletionState {
         match self.loss_info() {

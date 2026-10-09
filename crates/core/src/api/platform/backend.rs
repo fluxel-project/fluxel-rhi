@@ -60,8 +60,12 @@ pub trait ProviderBackend: Send + Sync + 'static {
     /// Raw handles cross this crate-private seam only; the public target keeps
     /// an opaque identity and the backend retains the platform facts privately.
     #[cfg(any(
-        all(windows, any(feature = "dx12", feature = "vulkan")),
-        all(target_os = "android", feature = "vulkan")
+        all(
+            windows,
+            any(feature = "dx12", feature = "vulkan", feature = "native-gl-wgl")
+        ),
+        all(target_os = "android", feature = "vulkan"),
+        all(target_vendor = "apple", feature = "metal")
     ))]
     fn register_presentation_target(
         &self,
@@ -76,13 +80,17 @@ pub trait ProviderBackend: Send + Sync + 'static {
 
     /// Retires a presentation target created by this provider.
     #[cfg(any(
-        all(windows, any(feature = "dx12", feature = "vulkan")),
-        all(target_os = "android", feature = "vulkan")
+        all(
+            windows,
+            any(feature = "dx12", feature = "vulkan", feature = "native-gl-wgl")
+        ),
+        all(target_os = "android", feature = "vulkan"),
+        all(target_vendor = "apple", feature = "metal")
     ))]
     fn retire_presentation_target(&self, _target: &PresentationTarget) -> RhiResult<()> {
         Err(crate::api::error::RhiError::new(
             crate::api::error::RhiErrorKind::Unsupported,
-            "this provider cannot retire a Windows presentation target",
+            "this provider cannot retire a native presentation target",
         )
         .at("ProviderBackend::retire_presentation_target"))
     }
@@ -225,6 +233,18 @@ pub fn ready_creation_request<T: ?Sized + Send + Sync + 'static>(
 /// here.
 pub trait DeviceBackend: Send + Sync + 'static {
     fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Opens one native command encoder for a portable recorder.
+    fn create_command_encoder(
+        &self,
+        _descriptor: &crate::api::command::RecorderDescriptor,
+    ) -> crate::api::error::RhiResult<Box<dyn crate::api::command::backend::CommandEncoderBackend>>;
+
+    /// Opens a draw-only native encoder that inherits a parent raster pass.
+    fn create_secondary_raster_encoder(
+        &self,
+        _descriptor: &crate::api::command::RecorderDescriptor,
+    ) -> crate::api::error::RhiResult<Box<dyn crate::api::command::backend::CommandEncoderBackend>>;
     /// The backend family this device came from.
     ///
     /// Diagnostics, selection provenance, and tooling UI only. Section 6.3 is
@@ -285,9 +305,8 @@ pub trait DeviceBackend: Send + Sync + 'static {
 
     /// This device's process-local object ID.
     ///
-    /// Section 3 gives every RHI object an [`ObjectId`] distinct from any native
-    /// handle, and section 7.1 requires tooling to describe what it observes by
-    /// that ID rather than by a pointer.
+    /// Every RHI object has an [`ObjectId`] distinct from any native handle, so
+    /// diagnostics can identify it without exposing a pointer.
     fn object_id(&self) -> ObjectId;
 
     /// Whether the device is still usable.
@@ -584,22 +603,6 @@ pub trait DeviceBackend: Send + Sync + 'static {
         Err(crate::api::error::RhiError::new(
             crate::api::error::RhiErrorKind::Unsupported,
             "this backend does not implement external-memory texture import",
-        ))
-    }
-
-    /// Starts a backend-native graphics debugger capture.
-    fn begin_native_graphics_capture(&self) -> RhiResult<()> {
-        Err(crate::api::error::RhiError::new(
-            crate::api::error::RhiErrorKind::Unsupported,
-            "this backend has no native graphics debugger integration",
-        ))
-    }
-
-    /// Ends a backend-native graphics debugger capture.
-    fn end_native_graphics_capture(&self) -> RhiResult<()> {
-        Err(crate::api::error::RhiError::new(
-            crate::api::error::RhiErrorKind::Unsupported,
-            "this backend has no native graphics debugger integration",
         ))
     }
 

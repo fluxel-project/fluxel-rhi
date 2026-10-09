@@ -24,7 +24,7 @@
 //! shader. A route may explicitly report its blit execution method; otherwise a
 //! caller that needs a particular implementation queries the route and
 //! selects another explicit graph pass or command route. The payoff is that
-//! capture, statistics, and the performance model describe what was actually
+//! diagnostics, statistics, and the performance model describe what was actually
 //! executed instead of what was nominally requested — which is exactly what a
 //! silent fallback would corrupt.
 //!

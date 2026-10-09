@@ -527,7 +527,7 @@ impl Texture {
 
     /// The descriptor this texture was created from.
     ///
-    /// Section 18.8 requires a descriptor to be recoverable for capture, and
+    /// Section 18.8 requires a descriptor to be recoverable for diagnostics, and
     /// §15.2's `whole` constructor reads it to build a view covering everything.
     pub fn descriptor(&self) -> &TextureDescriptor {
         &self.inner.descriptor

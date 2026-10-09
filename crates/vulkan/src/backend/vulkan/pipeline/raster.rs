@@ -218,7 +218,7 @@ fn create_render_pass(
                 ));
                 color_references.push(vk::AttachmentReference {
                     attachment: index,
-                    layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    layout: vk::ImageLayout::GENERAL,
                 });
             }
             None => color_references.push(vk::AttachmentReference {
@@ -240,7 +240,7 @@ fn create_render_pass(
             ));
             Ok(vk::AttachmentReference {
                 attachment: index,
-                layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                layout: vk::ImageLayout::GENERAL,
             })
         })
         .transpose()?;
@@ -507,8 +507,8 @@ fn color_attachment(
         .store_op(vk::AttachmentStoreOp::STORE)
         .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
         .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-        .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-        .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+        .initial_layout(vk::ImageLayout::GENERAL)
+        .final_layout(vk::ImageLayout::GENERAL)
 }
 
 fn depth_attachment(
@@ -522,8 +522,8 @@ fn depth_attachment(
         .store_op(vk::AttachmentStoreOp::STORE)
         .stencil_load_op(vk::AttachmentLoadOp::LOAD)
         .stencil_store_op(vk::AttachmentStoreOp::STORE)
-        .initial_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-        .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+        .initial_layout(vk::ImageLayout::GENERAL)
+        .final_layout(vk::ImageLayout::GENERAL)
 }
 
 fn shader_module<'a>(

@@ -725,7 +725,7 @@ impl Drop for AcquiredFrame {
     /// bookkeeping precisely because they run where an error cannot be returned: this
     /// `Drop` may run during unwinding, where a panic aborts the process instead of
     /// propagating, so the parts whose machinery does not exist yet are reported as
-    /// missing rather than reached for — the same rule `ToolingSubscription`'s empty
+    /// missing rather than reached for — the same rule an empty lease set follows
     /// `Drop` and `RasterScope`'s poisoning `Drop` are written to.
     fn drop(&mut self) {
         match self.state {

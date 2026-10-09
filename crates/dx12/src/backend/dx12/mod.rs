@@ -16,7 +16,7 @@
 //! `ID3D12Device`, `ID3D12Resource`, descriptor heaps, root signatures, command
 //! allocators, fences, `D3D12_RESOURCE_STATES`, and every memory offset live
 //! behind this boundary. None of them is reachable from a public type, a public
-//! error, a diagnostic, or a tooling event: v13's public model is
+//! error, a diagnostic, or a public observation: v13's model is
 //! device identity, and a native handle in it would make a
 //! second, DX12-shaped architecture for the next platform to copy.
 //!

@@ -105,7 +105,7 @@ pub(super) fn create_shader(
 fn native_error(operation: &'static str, _error: &NSError) -> RhiError {
     // NSError text is intentionally not copied into the portable error: its
     // locale and lifetime are platform details. Diagnostics may attach it on
-    // macOS, while this stable message remains useful in captures and tests.
+    // macOS, while this stable message remains useful in diagnostics and tests.
     RhiError::new(RhiErrorKind::BackendFailure, operation).at("MetalDevice::create_shader")
 }
 

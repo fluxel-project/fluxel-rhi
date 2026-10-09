@@ -15,21 +15,22 @@
 //! exists for that reason.
 
 use windows::Win32::Graphics::Direct3D12::{
-    ID3D12CommandAllocator, ID3D12CommandSignature, ID3D12DescriptorHeap, ID3D12Device,
-    ID3D12GraphicsCommandList, ID3D12Resource, D3D12_BOX, D3D12_CLEAR_FLAGS,
-    D3D12_CLEAR_FLAG_DEPTH, D3D12_CLEAR_FLAG_STENCIL, D3D12_CPU_DESCRIPTOR_HANDLE,
-    D3D12_DEPTH_STENCIL_VIEW_DESC, D3D12_DEPTH_STENCIL_VIEW_DESC_0, D3D12_DESCRIPTOR_HEAP_DESC,
-    D3D12_DESCRIPTOR_HEAP_FLAG_NONE, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, D3D12_DSV_DIMENSION_TEXTURE2D,
-    D3D12_DSV_DIMENSION_TEXTURE2DARRAY, D3D12_DSV_FLAG_NONE, D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
-    D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE,
+    D3D12_BOX, D3D12_CLEAR_FLAG_DEPTH, D3D12_CLEAR_FLAG_STENCIL, D3D12_CLEAR_FLAGS,
+    D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DEPTH_STENCIL_VIEW_DESC, D3D12_DEPTH_STENCIL_VIEW_DESC_0,
+    D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+    D3D12_DSV_DIMENSION_TEXTURE2D, D3D12_DSV_DIMENSION_TEXTURE2DARRAY, D3D12_DSV_FLAG_NONE,
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT, D3D12_RESOURCE_STATE_COMMON,
+    D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE,
     D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PRESENT, D3D12_TEX2D_ARRAY_DSV,
     D3D12_TEX2D_DSV, D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
     D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+    ID3D12CommandAllocator, ID3D12CommandSignature, ID3D12DescriptorHeap, ID3D12Device,
+    ID3D12GraphicsCommandList, ID3D12Resource,
 };
 
 use crate::api::binding::BindGroup;
-use crate::api::command::copy::{BufferTextureCopy, TextureCopy};
 use crate::api::command::ResourceUse;
+use crate::api::command::copy::{BufferTextureCopy, TextureCopy};
 use crate::api::format::{block_extent, logical_bytes_per_block};
 use crate::api::pipeline::{ComputePipeline, RasterPipeline};
 use crate::api::presentation::FrameAttachment;
@@ -38,7 +39,7 @@ use crate::api::resource::buffer::Buffer;
 use crate::api::resource::subresource::{
     TextureAspect, TextureAspects, TextureSubresourceLayers, TextureSubresourceRange,
 };
-use crate::api::resource::texture::{mip_extent, Texture, TextureDimension};
+use crate::api::resource::texture::{Texture, TextureDimension, mip_extent};
 use crate::api::resource::transfer::{
     ReadbackRequest, ReadbackStatus, ReadbackTexelLayout, ReadbackTicket, UploadDescriptor,
     UploadJob,
@@ -47,11 +48,11 @@ use crate::api::resource::view::TextureView;
 use crate::backend::dx12::ffi;
 use crate::backend::dx12::platform::facts::dxgi_format;
 use crate::backend::dx12::presentation::Dx12FrameAttachment;
-use crate::backend::dx12::resource::{create_staging, readback_bytes, Dx12Buffer, StagingHeap};
+use crate::backend::dx12::resource::{Dx12Buffer, StagingHeap, create_staging, readback_bytes};
 
 use super::transition::Transitions;
 use super::{dx12_buffer, dx12_texture};
-use crate::backend::dx12::failure::{ref_native, Dx12Failure};
+use crate::backend::dx12::failure::{Dx12Failure, ref_native};
 
 /// A batch that has been committed, and the host-visible memory its command list
 /// reads or writes.
@@ -110,6 +111,11 @@ pub(super) struct CommittedBatch {
     /// may be executed asynchronously by the direct list, so both COM objects
     /// remain live until this batch's fence reaches `serial`.
     pub(super) secondary_bundles: Vec<(ID3D12CommandAllocator, ID3D12GraphicsCommandList)>,
+    /// The primary-list allocator and list for immediate encoders.  D3D12 keeps
+    /// the list reference after `ExecuteCommandLists`, but its allocator owns
+    /// the command memory and therefore must remain live until this batch's
+    /// fence completes.
+    pub(super) primary_lists: Vec<(ID3D12CommandAllocator, ID3D12GraphicsCommandList)>,
     /// Every portable resource use named by the accepted work.
     ///
     /// D3D12 command lists do not make the application's portable resource
@@ -125,6 +131,61 @@ pub(super) struct CommittedBatch {
     /// pointers: it covers buffers, textures, query sets and future resource
     /// categories with their normal Device identity/lifetime semantics.
     pub(super) resource_uses: Vec<ResourceUse>,
+}
+
+impl CommittedBatch {
+    /// Starts the keep-alive collection for one command list.  Its completion
+    /// serial is assigned only when the list is accepted by the queue.
+    pub(super) fn pending() -> Self {
+        Self {
+            serial: 0,
+            staging: Vec::new(),
+            readbacks: Vec::new(),
+            compute_pipelines: Vec::new(),
+            raster_pipelines: Vec::new(),
+            raster_buffers: Vec::new(),
+            raster_views: Vec::new(),
+            raster_frames: Vec::new(),
+            raster_textures: Vec::new(),
+            raster_descriptor_heaps: Vec::new(),
+            blit_root_signatures: Vec::new(),
+            blit_pipeline_states: Vec::new(),
+            blit_resources: Vec::new(),
+            bind_groups: Vec::new(),
+            query_sets: Vec::new(),
+            indirect_buffers: Vec::new(),
+            command_signatures: Vec::new(),
+            secondary_bundles: Vec::new(),
+            primary_lists: Vec::new(),
+            resource_uses: Vec::new(),
+        }
+    }
+
+    pub(super) fn absorb(&mut self, mut other: Self) {
+        self.staging.append(&mut other.staging);
+        self.readbacks.append(&mut other.readbacks);
+        self.compute_pipelines.append(&mut other.compute_pipelines);
+        self.raster_pipelines.append(&mut other.raster_pipelines);
+        self.raster_buffers.append(&mut other.raster_buffers);
+        self.raster_views.append(&mut other.raster_views);
+        self.raster_frames.append(&mut other.raster_frames);
+        self.raster_textures.append(&mut other.raster_textures);
+        self.raster_descriptor_heaps
+            .append(&mut other.raster_descriptor_heaps);
+        self.blit_root_signatures
+            .append(&mut other.blit_root_signatures);
+        self.blit_pipeline_states
+            .append(&mut other.blit_pipeline_states);
+        self.blit_resources.append(&mut other.blit_resources);
+        self.bind_groups.append(&mut other.bind_groups);
+        self.query_sets.append(&mut other.query_sets);
+        self.indirect_buffers.append(&mut other.indirect_buffers);
+        self.command_signatures
+            .append(&mut other.command_signatures);
+        self.secondary_bundles.append(&mut other.secondary_bundles);
+        self.primary_lists.append(&mut other.primary_lists);
+        self.resource_uses.append(&mut other.resource_uses);
+    }
 }
 
 /// A readback's staging buffer and the ticket waiting on it.

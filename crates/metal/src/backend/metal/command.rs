@@ -28,7 +28,6 @@ use objc2_metal::{
 
 use crate::api::binding::BindingResource;
 use crate::api::command::ResourceUse;
-use crate::api::command::record::{CopyRecord, RecordedPayload};
 use crate::api::error::{RhiError, RhiErrorKind, RhiResult};
 use crate::api::format::{block_extent, logical_bytes_per_block};
 use crate::api::platform::{DeviceLossInfo, DeviceStatus};
@@ -41,6 +40,8 @@ use crate::api::submission::{CompletionFailure, CompletionState};
 
 use super::device::MetalShared;
 use super::resource::{MetalBuffer, MetalTexture};
+
+pub(super) mod native;
 
 /// The mutable execution frontier.  This belongs to the command spine, not to
 /// an individual command buffer: all command-buffer callbacks race through this
@@ -104,18 +105,11 @@ pub(super) struct MetalCommandSpine {
 /// Native staging retained until the command buffer's completion handler has
 /// copied it into the ticket. The public ticket owns the resulting bytes, not a
 /// Metal mapping lease, so it remains valid after this native allocation drops.
-struct MetalPendingReadback {
-    ticket: ReadbackTicket,
-    staging: Retained<ProtocolObject<dyn objc2_metal::MTLBuffer>>,
-    byte_len: usize,
-    layout: Option<ReadbackTexelLayout>,
-}
-
-/// Phase-A output: completion retention moves with the command buffer and is
-/// never released merely because all batches finished recording.
-struct EncodedBatch {
-    command_buffer: Retained<ProtocolObject<dyn MTLCommandBuffer>>,
-    readbacks: Vec<MetalPendingReadback>,
+pub(super) struct MetalPendingReadback {
+    pub(super) ticket: ReadbackTicket,
+    pub(super) staging: Retained<ProtocolObject<dyn objc2_metal::MTLBuffer>>,
+    pub(super) byte_len: usize,
+    pub(super) layout: Option<ReadbackTexelLayout>,
 }
 
 impl MetalCommandSpine {
@@ -197,7 +191,12 @@ impl MetalCommandSpine {
         Arc::clone(&self.state)
     }
 
-    /// Records every batch before committing any of them.
+    /// Accepts finished native command buffers and commits them in plan order.
+    ///
+    /// Recording owns Metal's command-buffer encoders.  Submission never
+    /// lowers portable packets a second time: it only validates ownership,
+    /// attaches completion bookkeeping, schedules presentation, and commits
+    /// the buffers which were already closed by `CommandEncoder::finish`.
     pub(super) fn submit(&self, request: &SubmissionRequest<'_>) -> RhiResult<SubmissionOutcome> {
         let mut state = self
             .state
@@ -216,11 +215,38 @@ impl MetalCommandSpine {
             });
         }
 
-        // Phase A: a local vector owns every native command buffer.  Dropping it
-        // after an error releases uncommitted buffers without feeding Metal work.
-        let mut encoded = Vec::with_capacity(request.batches.len());
+        // Validate the complete plan before transferring a single token.  This
+        // preserves `submit(Err) => zero native work accepted`: a foreign,
+        // already-submitted, or repeated buffer cannot leave a committed prefix.
+        let mut seen = BTreeSet::new();
         for batch in request.batches {
-            encoded.push(self.encode_batch(batch)?);
+            for work in &batch.work {
+                let native = work
+                    .native()
+                    .as_any()
+                    .downcast_ref::<native::MetalNativeCommandBuffer>()
+                    .ok_or_else(|| {
+                        RhiError::new(
+                            RhiErrorKind::InvalidUsage,
+                            "Metal queue received a command buffer from another backend",
+                        )
+                        .at("MetalCommandSpine::submit")
+                    })?;
+                if !native.is_available() {
+                    return Err(RhiError::new(
+                        RhiErrorKind::InvalidUsage,
+                        "a Metal command buffer may be submitted only once",
+                    )
+                    .at("MetalCommandSpine::submit"));
+                }
+                if !seen.insert(native as *const native::MetalNativeCommandBuffer) {
+                    return Err(RhiError::new(
+                        RhiErrorKind::InvalidUsage,
+                        "the same Metal command buffer appears more than once in one submission",
+                    )
+                    .at("MetalCommandSpine::submit"));
+                }
+            }
         }
         // A present belongs to one plan point, hence to exactly one command
         // buffer in this single-queue baseline. Validate every association while
@@ -246,56 +272,103 @@ impl MetalCommandSpine {
                 "Metal completion serial space is exhausted",
             )
         })?;
-        let last = first.checked_add(encoded.len() as u64 - 1).ok_or_else(|| {
-            RhiError::new(
-                RhiErrorKind::Unsupported,
-                "Metal completion serial space is exhausted",
-            )
-        })?;
+        let last = first
+            .checked_add(request.batches.len() as u64 - 1)
+            .ok_or_else(|| {
+                RhiError::new(
+                    RhiErrorKind::Unsupported,
+                    "Metal completion serial space is exhausted",
+                )
+            })?;
 
-        // Phase B: handlers are installed before commit and the serial frontier
-        // becomes visible before the first command buffer is handed to Metal.
-        // `presentDrawable:` is deliberately issued before `commit`, rather
-        // than using the attachment's direct-present fallback. This preserves
-        // the required ordering between rendering the drawable and display.
+        // Transfer every token only after the whole plan passed preflight.
+        // They remain uncommitted until presentation has also been scheduled.
+        let mut prepared = Vec::with_capacity(request.batches.len());
+        for batch in request.batches {
+            let mut finished = Vec::with_capacity(batch.work.len());
+            for work in &batch.work {
+                let native = work
+                    .native()
+                    .as_any()
+                    .downcast_ref::<native::MetalNativeCommandBuffer>()
+                    .expect("Metal native buffers were preflighted");
+                finished.push(
+                    native
+                        .take()
+                        .expect("Metal native buffer was consumed once"),
+                );
+            }
+            if finished.is_empty() {
+                return Err(RhiError::new(
+                    RhiErrorKind::InvalidUsage,
+                    "a Metal submission batch must contain native command work",
+                )
+                .at("MetalCommandSpine::submit"));
+            }
+            prepared.push(finished);
+        }
+
+        // `presentDrawable:` is issued before commit, on the final command
+        // buffer in the associated FIFO batch.
         for present in request.presents {
             let index = request
                 .batches
                 .iter()
                 .position(|batch| batch.point == present.after)
-                .ok_or_else(|| {
-                    RhiError::new(
-                        RhiErrorKind::InvalidUsage,
-                        "Metal present refers to a plan point absent from this submission",
-                    )
-                    .at("MetalCommandSpine::submit")
-                })?;
+                .expect("present associations were preflighted");
+            let command_buffer = &prepared[index]
+                .last()
+                .expect("empty native batches were rejected")
+                .command_buffer;
             super::presentation::frame_attachment(&present.attachment)?
-                .schedule_present(&encoded[index].command_buffer)?;
+                .schedule_present(command_buffer)?;
         }
 
+        // Phase B: completion handlers are installed before their final queue
+        // commit and the serial frontier becomes visible before native work.
         state.issued = last;
-        for (index, encoded) in encoded.into_iter().enumerate() {
+        for (index, (batch, mut finished)) in request.batches.iter().zip(prepared).enumerate() {
             let serial = first + index as u64;
             // Map requests consult this exact accepted serial.  It is recorded
-            // only after Phase A succeeded for the full plan and directly
+            // only after preflight succeeded for the full plan and directly
             // before the command buffer becomes native work, so a failed
             // submit never makes host mapping wait on imaginary GPU use.
-            mark_batch_buffers_accepted(&request.batches[index], serial);
-            let tickets = encoded
-                .readbacks
-                .iter()
-                .map(|entry| entry.ticket.clone())
-                .collect();
+            mark_batch_buffers_accepted(batch, serial);
+            let mut final_buffer = finished.pop().ok_or_else(|| {
+                RhiError::new(
+                    RhiErrorKind::InvalidUsage,
+                    "a Metal submission batch must contain native command work",
+                )
+                .at("MetalCommandSpine::submit")
+            })?;
+            let mut readbacks = Vec::new();
+            let mut retained_staging = Vec::new();
+            for buffer in &mut finished {
+                readbacks.append(&mut buffer.readbacks);
+                retained_staging.append(&mut buffer.retained_staging);
+            }
+            readbacks.append(&mut final_buffer.readbacks);
+            retained_staging.append(&mut final_buffer.retained_staging);
+            let tickets = readbacks.iter().map(|entry| entry.ticket.clone()).collect();
             state.pending_readbacks.insert(serial, tickets);
+            // Earlier buffers must reach the queue first. Their finished
+            // tokens remain owned by the final completion handler below.
+            for buffer in &finished {
+                buffer.command_buffer.commit();
+            }
             install_completion_handler(
-                &encoded.command_buffer,
+                &final_buffer.command_buffer,
                 Arc::clone(&self.state),
                 Arc::clone(&self.presentation_loss),
                 serial,
-                encoded.readbacks,
+                readbacks,
+                finished,
+                retained_staging,
             );
-            encoded.command_buffer.commit();
+            // Metal preserves submission order for one command queue. The
+            // final buffer's handler consequently represents the complete
+            // plan batch, including every earlier recorder retained above.
+            final_buffer.command_buffer.commit();
         }
         Ok(SubmissionOutcome {
             completion: last,
@@ -307,903 +380,6 @@ impl MetalCommandSpine {
                 .collect(),
         })
     }
-
-    fn encode_batch(
-        &self,
-        batch: &crate::api::submission::plan::PlanBatch,
-    ) -> RhiResult<EncodedBatch> {
-        let command_buffer = self.shared.queue.commandBuffer().ok_or_else(|| {
-            RhiError::new(
-                RhiErrorKind::BackendFailure,
-                "Metal failed to allocate command buffer",
-            )
-            .at("MetalCommandSpine::encode_batch")
-        })?;
-        let mut blit: Option<Retained<ProtocolObject<dyn MTLBlitCommandEncoder>>> = None;
-        let mut compute: Option<Retained<ProtocolObject<dyn MTLComputeCommandEncoder>>> = None;
-        let mut render: Option<Retained<ProtocolObject<dyn MTLRenderCommandEncoder>>> = None;
-        let mut raster_extent: Option<(u32, u32)> = None;
-        let mut vertex_amplification_active = false;
-        let mut readbacks = Vec::new();
-        let occlusion_slot_count = batch
-            .work
-            .iter()
-            .flat_map(|work| work.commands())
-            .filter(|command| matches!(command.payload, RecordedPayload::QueryBegin { .. }))
-            .count();
-        let visibility_scratch = if occlusion_slot_count == 0 {
-            None
-        } else {
-            let bytes = occlusion_slot_count.checked_mul(8).ok_or_else(|| {
-                RhiError::new(
-                    RhiErrorKind::OutOfMemory,
-                    "Metal visibility scratch size overflows",
-                )
-            })?;
-            Some(
-                self.shared
-                    .device
-                    .newBufferWithLength_options(bytes, MTLResourceOptions::StorageModeShared)
-                    .ok_or_else(|| {
-                        RhiError::new(
-                            RhiErrorKind::OutOfMemory,
-                            "Metal visibility scratch allocation failed",
-                        )
-                    })?,
-            )
-        };
-        let mut visibility_sequence = OcclusionQuerySequence::default();
-        let mut active_visibility = None;
-        let mut pending_visibility = Vec::new();
-        for work in &batch.work {
-            for command in work.commands() {
-                match &command.payload {
-                    // A portable debug-group may span encoder boundaries.
-                    // Metal groups cannot: ending an encoder implicitly ends its
-                    // native group stack. Keep groups as recording diagnostics
-                    // and lower only point markers, which cannot underflow or
-                    // leak across a blit/compute/render transition.
-                    RecordedPayload::DebugPush(_) | RecordedPayload::DebugPop => {}
-                    RecordedPayload::DebugMarker(label) => {
-                        let text = NSString::from_str(label.as_deref().unwrap_or("<debug-marker>"));
-                        if let Some(encoder) = render.as_deref() {
-                            encoder.insertDebugSignpost(&text);
-                        } else if let Some(encoder) = compute.as_deref() {
-                            encoder.insertDebugSignpost(&text);
-                        } else if let Some(encoder) = blit.as_deref() {
-                            encoder.insertDebugSignpost(&text);
-                        }
-                    }
-                    RecordedPayload::RasterBegin(begin) => {
-                        if compute.is_some() || render.is_some() {
-                            return Err(scope_switch_error(
-                                "raster scope",
-                                if compute.is_some() {
-                                    "compute"
-                                } else {
-                                    "raster"
-                                },
-                            ));
-                        }
-                        end_blit(&mut blit);
-                        let pass = render_pass_descriptor(begin)?;
-                        if let Some(scratch) = visibility_scratch.as_deref() {
-                            pass.setVisibilityResultBuffer(Some(scratch));
-                        }
-                        raster_extent = Some(raster_scope_extent(begin)?);
-                        render = Some(
-                            command_buffer
-                                .renderCommandEncoderWithDescriptor(&pass)
-                                .ok_or_else(|| {
-                                    RhiError::new(
-                                        RhiErrorKind::BackendFailure,
-                                        "Metal failed to create a render command encoder",
-                                    )
-                                    .at("MetalCommandSpine::encode_batch")
-                                })?,
-                        );
-                        vertex_amplification_active = false;
-                    }
-                    RecordedPayload::RasterDraw(draw) => {
-                        let encoder = render.as_deref().ok_or_else(|| {
-                            RhiError::new(
-                                RhiErrorKind::InvalidUsage,
-                                "Metal raster draw was recorded outside a raster scope",
-                            )
-                            .at("MetalCommandSpine::encode_batch")
-                        })?;
-                        let pipeline = draw
-                            .pipeline
-                            .native()
-                            .as_any()
-                            .downcast_ref::<super::pipeline::MetalRasterPipeline>()
-                            .ok_or_else(|| {
-                                RhiError::new(
-                                    RhiErrorKind::WrongDevice,
-                                    "raster pipeline is not backed by this Metal device",
-                                )
-                                .at("MetalCommandSpine::encode_batch")
-                            })?;
-                        encoder.setRenderPipelineState(pipeline.state());
-                        if let Some(mappings) = pipeline.vertex_amplification_mappings() {
-                            // Pipeline creation set this exact count as its
-                            // maximum only after the Metal device accepted it.
-                            // The pipeline owns the slice for the whole native
-                            // call, satisfying Metal's raw-pointer contract.
-                            unsafe {
-                                encoder.setVertexAmplificationCount_viewMappings(
-                                    mappings.len(),
-                                    mappings.as_ptr(),
-                                );
-                            }
-                            vertex_amplification_active = true;
-                        } else if vertex_amplification_active {
-                            // Amplification count is encoder state. A normal
-                            // pipeline following a multiview pipeline must
-                            // explicitly restore the single-view count.
-                            unsafe {
-                                encoder
-                                    .setVertexAmplificationCount_viewMappings(1, core::ptr::null());
-                            }
-                            vertex_amplification_active = false;
-                        }
-                        if let Some(mode) = pipeline.depth_clip_mode() {
-                            encoder.setDepthClipMode(mode);
-                        }
-                        encoder.setDepthStencilState(pipeline.depth_stencil());
-                        encoder.setStencilReferenceValue(draw.stencil_reference);
-                        let primitive = &draw.pipeline.descriptor().primitive;
-                        encoder.setCullMode(metal_cull_mode(primitive.cull_mode));
-                        encoder.setFrontFacingWinding(metal_winding(primitive.front_face));
-                        encoder.setTriangleFillMode(metal_fill_mode(primitive.polygon_mode)?);
-                        encoder.setBlendColorRed_green_blue_alpha(
-                            draw.blend_constant.r,
-                            draw.blend_constant.g,
-                            draw.blend_constant.b,
-                            draw.blend_constant.a,
-                        );
-                        let extent = raster_extent.ok_or_else(|| {
-                            RhiError::new(
-                                RhiErrorKind::InvalidUsage,
-                                "Metal raster draw has no attachment extent",
-                            )
-                        })?;
-                        encoder.setViewport(metal_viewport(draw.viewport.unwrap_or(
-                            crate::api::command::Viewport::new(
-                                0.0,
-                                0.0,
-                                extent.0 as f32,
-                                extent.1 as f32,
-                                0.0,
-                                1.0,
-                            ),
-                        )));
-                        encoder.setScissorRect(metal_scissor(
-                            draw.scissor.unwrap_or(crate::api::command::Rect::new(
-                                0, 0, extent.0, extent.1,
-                            )),
-                        ));
-                        bind_vertex_buffers(encoder, &draw.vertex_buffers)?;
-                        bind_raster_groups(encoder, pipeline.binding_abi(), &draw.groups)?;
-                        bind_raster_immediates(encoder, pipeline.binding_abi(), &draw.immediates)?;
-                        let topology = metal_primitive(primitive.topology);
-                        let instances = draw
-                            .instances
-                            .end
-                            .checked_sub(draw.instances.start)
-                            .ok_or_else(|| {
-                                RhiError::new(
-                                    RhiErrorKind::InvalidUsage,
-                                    "Metal raster instance range underflows",
-                                )
-                            })?;
-                        let count =
-                            draw.range
-                                .end
-                                .checked_sub(draw.range.start)
-                                .ok_or_else(|| {
-                                    RhiError::new(
-                                        RhiErrorKind::InvalidUsage,
-                                        "Metal raster vertex range underflows",
-                                    )
-                                })?;
-                        validate_base_vertex_instance_selector(
-                            self.shared.base_vertex_instance,
-                            draw.index.is_some(),
-                            draw.base_vertex,
-                            draw.instances.start,
-                        )?;
-                        if let Some(index) = &draw.index {
-                            let buffer = metal_buffer(&index.binding.buffer)?;
-                            let index_offset = index
-                                .binding
-                                .range
-                                .offset
-                                .checked_add(
-                                    u64::from(draw.range.start)
-                                        .checked_mul(index_element_size(index.format))
-                                        .ok_or_else(|| {
-                                            RhiError::new(
-                                                RhiErrorKind::InvalidUsage,
-                                                "Metal indexed-draw first-index offset overflow",
-                                            )
-                                        })?,
-                                )
-                                .ok_or_else(|| {
-                                    RhiError::new(
-                                        RhiErrorKind::InvalidUsage,
-                                        "Metal indexed-draw buffer offset overflow",
-                                    )
-                                })?;
-                            if self.shared.base_vertex_instance {
-                                unsafe {
-                                    encoder.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset_instanceCount_baseVertex_baseInstance(
-                                        topology, count as usize, metal_index_type(index.format), &buffer.raw,
-                                        index_offset as usize, instances as usize, draw.base_vertex as isize, draw.instances.start as usize,
-                                    );
-                                }
-                            } else {
-                                unsafe {
-                                    encoder.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset_instanceCount(
-                                        topology, count as usize, metal_index_type(index.format), &buffer.raw,
-                                        index_offset as usize, instances as usize,
-                                    );
-                                }
-                            }
-                        } else {
-                            if self.shared.base_vertex_instance {
-                                unsafe {
-                                    encoder.drawPrimitives_vertexStart_vertexCount_instanceCount_baseInstance(
-                                        topology, draw.range.start as usize, count as usize, instances as usize, draw.instances.start as usize,
-                                    );
-                                }
-                            } else {
-                                unsafe {
-                                    encoder.drawPrimitives_vertexStart_vertexCount_instanceCount(
-                                        topology,
-                                        draw.range.start as usize,
-                                        count as usize,
-                                        instances as usize,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    RecordedPayload::RasterEnd => {
-                        let encoder = render.take().ok_or_else(|| {
-                            RhiError::new(
-                                RhiErrorKind::InvalidUsage,
-                                "Metal received a raster-scope end without a matching begin",
-                            )
-                            .at("MetalCommandSpine::encode_batch")
-                        })?;
-                        if visibility_sequence.is_active() {
-                            return Err(RhiError::new(
-                                RhiErrorKind::InvalidUsage,
-                                "Metal raster scope ended with an active occlusion query",
-                            )
-                            .at("MetalCommandSpine::encode_batch"));
-                        }
-                        encoder.endEncoding();
-                        if !pending_visibility.is_empty() {
-                            let scratch = visibility_scratch.as_deref().ok_or_else(|| {
-                                RhiError::new(
-                                    RhiErrorKind::BackendFailure,
-                                    "Metal visibility copies have no scratch buffer",
-                                )
-                            })?;
-                            let encoder = ensure_blit(&command_buffer, &mut blit)?;
-                            for (set, index, scratch_offset) in pending_visibility.drain(..) {
-                                let native = metal_query_set(&set)?;
-                                unsafe {
-                                    encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
-                                        scratch,
-                                        scratch_offset,
-                                        &native.raw,
-                                        usize::try_from(u64::from(index) * 8).map_err(|_| {
-                                            RhiError::new(
-                                                RhiErrorKind::InvalidUsage,
-                                                "Metal query destination offset exceeds host size",
-                                            )
-                                        })?,
-                                        8,
-                                    );
-                                }
-                            }
-                        }
-                        raster_extent = None;
-                        vertex_amplification_active = false;
-                    }
-                    RecordedPayload::QueryBegin { set, index } => {
-                        let encoder = render.as_deref().ok_or_else(|| {
-                            RhiError::new(
-                                RhiErrorKind::InvalidUsage,
-                                "Metal occlusion query began outside a raster scope",
-                            )
-                        })?;
-                        if visibility_sequence.is_active() {
-                            return Err(RhiError::new(
-                                RhiErrorKind::InvalidUsage,
-                                "Metal received nested occlusion queries",
-                            ));
-                        }
-                        let native = metal_query_set(set)?;
-                        if *index >= native.count {
-                            return Err(RhiError::new(
-                                RhiErrorKind::InvalidUsage,
-                                "Metal occlusion query index exceeds its native query set",
-                            ));
-                        }
-                        let offset = visibility_sequence.begin(set.id(), *index)?;
-                        encoder.setVisibilityResultMode_offset(
-                            MTLVisibilityResultMode::Counting,
-                            offset,
-                        );
-                        active_visibility = Some(set.clone());
-                    }
-                    RecordedPayload::QueryEnd { set, index } => {
-                        let encoder = render.as_deref().ok_or_else(|| {
-                            RhiError::new(
-                                RhiErrorKind::InvalidUsage,
-                                "Metal occlusion query ended outside a raster scope",
-                            )
-                        })?;
-                        let offset = visibility_sequence.end(set.id(), *index)?;
-                        let active_set = active_visibility.take().ok_or_else(|| {
-                            RhiError::new(
-                                RhiErrorKind::InvalidUsage,
-                                "Metal received an occlusion-query end without a begin",
-                            )
-                        })?;
-                        encoder
-                            .setVisibilityResultMode_offset(MTLVisibilityResultMode::Disabled, 0);
-                        pending_visibility.push((active_set, *index, offset));
-                    }
-                    RecordedPayload::QueryResolve(resolve) => {
-                        if compute.is_some() || render.is_some() {
-                            return Err(scope_switch_error("query resolve", "active GPU scope"));
-                        }
-                        let source = metal_query_set(&resolve.set)?;
-                        if resolve
-                            .first_query
-                            .checked_add(resolve.query_count)
-                            .is_none_or(|end| end > source.count)
-                        {
-                            return Err(RhiError::new(
-                                RhiErrorKind::InvalidUsage,
-                                "Metal query resolve range exceeds its native query set",
-                            ));
-                        }
-                        let destination = metal_buffer(&resolve.destination)?;
-                        let source_offset = usize::try_from(u64::from(resolve.first_query) * 8)
-                            .map_err(|_| {
-                                RhiError::new(
-                                    RhiErrorKind::InvalidUsage,
-                                    "Metal query source offset exceeds host size",
-                                )
-                            })?;
-                        let destination_offset = usize::try_from(resolve.destination_offset)
-                            .map_err(|_| {
-                                RhiError::new(
-                                    RhiErrorKind::InvalidUsage,
-                                    "Metal query resolve destination exceeds host size",
-                                )
-                            })?;
-                        let bytes =
-                            usize::try_from(u64::from(resolve.query_count) * 8).map_err(|_| {
-                                RhiError::new(
-                                    RhiErrorKind::InvalidUsage,
-                                    "Metal query resolve size exceeds host size",
-                                )
-                            })?;
-                        let encoder = ensure_blit(&command_buffer, &mut blit)?;
-                        unsafe {
-                            encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
-                                &source.raw,
-                                source_offset,
-                                &destination.raw,
-                                destination_offset,
-                                bytes,
-                            );
-                        }
-                    }
-                    RecordedPayload::RasterIndirect(draw) => {
-                        let encoder = render.as_deref().ok_or_else(|| {
-                            RhiError::new(
-                                RhiErrorKind::InvalidUsage,
-                                "Metal indirect raster draw was recorded outside a raster scope",
-                            )
-                            .at("MetalCommandSpine::encode_batch")
-                        })?;
-                        if draw.count.is_some() {
-                            return Err(RhiError::new(
-                                RhiErrorKind::Unsupported,
-                                "Metal indirect-count raster draws are not implemented",
-                            )
-                            .at("MetalCommandSpine::encode_batch"));
-                        }
-                        let pipeline = draw
-                            .pipeline
-                            .native()
-                            .as_any()
-                            .downcast_ref::<super::pipeline::MetalRasterPipeline>()
-                            .ok_or_else(|| {
-                                RhiError::new(
-                                    RhiErrorKind::WrongDevice,
-                                    "indirect raster pipeline is not backed by this Metal device",
-                                )
-                                .at("MetalCommandSpine::encode_batch")
-                            })?;
-                        encoder.setRenderPipelineState(pipeline.state());
-                        if let Some(mappings) = pipeline.vertex_amplification_mappings() {
-                            // The same pipeline can be used by direct and
-                            // indirect draws; both must install the selected
-                            // layers rather than inheriting a prior encoder
-                            // mapping.
-                            unsafe {
-                                encoder.setVertexAmplificationCount_viewMappings(
-                                    mappings.len(),
-                                    mappings.as_ptr(),
-                                );
-                            }
-                            vertex_amplification_active = true;
-                        } else if vertex_amplification_active {
-                            unsafe {
-                                encoder
-                                    .setVertexAmplificationCount_viewMappings(1, core::ptr::null());
-                            }
-                            vertex_amplification_active = false;
-                        }
-                        if let Some(mode) = pipeline.depth_clip_mode() {
-                            encoder.setDepthClipMode(mode);
-                        }
-                        encoder.setDepthStencilState(pipeline.depth_stencil());
-                        encoder.setStencilReferenceValue(draw.stencil_reference);
-                        let primitive = &draw.pipeline.descriptor().primitive;
-                        encoder.setCullMode(metal_cull_mode(primitive.cull_mode));
-                        encoder.setFrontFacingWinding(metal_winding(primitive.front_face));
-                        encoder.setTriangleFillMode(metal_fill_mode(primitive.polygon_mode)?);
-                        encoder.setBlendColorRed_green_blue_alpha(
-                            draw.blend_constant.r,
-                            draw.blend_constant.g,
-                            draw.blend_constant.b,
-                            draw.blend_constant.a,
-                        );
-                        let extent = raster_extent.ok_or_else(|| {
-                            RhiError::new(
-                                RhiErrorKind::InvalidUsage,
-                                "Metal indirect raster draw has no attachment extent",
-                            )
-                        })?;
-                        encoder.setViewport(metal_viewport(draw.viewport.unwrap_or(
-                            crate::api::command::Viewport::new(
-                                0.0,
-                                0.0,
-                                extent.0 as f32,
-                                extent.1 as f32,
-                                0.0,
-                                1.0,
-                            ),
-                        )));
-                        encoder.setScissorRect(metal_scissor(
-                            draw.scissor.unwrap_or(crate::api::command::Rect::new(
-                                0, 0, extent.0, extent.1,
-                            )),
-                        ));
-                        bind_vertex_buffers(encoder, &draw.vertex_buffers)?;
-                        bind_raster_groups(encoder, pipeline.binding_abi(), &draw.groups)?;
-                        bind_raster_immediates(encoder, pipeline.binding_abi(), &[])?;
-                        let arguments = metal_buffer(&draw.arguments)?;
-                        let topology = metal_primitive(primitive.topology);
-                        for draw_index in 0..draw.draw_count {
-                            let offset = draw
-                                .arguments_offset
-                                .checked_add(
-                                    u64::from(draw_index)
-                                        .checked_mul(u64::from(draw.stride))
-                                        .ok_or_else(|| {
-                                            RhiError::new(
-                                                RhiErrorKind::InvalidUsage,
-                                                "Metal indirect draw stride offset overflows",
-                                            )
-                                        })?,
-                                )
-                                .ok_or_else(|| {
-                                    RhiError::new(
-                                        RhiErrorKind::InvalidUsage,
-                                        "Metal indirect draw offset overflows",
-                                    )
-                                })?;
-                            let offset = usize::try_from(offset).map_err(|_| {
-                                RhiError::new(
-                                    RhiErrorKind::InvalidUsage,
-                                    "Metal indirect draw offset exceeds host address space",
-                                )
-                            })?;
-                            if let Some(index) = &draw.index {
-                                let index_buffer = metal_buffer(&index.binding.buffer)?;
-                                unsafe {
-                                    encoder.drawIndexedPrimitives_indexType_indexBuffer_indexBufferOffset_indirectBuffer_indirectBufferOffset(topology, metal_index_type(index.format), &index_buffer.raw, index.binding.range.offset as usize, &arguments.raw, offset);
-                                }
-                            } else {
-                                unsafe {
-                                    encoder.drawPrimitives_indirectBuffer_indirectBufferOffset(
-                                        topology,
-                                        &arguments.raw,
-                                        offset,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    RecordedPayload::ComputeBegin(_) => {
-                        end_blit(&mut blit);
-                        if compute.is_some() || render.is_some() {
-                            return Err(RhiError::new(
-                                RhiErrorKind::InvalidUsage,
-                                "Metal received a nested compute scope",
-                            )
-                            .at("MetalCommandSpine::encode_batch"));
-                        }
-                        compute =
-                            Some(command_buffer.computeCommandEncoder().ok_or_else(|| {
-                                RhiError::new(
-                                    RhiErrorKind::BackendFailure,
-                                    "Metal failed to create a compute command encoder",
-                                )
-                                .at("MetalCommandSpine::encode_batch")
-                            })?);
-                    }
-                    RecordedPayload::ComputeDispatch(dispatch) => {
-                        let encoder = compute.as_deref().ok_or_else(|| {
-                            RhiError::new(
-                                RhiErrorKind::InvalidUsage,
-                                "Metal compute dispatch was recorded outside a compute scope",
-                            )
-                            .at("MetalCommandSpine::encode_batch")
-                        })?;
-                        let pipeline = dispatch
-                            .pipeline
-                            .native()
-                            .as_any()
-                            .downcast_ref::<super::pipeline::MetalComputePipeline>()
-                            .ok_or_else(|| {
-                                RhiError::new(
-                                    RhiErrorKind::WrongDevice,
-                                    "compute pipeline is not backed by this Metal device",
-                                )
-                                .at("MetalCommandSpine::encode_batch")
-                            })?;
-                        encoder.setComputePipelineState(pipeline.state());
-                        bind_compute_groups(encoder, pipeline.binding_abi(), &dispatch.groups)?;
-                        bind_compute_immediates(
-                            encoder,
-                            pipeline.binding_abi(),
-                            &dispatch.immediates,
-                        )?;
-                        let local = pipeline.workgroup_size();
-                        encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                            MTLSize {
-                                width: dispatch.workgroups.0 as usize,
-                                height: dispatch.workgroups.1 as usize,
-                                depth: dispatch.workgroups.2 as usize,
-                            },
-                            MTLSize {
-                                width: local.x as usize,
-                                height: local.y as usize,
-                                depth: local.z as usize,
-                            },
-                        );
-                    }
-                    RecordedPayload::ComputeEnd => {
-                        let encoder = compute.take().ok_or_else(|| {
-                            RhiError::new(
-                                RhiErrorKind::InvalidUsage,
-                                "Metal received a compute-scope end without a matching begin",
-                            )
-                            .at("MetalCommandSpine::encode_batch")
-                        })?;
-                        encoder.endEncoding();
-                    }
-                    RecordedPayload::ComputeIndirect(dispatch) => {
-                        let encoder = compute.as_deref().ok_or_else(|| RhiError::new(RhiErrorKind::InvalidUsage, "Metal indirect compute dispatch was recorded outside a compute scope").at("MetalCommandSpine::encode_batch"))?;
-                        let pipeline = dispatch
-                            .pipeline
-                            .native()
-                            .as_any()
-                            .downcast_ref::<super::pipeline::MetalComputePipeline>()
-                            .ok_or_else(|| {
-                                RhiError::new(
-                                    RhiErrorKind::WrongDevice,
-                                    "indirect compute pipeline is not backed by this Metal device",
-                                )
-                                .at("MetalCommandSpine::encode_batch")
-                            })?;
-                        let arguments = metal_buffer(&dispatch.arguments)?;
-                        encoder.setComputePipelineState(pipeline.state());
-                        bind_compute_groups(encoder, pipeline.binding_abi(), &dispatch.groups)?;
-                        bind_compute_immediates(encoder, pipeline.binding_abi(), &[])?;
-                        let local = pipeline.workgroup_size();
-                        let offset = usize::try_from(dispatch.arguments_offset).map_err(|_| {
-                            RhiError::new(
-                                RhiErrorKind::InvalidUsage,
-                                "Metal indirect compute offset exceeds host address space",
-                            )
-                        })?;
-                        unsafe {
-                            encoder.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&arguments.raw, offset, MTLSize { width: local.x as usize, height: local.y as usize, depth: local.z as usize });
-                        }
-                    }
-                    RecordedPayload::Copy(CopyRecord::Buffer(copy)) => {
-                        if compute.is_some() || render.is_some() {
-                            return Err(scope_switch_error("copy", "compute"));
-                        }
-                        let encoder = ensure_blit(&command_buffer, &mut blit)?;
-                        let source = copy
-                            .src
-                            .native()
-                            .as_any()
-                            .downcast_ref::<MetalBuffer>()
-                            .ok_or_else(|| {
-                                RhiError::new(
-                                    RhiErrorKind::WrongDevice,
-                                    "buffer is not backed by this Metal device",
-                                )
-                            })?;
-                        let destination = copy
-                            .dst
-                            .native()
-                            .as_any()
-                            .downcast_ref::<MetalBuffer>()
-                            .ok_or_else(|| {
-                                RhiError::new(
-                                    RhiErrorKind::WrongDevice,
-                                    "buffer is not backed by this Metal device",
-                                )
-                            })?;
-                        unsafe {
-                            encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
-                                &source.raw,
-                                copy.src_offset as usize,
-                                &destination.raw,
-                                copy.dst_offset as usize,
-                                copy.size as usize,
-                            );
-                        }
-                    }
-                    RecordedPayload::Copy(CopyRecord::ClearBuffer { buffer, range }) => {
-                        if compute.is_some() || render.is_some() {
-                            return Err(scope_switch_error("copy", "compute"));
-                        }
-                        let encoder = ensure_blit(&command_buffer, &mut blit)?;
-                        let native = metal_buffer(buffer)?;
-                        encoder.fillBuffer_range_value(
-                            &native.raw,
-                            NSRange {
-                                location: range.offset as usize,
-                                length: range.size as usize,
-                            },
-                            0,
-                        );
-                    }
-                    RecordedPayload::Copy(CopyRecord::ClearTexture {
-                        texture,
-                        subresources,
-                    }) => {
-                        if compute.is_some() || render.is_some() {
-                            return Err(scope_switch_error("texture clear", "active GPU scope"));
-                        }
-                        lower_clear_texture(
-                            &self.shared.device,
-                            &command_buffer,
-                            &mut blit,
-                            texture,
-                            *subresources,
-                        )?;
-                    }
-                    RecordedPayload::Copy(CopyRecord::Texture(copy)) => {
-                        if compute.is_some() || render.is_some() {
-                            return Err(scope_switch_error("copy", "compute"));
-                        }
-                        let encoder = ensure_blit(&command_buffer, &mut blit)?;
-                        let source = metal_texture(&copy.src)?;
-                        let destination = metal_texture(&copy.dst)?;
-                        for layer in 0..copy.src_subresource.layer_count {
-                            unsafe {
-                                encoder.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
-                                    &source.raw,
-                                    (copy.src_subresource.base_layer + layer) as usize,
-                                    copy.src_subresource.mip_level as usize,
-                                    origin(copy.src_origin), size(copy.extent), &destination.raw,
-                                    (copy.dst_subresource.base_layer + layer) as usize,
-                                    copy.dst_subresource.mip_level as usize, origin(copy.dst_origin),
-                                );
-                            }
-                        }
-                    }
-                    RecordedPayload::Copy(CopyRecord::BufferToTexture(copy)) => {
-                        if compute.is_some() || render.is_some() {
-                            return Err(scope_switch_error("copy", "compute"));
-                        }
-                        let encoder = ensure_blit(&command_buffer, &mut blit)?;
-                        let source = metal_buffer(&copy.buffer)?;
-                        let destination = metal_texture(&copy.texture)?;
-                        let image_stride = u64::from(copy.bytes_per_row)
-                            .checked_mul(u64::from(copy.rows_per_image))
-                            .ok_or_else(|| {
-                                RhiError::new(
-                                    RhiErrorKind::InvalidUsage,
-                                    "Metal buffer-to-texture image stride overflow",
-                                )
-                            })?;
-                        for layer in 0..copy.texture_subresource.layer_count {
-                            unsafe {
-                                encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
-                                    &source.raw, copy.buffer_offset.checked_add(image_stride.checked_mul(u64::from(layer)).ok_or_else(|| RhiError::new(RhiErrorKind::InvalidUsage, "Metal buffer-to-texture layer offset overflow"))?).ok_or_else(|| RhiError::new(RhiErrorKind::InvalidUsage, "Metal buffer-to-texture source offset overflow"))? as usize, copy.bytes_per_row as usize,
-                                    image_stride as usize,
-                                    size(copy.extent), &destination.raw,
-                                    (copy.texture_subresource.base_layer + layer) as usize,
-                                    copy.texture_subresource.mip_level as usize, origin(copy.texture_origin),
-                                );
-                            }
-                        }
-                    }
-                    RecordedPayload::Copy(CopyRecord::TextureToBuffer(copy)) => {
-                        if compute.is_some() || render.is_some() {
-                            return Err(scope_switch_error("copy", "compute"));
-                        }
-                        let encoder = ensure_blit(&command_buffer, &mut blit)?;
-                        let source = metal_texture(&copy.texture)?;
-                        let destination = metal_buffer(&copy.buffer)?;
-                        let image_stride = u64::from(copy.bytes_per_row)
-                            .checked_mul(u64::from(copy.rows_per_image))
-                            .ok_or_else(|| {
-                                RhiError::new(
-                                    RhiErrorKind::InvalidUsage,
-                                    "Metal texture-to-buffer image stride overflow",
-                                )
-                            })?;
-                        for layer in 0..copy.texture_subresource.layer_count {
-                            unsafe {
-                                encoder.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage(
-                                    &source.raw, (copy.texture_subresource.base_layer + layer) as usize,
-                                    copy.texture_subresource.mip_level as usize, origin(copy.texture_origin), size(copy.extent),
-                                    &destination.raw, copy.buffer_offset.checked_add(image_stride.checked_mul(u64::from(layer)).ok_or_else(|| RhiError::new(RhiErrorKind::InvalidUsage, "Metal texture-to-buffer layer offset overflow"))?).ok_or_else(|| RhiError::new(RhiErrorKind::InvalidUsage, "Metal texture-to-buffer destination offset overflow"))? as usize, copy.bytes_per_row as usize,
-                                    image_stride as usize,
-                                );
-                            }
-                        }
-                    }
-                    RecordedPayload::Copy(CopyRecord::Resolve(resolve)) => {
-                        if compute.is_some() || render.is_some() {
-                            return Err(scope_switch_error("texture resolve", "active GPU scope"));
-                        }
-                        // A blit encoder and a compute encoder cannot overlap.
-                        // End the former before the resolver installs its own
-                        // compute state, while retaining the same command-buffer
-                        // ordering as surrounding copy records.
-                        end_blit(&mut blit);
-                        let mut cache = self
-                            .shared
-                            .resolve_pipeline
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        if cache.is_none() {
-                            *cache = Some(super::resolve::create_pipeline(&self.shared.device)?);
-                        }
-                        let pipeline = cache.as_ref().ok_or_else(|| {
-                            RhiError::new(
-                                RhiErrorKind::BackendFailure,
-                                "Metal did not retain standalone resolve pipeline",
-                            )
-                            .at("MetalCommandSpine::encode_batch")
-                        })?;
-                        super::resolve::encode(&command_buffer, pipeline, resolve)?;
-                    }
-                    RecordedPayload::Upload(job) => {
-                        if compute.is_some() {
-                            return Err(scope_switch_error("upload", "compute"));
-                        }
-                        match job.descriptor() {
-                            UploadDescriptor::Buffer(upload) => {
-                                let destination = metal_buffer(&upload.dst)?;
-                                let source = unsafe { self.shared.device.newBufferWithBytes_length_options(
-                                std::ptr::NonNull::new(upload.bytes.as_ptr() as *mut core::ffi::c_void)
-                                    .ok_or_else(|| RhiError::new(RhiErrorKind::InvalidUsage, "Metal upload cannot encode an empty byte payload"))?,
-                                upload.bytes.len(), objc2_metal::MTLResourceOptions::StorageModeShared,
-                            ) }.ok_or_else(|| RhiError::new(RhiErrorKind::OutOfMemory, "Metal upload staging allocation failed"))?;
-                                let encoder = ensure_blit(&command_buffer, &mut blit)?;
-                                unsafe {
-                                    encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
-                                &source, 0, &destination.raw, upload.dst_offset as usize, upload.bytes.len(),
-                            );
-                                }
-                            }
-                            UploadDescriptor::Texture(upload) => {
-                                let destination = metal_texture(&upload.dst)?;
-                                let repacked = repack_texture_upload(upload)?;
-                                let source = unsafe { self.shared.device.newBufferWithBytes_length_options(
-                                std::ptr::NonNull::new(repacked.bytes.as_ptr() as *mut core::ffi::c_void)
-                                    .ok_or_else(|| RhiError::new(RhiErrorKind::InvalidUsage, "Metal upload cannot encode an empty byte payload"))?,
-                                repacked.bytes.len(), objc2_metal::MTLResourceOptions::StorageModeShared,
-                            ) }.ok_or_else(|| RhiError::new(RhiErrorKind::OutOfMemory, "Metal upload staging allocation failed"))?;
-                                let encoder = ensure_blit(&command_buffer, &mut blit)?;
-                                for layer in 0..upload.subresource.layer_count {
-                                    unsafe {
-                                        encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
-                                    &source, repacked.bytes_per_image.checked_mul(u64::from(layer)).ok_or_else(|| RhiError::new(RhiErrorKind::InvalidUsage, "Metal texture-upload layer offset overflow"))? as usize, repacked.bytes_per_row as usize,
-                                    repacked.bytes_per_image as usize,
-                                    size(upload.extent), &destination.raw,
-                                    (upload.subresource.base_layer + layer) as usize, upload.subresource.mip_level as usize,
-                                    origin(upload.origin),
-                                );
-                                    }
-                                }
-                            }
-                            _ => {
-                                return Err(RhiError::new(
-                                    RhiErrorKind::Unsupported,
-                                    "unknown upload descriptor",
-                                )
-                                .at("MetalCommandSpine::encode_batch"));
-                            }
-                        }
-                    }
-                    RecordedPayload::Readback(ticket) => {
-                        if compute.is_some() || render.is_some() {
-                            return Err(scope_switch_error("readback", "active GPU scope"));
-                        }
-                        lower_readback(
-                            &self.shared.device,
-                            &command_buffer,
-                            &mut blit,
-                            ticket,
-                            &mut readbacks,
-                        )?;
-                    }
-                    RecordedPayload::Copy(other) => {
-                        return Err(unsupported_copy(other));
-                    }
-                    // The capabilities published by the baseline only include
-                    // operations with a native lowering.  Refusing here is the
-                    // defensive second line if a stale capability snapshot or a
-                    // future recorder reaches this backend too early.
-                    other => {
-                        return Err(RhiError::new(
-                            RhiErrorKind::Unsupported,
-                            format!(
-                                "Metal baseline has no lowering for recorded payload {}",
-                                payload_name(other)
-                            ),
-                        )
-                        .at("MetalCommandSpine::encode_batch"));
-                    }
-                }
-            }
-        }
-        if let Some(encoder) = blit {
-            encoder.endEncoding();
-        }
-        if compute.is_some() {
-            return Err(RhiError::new(
-                RhiErrorKind::InvalidUsage,
-                "Metal command batch ended with an unclosed compute scope",
-            )
-            .at("MetalCommandSpine::encode_batch"));
-        }
-        if render.is_some() {
-            return Err(RhiError::new(
-                RhiErrorKind::InvalidUsage,
-                "Metal command batch ended with an unclosed raster scope",
-            )
-            .at("MetalCommandSpine::encode_batch"));
-        }
-        Ok(EncodedBatch {
-            command_buffer,
-            readbacks,
-        })
-    }
-
     fn record_terminal_failure(&self, message: &str) {
         let waiters = {
             let mut state = self
@@ -1301,7 +477,7 @@ impl OcclusionQuerySequence {
 /// four-byte row requirement on asset bytes would violate the upload contract.
 /// Copy only logical block bytes, so caller padding never leaks into native
 /// staging and compressed formats follow their block-row geometry exactly.
-fn repack_texture_upload(
+pub(super) fn repack_texture_upload(
     upload: &crate::api::resource::transfer::TextureUploadDescriptor,
 ) -> RhiResult<RepackedTextureUpload> {
     let descriptor = upload.dst.descriptor();
@@ -1438,21 +614,21 @@ fn repack_texture_upload_parts(
     })
 }
 
-fn end_blit(slot: &mut Option<Retained<ProtocolObject<dyn MTLBlitCommandEncoder>>>) {
+pub(super) fn end_blit(slot: &mut Option<Retained<ProtocolObject<dyn MTLBlitCommandEncoder>>>) {
     if let Some(encoder) = slot.take() {
         encoder.endEncoding();
     }
 }
 
-fn scope_switch_error(next: &'static str, active: &'static str) -> RhiError {
+pub(super) fn scope_switch_error(next: &'static str, active: &'static str) -> RhiError {
     RhiError::new(
         RhiErrorKind::InvalidUsage,
         format!("Metal cannot encode {next} while a {active} scope is open"),
     )
-    .at("MetalCommandSpine::encode_batch")
+    .at("MetalNativeEncoder")
 }
 
-fn ensure_blit<'a>(
+pub(super) fn ensure_blit<'a>(
     command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
     slot: &'a mut Option<Retained<ProtocolObject<dyn MTLBlitCommandEncoder>>>,
 ) -> RhiResult<&'a ProtocolObject<dyn MTLBlitCommandEncoder>> {
@@ -1462,7 +638,7 @@ fn ensure_blit<'a>(
                 RhiErrorKind::BackendFailure,
                 "Metal failed to create a blit command encoder",
             )
-            .at("MetalCommandSpine::encode_batch")
+            .at("MetalNativeEncoder")
         })?);
     }
     slot.as_deref().ok_or_else(|| {
@@ -1470,11 +646,11 @@ fn ensure_blit<'a>(
             RhiErrorKind::BackendFailure,
             "Metal did not retain the blit command encoder it created",
         )
-        .at("MetalCommandSpine::encode_batch")
+        .at("MetalNativeEncoder")
     })
 }
 
-fn metal_buffer(buffer: &crate::api::resource::Buffer) -> RhiResult<&MetalBuffer> {
+pub(super) fn metal_buffer(buffer: &crate::api::resource::Buffer) -> RhiResult<&MetalBuffer> {
     buffer
         .native()
         .as_any()
@@ -1484,11 +660,13 @@ fn metal_buffer(buffer: &crate::api::resource::Buffer) -> RhiResult<&MetalBuffer
                 RhiErrorKind::WrongDevice,
                 "buffer is not backed by this Metal device",
             )
-            .at("MetalCommandSpine::encode_batch")
+            .at("MetalNativeEncoder")
         })
 }
 
-fn metal_query_set(set: &crate::api::query::QuerySet) -> RhiResult<&super::query::MetalQuerySet> {
+pub(super) fn metal_query_set(
+    set: &crate::api::query::QuerySet,
+) -> RhiResult<&super::query::MetalQuerySet> {
     set.native()
         .as_any()
         .downcast_ref::<super::query::MetalQuerySet>()
@@ -1497,7 +675,7 @@ fn metal_query_set(set: &crate::api::query::QuerySet) -> RhiResult<&super::query
                 RhiErrorKind::WrongDevice,
                 "query set is not backed by this Metal device",
             )
-            .at("MetalCommandSpine::encode_batch")
+            .at("MetalNativeEncoder")
         })
 }
 
@@ -1511,11 +689,11 @@ pub(super) fn metal_texture(texture: &crate::api::resource::Texture) -> RhiResul
                 RhiErrorKind::WrongDevice,
                 "texture is not backed by this Metal device",
             )
-            .at("MetalCommandSpine::encode_batch")
+            .at("MetalNativeEncoder")
         })
 }
 
-fn render_pass_descriptor(
+pub(super) fn render_pass_descriptor(
     begin: &crate::api::command::record::RasterBegin,
 ) -> RhiResult<Retained<MTLRenderPassDescriptor>> {
     use crate::api::command::attachment::{
@@ -1609,7 +787,7 @@ fn render_pass_descriptor(
                         RhiErrorKind::Unsupported,
                         "Metal direct resolve into a presentation frame is not implemented",
                     )
-                    .at("MetalCommandSpine::encode_batch"));
+                    .at("MetalNativeEncoder"));
                 }
                 _ => {
                     return Err(RhiError::new(
@@ -1719,7 +897,9 @@ fn render_target_array_length(begin: &crate::api::command::record::RasterBegin) 
         .unwrap_or(1) as usize
 }
 
-fn raster_scope_extent(begin: &crate::api::command::record::RasterBegin) -> RhiResult<(u32, u32)> {
+pub(super) fn raster_scope_extent(
+    begin: &crate::api::command::record::RasterBegin,
+) -> RhiResult<(u32, u32)> {
     if let Some((_, color)) = begin.colors.first() {
         let extent = color.view.extent();
         return Ok((extent.width, extent.height));
@@ -1734,7 +914,7 @@ fn raster_scope_extent(begin: &crate::api::command::record::RasterBegin) -> RhiR
     ))
 }
 
-fn bind_vertex_buffers(
+pub(super) fn bind_vertex_buffers(
     encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
     bindings: &[(u32, crate::api::resource::BufferBinding)],
 ) -> RhiResult<()> {
@@ -1751,7 +931,7 @@ fn bind_vertex_buffers(
     Ok(())
 }
 
-fn metal_primitive(value: crate::api::pipeline::PrimitiveTopology) -> MTLPrimitiveType {
+pub(super) fn metal_primitive(value: crate::api::pipeline::PrimitiveTopology) -> MTLPrimitiveType {
     use crate::api::pipeline::PrimitiveTopology as P;
     match value {
         P::PointList => MTLPrimitiveType::Point,
@@ -1762,13 +942,13 @@ fn metal_primitive(value: crate::api::pipeline::PrimitiveTopology) -> MTLPrimiti
         _ => MTLPrimitiveType::Triangle,
     }
 }
-fn metal_index_type(value: crate::api::command::IndexFormat) -> MTLIndexType {
+pub(super) fn metal_index_type(value: crate::api::command::IndexFormat) -> MTLIndexType {
     match value {
         crate::api::command::IndexFormat::Uint16 => MTLIndexType::UInt16,
         crate::api::command::IndexFormat::Uint32 => MTLIndexType::UInt32,
     }
 }
-fn metal_cull_mode(value: crate::api::pipeline::CullMode) -> MTLCullMode {
+pub(super) fn metal_cull_mode(value: crate::api::pipeline::CullMode) -> MTLCullMode {
     match value {
         crate::api::pipeline::CullMode::None => MTLCullMode::None,
         crate::api::pipeline::CullMode::Front => MTLCullMode::Front,
@@ -1776,14 +956,16 @@ fn metal_cull_mode(value: crate::api::pipeline::CullMode) -> MTLCullMode {
         _ => MTLCullMode::None,
     }
 }
-fn metal_winding(value: crate::api::pipeline::FrontFace) -> MTLWinding {
+pub(super) fn metal_winding(value: crate::api::pipeline::FrontFace) -> MTLWinding {
     match value {
         crate::api::pipeline::FrontFace::Ccw => MTLWinding::CounterClockwise,
         crate::api::pipeline::FrontFace::Cw => MTLWinding::Clockwise,
         _ => MTLWinding::CounterClockwise,
     }
 }
-fn metal_fill_mode(value: crate::api::pipeline::PolygonMode) -> RhiResult<MTLTriangleFillMode> {
+pub(super) fn metal_fill_mode(
+    value: crate::api::pipeline::PolygonMode,
+) -> RhiResult<MTLTriangleFillMode> {
     match value {
         crate::api::pipeline::PolygonMode::Fill => Ok(MTLTriangleFillMode::Fill),
         crate::api::pipeline::PolygonMode::Line => Ok(MTLTriangleFillMode::Lines),
@@ -1797,7 +979,7 @@ fn metal_fill_mode(value: crate::api::pipeline::PolygonMode) -> RhiResult<MTLTri
         )),
     }
 }
-fn metal_viewport(value: crate::api::command::Viewport) -> MTLViewport {
+pub(super) fn metal_viewport(value: crate::api::command::Viewport) -> MTLViewport {
     MTLViewport {
         originX: value.x as f64,
         originY: value.y as f64,
@@ -1807,7 +989,7 @@ fn metal_viewport(value: crate::api::command::Viewport) -> MTLViewport {
         zfar: value.max_depth as f64,
     }
 }
-fn metal_scissor(value: crate::api::command::Rect) -> MTLScissorRect {
+pub(super) fn metal_scissor(value: crate::api::command::Rect) -> MTLScissorRect {
     MTLScissorRect {
         x: value.x as usize,
         y: value.y as usize,
@@ -1820,7 +1002,7 @@ fn metal_scissor(value: crate::api::command::Rect) -> MTLScissorRect {
 /// pipeline.  The direct Metal path intentionally binds every packet at every
 /// dispatch; state-diff caching is an optimization that must not weaken the
 /// group/slot/dynamic-offset proof performed here.
-fn bind_compute_groups(
+pub(super) fn bind_compute_groups(
     encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
     abi: &super::binding::MetalBindingAbi,
     groups: &[crate::api::command::record::BoundGroup],
@@ -1836,14 +1018,14 @@ fn bind_compute_groups(
                     RhiErrorKind::WrongDevice,
                     "compute bind group is not backed by this Metal device",
                 )
-                .at("MetalCommandSpine::encode_batch")
+                .at("MetalNativeEncoder")
             })?;
         let group_abi = abi.group(bound.index).ok_or_else(|| {
             RhiError::new(
                 RhiErrorKind::InvalidUsage,
                 "Metal compute pipeline has no ABI for a bound group",
             )
-            .at("MetalCommandSpine::encode_batch")
+            .at("MetalNativeEncoder")
         })?;
         let dynamic = abi.dynamic_offsets(bound.index, &bound.group, &bound.dynamic_offsets)?;
         for (slot, resource) in packet.entries() {
@@ -1857,7 +1039,7 @@ fn bind_compute_groups(
                     RhiErrorKind::InvalidUsage,
                     "compute bind packet contains a non-compute-visible slot",
                 )
-                .at("MetalCommandSpine::encode_batch")
+                .at("MetalNativeEncoder")
             })?;
             match resource {
                 BindingResource::Buffer(binding) => bind_compute_buffer(
@@ -1895,14 +1077,14 @@ fn bind_compute_groups(
                         RhiErrorKind::Unsupported,
                         "Metal direct binding does not implement this resource class",
                     )
-                    .at("MetalCommandSpine::encode_batch"));
+                    .at("MetalNativeEncoder"));
                 }
                 _ => {
                     return Err(RhiError::new(
                         RhiErrorKind::Unsupported,
                         "unknown compute binding resource",
                     )
-                    .at("MetalCommandSpine::encode_batch"));
+                    .at("MetalNativeEncoder"));
                 }
             }
         }
@@ -1910,7 +1092,7 @@ fn bind_compute_groups(
     Ok(())
 }
 
-fn bind_raster_groups(
+pub(super) fn bind_raster_groups(
     encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
     abi: &super::binding::MetalBindingAbi,
     groups: &[crate::api::command::record::BoundGroup],
@@ -2004,7 +1186,7 @@ fn bind_raster_groups(
     }
     Ok(())
 }
-fn bind_raster_buffer(
+pub(super) fn bind_raster_buffer(
     encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
     vertex: Option<u32>,
     fragment: Option<u32>,
@@ -2030,7 +1212,7 @@ fn bind_raster_buffer(
     }
     Ok(())
 }
-fn bind_raster_texture(
+pub(super) fn bind_raster_texture(
     encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
     vertex: Option<u32>,
     fragment: Option<u32>,
@@ -2054,7 +1236,7 @@ fn bind_raster_texture(
     }
     Ok(())
 }
-fn bind_raster_sampler(
+pub(super) fn bind_raster_sampler(
     encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
     vertex: Option<u32>,
     fragment: Option<u32>,
@@ -2120,7 +1302,7 @@ fn immediate_bytes(
     }
     Ok(bytes)
 }
-fn bind_compute_immediates(
+pub(super) fn bind_compute_immediates(
     encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
     abi: &super::binding::MetalBindingAbi,
     writes: &[crate::api::command::record::ImmediateWrite],
@@ -2142,7 +1324,7 @@ fn bind_compute_immediates(
     }
     Ok(())
 }
-fn bind_raster_immediates(
+pub(super) fn bind_raster_immediates(
     encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
     abi: &super::binding::MetalBindingAbi,
     writes: &[crate::api::command::record::ImmediateWrite],
@@ -2167,7 +1349,7 @@ fn bind_raster_immediates(
     }
     Ok(())
 }
-fn index_element_size(value: crate::api::command::IndexFormat) -> u64 {
+pub(super) fn index_element_size(value: crate::api::command::IndexFormat) -> u64 {
     match value {
         crate::api::command::IndexFormat::Uint16 => 2,
         crate::api::command::IndexFormat::Uint32 => 4,
@@ -2178,7 +1360,7 @@ fn index_element_size(value: crate::api::command::IndexFormat) -> u64 {
 /// overload.  Older Metal profiles have only the zero-base overload; that is a
 /// correct fallback for a zero base, not permission to silently drop a caller's
 /// non-zero first instance or base vertex.
-fn validate_base_vertex_instance_selector(
+pub(super) fn validate_base_vertex_instance_selector(
     selector_available: bool,
     indexed: bool,
     base_vertex: i32,
@@ -2196,7 +1378,7 @@ fn validate_base_vertex_instance_selector(
         RhiErrorKind::Unsupported,
         format!("Metal {operation} draw selector is unavailable on this device"),
     )
-    .at("MetalCommandSpine::encode_batch"))
+    .at("MetalNativeEncoder"))
 }
 
 fn dynamic_offset(
@@ -2210,7 +1392,7 @@ fn dynamic_offset(
         .map_or(0, |offset| offset.offset)
 }
 
-fn bind_compute_buffer(
+pub(super) fn bind_compute_buffer(
     encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
     index: u32,
     binding: &crate::api::resource::BufferBinding,
@@ -2227,7 +1409,7 @@ fn bind_compute_buffer(
     Ok(())
 }
 
-fn bind_compute_texture(
+pub(super) fn bind_compute_texture(
     encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
     index: u32,
     view: &crate::api::resource::TextureView,
@@ -2246,7 +1428,7 @@ fn bind_compute_texture(
     Ok(())
 }
 
-fn bind_compute_sampler(
+pub(super) fn bind_compute_sampler(
     encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
     index: u32,
     sampler: &crate::api::resource::Sampler,
@@ -2265,7 +1447,7 @@ fn bind_compute_sampler(
     Ok(())
 }
 
-fn origin(value: crate::api::resource::Origin3d) -> MTLOrigin {
+pub(super) fn origin(value: crate::api::resource::Origin3d) -> MTLOrigin {
     MTLOrigin {
         x: value.x as usize,
         y: value.y as usize,
@@ -2273,7 +1455,7 @@ fn origin(value: crate::api::resource::Origin3d) -> MTLOrigin {
     }
 }
 
-fn size(value: crate::api::resource::Extent3d) -> MTLSize {
+pub(super) fn size(value: crate::api::resource::Extent3d) -> MTLSize {
     MTLSize {
         width: value.width as usize,
         height: value.height as usize,
@@ -2287,6 +1469,11 @@ fn install_completion_handler(
     presentation_loss: Arc<super::presentation::MetalPresentationLoss>,
     serial: u64,
     readbacks: Vec<MetalPendingReadback>,
+    // Retain staging and the earlier command buffers until the final buffer in
+    // this FIFO batch completes. Metal does not promise caller-owned upload
+    // allocations survive merely because an encoder referenced them.
+    _earlier_buffers: Vec<native::FinishedMetalCommandBuffer>,
+    _retained_staging: Vec<Retained<ProtocolObject<dyn objc2_metal::MTLBuffer>>>,
 ) {
     let block = RcBlock::new(
         move |completed: std::ptr::NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
@@ -2444,7 +1631,7 @@ fn mark_batch_buffers_accepted(batch: &crate::api::submission::plan::PlanBatch, 
 /// published table, so it uses a one-attachment render pass instead. The
 /// recorder requires `DEPTH_STENCIL_ATTACHMENT` for that case, which is the
 /// native `RenderTarget` usage needed by Metal.
-fn lower_clear_texture(
+pub(super) fn lower_clear_texture(
     device: &ProtocolObject<dyn MTLDevice>,
     command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
     blit: &mut Option<Retained<ProtocolObject<dyn MTLBlitCommandEncoder>>>,
@@ -2472,7 +1659,7 @@ fn lower_color_clear(
                 RhiErrorKind::Unsupported,
                 "Metal cannot byte-clear a color format without a fixed block layout",
             )
-            .at("MetalCommandSpine::encode_batch")
+            .at("MetalNativeEncoder")
         })?;
     let (block_width, block_height) = crate::api::format::block_extent(descriptor.format);
     let is_3d = descriptor.dimension == TextureDimension::D3;
@@ -2493,7 +1680,7 @@ fn lower_color_clear(
                     RhiErrorKind::OutOfMemory,
                     "Metal clear texture row pitch overflows",
                 )
-                .at("MetalCommandSpine::encode_batch")
+                .at("MetalNativeEncoder")
             })?;
         // The Metal copy facts for this backend publish the native four-byte
         // row-pitch alignment. Padding is zero too, so it cannot change a
@@ -2506,7 +1693,7 @@ fn lower_color_clear(
                     RhiErrorKind::OutOfMemory,
                     "Metal clear texture image stride overflows",
                 )
-                .at("MetalCommandSpine::encode_batch")
+                .at("MetalNativeEncoder")
             })?;
         let byte_len = bytes_per_image
             .checked_mul(if is_3d { u64::from(extent.depth) } else { 1 })
@@ -2515,28 +1702,28 @@ fn lower_color_clear(
                     RhiErrorKind::OutOfMemory,
                     "Metal clear texture staging allocation overflows",
                 )
-                .at("MetalCommandSpine::encode_batch")
+                .at("MetalNativeEncoder")
             })?;
         let byte_len = usize::try_from(byte_len).map_err(|_| {
             RhiError::new(
                 RhiErrorKind::OutOfMemory,
                 "Metal clear texture staging allocation exceeds host address space",
             )
-            .at("MetalCommandSpine::encode_batch")
+            .at("MetalNativeEncoder")
         })?;
         let bytes_per_row = usize::try_from(bytes_per_row).map_err(|_| {
             RhiError::new(
                 RhiErrorKind::OutOfMemory,
                 "Metal clear texture row pitch exceeds host address space",
             )
-            .at("MetalCommandSpine::encode_batch")
+            .at("MetalNativeEncoder")
         })?;
         let bytes_per_image = usize::try_from(bytes_per_image).map_err(|_| {
             RhiError::new(
                 RhiErrorKind::OutOfMemory,
                 "Metal clear texture image stride exceeds host address space",
             )
-            .at("MetalCommandSpine::encode_batch")
+            .at("MetalNativeEncoder")
         })?;
 
         for layer in 0..copies_per_mip {
@@ -2547,7 +1734,7 @@ fn lower_color_clear(
                         RhiErrorKind::OutOfMemory,
                         "Metal clear texture staging allocation failed",
                     )
-                    .at("MetalCommandSpine::encode_batch")
+                    .at("MetalNativeEncoder")
                 })?;
             // Allocation contents are intentionally written, rather than
             // relying on a platform allocator's initialisation convention.
@@ -2585,7 +1772,7 @@ fn lower_depth_stencil_clear(
             RhiErrorKind::Unsupported,
             "Metal clear texture cannot mix color with depth/stencil aspects",
         )
-        .at("MetalCommandSpine::encode_batch"));
+        .at("MetalNativeEncoder"));
     }
     let native = metal_texture(texture)?;
     let descriptor = texture.descriptor();
@@ -2597,7 +1784,7 @@ fn lower_depth_stencil_clear(
             RhiErrorKind::Unsupported,
             "Metal depth/stencil ClearTexture requires a single-sampled 2D texture",
         )
-        .at("MetalCommandSpine::encode_batch"));
+        .at("MetalNativeEncoder"));
     }
     let format_aspects = crate::api::format::format_aspects(descriptor.format);
     end_blit(blit);
@@ -2637,7 +1824,7 @@ fn lower_depth_stencil_clear(
                         RhiErrorKind::BackendFailure,
                         "Metal failed to create a depth/stencil clear render encoder",
                     )
-                    .at("MetalCommandSpine::encode_batch")
+                    .at("MetalNativeEncoder")
                 })?;
             encoder.endEncoding();
         }
@@ -2651,11 +1838,11 @@ fn align_clear_row(value: u64) -> RhiResult<u64> {
             RhiErrorKind::OutOfMemory,
             "Metal clear texture row alignment overflows",
         )
-        .at("MetalCommandSpine::encode_batch")
+        .at("MetalNativeEncoder")
     })
 }
 
-fn lower_readback(
+pub(super) fn lower_readback(
     device: &ProtocolObject<dyn MTLDevice>,
     command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
     blit: &mut Option<Retained<ProtocolObject<dyn MTLBlitCommandEncoder>>>,
@@ -2670,7 +1857,7 @@ fn lower_readback(
                     RhiErrorKind::OutOfMemory,
                     "Metal buffer readback exceeds host address space",
                 )
-                .at("MetalCommandSpine::encode_batch")
+                .at("MetalNativeEncoder")
             })?;
             let staging = device
                 .newBufferWithLength_options(byte_len, MTLResourceOptions::StorageModeShared)
@@ -2679,7 +1866,7 @@ fn lower_readback(
                         RhiErrorKind::OutOfMemory,
                         "Metal buffer-readback staging allocation failed",
                     )
-                    .at("MetalCommandSpine::encode_batch")
+                    .at("MetalNativeEncoder")
                 })?;
             let encoder = ensure_blit(command_buffer, blit)?;
             unsafe {
@@ -2713,7 +1900,7 @@ fn lower_readback(
                     RhiErrorKind::Unsupported,
                     "Metal texture readback format has no byte-copy block size",
                 )
-                .at("MetalCommandSpine::encode_batch")
+                .at("MetalNativeEncoder")
             })?;
             let (_, block_height) = crate::api::format::block_extent(src.descriptor().format);
             let tight_row = extent
@@ -2725,7 +1912,7 @@ fn lower_readback(
                         RhiErrorKind::InvalidUsage,
                         "Metal texture readback row pitch overflows",
                     )
-                    .at("MetalCommandSpine::encode_batch")
+                    .at("MetalNativeEncoder")
                 })?;
             // The documented portable layout makes no promise of tight rows.
             // A 256-byte pitch satisfies Metal's blit-buffer alignment on the
@@ -2750,21 +1937,21 @@ fn lower_readback(
                         RhiErrorKind::InvalidUsage,
                         "Metal texture readback image stride overflows",
                     )
-                    .at("MetalCommandSpine::encode_batch")
+                    .at("MetalNativeEncoder")
                 })?;
             let total_size = image_stride.checked_mul(images).ok_or_else(|| {
                 RhiError::new(
                     RhiErrorKind::OutOfMemory,
                     "Metal texture readback staging size overflows",
                 )
-                .at("MetalCommandSpine::encode_batch")
+                .at("MetalNativeEncoder")
             })?;
             let byte_len = usize::try_from(total_size).map_err(|_| {
                 RhiError::new(
                     RhiErrorKind::OutOfMemory,
                     "Metal texture readback exceeds host address space",
                 )
-                .at("MetalCommandSpine::encode_batch")
+                .at("MetalNativeEncoder")
             })?;
             let staging = device
                 .newBufferWithLength_options(byte_len, MTLResourceOptions::StorageModeShared)
@@ -2773,7 +1960,7 @@ fn lower_readback(
                         RhiErrorKind::OutOfMemory,
                         "Metal texture-readback staging allocation failed",
                     )
-                    .at("MetalCommandSpine::encode_batch")
+                    .at("MetalNativeEncoder")
                 })?;
             let texture = metal_texture(src)?;
             let encoder = ensure_blit(command_buffer, blit)?;
@@ -2784,7 +1971,7 @@ fn lower_readback(
                         RhiErrorKind::InvalidUsage,
                         "Metal texture readback layer offset overflows",
                     )
-                    .at("MetalCommandSpine::encode_batch")
+                    .at("MetalNativeEncoder")
                 })?;
                 unsafe {
                     encoder.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage(
@@ -2810,7 +1997,7 @@ fn lower_readback(
                             RhiErrorKind::OutOfMemory,
                             "Metal texture readback row pitch exceeds public layout",
                         )
-                        .at("MetalCommandSpine::encode_batch")
+                        .at("MetalNativeEncoder")
                     })?,
                     rows_per_image,
                     total_size,
@@ -2820,7 +2007,7 @@ fn lower_readback(
         _ => {
             return Err(
                 RhiError::new(RhiErrorKind::Unsupported, "unknown readback request")
-                    .at("MetalCommandSpine::encode_batch"),
+                    .at("MetalNativeEncoder"),
             );
         }
     }
@@ -2833,56 +2020,8 @@ fn align_readback_row(value: u64) -> RhiResult<u64> {
             RhiErrorKind::InvalidUsage,
             "Metal texture readback row pitch alignment overflows",
         )
-        .at("MetalCommandSpine::encode_batch")
+        .at("MetalNativeEncoder")
     })
-}
-
-fn unsupported_copy(copy: &CopyRecord) -> RhiError {
-    let name = match copy {
-        CopyRecord::ExternalImage(_) => "external-image copy",
-        CopyRecord::ClearBuffer { .. } => "buffer clear",
-        CopyRecord::ClearTexture { .. } => "texture clear",
-        CopyRecord::Buffer(_) => "buffer copy",
-        CopyRecord::BufferToTexture(_) => "buffer-to-texture copy",
-        CopyRecord::TextureToBuffer(_) => "texture-to-buffer copy",
-        CopyRecord::Texture(_) => "texture copy",
-        CopyRecord::Resolve(_) => "texture resolve",
-        CopyRecord::Blit(_) => "texture blit",
-    };
-    RhiError::new(
-        RhiErrorKind::Unsupported,
-        format!("Metal baseline has no lowering for {name}"),
-    )
-    .at("MetalCommandSpine::encode_batch")
-}
-
-fn payload_name(payload: &RecordedPayload) -> &'static str {
-    match payload {
-        RecordedPayload::MeshDispatch(_) => "mesh dispatch",
-        RecordedPayload::MeshIndirect(_) => "indirect mesh dispatch",
-        RecordedPayload::RayTracingBegin(_) => "ray-tracing begin",
-        RecordedPayload::RayTracingDispatch(_) => "ray dispatch",
-        RecordedPayload::RayTracingEnd => "ray-tracing end",
-        RecordedPayload::AccelerationStructure(_) => "acceleration-structure command",
-        RecordedPayload::RasterBegin(_) => "raster begin",
-        RecordedPayload::RasterDraw(_) => "raster draw",
-        RecordedPayload::RasterEnd => "raster end",
-        RecordedPayload::ComputeBegin(_) => "compute begin",
-        RecordedPayload::ComputeDispatch(_) => "compute dispatch",
-        RecordedPayload::RasterIndirect(_) => "indirect raster draw",
-        RecordedPayload::ComputeIndirect(_) => "indirect compute dispatch",
-        RecordedPayload::QueryBegin { .. } => "query begin",
-        RecordedPayload::QueryEnd { .. } => "query end",
-        RecordedPayload::TimestampWrite { .. } => "timestamp write",
-        RecordedPayload::QueryResolve(_) => "query resolve",
-        RecordedPayload::ComputeEnd => "compute end",
-        RecordedPayload::Copy(_) => "copy",
-        RecordedPayload::Upload(_) => "upload",
-        RecordedPayload::Readback(_) => "readback",
-        RecordedPayload::DebugPush(_) => "debug push",
-        RecordedPayload::DebugPop => "debug pop",
-        RecordedPayload::DebugMarker(_) => "debug marker",
-    }
 }
 
 #[cfg(test)]

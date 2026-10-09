@@ -345,18 +345,21 @@ impl WebGl2BrowserDiscovery {
         for binding in &descriptor.layout.bindings {
             match binding.kind {
                 GlShaderResourceKind::UniformBuffer => {
-                    let index = self.raw.get_uniform_block_index(program, &binding.name);
-                    if index == Gl::INVALID_INDEX {
+                    let index = binding.names.iter().find_map(|name| {
+                        let index = self.raw.get_uniform_block_index(program, name);
+                        (index != Gl::INVALID_INDEX).then_some(index)
+                    });
+                    let Some(index) = index else {
                         return Err(Self::validation(
                             op,
                             "declared uniform block is missing from the linked program",
                         ));
-                    }
+                    };
                     assignments.push(GlExecutableBindingAssignment {
                         logical: binding.location,
                         executable: GlExecutableBindingLocation::UniformBlock(index),
                     });
-                    blocks.retain(|name| name != &binding.name);
+                    blocks.retain(|name| !binding.names.iter().any(|candidate| candidate == name));
                 }
                 GlShaderResourceKind::Sampler
                 | GlShaderResourceKind::Texture
@@ -364,9 +367,9 @@ impl WebGl2BrowserDiscovery {
                     let declared_size = binding.array_count.max(1);
                     let found = samplers
                         .iter()
-                        .find(|(name, _)| name == &binding.name)
-                        .map(|&(_, size)| size);
-                    let Some(active_size) = found else {
+                        .find(|(name, _)| binding.names.iter().any(|candidate| candidate == name))
+                        .map(|(name, size)| (name.clone(), *size));
+                    let Some((uniform_name, active_size)) = found else {
                         return Err(Self::validation(
                             op,
                             "declared sampler binding is missing from the linked program",
@@ -390,9 +393,9 @@ impl WebGl2BrowserDiscovery {
                     }
                     for element in 0..active_size {
                         let element_name = if active_size == 1 {
-                            binding.name.clone()
+                            uniform_name.clone()
                         } else {
-                            format!("{}[{element}]", binding.name)
+                            format!("{uniform_name}[{element}]")
                         };
                         let Some(location) = self.raw.get_uniform_location(program, &element_name)
                         else {
@@ -407,7 +410,9 @@ impl WebGl2BrowserDiscovery {
                         logical: binding.location,
                         executable: GlExecutableBindingLocation::TextureUnit(unit),
                     });
-                    samplers.retain(|(name, _)| name != &binding.name);
+                    samplers.retain(|(name, _)| {
+                        !binding.names.iter().any(|candidate| candidate == name)
+                    });
                 }
                 // The one refusal in this loop, and it is not a stub.  A WebGL2
                 // program is never a compute program, so a layout naming a

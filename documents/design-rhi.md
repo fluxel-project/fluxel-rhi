@@ -8,12 +8,12 @@ that explain it, and names work that is deliberately not enabled yet.
 ## Scope
 
 RHI owns portable GPU execution: device-scoped resources, shader and pipeline
-creation, recording actual uses, plans, submission, completion, presentation,
+creation, direct command encoding and actual-use tracking, plans, submission, completion, presentation,
 readback, retirement, capability reporting, diagnostics, and observability.
 
 It does not own a RenderGraph, renderer scheduling, material policy, native
-handles, native synchronization objects, capture artifacts, or a replay
-runtime. Backends keep their native objects and strategy private.
+handles, or native synchronization objects. Backends keep their native objects
+and strategy private.
 
 ## Public model
 
@@ -26,7 +26,7 @@ ConfiguredPresentation -> AcquiredFrame -> FrameAttachment -> present outcome
 
 The public modules are `platform`, `capability`, `format`, `resource`,
 `shader`, `binding`, `pipeline`, `command`, `submission`, `presentation`,
-`statistics`, `diagnostics`, and crate-private tooling support.
+`statistics`, and `diagnostics`.
 
 Native host composition enters through the public crate-level provider factories
 (`create_dx12_provider`, `create_vulkan_provider`, `create_metal_provider`, or
@@ -42,13 +42,13 @@ window handles stay in the host/backend seam.
   immutable capability snapshot before exposing a device; every public query on
   that snapshot is total. A supported fact requires validation, native
   lowering, lifetime/loss handling, and conformance evidence.
-- `command::ResourceUse` is derived from recorded commands. It includes
+- `command::ResourceUse` is derived while commands are encoded. It includes
   scheduling-only query-slot writes and resolve reads without pretending a
   `QuerySet` is a buffer. RenderGraph owns declarations and scheduling, while
   directly reusing this portable vocabulary; RHI itself does not own graph
   policy or types.
 - Only operations which may wait for a future event are async. Logical object
-  creation, validation, capability queries, and recording are synchronous.
+  creation, validation, capability queries, and command encoding are synchronous.
 - `submit(Err)` accepts no native work. `submit(Ok)` transfers plan ownership;
   acceptance, GPU completion, and present outcome remain distinct states.
 - `FrameAttachment` is not a `Texture` or `TextureView`. It is valid only for
@@ -74,7 +74,6 @@ device never exposes it.
 | [0015](adr/0015-plan-scoped-transient-allocation.md) | Freeze plan-scoped transient lifetimes and dedicated fallback. |
 | [0016](adr/0016-capability-claims-require-lowering-closure.md) | Publish facts only after lowering closure. |
 | [0017](adr/0017-presentation-is-not-a-texture-view.md) | Keep presentation frames separate from textures and completion. |
-| [0018](adr/0018-capture-observability-without-capture-ownership.md) | Preserve observability without owning capture/replay. |
 | [0019](adr/0019-portable-logical-statistics.md) | Keep statistics logical rather than native profiling. |
 | [0020](adr/0020-optional-feature-family-admission.md) | Admit optional feature families as complete portable contracts. |
 | [0021](adr/0021-shader-owned-immediate-abi.md) | Derive executable immediate-data ABI from shader artifacts, not interface supersets. |
@@ -88,7 +87,7 @@ conformance evidence, platform test gates, and the GL-family private boundary.
 
 The public vocabulary already carries provisional/experimental advanced
 mesh/task shaders, ray tracing, cooperative matrices, aliasing, external
-interop, multiplanar formats, native debug capture, HDR/timing, and advanced
+interop, multiplanar formats, native debugging tools, HDR/timing, and advanced
 descriptor indexing. These names do not freeze a descriptor ABI or promise
 availability. A backend keeps each incomplete fact disabled and returns
 structured `Unsupported` before native work. It must not replace an incomplete

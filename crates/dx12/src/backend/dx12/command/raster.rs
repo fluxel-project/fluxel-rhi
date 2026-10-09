@@ -34,18 +34,18 @@ use crate::api::command::attachment::{
     ColorAttachmentView, DepthAttachmentMode, StencilAttachmentMode,
 };
 use crate::api::command::geometry::{ColorClearValue, LoadOp};
-use crate::api::command::record::{RasterBegin, RasterDraw, RasterIndirect, SecondaryRasterWork};
-use crate::api::command::RasterAttachmentClear;
+use crate::api::command::record::{RasterBegin, SecondaryRasterWork};
 use crate::api::command::{AccessMask, IndexFormat, ResourceUse, TextureUseIntent};
+use crate::api::command::{Color, RasterAttachmentClear, Rect, Viewport};
 use crate::api::identity::ObjectId;
-use crate::api::pipeline::PrimitiveTopology;
+use crate::api::pipeline::{PrimitiveTopology, RasterPipeline};
 use crate::api::presentation::FrameAttachment;
-use crate::api::resource::buffer::Buffer;
+use crate::api::resource::buffer::{Buffer, BufferBinding};
 use crate::api::resource::texture::{Extent3d, Texture, TextureDimension};
 use crate::api::resource::view::{TextureView, TextureViewDimension};
-use crate::backend::dx12::binding::vocabulary::RegisterClass;
 use crate::backend::dx12::binding::Dx12BindGroup;
-use crate::backend::dx12::failure::{ref_native, Dx12Failure};
+use crate::backend::dx12::binding::vocabulary::RegisterClass;
+use crate::backend::dx12::failure::{Dx12Failure, ref_native};
 use crate::backend::dx12::pipeline::Dx12RasterPipeline;
 use crate::backend::dx12::platform::facts::dxgi_format;
 use crate::backend::dx12::presentation::Dx12FrameAttachment;
@@ -88,6 +88,26 @@ pub(super) struct RasterScopeState {
     attachment_extent: Extent3d,
 }
 
+/// Minimal inherited state used while a D3D12 bundle records draw commands.
+/// Secondary recordings must set viewport and scissor explicitly; attachments
+/// and their dimensions are inherited from the parent direct list.
+pub(super) fn secondary_scope_stub() -> RasterScopeState {
+    RasterScopeState {
+        colors: Vec::new(),
+        clear_colors: Vec::new(),
+        null_rtv_heaps: Vec::new(),
+        resolves: Vec::new(),
+        color_resolves: Vec::new(),
+        depth_view: None,
+        depth_handle: None,
+        depth_heap: None,
+        depth_read_only: false,
+        depth_mode: None,
+        stencil_mode: None,
+        attachment_extent: Extent3d::d2(0, 0),
+    }
+}
+
 /// One color-attachment resolve: source MSAA texture into a single-sample target.
 struct Dx12ColorResolve {
     src: windows::Win32::Graphics::Direct3D12::ID3D12Resource,
@@ -117,6 +137,27 @@ struct Dx12RenderAttachment {
 enum AttachmentRetention {
     Texture(TextureView),
     Frame(FrameAttachment),
+}
+
+/// A frame is usable by a raster draw only through the scope that attached it.
+/// The scope owns its PRESENT/render-target transitions and keeps the acquired
+/// attachment alive through submission; a draw's `ResourceUse::Frame` merely
+/// repeats that same access for portable hazard tracking.
+fn scope_contains_frame(
+    scope: &RasterScopeState,
+    frame: crate::api::presentation::AcquiredFrameId,
+) -> bool {
+    scope.colors.iter().any(|attachment| {
+        matches!(
+            &attachment.retention,
+            AttachmentRetention::Frame(attached) if attached.frame_id() == frame
+        )
+    }) || scope.resolves.iter().any(|resolve| {
+        resolve
+            .frame
+            .as_ref()
+            .is_some_and(|attached| attached.frame_id() == frame)
+    })
 }
 
 pub(super) fn lower_raster_begin(
@@ -597,27 +638,51 @@ fn clear_rect(
     })
 }
 
-pub(super) fn lower_raster_draw(
+pub(super) fn lower_raster_draw_view(
     list: &ID3D12GraphicsCommandList,
-    draw: &RasterDraw,
+    draw: &RasterDrawView<'_>,
     uses: &[ResourceUse],
     scope: &RasterScopeState,
     committed: &mut CommittedBatch,
+    indexed: bool,
 ) -> Result<(), Dx12Failure> {
-    lower_raster_draw_inner(list, draw, uses, scope, committed, true, true)
+    if indexed != draw.index.is_some() {
+        return Err(unsupported(
+            "typed indexed draw state",
+            "an indexed draw requires an index buffer and a non-indexed draw must not use one",
+        ));
+    }
+    lower_raster_draw_inner(list, draw, uses, scope, committed, true, true, false)
 }
 
+/// Borrowed current graphics state plus the one draw's scalar arguments.
+/// Native encoders pass this directly without constructing a draw packet.
+pub(super) struct RasterDrawView<'a> {
+    pub(super) pipeline: &'a RasterPipeline,
+    pub(super) groups: &'a [crate::api::command::record::BoundGroup],
+    pub(super) vertex_buffers: &'a [(u32, BufferBinding)],
+    pub(super) index: Option<&'a crate::api::command::record::BoundIndexBuffer>,
+    pub(super) viewport: Option<Viewport>,
+    pub(super) scissor: Option<Rect>,
+    pub(super) blend_constant: Color,
+    pub(super) stencil_reference: u32,
+    pub(super) range: core::ops::Range<u32>,
+    pub(super) instances: core::ops::Range<u32>,
+    pub(super) base_vertex: i32,
+    pub(super) immediates: &'a [crate::api::command::record::ImmediateWrite],
+}
 /// Writes a draw's state and geometry.  A D3D12 bundle cannot contain resource
 /// barriers, so inherited raster work uses this same encoder with transitions
 /// disabled and emits them on the parent direct list around `ExecuteBundle`.
-fn lower_raster_draw_inner(
+pub(super) fn lower_raster_draw_inner(
     list: &ID3D12GraphicsCommandList,
-    draw: &RasterDraw,
+    draw: &RasterDrawView<'_>,
     uses: &[ResourceUse],
     scope: &RasterScopeState,
     committed: &mut CommittedBatch,
     record_transitions: bool,
     set_descriptor_heaps: bool,
+    inherit_dynamic_state: bool,
 ) -> Result<(), Dx12Failure> {
     let pipeline = draw
         .pipeline
@@ -631,7 +696,7 @@ fn lower_raster_draw_inner(
             )
         })?;
     let mut groups = Vec::with_capacity(draw.groups.len());
-    for bound in &draw.groups {
+    for bound in draw.groups {
         let group = bound
             .group
             .native()
@@ -676,11 +741,17 @@ fn lower_raster_draw_inner(
                     ));
                 }
             },
-            ResourceUse::Frame(_) => {
-                return Err(unsupported(
-                    "a presentation frame used by a raster draw",
-                    "presentation attachment lowering is not implemented",
-                ));
+            ResourceUse::Frame(frame_use) => {
+                if !scope_contains_frame(scope, frame_use.frame) {
+                    return Err(unsupported(
+                        "a presentation frame used by a raster draw outside its current scope",
+                        "DX12 only lowers a frame as the scope attachment that owns its PRESENT-to-render-target transition",
+                    ));
+                }
+                // `lower_raster_begin` already transitioned and retained this
+                // exact attachment, and `lower_raster_end` restores PRESENT.
+                // Draw-use metadata repeats that attachment access for hazard
+                // tracking; it must not emit a second transition here.
             }
             ResourceUse::AccelerationStructure(_) => {
                 return Err(unsupported(
@@ -710,7 +781,7 @@ fn lower_raster_draw_inner(
         committed.raster_textures.push(texture.clone());
     }
     let mut vertex_views = Vec::with_capacity(draw.vertex_buffers.len());
-    for (slot, binding) in &draw.vertex_buffers {
+    for (slot, binding) in draw.vertex_buffers {
         let buffer = dx12_buffer(&binding.buffer)?;
         let stride = draw
             .pipeline
@@ -751,7 +822,7 @@ fn lower_raster_draw_inner(
     unsafe {
         list.SetGraphicsRootSignature(pipeline.root_signature());
         list.SetPipelineState(pipeline.pipeline_state());
-        for write in &draw.immediates {
+        for write in draw.immediates {
             let (parameter, destination) = pipeline
                 .immediate_root_parameter(write.offset, write.bytes.len() as u32)
                 .ok_or_else(|| {
@@ -806,22 +877,38 @@ fn lower_raster_draw_inner(
         for (slot, view) in &vertex_views {
             list.IASetVertexBuffers(*slot, Some(std::slice::from_ref(view)));
         }
-        let viewport = draw.viewport.unwrap_or_else(|| default_viewport(scope));
-        list.RSSetViewports(&[D3D12_VIEWPORT {
-            TopLeftX: viewport.x,
-            TopLeftY: viewport.y,
-            Width: viewport.width,
-            Height: viewport.height,
-            MinDepth: viewport.min_depth,
-            MaxDepth: viewport.max_depth,
-        }]);
-        let scissor = draw.scissor.unwrap_or_else(|| default_scissor(scope));
-        list.RSSetScissorRects(&[windows::Win32::Foundation::RECT {
-            left: scissor.x as i32,
-            top: scissor.y as i32,
-            right: scissor.right().unwrap_or(u32::MAX) as i32,
-            bottom: scissor.bottom().unwrap_or(u32::MAX) as i32,
-        }]);
+        let viewport = match draw.viewport {
+            Some(viewport) => viewport,
+            None if inherit_dynamic_state => {
+                // The parent direct list established attachment-sized defaults.
+                // A bundle must leave them untouched to inherit that state.
+                Viewport::new(0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+            }
+            None => default_viewport(scope),
+        };
+        if !inherit_dynamic_state || draw.viewport.is_some() {
+            list.RSSetViewports(&[D3D12_VIEWPORT {
+                TopLeftX: viewport.x,
+                TopLeftY: viewport.y,
+                Width: viewport.width,
+                Height: viewport.height,
+                MinDepth: viewport.min_depth,
+                MaxDepth: viewport.max_depth,
+            }]);
+        }
+        let scissor = match draw.scissor {
+            Some(scissor) => scissor,
+            None if inherit_dynamic_state => Rect::new(0, 0, 0, 0),
+            None => default_scissor(scope),
+        };
+        if !inherit_dynamic_state || draw.scissor.is_some() {
+            list.RSSetScissorRects(&[windows::Win32::Foundation::RECT {
+                left: scissor.x as i32,
+                top: scissor.y as i32,
+                right: scissor.right().unwrap_or(u32::MAX) as i32,
+                bottom: scissor.bottom().unwrap_or(u32::MAX) as i32,
+            }]);
+        }
         list.OMSetBlendFactor(Some(&[
             draw.blend_constant.r,
             draw.blend_constant.g,
@@ -916,74 +1003,66 @@ pub(super) fn lower_secondary_raster_work(
     scope: &RasterScopeState,
     committed: &mut CommittedBatch,
 ) -> Result<(), Dx12Failure> {
-    for command in work.commands() {
-        let crate::api::command::record::RecordedPayload::RasterDraw(draw) = &command.payload
-        else {
-            return Err(unsupported(
-                "a non-draw command in secondary raster work",
-                "portable validation must retain direct raster draws only",
-            ));
-        };
-
-        // Establish shader-visible resource states on the direct list before
-        // the bundle runs, then restore the batch invariant afterwards.
-        let leaving = secondary_draw_transitions(parent, &command.uses, committed)?;
-        bind_secondary_descriptor_heaps(parent, draw)?;
-
-        let allocator = unsafe {
-            device
-                .CreateCommandAllocator::<ID3D12CommandAllocator>(D3D12_COMMAND_LIST_TYPE_BUNDLE)
-                .map_err(|error| ref_native(&error))?
-        };
-        let bundle = unsafe {
-            device
-                .CreateCommandList::<_, _, ID3D12GraphicsCommandList>(
-                    0,
-                    D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                    &allocator,
-                    None::<&ID3D12PipelineState>,
-                )
-                .map_err(|error| ref_native(&error))?
-        };
-        lower_raster_draw_inner(&bundle, draw, &command.uses, scope, committed, false, false)?;
-        unsafe {
-            bundle.Close().map_err(|error| ref_native(&error))?;
-            parent.ExecuteBundle(&bundle);
-        }
-        leaving.record(parent);
-        committed.secondary_bundles.push((allocator, bundle));
-    }
-    Ok(())
-}
-
-/// Selects the descriptor heaps on the direct list for a bundle.  Root tables
-/// are set by the bundle itself, but heap selection is explicitly disallowed in
-/// bundle command streams.
-fn bind_secondary_descriptor_heaps(
-    parent: &ID3D12GraphicsCommandList,
-    draw: &RasterDraw,
-) -> Result<(), Dx12Failure> {
-    let Some(bound) = draw.groups.first() else {
-        return Ok(());
-    };
-    let group = bound
-        .group
+    if let Some(native) = work
         .native()
         .as_any()
-        .downcast_ref::<Dx12BindGroup>()
-        .ok_or_else(|| {
+        .downcast_ref::<super::native::Dx12NativeCommandBuffer>()
+    {
+        let mut bundle = native.take().ok_or_else(|| {
             unsupported(
-                "a secondary-raster bind group this device did not create",
-                "its descriptor table belongs to another backend",
+                "a secondary raster command buffer submitted more than once",
+                "a D3D12 bundle allocator remains owned by its first accepted submission",
             )
         })?;
-    unsafe {
-        parent.SetDescriptorHeaps(&[
-            Some(group.view_heap().clone()),
-            Some(group.sampler_heap().clone()),
-        ]);
+        if !bundle.secondary {
+            return Err(unsupported(
+                "a primary command buffer used as secondary raster work",
+                "ExecuteBundle accepts only D3D12 bundle command lists",
+            ));
+        }
+        let leaving = secondary_draw_transitions(parent, work.uses(), scope, committed)?;
+        if let Some((views, samplers)) = bundle.secondary_heaps.take() {
+            unsafe { parent.SetDescriptorHeaps(&[Some(views.clone()), Some(samplers.clone())]) };
+            committed.raster_descriptor_heaps.push(views);
+            committed.raster_descriptor_heaps.push(samplers);
+        }
+        // A bundle inherits dynamic state. Establish the parent attachment
+        // defaults first; a bundle draw with explicit state overwrites these.
+        set_inherited_dynamic_state(parent, scope);
+        unsafe { parent.ExecuteBundle(&bundle.list) };
+        leaving.record(parent);
+        committed
+            .secondary_bundles
+            .push((bundle.allocator, bundle.list));
+        committed.absorb(bundle.committed);
+        return Ok(());
     }
-    Ok(())
+
+    Err(unsupported(
+        "a secondary raster command buffer without DX12 native backing",
+        "direct DX12 encoding requires the child bundle to be closed before parent execution",
+    ))
+}
+
+fn set_inherited_dynamic_state(parent: &ID3D12GraphicsCommandList, scope: &RasterScopeState) {
+    let viewport = default_viewport(scope);
+    let scissor = default_scissor(scope);
+    unsafe {
+        parent.RSSetViewports(&[D3D12_VIEWPORT {
+            TopLeftX: viewport.x,
+            TopLeftY: viewport.y,
+            Width: viewport.width,
+            Height: viewport.height,
+            MinDepth: viewport.min_depth,
+            MaxDepth: viewport.max_depth,
+        }]);
+        parent.RSSetScissorRects(&[windows::Win32::Foundation::RECT {
+            left: scissor.x as i32,
+            top: scissor.y as i32,
+            right: scissor.right().unwrap_or(u32::MAX) as i32,
+            bottom: scissor.bottom().unwrap_or(u32::MAX) as i32,
+        }]);
+    }
 }
 
 /// Emits the parent-side state transitions for one bundle and returns the
@@ -993,6 +1072,7 @@ fn bind_secondary_descriptor_heaps(
 fn secondary_draw_transitions(
     parent: &ID3D12GraphicsCommandList,
     uses: &[ResourceUse],
+    scope: &RasterScopeState,
     committed: &mut CommittedBatch,
 ) -> Result<Transitions, Dx12Failure> {
     let mut entering = Transitions::default();
@@ -1026,11 +1106,13 @@ fn secondary_draw_transitions(
                     ));
                 }
             },
-            ResourceUse::Frame(_) => {
-                return Err(unsupported(
-                    "a presentation frame used by secondary raster work",
-                    "presentation attachment lowering is not implemented",
-                ));
+            ResourceUse::Frame(frame_use) => {
+                if !scope_contains_frame(scope, frame_use.frame) {
+                    return Err(unsupported(
+                        "a presentation frame used by secondary raster work outside its parent scope",
+                        "DX12 bundles inherit only the parent scope attachment transitions",
+                    ));
+                }
             }
             ResourceUse::AccelerationStructure(_) => {
                 return Err(unsupported(
@@ -1063,33 +1145,23 @@ fn secondary_draw_transitions(
     Ok(leaving)
 }
 
-/// Executes one native draw signature after reusing the ordinary raster state
-/// encoder.  The zero-count setup draw emits no primitives; it exists solely to
-/// keep direct and indirect binding/IA/dynamic-state lowering identical.
-pub(super) fn lower_raster_indirect(
+/// Encodes indirect draw metadata from the native encoder's borrowed graphics
+/// state without constructing or retaining a recorded raster packet.
+pub(super) fn lower_raster_indirect_view(
     device: &ID3D12Device,
     list: &ID3D12GraphicsCommandList,
-    indirect: &RasterIndirect,
+    setup: &RasterDrawView<'_>,
+    argument_buffer: &Buffer,
+    arguments_offset: u64,
+    draw_count: u32,
+    stride: u32,
+    count_meta: Option<(&Buffer, u64, u32)>,
     uses: &[ResourceUse],
     scope: &RasterScopeState,
     committed: &mut CommittedBatch,
 ) -> Result<(), Dx12Failure> {
-    let setup = RasterDraw {
-        pipeline: indirect.pipeline.clone(),
-        groups: indirect.groups.clone(),
-        vertex_buffers: indirect.vertex_buffers.clone(),
-        index: indirect.index.clone(),
-        viewport: indirect.viewport,
-        scissor: indirect.scissor,
-        blend_constant: indirect.blend_constant,
-        stencil_reference: indirect.stencil_reference,
-        range: 0..0,
-        instances: 0..0,
-        base_vertex: 0,
-        immediates: Vec::new(),
-    };
-    lower_raster_draw(list, &setup, uses, scope, committed)?;
-    let indexed = indirect.index.is_some();
+    lower_raster_draw_inner(list, &setup, uses, scope, committed, true, true, false)?;
+    let indexed = setup.index.is_some();
     let kind = if indexed {
         D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED
     } else {
@@ -1100,7 +1172,7 @@ pub(super) fn lower_raster_indirect(
         Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0::default(),
     };
     let signature_desc = D3D12_COMMAND_SIGNATURE_DESC {
-        ByteStride: indirect.stride,
+        ByteStride: stride,
         NumArgumentDescs: 1,
         pArgumentDescs: &desc,
         NodeMask: 0,
@@ -1126,9 +1198,9 @@ pub(super) fn lower_raster_indirect(
             "CreateCommandSignature returned success without a signature",
         )
     })?;
-    let arguments = dx12_buffer(&indirect.arguments)?;
-    let count = match indirect.count.as_ref() {
-        Some((buffer, offset, max)) => Some((dx12_buffer(buffer)?, *offset, *max)),
+    let arguments = dx12_buffer(argument_buffer)?;
+    let count = match count_meta {
+        Some((buffer, offset, max)) => Some((dx12_buffer(buffer)?, offset, max)),
         None => None,
     };
     let mut entering = Transitions::default();
@@ -1148,11 +1220,9 @@ pub(super) fn lower_raster_indirect(
     unsafe {
         list.ExecuteIndirect(
             &signature,
-            count
-                .as_ref()
-                .map_or(indirect.draw_count, |(_, _, max)| *max),
+            count.as_ref().map_or(draw_count, |(_, _, max)| *max),
             arguments.resource(),
-            indirect.arguments_offset,
+            arguments_offset,
             count.as_ref().map(|(buffer, _, _)| buffer.resource()),
             count.as_ref().map_or(0, |(_, offset, _)| *offset),
         );
@@ -1171,8 +1241,8 @@ pub(super) fn lower_raster_indirect(
         );
     }
     leaving.record(list);
-    committed.indirect_buffers.push(indirect.arguments.clone());
-    if let Some((buffer, _, _)) = &indirect.count {
+    committed.indirect_buffers.push(argument_buffer.clone());
+    if let Some((buffer, _, _)) = count_meta {
         committed.indirect_buffers.push(buffer.clone());
     }
     committed.command_signatures.push(signature);
@@ -1193,6 +1263,7 @@ pub(super) fn lower_raster_end(
         depth_heap,
         depth_read_only,
         attachment_extent: _,
+        ..
     } = scope;
 
     // Multisample color resolve, before the source leaves RENDER_TARGET. Each
@@ -1296,10 +1367,7 @@ fn create_rtv_range(
 ) -> Result<(ID3D12DescriptorHeap, D3D12_CPU_DESCRIPTOR_HANDLE), Dx12Failure> {
     let texture = dx12_texture(view.texture())?;
     let descriptor = view.descriptor();
-    // A multisampled color attachment is a legitimate MSAA render target: the
-    // resource carries `SampleDesc.Count = sample_count`, and an RTV on it is
-    // dimensioned by D3D12 to match. The color RTV form is identical regardless
-    // of sample count; only resolve-aware layout differs, handled in scope end.
+    let multisampled = view.texture().descriptor().sample_count > 1;
     let format = dxgi_format(view.format()).ok_or_else(|| {
         unsupported(
             "a color attachment format without DXGI mapping",
@@ -1346,6 +1414,21 @@ fn create_rtv_range(
                 },
             },
         }
+    } else if multisampled
+        && matches!(view.texture().descriptor().dimension, TextureDimension::D2)
+        && (view.texture().descriptor().array_layers > 1
+            || matches!(descriptor.dimension, TextureViewDimension::D2Array))
+    {
+        D3D12_RENDER_TARGET_VIEW_DESC {
+            Format: format,
+            ViewDimension: D3D12_RTV_DIMENSION_TEXTURE2DMSARRAY,
+            Anonymous: D3D12_RENDER_TARGET_VIEW_DESC_0 {
+                Texture2DMSArray: D3D12_TEX2DMS_ARRAY_RTV {
+                    FirstArraySlice: base_layer,
+                    ArraySize: layer_count,
+                },
+            },
+        }
     } else if matches!(view.texture().descriptor().dimension, TextureDimension::D2)
         && matches!(
             descriptor.dimension,
@@ -1364,6 +1447,23 @@ fn create_rtv_range(
                     ArraySize: layer_count,
                     PlaneSlice: 0,
                 },
+            },
+        }
+    } else if multisampled
+        && matches!(view.texture().descriptor().dimension, TextureDimension::D2)
+        && matches!(descriptor.dimension, TextureViewDimension::D2)
+    {
+        if depth_slice.is_some() || relative_base_layer != 0 || layer_count != 1 {
+            return Err(unsupported(
+                "a layered clear of a non-array 2D color attachment",
+                "only a 2D-array RTV can select several attachment layers",
+            ));
+        }
+        D3D12_RENDER_TARGET_VIEW_DESC {
+            Format: format,
+            ViewDimension: D3D12_RTV_DIMENSION_TEXTURE2DMS,
+            Anonymous: D3D12_RENDER_TARGET_VIEW_DESC_0 {
+                Texture2DMS: D3D12_TEX2DMS_RTV::default(),
             },
         }
     } else if matches!(view.texture().descriptor().dimension, TextureDimension::D2)
@@ -1436,10 +1536,13 @@ fn create_dsv_range(
         )
     })?;
     let mut flags = D3D12_DSV_FLAG_NONE;
-    if matches!(depth, Some(DepthAttachmentMode::ReadOnly) | None) {
+    if matches!(depth, Some(DepthAttachmentMode::ReadOnly)) {
         flags |= D3D12_DSV_FLAG_READ_ONLY_DEPTH;
     }
-    if matches!(stencil, Some(StencilAttachmentMode::ReadOnly) | None) {
+    // A depth-only format has no stencil plane. Marking that absent plane
+    // read-only produces an invalid DSV descriptor; CreateDepthStencilView is
+    // void, so some drivers defer the error until a later GPU call.
+    if matches!(stencil, Some(StencilAttachmentMode::ReadOnly)) {
         flags |= D3D12_DSV_FLAG_READ_ONLY_STENCIL;
     }
     let heap = cpu_heap(device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV)?;
@@ -1453,7 +1556,38 @@ fn create_dsv_range(
                 "validated layer ranges must fit the native DSV",
             )
         })?;
-    let desc = if view.texture().descriptor().array_layers > 1
+    let multisampled = view.texture().descriptor().sample_count > 1;
+    let desc = if multisampled
+        && (view.texture().descriptor().array_layers > 1
+            || matches!(descriptor.dimension, TextureViewDimension::D2Array))
+    {
+        D3D12_DEPTH_STENCIL_VIEW_DESC {
+            Format: format,
+            ViewDimension: D3D12_DSV_DIMENSION_TEXTURE2DMSARRAY,
+            Flags: flags,
+            Anonymous: D3D12_DEPTH_STENCIL_VIEW_DESC_0 {
+                Texture2DMSArray: D3D12_TEX2DMS_ARRAY_DSV {
+                    FirstArraySlice: base_layer,
+                    ArraySize: layer_count,
+                },
+            },
+        }
+    } else if multisampled {
+        if relative_base_layer != 0 || layer_count != 1 {
+            return Err(unsupported(
+                "a layered clear of a non-array 2D depth attachment",
+                "only a 2D-array DSV can select several attachment layers",
+            ));
+        }
+        D3D12_DEPTH_STENCIL_VIEW_DESC {
+            Format: format,
+            ViewDimension: D3D12_DSV_DIMENSION_TEXTURE2DMS,
+            Flags: flags,
+            Anonymous: D3D12_DEPTH_STENCIL_VIEW_DESC_0 {
+                Texture2DMS: D3D12_TEX2DMS_DSV::default(),
+            },
+        }
+    } else if view.texture().descriptor().array_layers > 1
         || matches!(descriptor.dimension, TextureViewDimension::D2Array)
     {
         D3D12_DEPTH_STENCIL_VIEW_DESC {
@@ -1574,12 +1708,16 @@ mod tests {
     fn default_dynamic_state_uses_the_recorded_attachment_extent() {
         let scope = RasterScopeState {
             colors: Vec::new(),
+            clear_colors: Vec::new(),
             null_rtv_heaps: Vec::new(),
             resolves: Vec::new(),
             color_resolves: Vec::new(),
             depth_view: None,
+            depth_handle: None,
             depth_heap: None,
             depth_read_only: false,
+            depth_mode: None,
+            stencil_mode: None,
             attachment_extent: Extent3d::d2(640, 480),
         };
 

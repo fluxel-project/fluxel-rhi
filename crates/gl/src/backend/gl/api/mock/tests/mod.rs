@@ -333,7 +333,7 @@ fn begin_pass(api: &mut MockGlFamilyApi) -> FramebufferId {
     framebuffer
 }
 
-/// A buffer created for one role, so a replay of its trace says which role the
+/// A buffer created for one role, so its trace identifies which role the
 /// domain under test was asked to read.
 fn buffer_with(api: &mut MockGlFamilyApi, size: u64, usage: GlBufferUsage) -> BufferId {
     api.create_buffer_resource(GlBufferDesc { size, usage })

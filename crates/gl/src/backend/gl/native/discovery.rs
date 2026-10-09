@@ -267,10 +267,13 @@ pub(crate) fn v13_capability_snapshot(
             textures: true,
             buffer_copy: true,
             texture_copy: true,
-            // Shader ABI 1.0 has no authoritative logical-binding-to-GL-name
-            // table. Resource-bearing programs therefore fail in Phase A and
-            // their public binding capabilities must remain unpublished.
-            bindings: false,
+            // GLSL artifacts carry the `fluxel-gl-abi-v1` manifest emitted by
+            // the shader helper.  Pipeline creation parses it, verifies the
+            // linked reflection names, assigns UBO binding points / sampler
+            // units, and the owner flushes those assignments before each
+            // draw.  Arrays and dynamic offsets remain individually
+            // fail-closed by the binding capability key and packet lowering.
+            bindings: true,
             // Resource-free compute programs have a complete create/dispatch
             // route. Storage resources remain independently closed by binding
             // facts and the shader-write Phase-A gate.

@@ -9,6 +9,7 @@ mod binding;
 mod capabilities;
 mod command;
 mod js;
+mod native;
 mod pipeline;
 mod presentation;
 mod provider;
@@ -21,6 +22,13 @@ mod translate;
 // place a successfully settled browser device becomes a portable Device.
 // The implementation lands with resource/command lowering.
 mod device;
+
+pub(crate) fn register_canvas(
+    device: &crate::api::platform::Device,
+    canvas: web_sys::HtmlCanvasElement,
+) -> crate::api::error::RhiResult<crate::api::presentation::PresentationTarget> {
+    device::register_canvas(device, canvas)
+}
 
 // These tests run in a headed browser against the actual adapter, never a JS
 // mock or a software renderer.

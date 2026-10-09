@@ -156,7 +156,7 @@ impl CapabilityCompatibilityId {
     }
 }
 
-/// Cache, diagnostics, and capture-provenance fingerprint.
+/// Cache and diagnostics fingerprint.
 ///
 /// The field is public where [`CapabilityCompatibilityId`]'s is not, and that
 /// asymmetry is deliberate: a fingerprint is a provenance and cache-key token
@@ -194,7 +194,7 @@ impl DeviceLimits {
 
     /// The keys this contract defines, in unspecified order.
     ///
-    /// For diagnostics and capture provenance. Correctness paths ask
+    /// For diagnostics. Correctness paths ask
     /// [`Self::get`] with the key they need rather than iterating.
     pub fn keys(&self) -> impl Iterator<Item = LimitKey> + '_ {
         self.entries.keys().copied()

@@ -17,7 +17,7 @@ use std::task::{Context, Poll, Waker};
 ///
 /// The label lives inside each variant rather than on the enum because the two
 /// requests describe different things, and a single label would have to mean
-/// "the buffer or the texture" to a capture tool that needs to say which.
+/// "the buffer or the texture" to a diagnostic tool that needs to say which.
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub enum ReadbackRequest {
@@ -140,8 +140,8 @@ impl ReadbackStatus {
 /// reasons: a D3D12 copy footprint distinguishes an unpadded row size from an
 /// aligned row pitch, backend staging layouts differ, and forcing a second CPU
 /// repack inside the RHI would cost more than it saves. Returning the layout
-/// instead makes the repack the caller's decision — and for a capture artifact
-/// that wants a canonical blob, the capture layer's decision.
+/// instead makes the repack the caller's decision when it needs a canonical
+/// byte layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadbackTexelLayout {
     /// Byte distance between starts of adjacent valid rows.

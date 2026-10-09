@@ -16,7 +16,7 @@ use windows::Win32::Graphics::Direct3D12::{
     ID3D12Resource,
 };
 
-use crate::api::command::record::{ComputeDispatch, ComputeIndirect};
+use crate::api::command::record::{BoundGroup, ImmediateWrite};
 use crate::api::command::{AccessMask, ResourceUse, TextureUseIntent};
 use crate::api::identity::ObjectId;
 use crate::api::resource::{Buffer, Texture};
@@ -29,11 +29,25 @@ use super::transfer::CommittedBatch;
 use super::transition::Transitions;
 use super::{dx12_buffer, dx12_texture};
 
-/// Records one dispatch and retains every native object it references until the
-/// batch's completion fence passes.
-pub(super) fn lower_compute_dispatch(
+/// Borrowed compute state consumed immediately by the native encoder.
+pub(super) struct ComputeDispatchView<'a> {
+    pub(super) pipeline: &'a crate::api::pipeline::ComputePipeline,
+    pub(super) groups: &'a [BoundGroup],
+    pub(super) immediates: &'a [ImmediateWrite],
+    pub(super) workgroups: (u32, u32, u32),
+}
+
+pub(super) struct ComputeIndirectView<'a> {
+    pub(super) pipeline: &'a crate::api::pipeline::ComputePipeline,
+    pub(super) groups: &'a [BoundGroup],
+    pub(super) immediates: &'a [ImmediateWrite],
+    pub(super) arguments: &'a Buffer,
+    pub(super) arguments_offset: u64,
+}
+
+pub(super) fn lower_compute_dispatch_view(
     list: &ID3D12GraphicsCommandList,
-    dispatch: &ComputeDispatch,
+    dispatch: &ComputeDispatchView<'_>,
     uses: &[ResourceUse],
     committed: &mut CommittedBatch,
 ) -> Result<(), Dx12Failure> {
@@ -48,7 +62,7 @@ pub(super) fn lower_compute_dispatch(
         })?;
 
     let mut native_groups = Vec::with_capacity(dispatch.groups.len());
-    for bound in &dispatch.groups {
+    for bound in dispatch.groups {
         let native = bound
             .group
             .native()
@@ -129,7 +143,7 @@ pub(super) fn lower_compute_dispatch(
     unsafe {
         list.SetComputeRootSignature(pipeline.root_signature());
         list.SetPipelineState(pipeline.pipeline_state());
-        for write in &dispatch.immediates {
+        for write in dispatch.immediates {
             let (parameter, destination) = pipeline
                 .immediate_root_parameter(write.offset, write.bytes.len() as u32)
                 .ok_or(Dx12Failure::Unsupported {
@@ -174,13 +188,10 @@ pub(super) fn lower_compute_dispatch(
     Ok(())
 }
 
-/// Lowers a native `Dispatch` command signature.  The API packet carries no
-/// root constants, so the signature contains exactly the twelve-byte dispatch
-/// argument and may use the already-bound root signature unchanged.
-pub(super) fn lower_compute_indirect(
+pub(super) fn lower_compute_indirect_view(
     device: &ID3D12Device,
     list: &ID3D12GraphicsCommandList,
-    dispatch: &ComputeIndirect,
+    dispatch: &ComputeIndirectView<'_>,
     uses: &[ResourceUse],
     committed: &mut CommittedBatch,
 ) -> Result<(), Dx12Failure> {
@@ -194,7 +205,7 @@ pub(super) fn lower_compute_indirect(
             why: "its native state belongs to another backend",
         })?;
     let mut native_groups = Vec::with_capacity(dispatch.groups.len());
-    for bound in &dispatch.groups {
+    for bound in dispatch.groups {
         let native = bound
             .group
             .native()
@@ -300,6 +311,25 @@ pub(super) fn lower_compute_indirect(
     unsafe {
         list.SetComputeRootSignature(pipeline.root_signature());
         list.SetPipelineState(pipeline.pipeline_state());
+        for write in dispatch.immediates {
+            let (parameter, destination) = pipeline
+                .immediate_root_parameter(write.offset, write.bytes.len() as u32)
+                .ok_or(Dx12Failure::Unsupported {
+                    what: "an immediate write outside the DX12 root-constant layout",
+                    why: "portable validation must keep writes within declared ranges",
+                })?;
+            let values: Vec<u32> = write
+                .bytes
+                .chunks_exact(4)
+                .map(|word| u32::from_le_bytes(word.try_into().expect("4-byte immediate word")))
+                .collect();
+            list.SetComputeRoot32BitConstants(
+                parameter,
+                values.len() as u32,
+                values.as_ptr().cast(),
+                destination,
+            );
+        }
         for (bound, native) in &native_groups {
             if let Some(parameter) = pipeline.view_root_parameter(bound.index.get()) {
                 list.SetComputeRootDescriptorTable(parameter, native.view_table());

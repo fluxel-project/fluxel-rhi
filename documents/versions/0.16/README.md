@@ -39,7 +39,7 @@ The following numbers come from commands actually run on this release worktree;
 | API-only | `cargo test -p fluxel-rhi --no-default-features --lib` | **597 passed** |
 | Windows Vulkan | `cargo test -p fluxel-rhi --no-default-features --features vulkan --lib -- --test-threads=1` | **610 passed, 0 failed** |
 | Windows GL/WebGL backend logic | `cargo test -p fluxel-rhi --no-default-features --features webgl2 --lib -- --test-threads=1` | **727 passed, 0 failed** |
-| Chrome headed WebGL2 wasm suite | historical monorepo runner: `scripts/browser/wasm_test_headed.py --features webgl2` | **13 browser tests passed**, capture produced; screenshot evidence written under `target/evidence/` |
+| Chrome headed WebGL2 wasm suite | historical monorepo runner: `scripts/browser/wasm_test_headed.py --features webgl2` | **13 browser tests passed**; screenshot evidence written under `target/evidence/` |
 | Examples | `cargo check -p fluxel-rhi --features examples --examples` | passed for all registered examples |
 | DX12 | full run attempted with DX12+Vulkan | initial GPU work passed, then adapter entered `DEVICE_REMOVED/DEVICE_PAUSED` after TDR; subsequent failures are terminal-device cascade and are not a clean DX12 verdict |
 

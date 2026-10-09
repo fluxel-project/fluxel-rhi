@@ -47,8 +47,6 @@ use crate::api::platform::backend::DeviceBackend;
 use crate::api::platform::provider::{AdapterInfo, BackendKind};
 use crate::api::platform::requirements::OptionalFeature;
 use crate::api::statistics::{CumulativeStatistics, StatisticsConfig};
-use crate::api::tooling::CapturedRecordedWork;
-use crate::api::tooling::SemanticObserver;
 
 /// Whether a device is still usable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -182,15 +180,6 @@ struct DeviceInner {
 pub(crate) struct RuntimeServices {
     diagnostics: Mutex<Vec<DiagnosticEvent>>,
     statistics: Mutex<StatisticsState>,
-    observers: Mutex<ObserverState>,
-    pub(crate) captured_work: Mutex<HashMap<ObjectId, CapturedRecordedWork>>,
-    /// Portable state machine around an optional backend debugger capture.
-    pub(crate) native_capture_active: Mutex<bool>,
-}
-
-struct ObserverState {
-    next: u64,
-    entries: Vec<(u64, Arc<dyn SemanticObserver>)>,
 }
 
 pub(crate) struct StatisticsState {
@@ -216,12 +205,6 @@ impl RuntimeServices {
                 started_nanos: statistics_now_nanos(),
                 cumulative: CumulativeStatistics::default(),
             }),
-            observers: Mutex::new(ObserverState {
-                next: 1,
-                entries: Vec::new(),
-            }),
-            captured_work: Mutex::new(HashMap::new()),
-            native_capture_active: Mutex::new(false),
         }
     }
 }
@@ -481,11 +464,6 @@ impl Device {
         &self.inner.serials
     }
 
-    /// The portable state cell for native debugger capture nesting.
-    pub(crate) fn native_capture_active(&self) -> &Mutex<bool> {
-        &self.inner.runtime.native_capture_active
-    }
-
     /// The exact compatibility tokens this domain has minted.
     ///
     /// Crate-private, and reached by the two chapters that mint from it:
@@ -505,48 +483,6 @@ impl Device {
 
     pub(crate) fn statistics_state(&self) -> &Mutex<StatisticsState> {
         &self.inner.runtime.statistics
-    }
-
-    pub(crate) fn retain_captured_work(&self, work: CapturedRecordedWork) {
-        self.inner
-            .runtime
-            .captured_work
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(work.work, work);
-    }
-
-    pub(crate) fn captured_work(&self, id: ObjectId) -> Option<CapturedRecordedWork> {
-        self.inner
-            .runtime
-            .captured_work
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&id)
-            .cloned()
-    }
-
-    pub(crate) fn insert_observer(&self, observer: Arc<dyn SemanticObserver>) -> u64 {
-        let mut state = self
-            .inner
-            .runtime
-            .observers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let id = state.next;
-        state.next = state.next.saturating_add(1);
-        state.entries.push((id, observer));
-        id
-    }
-
-    pub(crate) fn remove_observer(&self, id: u64) {
-        let mut state = self
-            .inner
-            .runtime
-            .observers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.entries.retain(|(entry, _)| *entry != id);
     }
 
     /// A shared handle to this device's capability snapshot.
@@ -585,7 +521,7 @@ impl Device {
 
     /// The backend family this device came from.
     ///
-    /// For diagnostics, UI, capture provenance, and benchmark reports only. It
+    /// For diagnostics, UI, and benchmark reports only. It
     /// is not a capability oracle: the same family exposes different
     /// capabilities on different drivers, so asking the backend what it is
     /// instead of asking the device what it can do is the mistake section 6.3
@@ -679,15 +615,9 @@ impl Device {
 
     /// This device's process-local object ID.
     ///
-    /// Section 3 gives every RHI object a process-local [`ObjectId`] distinct
-    /// from any native handle, and section 7.1 requires tooling to be able to
-    /// *describe* what it observes by that ID rather than by a pointer.
-    ///
-    /// Sections 3 through 7 declare no accessor that yields an `ObjectId`, so
-    /// this verb is an addition rather than a transcription. It is added because
-    /// the alternative is worse: `RhiError::object` returns an `ObjectId` and
-    /// section 7.1 requires tooling to describe objects by one, which is
-    /// unreachable if no object can name its own ID.
+    /// Every RHI object has a process-local [`ObjectId`] distinct from any
+    /// native handle. This accessor lets diagnostic reports identify the device
+    /// without exposing a pointer.
     pub fn object_id(&self) -> ObjectId {
         self.inner.native.object_id()
     }

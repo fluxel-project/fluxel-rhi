@@ -2094,8 +2094,8 @@ mod tests {
         );
         assert_eq!(
             enabled.binding_support(&sampled(crate::api::shader::ShaderStages::COMPUTE)),
-            BindingSupport::Unsupported,
-            "compute lowering refuses texture ResourceUse until texture transitions are lowered"
+            BindingSupport::Supported,
+            "compute lowering transitions sampled texture ResourceUse before dispatch"
         );
         assert_eq!(
             enabled.binding_support(&sampler(crate::api::shader::ShaderStages::COMPUTE)),

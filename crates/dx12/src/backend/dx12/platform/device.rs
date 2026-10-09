@@ -52,7 +52,7 @@ use crate::api::resource::buffer::BufferDescriptor;
 use crate::api::submission::{CompletionState, SubmissionCapabilities};
 
 use crate::backend::dx12::binding::DescriptorHeap;
-use crate::backend::dx12::command::Dx12CommandSpine;
+use crate::backend::dx12::command::{Dx12CommandSpine, Dx12NativeEncoder};
 use crate::backend::dx12::presentation::Dx12Presentation;
 use crate::backend::dx12::{binding, pipeline, resource, shader};
 
@@ -286,9 +286,21 @@ impl Dx12Device {
         operation: &'static str,
     ) -> RhiError {
         if failure.failure().is_terminal() {
+            // `DXGI_ERROR_DEVICE_REMOVED` only says that this call noticed the
+            // loss.  The reason attached to the device identifies whether the
+            // preceding GPU work hung, reset, or was removed by the driver.
+            // Query it before publishing loss so every later caller receives
+            // the same useful first diagnostic.
+            let removed_reason = match unsafe { self.device.GetDeviceRemovedReason() } {
+                Ok(()) => {
+                    "S_OK (the driver did not provide a more specific removal reason)".to_owned()
+                }
+                Err(error) => format!("{error} (HRESULT {:#010x})", error.code().0),
+            };
             self.mark_lost(DeviceLossInfo::new(format!(
-                "Direct3D 12 reported a terminal failure in {operation}: {}",
-                failure.as_error()
+                "Direct3D 12 reported a terminal failure in {operation}: {}; \
+                 GetDeviceRemovedReason: {removed_reason}",
+                failure.as_error(),
             )));
         }
         if let Some(info) = self.loss_info() {
@@ -303,6 +315,31 @@ impl DeviceBackend for Dx12Device {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    fn create_command_encoder(
+        &self,
+        _descriptor: &crate::api::command::RecorderDescriptor,
+    ) -> RhiResult<Box<dyn crate::api::command::backend::CommandEncoderBackend>> {
+        Dx12NativeEncoder::new(&self.device, Arc::clone(&self.loss))
+            .map(|encoder| {
+                Box::new(encoder) as Box<dyn crate::api::command::backend::CommandEncoderBackend>
+            })
+            .map_err(|failure| self.observe_failure(failure, "Dx12Device::create_command_encoder"))
+    }
+
+    fn create_secondary_raster_encoder(
+        &self,
+        _descriptor: &crate::api::command::RecorderDescriptor,
+    ) -> RhiResult<Box<dyn crate::api::command::backend::CommandEncoderBackend>> {
+        Dx12NativeEncoder::new_secondary(&self.device, Arc::clone(&self.loss))
+            .map(|encoder| {
+                Box::new(encoder) as Box<dyn crate::api::command::backend::CommandEncoderBackend>
+            })
+            .map_err(|failure| {
+                self.observe_failure(failure, "Dx12Device::create_secondary_raster_encoder")
+            })
+    }
+
     fn backend_kind(&self) -> BackendKind {
         BackendKind::Dx12
     }

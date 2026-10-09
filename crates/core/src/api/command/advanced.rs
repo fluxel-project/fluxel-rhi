@@ -1,12 +1,10 @@
 //! Advanced command families: mesh/task dispatch, acceleration-structure work,
-//! and ray-tracing dispatch.  They retain portable packets; native lowering is
-//! selected only by a backend that published the matching capability.
+//! and ray-tracing dispatch.
+//!
+//! Native encoders receive advanced commands as the caller issues them.
 
 use crate::api::binding::{BindGroup, BindGroupIndex};
-use crate::api::command::record::{
-    AccelerationStructureCommand, BoundGroup, ImmediateWrite, RayTracingBegin, RayTracingDispatch,
-    RecordedPayload,
-};
+use crate::api::command::record::{BoundGroup, ImmediateWrite};
 use crate::api::command::uses::{
     bound_group_uses, require_valid_dynamic_offsets, validate_bound_groups,
 };
@@ -201,15 +199,9 @@ impl CommandRecorder {
                 access: AccessMask::ACCELERATION_STRUCTURE_BUILD_WRITE,
             },
         ));
-        self.record_command(
-            RecordedPayload::AccelerationStructure(AccelerationStructureCommand::Build {
-                destination: destination.clone(),
-                scratch: scratch.clone(),
-                mode,
-            }),
-            uses,
-            COMPUTE,
-        );
+        self.encode_native(uses.clone(), COMPUTE, |native| {
+            native.acceleration_structure_build(destination, scratch, mode, &uses)
+        })?;
         Ok(())
     }
 
@@ -270,15 +262,9 @@ impl CommandRecorder {
                 access: AccessMask::ACCELERATION_STRUCTURE_BUILD_WRITE,
             }),
         ];
-        self.record_command(
-            RecordedPayload::AccelerationStructure(AccelerationStructureCommand::Copy {
-                source: source.clone(),
-                destination: destination.clone(),
-                mode,
-            }),
-            uses,
-            COMPUTE,
-        );
+        self.encode_native(uses.clone(), COMPUTE, |native| {
+            native.acceleration_structure_copy(source, destination, mode, &uses)
+        })?;
         Ok(())
     }
 
@@ -336,29 +322,27 @@ impl CommandRecorder {
                 "destination needs QUERY_RESOLVE usage and an in-range eight-byte-aligned u64 slot",
             );
         }
-        self.record_command(
-            RecordedPayload::AccelerationStructure(
-                AccelerationStructureCommand::WriteCompactedSize {
-                    source: source.clone(),
-                    destination: destination.clone(),
-                    destination_offset,
-                },
-            ),
-            vec![
-                ResourceUse::AccelerationStructure(crate::api::command::AccelerationStructureUse {
-                    structure: source.clone(),
-                    stages: PipelineScope::COPY,
-                    access: AccessMask::ACCELERATION_STRUCTURE_BUILD_READ,
-                }),
-                ResourceUse::Buffer(crate::api::command::BufferUse {
-                    buffer: destination.clone(),
-                    range: BufferRange::new(destination_offset, 8),
-                    stages: PipelineScope::COPY,
-                    access: AccessMask::COPY_WRITE,
-                }),
-            ],
-            COMPUTE,
-        );
+        let uses = vec![
+            ResourceUse::AccelerationStructure(crate::api::command::AccelerationStructureUse {
+                structure: source.clone(),
+                stages: PipelineScope::COPY,
+                access: AccessMask::ACCELERATION_STRUCTURE_BUILD_READ,
+            }),
+            ResourceUse::Buffer(crate::api::command::BufferUse {
+                buffer: destination.clone(),
+                range: BufferRange::new(destination_offset, 8),
+                stages: PipelineScope::COPY,
+                access: AccessMask::COPY_WRITE,
+            }),
+        ];
+        self.encode_native(uses.clone(), COMPUTE, |native| {
+            native.acceleration_structure_write_compacted_size(
+                source,
+                destination,
+                destination_offset,
+                &uses,
+            )
+        })?;
         Ok(())
     }
 
@@ -377,13 +361,7 @@ impl CommandRecorder {
                 "this device does not enable ray-tracing pipelines",
             );
         }
-        self.record_command(
-            RecordedPayload::RayTracingBegin(RayTracingBegin {
-                label: desc.label.clone(),
-            }),
-            Vec::new(),
-            COMPUTE,
-        );
+        self.encode_native(Vec::new(), COMPUTE, |native| native.ray_begin(desc))?;
         self.set_phase(RecorderPhase::ComputeScopeOpen);
         Ok(RayTracingScope {
             recorder: self,
@@ -417,6 +395,9 @@ impl RayTracingScope<'_> {
         )?;
         self.pipeline = Some(pipeline.clone());
         self.immediates.clear();
+        self.recorder.encode_native(Vec::new(), COMPUTE, |native| {
+            native.ray_set_pipeline(pipeline)
+        })?;
         Ok(())
     }
     /// Sets bytes in one declared immediate-data range of the bound pipeline.
@@ -494,12 +475,16 @@ impl RayTracingScope<'_> {
                 )
                 .at("RayTracingScope::set_immediates")
             })?;
-        self.immediates.retain(|write| write.offset != offset);
-        self.immediates.push(ImmediateWrite {
+        let write = ImmediateWrite {
             offset,
             bytes: bytes.to_vec(),
             visibility: write_range.visibility,
-        });
+        };
+        self.immediates.retain(|existing| existing.offset != offset);
+        self.recorder.encode_native(Vec::new(), COMPUTE, |native| {
+            native.ray_set_immediates(&write)
+        })?;
+        self.immediates.push(write);
         Ok(())
     }
     /// Binds a group used by the ray pipeline.
@@ -525,6 +510,9 @@ impl RayTracingScope<'_> {
         } else {
             self.groups.push(bound);
         }
+        self.recorder.encode_native(Vec::new(), COMPUTE, |native| {
+            native.ray_set_bind_group(index, group, dynamic_offsets)
+        })?;
         Ok(())
     }
     /// Dispatches rays over a non-empty three-dimensional extent.
@@ -591,23 +579,16 @@ impl RayTracingScope<'_> {
                 access: AccessMask::RAY_TRACING_SHADER_DATA_READ,
             }));
         }
-        self.recorder.record_command(
-            RecordedPayload::RayTracingDispatch(Box::new(RayTracingDispatch {
-                pipeline,
-                groups: self.groups.clone(),
-                table: table.clone(),
-                dimensions: (width, height, depth),
-                immediates: self.immediates.clone(),
-            })),
-            uses,
-            COMPUTE,
-        );
+        self.recorder
+            .encode_native(uses.clone(), COMPUTE, |native| {
+                native.ray_dispatch(table, width, height, depth, &uses)
+            })?;
         Ok(())
     }
     /// Ends the scope.
     pub fn end(mut self) -> RhiResult<()> {
         self.recorder
-            .record_command(RecordedPayload::RayTracingEnd, Vec::new(), COMPUTE);
+            .encode_native(Vec::new(), COMPUTE, |native| native.ray_end())?;
         self.recorder.set_phase(RecorderPhase::Open);
         self.ended = true;
         Ok(())

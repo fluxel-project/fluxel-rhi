@@ -62,6 +62,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll, Waker};
 
 use crate::api::capability::{AvailableCapabilities, CapabilityFacts};
+use crate::api::command::backend::{CommandBufferBackend, CommandEncoderBackend};
 use crate::api::error::{RhiError, RhiErrorKind, RhiResult};
 use crate::api::identity::{DeviceIdentity, DeviceInstanceId, ObjectId};
 use crate::api::platform::backend::{
@@ -89,6 +90,108 @@ use crate::api::submission::{
     LaneWorkDomains, SubmissionCapabilities, SubmissionLaneClass, SubmissionLaneId,
     SubmissionLaneInfo,
 };
+
+/// Finalized no-op command buffer used by the portable conformance mock.
+///
+/// The mock deliberately proves only that portable validation and command
+/// lifetime bookkeeping reach a native encoder. It models no GPU execution.
+struct MockCommandBuffer;
+
+impl CommandBufferBackend for MockCommandBuffer {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Native encoder counterpart for [`MockCommandBuffer`].
+///
+/// Every verb accepts the already validated portable request. This makes
+/// command tests exercise immediate native encoding while keeping the mock
+/// free of a second command representation.
+struct MockCommandEncoder;
+
+macro_rules! mock_noop_encoder_methods {
+    ($($name:ident($($argument:ident: $ty:ty),*);)*) => {
+        $(
+            fn $name(&mut self, $($argument: $ty),*) -> RhiResult<()> {
+                let _ = ($(&$argument),*);
+                Ok(())
+            }
+        )*
+    };
+}
+
+impl CommandEncoderBackend for MockCommandEncoder {
+    mock_noop_encoder_methods! {
+        raster_set_mesh_pipeline(pipeline: &crate::api::pipeline::MeshPipeline);
+        raster_dispatch_mesh(x: u32, y: u32, z: u32, uses: &[crate::api::command::ResourceUse]);
+        raster_dispatch_mesh_indirect(arguments: &Buffer, offset: u64, count: Option<(&Buffer, u64, u32)>, uses: &[crate::api::command::ResourceUse]);
+        acceleration_structure_build(destination: &crate::api::resource::AccelerationStructure, scratch: &Buffer, mode: crate::api::resource::AccelerationStructureBuildMode, uses: &[crate::api::command::ResourceUse]);
+        acceleration_structure_copy(source: &crate::api::resource::AccelerationStructure, destination: &crate::api::resource::AccelerationStructure, mode: crate::api::resource::AccelerationStructureCopyMode, uses: &[crate::api::command::ResourceUse]);
+        acceleration_structure_write_compacted_size(source: &crate::api::resource::AccelerationStructure, destination: &Buffer, destination_offset: u64, uses: &[crate::api::command::ResourceUse]);
+        ray_begin(desc: &crate::api::command::advanced::RayTracingScopeDescriptor);
+        ray_set_pipeline(pipeline: &crate::api::pipeline::RayTracingPipeline);
+        ray_set_bind_group(index: crate::api::binding::BindGroupIndex, group: &crate::api::binding::BindGroup, dynamic_offsets: &[u32]);
+        ray_set_immediates(write: &crate::api::command::record::ImmediateWrite);
+        ray_dispatch(table: &crate::api::command::advanced::RayTracingShaderTable, width: u32, height: u32, depth: u32, uses: &[crate::api::command::ResourceUse]);
+        ray_end();
+        copy_external_image_to_texture(copy: &crate::api::external::ExternalImageCopyDescriptor, uses: &[crate::api::command::ResourceUse]);
+        clear_buffer(buffer: &Buffer, range: BufferRange, uses: &[crate::api::command::ResourceUse]);
+        clear_texture(texture: &crate::api::resource::Texture, subresources: crate::api::resource::TextureSubresourceRange, uses: &[crate::api::command::ResourceUse]);
+        copy_buffer(copy: &crate::api::command::copy::BufferCopy, uses: &[crate::api::command::ResourceUse]);
+        copy_buffer_to_texture(copy: &crate::api::command::copy::BufferTextureCopy, uses: &[crate::api::command::ResourceUse]);
+        copy_texture_to_buffer(copy: &crate::api::command::copy::BufferTextureCopy, uses: &[crate::api::command::ResourceUse]);
+        copy_texture(copy: &crate::api::command::copy::TextureCopy, uses: &[crate::api::command::ResourceUse]);
+        resolve_texture(resolve: &crate::api::command::copy::TextureResolve, uses: &[crate::api::command::ResourceUse]);
+        blit_texture(blit: &crate::api::command::copy::TextureBlit, uses: &[crate::api::command::ResourceUse]);
+        encode_upload(upload: &crate::api::resource::transfer::UploadJob, uses: &[crate::api::command::ResourceUse]);
+        encode_readback(ticket: &crate::api::resource::transfer::ReadbackTicket, uses: &[crate::api::command::ResourceUse]);
+        encoder_write_timestamp(set: &crate::api::query::QuerySet, index: u32, uses: &[crate::api::command::ResourceUse]);
+        resolve_query_set(set: &crate::api::query::QuerySet, first_query: u32, query_count: u32, destination: &Buffer, destination_offset: u64, uses: &[crate::api::command::ResourceUse]);
+        encoder_push_debug_group(label: &str);
+        encoder_pop_debug_group();
+        encoder_insert_debug_marker(label: &str);
+        compute_begin(begin: &crate::api::command::record::ComputeBegin);
+        compute_set_pipeline(pipeline: &crate::api::pipeline::ComputePipeline);
+        compute_set_bind_group(index: crate::api::binding::BindGroupIndex, group: &crate::api::binding::BindGroup, dynamic_offsets: &[u32]);
+        compute_set_immediates(write: &crate::api::command::record::ImmediateWrite);
+        compute_dispatch(x: u32, y: u32, z: u32, uses: &[crate::api::command::ResourceUse]);
+        compute_dispatch_indirect(arguments: &Buffer, offset: u64, uses: &[crate::api::command::ResourceUse]);
+        compute_begin_query(set: &crate::api::query::QuerySet, index: u32);
+        compute_end_query(set: &crate::api::query::QuerySet, index: u32);
+        compute_write_timestamp(set: &crate::api::query::QuerySet, index: u32);
+        compute_push_debug_group(label: &str);
+        compute_pop_debug_group();
+        compute_insert_debug_marker(label: &str);
+        compute_end();
+        raster_begin(begin: &crate::api::command::record::RasterBegin, uses: &[crate::api::command::ResourceUse]);
+        raster_clear(clear: &crate::api::command::raster::RasterAttachmentClear, uses: &[crate::api::command::ResourceUse]);
+        raster_execute_secondary(work: crate::api::command::SecondaryRasterWork, uses: &[crate::api::command::ResourceUse]);
+        raster_set_pipeline(pipeline: &crate::api::pipeline::RasterPipeline);
+        raster_set_bind_group(index: crate::api::binding::BindGroupIndex, group: &crate::api::binding::BindGroup, dynamic_offsets: &[u32]);
+        raster_set_vertex_buffer(slot: u32, binding: &crate::api::resource::BufferBinding);
+        raster_set_index_buffer(binding: &crate::api::resource::BufferBinding, format: crate::api::command::IndexFormat);
+        raster_set_viewport(viewport: crate::api::command::geometry::Viewport);
+        raster_set_scissor(rect: crate::api::command::geometry::Rect);
+        raster_set_blend_constant(color: crate::api::command::geometry::Color);
+        raster_set_stencil_reference(value: u32);
+        raster_set_immediates(write: &crate::api::command::record::ImmediateWrite);
+        raster_draw(vertices: core::ops::Range<u32>, instances: core::ops::Range<u32>, uses: &[crate::api::command::ResourceUse]);
+        raster_draw_indexed(indices: core::ops::Range<u32>, base_vertex: i32, instances: core::ops::Range<u32>, uses: &[crate::api::command::ResourceUse]);
+        raster_draw_indirect(arguments: &Buffer, arguments_offset: u64, draw_count: u32, stride: u32, count: Option<(&Buffer, u64, u32)>, indexed: bool, uses: &[crate::api::command::ResourceUse]);
+        raster_begin_query(set: &crate::api::query::QuerySet, index: u32);
+        raster_end_query(set: &crate::api::query::QuerySet, index: u32);
+        raster_write_timestamp(set: &crate::api::query::QuerySet, index: u32);
+        raster_push_debug_group(label: &str);
+        raster_pop_debug_group();
+        raster_insert_debug_marker(label: &str);
+        raster_end();
+    }
+
+    fn finish(self: Box<Self>) -> RhiResult<Box<dyn CommandBufferBackend>> {
+        Ok(Box::new(MockCommandBuffer))
+    }
+}
 
 /// What a mock device request eventually reports.
 ///
@@ -984,6 +1087,20 @@ impl DeviceBackend for MockDevice {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+    fn create_command_encoder(
+        &self,
+        _descriptor: &crate::api::command::RecorderDescriptor,
+    ) -> RhiResult<Box<dyn CommandEncoderBackend>> {
+        Ok(Box::new(MockCommandEncoder))
+    }
+
+    fn create_secondary_raster_encoder(
+        &self,
+        _descriptor: &crate::api::command::RecorderDescriptor,
+    ) -> RhiResult<Box<dyn CommandEncoderBackend>> {
+        Ok(Box::new(MockCommandEncoder))
+    }
+
     fn backend_kind(&self) -> BackendKind {
         self.backend
     }
@@ -1051,14 +1168,6 @@ impl DeviceBackend for MockDevice {
 
     fn allocator_report(&self) -> RhiResult<crate::api::diagnostics::AllocatorReport> {
         Ok(crate::api::diagnostics::AllocatorReport { heaps: Vec::new() })
-    }
-
-    fn begin_native_graphics_capture(&self) -> RhiResult<()> {
-        Ok(())
-    }
-
-    fn end_native_graphics_capture(&self) -> RhiResult<()> {
-        Ok(())
     }
 
     fn presentation(&self) -> Option<&dyn PresentationBackend> {
@@ -1460,6 +1569,20 @@ impl DeviceBackend for ObservedMockDevice {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+    fn create_command_encoder(
+        &self,
+        descriptor: &crate::api::command::RecorderDescriptor,
+    ) -> RhiResult<Box<dyn CommandEncoderBackend>> {
+        self.0.create_command_encoder(descriptor)
+    }
+
+    fn create_secondary_raster_encoder(
+        &self,
+        descriptor: &crate::api::command::RecorderDescriptor,
+    ) -> RhiResult<Box<dyn CommandEncoderBackend>> {
+        self.0.create_secondary_raster_encoder(descriptor)
+    }
+
     fn backend_kind(&self) -> BackendKind {
         self.0.backend_kind()
     }
@@ -1510,12 +1633,6 @@ impl DeviceBackend for ObservedMockDevice {
     }
     fn allocator_report(&self) -> RhiResult<crate::api::diagnostics::AllocatorReport> {
         self.0.allocator_report()
-    }
-    fn begin_native_graphics_capture(&self) -> RhiResult<()> {
-        self.0.begin_native_graphics_capture()
-    }
-    fn end_native_graphics_capture(&self) -> RhiResult<()> {
-        self.0.end_native_graphics_capture()
     }
     fn presentation(&self) -> Option<&dyn PresentationBackend> {
         self.0.presentation()
@@ -1825,20 +1942,6 @@ pub(crate) fn query_device_with_occlusion_binding_for_test(
     );
     Device::new(identity, observed_backend(native))
         .expect("query mock exposes the base submission lane")
-}
-
-/// A mock device that advertises native debugger capture and accepts its two calls.
-pub(crate) fn native_capture_device_for_test(identity: DeviceIdentity) -> Device {
-    let mut facts = CapabilityFacts::empty();
-    facts.record_feature(crate::api::platform::OptionalFeature::NativeGraphicsCapture);
-    let native = MockDevice::with_capabilities(
-        BackendKind::Dx12,
-        MockProvider::new(BackendKind::Dx12, DeviceInstanceId::new(1)).adapter(),
-        facts,
-        default_lanes(),
-    );
-    Device::new(identity, observed_backend(native))
-        .expect("capture mock exposes base submission lanes")
 }
 
 /// A mock device with exactly the optional features a façade test needs.

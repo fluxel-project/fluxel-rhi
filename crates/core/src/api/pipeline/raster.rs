@@ -76,7 +76,7 @@ impl RenderTargetSignature {
     ///
     /// Section 26's canonicalization, and the reason it exists: `[RGBA8, None,
     /// None]` and `[RGBA8]` describe the same pipeline, and two representations of
-    /// one signature would make a cache key or a Capture comparison wrong about
+    /// one signature would make a cache key or diagnostic comparison wrong about
     /// identical pipelines. Interior `None`s are kept — they are real holes.
     ///
     /// The canonical form is what [`RasterPipelineDescriptor::target_signature`]

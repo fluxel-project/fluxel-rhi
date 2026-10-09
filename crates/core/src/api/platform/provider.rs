@@ -29,7 +29,7 @@ static NEXT_DEVICE_INSTANCE: AtomicU64 = AtomicU64::new(1);
 
 /// The backend family a provider or device speaks.
 ///
-/// Section 5.2 restricts this to four uses — diagnostics, selection and capture
+/// Section 5.2 restricts this to diagnostics and selection
 /// provenance, backend-specific shader acceptance, and tooling UI — and forbids
 /// the one use it most invites:
 ///
@@ -151,7 +151,7 @@ impl AdapterId {
 /// Every field is private and read through an accessor, because section 5.6
 /// warns against exactly the use the raw fields invite: an enumeration index, a
 /// name, or a vendor/device pair is not a stable cross-run key. They are
-/// diagnostics, shown to a user choosing an adapter and recorded in capture
+/// diagnostics, shown to a user choosing an adapter and retained in diagnostics
 /// provenance.
 #[derive(Clone, Debug)]
 pub struct AdapterInfo {
@@ -305,8 +305,12 @@ pub struct PlatformProvider {
 /// private window registration. The native window handle is never stored in
 /// this public value.
 #[cfg(any(
-    all(windows, any(feature = "dx12", feature = "vulkan")),
-    all(target_os = "android", feature = "vulkan")
+    all(
+        windows,
+        any(feature = "dx12", feature = "vulkan", feature = "native-gl-wgl")
+    ),
+    all(target_os = "android", feature = "vulkan"),
+    all(target_vendor = "apple", feature = "metal")
 ))]
 pub struct PresentationTargetRegistration {
     provider: PlatformProvider,
@@ -314,8 +318,12 @@ pub struct PresentationTargetRegistration {
 }
 
 #[cfg(any(
-    all(windows, any(feature = "dx12", feature = "vulkan")),
-    all(target_os = "android", feature = "vulkan")
+    all(
+        windows,
+        any(feature = "dx12", feature = "vulkan", feature = "native-gl-wgl")
+    ),
+    all(target_os = "android", feature = "vulkan"),
+    all(target_vendor = "apple", feature = "metal")
 ))]
 impl PresentationTargetRegistration {
     /// The opaque RHI target to pass into adapter checks and device requests.
@@ -325,8 +333,12 @@ impl PresentationTargetRegistration {
 }
 
 #[cfg(any(
-    all(windows, any(feature = "dx12", feature = "vulkan")),
-    all(target_os = "android", feature = "vulkan")
+    all(
+        windows,
+        any(feature = "dx12", feature = "vulkan", feature = "native-gl-wgl")
+    ),
+    all(target_os = "android", feature = "vulkan"),
+    all(target_vendor = "apple", feature = "metal")
 ))]
 impl Drop for PresentationTargetRegistration {
     fn drop(&mut self) {
@@ -385,8 +397,12 @@ impl PlatformProvider {
     /// Returns `Unsupported` when this provider has no presentation adapter,
     /// and a structured error when the host exposes an invalid native handle.
     #[cfg(any(
-        all(windows, any(feature = "dx12", feature = "vulkan")),
-        all(target_os = "android", feature = "vulkan")
+        all(
+            windows,
+            any(feature = "dx12", feature = "vulkan", feature = "native-gl-wgl")
+        ),
+        all(target_os = "android", feature = "vulkan"),
+        all(target_vendor = "apple", feature = "metal")
     ))]
     pub fn register_presentation_target(
         &self,

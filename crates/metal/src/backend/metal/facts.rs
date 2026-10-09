@@ -104,7 +104,7 @@ pub(super) struct MetalCapabilityLimits {
     /// encoder. Raster visibility remains a separate future fact.
     pub(super) compute_binding_lowering: bool,
     /// Raster pipeline construction, attachment encoding, and direct draw
-    /// replay are live. Kept separate from compute because neither command
+    /// are live. Kept separate from compute because neither command
     /// encoder implies the other in Metal.
     pub(super) raster_lowering: bool,
     /// Raster bind groups and immediate data are applied to both vertex and
@@ -756,7 +756,7 @@ fn record_compute_binding(
 }
 
 /// `supportsBCTextureCompression` was added later than the baseline Metal
-/// device protocol. A selector check keeps an old OS or proxy capture device
+/// device protocol. A selector check keeps an old OS or proxy device
 /// from receiving an unknown Objective-C message; only then is its truthful
 /// device-specific answer used. macOS's documented desktop baseline supports
 /// BC, so it remains a positive answer when that optional selector is absent.
@@ -987,7 +987,7 @@ fn metal_msaa_attachment_capable(format: TextureFormat, limits: MetalCapabilityL
 
 /// Records only copy routes the current command spine actually encodes.
 ///
-/// The encoder lowers `CopyRecord::Buffer` and `CopyRecord::Texture`, including
+/// The encoder lowers direct buffer and texture copies, including
 /// per-array-image buffer strides. It does not select a depth/stencil plane, so
 /// those aspects remain absent rather than silently copying the wrong bytes.
 /// `MTLBlitCommandEncoder::copyFromTexture` is used only for same-format,

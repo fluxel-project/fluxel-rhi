@@ -105,7 +105,7 @@ impl TextureUploadDescriptor {
 }
 /// Either upload, as one value.
 ///
-/// Exists so that a job, a capture record, and a statistics entry can carry
+/// Exists so that a job and a statistics entry can carry
 /// "the mutation" without caring which kind it was. The two variants are not
 /// unified further: a buffer range and a texture region share no fields, and a
 /// single struct with six optional members would make "a texture upload with a
@@ -167,7 +167,7 @@ impl UploadJob {
         self.device
     }
 
-    /// Capture/tooling can obtain the complete portable mutation descriptor.
+    /// Diagnostics can obtain the complete portable mutation descriptor.
     pub fn descriptor(&self) -> &UploadDescriptor {
         &self.descriptor
     }

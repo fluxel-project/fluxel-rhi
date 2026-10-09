@@ -19,7 +19,7 @@ use std::{
     fmt,
     future::Future,
     pin::pin,
-    sync::Arc,
+    sync::{Arc, Mutex},
     task::{Context, Poll, Wake, Waker},
 };
 
@@ -49,11 +49,18 @@ use crate::common::{
 pub fn run_example<D: Example + 'static>(title: &str, demo: D) -> Result<(), Box<dyn Error>> {
     let mut options = RunnerOptions::parse(title, std::env::args().skip(1))?;
     options.title = format!("{}: {title}", options.backend.as_str());
-    fluxel_host::HostRuntime::new()?.run(NativeExampleRunner::new(
-        options,
-        WindowsPlatform,
-        demo,
-    ))?;
+    let failure = Arc::new(Mutex::new(None));
+    fluxel_host::HostRuntime::new()?.run(
+        NativeExampleRunner::new(options, WindowsPlatform, demo)
+            .with_failure_slot(Arc::clone(&failure)),
+    )?;
+    let failure = failure
+        .lock()
+        .map_err(|_| std::io::Error::other("example failure state lock was poisoned"))?
+        .take();
+    if let Some(failure) = failure {
+        return Err(std::io::Error::other(failure).into());
+    }
     Ok(())
 }
 
@@ -358,29 +365,38 @@ fn open_provider(
         return Ok((WindowsProvider::Wgl(wgl), None, target));
     }
 
-    let provider = match backend {
-        #[cfg(feature = "dx12")]
-        NativeBackend::Dx12 => create_dx12_provider()?,
-        #[cfg(feature = "vulkan")]
-        NativeBackend::Vulkan => create_vulkan_provider()?,
-        #[cfg(not(feature = "dx12"))]
-        NativeBackend::Dx12 => return Err(AdapterError::WrongBackend(backend).into()),
-        #[cfg(not(feature = "vulkan"))]
-        NativeBackend::Vulkan => return Err(AdapterError::WrongBackend(backend).into()),
-        NativeBackend::Gl4 | NativeBackend::Gles3 | NativeBackend::Metal => {
-            return Err(AdapterError::WrongBackend(backend).into());
-        }
-    };
+    #[cfg(not(any(feature = "dx12", feature = "vulkan")))]
+    {
+        let _ = window;
+        return Err(AdapterError::WrongBackend(backend).into());
+    }
 
-    // This public call retains every Win32 detail below the RHI boundary and
-    // returns only an opaque target plus its lifetime guard.
-    let registration = provider.register_presentation_target(window)?;
-    let target = registration.target().clone();
-    Ok((
-        WindowsProvider::Registered(provider),
-        Some(registration),
-        target,
-    ))
+    #[cfg(any(feature = "dx12", feature = "vulkan"))]
+    {
+        let provider = match backend {
+            #[cfg(feature = "dx12")]
+            NativeBackend::Dx12 => create_dx12_provider()?,
+            #[cfg(feature = "vulkan")]
+            NativeBackend::Vulkan => create_vulkan_provider()?,
+            #[cfg(not(feature = "dx12"))]
+            NativeBackend::Dx12 => return Err(AdapterError::WrongBackend(backend).into()),
+            #[cfg(not(feature = "vulkan"))]
+            NativeBackend::Vulkan => return Err(AdapterError::WrongBackend(backend).into()),
+            NativeBackend::Gl4 | NativeBackend::Gles3 | NativeBackend::Metal => {
+                return Err(AdapterError::WrongBackend(backend).into());
+            }
+        };
+
+        // This public call retains every Win32 detail below the RHI boundary and
+        // returns only an opaque target plus its lifetime guard.
+        let registration = provider.register_presentation_target(window)?;
+        let target = registration.target().clone();
+        Ok((
+            WindowsProvider::Registered(provider),
+            Some(registration),
+            target,
+        ))
+    }
 }
 
 /// Compatibility names for callers that used the original Vulkan-only adapter.
