@@ -213,6 +213,37 @@ impl<B: IndirectBackend> Workload<B> {
             self.scene.upload(&mut e)?;
             upload_ktx(&mut e, &self.plant_texture, &self.plant_ktx)?;
             upload_ktx(&mut e, &self.ground_texture, &self.ground_ktx)?;
+            let reads = [
+                (
+                    &self.plant_texture,
+                    self.plant_ktx.mips,
+                    self.plant_ktx.layers,
+                ),
+                (&self.ground_texture, self.ground_ktx.mips, 1),
+            ]
+            .map(|(texture, mips, layers)| {
+                ResourceTransition::Texture(TextureBarrier {
+                    target: Subresources {
+                        texture,
+                        aspects: TextureAspects::COLOR,
+                        mips: 0..mips,
+                        layers: 0..layers,
+                    },
+                    usage: StateTransition {
+                        from: TextureUses {
+                            stages: StageMask::COPY,
+                            accesses: AccessMask::COPY_WRITE,
+                        },
+                        to: TextureUses {
+                            stages: StageMask::FRAGMENT,
+                            accesses: AccessMask::SHADER_READ,
+                        },
+                    },
+                    layout: Some((ImageLayout::Common, ImageLayout::ShaderReadOnly)),
+                    ownership: None,
+                })
+            });
+            e.transition_resources(&reads)?;
         }
         e.write_buffer(&self.uniform, 0, &frame_uniform(extent, time))?;
         self.direct_pass(&mut e, image, extent, true)?;

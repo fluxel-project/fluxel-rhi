@@ -135,20 +135,34 @@ impl api::RasterBackend for Dx12 {
                 false,
                 dsv.as_ref().map(|handle| handle as *const _),
             );
-            encoder.list.RSSetViewports(&[D3D12_VIEWPORT {
+            let viewport = D3D12_VIEWPORT {
                 TopLeftX: desc.render_area.x as f32,
                 TopLeftY: desc.render_area.y as f32,
                 Width: desc.render_area.width as f32,
                 Height: desc.render_area.height as f32,
                 MinDepth: 0.0,
                 MaxDepth: 1.0,
-            }]);
-            encoder.list.RSSetScissorRects(&[RECT {
+            };
+            let scissor = RECT {
                 left: desc.render_area.x as i32,
                 top: desc.render_area.y as i32,
                 right: desc.render_area.x.saturating_add(desc.render_area.width) as i32,
                 bottom: desc.render_area.y.saturating_add(desc.render_area.height) as i32,
-            }]);
+            };
+            if multiview.is_some() {
+                // The view-instanced PSO addresses viewport indices 0 and 1.
+                // D3D12 requires both slots to be explicitly initialized.
+                encoder.list.RSSetViewports(&[viewport, viewport]);
+                encoder.list.RSSetScissorRects(&[scissor, scissor]);
+                // A PSO with ENABLE_VIEW_INSTANCE_MASKING starts with mask 0,
+                // which suppresses every draw until the application sets it.
+                let view_list: ID3D12GraphicsCommandList1 =
+                    encoder.list.cast().map_err(native_error)?;
+                view_list.SetViewInstanceMask(0b11);
+            } else {
+                encoder.list.RSSetViewports(&[viewport]);
+                encoder.list.RSSetScissorRects(&[scissor]);
+            }
             match color.load {
                 api::LoadOp::Clear(api::ClearColor::Float(value)) => {
                     encoder.list.ClearRenderTargetView(

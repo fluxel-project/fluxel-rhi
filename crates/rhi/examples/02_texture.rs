@@ -65,7 +65,7 @@ impl<B: TextureBackend> TextureExample<B> {
         };
         let vertex = d.create_buffer(&buf(
             "02 vertices",
-            80,
+            128,
             BufferUsage::VERTEX.union(BufferUsage::COPY_DST),
         ))?;
         let index = d.create_buffer(&buf(
@@ -108,7 +108,7 @@ impl<B: TextureBackend> TextureExample<B> {
                     vec![ShaderStage::Vertex],
                     BindingType::UniformBuffer {
                         dynamic_offset: false,
-                        min_size: 64,
+                        min_size: 256,
                     },
                 ),
                 entry(
@@ -162,7 +162,7 @@ impl<B: TextureBackend> TextureExample<B> {
             pl,
             format,
             vec![VertexBufferLayout {
-                stride: 20,
+                stride: 32,
                 step_mode: VertexStepMode::Vertex,
                 attributes: vec![
                     VertexAttribute {
@@ -174,6 +174,11 @@ impl<B: TextureBackend> TextureExample<B> {
                         location: 1,
                         offset: 12,
                         format: VertexFormat::Float32(2),
+                    },
+                    VertexAttribute {
+                        location: 2,
+                        offset: 20,
+                        format: VertexFormat::Float32(3),
                     },
                 ],
             }],
@@ -201,7 +206,7 @@ impl<B: TextureBackend> TextureExample<B> {
         let mut e = d.encoder(self.lane)?;
         e.write_buffer(&self.vertex, 0, &quad())?;
         e.write_buffer(&self.index, 0, &[0, 0, 1, 0, 2, 0, 2, 0, 3, 0, 0, 0])?;
-        e.write_buffer(&self.uniform, 0, &identity())?;
+        e.write_buffer(&self.uniform, 0, &texture_transform(extent))?;
         e.write_texture(
             TextureRegion {
                 texture: &self.texture,
@@ -253,7 +258,7 @@ impl<B: TextureBackend> TextureExample<B> {
         })?;
         r.set_pipeline(&self.pipeline)?;
         r.set_bind_group(0, &self.group, &[])?;
-        r.set_vertex_buffer(0, &self.vertex, 0..80)?;
+        r.set_vertex_buffer(0, &self.vertex, 0..128)?;
         r.set_index_buffer(&self.index, 0..12, IndexFormat::Uint16)?;
         r.draw_indexed(0..6, 0, 0..1)?;
         r.finish()?;
@@ -353,22 +358,73 @@ async fn pipeline<B: TextureBackend>(
     })
     .await
 }
-fn quad() -> [u8; 80] {
-    let x: [f32; 20] = [
-        -1., -1., 0., 0., 1., 1., -1., 0., 1., 1., 1., 1., 0., 1., 0., -1., 1., 0., 0., 0.,
+fn quad() -> [u8; 128] {
+    // Same position / UV / normal records as the C++ textured quad.
+    let x: [f32; 32] = [
+        1., 1., 0., 1., 1., 0., 0., 1., -1., 1., 0., 0., 1., 0., 0., 1., -1., -1., 0., 0., 0., 0.,
+        0., 1., 1., -1., 0., 1., 0., 0., 0., 1.,
     ];
-    let mut b = [0; 80];
+    let mut b = [0; 128];
     for (i, v) in x.into_iter().enumerate() {
         b[i * 4..i * 4 + 4].copy_from_slice(&v.to_ne_bytes())
     }
     b
 }
-fn identity() -> [u8; 64] {
-    let mut b = [0; 64];
-    for i in 0..4 {
-        b[i * 20..i * 20 + 4].copy_from_slice(&1f32.to_ne_bytes())
+fn texture_transform(extent: [u32; 2]) -> [u8; 256] {
+    // Match the source's right-handed look-at camera: z=-2.5, a 15° yaw and
+    // a 60° perspective. WebGPU/DX12 still use a [0, 1] depth range; only
+    // the example's world/view convention is right-handed.
+    let aspect = extent[0].max(1) as f32 / extent[1].max(1) as f32;
+    let f = 1.0 / 30f32.to_radians().tan();
+    let projection = [
+        f / aspect,
+        0.,
+        0.,
+        0.,
+        0.,
+        f,
+        0.,
+        0.,
+        0.,
+        0.,
+        256. / -255.9,
+        -1.,
+        0.,
+        0.,
+        -25.6 / 255.9,
+        0.,
+    ];
+    let angle = 15f32.to_radians();
+    let (s, c) = angle.sin_cos();
+    let rotation = [c, 0., -s, 0., 0., 1., 0., 0., s, 0., c, 0., 0., 0., 0., 1.];
+    let view = [
+        1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., -2.5, 1.,
+    ];
+    let model = multiply(view, rotation);
+    let mut bytes = [0; 256];
+    write_matrix(&mut bytes, 0, projection);
+    write_matrix(&mut bytes, 64, model);
+    // `Camera::viewPos` from the source camera at (0, 0, -2.5).
+    for (index, value) in [0.0_f32, 0.0, 2.5, 0.0, 0.0].into_iter().enumerate() {
+        bytes[128 + index * 4..132 + index * 4].copy_from_slice(&value.to_le_bytes());
     }
-    b
+    bytes
+}
+
+fn multiply(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
+    let mut output = [0.; 16];
+    for column in 0..4 {
+        for row in 0..4 {
+            output[column * 4 + row] = (0..4).map(|k| a[k * 4 + row] * b[column * 4 + k]).sum();
+        }
+    }
+    output
+}
+
+fn write_matrix(bytes: &mut [u8], offset: usize, matrix: [f32; 16]) {
+    for (index, value) in matrix.into_iter().enumerate() {
+        bytes[offset + index * 4..offset + index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+    }
 }
 
 #[cfg(windows)]

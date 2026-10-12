@@ -194,27 +194,80 @@ pub(crate) fn depth<B: OffscreenBackend>(
     )?;
     Ok((t, v))
 }
-pub(crate) fn matrix(t: f32, mirror: bool) -> [u8; 256] {
-    let (s, c) = t.sin_cos();
-    let y = if mirror { -1.0 } else { 1.0 };
-    let x = [
-        0.55 * c,
-        0.0,
-        0.55 * s,
-        0.0,
-        0.0,
-        0.55 * y,
-        0.0,
-        0.0,
-        -0.55 * s,
-        0.0,
-        0.55 * c,
-        0.0,
-        0.0,
-        -0.15,
-        0.3,
-        1.0,
+pub(crate) fn scene_matrix(time: f32, reflected: bool, extent: [u32; 2]) -> [u8; 256] {
+    // Keep the C++ sample's look-at camera and model order.  The simplified
+    // predecessor scaled the complete scene in clip space, which moved both
+    // dragon and mirror away from their reference framing.
+    let angle = time * 10f32.to_radians();
+    let (s, c) = angle.sin_cos();
+    let rotation_y = [c, 0., -s, 0., 0., 1., 0., 0., s, 0., c, 0., 0., 0., 0., 1.];
+    let translate = [
+        1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., -1., 0., 1.,
     ];
+    let model = if reflected {
+        multiply(
+            multiply(
+                rotation_y,
+                [
+                    1., 0., 0., 0., 0., -1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
+                ],
+            ),
+            translate,
+        )
+    } else {
+        multiply(rotation_y, translate)
+    };
+    encode_matrix(multiply(camera(extent), model))
+}
+
+pub(crate) fn plane_matrix(extent: [u32; 2]) -> [u8; 256] {
+    encode_matrix(camera(extent))
+}
+
+fn camera(extent: [u32; 2]) -> [f32; 16] {
+    let aspect = extent[0].max(1) as f32 / extent[1].max(1) as f32;
+    let f = 1.0 / (60f32.to_radians() * 0.5).tan();
+    let near = 0.1;
+    let far = 256.0;
+    let projection = [
+        f / aspect,
+        0.,
+        0.,
+        0.,
+        0.,
+        -f,
+        0.,
+        0.,
+        0.,
+        0.,
+        far / (near - far),
+        -1.,
+        0.,
+        0.,
+        far * near / (near - far),
+        0.,
+    ];
+    let (s, c) = (-2.5f32.to_radians()).sin_cos();
+    let rotate_x = [1., 0., 0., 0., 0., c, s, 0., 0., -s, c, 0., 0., 0., 0., 1.];
+    let translate = [
+        1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 1., -6., 1.,
+    ];
+    multiply(projection, multiply(translate, rotate_x))
+}
+
+fn multiply(left: [f32; 16], right: [f32; 16]) -> [f32; 16] {
+    let mut out = [0.; 16];
+    for column in 0..4 {
+        for row in 0..4 {
+            out[column * 4 + row] = (0..4)
+                .map(|k| left[k * 4 + row] * right[column * 4 + k])
+                .sum();
+        }
+    }
+    out
+}
+
+fn encode_matrix(x: [f32; 16]) -> [u8; 256] {
     let mut b = [0; 256];
     for (i, v) in x.into_iter().enumerate() {
         b[i * 4..i * 4 + 4].copy_from_slice(&v.to_ne_bytes())

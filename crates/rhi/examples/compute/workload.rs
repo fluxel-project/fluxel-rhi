@@ -299,7 +299,6 @@ impl<B: ComputeBackend> Compute<B> {
             self.source_initialized = true;
         }
         self.result_initialized = true;
-        self.filter = (self.filter + 1) % self.pipelines.len();
         Ok(work)
     }
 

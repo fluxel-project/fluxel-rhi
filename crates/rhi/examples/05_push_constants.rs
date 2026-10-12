@@ -5,6 +5,8 @@
 //! it is deliberately not replaced with instance data or a dynamic uniform.
 
 mod common;
+#[path = "common/gltf.rs"]
+mod gltf;
 
 use fluxel_rhi::api::*;
 use std::sync::Arc;
@@ -15,6 +17,7 @@ pub const PUSH_BYTES: u32 = 32;
 /// The native DXIL source for the b0 camera / b1 root-constant ABI.
 pub const VERTEX_DXIL: &[u8] = include_bytes!("assets/05_push_constants/push_constants.vs.dxil");
 pub const FRAGMENT_DXIL: &[u8] = include_bytes!("assets/05_push_constants/push_constants.ps.dxil");
+const SPHERE: &[u8] = include_bytes!("assets/models/sphere.gltf");
 
 /// One source-equivalent `color + position` record.
 #[derive(Clone, Copy)]
@@ -35,19 +38,32 @@ impl PushData {
 
 /// The same sixteen positions as the original sample's radius-3.5 circle.
 pub fn sphere_ring() -> [PushData; SPHERE_COUNT] {
+    // Fixed capture palette sampled from the source example's reference run.
+    // The C++ program seeds `std::default_random_engine` from
+    // `std::random_device`, so it has no reproducible colour sequence.
+    const COLORS: [[f32; 3]; SPHERE_COUNT] = [
+        [0.659, 0.757, 0.757],
+        [0.537, 0.110, 0.929],
+        [0.294, 0.800, 0.702],
+        [0.345, 0.110, 0.976],
+        [0.580, 0.725, 0.780],
+        [0.537, 0.788, 0.125],
+        [0.298, 0.933, 0.855],
+        [0.867, 0.898, 0.137],
+        [0.890, 0.596, 0.890],
+        [0.667, 0.149, 0.667],
+        [0.314, 0.533, 0.553],
+        [0.973, 0.306, 0.941],
+        [0.639, 0.220, 0.741],
+        [0.141, 0.392, 0.518],
+        [0.267, 0.388, 0.376],
+        [0.459, 0.651, 0.220],
+    ];
     std::array::from_fn(|index| {
         let angle = (index as f32 * 360.0 / SPHERE_COUNT as f32).to_radians();
         let (sin, cos) = angle.sin_cos();
-        // Deterministic colors keep the original 0.1..1.0 range without
-        // making the API command workload depend on a host RNG.
-        let seed = index as f32;
         PushData {
-            color: [
-                0.1 + (seed * 0.37).fract() * 0.9,
-                0.1 + (seed * 0.61).fract() * 0.9,
-                0.1 + (seed * 0.83).fract() * 0.9,
-                1.0,
-            ],
+            color: [COLORS[index][0], COLORS[index][1], COLORS[index][2], 1.0],
             position: [sin * 3.5, cos * 3.5, 0.0, 1.0],
         }
     })
@@ -171,8 +187,12 @@ struct PushWorkload<B: PushBackend> {
     vertex: Buffer<B>,
     index: Buffer<B>,
     camera: Buffer<B>,
+    _depth: Texture<B>,
+    depth_view: TextureView<B>,
     group: BindGroup<B>,
     pipeline: RasterPipeline<B>,
+    source_vertices: Vec<u8>,
+    source_indices: Vec<u8>,
     uploaded: bool,
 }
 impl<B: PushBackend> PushWorkload<B> {
@@ -182,16 +202,19 @@ impl<B: PushBackend> PushWorkload<B> {
         {
             return Err(Error::Unsupported("05 push constants"));
         }
+        // Use the C++ sample's glTF sphere instead of a placeholder octahedron.
+        let sphere = gltf::load_embedded_first_mesh(SPHERE)
+            .map_err(|error| Error::Backend(error.to_string()))?;
         let vertex = buffer(
             d,
             "05 sphere vertices",
-            240,
+            sphere.vertices.len() as u64,
             BufferUsage::VERTEX.union(BufferUsage::COPY_DST),
         )?;
         let index = buffer(
             d,
             "05 sphere indices",
-            96,
+            sphere.indices.len() as u64,
             BufferUsage::INDEX.union(BufferUsage::COPY_DST),
         )?;
         let camera = buffer(
@@ -199,6 +222,27 @@ impl<B: PushBackend> PushWorkload<B> {
             "05 camera",
             256,
             BufferUsage::UNIFORM.union(BufferUsage::COPY_DST),
+        )?;
+        let depth = d.create_texture(&TextureDesc {
+            label: Some("05 depth".into()),
+            dimension: TextureDimension::D2,
+            extent: [1280, 720, 1],
+            array_layers: 1,
+            format: TextureFormat::Depth32Float,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER_ATTACHMENT,
+            view_formats: vec![],
+        })?;
+        let depth_view = d.create_view(
+            &depth,
+            &TextureViewDesc {
+                format: TextureFormat::Depth32Float,
+                dimension: TextureViewDimension::D2,
+                aspects: TextureAspects::DEPTH,
+                mips: 0..1,
+                layers: 0..1,
+            },
         )?;
         let group_layout = d.create_bind_group_layout(&BindGroupLayoutDesc {
             label: Some("05 camera layout".into()),
@@ -241,8 +285,12 @@ impl<B: PushBackend> PushWorkload<B> {
             vertex,
             index,
             camera,
+            _depth: depth,
+            depth_view,
             group,
             pipeline,
+            source_vertices: sphere.vertices,
+            source_indices: sphere.indices,
             uploaded: false,
         })
     }
@@ -254,11 +302,11 @@ impl<B: PushBackend> PushWorkload<B> {
     ) -> Result<RecordedWork<B>> {
         let mut encoder = d.encoder(self.lane)?;
         if !self.uploaded {
-            encoder.write_buffer(&self.vertex, 0, &sphere_vertices())?;
-            encoder.write_buffer(&self.index, 0, &sphere_indices())?;
+            encoder.write_buffer(&self.vertex, 0, &self.source_vertices)?;
+            encoder.write_buffer(&self.index, 0, &self.source_indices)?;
             self.uploaded = true;
         }
-        encoder.write_buffer(&self.camera, 0, &camera_bytes())?;
+        encoder.write_buffer(&self.camera, 0, &camera_bytes(extent))?;
         let colors = [Some(ColorAttachment {
             view: AttachmentView::Surface(image),
             resolve_target: None,
@@ -268,7 +316,13 @@ impl<B: PushBackend> PushWorkload<B> {
         let pass = RasterPassDesc {
             label: Some("05 push constant spheres"),
             colors: &colors,
-            depth_stencil: None,
+            depth_stencil: Some(DepthStencilAttachment {
+                view: AttachmentView::Texture(&self.depth_view),
+                depth: Some((LoadOp::Clear(1.0), StoreOp::Discard)),
+                stencil: None,
+                depth_read_only: false,
+                stencil_read_only: false,
+            }),
             render_area: Rect {
                 x: 0,
                 y: 0,
@@ -286,10 +340,10 @@ impl<B: PushBackend> PushWorkload<B> {
             &self.pipeline,
             &self.group,
             &self.vertex,
-            240,
+            self.source_vertices.len() as u64,
             &self.index,
-            96,
-            24,
+            self.source_indices.len() as u64,
+            (self.source_indices.len() / 4) as u32,
             &sphere_ring(),
         )?;
         encoder.finish()
@@ -348,7 +402,7 @@ async fn pipeline<B: PushBackend>(
             constants: vec![],
         }),
         vertex_buffers: vec![VertexBufferLayout {
-            stride: 40,
+            stride: gltf::VKGLTF_VERTEX_STRIDE as u64,
             step_mode: VertexStepMode::Vertex,
             attributes: vec![
                 VertexAttribute {
@@ -363,7 +417,7 @@ async fn pipeline<B: PushBackend>(
                 },
                 VertexAttribute {
                     location: 2,
-                    offset: 24,
+                    offset: 32,
                     format: VertexFormat::Float32(4),
                 },
             ],
@@ -382,7 +436,28 @@ async fn pipeline<B: PushBackend>(
             polygon_mode: PolygonMode::Fill,
             conservative: false,
         },
-        depth_stencil: None,
+        depth_stencil: Some(DepthStencilState {
+            format: TextureFormat::Depth32Float,
+            depth_write_enabled: true,
+            depth_compare: CompareFunction::LessEqual,
+            stencil_front: StencilFaceState {
+                compare: CompareFunction::Always,
+                fail: StencilOperation::Keep,
+                depth_fail: StencilOperation::Keep,
+                pass: StencilOperation::Keep,
+            },
+            stencil_back: StencilFaceState {
+                compare: CompareFunction::Always,
+                fail: StencilOperation::Keep,
+                depth_fail: StencilOperation::Keep,
+                pass: StencilOperation::Keep,
+            },
+            stencil_read_mask: 0,
+            stencil_write_mask: 0,
+            depth_bias_constant: 0,
+            depth_bias_slope_scale: 0.0,
+            depth_bias_clamp: 0.0,
+        }),
         multisample: MultisampleState {
             count: 1,
             mask: u64::from(u32::MAX),
@@ -393,38 +468,53 @@ async fn pipeline<B: PushBackend>(
     })
     .await
 }
-fn sphere_vertices() -> [u8; 240] {
-    let p: [[f32; 10]; 6] = [
-        [0., 1., 0., 0., 1., 0., 1., 1., 1., 1.],
-        [0., -1., 0., 0., -1., 0., 1., 1., 1., 1.],
-        [-1., 0., 0., -1., 0., 0., 1., 1., 1., 1.],
-        [1., 0., 0., 1., 0., 0., 1., 1., 1., 1.],
-        [0., 0., -1., 0., 0., -1., 1., 1., 1., 1.],
-        [0., 0., 1., 0., 0., 1., 1., 1., 1., 1.],
+fn camera_bytes(extent: [u32; 2]) -> [u8; 256] {
+    // The source uses a 60° camera at z=-10 and a uniform 0.5 model scale.
+    let aspect = extent[0].max(1) as f32 / extent[1].max(1) as f32;
+    let f = 1.0 / 30f32.to_radians().tan();
+    let projection = [
+        f / aspect,
+        0.,
+        0.,
+        0.,
+        0.,
+        f,
+        0.,
+        0.,
+        0.,
+        0.,
+        256. / 255.9,
+        1.,
+        0.,
+        0.,
+        -25.6 / 255.9,
+        0.,
     ];
-    let mut out = [0; 240];
-    for (i, x) in p.into_iter().flatten().enumerate() {
-        out[i * 4..i * 4 + 4].copy_from_slice(&x.to_ne_bytes())
-    }
-    out
-}
-fn sphere_indices() -> [u8; 96] {
-    let x: [u32; 24] = [
-        0, 3, 5, 0, 5, 2, 0, 2, 4, 0, 4, 3, 1, 5, 3, 1, 2, 5, 1, 4, 2, 1, 3, 4,
+    let view = [
+        1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 10., 1.,
     ];
-    let mut out = [0; 96];
-    for (i, v) in x.into_iter().enumerate() {
-        out[i * 4..i * 4 + 4].copy_from_slice(&v.to_ne_bytes())
-    }
-    out
-}
-fn camera_bytes() -> [u8; 256] {
+    let scale: [f32; 16] = [
+        0.5, 0., 0., 0., 0., 0.5, 0., 0., 0., 0., 0.5, 0., 0., 0., 0., 1.,
+    ];
+    let projection_view = multiply(projection, view);
     let mut out = [0; 256];
-    for i in 0..4 {
-        out[(i * 4 + i) * 4..(i * 4 + i + 1) * 4]
-            .copy_from_slice(&(if i < 2 { 0.2f32 } else { 1.0 }).to_ne_bytes())
+    for (index, value) in projection_view.into_iter().enumerate() {
+        out[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    for (index, value) in scale.into_iter().enumerate() {
+        out[64 + index * 4..68 + index * 4].copy_from_slice(&value.to_le_bytes());
     }
     out
+}
+
+fn multiply(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
+    let mut output = [0.; 16];
+    for column in 0..4 {
+        for row in 0..4 {
+            output[column * 4 + row] = (0..4).map(|k| a[k * 4 + row] * b[column * 4 + k]).sum();
+        }
+    }
+    output
 }
 
 #[cfg(not(windows))]

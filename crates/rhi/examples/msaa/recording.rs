@@ -64,6 +64,33 @@ impl<B: MsaaBackend> Msaa<B> {
                     &pixels,
                 )?;
             }
+            let reads = self
+                .material_textures
+                .iter()
+                .map(|texture| {
+                    ResourceTransition::Texture(TextureBarrier {
+                        target: Subresources {
+                            texture,
+                            aspects: TextureAspects::COLOR,
+                            mips: 0..1,
+                            layers: 0..1,
+                        },
+                        usage: StateTransition {
+                            from: TextureUses {
+                                stages: StageMask::COPY,
+                                accesses: AccessMask::COPY_WRITE,
+                            },
+                            to: TextureUses {
+                                stages: StageMask::FRAGMENT,
+                                accesses: AccessMask::SHADER_READ,
+                            },
+                        },
+                        layout: Some((ImageLayout::Common, ImageLayout::ShaderReadOnly)),
+                        ownership: None,
+                    })
+                })
+                .collect::<Vec<_>>();
+            encoder.transition_resources(&reads)?;
             self.uploaded = true;
         }
         encoder.write_buffer(&self.uniform, 0, &transform(extent, time))?;
@@ -142,19 +169,21 @@ impl<B: MsaaBackend> Msaa<B> {
         encoder.finish()
     }
 }
-fn transform(extent: [u32; 2], time: f32) -> [u8; 256] {
+fn transform(extent: [u32; 2], _time: f32) -> [u8; 256] {
     let aspect = extent[0].max(1) as f32 / extent[1].max(1) as f32;
-    let f = 1.0 / (30f32.to_radians() * 0.5).tan();
+    // Matches the reference camera's 60 degree perspective, with the public
+    // RHI depth interval [0, 1].
+    let f = 1.0 / (60f32.to_radians() * 0.5).tan();
     let near = 0.1;
     let far = 256.0;
-    let (s, c) = (time * 0.25).sin_cos();
+    let (s, c) = (-90f32.to_radians()).sin_cos();
     let projection = [
         f / aspect,
         0.,
         0.,
         0.,
         0.,
-        f,
+        -f,
         0.,
         0.,
         0.,
@@ -166,8 +195,11 @@ fn transform(extent: [u32; 2], time: f32) -> [u8; 256] {
         far * near / (near - far),
         0.,
     ];
+    // Column-major layout expected by this HLSL cbuffer. Keep this as exactly
+    // sixteen floats: the old seventeen-float literal shifted the light data
+    // into the matrix and gave model.w the camera's z translation.
     let model = [
-        c, 0., -s, 0., 0., 1., 0., 0., s, 0., c, 0., 0., -0.15, 2.5, -7.5, 1.,
+        c, 0., -s, 0., 0., 1., 0., 0., s, 0., c, 0., 2.5, 2.5, -7.5, 1.,
     ];
     let mut bytes = [0; 256];
     for (index, value) in projection

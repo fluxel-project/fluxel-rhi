@@ -156,7 +156,7 @@ impl<B: TriangleBackend> Triangle<B> {
         let colors = [Some(ColorAttachment {
             view: AttachmentView::Surface(image),
             resolve_target: None,
-            load: LoadOp::Clear(ClearColor::Float([0.02, 0.02, 0.03, 1.0])),
+            load: LoadOp::Clear(ClearColor::Float([0.0, 0.0, 0.2, 1.0])),
             store: StoreOp::Store,
         })];
         let mut pass = encoder.begin_raster(&RasterPassDesc {
@@ -197,9 +197,15 @@ impl<B: TriangleBackend> Triangle<B> {
 }
 
 fn triangle_vertices() -> [u8; 72] {
+    // C++ source vertices are `(1,1)` red, `(-1,1)` green and `(0,-1)`
+    // blue, viewed from z=-2.5 with a 60° projection.  Bake that fixed
+    // source-camera transform here so this minimal no-uniform example keeps
+    // its indexed-triangle focus while matching the reference composition.
+    // WebGPU/DX12 framebuffer coordinates put +NDC Y at the top, hence the
+    // source Vulkan projection's Y inversion is represented in these values.
     let values = [
-        0.0_f32, 0.5, 0.0, 1.0, 0.0, 0.0, -0.5, -0.5, 0.0, 0.0, 1.0, 0.0, 0.5, -0.5, 0.0, 0.0, 0.0,
-        1.0,
+        0.3897_f32, -0.6928, 0.0, 1.0, 0.0, 0.0, -0.3897, -0.6928, 0.0, 0.0, 1.0, 0.0, 0.0, 0.6928,
+        0.0, 0.0, 0.0, 1.0,
     ];
     let mut bytes = [0; 72];
     for (index, value) in values.into_iter().enumerate() {

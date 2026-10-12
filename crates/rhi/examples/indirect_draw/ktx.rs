@@ -58,7 +58,7 @@ impl Ktx {
         })
     }
 }
-pub(crate) fn frame_uniform(e: [u32; 2], t: f32) -> [u8; 256] {
+pub(crate) fn frame_uniform(e: [u32; 2], _t: f32) -> [u8; 256] {
     let f = 1.0 / 30f32.to_radians().tan();
     let a = e[0].max(1) as f32 / e[1].max(1) as f32;
     let projection = [
@@ -67,25 +67,47 @@ pub(crate) fn frame_uniform(e: [u32; 2], t: f32) -> [u8; 256] {
         0.,
         0.,
         0.,
-        f,
+        -f,
         0.,
         0.,
         0.,
         0.,
-        256. / -255.,
+        512. / -511.,
         -1.,
         0.,
         0.,
-        256. / -255.,
+        512. * 0.1 / -511.,
         0.,
     ];
-    let (s, c) = (-0.25 * t).sin_cos();
-    let view = [
-        c, 0., s, 0., 0., 1., 0., 0., -s, 0., c, 0., 0., -2.5, -35., 1.,
+    // `indirectdraw.cpp` uses its first-person camera without animation:
+    // rotX(-12) * rotY(159) * translate(0.4, 1.25, 0).
+    let (sx, cx) = (-12f32.to_radians()).sin_cos();
+    let rotate_x = [
+        1., 0., 0., 0., 0., cx, sx, 0., 0., -sx, cx, 0., 0., 0., 0., 1.,
     ];
+    let (sy, cy) = (159f32.to_radians()).sin_cos();
+    let rotate_y = [
+        cy, 0., -sy, 0., 0., 1., 0., 0., sy, 0., cy, 0., 0., 0., 0., 1.,
+    ];
+    let translate = [
+        1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0.4, 1.25, 0., 1.,
+    ];
+    let view = multiply(multiply(rotate_x, rotate_y), translate);
     let mut output = [0; 256];
     for (index, value) in projection.into_iter().chain(view).enumerate() {
         output[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
     }
     output
+}
+
+fn multiply(left: [f32; 16], right: [f32; 16]) -> [f32; 16] {
+    let mut out = [0.; 16];
+    for column in 0..4 {
+        for row in 0..4 {
+            out[column * 4 + row] = (0..4)
+                .map(|k| left[k * 4 + row] * right[column * 4 + k])
+                .sum();
+        }
+    }
+    out
 }

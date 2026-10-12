@@ -5,7 +5,8 @@ use std::sync::Arc;
 const TEXTURES: usize = 32;
 const CUBES: usize = 5;
 const VERTEX_BYTES: u64 = 24;
-const VERTICES_PER_CUBE: u32 = 36;
+const VERTICES_PER_CUBE: u32 = 24;
+const INDICES_PER_CUBE: u32 = 36;
 const VS: &[u8] = include_bytes!("assets/14_descriptor_indexing/descriptor_indexing.vs.dxil");
 const PS: &[u8] = include_bytes!("assets/14_descriptor_indexing/descriptor_indexing.ps.dxil");
 pub trait DescriptorIndexingBackend:
@@ -81,19 +82,32 @@ pub fn descriptor_indexing_layout<B: Backend + ResourceBackend>(
 pub struct DescriptorIndexing<B: DescriptorIndexingBackend> {
     lane: LaneId,
     vertex: Buffer<B>,
+    index: Buffer<B>,
     uniform: Buffer<B>,
     textures: Vec<Texture<B>>,
+    _depth: Texture<B>,
+    depth_view: TextureView<B>,
     group: BindGroup<B>,
     pipeline: RasterPipeline<B>,
     uploaded: bool,
 }
 impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
-    pub async fn new(d: &Device<B>, lane: LaneId, format: TextureFormat) -> Result<Self> {
+    pub async fn new(
+        d: &Device<B>,
+        lane: LaneId,
+        format: TextureFormat,
+        extent: [u32; 2],
+    ) -> Result<Self> {
         require_descriptor_indexing(d)?;
         let vertex = d.create_buffer(&buffer(
             "14 cube vertices",
             VERTEX_BYTES * u64::from(VERTICES_PER_CUBE) * CUBES as u64,
             BufferUsage::VERTEX.union(BufferUsage::COPY_DST),
+        ))?;
+        let index = d.create_buffer(&buffer(
+            "14 cube indices",
+            u64::from(INDICES_PER_CUBE) * CUBES as u64 * 4,
+            BufferUsage::INDEX.union(BufferUsage::COPY_DST),
         ))?;
         let uniform = d.create_buffer(&buffer(
             "14 matrices",
@@ -171,11 +185,15 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
             push_constants: &[],
         })?;
         let pipeline = pipeline(d, pl, format).await?;
+        let (depth, depth_view) = depth_target(d, extent)?;
         Ok(Self {
             lane,
             vertex,
+            index,
             uniform,
             textures,
+            _depth: depth,
+            depth_view,
             group,
             pipeline,
             uploaded: false,
@@ -191,6 +209,7 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
         let mut e = d.encoder(self.lane)?;
         if !self.uploaded {
             e.write_buffer(&self.vertex, 0, &cube_vertices())?;
+            e.write_buffer(&self.index, 0, &cube_indices())?;
             for (i, t) in self.textures.iter().enumerate() {
                 let p = texture_pixels(i as u8);
                 e.write_texture(
@@ -221,7 +240,13 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
         let mut p = e.begin_raster(&RasterPassDesc {
             label: Some("14 descriptor indexed cubes"),
             colors: &colors,
-            depth_stencil: None,
+            depth_stencil: Some(DepthStencilAttachment {
+                view: AttachmentView::Texture(&self.depth_view),
+                depth: Some((LoadOp::Clear(1.0), StoreOp::Discard)),
+                stencil: None,
+                depth_read_only: false,
+                stencil_read_only: false,
+            }),
             render_area: Rect {
                 x: 0,
                 y: 0,
@@ -239,7 +264,12 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
             &self.vertex,
             0..VERTEX_BYTES * u64::from(VERTICES_PER_CUBE) * CUBES as u64,
         )?;
-        p.draw(0..VERTICES_PER_CUBE * CUBES as u32, 0..1)?;
+        p.set_index_buffer(
+            &self.index,
+            0..u64::from(INDICES_PER_CUBE) * CUBES as u64 * 4,
+            IndexFormat::Uint32,
+        )?;
+        p.draw_indexed(0..INDICES_PER_CUBE * CUBES as u32, 0, 0..1)?;
         p.finish()?;
         e.finish()
     }
@@ -251,6 +281,33 @@ fn buffer(label: &str, size: u64, usage: BufferUsage) -> BufferDesc {
         usage,
         memory: MemoryClass::Device,
     }
+}
+fn depth_target<B: DescriptorIndexingBackend>(
+    d: &Device<B>,
+    extent: [u32; 2],
+) -> Result<(Texture<B>, TextureView<B>)> {
+    let texture = d.create_texture(&TextureDesc {
+        label: Some("14 depth".into()),
+        dimension: TextureDimension::D2,
+        extent: [extent[0], extent[1], 1],
+        array_layers: 1,
+        format: TextureFormat::Depth32Float,
+        mip_levels: 1,
+        samples: 1,
+        usage: TextureUsage::RENDER_ATTACHMENT,
+        view_formats: vec![],
+    })?;
+    let view = d.create_view(
+        &texture,
+        &TextureViewDesc {
+            format: TextureFormat::Depth32Float,
+            dimension: TextureViewDimension::D2,
+            aspects: TextureAspects::DEPTH,
+            mips: 0..1,
+            layers: 0..1,
+        },
+    )?;
+    Ok((texture, view))
 }
 async fn pipeline<B: DescriptorIndexingBackend>(
     d: &Device<B>,
@@ -327,12 +384,36 @@ async fn pipeline<B: DescriptorIndexingBackend>(
             topology: PrimitiveTopology::TriangleList,
             strip_index_format: None,
             front_face: FrontFace::Ccw,
-            cull_mode: CullMode::Back,
+            // The generated vertex order follows the C++ sample's Vulkan
+            // coordinate convention.  Keep both windings while this demo
+            // intentionally uses a hand-expanded, non-indexed cube stream.
+            cull_mode: CullMode::None,
             unclipped_depth: false,
             polygon_mode: PolygonMode::Fill,
             conservative: false,
         },
-        depth_stencil: None,
+        depth_stencil: Some(DepthStencilState {
+            format: TextureFormat::Depth32Float,
+            depth_write_enabled: true,
+            depth_compare: CompareFunction::LessEqual,
+            stencil_front: StencilFaceState {
+                compare: CompareFunction::Always,
+                fail: StencilOperation::Keep,
+                depth_fail: StencilOperation::Keep,
+                pass: StencilOperation::Keep,
+            },
+            stencil_back: StencilFaceState {
+                compare: CompareFunction::Always,
+                fail: StencilOperation::Keep,
+                depth_fail: StencilOperation::Keep,
+                pass: StencilOperation::Keep,
+            },
+            stencil_read_mask: 0,
+            stencil_write_mask: 0,
+            depth_bias_constant: 0,
+            depth_bias_slope_scale: 0.0,
+            depth_bias_clamp: 0.0,
+        }),
         multisample: MultisampleState {
             count: 1,
             mask: u64::from(u32::MAX),
@@ -359,51 +440,65 @@ fn texture_pixels(n: u8) -> [u8; 36] {
     p
 }
 fn cube_vertices() -> Vec<u8> {
+    // Same 24 per-face vertices as the C++ sample.  The indexed stream keeps
+    // each face's texture index and winding intact.
     let c = [
-        [-0.5, -0.5, -0.5],
-        [0.5, -0.5, -0.5],
-        [0.5, 0.5, -0.5],
-        [-0.5, 0.5, -0.5],
-        [-0.5, -0.5, 0.5],
-        [0.5, -0.5, 0.5],
-        [0.5, 0.5, 0.5],
-        [-0.5, 0.5, 0.5],
-    ];
-    let f = [
-        [0, 1, 2, 3],
-        [5, 4, 7, 6],
-        [4, 0, 3, 7],
-        [1, 5, 6, 2],
-        [3, 2, 6, 7],
-        [4, 5, 1, 0],
+        ([-1., -1., 1.], [0., 0.]),
+        ([1., -1., 1.], [1., 0.]),
+        ([1., 1., 1.], [1., 1.]),
+        ([-1., 1., 1.], [0., 1.]),
+        ([1., 1., 1.], [0., 0.]),
+        ([1., 1., -1.], [1., 0.]),
+        ([1., -1., -1.], [1., 1.]),
+        ([1., -1., 1.], [0., 1.]),
+        ([-1., -1., -1.], [0., 0.]),
+        ([1., -1., -1.], [1., 0.]),
+        ([1., 1., -1.], [1., 1.]),
+        ([-1., 1., -1.], [0., 1.]),
+        ([-1., -1., -1.], [0., 0.]),
+        ([-1., -1., 1.], [1., 0.]),
+        ([-1., 1., 1.], [1., 1.]),
+        ([-1., 1., -1.], [0., 1.]),
+        ([1., 1., 1.], [0., 0.]),
+        ([-1., 1., 1.], [1., 0.]),
+        ([-1., 1., -1.], [1., 1.]),
+        ([1., 1., -1.], [0., 1.]),
+        ([-1., -1., -1.], [0., 0.]),
+        ([1., -1., -1.], [1., 0.]),
+        ([1., -1., 1.], [1., 1.]),
+        ([-1., -1., 1.], [0., 1.]),
     ];
     let mut o = Vec::new();
     for cube in 0..CUBES {
-        for (face, ids) in f.iter().enumerate() {
-            for (k, uv) in [
-                (0, [0., 1.]),
-                (1, [1., 1.]),
-                (2, [1., 0.]),
-                (0, [0., 1.]),
-                (2, [1., 0.]),
-                (3, [0., 0.]),
-            ] {
-                let mut p = c[ids[k]];
-                p[0] += (cube as f32 - 2.) * 1.35;
-                p[1] += ((cube % 2) as f32 - 0.5) * 0.45;
-                for x in p.into_iter().chain(uv) {
-                    o.extend_from_slice(&x.to_ne_bytes())
-                }
-                o.extend_from_slice(&(((cube * 6 + face) % TEXTURES) as u32).to_ne_bytes())
+        for (vertex, (mut position, uv)) in c.into_iter().enumerate() {
+            position[0] += 2.5 * cube as f32 - (CUBES as f32 * 2.5 / 2.0) + 1.25;
+            for value in position.into_iter().chain(uv) {
+                o.extend_from_slice(&value.to_ne_bytes());
             }
+            o.extend_from_slice(&(((cube * 6 + vertex / 4) % TEXTURES) as u32).to_ne_bytes());
         }
     }
     o
 }
-fn matrices(extent: [u32; 2], time: f32) -> [u8; 256] {
+fn cube_indices() -> Vec<u8> {
+    let local = [
+        0u32, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 8, 9, 10, 8, 10, 11, 12, 13, 14, 12, 14, 15, 16, 17,
+        18, 16, 18, 19, 20, 21, 22, 20, 22, 23,
+    ];
+    (0..CUBES)
+        .flat_map(|cube| {
+            local
+                .into_iter()
+                .map(move |index| index + cube as u32 * VERTICES_PER_CUBE)
+        })
+        .flat_map(u32::to_ne_bytes)
+        .collect()
+}
+fn matrices(extent: [u32; 2], _time: f32) -> [u8; 256] {
     let a = extent[0].max(1) as f32 / extent[1].max(1) as f32;
     let f = 1. / (45f32.to_radians() * 0.5).tan();
-    let (s, c) = (time * 0.5).sin_cos();
+    // C++ `Camera::lookat`: position (0, 0, -10), rotation (-35, 0, 0).
+    let (s, c) = (-35.0_f32.to_radians()).sin_cos();
     let v = [
         f / a,
         0.,
@@ -421,21 +516,21 @@ fn matrices(extent: [u32; 2], time: f32) -> [u8; 256] {
         0.,
         -0.1001,
         0.,
-        c,
-        0.,
-        s,
-        0.,
-        0.,
         1.,
         0.,
         0.,
-        -s,
         0.,
+        0.,
+        c,
+        s,
+        0.,
+        0.,
+        -s,
         c,
         0.,
         0.,
         0.,
-        -5.,
+        -10.,
         1.,
         1.,
         0.,
@@ -490,6 +585,7 @@ fn main() {
                     d,
                     lane,
                     config.format,
+                    e,
                 ))?)
             }
             let w = scene.as_mut().ok_or(Error::InvalidState)?.record(

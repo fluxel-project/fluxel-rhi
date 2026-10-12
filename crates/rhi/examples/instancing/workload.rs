@@ -276,7 +276,10 @@ fn uniform(extent: [u32; 2], time: f32) -> [u8; 256] {
         0.,
         0.,
         0.,
-        f,
+        // Sascha Willems' Vulkan example uses its positive-height viewport,
+        // whose framebuffer Y mapping is opposite DX12/WebGPU. Keep that
+        // adaptation in this scene matrix rather than changing RHI semantics.
+        -f,
         0.,
         0.,
         0.,
@@ -292,7 +295,7 @@ fn uniform(extent: [u32; 2], time: f32) -> [u8; 256] {
     let (sin_y, cos_y) = (-4.7f32).to_radians().sin_cos();
     let view = multiply(
         [
-            1., 0., 0., 0., 0., cos_x, sin_x, 0., 0., -sin_x, cos_x, 0., 0., 0., -18.5, 1.,
+            1., 0., 0., 0., 0., cos_x, sin_x, 0., 0., -sin_x, cos_x, 0., 5.5, -1.85, -18.5, 1.,
         ],
         [
             cos_y, 0., -sin_y, 0., 0., 1., 0., 0., sin_y, 0., cos_y, 0., 0., 0., 0., 1.,

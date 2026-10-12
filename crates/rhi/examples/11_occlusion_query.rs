@@ -1,12 +1,17 @@
 //! Occlusion queries with native DX12 BeginQuery/EndQuery/ResolveQueryData.
 mod common;
+#[path = "common/gltf.rs"]
+mod gltf;
 use fluxel_rhi::api::*;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
-const VS: &[u8] = include_bytes!("assets/01_triangle/triangle_vs.dxil");
-const PS: &[u8] = include_bytes!("assets/01_triangle/triangle_ps.dxil");
+const PLANE: &[u8] = include_bytes!("assets/models/plane_z.gltf");
+const TEAPOT: &[u8] = include_bytes!("assets/models/teapot.gltf");
+const SPHERE: &[u8] = include_bytes!("assets/models/sphere.gltf");
+const VS: &[u8] = include_bytes!("assets/11_occlusion_query/occlusion.vs.dxil");
+const PS: &[u8] = include_bytes!("assets/11_occlusion_query/occlusion.ps.dxil");
 static NEXT_PLAN: AtomicU64 = AtomicU64::new(1);
 pub trait OcclusionBackend:
     Backend
@@ -32,9 +37,27 @@ impl<T> OcclusionBackend for T where
 }
 pub struct Workload<B: OcclusionBackend> {
     lane: LaneId,
-    plane: Buffer<B>,
-    red: Buffer<B>,
-    green: Buffer<B>,
+    plane_vertices: Buffer<B>,
+    plane_indices: Buffer<B>,
+    teapot_vertices: Buffer<B>,
+    teapot_indices: Buffer<B>,
+    sphere_vertices: Buffer<B>,
+    sphere_indices: Buffer<B>,
+    plane_count: u32,
+    teapot_count: u32,
+    sphere_count: u32,
+    plane_len: u64,
+    teapot_len: u64,
+    sphere_len: u64,
+    plane_index_len: u64,
+    teapot_index_len: u64,
+    sphere_index_len: u64,
+    plane_uniform: Buffer<B>,
+    teapot_uniform: Buffer<B>,
+    sphere_uniform: Buffer<B>,
+    plane_group: BindGroup<B>,
+    teapot_group: BindGroup<B>,
+    sphere_group: BindGroup<B>,
     pipeline: RasterPipeline<B>,
     queries: QuerySet<B>,
     results: Buffer<B>,
@@ -53,22 +76,91 @@ impl<B: OcclusionBackend> Workload<B> {
                 kind: QueryKind::Occlusion,
                 count: 2,
             })?;
-        let make = |name: &str, n: usize| {
+        let make = |name: &str, n: usize, usage: BufferUsage| {
             d.create_buffer(&BufferDesc {
                 label: Some(name.into()),
                 size: n as u64,
-                usage: BufferUsage::VERTEX.union(BufferUsage::COPY_DST),
+                usage: usage.union(BufferUsage::COPY_DST),
                 memory: MemoryClass::Device,
             })
         };
-        let plane = make("11 blue occluder", 144)?;
-        let red = make("11 queried teapot", 72)?;
-        let green = make("11 queried sphere", 72)?;
+        let plane =
+            gltf::load_embedded_model(PLANE, gltf::LoadOptions::CPP_PORT.with_flip_y(false))
+                .map_err(|x| Error::Backend(x.to_string()))?;
+        let teapot =
+            gltf::load_embedded_model(TEAPOT, gltf::LoadOptions::CPP_PORT.with_flip_y(false))
+                .map_err(|x| Error::Backend(x.to_string()))?;
+        let sphere =
+            gltf::load_embedded_model(SPHERE, gltf::LoadOptions::CPP_PORT.with_flip_y(false))
+                .map_err(|x| Error::Backend(x.to_string()))?;
+        let plane_vertices = make(
+            "11 occluder vertices",
+            plane.vertices.len(),
+            BufferUsage::VERTEX,
+        )?;
+        let plane_indices = make(
+            "11 occluder indices",
+            plane.indices.len(),
+            BufferUsage::INDEX,
+        )?;
+        let teapot_vertices = make(
+            "11 teapot vertices",
+            teapot.vertices.len(),
+            BufferUsage::VERTEX,
+        )?;
+        let teapot_indices = make(
+            "11 teapot indices",
+            teapot.indices.len(),
+            BufferUsage::INDEX,
+        )?;
+        let sphere_vertices = make(
+            "11 sphere vertices",
+            sphere.vertices.len(),
+            BufferUsage::VERTEX,
+        )?;
+        let sphere_indices = make(
+            "11 sphere indices",
+            sphere.indices.len(),
+            BufferUsage::INDEX,
+        )?;
+        let plane_uniform = make("11 occluder transform", 256, BufferUsage::UNIFORM)?;
+        let teapot_uniform = make("11 teapot transform", 256, BufferUsage::UNIFORM)?;
+        let sphere_uniform = make("11 sphere transform", 256, BufferUsage::UNIFORM)?;
         let vs = shader(d, "11 VS", VS, "vs_main", ShaderStage::Vertex).await?;
         let ps = shader(d, "11 PS", PS, "ps_main", ShaderStage::Fragment).await?;
+        let layout = d.create_bind_group_layout(&BindGroupLayoutDesc {
+            label: Some("11 transform layout".into()),
+            entries: vec![BindGroupLayoutEntry {
+                binding: 0,
+                visibility: vec![ShaderStage::Vertex],
+                ty: BindingType::UniformBuffer {
+                    dynamic_offset: false,
+                    min_size: 64,
+                },
+                count: BindingCount::One,
+                partially_bound: false,
+                nonuniform_indexing: false,
+            }],
+        })?;
+        let bind = |buffer: &Buffer<B>, name: &str| {
+            d.create_bind_group(&BindGroupDesc {
+                label: Some(name.into()),
+                layout: &layout,
+                entries: &[BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer {
+                        buffer,
+                        range: 0..256,
+                    },
+                }],
+            })
+        };
+        let plane_group = bind(&plane_uniform, "11 occluder group")?;
+        let teapot_group = bind(&teapot_uniform, "11 teapot group")?;
+        let sphere_group = bind(&sphere_uniform, "11 sphere group")?;
         let l = d.create_pipeline_layout(&PipelineLayoutDesc {
             label: Some("11 layout"),
-            groups: &[],
+            groups: &[&layout],
             push_constants: &[],
         })?;
         let face = StencilFaceState {
@@ -92,7 +184,7 @@ impl<B: OcclusionBackend> Workload<B> {
                     constants: vec![],
                 }),
                 vertex_buffers: vec![VertexBufferLayout {
-                    stride: 24,
+                    stride: 96,
                     step_mode: VertexStepMode::Vertex,
                     attributes: vec![
                         VertexAttribute {
@@ -103,6 +195,16 @@ impl<B: OcclusionBackend> Workload<B> {
                         VertexAttribute {
                             location: 1,
                             offset: 12,
+                            format: VertexFormat::Float32(3),
+                        },
+                        VertexAttribute {
+                            location: 2,
+                            offset: 24,
+                            format: VertexFormat::Float32(2),
+                        },
+                        VertexAttribute {
+                            location: 3,
+                            offset: 32,
                             format: VertexFormat::Float32(3),
                         },
                     ],
@@ -150,9 +252,27 @@ impl<B: OcclusionBackend> Workload<B> {
         })?;
         Ok(Self {
             lane,
-            plane,
-            red,
-            green,
+            plane_vertices,
+            plane_indices,
+            teapot_vertices,
+            teapot_indices,
+            sphere_vertices,
+            sphere_indices,
+            plane_count: (plane.indices.len() / 4) as u32,
+            teapot_count: (teapot.indices.len() / 4) as u32,
+            sphere_count: (sphere.indices.len() / 4) as u32,
+            plane_len: plane.vertices.len() as u64,
+            teapot_len: teapot.vertices.len() as u64,
+            sphere_len: sphere.vertices.len() as u64,
+            plane_index_len: plane.indices.len() as u64,
+            teapot_index_len: teapot.indices.len() as u64,
+            sphere_index_len: sphere.indices.len() as u64,
+            plane_uniform,
+            teapot_uniform,
+            sphere_uniform,
+            plane_group,
+            teapot_group,
+            sphere_group,
             pipeline: p,
             queries: q,
             results,
@@ -169,30 +289,37 @@ impl<B: OcclusionBackend> Workload<B> {
             return Err(Error::InvalidRange);
         }
         let mut e = d.encoder(self.lane)?;
+        if self.visible == [true, true] {
+            let plane =
+                gltf::load_embedded_model(PLANE, gltf::LoadOptions::CPP_PORT.with_flip_y(false))
+                    .map_err(|x| Error::Backend(x.to_string()))?;
+            let teapot =
+                gltf::load_embedded_model(TEAPOT, gltf::LoadOptions::CPP_PORT.with_flip_y(false))
+                    .map_err(|x| Error::Backend(x.to_string()))?;
+            let sphere =
+                gltf::load_embedded_model(SPHERE, gltf::LoadOptions::CPP_PORT.with_flip_y(false))
+                    .map_err(|x| Error::Backend(x.to_string()))?;
+            e.write_buffer(&self.plane_vertices, 0, &plane.vertices)?;
+            e.write_buffer(&self.plane_indices, 0, &plane.indices)?;
+            e.write_buffer(&self.teapot_vertices, 0, &teapot.vertices)?;
+            e.write_buffer(&self.teapot_indices, 0, &teapot.indices)?;
+            e.write_buffer(&self.sphere_vertices, 0, &sphere.vertices)?;
+            e.write_buffer(&self.sphere_indices, 0, &sphere.indices)?;
+        }
         e.write_buffer(
-            &self.plane,
+            &self.plane_uniform,
             0,
-            &quad([-0.85, -0.85, 0.2], [0.85, 0.85, 0.2], [0.08, 0.20, 0.95]),
+            &transform(extent, [0.0, 0.0, 0.0], 6.0, [0.0, 0.0, 1.0, 0.5]),
         )?;
         e.write_buffer(
-            &self.red,
+            &self.teapot_uniform,
             0,
-            &tri(
-                [-0.55, -0.45, 0.10],
-                [-0.05, -0.45, 0.10],
-                [-0.30, 0.42, 0.10],
-                [0.95, 0.12, 0.08],
-            ),
+            &transform(extent, [0.0, 0.0, -3.0], 1.0, [1.0, 0.0, 0.0, 1.0]),
         )?;
         e.write_buffer(
-            &self.green,
+            &self.sphere_uniform,
             0,
-            &tri(
-                [0.05, -0.45, 0.75],
-                [0.55, -0.45, 0.75],
-                [0.30, 0.42, 0.75],
-                [0.10, 0.90, 0.20],
-            ),
+            &transform(extent, [0.0, 0.0, 3.0], 1.0, [0.0, 1.0, 0.0, 1.0]),
         )?;
         let (_depth, view) = depth(d, extent)?;
         let colors = [Some(ColorAttachment {
@@ -240,23 +367,53 @@ impl<B: OcclusionBackend> Workload<B> {
             height: extent[1],
         })?;
         p.set_pipeline(&self.pipeline)?;
-        p.set_vertex_buffer(0, &self.plane, 0..144)?;
-        p.draw(0..6, 0..1)?;
+        p.set_bind_group(0, &self.plane_group, &[])?;
+        p.set_vertex_buffer(0, &self.plane_vertices, 0..self.plane_len)?;
+        p.set_index_buffer(
+            &self.plane_indices,
+            0..self.plane_index_len,
+            IndexFormat::Uint32,
+        )?;
+        p.draw_indexed(0..self.plane_count, 0, 0..1)?;
         queries.begin_occlusion(&mut p, &self.queries, 0)?;
-        p.set_vertex_buffer(0, &self.red, 0..72)?;
-        p.draw(0..3, 0..1)?;
+        p.set_bind_group(0, &self.teapot_group, &[])?;
+        p.set_vertex_buffer(0, &self.teapot_vertices, 0..self.teapot_len)?;
+        p.set_index_buffer(
+            &self.teapot_indices,
+            0..self.teapot_index_len,
+            IndexFormat::Uint32,
+        )?;
+        p.draw_indexed(0..self.teapot_count, 0, 0..1)?;
         queries.end_occlusion(&mut p)?;
         queries.begin_occlusion(&mut p, &self.queries, 1)?;
-        p.set_vertex_buffer(0, &self.green, 0..72)?;
-        p.draw(0..3, 0..1)?;
+        p.set_bind_group(0, &self.sphere_group, &[])?;
+        p.set_vertex_buffer(0, &self.sphere_vertices, 0..self.sphere_len)?;
+        p.set_index_buffer(
+            &self.sphere_indices,
+            0..self.sphere_index_len,
+            IndexFormat::Uint32,
+        )?;
+        p.draw_indexed(0..self.sphere_count, 0, 0..1)?;
         queries.end_occlusion(&mut p)?;
         if self.visible[0] {
-            p.set_vertex_buffer(0, &self.red, 0..72)?;
-            p.draw(0..3, 0..1)?
+            p.set_bind_group(0, &self.teapot_group, &[])?;
+            p.set_vertex_buffer(0, &self.teapot_vertices, 0..self.teapot_len)?;
+            p.set_index_buffer(
+                &self.teapot_indices,
+                0..self.teapot_index_len,
+                IndexFormat::Uint32,
+            )?;
+            p.draw_indexed(0..self.teapot_count, 0, 0..1)?
         }
         if self.visible[1] {
-            p.set_vertex_buffer(0, &self.green, 0..72)?;
-            p.draw(0..3, 0..1)?
+            p.set_bind_group(0, &self.sphere_group, &[])?;
+            p.set_vertex_buffer(0, &self.sphere_vertices, 0..self.sphere_len)?;
+            p.set_index_buffer(
+                &self.sphere_indices,
+                0..self.sphere_index_len,
+                IndexFormat::Uint32,
+            )?;
+            p.draw_indexed(0..self.sphere_count, 0, 0..1)?
         }
         p.finish()?;
         queries.resolve(&mut e, &self.queries, 0..2, &self.results, 0)?;
@@ -334,6 +491,77 @@ fn tri(a: [f32; 3], b: [f32; 3], c: [f32; 3], k: [f32; 3]) -> Vec<u8> {
         .into_iter()
         .flat_map(|p| p.into_iter().chain(k).flat_map(f32::to_le_bytes))
         .collect()
+}
+fn transform(extent: [u32; 2], translate: [f32; 3], scale: f32, tint: [f32; 4]) -> [u8; 256] {
+    // C++ camera: look-at style `translate(0, 0, -7.5) * rotateY(-123.75)`
+    // and a Vulkan depth-range perspective (60°, near 1, far 256).
+    let multiply = |a: [f32; 16], b: [f32; 16]| {
+        let mut out = [0.0; 16];
+        for column in 0..4 {
+            for row in 0..4 {
+                out[column * 4 + row] = (0..4).map(|k| a[k * 4 + row] * b[column * 4 + k]).sum();
+            }
+        }
+        out
+    };
+    let aspect = extent[0].max(1) as f32 / extent[1].max(1) as f32;
+    let f = 1.0 / (30.0_f32.to_radians()).tan();
+    let projection = [
+        f / aspect,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        f,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        256.0 / -255.0,
+        -1.0,
+        0.0,
+        0.0,
+        256.0 / -255.0,
+        0.0,
+    ];
+    let (s, c) = (-123.75_f32.to_radians()).sin_cos();
+    let rotate = [
+        c, 0.0, -s, 0.0, 0.0, 1.0, 0.0, 0.0, s, 0.0, c, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    let view = multiply(
+        [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, -7.5, 1.0,
+        ],
+        rotate,
+    );
+    let model = [
+        scale,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        scale,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        scale,
+        0.0,
+        translate[0],
+        translate[1],
+        translate[2],
+        1.0,
+    ];
+    let matrix = multiply(projection, multiply(view, model));
+    let mut bytes = [0; 256];
+    for (index, value) in matrix.into_iter().enumerate() {
+        bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
+    }
+    for (index, value) in tint.into_iter().enumerate() {
+        let offset = 64 + index * 4;
+        bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
+    }
+    bytes
 }
 fn quad(a: [f32; 3], b: [f32; 3], k: [f32; 3]) -> Vec<u8> {
     tri(a, [b[0], a[1], a[2]], b, k)

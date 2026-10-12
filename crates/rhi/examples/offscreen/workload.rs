@@ -249,9 +249,9 @@ impl<B: OffscreenBackend> Offscreen<B> {
             e.write_buffer(&self.pv, 0, &b.vertices)?;
             e.write_buffer(&self.pi, 0, &b.indices)?;
         }
-        e.write_buffer(&self.off_u, 0, &matrix(time, true))?;
-        e.write_buffer(&self.mirror_u, 0, &matrix(time, false))?;
-        e.write_buffer(&self.scene_u, 0, &matrix(time, false))?;
+        e.write_buffer(&self.off_u, 0, &scene_matrix(time, true, [512, 512]))?;
+        e.write_buffer(&self.mirror_u, 0, &plane_matrix(extent))?;
+        e.write_buffer(&self.scene_u, 0, &scene_matrix(time, false, extent))?;
         let range = Subresources {
             texture: &self.off,
             aspects: TextureAspects::COLOR,

@@ -16,6 +16,8 @@ struct VertexOutput {
     float3 normal : TEXCOORD0;
     float2 uv : TEXCOORD1;
     float3 color : COLOR0;
+    float3 view_vector : TEXCOORD2;
+    float3 light_vector : TEXCOORD3;
 };
 VertexOutput vs_main(VertexInput input) {
     VertexOutput output;
@@ -24,10 +26,20 @@ VertexOutput vs_main(VertexInput input) {
     output.normal = normalize(mul((float3x3)model, input.normal));
     output.uv = input.uv;
     output.color = input.color;
+    // The Vulkan source lights in view space.  SV_Position is in framebuffer
+    // pixels at this stage, so it cannot be used as a lighting position.
+    float3 light = mul((float3x3)model, light_position.xyz);
+    output.light_vector = light - world.xyz;
+    output.view_vector = -world.xyz;
     return output;
 }
 float4 ps_main(VertexOutput input) : SV_Target {
-    float3 light_dir = normalize(light_position.xyz - input.position.xyz);
-    float diffuse = max(dot(normalize(input.normal), light_dir), 0.12);
-    return float4(base_color.Sample(base_sampler, input.uv).rgb * input.color * diffuse, 1.0);
+    float3 normal = normalize(input.normal);
+    float3 light_dir = normalize(input.light_vector);
+    float3 view_dir = normalize(input.view_vector);
+    float3 reflected = reflect(-light_dir, normal);
+    float3 color = base_color.Sample(base_sampler, input.uv).rgb * input.color;
+    float diffuse = max(dot(normal, light_dir), 0.15);
+    float specular = pow(max(dot(reflected, view_dir), 0.0), 16.0) * 0.75;
+    return float4(color * diffuse + specular.xxx, 1.0);
 }

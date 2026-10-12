@@ -28,6 +28,8 @@ pub struct DynamicUniforms<B: DynamicUniformBackend> {
     index: Buffer<B>,
     camera: Buffer<B>,
     models: Buffer<B>,
+    _depth: Texture<B>,
+    depth_view: TextureView<B>,
     group: BindGroup<B>,
     pipeline: RasterPipeline<B>,
     lane: LaneId,
@@ -44,7 +46,7 @@ impl<B: DynamicUniformBackend> DynamicUniforms<B> {
         ))?;
         let index = d.create_buffer(&buffer(
             "04 cube indices",
-            72,
+            144,
             BufferUsage::INDEX.union(BufferUsage::COPY_DST),
         ))?;
         let camera = d.create_buffer(&buffer(
@@ -57,6 +59,27 @@ impl<B: DynamicUniformBackend> DynamicUniforms<B> {
             size,
             BufferUsage::UNIFORM.union(BufferUsage::COPY_DST),
         ))?;
+        let depth = d.create_texture(&TextureDesc {
+            label: Some("04 depth".into()),
+            dimension: TextureDimension::D2,
+            extent: [1280, 720, 1],
+            array_layers: 1,
+            format: TextureFormat::Depth32Float,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER_ATTACHMENT,
+            view_formats: vec![],
+        })?;
+        let depth_view = d.create_view(
+            &depth,
+            &TextureViewDesc {
+                format: TextureFormat::Depth32Float,
+                dimension: TextureViewDimension::D2,
+                aspects: TextureAspects::DEPTH,
+                mips: 0..1,
+                layers: 0..1,
+            },
+        )?;
         let layout = d.create_bind_group_layout(&BindGroupLayoutDesc {
             label: Some("04 dynamic uniforms".into()),
             entries: vec![entry(0, false, 64), entry(1, true, 64)],
@@ -93,6 +116,8 @@ impl<B: DynamicUniformBackend> DynamicUniforms<B> {
             index,
             camera,
             models,
+            _depth: depth,
+            depth_view,
             group,
             pipeline,
             lane,
@@ -109,7 +134,7 @@ impl<B: DynamicUniformBackend> DynamicUniforms<B> {
         let mut e = d.encoder(self.lane)?;
         e.write_buffer(&self.vertex, 0, &cube_vertices())?;
         e.write_buffer(&self.index, 0, &cube_indices())?;
-        e.write_buffer(&self.camera, 0, &identity())?;
+        e.write_buffer(&self.camera, 0, &camera_matrix(extent))?;
         for n in 0..OBJECT_COUNT {
             e.write_buffer(
                 &self.models,
@@ -126,7 +151,13 @@ impl<B: DynamicUniformBackend> DynamicUniforms<B> {
         let mut p = e.begin_raster(&RasterPassDesc {
             label: Some("04 dynamic uniforms"),
             colors: &c,
-            depth_stencil: None,
+            depth_stencil: Some(DepthStencilAttachment {
+                view: AttachmentView::Texture(&self.depth_view),
+                depth: Some((LoadOp::Clear(1.0), StoreOp::Discard)),
+                stencil: None,
+                depth_read_only: false,
+                stencil_read_only: false,
+            }),
             render_area: Rect {
                 x: 0,
                 y: 0,
@@ -153,7 +184,7 @@ impl<B: DynamicUniformBackend> DynamicUniforms<B> {
         })?;
         p.set_pipeline(&self.pipeline)?;
         p.set_vertex_buffer(0, &self.vertex, 0..192)?;
-        p.set_index_buffer(&self.index, 0..72, IndexFormat::Uint16)?;
+        p.set_index_buffer(&self.index, 0..144, IndexFormat::Uint32)?;
         for n in 0..OBJECT_COUNT {
             let offset = aligned(MODEL_BYTES, self.alignment) * u64::from(n);
             p.set_bind_group(
@@ -260,7 +291,28 @@ async fn make_pipeline<B: DynamicUniformBackend>(
             polygon_mode: PolygonMode::Fill,
             conservative: false,
         },
-        depth_stencil: None,
+        depth_stencil: Some(DepthStencilState {
+            format: TextureFormat::Depth32Float,
+            depth_write_enabled: true,
+            depth_compare: CompareFunction::LessEqual,
+            stencil_front: StencilFaceState {
+                compare: CompareFunction::Always,
+                fail: StencilOperation::Keep,
+                depth_fail: StencilOperation::Keep,
+                pass: StencilOperation::Keep,
+            },
+            stencil_back: StencilFaceState {
+                compare: CompareFunction::Always,
+                fail: StencilOperation::Keep,
+                depth_fail: StencilOperation::Keep,
+                pass: StencilOperation::Keep,
+            },
+            stencil_read_mask: 0,
+            stencil_write_mask: 0,
+            depth_bias_constant: 0,
+            depth_bias_slope_scale: 0.0,
+            depth_bias_clamp: 0.0,
+        }),
         multisample: MultisampleState {
             count: 1,
             mask: u64::from(u32::MAX),
@@ -271,28 +323,150 @@ async fn make_pipeline<B: DynamicUniformBackend>(
     })
     .await
 }
-fn identity() -> [u8; 64] {
-    let mut b = [0; 64];
-    for i in 0..4 {
-        b[i * 20..i * 20 + 4].copy_from_slice(&1f32.to_ne_bytes())
-    }
-    b
+fn model(n: u32, time: f32) -> [u8; 64] {
+    // The C++ sample lays out a 5³ lattice at five world-unit intervals and
+    // rotates every cube independently.  The previous 0.35-unit spacing made
+    // full-size cubes overlap, hiding the dynamic-offset workload.
+    let x = n / 25;
+    let y = (n / 5) % 5;
+    let z = n % 5;
+    let position = [
+        -10.0 + x as f32 * 5.0,
+        -10.0 + y as f32 * 5.0,
+        -10.0 + z as f32 * 5.0,
+    ];
+    // The source initializes each cube with independent rotations in
+    // [-2π, 2π] and then advances it with independent angular velocities.
+    // Its time seed is intentionally not reproducible, so use a local stable
+    // generator while preserving the same distribution and transform order.
+    let mut random = CubeRng::for_cube(n);
+    let angles: [f32; 3] = std::array::from_fn(|_| random.signed() * 2.0 * std::f32::consts::PI);
+    let speed: [f32; 3] = std::array::from_fn(|_| random.signed());
+    let angles: [f32; 3] = std::array::from_fn(|index| angles[index] + time * speed[index]);
+    encode_matrix(multiply(
+        translation(position),
+        multiply(
+            rotation_z(angles[2]),
+            multiply(rotation_y(angles[1]), rotation_axis_xy(angles[0])),
+        ),
+    ))
 }
-fn model(n: u32, t: f32) -> [u8; 64] {
-    let mut b = identity();
-    let x = (n % 5) as f32 - 2.0;
-    let y = ((n / 5) % 5) as f32 - 2.0;
-    let z = (n / 25) as f32 - 2.0;
-    b[48..52].copy_from_slice(&(x * 0.35).to_ne_bytes());
-    b[52..56].copy_from_slice(&(y * 0.35).to_ne_bytes());
-    b[56..60].copy_from_slice(&(z * 0.35 + t.sin() * 0.05).to_ne_bytes());
-    b
+
+struct CubeRng(u32);
+
+impl CubeRng {
+    fn for_cube(index: u32) -> Self {
+        // Do not seed adjacent lattice cells with adjacent LCG states: their
+        // first six values are correlated, making every z layer appear to
+        // share the same orientation. This avalanche mix gives each C++-style
+        // independent random stream while retaining reproducible captures.
+        let mut seed = index.wrapping_add(0x9e37_79b9);
+        seed ^= seed >> 16;
+        seed = seed.wrapping_mul(0x85eb_ca6b);
+        seed ^= seed >> 13;
+        seed = seed.wrapping_mul(0xc2b2_ae35);
+        Self(seed ^ (seed >> 16))
+    }
+
+    fn signed(&mut self) -> f32 {
+        self.0 = self.0.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        ((self.0 >> 8) as f32 / 16_777_216.0) * 2.0 - 1.0
+    }
+}
+
+fn camera_matrix(extent: [u32; 2]) -> [u8; 64] {
+    let aspect = extent[0].max(1) as f32 / extent[1].max(1) as f32;
+    let f = 1.0 / 30f32.to_radians().tan();
+    // The source's world/view convention is right-handed: its look-at camera
+    // is at z=-30 and looks toward the origin. DX12 still retains [0, 1]
+    // depth in this right-handed projection.
+    let projection = [
+        f / aspect,
+        0.,
+        0.,
+        0.,
+        0.,
+        f,
+        0.,
+        0.,
+        0.,
+        0.,
+        256. / -255.0,
+        -1.,
+        0.,
+        0.,
+        -25.6 / 255.0,
+        0.,
+    ];
+    encode_matrix(multiply(projection, translation([0., 0., -30.])))
+}
+
+fn translation(position: [f32; 3]) -> [f32; 16] {
+    [
+        1.,
+        0.,
+        0.,
+        0.,
+        0.,
+        1.,
+        0.,
+        0.,
+        0.,
+        0.,
+        1.,
+        0.,
+        position[0],
+        position[1],
+        position[2],
+        1.,
+    ]
+}
+
+fn rotation_axis_xy(angle: f32) -> [f32; 16] {
+    let (s, c) = angle.sin_cos();
+    // Rodrigues rotation for the normalized C++ axis vec3(1, 1, 0).
+    let half = 0.5 * (1.0 - c);
+    let diagonal = c + half;
+    let xy = half;
+    let z = s * std::f32::consts::FRAC_1_SQRT_2;
+    [
+        diagonal, xy, -z, 0., xy, diagonal, z, 0., z, -z, c, 0., 0., 0., 0., 1.,
+    ]
+}
+
+fn rotation_y(angle: f32) -> [f32; 16] {
+    let (s, c) = angle.sin_cos();
+    [c, 0., -s, 0., 0., 1., 0., 0., s, 0., c, 0., 0., 0., 0., 1.]
+}
+
+fn rotation_z(angle: f32) -> [f32; 16] {
+    let (s, c) = angle.sin_cos();
+    [c, s, 0., 0., -s, c, 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.]
+}
+
+fn multiply(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
+    let mut output = [0.; 16];
+    for column in 0..4 {
+        for row in 0..4 {
+            output[column * 4 + row] = (0..4).map(|k| a[k * 4 + row] * b[column * 4 + k]).sum();
+        }
+    }
+    output
+}
+
+fn encode_matrix(matrix: [f32; 16]) -> [u8; 64] {
+    let mut bytes = [0; 64];
+    for (index, value) in matrix.into_iter().enumerate() {
+        bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    bytes
 }
 fn cube_vertices() -> [u8; 192] {
+    // Exact `generateCube` vertex order and colour values from the C++ demo.
     let p: [f32; 48] = [
-        -1., -1., -1., 1., 0., 0., 1., -1., -1., 0., 1., 0., 1., 1., -1., 0., 0., 1., -1., 1., -1.,
-        1., 1., 0., -1., -1., 1., 1., 0., 1., 1., -1., 1., 0., 1., 1., 1., 1., 1., 1., 1., -1., 1.,
-        1., 0., 0., 0., 0.,
+        -1., -1., 1., 1., 0., 0., 1., -1., 1., 0., 1., 0., 1., 1., 1., 0., 0., 1., -1., 1., 1., 0.,
+        0., 0., -1., -1., -1., 1., 0., 0., 1., -1., -1., 0., 1., 0., 1., 1., -1., 0., 0., 1., -1.,
+        1., -1., 0., 0., 0.,
     ];
     let mut b = [0; 192];
     for (i, v) in p.into_iter().enumerate() {
@@ -300,14 +474,14 @@ fn cube_vertices() -> [u8; 192] {
     }
     b
 }
-fn cube_indices() -> [u8; 72] {
-    let x: [u16; 36] = [
-        0, 1, 2, 2, 3, 0, 4, 6, 5, 6, 4, 7, 0, 4, 5, 5, 1, 0, 3, 2, 6, 6, 7, 3, 1, 5, 6, 6, 2, 1,
-        0, 3, 7, 7, 4, 0,
+fn cube_indices() -> [u8; 144] {
+    let x: [u32; 36] = [
+        0, 1, 2, 2, 3, 0, 1, 5, 6, 6, 2, 1, 7, 6, 5, 5, 4, 7, 4, 0, 3, 3, 7, 4, 4, 5, 1, 1, 0, 4,
+        3, 2, 6, 6, 7, 3,
     ];
-    let mut b = [0; 72];
+    let mut b = [0; 144];
     for (i, v) in x.into_iter().enumerate() {
-        b[i * 2..i * 2 + 2].copy_from_slice(&v.to_ne_bytes())
+        b[i * 4..i * 4 + 4].copy_from_slice(&v.to_ne_bytes())
     }
     b
 }

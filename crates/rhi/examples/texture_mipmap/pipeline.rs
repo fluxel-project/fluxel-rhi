@@ -204,6 +204,11 @@ impl<B: MipmapBackend> Tunnel<B> {
                             offset: 24,
                             format: VertexFormat::Float32(2),
                         },
+                        VertexAttribute {
+                            location: 2,
+                            offset: 12,
+                            format: VertexFormat::Float32(3),
+                        },
                     ],
                 }],
                 color_targets: vec![Some(ColorTargetState {

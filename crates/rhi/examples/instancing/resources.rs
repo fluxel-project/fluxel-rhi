@@ -1,7 +1,6 @@
 //! glTF/KTX asset loading, texture resources, and instance data for example 03.
 use super::*;
 use crate::gltf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) const ROCK: &[u8] = include_bytes!("../assets/models/rock01.gltf");
 pub(crate) const PLANET: &[u8] = include_bytes!("../assets/models/lavaplanet.gltf");
@@ -260,10 +259,9 @@ pub(crate) fn upload_ktx<B: InstancingBackend>(
     Ok(())
 }
 fn instances(layers: u32) -> Vec<u8> {
-    let mut random = Rng(SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|value| value.as_secs() as u32)
-        .unwrap_or(1));
+    // The C++ benchmark path uses a fixed seed. Keep that path for the RHI
+    // sample as well so captured frames remain comparable across runs.
+    let mut random = Rng(0);
     let mut output = Vec::with_capacity(INSTANCES as usize * 32);
     for index in 0..INSTANCES {
         let range = if index < INSTANCES / 2 {

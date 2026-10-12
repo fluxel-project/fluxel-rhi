@@ -129,12 +129,33 @@ pub(crate) fn instance_bytes(draws: u32, layers: u32) -> Vec<u8> {
     let count = draws.saturating_mul(PLANT_INSTANCES);
     let mut out = Vec::with_capacity(count as usize * 32);
     for n in 0..count {
-        let a = n as f32 * 2.399963;
-        let r = 25.0 * (((n % PLANT_INSTANCES) as f32 / PLANT_INSTANCES as f32).sqrt());
-        for x in [r * a.cos(), 0.0, r * a.sin(), 0.0, a, 0.0, 0.7] {
+        // Same spherical distribution, scale range and texture grouping as
+        // the C++ sample.  A local deterministic generator keeps screenshots
+        // reproducible while avoiding the port's former spiral rings.
+        let mut state = n.wrapping_add(0x9e37_79b9);
+        let mut random = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state as f32) / (u32::MAX as f32)
+        };
+        let theta = std::f32::consts::TAU * random();
+        let phi = (1.0 - 2.0 * random()).acos();
+        let rotation = std::f32::consts::PI * random();
+        let scale = 1.0 + 2.0 * random();
+        let position = [phi.sin() * theta.cos() * 25.0, 0.0, phi.cos() * 25.0];
+        for x in [
+            position[0],
+            position[1],
+            position[2],
+            0.0,
+            rotation,
+            0.0,
+            scale,
+        ] {
             out.extend_from_slice(&x.to_le_bytes());
         }
-        out.extend_from_slice(&(n % layers.max(1)).to_le_bytes());
+        out.extend_from_slice(&(n / PLANT_INSTANCES % layers.max(1)).to_le_bytes());
     }
     out
 }

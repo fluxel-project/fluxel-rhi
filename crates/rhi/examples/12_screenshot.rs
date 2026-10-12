@@ -4,6 +4,12 @@
 //! texture, transitions it to a copy source, and maps a readback buffer only
 //! after the caller supplies completion evidence for that encoder.
 mod common;
+#[path = "common/gltf.rs"]
+mod gltf;
+mod screenshot {
+    mod scene;
+    pub(crate) use scene::DragonScene;
+}
 
 use fluxel_rhi::api::*;
 use std::{
@@ -15,8 +21,6 @@ use std::{
     },
 };
 
-const VS: &[u8] = include_bytes!("assets/12_screenshot/triangle_vs.dxil");
-const PS: &[u8] = include_bytes!("assets/12_screenshot/triangle_ps.dxil");
 static NEXT_CAPTURE_PLAN: AtomicU64 = AtomicU64::new(1);
 
 pub trait ScreenshotBackend:
@@ -52,11 +56,10 @@ pub struct ScreenshotRecord<B: ScreenshotBackend> {
 pub struct Screenshot<B: ScreenshotBackend> {
     lane: LaneId,
     extent: [u32; 2],
-    vertices: Buffer<B>,
     target: Texture<B>,
     target_view: TextureView<B>,
     readback: Buffer<B>,
-    pipeline: RasterPipeline<B>,
+    scene: screenshot::DragonScene<B>,
     layout: ImageLayout,
     row_pitch: u32,
 }
@@ -98,36 +101,28 @@ impl<B: ScreenshotBackend> Screenshot<B> {
             usage: BufferUsage::COPY_DST.union(BufferUsage::MAP_READ),
             memory: MemoryClass::Readback,
         })?;
-        let vertices = device.create_buffer(&BufferDesc {
-            label: Some("12 screenshot triangle".into()),
-            size: 72,
-            usage: BufferUsage::VERTEX.union(BufferUsage::COPY_DST),
-            memory: MemoryClass::Device,
-        })?;
-        let layout = device.create_pipeline_layout(&PipelineLayoutDesc {
-            label: Some("12 screenshot layout"),
-            groups: &[],
-            push_constants: &[],
-        })?;
-        let pipeline = pipeline(device, layout).await?;
+        let scene = screenshot::DragonScene::new(device, extent).await?;
         Ok(Self {
             lane,
             extent,
-            vertices,
             target,
             target_view,
             readback,
-            pipeline,
+            scene,
             layout: ImageLayout::Common,
             row_pitch,
         })
     }
 
-    /// Render the deterministic color triangle. `capture` records texture copy
-    /// plus native readback at the tail of this encoder.
-    pub fn record(&mut self, device: &Device<B>, capture: bool) -> Result<ScreenshotRecord<B>> {
+    /// Render the source Chinese-dragon scene twice: once into the ordinary
+    /// texture used for capture and once to the visible surface.
+    pub fn record(
+        &mut self,
+        device: &Device<B>,
+        image: &SurfaceImage<B>,
+        capture: bool,
+    ) -> Result<ScreenshotRecord<B>> {
         let mut encoder = device.encoder(self.lane)?;
-        encoder.write_buffer(&self.vertices, 0, &triangle())?;
         self.transition(
             &mut encoder,
             ImageLayout::ColorAttachment,
@@ -136,30 +131,10 @@ impl<B: ScreenshotBackend> Screenshot<B> {
                 accesses: AccessMask::COLOR_WRITE,
             },
         )?;
-        let colors = [Some(ColorAttachment {
-            view: AttachmentView::Texture(&self.target_view),
-            resolve_target: None,
-            load: LoadOp::Clear(ClearColor::Float([0.0, 0.0, 0.0, 0.0])),
-            store: StoreOp::Store,
-        })];
-        let mut pass = encoder.begin_raster(&RasterPassDesc {
-            label: Some("12 screenshot scene"),
-            colors: &colors,
-            depth_stencil: None,
-            render_area: Rect {
-                x: 0,
-                y: 0,
-                width: self.extent[0],
-                height: self.extent[1],
-            },
-            multiview_mask: None,
-            timestamp_writes: None,
-            secondary_inheritance: None,
-        })?;
-        pass.set_pipeline(&self.pipeline)?;
-        pass.set_vertex_buffer(0, &self.vertices, 0..72)?;
-        pass.draw(0..3, 0..1)?;
-        pass.finish()?;
+        self.scene
+            .record_target(&mut encoder, &self.target_view, self.extent)?;
+        self.scene
+            .record_surface(&mut encoder, image, self.extent)?;
         let ticket = if capture {
             self.transition(
                 &mut encoder,
@@ -309,94 +284,6 @@ fn aligned_row_pitch(width: u32) -> Result<u32> {
         .map(|n| n & !255)
         .ok_or(Error::InvalidRange)
 }
-async fn pipeline<B: ScreenshotBackend>(
-    device: &Device<B>,
-    layout: PipelineLayout<B>,
-) -> Result<RasterPipeline<B>> {
-    let shader = |bytes: &[u8], stage: ShaderStage, name: &str| ShaderDesc {
-        label: Some(format!("12 {name}")),
-        format: ShaderFormat::Dxil,
-        bytes: Arc::from(bytes),
-        entries: vec![ShaderEntryPoint {
-            name: name.into(),
-            stage,
-            workgroup_size: None,
-        }],
-        required_features: vec![],
-    };
-    let vs = device
-        .shader(shader(VS, ShaderStage::Vertex, "vs_main"))
-        .await?;
-    let ps = device
-        .shader(shader(PS, ShaderStage::Fragment, "ps_main"))
-        .await?;
-    device
-        .raster_pipeline(RasterPipelineDesc {
-            label: Some("12 screenshot pipeline".into()),
-            layout,
-            vertex: PipelineStage {
-                module: vs,
-                entry: "vs_main".into(),
-                constants: vec![],
-            },
-            fragment: Some(PipelineStage {
-                module: ps,
-                entry: "ps_main".into(),
-                constants: vec![],
-            }),
-            vertex_buffers: vec![VertexBufferLayout {
-                stride: 24,
-                step_mode: VertexStepMode::Vertex,
-                attributes: vec![
-                    VertexAttribute {
-                        location: 0,
-                        offset: 0,
-                        format: VertexFormat::Float32(3),
-                    },
-                    VertexAttribute {
-                        location: 1,
-                        offset: 12,
-                        format: VertexFormat::Float32(3),
-                    },
-                ],
-            }],
-            color_targets: vec![Some(ColorTargetState {
-                format: TextureFormat::Rgba8Unorm,
-                blend: None,
-                write_mask: 15,
-            })],
-            primitive: PrimitiveState {
-                topology: PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: FrontFace::Ccw,
-                cull_mode: CullMode::None,
-                unclipped_depth: false,
-                polygon_mode: PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: MultisampleState {
-                count: 1,
-                mask: u64::from(u32::MAX),
-                alpha_to_coverage_enabled: false,
-            },
-            multiview: None,
-            cache: None,
-        })
-        .await
-}
-fn triangle() -> [u8; 72] {
-    let values = [
-        0.0_f32, 0.65, 0.0, 1.0, 0.15, 0.1, -0.7, -0.6, 0.0, 0.1, 1.0, 0.25, 0.7, -0.6, 0.0, 0.2,
-        0.35, 1.0,
-    ];
-    let mut bytes = [0; 72];
-    for (i, v) in values.into_iter().enumerate() {
-        bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_ne_bytes());
-    }
-    bytes
-}
-
 #[cfg(windows)]
 fn main() {
     use fluxel_rhi::dx12::Dx12;
@@ -431,7 +318,7 @@ fn main() {
                 return Err(Error::Unsupported("screenshot resize"));
             }
             let capture = requested && !saved;
-            let record = workload.record(device, capture)?;
+            let record = workload.record(device, &image, capture)?;
             let completion = submit_capture_and_present(device, lane, record.work, image)?;
             if let Some(ticket) = record.ticket {
                 common::block_on(device.wait_completion(&completion))?;

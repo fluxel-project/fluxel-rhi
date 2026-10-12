@@ -9,8 +9,8 @@ use texture_mipmap::Tunnel;
 
 pub(crate) const MODEL: &[u8] = include_bytes!("assets/models/tunnel_cylinder.gltf");
 pub(crate) const IMAGE: &[u8] = include_bytes!("assets/textures/metalplate_nomips_rgba.ktx");
-pub(crate) const VS: &[u8] = include_bytes!("assets/02_texture/texture.vs.dxil");
-pub(crate) const PS: &[u8] = include_bytes!("assets/02_texture/texture.ps.dxil");
+pub(crate) const VS: &[u8] = include_bytes!("assets/09_texture_mipmap/tunnel.vs.dxil");
+pub(crate) const PS: &[u8] = include_bytes!("assets/09_texture_mipmap/tunnel.ps.dxil");
 #[cfg(windows)]
 fn main() {
     use fluxel_rhi::dx12::Dx12;

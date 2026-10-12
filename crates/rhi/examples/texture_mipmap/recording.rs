@@ -34,7 +34,7 @@ impl<B: MipmapBackend> Tunnel<B> {
                 ownership: None,
             })])?;
         }
-        encoder.write_buffer(&self.uniform, 0, &identity())?;
+        encoder.write_buffer(&self.uniform, 0, &tunnel_camera(extent))?;
         let colors = [Some(ColorAttachment {
             view: AttachmentView::Surface(image),
             resolve_target: None,
@@ -91,10 +91,63 @@ impl<B: MipmapBackend> Tunnel<B> {
         Ok(work)
     }
 }
-fn identity() -> [u8; 64] {
-    let mut bytes = [0; 64];
-    for index in 0..4 {
-        bytes[index * 20..index * 20 + 4].copy_from_slice(&1.0f32.to_ne_bytes());
+/// Matches the source sample's first-person camera and its three-matrix
+/// texturemipmapgen uniform block.
+fn tunnel_camera(extent: [u32; 2]) -> [u8; 256] {
+    let aspect = extent[0].max(1) as f32 / extent[1].max(1) as f32;
+    let f = 1.0 / (60f32.to_radians() * 0.5).tan();
+    let near = 0.1;
+    let far = 1024.0;
+    let projection = [
+        f / aspect,
+        0.,
+        0.,
+        0.,
+        0.,
+        f,
+        0.,
+        0.,
+        0.,
+        0.,
+        far / (near - far),
+        -1.,
+        0.,
+        0.,
+        far * near / (near - far),
+        0.,
+    ];
+    let (s, c) = 90f32.to_radians().sin_cos();
+    // `Camera::updateViewMatrix`: rotY(90) * translate(40.75, 0, 0).
+    let view = [
+        c,
+        0.,
+        -s,
+        0.,
+        0.,
+        1.,
+        0.,
+        0.,
+        s,
+        0.,
+        c,
+        0.,
+        c * 40.75,
+        0.,
+        -s * 40.75,
+        1.,
+    ];
+    // Reference animation: `rotate(identity, timer * 360°, +X)`.
+    // Keep a fixed initial pose for the two-frame visual comparison.
+    let model = [
+        1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
+    ];
+    let mut bytes = [0; 256];
+    for (index, value) in projection.into_iter().chain(view).chain(model).enumerate() {
+        bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
+    }
+    for (index, value) in [-40.75_f32, 0.0, 0.0, 0.0, 0.0].into_iter().enumerate() {
+        let offset = 192 + index * 4;
+        bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
     }
     bytes
 }

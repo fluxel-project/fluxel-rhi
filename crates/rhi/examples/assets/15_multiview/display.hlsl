@@ -8,5 +8,9 @@ Out vs_main(uint id : SV_VertexID) {
 float4 ps_main(Out input) : SV_Target {
     uint layer = input.uv.x >= 0.5 ? 1 : 0;
     float2 uv = float2(frac(input.uv.x * 2.0), input.uv.y);
-    return views.Sample(view_sampler, float3(uv, layer));
+    float2 p = uv * 2.0 - 1.0;
+    p /= 1.0 - 0.2 * length(p);
+    uv = (p + 1.0) * 0.5;
+    bool inside = all(uv >= 0.0) && all(uv <= 1.0);
+    return inside ? views.Sample(view_sampler, float3(uv, layer)) : float4(0.0, 0.0, 0.0, 1.0);
 }
