@@ -65,7 +65,39 @@ impl<B: MipmapBackend> MipChain<B> {
             },
             base,
         )?;
+        // `write_texture` returns mip 0 to the documented Common boundary.
+        // Each subsequent transition names the immediately preceding use, so
+        // a Vulkan implementation can lower the chain without tracking image
+        // state behind the RHI API.
+        self.transition(
+            e,
+            0,
+            ImageLayout::Common,
+            ImageLayout::CopySrc,
+            TextureUses {
+                stages: StageMask::COPY,
+                accesses: AccessMask::COPY_WRITE,
+            },
+            TextureUses {
+                stages: StageMask::COPY,
+                accesses: AccessMask::COPY_READ,
+            },
+        )?;
         for mip in 1..self.levels {
+            self.transition(
+                e,
+                mip,
+                ImageLayout::Undefined,
+                ImageLayout::CopyDst,
+                TextureUses {
+                    stages: StageMask::EMPTY,
+                    accesses: AccessMask::EMPTY,
+                },
+                TextureUses {
+                    stages: StageMask::COPY,
+                    accesses: AccessMask::COPY_WRITE,
+                },
+            )?;
             let sw = (self.width >> (mip - 1)).max(1);
             let sh = (self.height >> (mip - 1)).max(1);
             let dw = (self.width >> mip).max(1);
@@ -87,8 +119,67 @@ impl<B: MipmapBackend> MipChain<B> {
                 },
                 FilterMode::Linear,
             )?;
+            if mip + 1 < self.levels {
+                self.transition(
+                    e,
+                    mip,
+                    ImageLayout::CopyDst,
+                    ImageLayout::CopySrc,
+                    TextureUses {
+                        stages: StageMask::COPY,
+                        accesses: AccessMask::COPY_WRITE,
+                    },
+                    TextureUses {
+                        stages: StageMask::COPY,
+                        accesses: AccessMask::COPY_READ,
+                    },
+                )?;
+            }
+        }
+        for mip in 0..self.levels {
+            let (layout, accesses) = if mip + 1 == self.levels {
+                (ImageLayout::CopyDst, AccessMask::COPY_WRITE)
+            } else {
+                (ImageLayout::CopySrc, AccessMask::COPY_READ)
+            };
+            self.transition(
+                e,
+                mip,
+                layout,
+                ImageLayout::ShaderReadOnly,
+                TextureUses {
+                    stages: StageMask::COPY,
+                    accesses,
+                },
+                TextureUses {
+                    stages: StageMask::FRAGMENT,
+                    accesses: AccessMask::SHADER_READ,
+                },
+            )?;
         }
         Ok(())
+    }
+
+    fn transition(
+        &self,
+        encoder: &mut CommandEncoder<B>,
+        mip: u32,
+        from_layout: ImageLayout,
+        to_layout: ImageLayout,
+        from: TextureUses,
+        to: TextureUses,
+    ) -> Result<()> {
+        encoder.transition_resources(&[ResourceTransition::Texture(TextureBarrier {
+            target: Subresources {
+                texture: &self.texture,
+                aspects: TextureAspects::COLOR,
+                mips: mip..mip + 1,
+                layers: 0..1,
+            },
+            usage: StateTransition { from, to },
+            layout: Some((from_layout, to_layout)),
+            ownership: None,
+        })])
     }
 }
 pub(super) struct Ktx {

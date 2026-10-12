@@ -284,14 +284,14 @@ pub(crate) fn linear_mip_blit(
         list,
         source,
         source_mip,
-        D3D12_RESOURCE_STATE_COMMON,
+        D3D12_RESOURCE_STATE_COPY_SOURCE,
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
     );
     barrier_sub(
         list,
         target,
         target_mip,
-        D3D12_RESOURCE_STATE_COMMON,
+        D3D12_RESOURCE_STATE_COPY_DEST,
         D3D12_RESOURCE_STATE_RENDER_TARGET,
     );
     unsafe {
@@ -324,14 +324,14 @@ pub(crate) fn linear_mip_blit(
         source,
         source_mip,
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-        D3D12_RESOURCE_STATE_COMMON,
+        D3D12_RESOURCE_STATE_COPY_SOURCE,
     );
     barrier_sub(
         list,
         target,
         target_mip,
         D3D12_RESOURCE_STATE_RENDER_TARGET,
-        D3D12_RESOURCE_STATE_COMMON,
+        D3D12_RESOURCE_STATE_COPY_DEST,
     );
     encoder.mip_blit_heaps.push(views);
     encoder.mip_blit_heaps.push(samplers);

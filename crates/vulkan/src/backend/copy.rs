@@ -274,6 +274,117 @@ pub(super) fn write_texture(
     Ok(())
 }
 
+/// Records one native filtered image blit.
+///
+/// The caller must have explicitly transitioned `src` to `CopySrc` and `dst`
+/// to `CopyDst`.  Keeping that state selection at the Core call site avoids a
+/// backend-local image-state tracker and makes successive mip dependencies
+/// visible in the recorded workload.
+pub(super) fn blit(
+    encoder: &mut VulkanEncoder,
+    src: api::TextureRegion<'_, super::Vulkan>,
+    dst: api::TextureRegion<'_, super::Vulkan>,
+    filter: api::FilterMode,
+) -> Result<()> {
+    let source = unsafe { src.texture.native_ref() };
+    let target = unsafe { dst.texture.native_ref() };
+    validate_rgba_blit(source, &src, target, &dst, filter)?;
+
+    let properties = unsafe {
+        encoder
+            .device
+            .instance
+            .instance
+            .get_physical_device_format_properties(
+                encoder.device.physical,
+                vk::Format::R8G8B8A8_UNORM,
+            )
+    }
+    .optimal_tiling_features;
+    let required = vk::FormatFeatureFlags::BLIT_SRC | vk::FormatFeatureFlags::BLIT_DST;
+    if !properties.contains(required)
+        || (filter == api::FilterMode::Linear
+            && !properties.contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR))
+    {
+        return Err(Error::Unsupported("Vulkan RGBA8 texture blit format"));
+    }
+
+    let layers = |region: &api::TextureRegion<'_, super::Vulkan>| {
+        vk::ImageSubresourceLayers::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .mip_level(region.mip)
+            .base_array_layer(region.origin[2])
+            .layer_count(1)
+    };
+    let end = |region: &api::TextureRegion<'_, super::Vulkan>| vk::Offset3D {
+        x: region.extent[0] as i32,
+        y: region.extent[1] as i32,
+        z: 1,
+    };
+    let region = vk::ImageBlit::default()
+        .src_subresource(layers(&src))
+        .src_offsets([vk::Offset3D::default(), end(&src)])
+        .dst_subresource(layers(&dst))
+        .dst_offsets([vk::Offset3D::default(), end(&dst)]);
+    unsafe {
+        encoder.device.device.cmd_blit_image(
+            encoder.command,
+            source.native(),
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            target.native(),
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            std::slice::from_ref(&region),
+            match filter {
+                api::FilterMode::Nearest => vk::Filter::NEAREST,
+                api::FilterMode::Linear => vk::Filter::LINEAR,
+            },
+        );
+    }
+    encoder.textures.extend([source.clone(), target.clone()]);
+    Ok(())
+}
+
+fn validate_rgba_blit(
+    source: &VulkanTexture,
+    src: &api::TextureRegion<'_, super::Vulkan>,
+    target: &VulkanTexture,
+    dst: &api::TextureRegion<'_, super::Vulkan>,
+    filter: api::FilterMode,
+) -> Result<()> {
+    if !matches!(filter, api::FilterMode::Nearest | api::FilterMode::Linear)
+        || source.desc().format != api::TextureFormat::Rgba8Unorm
+        || target.desc().format != api::TextureFormat::Rgba8Unorm
+        || source.desc().dimension != api::TextureDimension::D2
+        || target.desc().dimension != api::TextureDimension::D2
+        || source.desc().array_layers != 1
+        || target.desc().array_layers != 1
+        || source.desc().samples != 1
+        || target.desc().samples != 1
+        || !source.desc().usage.contains(api::TextureUsage::COPY_SRC)
+        || !target.desc().usage.contains(api::TextureUsage::COPY_DST)
+        || src.aspect != api::TextureAspects::COLOR
+        || dst.aspect != api::TextureAspects::COLOR
+        || src.origin != [0, 0, 0]
+        || dst.origin != [0, 0, 0]
+        || src.mip >= source.desc().mip_levels
+        || dst.mip >= target.desc().mip_levels
+        || (source.native() == target.native() && src.mip == dst.mip)
+        || src.extent != mip_extent(source.desc(), src.mip)
+        || dst.extent != mip_extent(target.desc(), dst.mip)
+    {
+        return Err(Error::Unsupported("Vulkan full RGBA8 texture blit"));
+    }
+    Ok(())
+}
+
+fn mip_extent(desc: &api::TextureDesc, mip: u32) -> [u32; 3] {
+    [
+        (desc.extent[0] >> mip).max(1),
+        (desc.extent[1] >> mip).max(1),
+        1,
+    ]
+}
+
 fn validate_rgba_upload(
     texture: &VulkanTexture,
     region: &api::TextureRegion<'_, super::Vulkan>,

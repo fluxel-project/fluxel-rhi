@@ -37,18 +37,36 @@ impl api::CommandBackend for Dx12 {
                     }
                     let texture = unsafe { barrier_op.target.texture.native_ref() };
                     let desc = &texture.0.desc;
-                    if barrier_op.target.aspects != api::TextureAspects::COLOR
-                        || barrier_op.target.mips != (0..desc.mip_levels)
-                        || barrier_op.target.layers != (0..desc.array_layers)
+                    if barrier_op.target.aspects != api::TextureAspects::COLOR {
+                        return Err(Error::Unsupported("DX12 texture transition aspect"));
+                    }
+                    if barrier_op.target.mips.start >= barrier_op.target.mips.end
+                        || barrier_op.target.mips.end > desc.mip_levels
+                        || barrier_op.target.layers.start >= barrier_op.target.layers.end
+                        || barrier_op.target.layers.end > desc.array_layers
                     {
-                        return Err(Error::Unsupported("DX12 partial texture transition"));
+                        return Err(Error::InvalidRange);
                     }
                     let (from_layout, to_layout) = barrier_op.layout.ok_or(Error::Unsupported(
                         "DX12 texture transition requires explicit layouts",
                     ))?;
                     let before = texture_state(from_layout, barrier_op.usage.from)?;
                     let after = texture_state(to_layout, barrier_op.usage.to)?;
-                    barrier(&encoder.list, &texture.0.resource, before, after);
+                    for layer in barrier_op.target.layers.clone() {
+                        for mip in barrier_op.target.mips.clone() {
+                            // D3D12 subresource order is mip-major within each
+                            // array layer for the single color plane exposed by
+                            // this RHI path. Core supplied this exact range.
+                            let subresource = mip + layer * desc.mip_levels;
+                            barrier_sub(
+                                &encoder.list,
+                                &texture.0.resource,
+                                subresource,
+                                before,
+                                after,
+                            );
+                        }
+                    }
                     encoder.textures.push(texture.clone());
                 }
                 _ => return Err(Error::Unsupported("DX12 resource transition")),

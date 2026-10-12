@@ -8,31 +8,12 @@ impl<B: MipmapBackend> Tunnel<B> {
         image: &SurfaceImage<B>,
         extent: [u32; 2],
     ) -> Result<RecordedWork<B>> {
+        self.resize_depth(device, extent)?;
         let mut encoder = device.encoder(self.lane)?;
         if !self.initialized {
             encoder.write_buffer(&self.vertices, 0, &self.vertex_data)?;
             encoder.write_buffer(&self.indices, 0, &self.index_data)?;
             self.chain.encode_generation(&mut encoder, &self.pixels)?;
-            encoder.transition_resources(&[ResourceTransition::Texture(TextureBarrier {
-                target: Subresources {
-                    texture: self.chain.texture(),
-                    aspects: TextureAspects::COLOR,
-                    mips: 0..self.chain.levels(),
-                    layers: 0..1,
-                },
-                usage: StateTransition {
-                    from: TextureUses {
-                        stages: StageMask(0),
-                        accesses: AccessMask::EMPTY,
-                    },
-                    to: TextureUses {
-                        stages: StageMask::FRAGMENT,
-                        accesses: AccessMask::SHADER_READ,
-                    },
-                },
-                layout: Some((ImageLayout::Common, ImageLayout::ShaderReadOnly)),
-                ownership: None,
-            })])?;
         }
         encoder.write_buffer(&self.uniform, 0, &tunnel_camera(extent))?;
         let colors = [Some(ColorAttachment {
@@ -43,7 +24,7 @@ impl<B: MipmapBackend> Tunnel<B> {
         })];
         let depth = DepthStencilAttachment {
             view: AttachmentView::Texture(&self.depth_view),
-            depth: Some((LoadOp::Clear(1.0), StoreOp::Store)),
+            depth: Some((LoadOp::Clear(1.0), StoreOp::Discard)),
             stencil: None,
             depth_read_only: false,
             stencil_read_only: false,

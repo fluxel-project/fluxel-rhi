@@ -1,6 +1,5 @@
 use super::{MipChain, MipmapBackend};
 use fluxel_rhi::api::*;
-use std::sync::Arc;
 
 pub struct Tunnel<B: MipmapBackend> {
     pub(super) lane: LaneId,
@@ -10,6 +9,7 @@ pub struct Tunnel<B: MipmapBackend> {
     pub(super) uniform: Buffer<B>,
     pub(super) depth: Texture<B>,
     pub(super) depth_view: TextureView<B>,
+    pub(super) depth_extent: [u32; 2],
     pub(super) group: BindGroup<B>,
     pub(super) pipeline: RasterPipeline<B>,
     pub(super) vertex_data: Vec<u8>,
@@ -158,6 +158,7 @@ impl<B: MipmapBackend> Tunnel<B> {
             device,
             "09 tunnel crate::VS",
             crate::VS,
+            crate::VS_SPIRV,
             "vs_main",
             ShaderStage::Vertex,
         )
@@ -166,7 +167,8 @@ impl<B: MipmapBackend> Tunnel<B> {
             device,
             "09 tunnel crate::PS",
             crate::PS,
-            "fs_main",
+            crate::PS_SPIRV,
+            "ps_main",
             ShaderStage::Fragment,
         )
         .await?;
@@ -187,7 +189,7 @@ impl<B: MipmapBackend> Tunnel<B> {
                 },
                 fragment: Some(PipelineStage {
                     module: ps,
-                    entry: "fs_main".into(),
+                    entry: "ps_main".into(),
                     constants: vec![],
                 }),
                 vertex_buffers: vec![VertexBufferLayout {
@@ -255,6 +257,7 @@ impl<B: MipmapBackend> Tunnel<B> {
             uniform,
             depth,
             depth_view,
+            depth_extent: extent,
             group,
             pipeline,
             vertex_data: model.vertices,
@@ -263,6 +266,37 @@ impl<B: MipmapBackend> Tunnel<B> {
             pixels: image.pixels,
             initialized: false,
         })
+    }
+
+    pub(super) fn resize_depth(&mut self, device: &Device<B>, extent: [u32; 2]) -> Result<()> {
+        if self.depth_extent == extent {
+            return Ok(());
+        }
+        let depth = device.create_texture(&TextureDesc {
+            label: Some("09 tunnel depth".into()),
+            dimension: TextureDimension::D2,
+            extent: [extent[0], extent[1], 1],
+            array_layers: 1,
+            format: TextureFormat::Depth32Float,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER_ATTACHMENT,
+            view_formats: vec![],
+        })?;
+        let depth_view = device.create_view(
+            &depth,
+            &TextureViewDesc {
+                format: TextureFormat::Depth32Float,
+                dimension: TextureViewDimension::D2,
+                aspects: TextureAspects::DEPTH,
+                mips: 0..1,
+                layers: 0..1,
+            },
+        )?;
+        self.depth = depth;
+        self.depth_view = depth_view;
+        self.depth_extent = extent;
+        Ok(())
     }
 }
 
@@ -277,21 +311,10 @@ fn buffer(label: &str, size: u64, usage: BufferUsage) -> BufferDesc {
 async fn shader<B: MipmapBackend>(
     device: &Device<B>,
     label: &str,
-    bytes: &[u8],
+    dxil: &[u8],
+    spirv: &[u8],
     entry: &str,
     stage: ShaderStage,
 ) -> Result<Shader<B>> {
-    device
-        .shader(ShaderDesc {
-            label: Some(label.into()),
-            format: ShaderFormat::Dxil,
-            bytes: Arc::from(bytes),
-            entries: vec![ShaderEntryPoint {
-                name: entry.into(),
-                stage,
-                workgroup_size: None,
-            }],
-            required_features: vec![],
-        })
-        .await
+    crate::common::native_shader(device, label, entry, stage, dxil, spirv).await
 }

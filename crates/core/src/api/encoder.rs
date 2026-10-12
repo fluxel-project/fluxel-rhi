@@ -77,6 +77,8 @@ pub trait CommandBackend: Backend {
     ) -> Result<()> {
         Err(Error::Unsupported("resolve"))
     }
+    /// Blits between texture regions already transitioned to `CopySrc` and
+    /// `CopyDst`. The operation preserves those caller-selected states.
     fn blit(
         _: &mut Self::NativeEncoder,
         _: TextureRegion<'_, Self>,

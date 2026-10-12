@@ -11,9 +11,10 @@ pub(crate) const MODEL: &[u8] = include_bytes!("assets/models/tunnel_cylinder.gl
 pub(crate) const IMAGE: &[u8] = include_bytes!("assets/textures/metalplate_nomips_rgba.ktx");
 pub(crate) const VS: &[u8] = include_bytes!("assets/09_texture_mipmap/tunnel.vs.dxil");
 pub(crate) const PS: &[u8] = include_bytes!("assets/09_texture_mipmap/tunnel.ps.dxil");
+pub(crate) const VS_SPIRV: &[u8] = include_bytes!("assets/09_texture_mipmap/tunnel.vs.spv");
+pub(crate) const PS_SPIRV: &[u8] = include_bytes!("assets/09_texture_mipmap/tunnel.ps.spv");
 #[cfg(windows)]
-fn main() {
-    use fluxel_rhi::dx12::Dx12;
+fn run<B: texture_mipmap::MipmapBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Bgra8Unorm,
@@ -23,9 +24,9 @@ fn main() {
         usage: SurfaceUsage::RENDER_ATTACHMENT,
         maximum_frame_latency: 2,
     };
-    let mut demo: Option<Tunnel<Dx12>> = None;
-    let result = common::run_example(
-        common::windows_api::Dx12Host,
+    let mut demo: Option<Tunnel<B>> = None;
+    common::run_example(
+        host,
         "GPU generated mipmaps",
         config.clone(),
         move |device, _, image, extent| {
@@ -49,7 +50,20 @@ fn main() {
                 .record(device, &image, extent)?;
             common::submit_and_present(device, lane, work, image)
         },
-    );
+    )
+}
+#[cfg(windows)]
+fn main() {
+    let result = match common::windows_api::selected_backend() {
+        Ok(common::windows_api::SelectedBackend::Dx12) => {
+            run::<fluxel_rhi::dx12::Dx12, _>(common::windows_api::Dx12Host)
+        }
+        #[cfg(feature = "vulkan")]
+        Ok(common::windows_api::SelectedBackend::Vulkan) => {
+            run::<fluxel_rhi::vulkan::Vulkan, _>(common::windows_api::VulkanHost)
+        }
+        Err(error) => Err(error),
+    };
     if let Err(error) = result {
         eprintln!("09_texture_mipmap: {error:?}");
         std::process::exit(1);
@@ -57,5 +71,5 @@ fn main() {
 }
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("09_texture_mipmap requires Windows and DX12");
+    eprintln!("09_texture_mipmap requires Windows");
 }

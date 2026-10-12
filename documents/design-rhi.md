@@ -50,7 +50,7 @@ backend-wide Y flip into DX12.
   `surface`, `query`, and `readback`.
 - `crates/vulkan` is an in-progress native backend with real device, resource,
   SPIR-V, Win32 WSI, command buffer, descriptor, pipeline, and fence-backed
-  submission paths. Examples 01–08 have Vulkan validation-layer runtime and
+  submission paths. Examples 01–09 have Vulkan validation-layer runtime and
   GPU readback evidence; later numbered workloads are not yet supported.
 
 GL, Metal, and WebGPU are not active workspace backends. Documentation and CI

@@ -306,6 +306,14 @@ impl api::CommandBackend for Vulkan {
     ) -> Result<()> {
         copy::write_texture(e, region, layout, bytes)
     }
+    fn blit(
+        e: &mut VulkanEncoder,
+        src: api::TextureRegion<'_, Self>,
+        dst: api::TextureRegion<'_, Self>,
+        filter: api::FilterMode,
+    ) -> Result<()> {
+        copy::blit(e, src, dst, filter)
+    }
 }
 
 impl api::ShaderBackend for Vulkan {
