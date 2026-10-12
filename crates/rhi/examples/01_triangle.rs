@@ -5,13 +5,13 @@
 
 mod common;
 
-use std::sync::Arc;
-
 use fluxel_rhi::api::*;
 
 // These checked-in DXIL blobs are compiled from assets/01_triangle/triangle.hlsl.
 const TRIANGLE_VS: &[u8] = include_bytes!("assets/01_triangle/triangle_vs.dxil");
 const TRIANGLE_PS: &[u8] = include_bytes!("assets/01_triangle/triangle_ps.dxil");
+const TRIANGLE_VS_SPV: &[u8] = include_bytes!("assets/01_triangle/triangle_vs.spv");
+const TRIANGLE_PS_SPV: &[u8] = include_bytes!("assets/01_triangle/triangle_ps.spv");
 
 /// Requirements for the raster-only baseline.
 pub trait TriangleBackend:
@@ -49,32 +49,24 @@ impl<B: TriangleBackend> Triangle<B> {
             usage: BufferUsage(BufferUsage::INDEX.0 | BufferUsage::COPY_DST.0),
             memory: MemoryClass::Device,
         })?;
-        let vertex_shader = device
-            .shader(ShaderDesc {
-                label: Some("triangle vertex shader".into()),
-                format: ShaderFormat::Dxil,
-                bytes: Arc::<[u8]>::from(TRIANGLE_VS),
-                entries: vec![ShaderEntryPoint {
-                    name: "vs_main".into(),
-                    stage: ShaderStage::Vertex,
-                    workgroup_size: None,
-                }],
-                required_features: vec![],
-            })
-            .await?;
-        let fragment_shader = device
-            .shader(ShaderDesc {
-                label: Some("triangle fragment shader".into()),
-                format: ShaderFormat::Dxil,
-                bytes: Arc::<[u8]>::from(TRIANGLE_PS),
-                entries: vec![ShaderEntryPoint {
-                    name: "ps_main".into(),
-                    stage: ShaderStage::Fragment,
-                    workgroup_size: None,
-                }],
-                required_features: vec![],
-            })
-            .await?;
+        let vertex_shader = common::native_shader(
+            device,
+            "triangle vertex shader",
+            "vs_main",
+            ShaderStage::Vertex,
+            TRIANGLE_VS,
+            TRIANGLE_VS_SPV,
+        )
+        .await?;
+        let fragment_shader = common::native_shader(
+            device,
+            "triangle fragment shader",
+            "ps_main",
+            ShaderStage::Fragment,
+            TRIANGLE_PS,
+            TRIANGLE_PS_SPV,
+        )
+        .await?;
         let layout = device.create_pipeline_layout(&PipelineLayoutDesc {
             label: Some("triangle layout"),
             groups: &[],
@@ -219,9 +211,7 @@ fn triangle_indices() -> [u8; 6] {
 }
 
 #[cfg(windows)]
-fn main() {
-    use fluxel_rhi::dx12::Dx12;
-
+fn run<B: TriangleBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Bgra8Unorm,
@@ -231,9 +221,9 @@ fn main() {
         usage: SurfaceUsage::RENDER_ATTACHMENT,
         maximum_frame_latency: 2,
     };
-    let mut triangle: Option<Triangle<Dx12>> = None;
-    let result = common::run_example(
-        common::windows_api::Dx12Host,
+    let mut triangle: Option<Triangle<B>> = None;
+    common::run_example(
+        host,
         "Basic indexed triangle",
         config.clone(),
         move |device, _, image, extent| {
@@ -256,7 +246,21 @@ fn main() {
                 .record(device, &image, extent)?;
             common::submit_and_present(device, lane, work, image)
         },
-    );
+    )
+}
+
+#[cfg(windows)]
+fn main() {
+    let result = match common::windows_api::selected_backend() {
+        Ok(common::windows_api::SelectedBackend::Dx12) => {
+            run::<fluxel_rhi::dx12::Dx12, _>(common::windows_api::Dx12Host)
+        }
+        #[cfg(feature = "vulkan")]
+        Ok(common::windows_api::SelectedBackend::Vulkan) => {
+            run::<fluxel_rhi::vulkan::Vulkan, _>(common::windows_api::VulkanHost)
+        }
+        Err(error) => Err(error),
+    };
     if let Err(error) = result {
         eprintln!("01_triangle: {error:?}");
         std::process::exit(1);

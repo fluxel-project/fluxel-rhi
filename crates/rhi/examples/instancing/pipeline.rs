@@ -1,6 +1,5 @@
-//! DXIL shaders, bind-group layouts, and raster pipeline descriptions for example 03.
+//! Native shaders, bind-group layouts, and raster pipeline descriptions for example 03.
 use super::*;
-use std::sync::Arc;
 
 const ROCK_VS: &[u8] = include_bytes!("../assets/03_instancing/rock_vs.dxil");
 const ROCK_PS: &[u8] = include_bytes!("../assets/03_instancing/rock_ps.dxil");
@@ -8,6 +7,12 @@ const PLANET_VS: &[u8] = include_bytes!("../assets/03_instancing/planet_vs.dxil"
 const PLANET_PS: &[u8] = include_bytes!("../assets/03_instancing/planet_ps.dxil");
 const STAR_VS: &[u8] = include_bytes!("../assets/03_instancing/star_vs.dxil");
 const STAR_PS: &[u8] = include_bytes!("../assets/03_instancing/star_ps.dxil");
+const ROCK_VS_SPV: &[u8] = include_bytes!("../assets/03_instancing/rock_vs.spv");
+const ROCK_PS_SPV: &[u8] = include_bytes!("../assets/03_instancing/rock_ps.spv");
+const PLANET_VS_SPV: &[u8] = include_bytes!("../assets/03_instancing/planet_vs.spv");
+const PLANET_PS_SPV: &[u8] = include_bytes!("../assets/03_instancing/planet_ps.spv");
+const STAR_VS_SPV: &[u8] = include_bytes!("../assets/03_instancing/star_vs.spv");
+const STAR_PS_SPV: &[u8] = include_bytes!("../assets/03_instancing/star_ps.spv");
 
 pub(crate) async fn scene_pipelines<B: InstancingBackend>(
     device: &Device<B>,
@@ -37,6 +42,8 @@ pub(crate) async fn scene_pipelines<B: InstancingBackend>(
         mesh(true),
         ROCK_VS,
         ROCK_PS,
+        ROCK_VS_SPV,
+        ROCK_PS_SPV,
         true,
     )
     .await?;
@@ -55,6 +62,8 @@ pub(crate) async fn scene_pipelines<B: InstancingBackend>(
         mesh(false),
         PLANET_VS,
         PLANET_PS,
+        PLANET_VS_SPV,
+        PLANET_PS_SPV,
         true,
     )
     .await?;
@@ -71,7 +80,9 @@ pub(crate) async fn scene_pipelines<B: InstancingBackend>(
         vec![],
         STAR_VS,
         STAR_PS,
-        false,
+        STAR_VS_SPV,
+        STAR_PS_SPV,
+        true,
     )
     .await?;
     Ok((rocks, planet, stars, rock_layout, planet_layout))
@@ -114,27 +125,6 @@ pub(crate) fn texture_layout<B: InstancingBackend>(
     })
 }
 
-async fn shader<B: InstancingBackend>(
-    device: &Device<B>,
-    label: &str,
-    bytes: &[u8],
-    entry: &str,
-    stage: ShaderStage,
-) -> Result<Shader<B>> {
-    device
-        .shader(ShaderDesc {
-            label: Some(label.into()),
-            format: ShaderFormat::Dxil,
-            bytes: Arc::from(bytes),
-            entries: vec![ShaderEntryPoint {
-                name: entry.into(),
-                stage,
-                workgroup_size: None,
-            }],
-            required_features: vec![],
-        })
-        .await
-}
 async fn pipeline<B: InstancingBackend>(
     device: &Device<B>,
     label: &str,
@@ -143,6 +133,8 @@ async fn pipeline<B: InstancingBackend>(
     vertex_buffers: Vec<VertexBufferLayout>,
     vertex_dxil: &[u8],
     fragment_dxil: &[u8],
+    vertex_spirv: &[u8],
+    fragment_spirv: &[u8],
     depth: bool,
 ) -> Result<RasterPipeline<B>> {
     let (vertex_entry, fragment_entry) = match label {
@@ -161,24 +153,26 @@ async fn pipeline<B: InstancingBackend>(
             label: Some(label.into()),
             layout,
             vertex: PipelineStage {
-                module: shader(
+                module: crate::common::native_shader(
                     device,
                     label,
-                    vertex_dxil,
                     vertex_entry,
                     ShaderStage::Vertex,
+                    vertex_dxil,
+                    vertex_spirv,
                 )
                 .await?,
                 entry: vertex_entry.into(),
                 constants: vec![],
             },
             fragment: Some(PipelineStage {
-                module: shader(
+                module: crate::common::native_shader(
                     device,
                     label,
-                    fragment_dxil,
                     fragment_entry,
                     ShaderStage::Fragment,
+                    fragment_dxil,
+                    fragment_spirv,
                 )
                 .await?,
                 entry: fragment_entry.into(),

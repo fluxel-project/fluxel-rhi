@@ -8,15 +8,20 @@ const EDGE: &[u8] = include_bytes!("../assets/06_compute/edgedetect.dxil");
 const SHARPEN: &[u8] = include_bytes!("../assets/06_compute/sharpen.dxil");
 const DISPLAY_VS: &[u8] = include_bytes!("../assets/06_compute/display_vs.dxil");
 const DISPLAY_PS: &[u8] = include_bytes!("../assets/06_compute/display_ps.dxil");
+const EMBOSS_SPIRV: &[u8] = include_bytes!("../assets/06_compute/emboss.spv");
+const EDGE_SPIRV: &[u8] = include_bytes!("../assets/06_compute/edgedetect.spv");
+const SHARPEN_SPIRV: &[u8] = include_bytes!("../assets/06_compute/sharpen.spv");
+const DISPLAY_VS_SPIRV: &[u8] = include_bytes!("../assets/06_compute/display_vs.spv");
+const DISPLAY_PS_SPIRV: &[u8] = include_bytes!("../assets/06_compute/display_ps.spv");
 
 pub(super) async fn filters<B: ComputeBackend>(
     device: &Device<B>,
     layout: PipelineLayout<B>,
 ) -> Result<[ComputePipeline<B>; 3]> {
     Ok([
-        compute_pipeline(device, layout.clone(), "emboss", EMBOSS).await?,
-        compute_pipeline(device, layout.clone(), "edgedetect", EDGE).await?,
-        compute_pipeline(device, layout, "sharpen", SHARPEN).await?,
+        compute_pipeline(device, layout.clone(), "emboss", EMBOSS, EMBOSS_SPIRV).await?,
+        compute_pipeline(device, layout.clone(), "edgedetect", EDGE, EDGE_SPIRV).await?,
+        compute_pipeline(device, layout, "sharpen", SHARPEN, SHARPEN_SPIRV).await?,
     ])
 }
 
@@ -31,6 +36,7 @@ pub(super) async fn display<B: ComputeBackend>(
         "vs_main",
         ShaderStage::Vertex,
         DISPLAY_VS,
+        DISPLAY_VS_SPIRV,
     )
     .await?;
     let ps = shader(
@@ -39,6 +45,7 @@ pub(super) async fn display<B: ComputeBackend>(
         "ps_main",
         ShaderStage::Fragment,
         DISPLAY_PS,
+        DISPLAY_PS_SPIRV,
     )
     .await?;
     device
@@ -101,9 +108,10 @@ async fn compute_pipeline<B: ComputeBackend>(
     device: &Device<B>,
     layout: PipelineLayout<B>,
     entry: &str,
-    bytes: &[u8],
+    dxil: &[u8],
+    spirv: &[u8],
 ) -> Result<ComputePipeline<B>> {
-    let shader = shader(device, entry, entry, ShaderStage::Compute, bytes).await?;
+    let shader = shader(device, entry, entry, ShaderStage::Compute, dxil, spirv).await?;
     device
         .compute()
         .ok_or(Error::Unsupported("compute"))?
@@ -126,12 +134,13 @@ async fn shader<B: ComputeBackend>(
     label: &str,
     entry: &str,
     stage: ShaderStage,
-    bytes: &[u8],
+    dxil: &[u8],
+    spirv: &[u8],
 ) -> Result<Shader<B>> {
-    device
-        .shader(ShaderDesc {
+    for (format, bytes) in [(ShaderFormat::Dxil, dxil), (ShaderFormat::SpirV, spirv)] {
+        let desc = ShaderDesc {
             label: Some(label.into()),
-            format: ShaderFormat::Dxil,
+            format,
             bytes: Arc::from(bytes),
             entries: vec![ShaderEntryPoint {
                 name: entry.into(),
@@ -139,6 +148,10 @@ async fn shader<B: ComputeBackend>(
                 workgroup_size: (stage == ShaderStage::Compute).then_some([16, 16, 1]),
             }],
             required_features: vec![],
-        })
-        .await
+        };
+        if !matches!(device.shader_route(&desc), ShaderRoute::Unsupported) {
+            return device.shader(desc).await;
+        }
+    }
+    Err(Error::Unsupported("06 DXIL or SPIR-V shader route"))
 }

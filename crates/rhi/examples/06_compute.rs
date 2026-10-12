@@ -3,13 +3,11 @@ mod common;
 #[path = "compute/mod.rs"]
 mod compute;
 
-use compute::Compute;
+use compute::{Compute, ComputeBackend};
 use fluxel_rhi::api::*;
 
 #[cfg(windows)]
-fn main() {
-    use fluxel_rhi::dx12::Dx12;
-
+fn run<B: ComputeBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Bgra8Unorm,
@@ -19,9 +17,9 @@ fn main() {
         usage: SurfaceUsage::RENDER_ATTACHMENT,
         maximum_frame_latency: 2,
     };
-    let mut demo: Option<Compute<Dx12>> = None;
-    let result = common::run_example(
-        common::windows_api::Dx12Host,
+    let mut demo: Option<Compute<B>> = None;
+    common::run_example(
+        host,
         "Storage texture filters",
         config.clone(),
         move |device, _, image, extent| {
@@ -40,7 +38,21 @@ fn main() {
                 .record(device, &image, extent)?;
             common::submit_and_present(device, lane, work, image)
         },
-    );
+    )
+}
+
+#[cfg(windows)]
+fn main() {
+    let result = match common::windows_api::selected_backend() {
+        Ok(common::windows_api::SelectedBackend::Dx12) => {
+            run::<fluxel_rhi::dx12::Dx12, _>(common::windows_api::Dx12Host)
+        }
+        #[cfg(feature = "vulkan")]
+        Ok(common::windows_api::SelectedBackend::Vulkan) => {
+            run::<fluxel_rhi::vulkan::Vulkan, _>(common::windows_api::VulkanHost)
+        }
+        Err(error) => Err(error),
+    };
     if let Err(error) = result {
         eprintln!("06_compute: {error:?}");
         std::process::exit(1);

@@ -1,4 +1,7 @@
 Texture2D<float4> source_image : register(t0);
+#ifdef FLUXEL_VULKAN
+[[vk::image_format("rgba8")]]
+#endif
 RWTexture2D<float4> result_image : register(u1);
 
 float gray(int2 p) { float3 c = source_image.Load(int3(p, 0)).rgb; return dot(c, float3(.33333334, .33333334, .33333334)); }

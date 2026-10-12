@@ -16,6 +16,7 @@ pub struct Compute<B: ComputeBackend> {
     pixels: Option<Vec<u8>>,
     source_initialized: bool,
     result_initialized: bool,
+    display_extent: Option<[u32; 2]>,
     filter: usize,
 }
 
@@ -197,6 +198,7 @@ impl<B: ComputeBackend> Compute<B> {
             pixels: Some(image.pixels),
             source_initialized: false,
             result_initialized: false,
+            display_extent: None,
             filter: 0,
         })
     }
@@ -225,7 +227,6 @@ impl<B: ComputeBackend> Compute<B> {
                 },
                 pixels,
             )?;
-            encoder.write_buffer(&self.vertex, 0, &quad())?;
             encoder.write_buffer(&self.index, 0, &[0, 0, 1, 0, 2, 0, 2, 0, 3, 0, 0, 0])?;
             encoder.transition_resources(&[transition(
                 &self.source,
@@ -244,6 +245,10 @@ impl<B: ComputeBackend> Compute<B> {
         if !uploading_source && !self.source_initialized {
             return Err(Error::InvalidState);
         }
+        let display_changed = self.display_extent != Some(surface_extent);
+        if display_changed {
+            encoder.write_buffer(&self.vertex, 0, &quad(surface_extent))?;
+        }
         let (old_layout, old_use) = if self.result_initialized {
             (
                 ImageLayout::ShaderReadOnly,
@@ -254,7 +259,11 @@ impl<B: ComputeBackend> Compute<B> {
             )
         } else {
             (
-                ImageLayout::Common,
+                // A newly allocated texture has no defined contents.  This is
+                // deliberately `Undefined`, rather than the reusable Common
+                // upload boundary, so Vulkan can lower the first transition
+                // from its real native layout without state guessing.
+                ImageLayout::Undefined,
                 TextureUses {
                     stages: StageMask::HOST,
                     accesses: AccessMask::EMPTY,
@@ -299,6 +308,9 @@ impl<B: ComputeBackend> Compute<B> {
             self.source_initialized = true;
         }
         self.result_initialized = true;
+        if display_changed {
+            self.display_extent = Some(surface_extent);
+        }
         Ok(work)
     }
 
@@ -392,9 +404,14 @@ fn transition<'a, B: ComputeBackend>(
     })
 }
 
-fn quad() -> [u8; 80] {
+fn quad(extent: [u32; 2]) -> [u8; 80] {
+    // The C++ sample projects a 2x2 quad from camera z=-2 with a 60-degree
+    // vertical field of view, then uses a viewport covering half the window.
+    // Apply the same projection directly to this quad's clip-space vertices.
+    let y = 0.866_025_4_f32;
+    let x = y * (extent[1] as f32 * 2.0 / extent[0] as f32);
     let vertices: [f32; 20] = [
-        -1., -1., 0., 0., 1., 1., -1., 0., 1., 1., 1., 1., 0., 1., 0., -1., 1., 0., 0., 0.,
+        -x, -y, 0., 0., 1., x, -y, 0., 1., 1., x, y, 0., 1., 0., -x, y, 0., 0., 0.,
     ];
     let mut bytes = [0; 80];
     for (index, value) in vertices.into_iter().enumerate() {

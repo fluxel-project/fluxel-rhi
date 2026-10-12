@@ -1,0 +1,280 @@
+//! Vulkan dynamic-rendering raster-pipeline creation.
+
+use super::super::{DeviceState, VulkanDevice, VulkanShader, vk_error};
+use super::layout::{PushConstants, VulkanPipelineLayout};
+use ash::vk;
+use fluxel_rhi_core::api::{self, Error, Result};
+use std::{ffi::CString, sync::Arc};
+
+#[derive(Clone)]
+pub struct VulkanRasterPipeline(Arc<Raster>);
+impl VulkanRasterPipeline {
+    pub(crate) fn native(&self) -> vk::Pipeline {
+        self.0.pipeline
+    }
+    pub(crate) fn layout(&self) -> vk::PipelineLayout {
+        self.0.layout.native()
+    }
+    pub(crate) fn layout_state(&self) -> VulkanPipelineLayout {
+        self.0.layout.clone()
+    }
+    pub(crate) fn push_constants(&self) -> PushConstants {
+        self.0.layout.push_constants()
+    }
+}
+struct Raster {
+    device: Arc<DeviceState>,
+    pub(crate) pipeline: vk::Pipeline,
+    pub(crate) layout: VulkanPipelineLayout,
+}
+impl Drop for Raster {
+    fn drop(&mut self) {
+        unsafe { self.device.device.destroy_pipeline(self.pipeline, None) }
+    }
+}
+
+pub(crate) fn create_raster(
+    device: &VulkanDevice,
+    desc: &api::RasterPipelineDesc<super::super::Vulkan>,
+) -> Result<VulkanRasterPipeline> {
+    if !desc.vertex.constants.is_empty()
+        || desc
+            .fragment
+            .as_ref()
+            .is_some_and(|stage| !stage.constants.is_empty())
+    {
+        return Err(Error::Unsupported("Vulkan raster specialization constants"));
+    }
+    if desc.multiview.is_some() || desc.cache.is_some() {
+        return Err(Error::Unsupported(
+            "Vulkan raster multiview or pipeline cache",
+        ));
+    }
+    let vertex_name = CString::new(desc.vertex.entry.as_str())
+        .map_err(|_| Error::Shader("shader entry contains NUL".into()))?;
+    let fragment_name = desc
+        .fragment
+        .as_ref()
+        .map(|s| CString::new(s.entry.as_str()))
+        .transpose()
+        .map_err(|_| Error::Shader("shader entry contains NUL".into()))?;
+    let vs = stage(
+        unsafe { desc.vertex.module.native_ref() },
+        &vertex_name,
+        vk::ShaderStageFlags::VERTEX,
+    )?;
+    let fs = desc
+        .fragment
+        .as_ref()
+        .map(|s| {
+            stage(
+                unsafe { s.module.native_ref() },
+                fragment_name.as_ref().expect("fragment name exists"),
+                vk::ShaderStageFlags::FRAGMENT,
+            )
+        })
+        .transpose()?;
+    let mut stages = vec![vs];
+    if let Some(x) = fs {
+        stages.push(x)
+    };
+    let attributes: Vec<_> = desc
+        .vertex_buffers
+        .iter()
+        .enumerate()
+        .flat_map(|(b, v)| {
+            v.attributes
+                .iter()
+                .map(move |a| vk::VertexInputAttributeDescription {
+                    location: a.location,
+                    binding: b as u32,
+                    format: vformat(a.format).unwrap_or(vk::Format::UNDEFINED),
+                    offset: a.offset as u32,
+                })
+        })
+        .collect();
+    if attributes.iter().any(|a| a.format == vk::Format::UNDEFINED) {
+        return Err(Error::Unsupported("Vulkan vertex format"));
+    };
+    let bindings: Vec<_> = desc
+        .vertex_buffers
+        .iter()
+        .enumerate()
+        .map(|(i, v)| vk::VertexInputBindingDescription {
+            binding: i as u32,
+            stride: v.stride as u32,
+            input_rate: if matches!(v.step_mode, api::VertexStepMode::Instance) {
+                vk::VertexInputRate::INSTANCE
+            } else {
+                vk::VertexInputRate::VERTEX
+            },
+        })
+        .collect();
+    let vi = vk::PipelineVertexInputStateCreateInfo::default()
+        .vertex_attribute_descriptions(&attributes)
+        .vertex_binding_descriptions(&bindings);
+    if desc.primitive.strip_index_format.is_some() {
+        return Err(Error::Unsupported("Vulkan primitive restart"));
+    }
+    let topology = match desc.primitive.topology {
+        api::PrimitiveTopology::TriangleList => vk::PrimitiveTopology::TRIANGLE_LIST,
+        api::PrimitiveTopology::TriangleStrip => vk::PrimitiveTopology::TRIANGLE_STRIP,
+        _ => return Err(Error::Unsupported("Vulkan primitive topology")),
+    };
+    if !matches!(desc.primitive.polygon_mode, api::PolygonMode::Fill)
+        || desc.primitive.conservative
+        || desc.primitive.unclipped_depth
+    {
+        return Err(Error::Unsupported("Vulkan raster primitive state"));
+    }
+    let ia = vk::PipelineInputAssemblyStateCreateInfo::default().topology(topology);
+    let viewport = vk::PipelineViewportStateCreateInfo::default()
+        .viewport_count(1)
+        .scissor_count(1);
+    let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+    let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+    let cull = match desc.primitive.cull_mode {
+        api::CullMode::None => vk::CullModeFlags::NONE,
+        api::CullMode::Front => vk::CullModeFlags::FRONT,
+        api::CullMode::Back => vk::CullModeFlags::BACK,
+    };
+    let front = match desc.primitive.front_face {
+        api::FrontFace::Ccw => vk::FrontFace::COUNTER_CLOCKWISE,
+        api::FrontFace::Cw => vk::FrontFace::CLOCKWISE,
+    };
+    let raster = vk::PipelineRasterizationStateCreateInfo::default()
+        .polygon_mode(vk::PolygonMode::FILL)
+        .cull_mode(cull)
+        .front_face(front)
+        .line_width(1.0);
+    let samples = match desc.multisample.count {
+        1 => vk::SampleCountFlags::TYPE_1,
+        2 => vk::SampleCountFlags::TYPE_2,
+        4 => vk::SampleCountFlags::TYPE_4,
+        8 => vk::SampleCountFlags::TYPE_8,
+        _ => return Err(Error::Unsupported("Vulkan multisample count")),
+    };
+    if desc.multisample.alpha_to_coverage_enabled {
+        return Err(Error::Unsupported("Vulkan alpha-to-coverage"));
+    }
+    if desc.multisample.mask != u64::from(u32::MAX) {
+        return Err(Error::Unsupported("Vulkan multisample mask"));
+    }
+    let sample_mask = u32::MAX;
+    let ms = vk::PipelineMultisampleStateCreateInfo::default()
+        .rasterization_samples(samples)
+        .sample_mask(std::slice::from_ref(&sample_mask));
+    let blend = vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::RGBA);
+    let blends = vec![blend; desc.color_targets.len()];
+    let cb = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blends);
+    let depth = desc
+        .depth_stencil
+        .as_ref()
+        .map(|d| {
+            if d.format != api::TextureFormat::Depth32Float {
+                return Err(Error::Unsupported("Vulkan depth format"));
+            }
+            if d.depth_bias_constant != 0
+                || d.depth_bias_slope_scale != 0.0
+                || d.depth_bias_clamp != 0.0
+                || !stencil_disabled(d)
+            {
+                return Err(Error::Unsupported("Vulkan depth bias or stencil state"));
+            }
+            Ok(vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(true)
+                .depth_write_enable(d.depth_write_enabled)
+                .depth_compare_op(compare(d.depth_compare)))
+        })
+        .transpose()?;
+    let formats: Result<Vec<_>> = desc
+        .color_targets
+        .iter()
+        .map(|target| match target {
+            Some(t) if t.blend.is_none() && t.write_mask == 0xf => {
+                super::super::resource::format(t.format)
+                    .ok_or(Error::Unsupported("Vulkan color format"))
+            }
+            Some(_) => Err(Error::Unsupported("Vulkan color blend/write mask")),
+            None => Ok(vk::Format::UNDEFINED),
+        })
+        .collect();
+    let formats = formats?;
+    let mut rendering =
+        vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&formats);
+    if depth.is_some() {
+        rendering = rendering.depth_attachment_format(vk::Format::D32_SFLOAT);
+    }
+    let mut info = vk::GraphicsPipelineCreateInfo::default()
+        .stages(&stages)
+        .vertex_input_state(&vi)
+        .input_assembly_state(&ia)
+        .viewport_state(&viewport)
+        .dynamic_state(&dynamic)
+        .rasterization_state(&raster)
+        .multisample_state(&ms)
+        .color_blend_state(&cb)
+        .layout(unsafe { desc.layout.native_ref() }.native())
+        .push_next(&mut rendering);
+    if let Some(depth) = depth.as_ref() {
+        info = info.depth_stencil_state(depth);
+    }
+    let pipeline = unsafe {
+        device
+            .0
+            .device
+            .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)
+    }
+    .map_err(|(_, e)| vk_error(e))?[0];
+    Ok(VulkanRasterPipeline(Arc::new(Raster {
+        device: device.0.clone(),
+        pipeline,
+        layout: unsafe { desc.layout.native_ref() }.clone(),
+    })))
+}
+fn compare(v: api::CompareFunction) -> vk::CompareOp {
+    match v {
+        api::CompareFunction::Never => vk::CompareOp::NEVER,
+        api::CompareFunction::Less => vk::CompareOp::LESS,
+        api::CompareFunction::Equal => vk::CompareOp::EQUAL,
+        api::CompareFunction::LessEqual => vk::CompareOp::LESS_OR_EQUAL,
+        api::CompareFunction::Greater => vk::CompareOp::GREATER,
+        api::CompareFunction::NotEqual => vk::CompareOp::NOT_EQUAL,
+        api::CompareFunction::GreaterEqual => vk::CompareOp::GREATER_OR_EQUAL,
+        api::CompareFunction::Always => vk::CompareOp::ALWAYS,
+    }
+}
+fn stencil_disabled(state: &api::DepthStencilState) -> bool {
+    state.stencil_read_mask == 0
+        && state.stencil_write_mask == 0
+        && matches!(state.stencil_front.compare, api::CompareFunction::Always)
+        && matches!(state.stencil_back.compare, api::CompareFunction::Always)
+        && [state.stencil_front, state.stencil_back]
+            .iter()
+            .all(|face| {
+                matches!(face.fail, api::StencilOperation::Keep)
+                    && matches!(face.depth_fail, api::StencilOperation::Keep)
+                    && matches!(face.pass, api::StencilOperation::Keep)
+            })
+}
+fn stage<'a>(
+    shader: &VulkanShader,
+    entry: &'a std::ffi::CStr,
+    flags: vk::ShaderStageFlags,
+) -> Result<vk::PipelineShaderStageCreateInfo<'a>> {
+    Ok(vk::PipelineShaderStageCreateInfo::default()
+        .stage(flags)
+        .module(shader.module())
+        .name(entry))
+}
+
+fn vformat(v: api::VertexFormat) -> Option<vk::Format> {
+    match v {
+        api::VertexFormat::Float32(1) => Some(vk::Format::R32_SFLOAT),
+        api::VertexFormat::Float32(2) => Some(vk::Format::R32G32_SFLOAT),
+        api::VertexFormat::Float32(3) => Some(vk::Format::R32G32B32_SFLOAT),
+        api::VertexFormat::Float32(4) => Some(vk::Format::R32G32B32A32_SFLOAT),
+        _ => None,
+    }
+}

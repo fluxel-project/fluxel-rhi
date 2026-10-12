@@ -259,8 +259,8 @@ pub(crate) fn upload_ktx<B: InstancingBackend>(
     Ok(())
 }
 fn instances(layers: u32) -> Vec<u8> {
-    // The C++ benchmark path uses a fixed seed. Keep that path for the RHI
-    // sample as well so captured frames remain comparable across runs.
+    // Keep RHI captures repeatable. The ordinary C++ demo seeds its standard
+    // random engine from wall time, so individual rock positions will differ.
     let mut random = Rng(0);
     let mut output = Vec::with_capacity(INSTANCES as usize * 32);
     for index in 0..INSTANCES {

@@ -5,14 +5,19 @@ cbuffer Camera : register(b0, space0) {
     float4x4 projection_view;
     float4x4 model;
 }
-cbuffer Push : register(b1, space0) { float4 color; float4 offset; }
+struct Push { float4 color; float4 offset; };
+#ifdef FLUXEL_VULKAN
+[[vk::push_constant]] Push push;
+#else
+cbuffer PushBuffer : register(b1, space0) { Push push; }
+#endif
 struct VSIn { float3 position: LOCATION0; float3 normal:LOCATION1; float4 base:LOCATION2; };
 struct VSOut { float4 position:SV_Position;float3 color:COLOR0; };
 VSOut vs_main(VSIn i){
     VSOut o;
     float3 local = mul(model, float4(i.position, 1)).xyz;
-    o.position=mul(projection_view,float4(local + offset.xyz,1));
-    o.color=i.base.rgb*color.rgb;
+    o.position=mul(projection_view,float4(local + push.offset.xyz,1));
+    o.color=i.base.rgb*push.color.rgb;
     return o;
 }
 float4 fs_main(VSOut i):SV_Target{return float4(i.color,1);}

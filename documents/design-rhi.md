@@ -6,7 +6,8 @@
 
 `fluxel_rhi_core::api` is the single Core API namespace. The facade re-exports it as
 `fluxel_rhi::api`; applications use that namespace and select a concrete backend at
-initialization. On Windows the facade exposes `fluxel_rhi::dx12::Dx12`.
+initialization. On Windows the facade exposes `fluxel_rhi::dx12::Dx12` and
+`fluxel_rhi::vulkan::Vulkan` behind their optional features.
 
 The API is statically dispatched: `Device<B>`, resources, pipelines, encoders and
 recorded work retain their concrete `Backend` type. RenderGraph or its host owns graph
@@ -30,8 +31,10 @@ texel `(0, 0)` is the upper-left texel and texel Y increases downward. Upload
 row zero maps to that row; texture readback preserves this logical row order.
 
 Backends preserve these observable semantics when lowering to native APIs.
-DX12 already uses the matching native graphics convention; a future backend
-with a different convention must adapt its viewport, winding, depth, and copy
+DX12 already uses the matching native graphics convention. Vulkan uses a
+negative-height viewport for the public framebuffer Y direction and maps
+front-face winding in framebuffer coordinates.
+Backends with a different convention must adapt viewport, winding, depth, and copy
 lowering without changing the public contract. The RHI does not prescribe
 world-space handedness, camera direction, matrix storage, or multiplication
 order: those belong to the application's shader ABI and scene data. In
@@ -45,9 +48,13 @@ backend-wide Y flip into DX12.
 - `crates/dx12` is the active native backend. Its lowering is organized under
   `backend/`, including `encoder/`, `pipeline`, `texture`, `descriptor`, `sampler`,
   `surface`, `query`, and `readback`.
+- `crates/vulkan` is an in-progress native backend with real device, resource,
+  SPIR-V, Win32 WSI, command buffer, descriptor, pipeline, and fence-backed
+  submission paths. Examples 01–06 have Vulkan validation-layer runtime and
+  GPU readback evidence; later numbered workloads are not yet supported.
 
-There are no GL, Vulkan, Metal, or WebGPU backend crates in this checkout. Documentation
-and CI must not treat paths for those backends as implementation or hardware evidence.
+GL, Metal, and WebGPU are not active workspace backends. Documentation and CI
+must not treat source paths or compile checks as hardware execution evidence.
 
 ## Implemented DX12 baseline
 

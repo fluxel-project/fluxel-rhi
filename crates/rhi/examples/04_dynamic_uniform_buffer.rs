@@ -5,9 +5,10 @@
 //! substituted for the operation demonstrated here.
 mod common;
 use fluxel_rhi::api::*;
-use std::sync::Arc;
 const VS: &[u8] = include_bytes!("assets/04_dynamic_uniform_buffer/dynamic_uniform.vs.dxil");
 const PS: &[u8] = include_bytes!("assets/04_dynamic_uniform_buffer/dynamic_uniform.ps.dxil");
+const VS_SPV: &[u8] = include_bytes!("assets/04_dynamic_uniform_buffer/dynamic_uniform.vs.spv");
+const PS_SPV: &[u8] = include_bytes!("assets/04_dynamic_uniform_buffer/dynamic_uniform.ps.spv");
 pub const OBJECT_COUNT: u32 = 125;
 pub const MODEL_BYTES: u64 = 64;
 pub trait DynamicUniformBackend:
@@ -224,30 +225,20 @@ fn aligned(n: u64, a: u64) -> u64 {
 }
 async fn shader<B: DynamicUniformBackend>(
     d: &Device<B>,
-    bytes: &[u8],
+    dxil: &[u8],
+    spirv: &[u8],
     name: &str,
     stage: ShaderStage,
 ) -> Result<Shader<B>> {
-    d.shader(ShaderDesc {
-        label: Some(name.into()),
-        format: ShaderFormat::Dxil,
-        bytes: Arc::from(bytes),
-        entries: vec![ShaderEntryPoint {
-            name: name.into(),
-            stage,
-            workgroup_size: None,
-        }],
-        required_features: vec![],
-    })
-    .await
+    common::native_shader(d, name, name, stage, dxil, spirv).await
 }
 async fn make_pipeline<B: DynamicUniformBackend>(
     d: &Device<B>,
     layout: PipelineLayout<B>,
     format: TextureFormat,
 ) -> Result<RasterPipeline<B>> {
-    let vs = shader(d, VS, "vs_main", ShaderStage::Vertex).await?;
-    let ps = shader(d, PS, "fs_main", ShaderStage::Fragment).await?;
+    let vs = shader(d, VS, VS_SPV, "vs_main", ShaderStage::Vertex).await?;
+    let ps = shader(d, PS, PS_SPV, "fs_main", ShaderStage::Fragment).await?;
     d.raster_pipeline(RasterPipelineDesc {
         label: Some("04 pipeline".into()),
         layout,
@@ -391,11 +382,11 @@ fn camera_matrix(extent: [u32; 2]) -> [u8; 64] {
         0.,
         0.,
         0.,
-        256. / -255.0,
+        256. / -255.9,
         -1.,
         0.,
         0.,
-        -25.6 / 255.0,
+        -25.6 / 255.9,
         0.,
     ];
     encode_matrix(multiply(projection, translation([0., 0., -30.])))
@@ -486,8 +477,7 @@ fn cube_indices() -> [u8; 144] {
     b
 }
 #[cfg(windows)]
-fn main() {
-    use fluxel_rhi::dx12::Dx12;
+fn run<B: DynamicUniformBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Bgra8Unorm,
@@ -497,10 +487,10 @@ fn main() {
         usage: SurfaceUsage::RENDER_ATTACHMENT,
         maximum_frame_latency: 2,
     };
-    let mut workload: Option<DynamicUniforms<Dx12>> = None;
+    let mut workload: Option<DynamicUniforms<B>> = None;
     let start = std::time::Instant::now();
-    let result = common::run_example(
-        common::windows_api::Dx12Host,
+    common::run_example(
+        host,
         "Dynamic uniform buffers",
         config.clone(),
         move |device, _, image, extent| {
@@ -525,7 +515,21 @@ fn main() {
             )?;
             common::submit_and_present(device, lane, work, image)
         },
-    );
+    )
+}
+
+#[cfg(windows)]
+fn main() {
+    let result = match common::windows_api::selected_backend() {
+        Ok(common::windows_api::SelectedBackend::Dx12) => {
+            run::<fluxel_rhi::dx12::Dx12, _>(common::windows_api::Dx12Host)
+        }
+        #[cfg(feature = "vulkan")]
+        Ok(common::windows_api::SelectedBackend::Vulkan) => {
+            run::<fluxel_rhi::vulkan::Vulkan, _>(common::windows_api::VulkanHost)
+        }
+        Err(error) => Err(error),
+    };
     if let Err(error) = result {
         eprintln!("04_dynamic_uniform_buffer: {error:?}");
         std::process::exit(1)

@@ -163,6 +163,14 @@ impl<B: InstancingBackend> Instancing<B> {
                 &self.planet_pixels,
                 self.planet_extent,
             )?;
+            encoder.transition_resources(&[
+                sampled_transition(
+                    &self.rocks,
+                    0..self.rock_pixels.mips,
+                    0..self.rock_pixels.layers,
+                ),
+                sampled_transition(&self.planet, 0..1, 0..1),
+            ])?;
             self.uploaded = true;
         }
         encoder.write_buffer(&self.uniform, 0, &uniform(extent, time))?;
@@ -235,6 +243,32 @@ impl<B: InstancingBackend> Instancing<B> {
         pass.finish()?;
         encoder.finish()
     }
+}
+fn sampled_transition<B: InstancingBackend>(
+    texture: &Texture<B>,
+    mips: std::ops::Range<u32>,
+    layers: std::ops::Range<u32>,
+) -> ResourceTransition<'_, B> {
+    ResourceTransition::Texture(TextureBarrier {
+        target: Subresources {
+            texture,
+            aspects: TextureAspects::COLOR,
+            mips,
+            layers,
+        },
+        usage: StateTransition {
+            from: TextureUses {
+                stages: StageMask::COPY,
+                accesses: AccessMask::COPY_WRITE,
+            },
+            to: TextureUses {
+                stages: StageMask::FRAGMENT,
+                accesses: AccessMask::SHADER_READ,
+            },
+        },
+        layout: Some((ImageLayout::Common, ImageLayout::ShaderReadOnly)),
+        ownership: None,
+    })
 }
 fn group<B: InstancingBackend>(
     device: &Device<B>,

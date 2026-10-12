@@ -1,5 +1,14 @@
 # Example assets
 
+The checked-in `.spv` files for examples 01–06 are compiled from the
+neighboring project-owned HLSL sources. Rebuild and validate them with
+`../compile-spirv.ps1` using the Vulkan SDK's `dxc.exe` and `spirv-val.exe`.
+Their Vulkan descriptor set/binding numbers match the examples' bind-group
+indices and layout entries. The checked-in DXIL files remain the DX12 path.
+
+The external model and texture assets described below are separate from these
+shader binaries.
+
 These files are the exact resources used by the selected ports from
 [SaschaWillems/Vulkan](https://github.com/SaschaWillems/Vulkan).  They were
 copied without conversion from the `assets` submodule at commit

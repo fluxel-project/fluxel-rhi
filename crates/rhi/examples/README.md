@@ -1,117 +1,58 @@
 # RHI examples
 
-This directory contains the numbered ports selected from the local
-`SaschaWillems/Vulkan` C++ checkout. Each demo uses the shared `fluxel-host`
-lifecycle framework and portable RHI calls. Platform lifecycle and backend
-composition live under `common/`, grouped by operating system in `windows.rs`,
-`android.rs`, `web.rs`, and `apple.rs`.
+The 15 numbered examples use the statically typed `fluxel_rhi::api` and the
+shared `fluxel-host` window lifecycle. DX12 is the established Windows route.
+Vulkan support is being migrated one example at a time. Examples 01–06 have
+been run for two frames on Vulkan with the Khronos validation layer and
+GPU-image readback comparison against the local C++ captures. Later numbered
+examples still use DX12.
 
-Build and run it from the workspace root:
+From the workspace root on Windows:
 
 ```powershell
 .\crates\rhi\examples\fetch-assets.ps1
-cargo check -p fluxel-rhi --features examples --example 01_triangle
-cargo run -p fluxel-rhi --features examples --example 01_triangle -- --backend vulkan
+cargo run -p fluxel-rhi --features examples,dx12 --example 01_triangle -- --frames 2
 ```
 
-The fetcher downloads the 20 pinned source assets used by the numbered ports
-and checks their SHA-256 digests. Their binaries are local build inputs and are
-excluded from version control; see [assets/README.md](assets/README.md) for
-provenance and attribution. `--frames COUNT` closes a native example after the
-given number of rendered frames, which is useful for the later validation pass.
-
-On Windows, the DX12, Vulkan, and GL adapters are implemented in
-`common/windows.rs`. The new examples and backend support have not yet been
-compiled or run on these backends; see the root `进度.md` for the current state.
-On Android, the Vulkan NativeActivity can be built, packaged, installed, and
-launched on an attached x86_64 emulator with:
+Run one of examples 01–06 with the Vulkan feature and explicit backend selection:
 
 ```powershell
-.\crates\rhi\examples\android\run.ps1 -Serial emulator-5554
+cargo run -p fluxel-rhi --features examples,vulkan --example 01_triangle -- --backend vulkan --frames 2
 ```
 
-The Android adapter and NativeActivity entry point are in
-`common/android.rs` and `common/mod.rs`; the package manifest and runner are in
-`crates/rhi/examples/android/`. The verified Android run used the Vulkan 1.3 emulator and
-presented the reference triangle.
+The native host accepts `--backend dx12|vulkan` and `--frames COUNT` for
+examples 01–06. Backend selection happens once at startup; GPU objects and
+command recording retain their concrete backend type. The example host and
+submission helper live in `common/`. The GPU workload remains in each
+numbered example or its small sibling modules.
 
-The framework parses `--backend`, `--width`, `--height`, and `--frames`, then routes
-`init`, `update`, `render`, `resize`, device-loss/recovery, and `close` through
-the `fluxel-host` callbacks. Platform window handles and Vulkan objects stay in
-the framework adapter. `01_triangle.rs` contains one demo implementation and
-does not call Vulkan APIs directly.
+Examples 01–06 use checked-in DXIL for DX12 and SPIR-V for Vulkan. The SPIR-V
+blobs are built from adjacent HLSL sources with `compile-spirv.ps1`; the
+script also validates the result for Vulkan 1.3. `fetch-assets.ps1` obtains
+the pinned external models and textures required by some examples. Those
+assets remain local; see [assets/README.md](assets/README.md).
 
-Examples author shaders in WGSL. RHI preserves device-native direct inputs and
-uses its optional `naga` feature for source/target pairs Naga supports. The
-feature is enabled by default. If the feature is disabled or the requested
-conversion is unsupported, shader creation returns a structured
-`Unsupported` error. The public API still accepts any code form the selected
-device consumes natively; WGSL is the examples' source choice, not an RHI input
-restriction.
-
-## SaschaWillems/Vulkan porting plan
-
-The initial porting set contains **15 selected examples** from
-`SaschaWillems/Vulkan`. The 15 ports are written through the portable RHI API
-and shared example framework. Their Windows DX12, Vulkan, and GL validation
-pass has not started yet.
-
-| Example | Main capability to verify | Group |
-| --- | --- | --- |
-| `triangle` | Graphics pipeline and draw | Baseline |
-| `texture` | Texture, sampler, and resource binding | Baseline |
-| `instancing` | Instanced draw | Baseline |
-| `dynamic_uniform_buffer` | Uniform buffers and dynamic updates | Baseline |
-| `push_constants` | Push constants | Baseline |
-| `compute` | Compute pipeline and dispatch | Baseline |
-| `offscreen` | Offscreen rendering and sampling the result in a mirror pass | Baseline |
-| `msaa` | Multisampling and resolve | Baseline |
-| `texture_mipmap` | Mipmap generation and use | Baseline |
-| `indirect_draw` | Indirect draw | Baseline |
-| `occlusion_query` | GPU occlusion queries | Baseline |
-| `screenshot` | Texture-to-buffer copy and CPU readback | Baseline |
-| `multithreaded_recording` | Parallel command recording | Baseline |
-| `descriptor_indexing` | Descriptor indexing | Capability-gated |
-| `multiview` | Multiview rendering | Capability-gated |
-
-The core validation path is:
-
-```text
-triangle -> texture -> offscreen -> compute -> indirect_draw -> occlusion_query -> multithreaded_recording
-```
-
-`descriptor_indexing` and `multiview` must query the device's published
-capabilities and refuse unsupported routes explicitly. Vulkan-specific
-`dynamicrendering`, `timelinesemaphore`, subpass and input-attachment examples,
-and advanced mesh-shader and ray-tracing examples are outside this initial set.
-
-## Migration record: 01 triangle
-
-Reference checkout: `E:\moyy\program\cpp\Vulkan`, revision
-`41a4410243fca7640a2dd0115a5ff5cb9a29494`.
-
-Primary source: `examples/triangle/triangle.cpp`. Shader sources:
-`shaders/glsl/triangle/triangle.vert` and
-`shaders/glsl/triangle/triangle.frag`. The C++ `base/` supplies the window,
-surface/swapchain, depth format, render pass, framebuffers, and camera. The
-triangle class owns geometry, uniforms, descriptors, pipeline, and commands.
-
-| C++ behavior | RHI port |
+| Example | Workload |
 | --- | --- |
-| Three position/color vertices and indices `[0, 1, 2]`; staging copies into device buffers | Preserves the same 24-byte vertex records, index order, upload jobs, and indexed draw. |
-| Two per-frame uniform blocks containing projection, model, and view matrices | Uses two UBOs and corresponding bind groups; waits for a slot's completion before reusing it. |
-| GLSL vertex/fragment shaders; triangle list; two `vec3<f32>` attributes; depth test/write `LessEqual`; one sample; dynamic viewport/scissor | Authors equivalent WGSL and creates the shader modules through `Device::create_shader`; the pipeline and vertex layout use portable RHI descriptors. |
-| Swapchain color clear/store; depth clear to 1 and discard | Acquires a presentation frame, clears color to `[0, 0, 0.2, 1]`, clears depth to 1, and stores the color result. |
-| Per-frame indexed draw and present | Records `draw_indexed(0..3)`, submits with `present_after`, and waits for presentation completion. |
-| Camera at `(0, 0, -2.5)`, perspective 60°, near/far `1/256`, identity model | Reproduces the camera matrices and recomputes projection aspect from the drawable extent. |
-| Resize and teardown callbacks in `base/` | `fluxel-host` owns resize and surface lifecycle; the framework reconfigures presentation before the demo recreates its depth attachment. |
+| 01 triangle | Indexed triangle and presentation |
+| 02 texture | Textured, lit quad with uniform and sampler bindings |
+| 03 instancing | glTF rock field, planet, stars, depth, and instanced draw |
+| 04 dynamic uniform buffer | Cube grid with per-draw dynamic uniform offsets |
+| 05 push constants | Push constants |
+| 06 compute | Compute dispatch |
+| 07 offscreen | Offscreen pass sampled by a display pass |
+| 08 msaa | Multisampling and resolve |
+| 09 texture mipmap | Mipmap generation and sampling |
+| 10 indirect draw | Native indirect drawing |
+| 11 occlusion query | GPU occlusion query and readback |
+| 12 screenshot | Texture readback |
+| 13 multithreaded recording | Secondary/native parallel recording |
+| 14 descriptor indexing | Capability-gated runtime descriptor indexing |
+| 15 multiview | Capability-gated multiview rasterization |
 
-Observable reference output: window title `Basic indexed triangle`; a centered
-triangle with red `(1, 1, 0)`, green `(-1, 1, 0)`, and blue `(0, -1, 0)`
-vertices on a dark blue clear background. The example has no triangle-specific
-animation.
-
-The numbered examples are registered in `crates/rhi/Cargo.toml` and gated by
-the `examples` feature. The migration record above documents the triangle in
-detail; the other ports should be compared with their corresponding C++ source
-when the Windows backend validation pass begins.
+The visual reference is the local `SaschaWillems/Vulkan` C++ checkout. Compare
+actual frames with the reference captures under `临时/参考效果/`; the C++ HUD in
+the upper-left corner is outside the rendering comparison. Follow the public
+coordinate contract in `documents/design-rhi.md` when interpreting a vertical
+flip or front-face difference. A backend must adapt its native viewport and
+winding rather than changing the example's shared scene data.

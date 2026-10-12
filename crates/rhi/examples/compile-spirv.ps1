@@ -1,0 +1,42 @@
+param(
+    [string]$VulkanSdkBin = "$env:VULKAN_SDK\Bin"
+)
+
+$ErrorActionPreference = 'Stop'
+$dxc = Join-Path $VulkanSdkBin 'dxc.exe'
+$validator = Join-Path $VulkanSdkBin 'spirv-val.exe'
+if (!(Test-Path $dxc) -or !(Test-Path $validator)) {
+    throw 'Set VULKAN_SDK or pass -VulkanSdkBin with dxc.exe and spirv-val.exe.'
+}
+
+$jobs = @(
+    @('01_triangle', 'triangle.hlsl', 'vs_main', 'vs_6_0', 'triangle_vs.spv'),
+    @('01_triangle', 'triangle.hlsl', 'ps_main', 'ps_6_0', 'triangle_ps.spv'),
+    @('02_texture', 'texture.hlsl', 'vs_main', 'vs_6_0', 'texture.vs.spv'),
+    @('02_texture', 'texture.hlsl', 'fs_main', 'ps_6_0', 'texture.ps.spv'),
+    @('03_instancing', 'instancing.hlsl', 'rock_vs', 'vs_6_0', 'rock_vs.spv'),
+    @('03_instancing', 'rock_ps.hlsl', 'rock_ps', 'ps_6_0', 'rock_ps.spv'),
+    @('03_instancing', 'instancing.hlsl', 'planet_vs', 'vs_6_0', 'planet_vs.spv'),
+    @('03_instancing', 'instancing.hlsl', 'planet_ps', 'ps_6_0', 'planet_ps.spv'),
+    @('03_instancing', 'instancing.hlsl', 'star_vs', 'vs_6_0', 'star_vs.spv'),
+    @('03_instancing', 'instancing.hlsl', 'star_ps', 'ps_6_0', 'star_ps.spv'),
+    @('04_dynamic_uniform_buffer', 'dynamic_uniform.hlsl', 'vs_main', 'vs_6_0', 'dynamic_uniform.vs.spv'),
+    @('04_dynamic_uniform_buffer', 'dynamic_uniform.hlsl', 'fs_main', 'ps_6_0', 'dynamic_uniform.ps.spv'),
+    @('05_push_constants', 'push_constants.hlsl', 'vs_main', 'vs_6_0', 'push_constants.vs.spv'),
+    @('05_push_constants', 'push_constants.hlsl', 'fs_main', 'ps_6_0', 'push_constants.ps.spv'),
+    @('06_compute', 'compute_filters.hlsl', 'emboss', 'cs_6_0', 'emboss.spv'),
+    @('06_compute', 'compute_filters.hlsl', 'edgedetect', 'cs_6_0', 'edgedetect.spv'),
+    @('06_compute', 'compute_filters.hlsl', 'sharpen', 'cs_6_0', 'sharpen.spv'),
+    @('06_compute', 'display.hlsl', 'vs_main', 'vs_6_0', 'display_vs.spv'),
+    @('06_compute', 'display.hlsl', 'ps_main', 'ps_6_0', 'display_ps.spv')
+)
+
+foreach ($job in $jobs) {
+    $directory = Join-Path $PSScriptRoot ('assets/' + $job[0])
+    $source = Join-Path $directory $job[1]
+    $output = Join-Path $directory $job[4]
+    & $dxc -spirv -D FLUXEL_VULKAN=1 -fvk-use-dx-layout -T $job[3] -E $job[2] -Fo $output $source
+    if ($LASTEXITCODE -ne 0) { throw "DXC failed: $source $($job[2])" }
+    & $validator --target-env vulkan1.3 $output
+    if ($LASTEXITCODE -ne 0) { throw "SPIR-V validation failed: $output" }
+}

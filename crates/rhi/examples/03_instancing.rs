@@ -9,9 +9,7 @@ use fluxel_rhi::api::*;
 use instancing::Instancing;
 
 #[cfg(windows)]
-fn main() {
-    use fluxel_rhi::dx12::Dx12;
-
+fn run<B: instancing::InstancingBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Bgra8Unorm,
@@ -21,10 +19,10 @@ fn main() {
         usage: SurfaceUsage::RENDER_ATTACHMENT,
         maximum_frame_latency: 2,
     };
-    let mut scene: Option<Instancing<Dx12>> = None;
+    let mut scene: Option<Instancing<B>> = None;
     let started = std::time::Instant::now();
-    let result = common::run_example(
-        common::windows_api::Dx12Host,
+    common::run_example(
+        host,
         "Instanced rock field",
         config.clone(),
         move |device, _, image, extent| {
@@ -50,7 +48,21 @@ fn main() {
             )?;
             common::submit_and_present(device, lane, work, image)
         },
-    );
+    )
+}
+
+#[cfg(windows)]
+fn main() {
+    let result = match common::windows_api::selected_backend() {
+        Ok(common::windows_api::SelectedBackend::Dx12) => {
+            run::<fluxel_rhi::dx12::Dx12, _>(common::windows_api::Dx12Host)
+        }
+        #[cfg(feature = "vulkan")]
+        Ok(common::windows_api::SelectedBackend::Vulkan) => {
+            run::<fluxel_rhi::vulkan::Vulkan, _>(common::windows_api::VulkanHost)
+        }
+        Err(error) => Err(error),
+    };
     if let Err(error) = result {
         eprintln!("03_instancing: {error:?}");
         std::process::exit(1);

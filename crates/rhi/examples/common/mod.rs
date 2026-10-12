@@ -12,7 +12,8 @@ use std::sync::{
 
 use fluxel_rhi::api::{
     AccessMask, AccessScope, Backend, BoundStep, CompletionRequest, DeferredBackend, Device, Error,
-    LaneId, PlanId, PresentBinding, RecordedWork, Result, StageMask, StepDesc, StepKind,
+    LaneId, PlanId, PresentBinding, RecordedWork, Result, Shader, ShaderBackend, ShaderDesc,
+    ShaderEntryPoint, ShaderFormat, ShaderRoute, ShaderStage, StageMask, StepDesc, StepKind,
     StepPayload, StepWait, SubmissionPlan, SubmitOutcome, SubmitPacket, Surface, SurfaceConfig,
     SurfaceImage,
 };
@@ -76,6 +77,35 @@ pub fn require<T>(value: Result<T>, what: &'static str) -> Result<T> {
         Error::Unsupported(_) => Error::Unsupported(what),
         other => other,
     })
+}
+
+/// Selects a checked-in native shader at creation time using the backend's
+/// declared route. Compilation errors from a selected route are returned as-is.
+pub async fn native_shader<B: ShaderBackend>(
+    device: &Device<B>,
+    label: &str,
+    entry: &str,
+    stage: ShaderStage,
+    dxil: &[u8],
+    spirv: &[u8],
+) -> Result<Shader<B>> {
+    for (format, bytes) in [(ShaderFormat::Dxil, dxil), (ShaderFormat::SpirV, spirv)] {
+        let desc = ShaderDesc {
+            label: Some(label.into()),
+            format,
+            bytes: Arc::from(bytes),
+            entries: vec![ShaderEntryPoint {
+                name: entry.into(),
+                stage,
+                workgroup_size: None,
+            }],
+            required_features: vec![],
+        };
+        if !matches!(device.shader_route(&desc), ShaderRoute::Unsupported) {
+            return device.shader(desc).await;
+        }
+    }
+    Err(Error::Unsupported("DXIL or SPIR-V shader route"))
 }
 
 /// Submits one recorded frame on a single queue, then presents its surface lease.

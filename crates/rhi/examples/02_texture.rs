@@ -5,9 +5,10 @@
 //! acquired surface and submits the returned work.
 mod common;
 use fluxel_rhi::api::*;
-use std::sync::Arc;
 const VS: &[u8] = include_bytes!("assets/02_texture/texture.vs.dxil");
 const PS: &[u8] = include_bytes!("assets/02_texture/texture.ps.dxil");
+const VS_SPV: &[u8] = include_bytes!("assets/02_texture/texture.vs.spv");
+const PS_SPV: &[u8] = include_bytes!("assets/02_texture/texture.ps.spv");
 pub trait TextureBackend:
     Backend + ResourceBackend + ShaderBackend + PipelineBackend + RasterBackend + DeferredBackend
 {
@@ -222,6 +223,19 @@ impl<B: TextureBackend> TextureExample<B> {
             },
             p.rgba,
         )?;
+        e.transition_resources(&[texture_transition(
+            &self.texture,
+            ImageLayout::Common,
+            ImageLayout::ShaderReadOnly,
+            TextureUses {
+                stages: StageMask::COPY,
+                accesses: AccessMask::COPY_WRITE,
+            },
+            TextureUses {
+                stages: StageMask::FRAGMENT,
+                accesses: AccessMask::SHADER_READ,
+            },
+        )])?;
         let c = [Some(ColorAttachment {
             view: AttachmentView::Surface(image),
             resolve_target: None,
@@ -262,8 +276,43 @@ impl<B: TextureBackend> TextureExample<B> {
         r.set_index_buffer(&self.index, 0..12, IndexFormat::Uint16)?;
         r.draw_indexed(0..6, 0, 0..1)?;
         r.finish()?;
+        e.transition_resources(&[texture_transition(
+            &self.texture,
+            ImageLayout::ShaderReadOnly,
+            ImageLayout::Common,
+            TextureUses {
+                stages: StageMask::FRAGMENT,
+                accesses: AccessMask::SHADER_READ,
+            },
+            TextureUses {
+                stages: StageMask::ALL_COMMANDS,
+                accesses: AccessMask::EMPTY,
+            },
+        )])?;
         e.finish()
     }
+}
+fn texture_transition<B: TextureBackend>(
+    texture: &Texture<B>,
+    from: ImageLayout,
+    to: ImageLayout,
+    before: TextureUses,
+    after: TextureUses,
+) -> ResourceTransition<'_, B> {
+    ResourceTransition::Texture(TextureBarrier {
+        target: Subresources {
+            texture,
+            aspects: TextureAspects::COLOR,
+            mips: 0..1,
+            layers: 0..1,
+        },
+        usage: StateTransition {
+            from: before,
+            to: after,
+        },
+        layout: Some((from, to)),
+        ownership: None,
+    })
 }
 fn buf(label: &str, size: u64, usage: BufferUsage) -> BufferDesc {
     BufferDesc {
@@ -291,32 +340,8 @@ async fn pipeline<B: TextureBackend>(
     vs: &[u8],
     ps: &[u8],
 ) -> Result<RasterPipeline<B>> {
-    let a = d
-        .shader(ShaderDesc {
-            label: Some("vs".into()),
-            format: ShaderFormat::Dxil,
-            bytes: Arc::from(vs),
-            entries: vec![ShaderEntryPoint {
-                name: "vs_main".into(),
-                stage: ShaderStage::Vertex,
-                workgroup_size: None,
-            }],
-            required_features: vec![],
-        })
-        .await?;
-    let b = d
-        .shader(ShaderDesc {
-            label: Some("ps".into()),
-            format: ShaderFormat::Dxil,
-            bytes: Arc::from(ps),
-            entries: vec![ShaderEntryPoint {
-                name: "fs_main".into(),
-                stage: ShaderStage::Fragment,
-                workgroup_size: None,
-            }],
-            required_features: vec![],
-        })
-        .await?;
+    let a = common::native_shader(d, "vs", "vs_main", ShaderStage::Vertex, vs, VS_SPV).await?;
+    let b = common::native_shader(d, "ps", "fs_main", ShaderStage::Fragment, ps, PS_SPV).await?;
     d.raster_pipeline(RasterPipelineDesc {
         label: Some("02 pipeline".into()),
         layout,
@@ -461,14 +486,10 @@ fn load_ktx() -> Result<(Vec<u8>, u32, u32)> {
 }
 
 #[cfg(windows)]
-fn main() {
-    use fluxel_rhi::dx12::Dx12;
+fn run<B: TextureBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
     let (rgba, width, height) = match load_ktx() {
         Ok(value) => value,
-        Err(error) => {
-            eprintln!("02_texture: {error:?}");
-            std::process::exit(1);
-        }
+        Err(error) => return Err(error),
     };
     let config = SurfaceConfig {
         extent: [1280, 720],
@@ -479,9 +500,9 @@ fn main() {
         usage: SurfaceUsage::RENDER_ATTACHMENT,
         maximum_frame_latency: 2,
     };
-    let mut example: Option<TextureExample<Dx12>> = None;
-    let result = common::run_example(
-        common::windows_api::Dx12Host,
+    let mut example: Option<TextureExample<B>> = None;
+    common::run_example(
+        host,
         "Textured quad",
         config.clone(),
         move |device, _, image, extent| {
@@ -510,7 +531,21 @@ fn main() {
                 .record(device, &image, extent, pixels)?;
             common::submit_and_present(device, lane, work, image)
         },
-    );
+    )
+}
+
+#[cfg(windows)]
+fn main() {
+    let result = match common::windows_api::selected_backend() {
+        Ok(common::windows_api::SelectedBackend::Dx12) => {
+            run::<fluxel_rhi::dx12::Dx12, _>(common::windows_api::Dx12Host)
+        }
+        #[cfg(feature = "vulkan")]
+        Ok(common::windows_api::SelectedBackend::Vulkan) => {
+            run::<fluxel_rhi::vulkan::Vulkan, _>(common::windows_api::VulkanHost)
+        }
+        Err(error) => Err(error),
+    };
     if let Err(error) = result {
         eprintln!("02_texture: {error:?}");
         std::process::exit(1);

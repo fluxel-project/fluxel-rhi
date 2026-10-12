@@ -5,7 +5,7 @@
 //! enum. RenderGraph and renderer code own scheduling, hazard analysis, frame
 //! policy, and resource lifetime planning; the RHI executes the resulting work.
 //!
-//! Direct3D 12 is the native backend currently exposed by this crate.
+//! Direct3D 12 is the validated native backend; Vulkan is under migration.
 
 #![deny(missing_docs)]
 
@@ -17,4 +17,11 @@ pub use fluxel_rhi_core::api;
 pub mod dx12 {
     /// The statically typed Direct3D 12 backend implementation.
     pub use fluxel_rhi_dx12::*;
+}
+
+/// Vulkan backend using statically typed native resources and commands.
+#[cfg(feature = "vulkan")]
+pub mod vulkan {
+    /// Vulkan backend implementation and construction entry points.
+    pub use fluxel_rhi_vulkan::*;
 }

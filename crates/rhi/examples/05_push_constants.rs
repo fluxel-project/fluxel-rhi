@@ -9,7 +9,6 @@ mod common;
 mod gltf;
 
 use fluxel_rhi::api::*;
-use std::sync::Arc;
 
 pub const SPHERE_COUNT: usize = 16;
 pub const PUSH_BYTES: u32 = 32;
@@ -17,6 +16,8 @@ pub const PUSH_BYTES: u32 = 32;
 /// The native DXIL source for the b0 camera / b1 root-constant ABI.
 pub const VERTEX_DXIL: &[u8] = include_bytes!("assets/05_push_constants/push_constants.vs.dxil");
 pub const FRAGMENT_DXIL: &[u8] = include_bytes!("assets/05_push_constants/push_constants.ps.dxil");
+pub const VERTEX_SPIRV: &[u8] = include_bytes!("assets/05_push_constants/push_constants.vs.spv");
+pub const FRAGMENT_SPIRV: &[u8] = include_bytes!("assets/05_push_constants/push_constants.ps.spv");
 const SPHERE: &[u8] = include_bytes!("assets/models/sphere.gltf");
 
 /// One source-equivalent `color + position` record.
@@ -125,9 +126,7 @@ where
 }
 
 #[cfg(windows)]
-fn main() {
-    use fluxel_rhi::dx12::Dx12;
-
+fn run<B: PushBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Bgra8Unorm,
@@ -137,9 +136,9 @@ fn main() {
         usage: SurfaceUsage::RENDER_ATTACHMENT,
         maximum_frame_latency: 2,
     };
-    let mut workload: Option<PushWorkload<Dx12>> = None;
-    let result = common::run_example(
-        common::windows_api::Dx12Host,
+    let mut workload: Option<PushWorkload<B>> = None;
+    common::run_example(
+        host,
         "Push constants",
         config.clone(),
         move |device, _, image, extent| {
@@ -162,7 +161,21 @@ fn main() {
                 .record(device, &image, extent)?;
             common::submit_and_present(device, lane, work, image)
         },
-    );
+    )
+}
+
+#[cfg(windows)]
+fn main() {
+    let result = match common::windows_api::selected_backend() {
+        Ok(common::windows_api::SelectedBackend::Dx12) => {
+            run::<fluxel_rhi::dx12::Dx12, _>(common::windows_api::Dx12Host)
+        }
+        #[cfg(feature = "vulkan")]
+        Ok(common::windows_api::SelectedBackend::Vulkan) => {
+            run::<fluxel_rhi::vulkan::Vulkan, _>(common::windows_api::VulkanHost)
+        }
+        Err(error) => Err(error),
+    };
     if let Err(error) = result {
         eprintln!("05_push_constants: {error:?}");
         std::process::exit(1);
@@ -364,30 +377,27 @@ fn buffer<B: PushBackend>(
 }
 async fn shader<B: PushBackend>(
     d: &Device<B>,
-    bytes: &[u8],
+    dxil: &[u8],
+    spirv: &[u8],
     entry: &str,
     stage: ShaderStage,
 ) -> Result<Shader<B>> {
-    d.shader(ShaderDesc {
-        label: Some("05 shader".into()),
-        format: ShaderFormat::Dxil,
-        bytes: Arc::from(bytes),
-        entries: vec![ShaderEntryPoint {
-            name: entry.into(),
-            stage,
-            workgroup_size: None,
-        }],
-        required_features: vec![],
-    })
-    .await
+    common::native_shader(d, "05 shader", entry, stage, dxil, spirv).await
 }
 async fn pipeline<B: PushBackend>(
     d: &Device<B>,
     layout: PipelineLayout<B>,
     format: TextureFormat,
 ) -> Result<RasterPipeline<B>> {
-    let vs = shader(d, VERTEX_DXIL, "vs_main", ShaderStage::Vertex).await?;
-    let ps = shader(d, FRAGMENT_DXIL, "fs_main", ShaderStage::Fragment).await?;
+    let vs = shader(d, VERTEX_DXIL, VERTEX_SPIRV, "vs_main", ShaderStage::Vertex).await?;
+    let ps = shader(
+        d,
+        FRAGMENT_DXIL,
+        FRAGMENT_SPIRV,
+        "fs_main",
+        ShaderStage::Fragment,
+    )
+    .await?;
     d.raster_pipeline(RasterPipelineDesc {
         label: Some("05 push pipeline".into()),
         layout,
