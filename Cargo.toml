@@ -1,13 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/android-app",
     "crates/core",
     "crates/dx12",
-    "crates/vulkan",
-    "crates/gl",
-    "crates/webgpu",
-    "crates/metal",
     "crates/rhi",
 ]
 

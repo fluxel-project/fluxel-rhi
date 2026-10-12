@@ -9,23 +9,5 @@ repository = "https://github.com/fluxel-project/fluxel-rhi"
 
 [features]
 default = []
-dx12 = ["dep:raw-window-handle"]
-vulkan = ["dep:raw-window-handle"]
-naga = ["dep:naga"]
-android-wsi-evidence = ["vulkan"]
-gl-family = []
-native-gl-wgl = ["gl-family", "dep:raw-window-handle"]
-native-gles-egl = ["gl-family"]
-webgl2 = ["gl-family", "dep:web-sys"]
-webgpu = ["dep:web-sys"]
-metal = ["dep:raw-window-handle"]
-test-support = []
 
 [dependencies]
-raw-window-handle = { version = "=0.6.2", optional = true }
-naga = { version = "=27.0.3", optional = true, default-features = false, features = [
-    "wgsl-in", "glsl-in", "spv-in", "spv-out", "glsl-out", "msl-out", "hlsl-out",
-] }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { version = "=0.3.105", optional = true, features = ["Window", "Performance"] }

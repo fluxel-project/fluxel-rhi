@@ -14,7 +14,7 @@ repository = "https://github.com/fluxel-project/fluxel-rhi"
 hardware-tests = []
 
 [dependencies]
-fluxel-rhi-core = { path = "../core", features = ["dx12"] }
+fluxel-rhi-core = { path = "../core" }
 raw-window-handle = "=0.6.2"
 
 [dev-dependencies]

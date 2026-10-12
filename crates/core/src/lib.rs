@@ -1,25 +1,10 @@
 //! Portable GPU execution API and backend implementation contract.
-
+//!
+//! The root [`api`] module is the statically typed renderer-facing RHI
+//! contract. Scheduling, lifetime policy, hazard analysis, and frame policy
+//! remain outside Core.
 #![deny(missing_docs)]
 
+/// Statically typed public RHI contract and backend SPI.
+#[allow(missing_docs, dead_code, unused_variables)]
 pub mod api;
-
-/// Hardware evidence and fault-injection helpers used by integration tests.
-#[cfg(feature = "test-support")]
-#[doc(hidden)]
-pub mod test_support;
-
-/// Implementation entry points shared by separately compiled backend crates.
-#[doc(hidden)]
-pub mod backend_spi {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    use crate::api::identity::DeviceInstanceId;
-
-    static NEXT_PUBLIC_PROVIDER: AtomicU64 = AtomicU64::new(0xF1_0000_0000_0000);
-
-    /// Reserves a process-wide provider identity for one backend provider.
-    pub fn next_provider_instance() -> DeviceInstanceId {
-        DeviceInstanceId::new(NEXT_PUBLIC_PROVIDER.fetch_add(1, Ordering::Relaxed))
-    }
-}

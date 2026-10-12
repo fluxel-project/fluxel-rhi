@@ -1,0 +1,100 @@
+use super::{MipmapBackend, Tunnel};
+use fluxel_rhi::api::*;
+
+impl<B: MipmapBackend> Tunnel<B> {
+    pub fn record(
+        &mut self,
+        device: &Device<B>,
+        image: &SurfaceImage<B>,
+        extent: [u32; 2],
+    ) -> Result<RecordedWork<B>> {
+        let mut encoder = device.encoder(self.lane)?;
+        if !self.initialized {
+            encoder.write_buffer(&self.vertices, 0, &self.vertex_data)?;
+            encoder.write_buffer(&self.indices, 0, &self.index_data)?;
+            self.chain.encode_generation(&mut encoder, &self.pixels)?;
+            encoder.transition_resources(&[ResourceTransition::Texture(TextureBarrier {
+                target: Subresources {
+                    texture: self.chain.texture(),
+                    aspects: TextureAspects::COLOR,
+                    mips: 0..self.chain.levels(),
+                    layers: 0..1,
+                },
+                usage: StateTransition {
+                    from: TextureUses {
+                        stages: StageMask(0),
+                        accesses: AccessMask::EMPTY,
+                    },
+                    to: TextureUses {
+                        stages: StageMask::FRAGMENT,
+                        accesses: AccessMask::SHADER_READ,
+                    },
+                },
+                layout: Some((ImageLayout::Common, ImageLayout::ShaderReadOnly)),
+                ownership: None,
+            })])?;
+        }
+        encoder.write_buffer(&self.uniform, 0, &identity())?;
+        let colors = [Some(ColorAttachment {
+            view: AttachmentView::Surface(image),
+            resolve_target: None,
+            load: LoadOp::Clear(ClearColor::Float([0.015, 0.015, 0.025, 1.0])),
+            store: StoreOp::Store,
+        })];
+        let depth = DepthStencilAttachment {
+            view: AttachmentView::Texture(&self.depth_view),
+            depth: Some((LoadOp::Clear(1.0), StoreOp::Store)),
+            stencil: None,
+            depth_read_only: false,
+            stencil_read_only: false,
+        };
+        let mut pass = encoder.begin_raster(&RasterPassDesc {
+            label: Some("09 textured tunnel"),
+            colors: &colors,
+            depth_stencil: Some(depth),
+            render_area: Rect {
+                x: 0,
+                y: 0,
+                width: extent[0],
+                height: extent[1],
+            },
+            multiview_mask: None,
+            timestamp_writes: None,
+            secondary_inheritance: None,
+        })?;
+        pass.set_pipeline(&self.pipeline)?;
+        pass.set_bind_group(0, &self.group, &[])?;
+        pass.set_vertex_buffer(0, &self.vertices, 0..self.vertex_data.len() as u64)?;
+        pass.set_index_buffer(
+            &self.indices,
+            0..self.index_data.len() as u64,
+            IndexFormat::Uint32,
+        )?;
+        pass.viewport(Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: extent[0] as f32,
+            height: extent[1] as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        })?;
+        pass.scissor(Rect {
+            x: 0,
+            y: 0,
+            width: extent[0],
+            height: extent[1],
+        })?;
+        pass.draw_indexed(0..self.index_count, 0, 0..1)?;
+        pass.finish()?;
+        let work = encoder.finish()?;
+        self.initialized = true;
+        Ok(work)
+    }
+}
+fn identity() -> [u8; 64] {
+    let mut bytes = [0; 64];
+    for index in 0..4 {
+        bytes[index * 20..index * 20 + 4].copy_from_slice(&1.0f32.to_ne_bytes());
+    }
+    bytes
+}

@@ -1,103 +1,52 @@
-# RHI hardware conformance cases
+# RHI testing
 
-Each backend crate keeps a copy of Fluxel RHI's real-hardware baseline under
-`crates/<backend>/tests/`. Every portable workload has one shared case
-implementation per backend test suite under `common/`; a backend test is
-only a fixture that supplies code-form-specific shader artifacts, selects a
-compatible lane, or owns native surface-host glue. Public applications and
-examples construct process-owned providers through `create_*_provider`; only
-the in-crate hardware fixture may use the backend-private constructor when it
-needs a deliberately controlled native surface/context.
+## What is present
 
-The backend crate's `tests/common/mod.rs` and `tests/harness/` are included by its test build
-so they can accept backend-injected shader/surface fixtures while still using
-the same public provider/device API. `harness` owns async completion/readback policy and the
-Pass/Unsupported/Skipped/Failure vocabulary; it never contains a native handle
-or a backend name.
-`common/cases/` owns portable recording, submission, completion and CPU
-assertion behaviour. `fixtures/` and the thin modules under each backend own
-only the private bridge. New cross-backend cases belong in `common/cases/`
-first.
+This checkout has an active DX12 backend and the typed facade/examples. It does not
+contain the historical Vulkan, Metal, or WebGPU backend test suites referenced by older
+documentation. Commands for those removed crates are invalid and are not conformance
+evidence.
 
-| Case | Portable owner | Fixture responsibility |
-| --- | --- | --- |
-| Empty occlusion query → resolve → readback | `common` | provider/device, compatible lane, executor |
-| Indirect compute → readback | `common` | shader artifact, pipeline/bind group, compatible lane |
-| Device identity and core resource creation | `common/cases/core_device.rs` | provider/device availability classification |
-| GL-family core creation and empty submission | `common/cases/core_device.rs` | adopted WGL/EGL/WebGL owner and host drawable |
-| Buffer / texture transfer | `common/cases/transfer.rs` | device and exact capability gate |
-| Storage-buffer compute and offscreen raster | `common/cases/compute.rs`, `common/cases/raster.rs` | code-form-specific shader fixture |
-| Depth/stencil | `common/cases/depth_stencil.rs` | compatible format and shader fixture |
-| Surface lifecycle | `common/cases/presentation.rs` | HWND/ANativeWindow/CAMetalLayer/canvas target registration, configuration chosen from fresh facts, logical lane |
-
-## Baseline matrix
-
-The baseline is intentionally enumerated here so a backend cannot claim broad
-conformance merely because its provider can be constructed.  A fixture should
-wire each row to the shared case (or report `Unsupported` from the published
-capability facts):
-
-| ID | Workload | Shared owner / gate |
-| --- | --- | --- |
-| 01 | triangle | `cases/raster.rs`, raster + RGBA8 |
-| 02 | indexed triangle | `cases/raster.rs`, index-buffer route |
-| 03 | uniform + texture + sampler | `cases/compute.rs`/binding fixture, sampled-texture facts |
-| 04 | storage-buffer compute | `cases/compute.rs`, storage-buffer + dispatch |
-| 05 | texture upload / copy / readback | `cases/transfer.rs`, copy-src/dst |
-| 06 | depth + stencil | `cases/depth_stencil.rs`, depth/stencil attachment facts |
-| 07 | MSAA + resolve | raster resolve route and sample-count capability |
-| 08 | indirect draw / dispatch | indirect draw/dispatch facts and argument validation |
-| 09 | occlusion query | query begin/end/resolve/readback |
-| 10 | multiview | multiview view-count and attachment route |
-| 11 | mapping | asynchronous `ReadbackTicket::read` RAII lease |
-| 12 | BC / ETC2 / ASTC compressed textures | per-format support and block-aware transfer |
-| 13 | presentation / resize / recreate | `cases/presentation.rs`, host target lifecycle |
-
-Rows 01, 04, 05, 06, 08, 09, 11 and 13 already have executable native
-fixtures in this tree.  Rows 02, 03, 07, 10 and 12 share the same public API
-and are capability-gated; a backend must add its code-form-specific shader or
-surface fixture before advertising them as hardware evidence.  Keeping the
-matrix explicit prevents a small green smoke set from being mistaken for full
-wgpu-style conformance.
-
-Each case records portable work, submits it to a real adapter, waits for a
-terminal completion, and asserts a readback or surface lifecycle outcome.
-Shader artifacts intentionally remain backend-specific (DXIL, SPIR-V, MSL,
-WGSL, or GLSL): sharing a source form would test a compiler or translator,
-not the selected backend lowering.
-
-The public case must distinguish these outcomes precisely:
-
-- `Pass`: an advertised capability completed and met its CPU assertion.
-- `Unsupported`: the exact capability/format/route is not published; the case
-  is not run and no success is fabricated.
-- `Skipped`: the required native loader, adapter, or host surface is absent.
-- `Failure`: an advertised route rejected the case, lost the device, failed, or
-  produced wrong readback data.
-
-## Running a baseline
-
-On Windows, DX12 and Vulkan headless cases are ordinary crate tests. The exact
-filters evolve with the suite, so start with:
+Run the portable API/unit coverage with:
 
 ```powershell
-cargo test -p fluxel-rhi-dx12 --features hardware-tests -- --nocapture
-cargo test -p fluxel-rhi-vulkan -- --nocapture
-cargo test -p fluxel-rhi-gl --features native-gl-wgl -- --nocapture
+cargo test -p fluxel-rhi-core
+cargo test -p fluxel-rhi-dx12
 ```
 
-The WGL fixture is intentionally an adopted-context case: it creates its Host
-window and private WGL worker itself, then crosses only the public provider and
-device boundary into `common`. GLES and WebGL2 must use the same fixture shape
-through their respective owner (EGL / browser canvas); they must not obtain
-coverage by exporting an EGL context or `WebGl2RenderingContext` from RHI.
+Check an example through the facade with:
 
-Hardware evidence records the commit, target, adapter, driver, case, expected
-result and actual result. A local green unit-test run alone is not hardware
-evidence. Android and browser fixtures require their respective host adapters;
-a desktop result does not substitute for them.
-Metal fixtures compile cross-target on Windows but execute only on an Apple
-host.
+```powershell
+cargo check -p fluxel-rhi --features examples --example 10_indirect_draw
+```
 
-Result labels and the distinction between portable, headless, and presentation
-evidence are fixed by [ADR-0022](adr/0022-hardware-conformance-evidence.md).
+On a Windows DX12 machine, run a finite example workload when it supports `--frames`:
+
+```powershell
+cargo run -p fluxel-rhi --features examples --example 10_indirect_draw -- --frames 2
+```
+
+The example command is real GPU evidence for the exercised route only. It is not a
+claim of general backend conformance.
+
+## Evidence rules
+
+Record the command, commit, Windows version, adapter/driver, workload and observed
+outcome for a hardware claim. Classify an outcome as follows:
+
+- **Pass:** the selected native route ran and its stated result was observed.
+- **Unsupported:** the backend accurately rejected a capability or descriptor it does
+  not implement.
+- **Skipped:** the required platform, adapter, window host or driver was unavailable.
+- **Failure:** an advertised route failed, lost the device or produced incorrect output.
+
+Compilation verifies API integration; it does not prove native command execution.
+Hardware evidence must name the exact route: for example a D2 array texture view,
+indexed indirect draw, a depth attachment, or a readback path.
+
+## Adding coverage
+
+Keep portable behavior tests in `crates/core/src/api/tests.rs` when they exercise the
+contract without a device. Put DX12-native validation beside the active DX12 crate and
+use the public `api` descriptors wherever possible. Do not revive test paths for absent
+backends or private constructors merely to make a matrix cell appear covered.

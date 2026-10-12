@@ -1,607 +1,530 @@
-//! Port of SaschaWillems/Vulkan `examples/screenshot`.
+//! Typed offscreen render, texture copy, and completed readback screenshot path.
 //!
-//! Renders the original Chinese dragon, reads the acquired frame after the draw,
-//! and writes the C++ example's binary P6 `screenshot.ppm` image. Set
-//! `FLUXEL_RHI_SCREENSHOT=1` to request the capture at startup; the shared host
-//! currently has no button input callback.
+//! Surface leases are present-only. This example renders into an ordinary RGBA8
+//! texture, transitions it to a copy source, and maps a readback buffer only
+//! after the caller supplies completion evidence for that encoder.
+mod common;
 
-pub mod common;
-#[path = "common/gltf.rs"]
-mod gltf;
-
-use std::{fs, sync::Arc};
-
-use fluxel_rhi::api::{
-    binding::{
-        BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupIndex, BindGroupLayoutDescriptor,
-        BindingCount, BindingKind, BindingResource, BindingSlot, BindingSlotId,
+use fluxel_rhi::api::*;
+use std::{
+    fs,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
     },
-    command::{
-        ColorAttachment, ColorAttachmentView, ColorClearValue, DepthAttachmentMode,
-        DepthStencilAttachment, IndexFormat, LoadOp, RasterScopeDescriptor, RecorderDescriptor,
-        Rect, StoreOp, Viewport,
-    },
-    error::{RhiError, RhiErrorKind, RhiResult},
-    format::TextureFormat,
-    identity::Label,
-    pipeline::{
-        ColorTargetState, CullMode, DepthState, DepthStencilState, PipelineInterfaceDescriptor,
-        PrimitiveState, PrimitiveTopology, RasterPipeline, RasterPipelineDescriptor,
-        VertexAttribute, VertexBufferLayout, VertexFormat, VertexInputState, VertexStepMode,
-    },
-    platform::Device,
-    presentation::AcquiredFrame,
-    resource::{
-        Buffer, BufferBinding, BufferDescriptor, BufferRange, BufferUploadDescriptor, BufferUsage,
-        CompareFunction, Extent3d, ReadbackRequest, ReadbackViewData, TextureDescriptor,
-        TextureUsage, TextureView, TextureViewDescriptor, TextureViewDimension,
-    },
-    shader::{
-        ArtifactHash, ArtifactProducerVersion, InterpolationMode, InterpolationSampling,
-        ShaderAbiVersion, ShaderArtifact, ShaderCode, ShaderInterface, ShaderInterpolation,
-        ShaderLocation, ShaderLocationInterface, ShaderNumericType, ShaderRequirements,
-        ShaderResourceRequirement, ShaderStage, ShaderStages,
-    },
-    submission::{CompletionPoint, LaneWorkDomains, SubmissionLaneId, SubmissionPlanBuilder},
 };
 
-const FRAMES: usize = 2;
-const UBO_BYTES: u64 = 192;
-const DRAGON: &[u8] = include_bytes!("assets/models/chinesedragon.gltf");
+const VS: &[u8] = include_bytes!("assets/12_screenshot/triangle_vs.dxil");
+const PS: &[u8] = include_bytes!("assets/12_screenshot/triangle_ps.dxil");
+static NEXT_CAPTURE_PLAN: AtomicU64 = AtomicU64::new(1);
 
-const SHADER: &str = r#"
-struct U { projection:mat4x4<f32>, view:mat4x4<f32>, model:mat4x4<f32>, };
-@group(0) @binding(0) var<uniform> u:U;
-struct Input { @location(0) pos:vec3<f32>, @location(1) normal:vec3<f32>, @location(2) color:vec3<f32>, };
-struct Output { @builtin(position) pos:vec4<f32>, @location(0) normal:vec3<f32>, @location(1) color:vec3<f32>, @location(2) view_vec:vec3<f32>, @location(3) light_vec:vec3<f32>, };
-@vertex fn vs_main(i:Input)->Output {
-    var o:Output;
-    o.color=i.color;
-    o.pos=u.projection*u.view*u.model*vec4<f32>(i.pos,1.0);
-    let p=u.view*u.model*vec4<f32>(i.pos,1.0);
-    o.normal=mat3x3<f32>(u.model[0].xyz,u.model[1].xyz,u.model[2].xyz)*i.normal;
-    o.light_vec=vec3<f32>(1.0,-1.0,1.0)-p.xyz;
-    o.view_vec=-p.xyz;
-    return o;
+pub trait ScreenshotBackend:
+    Backend
+    + ResourceBackend
+    + ShaderBackend
+    + PipelineBackend
+    + CommandBackend
+    + RasterBackend
+    + DeferredBackend
+    + ReadbackBackend
+{
 }
-@fragment fn fs_main(i:Output)->@location(0) vec4<f32> {
-    let n=normalize(i.normal);let l=normalize(i.light_vec);let v=normalize(i.view_vec);
-    let r=reflect(-l,n);
-    let diffuse=max(dot(n,l),0.0);
-    let specular=pow(max(dot(r,v),0.0),16.0)*vec3<f32>(0.75);
-    return vec4<f32>((vec3<f32>(0.1)+vec3<f32>(diffuse))*i.color+specular,1.0);
+impl<T> ScreenshotBackend for T where
+    T: Backend
+        + ResourceBackend
+        + ShaderBackend
+        + PipelineBackend
+        + CommandBackend
+        + RasterBackend
+        + DeferredBackend
+        + ReadbackBackend
+{
 }
-"#;
 
+/// A submitted record and its optional readback ticket. Map the ticket only
+/// with a completion point which covers this exact `work` submission.
+pub struct ScreenshotRecord<B: ScreenshotBackend> {
+    pub work: RecordedWork<B>,
+    pub ticket: Option<ReadbackTicket<B>>,
+}
+
+pub struct Screenshot<B: ScreenshotBackend> {
+    lane: LaneId,
+    extent: [u32; 2],
+    vertices: Buffer<B>,
+    target: Texture<B>,
+    target_view: TextureView<B>,
+    readback: Buffer<B>,
+    pipeline: RasterPipeline<B>,
+    layout: ImageLayout,
+    row_pitch: u32,
+}
+impl<B: ScreenshotBackend> Screenshot<B> {
+    pub async fn new(device: &Device<B>, lane: LaneId, extent: [u32; 2]) -> Result<Self> {
+        if extent.contains(&0) {
+            return Err(Error::InvalidRange);
+        }
+        let target_desc = TextureDesc {
+            label: Some("12 screenshot render target".into()),
+            dimension: TextureDimension::D2,
+            extent: [extent[0], extent[1], 1],
+            array_layers: 1,
+            format: TextureFormat::Rgba8Unorm,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER_ATTACHMENT.union(TextureUsage::COPY_SRC),
+            view_formats: vec![],
+        };
+        match device.texture_support(&target_desc) {
+            Support::Supported(_) => {}
+            Support::Unsupported(reason) => return Err(Error::Unsupported(reason)),
+        }
+        let target = device.create_texture(&target_desc)?;
+        let target_view = device.create_view(
+            &target,
+            &TextureViewDesc {
+                format: TextureFormat::Rgba8Unorm,
+                dimension: TextureViewDimension::D2,
+                aspects: TextureAspects::COLOR,
+                mips: 0..1,
+                layers: 0..1,
+            },
+        )?;
+        let row_pitch = aligned_row_pitch(extent[0])?;
+        let readback = device.create_buffer(&BufferDesc {
+            label: Some("12 screenshot readback".into()),
+            size: u64::from(row_pitch) * u64::from(extent[1]),
+            usage: BufferUsage::COPY_DST.union(BufferUsage::MAP_READ),
+            memory: MemoryClass::Readback,
+        })?;
+        let vertices = device.create_buffer(&BufferDesc {
+            label: Some("12 screenshot triangle".into()),
+            size: 72,
+            usage: BufferUsage::VERTEX.union(BufferUsage::COPY_DST),
+            memory: MemoryClass::Device,
+        })?;
+        let layout = device.create_pipeline_layout(&PipelineLayoutDesc {
+            label: Some("12 screenshot layout"),
+            groups: &[],
+            push_constants: &[],
+        })?;
+        let pipeline = pipeline(device, layout).await?;
+        Ok(Self {
+            lane,
+            extent,
+            vertices,
+            target,
+            target_view,
+            readback,
+            pipeline,
+            layout: ImageLayout::Common,
+            row_pitch,
+        })
+    }
+
+    /// Render the deterministic color triangle. `capture` records texture copy
+    /// plus native readback at the tail of this encoder.
+    pub fn record(&mut self, device: &Device<B>, capture: bool) -> Result<ScreenshotRecord<B>> {
+        let mut encoder = device.encoder(self.lane)?;
+        encoder.write_buffer(&self.vertices, 0, &triangle())?;
+        self.transition(
+            &mut encoder,
+            ImageLayout::ColorAttachment,
+            TextureUses {
+                stages: StageMask::COLOR_OUTPUT,
+                accesses: AccessMask::COLOR_WRITE,
+            },
+        )?;
+        let colors = [Some(ColorAttachment {
+            view: AttachmentView::Texture(&self.target_view),
+            resolve_target: None,
+            load: LoadOp::Clear(ClearColor::Float([0.0, 0.0, 0.0, 0.0])),
+            store: StoreOp::Store,
+        })];
+        let mut pass = encoder.begin_raster(&RasterPassDesc {
+            label: Some("12 screenshot scene"),
+            colors: &colors,
+            depth_stencil: None,
+            render_area: Rect {
+                x: 0,
+                y: 0,
+                width: self.extent[0],
+                height: self.extent[1],
+            },
+            multiview_mask: None,
+            timestamp_writes: None,
+            secondary_inheritance: None,
+        })?;
+        pass.set_pipeline(&self.pipeline)?;
+        pass.set_vertex_buffer(0, &self.vertices, 0..72)?;
+        pass.draw(0..3, 0..1)?;
+        pass.finish()?;
+        let ticket = if capture {
+            self.transition(
+                &mut encoder,
+                ImageLayout::CopySrc,
+                TextureUses {
+                    stages: StageMask::COPY,
+                    accesses: AccessMask::COPY_READ,
+                },
+            )?;
+            Some(encode_screenshot(
+                &mut encoder,
+                &self.target,
+                self.extent,
+                &self.readback,
+                aligned_row_pitch(self.extent[0])?,
+            )?)
+        } else {
+            None
+        };
+        Ok(ScreenshotRecord {
+            work: encoder.finish()?,
+            ticket,
+        })
+    }
+
+    fn transition(
+        &mut self,
+        encoder: &mut CommandEncoder<B>,
+        next: ImageLayout,
+        after: TextureUses,
+    ) -> Result<()> {
+        let before = match self.layout {
+            ImageLayout::Common => TextureUses {
+                stages: StageMask::EMPTY,
+                accesses: AccessMask::EMPTY,
+            },
+            ImageLayout::ColorAttachment => TextureUses {
+                stages: StageMask::COLOR_OUTPUT,
+                accesses: AccessMask::COLOR_WRITE,
+            },
+            ImageLayout::CopySrc => TextureUses {
+                stages: StageMask::COPY,
+                accesses: AccessMask::COPY_READ,
+            },
+            _ => return Err(Error::InvalidState),
+        };
+        encoder.transition_resources(&[ResourceTransition::Texture(TextureBarrier {
+            target: Subresources {
+                texture: &self.target,
+                aspects: TextureAspects::COLOR,
+                mips: 0..1,
+                layers: 0..1,
+            },
+            usage: StateTransition {
+                from: before,
+                to: after,
+            },
+            layout: Some((self.layout, next)),
+            ownership: None,
+        })])?;
+        self.layout = next;
+        Ok(())
+    }
+
+    /// Waits for `completion` and writes the original demo's binary PPM image.
+    /// The safety precondition of `read_after` is fulfilled by the caller only
+    /// when `completion` covers the record holding this ticket.
+    pub async fn save_ppm_after(
+        &self,
+        device: &Device<B>,
+        ticket: ReadbackTicket<B>,
+        completion: &CompletionPoint<B>,
+        path: impl AsRef<Path>,
+    ) -> Result<()> {
+        let data = unsafe { device.read_after(ticket, completion).await? };
+        // ReadbackBackend maps a buffer; its row geometry is established by
+        // the explicit TexelCopyBufferLayout recorded above.
+        let ppm = ppm_rgb(&data.bytes, self.row_pitch as usize, self.extent, false)?;
+        fs::write(path, ppm).map_err(|e| Error::Backend(e.to_string()))
+    }
+}
+
+/// Records the explicit texture-to-buffer copy used by the screenshot demo.
+pub fn encode_screenshot<B>(
+    encoder: &mut CommandEncoder<B>,
+    rendered_frame: &Texture<B>,
+    extent: [u32; 2],
+    readback: &Buffer<B>,
+    row_pitch: u32,
+) -> Result<ReadbackTicket<B>>
+where
+    B: ReadbackBackend + DeferredBackend,
+{
+    if extent.contains(&0) || row_pitch < extent[0].checked_mul(4).ok_or(Error::InvalidRange)? {
+        return Err(Error::InvalidRange);
+    }
+    encoder.texture_to_buffer(
+        TextureRegion {
+            texture: rendered_frame,
+            mip: 0,
+            origin: [0, 0, 0],
+            extent: [extent[0], extent[1], 1],
+            aspect: TextureAspects::COLOR,
+        },
+        readback,
+        TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: row_pitch,
+            rows_per_image: extent[1],
+        },
+    )?;
+    encoder.readback_buffer(
+        readback,
+        0..u64::from(row_pitch)
+            .checked_mul(u64::from(extent[1]))
+            .ok_or(Error::InvalidRange)?,
+    )
+}
+
+/// Writes an RGBA or BGRA readback to binary PPM, stripping D3D12 row padding.
+pub fn ppm_rgb(bytes: &[u8], row_pitch: usize, extent: [u32; 2], bgra: bool) -> Result<Vec<u8>> {
+    let row_bytes = (extent[0] as usize)
+        .checked_mul(4)
+        .ok_or(Error::InvalidRange)?;
+    let height = extent[1] as usize;
+    if row_pitch < row_bytes
+        || bytes.len() < row_pitch.checked_mul(height).ok_or(Error::InvalidRange)?
+    {
+        return Err(Error::InvalidRange);
+    }
+    let mut ppm = format!("P6\n{}\n{}\n255\n", extent[0], extent[1]).into_bytes();
+    for row in bytes.chunks_exact(row_pitch).take(height) {
+        for px in row[..row_bytes].chunks_exact(4) {
+            if bgra {
+                ppm.extend_from_slice(&[px[2], px[1], px[0]]);
+            } else {
+                ppm.extend_from_slice(&px[..3]);
+            }
+        }
+    }
+    Ok(ppm)
+}
+fn aligned_row_pitch(width: u32) -> Result<u32> {
+    width
+        .checked_mul(4)
+        .and_then(|n| n.checked_add(255))
+        .map(|n| n & !255)
+        .ok_or(Error::InvalidRange)
+}
+async fn pipeline<B: ScreenshotBackend>(
+    device: &Device<B>,
+    layout: PipelineLayout<B>,
+) -> Result<RasterPipeline<B>> {
+    let shader = |bytes: &[u8], stage: ShaderStage, name: &str| ShaderDesc {
+        label: Some(format!("12 {name}")),
+        format: ShaderFormat::Dxil,
+        bytes: Arc::from(bytes),
+        entries: vec![ShaderEntryPoint {
+            name: name.into(),
+            stage,
+            workgroup_size: None,
+        }],
+        required_features: vec![],
+    };
+    let vs = device
+        .shader(shader(VS, ShaderStage::Vertex, "vs_main"))
+        .await?;
+    let ps = device
+        .shader(shader(PS, ShaderStage::Fragment, "ps_main"))
+        .await?;
+    device
+        .raster_pipeline(RasterPipelineDesc {
+            label: Some("12 screenshot pipeline".into()),
+            layout,
+            vertex: PipelineStage {
+                module: vs,
+                entry: "vs_main".into(),
+                constants: vec![],
+            },
+            fragment: Some(PipelineStage {
+                module: ps,
+                entry: "ps_main".into(),
+                constants: vec![],
+            }),
+            vertex_buffers: vec![VertexBufferLayout {
+                stride: 24,
+                step_mode: VertexStepMode::Vertex,
+                attributes: vec![
+                    VertexAttribute {
+                        location: 0,
+                        offset: 0,
+                        format: VertexFormat::Float32(3),
+                    },
+                    VertexAttribute {
+                        location: 1,
+                        offset: 12,
+                        format: VertexFormat::Float32(3),
+                    },
+                ],
+            }],
+            color_targets: vec![Some(ColorTargetState {
+                format: TextureFormat::Rgba8Unorm,
+                blend: None,
+                write_mask: 15,
+            })],
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: FrontFace::Ccw,
+                cull_mode: CullMode::None,
+                unclipped_depth: false,
+                polygon_mode: PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: MultisampleState {
+                count: 1,
+                mask: u64::from(u32::MAX),
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        })
+        .await
+}
+fn triangle() -> [u8; 72] {
+    let values = [
+        0.0_f32, 0.65, 0.0, 1.0, 0.15, 0.1, -0.7, -0.6, 0.0, 0.1, 1.0, 0.25, 0.7, -0.6, 0.0, 0.2,
+        0.35, 1.0,
+    ];
+    let mut bytes = [0; 72];
+    for (i, v) in values.into_iter().enumerate() {
+        bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_ne_bytes());
+    }
+    bytes
+}
+
+#[cfg(windows)]
 fn main() {
-    if let Err(error) = common::run_example("Saving framebuffer to screenshot", create_example()) {
-        eprintln!("12_screenshot: {error}");
+    use fluxel_rhi::dx12::Dx12;
+    let config = SurfaceConfig {
+        extent: [1280, 720],
+        format: TextureFormat::Bgra8Unorm,
+        present_mode: PresentMode::Fifo,
+        alpha_mode: CompositeAlphaMode::Opaque,
+        color_space: ColorSpace::Srgb,
+        usage: SurfaceUsage::RENDER_ATTACHMENT,
+        maximum_frame_latency: 2,
+    };
+    let requested = std::env::var_os("FLUXEL_RHI_SCREENSHOT").is_some();
+    let mut screenshot: Option<Screenshot<Dx12>> = None;
+    let mut saved = false;
+    let result = common::run_example(
+        common::windows_api::Dx12Host,
+        "Screenshot readback",
+        config,
+        move |device, _, image, extent| {
+            let lane = device
+                .lanes()
+                .iter()
+                .find(|lane| lane.class == LaneClass::Graphics)
+                .map(|lane| lane.id)
+                .ok_or(Error::Unsupported("graphics lane"))?;
+            if screenshot.is_none() {
+                screenshot = Some(common::block_on(Screenshot::new(device, lane, extent))?);
+            }
+            let workload = screenshot.as_mut().expect("initialized above");
+            if workload.extent != extent {
+                return Err(Error::Unsupported("screenshot resize"));
+            }
+            let capture = requested && !saved;
+            let record = workload.record(device, capture)?;
+            let completion = submit_capture_and_present(device, lane, record.work, image)?;
+            if let Some(ticket) = record.ticket {
+                common::block_on(device.wait_completion(&completion))?;
+                common::block_on(workload.save_ppm_after(
+                    device,
+                    ticket,
+                    &completion,
+                    "screenshot.ppm",
+                ))?;
+                saved = true;
+            }
+            Ok(())
+        },
+    );
+    if let Err(error) = result {
+        eprintln!("12_screenshot: {error:?}");
         std::process::exit(1);
     }
 }
 
-pub fn create_example() -> Example {
-    Example {
-        work: None,
-        lane: None,
+#[cfg(windows)]
+fn submit_capture_and_present<B: DeferredBackend>(
+    device: &Device<B>,
+    lane: LaneId,
+    work: RecordedWork<B>,
+    image: SurfaceImage<B>,
+) -> Result<CompletionPoint<B>> {
+    if lane.device != device.id() || image.device() != device.id() {
+        return Err(Error::WrongDevice);
     }
-}
-
-pub struct Example {
-    work: Option<Workload>,
-    lane: Option<SubmissionLaneId>,
-}
-
-impl common::Example for Example {
-    fn presentation_usage(&self) -> TextureUsage {
-        TextureUsage::COLOR_ATTACHMENT.union(TextureUsage::COPY_SRC)
-    }
-
-    fn init(
-        &mut self,
-        context: &mut common::ExampleContext<'_>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let device = context.device().clone();
-        let lane = device
-            .capabilities()
-            .submission()
-            .lanes()
-            .iter()
-            .find(|candidate| {
-                candidate
-                    .domains()
-                    .contains(LaneWorkDomains::RASTER.union(LaneWorkDomains::COPY))
-            })
-            .map(|candidate| candidate.id())
-            .ok_or_else(|| std::io::Error::other("12_screenshot requires COPY|RASTER lane"))?;
-        let extent = context.extent();
-        let format = context.presentation_mut().configuration().format();
-        self.work = Some(common::block_on(Workload::new(
-            &device,
-            format,
-            Extent3d::d2(extent.width, extent.height),
-            lane,
-        ))?);
-        self.lane = Some(lane);
-        Ok(())
-    }
-
-    fn update(
-        &mut self,
-        _: &mut common::ExampleContext<'_>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        Ok(())
-    }
-
-    fn render(
-        &mut self,
-        context: &mut common::ExampleContext<'_>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let frame = common::block_on(context.presentation_mut().acquire())?;
-        common::block_on(
-            self.work
-                .as_mut()
-                .ok_or_else(|| std::io::Error::other("not initialized"))?
-                .render(
-                    context.device(),
-                    self.lane.ok_or_else(|| std::io::Error::other("no lane"))?,
-                    frame,
-                ),
-        )?;
-        Ok(())
-    }
-
-    fn resize(
-        &mut self,
-        context: &mut common::ExampleContext<'_>,
-        width: u32,
-        height: u32,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(work) = &mut self.work {
-            work.resize(context.device(), Extent3d::d2(width, height))?;
-        }
-        Ok(())
-    }
-
-    fn device_lost(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.work = None;
-        self.lane = None;
-        Ok(())
-    }
-    fn close(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.device_lost()
-    }
-}
-
-struct Workload {
-    pipeline: RasterPipeline,
-    groups: [BindGroup; FRAMES],
-    uniforms: [Buffer; FRAMES],
-    vertex: BufferBinding,
-    index: BufferBinding,
-    draws: Vec<(u32, u32)>,
-    depth: TextureView,
-    extent: Extent3d,
-    format: TextureFormat,
-    requested: bool,
-    saved: bool,
-    next: usize,
-    done: [Option<CompletionPoint>; FRAMES],
-}
-
-impl Workload {
-    async fn new(
-        device: &Device,
-        format: TextureFormat,
-        extent: Extent3d,
-        lane: SubmissionLaneId,
-    ) -> RhiResult<Self> {
-        let model = gltf::load_embedded_model(DRAGON, gltf::LoadOptions::CPP_PORT)
-            .map_err(|error| RhiError::new(RhiErrorKind::InvalidUsage, error.to_string()))?;
-        let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor::new(vec![
-            BindingSlot::new(
-                BindingSlotId::new(0),
-                ShaderStages::VERTEX,
-                BindingKind::UniformBuffer {
-                    min_size: UBO_BYTES,
+    let id = PlanId {
+        device: device.id(),
+        ordinal: NEXT_CAPTURE_PLAN.fetch_add(1, Ordering::Relaxed),
+    };
+    let plan = unsafe {
+        SubmissionPlan::from_compiled(
+            id,
+            Arc::from([
+                StepDesc {
+                    lane,
+                    kind: StepKind::Commands,
+                    waits: vec![],
                 },
-            ),
-        ]))?;
-        let interface = device
-            .create_pipeline_interface(&PipelineInterfaceDescriptor::new(vec![layout.clone()]))?;
-        let pipeline = device
-            .create_raster_pipeline(
-                &RasterPipelineDescriptor::new(
-                    common::shader::create_shader(device, &artifact(ShaderStage::Vertex)).await?,
-                    interface,
-                )
-                .with_fragment(
-                    common::shader::create_shader(device, &artifact(ShaderStage::Fragment)).await?,
-                )
-                .with_vertex_input(
-                    VertexInputState::new().with_buffer(
-                        VertexBufferLayout::new(
-                            gltf::VKGLTF_VERTEX_STRIDE as u64,
-                            VertexStepMode::Vertex,
-                        )
-                        .with_attribute(VertexAttribute::new(
-                            ShaderLocation::new(0),
-                            VertexFormat::Float32x3,
-                            0,
-                        ))
-                        .with_attribute(VertexAttribute::new(
-                            ShaderLocation::new(1),
-                            VertexFormat::Float32x3,
-                            12,
-                        ))
-                        .with_attribute(VertexAttribute::new(
-                            ShaderLocation::new(2),
-                            VertexFormat::Float32x3,
-                            32,
-                        )),
-                    ),
-                )
-                .with_primitive(
-                    PrimitiveState::new(PrimitiveTopology::TriangleList)
-                        .with_cull_mode(CullMode::Back),
-                )
-                .with_depth_stencil(
-                    DepthStencilState::new(TextureFormat::Depth32Float).with_depth(
-                        DepthState::new(CompareFunction::LessEqual).with_write_enabled(true),
-                    ),
-                )
-                .with_color_target(ShaderLocation::new(0), ColorTargetState::new(format)),
-            )
-            .await?;
-        let vertex_len = model.vertices.len() as u64;
-        let index_len = model.indices.len() as u64;
-        let vertex = device.create_buffer(&BufferDescriptor::new(
-            vertex_len,
-            BufferUsage::VERTEX.union(BufferUsage::COPY_DST),
-        ))?;
-        let index = device.create_buffer(&BufferDescriptor::new(
-            index_len,
-            BufferUsage::INDEX.union(BufferUsage::COPY_DST),
-        ))?;
-        let draws = model
-            .primitives
-            .iter()
-            .map(|p| (p.first_index, p.index_count))
-            .collect();
-        let uniforms = [0, 1]
-            .map(|_| {
-                device.create_buffer(&BufferDescriptor::new(
-                    UBO_BYTES,
-                    BufferUsage::UNIFORM.union(BufferUsage::COPY_DST),
-                ))
-            })
-            .into_iter()
-            .collect::<RhiResult<Vec<_>>>()?;
-        let uniforms: [Buffer; FRAMES] = uniforms
-            .try_into()
-            .map_err(|_| RhiError::new(RhiErrorKind::BackendFailure, "uniform allocation count"))?;
-        let group = |slot: usize| {
-            device.create_bind_group(&BindGroupDescriptor::new(layout.clone()).with_entry(
-                BindGroupEntry::new(
-                    BindingSlotId::new(0),
-                    BindingResource::Buffer(BufferBinding::new(
-                        uniforms[slot].clone(),
-                        BufferRange::new(0, UBO_BYTES),
-                    )),
-                ),
-            ))
-        };
-        let groups = [group(0)?, group(1)?];
-        let mut recorder = device.create_recorder(&RecorderDescriptor::new())?;
-        recorder.encode_upload(&device.create_buffer_upload(BufferUploadDescriptor::new(
-            vertex.clone(),
-            0,
-            model.vertices,
-        ))?)?;
-        recorder.encode_upload(&device.create_buffer_upload(BufferUploadDescriptor::new(
-            index.clone(),
-            0,
-            model.indices,
-        ))?)?;
-        let mut plan = SubmissionPlanBuilder::new(device);
-        plan.add_batch(lane, vec![recorder.finish()?])?;
-        let receipt = device.submit(plan.build()?)?;
-        let _ = device.wait_completion(receipt.completion()).await?;
-        Ok(Self {
-            pipeline,
-            groups,
-            uniforms,
-            vertex: BufferBinding::new(vertex, BufferRange::new(0, vertex_len)),
-            index: BufferBinding::new(index, BufferRange::new(0, index_len)),
-            draws,
-            depth: depth_view(device, extent)?,
-            extent,
-            format,
-            requested: std::env::var("FLUXEL_RHI_SCREENSHOT").as_deref() == Ok("1"),
-            saved: false,
-            next: 0,
-            done: [None, None],
-        })
-    }
-
-    fn resize(&mut self, device: &Device, extent: Extent3d) -> RhiResult<()> {
-        self.depth = depth_view(device, extent)?;
-        self.extent = extent;
-        Ok(())
-    }
-
-    async fn render(
-        &mut self,
-        device: &Device,
-        lane: SubmissionLaneId,
-        frame: AcquiredFrame,
-    ) -> RhiResult<()> {
-        let slot = self.next;
-        if let Some(completion) = self.done[slot].take() {
-            let _ = device.wait_completion(completion).await?;
-        }
-        let mut recorder = device.create_recorder(&RecorderDescriptor::new())?;
-        recorder.encode_upload(&device.create_buffer_upload(BufferUploadDescriptor::new(
-            self.uniforms[slot].clone(),
-            0,
-            uniform_bytes(self.extent),
-        ))?)?;
-        let frame_attachment = frame.attachment();
-        {
-            let mut raster = recorder.begin_raster(
-                &RasterScopeDescriptor::new()
-                    .with_color(
-                        ShaderLocation::new(0),
-                        ColorAttachment {
-                            view: ColorAttachmentView::Frame(frame_attachment.clone()),
-                            load: LoadOp::Clear(ColorClearValue::Float([0.025, 0.025, 0.025, 1.])),
-                            store: StoreOp::Store,
-                            resolve: None,
-                            depth_slice: None,
+                StepDesc {
+                    lane,
+                    kind: StepKind::Present,
+                    waits: vec![StepWait {
+                        previous: fluxel_rhi::api::StepId { plan: id, index: 0 },
+                        destination: AccessScope {
+                            stages: StageMask::ALL_COMMANDS,
+                            accesses: AccessMask::ALL,
                         },
-                    )
-                    .with_depth_stencil(DepthStencilAttachment {
-                        view: self.depth.clone(),
-                        depth: Some(DepthAttachmentMode::ReadWrite {
-                            load: LoadOp::Clear(1.),
-                            store: StoreOp::Discard,
-                        }),
-                        stencil: None,
-                    }),
-            )?;
-            raster.set_pipeline(&self.pipeline)?;
-            raster.set_viewport(Viewport::new(
-                0.,
-                0.,
-                self.extent.width as f32,
-                self.extent.height as f32,
-                0.,
-                1.,
-            ))?;
-            raster.set_scissor(Rect::new(0, 0, self.extent.width, self.extent.height))?;
-            raster.set_bind_group(BindGroupIndex::new(0), &self.groups[slot], &[])?;
-            raster.set_vertex_buffer(0, &self.vertex)?;
-            raster.set_index_buffer(&self.index, IndexFormat::Uint32)?;
-            for &(first, count) in &self.draws {
-                raster.draw_indexed(first..first + count, 0, 0..1)?;
-            }
-            raster.end()?;
-        }
-        let ticket = if self.saved || !self.requested {
-            None
-        } else {
-            Some(recorder.encode_readback(ReadbackRequest::Frame {
-                label: Label(Some("12_screenshot acquired frame".into())),
-                src: frame_attachment,
-            })?)
-        };
-        let mut plan = SubmissionPlanBuilder::new(device);
-        let point = plan.add_batch(lane, vec![recorder.finish()?])?;
-        plan.present_after(frame, point)?;
-        let receipt = device.submit(plan.build()?)?;
-        self.done[slot] = Some(receipt.completion());
-        if let Some(ticket) = ticket {
-            let _ = device.wait_completion(receipt.completion()).await?;
-            let read = ticket.try_read()?.ok_or_else(|| {
-                RhiError::new(
-                    RhiErrorKind::BackendFailure,
-                    "frame readback did not complete",
-                )
-            })?;
-            if let ReadbackViewData::Texture { bytes, layout } = read.data() {
-                write_ppm(
-                    "screenshot.ppm",
-                    bytes,
-                    layout.bytes_per_row,
-                    self.extent,
-                    self.format,
-                )
-                .map_err(|error| RhiError::new(RhiErrorKind::BackendFailure, error.to_string()))?;
-                self.saved = true;
-            } else {
-                return Err(RhiError::new(
-                    RhiErrorKind::BackendFailure,
-                    "frame readback has no pixel layout",
-                ));
-            }
-        }
-        let _ = device
-            .wait_present(receipt.presents().first().expect("present").id())
-            .await?;
-        self.next = (slot + 1) % FRAMES;
-        Ok(())
-    }
-}
-
-fn depth_view(device: &Device, extent: Extent3d) -> RhiResult<TextureView> {
-    let texture = device.create_texture(&TextureDescriptor::new_2d(
-        extent.width,
-        extent.height,
-        TextureFormat::Depth32Float,
-        TextureUsage::DEPTH_STENCIL_ATTACHMENT,
-    ))?;
-    device.create_texture_view(
-        &texture,
-        &TextureViewDescriptor::whole(&texture, TextureViewDimension::D2)?,
-    )
-}
-
-fn uniform_bytes(extent: Extent3d) -> Vec<u8> {
-    let near = 0.1;
-    let far = 512.;
-    let f = 1. / 30f32.to_radians().tan();
-    let a = extent.width.max(1) as f32 / extent.height.max(1) as f32;
-    let projection = [
-        f / a,
-        0.,
-        0.,
-        0.,
-        0.,
-        f,
-        0.,
-        0.,
-        0.,
-        0.,
-        far / (near - far),
-        -1.,
-        0.,
-        0.,
-        far * near / (near - far),
-        0.,
-    ];
-    let (sx, cx) = (-25f32).to_radians().sin_cos();
-    let (sy, cy) = (23.75f32).to_radians().sin_cos();
-    let rx = [
-        1., 0., 0., 0., 0., cx, sx, 0., 0., -sx, cx, 0., 0., 0., 0., 1.,
-    ];
-    let ry = [
-        cy, 0., -sy, 0., 0., 1., 0., 0., sy, 0., cy, 0., 0., 0., 0., 1.,
-    ];
-    let translate = [
-        1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., -3., 1.,
-    ];
-    let view = mm(mm(translate, rx), ry);
-    let model = [
-        1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
-    ];
-    projection
-        .into_iter()
-        .chain(view)
-        .chain(model)
-        .flat_map(f32::to_le_bytes)
-        .collect()
-}
-
-fn mm(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
-    let mut out = [0.; 16];
-    for c in 0..4 {
-        for r in 0..4 {
-            out[c * 4 + r] = (0..4).map(|k| a[k * 4 + r] * b[c * 4 + k]).sum();
-        }
-    }
-    out
-}
-
-fn write_ppm(
-    path: &str,
-    bytes: &[u8],
-    row_pitch: u32,
-    extent: Extent3d,
-    format: TextureFormat,
-) -> std::io::Result<()> {
-    use std::io::{Error, ErrorKind};
-    let swizzle = match format {
-        TextureFormat::Bgra8Unorm | TextureFormat::Bgra8UnormSrgb => true,
-        TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb => false,
-        _ => {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                "screenshot requires BGRA8 or RGBA8 frame",
-            ));
-        }
-    };
-    let row_len = (extent.width as usize)
-        .checked_mul(4)
-        .ok_or_else(|| Error::new(ErrorKind::InvalidData, "row size overflow"))?;
-    if (row_pitch as usize) < row_len {
-        return Err(Error::new(
-            ErrorKind::InvalidData,
-            "readback row pitch is too small",
-        ));
-    }
-    let mut ppm = format!("P6\n{}\n{}\n255\n", extent.width, extent.height).into_bytes();
-    for y in 0..extent.height as usize {
-        let start = y
-            .checked_mul(row_pitch as usize)
-            .ok_or_else(|| Error::new(ErrorKind::InvalidData, "row offset overflow"))?;
-        let row = bytes
-            .get(start..start + row_len)
-            .ok_or_else(|| Error::new(ErrorKind::UnexpectedEof, "truncated frame readback"))?;
-        for pixel in row.chunks_exact(4) {
-            if swizzle {
-                ppm.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
-            } else {
-                ppm.extend_from_slice(&pixel[..3]);
-            }
-        }
-    }
-    fs::write(path, ppm)
-}
-
-fn artifact(stage: ShaderStage) -> ShaderArtifact {
-    let i = || ShaderInterpolation {
-        mode: InterpolationMode::Perspective,
-        sampling: InterpolationSampling::Center,
-    };
-    let io = |location, components, interpolation| ShaderLocationInterface {
-        location: ShaderLocation::new(location),
-        numeric_type: ShaderNumericType::Float32,
-        components,
-        interpolation,
-    };
-    let mut interface = ShaderInterface::new();
-    if stage == ShaderStage::Vertex {
-        interface = interface
-            .with_resource(ShaderResourceRequirement {
-                group: BindGroupIndex::new(0),
-                slot: BindingSlotId::new(0),
-                kind: BindingKind::UniformBuffer {
-                    min_size: UBO_BYTES,
+                    }],
                 },
-                count: BindingCount::One,
-            })
-            .with_input(io(0, 3, None))
-            .with_input(io(1, 3, None))
-            .with_input(io(2, 3, None))
-            .with_output(io(0, 3, Some(i())))
-            .with_output(io(1, 3, Some(i())))
-            .with_output(io(2, 3, Some(i())))
-            .with_output(io(3, 3, Some(i())))
-            .with_writes_position(true);
-    } else {
-        interface = interface
-            .with_input(io(0, 3, Some(i())))
-            .with_input(io(1, 3, Some(i())))
-            .with_input(io(2, 3, Some(i())))
-            .with_input(io(3, 3, Some(i())))
-            .with_output(io(0, 4, None));
+            ]),
+        )
+    };
+    let result = unsafe {
+        device.queue().submit(SubmitPacket {
+            steps: vec![
+                BoundStep {
+                    step: plan.step(0),
+                    payload: StepPayload::Commands(vec![work]),
+                },
+                BoundStep {
+                    step: plan.step(1),
+                    payload: StepPayload::Present(PresentBinding::new(image)),
+                },
+            ],
+            plan,
+            completion: CompletionRequest::End,
+        })
+    };
+    match result {
+        SubmitOutcome::Accepted(receipt)
+            if receipt.accepted.len() == 2
+                && receipt.presents.len() == 1
+                && receipt.presents[0].accepted =>
+        {
+            receipt
+                .checkpoints
+                .into_iter()
+                .next()
+                .map(|checkpoint| checkpoint.point)
+                .ok_or(Error::InvalidState)
+        }
+        SubmitOutcome::Accepted(_) => Err(Error::InvalidState),
+        SubmitOutcome::Rejected { error, .. }
+        | SubmitOutcome::PartiallyAccepted { error, .. }
+        | SubmitOutcome::Indeterminate { error, .. } => Err(error),
     }
-    ShaderArtifact::new(
-        stage,
-        if stage == ShaderStage::Vertex {
-            "vs_main"
-        } else {
-            "fs_main"
-        },
-        ShaderCode::Wgsl(Arc::from(SHADER)),
-        ShaderAbiVersion { major: 1, minor: 0 },
-        interface,
-        ShaderRequirements::new(),
-        ArtifactHash(if stage == ShaderStage::Vertex {
-            [12; 32]
-        } else {
-            [13; 32]
-        }),
-        ArtifactProducerVersion { major: 1, minor: 0 },
-    )
+}
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("12_screenshot requires a backend implementing ReadbackBackend");
 }

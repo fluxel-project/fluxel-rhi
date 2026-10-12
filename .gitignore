@@ -6,3 +6,7 @@ __pycache__/
 *.py[cod]
 /crates/rhi/examples/assets/models/
 /crates/rhi/examples/assets/textures/
+/crates/rhi/examples/assets/08_msaa/*.rgba
+AGENTS.md
+CLAUDE.md
+/临时/

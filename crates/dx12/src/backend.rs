@@ -1,0 +1,536 @@
+//! The initial, statically typed DX12 entry points.
+//!
+//! Its native associated types remain concrete through the public API.
+
+use std::{
+    ffi::CStr,
+    future::{Ready, ready},
+    sync::{Arc, Mutex, atomic::AtomicU64},
+};
+
+use fluxel_rhi_core::api::{
+    self, AdapterId, AdapterInfo, Backend, DeviceCapabilities, DeviceId, DeviceLimits,
+    DeviceRequest, Error, InstanceBackend, InstanceId, LaneClass, LaneId, LaneInfo, Result,
+};
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::{
+    Direct3D::D3D_FEATURE_LEVEL_11_0,
+    Direct3D12::{
+        D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAG_NONE,
+        D3D12_COMMAND_QUEUE_PRIORITY_NORMAL, D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+        D3D12_FENCE_FLAG_NONE, D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES,
+        D3D12_HEAP_TYPE_DEFAULT, D3D12_MEMORY_POOL_UNKNOWN, D3D12_MESSAGE_CALLBACK_FLAG_NONE,
+        D3D12_MESSAGE_CATEGORY, D3D12_MESSAGE_ID, D3D12_MESSAGE_SEVERITY, D3D12_RESOURCE_DESC,
+        D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON,
+        D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12CreateDevice, D3D12GetDebugInterface,
+        ID3D12CommandQueue, ID3D12Debug, ID3D12Device, ID3D12Fence, ID3D12InfoQueue1,
+        ID3D12Resource,
+    },
+    Dxgi::{CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIFactory1},
+};
+use windows::core::Interface;
+
+mod compute;
+mod descriptor;
+mod encoder;
+mod pipeline;
+mod query;
+mod readback;
+mod sampler;
+mod secondary;
+mod surface;
+mod texture;
+
+/// Direct3D 12 selected once by the host.  Resource and command associated
+/// types stay concrete throughout the typed execution API.
+pub struct Dx12;
+impl Dx12 {
+    /// Creates a typed surface for a live Win32 window owned by the caller.
+    /// # Safety
+    /// The raw window handle must remain valid until the returned surface and
+    /// every image lease from it have been retired.
+    pub unsafe fn surface_from_raw_window_handle(
+        device: &api::Device<Self>,
+        handle: raw_window_handle::RawWindowHandle,
+    ) -> Result<api::Surface<Self>> {
+        unsafe { surface::create_surface(device, handle) }
+    }
+}
+
+#[derive(Clone)]
+pub struct Dx12Device(Arc<Dx12DeviceState>);
+struct Dx12DeviceState {
+    pub(super) native: ID3D12Device,
+    pub(super) queue: ID3D12CommandQueue,
+    pub(super) fence: ID3D12Fence,
+    pub(super) next_fence: AtomicU64,
+    pub(super) in_flight: Mutex<Vec<(u64, Vec<encoder::Dx12RecordedWork>)>>,
+    pub(super) descriptors: descriptor::DescriptorHeaps,
+    // Retain the registration for the device lifetime when diagnostics are
+    // explicitly requested.  Production devices do not enable the debug layer.
+    _debug_info: Option<ID3D12InfoQueue1>,
+}
+
+unsafe extern "system" fn debug_message(
+    _: D3D12_MESSAGE_CATEGORY,
+    severity: D3D12_MESSAGE_SEVERITY,
+    id: D3D12_MESSAGE_ID,
+    description: windows::core::PCSTR,
+    _: *mut std::ffi::c_void,
+) {
+    let text = if description.is_null() {
+        "<no message>".into()
+    } else {
+        unsafe { CStr::from_ptr(description.as_ptr().cast()) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    eprintln!("D3D12 [{severity:?}/{id:?}]: {text}");
+}
+
+/// DXGI factory used by [`api::Instance`] when opening a `Dx12` device.
+#[derive(Clone)]
+pub struct Dx12Instance {
+    factory: IDXGIFactory1,
+}
+
+impl Dx12Instance {
+    /// Opens the process-local DXGI factory. No adapter or GPU device is
+    /// created until `Instance::<Dx12>::open` is called.
+    pub fn new() -> Result<Self> {
+        let factory = unsafe { CreateDXGIFactory2::<IDXGIFactory1>(DXGI_CREATE_FACTORY_FLAGS(0)) }
+            .map_err(native_error)?;
+        Ok(Self { factory })
+    }
+
+    /// Creates an instance with a fresh identity.
+    pub fn instance(&self) -> Result<api::Instance<Dx12>> {
+        Ok(unsafe { api::Instance::from_native(InstanceId::allocate()?, self.clone()) })
+    }
+
+    /// Opens the default DXGI adapter through the static API.
+    pub async fn open_default(&self) -> Result<api::Device<Dx12>> {
+        let instance = self.instance()?;
+        let adapter = instance
+            .enumerate()?
+            .into_iter()
+            .next()
+            .ok_or(Error::Unsupported("a Direct3D 12 adapter"))?;
+        instance
+            .open(DeviceRequest {
+                adapter: adapter.id,
+                required_features: Vec::new(),
+            })
+            .await
+    }
+}
+
+pub struct Dx12SurfaceImage(pub(crate) surface::ImageLease);
+#[derive(Clone)]
+pub struct Dx12Surface(pub(crate) Arc<surface::SurfaceState>);
+
+#[derive(Clone)]
+pub struct Dx12Buffer {
+    pub(super) resource: ID3D12Resource,
+    pub(super) size: u64,
+    pub(super) usage: api::BufferUsage,
+    pub(super) memory: api::MemoryClass,
+}
+macro_rules! native_arc { ($($name:ident),* $(,)?) => { $(#[derive(Clone)] pub struct $name(Arc<()>);)* }; }
+native_arc!(
+    Dx12MeshPipeline,
+    Dx12RayPipeline,
+    Dx12PipelineCache,
+    Dx12Acceleration,
+    Dx12Sparse
+);
+#[derive(Clone)]
+pub struct Dx12QuerySet(pub(crate) Arc<query::QuerySetState>);
+#[derive(Clone)]
+pub struct Dx12PipelineLayout(pub(crate) Arc<pipeline::PipelineLayoutState>);
+#[derive(Clone)]
+pub struct Dx12RasterPipeline(pub(crate) Arc<pipeline::RasterPipelineState>);
+#[derive(Clone)]
+pub struct Dx12Texture(pub(crate) Arc<texture::TextureState>);
+#[derive(Clone)]
+pub struct Dx12TextureView(pub(crate) Arc<texture::TextureViewState>);
+#[derive(Clone)]
+pub struct Dx12Sampler(pub(crate) Arc<sampler::SamplerState>);
+#[derive(Clone)]
+pub struct Dx12BindGroupLayout(pub(crate) Arc<descriptor::BindGroupLayoutState>);
+#[derive(Clone)]
+pub struct Dx12BindGroup(pub(crate) Arc<descriptor::BindGroupState>);
+#[derive(Clone)]
+pub struct Dx12Shader {
+    pub(crate) bytes: Arc<[u8]>,
+    pub(crate) entries: Vec<api::ShaderEntryPoint>,
+}
+#[derive(Clone)]
+pub struct Dx12ComputePipeline(pub(crate) Arc<compute::ComputePipelineState>);
+
+impl Backend for Dx12 {
+    type NativeDevice = Dx12Device;
+    type NativeBuffer = Dx12Buffer;
+    type NativeTexture = Dx12Texture;
+    type NativeTextureView = Dx12TextureView;
+    type NativeSampler = Dx12Sampler;
+    type NativeBindGroupLayout = Dx12BindGroupLayout;
+    type NativeBindGroup = Dx12BindGroup;
+    type NativePipelineLayout = Dx12PipelineLayout;
+    type NativeShader = Dx12Shader;
+    type NativeRasterPipeline = Dx12RasterPipeline;
+    type NativeComputePipeline = Dx12ComputePipeline;
+    type NativeMeshPipeline = Dx12MeshPipeline;
+    type NativeRayPipeline = Dx12RayPipeline;
+    type NativePipelineCache = Dx12PipelineCache;
+    type NativeAcceleration = Dx12Acceleration;
+    type NativeSparseAllocation = Dx12Sparse;
+    type NativeQuerySet = Dx12QuerySet;
+    type NativeEncoder = encoder::Dx12Encoder;
+    type NativeCompletion = encoder::Dx12Completion;
+    type NativeSurface = Dx12Surface;
+    type NativeSurfaceImage = Dx12SurfaceImage;
+    type NativeUncertainty = ();
+    type Compute = compute::Compute;
+    type Mesh = api::Unavailable;
+    type Ray = api::Unavailable;
+    type Extras = encoder::RasterExtras;
+}
+
+impl InstanceBackend for Dx12 {
+    type NativeInstance = Dx12Instance;
+    type OpenFuture<'a> = Ready<Result<(Dx12Device, DeviceCapabilities)>>;
+    fn enumerate(instance: &Dx12Instance, scope: InstanceId) -> Result<Vec<AdapterInfo>> {
+        let adapter = unsafe { instance.factory.EnumAdapters1(0) }.map_err(native_error)?;
+        let desc = unsafe { adapter.GetDesc1() }.map_err(native_error)?;
+        let end = desc
+            .Description
+            .iter()
+            .position(|x| *x == 0)
+            .unwrap_or(desc.Description.len());
+        Ok(vec![AdapterInfo {
+            id: AdapterId {
+                instance: scope,
+                ordinal: 0,
+            },
+            name: String::from_utf16_lossy(&desc.Description[..end]),
+        }])
+    }
+    fn open<'a>(
+        instance: &'a Dx12Instance,
+        device: DeviceId,
+        request: &'a DeviceRequest,
+    ) -> Self::OpenFuture<'a> {
+        let result = (|| {
+            if request.adapter.ordinal != 0 {
+                return Err(Error::Unsupported("the requested DXGI adapter"));
+            }
+            if !request.required_features.is_empty() {
+                return Err(Error::Unsupported("requested DX12 device features"));
+            }
+            let diagnostics = std::env::var_os("FLUXEL_DX12_DEBUG").is_some();
+            if diagnostics {
+                let mut debug: Option<ID3D12Debug> = None;
+                unsafe { D3D12GetDebugInterface(&mut debug) }.map_err(native_error)?;
+                unsafe {
+                    debug
+                        .ok_or_else(|| Error::Backend("D3D12 debug interface unavailable".into()))?
+                        .EnableDebugLayer();
+                }
+            }
+            let adapter = unsafe { instance.factory.EnumAdapters1(0) }.map_err(native_error)?;
+            let mut native: Option<ID3D12Device> = None;
+            unsafe { D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut native) }
+                .map_err(native_error)?;
+            let native = native
+                .ok_or_else(|| Error::Backend("D3D12CreateDevice returned no device".into()))?;
+            let mut shader_model =
+                windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_SHADER_MODEL {
+                    HighestShaderModel: windows::Win32::Graphics::Direct3D12::D3D_SHADER_MODEL_6_0,
+                };
+            let descriptor_indexing = unsafe {
+                native.CheckFeatureSupport(
+                    windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_SHADER_MODEL,
+                    (&mut shader_model as *mut _) as *mut _,
+                    std::mem::size_of_val(&shader_model) as u32,
+                )
+            }
+            .is_ok()
+                && shader_model.HighestShaderModel.0
+                    >= windows::Win32::Graphics::Direct3D12::D3D_SHADER_MODEL_6_0.0;
+            let mut options3 =
+                windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS3::default();
+            let multiview = unsafe {
+                native.CheckFeatureSupport(
+                    windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_D3D12_OPTIONS3,
+                    (&mut options3 as *mut _) as *mut _,
+                    std::mem::size_of_val(&options3) as u32,
+                )
+            }
+            .is_ok()
+                && options3.ViewInstancingTier.0
+                    >= windows::Win32::Graphics::Direct3D12::D3D12_VIEW_INSTANCING_TIER_1.0
+                && native
+                    .cast::<windows::Win32::Graphics::Direct3D12::ID3D12Device2>()
+                    .is_ok();
+            let queue_desc = D3D12_COMMAND_QUEUE_DESC {
+                Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
+                Priority: D3D12_COMMAND_QUEUE_PRIORITY_NORMAL.0,
+                Flags: D3D12_COMMAND_QUEUE_FLAG_NONE,
+                NodeMask: 0,
+            };
+            let queue = unsafe { native.CreateCommandQueue::<ID3D12CommandQueue>(&queue_desc) }
+                .map_err(native_error)?;
+            let fence = unsafe { native.CreateFence::<ID3D12Fence>(0, D3D12_FENCE_FLAG_NONE) }
+                .map_err(native_error)?;
+            let lane = LaneId { device, ordinal: 0 };
+            let descriptors = descriptor::create_heaps(&native)?;
+            let debug_info = if diagnostics {
+                let info: ID3D12InfoQueue1 = native.cast().map_err(native_error)?;
+                let mut cookie = 0;
+                unsafe {
+                    info.RegisterMessageCallback(
+                        Some(debug_message),
+                        D3D12_MESSAGE_CALLBACK_FLAG_NONE,
+                        std::ptr::null_mut(),
+                        &mut cookie,
+                    )
+                }
+                .map_err(native_error)?;
+                Some(info)
+            } else {
+                None
+            };
+            Ok((
+                Dx12Device(Arc::new(Dx12DeviceState {
+                    native,
+                    queue,
+                    fence,
+                    next_fence: AtomicU64::new(1),
+                    in_flight: Mutex::new(Vec::new()),
+                    descriptors,
+                    _debug_info: debug_info,
+                })),
+                DeviceCapabilities {
+                    lanes: Arc::from([LaneInfo {
+                        id: lane,
+                        class: LaneClass::Graphics,
+                        routes: vec![(lane, api::WaitRoute::SameQueue)],
+                    }]),
+                    limits: DeviceLimits {
+                        max_bind_groups: 8,
+                        max_bindings_per_group: 64,
+                        max_color_attachments: 1,
+                        max_texture_dimension_2d: 16_384,
+                        max_texture_array_layers: 2_048,
+                        max_multiview_views: if multiview { 2 } else { 0 },
+                        max_buffer_bytes: 1 << 30,
+                        max_vertex_buffers: 32,
+                        max_vertex_attributes: 32,
+                        // D3D12 guarantees these dispatch dimensions at feature
+                        // level 11; this path exposes one direct queue.
+                        max_compute_workgroups: [65_535; 3],
+                        max_compute_workgroup_size: [1_024, 1_024, 64],
+                        uniform_offset_alignment: 256,
+                        max_push_constant_bytes: 128,
+                        ..Default::default()
+                    },
+                    compute: true,
+                    storage_textures: true,
+                    push_constants: true,
+                    indirect_draw: true,
+                    multi_draw: true,
+                    binding_arrays: descriptor_indexing,
+                    runtime_sized_binding_arrays: descriptor_indexing,
+                    nonuniform_sampled_texture_and_storage_buffer_indexing: descriptor_indexing,
+                    secondary_commands: true,
+                    multiview,
+                    ..Default::default()
+                },
+            ))
+        })();
+        ready(result)
+    }
+}
+
+impl api::ResourceBackend for Dx12 {
+    fn buffer_support(_: &Dx12Device, desc: &api::BufferDesc) -> api::Support<api::BufferSupport> {
+        if desc.size == 0 {
+            api::Support::Unsupported("zero-sized buffers")
+        } else if desc.size > (1 << 30) {
+            api::Support::Unsupported("DX12 buffer size limit")
+        } else if matches!(desc.memory, api::MemoryClass::Readback) {
+            let readback_writes = api::BufferUsage::COPY_DST.0 | api::BufferUsage::QUERY_RESOLVE.0;
+            if desc.usage.contains(api::BufferUsage::MAP_READ)
+                && desc.usage.0 & readback_writes != 0
+                && desc.usage.0 & !(readback_writes | api::BufferUsage::MAP_READ.0) == 0
+            {
+                api::Support::Supported(api::BufferSupport {
+                    alignment: 1,
+                    max_size: 1 << 30,
+                })
+            } else {
+                api::Support::Unsupported("DX12 readback buffer usage")
+            }
+        } else if !matches!(desc.memory, api::MemoryClass::Device) {
+            api::Support::Unsupported("DX12 upload buffers")
+        } else if desc.usage.0
+            & !(api::BufferUsage::VERTEX.0
+                | api::BufferUsage::INDEX.0
+                | api::BufferUsage::UNIFORM.0
+                | api::BufferUsage::COPY_DST.0
+                | api::BufferUsage::COPY_SRC.0
+                | api::BufferUsage::INDIRECT.0
+                | api::BufferUsage::QUERY_RESOLVE.0)
+            != 0
+        {
+            api::Support::Unsupported("DX12 buffer usage")
+        } else if desc.usage.contains(api::BufferUsage::UNIFORM) && desc.size % 256 != 0 {
+            api::Support::Unsupported("DX12 uniform buffer size alignment")
+        } else {
+            api::Support::Supported(api::BufferSupport {
+                alignment: if desc.usage.contains(api::BufferUsage::UNIFORM) {
+                    256
+                } else {
+                    1
+                },
+                max_size: 1 << 30,
+            })
+        }
+    }
+    fn texture_support(
+        device: &Dx12Device,
+        desc: &api::TextureDesc,
+    ) -> api::Support<api::TextureSupport> {
+        texture::support(device, desc)
+    }
+    fn create_buffer(device: &Dx12Device, desc: &api::BufferDesc) -> Result<Dx12Buffer> {
+        if let api::Support::Unsupported(reason) =
+            <Self as api::ResourceBackend>::buffer_support(device, desc)
+        {
+            return Err(Error::Unsupported(reason));
+        }
+        let readback = desc.memory == api::MemoryClass::Readback;
+        let heap = D3D12_HEAP_PROPERTIES {
+            Type: if readback {
+                windows::Win32::Graphics::Direct3D12::D3D12_HEAP_TYPE_READBACK
+            } else {
+                D3D12_HEAP_TYPE_DEFAULT
+            },
+            CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+            MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
+            CreationNodeMask: 1,
+            VisibleNodeMask: 1,
+        };
+        let native = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+            Alignment: 0,
+            Width: desc.size,
+            Height: 1,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: DXGI_FORMAT_UNKNOWN,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+            Flags: D3D12_RESOURCE_FLAG_NONE,
+        };
+        let mut resource = None;
+        unsafe {
+            device.0.native.CreateCommittedResource(
+                &heap,
+                D3D12_HEAP_FLAG_NONE,
+                &native,
+                if readback {
+                    windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_COPY_DEST
+                } else {
+                    D3D12_RESOURCE_STATE_COMMON
+                },
+                None,
+                &mut resource,
+            )
+        }
+        .map_err(native_error)?;
+        Ok(Dx12Buffer {
+            resource: resource.ok_or_else(|| {
+                Error::Backend("CreateCommittedResource returned no buffer".into())
+            })?,
+            size: desc.size,
+            usage: desc.usage,
+            memory: desc.memory,
+        })
+    }
+    fn create_texture(device: &Dx12Device, desc: &api::TextureDesc) -> Result<Dx12Texture> {
+        texture::create(device, desc)
+    }
+    fn create_view(
+        device: &Dx12Device,
+        texture: &Dx12Texture,
+        desc: &api::TextureViewDesc,
+    ) -> Result<Dx12TextureView> {
+        texture::create_view(device, texture, desc)
+    }
+    fn create_sampler(device: &Dx12Device, desc: &api::SamplerDesc) -> Result<Dx12Sampler> {
+        sampler::create_sampler(device, desc)
+    }
+    fn create_bind_group_layout(
+        device: &Dx12Device,
+        desc: &api::BindGroupLayoutDesc,
+    ) -> Result<Dx12BindGroupLayout> {
+        descriptor::create_bind_group_layout(device, desc)
+    }
+    fn create_bind_group(
+        device: &Dx12Device,
+        desc: &api::BindGroupDesc<'_, Self>,
+    ) -> Result<Dx12BindGroup> {
+        descriptor::create_bind_group(device, desc)
+    }
+    fn create_pipeline_layout(
+        device: &Dx12Device,
+        desc: &api::PipelineLayoutDesc<'_, Self>,
+    ) -> Result<Dx12PipelineLayout> {
+        pipeline::create_pipeline_layout(device, desc)
+    }
+}
+
+impl api::ShaderBackend for Dx12 {
+    type DirectFuture<'a> = Ready<Result<Dx12Shader>>;
+    type NagaFuture<'a> = Ready<Result<Dx12Shader>>;
+    fn shader_route(_: &Dx12Device, desc: &api::ShaderDesc) -> api::ShaderRoute {
+        match desc.format {
+            api::ShaderFormat::Dxil => api::ShaderRoute::Direct(api::ShaderTarget {
+                format: api::ShaderFormat::Dxil,
+                environment: "d3d12".into(),
+                abi_key: "dxil".into(),
+            }),
+            _ => api::ShaderRoute::Unsupported,
+        }
+    }
+    fn compile_direct<'a>(
+        _: &'a Dx12Device,
+        desc: &'a api::ShaderDesc,
+        _: &'a api::ShaderTarget,
+    ) -> Self::DirectFuture<'a> {
+        ready(if desc.bytes.is_empty() {
+            Err(Error::Shader("empty DXIL artifact".into()))
+        } else {
+            Ok(Dx12Shader {
+                bytes: desc.bytes.clone(),
+                entries: desc.entries.clone(),
+            })
+        })
+    }
+    fn compile_naga<'a>(
+        _: &'a Dx12Device,
+        _: &'a api::ShaderDesc,
+        _: &'a api::ShaderTarget,
+    ) -> Self::NagaFuture<'a> {
+        ready(Err(Error::Unsupported("DX12 Naga shader route")))
+    }
+}
+
+fn native_error(error: windows::core::Error) -> Error {
+    Error::Backend(format!("Direct3D 12: {error}"))
+}

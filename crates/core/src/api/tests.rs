@@ -1,0 +1,571 @@
+//! Statically typed RHI contract component.
+#![allow(missing_docs, dead_code, unused_variables, unused_imports)]
+use super::*;
+use std::{
+    future::Future,
+    marker::PhantomData,
+    ops::Range,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+
+#[cfg(test)]
+mod type_contract_tests {
+    use super::*;
+    use std::{
+        cell::Cell,
+        future::{Ready, ready},
+        rc::Rc,
+    };
+    thread_local! {
+        static ABANDONED_STEPS: Cell<usize> = const { Cell::new(0) };
+        static DRAW_CALLS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    unsafe impl NativeImageLease for () {
+        fn try_handoff(&mut self, _: u64) -> Result<()> {
+            Ok(())
+        }
+        fn is_current(&self, _: u64) -> bool {
+            true
+        }
+    }
+    struct TestLease {
+        current: Arc<AtomicU64>,
+        handed_off: bool,
+    }
+    unsafe impl NativeImageLease for TestLease {
+        fn try_handoff(&mut self, generation: u64) -> Result<()> {
+            if !self.is_current(generation) {
+                return Err(Error::SurfaceOutdated);
+            }
+            self.handed_off = true;
+            Ok(())
+        }
+        fn is_current(&self, generation: u64) -> bool {
+            self.current.load(Ordering::Acquire) == generation && !self.handed_off
+        }
+    }
+
+    struct NativeShared;
+    struct GlLocal;
+    impl Backend for NativeShared {
+        type NativeDevice = Arc<()>;
+        type NativeBuffer = Arc<()>;
+        type NativeTexture = Arc<()>;
+        type NativeTextureView = Arc<()>;
+        type NativeSampler = Arc<()>;
+        type NativeBindGroupLayout = Arc<()>;
+        type NativePipelineLayout = Arc<()>;
+        type NativeBindGroup = Arc<()>;
+        type NativeShader = Arc<()>;
+        type NativeRasterPipeline = Arc<()>;
+        type NativeComputePipeline = Arc<()>;
+        type NativeMeshPipeline = Arc<()>;
+        type NativeRayPipeline = Arc<()>;
+        type NativePipelineCache = Arc<()>;
+        type NativeAcceleration = Arc<()>;
+        type NativeSparseAllocation = Arc<()>;
+        type NativeQuerySet = Arc<()>;
+        type NativeEncoder = ();
+        type NativeCompletion = Arc<()>;
+        type NativeSurface = Arc<()>;
+        type NativeSurfaceImage = TestLease;
+        type NativeUncertainty = ();
+        type Compute = Unavailable;
+        type Mesh = Unavailable;
+        type Ray = Unavailable;
+        type Extras = Unavailable;
+    }
+    impl Backend for GlLocal {
+        type NativeDevice = Rc<()>;
+        type NativeBuffer = Rc<()>;
+        type NativeTexture = Rc<()>;
+        type NativeTextureView = Rc<()>;
+        type NativeSampler = Rc<()>;
+        type NativeBindGroupLayout = Rc<()>;
+        type NativePipelineLayout = Rc<()>;
+        type NativeBindGroup = Rc<()>;
+        type NativeShader = Rc<()>;
+        type NativeRasterPipeline = Rc<()>;
+        type NativeComputePipeline = Rc<()>;
+        type NativeMeshPipeline = Rc<()>;
+        type NativeRayPipeline = Rc<()>;
+        type NativePipelineCache = Rc<()>;
+        type NativeAcceleration = Rc<()>;
+        type NativeSparseAllocation = Rc<()>;
+        type NativeQuerySet = Rc<()>;
+        type NativeEncoder = Rc<()>;
+        type NativeCompletion = Rc<()>;
+        type NativeSurface = Rc<()>;
+        type NativeSurfaceImage = ();
+        type NativeUncertainty = ();
+        type Compute = Unavailable;
+        type Mesh = Unavailable;
+        type Ray = Unavailable;
+        type Extras = Unavailable;
+    }
+    impl SharedBackend for NativeShared {}
+    impl CommandBackend for NativeShared {
+        fn begin_encoder(_: &Arc<()>, _: LaneId) -> Result<()> {
+            Ok(())
+        }
+        fn transition(_: &mut (), _: &[ResourceTransition<'_, Self>]) -> Result<()> {
+            Ok(())
+        }
+        fn copy_buffer(_: &mut (), _: &Arc<()>, _: u64, _: &Arc<()>, _: u64, _: u64) -> Result<()> {
+            Ok(())
+        }
+        fn copy_texture(
+            _: &mut (),
+            _: TextureRegion<'_, Self>,
+            _: TextureRegion<'_, Self>,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn buffer_to_texture(
+            _: &mut (),
+            _: &Arc<()>,
+            _: TexelCopyBufferLayout,
+            _: TextureRegion<'_, Self>,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn texture_to_buffer(
+            _: &mut (),
+            _: TextureRegion<'_, Self>,
+            _: &Arc<()>,
+            _: TexelCopyBufferLayout,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn write_buffer(_: &mut (), _: &Arc<()>, _: u64, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_texture(
+            _: &mut (),
+            _: TextureRegion<'_, Self>,
+            _: TexelCopyBufferLayout,
+            _: &[u8],
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+    impl CommandBackend for GlLocal {
+        fn begin_encoder(_: &Rc<()>, _: LaneId) -> Result<Rc<()>> {
+            Ok(Rc::new(()))
+        }
+        fn transition(_: &mut Rc<()>, _: &[ResourceTransition<'_, Self>]) -> Result<()> {
+            Ok(())
+        }
+        fn copy_buffer(
+            _: &mut Rc<()>,
+            _: &Rc<()>,
+            _: u64,
+            _: &Rc<()>,
+            _: u64,
+            _: u64,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn copy_texture(
+            _: &mut Rc<()>,
+            _: TextureRegion<'_, Self>,
+            _: TextureRegion<'_, Self>,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn buffer_to_texture(
+            _: &mut Rc<()>,
+            _: &Rc<()>,
+            _: TexelCopyBufferLayout,
+            _: TextureRegion<'_, Self>,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn texture_to_buffer(
+            _: &mut Rc<()>,
+            _: TextureRegion<'_, Self>,
+            _: &Rc<()>,
+            _: TexelCopyBufferLayout,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn write_buffer(_: &mut Rc<()>, _: &Rc<()>, _: u64, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_texture(
+            _: &mut Rc<()>,
+            _: TextureRegion<'_, Self>,
+            _: TexelCopyBufferLayout,
+            _: &[u8],
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+    impl RasterBackend for NativeShared {
+        fn begin_raster(_: &mut (), _: &RasterPassDesc<'_, Self>) -> Result<()> {
+            Ok(())
+        }
+        fn set_pipeline(_: &mut (), _: &Arc<()>) -> Result<()> {
+            Ok(())
+        }
+        fn set_bind_group(_: &mut (), _: u32, _: &Arc<()>, _: &[u32]) -> Result<()> {
+            Ok(())
+        }
+        fn set_vertex_buffer(_: &mut (), _: u32, _: &Arc<()>, _: u64, _: u64) -> Result<()> {
+            Ok(())
+        }
+        fn set_index_buffer(_: &mut (), _: &Arc<()>, _: u64, _: u64, _: IndexFormat) -> Result<()> {
+            Ok(())
+        }
+        fn viewport(_: &mut (), _: Viewport) -> Result<()> {
+            Ok(())
+        }
+        fn scissor(_: &mut (), _: Rect) -> Result<()> {
+            Ok(())
+        }
+        fn blend_constant(_: &mut (), _: [f32; 4]) -> Result<()> {
+            Ok(())
+        }
+        fn stencil_reference(_: &mut (), _: u32) -> Result<()> {
+            Ok(())
+        }
+        fn draw(_: &mut (), _: Range<u32>, _: Range<u32>) -> Result<()> {
+            DRAW_CALLS.with(|calls| calls.set(calls.get() + 1));
+            Ok(())
+        }
+        fn draw_indexed(_: &mut (), _: Range<u32>, _: i32, _: Range<u32>) -> Result<()> {
+            DRAW_CALLS.with(|calls| calls.set(calls.get() + 1));
+            Ok(())
+        }
+        fn end_raster(_: &mut ()) -> Result<()> {
+            Ok(())
+        }
+        fn abort_raster(_: &mut ()) {}
+    }
+    impl CompletionBackend for NativeShared {
+        type WaitFuture<'a> = Ready<Result<()>>;
+        fn completion_status(_: &Arc<()>, _: &Arc<()>) -> CompletionState {
+            CompletionState::Complete
+        }
+        fn wait_completion<'a>(_: &'a Arc<()>, _: &'a Arc<()>) -> Self::WaitFuture<'a> {
+            ready(Ok(()))
+        }
+        fn wait_idle<'a>(_: &'a Arc<()>) -> Self::WaitFuture<'a> {
+            ready(Ok(()))
+        }
+    }
+    impl CompletionBackend for GlLocal {
+        type WaitFuture<'a> = Ready<Result<()>>;
+        fn completion_status(_: &Rc<()>, _: &Rc<()>) -> CompletionState {
+            CompletionState::Complete
+        }
+        fn wait_completion<'a>(_: &'a Rc<()>, _: &'a Rc<()>) -> Self::WaitFuture<'a> {
+            ready(Ok(()))
+        }
+        fn wait_idle<'a>(_: &'a Rc<()>) -> Self::WaitFuture<'a> {
+            ready(Ok(()))
+        }
+    }
+    impl DeferredBackend for NativeShared {
+        type NativeRecordedWork = ();
+        fn finish_encoder(_: (), _: LaneId) -> Result<()> {
+            Ok(())
+        }
+        unsafe fn submit(_: &Arc<()>, packet: SubmitPacket<Self>) -> SubmitOutcome<Self> {
+            SubmitOutcome::Rejected {
+                error: Error::Unsupported("mock"),
+                work: RetryableSubmit::Fresh(packet),
+            }
+        }
+        unsafe fn resume(_: &Arc<()>, tail: DeferredTail<Self>) -> SubmitOutcome<Self> {
+            SubmitOutcome::Rejected {
+                error: Error::Unsupported("mock"),
+                work: RetryableSubmit::Tail(tail),
+            }
+        }
+    }
+    unsafe impl ImmediateBackend for GlLocal {
+        fn install_waits(_: &Rc<()>, _: LaneId, _: &[StepWait]) -> WaitInstallOutcome<Self> {
+            WaitInstallOutcome::Ready { issued: false }
+        }
+        fn close_immediate(_: Rc<()>, reason: ImmediateCloseReason) -> ImmediateClose<Self> {
+            match reason {
+                ImmediateCloseReason::Finished => ImmediateClose::Issued,
+                ImmediateCloseReason::Aborted => ImmediateClose::Failed {
+                    error: Error::InvalidState,
+                    issued: false,
+                },
+            }
+        }
+        fn present_immediate(
+            _: &Rc<()>,
+            _: LaneId,
+            _: &[StepWait],
+            _: PresentBinding<Self>,
+        ) -> std::result::Result<ImmediateClose<Self>, (Error, PresentBinding<Self>)> {
+            Ok(ImmediateClose::Issued)
+        }
+        fn checkpoints(
+            _: &Rc<()>,
+            _: &SubmissionPlan<Self>,
+            _: &[StepId],
+            _: &CompletionRequest,
+        ) -> CheckpointOutcome<Self> {
+            CheckpointOutcome::Covered(Vec::new())
+        }
+        fn emergency_checkpoint(
+            _: &Rc<()>,
+            _: &SubmissionPlan<Self>,
+            _: &[StepId],
+        ) -> CheckpointOutcome<Self> {
+            CheckpointOutcome::Covered(Vec::new())
+        }
+        fn abandon_session(_: &Rc<()>, _: &SubmissionPlan<Self>, issued: &[StepId]) {
+            ABANDONED_STEPS.with(|count| count.set(issued.len()));
+        }
+    }
+    fn assert_send_sync<T: Send + Sync>() {}
+    fn assert_send<T: Send>() {}
+    fn generic_renderer_optional_compute<B: Backend + CommandBackend>(
+        device: &Device<B>,
+        encoder: &mut CommandEncoder<B>,
+    ) -> Result<()> {
+        if let Some(compute) = device.compute() {
+            let mut pass = compute.begin(encoder)?;
+            pass.dispatch([1, 1, 1])?;
+            pass.finish()?;
+        }
+        Ok(())
+    }
+    #[test]
+    fn concrete_shared_and_local_profiles_typecheck() {
+        assert_send_sync::<Device<NativeShared>>();
+        assert_send_sync::<Buffer<NativeShared>>();
+        assert_send_sync::<Queue<NativeShared>>();
+        assert_send::<CommandEncoder<NativeShared>>();
+        assert_send::<RecordedWork<NativeShared>>();
+        assert_send_sync::<CompletionPoint<NativeShared>>();
+        let id = DeviceId::allocate().unwrap();
+        let native = unsafe {
+            Device::<NativeShared>::from_native(id, Arc::new(()), DeviceCapabilities::default())
+        };
+        let local = unsafe {
+            Device::<GlLocal>::from_native(id, Rc::new(()), DeviceCapabilities::default())
+        };
+        let lane = LaneId {
+            device: id,
+            ordinal: 0,
+        };
+        let mut encoder = CommandEncoder::<NativeShared>::new(&native, lane).unwrap();
+        generic_renderer_optional_compute(&native, &mut encoder).unwrap();
+        let _ = CommandEncoder::<GlLocal>::new(&local, lane).unwrap();
+    }
+    #[test]
+    fn raster_draw_rejects_inverted_ranges_before_backend() {
+        DRAW_CALLS.with(|calls| calls.set(0));
+        let id = DeviceId::allocate().unwrap();
+        let device = unsafe {
+            Device::<NativeShared>::from_native(id, Arc::new(()), DeviceCapabilities::default())
+        };
+        let lane = LaneId {
+            device: id,
+            ordinal: 0,
+        };
+        let mut encoder = CommandEncoder::new(&device, lane).unwrap();
+        let colors = [];
+        let mut pass = encoder
+            .begin_raster(&RasterPassDesc {
+                label: None,
+                colors: &colors,
+                depth_stencil: None,
+                render_area: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                },
+                multiview_mask: None,
+                timestamp_writes: None,
+                secondary_inheritance: None,
+            })
+            .unwrap();
+        assert!(matches!(pass.draw(4..3, 0..1), Err(Error::InvalidRange)));
+        assert!(matches!(
+            pass.draw_indexed(0..1, 0, 2..1),
+            Err(Error::InvalidRange)
+        ));
+        DRAW_CALLS.with(|calls| assert_eq!(calls.get(), 0));
+        pass.draw(0..3, 0..1).unwrap();
+        DRAW_CALLS.with(|calls| assert_eq!(calls.get(), 1));
+        pass.finish().unwrap();
+    }
+    #[test]
+    fn deferred_binding_rejects_wrong_lane_and_foreign_tail() {
+        let device_id = DeviceId::allocate().unwrap();
+        let other_id = DeviceId::allocate().unwrap();
+        let device = unsafe {
+            Device::<NativeShared>::from_native(
+                device_id,
+                Arc::new(()),
+                DeviceCapabilities::default(),
+            )
+        };
+        let lane = LaneId {
+            device: device_id,
+            ordinal: 0,
+        };
+        let wrong_lane = LaneId {
+            device: device_id,
+            ordinal: 1,
+        };
+        let plan = unsafe {
+            SubmissionPlan::<NativeShared>::from_compiled(
+                PlanId {
+                    device: device_id,
+                    ordinal: 1,
+                },
+                Arc::from([StepDesc {
+                    lane,
+                    kind: StepKind::Commands,
+                    waits: Vec::new(),
+                }]),
+            )
+        };
+        let packet = SubmitPacket {
+            steps: vec![BoundStep {
+                step: plan.step(0),
+                payload: StepPayload::Commands(vec![RecordedWork {
+                    device: device_id,
+                    lane: wrong_lane,
+                    native: (),
+                }]),
+            }],
+            plan: plan.clone(),
+            completion: CompletionRequest::End,
+        };
+        match unsafe { device.queue().submit(packet) } {
+            SubmitOutcome::Rejected {
+                error: Error::WrongLane,
+                ..
+            } => {}
+            _ => panic!("wrong-lane work reached the backend"),
+        }
+        let foreign_plan = unsafe {
+            SubmissionPlan::<NativeShared>::from_compiled(
+                PlanId {
+                    device: other_id,
+                    ordinal: 1,
+                },
+                Arc::from([]),
+            )
+        };
+        let tail = DeferredTail {
+            plan: foreign_plan,
+            next_step: 0,
+            pending: Vec::new(),
+            accepted_frontier: Vec::new(),
+            completion: CompletionRequest::None,
+        };
+        match unsafe { device.queue().resume(tail) } {
+            SubmitOutcome::Rejected {
+                error: Error::WrongDevice,
+                ..
+            } => {}
+            _ => panic!("foreign tail reached the backend"),
+        }
+    }
+    #[test]
+    fn stale_surface_lease_cannot_enter_plan_present() {
+        let device_id = DeviceId::allocate().unwrap();
+        let device = unsafe {
+            Device::<NativeShared>::from_native(
+                device_id,
+                Arc::new(()),
+                DeviceCapabilities::default(),
+            )
+        };
+        let lane = LaneId {
+            device: device_id,
+            ordinal: 0,
+        };
+        let plan = unsafe {
+            SubmissionPlan::<NativeShared>::from_compiled(
+                PlanId {
+                    device: device_id,
+                    ordinal: 2,
+                },
+                Arc::from([StepDesc {
+                    lane,
+                    kind: StepKind::Present,
+                    waits: Vec::new(),
+                }]),
+            )
+        };
+        let current = Arc::new(AtomicU64::new(1));
+        let image = SurfaceImage {
+            device: device_id,
+            surface: SurfaceId::allocate().unwrap(),
+            generation: 1,
+            native: TestLease {
+                current: current.clone(),
+                handed_off: false,
+            },
+        };
+        current.store(2, Ordering::Release);
+        let packet = SubmitPacket {
+            steps: vec![BoundStep {
+                step: plan.step(0),
+                payload: StepPayload::Present(PresentBinding::new(image)),
+            }],
+            plan,
+            completion: CompletionRequest::None,
+        };
+        match unsafe { device.queue().submit(packet) } {
+            SubmitOutcome::Rejected {
+                error: Error::SurfaceOutdated,
+                ..
+            } => {}
+            _ => panic!("stale surface lease reached the backend"),
+        }
+    }
+    #[test]
+    fn dropped_immediate_session_reports_issued_prefix_to_backend() {
+        ABANDONED_STEPS.with(|count| count.set(0));
+        let device_id = DeviceId::allocate().unwrap();
+        let device = unsafe {
+            Device::<GlLocal>::from_native(device_id, Rc::new(()), DeviceCapabilities::default())
+        };
+        let lane = LaneId {
+            device: device_id,
+            ordinal: 0,
+        };
+        let plan = unsafe {
+            SubmissionPlan::<GlLocal>::from_compiled(
+                PlanId {
+                    device: device_id,
+                    ordinal: 3,
+                },
+                Arc::from([StepDesc {
+                    lane,
+                    kind: StepKind::Commands,
+                    waits: Vec::new(),
+                }]),
+            )
+        };
+        let mut session = unsafe { device.immediate(plan, CompletionRequest::None).unwrap() };
+        let encoder = match session.begin_commands() {
+            Ok(encoder) => encoder,
+            Err(_) => panic!("mock command slot could not begin"),
+        };
+        match encoder.close() {
+            ImmediateRunOutcome::Issued(_) => {}
+            _ => panic!("mock command slot did not issue"),
+        }
+        drop(session);
+        ABANDONED_STEPS.with(|count| assert_eq!(count.get(), 1));
+    }
+}

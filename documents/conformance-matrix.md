@@ -1,127 +1,36 @@
-# RHI Backend Conformance Matrix
+# RHI conformance matrix
 
-> Baseline: commit `54b846c` (`docs: separate graph plans from RHI bindings`), RHI API freeze v13.
-> Purpose: freeze the actual observed capability of every backend **before** the 0.17 B3
-> (direct native encoding / submission separation) refactor, so that "green after refactor" cannot
-> be claimed without knowing what was lost. Scope: this repository.
->
-> Cell states are restricted to: `HardwarePass` · `Unsupported` · `Skipped` · `Failure` · `NotCovered`.
-> - `HardwarePass` requires a real-adapter run with recorded commit/adapter/driver/case/expected/actual.
-> - `Unsupported` must point at a capability fact or a public early-refusal.
-> - compile-only / source-audit may not be written as `HardwarePass`.
->
-> This is a living document; each backend row updates as S0/S3 evolves.
-> DX12 hardware fixtures are compiled and run with `cargo test -p fluxel-rhi-dx12 --features hardware-tests`.
+**Scope:** current checkout. The only facade-exposed native provider is DX12 on Windows.
+GL, Vulkan, Metal and WebGPU implementation/test paths are not present in this checkout
+and therefore have no matrix row.
 
-## Adapters & runtimes
+`Pass` means a recorded native run, not successful compilation. `Unsupported` requires a
+published capability or operation result. `Not yet evidenced` makes no claim either way.
 
-| Label | Adapter | Backend | Evidence source |
-|---|---|---|---|
-| `dx12-780M` | Direct3D 12 (adapter TBD) | dx12 | `crates/dx12/src/backend/dx12/platform/tests/` |
-| `vk-780M` | Vulkan (adapter TBD) | vulkan | `crates/vulkan/src/backend/vulkan/*_tests.rs` |
-| `metal-host` | Metal (Apple host, remote) | metal | `crates/metal/src/backend/metal/tests.rs` |
-| `webgpu-ci` | WebGPU (CI headless Chrome, wasm) | webgpu | `crates/webgpu/src/backend/webgpu/tests.rs` |
-| `gl-wgl` | OpenGL WGL 4.x | gl | `crates/gl/tests/gl/wgl_core.rs` |
+| Route | DX12 status | Evidence / command |
+| --- | --- | --- |
+| Typed Core/facade integration | Checked | `cargo test -p fluxel-rhi-core`; facade examples compile through `fluxel_rhi::api` |
+| Resource, DXIL shader and raster pipeline creation | Checked | numbered DX12 examples and `cargo check -p fluxel-rhi --features examples` |
+| Surface acquire, graphics submit and present | Checked on Windows | numbered window examples |
+| RGBA8 textures, views, sampler bindings and uploads | Checked | texture examples; descriptor-specific support remains authoritative |
+| Depth attachments | Checked | depth/offscreen/MSAA example routes |
+| Texture-array SRV and KTX mip/layer upload | Hardware pass | `10_indirect_draw -- --frames 2` |
+| Indexed indirect draw (`ExecuteIndirect`) | Hardware pass | `10_indirect_draw -- --frames 2` |
+| Multi-draw | Capability-gated | depends on `Device::capabilities()` |
+| Push constants | Capability-gated | no general hardware-pass claim |
+| Occlusion query and resolve to readback | Hardware pass | `11_occlusion_query -- --frames 2`; observed 50112 and 0 passing samples |
+| Buffer/texture readback | Hardware pass | `12_screenshot -- --frames 2`; generated and inspected 1280×720 PPM |
+| Secondary raster work | Hardware pass | `13_multithreaded_recording -- --frames 2` |
+| Descriptor indexing | Hardware pass | `14_descriptor_indexing -- --frames 2` |
+| Two-view multiview | Hardware pass | `15_multiview -- --frames 2` with DX12 debug layer |
+| Compute and mip generation | Descriptor/capability-gated | test each selected route before recording a pass claim |
 
-> Adapter/driver details are recorded per `HardwarePass` cell below as they are produced.
-> Metal / WebGPU / GL rows are largely `NotCovered` / `Skipped` until the corresponding
-> hardware carrier is available on this machine (Metal needs an Apple host; WebGPU needs
-> CI wasm; GL raster needs a WGL rendering example), per the 0.17 plan hard constraints.
+The two hardware-pass cells above describe the local finite-frame run performed for the
+current DX12 route. Re-run it after changes to DX12 command lowering, descriptors,
+pipelines, texture arrays, indirect recording, or the example assets.
 
-## Matrix
+## Updating this matrix
 
-| Case | dx12 | vulkan | metal | webgpu | gl |
-|---|---|---|---|---|---|
-| buffer upload/readback | HardwarePass | — | NotCovered | NotCovered | NotCovered |
-| texture upload/readback | HardwarePass | — | NotCovered | NotCovered | NotCovered |
-| compute dispatch | HardwarePass | HardwarePass | HardwarePass | NotCovered | NotCovered |
-| raster triangle | HardwarePass | HardwarePass | NotCovered | NotCovered | NotCovered |
-| sampled texture | HardwarePass | HardwarePass | NotCovered | NotCovered | NotCovered |
-| storage buffer | HardwarePass | HardwarePass | NotCovered | NotCovered | NotCovered |
-| storage texture | NotCovered | HardwarePass | NotCovered | NotCovered | NotCovered |
-| depth/stencil | HardwarePass | HardwarePass | NotCovered | NotCovered | NotCovered |
-| indirect compute | HardwarePass | HardwarePass | NotCovered | NotCovered | NotCovered |
-| indirect raster | NotCovered | — | NotCovered | NotCovered | NotCovered |
-| timestamp query | NotCovered | — | NotCovered | Unsupported | NotCovered |
-| occlusion query | HardwarePass | HardwarePass | NotCovered | NotCovered | NotCovered |
-| pipeline statistics | NotCovered | NotCovered | NotCovered | Unsupported | NotCovered |
-| clear buffer | NotCovered | — | NotCovered | NotCovered | NotCovered |
-| clear texture | NotCovered | — | NotCovered | NotCovered | NotCovered |
-| MSAA + resolve | NotCovered | NotCovered | NotCovered | NotCovered | NotCovered |
-| multi-batch plan | NotCovered | NotCovered | NotCovered | NotCovered | NotCovered |
-| cross-submit resource state | NotCovered | NotCovered | NotCovered | NotCovered | NotCovered |
-| map/readback lifetime | NotCovered | — | NotCovered | NotCovered | NotCovered |
-| presentation | HardwarePass | HardwarePass | NotCovered | NotCovered | NotCovered |
-| resize/reconfigure | NotCovered | HardwarePass | NotCovered | NotCovered | NotCovered |
-| device loss | HardwarePass | HardwarePass | NotCovered | NotCovered | NotCovered |
-
-## Evidence ledger
-
-### dx12 (HardwarePass)
-
-All on `dx12-780M`. Case → test function → evidence.
-
-- **buffer upload/readback** — `a_real_device_moves_bytes_from_the_cpu_to_a_buffer_and_back_to_the_cpu`
-- **texture upload/readback** — `a_real_device_round_trips_texels_through_every_dx12_copy_path`
-- **compute dispatch** — `a_real_compute_dispatch_writes_a_storage_buffer`
-- **raster triangle** — `an_offscreen_triangle_writes_deterministic_rgba8_pixels` (platform/tests/raster.rs)
-- **sampled texture** — `a_fragment_sampled_texture_and_sampler_reach_the_raster_output` (platform/tests/raster.rs)
-- **storage buffer** — `a_real_compute_dispatch_writes_a_storage_buffer`
-- **depth/stencil** — `crates/dx12/tests/dx12/depth_stencil.rs`
-- **indirect compute** — `a_real_indirect_compute_dispatch_reads_gpu_arguments`
-- **occlusion query** — `crates/dx12/tests/dx12/query.rs`
-- **presentation** — `a_host_window_frame_clears_presents_and_can_be_acquired_again` + `common_presentation_lifecycle_case`
-- **device loss** — `a_loss_recorded_on_the_native_device_is_terminal_and_stable`
-
-### vulkan (HardwarePass)
-
-All on `vk-780M`. Case → test function → evidence.
-
-- **compute dispatch** — `buffer_compute_dispatch_keeps_dropped_caller_handles_alive_until_readback` (compute_tests.rs)
-- **indirect compute** — `indirect_compute_dispatch_reads_gpu_arguments_and_publishes_readback` (compute_tests.rs)
-- **raster triangle** — `offscreen_raster_draw_transitions_to_readback_and_retains_native_objects` (raster_tests.rs)
-- **sampled texture / storage texture** — `image_binding_tests.rs`
-- **depth/stencil** — `crates/vulkan/tests/vulkan/depth_stencil.rs`
-- **occlusion query** — `crates/vulkan/tests/vulkan/query.rs`
-- **presentation** — `presentation_tests.rs` (win32, real HWND acquire/clear/present)
-- **device loss / resize** — platform/tests.rs
-
-### metal (NotCovered)
-
-Only 3 Apple-gated `#[test]` exist in `crates/metal/src/backend/metal/tests.rs` (enumeration/identity, compute
-dispatch+readback, rgba8 upload copy readback). Everything else — presentation, raster,
-query, resolve, MSAA, indirect, depth-stencil — has **zero** hardware evidence and requires
-an Apple host that is not available on this machine. Camera to C2 later in the series.
-
-### webgpu (NotCovered)
-
-Only 2 headed-browser smoke tests (`crates/webgpu/src/backend/webgpu/tests.rs`, wasm32-gated, CI). They cover
-device/buffer/texture/view creation + async compute pipeline, but never `submit`, draw,
-copy, acquire/present, or readback publication. The whole `command.rs` submission/readback
-spine has no hardware evidence. Camera to C4.
-
-### gl (NotCovered)
-
-`crates/gl/tests/gl/wgl_core.rs` is real WGL 4.x but only runs logical-creation + an empty-plan
-submit. No raster/compute rendering path, no GL example exists. Camera to C5.
-
-## Unsupported cross-check
-
-`Unsupported` cells must point at a capability fact / public early-refusal — this is the
-S0.1 **completion gate** and is audited as the matrix is filled.
-
-- webgpu **timestamp query / pipeline statistics** — WebGPU capability publishes
-  `OcclusionQuery` + `FixedAtRasterScope` only; it refuses query-family / timestamp
-  capability facts. Verified in `crates/webgpu/src/backend/webgpu/capabilities.rs`.
-
-## Open gaps (against 0.17 plan §7 S3)
-
-- DX12: resolve_texture, map/late-lifetime, timestamp query, clear buffer/texture, indirect
-  raster, MSAA+resolve, wait_idle timing.
-- Vulkan: multi-batch single plan, cross-submit layout persistence, Android presentation.
-- Metal / WebGPU / GL: as above — hardware carriers required.
-
-## Rebaseline procedure
-
-When the code changes, re-run the affected backend's evidence, update the commit SHA in the
-header, and move the prior version into `versions/` history per the repo evidence rule.
+Add a row only after recording a reproducible command and result. A new backend first
+needs a checked-in implementation, facade exposure, accurate capability reporting and a
+native execution test; a planned provider belongs in design notes, not this matrix.

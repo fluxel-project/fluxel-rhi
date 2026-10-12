@@ -1,114 +1,82 @@
-# Fluxel RHI design
+# Fluxel RHI execution contract
 
-This is the short architecture guide for `fluxel-rhi`. The public Rust API,
-its rustdoc, and its positive/negative/boundary tests are the executable API
-reference. This document records the stable model, points to the decisions
-that explain it, and names work that is deliberately not enabled yet.
+**Status:** current implementation and design boundary.
 
-## Scope
+## Public API and ownership
 
-RHI owns portable GPU execution: device-scoped resources, shader and pipeline
-creation, direct command encoding and actual-use tracking, plans, submission, completion, presentation,
-readback, retirement, capability reporting, diagnostics, and observability.
+`fluxel_rhi_core::api` is the single Core API namespace. The facade re-exports it as
+`fluxel_rhi::api`; applications use that namespace and select a concrete backend at
+initialization. On Windows the facade exposes `fluxel_rhi::dx12::Dx12`.
 
-It does not own a RenderGraph, renderer scheduling, material policy, native
-handles, or native synchronization objects. Backends keep their native objects
-and strategy private.
+The API is statically dispatched: `Device<B>`, resources, pipelines, encoders and
+recorded work retain their concrete `Backend` type. RenderGraph or its host owns graph
+scheduling, hazard analysis, lifetime policy and frame pacing. The RHI creates native
+objects, encodes the supplied operations, submits them, and reports support or failure.
 
-## Public model
+A backend must keep public descriptors, support queries and command results aligned. A
+feature is advertised only if the corresponding native route exists. Format- and
+descriptor-specific limits belong in support queries or operation results. `Unsupported`
+is the required result for a route that is absent.
 
-```text
-PlatformProvider -> Adapter -> Device
-Device -> resource / shader / binding / pipeline / command
-CommandRecorder -> RecordedWork -> SubmissionPlan -> CompletionPoint
-ConfiguredPresentation -> AcquiredFrame -> FrameAttachment -> present outcome
-```
+## Current repository shape
 
-The public modules are `platform`, `capability`, `format`, `resource`,
-`shader`, `binding`, `pipeline`, `command`, `submission`, `presentation`,
-`statistics`, and `diagnostics`.
+- `crates/core/src/api/` defines the public vocabulary and backend SPI traits.
+- `crates/rhi` is the typed facade and contains the numbered runnable examples.
+- `crates/dx12` is the active native backend. Its lowering is organized under
+  `backend/`, including `encoder/`, `pipeline`, `texture`, `descriptor`, `sampler`,
+  `surface`, `query`, and `readback`.
 
-Native host composition enters through the public crate-level provider factories
-(`create_dx12_provider`, `create_vulkan_provider`, `create_metal_provider`, or
-the browser `create_webgpu_provider` where their target features exist). These
-functions return only `PlatformProvider`; native instances, surfaces, and
-window handles stay in the host/backend seam.
+There are no GL, Vulkan, Metal, or WebGPU backend crates in this checkout. Documentation
+and CI must not treat paths for those backends as implementation or hardware evidence.
 
-## Invariants
+## Implemented DX12 baseline
 
-- Every object belongs to one opaque `DeviceIdentity`; loss terminates that
-  identity and a replacement device receives a new one.
-- Capability facts are the authority. Backends must finalize and validate one
-  immutable capability snapshot before exposing a device; every public query on
-  that snapshot is total. A supported fact requires validation, native
-  lowering, lifetime/loss handling, and conformance evidence.
-- `command::ResourceUse` is derived while commands are encoded. It includes
-  scheduling-only query-slot writes and resolve reads without pretending a
-  `QuerySet` is a buffer. RenderGraph owns declarations and scheduling, while
-  directly reusing this portable vocabulary; RHI itself does not own graph
-  policy or types.
-- Only operations which may wait for a future event are async. Logical object
-  creation, validation, capability queries, and command encoding are synchronous.
-- `submit(Err)` accepts no native work. `submit(Ok)` transfers plan ownership;
-  acceptance, GPU completion, and present outcome remain distinct states.
-- `FrameAttachment` is not a `Texture` or `TextureView`. It is valid only for
-  the acquired-frame lifecycle that produced it.
-- Transient lifetimes use `PlanPoint` ordering. `Dedicated` allocation is the
-  correct baseline; aliasing is a private, capability-gated optimization.
+The DX12 backend has real resource creation, descriptor/bind-group creation, DXIL shader
+and raster-pipeline creation, command-list recording, graphics submission, surface
+acquire/present, texture upload/copy routes, depth and color attachments, samplers,
+readback, queries, mip generation, and raster indirect commands. Support remains
+operation and descriptor dependent.
 
-The total-query rule above is the required contract, not a claim that the
-current constructor already checks every finite query domain. The current
-implementation can still route a missing required finite-domain entry to the
-query-time panic used to identify an incomplete enumeration. Capability
-snapshot finalization is an entry gate for the next implementation plan: it
-must move that failure into device construction so a successfully published
-device never exposes it.
+Examples exercise this baseline through `fluxel_rhi::api`. For example 10, the running
+path loads the plant, ground and sky glTF assets; uploads the KTX mip chains and plant
+texture array; encodes sky, ground and indexed-indirect plant passes; and presents the
+surface image. Its DX12 route uses real `ExecuteIndirect` records.
 
-## Decision records
+Optional operations remain capability-gated. In particular, callers must check the
+published indirect, multi-draw, push-constant, query, descriptor-indexing, multiview,
+secondary-recording, and format support before selecting a workload. A compiling API
+call is not evidence that every backend or descriptor can execute it.
 
-| ADR | Decision |
-| --- | --- |
-| [0012](adr/0012-pure-rhi-execution-boundary.md) | Keep RHI limited to portable execution. |
-| [0013](adr/0013-async-operation-boundary.md) | Make only future-event operations asynchronous. |
-| [0014](adr/0014-terminal-device-loss.md) | Treat device loss as a terminal identity state. |
-| [0015](adr/0015-plan-scoped-transient-allocation.md) | Freeze plan-scoped transient lifetimes and dedicated fallback. |
-| [0016](adr/0016-capability-claims-require-lowering-closure.md) | Publish facts only after lowering closure. |
-| [0017](adr/0017-presentation-is-not-a-texture-view.md) | Keep presentation frames separate from textures and completion. |
-| [0019](adr/0019-portable-logical-statistics.md) | Keep statistics logical rather than native profiling. |
-| [0020](adr/0020-optional-feature-family-admission.md) | Admit optional feature families as complete portable contracts. |
-| [0021](adr/0021-shader-owned-immediate-abi.md) | Derive executable immediate-data ABI from shader artifacts, not interface supersets. |
-| [0022](adr/0022-hardware-conformance-evidence.md) | Separate portable contract tests, headless hardware conformance, and presentation smoke evidence. |
-| [0023](adr/0023-host-rhi-integration-boundary.md) | Keep host-window lifetime and RHI presentation integration in separate dependency domains. |
+## Command and synchronization boundary
 
-Existing ADRs cover unsafe/native containment, serial lowering policy,
-conformance evidence, platform test gates, and the GL-family private boundary.
+`CommandEncoder` records copies, uploads, transitions and pass commands. Raster passes
+own their attachment/load-store contract; a pipeline, bind group, vertex/index buffers,
+viewport/scissor and draw are lowered by the selected backend. The extras interface
+holds optional raster operations such as indirect and multi-draw, with independent
+capability facts.
 
-## Current TODO boundary
+The caller provides ordered work and transitions. RHI does not construct a render graph,
+perform global hazard analysis, or decide resource retirement. Submission and
+presentation are separate public operations; a present consumes the acquired surface
+image associated with the submitted work.
 
-The public vocabulary already carries provisional/experimental advanced
-mesh/task shaders, ray tracing, cooperative matrices, aliasing, external
-interop, multiplanar formats, native debugging tools, HDR/timing, and advanced
-descriptor indexing. These names do not freeze a descriptor ABI or promise
-availability. A backend keeps each incomplete fact disabled and returns
-structured `Unsupported` before native work. It must not replace an incomplete
-path with a panic, dummy success, or silent fallback.
+## Shader and pipeline boundary
 
-Current examples include transient physical aliasing, counted indirect paths,
-Metal timestamp/statistics, WebGPU timestamp placement/conversion, and
-WebGPU host-image interop. See ADR-0020 and the capability facts for the exact
-per-backend answer.
+`ShaderDesc` declares the artifact format and entry points. DX12 currently accepts DXIL
+on its direct route. Examples that need DX12 use checked-in HLSL source and DXIL assets;
+WGSL or GLSL must not be described as directly executable on DX12 unless a real
+translation route is implemented and selected.
 
-Native discovery backends expose public provider composition functions. GL and
-WebGL are context-adopting backends, so their remaining integration work is a
-small host-composition crate or bridge which returns `PlatformProvider` without
-putting an HGLRC/EGLContext/WebGL context, browser session, or token in the
-RHI API. This is an ecosystem integration TODO, not an excuse to weaken the
-portable boundary.
+Pipeline and binding descriptors describe the native operation honestly: vertex layouts,
+texture view dimensions, sampler and uniform bindings, attachment formats, depth/stencil
+state, and raster state are all part of the route. A backend rejects unsupported formats,
+view dimensions, layouts or state combinations instead of substituting a no-op.
 
-## Change rule
+## Future work
 
-For a new stable boundary: write or update one focused ADR, update public API
-and rustdoc, add positive/negative/boundary tests, then implement and test
-every backend that publishes the capability. Performance-only changes stay
-backend-private provided observable execution, loss, completion, and tooling
-semantics remain unchanged.
+The API contains vocabulary for several operations whose portable coverage is incomplete.
+Those declarations are design surface, not a claim that every backend implements them.
+Adding a provider requires a real backend crate, facade exposure, descriptor-consistent
+support answers, native lowering, and hardware evidence. Expanding DX12 follows the same
+rule: expose a capability only after creation, recording, submission and observable
+failure behavior are implemented together.
