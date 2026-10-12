@@ -56,10 +56,20 @@ pub(super) fn record(
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .image(texture.native())
             .subresource_range(range);
+        let source_stages = if old_layout == api::ImageLayout::Undefined
+            && barrier.usage.from.stages == api::StageMask::EMPTY
+            && barrier.usage.from.accesses == api::AccessMask::EMPTY
+        {
+            // The only valid empty source is an image's first transition:
+            // no prior access exists, so Vulkan starts it at TOP_OF_PIPE.
+            vk::PipelineStageFlags::TOP_OF_PIPE
+        } else {
+            stages(barrier.usage.from.stages)?
+        };
         unsafe {
             encoder.device.device.cmd_pipeline_barrier(
                 encoder.command,
-                stages(barrier.usage.from.stages)?,
+                source_stages,
                 stages(barrier.usage.to.stages)?,
                 vk::DependencyFlags::empty(),
                 &[],

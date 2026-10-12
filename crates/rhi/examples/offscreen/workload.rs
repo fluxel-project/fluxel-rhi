@@ -14,6 +14,7 @@ pub struct Offscreen<B: OffscreenBackend> {
     off_depth_view: TextureView<B>,
     scene_depth: Texture<B>,
     scene_depth_view: TextureView<B>,
+    scene_extent: [u32; 2],
     scene_u: Buffer<B>,
     off_u: Buffer<B>,
     mirror_u: Buffer<B>,
@@ -195,11 +196,45 @@ impl<B: OffscreenBackend> Offscreen<B> {
             spl.clone(),
             TextureFormat::Rgba8Unorm,
             PVS,
+            PVS_SPIRV,
             PPS,
+            PPS_SPIRV,
+            "phong_vs",
+            "phong_ps",
+            true,
+            CullMode::Front,
         )
         .await?;
-        let scene_p = pipe(d, "07 dragon", spl, fmt, PVS, PPS).await?;
-        let mirror_p = pipe(d, "07 blurred mirror", mpl, fmt, MVS, MPS).await?;
+        let scene_p = pipe(
+            d,
+            "07 dragon",
+            spl,
+            fmt,
+            PVS,
+            PVS_SPIRV,
+            PPS,
+            PPS_SPIRV,
+            "phong_vs",
+            "phong_ps",
+            true,
+            CullMode::Back,
+        )
+        .await?;
+        let mirror_p = pipe(
+            d,
+            "07 blurred mirror",
+            mpl,
+            fmt,
+            MVS,
+            MVS_SPIRV,
+            MPS,
+            MPS_SPIRV,
+            "mirror_vs",
+            "mirror_ps",
+            false,
+            CullMode::None,
+        )
+        .await?;
         Ok(Self {
             lane,
             dv,
@@ -212,6 +247,7 @@ impl<B: OffscreenBackend> Offscreen<B> {
             off_depth_view,
             scene_depth,
             scene_depth_view,
+            scene_extent: extent,
             scene_u,
             off_u,
             mirror_u,
@@ -237,6 +273,12 @@ impl<B: OffscreenBackend> Offscreen<B> {
         extent: [u32; 2],
         time: f32,
     ) -> Result<RecordedWork<B>> {
+        if extent != self.scene_extent {
+            let (depth, view) = depth(d, extent)?;
+            self.scene_depth = depth;
+            self.scene_depth_view = view;
+            self.scene_extent = extent;
+        }
         let mut e = d.encoder(self.lane)?;
         let first = !self.uploaded;
         if first {
@@ -290,7 +332,7 @@ impl<B: OffscreenBackend> Offscreen<B> {
         let c = [Some(ColorAttachment {
             view: AttachmentView::Texture(&self.off_view),
             resolve_target: None,
-            load: LoadOp::Clear(ClearColor::Float([0., 0., 0., 1.])),
+            load: LoadOp::Clear(ClearColor::Float([0., 0., 0., 0.])),
             store: StoreOp::Store,
         })];
         let depth = DepthStencilAttachment {

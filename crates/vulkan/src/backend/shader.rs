@@ -29,6 +29,13 @@ impl VulkanShader {
 }
 
 pub(super) fn create(device: &VulkanDevice, desc: &api::ShaderDesc) -> Result<VulkanShader> {
+    for feature in &desc.required_features {
+        match feature.as_str() {
+            "shaderClipDistance" if device.0.shader_clip_distance => {}
+            "shaderClipDistance" => return Err(Error::Unsupported("Vulkan shaderClipDistance")),
+            _ => return Err(Error::Unsupported("Vulkan shader required feature")),
+        }
+    }
     if desc.bytes.is_empty() || desc.bytes.len() % 4 != 0 {
         return Err(Error::Shader(
             "SPIR-V binary must contain whole u32 words".into(),

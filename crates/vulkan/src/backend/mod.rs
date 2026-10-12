@@ -52,6 +52,7 @@ struct DeviceState {
     physical: vk::PhysicalDevice,
     graphics_queue: vk::Queue,
     graphics_family: u32,
+    shader_clip_distance: bool,
     /// Serializes Vulkan queue submission and fence allocation only. It is
     /// not a graph scheduler and must never span host completion waits.
     queue_gate: Mutex<()>,
@@ -400,17 +401,27 @@ impl InstanceBackend for Vulkan {
             .iter()
             .position(|f| f.queue_flags.contains(vk::QueueFlags::GRAPHICS))
             .ok_or(Error::Unsupported("a Vulkan graphics queue"))? as u32;
-            let mut available13 = vk::PhysicalDeviceVulkan13Features::default();
-            let mut available = vk::PhysicalDeviceFeatures2::default().push_next(&mut available13);
-            unsafe {
-                instance
-                    .0
-                    .instance
-                    .get_physical_device_features2(physical, &mut available)
+            let (dynamic_rendering, shader_clip_distance) = {
+                let mut available13 = vk::PhysicalDeviceVulkan13Features::default();
+                let mut available =
+                    vk::PhysicalDeviceFeatures2::default().push_next(&mut available13);
+                unsafe {
+                    instance
+                        .0
+                        .instance
+                        .get_physical_device_features2(physical, &mut available)
+                };
+                let shader_clip_distance = available.features.shader_clip_distance == vk::TRUE;
+                (
+                    available13.dynamic_rendering == vk::TRUE,
+                    shader_clip_distance,
+                )
             };
-            if available13.dynamic_rendering == 0 {
+            if !dynamic_rendering {
                 return Err(Error::Unsupported("Vulkan dynamic rendering"));
             }
+            let enabled_features =
+                vk::PhysicalDeviceFeatures::default().shader_clip_distance(shader_clip_distance);
             let priorities = [1.0_f32];
             let queue = vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(family)
@@ -421,6 +432,7 @@ impl InstanceBackend for Vulkan {
             let create = vk::DeviceCreateInfo::default()
                 .queue_create_infos(std::slice::from_ref(&queue))
                 .enabled_extension_names(&extensions)
+                .enabled_features(&enabled_features)
                 .push_next(&mut vulkan13);
             let native = unsafe { instance.0.instance.create_device(physical, &create, None) }
                 .map_err(vk_error)?;
@@ -442,6 +454,7 @@ impl InstanceBackend for Vulkan {
                     physical,
                     graphics_queue,
                     graphics_family: family,
+                    shader_clip_distance,
                     queue_gate: Mutex::new(()),
                 })),
                 DeviceCapabilities {

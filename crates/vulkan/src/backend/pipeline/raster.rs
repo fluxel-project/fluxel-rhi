@@ -139,6 +139,9 @@ pub(crate) fn create_raster(
         api::CullMode::Back => vk::CullModeFlags::BACK,
     };
     let front = match desc.primitive.front_face {
+        // Both RHI and Vulkan define front facing after viewport conversion,
+        // in framebuffer coordinates. The negative-height viewport realizes
+        // RHI's Y-up NDC contract, so no second winding compensation applies.
         api::FrontFace::Ccw => vk::FrontFace::COUNTER_CLOCKWISE,
         api::FrontFace::Cw => vk::FrontFace::CLOCKWISE,
     };

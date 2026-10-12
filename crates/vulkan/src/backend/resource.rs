@@ -105,6 +105,23 @@ impl VulkanTextureView {
     pub(super) fn usage(&self) -> api::TextureUsage {
         self.0.texture.0.desc.usage
     }
+    pub(super) fn attachment_extent(&self, aspects: api::TextureAspects) -> Option<[u32; 2]> {
+        let view = &self.0.desc;
+        let texture = &self.0.texture.0.desc;
+        if view.dimension != api::TextureViewDimension::D2
+            || view.aspects != aspects
+            || view.mips.end != view.mips.start.checked_add(1)?
+            || view.layers.end != view.layers.start.checked_add(1)?
+            || texture.samples != 1
+            || !texture.usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
+        {
+            return None;
+        }
+        Some([
+            (texture.extent[0] >> view.mips.start).max(1),
+            (texture.extent[1] >> view.mips.start).max(1),
+        ])
+    }
 }
 struct TextureViewState {
     texture: VulkanTexture,

@@ -28,7 +28,11 @@ $jobs = @(
     @('06_compute', 'compute_filters.hlsl', 'edgedetect', 'cs_6_0', 'edgedetect.spv'),
     @('06_compute', 'compute_filters.hlsl', 'sharpen', 'cs_6_0', 'sharpen.spv'),
     @('06_compute', 'display.hlsl', 'vs_main', 'vs_6_0', 'display_vs.spv'),
-    @('06_compute', 'display.hlsl', 'ps_main', 'ps_6_0', 'display_ps.spv')
+    @('06_compute', 'display.hlsl', 'ps_main', 'ps_6_0', 'display_ps.spv'),
+    @('07_offscreen', 'offscreen.hlsl', 'phong_vs', 'vs_6_0', 'phong.vs.spv'),
+    @('07_offscreen', 'offscreen.hlsl', 'phong_ps', 'ps_6_0', 'phong.ps.spv'),
+    @('07_offscreen', 'offscreen.hlsl', 'mirror_vs', 'vs_6_0', 'mirror.vs.spv'),
+    @('07_offscreen', 'offscreen.hlsl', 'mirror_ps', 'ps_6_0', 'mirror.ps.spv')
 )
 
 foreach ($job in $jobs) {

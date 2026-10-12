@@ -1,6 +1,82 @@
-cbuffer Transform:register(b0){float4x4 mvp;};
-struct I{float3 p:LOCATION0;float3 n:LOCATION1;float2 uv:LOCATION2;float3 c:LOCATION3;};
-struct P{float4 p:SV_Position;float3 n:NORMAL0;float3 c:COLOR0;float3 v:TEXCOORD0;};
-P phong_vs(I i){P o;o.p=mul(mvp,float4(i.p,1));o.n=normalize(i.n);o.c=i.c;o.v=-i.p;return o;}
-float4 phong_ps(P i):SV_Target{float3 n=normalize(i.n);float3 l=normalize(float3(-2,4,-3));float3 v=normalize(i.v);float3 r=reflect(-l,n);float d=max(dot(n,l),.15);float s=pow(max(dot(r,v),0),16)*.5;return float4(i.c*(.25+d)+s,1);}
-Texture2D image:register(t1);SamplerState samp:register(s2);struct M{float4 p:SV_Position;float2 uv:TEXCOORD0;};M mirror_vs(I i){M o;o.p=mul(mvp,float4(i.p,1));o.uv=i.uv;return o;}float4 mirror_ps(M i):SV_Target{float4 c=0;[unroll]for(int x=-3;x<=3;x++)[unroll]for(int y=-3;y<=3;y++)c+=image.Sample(samp,i.uv+float2(x,y)/512.)/49.;return c;}
+// Matches the captured C++ GLSL offscreen scene and Fluxel's framebuffer axes.
+cbuffer Transform : register(b0) {
+    float4x4 projection;
+    float4x4 view;
+    float4x4 model;
+    float4 lightPos;
+};
+
+struct VertexInput {
+    float3 position : LOCATION0;
+    float3 normal : LOCATION1;
+    float2 uv : LOCATION2;
+    float3 color : LOCATION3;
+};
+
+struct PhongVertex {
+    float4 position : SV_Position;
+    float clip : SV_ClipDistance0;
+    float3 normal : NORMAL0;
+    float3 color : COLOR0;
+    float3 eyePos : TEXCOORD0;
+    float3 lightVec : TEXCOORD1;
+};
+
+PhongVertex phong_vs(VertexInput input) {
+    PhongVertex output;
+    float4 world = mul(model, float4(input.position, 1.0));
+    float4 eye = mul(view, world);
+    output.position = mul(projection, eye);
+    // The captured C++ reference uses its GLSL path, whose clip plane is zero.
+    output.clip = 0.0;
+    output.normal = input.normal;
+    output.color = input.color;
+    output.eyePos = eye.xyz;
+    output.lightVec = normalize(lightPos.xyz - eye.xyz);
+    return output;
+}
+
+float4 phong_ps(PhongVertex input) : SV_Target {
+    float3 eye = normalize(-input.eyePos);
+    float3 reflected = normalize(reflect(-input.lightVec, input.normal));
+    float4 ambient = float4(0.1, 0.1, 0.1, 1.0);
+    float4 diffuse = max(dot(input.normal, input.lightVec), 0.0).xxxx;
+    float4 specular = 0.0;
+    if (dot(input.eyePos, input.normal) < 0.0) {
+        specular = float4(0.5, 0.5, 0.5, 1.0)
+            * pow(max(dot(reflected, eye), 0.0), 16.0) * 0.75;
+    }
+    return (ambient + diffuse) * float4(input.color, 1.0) + specular;
+}
+
+struct MirrorVertex {
+    float4 position : SV_Position;
+    float4 projected : TEXCOORD0;
+};
+
+MirrorVertex mirror_vs(VertexInput input) {
+    MirrorVertex output;
+    output.projected = mul(projection, mul(view, mul(model, float4(input.position, 1.0))));
+    output.position = output.projected;
+    return output;
+}
+
+Texture2D reflectionImage : register(t1);
+SamplerState reflectionSampler : register(s2);
+
+float4 mirror_ps(MirrorVertex input, bool frontFacing : SV_IsFrontFace) : SV_Target {
+    if (!frontFacing) {
+        return float4(0.0, 0.0, 0.0, 1.0);
+    }
+    float2 projected = input.projected.xy / input.projected.w * 0.5 + 0.5;
+    // Fluxel's +Y-up NDC maps to a top-left framebuffer origin.
+    projected.y = 1.0 - projected.y;
+    float4 color = 0.0;
+    [unroll] for (int x = -3; x <= 3; ++x) {
+        [unroll] for (int y = -3; y <= 3; ++y) {
+            color += reflectionImage.Sample(
+                reflectionSampler, projected + float2(x, y) / 512.0) / 49.0;
+        }
+    }
+    return float4(color.rgb, 1.0);
+}

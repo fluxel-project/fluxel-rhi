@@ -60,6 +60,7 @@ impl api::RasterExtrasOps<Vulkan> for RasterExtras {
 impl api::RasterBackend for Vulkan {
     fn begin_raster(e: &mut VulkanEncoder, d: &api::RasterPassDesc<'_, Self>) -> Result<()> {
         if e.raster
+            || e.compute
             || d.colors.len() != 1
             || d.multiview_mask.is_some()
             || d.timestamp_writes.is_some()
@@ -75,34 +76,51 @@ impl api::RasterBackend for Vulkan {
         if color.resolve_target.is_some() || !matches!(color.store, api::StoreOp::Store) {
             return Err(Error::Unsupported("Vulkan raster resolve/store operation"));
         }
-        let api::AttachmentView::Surface(image) = &color.view else {
-            return Err(Error::Unsupported("Vulkan texture raster attachment"));
+        let (color_view, surface_image) = match &color.view {
+            api::AttachmentView::Surface(image) => {
+                let native = unsafe { image.native_ref() };
+                let range = vk::ImageSubresourceRange::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .level_count(1)
+                    .layer_count(1);
+                // Swapchain images have their own WSI boundary. Texture
+                // attachments instead arrive in the explicit state selected
+                // by Core, so they receive no hidden layout transition here.
+                let to_color = vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::empty())
+                    .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(native.image)
+                    .subresource_range(range);
+                unsafe {
+                    e.device.device.cmd_pipeline_barrier(
+                        e.command,
+                        vk::PipelineStageFlags::TOP_OF_PIPE,
+                        vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                        vk::DependencyFlags::empty(),
+                        &[],
+                        &[],
+                        &[to_color],
+                    );
+                }
+                (native.view, Some(native.image))
+            }
+            api::AttachmentView::Texture(view) => {
+                let native = unsafe { view.native_ref() };
+                if d.render_area.x != 0
+                    || d.render_area.y != 0
+                    || native.attachment_extent(api::TextureAspects::COLOR)
+                        != Some([d.render_area.width, d.render_area.height])
+                {
+                    return Err(Error::InvalidRange);
+                }
+                e.attachments.push(native.clone());
+                (native.native(), None)
+            }
         };
-        let native_image = unsafe { image.native_ref() }.image;
-        let range = vk::ImageSubresourceRange::default()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
-            .level_count(1)
-            .layer_count(1);
-        let to_color = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::empty())
-            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(native_image)
-            .subresource_range(range);
-        unsafe {
-            e.device.device.cmd_pipeline_barrier(
-                e.command,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[to_color],
-            );
-        }
         let clear = match color.load {
             api::LoadOp::Clear(api::ClearColor::Float(v)) => vk::ClearValue {
                 color: vk::ClearColorValue { float32: v },
@@ -110,7 +128,7 @@ impl api::RasterBackend for Vulkan {
             _ => return Err(Error::Unsupported("Vulkan raster load operation")),
         };
         let attachment = vk::RenderingAttachmentInfo::default()
-            .image_view(unsafe { image.native_ref() }.view)
+            .image_view(color_view)
             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::STORE)
@@ -122,10 +140,23 @@ impl api::RasterBackend for Vulkan {
             let Some((api::LoadOp::Clear(value), store)) = depth.depth else {
                 return Err(Error::Unsupported("Vulkan depth load operation"));
             };
+            if !matches!(store, api::StoreOp::Discard) {
+                return Err(Error::Unsupported("Vulkan depth store operation"));
+            }
             let api::AttachmentView::Texture(view) = &depth.view else {
                 return Err(Error::Unsupported("Vulkan depth surface attachment"));
             };
             let native = unsafe { view.native_ref() };
+            if native.attachment_extent(api::TextureAspects::DEPTH)
+                != Some([d.render_area.width, d.render_area.height])
+            {
+                return Err(Error::InvalidRange);
+            }
+            // 07 clears then discards its depth attachments every pass.  The
+            // old depth contents therefore carry no meaning, so Vulkan may
+            // discard them with UNDEFINED instead of tracking a cross-frame
+            // layout. Load/Store depth attachments need an explicit state
+            // contract before this backend can support them.
             let to_depth = vk::ImageMemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::empty())
                 .dst_access_mask(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE)
@@ -157,11 +188,7 @@ impl api::RasterBackend for Vulkan {
                     .image_view(native.native())
                     .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
                     .load_op(vk::AttachmentLoadOp::CLEAR)
-                    .store_op(if matches!(store, api::StoreOp::Store) {
-                        vk::AttachmentStoreOp::STORE
-                    } else {
-                        vk::AttachmentStoreOp::DONT_CARE
-                    })
+                    .store_op(vk::AttachmentStoreOp::DONT_CARE)
                     .clear_value(vk::ClearValue {
                         depth_stencil: vk::ClearDepthStencilValue {
                             depth: value,
@@ -188,9 +215,11 @@ impl api::RasterBackend for Vulkan {
         if let Some(depth) = &depth_attachment {
             info = info.depth_attachment(depth);
         }
-        capture::prepare(e, d.render_area.width, d.render_area.height)?;
+        if surface_image.is_some() {
+            capture::prepare(e, d.render_area.width, d.render_area.height)?;
+        }
         unsafe { e.device.device.cmd_begin_rendering(e.command, &info) };
-        e.color_surface_image = Some(native_image);
+        e.color_surface_image = surface_image;
         e.raster = true;
         Ok(())
     }
@@ -362,9 +391,14 @@ impl api::RasterBackend for Vulkan {
         Ok(())
     }
     fn end_raster(e: &mut VulkanEncoder) -> Result<()> {
-        let image = e.color_surface_image.take().ok_or(Error::InvalidState)?;
+        if !e.raster {
+            return Err(Error::InvalidState);
+        }
+        let image = e.color_surface_image.take();
         unsafe { e.device.device.cmd_end_rendering(e.command) };
-        capture::finish(e, image);
+        if let Some(image) = image {
+            capture::finish(e, image);
+        }
         e.raster = false;
         e.raster_layout = None;
         e.raster_layout_state = None;
