@@ -105,13 +105,22 @@ impl VulkanTextureView {
     pub(super) fn usage(&self) -> api::TextureUsage {
         self.0.texture.0.desc.usage
     }
-    pub(super) fn attachment_extent(&self, aspects: api::TextureAspects) -> Option<[u32; 2]> {
+    /// Dynamic rendering maps multiview indices onto consecutive layers of a
+    /// 2D-array attachment.  The public pass owns the selected mask; this
+    /// helper only proves that the view can back every referenced layer.
+    pub(super) fn attachment_extent_for_layers(
+        &self,
+        aspects: api::TextureAspects,
+        layers: u32,
+    ) -> Option<[u32; 2]> {
         let view = &self.0.desc;
         let texture = &self.0.texture.0.desc;
-        if view.dimension != api::TextureViewDimension::D2
+        if !(layers == 1 && view.dimension == api::TextureViewDimension::D2
+            || layers > 1 && view.dimension == api::TextureViewDimension::D2Array)
             || view.aspects != aspects
             || view.mips.end != view.mips.start.checked_add(1)?
-            || view.layers.end != view.layers.start.checked_add(1)?
+            || view.layers.start != 0
+            || view.layers.end < layers
             || !texture.usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
         {
             return None;

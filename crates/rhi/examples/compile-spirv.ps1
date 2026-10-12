@@ -55,6 +55,10 @@ $jobs = @(
     ,@('13_multithreaded_recording', 'stars.hlsl', 'ps_main', 'ps_6_0', 'stars_ps.spv')
     ,@('14_descriptor_indexing', 'descriptor_indexing.hlsl', 'vs_main', 'vs_6_0', 'descriptor_indexing.vs.spv')
     ,@('14_descriptor_indexing', 'descriptor_indexing.hlsl', 'ps_main', 'ps_6_0', 'descriptor_indexing.ps.spv')
+    ,@('15_multiview', 'scene.hlsl', 'vs_main', 'vs_6_1', 'scene_vs.spv')
+    ,@('15_multiview', 'scene.hlsl', 'ps_main', 'ps_6_0', 'scene_ps.spv')
+    ,@('15_multiview', 'display.hlsl', 'vs_main', 'vs_6_0', 'display_vs.spv')
+    ,@('15_multiview', 'display.hlsl', 'ps_main', 'ps_6_0', 'display_ps.spv')
 )
 
 foreach ($job in $jobs) {

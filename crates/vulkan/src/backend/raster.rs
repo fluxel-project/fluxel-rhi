@@ -169,14 +169,14 @@ fn validate_indirect(
 
 impl api::RasterBackend for Vulkan {
     fn begin_raster(e: &mut VulkanEncoder, d: &api::RasterPassDesc<'_, Self>) -> Result<()> {
-        if e.raster
-            || e.compute
-            || d.colors.len() != 1
-            || d.multiview_mask.is_some()
-            || d.timestamp_writes.is_some()
-        {
+        if e.raster || e.compute || d.colors.len() != 1 || d.timestamp_writes.is_some() {
             return Err(Error::Unsupported("Vulkan raster pass configuration"));
         }
+        let multiview_layers = match d.multiview_mask {
+            None => 1,
+            Some(mask) if e.device.multiview && mask != 0 => 32 - mask.leading_zeros(),
+            Some(_) => return Err(Error::Unsupported("Vulkan multiview")),
+        };
         let color = d
             .colors
             .first()
@@ -185,43 +185,45 @@ impl api::RasterBackend for Vulkan {
         if color.resolve_target.is_none() && !matches!(color.store, api::StoreOp::Store) {
             return Err(Error::Unsupported("Vulkan raster resolve/store operation"));
         }
-        let (color_view, color_samples, mut surface, color_format, color_attachment) =
-            match &color.view {
-                api::AttachmentView::Surface(image) => {
-                    let surface = surface_attachment(image);
-                    if d.render_area.x != 0
-                        || d.render_area.y != 0
-                        || surface.extent
-                            != (vk::Extent2D {
-                                width: d.render_area.width,
-                                height: d.render_area.height,
-                            })
-                    {
-                        return Err(Error::InvalidRange);
-                    }
-                    (surface.view, 1, Some(surface), None, None)
+        let (color_view, color_samples, mut surface, color_format, color_attachment) = match &color
+            .view
+        {
+            api::AttachmentView::Surface(image) => {
+                let surface = surface_attachment(image);
+                if d.render_area.x != 0
+                    || d.render_area.y != 0
+                    || surface.extent
+                        != (vk::Extent2D {
+                            width: d.render_area.width,
+                            height: d.render_area.height,
+                        })
+                {
+                    return Err(Error::InvalidRange);
                 }
-                api::AttachmentView::Texture(view) => {
-                    let native = unsafe { view.native_ref() };
-                    if d.render_area.x != 0
-                        || d.render_area.y != 0
-                        || native.attachment_extent(api::TextureAspects::COLOR)
-                            != Some([d.render_area.width, d.render_area.height])
-                    {
-                        return Err(Error::InvalidRange);
-                    }
-                    (
-                        native.native(),
-                        native.samples(),
-                        None,
-                        Some(
-                            super::resource::format(native.format())
-                                .ok_or(Error::Unsupported("Vulkan color attachment format"))?,
-                        ),
-                        Some(native.clone()),
-                    )
+                (surface.view, 1, Some(surface), None, None)
+            }
+            api::AttachmentView::Texture(view) => {
+                let native = unsafe { view.native_ref() };
+                if d.render_area.x != 0
+                    || d.render_area.y != 0
+                    || native
+                        .attachment_extent_for_layers(api::TextureAspects::COLOR, multiview_layers)
+                        != Some([d.render_area.width, d.render_area.height])
+                {
+                    return Err(Error::InvalidRange);
                 }
-            };
+                (
+                    native.native(),
+                    native.samples(),
+                    None,
+                    Some(
+                        super::resource::format(native.format())
+                            .ok_or(Error::Unsupported("Vulkan color attachment format"))?,
+                    ),
+                    Some(native.clone()),
+                )
+            }
+        };
         let resolve = match color.resolve_target.as_ref() {
             None => {
                 if color_samples != 1 {
@@ -292,7 +294,7 @@ impl api::RasterBackend for Vulkan {
                 return Err(Error::Unsupported("Vulkan depth surface attachment"));
             };
             let native = unsafe { view.native_ref() };
-            if native.attachment_extent(api::TextureAspects::DEPTH)
+            if native.attachment_extent_for_layers(api::TextureAspects::DEPTH, multiview_layers)
                 != Some([d.render_area.width, d.render_area.height])
                 || native.samples() != color_samples
             {
@@ -315,7 +317,7 @@ impl api::RasterBackend for Vulkan {
                     vk::ImageSubresourceRange::default()
                         .aspect_mask(vk::ImageAspectFlags::DEPTH)
                         .level_count(1)
-                        .layer_count(1),
+                        .layer_count(multiview_layers),
                 );
             unsafe {
                 e.device.device.cmd_pipeline_barrier(
@@ -353,7 +355,7 @@ impl api::RasterBackend for Vulkan {
             let expected_depth = depth_attachment.as_ref().map(|_| vk::Format::D32_SFLOAT);
             if formats.as_slice() != [expected_color]
                 || signature.samples != color_samples
-                || signature.multiview_mask.is_some()
+                || signature.multiview_mask != d.multiview_mask
                 || signature
                     .depth_stencil_format
                     .and_then(super::resource::format)
@@ -375,6 +377,11 @@ impl api::RasterBackend for Vulkan {
             })
             .layer_count(1)
             .color_attachments(std::slice::from_ref(&attachment));
+        if let Some(mask) = d.multiview_mask {
+            // A nonzero view mask broadcasts the one draw to its selected
+            // attachment layers. Dynamic rendering requires layer_count=1.
+            info = info.view_mask(mask);
+        }
         if secondary_signature.is_some() {
             info = info.flags(vk::RenderingFlags::CONTENTS_SECONDARY_COMMAND_BUFFERS);
         }
@@ -392,11 +399,12 @@ impl api::RasterBackend for Vulkan {
         e.color_surface_image = surface.map(|surface| surface.image);
         e.raster = true;
         e.raster_index_bound = false;
+        e.raster_multiview_mask = d.multiview_mask;
         e.secondary_signature = secondary_signature.cloned();
         Ok(())
     }
     fn set_pipeline(e: &mut VulkanEncoder, p: &VulkanRasterPipeline) -> Result<()> {
-        if e.secondary_signature.is_some() {
+        if e.secondary_signature.is_some() || e.raster_multiview_mask != p.multiview_mask() {
             return Err(Error::InvalidState);
         }
         unsafe {
@@ -609,6 +617,7 @@ impl api::RasterBackend for Vulkan {
         }
         e.raster = false;
         e.raster_index_bound = false;
+        e.raster_multiview_mask = None;
         e.raster_layout = None;
         e.raster_layout_state = None;
         e.raster_push_constants = None;
@@ -623,6 +632,7 @@ impl api::RasterBackend for Vulkan {
             unsafe { e.device.device.cmd_end_rendering(e.command) };
             e.raster = false;
             e.raster_index_bound = false;
+            e.raster_multiview_mask = None;
             e.color_surface_image = None;
             e.raster_layout = None;
             e.raster_layout_state = None;

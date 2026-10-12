@@ -21,11 +21,14 @@ impl VulkanRasterPipeline {
     pub(crate) fn push_constants(&self) -> PushConstants {
         self.0.layout.push_constants()
     }
+    pub(crate) fn multiview_mask(&self) -> Option<u32> {
+        self.0.multiview_mask
+    }
     pub(crate) fn matches_secondary(&self, signature: &api::SecondaryRasterDesc) -> bool {
         self.0.color_formats.as_ref() == signature.color_formats.as_slice()
             && self.0.depth_format == signature.depth_stencil_format
             && self.0.samples == signature.samples
-            && signature.multiview_mask.is_none()
+            && self.0.multiview_mask == signature.multiview_mask
     }
 }
 struct Raster {
@@ -35,6 +38,7 @@ struct Raster {
     color_formats: Arc<[Option<api::TextureFormat>]>,
     depth_format: Option<api::TextureFormat>,
     samples: u32,
+    multiview_mask: Option<u32>,
 }
 impl Drop for Raster {
     fn drop(&mut self) {
@@ -54,10 +58,8 @@ pub(crate) fn create_raster(
     {
         return Err(Error::Unsupported("Vulkan raster specialization constants"));
     }
-    if desc.multiview.is_some() || desc.cache.is_some() {
-        return Err(Error::Unsupported(
-            "Vulkan raster multiview or pipeline cache",
-        ));
+    if desc.cache.is_some() {
+        return Err(Error::Unsupported("Vulkan raster pipeline cache"));
     }
     let vertex_name = CString::new(desc.vertex.entry.as_str())
         .map_err(|_| Error::Shader("shader entry contains NUL".into()))?;
@@ -232,8 +234,15 @@ pub(crate) fn create_raster(
         })
         .collect();
     let formats = formats?;
-    let mut rendering =
-        vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&formats);
+    let multiview_mask = desc
+        .multiview
+        .map(|views| (1_u32.checked_shl(views).unwrap_or(0)).wrapping_sub(1));
+    if desc.multiview.is_some() && multiview_mask == Some(0) {
+        return Err(Error::InvalidRange);
+    }
+    let mut rendering = vk::PipelineRenderingCreateInfo::default()
+        .color_attachment_formats(&formats)
+        .view_mask(multiview_mask.unwrap_or(0));
     if depth.is_some() {
         rendering = rendering.depth_attachment_format(vk::Format::D32_SFLOAT);
     }
@@ -270,6 +279,7 @@ pub(crate) fn create_raster(
         ),
         depth_format: desc.depth_stencil.as_ref().map(|depth| depth.format),
         samples: desc.multisample.count,
+        multiview_mask,
     })))
 }
 

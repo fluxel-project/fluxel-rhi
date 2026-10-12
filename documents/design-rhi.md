@@ -45,13 +45,13 @@ backend-wide Y flip into DX12.
 
 - `crates/core/src/api/` defines the public vocabulary and backend SPI traits.
 - `crates/rhi` is the typed facade and contains the numbered runnable examples.
-- `crates/dx12` is the active native backend. Its lowering is organized under
+- `crates/dx12` is an active native backend. Its lowering is organized under
   `backend/`, including `encoder/`, `pipeline`, `texture`, `descriptor`, `sampler`,
   `surface`, `query`, and `readback`.
-- `crates/vulkan` is an in-progress native backend with real device, resource,
+- `crates/vulkan` is an active, still incomplete native backend with real device, resource,
   SPIR-V, Win32 WSI, command buffer, descriptor, pipeline, and fence-backed
-  submission paths. Examples 01–14 have Vulkan validation-layer runtime and
-  GPU readback evidence; later numbered workloads are not yet supported.
+  submission paths. All 15 numbered examples have Vulkan validation-layer
+  runtime and GPU readback evidence.
 
 GL, Metal, and WebGPU are not active workspace backends. Documentation and CI
 must not treat source paths or compile checks as hardware execution evidence.

@@ -8,8 +8,12 @@ use fluxel_rhi::api::*;
 use std::sync::Arc;
 const SCENE_VS: &[u8] = include_bytes!("assets/15_multiview/scene_vs.dxil");
 const SCENE_PS: &[u8] = include_bytes!("assets/15_multiview/scene_ps.dxil");
+const SCENE_VS_SPIRV: &[u8] = include_bytes!("assets/15_multiview/scene_vs.spv");
+const SCENE_PS_SPIRV: &[u8] = include_bytes!("assets/15_multiview/scene_ps.spv");
 const DISPLAY_VS: &[u8] = include_bytes!("assets/15_multiview/display_vs.dxil");
 const DISPLAY_PS: &[u8] = include_bytes!("assets/15_multiview/display_ps.dxil");
+const DISPLAY_VS_SPIRV: &[u8] = include_bytes!("assets/15_multiview/display_vs.spv");
+const DISPLAY_PS_SPIRV: &[u8] = include_bytes!("assets/15_multiview/display_ps.spv");
 const ROOM: &[u8] = include_bytes!("assets/models/sampleroom.gltf");
 
 pub trait MultiviewBackend:
@@ -46,6 +50,9 @@ pub struct Multiview<B: MultiviewBackend> {
     lane: LaneId,
     vertices: Buffer<B>,
     indices: Buffer<B>,
+    vertex_bytes: Arc<[u8]>,
+    index_bytes: Arc<[u8]>,
+    uploaded: bool,
     vertex_len: u64,
     index_len: u64,
     index_count: u32,
@@ -69,6 +76,8 @@ impl<B: MultiviewBackend> Multiview<B> {
         extent: [u32; 2],
     ) -> Result<Self> {
         require_multiview(device, 2)?;
+        // Match the C++ sample's glTF preprocessing, including FlipY. The
+        // backend's viewport convention is applied after vertex processing.
         let room = gltf::load_embedded_model(ROOM, gltf::LoadOptions::CPP_PORT)
             .map_err(|error| Error::Backend(error.to_string()))?;
         let vertices = device.create_buffer(&BufferDesc {
@@ -85,7 +94,10 @@ impl<B: MultiviewBackend> Multiview<B> {
         })?;
         let uniforms = device.create_buffer(&BufferDesc {
             label: Some("15 two-eye transforms".into()),
-            size: 256,
+            // D3D12 CBV descriptors round their range to 256 bytes.  Keep
+            // the portable payload at 272 bytes but allocate its native-safe
+            // 512-byte envelope.
+            size: 512,
             usage: BufferUsage::UNIFORM.union(BufferUsage::COPY_DST),
             memory: MemoryClass::Device,
         })?;
@@ -97,8 +109,9 @@ impl<B: MultiviewBackend> Multiview<B> {
                 0,
                 BindingType::UniformBuffer {
                     dynamic_offset: false,
-                    min_size: 128,
+                    min_size: 272,
                 },
+                ShaderStage::Vertex,
             )],
         })?;
         let scene_group = device.create_bind_group(&BindGroupDesc {
@@ -108,7 +121,7 @@ impl<B: MultiviewBackend> Multiview<B> {
                 binding: 0,
                 resource: BindingResource::Buffer {
                     buffer: &uniforms,
-                    range: 0..256,
+                    range: 0..512,
                 },
             }],
         })?;
@@ -123,6 +136,8 @@ impl<B: MultiviewBackend> Multiview<B> {
             format,
             SCENE_VS,
             SCENE_PS,
+            SCENE_VS_SPIRV,
+            SCENE_PS_SPIRV,
             true,
             true,
             vec![VertexBufferLayout {
@@ -163,6 +178,7 @@ impl<B: MultiviewBackend> Multiview<B> {
                         dimension: TextureViewDimension::D2Array,
                         multisampled: false,
                     },
+                    ShaderStage::Fragment,
                 ),
                 binding(
                     1,
@@ -170,14 +186,15 @@ impl<B: MultiviewBackend> Multiview<B> {
                         filtering: true,
                         comparison: false,
                     },
+                    ShaderStage::Fragment,
                 ),
             ],
         })?;
         let sampler = device.create_sampler(&SamplerDesc {
             label: Some("15 display sampler".into()),
             address: [AddressMode::ClampToEdge; 3],
-            mag_filter: FilterMode::Linear,
-            min_filter: FilterMode::Linear,
+            mag_filter: FilterMode::Nearest,
+            min_filter: FilterMode::Nearest,
             mip_filter: FilterMode::Linear,
             lod: 0.0..1.0,
             anisotropy: 1,
@@ -210,18 +227,26 @@ impl<B: MultiviewBackend> Multiview<B> {
             format,
             DISPLAY_VS,
             DISPLAY_PS,
+            DISPLAY_VS_SPIRV,
+            DISPLAY_PS_SPIRV,
             false,
             false,
             vec![],
         )
         .await?;
+        let vertex_len = room.vertices.len() as u64;
+        let index_len = room.indices.len() as u64;
+        let index_count = (room.indices.len() / 4) as u32;
         Ok(Self {
             lane,
             vertices,
             indices,
-            vertex_len: room.vertices.len() as u64,
-            index_len: room.indices.len() as u64,
-            index_count: (room.indices.len() / 4) as u32,
+            vertex_bytes: Arc::from(room.vertices),
+            index_bytes: Arc::from(room.indices),
+            uploaded: false,
+            vertex_len,
+            index_len,
+            index_count,
             uniforms,
             scene_group,
             scene,
@@ -235,21 +260,42 @@ impl<B: MultiviewBackend> Multiview<B> {
             extent,
         })
     }
-    pub fn record(&self, device: &Device<B>, image: &SurfaceImage<B>) -> Result<RecordedWork<B>> {
+    pub fn record(
+        &mut self,
+        device: &Device<B>,
+        image: &SurfaceImage<B>,
+    ) -> Result<(RecordedWork<B>, bool)> {
         let mut encoder = device.encoder(self.lane)?;
-        let room = gltf::load_embedded_model(ROOM, gltf::LoadOptions::CPP_PORT)
-            .map_err(|error| Error::Backend(error.to_string()))?;
-        encoder.write_buffer(&self.vertices, 0, &room.vertices)?;
-        encoder.write_buffer(&self.indices, 0, &room.indices)?;
+        let uploads_geometry = !self.uploaded;
+        if uploads_geometry {
+            encoder.write_buffer(&self.vertices, 0, &self.vertex_bytes)?;
+            encoder.write_buffer(&self.indices, 0, &self.index_bytes)?;
+        }
         encoder.write_buffer(&self.uniforms, 0, &two_eye_matrices(self.extent))?;
+        // This attachment survives between frames. After the first accepted
+        // submission, the display pass leaves both layers shader-readable.
+        let (previous_layout, previous_uses) = if self.uploaded {
+            (
+                ImageLayout::ShaderReadOnly,
+                TextureUses {
+                    stages: StageMask::FRAGMENT,
+                    accesses: AccessMask::SHADER_READ,
+                },
+            )
+        } else {
+            (
+                ImageLayout::Undefined,
+                TextureUses {
+                    stages: StageMask::EMPTY,
+                    accesses: AccessMask::EMPTY,
+                },
+            )
+        };
         encoder.transition_resources(&[transition(
             &self.views,
-            ImageLayout::Undefined,
+            previous_layout,
             ImageLayout::ColorAttachment,
-            TextureUses {
-                stages: StageMask::EMPTY,
-                accesses: AccessMask::EMPTY,
-            },
+            previous_uses,
             TextureUses {
                 stages: StageMask::COLOR_OUTPUT,
                 accesses: AccessMask::COLOR_WRITE,
@@ -258,9 +304,6 @@ impl<B: MultiviewBackend> Multiview<B> {
         let scene_color = [Some(ColorAttachment {
             view: AttachmentView::Texture(&self.view),
             resolve_target: None,
-            // Diagnostic: a visible layer clear separates a failed scene draw
-            // from a failed array-SRV/display pass. Restore the scene clear
-            // after the capture establishes which boundary is at fault.
             load: LoadOp::Clear(ClearColor::Float([0.0, 0.0, 0.0, 0.0])),
             store: StoreOp::Store,
         })];
@@ -283,6 +326,20 @@ impl<B: MultiviewBackend> Multiview<B> {
             multiview_mask: Some(0b11),
             timestamp_writes: None,
             secondary_inheritance: None,
+        })?;
+        scene.viewport(Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: self.extent[0] as f32,
+            height: self.extent[1] as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        })?;
+        scene.scissor(Rect {
+            x: 0,
+            y: 0,
+            width: self.extent[0],
+            height: self.extent[1],
         })?;
         scene.set_pipeline(&self.scene)?;
         scene.set_bind_group(0, &self.scene_group, &[])?;
@@ -323,11 +380,29 @@ impl<B: MultiviewBackend> Multiview<B> {
             timestamp_writes: None,
             secondary_inheritance: None,
         })?;
+        display.viewport(Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: self.extent[0] as f32,
+            height: self.extent[1] as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        })?;
+        display.scissor(Rect {
+            x: 0,
+            y: 0,
+            width: self.extent[0],
+            height: self.extent[1],
+        })?;
         display.set_pipeline(&self.display)?;
         display.set_bind_group(0, &self.group, &[])?;
         display.draw(0..3, 0..1)?;
         display.finish()?;
-        encoder.finish()
+        let work = encoder.finish()?;
+        Ok((work, uploads_geometry))
+    }
+    fn mark_uploaded(&mut self) {
+        self.uploaded = true;
     }
     pub fn extent(&self) -> [u32; 2] {
         self.extent
@@ -391,10 +466,10 @@ fn layered_depth<B: MultiviewBackend>(
     )?;
     Ok((texture, view))
 }
-fn binding(binding: u32, ty: BindingType) -> BindGroupLayoutEntry {
+fn binding(binding: u32, ty: BindingType, visibility: ShaderStage) -> BindGroupLayoutEntry {
     BindGroupLayoutEntry {
         binding,
-        visibility: vec![ShaderStage::Fragment],
+        visibility: vec![visibility],
         ty,
         count: BindingCount::One,
         partially_bound: false,
@@ -429,36 +504,30 @@ async fn pipeline<B: MultiviewBackend>(
     format: TextureFormat,
     vs: &[u8],
     ps: &[u8],
+    vs_spirv: &[u8],
+    ps_spirv: &[u8],
     multiview: bool,
     depth: bool,
     vertex_buffers: Vec<VertexBufferLayout>,
 ) -> Result<RasterPipeline<B>> {
-    let vs = device
-        .shader(ShaderDesc {
-            label: Some("15 VS".into()),
-            format: ShaderFormat::Dxil,
-            bytes: Arc::from(vs),
-            entries: vec![ShaderEntryPoint {
-                name: "vs_main".into(),
-                stage: ShaderStage::Vertex,
-                workgroup_size: None,
-            }],
-            required_features: vec![],
-        })
-        .await?;
-    let ps = device
-        .shader(ShaderDesc {
-            label: Some("15 PS".into()),
-            format: ShaderFormat::Dxil,
-            bytes: Arc::from(ps),
-            entries: vec![ShaderEntryPoint {
-                name: "ps_main".into(),
-                stage: ShaderStage::Fragment,
-                workgroup_size: None,
-            }],
-            required_features: vec![],
-        })
-        .await?;
+    let vs = common::native_shader(
+        device,
+        "15 VS",
+        "vs_main",
+        ShaderStage::Vertex,
+        vs,
+        vs_spirv,
+    )
+    .await?;
+    let ps = common::native_shader(
+        device,
+        "15 PS",
+        "ps_main",
+        ShaderStage::Fragment,
+        ps,
+        ps_spirv,
+    )
+    .await?;
     device
         .raster_pipeline(RasterPipelineDesc {
             label: Some("15 raster pipeline".into()),
@@ -520,18 +589,7 @@ async fn pipeline<B: MultiviewBackend>(
         })
         .await
 }
-fn triangle() -> [u8; 72] {
-    let values = [
-        0.0_f32, 0.55, 0.0, 1.0, 0.2, 0.1, -0.55, -0.5, 0.0, 0.1, 1.0, 0.25, 0.55, -0.5, 0.0, 0.2,
-        0.35, 1.0,
-    ];
-    let mut bytes = [0; 72];
-    for (index, value) in values.into_iter().enumerate() {
-        bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
-    }
-    bytes
-}
-fn two_eye_matrices(extent: [u32; 2]) -> [u8; 256] {
+fn two_eye_matrices(extent: [u32; 2]) -> [u8; 272] {
     // Same stereo frusta and first-person camera as the C++ multiview sample:
     // 90° FOV, near/far 0.1/256, 0.08 eye separation, camera (7, 3.2, 0)
     // rotated +90° around Y. Matrices are column-major for HLSL `mul(M, v)`.
@@ -560,43 +618,33 @@ fn two_eye_matrices(extent: [u32; 2]) -> [u8; 256] {
             0.0,
         ]
     };
-    let multiply = |a: [f32; 16], b: [f32; 16]| {
-        let mut out = [0.0; 16];
-        for column in 0..4 {
-            for row in 0..4 {
-                out[column * 4 + row] = (0..4).map(|k| a[k * 4 + row] * b[column * 4 + k]).sum();
-            }
-        }
-        out
-    };
     let modelview = |z: f32| {
         // `rotY(90°) * translate(7, 3.2, z)` from Camera::updateViewMatrix.
         [
             0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, z, 3.2, -7.0, 1.0,
         ]
     };
-    let left = multiply(
-        projection(
-            -aspect * half_width - eye_shift,
-            aspect * half_width - eye_shift,
-        ),
-        modelview(0.04),
-    );
-    let right = multiply(
-        projection(
-            -aspect * half_width + eye_shift,
-            aspect * half_width + eye_shift,
-        ),
-        modelview(-0.04),
-    );
-    let mut bytes = [0; 256];
-    for (index, value) in left.into_iter().chain(right).enumerate() {
+    let mut bytes = [0; 272];
+    for (index, value) in projection(
+        -aspect * half_width - eye_shift,
+        aspect * half_width - eye_shift,
+    )
+    .into_iter()
+    .chain(projection(
+        -aspect * half_width + eye_shift,
+        aspect * half_width + eye_shift,
+    ))
+    .chain(modelview(0.04))
+    .chain(modelview(-0.04))
+    .chain([-2.5, -3.5, 0.0, 1.0])
+    .enumerate()
+    {
         bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
     }
     bytes
 }
 #[cfg(windows)]
-fn main() {
+fn run<B: MultiviewBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Bgra8Unorm,
@@ -606,8 +654,9 @@ fn main() {
         usage: SurfaceUsage::RENDER_ATTACHMENT,
         maximum_frame_latency: 2,
     };
-    let result = common::run_example(
-        common::windows_api::Dx12Host,
+    let mut scene: Option<Multiview<B>> = None;
+    common::run_example(
+        host,
         "Multiview rendering",
         config.clone(),
         move |device, _, image, extent| {
@@ -618,14 +667,39 @@ fn main() {
                 .find(|lane| lane.class == LaneClass::Graphics)
                 .map(|lane| lane.id)
                 .ok_or(Error::Unsupported("graphics lane"))?;
-            // The attachment has an explicit Undefined/COMMON initial
-            // transition, so rebuild it each frame rather than pretending a
-            // device-wide state tracker knows its previous layout.
-            let example = common::block_on(Multiview::new(device, lane, config.format, extent))?;
-            let work = example.record(device, &image)?;
-            common::submit_and_present(device, lane, work, image)
+            if scene
+                .as_ref()
+                .is_none_or(|example| example.extent() != extent)
+            {
+                scene = Some(common::block_on(Multiview::new(
+                    device,
+                    lane,
+                    config.format,
+                    extent,
+                ))?);
+            }
+            let example = scene.as_mut().ok_or(Error::InvalidState)?;
+            let (work, uploaded_geometry) = example.record(device, &image)?;
+            common::submit_and_present(device, lane, work, image)?;
+            if uploaded_geometry {
+                example.mark_uploaded();
+            }
+            Ok(())
         },
-    );
+    )
+}
+#[cfg(windows)]
+fn main() {
+    let result = match common::windows_api::selected_backend() {
+        Ok(common::windows_api::SelectedBackend::Dx12) => {
+            run::<fluxel_rhi::dx12::Dx12, _>(common::windows_api::Dx12Host)
+        }
+        #[cfg(feature = "vulkan")]
+        Ok(common::windows_api::SelectedBackend::Vulkan) => {
+            run::<fluxel_rhi::vulkan::Vulkan, _>(common::windows_api::VulkanHost)
+        }
+        Err(error) => Err(error),
+    };
     if let Err(error) = result {
         eprintln!("15_multiview: {error:?}");
         std::process::exit(1);

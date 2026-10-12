@@ -57,6 +57,9 @@ struct DeviceState {
     graphics_family: u32,
     shader_clip_distance: bool,
     multi_draw_indirect: bool,
+    /// Enabled at device creation, so dynamic rendering may broadcast one
+    /// graphics invocation to the layers selected by `RenderingInfo::view_mask`.
+    multiview: bool,
     /// The descriptor-indexing feature subset required by the public binding
     /// array contract.  Layout creation is deliberately gated by Core
     /// capabilities; retaining this fact here keeps native lowering honest.
@@ -468,13 +471,22 @@ impl InstanceBackend for Vulkan {
             .iter()
             .position(|f| f.queue_flags.contains(vk::QueueFlags::GRAPHICS))
             .ok_or(Error::Unsupported("a Vulkan graphics queue"))? as u32;
-            let (dynamic_rendering, shader_clip_distance, multi_draw_indirect, descriptor_indexing) = {
+            let (
+                dynamic_rendering,
+                shader_clip_distance,
+                multi_draw_indirect,
+                descriptor_indexing,
+                multiview,
+                max_multiview_views,
+            ) = {
                 let mut available13 = vk::PhysicalDeviceVulkan13Features::default();
                 let mut available_descriptor_indexing =
                     vk::PhysicalDeviceDescriptorIndexingFeatures::default();
+                let mut available_multiview = vk::PhysicalDeviceMultiviewFeatures::default();
                 let mut available = vk::PhysicalDeviceFeatures2::default()
                     .push_next(&mut available13)
-                    .push_next(&mut available_descriptor_indexing);
+                    .push_next(&mut available_descriptor_indexing)
+                    .push_next(&mut available_multiview);
                 unsafe {
                     instance
                         .0
@@ -491,11 +503,24 @@ impl InstanceBackend for Vulkan {
                     && available_descriptor_indexing
                         .shader_sampled_image_array_non_uniform_indexing
                         == vk::TRUE;
+                let multiview = available_multiview.multiview == vk::TRUE;
+                let mut multiview_properties = vk::PhysicalDeviceMultiviewProperties::default();
+                let mut properties =
+                    vk::PhysicalDeviceProperties2::default().push_next(&mut multiview_properties);
+                unsafe {
+                    instance
+                        .0
+                        .instance
+                        .get_physical_device_properties2(physical, &mut properties)
+                };
+                let max_multiview_views = multiview_properties.max_multiview_view_count;
                 (
                     dynamic_rendering,
                     shader_clip_distance,
                     multi_draw_indirect,
                     descriptor_indexing,
+                    multiview,
+                    max_multiview_views,
                 )
             };
             if !dynamic_rendering {
@@ -516,12 +541,15 @@ impl InstanceBackend for Vulkan {
                     .runtime_descriptor_array(descriptor_indexing)
                     .descriptor_binding_variable_descriptor_count(descriptor_indexing)
                     .shader_sampled_image_array_non_uniform_indexing(descriptor_indexing);
+            let mut multiview_features =
+                vk::PhysicalDeviceMultiviewFeatures::default().multiview(multiview);
             let create = vk::DeviceCreateInfo::default()
                 .queue_create_infos(std::slice::from_ref(&queue))
                 .enabled_extension_names(&extensions)
                 .enabled_features(&enabled_features)
                 .push_next(&mut vulkan13)
-                .push_next(&mut descriptor_indexing_features);
+                .push_next(&mut descriptor_indexing_features)
+                .push_next(&mut multiview_features);
             let native = unsafe { instance.0.instance.create_device(physical, &create, None) }
                 .map_err(vk_error)?;
             let graphics_queue = unsafe { native.get_device_queue(family, 0) };
@@ -544,6 +572,7 @@ impl InstanceBackend for Vulkan {
                     graphics_family: family,
                     shader_clip_distance,
                     multi_draw_indirect,
+                    multiview,
                     descriptor_indexing,
                     max_sampled_images: limits
                         .max_per_stage_descriptor_sampled_images
@@ -555,6 +584,7 @@ impl InstanceBackend for Vulkan {
                     compute: true,
                     indirect_draw: true,
                     multi_draw: multi_draw_indirect,
+                    multiview,
                     binding_arrays: descriptor_indexing,
                     runtime_sized_binding_arrays: descriptor_indexing,
                     nonuniform_sampled_texture_and_storage_buffer_indexing: descriptor_indexing,
@@ -579,6 +609,7 @@ impl InstanceBackend for Vulkan {
                         max_vertex_buffers: limits.max_vertex_input_bindings,
                         max_vertex_attributes: limits.max_vertex_input_attributes,
                         max_push_constant_bytes: limits.max_push_constants_size,
+                        max_multiview_views,
                         uniform_offset_alignment: limits.min_uniform_buffer_offset_alignment,
                         storage_offset_alignment: limits.min_storage_buffer_offset_alignment,
                         ..Default::default()

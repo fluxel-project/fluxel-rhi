@@ -208,7 +208,7 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
         image: &SurfaceImage<B>,
         extent: [u32; 2],
         time: f32,
-    ) -> Result<RecordedWork<B>> {
+    ) -> Result<(RecordedWork<B>, bool)> {
         if self.depth_extent != extent {
             let (depth, depth_view) = depth_target(d, extent)?;
             self.depth = depth;
@@ -216,7 +216,8 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
             self.depth_extent = extent;
         }
         let mut e = d.encoder(self.lane)?;
-        if !self.uploaded {
+        let upload_geometry = !self.uploaded;
+        if upload_geometry {
             e.write_buffer(&self.vertex, 0, &cube_vertices())?;
             e.write_buffer(&self.index, 0, &cube_indices())?;
             for (i, t) in self.textures.iter().enumerate() {
@@ -294,11 +295,11 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
         p.draw_indexed(0..INDICES_PER_CUBE * CUBES as u32, 0, 0..1)?;
         p.finish()?;
         let work = e.finish()?;
-        // Retain the initialization request until the complete command buffer
-        // has been recorded.  A recoverable recording error must not make a
-        // later frame draw uninitialized geometry or images.
+        Ok((work, upload_geometry))
+    }
+
+    fn mark_uploaded(&mut self) {
         self.uploaded = true;
-        Ok(work)
     }
 }
 fn buffer(label: &str, size: u64, usage: BufferUsage) -> BufferDesc {
@@ -619,13 +620,17 @@ fn run<B: DescriptorIndexingBackend, H: common::ExampleHost<B>>(host: H) -> Resu
                     e,
                 ))?)
             }
-            let w = scene.as_mut().ok_or(Error::InvalidState)?.record(
+            let (w, uploaded_geometry) = scene.as_mut().ok_or(Error::InvalidState)?.record(
                 d,
                 &i,
                 e,
                 start.elapsed().as_secs_f32(),
             )?;
-            common::submit_and_present(d, lane, w, i)
+            common::submit_and_present(d, lane, w, i)?;
+            if uploaded_geometry {
+                scene.as_mut().ok_or(Error::InvalidState)?.mark_uploaded();
+            }
+            Ok(())
         },
     )
 }

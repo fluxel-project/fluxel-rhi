@@ -250,7 +250,7 @@ impl<B: SecondaryExampleBackend> Multithreaded<B> {
         d: &Device<B>,
         image: &SurfaceImage<B>,
         extent: [u32; 2],
-    ) -> Result<RecordedWork<B>>
+    ) -> Result<(RecordedWork<B>, bool)>
     where
         B::NativeDevice: Send + Sync,
         B::NativeRasterPipeline: Send + Sync,
@@ -363,13 +363,11 @@ impl<B: SecondaryExampleBackend> Multithreaded<B> {
         // attachment.  Keep the local binding alive through `finish` as well.
         let _ = depth;
         let work = e.finish()?;
-        // Do not mark the immutable geometry resident until its upload encoder
-        // has successfully finished.  A recoverable recording error must
-        // cause the next attempt to upload it again.
-        if upload_geometry {
-            self.uploaded = true;
-        }
-        Ok(work)
+        Ok((work, upload_geometry))
+    }
+
+    fn mark_uploaded(&mut self) {
+        self.uploaded = true;
     }
 }
 
@@ -680,11 +678,15 @@ where
             if scene.is_none() {
                 scene = Some(common::block_on(Multithreaded::new(d, lane, cfg.format))?)
             }
-            let work = scene
+            let (work, uploaded_geometry) = scene
                 .as_mut()
                 .ok_or(Error::InvalidState)?
                 .record(d, &image, extent)?;
-            common::submit_and_present(d, lane, work, image)
+            common::submit_and_present(d, lane, work, image)?;
+            if uploaded_geometry {
+                scene.as_mut().ok_or(Error::InvalidState)?.mark_uploaded();
+            }
+            Ok(())
         },
     )
 }

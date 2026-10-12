@@ -30,6 +30,9 @@ pub struct VulkanEncoder {
     pub(super) capture: Option<FrameCapture>,
     pub(super) raster_layout: Option<vk::PipelineLayout>,
     pub(super) raster_index_bound: bool,
+    /// The dynamic-rendering view mask of the active primary pass. Pipelines
+    /// carry their own creation-time mask and must match it before binding.
+    pub(super) raster_multiview_mask: Option<u32>,
     pub(super) raster_layout_state: Option<super::pipeline::VulkanPipelineLayout>,
     pub(super) raster_push_constants: Option<super::pipeline::PushConstants>,
     /// Set only for a primary dynamic-rendering pass that accepts inherited
@@ -84,6 +87,7 @@ impl VulkanEncoder {
             capture: None,
             raster_layout: None,
             raster_index_bound: false,
+            raster_multiview_mask: None,
             raster_layout_state: None,
             raster_push_constants: None,
             secondary_signature: None,
