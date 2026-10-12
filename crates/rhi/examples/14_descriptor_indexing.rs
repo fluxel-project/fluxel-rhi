@@ -1,7 +1,6 @@
 //! Runtime-sized, non-uniformly indexed 32-texture cube scene using RHI.
 mod common;
 use fluxel_rhi::api::*;
-use std::sync::Arc;
 const TEXTURES: usize = 32;
 const CUBES: usize = 5;
 const VERTEX_BYTES: u64 = 24;
@@ -9,6 +8,8 @@ const VERTICES_PER_CUBE: u32 = 24;
 const INDICES_PER_CUBE: u32 = 36;
 const VS: &[u8] = include_bytes!("assets/14_descriptor_indexing/descriptor_indexing.vs.dxil");
 const PS: &[u8] = include_bytes!("assets/14_descriptor_indexing/descriptor_indexing.ps.dxil");
+const VS_SPIRV: &[u8] = include_bytes!("assets/14_descriptor_indexing/descriptor_indexing.vs.spv");
+const PS_SPIRV: &[u8] = include_bytes!("assets/14_descriptor_indexing/descriptor_indexing.ps.spv");
 pub trait DescriptorIndexingBackend:
     Backend + ResourceBackend + ShaderBackend + PipelineBackend + RasterBackend + DeferredBackend
 {
@@ -85,8 +86,9 @@ pub struct DescriptorIndexing<B: DescriptorIndexingBackend> {
     index: Buffer<B>,
     uniform: Buffer<B>,
     textures: Vec<Texture<B>>,
-    _depth: Texture<B>,
+    depth: Texture<B>,
     depth_view: TextureView<B>,
+    depth_extent: [u32; 2],
     group: BindGroup<B>,
     pipeline: RasterPipeline<B>,
     uploaded: bool,
@@ -192,8 +194,9 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
             index,
             uniform,
             textures,
-            _depth: depth,
+            depth,
             depth_view,
+            depth_extent: extent,
             group,
             pipeline,
             uploaded: false,
@@ -206,6 +209,12 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
         extent: [u32; 2],
         time: f32,
     ) -> Result<RecordedWork<B>> {
+        if self.depth_extent != extent {
+            let (depth, depth_view) = depth_target(d, extent)?;
+            self.depth = depth;
+            self.depth_view = depth_view;
+            self.depth_extent = extent;
+        }
         let mut e = d.encoder(self.lane)?;
         if !self.uploaded {
             e.write_buffer(&self.vertex, 0, &cube_vertices())?;
@@ -228,13 +237,12 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
                     &p,
                 )?
             }
-            self.uploaded = true
         }
         e.write_buffer(&self.uniform, 0, &matrices(extent, time))?;
         let colors = [Some(ColorAttachment {
             view: AttachmentView::Surface(image),
             resolve_target: None,
-            load: LoadOp::Clear(ClearColor::Float([0.025, 0.025, 0.04, 1.])),
+            load: LoadOp::Clear(ClearColor::Float([0.025, 0.025, 0.025, 1.])),
             store: StoreOp::Store,
         })];
         let mut p = e.begin_raster(&RasterPassDesc {
@@ -257,6 +265,20 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
             timestamp_writes: None,
             secondary_inheritance: None,
         })?;
+        p.viewport(Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: extent[0] as f32,
+            height: extent[1] as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        })?;
+        p.scissor(Rect {
+            x: 0,
+            y: 0,
+            width: extent[0],
+            height: extent[1],
+        })?;
         p.set_pipeline(&self.pipeline)?;
         p.set_bind_group(0, &self.group, &[])?;
         p.set_vertex_buffer(
@@ -271,7 +293,12 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
         )?;
         p.draw_indexed(0..INDICES_PER_CUBE * CUBES as u32, 0, 0..1)?;
         p.finish()?;
-        e.finish()
+        let work = e.finish()?;
+        // Retain the initialization request until the complete command buffer
+        // has been recorded.  A recoverable recording error must not make a
+        // later frame draw uninitialized geometry or images.
+        self.uploaded = true;
+        Ok(work)
     }
 }
 fn buffer(label: &str, size: u64, usage: BufferUsage) -> BufferDesc {
@@ -314,33 +341,24 @@ async fn pipeline<B: DescriptorIndexingBackend>(
     layout: PipelineLayout<B>,
     format: TextureFormat,
 ) -> Result<RasterPipeline<B>> {
-    let desc = |label: &str, bytes: &[u8], entry: &str, stage| ShaderDesc {
-        label: Some(label.into()),
-        format: ShaderFormat::Dxil,
-        bytes: Arc::from(bytes),
-        entries: vec![ShaderEntryPoint {
-            name: entry.into(),
-            stage,
-            workgroup_size: None,
-        }],
-        required_features: vec![],
-    };
-    let vs = d
-        .shader(desc(
-            "14 descriptor vertex",
-            VS,
-            "vs_main",
-            ShaderStage::Vertex,
-        ))
-        .await?;
-    let ps = d
-        .shader(desc(
-            "14 descriptor fragment",
-            PS,
-            "ps_main",
-            ShaderStage::Fragment,
-        ))
-        .await?;
+    let vs = common::native_shader(
+        d,
+        "14 descriptor vertex",
+        "vs_main",
+        ShaderStage::Vertex,
+        VS,
+        VS_SPIRV,
+    )
+    .await?;
+    let ps = common::native_shader(
+        d,
+        "14 descriptor fragment",
+        "ps_main",
+        ShaderStage::Fragment,
+        PS,
+        PS_SPIRV,
+    )
+    .await?;
     d.raster_pipeline(RasterPipelineDesc {
         label: Some("14 descriptor-indexing pipeline".into()),
         layout,
@@ -426,16 +444,18 @@ async fn pipeline<B: DescriptorIndexingBackend>(
 }
 fn texture_pixels(n: u8) -> [u8; 36] {
     let mut p = [0; 36];
-    for y in 0..3 {
-        for x in 0..3 {
-            let i = (y * 3 + x) * 4;
-            p[i..i + 4].copy_from_slice(&[
-                n.wrapping_mul(37).wrapping_add(x as u8 * 45),
-                n.wrapping_mul(17).wrapping_add(y as u8 * 65),
-                n.wrapping_mul(73),
-                255,
-            ])
+    // C++ fills every texel independently with a bright random RGB value.
+    // A fixed local generator gives the same patchwork character while making
+    // screenshot evidence reproducible.
+    let mut state = 0x9e37_79b9_u32 ^ u32::from(n).wrapping_mul(0x85eb_ca6b);
+    for texel in p.chunks_exact_mut(4) {
+        for channel in &mut texel[..3] {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            *channel = 50 + (state % 206) as u8;
         }
+        texel[3] = 255;
     }
     p
 }
@@ -475,10 +495,19 @@ fn cube_vertices() -> Vec<u8> {
             for value in position.into_iter().chain(uv) {
                 o.extend_from_slice(&value.to_ne_bytes());
             }
-            o.extend_from_slice(&(((cube * 6 + vertex / 4) % TEXTURES) as u32).to_ne_bytes());
+            let face = vertex / 4;
+            let texture = texture_index(cube as u32, face as u32);
+            o.extend_from_slice(&texture.to_ne_bytes());
         }
     }
     o
+}
+fn texture_index(cube: u32, face: u32) -> u32 {
+    let mut state = (cube + 1).wrapping_mul(0x9e37_79b9) ^ face.wrapping_mul(0x85eb_ca6b);
+    state ^= state >> 16;
+    state = state.wrapping_mul(0x7feb_352d);
+    state ^= state >> 15;
+    state % TEXTURES as u32
 }
 fn cube_indices() -> Vec<u8> {
     let local = [
@@ -505,7 +534,10 @@ fn matrices(extent: [u32; 2], _time: f32) -> [u8; 256] {
         0.,
         0.,
         0.,
-        f,
+        // Fluxel exposes WebGPU-style Y-up NDC.  The C++ sample uses a
+        // positive-height Vulkan viewport, which maps that axis downward;
+        // the backend's negative viewport maps it upward instead.
+        -f,
         0.,
         0.,
         0.,
@@ -556,8 +588,7 @@ fn matrices(extent: [u32; 2], _time: f32) -> [u8; 256] {
     b
 }
 #[cfg(windows)]
-fn main() {
-    use fluxel_rhi::dx12::Dx12;
+fn run<B: DescriptorIndexingBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Bgra8Unorm,
@@ -568,9 +599,9 @@ fn main() {
         maximum_frame_latency: 2,
     };
     let start = std::time::Instant::now();
-    let mut scene: Option<DescriptorIndexing<Dx12>> = None;
-    let r = common::run_example(
-        common::windows_api::Dx12Host,
+    let mut scene: Option<DescriptorIndexing<B>> = None;
+    common::run_example(
+        host,
         "Descriptor indexing",
         config.clone(),
         move |d, _, i, e| {
@@ -596,7 +627,20 @@ fn main() {
             )?;
             common::submit_and_present(d, lane, w, i)
         },
-    );
+    )
+}
+#[cfg(windows)]
+fn main() {
+    let r = match common::windows_api::selected_backend() {
+        Ok(common::windows_api::SelectedBackend::Dx12) => {
+            run::<fluxel_rhi::dx12::Dx12, _>(common::windows_api::Dx12Host)
+        }
+        #[cfg(feature = "vulkan")]
+        Ok(common::windows_api::SelectedBackend::Vulkan) => {
+            run::<fluxel_rhi::vulkan::Vulkan, _>(common::windows_api::VulkanHost)
+        }
+        Err(error) => Err(error),
+    };
     if let Err(e) = r {
         eprintln!("14_descriptor_indexing: {e:?}");
         std::process::exit(1)

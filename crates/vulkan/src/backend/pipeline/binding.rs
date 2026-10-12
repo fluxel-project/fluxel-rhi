@@ -98,21 +98,64 @@ pub(crate) fn create_group_layout(
         .entries
         .iter()
         .map(|e| {
+            if e.partially_bound {
+                return Err(Error::Unsupported("Vulkan partially-bound descriptors"));
+            }
+            // The public contract permits arrays of several binding kinds,
+            // but this native path only lowers sampled-image arrays.  Reject
+            // other kinds while creating the layout instead of advertising a
+            // layout that would fail later during descriptor writes.
             if !matches!(e.count, api::BindingCount::One)
-                || e.partially_bound
-                || e.nonuniform_indexing
+                && !matches!(&e.ty, api::BindingType::SampledTexture { .. })
             {
-                return Err(Error::Unsupported("Vulkan descriptor array layout"));
+                return Err(Error::Unsupported("Vulkan descriptor array binding type"));
+            }
+            if e.nonuniform_indexing && !matches!(&e.ty, api::BindingType::SampledTexture { .. }) {
+                return Err(Error::Unsupported("Vulkan nonuniform binding type"));
+            }
+            let descriptor_count = match e.count {
+                api::BindingCount::One => 1,
+                api::BindingCount::Fixed(count) => {
+                    if count > device.0.max_sampled_images {
+                        return Err(Error::InvalidRange);
+                    }
+                    count
+                }
+                // Vulkan requires an upper bound in the layout even though
+                // the set is allocated with its actual variable count.
+                api::BindingCount::RuntimeSized => {
+                    if !device.0.descriptor_indexing {
+                        return Err(Error::Unsupported("Vulkan descriptor indexing"));
+                    }
+                    device.0.max_sampled_images
+                }
+            };
+            if descriptor_count == 0 {
+                return Err(Error::InvalidRange);
             }
             Ok(vk::DescriptorSetLayoutBinding::default()
                 .binding(e.binding)
                 .descriptor_type(dtype(&e.ty)?)
-                .descriptor_count(1)
+                .descriptor_count(descriptor_count)
                 .stage_flags(stages(&e.visibility)?))
         })
         .collect();
     let bindings = bindings?;
-    let info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
+    let binding_flags: Vec<_> = desc
+        .entries
+        .iter()
+        .map(|entry| match entry.count {
+            api::BindingCount::RuntimeSized => {
+                vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT
+            }
+            _ => vk::DescriptorBindingFlags::empty(),
+        })
+        .collect();
+    let mut flags =
+        vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
+    let info = vk::DescriptorSetLayoutCreateInfo::default()
+        .bindings(&bindings)
+        .push_next(&mut flags);
     let layout =
         unsafe { device.0.device.create_descriptor_set_layout(&info, None) }.map_err(vk_error)?;
     Ok(VulkanBindGroupLayout(Arc::new(GroupLayout {
@@ -128,11 +171,32 @@ pub(crate) fn create_group(
     let layout = unsafe { desc.layout.native_ref() };
     let entries = &layout.0.entries;
     let mut sizes = Vec::new();
-    for entry in entries.as_ref() {
-        sizes.push(vk::DescriptorPoolSize {
-            ty: dtype(&entry.ty)?,
-            descriptor_count: 1,
-        });
+    let mut variable_count = None;
+    for (layout_entry, entry) in entries.as_ref().iter().zip(desc.entries) {
+        let descriptor_count = resource_count(&layout_entry.count, &entry.resource)?;
+        if matches!(layout_entry.count, api::BindingCount::RuntimeSized) {
+            if variable_count.replace(descriptor_count).is_some() {
+                return Err(Error::InvalidState);
+            }
+            if descriptor_count > device.0.max_sampled_images {
+                return Err(Error::InvalidRange);
+            }
+        }
+        let ty = dtype(&layout_entry.ty)?;
+        if let Some(size) = sizes
+            .iter_mut()
+            .find(|size: &&mut vk::DescriptorPoolSize| size.ty == ty)
+        {
+            size.descriptor_count = size
+                .descriptor_count
+                .checked_add(descriptor_count)
+                .ok_or(Error::InvalidRange)?;
+        } else {
+            sizes.push(vk::DescriptorPoolSize {
+                ty,
+                descriptor_count,
+            });
+        }
     }
     let pool = unsafe {
         device.0.device.create_descriptor_pool(
@@ -144,13 +208,16 @@ pub(crate) fn create_group(
     }
     .map_err(vk_error)?;
     let layouts = [layout.0.layout];
-    let set = match unsafe {
-        device.0.device.allocate_descriptor_sets(
-            &vk::DescriptorSetAllocateInfo::default()
-                .descriptor_pool(pool)
-                .set_layouts(&layouts),
-        )
-    } {
+    let variable_counts = variable_count.into_iter().collect::<Vec<_>>();
+    let mut variable_allocate = vk::DescriptorSetVariableDescriptorCountAllocateInfo::default()
+        .descriptor_counts(&variable_counts);
+    let mut allocate = vk::DescriptorSetAllocateInfo::default()
+        .descriptor_pool(pool)
+        .set_layouts(&layouts);
+    if !variable_counts.is_empty() {
+        allocate = allocate.push_next(&mut variable_allocate);
+    }
+    let set = match unsafe { device.0.device.allocate_descriptor_sets(&allocate) } {
         Ok(v) => v[0],
         Err(e) => {
             unsafe { device.0.device.destroy_descriptor_pool(pool, None) };
@@ -276,6 +343,48 @@ pub(crate) fn create_group(
                 group._retained.push(Retained::View(native.clone()));
             }
             (
+                api::BindingResource::Array(values),
+                api::BindingType::SampledTexture {
+                    dimension,
+                    multisampled,
+                    ..
+                },
+            ) => {
+                let mut infos = Vec::with_capacity(values.len());
+                for value in values {
+                    let api::BindingResource::TextureView(view) = value.as_ref().ok_or(
+                        Error::Unsupported("Vulkan partially-bound descriptor array"),
+                    )?
+                    else {
+                        return Err(Error::InvalidState);
+                    };
+                    let native = unsafe { view.native_ref() };
+                    if !native.usage().contains(api::TextureUsage::TEXTURE_BINDING)
+                        || native.dimension() != *dimension
+                        || native.samples() != if *multisampled { 2 } else { 1 }
+                    {
+                        return Err(Error::InvalidRange);
+                    }
+                    infos.push(
+                        vk::DescriptorImageInfo::default()
+                            .image_view(native.native())
+                            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+                    );
+                    group._retained.push(Retained::View(native.clone()));
+                }
+                let write = vk::WriteDescriptorSet::default()
+                    .dst_set(set)
+                    .dst_binding(entry.binding)
+                    .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                    .image_info(&infos);
+                unsafe {
+                    device
+                        .0
+                        .device
+                        .update_descriptor_sets(std::slice::from_ref(&write), &[])
+                };
+            }
+            (
                 api::BindingResource::TextureView(view),
                 api::BindingType::StorageTexture {
                     format,
@@ -335,6 +444,26 @@ pub(crate) fn create_group(
         .dynamic_uniforms
         .sort_unstable_by_key(|slot| slot.binding);
     Ok(VulkanBindGroup(Arc::new(group)))
+}
+
+fn resource_count<B: api::Backend>(
+    count: &api::BindingCount,
+    resource: &api::BindingResource<'_, B>,
+) -> Result<u32> {
+    match (count, resource) {
+        (api::BindingCount::One, _) => Ok(1),
+        (api::BindingCount::Fixed(expected), api::BindingResource::Array(values))
+            if values.len() == *expected as usize =>
+        {
+            Ok(*expected)
+        }
+        (api::BindingCount::RuntimeSized, api::BindingResource::Array(values))
+            if !values.is_empty() =>
+        {
+            u32::try_from(values.len()).map_err(|_| Error::InvalidRange)
+        }
+        _ => Err(Error::InvalidState),
+    }
 }
 
 fn dtype(t: &api::BindingType) -> Result<vk::DescriptorType> {

@@ -1,6 +1,6 @@
 # Example assets
 
-The checked-in `.spv` files for examples 01–13 are compiled from the
+The checked-in `.spv` files for examples 01–14 are compiled from the
 neighboring project-owned HLSL sources. Rebuild and validate them with
 `../compile-spirv.ps1` using the Vulkan SDK's `dxc.exe` and `spirv-val.exe`.
 Their Vulkan descriptor set/binding numbers match the examples' bind-group
