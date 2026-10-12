@@ -2,11 +2,12 @@
 
 use crate::{ScreenshotBackend, gltf};
 use fluxel_rhi::api::*;
-use std::sync::Arc;
 
 const DRAGON: &[u8] = include_bytes!("../assets/models/chinesedragon.gltf");
 const VS: &[u8] = include_bytes!("../assets/12_screenshot/screenshot_vs.dxil");
 const PS: &[u8] = include_bytes!("../assets/12_screenshot/screenshot_ps.dxil");
+const VS_SPIRV: &[u8] = include_bytes!("../assets/12_screenshot/screenshot.vs.spv");
+const PS_SPIRV: &[u8] = include_bytes!("../assets/12_screenshot/screenshot.ps.spv");
 
 pub(crate) struct DragonScene<B: ScreenshotBackend> {
     vertices: Buffer<B>,
@@ -29,9 +30,9 @@ pub(crate) struct DragonScene<B: ScreenshotBackend> {
 
 impl<B: ScreenshotBackend> DragonScene<B> {
     pub(crate) async fn new(device: &Device<B>, extent: [u32; 2]) -> Result<Self> {
-        // The source Vulkan loader flips mesh Y before Vulkan rasterization.
-        // DX12's viewport convention already supplies that presentation-axis
-        // inversion, so repeating it here turns the source dragon upside down.
+        // Fluxel's Vulkan route uses a negative viewport height to implement
+        // its WebGPU-style presentation axis.  Applying the C++ loader's
+        // `FlipY` as well would reflect the mesh twice.
         let model =
             gltf::load_embedded_model(DRAGON, gltf::LoadOptions::CPP_PORT.with_flip_y(false))
                 .map_err(|error| Error::Backend(error.to_string()))?;
@@ -262,23 +263,24 @@ async fn pipeline<B: ScreenshotBackend>(
     layout: PipelineLayout<B>,
     format: TextureFormat,
 ) -> Result<RasterPipeline<B>> {
-    let shader = |bytes: &[u8], entry: &str, stage| ShaderDesc {
-        label: Some(format!("12 screenshot {entry}")),
-        format: ShaderFormat::Dxil,
-        bytes: Arc::from(bytes),
-        entries: vec![ShaderEntryPoint {
-            name: entry.into(),
-            stage,
-            workgroup_size: None,
-        }],
-        required_features: vec![],
-    };
-    let vertex = device
-        .shader(shader(VS, "vs_main", ShaderStage::Vertex))
-        .await?;
-    let fragment = device
-        .shader(shader(PS, "ps_main", ShaderStage::Fragment))
-        .await?;
+    let vertex = crate::common::native_shader(
+        device,
+        "12 screenshot vertex",
+        "vs_main",
+        ShaderStage::Vertex,
+        VS,
+        VS_SPIRV,
+    )
+    .await?;
+    let fragment = crate::common::native_shader(
+        device,
+        "12 screenshot fragment",
+        "ps_main",
+        ShaderStage::Fragment,
+        PS,
+        PS_SPIRV,
+    )
+    .await?;
     let stencil = StencilFaceState {
         compare: CompareFunction::Always,
         fail: StencilOperation::Keep,
@@ -358,10 +360,9 @@ async fn pipeline<B: ScreenshotBackend>(
 }
 
 fn camera_bytes(extent: [u32; 2]) -> [u8; 256] {
-    // screenshot.cpp's CPU struct is `projection, model, view`, whereas its
-    // SPIR-V shader declares `projection, view, model`. Keep that observable
-    // byte layout: positions still evaluate to P * I * V, while normals use
-    // the source's third matrix (the camera rotation) for its Phong lighting.
+    // screenshot.cpp's CPU struct is `projection, model, view`, while its
+    // GLSL block is `projection, view, model`. Preserve that ABI: shader
+    // `view` receives identity and shader `model` receives the camera.
     let aspect = extent[0] as f32 / extent[1] as f32;
     let f = 1.0 / 30f32.to_radians().tan();
     let near = 0.1;
@@ -384,9 +385,7 @@ fn camera_bytes(extent: [u32; 2]) -> [u8; 256] {
         far * near / (near - far),
         0.0,
     ];
-    // Rotate in clip-facing model space so the DX12 image uses the source
-    // screenshot framing: dragon head at upper-left, sphere at lower-center.
-    let model = rotation_z(90.0f32.to_radians());
+    let model = identity();
     let view = multiply(
         translation([0.0, 0.0, -3.0]),
         multiply(
@@ -424,13 +423,6 @@ fn rotation_y(angle: f32) -> [f32; 16] {
     let (sine, cosine) = angle.sin_cos();
     [
         cosine, 0.0, -sine, 0.0, 0.0, 1.0, 0.0, 0.0, sine, 0.0, cosine, 0.0, 0.0, 0.0, 0.0, 1.0,
-    ]
-}
-
-fn rotation_z(angle: f32) -> [f32; 16] {
-    let (sine, cosine) = angle.sin_cos();
-    [
-        cosine, sine, 0.0, 0.0, -sine, cosine, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
     ]
 }
 

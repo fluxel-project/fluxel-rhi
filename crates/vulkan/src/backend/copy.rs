@@ -274,6 +274,76 @@ pub(super) fn write_texture(
     Ok(())
 }
 
+/// Records a full RGBA8 texture readback into a host-readable transfer buffer.
+///
+/// The caller owns image state selection: this operation requires the source
+/// to have been explicitly transitioned to `CopySrc`.  It only lowers the
+/// requested native copy and retains the two native resources until submission
+/// completes; it does not add a backend image-state tracker.
+pub(super) fn texture_to_buffer(
+    encoder: &mut VulkanEncoder,
+    source: api::TextureRegion<'_, super::Vulkan>,
+    destination: &VulkanBuffer,
+    layout: api::TexelCopyBufferLayout,
+) -> Result<()> {
+    let texture = unsafe { source.texture.native_ref() };
+    validate_rgba_readback(texture, &source, destination, layout)?;
+    unsafe {
+        encoder.device.device.cmd_copy_image_to_buffer(
+            encoder.command,
+            texture.native(),
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            destination.0.buffer,
+            &[vk::BufferImageCopy::default()
+                .buffer_offset(layout.offset)
+                .buffer_row_length(layout.bytes_per_row / 4)
+                .buffer_image_height(layout.rows_per_image)
+                .image_subresource(
+                    vk::ImageSubresourceLayers::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .mip_level(source.mip)
+                        .base_array_layer(source.origin[2])
+                        .layer_count(1),
+                )
+                .image_offset(vk::Offset3D {
+                    x: source.origin[0] as i32,
+                    y: source.origin[1] as i32,
+                    z: 0,
+                })
+                .image_extent(vk::Extent3D {
+                    width: source.extent[0],
+                    height: source.extent[1],
+                    depth: 1,
+                })],
+        );
+    }
+    // Make the transfer write visible to the host map performed after the
+    // submission completion point.  The readback allocation is coherent, but
+    // coherence does not replace this execution/memory dependency.
+    let barrier = vk::BufferMemoryBarrier::default()
+        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+        .dst_access_mask(vk::AccessFlags::HOST_READ)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .buffer(destination.0.buffer)
+        .offset(layout.offset)
+        .size(vk::WHOLE_SIZE);
+    unsafe {
+        encoder.device.device.cmd_pipeline_barrier(
+            encoder.command,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::HOST,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[barrier],
+            &[],
+        );
+    }
+    encoder.textures.push(texture.clone());
+    encoder.buffers.push(destination.clone());
+    Ok(())
+}
+
 /// Records one native filtered image blit.
 ///
 /// The caller must have explicitly transitioned `src` to `CopySrc` and `dst`
@@ -423,6 +493,44 @@ fn validate_rgba_upload(
         .and_then(|n| n.checked_add(u64::from(row_bytes)))
         .ok_or(Error::InvalidRange)?;
     if required > len as u64 {
+        return Err(Error::InvalidRange);
+    }
+    Ok(())
+}
+
+fn validate_rgba_readback(
+    texture: &VulkanTexture,
+    source: &api::TextureRegion<'_, super::Vulkan>,
+    destination: &VulkanBuffer,
+    layout: api::TexelCopyBufferLayout,
+) -> Result<()> {
+    let desc = texture.desc();
+    if desc.format != api::TextureFormat::Rgba8Unorm
+        || desc.dimension != api::TextureDimension::D2
+        || desc.array_layers != 1
+        || desc.samples != 1
+        || !desc.usage.contains(api::TextureUsage::COPY_SRC)
+        || !destination.0.usage.contains(api::BufferUsage::COPY_DST)
+        || source.aspect != api::TextureAspects::COLOR
+        || source.mip >= desc.mip_levels
+        || source.origin != [0, 0, 0]
+        || source.extent != mip_extent(desc, source.mip)
+        || layout.offset % 4 != 0
+    {
+        return Err(Error::Unsupported("Vulkan full RGBA8 texture readback"));
+    }
+    let row_bytes = source.extent[0].checked_mul(4).ok_or(Error::InvalidRange)?;
+    if layout.bytes_per_row < row_bytes
+        || layout.bytes_per_row % 4 != 0
+        || layout.rows_per_image < source.extent[1]
+    {
+        return Err(Error::InvalidRange);
+    }
+    let required = u64::from(layout.offset)
+        .checked_add(u64::from(layout.bytes_per_row) * u64::from(source.extent[1] - 1))
+        .and_then(|n| n.checked_add(u64::from(row_bytes)))
+        .ok_or(Error::InvalidRange)?;
+    if required > destination.0.size {
         return Err(Error::InvalidRange);
     }
     Ok(())

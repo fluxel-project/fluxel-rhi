@@ -109,7 +109,9 @@ impl<B: ScreenshotBackend> Screenshot<B> {
             target_view,
             readback,
             scene,
-            layout: ImageLayout::Common,
+            // An ordinary Vulkan image starts undefined.  Every later state
+            // change is explicit in `transition` below.
+            layout: ImageLayout::Undefined,
             row_pitch,
         })
     }
@@ -167,6 +169,10 @@ impl<B: ScreenshotBackend> Screenshot<B> {
         after: TextureUses,
     ) -> Result<()> {
         let before = match self.layout {
+            ImageLayout::Undefined => TextureUses {
+                stages: StageMask::EMPTY,
+                accesses: AccessMask::EMPTY,
+            },
             ImageLayout::Common => TextureUses {
                 stages: StageMask::EMPTY,
                 accesses: AccessMask::EMPTY,
@@ -286,7 +292,28 @@ fn aligned_row_pitch(width: u32) -> Result<u32> {
 }
 #[cfg(windows)]
 fn main() {
-    use fluxel_rhi::dx12::Dx12;
+    let result = match common::windows_api::selected_backend() {
+        Ok(common::windows_api::SelectedBackend::Dx12) => {
+            run::<fluxel_rhi::dx12::Dx12, _>(common::windows_api::Dx12Host)
+        }
+        #[cfg(feature = "vulkan")]
+        Ok(common::windows_api::SelectedBackend::Vulkan) => {
+            run::<fluxel_rhi::vulkan::Vulkan, _>(common::windows_api::VulkanHost)
+        }
+        Err(error) => Err(error),
+    };
+    if let Err(error) = result {
+        eprintln!("12_screenshot: {error:?}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(windows)]
+fn run<B, H>(host: H) -> Result<()>
+where
+    B: ScreenshotBackend,
+    H: common::ExampleHost<B>,
+{
     let config = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Bgra8Unorm,
@@ -297,10 +324,10 @@ fn main() {
         maximum_frame_latency: 2,
     };
     let requested = std::env::var_os("FLUXEL_RHI_SCREENSHOT").is_some();
-    let mut screenshot: Option<Screenshot<Dx12>> = None;
+    let mut screenshot: Option<Screenshot<B>> = None;
     let mut saved = false;
-    let result = common::run_example(
-        common::windows_api::Dx12Host,
+    common::run_example(
+        host,
         "Screenshot readback",
         config,
         move |device, _, image, extent| {
@@ -313,10 +340,18 @@ fn main() {
             if screenshot.is_none() {
                 screenshot = Some(common::block_on(Screenshot::new(device, lane, extent))?);
             }
-            let workload = screenshot.as_mut().expect("initialized above");
-            if workload.extent != extent {
-                return Err(Error::Unsupported("screenshot resize"));
+            if screenshot
+                .as_ref()
+                .is_some_and(|workload| workload.extent != extent)
+            {
+                // The old offscreen target, depth images, and readback buffer
+                // may still be used by a submitted frame.  This standalone
+                // example has no frame-retirement policy, so wait before
+                // replacing its extent-owned resources.
+                common::block_on(device.wait_idle())?;
+                screenshot = Some(common::block_on(Screenshot::new(device, lane, extent))?);
             }
+            let workload = screenshot.as_mut().expect("initialized above");
             let capture = requested && !saved;
             let record = workload.record(device, &image, capture)?;
             let completion = submit_capture_and_present(device, lane, record.work, image)?;
@@ -332,11 +367,7 @@ fn main() {
             }
             Ok(())
         },
-    );
-    if let Err(error) = result {
-        eprintln!("12_screenshot: {error:?}");
-        std::process::exit(1);
-    }
+    )
 }
 
 #[cfg(windows)]

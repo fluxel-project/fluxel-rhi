@@ -335,12 +335,12 @@ impl api::CommandBackend for Vulkan {
         Err(Error::Unsupported("Vulkan buffer-to-texture"))
     }
     fn texture_to_buffer(
-        _: &mut VulkanEncoder,
-        _: api::TextureRegion<'_, Self>,
-        _: &VulkanBuffer,
-        _: api::TexelCopyBufferLayout,
+        encoder: &mut VulkanEncoder,
+        source: api::TextureRegion<'_, Self>,
+        destination: &VulkanBuffer,
+        layout: api::TexelCopyBufferLayout,
     ) -> Result<()> {
-        Err(Error::Unsupported("Vulkan texture-to-buffer"))
+        copy::texture_to_buffer(encoder, source, destination, layout)
     }
     fn write_buffer(
         e: &mut VulkanEncoder,

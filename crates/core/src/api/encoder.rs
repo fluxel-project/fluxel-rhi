@@ -45,7 +45,9 @@ pub trait CommandBackend: Backend {
         layout: TexelCopyBufferLayout,
         dst: TextureRegion<'_, Self>,
     ) -> Result<()>;
-    /// Copies from a CopySrc texture region into a CopyDst buffer.
+    /// Copies from a CopySrc texture region into a buffer usable as CopyDst.
+    /// A readback buffer created with `COPY_DST` may have a fixed native copy
+    /// destination state; otherwise the caller supplies required transitions.
     fn texture_to_buffer(
         encoder: &mut Self::NativeEncoder,
         src: TextureRegion<'_, Self>,

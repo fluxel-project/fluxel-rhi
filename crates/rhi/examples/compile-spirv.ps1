@@ -46,7 +46,9 @@ $jobs = @(
     @('11_occlusion_query', 'occlusion.hlsl', 'vs_main', 'vs_6_0', 'occlusion.vs.spv'),
     @('11_occlusion_query', 'occlusion.hlsl', 'simple_ps', 'ps_6_0', 'simple.ps.spv'),
     @('11_occlusion_query', 'occlusion.hlsl', 'mesh_ps', 'ps_6_0', 'mesh.ps.spv'),
-    @('11_occlusion_query', 'occlusion.hlsl', 'occluder_ps', 'ps_6_0', 'occluder.ps.spv')
+    @('11_occlusion_query', 'occlusion.hlsl', 'occluder_ps', 'ps_6_0', 'occluder.ps.spv'),
+    @('12_screenshot', 'screenshot.hlsl', 'vs_main', 'vs_6_0', 'screenshot.vs.spv'),
+    @('12_screenshot', 'screenshot.hlsl', 'ps_main', 'ps_6_0', 'screenshot.ps.spv')
 )
 
 foreach ($job in $jobs) {

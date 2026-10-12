@@ -29,10 +29,17 @@ VertexOutput vs_main(VertexInput input)
     float4 model_position = mul(model, float4(input.position, 1.0));
     float4 view_position = mul(view, model_position);
     output.position = mul(projection, view_position);
-    output.normal = mul((float3x3)view, mul((float3x3)model, input.normal));
+    // The C++ GLSL source transforms normals by its `model` field only.  Its
+    // CPU UBO writes `projection, model, view` while GLSL declares
+    // `projection, view, model`, so this is the camera matrix in both native
+    // shader routes.
+    output.normal = mul((float3x3)model, input.normal);
     output.color = input.color.rgb;
     output.view_vec = -view_position.xyz;
-    output.light_vec = float3(1.0, -1.0, 1.0) - view_position.xyz;
+    // The source Vulkan loader reflects mesh Y, whereas Fluxel keeps model
+    // space WebGPU-style and reflects the viewport.  Reflect the source light
+    // through the same Y axis so lighting remains in the model's coordinates.
+    output.light_vec = float3(1.0, 1.0, 1.0) - view_position.xyz;
     return output;
 }
 
