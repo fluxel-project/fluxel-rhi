@@ -44,6 +44,16 @@ impl api::QueryBackend for Dx12 {
     ) -> Result<()> {
         super::encoder::query::begin_occlusion(encoder, set, slot)
     }
+    fn reset_queries(
+        _: &mut super::encoder::Dx12Encoder,
+        set: &Dx12QuerySet,
+        slots: Range<u32>,
+    ) -> Result<()> {
+        if slots.start >= slots.end || slots.end > set.0.count {
+            return Err(Error::InvalidRange);
+        }
+        Ok(())
+    }
     fn end_occlusion(encoder: &mut super::encoder::Dx12Encoder) -> Result<()> {
         super::encoder::query::end_occlusion(encoder)
     }

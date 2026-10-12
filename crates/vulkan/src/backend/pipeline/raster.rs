@@ -167,9 +167,30 @@ pub(crate) fn create_raster(
     let ms = vk::PipelineMultisampleStateCreateInfo::default()
         .rasterization_samples(samples)
         .sample_mask(std::slice::from_ref(&sample_mask));
-    let blend = vk::PipelineColorBlendAttachmentState::default()
-        .color_write_mask(vk::ColorComponentFlags::RGBA);
-    let blends = vec![blend; desc.color_targets.len()];
+    let blends: Result<Vec<_>> = desc
+        .color_targets
+        .iter()
+        .map(|target| match target {
+            Some(target) if target.write_mask == 0xf => {
+                let mut native = vk::PipelineColorBlendAttachmentState::default()
+                    .color_write_mask(vk::ColorComponentFlags::RGBA);
+                if let Some(blend) = target.blend {
+                    native = native
+                        .blend_enable(true)
+                        .src_color_blend_factor(blend_factor(blend.color.src_factor)?)
+                        .dst_color_blend_factor(blend_factor(blend.color.dst_factor)?)
+                        .color_blend_op(blend_op(blend.color.operation)?)
+                        .src_alpha_blend_factor(blend_factor(blend.alpha.src_factor)?)
+                        .dst_alpha_blend_factor(blend_factor(blend.alpha.dst_factor)?)
+                        .alpha_blend_op(blend_op(blend.alpha.operation)?);
+                }
+                Ok(native)
+            }
+            Some(_) => Err(Error::Unsupported("Vulkan color write mask")),
+            None => Ok(vk::PipelineColorBlendAttachmentState::default()),
+        })
+        .collect();
+    let blends = blends?;
     let cb = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blends);
     let depth = desc
         .depth_stencil
@@ -195,10 +216,8 @@ pub(crate) fn create_raster(
         .color_targets
         .iter()
         .map(|target| match target {
-            Some(t) if t.blend.is_none() && t.write_mask == 0xf => {
-                super::super::resource::format(t.format)
-                    .ok_or(Error::Unsupported("Vulkan color format"))
-            }
+            Some(t) if t.write_mask == 0xf => super::super::resource::format(t.format)
+                .ok_or(Error::Unsupported("Vulkan color format")),
             Some(_) => Err(Error::Unsupported("Vulkan color blend/write mask")),
             None => Ok(vk::Format::UNDEFINED),
         })
@@ -235,6 +254,32 @@ pub(crate) fn create_raster(
         pipeline,
         layout: unsafe { desc.layout.native_ref() }.clone(),
     })))
+}
+
+fn blend_factor(value: api::BlendFactor) -> Result<vk::BlendFactor> {
+    Ok(match value {
+        api::BlendFactor::Zero => vk::BlendFactor::ZERO,
+        api::BlendFactor::One => vk::BlendFactor::ONE,
+        api::BlendFactor::SrcColor => vk::BlendFactor::SRC_COLOR,
+        api::BlendFactor::OneMinusSrcColor => vk::BlendFactor::ONE_MINUS_SRC_COLOR,
+        api::BlendFactor::SrcAlpha => vk::BlendFactor::SRC_ALPHA,
+        api::BlendFactor::OneMinusSrcAlpha => vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+        api::BlendFactor::DstColor => vk::BlendFactor::DST_COLOR,
+        api::BlendFactor::OneMinusDstColor => vk::BlendFactor::ONE_MINUS_DST_COLOR,
+        api::BlendFactor::DstAlpha => vk::BlendFactor::DST_ALPHA,
+        api::BlendFactor::OneMinusDstAlpha => vk::BlendFactor::ONE_MINUS_DST_ALPHA,
+        _ => return Err(Error::Unsupported("Vulkan blend factor")),
+    })
+}
+
+fn blend_op(value: api::BlendOperation) -> Result<vk::BlendOp> {
+    Ok(match value {
+        api::BlendOperation::Add => vk::BlendOp::ADD,
+        api::BlendOperation::Subtract => vk::BlendOp::SUBTRACT,
+        api::BlendOperation::ReverseSubtract => vk::BlendOp::REVERSE_SUBTRACT,
+        api::BlendOperation::Min => vk::BlendOp::MIN,
+        api::BlendOperation::Max => vk::BlendOp::MAX,
+    })
 }
 fn compare(v: api::CompareFunction) -> vk::CompareOp {
     match v {

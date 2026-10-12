@@ -42,6 +42,8 @@ pub struct VulkanEncoder {
     pub(super) uploads: Vec<VulkanBuffer>,
     pub(super) buffers: Vec<VulkanBuffer>,
     pub(super) textures: Vec<VulkanTexture>,
+    pub(super) queries: Vec<super::VulkanQuerySet>,
+    pub(super) active_occlusion: Option<(super::VulkanQuerySet, u32)>,
 }
 impl VulkanEncoder {
     pub(super) fn new(device: &VulkanDevice) -> Result<Self> {
@@ -89,6 +91,8 @@ impl VulkanEncoder {
             uploads: Vec::new(),
             buffers: Vec::new(),
             textures: Vec::new(),
+            queries: Vec::new(),
+            active_occlusion: None,
         })
     }
 }

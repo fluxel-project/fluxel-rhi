@@ -37,6 +37,11 @@ pub trait QueryBackend: CommandBackend {
         set: &Self::NativeQuerySet,
         slot: u32,
     ) -> Result<()>;
+    fn reset_queries(
+        encoder: &mut Self::NativeEncoder,
+        set: &Self::NativeQuerySet,
+        slots: Range<u32>,
+    ) -> Result<()>;
     fn end_occlusion(encoder: &mut Self::NativeEncoder) -> Result<()>;
     fn begin_statistics(
         encoder: &mut Self::NativeEncoder,
@@ -65,6 +70,17 @@ impl<B: QueryBackend> Device<B> {
     }
 }
 impl<B: QueryBackend> Queries<'_, B> {
+    pub fn reset(
+        &self,
+        encoder: &mut CommandEncoder<B>,
+        set: &QuerySet<B>,
+        slots: Range<u32>,
+    ) -> Result<()> {
+        if encoder.device != self.device.id || set.device != self.device.id {
+            return Err(Error::WrongDevice);
+        }
+        encoder.call(|e| B::reset_queries(e, &set.native, slots))
+    }
     pub fn create(&self, desc: &QueryDesc) -> Result<QuerySet<B>> {
         Ok(QuerySet {
             device: self.device.id,

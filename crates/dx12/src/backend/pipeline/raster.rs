@@ -145,18 +145,30 @@ fn create_raster(
     let elements = elements?;
     let target = desc.color_targets[0].as_ref().unwrap();
     let format = color_format(target.format)?;
-    if target.blend.is_some() || target.write_mask != 15 {
+    if target.write_mask != 15 {
         return Err(Error::Unsupported("DX12 color blend/write mask"));
     }
     let blend = D3D12_RENDER_TARGET_BLEND_DESC {
-        BlendEnable: FALSE,
+        BlendEnable: if target.blend.is_some() { TRUE } else { FALSE },
         LogicOpEnable: FALSE,
-        SrcBlend: D3D12_BLEND_ONE,
-        DestBlend: D3D12_BLEND_ZERO,
-        BlendOp: D3D12_BLEND_OP_ADD,
-        SrcBlendAlpha: D3D12_BLEND_ONE,
-        DestBlendAlpha: D3D12_BLEND_ZERO,
-        BlendOpAlpha: D3D12_BLEND_OP_ADD,
+        SrcBlend: target
+            .blend
+            .map_or(Ok(D3D12_BLEND_ONE), |x| blend_factor(x.color.src_factor))?,
+        DestBlend: target
+            .blend
+            .map_or(Ok(D3D12_BLEND_ZERO), |x| blend_factor(x.color.dst_factor))?,
+        BlendOp: target
+            .blend
+            .map_or(D3D12_BLEND_OP_ADD, |x| blend_op(x.color.operation)),
+        SrcBlendAlpha: target
+            .blend
+            .map_or(Ok(D3D12_BLEND_ONE), |x| blend_factor(x.alpha.src_factor))?,
+        DestBlendAlpha: target
+            .blend
+            .map_or(Ok(D3D12_BLEND_ZERO), |x| blend_factor(x.alpha.dst_factor))?,
+        BlendOpAlpha: target
+            .blend
+            .map_or(D3D12_BLEND_OP_ADD, |x| blend_op(x.alpha.operation)),
         LogicOp: D3D12_LOGIC_OP_NOOP,
         RenderTargetWriteMask: D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8,
     };
@@ -300,6 +312,32 @@ fn create_raster(
         samples: desc.multisample.count,
         multiview: desc.multiview,
     })))
+}
+
+fn blend_factor(value: api::BlendFactor) -> Result<D3D12_BLEND> {
+    Ok(match value {
+        api::BlendFactor::Zero => D3D12_BLEND_ZERO,
+        api::BlendFactor::One => D3D12_BLEND_ONE,
+        api::BlendFactor::SrcColor => D3D12_BLEND_SRC_COLOR,
+        api::BlendFactor::OneMinusSrcColor => D3D12_BLEND_INV_SRC_COLOR,
+        api::BlendFactor::DstColor => D3D12_BLEND_DEST_COLOR,
+        api::BlendFactor::OneMinusDstColor => D3D12_BLEND_INV_DEST_COLOR,
+        api::BlendFactor::SrcAlpha => D3D12_BLEND_SRC_ALPHA,
+        api::BlendFactor::OneMinusSrcAlpha => D3D12_BLEND_INV_SRC_ALPHA,
+        api::BlendFactor::DstAlpha => D3D12_BLEND_DEST_ALPHA,
+        api::BlendFactor::OneMinusDstAlpha => D3D12_BLEND_INV_DEST_ALPHA,
+        _ => return Err(Error::Unsupported("DX12 blend factor")),
+    })
+}
+
+fn blend_op(value: api::BlendOperation) -> D3D12_BLEND_OP {
+    match value {
+        api::BlendOperation::Add => D3D12_BLEND_OP_ADD,
+        api::BlendOperation::Subtract => D3D12_BLEND_OP_SUBTRACT,
+        api::BlendOperation::ReverseSubtract => D3D12_BLEND_OP_REV_SUBTRACT,
+        api::BlendOperation::Min => D3D12_BLEND_OP_MIN,
+        api::BlendOperation::Max => D3D12_BLEND_OP_MAX,
+    }
 }
 fn stencil_is_disabled(d: &api::DepthStencilState) -> bool {
     let inactive = |s: api::StencilFaceState| {

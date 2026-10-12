@@ -1,4 +1,4 @@
-//! Occlusion queries with native DX12 BeginQuery/EndQuery/ResolveQueryData.
+//! SaschaWillems occlusion-query scene with native query pools.
 mod common;
 #[path = "common/gltf.rs"]
 mod gltf;
@@ -7,12 +7,18 @@ use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
+static NEXT_PLAN: AtomicU64 = AtomicU64::new(1);
 const PLANE: &[u8] = include_bytes!("assets/models/plane_z.gltf");
 const TEAPOT: &[u8] = include_bytes!("assets/models/teapot.gltf");
 const SPHERE: &[u8] = include_bytes!("assets/models/sphere.gltf");
 const VS: &[u8] = include_bytes!("assets/11_occlusion_query/occlusion.vs.dxil");
-const PS: &[u8] = include_bytes!("assets/11_occlusion_query/occlusion.ps.dxil");
-static NEXT_PLAN: AtomicU64 = AtomicU64::new(1);
+const SIMPLE_PS: &[u8] = include_bytes!("assets/11_occlusion_query/simple.ps.dxil");
+const MESH_PS: &[u8] = include_bytes!("assets/11_occlusion_query/mesh.ps.dxil");
+const OCCLUDER_PS: &[u8] = include_bytes!("assets/11_occlusion_query/occluder.ps.dxil");
+const VS_SPIRV: &[u8] = include_bytes!("assets/11_occlusion_query/occlusion.vs.spv");
+const SIMPLE_PS_SPIRV: &[u8] = include_bytes!("assets/11_occlusion_query/simple.ps.spv");
+const MESH_PS_SPIRV: &[u8] = include_bytes!("assets/11_occlusion_query/mesh.ps.spv");
+const OCCLUDER_PS_SPIRV: &[u8] = include_bytes!("assets/11_occlusion_query/occluder.ps.spv");
 pub trait OcclusionBackend:
     Backend
     + ResourceBackend
@@ -58,7 +64,9 @@ pub struct Workload<B: OcclusionBackend> {
     plane_group: BindGroup<B>,
     teapot_group: BindGroup<B>,
     sphere_group: BindGroup<B>,
-    pipeline: RasterPipeline<B>,
+    simple_pipeline: RasterPipeline<B>,
+    mesh_pipeline: RasterPipeline<B>,
+    occluder_pipeline: RasterPipeline<B>,
     queries: QuerySet<B>,
     results: Buffer<B>,
     visible: [bool; 2],
@@ -84,15 +92,16 @@ impl<B: OcclusionBackend> Workload<B> {
                 memory: MemoryClass::Device,
             })
         };
+        // C++ uses FlipY with a positive-height Vulkan viewport. Fluxel's
+        // WebGPU-compatible viewport has negative native height, so retain
+        // the same final orientation by cancelling that loader-space flip.
+        let options = gltf::LoadOptions::CPP_PORT.with_flip_y(false);
         let plane =
-            gltf::load_embedded_model(PLANE, gltf::LoadOptions::CPP_PORT.with_flip_y(false))
-                .map_err(|x| Error::Backend(x.to_string()))?;
-        let teapot =
-            gltf::load_embedded_model(TEAPOT, gltf::LoadOptions::CPP_PORT.with_flip_y(false))
-                .map_err(|x| Error::Backend(x.to_string()))?;
-        let sphere =
-            gltf::load_embedded_model(SPHERE, gltf::LoadOptions::CPP_PORT.with_flip_y(false))
-                .map_err(|x| Error::Backend(x.to_string()))?;
+            gltf::load_embedded_model(PLANE, options).map_err(|x| Error::Backend(x.to_string()))?;
+        let teapot = gltf::load_embedded_model(TEAPOT, options)
+            .map_err(|x| Error::Backend(x.to_string()))?;
+        let sphere = gltf::load_embedded_model(SPHERE, options)
+            .map_err(|x| Error::Backend(x.to_string()))?;
         let plane_vertices = make(
             "11 occluder vertices",
             plane.vertices.len(),
@@ -126,8 +135,35 @@ impl<B: OcclusionBackend> Workload<B> {
         let plane_uniform = make("11 occluder transform", 256, BufferUsage::UNIFORM)?;
         let teapot_uniform = make("11 teapot transform", 256, BufferUsage::UNIFORM)?;
         let sphere_uniform = make("11 sphere transform", 256, BufferUsage::UNIFORM)?;
-        let vs = shader(d, "11 VS", VS, "vs_main", ShaderStage::Vertex).await?;
-        let ps = shader(d, "11 PS", PS, "ps_main", ShaderStage::Fragment).await?;
+        let vs =
+            common::native_shader(d, "11 VS", "vs_main", ShaderStage::Vertex, VS, VS_SPIRV).await?;
+        let simple_ps = common::native_shader(
+            d,
+            "11 simple PS",
+            "simple_ps",
+            ShaderStage::Fragment,
+            SIMPLE_PS,
+            SIMPLE_PS_SPIRV,
+        )
+        .await?;
+        let mesh_ps = common::native_shader(
+            d,
+            "11 mesh PS",
+            "mesh_ps",
+            ShaderStage::Fragment,
+            MESH_PS,
+            MESH_PS_SPIRV,
+        )
+        .await?;
+        let occluder_ps = common::native_shader(
+            d,
+            "11 occluder PS",
+            "occluder_ps",
+            ShaderStage::Fragment,
+            OCCLUDER_PS,
+            OCCLUDER_PS_SPIRV,
+        )
+        .await?;
         let layout = d.create_bind_group_layout(&BindGroupLayoutDesc {
             label: Some("11 transform layout".into()),
             entries: vec![BindGroupLayoutEntry {
@@ -169,80 +205,106 @@ impl<B: OcclusionBackend> Workload<B> {
             depth_fail: StencilOperation::Keep,
             pass: StencilOperation::Keep,
         };
-        let p = d
-            .raster_pipeline(RasterPipelineDesc {
-                label: Some("11 query pipeline".into()),
-                layout: l,
-                vertex: PipelineStage {
-                    module: vs,
-                    entry: "vs_main".into(),
-                    constants: vec![],
-                },
-                fragment: Some(PipelineStage {
-                    module: ps,
-                    entry: "ps_main".into(),
-                    constants: vec![],
+        let pipeline = |label: &str,
+                        fragment: Shader<B>,
+                        entry: &str,
+                        blend: Option<BlendState>| RasterPipelineDesc {
+            label: Some(label.into()),
+            layout: l.clone(),
+            vertex: PipelineStage {
+                module: vs.clone(),
+                entry: "vs_main".into(),
+                constants: vec![],
+            },
+            fragment: Some(PipelineStage {
+                module: fragment,
+                entry: entry.into(),
+                constants: vec![],
+            }),
+            vertex_buffers: vec![VertexBufferLayout {
+                stride: 96,
+                step_mode: VertexStepMode::Vertex,
+                attributes: vec![
+                    VertexAttribute {
+                        location: 0,
+                        offset: 0,
+                        format: VertexFormat::Float32(3),
+                    },
+                    VertexAttribute {
+                        location: 1,
+                        offset: 12,
+                        format: VertexFormat::Float32(3),
+                    },
+                    VertexAttribute {
+                        location: 2,
+                        offset: 24,
+                        format: VertexFormat::Float32(2),
+                    },
+                    VertexAttribute {
+                        location: 3,
+                        offset: 32,
+                        format: VertexFormat::Float32(3),
+                    },
+                ],
+            }],
+            color_targets: vec![Some(ColorTargetState {
+                format,
+                blend,
+                write_mask: 15,
+            })],
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: FrontFace::Ccw,
+                cull_mode: CullMode::None,
+                unclipped_depth: false,
+                polygon_mode: PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(DepthStencilState {
+                format: TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: CompareFunction::LessEqual,
+                stencil_front: face,
+                stencil_back: face,
+                stencil_read_mask: 0,
+                stencil_write_mask: 0,
+                depth_bias_constant: 0,
+                depth_bias_slope_scale: 0.,
+                depth_bias_clamp: 0.,
+            }),
+            multisample: MultisampleState {
+                count: 1,
+                mask: u64::from(u32::MAX),
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        };
+        let simple_pipeline = d
+            .raster_pipeline(pipeline("11 simple pipeline", simple_ps, "simple_ps", None))
+            .await?;
+        let mesh_pipeline = d
+            .raster_pipeline(pipeline("11 mesh pipeline", mesh_ps, "mesh_ps", None))
+            .await?;
+        let occluder_pipeline = d
+            .raster_pipeline(pipeline(
+                "11 occluder pipeline",
+                occluder_ps,
+                "occluder_ps",
+                Some(BlendState {
+                    color: BlendComponent {
+                        src_factor: BlendFactor::SrcColor,
+                        dst_factor: BlendFactor::OneMinusSrcColor,
+                        operation: BlendOperation::Add,
+                    },
+                    alpha: BlendComponent {
+                        src_factor: BlendFactor::One,
+                        dst_factor: BlendFactor::Zero,
+                        operation: BlendOperation::Add,
+                    },
                 }),
-                vertex_buffers: vec![VertexBufferLayout {
-                    stride: 96,
-                    step_mode: VertexStepMode::Vertex,
-                    attributes: vec![
-                        VertexAttribute {
-                            location: 0,
-                            offset: 0,
-                            format: VertexFormat::Float32(3),
-                        },
-                        VertexAttribute {
-                            location: 1,
-                            offset: 12,
-                            format: VertexFormat::Float32(3),
-                        },
-                        VertexAttribute {
-                            location: 2,
-                            offset: 24,
-                            format: VertexFormat::Float32(2),
-                        },
-                        VertexAttribute {
-                            location: 3,
-                            offset: 32,
-                            format: VertexFormat::Float32(3),
-                        },
-                    ],
-                }],
-                color_targets: vec![Some(ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: 15,
-                })],
-                primitive: PrimitiveState {
-                    topology: PrimitiveTopology::TriangleList,
-                    strip_index_format: None,
-                    front_face: FrontFace::Ccw,
-                    cull_mode: CullMode::None,
-                    unclipped_depth: false,
-                    polygon_mode: PolygonMode::Fill,
-                    conservative: false,
-                },
-                depth_stencil: Some(DepthStencilState {
-                    format: TextureFormat::Depth32Float,
-                    depth_write_enabled: true,
-                    depth_compare: CompareFunction::LessEqual,
-                    stencil_front: face,
-                    stencil_back: face,
-                    stencil_read_mask: 0,
-                    stencil_write_mask: 0,
-                    depth_bias_constant: 0,
-                    depth_bias_slope_scale: 0.,
-                    depth_bias_clamp: 0.,
-                }),
-                multisample: MultisampleState {
-                    count: 1,
-                    mask: u64::from(u32::MAX),
-                    alpha_to_coverage_enabled: false,
-                },
-                multiview: None,
-                cache: None,
-            })
+            ))
             .await?;
         let results = d.create_buffer(&BufferDesc {
             label: Some("11 resolved occlusion results".into()),
@@ -273,7 +335,9 @@ impl<B: OcclusionBackend> Workload<B> {
             plane_group,
             teapot_group,
             sphere_group,
-            pipeline: p,
+            simple_pipeline,
+            mesh_pipeline,
+            occluder_pipeline,
             queries: q,
             results,
             visible: [true; 2],
@@ -290,15 +354,13 @@ impl<B: OcclusionBackend> Workload<B> {
         }
         let mut e = d.encoder(self.lane)?;
         if self.visible == [true, true] {
-            let plane =
-                gltf::load_embedded_model(PLANE, gltf::LoadOptions::CPP_PORT.with_flip_y(false))
-                    .map_err(|x| Error::Backend(x.to_string()))?;
-            let teapot =
-                gltf::load_embedded_model(TEAPOT, gltf::LoadOptions::CPP_PORT.with_flip_y(false))
-                    .map_err(|x| Error::Backend(x.to_string()))?;
-            let sphere =
-                gltf::load_embedded_model(SPHERE, gltf::LoadOptions::CPP_PORT.with_flip_y(false))
-                    .map_err(|x| Error::Backend(x.to_string()))?;
+            let options = gltf::LoadOptions::CPP_PORT.with_flip_y(false);
+            let plane = gltf::load_embedded_model(PLANE, options)
+                .map_err(|x| Error::Backend(x.to_string()))?;
+            let teapot = gltf::load_embedded_model(TEAPOT, options)
+                .map_err(|x| Error::Backend(x.to_string()))?;
+            let sphere = gltf::load_embedded_model(SPHERE, options)
+                .map_err(|x| Error::Backend(x.to_string()))?;
             e.write_buffer(&self.plane_vertices, 0, &plane.vertices)?;
             e.write_buffer(&self.plane_indices, 0, &plane.indices)?;
             e.write_buffer(&self.teapot_vertices, 0, &teapot.vertices)?;
@@ -309,27 +371,64 @@ impl<B: OcclusionBackend> Workload<B> {
         e.write_buffer(
             &self.plane_uniform,
             0,
-            &transform(extent, [0.0, 0.0, 0.0], 6.0, [0.0, 0.0, 1.0, 0.5]),
+            &transform(extent, [0.0, 0.0, 0.0], 6.0, [0.0, 0.0, 1.0, 0.5], true),
         )?;
         e.write_buffer(
             &self.teapot_uniform,
             0,
-            &transform(extent, [0.0, 0.0, -3.0], 1.0, [1.0, 0.0, 0.0, 1.0]),
+            &transform(
+                extent,
+                [0.0, 0.0, -3.0],
+                1.0,
+                [1.0, 0.0, 0.0, 1.0],
+                self.visible[0],
+            ),
         )?;
         e.write_buffer(
             &self.sphere_uniform,
             0,
-            &transform(extent, [0.0, 0.0, 3.0], 1.0, [0.0, 1.0, 0.0, 1.0]),
+            &transform(
+                extent,
+                [0.0, 0.0, 3.0],
+                1.0,
+                [0.0, 1.0, 0.0, 1.0],
+                self.visible[1],
+            ),
         )?;
-        let (_depth, view) = depth(d, extent)?;
+        // The C++ sample queries into a pass that it clears before display.
+        // Core has no intra-pass attachment clear yet, so use a disposable
+        // color/depth pair for the exact same query visibility work.
+        let (query_color, query_color_view) = color(d, extent, "11 query color")?;
+        let (_query_depth, query_depth_view) = depth(d, extent)?;
+        let (_display_depth, display_depth_view) = depth(d, extent)?;
+        e.transition_resources(&[ResourceTransition::Texture(TextureBarrier {
+            target: Subresources {
+                texture: &query_color,
+                aspects: TextureAspects::COLOR,
+                mips: 0..1,
+                layers: 0..1,
+            },
+            usage: StateTransition {
+                from: TextureUses {
+                    stages: StageMask::EMPTY,
+                    accesses: AccessMask::EMPTY,
+                },
+                to: TextureUses {
+                    stages: StageMask::COLOR_OUTPUT,
+                    accesses: AccessMask::COLOR_WRITE,
+                },
+            },
+            layout: Some((ImageLayout::Undefined, ImageLayout::ColorAttachment)),
+            ownership: None,
+        })])?;
         let colors = [Some(ColorAttachment {
-            view: AttachmentView::Surface(image),
+            view: AttachmentView::Texture(&query_color_view),
             resolve_target: None,
-            load: LoadOp::Clear(ClearColor::Float([0.025, 0.025, 0.025, 1.])),
+            load: LoadOp::Clear(ClearColor::Float([0., 0., 0., 0.])),
             store: StoreOp::Store,
         })];
         let da = DepthStencilAttachment {
-            view: AttachmentView::Texture(&view),
+            view: AttachmentView::Texture(&query_depth_view),
             depth: Some((LoadOp::Clear(1.), StoreOp::Discard)),
             stencil: None,
             depth_read_only: false,
@@ -338,6 +437,7 @@ impl<B: OcclusionBackend> Workload<B> {
         let queries = d
             .queries(QueryKind::Occlusion)
             .ok_or(Error::Unsupported("occlusion queries"))?;
+        queries.reset(&mut e, &self.queries, 0..2)?;
         let mut p = e.begin_raster(&RasterPassDesc {
             label: Some("11 occlusion query pass"),
             colors: &colors,
@@ -366,7 +466,7 @@ impl<B: OcclusionBackend> Workload<B> {
             width: extent[0],
             height: extent[1],
         })?;
-        p.set_pipeline(&self.pipeline)?;
+        p.set_pipeline(&self.simple_pipeline)?;
         p.set_bind_group(0, &self.plane_group, &[])?;
         p.set_vertex_buffer(0, &self.plane_vertices, 0..self.plane_len)?;
         p.set_index_buffer(
@@ -395,26 +495,77 @@ impl<B: OcclusionBackend> Workload<B> {
         )?;
         p.draw_indexed(0..self.sphere_count, 0, 0..1)?;
         queries.end_occlusion(&mut p)?;
-        if self.visible[0] {
-            p.set_bind_group(0, &self.teapot_group, &[])?;
-            p.set_vertex_buffer(0, &self.teapot_vertices, 0..self.teapot_len)?;
-            p.set_index_buffer(
-                &self.teapot_indices,
-                0..self.teapot_index_len,
-                IndexFormat::Uint32,
-            )?;
-            p.draw_indexed(0..self.teapot_count, 0, 0..1)?
-        }
-        if self.visible[1] {
-            p.set_bind_group(0, &self.sphere_group, &[])?;
-            p.set_vertex_buffer(0, &self.sphere_vertices, 0..self.sphere_len)?;
-            p.set_index_buffer(
-                &self.sphere_indices,
-                0..self.sphere_index_len,
-                IndexFormat::Uint32,
-            )?;
-            p.draw_indexed(0..self.sphere_count, 0, 0..1)?
-        }
+        p.finish()?;
+        // Visible pass: clear independently and draw all models. The mesh
+        // shader uses the preceding query result only to dim an occluded mesh,
+        // matching the C++ sample's `visible` uniform rather than skipping it.
+        let colors = [Some(ColorAttachment {
+            view: AttachmentView::Surface(image),
+            resolve_target: None,
+            load: LoadOp::Clear(ClearColor::Float([0., 0., 0., 0.])),
+            store: StoreOp::Store,
+        })];
+        let depth = DepthStencilAttachment {
+            view: AttachmentView::Texture(&display_depth_view),
+            depth: Some((LoadOp::Clear(1.), StoreOp::Discard)),
+            stencil: None,
+            depth_read_only: false,
+            stencil_read_only: false,
+        };
+        let mut p = e.begin_raster(&RasterPassDesc {
+            label: Some("11 visible pass"),
+            colors: &colors,
+            depth_stencil: Some(depth),
+            render_area: Rect {
+                x: 0,
+                y: 0,
+                width: extent[0],
+                height: extent[1],
+            },
+            multiview_mask: None,
+            timestamp_writes: None,
+            secondary_inheritance: None,
+        })?;
+        p.viewport(Viewport {
+            x: 0.,
+            y: 0.,
+            width: extent[0] as f32,
+            height: extent[1] as f32,
+            min_depth: 0.,
+            max_depth: 1.,
+        })?;
+        p.scissor(Rect {
+            x: 0,
+            y: 0,
+            width: extent[0],
+            height: extent[1],
+        })?;
+        p.set_pipeline(&self.mesh_pipeline)?;
+        p.set_bind_group(0, &self.teapot_group, &[])?;
+        p.set_vertex_buffer(0, &self.teapot_vertices, 0..self.teapot_len)?;
+        p.set_index_buffer(
+            &self.teapot_indices,
+            0..self.teapot_index_len,
+            IndexFormat::Uint32,
+        )?;
+        p.draw_indexed(0..self.teapot_count, 0, 0..1)?;
+        p.set_bind_group(0, &self.sphere_group, &[])?;
+        p.set_vertex_buffer(0, &self.sphere_vertices, 0..self.sphere_len)?;
+        p.set_index_buffer(
+            &self.sphere_indices,
+            0..self.sphere_index_len,
+            IndexFormat::Uint32,
+        )?;
+        p.draw_indexed(0..self.sphere_count, 0, 0..1)?;
+        p.set_pipeline(&self.occluder_pipeline)?;
+        p.set_bind_group(0, &self.plane_group, &[])?;
+        p.set_vertex_buffer(0, &self.plane_vertices, 0..self.plane_len)?;
+        p.set_index_buffer(
+            &self.plane_indices,
+            0..self.plane_index_len,
+            IndexFormat::Uint32,
+        )?;
+        p.draw_indexed(0..self.plane_count, 0, 0..1)?;
         p.finish()?;
         queries.resolve(&mut e, &self.queries, 0..2, &self.results, 0)?;
         let ticket = e.readback_buffer(&self.results, 0..16)?;
@@ -438,29 +589,43 @@ impl<B: OcclusionBackend> Workload<B> {
             u64::from_le_bytes(v[..8].try_into().map_err(|_| Error::InvalidState)?),
             u64::from_le_bytes(v[8..].try_into().map_err(|_| Error::InvalidState)?),
         ];
+        if std::env::var_os("FLUXEL_QUERY_TRACE").is_some() {
+            println!(
+                "occlusion samples: teapot={} sphere={}",
+                passed[0], passed[1]
+            );
+        }
         self.visible = [passed[0] != 0, passed[1] != 0];
         Ok(())
     }
 }
-async fn shader<B: OcclusionBackend>(
+fn color<B: OcclusionBackend>(
     d: &Device<B>,
-    n: &str,
-    b: &[u8],
-    e: &str,
-    s: ShaderStage,
-) -> Result<Shader<B>> {
-    d.shader(ShaderDesc {
-        label: Some(n.into()),
-        format: ShaderFormat::Dxil,
-        bytes: Arc::from(b),
-        entries: vec![ShaderEntryPoint {
-            name: e.into(),
-            stage: s,
-            workgroup_size: None,
-        }],
-        required_features: vec![],
-    })
-    .await
+    e: [u32; 2],
+    label: &str,
+) -> Result<(Texture<B>, TextureView<B>)> {
+    let t = d.create_texture(&TextureDesc {
+        label: Some(label.into()),
+        dimension: TextureDimension::D2,
+        extent: [e[0], e[1], 1],
+        array_layers: 1,
+        format: TextureFormat::Bgra8Unorm,
+        mip_levels: 1,
+        samples: 1,
+        usage: TextureUsage::RENDER_ATTACHMENT,
+        view_formats: vec![],
+    })?;
+    let v = d.create_view(
+        &t,
+        &TextureViewDesc {
+            format: TextureFormat::Bgra8Unorm,
+            dimension: TextureViewDimension::D2,
+            aspects: TextureAspects::COLOR,
+            mips: 0..1,
+            layers: 0..1,
+        },
+    )?;
+    Ok((t, v))
 }
 fn depth<B: OcclusionBackend>(d: &Device<B>, e: [u32; 2]) -> Result<(Texture<B>, TextureView<B>)> {
     let t = d.create_texture(&TextureDesc {
@@ -486,13 +651,13 @@ fn depth<B: OcclusionBackend>(d: &Device<B>, e: [u32; 2]) -> Result<(Texture<B>,
     )?;
     Ok((t, v))
 }
-fn tri(a: [f32; 3], b: [f32; 3], c: [f32; 3], k: [f32; 3]) -> Vec<u8> {
-    [a, b, c]
-        .into_iter()
-        .flat_map(|p| p.into_iter().chain(k).flat_map(f32::to_le_bytes))
-        .collect()
-}
-fn transform(extent: [u32; 2], translate: [f32; 3], scale: f32, tint: [f32; 4]) -> [u8; 256] {
+fn transform(
+    extent: [u32; 2],
+    translate: [f32; 3],
+    scale: f32,
+    tint: [f32; 4],
+    visible: bool,
+) -> [u8; 256] {
     // C++ camera: look-at style `translate(0, 0, -7.5) * rotateY(-123.75)`
     // and a Vulkan depth-range perspective (60°, near 1, far 256).
     let multiply = |a: [f32; 16], b: [f32; 16]| {
@@ -552,26 +717,29 @@ fn transform(extent: [u32; 2], translate: [f32; 3], scale: f32, tint: [f32; 4]) 
         translate[2],
         1.0,
     ];
-    let matrix = multiply(projection, multiply(view, model));
     let mut bytes = [0; 256];
-    for (index, value) in matrix.into_iter().enumerate() {
-        bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
+    for (matrix_index, matrix) in [projection, view, model].into_iter().enumerate() {
+        for (index, value) in matrix.into_iter().enumerate() {
+            let offset = matrix_index * 64 + index * 4;
+            bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
+        }
     }
     for (index, value) in tint.into_iter().enumerate() {
-        let offset = 64 + index * 4;
+        let offset = 192 + index * 4;
         bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
     }
+    // The RHI viewport mirrors the C++ Vulkan viewport in Y, so the model
+    // keeps its original glTF Y and the world-space light mirrors with it.
+    for (index, value) in [10.0_f32, 10.0, 10.0, 1.0].into_iter().enumerate() {
+        let offset = 208 + index * 4;
+        bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
+    }
+    let visible = if visible { 1.0_f32 } else { 0.0_f32 };
+    bytes[224..228].copy_from_slice(&visible.to_ne_bytes());
     bytes
 }
-fn quad(a: [f32; 3], b: [f32; 3], k: [f32; 3]) -> Vec<u8> {
-    tri(a, [b[0], a[1], a[2]], b, k)
-        .into_iter()
-        .chain(tri(a, b, [a[0], b[1], a[2]], k))
-        .collect()
-}
 #[cfg(windows)]
-fn main() {
-    use fluxel_rhi::dx12::Dx12;
+fn run<B: OcclusionBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
     let cfg = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Bgra8Unorm,
@@ -581,9 +749,9 @@ fn main() {
         usage: SurfaceUsage::RENDER_ATTACHMENT,
         maximum_frame_latency: 2,
     };
-    let mut work: Option<Workload<Dx12>> = None;
-    let result = common::run_example(
-        common::windows_api::Dx12Host,
+    let mut work: Option<Workload<B>> = None;
+    common::run_example(
+        host,
         "Occlusion queries",
         cfg.clone(),
         move |d, _, image, extent| {
@@ -601,13 +769,29 @@ fn main() {
                 work: recorded,
                 ticket,
             } = w.record(d, &image, extent)?;
-            let c = submit(d, lane, recorded, image)?;
-            w.consume(d, ticket, &c)
+            // The harness waits for the frame completion.  Keep the query
+            // result path explicit here so the next frame's visibility is
+            // based on native query evidence.
+            let point = submit(d, lane, recorded, image)?;
+            w.consume(d, ticket, &point)
         },
-    );
-    if let Err(e) = result {
-        eprintln!("11_occlusion_query: {e:?}");
-        std::process::exit(1)
+    )
+}
+#[cfg(windows)]
+fn main() {
+    let result = match common::windows_api::selected_backend() {
+        Ok(common::windows_api::SelectedBackend::Dx12) => {
+            run::<fluxel_rhi::dx12::Dx12, _>(common::windows_api::Dx12Host)
+        }
+        #[cfg(feature = "vulkan")]
+        Ok(common::windows_api::SelectedBackend::Vulkan) => {
+            run::<fluxel_rhi::vulkan::Vulkan, _>(common::windows_api::VulkanHost)
+        }
+        Err(error) => Err(error),
+    };
+    if let Err(error) = result {
+        eprintln!("11_occlusion_query: {error:?}");
+        std::process::exit(1);
     }
 }
 #[cfg(not(windows))]

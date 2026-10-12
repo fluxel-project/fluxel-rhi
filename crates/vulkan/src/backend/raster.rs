@@ -555,7 +555,7 @@ impl api::RasterBackend for Vulkan {
         Ok(())
     }
     fn end_raster(e: &mut VulkanEncoder) -> Result<()> {
-        if !e.raster {
+        if !e.raster || e.active_occlusion.is_some() {
             return Err(Error::InvalidState);
         }
         let image = e.color_surface_image.take();
@@ -572,6 +572,9 @@ impl api::RasterBackend for Vulkan {
     }
     fn abort_raster(e: &mut VulkanEncoder) {
         if e.raster {
+            if let Some((set, slot)) = e.active_occlusion.take() {
+                unsafe { e.device.device.cmd_end_query(e.command, set.pool(), slot) };
+            }
             unsafe { e.device.device.cmd_end_rendering(e.command) };
             e.raster = false;
             e.raster_index_bound = false;

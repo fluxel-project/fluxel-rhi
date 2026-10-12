@@ -32,7 +32,9 @@ mod compute;
 mod copy;
 mod encoder;
 mod pipeline;
+mod query;
 mod raster;
+mod readback;
 mod resource;
 mod shader;
 mod submit;
@@ -73,13 +75,13 @@ native_arc!(
     VulkanPipelineCache,
     VulkanAcceleration,
     VulkanSparse,
-    VulkanQuerySet,
 );
 
 pub use pipeline::{
     VulkanBindGroup, VulkanBindGroupLayout, VulkanComputePipeline, VulkanPipelineLayout,
     VulkanRasterPipeline,
 };
+pub use query::VulkanQuerySet;
 pub use resource::{VulkanBuffer, VulkanSampler, VulkanTexture, VulkanTextureView};
 pub use shader::VulkanShader;
 pub use surface::{VulkanSurface, VulkanSurfaceImage};
@@ -249,6 +251,54 @@ impl api::PipelineBackend for Vulkan {
         desc: &'a api::RasterPipelineDesc<Self>,
     ) -> Self::RasterPipelineFuture<'a> {
         ready(pipeline::create_raster(device, desc))
+    }
+}
+
+impl api::QueryBackend for Vulkan {
+    fn query_supported(_: &VulkanDevice, kind: api::QueryKind) -> bool {
+        matches!(kind, api::QueryKind::Occlusion)
+    }
+
+    fn create_query_set(device: &VulkanDevice, desc: &api::QueryDesc) -> Result<VulkanQuerySet> {
+        query::create(device, desc)
+    }
+
+    fn write_timestamp(_: &mut VulkanEncoder, _: &VulkanQuerySet, _: u32) -> Result<()> {
+        Err(Error::Unsupported("Vulkan timestamps"))
+    }
+
+    fn begin_occlusion(encoder: &mut VulkanEncoder, set: &VulkanQuerySet, slot: u32) -> Result<()> {
+        query::begin_occlusion(encoder, set, slot)
+    }
+
+    fn reset_queries(
+        encoder: &mut VulkanEncoder,
+        set: &VulkanQuerySet,
+        slots: std::ops::Range<u32>,
+    ) -> Result<()> {
+        query::reset(encoder, set, slots)
+    }
+
+    fn end_occlusion(encoder: &mut VulkanEncoder) -> Result<()> {
+        query::end_occlusion(encoder)
+    }
+
+    fn begin_statistics(_: &mut VulkanEncoder, _: &VulkanQuerySet, _: u32) -> Result<()> {
+        Err(Error::Unsupported("Vulkan pipeline statistics"))
+    }
+
+    fn end_statistics(_: &mut VulkanEncoder) -> Result<()> {
+        Err(Error::Unsupported("Vulkan pipeline statistics"))
+    }
+
+    fn resolve_queries(
+        encoder: &mut VulkanEncoder,
+        set: &VulkanQuerySet,
+        slots: std::ops::Range<u32>,
+        destination: &VulkanBuffer,
+        offset: u64,
+    ) -> Result<()> {
+        query::resolve(encoder, set, slots, destination, offset)
     }
 }
 

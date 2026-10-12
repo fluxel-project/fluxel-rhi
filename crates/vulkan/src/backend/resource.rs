@@ -14,7 +14,7 @@ use super::{DeviceState, VulkanDevice, vk_error};
 #[derive(Clone)]
 pub struct VulkanBuffer(pub(super) Arc<BufferState>);
 pub(super) struct BufferState {
-    device: Arc<DeviceState>,
+    pub(super) device: Arc<DeviceState>,
     pub(super) buffer: vk::Buffer,
     pub(super) memory: vk::DeviceMemory,
     pub(super) size: u64,
@@ -506,7 +506,10 @@ fn memory_flags(memory: api::MemoryClass) -> vk::MemoryPropertyFlags {
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
         }
         api::MemoryClass::Readback => {
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_CACHED
+            // Query/readback consumers map bytes after a completion point.
+            // Request coherent memory so the narrow ReadbackBackend mapping
+            // contract never exposes stale non-coherent cache lines.
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
         }
     }
 }
@@ -535,6 +538,9 @@ fn buffer_usage(usage: api::BufferUsage) -> Result<vk::BufferUsageFlags> {
     }
     if usage.contains(api::BufferUsage::INDIRECT) {
         out |= vk::BufferUsageFlags::INDIRECT_BUFFER;
+    }
+    if usage.contains(api::BufferUsage::QUERY_RESOLVE) {
+        out |= vk::BufferUsageFlags::TRANSFER_DST;
     }
     if out.is_empty() {
         return Err(Error::Unsupported("Vulkan buffer usage"));
@@ -634,7 +640,10 @@ const SUPPORTED_BUFFER_USAGE: u64 = api::BufferUsage::COPY_SRC.0
     | api::BufferUsage::INDEX.0
     | api::BufferUsage::UNIFORM.0
     | api::BufferUsage::STORAGE.0
-    | api::BufferUsage::INDIRECT.0;
+    | api::BufferUsage::INDIRECT.0
+    | api::BufferUsage::MAP_READ.0
+    | api::BufferUsage::MAP_WRITE.0
+    | api::BufferUsage::QUERY_RESOLVE.0;
 const SUPPORTED_TEXTURE_USAGE: u64 = api::TextureUsage::COPY_SRC.0
     | api::TextureUsage::COPY_DST.0
     | api::TextureUsage::TEXTURE_BINDING.0

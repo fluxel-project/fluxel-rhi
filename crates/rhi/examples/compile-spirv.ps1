@@ -42,7 +42,11 @@ $jobs = @(
     @('10_indirect_draw', 'indirect.hlsl', 'ground_vs', 'vs_6_0', 'ground_vs.spv'),
     @('10_indirect_draw', 'indirect.hlsl', 'ground_ps', 'ps_6_0', 'ground_ps.spv'),
     @('10_indirect_draw', 'indirect.hlsl', 'sky_vs', 'vs_6_0', 'sky_vs.spv'),
-    @('10_indirect_draw', 'indirect.hlsl', 'sky_ps', 'ps_6_0', 'sky_ps.spv')
+    @('10_indirect_draw', 'indirect.hlsl', 'sky_ps', 'ps_6_0', 'sky_ps.spv'),
+    @('11_occlusion_query', 'occlusion.hlsl', 'vs_main', 'vs_6_0', 'occlusion.vs.spv'),
+    @('11_occlusion_query', 'occlusion.hlsl', 'simple_ps', 'ps_6_0', 'simple.ps.spv'),
+    @('11_occlusion_query', 'occlusion.hlsl', 'mesh_ps', 'ps_6_0', 'mesh.ps.spv'),
+    @('11_occlusion_query', 'occlusion.hlsl', 'occluder_ps', 'ps_6_0', 'occluder.ps.spv')
 )
 
 foreach ($job in $jobs) {
