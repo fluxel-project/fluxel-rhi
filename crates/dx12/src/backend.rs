@@ -64,7 +64,9 @@ struct Dx12DeviceState {
     pub(super) queue: ID3D12CommandQueue,
     pub(super) fence: ID3D12Fence,
     pub(super) next_fence: AtomicU64,
+    pub(super) queue_lock: Mutex<()>,
     pub(super) in_flight: Mutex<Vec<(u64, Vec<encoder::Dx12RecordedWork>)>>,
+    pub(super) abandoned_fence_events: Mutex<Vec<encoder::fence_wait::AbandonedFenceEvent>>,
     pub(super) descriptors: descriptor::DescriptorHeaps,
     // Retain the registration for the device lifetime when diagnostics are
     // explicitly requested.  Production devices do not enable the debug layer.
@@ -307,7 +309,9 @@ impl InstanceBackend for Dx12 {
                     queue,
                     fence,
                     next_fence: AtomicU64::new(1),
+                    queue_lock: Mutex::new(()),
                     in_flight: Mutex::new(Vec::new()),
+                    abandoned_fence_events: Mutex::new(Vec::new()),
                     descriptors,
                     _debug_info: debug_info,
                 })),

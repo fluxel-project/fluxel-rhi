@@ -5,10 +5,7 @@
 //! queue has accepted it, and `Dx12Completion` names the exact fence value
 //! signalled after that submission.
 
-use std::{
-    future::{Ready, ready},
-    mem::ManuallyDrop,
-};
+use std::mem::ManuallyDrop;
 
 use fluxel_rhi_core::api::{
     self, CompletionCoverage, CompletionPoint, CompletionState, DeferredBackend, Error, LaneId,
@@ -16,11 +13,10 @@ use fluxel_rhi_core::api::{
 };
 use windows::{
     Win32::{
-        Foundation::{CloseHandle, RECT, WAIT_OBJECT_0},
+        Foundation::RECT,
         Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
         Graphics::Direct3D12::*,
         Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC},
-        System::Threading::{CreateEventW, WaitForSingleObject},
     },
     core::Interface,
 };
@@ -31,6 +27,7 @@ use super::{
 };
 
 mod core;
+pub(super) mod fence_wait;
 mod indirect;
 mod mipmap;
 pub(crate) mod query;

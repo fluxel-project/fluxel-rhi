@@ -1,60 +1,91 @@
 use super::*;
 impl api::CompletionBackend for Dx12 {
     type WaitFuture<'a>
-        = Ready<Result<(), Error>>
+        = super::fence_wait::Dx12FenceFuture
     where
         Self: 'a;
     fn completion_status(device: &Dx12Device, point: &Dx12Completion) -> CompletionState {
         // GetCompletedValue is native queue evidence; no host-side counter is
         // treated as completion.
-        if unsafe { point.fence.GetCompletedValue() } >= point.value {
-            retire(device);
-            CompletionState::Complete
-        } else {
-            CompletionState::Pending
+        match super::fence_wait::fence_progress(
+            unsafe { point.fence.GetCompletedValue() },
+            point.value,
+        ) {
+            Err(error) => CompletionState::Failed(error),
+            Ok(true) => {
+                retire(device);
+                CompletionState::Complete
+            }
+            Ok(false) => CompletionState::Pending,
         }
     }
     fn wait_completion<'a>(
         device: &'a Dx12Device,
         point: &'a Dx12Completion,
     ) -> Self::WaitFuture<'a> {
-        let result = wait_fence(device, point);
-        if result.is_ok() {
-            retire(device);
-        }
-        ready(result)
+        super::fence_wait::Dx12FenceFuture::new(device.clone(), point.fence.clone(), point.value)
     }
     fn wait_idle(device: &Dx12Device) -> Self::WaitFuture<'_> {
-        let value = device
-            .0
-            .next_fence
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let result = unsafe { device.0.queue.Signal(&device.0.fence, value) }
-            .map_err(native_error)
-            .and_then(|_| {
-                wait_fence(
-                    device,
-                    &Dx12Completion {
-                        fence: device.0.fence.clone(),
-                        value,
-                    },
-                )
-            });
-        if result.is_ok() {
-            retire(device);
-        }
-        ready(result)
+        let result = {
+            let _queue = device
+                .0
+                .queue_lock
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            signal_queue(device)
+        };
+        let value = match result {
+            Ok(value) => value,
+            Err(error) => {
+                return super::fence_wait::Dx12FenceFuture::immediate(
+                    device.clone(),
+                    device.0.fence.clone(),
+                    0,
+                    Err(error),
+                );
+            }
+        };
+        super::fence_wait::Dx12FenceFuture::new(device.clone(), device.0.fence.clone(), value)
     }
 }
 
-fn retire(device: &Dx12Device) {
+pub(super) fn retire(device: &Dx12Device) {
     let completed = unsafe { device.0.fence.GetCompletedValue() };
+    device
+        .0
+        .abandoned_fence_events
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .retain(|event| completed != u64::MAX && event.value > completed);
+    if completed == u64::MAX {
+        return;
+    }
     device
         .0
         .in_flight
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .retain(|(value, _)| *value == u64::MAX || *value > completed);
+        .retain(|(value, _)| retain_after(completed, *value));
+}
+
+fn retain_after(completed: u64, value: u64) -> bool {
+    completed == u64::MAX || value == u64::MAX || value > completed
+}
+
+// The caller holds queue_lock. u64::MAX is reserved for device removal and
+// never used as ordinary completion evidence.
+fn signal_queue(device: &Dx12Device) -> Result<u64, Error> {
+    let value = device
+        .0
+        .next_fence
+        .fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |next| next.checked_add(1),
+        )
+        .map_err(|_| Error::InvalidRange)?;
+    unsafe { device.0.queue.Signal(&device.0.fence, value) }.map_err(native_error)?;
+    Ok(value)
 }
 
 fn checkpoint(
@@ -90,26 +121,6 @@ fn retain_indeterminate(device: &Dx12Device, issued: Vec<Dx12RecordedWork>) {
     }
 }
 
-fn wait_fence(_: &Dx12Device, point: &Dx12Completion) -> Result<(), Error> {
-    if unsafe { point.fence.GetCompletedValue() } >= point.value {
-        return Ok(());
-    }
-    let event = unsafe { CreateEventW(None, false, false, None) }.map_err(native_error)?;
-    let result = unsafe { point.fence.SetEventOnCompletion(point.value, event) }
-        .map_err(native_error)
-        .and_then(|_| {
-            if unsafe { WaitForSingleObject(event, u32::MAX) } == WAIT_OBJECT_0 {
-                Ok(())
-            } else {
-                Err(Error::DeviceLost)
-            }
-        });
-    unsafe {
-        let _ = CloseHandle(event);
-    }
-    result
-}
-
 impl DeferredBackend for Dx12 {
     type NativeRecordedWork = Dx12RecordedWork;
     fn finish_encoder(mut encoder: Dx12Encoder, lane: LaneId) -> Result<Dx12RecordedWork, Error> {
@@ -118,6 +129,14 @@ impl DeferredBackend for Dx12 {
         Ok(Dx12RecordedWork { lane, encoder })
     }
     unsafe fn submit(device: &Dx12Device, packet: SubmitPacket<Self>) -> SubmitOutcome<Self> {
+        // The direct queue is one ordered stream. Hold the gate across this
+        // packet so command execution and every fence signal share one order.
+        retire(device);
+        let _queue = device
+            .0
+            .queue_lock
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let SubmitPacket {
             plan,
             steps,
@@ -227,21 +246,18 @@ impl DeferredBackend for Dx12 {
                 }
             }
             if requested.contains(&id) {
-                let value = device
-                    .0
-                    .next_fence
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if let Err(error) =
-                    unsafe { device.0.queue.Signal(&device.0.fence, value) }.map_err(native_error)
-                {
-                    retain_indeterminate(device, issued);
-                    return SubmitOutcome::Indeterminate {
-                        error,
-                        uncertain: unsafe {
-                            api::NativeUncertainty::from_native(plan.id().device, ())
-                        },
-                    };
-                }
+                let value = match signal_queue(device) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        retain_indeterminate(device, issued);
+                        return SubmitOutcome::Indeterminate {
+                            error,
+                            uncertain: unsafe {
+                                api::NativeUncertainty::from_native(plan.id().device, ())
+                            },
+                        };
+                    }
+                };
                 checkpoints.push(checkpoint(device, plan.id().device, value, &lane_frontiers));
                 last_signal = Some((id, value));
             }
@@ -250,28 +266,26 @@ impl DeferredBackend for Dx12 {
         // retention, even when the caller requested no completion evidence.
         // Reuse a signal made at the final accepted step when possible.
         let final_step = accepted.last().copied();
-        let retention_value = if final_step.is_some()
-            && last_signal.map(|(step, _)| step) == final_step
-        {
-            last_signal.map(|(_, value)| value)
-        } else if final_step.is_some() {
-            let value = device
-                .0
-                .next_fence
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if let Err(error) =
-                unsafe { device.0.queue.Signal(&device.0.fence, value) }.map_err(native_error)
-            {
-                retain_indeterminate(device, issued);
-                return SubmitOutcome::Indeterminate {
-                    error,
-                    uncertain: unsafe { api::NativeUncertainty::from_native(plan.id().device, ()) },
+        let retention_value =
+            if final_step.is_some() && last_signal.map(|(step, _)| step) == final_step {
+                last_signal.map(|(_, value)| value)
+            } else if final_step.is_some() {
+                let value = match signal_queue(device) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        retain_indeterminate(device, issued);
+                        return SubmitOutcome::Indeterminate {
+                            error,
+                            uncertain: unsafe {
+                                api::NativeUncertainty::from_native(plan.id().device, ())
+                            },
+                        };
+                    }
                 };
-            }
-            Some(value)
-        } else {
-            None
-        };
+                Some(value)
+            } else {
+                None
+            };
         if let Some(value) = retention_value {
             device
                 .0
@@ -279,6 +293,7 @@ impl DeferredBackend for Dx12 {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .push((value, issued));
+            retire(device);
         }
         match completion {
             api::CompletionRequest::None => checkpoints.clear(),
@@ -303,5 +318,19 @@ impl DeferredBackend for Dx12 {
             error: Error::Unsupported("DX12 submit resume"),
             work: api::RetryableSubmit::Tail(tail),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::retain_after;
+
+    #[test]
+    fn device_removed_keeps_all_submitted_native_owners() {
+        assert!(retain_after(u64::MAX, 1));
+        assert!(retain_after(u64::MAX, u64::MAX));
+        assert!(retain_after(10, u64::MAX));
+        assert!(retain_after(10, 11));
+        assert!(!retain_after(10, 10));
     }
 }

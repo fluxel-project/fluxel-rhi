@@ -204,6 +204,9 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
         return Err(Error::InvalidState);
     }
     let completed = unsafe { s.0.device.0.fence.GetCompletedValue() };
+    if completed == u64::MAX {
+        return Err(Error::DeviceLost);
+    }
     if s.0
         .device
         .0
