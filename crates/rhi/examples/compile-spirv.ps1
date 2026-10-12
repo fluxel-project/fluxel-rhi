@@ -32,7 +32,9 @@ $jobs = @(
     @('07_offscreen', 'offscreen.hlsl', 'phong_vs', 'vs_6_0', 'phong.vs.spv'),
     @('07_offscreen', 'offscreen.hlsl', 'phong_ps', 'ps_6_0', 'phong.ps.spv'),
     @('07_offscreen', 'offscreen.hlsl', 'mirror_vs', 'vs_6_0', 'mirror.vs.spv'),
-    @('07_offscreen', 'offscreen.hlsl', 'mirror_ps', 'ps_6_0', 'mirror.ps.spv')
+    @('07_offscreen', 'offscreen.hlsl', 'mirror_ps', 'ps_6_0', 'mirror.ps.spv'),
+    @('08_msaa', 'msaa.hlsl', 'vs_main', 'vs_6_0', 'msaa.vs.spv'),
+    @('08_msaa', 'msaa.hlsl', 'ps_main', 'ps_6_0', 'msaa.ps.spv')
 )
 
 foreach ($job in $jobs) {

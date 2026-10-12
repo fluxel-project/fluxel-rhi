@@ -51,6 +51,8 @@ pub struct VulkanSurfaceImage {
     pub(crate) image_index: u32,
     pub(crate) image: vk::Image,
     pub(crate) view: vk::ImageView,
+    extent: vk::Extent2D,
+    format: vk::Format,
     generation: u64,
     handed: bool,
     present_wait: Mutex<Option<vk::Semaphore>>,
@@ -157,6 +159,10 @@ impl Drop for SurfaceState {
     }
 }
 impl VulkanSurfaceImage {
+    pub(super) fn attachment(&self) -> (vk::ImageView, vk::Image, vk::Extent2D, vk::Format) {
+        (self.view, self.image, self.extent, self.format)
+    }
+
     pub(super) fn set_present_wait(&self, semaphore: vk::Semaphore) -> Result<()> {
         let mut pending = self.present_wait.lock().unwrap_or_else(|e| e.into_inner());
         if pending.is_some() {
@@ -622,6 +628,8 @@ fn acquire(surface: &VulkanSurface) -> Result<VulkanSurfaceImage> {
         image_index: index,
         image: inner.images[index as usize],
         view: inner.views[index as usize],
+        extent: inner.extent,
+        format: inner.format,
         generation: inner.generation,
         handed: false,
         present_wait: Mutex::new(None),

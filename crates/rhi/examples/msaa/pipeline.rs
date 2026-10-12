@@ -1,6 +1,5 @@
 use super::MsaaBackend;
 use fluxel_rhi::api::*;
-use std::sync::Arc;
 
 pub(super) async fn shader<B: MsaaBackend>(
     device: &Device<B>,
@@ -9,19 +8,12 @@ pub(super) async fn shader<B: MsaaBackend>(
     entry: &str,
     stage: ShaderStage,
 ) -> Result<Shader<B>> {
-    device
-        .shader(ShaderDesc {
-            label: Some(label.into()),
-            format: ShaderFormat::Dxil,
-            bytes: Arc::from(bytes),
-            entries: vec![ShaderEntryPoint {
-                name: entry.into(),
-                stage,
-                workgroup_size: None,
-            }],
-            required_features: vec![],
-        })
-        .await
+    let spirv = match stage {
+        ShaderStage::Vertex => crate::VS_SPIRV,
+        ShaderStage::Fragment => crate::PS_SPIRV,
+        _ => return Err(Error::InvalidState),
+    };
+    crate::common::native_shader(device, label, entry, stage, bytes, spirv).await
 }
 pub(super) async fn pipeline<B: MsaaBackend>(
     device: &Device<B>,

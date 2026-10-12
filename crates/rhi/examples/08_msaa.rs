@@ -8,14 +8,15 @@ mod gltf;
 mod msaa;
 
 use fluxel_rhi::api::*;
-use msaa::Msaa;
+use msaa::{Msaa, MsaaBackend};
 
 pub(crate) const VOYAGER: &[u8] = include_bytes!("assets/models/voyager.gltf");
 pub(crate) const VS: &[u8] = include_bytes!("assets/08_msaa/msaa.vs.dxil");
 pub(crate) const PS: &[u8] = include_bytes!("assets/08_msaa/msaa.ps.dxil");
+pub(crate) const VS_SPIRV: &[u8] = include_bytes!("assets/08_msaa/msaa.vs.spv");
+pub(crate) const PS_SPIRV: &[u8] = include_bytes!("assets/08_msaa/msaa.ps.spv");
 #[cfg(windows)]
-fn main() {
-    use fluxel_rhi::dx12::Dx12;
+fn run<B: MsaaBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Bgra8Unorm,
@@ -25,10 +26,10 @@ fn main() {
         usage: SurfaceUsage::RENDER_ATTACHMENT,
         maximum_frame_latency: 2,
     };
-    let mut workload: Option<Msaa<Dx12>> = None;
+    let mut workload: Option<Msaa<B>> = None;
     let start = std::time::Instant::now();
-    let result = common::run_example(
-        common::windows_api::Dx12Host,
+    common::run_example(
+        host,
         "Multisample anti-aliasing",
         config.clone(),
         move |device, _, image, extent| {
@@ -54,7 +55,20 @@ fn main() {
             )?;
             common::submit_and_present(device, lane, work, image)
         },
-    );
+    )
+}
+#[cfg(windows)]
+fn main() {
+    let result = match common::windows_api::selected_backend() {
+        Ok(common::windows_api::SelectedBackend::Dx12) => {
+            run::<fluxel_rhi::dx12::Dx12, _>(common::windows_api::Dx12Host)
+        }
+        #[cfg(feature = "vulkan")]
+        Ok(common::windows_api::SelectedBackend::Vulkan) => {
+            run::<fluxel_rhi::vulkan::Vulkan, _>(common::windows_api::VulkanHost)
+        }
+        Err(error) => Err(error),
+    };
     if let Err(error) = result {
         eprintln!("08_msaa: {error:?}");
         std::process::exit(1)
@@ -62,5 +76,5 @@ fn main() {
 }
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("08_msaa requires Windows and DX12");
+    eprintln!("08_msaa requires Windows");
 }

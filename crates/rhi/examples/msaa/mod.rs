@@ -188,7 +188,13 @@ impl<B: MsaaBackend> Msaa<B> {
                 .map(|primitive| Draw {
                     first: primitive.first_index,
                     count: primitive.index_count,
-                    material: primitive.material_index.unwrap_or(0).min(1),
+                    // Voyager's first two materials both reference texture 0;
+                    // only material 2 selects texture 1.  Bind groups follow
+                    // image identity rather than raw glTF material ordinal.
+                    material: match primitive.material_index {
+                        Some(2) => 1,
+                        _ => 0,
+                    },
                 })
                 .collect(),
             samples,

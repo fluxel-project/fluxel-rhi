@@ -112,7 +112,11 @@ impl<B: MsaaBackend> Msaa<B> {
                         accesses: AccessMask::COLOR_WRITE,
                     },
                 },
-                layout: Some((ImageLayout::Common, ImageLayout::ColorAttachment)),
+                // The multisampled target has never been read. Its first
+                // clear may therefore discard the allocation's undefined
+                // contents; subsequent frames retain COLOR_ATTACHMENT_OPTIMAL
+                // even though their StoreOp discards the pixels.
+                layout: Some((ImageLayout::Undefined, ImageLayout::ColorAttachment)),
                 ownership: None,
             })])?;
             self.color_state_initialized = true;

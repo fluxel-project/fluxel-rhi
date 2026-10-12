@@ -112,7 +112,6 @@ impl VulkanTextureView {
             || view.aspects != aspects
             || view.mips.end != view.mips.start.checked_add(1)?
             || view.layers.end != view.layers.start.checked_add(1)?
-            || texture.samples != 1
             || !texture.usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
         {
             return None;
