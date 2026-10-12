@@ -1,4 +1,40 @@
 use super::*;
+use std::sync::{Arc, Mutex};
+
+/// Device-lifetime native state for the fixed RGBA8 linear mip blit pass.
+/// Descriptor heaps remain per encoder because their descriptors are rewritten
+/// for each source/target mip pair and must outlive command execution.
+pub(crate) struct MipBlitPipeline {
+    pub(crate) root: ID3D12RootSignature,
+    pub(crate) state: ID3D12PipelineState,
+}
+
+pub(crate) struct MipBlitCache(Mutex<Option<Arc<MipBlitPipeline>>>);
+
+impl MipBlitCache {
+    pub(crate) fn get_or_create(
+        &self,
+        device: &ID3D12Device,
+    ) -> Result<Arc<MipBlitPipeline>, Error> {
+        let mut cached = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(pipeline) = cached.as_ref() {
+            return Ok(pipeline.clone());
+        }
+        let pipeline = Arc::new(create_pipeline(device)?);
+        *cached = Some(pipeline.clone());
+        Ok(pipeline)
+    }
+}
+
+impl Default for MipBlitCache {
+    fn default() -> Self {
+        Self(Mutex::new(None))
+    }
+}
+
 pub(crate) fn validate_mip_blit(
     texture: &super::super::texture::TextureState,
     region: &api::TextureRegion<'_, Dx12>,
@@ -23,21 +59,7 @@ pub(crate) fn validate_mip_blit(
     Ok(())
 }
 
-pub(crate) fn linear_mip_blit(
-    encoder: &mut Dx12Encoder,
-    source: &ID3D12Resource,
-    source_mip: u32,
-    target: &ID3D12Resource,
-    target_mip: u32,
-    width: u32,
-    height: u32,
-) -> Result<(), Error> {
-    let list = &encoder.list;
-    // D3D12 has no fixed-function scaled blit.  This tiny native fullscreen
-    // pass samples the source with a linear sampler and writes the destination.
-    let mut device = None;
-    unsafe { source.GetDevice::<ID3D12Device>(&mut device) }.map_err(native_error)?;
-    let device = device.ok_or(Error::OutOfMemory)?;
+fn create_pipeline(device: &ID3D12Device) -> Result<MipBlitPipeline, Error> {
     let ranges = [
         D3D12_DESCRIPTOR_RANGE {
             RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
@@ -159,6 +181,27 @@ pub(crate) fn linear_mip_blit(
     };
     let state = unsafe { device.CreateGraphicsPipelineState::<ID3D12PipelineState>(&pso) }
         .map_err(native_error)?;
+    Ok(MipBlitPipeline { root, state })
+}
+
+pub(crate) fn linear_mip_blit(
+    encoder: &mut Dx12Encoder,
+    source: &ID3D12Resource,
+    source_mip: u32,
+    target: &ID3D12Resource,
+    target_mip: u32,
+    width: u32,
+    height: u32,
+) -> Result<(), Error> {
+    let list = &encoder.list;
+    // D3D12 has no fixed-function scaled blit.  This tiny native fullscreen
+    // pass samples the source with a linear sampler and writes the destination.
+    let mut device = None;
+    unsafe { source.GetDevice::<ID3D12Device>(&mut device) }.map_err(native_error)?;
+    let device = device.ok_or(Error::OutOfMemory)?;
+    let pipeline = encoder.mip_blit_cache.get_or_create(&device)?;
+    let root = &pipeline.root;
+    let state = &pipeline.state;
     let views = unsafe {
         device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&D3D12_DESCRIPTOR_HEAP_DESC {
             Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
@@ -253,8 +296,8 @@ pub(crate) fn linear_mip_blit(
     );
     unsafe {
         list.OMSetRenderTargets(1, Some(&rtv), false, None);
-        list.SetGraphicsRootSignature(&root);
-        list.SetPipelineState(&state);
+        list.SetGraphicsRootSignature(root);
+        list.SetPipelineState(state);
         list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         list.RSSetViewports(&[D3D12_VIEWPORT {
             TopLeftX: 0.,
@@ -293,7 +336,5 @@ pub(crate) fn linear_mip_blit(
     encoder.mip_blit_heaps.push(views);
     encoder.mip_blit_heaps.push(samplers);
     encoder.mip_blit_heaps.push(rtv_heap);
-    encoder.mip_blit_states.push(state);
-    encoder.mip_blit_roots.push(root);
     Ok(())
 }

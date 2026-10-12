@@ -26,6 +26,8 @@ use super::{
     Dx12RasterPipeline, Dx12Texture, native_error,
 };
 
+mod coordinates;
+mod copy;
 mod core;
 pub(super) mod fence_wait;
 mod indirect;
@@ -37,8 +39,13 @@ mod record;
 pub(crate) mod secondary;
 mod submit;
 mod transition;
+pub(super) use coordinates::{scissor as validate_scissor, viewport as validate_viewport};
+pub(crate) use core::DirectCommandPool;
 pub use core::{Dx12Completion, Dx12Encoder, Dx12RecordedWork, RasterExtras};
+pub(crate) use mipmap::MipBlitCache;
 pub(super) use mipmap::{linear_mip_blit, validate_mip_blit};
 pub(super) use raster::{barrier, upload_buffer};
 pub(crate) use secondary::{Dx12SecondaryEncoder, Dx12SecondaryWork};
-pub(super) use transition::{barrier_sub, copy_location, texture_state, texture_upload_buffer};
+pub(super) use transition::{
+    barrier_sub, buffer_state, copy_location, texture_state, texture_upload_buffer,
+};

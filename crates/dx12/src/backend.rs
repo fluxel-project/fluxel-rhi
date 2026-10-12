@@ -3,6 +3,7 @@
 //! Its native associated types remain concrete through the public API.
 
 use std::{
+    collections::HashMap,
     ffi::CStr,
     future::{Ready, ready},
     sync::{Arc, Mutex, atomic::AtomicU64},
@@ -23,8 +24,8 @@ use windows::Win32::Graphics::{
         D3D12_MESSAGE_CATEGORY, D3D12_MESSAGE_ID, D3D12_MESSAGE_SEVERITY, D3D12_RESOURCE_DESC,
         D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON,
         D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12CreateDevice, D3D12GetDebugInterface,
-        ID3D12CommandQueue, ID3D12Debug, ID3D12Device, ID3D12Fence, ID3D12InfoQueue1,
-        ID3D12Resource,
+        ID3D12CommandQueue, ID3D12CommandSignature, ID3D12Debug, ID3D12Device, ID3D12Fence,
+        ID3D12InfoQueue1, ID3D12Resource,
     },
     Dxgi::{CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIFactory1},
 };
@@ -66,7 +67,13 @@ struct Dx12DeviceState {
     pub(super) next_fence: AtomicU64,
     pub(super) queue_lock: Mutex<()>,
     pub(super) in_flight: Mutex<Vec<(u64, Vec<encoder::Dx12RecordedWork>)>>,
+    pub(super) direct_commands: Arc<encoder::DirectCommandPool>,
+    pub(super) mip_blit_cache: Arc<encoder::MipBlitCache>,
     pub(super) abandoned_fence_events: Mutex<Vec<encoder::fence_wait::AbandonedFenceEvent>>,
+    /// Native ExecuteIndirect signatures are immutable and device-owned.
+    /// Sharing this cache through each buffer avoids per-recording creation
+    /// without introducing a command scheduler or retaining command streams.
+    pub(super) indirect_signatures: Arc<Mutex<HashMap<(bool, u32), ID3D12CommandSignature>>>,
     pub(super) descriptors: descriptor::DescriptorHeaps,
     // Retain the registration for the device lifetime when diagnostics are
     // explicitly requested.  Production devices do not enable the debug layer.
@@ -137,6 +144,7 @@ pub struct Dx12Buffer {
     pub(super) size: u64,
     pub(super) usage: api::BufferUsage,
     pub(super) memory: api::MemoryClass,
+    pub(super) indirect_signatures: Arc<Mutex<HashMap<(bool, u32), ID3D12CommandSignature>>>,
 }
 macro_rules! native_arc { ($($name:ident),* $(,)?) => { $(#[derive(Clone)] pub struct $name(Arc<()>);)* }; }
 native_arc!(
@@ -311,6 +319,9 @@ impl InstanceBackend for Dx12 {
                     next_fence: AtomicU64::new(1),
                     queue_lock: Mutex::new(()),
                     in_flight: Mutex::new(Vec::new()),
+                    direct_commands: Arc::default(),
+                    mip_blit_cache: Arc::default(),
+                    indirect_signatures: Arc::default(),
                     abandoned_fence_events: Mutex::new(Vec::new()),
                     descriptors,
                     _debug_info: debug_info,
@@ -464,6 +475,7 @@ impl api::ResourceBackend for Dx12 {
             size: desc.size,
             usage: desc.usage,
             memory: desc.memory,
+            indirect_signatures: device.0.indirect_signatures.clone(),
         })
     }
     fn create_texture(device: &Dx12Device, desc: &api::TextureDesc) -> Result<Dx12Texture> {

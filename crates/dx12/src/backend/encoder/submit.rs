@@ -26,15 +26,7 @@ impl api::CompletionBackend for Dx12 {
         super::fence_wait::Dx12FenceFuture::new(device.clone(), point.fence.clone(), point.value)
     }
     fn wait_idle(device: &Dx12Device) -> Self::WaitFuture<'_> {
-        let result = {
-            let _queue = device
-                .0
-                .queue_lock
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            signal_queue(device)
-        };
-        let value = match result {
+        let value = match signal_queue(device) {
             Ok(value) => value,
             Err(error) => {
                 return super::fence_wait::Dx12FenceFuture::immediate(
@@ -72,9 +64,15 @@ fn retain_after(completed: u64, value: u64) -> bool {
     completed == u64::MAX || value == u64::MAX || value > completed
 }
 
-// The caller holds queue_lock. u64::MAX is reserved for device removal and
-// never used as ordinary completion evidence.
+// The queue gate serializes each fence allocation with its native Signal.
+// u64::MAX is reserved for device removal and never used as ordinary
+// completion evidence.
 fn signal_queue(device: &Dx12Device) -> Result<u64, Error> {
+    let _queue = device
+        .0
+        .queue_lock
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let value = device
         .0
         .next_fence
@@ -129,14 +127,9 @@ impl DeferredBackend for Dx12 {
         Ok(Dx12RecordedWork { lane, encoder })
     }
     unsafe fn submit(device: &Dx12Device, packet: SubmitPacket<Self>) -> SubmitOutcome<Self> {
-        // The direct queue is one ordered stream. Hold the gate across this
-        // packet so command execution and every fence signal share one order.
+        // Completion records from a prior submission can be released without
+        // entering the native queue gate.
         retire(device);
-        let _queue = device
-            .0
-            .queue_lock
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let SubmitPacket {
             plan,
             steps,
@@ -185,6 +178,15 @@ impl DeferredBackend for Dx12 {
                         issued.push(native);
                     }
                     if !lists.is_empty() {
+                        // Serialize only the native queue operation. Do not
+                        // carry this lock into Present: DXGI Present may wait
+                        // for vblank, while Execute/Signal still need a
+                        // single total order across submitters.
+                        let _queue = device
+                            .0
+                            .queue_lock
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner());
                         unsafe {
                             device.0.queue.ExecuteCommandLists(
                                 &lists.into_iter().map(Some).collect::<Vec<_>>(),

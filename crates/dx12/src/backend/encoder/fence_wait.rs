@@ -106,6 +106,12 @@ pub struct Dx12FenceFuture {
     immediate: Option<Result<(), Error>>,
 }
 
+// D3D12 fence/device interfaces are free-threaded. Registration owns the
+// thread-pool wait and drains its callback before either native handle or the
+// callback context can be released, so moving a pending future only changes
+// which executor thread polls or drops it.
+unsafe impl Send for Dx12FenceFuture {}
+
 impl Dx12FenceFuture {
     pub(super) fn immediate(
         device: Dx12Device,
@@ -246,7 +252,7 @@ impl Future for Dx12FenceFuture {
 
 #[cfg(test)]
 mod tests {
-    use super::fence_progress;
+    use super::{Dx12FenceFuture, fence_progress};
     use fluxel_rhi_core::api::Error;
 
     #[test]
@@ -256,10 +262,15 @@ mod tests {
         assert_eq!(fence_progress(5, 5), Ok(true));
     }
 
+    #[test]
+    fn fence_future_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Dx12FenceFuture>();
+    }
+
     #[cfg(feature = "hardware-tests")]
     #[test]
     fn native_wait_yields_wakes_and_can_be_cancelled() {
-        use super::Dx12FenceFuture;
         use crate::backend::{Dx12, Dx12Instance};
         use fluxel_rhi_core::api::{
             AdapterId, CompletionBackend, DeviceId, DeviceRequest, InstanceBackend, InstanceId,

@@ -18,6 +18,26 @@ feature is advertised only if the corresponding native route exists. Format- and
 descriptor-specific limits belong in support queries or operation results. `Unsupported`
 is the required result for a route that is absent.
 
+## Graphics coordinate convention
+
+The public raster contract follows the [WebGPU coordinate systems](https://www.w3.org/TR/webgpu/#coordinate-systems):
+after perspective division, NDC X and Y are in `[-1, 1]`, NDC Y points up,
+and NDC Z is in `[0, 1]`.
+The framebuffer and viewport origin is the upper-left pixel, with X increasing
+rightward and Y downward. `Viewport` and `Rect` use framebuffer coordinates;
+`FrontFace` describes winding in framebuffer coordinates. For 2D textures,
+texel `(0, 0)` is the upper-left texel and texel Y increases downward. Upload
+row zero maps to that row; texture readback preserves this logical row order.
+
+Backends preserve these observable semantics when lowering to native APIs.
+DX12 already uses the matching native graphics convention; a future backend
+with a different convention must adapt its viewport, winding, depth, and copy
+lowering without changing the public contract. The RHI does not prescribe
+world-space handedness, camera direction, matrix storage, or multiplication
+order: those belong to the application's shader ABI and scene data. In
+particular, matching a Vulkan example's screenshot must not introduce a
+backend-wide Y flip into DX12.
+
 ## Current repository shape
 
 - `crates/core/src/api/` defines the public vocabulary and backend SPI traits.
@@ -59,6 +79,15 @@ The caller provides ordered work and transitions. RHI does not construct a rende
 perform global hazard analysis, or decide resource retirement. Submission and
 presentation are separate public operations; a present consumes the acquired surface
 image associated with the submitted work.
+
+Generic buffer and texture copies consume resources already transitioned to
+`CopySrc` and `CopyDst`; recording a copy leaves those states unchanged. The
+caller supplies any later transition. Convenience `write_buffer` and
+`write_texture` own their temporary upload transition instead. On DX12 their
+destination starts and ends in `COMMON`, and callers must not invoke them while
+that destination is in a different explicit state. DX12 surface presentation
+and pass-local resolve operations retain the transitions required by those
+native operations. The backend does not track a global resource-state history.
 
 ## Shader and pipeline boundary
 

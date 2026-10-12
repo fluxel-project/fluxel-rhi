@@ -11,6 +11,8 @@ use std::{
     },
 };
 
+/// Framebuffer viewport: upper-left origin, X right, Y down, depth in [0, 1].
+/// Clip/NDC Y points up; backends map it to this framebuffer convention.
 #[derive(Clone, Copy, Debug)]
 pub struct Viewport {
     pub x: f32,
@@ -20,6 +22,7 @@ pub struct Viewport {
     pub min_depth: f32,
     pub max_depth: f32,
 }
+/// Rectangle in framebuffer pixels, measured from the upper-left origin.
 #[derive(Clone, Copy, Debug)]
 pub struct Rect {
     pub x: u32,
@@ -103,6 +106,7 @@ pub struct TexelCopyBufferLayout {
 pub struct TextureRegion<'a, B: Backend> {
     pub texture: &'a Texture<B>,
     pub mip: u32,
+    /// Texel origin; for 2D images (0, 0) is upper-left and Y increases down.
     pub origin: [u32; 3],
     pub extent: [u32; 3],
     pub aspect: TextureAspects,

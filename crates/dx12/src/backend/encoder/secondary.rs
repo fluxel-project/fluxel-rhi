@@ -86,7 +86,10 @@ fn validate_signature(desc: &api::SecondaryRasterDesc) -> Result<(), Error> {
                 api::TextureFormat::Rgba8Unorm | api::TextureFormat::Bgra8Unorm
             ))
         )
-        || desc.depth_stencil_format.is_some()
+        || !matches!(
+            desc.depth_stencil_format,
+            None | Some(api::TextureFormat::Depth32Float)
+        )
         || desc.samples != 1
         || desc.multiview_mask.is_some()
     {
@@ -105,7 +108,10 @@ pub(crate) fn set_pipeline(
         .first()
         .and_then(|format| *format)
         .ok_or(Error::InvalidState)?;
-    if pipeline.0.color_format != color || pipeline.0.samples != encoder.signature.samples {
+    if pipeline.0.color_format != color
+        || pipeline.0.depth_format != encoder.signature.depth_stencil_format
+        || pipeline.0.samples != encoder.signature.samples
+    {
         return Err(Error::InvalidState);
     }
     unsafe {
@@ -117,6 +123,70 @@ pub(crate) fn set_pipeline(
     }
     encoder.pipeline = Some(pipeline.clone());
     Ok(())
+}
+
+pub(crate) fn validate_inheritance(
+    inherited: Option<&api::SecondaryRasterDesc>,
+    color_format: api::TextureFormat,
+    depth_format: Option<api::TextureFormat>,
+    samples: u32,
+    multiview_mask: Option<u32>,
+) -> Result<(), Error> {
+    let Some(inherited) = inherited else {
+        return Ok(());
+    };
+    if inherited.color_formats != [Some(color_format)]
+        || inherited.depth_stencil_format != depth_format
+        || inherited.samples != samples
+        || inherited.multiview_mask != multiview_mask
+    {
+        return Err(Error::InvalidState);
+    }
+    validate_signature(inherited)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn signature(depth: Option<api::TextureFormat>) -> api::SecondaryRasterDesc {
+        api::SecondaryRasterDesc {
+            color_formats: vec![Some(api::TextureFormat::Rgba8Unorm)],
+            depth_stencil_format: depth,
+            samples: 1,
+            multiview_mask: None,
+        }
+    }
+
+    #[test]
+    fn secondary_signature_accepts_depth32_inheritance() {
+        assert!(validate_signature(&signature(Some(api::TextureFormat::Depth32Float))).is_ok());
+    }
+
+    #[test]
+    fn secondary_inheritance_must_match_the_real_depth_attachment() {
+        let inherited = signature(Some(api::TextureFormat::Depth32Float));
+        assert!(
+            validate_inheritance(
+                Some(&inherited),
+                api::TextureFormat::Rgba8Unorm,
+                Some(api::TextureFormat::Depth32Float),
+                1,
+                None,
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            validate_inheritance(
+                Some(&inherited),
+                api::TextureFormat::Rgba8Unorm,
+                None,
+                1,
+                None,
+            ),
+            Err(Error::InvalidState)
+        ));
+    }
 }
 
 pub(crate) fn set_bind_group(
@@ -254,18 +324,7 @@ pub(crate) fn set_viewport(
     encoder: &mut Dx12SecondaryEncoder,
     viewport: api::Viewport,
 ) -> Result<(), Error> {
-    if viewport.width <= 0.0
-        || viewport.height <= 0.0
-        || viewport.min_depth > viewport.max_depth
-        || !viewport.x.is_finite()
-        || !viewport.y.is_finite()
-        || !viewport.width.is_finite()
-        || !viewport.height.is_finite()
-        || !viewport.min_depth.is_finite()
-        || !viewport.max_depth.is_finite()
-    {
-        return Err(Error::InvalidRange);
-    }
+    validate_viewport(viewport)?;
     // Bundles cannot issue RSSetViewports.  Preserve the command here and
     // lower it on the executing direct list immediately before this bundle.
     encoder.viewport = Some(viewport);
@@ -276,14 +335,7 @@ pub(crate) fn set_scissor(
     encoder: &mut Dx12SecondaryEncoder,
     rect: api::Rect,
 ) -> Result<(), Error> {
-    if rect.width == 0 || rect.height == 0 {
-        return Err(Error::InvalidRange);
-    }
-    let right = rect.x.checked_add(rect.width).ok_or(Error::InvalidRange)?;
-    let bottom = rect.y.checked_add(rect.height).ok_or(Error::InvalidRange)?;
-    if right > i32::MAX as u32 || bottom > i32::MAX as u32 {
-        return Err(Error::InvalidRange);
-    }
+    validate_scissor(rect)?;
     // Bundles cannot issue RSSetScissorRects.  See `set_viewport`.
     encoder.scissor = Some(rect);
     Ok(())

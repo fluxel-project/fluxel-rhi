@@ -58,6 +58,7 @@ pub struct VertexBufferLayout {
     pub step_mode: VertexStepMode,
     pub attributes: Vec<VertexAttribute>,
 }
+/// Front-facing winding after viewport mapping, in framebuffer coordinates.
 #[derive(Clone, Copy, Debug)]
 pub enum FrontFace {
     Ccw,

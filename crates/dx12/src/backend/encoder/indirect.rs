@@ -24,32 +24,7 @@ fn execute(
     {
         return Err(Error::InvalidRange);
     }
-    let kind = if indexed {
-        D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED
-    } else {
-        D3D12_INDIRECT_ARGUMENT_TYPE_DRAW
-    };
-    let argument = D3D12_INDIRECT_ARGUMENT_DESC {
-        Type: kind,
-        Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0::default(),
-    };
-    let desc = D3D12_COMMAND_SIGNATURE_DESC {
-        ByteStride: stride,
-        NumArgumentDescs: 1,
-        pArgumentDescs: &argument,
-        NodeMask: 0,
-    };
-    let mut signature = None;
-    // Command-list devices create a signature independently of the current PSO;
-    // the argument layout is exactly D3D12_DRAW(_INDEXED)_ARGUMENTS.
-    let mut device = None;
-    unsafe { arguments.resource.GetDevice::<ID3D12Device>(&mut device) }.map_err(native_error)?;
-    let device =
-        device.ok_or_else(|| Error::Backend("indirect buffer has no DX12 device".into()))?;
-    unsafe { device.CreateCommandSignature(&desc, None::<&ID3D12RootSignature>, &mut signature) }
-        .map_err(native_error)?;
-    let signature = signature
-        .ok_or_else(|| Error::Backend("CreateCommandSignature returned no signature".into()))?;
+    let signature = signature(arguments, indexed, stride)?;
     barrier(
         &encoder.list,
         &arguments.resource,
@@ -73,9 +48,49 @@ fn execute(
         D3D12_RESOURCE_STATE_COMMON,
     );
     encoder.buffers.push(arguments.clone());
-    // `core.rs` retains this COM object until the submitted command list fence.
-    encoder.command_signatures.push(signature);
     Ok(())
+}
+
+/// Retrieves a device-lifetime native signature.  It is keyed solely by the
+/// public argument layout and stored with the buffer's owning device, so it
+/// cannot cross devices and does not retain recorded command lists.
+fn signature(
+    arguments: &Dx12Buffer,
+    indexed: bool,
+    stride: u32,
+) -> Result<ID3D12CommandSignature, Error> {
+    let mut cache = arguments
+        .indirect_signatures
+        .lock()
+        .map_err(|_| Error::Backend("DX12 indirect signature cache poisoned".into()))?;
+    if let Some(signature) = cache.get(&(indexed, stride)) {
+        return Ok(signature.clone());
+    }
+    let argument = D3D12_INDIRECT_ARGUMENT_DESC {
+        Type: if indexed {
+            D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED
+        } else {
+            D3D12_INDIRECT_ARGUMENT_TYPE_DRAW
+        },
+        Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0::default(),
+    };
+    let desc = D3D12_COMMAND_SIGNATURE_DESC {
+        ByteStride: stride,
+        NumArgumentDescs: 1,
+        pArgumentDescs: &argument,
+        NodeMask: 0,
+    };
+    let mut device = None;
+    unsafe { arguments.resource.GetDevice::<ID3D12Device>(&mut device) }.map_err(native_error)?;
+    let device =
+        device.ok_or_else(|| Error::Backend("indirect buffer has no DX12 device".into()))?;
+    let mut output: Option<ID3D12CommandSignature> = None;
+    unsafe { device.CreateCommandSignature(&desc, None::<&ID3D12RootSignature>, &mut output) }
+        .map_err(native_error)?;
+    let signature = output
+        .ok_or_else(|| Error::Backend("CreateCommandSignature returned no signature".into()))?;
+    cache.insert((indexed, stride), signature.clone());
+    Ok(signature)
 }
 pub(crate) fn draw(
     encoder: &mut Dx12Encoder,

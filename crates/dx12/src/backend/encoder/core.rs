@@ -1,13 +1,75 @@
 use super::*;
+use std::sync::{Arc, Mutex};
+
+/// Direct command objects that can be reset after their submission fence has
+/// completed. They never enter this pool while `Dx12RecordedWork` still owns
+/// them in the device's in-flight list.
+pub(crate) struct DirectCommandPool {
+    available: Mutex<Vec<(ID3D12CommandAllocator, ID3D12GraphicsCommandList)>>,
+}
+
+impl DirectCommandPool {
+    const MAX_CACHED: usize = 32;
+
+    pub(crate) fn acquire(
+        &self,
+        device: &ID3D12Device,
+    ) -> Result<(ID3D12CommandAllocator, ID3D12GraphicsCommandList), Error> {
+        if let Some((allocator, list)) = self
+            .available
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pop()
+        {
+            unsafe {
+                allocator.Reset().map_err(native_error)?;
+                list.Reset(&allocator, None).map_err(native_error)?;
+            }
+            return Ok((allocator, list));
+        }
+
+        unsafe {
+            let allocator = device
+                .CreateCommandAllocator::<ID3D12CommandAllocator>(D3D12_COMMAND_LIST_TYPE_DIRECT)
+                .map_err(native_error)?;
+            let list = device
+                .CreateCommandList::<_, _, ID3D12GraphicsCommandList>(
+                    0,
+                    D3D12_COMMAND_LIST_TYPE_DIRECT,
+                    &allocator,
+                    None,
+                )
+                .map_err(native_error)?;
+            Ok((allocator, list))
+        }
+    }
+
+    fn release(&self, allocator: ID3D12CommandAllocator, list: ID3D12GraphicsCommandList) {
+        let mut available = self
+            .available
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if available.len() < Self::MAX_CACHED {
+            available.push((allocator, list));
+        }
+    }
+}
+
+impl Default for DirectCommandPool {
+    fn default() -> Self {
+        Self {
+            available: Mutex::new(Vec::new()),
+        }
+    }
+}
 /// until this value crosses the queue boundary.
 pub struct Dx12Encoder {
     pub(crate) allocator: ID3D12CommandAllocator,
     pub(crate) list: ID3D12GraphicsCommandList,
+    direct_commands: Arc<DirectCommandPool>,
+    pub(crate) mip_blit_cache: Arc<super::mipmap::MipBlitCache>,
     pub(crate) uploads: Vec<windows::Win32::Graphics::Direct3D12::ID3D12Resource>,
     pub(crate) mip_blit_heaps: Vec<ID3D12DescriptorHeap>,
-    pub(crate) mip_blit_states: Vec<ID3D12PipelineState>,
-    pub(crate) mip_blit_roots: Vec<ID3D12RootSignature>,
-    pub(crate) command_signatures: Vec<ID3D12CommandSignature>,
     pub(crate) secondary: Vec<super::secondary::Dx12SecondaryWork>,
     pub(crate) queries: Vec<Dx12QuerySet>,
     pub(crate) active_occlusion: Option<(Dx12QuerySet, u32)>,
@@ -119,32 +181,14 @@ impl api::RasterExtrasOps<Dx12> for RasterExtras {
 
 impl Dx12Encoder {
     pub(crate) fn new(device: &Dx12Device) -> Result<Self, Error> {
-        let (allocator, list) = unsafe {
-            let allocator = device
-                .0
-                .native
-                .CreateCommandAllocator::<ID3D12CommandAllocator>(D3D12_COMMAND_LIST_TYPE_DIRECT)
-                .map_err(native_error)?;
-            let list = device
-                .0
-                .native
-                .CreateCommandList::<_, _, ID3D12GraphicsCommandList>(
-                    0,
-                    D3D12_COMMAND_LIST_TYPE_DIRECT,
-                    &allocator,
-                    None,
-                )
-                .map_err(native_error)?;
-            (allocator, list)
-        };
+        let (allocator, list) = device.0.direct_commands.acquire(&device.0.native)?;
         Ok(Self {
             allocator,
             list,
+            direct_commands: device.0.direct_commands.clone(),
+            mip_blit_cache: device.0.mip_blit_cache.clone(),
             uploads: Vec::new(),
             mip_blit_heaps: Vec::new(),
-            mip_blit_states: Vec::new(),
-            mip_blit_roots: Vec::new(),
-            command_signatures: Vec::new(),
             secondary: Vec::new(),
             queries: Vec::new(),
             active_occlusion: None,
@@ -163,5 +207,19 @@ impl Dx12Encoder {
             raster_multiview: None,
             closed: false,
         })
+    }
+}
+
+impl Drop for Dx12Encoder {
+    fn drop(&mut self) {
+        // `Dx12RecordedWork` remains in the device's in-flight list until the
+        // submission fence completes, so a submitted encoder only reaches
+        // this pool after the GPU has stopped using its native objects. An
+        // unfinished list is still open and cannot legally be reset, so a
+        // failed recording simply releases its native objects instead.
+        if self.closed {
+            self.direct_commands
+                .release(self.allocator.clone(), self.list.clone());
+        }
     }
 }

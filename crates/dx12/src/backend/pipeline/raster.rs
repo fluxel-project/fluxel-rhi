@@ -23,6 +23,7 @@ pub(crate) struct RasterPipelineState {
     pub(in crate::backend) topology: D3D12_PRIMITIVE_TOPOLOGY_TYPE,
     pub(in crate::backend) vertex_strides: Vec<u32>,
     pub(in crate::backend) color_format: api::TextureFormat,
+    pub(in crate::backend) depth_format: Option<api::TextureFormat>,
     pub(in crate::backend) samples: u32,
     pub(in crate::backend) multiview: Option<u32>,
 }
@@ -295,6 +296,7 @@ fn create_raster(
             .as_ref()
             .expect("validated color target")
             .format,
+        depth_format: depth.map(|state| state.format),
         samples: desc.multisample.count,
         multiview: desc.multiview,
     })))

@@ -12,58 +12,75 @@ impl api::CommandBackend for Dx12 {
         ops: &[api::ResourceTransition<'_, Self>],
     ) -> Result<(), Error> {
         for op in ops {
-            let api::ResourceTransition::Texture(barrier_op) = op else {
-                return Err(Error::Unsupported("DX12 non-texture resource transition"));
-            };
-            if barrier_op.ownership.is_some() {
-                return Err(Error::Unsupported("DX12 texture ownership transfer"));
+            match op {
+                api::ResourceTransition::Buffer(barrier_op) => {
+                    if barrier_op.ownership.is_some() {
+                        return Err(Error::Unsupported("DX12 buffer ownership transfer"));
+                    }
+                    let buffer = unsafe { barrier_op.target.buffer.native_ref() };
+                    if barrier_op.target.range != (0..buffer.size) {
+                        return Err(Error::Unsupported("DX12 partial buffer transition"));
+                    }
+                    if buffer.memory == api::MemoryClass::Readback {
+                        return Err(Error::Unsupported(
+                            "DX12 readback buffers have fixed COPY_DEST state",
+                        ));
+                    }
+                    let before = buffer_state(barrier_op.usage.from)?;
+                    let after = buffer_state(barrier_op.usage.to)?;
+                    barrier(&encoder.list, &buffer.resource, before, after);
+                    encoder.buffers.push(buffer.clone());
+                }
+                api::ResourceTransition::Texture(barrier_op) => {
+                    if barrier_op.ownership.is_some() {
+                        return Err(Error::Unsupported("DX12 texture ownership transfer"));
+                    }
+                    let texture = unsafe { barrier_op.target.texture.native_ref() };
+                    let desc = &texture.0.desc;
+                    if barrier_op.target.aspects != api::TextureAspects::COLOR
+                        || barrier_op.target.mips != (0..desc.mip_levels)
+                        || barrier_op.target.layers != (0..desc.array_layers)
+                    {
+                        return Err(Error::Unsupported("DX12 partial texture transition"));
+                    }
+                    let (from_layout, to_layout) = barrier_op.layout.ok_or(Error::Unsupported(
+                        "DX12 texture transition requires explicit layouts",
+                    ))?;
+                    let before = texture_state(from_layout, barrier_op.usage.from)?;
+                    let after = texture_state(to_layout, barrier_op.usage.to)?;
+                    barrier(&encoder.list, &texture.0.resource, before, after);
+                    encoder.textures.push(texture.clone());
+                }
+                _ => return Err(Error::Unsupported("DX12 resource transition")),
             }
-            let texture = unsafe { barrier_op.target.texture.native_ref() };
-            let desc = &texture.0.desc;
-            // Texture creation currently exposes a single mip and layer.  A
-            // range is still checked here so a future texture implementation
-            // cannot silently lower a partial-range barrier as all resources.
-            if barrier_op.target.aspects != api::TextureAspects::COLOR
-                || barrier_op.target.mips != (0..desc.mip_levels)
-                || barrier_op.target.layers != (0..desc.array_layers)
-            {
-                return Err(Error::Unsupported("DX12 partial texture transition"));
-            }
-            let (from_layout, to_layout) = barrier_op.layout.ok_or(Error::Unsupported(
-                "DX12 texture transition requires explicit layouts",
-            ))?;
-            let before = texture_state(from_layout, barrier_op.usage.from)?;
-            let after = texture_state(to_layout, barrier_op.usage.to)?;
-            barrier(&encoder.list, &texture.0.resource, before, after);
-            encoder.textures.push(texture.clone());
         }
         Ok(())
     }
 
     fn copy_buffer(
-        _: &mut Dx12Encoder,
-        _: &super::Dx12Buffer,
-        _: u64,
-        _: &super::Dx12Buffer,
-        _: u64,
-        _: u64,
+        encoder: &mut Dx12Encoder,
+        src: &super::Dx12Buffer,
+        src_offset: u64,
+        dst: &super::Dx12Buffer,
+        dst_offset: u64,
+        bytes: u64,
     ) -> Result<(), Error> {
-        Err(Error::Unsupported("DX12 buffer copies"))
+        super::copy::buffer(encoder, src, src_offset, dst, dst_offset, bytes)
     }
     fn copy_texture(
-        _: &mut Dx12Encoder,
-        _: api::TextureRegion<'_, Self>,
-        _: api::TextureRegion<'_, Self>,
+        encoder: &mut Dx12Encoder,
+        src: api::TextureRegion<'_, Self>,
+        dst: api::TextureRegion<'_, Self>,
     ) -> Result<(), Error> {
-        Err(Error::Unsupported("DX12 texture copies"))
+        super::copy::texture(encoder, src, dst)
     }
     fn buffer_to_texture(
-        _: &mut Dx12Encoder,
-        _: &super::Dx12Buffer,
-        _: api::TexelCopyBufferLayout,
-        _: api::TextureRegion<'_, Self>,
+        encoder: &mut Dx12Encoder,
+        src: &super::Dx12Buffer,
+        layout: api::TexelCopyBufferLayout,
+        dst: api::TextureRegion<'_, Self>,
     ) -> Result<(), Error> {
-        Err(Error::Unsupported("DX12 texture uploads"))
+        super::copy::buffer_to_texture(encoder, src, layout, dst)
     }
     fn texture_to_buffer(
         encoder: &mut Dx12Encoder,
@@ -71,7 +88,7 @@ impl api::CommandBackend for Dx12 {
         dst: &super::Dx12Buffer,
         layout: api::TexelCopyBufferLayout,
     ) -> Result<(), Error> {
-        super::readback::texture_to_buffer(encoder, src, dst, layout)
+        super::copy::texture_to_buffer(encoder, src, dst, layout)
     }
     fn write_buffer(
         encoder: &mut Dx12Encoder,

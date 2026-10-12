@@ -3,9 +3,12 @@
 use std::mem::ManuallyDrop;
 
 use fluxel_rhi_core::api::{self, Error, Result};
-use windows::Win32::Graphics::Direct3D12::{D3D12_PLACED_SUBRESOURCE_FOOTPRINT, ID3D12Device};
+use windows::Win32::Graphics::{
+    Direct3D12::{D3D12_PLACED_SUBRESOURCE_FOOTPRINT, D3D12_SUBRESOURCE_FOOTPRINT},
+    Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM},
+};
 
-use super::{Dx12Encoder, copy_location, native_error};
+use super::{Dx12Encoder, copy_location};
 use crate::backend::{Dx12Buffer, Dx12Texture};
 
 /// Lowers one RGBA8 2D subresource region into a caller-provided READBACK
@@ -18,9 +21,12 @@ pub(crate) fn texture_to_buffer(
 ) -> Result<()> {
     let texture = unsafe { src.texture.native_ref() }.0.clone();
     let desc = &texture.desc;
-    if desc.format != api::TextureFormat::Rgba8Unorm
-        || src.aspect != api::TextureAspects::COLOR
-        || !desc.usage.contains(api::TextureUsage::COPY_SRC)
+    let native_format = match desc.format {
+        api::TextureFormat::Rgba8Unorm => DXGI_FORMAT_R8G8B8A8_UNORM,
+        api::TextureFormat::Bgra8Unorm => DXGI_FORMAT_B8G8R8A8_UNORM,
+        _ => return Err(Error::Unsupported("DX12 RGBA8/BGRA8 texture readback")),
+    };
+    if src.aspect != api::TextureAspects::COLOR || !desc.usage.contains(api::TextureUsage::COPY_SRC)
     {
         return Err(Error::Unsupported("DX12 RGBA8 COPY_SRC texture readback"));
     }
@@ -49,12 +55,13 @@ pub(crate) fn texture_to_buffer(
     if layout.offset % 512 != 0
         || layout.bytes_per_row < tight
         || layout.bytes_per_row % 256 != 0
-        || layout.rows_per_image != src.extent[1]
+        || layout.rows_per_image < src.extent[1]
     {
         return Err(Error::InvalidRange);
     }
     let copied = u64::from(layout.bytes_per_row)
-        .checked_mul(u64::from(src.extent[1]))
+        .checked_mul(u64::from(src.extent[1] - 1))
+        .and_then(|prefix| prefix.checked_add(u64::from(tight)))
         .ok_or(Error::InvalidRange)?;
     let end = u64::from(layout.offset)
         .checked_add(copied)
@@ -66,35 +73,16 @@ pub(crate) fn texture_to_buffer(
         .checked_mul(desc.mip_levels)
         .and_then(|layer| layer.checked_add(src.mip))
         .ok_or(Error::InvalidRange)?;
-    let native_desc = unsafe { texture.resource.GetDesc() };
-    let mut footprint = D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default();
-    let mut rows = 0;
-    let mut row_size = 0;
-    let mut total = 0;
-    let mut device: Option<ID3D12Device> = None;
-    unsafe { texture.resource.GetDevice(&mut device) }.map_err(native_error)?;
-    let device = device.ok_or_else(|| Error::Backend("texture has no D3D12 device".into()))?;
-    unsafe {
-        device.GetCopyableFootprints(
-            &native_desc,
-            subresource,
-            1,
-            u64::from(layout.offset),
-            Some(&mut footprint),
-            Some(&mut rows),
-            Some(&mut row_size),
-            Some(&mut total),
-        );
-    }
-    if rows < src.extent[1]
-        || row_size < u64::from(tight)
-        || footprint.Footprint.RowPitch != layout.bytes_per_row
-    {
-        return Err(Error::InvalidRange);
-    }
-    footprint.Footprint.Width = src.extent[0];
-    footprint.Footprint.Height = src.extent[1];
-    footprint.Footprint.Depth = 1;
+    let footprint = D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
+        Offset: layout.offset,
+        Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
+            Format: native_format,
+            Width: src.extent[0],
+            Height: src.extent[1],
+            Depth: 1,
+            RowPitch: layout.bytes_per_row,
+        },
+    };
     let mut target = copy_location(&dst.resource, footprint, true, 0);
     let mut source = copy_location(
         &texture.resource,

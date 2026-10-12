@@ -105,6 +105,85 @@ pub(crate) fn texture_state(
     }
 }
 
+/// Lowers the graph-selected whole-buffer use into the corresponding D3D12
+/// state.  Buffers do not have layouts, so callers must state both sides of
+/// every cross-operation transition with [`api::BufferBarrier`].  Convenience
+/// writes and indirect execution deliberately remain self-contained COMMON
+/// operations and never call this mapping.
+pub(crate) fn buffer_state(
+    uses: api::BufferUses,
+) -> Result<windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATES, Error> {
+    let read = uses.accesses;
+    if read == api::AccessMask::EMPTY {
+        return Ok(D3D12_RESOURCE_STATE_COMMON);
+    }
+    let copy_read = read.contains(api::AccessMask::COPY_READ);
+    let copy_write = read.contains(api::AccessMask::COPY_WRITE);
+    if copy_read || copy_write {
+        if (copy_read && copy_write)
+            || read.0
+                != (if copy_read {
+                    api::AccessMask::COPY_READ
+                } else {
+                    api::AccessMask::COPY_WRITE
+                })
+                .0
+        {
+            return Err(Error::Unsupported("DX12 combined buffer copy access"));
+        }
+        return Ok(if copy_read {
+            D3D12_RESOURCE_STATE_COPY_SOURCE
+        } else {
+            D3D12_RESOURCE_STATE_COPY_DEST
+        });
+    }
+    if read.contains(api::AccessMask::SHADER_WRITE) {
+        if read.0 != api::AccessMask::SHADER_WRITE.0
+            || !uses.stages.contains(api::StageMask::COMPUTE)
+        {
+            return Err(Error::Unsupported("DX12 buffer shader write access"));
+        }
+        return Ok(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }
+    let mut state = D3D12_RESOURCE_STATES(0);
+    let mut known = 0u64;
+    if read.contains(api::AccessMask::INDIRECT_READ) {
+        state |= D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+        known |= api::AccessMask::INDIRECT_READ.0;
+    }
+    if read.contains(api::AccessMask::VERTEX_READ) || read.contains(api::AccessMask::UNIFORM_READ) {
+        state |= D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+        known |= read.0 & (api::AccessMask::VERTEX_READ.0 | api::AccessMask::UNIFORM_READ.0);
+    }
+    if read.contains(api::AccessMask::INDEX_READ) {
+        state |= D3D12_RESOURCE_STATE_INDEX_BUFFER;
+        known |= api::AccessMask::INDEX_READ.0;
+    }
+    if read.contains(api::AccessMask::SHADER_READ) {
+        let mut shader_state = D3D12_RESOURCE_STATES(0);
+        if uses.stages.contains(api::StageMask::FRAGMENT) {
+            shader_state |= D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        }
+        if uses.stages.contains(api::StageMask::VERTEX)
+            || uses.stages.contains(api::StageMask::COMPUTE)
+            || uses.stages.contains(api::StageMask::TASK)
+            || uses.stages.contains(api::StageMask::MESH)
+            || uses.stages.contains(api::StageMask::RAY)
+        {
+            shader_state |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        }
+        if shader_state.0 == 0 {
+            return Err(Error::Unsupported("DX12 buffer shader-read stage"));
+        }
+        state |= shader_state;
+        known |= api::AccessMask::SHADER_READ.0;
+    }
+    if known != read.0 || state.0 == 0 {
+        return Err(Error::Unsupported("DX12 buffer access state"));
+    }
+    Ok(state)
+}
+
 pub(crate) fn copy_location(
     resource: &ID3D12Resource,
     footprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
@@ -170,4 +249,34 @@ pub(crate) fn texture_upload_buffer(
     .map_err(native_error)?;
     output
         .ok_or_else(|| Error::Backend("DX12 texture upload allocation returned no resource".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buffer_state_accepts_individual_vertex_and_uniform_reads() {
+        for access in [api::AccessMask::VERTEX_READ, api::AccessMask::UNIFORM_READ] {
+            assert_eq!(
+                buffer_state(api::BufferUses {
+                    stages: api::StageMask::VERTEX,
+                    accesses: access
+                })
+                .expect("DX12 vertex/constant-buffer state"),
+                D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
+            );
+        }
+    }
+
+    #[test]
+    fn buffer_state_rejects_shader_read_without_a_shader_stage() {
+        assert!(
+            buffer_state(api::BufferUses {
+                stages: api::StageMask::VERTEX_INPUT,
+                accesses: api::AccessMask::SHADER_READ,
+            })
+            .is_err()
+        );
+    }
 }

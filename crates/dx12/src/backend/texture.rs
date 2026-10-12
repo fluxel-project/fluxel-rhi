@@ -169,29 +169,7 @@ pub(crate) fn create_view(
         }
         .map_err(err)?;
         let dsv = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
-        if v.mips != (0..1) {
-            return Err(Error::Unsupported("DX12 depth DSV mip"));
-        }
-        let desc = D3D12_DEPTH_STENCIL_VIEW_DESC {
-            Format: DXGI_FORMAT_D32_FLOAT,
-            ViewDimension: if texture.desc.samples == 1 {
-                D3D12_DSV_DIMENSION_TEXTURE2D
-            } else {
-                D3D12_DSV_DIMENSION_TEXTURE2DMS
-            },
-            Flags: D3D12_DSV_FLAG_NONE,
-            Anonymous: if texture.desc.samples == 1 {
-                D3D12_DEPTH_STENCIL_VIEW_DESC_0 {
-                    Texture2D: D3D12_TEX2D_DSV { MipSlice: 0 },
-                }
-            } else {
-                D3D12_DEPTH_STENCIL_VIEW_DESC_0 {
-                    Texture2DMS: D3D12_TEX2DMS_DSV {
-                        UnusedField_NothingToDefine: 0,
-                    },
-                }
-            },
-        };
+        let desc = depth_dsv_desc(v, texture.desc.samples)?;
         unsafe {
             dv.0.native
                 .CreateDepthStencilView(&texture.resource, Some(&desc), dsv)
@@ -371,6 +349,67 @@ pub(crate) fn create_view(
     })))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DsvLayers {
+    start: u32,
+    count: u32,
+}
+
+fn dsv_layers(view: &api::TextureViewDesc) -> Result<DsvLayers> {
+    let count = view
+        .layers
+        .end
+        .checked_sub(view.layers.start)
+        .ok_or(Error::InvalidRange)?;
+    if count == 0 {
+        return Err(Error::InvalidRange);
+    }
+    Ok(DsvLayers {
+        start: view.layers.start,
+        count,
+    })
+}
+
+fn depth_dsv_desc(
+    view: &api::TextureViewDesc,
+    samples: u32,
+) -> Result<D3D12_DEPTH_STENCIL_VIEW_DESC> {
+    if view.mips != (0..1) {
+        return Err(Error::Unsupported("DX12 depth DSV mip"));
+    }
+    let layers = dsv_layers(view)?;
+    Ok(D3D12_DEPTH_STENCIL_VIEW_DESC {
+        Format: DXGI_FORMAT_D32_FLOAT,
+        ViewDimension: if samples == 1 && view.dimension == api::TextureViewDimension::D2Array {
+            D3D12_DSV_DIMENSION_TEXTURE2DARRAY
+        } else if samples == 1 {
+            D3D12_DSV_DIMENSION_TEXTURE2D
+        } else {
+            D3D12_DSV_DIMENSION_TEXTURE2DMS
+        },
+        Flags: D3D12_DSV_FLAG_NONE,
+        Anonymous: if samples == 1 && view.dimension == api::TextureViewDimension::D2Array {
+            D3D12_DEPTH_STENCIL_VIEW_DESC_0 {
+                Texture2DArray: D3D12_TEX2D_ARRAY_DSV {
+                    MipSlice: 0,
+                    FirstArraySlice: layers.start,
+                    ArraySize: layers.count,
+                },
+            }
+        } else if samples == 1 {
+            D3D12_DEPTH_STENCIL_VIEW_DESC_0 {
+                Texture2D: D3D12_TEX2D_DSV { MipSlice: 0 },
+            }
+        } else {
+            D3D12_DEPTH_STENCIL_VIEW_DESC_0 {
+                Texture2DMS: D3D12_TEX2DMS_DSV {
+                    UnusedField_NothingToDefine: 0,
+                },
+            }
+        },
+    })
+}
+
 fn valid(d: &api::TextureDesc) -> std::result::Result<(), &'static str> {
     let depth = d.format == api::TextureFormat::Depth32Float;
     if d.dimension != api::TextureDimension::D2
@@ -405,7 +444,12 @@ fn valid(d: &api::TextureDesc) -> std::result::Result<(), &'static str> {
         && (d.mip_levels != 1
             || !d.usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
             || d.usage.contains(api::TextureUsage::TEXTURE_BINDING)
-            || d.usage.contains(api::TextureUsage::STORAGE_BINDING))
+            || d.usage.contains(api::TextureUsage::STORAGE_BINDING)
+            // The command path does not yet expose a depth-aspect copy
+            // transition. Rejecting these usages here keeps support facts in
+            // sync with the executable DX12 path.
+            || d.usage.contains(api::TextureUsage::COPY_SRC)
+            || d.usage.contains(api::TextureUsage::COPY_DST))
     {
         return Err("DX12 depth texture usage");
     }
@@ -456,4 +500,49 @@ fn max_mips(width: u32, height: u32) -> u32 {
 }
 fn err(e: windows::core::Error) -> Error {
     Error::Backend(format!("Direct3D 12: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dsv_array_range_preserves_the_selected_layers() {
+        let view = api::TextureViewDesc {
+            format: api::TextureFormat::Depth32Float,
+            dimension: api::TextureViewDimension::D2Array,
+            aspects: api::TextureAspects::DEPTH,
+            mips: 0..1,
+            layers: 3..5,
+        };
+        assert_eq!(dsv_layers(&view), Ok(DsvLayers { start: 3, count: 2 }));
+    }
+
+    #[test]
+    fn dsv_array_range_rejects_an_empty_range() {
+        let view = api::TextureViewDesc {
+            format: api::TextureFormat::Depth32Float,
+            dimension: api::TextureViewDimension::D2Array,
+            aspects: api::TextureAspects::DEPTH,
+            mips: 0..1,
+            layers: 2..2,
+        };
+        assert!(matches!(dsv_layers(&view), Err(Error::InvalidRange)));
+    }
+
+    #[test]
+    fn array_depth_view_lowers_its_selected_layers() {
+        let view = api::TextureViewDesc {
+            format: api::TextureFormat::Depth32Float,
+            dimension: api::TextureViewDimension::D2Array,
+            aspects: api::TextureAspects::DEPTH,
+            mips: 0..1,
+            layers: 3..5,
+        };
+        let desc = depth_dsv_desc(&view, 1).unwrap();
+        assert_eq!(desc.ViewDimension, D3D12_DSV_DIMENSION_TEXTURE2DARRAY);
+        let array = unsafe { desc.Anonymous.Texture2DArray };
+        assert_eq!(array.FirstArraySlice, 3);
+        assert_eq!(array.ArraySize, 2);
+    }
 }

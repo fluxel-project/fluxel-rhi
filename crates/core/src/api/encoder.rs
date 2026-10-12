@@ -21,6 +21,9 @@ pub trait CommandBackend: Backend {
         encoder: &mut Self::NativeEncoder,
         ops: &[ResourceTransition<'_, Self>],
     ) -> Result<()>;
+    /// Copies from a buffer already in CopySrc state to one in CopyDst state.
+    /// The caller supplies transitions; recording this operation does not
+    /// change either resource's state after the copy.
     fn copy_buffer(
         encoder: &mut Self::NativeEncoder,
         src: &Self::NativeBuffer,
@@ -29,29 +32,36 @@ pub trait CommandBackend: Backend {
         dst_offset: u64,
         bytes: u64,
     ) -> Result<()>;
+    /// Copies between texture regions already in CopySrc and CopyDst states.
     fn copy_texture(
         encoder: &mut Self::NativeEncoder,
         src: TextureRegion<'_, Self>,
         dst: TextureRegion<'_, Self>,
     ) -> Result<()>;
+    /// Copies from a CopySrc buffer into a CopyDst texture region.
     fn buffer_to_texture(
         encoder: &mut Self::NativeEncoder,
         src: &Self::NativeBuffer,
         layout: TexelCopyBufferLayout,
         dst: TextureRegion<'_, Self>,
     ) -> Result<()>;
+    /// Copies from a CopySrc texture region into a CopyDst buffer.
     fn texture_to_buffer(
         encoder: &mut Self::NativeEncoder,
         src: TextureRegion<'_, Self>,
         dst: &Self::NativeBuffer,
         layout: TexelCopyBufferLayout,
     ) -> Result<()>;
+    /// A convenience upload with a backend-managed temporary copy state.
+    /// The destination must be in its backend's documented idle state before
+    /// the call and returns to that state afterwards.
     fn write_buffer(
         encoder: &mut Self::NativeEncoder,
         dst: &Self::NativeBuffer,
         offset: u64,
         bytes: &[u8],
     ) -> Result<()>;
+    /// A convenience upload with the same idle-state boundary as write_buffer.
     fn write_texture(
         encoder: &mut Self::NativeEncoder,
         dst: TextureRegion<'_, Self>,

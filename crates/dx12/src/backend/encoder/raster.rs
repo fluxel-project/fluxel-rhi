@@ -86,7 +86,7 @@ impl api::RasterBackend for Dx12 {
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
             );
         }
-        let dsv = if let Some(depth) = &desc.depth_stencil {
+        let (dsv, depth_format) = if let Some(depth) = &desc.depth_stencil {
             let api::AttachmentView::Texture(view) = depth.view else {
                 return Err(Error::Unsupported("DX12 surface depth attachment"));
             };
@@ -117,10 +117,17 @@ impl api::RasterBackend for Dx12 {
                 };
             }
             encoder.depth_target = Some(n.0.texture.resource.clone());
-            Some(handle)
+            (Some(handle), Some(n.0.texture.desc.format))
         } else {
-            None
+            (None, None)
         };
+        super::secondary::validate_inheritance(
+            desc.secondary_inheritance.as_ref(),
+            attachment_format,
+            depth_format,
+            source_samples,
+            desc.multiview_mask,
+        )?;
         unsafe {
             encoder.list.OMSetRenderTargets(
                 1,
@@ -333,26 +340,16 @@ impl api::RasterBackend for Dx12 {
         Ok(())
     }
     fn viewport(encoder: &mut Dx12Encoder, v: api::Viewport) -> Result<(), Error> {
+        let viewport = validate_viewport(v)?;
         unsafe {
-            encoder.list.RSSetViewports(&[D3D12_VIEWPORT {
-                TopLeftX: v.x,
-                TopLeftY: v.y,
-                Width: v.width,
-                Height: v.height,
-                MinDepth: v.min_depth,
-                MaxDepth: v.max_depth,
-            }]);
+            encoder.list.RSSetViewports(&[viewport]);
         }
         Ok(())
     }
     fn scissor(encoder: &mut Dx12Encoder, r: api::Rect) -> Result<(), Error> {
+        let rect = validate_scissor(r)?;
         unsafe {
-            encoder.list.RSSetScissorRects(&[RECT {
-                left: r.x as i32,
-                top: r.y as i32,
-                right: r.x.saturating_add(r.width) as i32,
-                bottom: r.y.saturating_add(r.height) as i32,
-            }]);
+            encoder.list.RSSetScissorRects(&[rect]);
         }
         Ok(())
     }
