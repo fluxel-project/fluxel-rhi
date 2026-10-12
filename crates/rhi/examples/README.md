@@ -2,10 +2,10 @@
 
 The 15 numbered examples use the statically typed `fluxel_rhi::api` and the
 shared `fluxel-host` window lifecycle. DX12 is the established Windows route.
-Vulkan support is being migrated one example at a time. Examples 01–12 have
+Vulkan support is being migrated one example at a time. Examples 01–13 have
 been run for two frames on Vulkan with the Khronos validation layer and
 GPU-image readback comparison against the local C++ captures. Later numbered
-examples still use DX12.
+examples 14–15 still use DX12.
 
 From the workspace root on Windows:
 
@@ -14,19 +14,19 @@ From the workspace root on Windows:
 cargo run -p fluxel-rhi --features examples,dx12 --example 01_triangle -- --frames 2
 ```
 
-Run one of examples 01–12 with the Vulkan feature and explicit backend selection:
+Run one of examples 01–13 with the Vulkan feature and explicit backend selection:
 
 ```powershell
 cargo run -p fluxel-rhi --features examples,vulkan --example 01_triangle -- --backend vulkan --frames 2
 ```
 
 The native host accepts `--backend dx12|vulkan` and `--frames COUNT` for
-examples 01–12. Backend selection happens once at startup; GPU objects and
+examples 01–13. Backend selection happens once at startup; GPU objects and
 command recording retain their concrete backend type. The example host and
 submission helper live in `common/`. The GPU workload remains in each
 numbered example or its small sibling modules.
 
-Examples 01–12 use checked-in DXIL for DX12 and SPIR-V for Vulkan. The SPIR-V
+Examples 01–13 use checked-in DXIL for DX12 and SPIR-V for Vulkan. The SPIR-V
 blobs are built from adjacent HLSL sources with `compile-spirv.ps1`; the
 script also validates the result for Vulkan 1.3. `fetch-assets.ps1` obtains
 the pinned external models and textures required by some examples. Those

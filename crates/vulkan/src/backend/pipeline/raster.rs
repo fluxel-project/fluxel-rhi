@@ -21,11 +21,20 @@ impl VulkanRasterPipeline {
     pub(crate) fn push_constants(&self) -> PushConstants {
         self.0.layout.push_constants()
     }
+    pub(crate) fn matches_secondary(&self, signature: &api::SecondaryRasterDesc) -> bool {
+        self.0.color_formats.as_ref() == signature.color_formats.as_slice()
+            && self.0.depth_format == signature.depth_stencil_format
+            && self.0.samples == signature.samples
+            && signature.multiview_mask.is_none()
+    }
 }
 struct Raster {
     device: Arc<DeviceState>,
     pub(crate) pipeline: vk::Pipeline,
     pub(crate) layout: VulkanPipelineLayout,
+    color_formats: Arc<[Option<api::TextureFormat>]>,
+    depth_format: Option<api::TextureFormat>,
+    samples: u32,
 }
 impl Drop for Raster {
     fn drop(&mut self) {
@@ -253,6 +262,14 @@ pub(crate) fn create_raster(
         device: device.0.clone(),
         pipeline,
         layout: unsafe { desc.layout.native_ref() }.clone(),
+        color_formats: Arc::from(
+            desc.color_targets
+                .iter()
+                .map(|target| target.as_ref().map(|target| target.format))
+                .collect::<Vec<_>>(),
+        ),
+        depth_format: desc.depth_stencil.as_ref().map(|depth| depth.format),
+        samples: desc.multisample.count,
     })))
 }
 

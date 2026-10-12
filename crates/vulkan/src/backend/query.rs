@@ -53,7 +53,11 @@ pub(super) fn begin_occlusion(
     set: &VulkanQuerySet,
     slot: u32,
 ) -> Result<()> {
-    if !encoder.raster || slot >= set.0.count || encoder.active_occlusion.is_some() {
+    if !encoder.raster
+        || encoder.secondary_signature.is_some()
+        || slot >= set.0.count
+        || encoder.active_occlusion.is_some()
+    {
         return Err(Error::InvalidState);
     }
     unsafe {
@@ -95,6 +99,12 @@ pub(super) fn reset(
 }
 
 pub(super) fn end_occlusion(encoder: &mut VulkanEncoder) -> Result<()> {
+    // A dynamic-rendering instance which inherits secondary commands must be
+    // populated exclusively by those secondaries.  Reject this before taking
+    // the active query so the caller can still abort the raster pass cleanly.
+    if encoder.secondary_signature.is_some() {
+        return Err(Error::InvalidState);
+    }
     let (set, slot) = encoder.active_occlusion.take().ok_or(Error::InvalidState)?;
     unsafe {
         encoder

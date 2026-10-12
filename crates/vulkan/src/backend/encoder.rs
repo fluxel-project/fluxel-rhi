@@ -32,6 +32,10 @@ pub struct VulkanEncoder {
     pub(super) raster_index_bound: bool,
     pub(super) raster_layout_state: Option<super::pipeline::VulkanPipelineLayout>,
     pub(super) raster_push_constants: Option<super::pipeline::PushConstants>,
+    /// Set only for a primary dynamic-rendering pass that accepts inherited
+    /// secondary command buffers.  The signature is validated again by the
+    /// secondary executor before `vkCmdExecuteCommands`.
+    pub(super) secondary_signature: Option<fluxel_rhi_core::api::SecondaryRasterDesc>,
     pub(super) compute_layout: Option<vk::PipelineLayout>,
     pub(super) compute_layout_state: Option<super::pipeline::VulkanPipelineLayout>,
     pub(super) compute_push_constants: Option<super::pipeline::PushConstants>,
@@ -44,6 +48,7 @@ pub struct VulkanEncoder {
     pub(super) textures: Vec<VulkanTexture>,
     pub(super) queries: Vec<super::VulkanQuerySet>,
     pub(super) active_occlusion: Option<(super::VulkanQuerySet, u32)>,
+    pub(super) secondary: Vec<super::VulkanSecondaryWork>,
 }
 impl VulkanEncoder {
     pub(super) fn new(device: &VulkanDevice) -> Result<Self> {
@@ -81,6 +86,7 @@ impl VulkanEncoder {
             raster_index_bound: false,
             raster_layout_state: None,
             raster_push_constants: None,
+            secondary_signature: None,
             compute_layout: None,
             compute_layout_state: None,
             compute_push_constants: None,
@@ -93,11 +99,14 @@ impl VulkanEncoder {
             textures: Vec::new(),
             queries: Vec::new(),
             active_occlusion: None,
+            secondary: Vec::new(),
         })
     }
 }
 impl Drop for VulkanEncoder {
     fn drop(&mut self) {
-        unsafe { self.device.device.destroy_command_pool(self.pool, None) }
+        if self.pool != vk::CommandPool::null() {
+            unsafe { self.device.device.destroy_command_pool(self.pool, None) }
+        }
     }
 }

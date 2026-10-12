@@ -36,6 +36,7 @@ mod query;
 mod raster;
 mod readback;
 mod resource;
+mod secondary;
 mod shader;
 mod submit;
 mod surface;
@@ -89,6 +90,7 @@ pub use surface::{VulkanSurface, VulkanSurfaceImage};
 /// Native command encoder. Its concrete command-pool/list state is added by
 /// `encoder`; keeping it opaque here prevents a catch-all compatibility file.
 pub use encoder::VulkanEncoder;
+pub use secondary::VulkanSecondaryWork;
 
 impl VulkanInstance {
     /// Loads the Vulkan loader and creates a private API 1.3 instance.
@@ -526,6 +528,9 @@ impl InstanceBackend for Vulkan {
                     storage_textures: rgba8_features
                         .contains(vk::FormatFeatureFlags::STORAGE_IMAGE),
                     push_constants: limits.max_push_constants_size != 0,
+                    // Vulkan 1.3 dynamic rendering supplies the inherited
+                    // rendering-info path used by `secondary.rs`.
+                    secondary_commands: true,
                     lanes: Arc::from([LaneInfo {
                         id: LaneId { device, ordinal: 0 },
                         class: LaneClass::Graphics,

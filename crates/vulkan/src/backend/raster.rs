@@ -174,7 +174,6 @@ impl api::RasterBackend for Vulkan {
             || d.colors.len() != 1
             || d.multiview_mask.is_some()
             || d.timestamp_writes.is_some()
-            || d.secondary_inheritance.is_some()
         {
             return Err(Error::Unsupported("Vulkan raster pass configuration"));
         }
@@ -346,6 +345,23 @@ impl api::RasterBackend for Vulkan {
         } else {
             None
         };
+        let secondary_signature = d.secondary_inheritance.as_ref();
+        if let Some(signature) = secondary_signature {
+            let formats = super::secondary::native_signature(signature)?;
+            let expected_color =
+                color_format.unwrap_or_else(|| surface.as_ref().expect("surface").format);
+            let expected_depth = depth_attachment.as_ref().map(|_| vk::Format::D32_SFLOAT);
+            if formats.as_slice() != [expected_color]
+                || signature.samples != color_samples
+                || signature.multiview_mask.is_some()
+                || signature
+                    .depth_stencil_format
+                    .and_then(super::resource::format)
+                    != expected_depth
+            {
+                return Err(Error::InvalidState);
+            }
+        }
         let mut info = vk::RenderingInfo::default()
             .render_area(vk::Rect2D {
                 offset: vk::Offset2D {
@@ -359,6 +375,9 @@ impl api::RasterBackend for Vulkan {
             })
             .layer_count(1)
             .color_attachments(std::slice::from_ref(&attachment));
+        if secondary_signature.is_some() {
+            info = info.flags(vk::RenderingFlags::CONTENTS_SECONDARY_COMMAND_BUFFERS);
+        }
         if let Some(depth) = &depth_attachment {
             info = info.depth_attachment(depth);
         }
@@ -373,9 +392,13 @@ impl api::RasterBackend for Vulkan {
         e.color_surface_image = surface.map(|surface| surface.image);
         e.raster = true;
         e.raster_index_bound = false;
+        e.secondary_signature = secondary_signature.cloned();
         Ok(())
     }
     fn set_pipeline(e: &mut VulkanEncoder, p: &VulkanRasterPipeline) -> Result<()> {
+        if e.secondary_signature.is_some() {
+            return Err(Error::InvalidState);
+        }
         unsafe {
             e.device.device.cmd_bind_pipeline(
                 e.command,
@@ -395,6 +418,9 @@ impl api::RasterBackend for Vulkan {
         group: &VulkanBindGroup,
         offsets: &[u32],
     ) -> Result<()> {
+        if e.secondary_signature.is_some() {
+            return Err(Error::InvalidState);
+        }
         group.validate_dynamic_offsets(offsets)?;
         let layout = e.raster_layout.ok_or(Error::InvalidState)?;
         e.raster_layout_state
@@ -421,6 +447,9 @@ impl api::RasterBackend for Vulkan {
         offset: u64,
         size: u64,
     ) -> Result<()> {
+        if e.secondary_signature.is_some() {
+            return Err(Error::InvalidState);
+        }
         if size == 0
             || !b.0.usage.contains(api::BufferUsage::VERTEX)
             || offset.checked_add(size).is_none_or(|end| end > b.0.size)
@@ -442,6 +471,9 @@ impl api::RasterBackend for Vulkan {
         size: u64,
         f: api::IndexFormat,
     ) -> Result<()> {
+        if e.secondary_signature.is_some() {
+            return Err(Error::InvalidState);
+        }
         let stride = if matches!(f, api::IndexFormat::Uint16) {
             2
         } else {
@@ -472,6 +504,9 @@ impl api::RasterBackend for Vulkan {
         Ok(())
     }
     fn viewport(e: &mut VulkanEncoder, v: api::Viewport) -> Result<()> {
+        if e.secondary_signature.is_some() {
+            return Err(Error::InvalidState);
+        }
         unsafe {
             e.device.device.cmd_set_viewport(
                 e.command,
@@ -489,6 +524,9 @@ impl api::RasterBackend for Vulkan {
         Ok(())
     }
     fn scissor(e: &mut VulkanEncoder, r: api::Rect) -> Result<()> {
+        if e.secondary_signature.is_some() {
+            return Err(Error::InvalidState);
+        }
         unsafe {
             e.device.device.cmd_set_scissor(
                 e.command,
@@ -514,6 +552,9 @@ impl api::RasterBackend for Vulkan {
         Err(Error::Unsupported("Vulkan dynamic stencil reference"))
     }
     fn draw(e: &mut VulkanEncoder, v: std::ops::Range<u32>, i: std::ops::Range<u32>) -> Result<()> {
+        if e.secondary_signature.is_some() {
+            return Err(Error::InvalidState);
+        }
         if !e.raster || e.raster_layout.is_none() || v.start > v.end || i.start > i.end {
             return Err(Error::InvalidState);
         }
@@ -534,6 +575,9 @@ impl api::RasterBackend for Vulkan {
         base: i32,
         i: std::ops::Range<u32>,
     ) -> Result<()> {
+        if e.secondary_signature.is_some() {
+            return Err(Error::InvalidState);
+        }
         if !e.raster
             || e.raster_layout.is_none()
             || !e.raster_index_bound
@@ -568,6 +612,7 @@ impl api::RasterBackend for Vulkan {
         e.raster_layout = None;
         e.raster_layout_state = None;
         e.raster_push_constants = None;
+        e.secondary_signature = None;
         Ok(())
     }
     fn abort_raster(e: &mut VulkanEncoder) {
@@ -582,6 +627,7 @@ impl api::RasterBackend for Vulkan {
             e.raster_layout = None;
             e.raster_layout_state = None;
             e.raster_push_constants = None;
+            e.secondary_signature = None;
         }
     }
 }

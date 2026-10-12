@@ -1,4 +1,36 @@
-struct Output { float4 position : SV_Position; };
-Output vs_main(uint id : SV_VertexID) { float2 p = id == 0 ? float2(-1, -1) : (id == 1 ? float2(-1, 3) : float2(3, -1)); Output o; o.position = float4(p, 0.999, 1); return o; }
-float hash(float2 p) { return frac(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453); }
-float4 ps_main(float4 position : SV_Position) : SV_TARGET { float2 cell = floor(position.xy * .72); float star = step(.9982, hash(cell)); float glow = step(.99965, hash(cell + 19.7)); float horizon = saturate(position.y / 720.0); float3 sky = lerp(float3(.002,.003,.012), float3(.035,.075,.24), horizon * horizon); return float4(star.xxx + glow * float3(.25,.35,.7) + sky, 1); }
+// Direct HLSL port of Vulkan/examples/multithreading/starsphere.*.
+#ifdef FLUXEL_VULKAN
+struct Push { float4x4 mvp; };
+[[vk::push_constant]] Push push;
+#else
+cbuffer PushBuffer : register(b1, space0) { float4x4 mvp; }
+#endif
+
+struct VertexInput { float3 position : LOCATION0; };
+struct VertexOutput { float4 position : SV_Position; float3 uvw : TEXCOORD0; };
+VertexOutput vs_main(VertexInput input) {
+    VertexOutput output;
+    // The C++ vkglTF path applies FlipY before this shader sees the sphere.
+    // Fluxel's common coordinate convention keeps the mesh unflipped and
+    // Vulkan flips only the viewport, so preserve the source procedural
+    // coordinate with this one local reflection.
+    output.uvw = float3(input.position.x, -input.position.y, input.position.z);
+#ifdef FLUXEL_VULKAN
+    output.position = mul(push.mvp, float4(input.position, 1.0));
+#else
+    output.position = mul(mvp, float4(input.position, 1.0));
+#endif
+    return output;
+}
+float hash33(float3 p3) {
+    p3 = frac(p3 * float3(443.897, 441.423, 437.195));
+    p3 += dot(p3, p3.yxz + float3(19.19, 19.19, 19.19));
+    return frac((p3.x + p3.y) * p3.z + (p3.x + p3.z) * p3.y + (p3.y + p3.z) * p3.x);
+}
+float4 ps_main(VertexOutput input) : SV_TARGET {
+    float threshold = 0.99;
+    float random = hash33(input.uvw);
+    float star = random >= threshold ? pow((random - threshold) / (1.0 - threshold), 16.0) : 0.0;
+    float3 atmosphere = saturate(float3(0.1, 0.15, 0.4) * (input.uvw.y + 0.25));
+    return float4(star.xxx + atmosphere, 1.0);
+}

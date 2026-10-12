@@ -49,6 +49,10 @@ $jobs = @(
     @('11_occlusion_query', 'occlusion.hlsl', 'occluder_ps', 'ps_6_0', 'occluder.ps.spv'),
     @('12_screenshot', 'screenshot.hlsl', 'vs_main', 'vs_6_0', 'screenshot.vs.spv'),
     @('12_screenshot', 'screenshot.hlsl', 'ps_main', 'ps_6_0', 'screenshot.ps.spv')
+    ,@('13_multithreaded_recording', 'ufo.hlsl', 'vs_main', 'vs_6_0', 'ufo_vs.spv')
+    ,@('13_multithreaded_recording', 'ufo.hlsl', 'ps_main', 'ps_6_0', 'ufo_ps.spv')
+    ,@('13_multithreaded_recording', 'stars.hlsl', 'vs_main', 'vs_6_0', 'stars_vs.spv')
+    ,@('13_multithreaded_recording', 'stars.hlsl', 'ps_main', 'ps_6_0', 'stars_ps.spv')
 )
 
 foreach ($job in $jobs) {
