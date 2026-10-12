@@ -53,6 +53,8 @@ struct DeviceState {
     graphics_queue: vk::Queue,
     graphics_family: u32,
     shader_clip_distance: bool,
+    multi_draw_indirect: bool,
+    max_draw_indirect_count: u32,
     /// Serializes Vulkan queue submission and fence allocation only. It is
     /// not a graph scheduler and must never span host completion waits.
     queue_gate: Mutex<()>,
@@ -409,7 +411,7 @@ impl InstanceBackend for Vulkan {
             .iter()
             .position(|f| f.queue_flags.contains(vk::QueueFlags::GRAPHICS))
             .ok_or(Error::Unsupported("a Vulkan graphics queue"))? as u32;
-            let (dynamic_rendering, shader_clip_distance) = {
+            let (dynamic_rendering, shader_clip_distance, multi_draw_indirect) = {
                 let mut available13 = vk::PhysicalDeviceVulkan13Features::default();
                 let mut available =
                     vk::PhysicalDeviceFeatures2::default().push_next(&mut available13);
@@ -420,16 +422,16 @@ impl InstanceBackend for Vulkan {
                         .get_physical_device_features2(physical, &mut available)
                 };
                 let shader_clip_distance = available.features.shader_clip_distance == vk::TRUE;
-                (
-                    available13.dynamic_rendering == vk::TRUE,
-                    shader_clip_distance,
-                )
+                let multi_draw_indirect = available.features.multi_draw_indirect == vk::TRUE;
+                let dynamic_rendering = available13.dynamic_rendering == vk::TRUE;
+                (dynamic_rendering, shader_clip_distance, multi_draw_indirect)
             };
             if !dynamic_rendering {
                 return Err(Error::Unsupported("Vulkan dynamic rendering"));
             }
-            let enabled_features =
-                vk::PhysicalDeviceFeatures::default().shader_clip_distance(shader_clip_distance);
+            let enabled_features = vk::PhysicalDeviceFeatures::default()
+                .shader_clip_distance(shader_clip_distance)
+                .multi_draw_indirect(multi_draw_indirect);
             let priorities = [1.0_f32];
             let queue = vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(family)
@@ -463,10 +465,14 @@ impl InstanceBackend for Vulkan {
                     graphics_queue,
                     graphics_family: family,
                     shader_clip_distance,
+                    multi_draw_indirect,
+                    max_draw_indirect_count: limits.max_draw_indirect_count,
                     queue_gate: Mutex::new(()),
                 })),
                 DeviceCapabilities {
                     compute: true,
+                    indirect_draw: true,
+                    multi_draw: multi_draw_indirect,
                     storage_textures: rgba8_features
                         .contains(vk::FormatFeatureFlags::STORAGE_IMAGE),
                     push_constants: limits.max_push_constants_size != 0,

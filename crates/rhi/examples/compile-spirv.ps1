@@ -36,7 +36,13 @@ $jobs = @(
     @('08_msaa', 'msaa.hlsl', 'vs_main', 'vs_6_0', 'msaa.vs.spv'),
     @('08_msaa', 'msaa.hlsl', 'ps_main', 'ps_6_0', 'msaa.ps.spv'),
     @('09_texture_mipmap', 'tunnel.hlsl', 'vs_main', 'vs_6_0', 'tunnel.vs.spv'),
-    @('09_texture_mipmap', 'tunnel.hlsl', 'ps_main', 'ps_6_0', 'tunnel.ps.spv')
+    @('09_texture_mipmap', 'tunnel.hlsl', 'ps_main', 'ps_6_0', 'tunnel.ps.spv'),
+    @('10_indirect_draw', 'indirect.hlsl', 'plants_vs', 'vs_6_0', 'plants_vs.spv'),
+    @('10_indirect_draw', 'indirect.hlsl', 'plants_ps', 'ps_6_0', 'plants_ps.spv'),
+    @('10_indirect_draw', 'indirect.hlsl', 'ground_vs', 'vs_6_0', 'ground_vs.spv'),
+    @('10_indirect_draw', 'indirect.hlsl', 'ground_ps', 'ps_6_0', 'ground_ps.spv'),
+    @('10_indirect_draw', 'indirect.hlsl', 'sky_vs', 'vs_6_0', 'sky_vs.spv'),
+    @('10_indirect_draw', 'indirect.hlsl', 'sky_ps', 'ps_6_0', 'sky_ps.spv')
 )
 
 foreach ($job in $jobs) {

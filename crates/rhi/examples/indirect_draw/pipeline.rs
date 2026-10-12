@@ -1,6 +1,5 @@
 use super::{ktx::Ktx, workload::IndirectBackend};
 use fluxel_rhi::api::*;
-use std::sync::Arc;
 
 pub(crate) fn buffer<B: IndirectBackend>(
     d: &Device<B>,
@@ -119,22 +118,12 @@ pub(crate) fn textured_group<B: IndirectBackend>(
 pub(crate) async fn shader<B: IndirectBackend>(
     d: &Device<B>,
     label: &str,
-    bytes: &[u8],
+    dxil: &[u8],
+    spirv: &[u8],
     entry: &str,
     stage: ShaderStage,
 ) -> Result<Shader<B>> {
-    d.shader(ShaderDesc {
-        label: Some(label.into()),
-        format: ShaderFormat::Dxil,
-        bytes: Arc::from(bytes),
-        entries: vec![ShaderEntryPoint {
-            name: entry.into(),
-            stage,
-            workgroup_size: None,
-        }],
-        required_features: vec![],
-    })
-    .await
+    crate::common::native_shader(d, label, entry, stage, dxil, spirv).await
 }
 pub(crate) async fn pipeline<B: IndirectBackend>(
     d: &Device<B>,
@@ -142,11 +131,14 @@ pub(crate) async fn pipeline<B: IndirectBackend>(
     layout: PipelineLayout<B>,
     format: TextureFormat,
     vs: &[u8],
+    vs_spirv: &[u8],
     vse: &str,
     ps: &[u8],
+    ps_spirv: &[u8],
     pse: &str,
     writes_depth: bool,
     instanced: bool,
+    cull_mode: CullMode,
 ) -> Result<RasterPipeline<B>> {
     let mut vertex_buffers = vec![VertexBufferLayout {
         stride: 96,
@@ -212,12 +204,12 @@ pub(crate) async fn pipeline<B: IndirectBackend>(
         label: Some(label.into()),
         layout,
         vertex: PipelineStage {
-            module: shader(d, label, vs, vse, ShaderStage::Vertex).await?,
+            module: shader(d, label, vs, vs_spirv, vse, ShaderStage::Vertex).await?,
             entry: vse.into(),
             constants: vec![],
         },
         fragment: Some(PipelineStage {
-            module: shader(d, label, ps, pse, ShaderStage::Fragment).await?,
+            module: shader(d, label, ps, ps_spirv, pse, ShaderStage::Fragment).await?,
             entry: pse.into(),
             constants: vec![],
         }),
@@ -231,7 +223,7 @@ pub(crate) async fn pipeline<B: IndirectBackend>(
             topology: PrimitiveTopology::TriangleList,
             strip_index_format: None,
             front_face: FrontFace::Ccw,
-            cull_mode: CullMode::Back,
+            cull_mode,
             unclipped_depth: false,
             polygon_mode: PolygonMode::Fill,
             conservative: false,

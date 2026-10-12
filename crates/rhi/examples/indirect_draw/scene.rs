@@ -11,10 +11,20 @@ pub(crate) const PLANT_TEX: &[u8] =
 pub(crate) const GROUND_TEX: &[u8] = include_bytes!("../assets/textures/ground_dry_rgba.ktx");
 pub(crate) const PLANTS_VS: &[u8] = include_bytes!("../assets/10_indirect_draw/plants_vs.dxil");
 pub(crate) const PLANTS_PS: &[u8] = include_bytes!("../assets/10_indirect_draw/plants_ps.dxil");
+pub(crate) const PLANTS_VS_SPIRV: &[u8] =
+    include_bytes!("../assets/10_indirect_draw/plants_vs.spv");
+pub(crate) const PLANTS_PS_SPIRV: &[u8] =
+    include_bytes!("../assets/10_indirect_draw/plants_ps.spv");
 pub(crate) const GROUND_VS: &[u8] = include_bytes!("../assets/10_indirect_draw/ground_vs.dxil");
 pub(crate) const GROUND_PS: &[u8] = include_bytes!("../assets/10_indirect_draw/ground_ps.dxil");
+pub(crate) const GROUND_VS_SPIRV: &[u8] =
+    include_bytes!("../assets/10_indirect_draw/ground_vs.spv");
+pub(crate) const GROUND_PS_SPIRV: &[u8] =
+    include_bytes!("../assets/10_indirect_draw/ground_ps.spv");
 pub(crate) const SKY_VS: &[u8] = include_bytes!("../assets/10_indirect_draw/sky_vs.dxil");
 pub(crate) const SKY_PS: &[u8] = include_bytes!("../assets/10_indirect_draw/sky_ps.dxil");
+pub(crate) const SKY_VS_SPIRV: &[u8] = include_bytes!("../assets/10_indirect_draw/sky_vs.spv");
+pub(crate) const SKY_PS_SPIRV: &[u8] = include_bytes!("../assets/10_indirect_draw/sky_ps.spv");
 
 /// The original plant/ground/sky geometry and the native
 /// `DrawIndexedIndirect` ABI.  Creation and upload are typed API operations;
@@ -128,17 +138,17 @@ impl<B: ResourceBackend> IndirectScene<B> {
 pub(crate) fn instance_bytes(draws: u32, layers: u32) -> Vec<u8> {
     let count = draws.saturating_mul(PLANT_INSTANCES);
     let mut out = Vec::with_capacity(count as usize * 32);
+    // Match the C++ sample's one continuous random-engine stream.  Reseeding
+    // per instance creates correlated positions and can place foliage directly
+    // around the fixed first-person camera.
+    let mut state = 0x9e37_79b9_u32;
+    let mut random = || {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        (state as f32) / (u32::MAX as f32)
+    };
     for n in 0..count {
-        // Same spherical distribution, scale range and texture grouping as
-        // the C++ sample.  A local deterministic generator keeps screenshots
-        // reproducible while avoiding the port's former spiral rings.
-        let mut state = n.wrapping_add(0x9e37_79b9);
-        let mut random = || {
-            state ^= state << 13;
-            state ^= state >> 17;
-            state ^= state << 5;
-            (state as f32) / (u32::MAX as f32)
-        };
         let theta = std::f32::consts::TAU * random();
         let phi = (1.0 - 2.0 * random()).acos();
         let rotation = std::f32::consts::PI * random();
@@ -168,69 +178,11 @@ fn indirect_bytes(primitives: &[gltf::DrawPrimitive]) -> Vec<u8> {
             primitive.index_count,
             PLANT_INSTANCES,
             primitive.first_index,
-            primitive_index as u32 * PLANT_INSTANCES,
             0,
+            primitive_index as u32 * PLANT_INSTANCES,
         ] {
             out.extend_from_slice(&x.to_le_bytes())
         }
     }
     out
-}
-
-/// Encodes the plant portion of the original indirect-draw workload.
-///
-/// `draw_count` is the number of `DrawIndexedIndirect` records in `arguments`.
-/// The caller must have transitioned all supplied resources to the uses implied
-/// by the pass; the RHI deliberately does not infer those graph decisions.
-pub fn encode_plants<B>(
-    device: &Device<B>,
-    encoder: &mut CommandEncoder<B>,
-    pass: &RasterPassDesc<'_, B>,
-    pipeline: &RasterPipeline<B>,
-    group: &BindGroup<B>,
-    vertices: &Buffer<B>,
-    vertex_bytes: u64,
-    indices: &Buffer<B>,
-    index_bytes: u64,
-    instances: &Buffer<B>,
-    instance_bytes: u64,
-    arguments: &Buffer<B>,
-    draw_count: u32,
-) -> Result<()>
-where
-    B: RasterBackend + DeferredBackend,
-{
-    if !device.capabilities().indirect_draw {
-        return Err(Error::Unsupported("indexed indirect draw"));
-    }
-    let extras = device
-        .raster_extras()
-        .ok_or(Error::Unsupported("indexed indirect draw"))?;
-    let mut raster = encoder.begin_raster(pass)?;
-    raster.set_pipeline(pipeline)?;
-    raster.set_bind_group(0, group, &[])?;
-    raster.set_vertex_buffer(0, vertices, 0..vertex_bytes)?;
-    raster.set_vertex_buffer(1, instances, 0..instance_bytes)?;
-    raster.set_index_buffer(indices, 0..index_bytes, IndexFormat::Uint32)?;
-
-    if device.capabilities().multi_draw {
-        extras.multi_draw(
-            &mut raster,
-            arguments,
-            0,
-            draw_count,
-            INDEXED_INDIRECT_STRIDE,
-            true,
-        )?;
-    } else {
-        for draw in 0..draw_count {
-            extras.draw_indirect(
-                &mut raster,
-                arguments,
-                u64::from(draw) * u64::from(INDEXED_INDIRECT_STRIDE),
-                true,
-            )?;
-        }
-    }
-    raster.finish()
 }

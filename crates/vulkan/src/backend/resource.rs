@@ -533,6 +533,9 @@ fn buffer_usage(usage: api::BufferUsage) -> Result<vk::BufferUsageFlags> {
     if usage.contains(api::BufferUsage::STORAGE) {
         out |= vk::BufferUsageFlags::STORAGE_BUFFER;
     }
+    if usage.contains(api::BufferUsage::INDIRECT) {
+        out |= vk::BufferUsageFlags::INDIRECT_BUFFER;
+    }
     if out.is_empty() {
         return Err(Error::Unsupported("Vulkan buffer usage"));
     }
@@ -630,7 +633,8 @@ const SUPPORTED_BUFFER_USAGE: u64 = api::BufferUsage::COPY_SRC.0
     | api::BufferUsage::VERTEX.0
     | api::BufferUsage::INDEX.0
     | api::BufferUsage::UNIFORM.0
-    | api::BufferUsage::STORAGE.0;
+    | api::BufferUsage::STORAGE.0
+    | api::BufferUsage::INDIRECT.0;
 const SUPPORTED_TEXTURE_USAGE: u64 = api::TextureUsage::COPY_SRC.0
     | api::TextureUsage::COPY_DST.0
     | api::TextureUsage::TEXTURE_BINDING.0

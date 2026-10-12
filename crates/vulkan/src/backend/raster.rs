@@ -14,18 +14,76 @@ struct SurfaceAttachment {
 impl api::RasterExtrasOps<Vulkan> for RasterExtras {
     const AVAILABLE: bool = true;
 
-    fn draw_indirect(_: &mut VulkanEncoder, _: &VulkanBuffer, _: u64, _: bool) -> Result<()> {
-        Err(Error::Unsupported("Vulkan indirect draw"))
+    fn draw_indirect(
+        encoder: &mut VulkanEncoder,
+        arguments: &VulkanBuffer,
+        offset: u64,
+        indexed: bool,
+    ) -> Result<()> {
+        validate_indirect(
+            encoder,
+            arguments,
+            offset,
+            1,
+            indirect_stride(indexed),
+            indexed,
+            false,
+        )?;
+        unsafe {
+            if indexed {
+                encoder.device.device.cmd_draw_indexed_indirect(
+                    encoder.command,
+                    arguments.0.buffer,
+                    offset,
+                    1,
+                    indirect_stride(true),
+                );
+            } else {
+                encoder.device.device.cmd_draw_indirect(
+                    encoder.command,
+                    arguments.0.buffer,
+                    offset,
+                    1,
+                    indirect_stride(false),
+                );
+            }
+        }
+        encoder.buffers.push(arguments.clone());
+        Ok(())
     }
     fn multi_draw(
-        _: &mut VulkanEncoder,
-        _: &VulkanBuffer,
-        _: u64,
-        _: u32,
-        _: u32,
-        _: bool,
+        encoder: &mut VulkanEncoder,
+        arguments: &VulkanBuffer,
+        offset: u64,
+        count: u32,
+        stride: u32,
+        indexed: bool,
     ) -> Result<()> {
-        Err(Error::Unsupported("Vulkan multi draw"))
+        if count == 0 {
+            return Ok(());
+        }
+        validate_indirect(encoder, arguments, offset, count, stride, indexed, true)?;
+        unsafe {
+            if indexed {
+                encoder.device.device.cmd_draw_indexed_indirect(
+                    encoder.command,
+                    arguments.0.buffer,
+                    offset,
+                    count,
+                    stride,
+                );
+            } else {
+                encoder.device.device.cmd_draw_indirect(
+                    encoder.command,
+                    arguments.0.buffer,
+                    offset,
+                    count,
+                    stride,
+                );
+            }
+        }
+        encoder.buffers.push(arguments.clone());
+        Ok(())
     }
     fn multi_draw_count(
         _: &mut VulkanEncoder,
@@ -62,6 +120,51 @@ impl api::RasterExtrasOps<Vulkan> for RasterExtras {
         }
         Ok(())
     }
+}
+
+fn indirect_stride(indexed: bool) -> u32 {
+    if indexed { 20 } else { 16 }
+}
+
+fn validate_indirect(
+    encoder: &VulkanEncoder,
+    arguments: &VulkanBuffer,
+    offset: u64,
+    count: u32,
+    stride: u32,
+    indexed: bool,
+    multi: bool,
+) -> Result<()> {
+    if !encoder.raster
+        || encoder.raster_layout.is_none()
+        || (indexed && !encoder.raster_index_bound)
+        || !arguments.0.usage.contains(api::BufferUsage::INDIRECT)
+        || offset % 4 != 0
+    {
+        return Err(Error::InvalidState);
+    }
+    let command_size = indirect_stride(indexed);
+    if (count != 0 && (stride < command_size || stride % 4 != 0))
+        || (multi
+            && count > 1
+            && (!encoder.device.multi_draw_indirect
+                || count > encoder.device.max_draw_indirect_count))
+    {
+        return Err(Error::InvalidRange);
+    }
+    let bytes = if count == 0 {
+        offset
+    } else {
+        u64::from(count - 1)
+            .checked_mul(u64::from(stride))
+            .and_then(|tail| offset.checked_add(tail))
+            .and_then(|last| last.checked_add(u64::from(command_size)))
+            .ok_or(Error::InvalidRange)?
+    };
+    if bytes > arguments.0.size {
+        return Err(Error::InvalidRange);
+    }
+    Ok(())
 }
 
 impl api::RasterBackend for Vulkan {
@@ -269,6 +372,7 @@ impl api::RasterBackend for Vulkan {
         unsafe { e.device.device.cmd_begin_rendering(e.command, &info) };
         e.color_surface_image = surface.map(|surface| surface.image);
         e.raster = true;
+        e.raster_index_bound = false;
         Ok(())
     }
     fn set_pipeline(e: &mut VulkanEncoder, p: &VulkanRasterPipeline) -> Result<()> {
@@ -364,6 +468,7 @@ impl api::RasterBackend for Vulkan {
             )
         };
         e.buffers.push(b.clone());
+        e.raster_index_bound = true;
         Ok(())
     }
     fn viewport(e: &mut VulkanEncoder, v: api::Viewport) -> Result<()> {
@@ -409,6 +514,9 @@ impl api::RasterBackend for Vulkan {
         Err(Error::Unsupported("Vulkan dynamic stencil reference"))
     }
     fn draw(e: &mut VulkanEncoder, v: std::ops::Range<u32>, i: std::ops::Range<u32>) -> Result<()> {
+        if !e.raster || e.raster_layout.is_none() || v.start > v.end || i.start > i.end {
+            return Err(Error::InvalidState);
+        }
         unsafe {
             e.device.device.cmd_draw(
                 e.command,
@@ -426,6 +534,14 @@ impl api::RasterBackend for Vulkan {
         base: i32,
         i: std::ops::Range<u32>,
     ) -> Result<()> {
+        if !e.raster
+            || e.raster_layout.is_none()
+            || !e.raster_index_bound
+            || x.start > x.end
+            || i.start > i.end
+        {
+            return Err(Error::InvalidState);
+        }
         unsafe {
             e.device.device.cmd_draw_indexed(
                 e.command,
@@ -448,6 +564,7 @@ impl api::RasterBackend for Vulkan {
             capture::finish(e, image);
         }
         e.raster = false;
+        e.raster_index_bound = false;
         e.raster_layout = None;
         e.raster_layout_state = None;
         e.raster_push_constants = None;
@@ -457,6 +574,7 @@ impl api::RasterBackend for Vulkan {
         if e.raster {
             unsafe { e.device.device.cmd_end_rendering(e.command) };
             e.raster = false;
+            e.raster_index_bound = false;
             e.color_surface_image = None;
             e.raster_layout = None;
             e.raster_layout_state = None;

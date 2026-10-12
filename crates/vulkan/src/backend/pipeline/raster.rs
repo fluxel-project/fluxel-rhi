@@ -278,6 +278,7 @@ fn vformat(v: api::VertexFormat) -> Option<vk::Format> {
         api::VertexFormat::Float32(2) => Some(vk::Format::R32G32_SFLOAT),
         api::VertexFormat::Float32(3) => Some(vk::Format::R32G32B32_SFLOAT),
         api::VertexFormat::Float32(4) => Some(vk::Format::R32G32B32A32_SFLOAT),
+        api::VertexFormat::Sint32(1) => Some(vk::Format::R32_SINT),
         _ => None,
     }
 }
