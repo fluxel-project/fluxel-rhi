@@ -1,4 +1,17 @@
+//! Raster-pass lowering to one open D3D12 graphics command list.
+//!
+//! Core validates command ordering.  This module installs attachments,
+//! pipeline state, bindings and draw calls immediately; it does not retain a
+//! CPU draw stream or infer cross-pass hazards.  `Dx12Encoder` holds every
+//! COM resource and typed wrapper referenced by a recorded call until submit
+//! transfers the encoder into fence-retired work.
+
 use super::*;
+
+#[path = "raster/native.rs"]
+mod native;
+
+pub(crate) use native::{barrier, upload_buffer};
 impl api::RasterBackend for Dx12 {
     fn begin_raster(
         encoder: &mut Dx12Encoder,
@@ -22,12 +35,19 @@ impl api::RasterBackend for Dx12 {
         ) {
             return Err(Error::Unsupported("DX12 integer color clears"));
         }
+        // Hold a native attachment reference in the encoder. A DXGI backbuffer
+        // lease or texture view may otherwise disappear before this recorded
+        // list reaches the queue.
         let (rtv, target, surface) = match color.view {
             api::AttachmentView::Surface(image) => {
+                // SAFETY: Core tied this image lease to the encoder's device;
+                // the lease remains borrowed for this call and its resource is cloned.
                 let n = unsafe { image.native_ref() };
                 (n.0.rtv, n.0.resource.clone(), true)
             }
             api::AttachmentView::Texture(view) => {
+                // SAFETY: this typed view belongs to this encoder's device;
+                // we retain its texture state before recording native handles.
                 let n = unsafe { view.native_ref() };
                 if multiview.is_some()
                     && (n.0.desc.dimension != api::TextureViewDimension::D2Array
@@ -43,6 +63,8 @@ impl api::RasterBackend for Dx12 {
                 )
             }
         };
+        // SAFETY: `target` is a retained COM resource; GetDesc only reads its
+        // immutable native descriptor.
         let native_desc = unsafe { target.GetDesc() };
         let source_samples = native_desc.SampleDesc.Count;
         let attachment_format = match native_desc.Format {
@@ -54,6 +76,8 @@ impl api::RasterBackend for Dx12 {
         };
         let source_format = match color.view {
             api::AttachmentView::Texture(view) => {
+                // SAFETY: Core supplied a same-device typed view; only its
+                // immutable Rust-side descriptor is read here.
                 match unsafe { view.native_ref() }.0.texture.desc.format {
                     api::TextureFormat::Rgba8Unorm => DXGI_FORMAT_R8G8B8A8_UNORM,
                     api::TextureFormat::Bgra8Unorm => {
@@ -66,6 +90,8 @@ impl api::RasterBackend for Dx12 {
         };
         let resolve = match color.resolve_target {
             Some(api::AttachmentView::Surface(image)) if source_samples > 1 => {
+                // SAFETY: resolve target is the current same-device surface
+                // lease; cloning its resource extends native lifetime.
                 let n = unsafe { image.native_ref() };
                 barrier(
                     &encoder.list,
@@ -78,6 +104,9 @@ impl api::RasterBackend for Dx12 {
             Some(_) => return Err(Error::Unsupported("DX12 MSAA resolve target")),
             None => None,
         };
+        // Swapchain images are presented between passes. This local boundary
+        // is inherent to DXGI WSI; graph-selected texture states remain in
+        // `transition`, and no last-use state is recorded here.
         if surface {
             barrier(
                 &encoder.list,
@@ -90,6 +119,8 @@ impl api::RasterBackend for Dx12 {
             let api::AttachmentView::Texture(view) = depth.view else {
                 return Err(Error::Unsupported("DX12 surface depth attachment"));
             };
+            // SAFETY: Core validated device identity for this attachment view;
+            // the retained texture keeps its DSV resource alive.
             let n = unsafe { view.native_ref() };
             if n.0.texture.desc.samples != source_samples {
                 return Err(Error::InvalidState);
@@ -100,6 +131,8 @@ impl api::RasterBackend for Dx12 {
                 return Err(Error::Unsupported("DX12 depth attachment mode"));
             }
             if let Some((api::LoadOp::Clear(value), _)) = depth.depth {
+                // SAFETY: the DSV belongs to the retained depth resource and
+                // the rectangle was derived from the validated pass area.
                 unsafe {
                     encoder.list.ClearDepthStencilView(
                         handle,
@@ -128,6 +161,12 @@ impl api::RasterBackend for Dx12 {
             source_samples,
             desc.multiview_mask,
         )?;
+        // Attachments, viewport and scissor are installed together: D3D12
+        // keeps them as command-list state, so splitting them lets a secondary
+        // command inherit a half-configured render target. Multiview repeats
+        // both viewport slots because the view-instanced PSO addresses 0 and 1.
+        // SAFETY: encoder exclusively owns this open list; all referenced RTV,
+        // DSV and resources are retained in the encoder through submission.
         unsafe {
             encoder.list.OMSetRenderTargets(
                 1,
@@ -206,6 +245,8 @@ impl api::RasterBackend for Dx12 {
         {
             return Err(Error::InvalidState);
         }
+        // SAFETY: pipeline owns the root signature and PSO COM references, and
+        // the encoder retains its clone through command-list execution.
         unsafe {
             encoder.list.SetGraphicsRootSignature(&pipeline.0.root);
             encoder.list.SetPipelineState(&pipeline.0.state);
@@ -238,6 +279,10 @@ impl api::RasterBackend for Dx12 {
         if offsets.len() != table.dynamic_cbvs.len() {
             return Err(Error::InvalidRange);
         }
+        // Binding both descriptor heaps as one operation prevents a later root
+        // table from referring to a heap selected by a previous bind group.
+        // SAFETY: group and pipeline are same-device validated and retained;
+        // dynamic CBV addresses below are range/alignment checked before use.
         unsafe {
             let heaps = [
                 Some(native.heaps().view_heap().clone()),
@@ -310,10 +355,14 @@ impl api::RasterBackend for Dx12 {
             return Err(Error::InvalidRange);
         }
         let view = D3D12_VERTEX_BUFFER_VIEW {
+            // SAFETY: the buffer is a live same-device COM resource; querying
+            // its immutable GPU virtual address has no ownership side effect.
             BufferLocation: unsafe { buffer.resource.GetGPUVirtualAddress() } + offset,
             SizeInBytes: size as u32,
             StrideInBytes: stride,
         };
+        // SAFETY: `view` names a checked byte range of the retained buffer and
+        // this encoder exclusively records its open graphics list.
         unsafe {
             encoder
                 .list
@@ -343,10 +392,13 @@ impl api::RasterBackend for Dx12 {
             }
         };
         let view = D3D12_INDEX_BUFFER_VIEW {
+            // SAFETY: as for the vertex buffer, the retained resource exposes
+            // a stable GPU address for the checked index range.
             BufferLocation: unsafe { buffer.resource.GetGPUVirtualAddress() } + offset,
             SizeInBytes: size as u32,
             Format: format,
         };
+        // SAFETY: the index view is fully initialized from a retained resource.
         unsafe {
             encoder.list.IASetIndexBuffer(Some(&view));
         }
@@ -355,6 +407,8 @@ impl api::RasterBackend for Dx12 {
     }
     fn viewport(encoder: &mut Dx12Encoder, v: api::Viewport) -> Result<(), Error> {
         let viewport = validate_viewport(v)?;
+        // SAFETY: `validate_viewport` checked finite dimensions and this open
+        // command list is exclusively owned by the encoder.
         unsafe {
             encoder.list.RSSetViewports(&[viewport]);
         }
@@ -362,6 +416,7 @@ impl api::RasterBackend for Dx12 {
     }
     fn scissor(encoder: &mut Dx12Encoder, r: api::Rect) -> Result<(), Error> {
         let rect = validate_scissor(r)?;
+        // SAFETY: `validate_scissor` checked integer bounds for this list.
         unsafe {
             encoder.list.RSSetScissorRects(&[rect]);
         }
@@ -381,6 +436,8 @@ impl api::RasterBackend for Dx12 {
         if vertices.start > vertices.end || instances.start > instances.end {
             return Err(Error::InvalidRange);
         }
+        // SAFETY: Core checked pass/pipeline sequencing and range arithmetic;
+        // this only appends a draw to the encoder-owned list.
         unsafe {
             encoder.list.DrawInstanced(
                 vertices.end - vertices.start,
@@ -400,6 +457,8 @@ impl api::RasterBackend for Dx12 {
         if indices.start > indices.end || instances.start > instances.end {
             return Err(Error::InvalidRange);
         }
+        // SAFETY: as above, the checked index/instance ranges are copied into
+        // the encoder-owned command list without borrowing caller memory.
         unsafe {
             encoder.list.DrawIndexedInstanced(
                 indices.end - indices.start,
@@ -421,6 +480,9 @@ impl api::RasterBackend for Dx12 {
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
                 D3D12_RESOURCE_STATE_RESOLVE_SOURCE,
             );
+            // Resolve occurs only after both resources were retained and moved
+            // into RESOLVE states by the barriers immediately around this call.
+            // SAFETY: the same open list owns this ordered resolve operation.
             unsafe {
                 encoder
                     .list
@@ -456,95 +518,4 @@ impl api::RasterBackend for Dx12 {
         Ok(())
     }
     fn abort_raster(_: &mut Dx12Encoder) {}
-}
-
-pub(crate) fn barrier(
-    list: &ID3D12GraphicsCommandList,
-    resource: &ID3D12Resource,
-    before: windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATES,
-    after: windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATES,
-) {
-    if before == after {
-        return;
-    }
-    let mut barrier = D3D12_RESOURCE_BARRIER {
-        Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
-        Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
-        Anonymous: D3D12_RESOURCE_BARRIER_0 {
-            Transition: ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
-                pResource: ManuallyDrop::new(Some(resource.clone())),
-                Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-                StateBefore: before,
-                StateAfter: after,
-            }),
-        },
-    };
-    unsafe {
-        list.ResourceBarrier(std::slice::from_ref(&barrier));
-        // The command list has consumed the barrier descriptor.  The clone
-        // placed in its FFI union is only an argument owner, not retention.
-        ManuallyDrop::drop(&mut (*barrier.Anonymous.Transition).pResource);
-    }
-}
-
-pub(crate) fn upload_buffer(
-    template: &ID3D12Resource,
-    bytes: &[u8],
-) -> Result<ID3D12Resource, Error> {
-    let mut device = None;
-    unsafe {
-        template.GetDevice::<windows::Win32::Graphics::Direct3D12::ID3D12Device>(&mut device)
-    }
-    .map_err(native_error)?;
-    let device = device.ok_or_else(|| Error::Backend("buffer has no D3D12 device".into()))?;
-    let heap = D3D12_HEAP_PROPERTIES {
-        Type: D3D12_HEAP_TYPE_UPLOAD,
-        CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-        MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
-        CreationNodeMask: 1,
-        VisibleNodeMask: 1,
-    };
-    let desc = D3D12_RESOURCE_DESC {
-        Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-        Alignment: 0,
-        Width: bytes.len() as u64,
-        Height: 1,
-        DepthOrArraySize: 1,
-        MipLevels: 1,
-        Format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN,
-        SampleDesc: windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC {
-            Count: 1,
-            Quality: 0,
-        },
-        Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-        Flags: D3D12_RESOURCE_FLAG_NONE,
-    };
-    let mut upload: Option<ID3D12Resource> = None;
-    unsafe {
-        device.CreateCommittedResource(
-            &heap,
-            D3D12_HEAP_FLAG_NONE,
-            &desc,
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            None,
-            &mut upload,
-        )
-    }
-    .map_err(native_error)?;
-    let upload = upload
-        .ok_or_else(|| Error::Backend("upload resource creation returned no resource".into()))?;
-    let mut mapped = std::ptr::null_mut();
-    unsafe {
-        upload.Map(
-            0,
-            Some(&D3D12_RANGE { Begin: 0, End: 0 }),
-            Some(&mut mapped),
-        )
-    }
-    .map_err(native_error)?;
-    unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.cast::<u8>(), bytes.len());
-        upload.Unmap(0, None);
-    }
-    Ok(upload)
 }

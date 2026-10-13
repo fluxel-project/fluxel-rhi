@@ -1,3 +1,4 @@
+// WebGPU sequential fallback equivalent of the native per-UFO transform ABI.
 struct Transform {
     mvp: mat4x4<f32>,
     tint: vec4<f32>,

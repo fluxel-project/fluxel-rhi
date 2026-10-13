@@ -1,6 +1,7 @@
 # ADR-0019: Define statistics as logical observation, not profiling
 
-**Status:** Accepted
+**Status:** Future design principle. The current Core API has no portable
+statistics interface; this record does not claim an implemented capability.
 
 ## Context
 

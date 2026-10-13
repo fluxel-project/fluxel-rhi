@@ -1,3 +1,12 @@
+<#
+.SYNOPSIS
+Rebuilds checked-in Vulkan SPIR-V example shaders from their project-owned HLSL.
+
+.DESCRIPTION
+Each job names one source file, entry point, shader profile, and checked-in
+output. The script validates every newly written binary with `spirv-val`; it
+does not generate DXIL, download assets, or alter example Rust code.
+#>
 param(
     [string]$VulkanSdkBin = "$env:VULKAN_SDK\Bin"
 )

@@ -1,6 +1,8 @@
-// The SaschaWillems multisampled Voyager scene, lowered through RHI.
-// The scene renders the original `voyager.gltf` mesh into a multisampled
-// color/depth pair and resolves the color attachment into the acquired frame.
+//! SaschaWillems multisampled Voyager scene lowered through the RHI.
+//!
+//! The scene renders the original `voyager.gltf` mesh into a multisampled
+//! color/depth pair and resolves the color attachment into the acquired frame.
+//! The native host owns the window and surface lifecycle.
 mod common;
 #[path = "common/gltf.rs"]
 mod gltf;

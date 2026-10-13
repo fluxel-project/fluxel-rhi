@@ -1,3 +1,4 @@
+// Native display pass samples the two multiview layers into left and right halves.
 Texture2DArray<float4> views : register(t0);
 SamplerState view_sampler : register(s1);
 struct Out { float4 position : SV_Position; float2 uv : TEXCOORD0; };

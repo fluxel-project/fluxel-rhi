@@ -1,4 +1,7 @@
-//! Statically typed RHI contract component.
+//! Explicit import and export contract for externally owned GPU resources.
+//!
+//! The platform bridge supplies ownership and synchronization evidence. Core
+//! does not copy, adopt, or schedule external resources implicitly.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -103,6 +106,8 @@ impl<B: ExternalBackend> ExternalDomain<'_, B> {
         }
         let result = B::acquire_external(encoder.ready()?, &memory.native, sync.native);
         if result.is_err() {
+            // External acquire can alter native ownership as well as command
+            // state; no later command may conceal that partial transition.
             encoder.poisoned = true;
         }
         result
@@ -117,6 +122,8 @@ impl<B: ExternalBackend> ExternalDomain<'_, B> {
         }
         let result = B::release_external(encoder.ready()?, &memory.native);
         if result.is_err() {
+            // A failed release leaves external synchronization ambiguous, so
+            // retain the same terminal rule as other native commands.
             encoder.poisoned = true;
         }
         result.map(|native| ExternalSync {

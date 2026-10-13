@@ -1,4 +1,7 @@
-//! Statically typed RHI contract component.
+//! Portable resource, view, sampler, and bind-group descriptors.
+//!
+//! Descriptors state intended native objects and bindings. RenderGraph owns
+//! usage planning and hazards; backends own allocation and native layout.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -355,6 +358,8 @@ pub(crate) fn binding_resource_device<B: Backend>(
         BindingResource::Array(a) => a
             .iter()
             .flatten()
+            // Missing array entries are represented explicitly for optional
+            // binding slots; provenance applies to entries that actually exist.
             .all(|v| binding_resource_device(v, device)),
     }
 }
@@ -367,6 +372,8 @@ pub(crate) fn binding_matches<B: Backend>(
         BindingResource::Array(values) => values
             .iter()
             .flatten()
+            // Type matching is recursive because a backend descriptor array
+            // must not hide one incompatible element behind its outer array.
             .all(|value| binding_matches(ty, value)),
         BindingResource::Buffer { .. } => matches!(
             ty,

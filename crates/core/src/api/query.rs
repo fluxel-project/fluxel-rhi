@@ -1,4 +1,7 @@
-//! Statically typed RHI contract component.
+//! Query allocation, command recording, and result resolution contract.
+//!
+//! Query availability is established by explicit completion evidence; Core does
+//! not poll a driver or choose when a renderer consumes results.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{

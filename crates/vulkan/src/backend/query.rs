@@ -4,6 +4,9 @@
 //! the active command buffer. Result copying and the next reset are encoded
 //! after raster rendering, while reset is encoded explicitly before the raster
 //! pass, so no CPU-side draw list or query scheduler exists.
+//! `active_occlusion` is the sole begin/end state: it prevents nesting and is
+//! forcibly balanced by raster abort. The caller supplies all cross-command
+//! synchronization; this module only records Vulkan query-pool operations.
 
 use std::{ops::Range, sync::Arc};
 
@@ -29,6 +32,8 @@ struct QuerySetState {
 
 impl Drop for QuerySetState {
     fn drop(&mut self) {
+        // SAFETY: the final Arc owns this pool; submitted encoders retain the
+        // query set until their completion fence and the device stays alive.
         unsafe { self.device.device.destroy_query_pool(self.pool, None) };
     }
 }
@@ -40,6 +45,8 @@ pub(super) fn create(device: &VulkanDevice, desc: &api::QueryDesc) -> Result<Vul
     let info = vk::QueryPoolCreateInfo::default()
         .query_type(vk::QueryType::OCCLUSION)
         .query_count(desc.count);
+    // SAFETY: DeviceState owns the live device; the returned pool is moved into
+    // the new QuerySetState that retains it until destruction.
     let pool = unsafe { device.0.device.create_query_pool(&info, None) }.map_err(vk_error)?;
     Ok(VulkanQuerySet(Arc::new(QuerySetState {
         device: device.0.clone(),
@@ -60,6 +67,8 @@ pub(super) fn begin_occlusion(
     {
         return Err(Error::InvalidState);
     }
+    // SAFETY: raster state proves this is a recording primary command buffer;
+    // slot is in the retained pool's range and no query is currently active.
     unsafe {
         encoder.device.device.cmd_begin_query(
             encoder.command,
@@ -86,6 +95,8 @@ pub(super) fn reset(
     {
         return Err(Error::InvalidRange);
     }
+    // SAFETY: query reset is outside rendering and the checked slot range is
+    // contained by the retained native query pool.
     unsafe {
         encoder.device.device.cmd_reset_query_pool(
             encoder.command,
@@ -106,6 +117,8 @@ pub(super) fn end_occlusion(encoder: &mut VulkanEncoder) -> Result<()> {
         return Err(Error::InvalidState);
     }
     let (set, slot) = encoder.active_occlusion.take().ok_or(Error::InvalidState)?;
+    // SAFETY: `active_occlusion` holds the matching retained pool and slot on
+    // this recording command buffer, so the native begin/end pair is balanced.
     unsafe {
         encoder
             .device
@@ -139,6 +152,8 @@ pub(super) fn resolve(
     if offset.checked_add(bytes).ok_or(Error::InvalidRange)? > destination.0.size {
         return Err(Error::InvalidRange);
     }
+    // SAFETY: the command is outside rendering, all source slots and the
+    // aligned destination range were checked, and both objects are retained.
     unsafe {
         encoder.device.device.cmd_copy_query_pool_results(
             encoder.command,

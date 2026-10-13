@@ -1,4 +1,9 @@
 //! Native immutable sampler descriptors for the DX12 backend.
+//!
+//! Each sampler owns one CPU-only descriptor heap so descriptor-copying bind
+//! groups can outlive the construction call. This module maps only values that
+//! have a defined D3D12 equivalent and rejects the rest rather than relying on
+//! driver defaults.
 
 use super::{Dx12Device, Dx12Sampler};
 use fluxel_rhi_core::api::{self, Error, Result};
@@ -21,6 +26,8 @@ pub(crate) fn create_sampler(device: &Dx12Device, desc: &api::SamplerDesc) -> Re
         Flags: D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
         NodeMask: 0,
     };
+    // SAFETY: `heap_desc` is fully initialized and the returned COM heap is
+    // retained by SamplerState for every later use of its CPU handle.
     let heap = unsafe {
         device
             .0
@@ -28,6 +35,8 @@ pub(crate) fn create_sampler(device: &Dx12Device, desc: &api::SamplerDesc) -> Re
             .CreateDescriptorHeap::<ID3D12DescriptorHeap>(&heap_desc)
     }
     .map_err(native_error)?;
+    // SAFETY: `heap` is a live one-descriptor sampler heap owned locally, so
+    // its first CPU handle is valid until SamplerState drops the heap.
     let cpu = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
     let native = D3D12_SAMPLER_DESC {
         Filter: filter(desc),
@@ -41,6 +50,8 @@ pub(crate) fn create_sampler(device: &Dx12Device, desc: &api::SamplerDesc) -> Re
         MinLOD: desc.lod.start,
         MaxLOD: desc.lod.end,
     };
+    // SAFETY: validation made the descriptor representable, and `cpu` points
+    // at the sole entry of the live CPU-only sampler heap.
     unsafe { device.0.native.CreateSampler(&native, cpu) };
     Ok(Dx12Sampler(Arc::new(SamplerState { heap, cpu, native })))
 }

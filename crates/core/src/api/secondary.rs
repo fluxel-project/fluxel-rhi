@@ -1,4 +1,7 @@
-//! Statically typed RHI contract component.
+//! Secondary command recording and execution contract.
+//!
+//! Secondary work stays device-local and is consumed only by a compatible
+//! primary encoder. Core does not reorder, cache, or replay recorded commands.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -22,6 +25,8 @@ pub struct SecondaryRasterDesc {
 }
 impl PartialEq for SecondaryRasterDesc {
     fn eq(&self, other: &Self) -> bool {
+        // Labels are diagnostic-only. Including them would reject compatible
+        // secondary work merely because logging text changed.
         self.color_formats == other.color_formats
             && self.depth_stencil_format == other.depth_stencil_format
             && self.samples == other.samples

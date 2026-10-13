@@ -3,7 +3,9 @@
 //! D3D12 descriptor-table ranges are fixed when the root signature is created.
 //! The public runtime-sized binding in example 14 is therefore bounded to the
 //! advertised 32 descriptors. A bind group supplies a contiguous, nonempty
-//! prefix and retains every view written into that range.
+//! prefix and retains every view written into that range. The parent bind group
+//! owns the retained views, so the copied descriptors cannot outlive their
+//! native resources while GPU work still refers to them.
 
 use fluxel_rhi_core::api::{self, Error, Result};
 use windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
@@ -35,11 +37,16 @@ pub(super) fn write_sampled_array(
         let Some(api::BindingResource::TextureView(view)) = value else {
             return Err(Error::Unsupported("DX12 sampled texture array resource"));
         };
+        // SAFETY: Core's typed handle check admits only a view from this DX12
+        // device. The cloned view below keeps the source descriptor's resource
+        // alive after this short borrow ends.
         let native = unsafe { view.native_ref() };
         let source = native
             .0
             .srv
             .ok_or(Error::Unsupported("DX12 sampled texture without SRV"))?;
+        // SAFETY: the destination is a distinct, reserved entry in the live
+        // device heap; `source` names one descriptor in a live CPU heap.
         unsafe {
             device.0.native.CopyDescriptorsSimple(
                 1,

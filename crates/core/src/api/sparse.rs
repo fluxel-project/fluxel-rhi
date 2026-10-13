@@ -1,4 +1,7 @@
-//! Statically typed RHI contract component.
+//! Optional sparse-resource mapping and submission contract.
+//!
+//! The renderer supplies mappings and synchronization explicitly. Backends
+//! reject this API when their native sparse capability is unavailable.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -29,6 +32,7 @@ impl<B: SparseBackend> Device<B> {
 }
 impl<B: SparseBackend> SparseDomain<'_, B> {
     pub fn allocation(&self, size: u64) -> Result<SparseAllocation<B>> {
+        // SAFETY: SPI allocation and the checked backing allocation share this device.
         Ok(unsafe {
             SparseAllocation::from_native(
                 self.device.id,
@@ -191,11 +195,14 @@ impl<B: MultiQueueBackend> MultiQueueDomain<'_, B> {
                         })
             });
         if !valid {
+            // Reject before SPI entry so an invalid cross-lane signal graph is
+            // returned intact instead of becoming a partial native submission.
             return MultiQueueSubmitOutcome::Rejected {
                 error: Error::WrongDevice,
                 packet,
             };
         }
+        // SAFETY: packet validation above established this queue's device ownership.
         unsafe { B::submit_multi(&self.device.native, packet) }
     }
 }

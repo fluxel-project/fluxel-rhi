@@ -1,4 +1,7 @@
-//! Statically typed RHI contract component.
+//! Immediate-mode execution contract for backends without deferred command lists.
+//!
+//! The session reports an exact issued prefix on close or abandonment. It does
+//! not add a scheduler, command cache, or hidden synchronization policy.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -181,6 +184,9 @@ impl<B: ImmediateBackend> ImmediateSession<B> {
                 ImmediateRunOutcome::Issued(step)
             }
             ImmediateClose::Failed { error, issued } => {
+                // A close failure can still have issued native commands. Keep
+                // that prefix rather than returning an ordinary retryable
+                // error, because later work may already observe its effects.
                 if issued {
                     self.issued_count += 1;
                     self.history_count += 1;
@@ -201,6 +207,9 @@ impl<B: ImmediateBackend> ImmediateSession<B> {
     pub(crate) fn fail(&mut self, error: Error) -> ImmediateRunOutcome<B> {
         self.failed = true;
         let steps = self.take_issued_steps();
+        // Once a session has issued any prefix, failure must carry completion
+        // evidence for that exact prefix. Otherwise resource retirement could
+        // race GPU work whose issuing status is no longer recoverable.
         match B::emergency_checkpoint(&self.device.native, &self.plan, &steps) {
             CheckpointOutcome::Covered(checkpoints) => ImmediateRunOutcome::Failed {
                 error,
@@ -285,6 +294,9 @@ impl<B: ImmediateBackend> ImmediateSession<B> {
             return ImmediateFinishOutcome::Failed(self.fail(Error::InvalidState));
         }
         let steps = self.take_issued_steps();
+        // A completion request is useful only if it covers every issued step.
+        // If the backend cannot prove coverage, expose indeterminacy rather
+        // than fabricating a completion point from a later or unrelated event.
         match B::checkpoints(&self.device.native, &self.plan, &steps, &self.completion) {
             CheckpointOutcome::Covered(checkpoints) => {
                 ImmediateFinishOutcome::Issued(IssuedPrefix { steps, checkpoints })

@@ -60,6 +60,9 @@ pub(super) fn finish(encoder: &mut VulkanEncoder, image: vk::Image) {
         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .image(image)
         .subresource_range(range);
+    // SAFETY: the encoder owns this still-recording command buffer and the
+    // active surface image is in the color-attachment layout established by
+    // the matching raster pass.
     unsafe {
         encoder.device.device.cmd_pipeline_barrier(
             encoder.command,
@@ -87,6 +90,8 @@ pub(super) fn finish(encoder: &mut VulkanEncoder, image: vk::Image) {
                 height: capture.height,
                 depth: 1,
             });
+        // SAFETY: capture retains its destination buffer and the preceding
+        // barrier made the image readable as TRANSFER_SRC in this command buffer.
         unsafe {
             encoder.device.device.cmd_copy_image_to_buffer(
                 encoder.command,
@@ -105,6 +110,8 @@ pub(super) fn finish(encoder: &mut VulkanEncoder, image: vk::Image) {
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .image(image)
             .subresource_range(range);
+        // SAFETY: the copy above is ordered before this barrier, which restores
+        // the present layout required by the same surface image lease.
         unsafe {
             encoder.device.device.cmd_pipeline_barrier(
                 encoder.command,
@@ -125,6 +132,8 @@ pub(super) fn write_completed(work: &[super::submit::RecordedWork]) -> Result<()
             continue;
         };
         let size = u64::from(capture.width) * u64::from(capture.height) * 4;
+        // SAFETY: the fence waiter invokes this only after GPU completion;
+        // capture owns a host-visible allocation large enough for `size`.
         let mapped = unsafe {
             item.encoder.device.device.map_memory(
                 capture.buffer.0.memory,
@@ -134,9 +143,12 @@ pub(super) fn write_completed(work: &[super::submit::RecordedWork]) -> Result<()
             )
         }
         .map_err(vk_error)?;
+        // SAFETY: map_memory returned the exact `size` byte range requested.
         let bytes = unsafe { std::slice::from_raw_parts(mapped.cast::<u8>(), size as usize) };
         let result = std::fs::write(&capture.path, bytes)
             .map_err(|e| Error::Backend(format!("Vulkan visual capture: {e}")));
+        // SAFETY: this balances the successful map after the synchronous file
+        // write has consumed the borrowed byte slice.
         unsafe {
             item.encoder
                 .device

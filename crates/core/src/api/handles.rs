@@ -1,4 +1,7 @@
-//! Statically typed RHI contract component.
+//! Typed public wrappers around backend-native resource handles.
+//!
+//! Wrappers preserve device provenance and keep native types out of renderer
+//! code. Native validity and destruction remain backend responsibilities.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -79,6 +82,9 @@ impl<B: Backend> BindGroupLayout<B> {
     pub fn device(&self) -> DeviceId {
         self.device
     }
+    /// # Safety
+    /// Use only in the owning backend on a permitted thread; the returned
+    /// reference must not outlive this layout or mutate native state directly.
     #[doc(hidden)]
     pub unsafe fn native_ref(&self) -> &B::NativeBindGroupLayout {
         &self.native

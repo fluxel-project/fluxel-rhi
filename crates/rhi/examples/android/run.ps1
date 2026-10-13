@@ -1,3 +1,12 @@
+<#
+.SYNOPSIS
+Builds, packages, installs, and starts the Android triangle example.
+
+.DESCRIPTION
+This local developer helper targets one x86_64 emulator and writes all APK
+staging output below `target/android-01-triangle`; it does not publish artifacts
+or modify checked-in example resources.
+#>
 param(
     [string]$Serial = "emulator-5554"
 )

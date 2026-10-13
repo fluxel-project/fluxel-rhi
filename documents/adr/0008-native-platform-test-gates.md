@@ -1,6 +1,8 @@
 # ADR-0008: Execute platform-specific test paths natively
 
-**Status:** Accepted
+**Status:** Historical platform baseline. Current gates are described in the
+[testing guide](../testing.md); the stub and feature combinations below refer
+to the older repository layout.
 
 ## Context
 

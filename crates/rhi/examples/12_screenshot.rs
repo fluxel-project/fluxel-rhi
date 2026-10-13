@@ -215,6 +215,8 @@ impl<B: ScreenshotBackend> Screenshot<B> {
         completion: &CompletionPoint<B>,
         path: impl AsRef<Path>,
     ) -> Result<()> {
+        // SAFETY: callers pass the checkpoint returned by the record that
+        // produced `ticket`; it is awaited by `read_after` before mapping.
         let data = unsafe { device.read_after(ticket, completion).await? };
         // ReadbackBackend maps a buffer; its row geometry is established by
         // the explicit TexelCopyBufferLayout recorded above.
@@ -383,6 +385,8 @@ fn submit_capture_and_present<B: DeferredBackend>(
         device: device.id(),
         ordinal: NEXT_CAPTURE_PLAN.fetch_add(1, Ordering::Relaxed),
     };
+    // SAFETY: the two steps share one device-local lane and present explicitly
+    // waits for commands, so this compiled order is realizable by that queue.
     let plan = unsafe {
         SubmissionPlan::from_compiled(
             id,
@@ -406,6 +410,9 @@ fn submit_capture_and_present<B: DeferredBackend>(
             ]),
         )
     };
+    // SAFETY: the caller retains screenshot resources and the acquired image
+    // until the returned end checkpoint completes; every bound step is from
+    // this plan and device.
     let result = unsafe {
         device.queue().submit(SubmitPacket {
             steps: vec![
@@ -488,6 +495,8 @@ pub async fn run_webgpu_screenshot(
             let completion = submit_capture_and_present(&device, lane, record.work, image)?;
             device.wait_completion(&completion).await?;
             if let Some(ticket) = record.ticket {
+                // SAFETY: `completion` is the end checkpoint returned for
+                // `record` and was awaited above, so it covers this ticket.
                 let data = unsafe { device.read_after(ticket, &completion).await? };
                 let rgb = ppm_rgb(&data.bytes, screenshot.row_pitch as usize, extent, false)?;
                 if !rgb.starts_with(b"P6\n") || rgb.len() <= 64 {

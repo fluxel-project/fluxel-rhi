@@ -58,21 +58,31 @@ impl VulkanEncoder {
         let info = vk::CommandPoolCreateInfo::default()
             .queue_family_index(device.0.graphics_family)
             .flags(vk::CommandPoolCreateFlags::TRANSIENT);
+        // SAFETY: DeviceState owns a live logical device and this pool is
+        // restricted to its graphics family; VulkanEncoder becomes its owner.
         let pool = unsafe { device.0.device.create_command_pool(&info, None) }.map_err(vk_error)?;
         let alloc = vk::CommandBufferAllocateInfo::default()
             .command_pool(pool)
             .level(vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(1);
+        // SAFETY: `pool` was just created on this device and has not been
+        // destroyed or reset, so it can allocate one primary command buffer.
         let command = match unsafe { device.0.device.allocate_command_buffers(&alloc) } {
             Ok(v) => v[0],
             Err(e) => {
+                // SAFETY: allocation returned no command buffer, leaving this
+                // local pool unused and exclusively owned by this error path.
                 unsafe { device.0.device.destroy_command_pool(pool, None) };
                 return Err(vk_error(e));
             }
         };
         let begin = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        // SAFETY: `command` is a newly allocated primary buffer and no thread
+        // can access this private pool before the encoder is returned.
         if let Err(e) = unsafe { device.0.device.begin_command_buffer(command, &begin) } {
+            // SAFETY: a failed begin leaves the locally owned pool safe to
+            // destroy; it has not been submitted.
             unsafe { device.0.device.destroy_command_pool(pool, None) };
             return Err(vk_error(e));
         };
@@ -110,6 +120,9 @@ impl VulkanEncoder {
 impl Drop for VulkanEncoder {
     fn drop(&mut self) {
         if self.pool != vk::CommandPool::null() {
+            // SAFETY: submitted encoders move into RecordedWork and remain
+            // retained until their fence; this Drop runs only for unsubmitted
+            // or completed work, and owns the pool and all its command buffers.
             unsafe { self.device.device.destroy_command_pool(self.pool, None) }
         }
     }

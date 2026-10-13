@@ -1,6 +1,9 @@
 # ADR-0005: Require GPU conformance evidence for native correctness claims
 
-**Status:** Accepted
+**Status:** Superseded by [ADR-0022](0022-hardware-conformance-evidence.md)
+and the current [testing guide](../testing.md). This record describes an older
+`ExecutionPlan` and release-artifact workflow; it does not require a GitHub
+Release or attachments for the current repository.
 
 ## Context
 

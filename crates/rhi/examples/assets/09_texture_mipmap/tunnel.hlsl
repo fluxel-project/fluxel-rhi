@@ -1,3 +1,4 @@
+// Native textured tunnel pass consuming the generated mip chain.
 cbuffer Scene : register(b0) {
     column_major float4x4 projection;
     column_major float4x4 view;

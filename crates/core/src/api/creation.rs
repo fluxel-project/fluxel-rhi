@@ -1,4 +1,8 @@
-//! Statically typed RHI contract component.
+//! Device-owned resource and layout creation.
+//!
+//! Every successful constructor stamps its result with this `DeviceId` so
+//! later recording rejects cross-device objects. Backend allocation remains
+//! entirely behind the static SPI; this module performs no lifetime policy.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -53,12 +57,14 @@ impl<B: ResourceBackend> Device<B> {
         if let Support::Unsupported(reason) = B::buffer_support(&self.native, desc) {
             return Err(Error::Unsupported(reason));
         }
+        // SAFETY: the SPI created the buffer for this device after support validation.
         Ok(unsafe { Buffer::from_native(self.id, B::create_buffer(&self.native, desc)?) })
     }
     pub fn create_texture(&self, desc: &TextureDesc) -> Result<Texture<B>> {
         if let Support::Unsupported(reason) = B::texture_support(&self.native, desc) {
             return Err(Error::Unsupported(reason));
         }
+        // SAFETY: the SPI created the texture for this device after support validation.
         Ok(unsafe { Texture::from_native(self.id, B::create_texture(&self.native, desc)?) })
     }
     pub fn create_view(
@@ -69,6 +75,7 @@ impl<B: ResourceBackend> Device<B> {
         if texture.device != self.id {
             return Err(Error::WrongDevice);
         }
+        // SAFETY: `texture` was checked to belong to this device and SPI creates its view.
         Ok(unsafe {
             TextureView::from_native(
                 self.id,
@@ -77,6 +84,7 @@ impl<B: ResourceBackend> Device<B> {
         })
     }
     pub fn create_sampler(&self, desc: &SamplerDesc) -> Result<Sampler<B>> {
+        // SAFETY: the SPI created the sampler for this device.
         Ok(unsafe { Sampler::from_native(self.id, B::create_sampler(&self.native, desc)?) })
     }
     pub fn create_bind_group_layout(
@@ -118,6 +126,7 @@ impl<B: ResourceBackend> Device<B> {
                 return Err(Error::Unsupported("nonuniform binding indexing"));
             }
         }
+        // SAFETY: the SPI created the validated layout for this device.
         Ok(unsafe {
             BindGroupLayout::from_native(
                 self.id,
@@ -127,6 +136,9 @@ impl<B: ResourceBackend> Device<B> {
         })
     }
     pub fn create_bind_group(&self, desc: &BindGroupDesc<'_, B>) -> Result<BindGroup<B>> {
+        // Validate every recursively nested binding before native allocation so
+        // a backend never observes a cross-device descriptor after creating a
+        // partially owned bind group.
         if desc.layout.device != self.id
             || !desc
                 .entries
@@ -167,6 +179,7 @@ impl<B: ResourceBackend> Device<B> {
                 BindingCount::One => {}
             }
         }
+        // SAFETY: descriptor validation established one-device provenance before SPI creation.
         Ok(unsafe { BindGroup::from_native(self.id, B::create_bind_group(&self.native, desc)?) })
     }
     pub fn create_pipeline_layout(
@@ -182,6 +195,7 @@ impl<B: ResourceBackend> Device<B> {
         if !desc.push_constants.is_empty() && !self.caps.push_constants {
             return Err(Error::Unsupported("push constants"));
         }
+        // SAFETY: every referenced layout was checked to belong to this device.
         Ok(unsafe {
             PipelineLayout::from_native(self.id, B::create_pipeline_layout(&self.native, desc)?)
         })

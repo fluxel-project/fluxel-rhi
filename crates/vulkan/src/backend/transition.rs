@@ -2,6 +2,10 @@
 //!
 //! Vulkan itself has no `COMMON` image layout.  Fluxel's portable `Common`
 //! state is represented by `GENERAL`; callers still supply every dependency.
+//!
+//! No state is cached here.  Each barrier is emitted from the immutable Core
+//! transition selected by RenderGraph, and retained resource clones keep every
+//! referenced Vulkan handle live until the enclosing encoder completes.
 
 use super::*;
 
@@ -46,6 +50,8 @@ fn buffer(encoder: &mut VulkanEncoder, barrier: &api::BufferBarrier<'_, Vulkan>)
     if barrier.ownership.is_some() {
         return Err(Error::Unsupported("Vulkan queue ownership transition"));
     }
+    // SAFETY: Core checked device identity before CommandBackend::transition;
+    // this backend bridge borrows the buffer only while recording its barrier.
     let buffer = unsafe { barrier.target.buffer.native_ref() };
     let range = &barrier.target.range;
     if range.start >= range.end || range.end > buffer.0.size {
@@ -80,6 +86,8 @@ fn texture(encoder: &mut VulkanEncoder, barrier: &api::TextureBarrier<'_, Vulkan
     let (old_layout, new_layout) = barrier.layout.ok_or(Error::Unsupported(
         "Vulkan texture transition requires explicit layouts",
     ))?;
+    // SAFETY: Core has checked device identity. The encoder retains a clone
+    // after recording, so this temporary native borrow cannot outlive it.
     let texture = unsafe { barrier.target.texture.native_ref() };
     let range = vk::ImageSubresourceRange::default()
         .aspect_mask(aspects(barrier.target.aspects)?)
@@ -147,6 +155,8 @@ fn pipeline_barrier(
     buffers: &[vk::BufferMemoryBarrier],
     images: &[vk::ImageMemoryBarrier],
 ) {
+    // SAFETY: validated Core scopes determine stages/accesses and every native
+    // resource handle is retained by the encoder until submission completion.
     unsafe {
         encoder.device.device.cmd_pipeline_barrier(
             encoder.command,

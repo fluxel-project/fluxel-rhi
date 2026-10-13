@@ -10,13 +10,14 @@ from GPU completion.
 
 ## Decision
 
-`FrameAttachment` is distinct from `Texture` and `TextureView`; an acquired
-frame is non-cloneable and has one lifecycle. Presentation is planned before
-submission, while acceptance, completion, and present outcome are separate.
-`abandon()` terminates ownership without promising a cheap native release.
+`SurfaceImage` is distinct from `Texture` and `TextureView`; an acquired image
+is non-cloneable and has one lifecycle. `PresentBinding` transfers its exclusive
+lease into a submission plan. A rejected handoff can return the lease; an
+unhanded lease is abandoned through its native drop path. Native present
+acceptance, GPU completion, and present outcome remain separate observations.
 
 ## Consequences
 
 Backend lowering can normalize attachments privately without leaking a
-swapchain model. WebGPU waits for browser current-texture expiry after abandon
-before issuing a distinct frame identity.
+swapchain model. Backends own the safety of their native lease abandonment and
+configuration-generation checks.

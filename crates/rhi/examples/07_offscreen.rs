@@ -1,4 +1,8 @@
-// The SaschaWillems offscreen mirror scene, lowered through RHI.
+//! SaschaWillems offscreen mirror scene lowered through the RHI.
+//!
+//! This entry assembles the scene and records its two passes. The host owns
+//! the window and presentation lifetime; the renderer remains responsible for
+//! scheduling and resource retirement outside this standalone example.
 mod common;
 #[path = "common/gltf.rs"]
 mod gltf;

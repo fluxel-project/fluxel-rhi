@@ -1,4 +1,8 @@
 //! Browser adapter and device requests through Core's static backend contract.
+//!
+//! `WebGpuDevice` is deliberately `Rc`-backed and therefore owner-thread local.
+//! Device loss makes every completion fail, while submitted JS resources remain
+//! retained until the browser queue reports completion or loss.
 
 use std::{
     cell::{Cell, RefCell},
@@ -46,6 +50,8 @@ impl WebGpuInstance {
 
     /// Creates a typed Core instance on the browser owner thread.
     pub fn instance(&self) -> Result<api::Instance<WebGpu>> {
+        // SAFETY: `self` is this backend's only native instance value and the
+        // freshly allocated id is associated with it exactly once.
         Ok(unsafe { api::Instance::from_native(InstanceId::allocate()?, self.clone()) })
     }
 

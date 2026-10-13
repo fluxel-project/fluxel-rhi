@@ -1,4 +1,7 @@
-//! Statically typed RHI contract component.
+//! Raster pipeline descriptors and static backend pipeline creation SPI.
+//!
+//! Pipeline objects are device-local. Shader selection and pipeline caching
+//! policy belong to callers or backends, not this portable contract.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -221,6 +224,9 @@ pub trait PipelineBackend: Backend {
 }
 impl<B: PipelineBackend> Device<B> {
     pub async fn raster_pipeline(&self, desc: RasterPipelineDesc<B>) -> Result<RasterPipeline<B>> {
+        // Pipeline pieces may be structurally compatible while belonging to
+        // different devices. Validate provenance before a backend starts a
+        // potentially expensive asynchronous native pipeline compilation.
         if desc.layout.device != self.id
             || desc.vertex.module.device != self.id
             || desc
@@ -243,6 +249,8 @@ impl<B: PipelineBackend> Device<B> {
             return Err(Error::InvalidRange);
         }
         if let Some(views) = desc.multiview {
+            // A nonzero count is required because a zero-mask pipeline has no
+            // native attachment interpretation on several APIs.
             if !self.caps.multiview {
                 return Err(Error::Unsupported("multiview"));
             }
@@ -250,6 +258,7 @@ impl<B: PipelineBackend> Device<B> {
                 return Err(Error::InvalidRange);
             }
         }
+        // SAFETY: shader and layout provenance were checked against this device.
         Ok(unsafe {
             RasterPipeline::from_native(
                 self.id,
@@ -268,6 +277,7 @@ pub trait CacheBackend: Backend {
 }
 impl<B: CacheBackend> Device<B> {
     pub fn create_pipeline_cache(&self, data: Option<&[u8]>) -> Result<PipelineCache<B>> {
+        // SAFETY: the SPI created this cache for this device.
         Ok(unsafe { PipelineCache::from_native(self.id, B::create_cache(&self.native, data)?) })
     }
     pub fn serialize_pipeline_cache(&self, cache: &PipelineCache<B>) -> Result<Vec<u8>> {

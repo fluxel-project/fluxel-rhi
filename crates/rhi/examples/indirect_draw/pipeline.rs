@@ -1,3 +1,8 @@
+//! Resource-layout, shader, and raster-pipeline construction for example 10.
+//!
+//! The resulting objects are reusable scene state. Per-frame commands stay in
+//! `workload`, preserving the example's per-frame recording boundary.
+
 use super::{ktx::Ktx, workload::IndirectBackend};
 use fluxel_rhi::api::*;
 

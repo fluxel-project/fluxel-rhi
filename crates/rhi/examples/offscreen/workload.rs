@@ -1,3 +1,8 @@
+//! GPU resource ownership and two-pass mirror-scene recording for example 07.
+//!
+//! The returned work is submitted by the host. This workload therefore does
+//! not own presentation, completion waiting, or cross-frame retirement.
+
 use super::super::*;
 use super::resources::*;
 use crate::gltf;

@@ -1,3 +1,11 @@
+//! Explicit Core resource-transition lowering for D3D12 barriers.
+//!
+//! The graph owns the before/after usage contract.  This module only maps that
+//! supplied contract to D3D12 states and emits barriers for the stated range;
+//! it does not remember a resource's last state, infer a later use, or perform
+//! queue ownership scheduling.  Private upload and readback helpers use their
+//! own fixed states outside this cross-operation contract.
+
 use super::*;
 pub(crate) fn barrier_sub(
     list: &ID3D12GraphicsCommandList,
@@ -21,6 +29,9 @@ pub(crate) fn barrier_sub(
             }),
         },
     };
+    // SAFETY: `b` owns a cloned COM reference for the call; `ResourceBarrier`
+    // consumes only the borrowed slice synchronously, then we drop precisely
+    // that manually-managed reference before `b` leaves scope.
     unsafe {
         list.ResourceBarrier(std::slice::from_ref(&b));
         ManuallyDrop::drop(&mut (*b.Anonymous.Transition).pResource);
@@ -236,6 +247,8 @@ pub(crate) fn texture_upload_buffer(
         Flags: D3D12_RESOURCE_FLAG_NONE,
     };
     let mut output: Option<ID3D12Resource> = None;
+    // SAFETY: the fully initialized heap/resource descriptors are local to the
+    // call and D3D12 writes the returned COM resource into `output` only.
     unsafe {
         device.CreateCommittedResource(
             &heap,

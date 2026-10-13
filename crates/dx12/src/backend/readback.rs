@@ -1,4 +1,10 @@
 //! Completion-gated mapping of DX12 readback buffers.
+//!
+//! The public contract requires callers to observe the matching completion
+//! point before mapping. This module does not wait or poll for them: mapping
+//! early would race GPU writes, and completion ownership belongs to the queue
+//! implementation. The ticket retains the buffer so its native resource stays
+//! alive through mapping.
 
 use std::future::{Ready, ready};
 use std::ops::Range;
@@ -52,6 +58,9 @@ fn map(ticket: Dx12Readback) -> Result<ReadbackData> {
     let begin = usize::try_from(ticket.range.start).map_err(|_| Error::InvalidRange)?;
     let end = begin.checked_add(size_usize).ok_or(Error::InvalidRange)?;
     let mut pointer = std::ptr::null_mut();
+    // SAFETY: the completion-gated API guarantees the GPU no longer writes this
+    // MAP_READ resource; range conversion and bounds checks above make the
+    // D3D12 read range valid, and `pointer` is writable out storage.
     unsafe {
         ticket.buffer.resource.Map(
             0,
@@ -66,8 +75,12 @@ fn map(ticket: Dx12Readback) -> Result<ReadbackData> {
     if pointer.is_null() {
         return Err(Error::Backend("DX12 readback Map returned null".into()));
     }
+    // SAFETY: Map returned a non-null pointer to the retained resource, and
+    // the checked [begin, end) range is inside the mapped subresource.
     let bytes =
         unsafe { std::slice::from_raw_parts(pointer.cast::<u8>().add(begin), size_usize).to_vec() };
+    // SAFETY: this exactly balances the successful Map above. D3D12 permits
+    // the empty written range because CPU only read the resource.
     unsafe {
         ticket
             .buffer

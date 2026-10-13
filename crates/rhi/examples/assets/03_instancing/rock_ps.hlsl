@@ -1,3 +1,4 @@
+// Array-texture fragment stage split from instancing.hlsl for the rock path.
 cbuffer Scene : register(b0) {
   column_major float4x4 projection;
   column_major float4x4 view;

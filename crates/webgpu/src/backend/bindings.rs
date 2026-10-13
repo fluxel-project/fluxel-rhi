@@ -1,4 +1,8 @@
 //! WebGPU bind-group layout lowering and feature gates.
+//!
+//! The conversion is intentionally fail-closed: capabilities which the opened
+//! browser device did not establish remain unavailable instead of being lowered
+//! to a nearby but semantically different WebGPU layout.
 
 use fluxel_rhi_core::api::{self, Error, Result};
 use wasm_bindgen::JsValue;

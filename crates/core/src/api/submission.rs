@@ -1,4 +1,8 @@
-//! Statically typed RHI contract component.
+//! Compiled submission plans, presentation leases, and completion evidence.
+//!
+//! RenderGraph supplies an ordered realizable plan and lifetime decisions.
+//! Backends execute it as submitted and report facts; this module builds no
+//! DAG, hazard tracker, scheduler, or CPU command replay layer.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -351,6 +355,9 @@ impl<B: DeferredBackend> SubmitPacket<B> {
     /// Checks only binding integrity. The compiled graph and synchronization
     /// choices remain the RenderGraph's responsibility.
     fn validate(&self, device: DeviceId) -> Result<()> {
+        // Do this before native submission so a clean rejection can return the
+        // unchanged owning packet. Once native submission begins, only the
+        // backend can state which prefix has become externally observable.
         if self.plan.id.device != device {
             return Err(Error::WrongDevice);
         }
@@ -373,6 +380,9 @@ pub struct DeferredTail<B: DeferredBackend> {
 }
 impl<B: DeferredBackend> DeferredTail<B> {
     fn validate(&self, device: DeviceId) -> Result<()> {
+        // A tail is not fresh work: it carries an accepted frontier from an
+        // earlier call. Preserve that provenance so callers cannot resume it
+        // on a lookalike queue or a rebuilt plan.
         if self.plan.id.device != device {
             return Err(Error::WrongDevice);
         }
@@ -451,6 +461,8 @@ impl<B: DeferredBackend> Device<B> {
 }
 impl<B: DeferredBackend> CommandEncoder<B> {
     pub fn finish(mut self) -> Result<RecordedWork<B>> {
+        // Finishing an incomplete pass or a poisoned encoder would turn a
+        // failed recording path into apparently reusable native work.
         if self.poisoned || self.in_pass {
             return Err(Error::InvalidState);
         }
@@ -482,17 +494,21 @@ impl<B: DeferredBackend> Queue<B> {
                 work: RetryableSubmit::Fresh(packet),
             };
         }
+        // SAFETY: packet validation above established this queue's device ownership.
         unsafe { B::submit(&self.device.native, packet) }
     }
     /// # Safety
     /// Caller has observed every checkpoint in the accepted frontier.
     pub unsafe fn resume(&self, tail: DeferredTail<B>) -> SubmitOutcome<B> {
+        // Revalidation guards Core-owned structural facts; the caller's unsafe
+        // obligation remains proving completion of the accepted frontier.
         if let Err(error) = tail.validate(self.device.id) {
             return SubmitOutcome::Rejected {
                 error,
                 work: RetryableSubmit::Tail(tail),
             };
         }
+        // SAFETY: tail validation above established the same device and accepted frontier.
         unsafe { B::resume(&self.device.native, tail) }
     }
 }

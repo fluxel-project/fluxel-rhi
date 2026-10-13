@@ -1,4 +1,8 @@
 //! Direct browser resource construction, based on the historical WebGPU lowering.
+//!
+//! Resource creation is synchronous browser descriptor construction. Native JS
+//! objects remain inside typed Core handles; cross-device validation happens in
+//! Core before descriptor relationships reach this module.
 
 use fluxel_rhi_core::api::{self, Error, Result, Support};
 use js_sys::{Array, Object};
@@ -435,17 +439,18 @@ impl api::ResourceBackend for WebGpu {
         desc: &api::BindGroupDesc<'_, WebGpu>,
     ) -> Result<JsValue> {
         let object = descriptor();
-        field(
-            &object,
-            "layout",
-            unsafe { desc.layout.native_ref() }.clone(),
-        )?;
+        // SAFETY: `Device::create_bind_group` checks `desc.layout.device` and
+        // every entry's device against this device before this SPI call.
+        let layout = unsafe { desc.layout.native_ref() }.clone();
+        field(&object, "layout", layout)?;
         let entries = Array::new();
         for entry in desc.entries {
             let native = descriptor();
             field(&native, "binding", JsValue::from_f64(entry.binding as f64))?;
             let resource = match &entry.resource {
                 api::BindingResource::Buffer { buffer, range } => {
+                    // SAFETY: `Device::create_bind_group` checked this buffer's
+                    // DeviceId; this borrow ends before any asynchronous work.
                     let native_buffer = unsafe { buffer.native_ref() };
                     if range.start >= range.end || range.end > native_buffer.size {
                         return Err(Error::InvalidRange);
@@ -460,8 +465,16 @@ impl api::ResourceBackend for WebGpu {
                     )?;
                     value
                 }
-                api::BindingResource::TextureView(view) => unsafe { view.native_ref() }.raw.clone(),
-                api::BindingResource::Sampler(sampler) => unsafe { sampler.native_ref() }.clone(),
+                api::BindingResource::TextureView(view) => {
+                    // SAFETY: `Device::create_bind_group` checked this view's
+                    // DeviceId before entering the backend SPI.
+                    unsafe { view.native_ref() }.raw.clone()
+                }
+                api::BindingResource::Sampler(sampler) => {
+                    // SAFETY: `Device::create_bind_group` checked this sampler's
+                    // DeviceId before entering the backend SPI.
+                    unsafe { sampler.native_ref() }.clone()
+                }
                 _ => return Err(Error::Unsupported("WebGPU binding resource")),
             };
             field(&native, "resource", resource)?;
@@ -484,6 +497,8 @@ impl api::ResourceBackend for WebGpu {
         let object = descriptor();
         let layouts = Array::new();
         for layout in desc.groups {
+            // SAFETY: `Device::create_pipeline_layout` checked each group's
+            // DeviceId against this device before the backend SPI call.
             layouts.push(unsafe { layout.native_ref() });
         }
         field(&object, "bindGroupLayouts", layouts.into())?;

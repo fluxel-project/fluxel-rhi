@@ -1,3 +1,4 @@
+// WebGPU sequential-stereo display pass sampling the two eye layers.
 @group(0) @binding(0) var views: texture_2d_array<f32>;
 @group(0) @binding(1) var view_sampler: sampler;
 

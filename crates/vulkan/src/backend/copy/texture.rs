@@ -9,6 +9,8 @@ pub(crate) fn copy_texture(
     src: api::TextureRegion<'_, super::super::Vulkan>,
     dst: api::TextureRegion<'_, super::super::Vulkan>,
 ) -> Result<()> {
+    // SAFETY: the Core command contract has checked device identity. These
+    // borrowed native handles remain retained by the encoder through submit.
     let source = unsafe { src.texture.native_ref() };
     let target = unsafe { dst.texture.native_ref() };
     validate_image_region(source, &src)?;
@@ -54,6 +56,8 @@ pub(crate) fn copy_texture(
             height: src.extent[1],
             depth: 1,
         });
+    // SAFETY: region validation bounds every subresource and extent; Core has
+    // selected the transfer layouts before this direct command is recorded.
     unsafe {
         encoder.device.device.cmd_copy_image(
             encoder.command,
@@ -74,6 +78,8 @@ pub(crate) fn buffer_to_texture(
     layout: api::TexelCopyBufferLayout,
     dst: api::TextureRegion<'_, super::super::Vulkan>,
 ) -> Result<()> {
+    // SAFETY: Core has checked the texture belongs to this command device; the
+    // encoder retains it after recording.
     let target = unsafe { dst.texture.native_ref() };
     validate_image_region(target, &dst)?;
     if !src.0.usage.contains(api::BufferUsage::COPY_SRC)
@@ -125,6 +131,8 @@ pub(crate) fn buffer_to_texture(
             height: dst.extent[1],
             depth: 1,
         });
+    // SAFETY: validation covers buffer range, texel layout, and image region.
+    // The caller supplies the required CopyDst layout through Core transitions.
     unsafe {
         encoder.device.device.cmd_copy_buffer_to_image(
             encoder.command,
@@ -184,6 +192,8 @@ pub(crate) fn write_texture(
     layout: api::TexelCopyBufferLayout,
     bytes: &[u8],
 ) -> Result<()> {
+    // SAFETY: Core checked identity and this encoder retains the image until
+    // submission completion.
     let texture = unsafe { region.texture.native_ref() };
     validate_rgba_upload(texture, &region, layout, bytes.len())?;
     let upload = resource::create_buffer(
@@ -195,6 +205,8 @@ pub(crate) fn write_texture(
             memory: api::MemoryClass::Upload,
         },
     )?;
+    // SAFETY: `create_buffer` selected host-visible coherent upload memory and
+    // this exact, fresh allocation has no concurrent GPU use.
     let mapped = unsafe {
         encoder.device.device.map_memory(
             upload.0.memory,
@@ -204,6 +216,8 @@ pub(crate) fn write_texture(
         )
     }
     .map_err(vk_error)?;
+    // SAFETY: the mapping covers `bytes.len()` bytes at offset zero. The copy
+    // completes and memory is unmapped before any submitted GPU command uses it.
     unsafe {
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.cast(), bytes.len());
         encoder.device.device.unmap_memory(upload.0.memory);
@@ -228,6 +242,8 @@ pub(crate) fn write_texture(
         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .image(image)
         .subresource_range(range);
+    // SAFETY: validation proves a full color subresource upload. This owned
+    // command buffer retains upload and image handles through fence retirement.
     unsafe {
         encoder.device.device.cmd_pipeline_barrier(
             encoder.command,
@@ -296,8 +312,12 @@ pub(crate) fn texture_to_buffer(
     destination: &VulkanBuffer,
     layout: api::TexelCopyBufferLayout,
 ) -> Result<()> {
+    // SAFETY: Core checked identity; command submission retains both the image
+    // and destination buffer through the completion point.
     let texture = unsafe { source.texture.native_ref() };
     validate_rgba_readback(texture, &source, destination, layout)?;
+    // SAFETY: validated regions and layouts match the transfer command; the
+    // source's CopySrc state is an explicit Core prerequisite.
     unsafe {
         encoder.device.device.cmd_copy_image_to_buffer(
             encoder.command,
@@ -335,6 +355,8 @@ pub(crate) fn texture_to_buffer(
         .buffer(destination.0.buffer)
         .offset(layout.offset)
         .size(vk::WHOLE_SIZE);
+    // SAFETY: this barrier belongs to the same recording command buffer and
+    // makes its preceding transfer visible to host reads after completion.
     unsafe {
         encoder.device.device.cmd_pipeline_barrier(
             encoder.command,
@@ -363,10 +385,14 @@ pub(crate) fn blit(
     dst: api::TextureRegion<'_, super::super::Vulkan>,
     filter: api::FilterMode,
 ) -> Result<()> {
+    // SAFETY: Core checked both borrowed textures against this device, and the
+    // encoder retains their native handles until the submission retires.
     let source = unsafe { src.texture.native_ref() };
     let target = unsafe { dst.texture.native_ref() };
     validate_rgba_blit(source, &src, target, &dst, filter)?;
 
+    // SAFETY: DeviceState retains the Vulkan instance and selected physical
+    // device for this query; it passes no application-owned pointers.
     let properties = unsafe {
         encoder
             .device
@@ -403,6 +429,8 @@ pub(crate) fn blit(
         .src_offsets([vk::Offset3D::default(), end(&src)])
         .dst_subresource(layers(&dst))
         .dst_offsets([vk::Offset3D::default(), end(&dst)]);
+    // SAFETY: validation proves non-overlapping compatible full subresources;
+    // explicit Core transitions established the two transfer layouts.
     unsafe {
         encoder.device.device.cmd_blit_image(
             encoder.command,

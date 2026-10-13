@@ -1,3 +1,9 @@
+//! Opt-in Windows Vulkan hardware regressions for submission and transfer paths.
+//!
+//! These tests use Core unsafe constructors only after building work whose
+//! resource and lane identities all originate from the same tested device.
+//! They intentionally exercise a real driver when explicitly enabled; normal
+//! crate tests do not gain a hardware requirement or claim visual conformance.
 #![cfg(all(windows, feature = "hardware-tests"))]
 
 use std::{
@@ -130,6 +136,8 @@ fn submit(
             waits: vec![],
         })
         .collect::<Vec<_>>();
+    // SAFETY: each description targets this device's sole lane and later
+    // payload construction binds exactly one Commands payload to every step.
     let plan = unsafe { SubmissionPlan::from_compiled(id, Arc::from(descriptions)) };
     let completion = if steps {
         CompletionRequest::Steps(Arc::from(
@@ -148,6 +156,8 @@ fn submit(
             payload: StepPayload::Commands(vec![work]),
         })
         .collect();
+    // SAFETY: `plan` and every bound step use this device identity, matching
+    // lane and the exact compiled step index constructed immediately above.
     match unsafe {
         device.queue().submit(SubmitPacket {
             plan,
@@ -206,6 +216,8 @@ fn abandoned_recording_and_reverse_submission_keep_upload_correct() {
     drop(device.wait_completion(&receipt.checkpoints[0].point));
     let final_point = &receipt.checkpoints[2].point;
     block_on(device.wait_completion(final_point)).unwrap();
+    // SAFETY: the final checkpoint is awaited before mapping this ticket, and
+    // both ticket and completion point were produced by this device.
     let data = block_on(unsafe { device.read_after(ticket, final_point) }).unwrap();
     assert_eq!(data.bytes, red);
 }
@@ -342,6 +354,8 @@ fn explicit_buffer_and_texture_copies_round_trip() {
     let receipt = submit(&device, vec![work], false);
     let point = &receipt.checkpoints[0].point;
     block_on(device.wait_completion(point)).unwrap();
+    // SAFETY: the receipt's checkpoint was awaited and belongs to the same
+    // device that created this readback ticket.
     let data = block_on(unsafe { device.read_after(ticket, point) }).unwrap();
     assert_eq!(data.bytes, expected);
 }
@@ -356,6 +370,8 @@ fn many_offscreen_submissions_without_host_checkpoints_complete() {
             device: device.id(),
             ordinal,
         };
+        // SAFETY: this one-step plan names only the sole lane of `device`; the
+        // following packet supplies its one Commands payload at step zero.
         let plan = unsafe {
             SubmissionPlan::from_compiled(
                 id,
@@ -370,6 +386,8 @@ fn many_offscreen_submissions_without_host_checkpoints_complete() {
             step: plan.step(0),
             payload: StepPayload::Commands(vec![work]),
         }];
+        // SAFETY: the work, plan and bound step share this device and lane;
+        // CompletionRequest::None does not invent an unbound checkpoint.
         let outcome = unsafe {
             device.queue().submit(SubmitPacket {
                 plan,

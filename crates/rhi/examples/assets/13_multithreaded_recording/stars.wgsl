@@ -1,3 +1,4 @@
+// WebGPU sequential fallback's procedural star pass for example 13.
 struct StarTransform { mvp: mat4x4<f32> };
 @group(0) @binding(0) var<uniform> transform: StarTransform;
 

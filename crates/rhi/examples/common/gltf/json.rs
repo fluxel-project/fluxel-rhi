@@ -1,3 +1,8 @@
+//! Small checked JSON access helpers for embedded glTF documents.
+//!
+//! Keeping structural validation here lets decoding modules report consistent
+//! document errors without owning glTF resource interpretation.
+
 use super::*;
 
 pub(super) fn array<'a>(value: &'a Value, name: &str) -> Result<&'a Vec<Value>, GltfError> {

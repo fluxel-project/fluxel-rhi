@@ -1,6 +1,7 @@
 # ADR-0003: Keep execution lowering serial until evidence justifies more
 
-**Status:** Accepted
+**Status:** Historical baseline. The current execution contract is in
+[`design-rhi.md`](../design-rhi.md) and `crates/core/src/api/submission.rs`.
 
 ## Context
 
@@ -9,7 +10,7 @@ multiple queues, parallel recording jobs, command caching, or aliasing.
 
 ## Decision
 
-The current native lowering uses one logical queue, serial recording, and one
+The original native lowering used one logical queue, serial recording, and one
 submission per frame. A shared queue-operation lock covers submit and
 error-path idle waits. Same-state write dependencies remain semantic facts even
 when a backend needs no state transition.

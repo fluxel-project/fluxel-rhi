@@ -1,4 +1,8 @@
 //! Vulkan descriptor-set layouts, pools, and bind groups.
+//!
+//! A bind group owns the descriptor pool that allocated its sole set and retains
+//! every referenced resource. Encoders retain the bind group through GPU
+//! completion, so destroying the pool cannot invalidate an in-flight set.
 
 use super::super::{
     DeviceState, VulkanBuffer, VulkanDevice, VulkanSampler, VulkanTextureView, vk_error,
@@ -72,6 +76,8 @@ enum Retained {
 }
 impl Drop for Group {
     fn drop(&mut self) {
+        // SAFETY: Group owns the descriptor pool and retains its set/layout
+        // inputs; submitted encoders retain the Group through fence retirement.
         unsafe { self.device.device.destroy_descriptor_pool(self.pool, None) }
     }
 }
@@ -82,6 +88,8 @@ pub(crate) struct GroupLayout {
 }
 impl Drop for GroupLayout {
     fn drop(&mut self) {
+        // SAFETY: Group keeps its layout alive, so this final Arc can destroy
+        // the native layout while its retained DeviceState is still valid.
         unsafe {
             self.device
                 .device
@@ -156,6 +164,9 @@ pub(crate) fn create_group_layout(
     let info = vk::DescriptorSetLayoutCreateInfo::default()
         .bindings(&bindings)
         .push_next(&mut flags);
+    // SAFETY: `bindings` and the matching flag array stay alive for the call;
+    // DeviceState owns a live logical device and the descriptor data was
+    // validated above before constructing Vulkan create-info structures.
     let layout =
         unsafe { device.0.device.create_descriptor_set_layout(&info, None) }.map_err(vk_error)?;
     Ok(VulkanBindGroupLayout(Arc::new(GroupLayout {
@@ -168,6 +179,8 @@ pub(crate) fn create_group(
     device: &VulkanDevice,
     desc: &api::BindGroupDesc<'_, super::super::Vulkan>,
 ) -> Result<VulkanBindGroup> {
+    // SAFETY: `Device::create_bind_group` checked the layout and every resource
+    // DeviceId before this backend entry point; this borrow is used only here.
     let layout = unsafe { desc.layout.native_ref() };
     let entries = &layout.0.entries;
     let mut sizes = Vec::new();
@@ -198,6 +211,11 @@ pub(crate) fn create_group(
             });
         }
     }
+    // Each bind group owns a small pool for its one set. This keeps allocation
+    // lifetime identical to the group and avoids a backend-wide descriptor-set
+    // allocator whose retirement policy would duplicate Renderer ownership.
+    // SAFETY: pool sizes are derived from the validated layout and one set is
+    // requested. DeviceState keeps the logical device alive for the result.
     let pool = unsafe {
         device.0.device.create_descriptor_pool(
             &vk::DescriptorPoolCreateInfo::default()
@@ -217,9 +235,13 @@ pub(crate) fn create_group(
     if !variable_counts.is_empty() {
         allocate = allocate.push_next(&mut variable_allocate);
     }
+    // SAFETY: `pool`, `layouts`, and optional variable count info all remain
+    // live for allocation, and the descriptor-count chain matches this layout.
     let set = match unsafe { device.0.device.allocate_descriptor_sets(&allocate) } {
         Ok(v) => v[0],
         Err(e) => {
+            // SAFETY: allocation failed before a Group took ownership, so this
+            // function is the unique owner of `pool` and the device is live.
             unsafe { device.0.device.destroy_descriptor_pool(pool, None) };
             return Err(vk_error(e));
         }
@@ -248,6 +270,8 @@ pub(crate) fn create_group(
                     min_size,
                 },
             ) => {
+                // SAFETY: Core checked the buffer DeviceId before calling this
+                // backend; the Group clones it before returning or submission.
                 let b = unsafe { buffer.native_ref() };
                 if !b.0.usage.contains(api::BufferUsage::UNIFORM)
                     || range.start >= range.end
@@ -256,6 +280,8 @@ pub(crate) fn create_group(
                 {
                     return Err(Error::InvalidRange);
                 }
+                // SAFETY: DeviceState retains the VkInstance that owns this
+                // physical device, which remains valid for this property query.
                 let alignment = u64::from(
                     unsafe {
                         device
@@ -294,6 +320,8 @@ pub(crate) fn create_group(
                     .dst_binding(entry.binding)
                     .descriptor_type(dtype(ty)?)
                     .buffer_info(std::slice::from_ref(&info));
+                // SAFETY: this newly allocated set is private to `group`; the
+                // write references local info valid for the call and a live buffer.
                 unsafe {
                     device
                         .0
@@ -319,6 +347,8 @@ pub(crate) fn create_group(
                     ..
                 },
             ) => {
+                // SAFETY: Core checked the view DeviceId before this backend
+                // call; `group` retains the cloned view after this write.
                 let native = unsafe { view.native_ref() };
                 if !native.usage().contains(api::TextureUsage::TEXTURE_BINDING)
                     || native.dimension() != *dimension
@@ -334,6 +364,8 @@ pub(crate) fn create_group(
                     .dst_binding(entry.binding)
                     .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                     .image_info(std::slice::from_ref(&info));
+                // SAFETY: this private descriptor set and its local image info
+                // remain valid for the synchronous update call.
                 unsafe {
                     device
                         .0
@@ -358,6 +390,8 @@ pub(crate) fn create_group(
                     else {
                         return Err(Error::InvalidState);
                     };
+                    // SAFETY: Core validated every array element's DeviceId;
+                    // `group` retains each view before this function returns.
                     let native = unsafe { view.native_ref() };
                     if !native.usage().contains(api::TextureUsage::TEXTURE_BINDING)
                         || native.dimension() != *dimension
@@ -377,6 +411,8 @@ pub(crate) fn create_group(
                     .dst_binding(entry.binding)
                     .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                     .image_info(&infos);
+                // SAFETY: `infos` and the private descriptor set remain valid
+                // throughout this synchronous descriptor update.
                 unsafe {
                     device
                         .0
@@ -395,6 +431,8 @@ pub(crate) fn create_group(
                 if !matches!(access, api::StorageAccess::Write) {
                     return Err(Error::Unsupported("Vulkan storage texture access"));
                 }
+                // SAFETY: Core checked the view DeviceId; the Group retains the
+                // cloned view, keeping its native image view alive for the set.
                 let native = unsafe { view.native_ref() };
                 if !native.usage().contains(api::TextureUsage::STORAGE_BINDING)
                     || native.format() != *format
@@ -411,6 +449,8 @@ pub(crate) fn create_group(
                     .dst_binding(entry.binding)
                     .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                     .image_info(std::slice::from_ref(&info));
+                // SAFETY: the set is private until Group construction finishes;
+                // the descriptor image info is valid for this synchronous call.
                 unsafe {
                     device
                         .0
@@ -420,22 +460,24 @@ pub(crate) fn create_group(
                 group._retained.push(Retained::View(native.clone()));
             }
             (api::BindingResource::Sampler(sampler), api::BindingType::Sampler { .. }) => {
-                let info = vk::DescriptorImageInfo::default()
-                    .sampler(unsafe { sampler.native_ref() }.native());
+                // SAFETY: Core checked the sampler DeviceId before this call;
+                // Group clones it immediately after updating the private set.
+                let native = unsafe { sampler.native_ref() };
+                let info = vk::DescriptorImageInfo::default().sampler(native.native());
                 let write = vk::WriteDescriptorSet::default()
                     .dst_set(set)
                     .dst_binding(entry.binding)
                     .descriptor_type(vk::DescriptorType::SAMPLER)
                     .image_info(std::slice::from_ref(&info));
+                // SAFETY: the private set and stack descriptor info remain valid
+                // for this synchronous update on the live logical device.
                 unsafe {
                     device
                         .0
                         .device
                         .update_descriptor_sets(std::slice::from_ref(&write), &[])
                 };
-                group
-                    ._retained
-                    .push(Retained::Sampler(unsafe { sampler.native_ref() }.clone()));
+                group._retained.push(Retained::Sampler(native.clone()));
             }
             _ => return Err(Error::Unsupported("Vulkan descriptor resource")),
         }

@@ -1,4 +1,8 @@
 //! One-shot native command buffers and browser queue completion.
+//!
+//! Finished command buffers are submitted once. Their JS objects stay alive in
+//! `in_flight` until `onSubmittedWorkDone` settles; loss and validation failure
+//! settle the same completion path, so a caller never observes a fake success.
 
 use std::{
     cell::RefCell,
@@ -188,6 +192,9 @@ impl api::DeferredBackend for WebGpu {
         })
     }
 
+    // SAFETY: Core has validated all packet handles, lanes, and lifetime
+    // ownership. This implementation consumes each recorded command buffer once
+    // and retains every JS resource through the returned queue completion.
     unsafe fn submit(
         device: &WebGpuDevice,
         packet: api::SubmitPacket<Self>,
@@ -232,6 +239,8 @@ impl api::DeferredBackend for WebGpu {
         for bound in &mut steps {
             if let api::StepPayload::Commands(work) = &mut bound.payload {
                 for work in std::mem::take(work) {
+                    // SAFETY: the packet was validated for this device/lane and
+                    // `work` is consumed exactly once by this submit call.
                     let native = unsafe { work.into_native() };
                     commands.push(&native.command_buffer);
                     resources.push(native.command_buffer);
@@ -243,6 +252,8 @@ impl api::DeferredBackend for WebGpu {
             device.0.uncertain_resources.borrow_mut().extend(resources);
             return api::SubmitOutcome::Indeterminate {
                 error: Error::Backend(js::message(&error)),
+                // SAFETY: queue submission was entered; the retained resource
+                // set marks this device's native issue boundary as uncertain.
                 uncertain: unsafe { api::NativeUncertainty::from_native(device.0.id, ()) },
             };
         }
@@ -252,6 +263,8 @@ impl api::DeferredBackend for WebGpu {
                 device.0.uncertain_resources.borrow_mut().extend(resources);
                 return api::SubmitOutcome::Indeterminate {
                     error,
+                    // SAFETY: queue submission succeeded but completion fence
+                    // creation failed, leaving this device's issue boundary uncertain.
                     uncertain: unsafe { api::NativeUncertainty::from_native(device.0.id, ()) },
                 };
             }
@@ -265,9 +278,13 @@ impl api::DeferredBackend for WebGpu {
         for mut bound in steps {
             accepted.push(bound.step);
             if let api::StepPayload::Present(binding) = &mut bound.payload {
+                // SAFETY: packet validation proved this is the live exclusive
+                // lease; after queue submission, failed handoff is indeterminate.
                 if let Err(error) = unsafe { binding.try_handoff() } {
                     return api::SubmitOutcome::Indeterminate {
                         error,
+                        // SAFETY: GPU commands were already accepted, so this
+                        // device owns the indeterminate presentation boundary.
                         uncertain: unsafe { api::NativeUncertainty::from_native(device.0.id, ()) },
                     };
                 }
@@ -281,6 +298,8 @@ impl api::DeferredBackend for WebGpu {
         let checkpoints = match (&completion, last) {
             (api::CompletionRequest::None, _) | (_, None) => Vec::new(),
             (_, Some(frontier)) => vec![api::Checkpoint {
+                // SAFETY: `point` was created from this device's queue after
+                // accepted submission and therefore belongs to `device.0.id`.
                 point: unsafe { api::CompletionPoint::from_native(device.0.id, point) },
                 covers: api::CompletionCoverage {
                     lane_frontiers: vec![(plan.steps()[frontier.index as usize].lane, frontier)],
@@ -301,6 +320,8 @@ impl api::DeferredBackend for WebGpu {
         })
     }
 
+    // SAFETY: Core only calls resume after the accepted frontier completed.
+    // WebGPU has no partial-tail route, so this preserves the tail for retry.
     unsafe fn resume(
         _device: &WebGpuDevice,
         tail: api::DeferredTail<Self>,

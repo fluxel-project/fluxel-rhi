@@ -1,4 +1,9 @@
 //! Canvas configuration and exclusive browser image leases.
+//!
+//! A surface is bound to one browser `GPUDevice` and owner thread. Configuration
+//! increments its generation; at most one current texture lease exists. Dropping
+//! an unhanded lease marks the canvas abandoned so a later configuration first
+//! retires the browser current texture instead of reusing it.
 
 use std::{
     cell::RefCell,
@@ -47,6 +52,8 @@ impl WebGpu {
             .get_context("webgpu")
             .map_err(|error| Error::Backend(js::message(&error)))?
             .ok_or(Error::Unsupported("GPUCanvasContext"))?;
+        // SAFETY: `device` is this backend's typed Core handle. The returned
+        // native clone stays in surface state, confined to the browser owner.
         let native = WebGpuSurface(Rc::new(RefCell::new(SurfaceState {
             device: unsafe { device.native_ref() }.clone(),
             canvas,
@@ -56,10 +63,14 @@ impl WebGpu {
             acquired: false,
             abandoned: false,
         })));
+        // SAFETY: this freshly created native surface is associated exactly
+        // once with `device.id()` and has no outstanding image lease.
         Ok(unsafe { api::Surface::from_native(device.id(), api::SurfaceId::allocate()?, native) })
     }
 }
 
+// SAFETY: `try_handoff` only succeeds for the matching live generation and
+// clears the sole acquired flag. Drop clears an unhanded lease exactly once.
 unsafe impl api::NativeImageLease for WebGpuImageLease {
     fn try_handoff(&mut self, generation: u64) -> Result<()> {
         if !self.is_current(generation) {

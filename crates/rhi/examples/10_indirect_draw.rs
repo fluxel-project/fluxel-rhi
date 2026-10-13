@@ -1,6 +1,8 @@
-// The native indexed-indirect plant scene.
-// Scene resources, KTX parsing, pipelines, and frame recording live in the
-// sibling modules so this entry point only owns platform startup.
+//! Native indexed-indirect plant scene.
+//!
+//! Scene resources, KTX parsing, pipelines, and frame recording live in the
+//! sibling modules, leaving this entry point responsible only for platform
+//! startup and not for renderer scheduling or resource retirement.
 mod common;
 #[path = "common/gltf.rs"]
 mod gltf;

@@ -138,21 +138,19 @@ fn raster_descriptor(desc: &api::RasterPipelineDesc<WebGpu>) -> Result<JsValue> 
         return Err(Error::Unsupported("WebGPU pipeline constants"));
     }
     let native = object();
-    field(
-        &native,
-        "layout",
-        unsafe { desc.layout.native_ref() }.clone(),
-    )?;
+    // SAFETY: `Device::raster_pipeline` validates the layout, shader, and cache
+    // DeviceIds against its device before it calls this backend future.
+    let layout = unsafe { desc.layout.native_ref() }.clone();
+    field(&native, "layout", layout)?;
     if let Some(label) = &desc.label {
         field(&native, "label", JsValue::from_str(label))?;
     }
 
     let vertex = object();
-    field(
-        &vertex,
-        "module",
-        unsafe { desc.vertex.module.native_ref() }.clone(),
-    )?;
+    // SAFETY: `Device::raster_pipeline` validated the vertex shader DeviceId;
+    // the cloned JS module is held by the browser descriptor for this call.
+    let vertex_module = unsafe { desc.vertex.module.native_ref() }.clone();
+    field(&vertex, "module", vertex_module)?;
     field(&vertex, "entryPoint", JsValue::from_str(&desc.vertex.entry))?;
     let buffers = Array::new();
     for buffer in &desc.vertex_buffers {
@@ -194,11 +192,10 @@ fn raster_descriptor(desc: &api::RasterPipelineDesc<WebGpu>) -> Result<JsValue> 
 
     if let Some(fragment) = &desc.fragment {
         let part = object();
-        field(
-            &part,
-            "module",
-            unsafe { fragment.module.native_ref() }.clone(),
-        )?;
+        // SAFETY: the same public pipeline validation checked this optional
+        // fragment shader against the device that owns this backend call.
+        let fragment_module = unsafe { fragment.module.native_ref() }.clone();
+        field(&part, "module", fragment_module)?;
         field(&part, "entryPoint", JsValue::from_str(&fragment.entry))?;
         let targets = Array::new();
         for target in &desc.color_targets {

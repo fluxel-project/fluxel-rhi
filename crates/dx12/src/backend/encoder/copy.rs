@@ -133,6 +133,8 @@ pub(crate) fn buffer(
     if same_resource(&src.resource, &dst.resource) {
         return Err(Error::Unsupported("DX12 same-resource buffer copy"));
     }
+    // SAFETY: ranges/usages were validated above, both buffers are retained
+    // below, and this encoder exclusively owns the open native list.
     unsafe {
         encoder
             .list
@@ -148,6 +150,8 @@ pub(crate) fn texture(
     src: api::TextureRegion<'_, crate::backend::Dx12>,
     dst: api::TextureRegion<'_, crate::backend::Dx12>,
 ) -> Result<()> {
+    // SAFETY: Core tied both regions to this device; cloning extends native
+    // texture lifetime through the recorded copy and submission fence.
     let source = unsafe { src.texture.native_ref() }.0.clone();
     let target = unsafe { dst.texture.native_ref() }.0.clone();
     if !source.desc.usage.contains(api::TextureUsage::COPY_SRC)
@@ -197,6 +201,8 @@ pub(crate) fn texture(
         false,
         target_subresource,
     );
+    // SAFETY: source/target subresources and box were validated above; copy
+    // locations own cloned COM references which are released after this call.
     unsafe {
         encoder.list.CopyTextureRegion(
             &to,
@@ -227,6 +233,8 @@ pub(crate) fn buffer_to_texture(
     layout: api::TexelCopyBufferLayout,
     dst: api::TextureRegion<'_, crate::backend::Dx12>,
 ) -> Result<()> {
+    // SAFETY: Core validated the destination region's device; clone retains
+    // its native resource until this command list retires.
     let target = unsafe { dst.texture.native_ref() }.0.clone();
     if src.memory == api::MemoryClass::Readback
         || !src.usage.contains(api::BufferUsage::COPY_SRC)
@@ -258,6 +266,8 @@ pub(crate) fn buffer_to_texture(
         false,
         subresource,
     );
+    // SAFETY: layout and region validation established copy bounds; both FFI
+    // locations own COM clones released immediately after synchronous encoding.
     unsafe {
         encoder
             .list

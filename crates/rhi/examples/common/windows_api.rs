@@ -41,6 +41,12 @@ pub fn selected_backend() -> Result<SelectedBackend> {
 
 trait WindowsBackend: SurfaceBackend + Sized + 'static {
     fn open() -> Result<Device<Self>>;
+    /// # Safety
+    ///
+    /// `window` and `display` must originate from a live host window and that
+    /// window must outlive the returned surface. `Application` stores the
+    /// surface only between matching host lifecycle events, which maintains
+    /// that handle lifetime.
     unsafe fn surface(
         device: &Device<Self>,
         window: RawWindowHandle,
@@ -53,11 +59,15 @@ impl WindowsBackend for Dx12 {
         block_on(Dx12Instance::new()?.open_default())
     }
 
+    // SAFETY: the trait contract keeps the host window alive for the returned
+    // surface; this implementation forwards the same borrowed Win32 handle.
     unsafe fn surface(
         device: &Device<Self>,
         window: RawWindowHandle,
         _: RawDisplayHandle,
     ) -> Result<Surface<Self>> {
+        // SAFETY: `Application::open` obtained this raw handle from the live
+        // host window and retains that window through the surface's lifetime.
         unsafe { Dx12::surface_from_raw_window_handle(device, window) }
     }
 }
@@ -68,11 +78,15 @@ impl WindowsBackend for fluxel_rhi::vulkan::Vulkan {
         block_on(fluxel_rhi::vulkan::VulkanInstance::new()?.open_default())
     }
 
+    // SAFETY: both raw handles belong to the live host window whose lifetime
+    // the caller extends through the surface and every acquired image lease.
     unsafe fn surface(
         device: &Device<Self>,
         window: RawWindowHandle,
         display: RawDisplayHandle,
     ) -> Result<Surface<Self>> {
+        // SAFETY: both handles came from the same live host window;
+        // `Application` drops the surface before that host is destroyed.
         unsafe { Self::surface_from_raw_window_handle(device, window, display) }
     }
 }
@@ -110,6 +124,8 @@ impl<B: WindowsBackend> Application<B> {
             .map_err(|error| Error::Backend(error.to_string()))?
             .as_raw();
         let device = B::open()?;
+        // SAFETY: the host owns `window` for this lifecycle and drops the
+        // surface on `SurfaceDestroyed` before that ownership ends.
         let mut surface = unsafe { B::surface(&device, handle, display)? };
         block_on(surface.configure(&self.config))?;
         self.device = Some(device);

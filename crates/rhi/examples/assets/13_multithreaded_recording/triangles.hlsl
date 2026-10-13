@@ -1,3 +1,4 @@
+// Legacy triangle stage retained as a fixture; the UFO workload uses ufo.hlsl.
 struct VertexInput { float3 position : LOCATION0; float3 color : LOCATION1; };
 struct VertexOutput { float4 position : SV_POSITION; float3 color : COLOR0; };
 VertexOutput vs_main(VertexInput input) {

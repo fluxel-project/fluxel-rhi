@@ -1,3 +1,8 @@
+//! Accessor decoding for the constrained embedded glTF loader.
+//!
+//! This module validates byte ranges and converts supported accessors to the
+//! loader's vertex representation; it does not define scene traversal.
+
 use super::*;
 
 pub(super) struct Attribute {

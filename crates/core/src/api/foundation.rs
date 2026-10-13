@@ -1,4 +1,8 @@
-//! Statically typed RHI contract component.
+//! Backend identity, device ownership, capabilities, and common errors.
+//!
+//! `DeviceId` is the invariant joining every public resource and submission to
+//! one backend-native device. Renderer policy, graph scheduling, and resource
+//! retirement remain outside this layer.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -186,6 +190,7 @@ impl<B: InstanceBackend> Instance<B> {
         }
         let id = DeviceId::allocate()?;
         let (native, caps) = B::open(&self.native, id, &request).await?;
+        // SAFETY: `open` returned the native device and capabilities for allocated `id`.
         Ok(unsafe { Device::from_native(id, native, caps) })
     }
 }
@@ -259,6 +264,9 @@ impl<B: Backend> Device<B> {
         native: B::NativeDevice,
         caps: DeviceCapabilities,
     ) -> Self {
+        // Capability bits are observable API facts. Checking their static
+        // lowering domain here prevents a backend from publishing an optional
+        // route which can only fail after renderer work has been recorded.
         assert!(
             !caps.compute || B::Compute::AVAILABLE,
             "compute capability without implementation"
@@ -299,6 +307,9 @@ impl<B: Backend> Device<B> {
         &self.caps.lanes
     }
     pub fn wait_route(&self, from: LaneId, to: LaneId) -> WaitRoute {
+        // A lane ordinal has meaning only within its device. Rejecting foreign
+        // IDs here keeps later submission validation from treating coincident
+        // numeric ordinals as an interoperable synchronization route.
         if from.device != self.id || to.device != self.id {
             return WaitRoute::Unsupported;
         }

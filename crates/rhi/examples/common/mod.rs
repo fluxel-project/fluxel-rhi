@@ -230,8 +230,9 @@ fn issue_submit_and_present<B: DeferredBackend>(
             accesses: AccessMask::ALL,
         },
     };
-    // Both steps target the same ordered graphics lane. The present dependency
-    // is explicitly represented; the backend resolves it by native queue order.
+    // SAFETY: both steps target the same ordered graphics lane. The present
+    // dependency names this plan's command step, making the compiled order
+    // realizable by native queue order without backend DAG reconstruction.
     let plan = unsafe {
         SubmissionPlan::from_compiled(
             id,
@@ -259,8 +260,9 @@ fn issue_submit_and_present<B: DeferredBackend>(
             payload: StepPayload::Present(PresentBinding::new(image)),
         },
     ];
-    // The host retains all demo resources and this surface until the requested
-    // completion is observed. That fulfills the native submission lifetime rule.
+    // SAFETY: the host retains resources referenced by `work` and the image
+    // lease until the end checkpoint completes. Both bound steps belong to
+    // this plan and device, fulfilling the native submission contract.
     Ok(unsafe {
         device.queue().submit(SubmitPacket {
             plan,

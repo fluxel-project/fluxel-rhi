@@ -1,3 +1,4 @@
+// Legacy one-pass grayscale kernel retained as an asset reference for example 06.
 RWTexture2D<float4> src : register(u0);
 RWTexture2D<float4> dst : register(u1);
 

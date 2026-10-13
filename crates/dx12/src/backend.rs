@@ -1,6 +1,12 @@
-//! The initial, statically typed DX12 entry points.
+//! Statically typed DX12 instance, device, resource, and native-boundary entry points.
 //!
-//! Its native associated types remain concrete through the public API.
+//! Its native associated types remain concrete through the public API. This
+//! module creates the device-wide D3D12 objects and delegates each resource or
+//! command domain to a focused child module. `Dx12DeviceState` owns the direct
+//! queue, fence, descriptor stores and native-object caches; recorded work
+//! retains every command-list dependency until fence retirement in
+//! `encoder::submit`. It does not perform render-graph scheduling, hazard
+//! planning, or CPU command replay.
 
 use std::{
     collections::HashMap,
@@ -54,6 +60,8 @@ impl Dx12 {
         device: &api::Device<Self>,
         handle: raw_window_handle::RawWindowHandle,
     ) -> Result<api::Surface<Self>> {
+        // SAFETY: this public method carries the host-window lifetime contract
+        // required by the narrower DXGI construction helper.
         unsafe { surface::create_surface(device, handle) }
     }
 }
@@ -66,9 +74,13 @@ struct Dx12DeviceState {
     pub(super) fence: ID3D12Fence,
     pub(super) next_fence: AtomicU64,
     pub(super) queue_lock: Mutex<()>,
+    /// Work remains here until the corresponding native fence proves GPU
+    /// completion. A `u64::MAX` value is quarantined indeterminate work.
     pub(super) in_flight: Mutex<Vec<(u64, Vec<encoder::Dx12RecordedWork>)>>,
     pub(super) direct_commands: Arc<encoder::DirectCommandPool>,
     pub(super) mip_blit_cache: Arc<encoder::MipBlitCache>,
+    /// Dropped futures cannot unregister SetEventOnCompletion, so their HANDLE
+    /// ownership stays here until the associated fence has passed it.
     pub(super) abandoned_fence_events: Mutex<Vec<encoder::fence_wait::AbandonedFenceEvent>>,
     /// Native ExecuteIndirect signatures are immutable and device-owned.
     /// Sharing this cache through each buffer avoids per-recording creation
@@ -90,6 +102,8 @@ unsafe extern "system" fn debug_message(
     let text = if description.is_null() {
         "<no message>".into()
     } else {
+        // SAFETY: D3D12 invokes this callback with a valid NUL-terminated
+        // diagnostic string for the duration of this synchronous callback.
         unsafe { CStr::from_ptr(description.as_ptr().cast()) }
             .to_string_lossy()
             .into_owned()
@@ -107,6 +121,8 @@ impl Dx12Instance {
     /// Opens the process-local DXGI factory. No adapter or GPU device is
     /// created until `Instance::<Dx12>::open` is called.
     pub fn new() -> Result<Self> {
+        // SAFETY: factory creation has no borrowed inputs and returns an owned
+        // COM interface on success.
         let factory = unsafe { CreateDXGIFactory2::<IDXGIFactory1>(DXGI_CREATE_FACTORY_FLAGS(0)) }
             .map_err(native_error)?;
         Ok(Self { factory })
@@ -114,6 +130,8 @@ impl Dx12Instance {
 
     /// Creates an instance with a fresh identity.
     pub fn instance(&self) -> Result<api::Instance<Dx12>> {
+        // SAFETY: the fresh identity is unique and this clone retains the
+        // DXGI factory for every instance operation.
         Ok(unsafe { api::Instance::from_native(InstanceId::allocate()?, self.clone()) })
     }
 
@@ -211,7 +229,11 @@ impl InstanceBackend for Dx12 {
     type NativeInstance = Dx12Instance;
     type OpenFuture<'a> = Ready<Result<(Dx12Device, DeviceCapabilities)>>;
     fn enumerate(instance: &Dx12Instance, scope: InstanceId) -> Result<Vec<AdapterInfo>> {
+        // SAFETY: the instance owns the factory; ordinal zero is the only
+        // adapter this backend advertises and the returned COM object is owned.
         let adapter = unsafe { instance.factory.EnumAdapters1(0) }.map_err(native_error)?;
+        // SAFETY: `adapter` is a live COM interface and GetDesc1 only writes
+        // an initialized value returned by the Windows binding.
         let desc = unsafe { adapter.GetDesc1() }.map_err(native_error)?;
         let end = desc
             .Description
@@ -241,15 +263,22 @@ impl InstanceBackend for Dx12 {
             let diagnostics = std::env::var_os("FLUXEL_DX12_DEBUG").is_some();
             if diagnostics {
                 let mut debug: Option<ID3D12Debug> = None;
+                // SAFETY: `debug` is a valid local output slot for this COM query.
                 unsafe { D3D12GetDebugInterface(&mut debug) }.map_err(native_error)?;
+                // SAFETY: the returned interface remains owned by `debug` for
+                // this call and EnableDebugLayer has no borrowed Rust inputs.
                 unsafe {
                     debug
                         .ok_or_else(|| Error::Backend("D3D12 debug interface unavailable".into()))?
                         .EnableDebugLayer();
                 }
             }
+            // SAFETY: factory ownership and the advertised ordinal match
+            // enumerate above; the returned adapter COM reference is retained locally.
             let adapter = unsafe { instance.factory.EnumAdapters1(0) }.map_err(native_error)?;
             let mut native: Option<ID3D12Device> = None;
+            // SAFETY: adapter is live and `native` is the output slot for the
+            // newly created device interface.
             unsafe { D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut native) }
                 .map_err(native_error)?;
             let native = native
@@ -258,6 +287,8 @@ impl InstanceBackend for Dx12 {
                 windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_SHADER_MODEL {
                     HighestShaderModel: windows::Win32::Graphics::Direct3D12::D3D_SHADER_MODEL_6_0,
                 };
+            // SAFETY: the feature struct is the exact size/type requested and
+            // stays valid for D3D12's synchronous feature query.
             let descriptor_indexing = unsafe {
                 native.CheckFeatureSupport(
                     windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_SHADER_MODEL,
@@ -270,6 +301,8 @@ impl InstanceBackend for Dx12 {
                     >= windows::Win32::Graphics::Direct3D12::D3D_SHADER_MODEL_6_0.0;
             let mut options3 =
                 windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS3::default();
+            // SAFETY: as above, this query receives the exact initialized
+            // feature structure and does not retain its pointer.
             let multiview = unsafe {
                 native.CheckFeatureSupport(
                     windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_D3D12_OPTIONS3,
@@ -289,8 +322,12 @@ impl InstanceBackend for Dx12 {
                 Flags: D3D12_COMMAND_QUEUE_FLAG_NONE,
                 NodeMask: 0,
             };
+            // SAFETY: queue descriptor is fully initialized and native owns
+            // the returned queue COM interface.
             let queue = unsafe { native.CreateCommandQueue::<ID3D12CommandQueue>(&queue_desc) }
                 .map_err(native_error)?;
+            // SAFETY: the device creates and returns an owned fence with the
+            // supplied initial value and no borrowed pointer arguments.
             let fence = unsafe { native.CreateFence::<ID3D12Fence>(0, D3D12_FENCE_FLAG_NONE) }
                 .map_err(native_error)?;
             let lane = LaneId { device, ordinal: 0 };
@@ -298,6 +335,8 @@ impl InstanceBackend for Dx12 {
             let debug_info = if diagnostics {
                 let info: ID3D12InfoQueue1 = native.cast().map_err(native_error)?;
                 let mut cookie = 0;
+                // SAFETY: info owns the callback registration until device
+                // destruction; the callback context is null and its ABI matches.
                 unsafe {
                     info.RegisterMessageCallback(
                         Some(debug_message),
@@ -453,6 +492,8 @@ impl api::ResourceBackend for Dx12 {
             Flags: D3D12_RESOURCE_FLAG_NONE,
         };
         let mut resource = None;
+        // SAFETY: heap and buffer descriptors are initialized local values;
+        // D3D12 writes the owned resource COM interface into `resource` only.
         unsafe {
             device.0.native.CreateCommittedResource(
                 &heap,

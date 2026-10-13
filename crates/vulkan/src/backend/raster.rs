@@ -1,171 +1,21 @@
 //! Native Vulkan dynamic rendering and draw lowering.
+//!
+//! This module records directly into a live primary command buffer.  It owns
+//! no render graph and does not infer resource state.  Texture attachments and
+//! surface-image leases are retained by the encoder through submission; a
+//! surface image is deliberately never converted into a durable TextureView.
+//! The state machine is `idle -> raster -> idle`; all draw setters require the
+//! middle state and abort closes any native scope it opened. RenderGraph owns
+//! cross-pass hazards and layouts, while this module handles only attachment
+//! setup that Vulkan requires inside the pass.
 
 use super::*;
 
-pub struct RasterExtras;
+mod extras;
+mod surface;
 
-struct SurfaceAttachment {
-    view: vk::ImageView,
-    image: vk::Image,
-    extent: vk::Extent2D,
-    format: vk::Format,
-}
-
-impl api::RasterExtrasOps<Vulkan> for RasterExtras {
-    const AVAILABLE: bool = true;
-
-    fn draw_indirect(
-        encoder: &mut VulkanEncoder,
-        arguments: &VulkanBuffer,
-        offset: u64,
-        indexed: bool,
-    ) -> Result<()> {
-        validate_indirect(
-            encoder,
-            arguments,
-            offset,
-            1,
-            indirect_stride(indexed),
-            indexed,
-            false,
-        )?;
-        unsafe {
-            if indexed {
-                encoder.device.device.cmd_draw_indexed_indirect(
-                    encoder.command,
-                    arguments.0.buffer,
-                    offset,
-                    1,
-                    indirect_stride(true),
-                );
-            } else {
-                encoder.device.device.cmd_draw_indirect(
-                    encoder.command,
-                    arguments.0.buffer,
-                    offset,
-                    1,
-                    indirect_stride(false),
-                );
-            }
-        }
-        encoder.buffers.push(arguments.clone());
-        Ok(())
-    }
-    fn multi_draw(
-        encoder: &mut VulkanEncoder,
-        arguments: &VulkanBuffer,
-        offset: u64,
-        count: u32,
-        stride: u32,
-        indexed: bool,
-    ) -> Result<()> {
-        if count == 0 {
-            return Ok(());
-        }
-        validate_indirect(encoder, arguments, offset, count, stride, indexed, true)?;
-        unsafe {
-            if indexed {
-                encoder.device.device.cmd_draw_indexed_indirect(
-                    encoder.command,
-                    arguments.0.buffer,
-                    offset,
-                    count,
-                    stride,
-                );
-            } else {
-                encoder.device.device.cmd_draw_indirect(
-                    encoder.command,
-                    arguments.0.buffer,
-                    offset,
-                    count,
-                    stride,
-                );
-            }
-        }
-        encoder.buffers.push(arguments.clone());
-        Ok(())
-    }
-    fn multi_draw_count(
-        _: &mut VulkanEncoder,
-        _: &VulkanBuffer,
-        _: u64,
-        _: &VulkanBuffer,
-        _: u64,
-        _: u32,
-        _: u32,
-        _: bool,
-    ) -> Result<()> {
-        Err(Error::Unsupported("Vulkan multi draw count"))
-    }
-    fn set_push_constants(
-        encoder: &mut VulkanEncoder,
-        stages: api::StageMask,
-        offset: u32,
-        bytes: &[u8],
-    ) -> Result<()> {
-        let layout = encoder.raster_layout.ok_or(Error::InvalidState)?;
-        let push_constants = encoder
-            .raster_push_constants
-            .as_ref()
-            .ok_or(Error::InvalidState)?;
-        let native_stages = push_constants.validate(stages, offset, bytes)?;
-        unsafe {
-            encoder.device.device.cmd_push_constants(
-                encoder.command,
-                layout,
-                native_stages,
-                offset,
-                bytes,
-            );
-        }
-        Ok(())
-    }
-}
-
-fn indirect_stride(indexed: bool) -> u32 {
-    if indexed { 20 } else { 16 }
-}
-
-fn validate_indirect(
-    encoder: &VulkanEncoder,
-    arguments: &VulkanBuffer,
-    offset: u64,
-    count: u32,
-    stride: u32,
-    indexed: bool,
-    multi: bool,
-) -> Result<()> {
-    if !encoder.raster
-        || encoder.raster_layout.is_none()
-        || (indexed && !encoder.raster_index_bound)
-        || !arguments.0.usage.contains(api::BufferUsage::INDIRECT)
-        || offset % 4 != 0
-    {
-        return Err(Error::InvalidState);
-    }
-    let command_size = indirect_stride(indexed);
-    if (count != 0 && (stride < command_size || stride % 4 != 0))
-        || (multi
-            && count > 1
-            && (!encoder.device.multi_draw_indirect
-                || count > encoder.device.max_draw_indirect_count))
-    {
-        return Err(Error::InvalidRange);
-    }
-    let bytes = if count == 0 {
-        offset
-    } else {
-        u64::from(count - 1)
-            .checked_mul(u64::from(stride))
-            .and_then(|tail| offset.checked_add(tail))
-            .and_then(|last| last.checked_add(u64::from(command_size)))
-            .ok_or(Error::InvalidRange)?
-    };
-    if bytes > arguments.0.size {
-        return Err(Error::InvalidRange);
-    }
-    Ok(())
-}
+pub use extras::RasterExtras;
+use surface::{surface_attachment, transition_surface_to_color};
 
 impl api::RasterBackend for Vulkan {
     fn begin_raster(e: &mut VulkanEncoder, d: &api::RasterPassDesc<'_, Self>) -> Result<()> {
@@ -203,6 +53,8 @@ impl api::RasterBackend for Vulkan {
                 (surface.view, 1, Some(surface), None, None)
             }
             api::AttachmentView::Texture(view) => {
+                // SAFETY: `AttachmentView::Texture` was constructed from this
+                // backend and Core keeps the typed view alive for this call.
                 let native = unsafe { view.native_ref() };
                 if d.render_area.x != 0
                     || d.render_area.y != 0
@@ -303,6 +155,8 @@ impl api::RasterBackend for Vulkan {
             let api::AttachmentView::Texture(view) = &depth.view else {
                 return Err(Error::Unsupported("Vulkan depth surface attachment"));
             };
+            // SAFETY: this typed attachment view belongs to Vulkan and remains
+            // borrowed by the pass description while native metadata is read.
             let native = unsafe { view.native_ref() };
             if native.attachment_extent_for_layers(api::TextureAspects::DEPTH, multiview_layers)
                 != Some([d.render_area.width, d.render_area.height])
@@ -327,6 +181,9 @@ impl api::RasterBackend for Vulkan {
                             .level_count(1)
                             .layer_count(multiview_layers),
                     );
+                // SAFETY: the encoder still owns this recording command buffer;
+                // Clear/Discard makes UNDEFINED a valid old layout for this
+                // attachment, while the retained view keeps the image alive.
                 unsafe {
                     e.device.device.cmd_pipeline_barrier(
                         e.command,
@@ -407,6 +264,8 @@ impl api::RasterBackend for Vulkan {
             transition_surface_to_color(e, surface.image);
             capture::prepare(e, d.render_area.width, d.render_area.height)?;
         }
+        // SAFETY: all attachment views above are validated and retained by the
+        // encoder. `info` only borrows stack data for this recording call.
         unsafe { e.device.device.cmd_begin_rendering(e.command, &info) };
         e.color_surface_image = surface.map(|surface| surface.image);
         e.raster = true;
@@ -419,6 +278,8 @@ impl api::RasterBackend for Vulkan {
         if e.secondary_signature.is_some() || e.raster_multiview_mask != p.multiview_mask() {
             return Err(Error::InvalidState);
         }
+        // SAFETY: the pipeline matches this pass's multiview state and is
+        // retained through submission before its native handle is recorded.
         unsafe {
             e.device.device.cmd_bind_pipeline(
                 e.command,
@@ -447,6 +308,8 @@ impl api::RasterBackend for Vulkan {
             .as_ref()
             .ok_or(Error::InvalidState)?
             .validate_group(index, group)?;
+        // SAFETY: layout compatibility and dynamic-offset alignment were
+        // checked above; retaining the group preserves its descriptor set.
         unsafe {
             e.device.device.cmd_bind_descriptor_sets(
                 e.command,
@@ -476,6 +339,8 @@ impl api::RasterBackend for Vulkan {
         {
             return Err(Error::InvalidRange);
         }
+        // SAFETY: range and VERTEX usage were validated, and the cloned buffer
+        // remains owned by the encoder until the GPU has executed this bind.
         unsafe {
             e.device
                 .device
@@ -507,6 +372,8 @@ impl api::RasterBackend for Vulkan {
         {
             return Err(Error::InvalidRange);
         }
+        // SAFETY: index type alignment, extent and INDEX usage were validated;
+        // the encoder retains the buffer for this recorded command.
         unsafe {
             e.device.device.cmd_bind_index_buffer(
                 e.command,
@@ -527,6 +394,8 @@ impl api::RasterBackend for Vulkan {
         if e.secondary_signature.is_some() {
             return Err(Error::InvalidState);
         }
+        // SAFETY: this is a live primary raster command buffer. Negative height
+        // intentionally maps the public top-left viewport convention to Vulkan.
         unsafe {
             e.device.device.cmd_set_viewport(
                 e.command,
@@ -547,6 +416,8 @@ impl api::RasterBackend for Vulkan {
         if e.secondary_signature.is_some() {
             return Err(Error::InvalidState);
         }
+        // SAFETY: a live primary command buffer owns this dynamic state and the
+        // nonzero extent was checked before it is lowered to Vulkan.
         unsafe {
             e.device.device.cmd_set_scissor(
                 e.command,
@@ -578,6 +449,8 @@ impl api::RasterBackend for Vulkan {
         if !e.raster || e.raster_layout.is_none() || v.start > v.end || i.start > i.end {
             return Err(Error::InvalidState);
         }
+        // SAFETY: raster and pipeline state are active, and checked ranges avoid
+        // arithmetic underflow when converted into Vulkan draw counts.
         unsafe {
             e.device.device.cmd_draw(
                 e.command,
@@ -606,6 +479,8 @@ impl api::RasterBackend for Vulkan {
         {
             return Err(Error::InvalidState);
         }
+        // SAFETY: an index buffer and compatible pipeline are bound; validated
+        // ranges are converted directly to the native indexed draw parameters.
         unsafe {
             e.device.device.cmd_draw_indexed(
                 e.command,
@@ -623,6 +498,8 @@ impl api::RasterBackend for Vulkan {
             return Err(Error::InvalidState);
         }
         let image = e.color_surface_image.take();
+        // SAFETY: `e.raster` proves this primary command buffer has a matching
+        // dynamic-rendering begin which has not yet been ended.
         unsafe { e.device.device.cmd_end_rendering(e.command) };
         if let Some(image) = image {
             capture::finish(e, image);
@@ -639,8 +516,11 @@ impl api::RasterBackend for Vulkan {
     fn abort_raster(e: &mut VulkanEncoder) {
         if e.raster {
             if let Some((set, slot)) = e.active_occlusion.take() {
+                // SAFETY: the encoder owns the still-active query and command
+                // buffer; ending it makes abort leave native state balanced.
                 unsafe { e.device.device.cmd_end_query(e.command, set.pool(), slot) };
             }
+            // SAFETY: the branch is entered only for a begun rendering scope.
             unsafe { e.device.device.cmd_end_rendering(e.command) };
             e.raster = false;
             e.raster_index_bound = false;
@@ -651,46 +531,5 @@ impl api::RasterBackend for Vulkan {
             e.raster_push_constants = None;
             e.secondary_signature = None;
         }
-    }
-}
-
-/// Acquired images form their own WSI boundary. Every raster pass that writes
-/// one begins from discarded contents and leaves final present/capture layout
-/// selection to `capture::finish` after dynamic rendering has ended.
-fn surface_attachment(image: &api::SurfaceImage<Vulkan>) -> SurfaceAttachment {
-    let native = unsafe { image.native_ref() };
-    let (view, image, extent, format) = native.attachment();
-    SurfaceAttachment {
-        view,
-        image,
-        extent,
-        format,
-    }
-}
-
-fn transition_surface_to_color(encoder: &mut VulkanEncoder, image: vk::Image) {
-    let range = vk::ImageSubresourceRange::default()
-        .aspect_mask(vk::ImageAspectFlags::COLOR)
-        .level_count(1)
-        .layer_count(1);
-    let to_color = vk::ImageMemoryBarrier::default()
-        .src_access_mask(vk::AccessFlags::empty())
-        .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-        .old_layout(vk::ImageLayout::UNDEFINED)
-        .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .image(image)
-        .subresource_range(range);
-    unsafe {
-        encoder.device.device.cmd_pipeline_barrier(
-            encoder.command,
-            vk::PipelineStageFlags::TOP_OF_PIPE,
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[to_color],
-        );
     }
 }

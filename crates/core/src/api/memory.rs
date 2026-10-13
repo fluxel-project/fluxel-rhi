@@ -1,4 +1,7 @@
-//! Statically typed RHI contract component.
+//! Explicit memory allocation and placement contracts.
+//!
+//! Allocation ownership stays with one device. Suballocation strategy and
+//! eviction are backend or renderer decisions, not Core policy.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -82,6 +85,7 @@ impl<B: MemoryBackend> MemoryDomain<'_, B> {
         if heap.device != self.device.id {
             return Err(Error::WrongDevice);
         }
+        // SAFETY: SPI allocation was requested from this device for this validated descriptor.
         Ok(unsafe {
             Buffer::from_native(
                 self.device.id,
@@ -98,6 +102,7 @@ impl<B: MemoryBackend> MemoryDomain<'_, B> {
         if heap.device != self.device.id {
             return Err(Error::WrongDevice);
         }
+        // SAFETY: the backing allocation was checked to belong to this device.
         Ok(unsafe {
             Texture::from_native(
                 self.device.id,

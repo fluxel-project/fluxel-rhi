@@ -1,4 +1,11 @@
 //! DX12 lowering for the compute domain.
+//!
+//! This module turns Core's already-validated compute pipeline and dispatch
+//! operations directly into commands on the encoder's native command list. It
+//! owns no scheduling or state tracking: cross-operation transitions and
+//! submission order remain the caller's responsibility. Pipeline and bound
+//! group clones are retained by the encoder solely until the submission fence
+//! proves D3D12 has stopped reading their native objects.
 
 use std::{
     future::{Ready, ready},
@@ -37,6 +44,8 @@ impl api::ComputeOps<Dx12> for Compute {
         encoder: &mut super::encoder::Dx12Encoder,
         pipeline: &Dx12ComputePipeline,
     ) -> Result<()> {
+        // SAFETY: the pipeline retains root signature and PSO COM interfaces;
+        // the encoder owns this open list and keeps a pipeline clone below.
         unsafe {
             encoder.list.SetComputeRootSignature(&pipeline.0.root);
             encoder.list.SetPipelineState(&pipeline.0.state);
@@ -68,6 +77,8 @@ impl api::ComputeOps<Dx12> for Compute {
         {
             return Err(Error::InvalidState);
         }
+        // SAFETY: group heaps and table handles are same-device validated and
+        // retained in `bound_groups` until this command list fence retires.
         unsafe {
             let heaps = [
                 Some(group.0.heaps().view_heap().clone()),
@@ -99,6 +110,8 @@ impl api::ComputeOps<Dx12> for Compute {
         {
             return Err(Error::InvalidRange);
         }
+        // SAFETY: validated group counts are copied into the encoder-owned
+        // open list; this call does not borrow caller memory.
         unsafe {
             encoder.list.Dispatch(groups[0], groups[1], groups[2]);
         }
@@ -127,6 +140,8 @@ fn create_pipeline(
     {
         return Err(Error::Unsupported("DX12 compute pipeline option"));
     }
+    // SAFETY: pipeline descriptors are device-checked by Core; this borrows
+    // immutable shader native state during synchronous PSO creation.
     let shader = unsafe { desc.compute.module.native_ref() };
     if !shader
         .entries
@@ -135,6 +150,8 @@ fn create_pipeline(
     {
         return Err(Error::Shader("DXIL has no requested compute entry".into()));
     }
+    // SAFETY: same-device layout native state is cloned to retain its root
+    // signature independently of the caller's descriptor borrow.
     let layout = unsafe { desc.layout.native_ref() }.0.clone();
     let bytes = &shader.bytes;
     let mut state_desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
@@ -145,6 +162,8 @@ fn create_pipeline(
         },
         ..Default::default()
     };
+    // SAFETY: root-signature COM reference and DXIL byte slice remain live for
+    // the synchronous creation call; D3D12 copies the pipeline description.
     let state = unsafe {
         device
             .0
@@ -152,6 +171,8 @@ fn create_pipeline(
             .CreateComputePipelineState::<ID3D12PipelineState>(&state_desc)
     }
     .map_err(native_error)?;
+    // SAFETY: this drops exactly the manually-owned root-signature clone put
+    // into the FFI struct after D3D12 consumed it.
     unsafe {
         ManuallyDrop::drop(&mut state_desc.pRootSignature);
     }

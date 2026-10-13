@@ -1,4 +1,10 @@
 //! Browser-owned WebGPU objects and native command lowering.
+//!
+//! This module is the native boundary for one wasm browser owner thread. It
+//! keeps JavaScript objects private, records directly into `GPUCommandEncoder`,
+//! and retains only the native objects needed until queue completion. Surface
+//! leases and device loss are handled by their dedicated modules; no renderer
+//! scheduling or CPU command replay lives here.
 
 mod bindings;
 mod blit;

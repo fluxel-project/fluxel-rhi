@@ -1,3 +1,8 @@
+//! Data types exported by the constrained embedded glTF loader.
+//!
+//! These CPU-side types retain asset identity and decoded geometry only; GPU
+//! resource allocation belongs to each example workload.
+
 use super::*;
 
 pub const VKGLTF_VERTEX_STRIDE: usize = 96;

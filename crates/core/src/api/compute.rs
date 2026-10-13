@@ -1,4 +1,7 @@
-//! Statically typed RHI contract component.
+//! Compute pipeline creation, pass recording, and dispatch contract.
+//!
+//! RenderGraph supplies dispatch order, resource states, and synchronization;
+//! this module describes and records only the requested compute work.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -108,6 +111,7 @@ impl<B: Backend> ComputeDomain<'_, B> {
             return Err(Error::WrongDevice);
         }
         let native = B::Compute::create_pipeline(&self.device.native, &desc).await?;
+        // SAFETY: the SPI created this pipeline for this exact native device.
         Ok(unsafe { ComputePipeline::from_native(self.device.id, native) })
     }
     pub fn begin<'a>(&self, encoder: &'a mut CommandEncoder<B>) -> Result<ComputePass<'a, B>>
@@ -174,6 +178,8 @@ impl<B: CommandBackend> ComputePass<'_, B> {
         self.call(|e| B::Compute::dispatch_indirect(e, &buffer.native, offset))
     }
     pub fn finish(mut self) -> Result<()> {
+        // Clear `in_pass` only after native end succeeds; otherwise a caller
+        // cannot record new work after a potentially half-ended pass.
         if self.encoder.poisoned {
             if let Some(native) = self.encoder.native.as_mut() {
                 B::Compute::abort(native);

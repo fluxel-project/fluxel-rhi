@@ -1,3 +1,8 @@
+//! Per-frame upload, mip generation, and tunnel raster recording.
+//!
+//! The caller owns the acquired surface lease and submission result after this
+//! module returns its one-shot recorded work.
+
 use super::{MipmapBackend, Tunnel};
 use fluxel_rhi::api::*;
 

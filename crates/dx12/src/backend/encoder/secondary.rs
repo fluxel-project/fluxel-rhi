@@ -42,6 +42,8 @@ impl Dx12SecondaryEncoder {
         signature: &api::SecondaryRasterDesc,
     ) -> Result<Self, Error> {
         validate_signature(signature)?;
+        // SAFETY: the device owns both newly created bundle objects; allocator
+        // stays inside this secondary encoder until its closed bundle is retained.
         let (allocator, list) = unsafe {
             let allocator = device
                 .0
@@ -114,6 +116,8 @@ pub(crate) fn set_pipeline(
     {
         return Err(Error::InvalidState);
     }
+    // SAFETY: the pipeline retains root/PSO COM objects and this bundle is
+    // exclusively open on its recording thread.
     unsafe {
         encoder.list.SetGraphicsRootSignature(&pipeline.0.root);
         encoder.list.SetPipelineState(&pipeline.0.state);
@@ -213,6 +217,8 @@ pub(crate) fn set_bind_group(
     // bundle may select root tables but cannot switch the active heap; the
     // primary installs this bundle's device-wide heaps immediately before
     // ExecuteBundle.
+    // SAFETY: the primary installs the device-wide heaps before ExecuteBundle;
+    // group/pipeline objects are same-device validated and retained by this bundle.
     unsafe {
         if let Some(root) = table.views {
             encoder
@@ -281,10 +287,14 @@ pub(crate) fn set_vertex_buffer(
         return Err(Error::InvalidRange);
     }
     let view = D3D12_VERTEX_BUFFER_VIEW {
+        // SAFETY: retained same-device buffer has a stable GPU address and
+        // offset/size have been checked against its allocation above.
         BufferLocation: unsafe { buffer.resource.GetGPUVirtualAddress() } + offset,
         SizeInBytes: size as u32,
         StrideInBytes: stride,
     };
+    // SAFETY: fully initialized view refers to a retained buffer and is copied
+    // synchronously into this exclusively recorded bundle.
     unsafe {
         encoder
             .list
@@ -311,10 +321,12 @@ pub(crate) fn set_index_buffer(
         api::IndexFormat::Uint32 => windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_UINT,
     };
     let view = D3D12_INDEX_BUFFER_VIEW {
+        // SAFETY: same retained-resource/range invariant as vertex binding.
         BufferLocation: unsafe { buffer.resource.GetGPUVirtualAddress() } + offset,
         SizeInBytes: size as u32,
         Format: format,
     };
+    // SAFETY: `view` is complete and names a checked range in the retained buffer.
     unsafe { encoder.list.IASetIndexBuffer(Some(&view)) };
     encoder.buffers.push(buffer.clone());
     Ok(())
@@ -370,6 +382,8 @@ pub(crate) fn set_push_constants(
         .chunks_exact(4)
         .map(|word| u32::from_le_bytes(word.try_into().expect("exact DWORD")))
         .collect();
+    // SAFETY: values remains alive for this synchronous call; range and DWORD
+    // offset were validated before constructing the temporary vector.
     unsafe {
         encoder.list.SetGraphicsRoot32BitConstants(
             range.root,
@@ -390,6 +404,8 @@ pub(crate) fn draw(
         return Err(Error::InvalidRange);
     }
     encoder.pipeline()?;
+    // SAFETY: an installed pipeline and checked ranges make this an append-only
+    // command on the bundle owned exclusively by this encoder.
     unsafe {
         encoder.list.DrawInstanced(
             vertices.end - vertices.start,
@@ -411,6 +427,8 @@ pub(crate) fn draw_indexed(
         return Err(Error::InvalidRange);
     }
     encoder.pipeline()?;
+    // SAFETY: as above, validated indexed draw operands are copied into this
+    // exclusively recorded bundle without borrowing caller memory.
     unsafe {
         encoder.list.DrawIndexedInstanced(
             indices.end - indices.start,

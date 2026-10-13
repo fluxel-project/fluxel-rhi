@@ -1,3 +1,8 @@
+//! Image decoding and attachment/resource construction for the Voyager scene.
+//!
+//! The module creates durable scene resources and transient resize targets but
+//! does not record or submit frame commands.
+
 use super::MsaaBackend;
 use fluxel_rhi::api::*;
 use std::io::Cursor;

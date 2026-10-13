@@ -4,6 +4,14 @@
 //! manufactured as a portable TextureView, so presentation lifetime remains
 //! backend-private and the raster encoder receives it only through the Core
 //! attachment vocabulary.
+//!
+//! Configuration replaces swapchains atomically under `inner`.  An acquired
+//! image is represented only by `VulkanSurfaceImage`; dropping an unhanded
+//! lease marks the chain abandoned rather than pretending the image was
+//! released.  Retired chains are destroyed only after the documented acquire
+//! evidence shows their presentation wait semaphores are no longer in use.
+//! The acquire worker owns bounded CPU waits; `Future::poll` only registers a
+//! waker and never blocks an executor thread.
 
 use std::{
     future::{Ready, ready},
@@ -16,7 +24,9 @@ use raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle};
 
 use super::{Vulkan, VulkanDevice, vk_error};
 mod acquire;
+mod configure;
 use acquire::{AcquireFuture, AcquireWait};
+use configure::configure;
 
 #[derive(Clone)]
 pub struct VulkanSurface(pub(crate) Arc<SurfaceState>);
@@ -62,11 +72,16 @@ pub struct VulkanSurfaceImage {
     present_wait: Mutex<Option<vk::Semaphore>>,
 }
 
+// SAFETY: callers preserve the raw window/display handles until every surface
+// image lease is gone; SurfaceState then owns all Vulkan objects it creates.
 pub(crate) unsafe fn create_surface(
     device: &api::Device<Vulkan>,
     window: RawWindowHandle,
     display: RawDisplayHandle,
 ) -> Result<api::Surface<Vulkan>> {
+    // SAFETY: the public caller promises that these borrowed raw handles stay
+    // valid for the surface and every originating image lease.  This function
+    // copies only their numeric Win32 values into Vulkan's create structure.
     let RawWindowHandle::Win32(Win32WindowHandle {
         hwnd, hinstance, ..
     }) = window
@@ -76,6 +91,8 @@ pub(crate) unsafe fn create_surface(
     if !matches!(display, RawDisplayHandle::Windows(_)) {
         return Err(Error::Unsupported("a Windows display handle"));
     }
+    // SAFETY: this backend bridge reads the native VulkanDevice belonging to
+    // `device`; cloning it retains the dispatch owners for the new surface.
     let native = unsafe { device.native_ref() }.clone();
     let win32 = ash::khr::win32_surface::Instance::new(
         &native.0.instance.entry,
@@ -84,9 +101,13 @@ pub(crate) unsafe fn create_surface(
     let info = vk::Win32SurfaceCreateInfoKHR::default()
         .hwnd(hwnd.get() as vk::HWND)
         .hinstance(hinstance.map_or(0, |v| v.get()) as vk::HINSTANCE);
+    // SAFETY: `info` contains the validated live HWND/HINSTANCE pair above and
+    // `win32` retains the Vulkan instance used to create this surface.
     let surface = unsafe { win32.create_win32_surface(&info, None) }.map_err(vk_error)?;
     let surface_loader =
         ash::khr::surface::Instance::new(&native.0.instance.entry, &native.0.instance.instance);
+    // SAFETY: physical device, queue family, and surface all belong to the
+    // retained instance and have not been destroyed.
     let supported = unsafe {
         surface_loader.get_physical_device_surface_support(
             native.0.physical,
@@ -96,6 +117,7 @@ pub(crate) unsafe fn create_surface(
     }
     .map_err(vk_error)?;
     if !supported {
+        // SAFETY: this locally owned surface was never published to SurfaceState.
         unsafe { surface_loader.destroy_surface(surface, None) };
         return Err(Error::Unsupported(
             "Vulkan graphics queue presentation to this HWND",
@@ -126,6 +148,8 @@ pub(crate) unsafe fn create_surface(
         }),
     });
     acquire::start_worker(Arc::downgrade(&state), acquire_receiver)?;
+    // SAFETY: SurfaceState is newly allocated for this Core device and owns
+    // every native WSI object it will expose through VulkanSurface.
     Ok(unsafe {
         api::Surface::from_native(
             device.id(),
@@ -138,6 +162,9 @@ pub(crate) unsafe fn create_surface(
 impl Drop for SurfaceState {
     fn drop(&mut self) {
         let inner = self.inner.get_mut().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: SurfaceState owns every listed WSI object. queue_gate
+        // serializes the externally synchronized queue idle call; idle proves
+        // no queue operation still refers to the views, semaphores or chains.
         unsafe {
             let _queue = self
                 .device
@@ -216,6 +243,8 @@ impl Drop for VulkanSurfaceImage {
         }
     }
 }
+// SAFETY: `inner` serializes generation, acquisition, abandonment, and native
+// present handoff, while the lease retains SurfaceState for its entire lifetime.
 unsafe impl api::NativeImageLease for VulkanSurfaceImage {
     fn try_handoff(&mut self, generation: u64) -> Result<()> {
         if self.handed || generation != self.generation {
@@ -254,6 +283,8 @@ unsafe impl api::NativeImageLease for VulkanSurfaceImage {
                 .queue_gate
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
+            // SAFETY: lease handoff has moved the semaphore into the current
+            // swapchain image slot; queue_gate serializes external queue access.
             unsafe {
                 self.state
                     .swapchain_loader
@@ -310,18 +341,22 @@ impl api::SurfaceBackend for Vulkan {
 }
 
 fn capabilities(state: &SurfaceState) -> Result<api::SurfaceCapabilities> {
+    // SAFETY: SurfaceState retains the instance, physical device, and surface;
+    // these read-only WSI queries need no queue synchronization.
     let caps = unsafe {
         state
             .surface_loader
             .get_physical_device_surface_capabilities(state.device.0.physical, state.surface)
     }
     .map_err(vk_error)?;
+    // SAFETY: same retained physical device/surface pair as the capability query.
     let formats = unsafe {
         state
             .surface_loader
             .get_physical_device_surface_formats(state.device.0.physical, state.surface)
     }
     .map_err(vk_error)?;
+    // SAFETY: same retained physical device/surface pair as the capability query.
     let modes = unsafe {
         state
             .surface_loader
@@ -403,6 +438,7 @@ fn validate_config(
     let Some(format) = super::resource::format(config.format) else {
         return Err("Vulkan surface format");
     };
+    // SAFETY: validation only queries the SurfaceState-owned WSI pair.
     let caps = unsafe {
         state
             .surface_loader
@@ -434,6 +470,7 @@ fn validate_config(
     {
         return Err("Vulkan surface extent range");
     }
+    // SAFETY: validation only queries the SurfaceState-owned WSI pair.
     let formats = unsafe {
         state
             .surface_loader
@@ -446,6 +483,7 @@ fn validate_config(
     {
         return Err("Vulkan surface format/color space");
     }
+    // SAFETY: validation only queries the SurfaceState-owned WSI pair.
     let modes = unsafe {
         state
             .surface_loader
@@ -455,161 +493,6 @@ fn validate_config(
     if !modes.contains(&vk::PresentModeKHR::FIFO) {
         return Err("Vulkan FIFO presentation");
     }
-    Ok(())
-}
-fn configure(state: &SurfaceState, config: &api::SurfaceConfig) -> Result<()> {
-    validate_config(state, config).map_err(Error::Unsupported)?;
-    let caps = unsafe {
-        state
-            .surface_loader
-            .get_physical_device_surface_capabilities(state.device.0.physical, state.surface)
-    }
-    .map_err(vk_error)?;
-    let formats = unsafe {
-        state
-            .surface_loader
-            .get_physical_device_surface_formats(state.device.0.physical, state.surface)
-    }
-    .map_err(vk_error)?;
-    let format = super::resource::format(config.format)
-        .ok_or(Error::Unsupported("Vulkan surface format"))?;
-    let surface_format = formats
-        .into_iter()
-        .find(|f| f.format == format && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
-        .ok_or(Error::Unsupported("Vulkan surface format"))?;
-    let extent = vk::Extent2D {
-        width: config.extent[0],
-        height: config.extent[1],
-    };
-    let mut inner = state.inner.lock().unwrap_or_else(|e| e.into_inner());
-    if inner.acquired {
-        return Err(Error::InvalidState);
-    }
-    let next_generation = inner.generation.checked_add(1).ok_or(Error::OutOfMemory)?;
-    let old = inner.swapchain;
-    let mut usage = vk::ImageUsageFlags::COLOR_ATTACHMENT;
-    if std::env::var_os("FLUXEL_VULKAN_CAPTURE").is_some() {
-        if !caps
-            .supported_usage_flags
-            .contains(vk::ImageUsageFlags::TRANSFER_SRC)
-        {
-            return Err(Error::Unsupported(
-                "Vulkan swapchain transfer source capture",
-            ));
-        }
-        usage |= vk::ImageUsageFlags::TRANSFER_SRC;
-    }
-    let info = vk::SwapchainCreateInfoKHR::default()
-        .surface(state.surface)
-        .min_image_count(caps.min_image_count.max(2))
-        .image_format(surface_format.format)
-        .image_color_space(surface_format.color_space)
-        .image_extent(extent)
-        .image_array_layers(1)
-        .image_usage(usage)
-        .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-        .pre_transform(caps.current_transform)
-        .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-        .present_mode(vk::PresentModeKHR::FIFO)
-        .clipped(true)
-        .old_swapchain(old);
-    let created = unsafe { state.swapchain_loader.create_swapchain(&info, None) };
-    if old != vk::SwapchainKHR::null() {
-        // The old chain is retired by the create attempt even if creation
-        // fails. It must never remain active or be passed as oldSwapchain
-        // again. Keep its views and present waits until new presentation
-        // provides safe retirement evidence.
-        let mut waits: Vec<_> = inner.present_waits.drain(..).flatten().collect();
-        waits.extend(inner.orphaned_waits.drain(..));
-        let old_views = std::mem::take(&mut inner.views);
-        let retired = RetiredSwapchain {
-            chain: old,
-            views: old_views,
-            wait_semaphores: waits,
-        };
-        if inner.presented {
-            // Without a present fence, keep this chain until presentation of
-            // the new chain is proved finished by reacquiring its image.
-            inner.retired.push(retired);
-        } else {
-            // A chain never handed to presentation only has queue work. The
-            // cold resize path may wait for that work and reclaim it now.
-            let idle = {
-                let _queue = state
-                    .device
-                    .0
-                    .queue_gate
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                unsafe {
-                    state
-                        .device
-                        .0
-                        .device
-                        .queue_wait_idle(state.device.0.graphics_queue)
-                }
-            };
-            if idle.is_ok() {
-                unsafe {
-                    for view in retired.views {
-                        state.device.0.device.destroy_image_view(view, None);
-                    }
-                    for semaphore in retired.wait_semaphores {
-                        state.device.0.device.destroy_semaphore(semaphore, None);
-                    }
-                    state
-                        .swapchain_loader
-                        .destroy_swapchain(retired.chain, None);
-                }
-            } else {
-                inner.retired.push(retired);
-            }
-        }
-        inner.swapchain = vk::SwapchainKHR::null();
-        inner.images.clear();
-    }
-    let chain = created.map_err(vk_error)?;
-    let images =
-        unsafe { state.swapchain_loader.get_swapchain_images(chain) }.map_err(|error| {
-            unsafe { state.swapchain_loader.destroy_swapchain(chain, None) };
-            vk_error(error)
-        })?;
-    let mut views = Vec::with_capacity(images.len());
-    for image in &images {
-        let range = vk::ImageSubresourceRange {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
-            base_mip_level: 0,
-            level_count: 1,
-            base_array_layer: 0,
-            layer_count: 1,
-        };
-        let view_info = vk::ImageViewCreateInfo::default()
-            .image(*image)
-            .view_type(vk::ImageViewType::TYPE_2D)
-            .format(format)
-            .subresource_range(range);
-        match unsafe { state.device.0.device.create_image_view(&view_info, None) } {
-            Ok(view) => views.push(view),
-            Err(error) => {
-                unsafe {
-                    for view in views {
-                        state.device.0.device.destroy_image_view(view, None);
-                    }
-                    state.swapchain_loader.destroy_swapchain(chain, None);
-                }
-                return Err(vk_error(error));
-            }
-        }
-    }
-    inner.swapchain = chain;
-    inner.images = images;
-    inner.views = views;
-    inner.present_waits = vec![None; inner.images.len()];
-    inner.extent = extent;
-    inner.format = format;
-    inner.generation = next_generation;
-    inner.abandoned = false;
-    inner.presented = false;
     Ok(())
 }
 fn from_format(format: vk::Format) -> Option<api::TextureFormat> {

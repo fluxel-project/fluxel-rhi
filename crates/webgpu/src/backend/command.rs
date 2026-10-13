@@ -1,4 +1,9 @@
 //! Direct `GPUCommandEncoder` and `GPURenderPassEncoder` lowering.
+//!
+//! `pass` is the encoder state machine: `None` permits copies and a new pass;
+//! `Some` permits only that pass's commands. `keep_alive` owns cloned JS objects
+//! referenced by the native command buffer until queue completion; it is not a
+//! portable command cache or replay stream.
 
 use fluxel_rhi_core::api::{self, Error, Result};
 use js_sys::{Object, Uint8Array};
@@ -60,11 +65,10 @@ fn copy_extent(extent: [u32; 3]) -> Result<JsValue> {
 
 fn copy_texture_desc(region: &api::TextureRegion<'_, WebGpu>) -> Result<JsValue> {
     let value = object();
-    field(
-        &value,
-        "texture",
-        unsafe { region.texture.native_ref() }.raw.clone(),
-    )?;
+    // SAFETY: every caller is a CommandEncoder entry point that checked the
+    // region's DeviceId against the encoder; the JS clone is retained by it.
+    let texture = unsafe { region.texture.native_ref() }.raw.clone();
+    field(&value, "texture", texture)?;
     field(&value, "mipLevel", number(region.mip))?;
     field(&value, "origin", copy_origin(region.origin)?)?;
     field(
@@ -88,6 +92,8 @@ fn validate_texel_buffer(
     layout: api::TexelCopyBufferLayout,
     region: &api::TextureRegion<'_, WebGpu>,
 ) -> Result<()> {
+    // SAFETY: callers first check this region's DeviceId against the encoder;
+    // this only reads immutable descriptor metadata during that call.
     let format = unsafe { region.texture.native_ref() }.desc.format;
     let bytes_per_texel = match format {
         api::TextureFormat::R8Unorm => 1_u64,
@@ -212,6 +218,8 @@ impl api::CommandBackend for WebGpu {
         if src.extent != dst.extent {
             return Err(Error::InvalidRange);
         }
+        // SAFETY: `CommandEncoder::copy_texture` checked both DeviceIds against
+        // this encoder; their cloned JS values are retained below.
         let source = unsafe { src.texture.native_ref() };
         let target = unsafe { dst.texture.native_ref() };
         if !source.desc.usage.contains(api::TextureUsage::COPY_SRC)
@@ -242,11 +250,11 @@ impl api::CommandBackend for WebGpu {
         layout: api::TexelCopyBufferLayout,
         dst: api::TextureRegion<'_, Self>,
     ) -> Result<()> {
+        // SAFETY: `CommandEncoder::buffer_to_texture` checked the source and
+        // destination DeviceIds against this encoder before this SPI call.
+        let destination = unsafe { dst.texture.native_ref() };
         if !src.usage.contains(api::BufferUsage::COPY_SRC)
-            || !unsafe { dst.texture.native_ref() }
-                .desc
-                .usage
-                .contains(api::TextureUsage::COPY_DST)
+            || !destination.desc.usage.contains(api::TextureUsage::COPY_DST)
         {
             return Err(Error::Unsupported("WebGPU buffer-to-texture copy usage"));
         }
@@ -256,7 +264,7 @@ impl api::CommandBackend for WebGpu {
         field(&source, "offset", number(layout.offset as f64))?;
         field(&source, "bytesPerRow", number(layout.bytes_per_row))?;
         field(&source, "rowsPerImage", number(layout.rows_per_image))?;
-        let texture = unsafe { dst.texture.native_ref() }.raw.clone();
+        let texture = destination.raw.clone();
         js::call(
             &encoder.raw,
             "copyBufferToTexture",
@@ -273,10 +281,10 @@ impl api::CommandBackend for WebGpu {
         dst: &WebGpuBuffer,
         layout: api::TexelCopyBufferLayout,
     ) -> Result<()> {
-        if !unsafe { src.texture.native_ref() }
-            .desc
-            .usage
-            .contains(api::TextureUsage::COPY_SRC)
+        // SAFETY: `CommandEncoder::texture_to_buffer` checked the source and
+        // destination DeviceIds against this encoder before this SPI call.
+        let source = unsafe { src.texture.native_ref() };
+        if !source.desc.usage.contains(api::TextureUsage::COPY_SRC)
             || !dst.usage.contains(api::BufferUsage::COPY_DST)
         {
             return Err(Error::Unsupported("WebGPU texture-to-buffer copy usage"));
@@ -287,7 +295,7 @@ impl api::CommandBackend for WebGpu {
         field(&target, "offset", number(layout.offset as f64))?;
         field(&target, "bytesPerRow", number(layout.bytes_per_row))?;
         field(&target, "rowsPerImage", number(layout.rows_per_image))?;
-        let texture = unsafe { src.texture.native_ref() }.raw.clone();
+        let texture = source.raw.clone();
         js::call(
             &encoder.raw,
             "copyTextureToBuffer",
@@ -354,6 +362,8 @@ impl api::CommandBackend for WebGpu {
         layout: api::TexelCopyBufferLayout,
         bytes: &[u8],
     ) -> Result<()> {
+        // SAFETY: `CommandEncoder::write_texture` checked the destination
+        // DeviceId; the raw texture is retained with the finished command buffer.
         let native = unsafe { dst.texture.native_ref() };
         if native.desc.dimension != api::TextureDimension::D2
             || native.desc.format != api::TextureFormat::Rgba8Unorm

@@ -1,3 +1,4 @@
+// Native rock, planet, and procedural-star stages for example 03.
 cbuffer Scene : register(b0) {
   column_major float4x4 projection;
   column_major float4x4 view;

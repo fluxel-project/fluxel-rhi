@@ -1,3 +1,8 @@
+//! Resize handling and per-frame MSAA pass recording for the Voyager scene.
+//!
+//! This module owns pass-local command order; it does not submit work or own
+//! the acquired surface lease after returning recorded work.
+
 use super::resources::{color_target, decode_material_image, depth_target};
 use super::{Msaa, MsaaBackend};
 use fluxel_rhi::api::*;

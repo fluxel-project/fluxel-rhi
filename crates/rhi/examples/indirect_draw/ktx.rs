@@ -1,3 +1,8 @@
+//! KTX 1 RGBA8 array-texture parsing and frame-uniform helpers for example 10.
+//!
+//! This module validates the asset representation; texture creation and draw
+//! recording are owned by the pipeline and workload modules.
+
 use fluxel_rhi::api::*;
 
 pub(crate) struct Ktx {

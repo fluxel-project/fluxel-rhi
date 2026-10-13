@@ -1,6 +1,7 @@
 # ADR-0021: Make executable shaders own immediate-data ABI
 
-**Status:** Accepted
+**Status:** Historical design target. `ShaderInterface`, `PipelineInterface`,
+and `ShaderAbiVersion` below are not part of the current Core API.
 
 ## Context
 

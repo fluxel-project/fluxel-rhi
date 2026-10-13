@@ -1,4 +1,9 @@
 //! D3D12 pipeline-state stream lowering for view instancing.
+//!
+//! D3D12 exposes view instancing only through the byte-addressed pipeline
+//! stream ABI. The builder below serializes supported POD subobjects in the
+//! required alignment order and calls Device2 synchronously; it is intentionally
+//! narrow and is not a general command or PSO cache.
 use fluxel_rhi_core::api::{Error, Result};
 use windows::{Win32::Graphics::Direct3D12::*, core::Interface};
 /// Builds the extended PSO stream required by D3D12 view instancing. The
@@ -14,6 +19,9 @@ pub(crate) fn create_view_instanced_pso(
         bytes.extend_from_slice(&(tag.0 as u32).to_ne_bytes());
         bytes.resize(bytes.len().next_multiple_of(std::mem::align_of::<T>()), 0);
         let value = std::mem::ManuallyDrop::new(value);
+        // SAFETY: T is Copy and is held in ManuallyDrop, so reading exactly its
+        // initialized object representation neither moves nor drops it. D3D12
+        // defines these stream subobjects as their in-memory ABI representation.
         let raw = unsafe {
             std::slice::from_raw_parts((&*value as *const T).cast::<u8>(), std::mem::size_of::<T>())
         };
@@ -95,6 +103,9 @@ pub(crate) fn create_view_instanced_pso(
         pPipelineStateSubobjectStream: bytes.as_mut_ptr().cast(),
     };
     let device: ID3D12Device2 = device.cast().map_err(native_error)?;
+    // SAFETY: `bytes` owns the complete aligned stream, including all pointer
+    // targets borrowed from `pso`/`locations`, until this synchronous call
+    // returns. Device2 copies/consumes the stream before returning.
     unsafe { device.CreatePipelineState::<ID3D12PipelineState>(&stream) }.map_err(native_error)
 }
 

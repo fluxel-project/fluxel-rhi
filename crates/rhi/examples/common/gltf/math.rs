@@ -1,3 +1,8 @@
+//! Minimal column-major matrix operations used while flattening glTF nodes.
+//!
+//! The helpers only transform decoded scene data and do not establish an RHI
+//! coordinate-system contract.
+
 use super::*;
 
 #[derive(Clone, Copy)]

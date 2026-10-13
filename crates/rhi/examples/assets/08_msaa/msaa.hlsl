@@ -1,3 +1,4 @@
+// Native Voyager material shader; its output is resolved by the RHI pass setup.
 cbuffer Transform : register(b0) {
     float4x4 projection;
     float4x4 model;

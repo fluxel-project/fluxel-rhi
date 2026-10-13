@@ -1,4 +1,8 @@
 //! Native render-pass lowering for a color mip blit. WebGPU has no scaled copy.
+//!
+//! The device-local cache contains only immutable helper pipeline objects. Each
+//! invocation records its transient views, bind group, and texture in the live
+//! native encoder, which retains them through queue completion.
 
 use fluxel_rhi_core::api::{self, Error, FilterMode, Result};
 use js_sys::{Array, Object};
@@ -104,6 +108,8 @@ pub(super) fn blit(
     dst: api::TextureRegion<'_, WebGpu>,
     filter: FilterMode,
 ) -> Result<()> {
+    // SAFETY: `CommandEncoder::blit` checked both region DeviceIds against this
+    // encoder; their raw JS objects are retained with the finished command buffer.
     let source = unsafe { src.texture.native_ref() };
     let target = unsafe { dst.texture.native_ref() };
     let desc = &source.desc;

@@ -1,4 +1,8 @@
 //! Native WebGPU occlusion query sets and direct command lowering.
+//!
+//! WebGPU ties occlusion queries to the pass descriptor. The encoder records
+//! that identity at pass begin and rejects attempts to begin a query from a
+//! different set while the pass is live.
 
 use std::ops::Range;
 

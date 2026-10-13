@@ -31,6 +31,8 @@ fn execute(
         D3D12_RESOURCE_STATE_COMMON,
         D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
     );
+    // SAFETY: arguments is retained below, its checked range is in
+    // INDIRECT_ARGUMENT state between the explicit barriers, and this list is exclusive.
     unsafe {
         encoder.list.ExecuteIndirect(
             &signature,
@@ -81,10 +83,14 @@ fn signature(
         NodeMask: 0,
     };
     let mut device = None;
+    // SAFETY: arguments retains a live resource and `device` is a valid COM
+    // output slot populated synchronously by its owning D3D12 device.
     unsafe { arguments.resource.GetDevice::<ID3D12Device>(&mut device) }.map_err(native_error)?;
     let device =
         device.ok_or_else(|| Error::Backend("indirect buffer has no DX12 device".into()))?;
     let mut output: Option<ID3D12CommandSignature> = None;
+    // SAFETY: `argument`/`desc` remain live through the call and `output` is a
+    // valid slot for an owned immutable signature cached by this device only.
     unsafe { device.CreateCommandSignature(&desc, None::<&ID3D12RootSignature>, &mut output) }
         .map_err(native_error)?;
     let signature = output

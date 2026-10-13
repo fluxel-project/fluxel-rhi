@@ -1,4 +1,10 @@
 //! Core secondary-raster SPI implementation using D3D12 bundles.
+//!
+//! A secondary encoder owns a D3D12 bundle until it is closed. A finished
+//! bundle contains the resources needed by its recorded native calls, and the
+//! primary encoder retains a clone after ExecuteBundle until queue retirement.
+//! This module validates compatibility with the active raster pass; it does
+//! not replay commands or decide resource transitions.
 
 use crate::backend::{Dx12, Dx12Device};
 use fluxel_rhi_core::api::{self, Error, Result};
@@ -98,6 +104,8 @@ impl api::SecondaryBackend for Dx12 {
         if encoder.closed || encoder.pipeline.is_none() {
             return Err(Error::InvalidState);
         }
+        // SAFETY: this encoder exclusively owns an open bundle list and the
+        // closed flag prevents a second Close call.
         unsafe { encoder.list.Close() }.map_err(super::native_error)?;
         encoder.closed = true;
         Ok(Dx12SecondaryWork {
@@ -126,9 +134,13 @@ impl api::SecondaryBackend for Dx12 {
                 Some(group.0.heaps().view_heap().clone()),
                 Some(group.0.heaps().sampler_heap().clone()),
             ];
+            // SAFETY: the retained bind group owns both heaps and the primary
+            // command list belongs to the same D3D12 device.
             unsafe { encoder.list.SetDescriptorHeaps(&heaps) };
         }
         if let Some(viewport) = work.viewport {
+            // SAFETY: viewport values are copied immediately into the open
+            // primary list; the stack array has no lifetime after this call.
             unsafe {
                 encoder.list.RSSetViewports(&[
                     windows::Win32::Graphics::Direct3D12::D3D12_VIEWPORT {
@@ -145,6 +157,8 @@ impl api::SecondaryBackend for Dx12 {
         if let Some(rect) = work.scissor {
             let right = rect.x.checked_add(rect.width).ok_or(Error::InvalidRange)?;
             let bottom = rect.y.checked_add(rect.height).ok_or(Error::InvalidRange)?;
+            // SAFETY: overflow checks above formed a valid RECT, copied
+            // immediately by the open primary command list.
             unsafe {
                 encoder
                     .list
@@ -156,6 +170,9 @@ impl api::SecondaryBackend for Dx12 {
                     }]);
             }
         }
+        // SAFETY: finish_secondary closed this bundle once, compatibility was
+        // checked above, and `work` is retained by the primary encoder before
+        // submission can retire either native command object.
         unsafe { encoder.list.ExecuteBundle(&work.list) };
         encoder.secondary.push(work.clone());
         Ok(())

@@ -1,3 +1,4 @@
+// Native dynamic-uniform ABI: camera at b0 and the selected model matrix at b1.
 cbuffer Camera : register(b0) { float4x4 vp; }
 cbuffer Model : register(b1) { float4x4 model; }
 struct VSIn { float3 position: LOCATION0; float3 color: LOCATION1; };

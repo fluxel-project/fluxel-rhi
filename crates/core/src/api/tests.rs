@@ -1,4 +1,7 @@
-//! Statically typed RHI contract component.
+//! Contract tests for device provenance, submission, and immediate execution.
+//!
+//! Test backends are local witnesses for Core invariants; they do not model a
+//! native GPU implementation or replace backend conformance testing.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -24,6 +27,7 @@ mod type_contract_tests {
         static DRAW_CALLS: Cell<usize> = const { Cell::new(0) };
     }
 
+    // SAFETY: the unit test lease has no native state and always accepts handoff.
     unsafe impl NativeImageLease for () {
         fn try_handoff(&mut self, _: u64) -> Result<()> {
             Ok(())
@@ -36,6 +40,7 @@ mod type_contract_tests {
         current: Arc<AtomicU64>,
         handed_off: bool,
     }
+    // SAFETY: atomic generation and `handed_off` make the test lease single-use.
     unsafe impl NativeImageLease for TestLease {
         fn try_handoff(&mut self, generation: u64) -> Result<()> {
             if !self.is_current(generation) {
@@ -275,12 +280,16 @@ mod type_contract_tests {
         fn finish_encoder(_: (), _: LaneId) -> Result<()> {
             Ok(())
         }
+        // SAFETY: this mock never issues native work and returns the owning
+        // packet unchanged; there is no accepted prefix to retain or retire.
         unsafe fn submit(_: &Arc<()>, packet: SubmitPacket<Self>) -> SubmitOutcome<Self> {
             SubmitOutcome::Rejected {
                 error: Error::Unsupported("mock"),
                 work: RetryableSubmit::Fresh(packet),
             }
         }
+        // SAFETY: this mock also rejects a tail without touching its accepted
+        // frontier, so the caller retains its original ownership and proof.
         unsafe fn resume(_: &Arc<()>, tail: DeferredTail<Self>) -> SubmitOutcome<Self> {
             SubmitOutcome::Rejected {
                 error: Error::Unsupported("mock"),
@@ -288,6 +297,7 @@ mod type_contract_tests {
             }
         }
     }
+    // SAFETY: this fixture reports every issued prefix deterministically.
     unsafe impl ImmediateBackend for GlLocal {
         fn install_waits(_: &Rc<()>, _: LaneId, _: &[StepWait]) -> WaitInstallOutcome<Self> {
             WaitInstallOutcome::Ready { issued: false }
@@ -350,9 +360,11 @@ mod type_contract_tests {
         assert_send::<RecordedWork<NativeShared>>();
         assert_send_sync::<CompletionPoint<NativeShared>>();
         let id = DeviceId::allocate().unwrap();
+        // SAFETY: this fixture creates matching native values for the allocated device ID.
         let native = unsafe {
             Device::<NativeShared>::from_native(id, Arc::new(()), DeviceCapabilities::default())
         };
+        // SAFETY: this fixture creates matching native values for the allocated device ID.
         let local = unsafe {
             Device::<GlLocal>::from_native(id, Rc::new(()), DeviceCapabilities::default())
         };
@@ -368,6 +380,7 @@ mod type_contract_tests {
     fn raster_draw_rejects_inverted_ranges_before_backend() {
         DRAW_CALLS.with(|calls| calls.set(0));
         let id = DeviceId::allocate().unwrap();
+        // SAFETY: the fixture pairs this native device with its newly allocated ID.
         let device = unsafe {
             Device::<NativeShared>::from_native(id, Arc::new(()), DeviceCapabilities::default())
         };
@@ -408,6 +421,7 @@ mod type_contract_tests {
     fn deferred_binding_rejects_wrong_lane_and_foreign_tail() {
         let device_id = DeviceId::allocate().unwrap();
         let other_id = DeviceId::allocate().unwrap();
+        // SAFETY: the fixture pairs this native device with its newly allocated ID.
         let device = unsafe {
             Device::<NativeShared>::from_native(
                 device_id,
@@ -423,6 +437,7 @@ mod type_contract_tests {
             device: device_id,
             ordinal: 1,
         };
+        // SAFETY: this test provides an ordered, device-local compiled plan.
         let plan = unsafe {
             SubmissionPlan::<NativeShared>::from_compiled(
                 PlanId {
@@ -448,6 +463,7 @@ mod type_contract_tests {
             plan: plan.clone(),
             completion: CompletionRequest::End,
         };
+        // SAFETY: the test intentionally invokes submit to assert Core rejects the invalid lane.
         match unsafe { device.queue().submit(packet) } {
             SubmitOutcome::Rejected {
                 error: Error::WrongLane,
@@ -455,6 +471,7 @@ mod type_contract_tests {
             } => {}
             _ => panic!("wrong-lane work reached the backend"),
         }
+        // SAFETY: this test constructs a device-local plan for the other fixture device.
         let foreign_plan = unsafe {
             SubmissionPlan::<NativeShared>::from_compiled(
                 PlanId {
@@ -471,6 +488,7 @@ mod type_contract_tests {
             accepted_frontier: Vec::new(),
             completion: CompletionRequest::None,
         };
+        // SAFETY: the test intentionally invokes resume to assert Core rejects the foreign tail.
         match unsafe { device.queue().resume(tail) } {
             SubmitOutcome::Rejected {
                 error: Error::WrongDevice,
@@ -482,6 +500,7 @@ mod type_contract_tests {
     #[test]
     fn stale_surface_lease_cannot_enter_plan_present() {
         let device_id = DeviceId::allocate().unwrap();
+        // SAFETY: the fixture pairs this native device with its newly allocated ID.
         let device = unsafe {
             Device::<NativeShared>::from_native(
                 device_id,
@@ -493,6 +512,7 @@ mod type_contract_tests {
             device: device_id,
             ordinal: 0,
         };
+        // SAFETY: this test provides an ordered, device-local compiled plan.
         let plan = unsafe {
             SubmissionPlan::<NativeShared>::from_compiled(
                 PlanId {
@@ -525,6 +545,7 @@ mod type_contract_tests {
             plan,
             completion: CompletionRequest::None,
         };
+        // SAFETY: the test invokes submit only to exercise stale-lease validation.
         match unsafe { device.queue().submit(packet) } {
             SubmitOutcome::Rejected {
                 error: Error::SurfaceOutdated,
@@ -537,6 +558,7 @@ mod type_contract_tests {
     fn dropped_immediate_session_reports_issued_prefix_to_backend() {
         ABANDONED_STEPS.with(|count| count.set(0));
         let device_id = DeviceId::allocate().unwrap();
+        // SAFETY: the fixture pairs this native device with its newly allocated ID.
         let device = unsafe {
             Device::<GlLocal>::from_native(device_id, Rc::new(()), DeviceCapabilities::default())
         };
@@ -544,6 +566,7 @@ mod type_contract_tests {
             device: device_id,
             ordinal: 0,
         };
+        // SAFETY: this test provides an ordered, device-local compiled plan.
         let plan = unsafe {
             SubmissionPlan::<GlLocal>::from_compiled(
                 PlanId {
@@ -557,6 +580,7 @@ mod type_contract_tests {
                 }]),
             )
         };
+        // SAFETY: the fixture plan belongs to this immediate-only device.
         let mut session = unsafe { device.immediate(plan, CompletionRequest::None).unwrap() };
         let encoder = match session.begin_commands() {
             Ok(encoder) => encoder,

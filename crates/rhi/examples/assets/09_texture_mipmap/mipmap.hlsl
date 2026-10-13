@@ -1,3 +1,4 @@
+// Native fullscreen blit used to generate one mip level from the previous level.
 Texture2D<float4> source_texture : register(t0);
 SamplerState source_sampler : register(s0);
 

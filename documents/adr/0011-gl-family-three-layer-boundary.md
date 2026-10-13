@@ -13,11 +13,13 @@ and duplicate resource ownership.
 
 `backend/gl` has three private responsibilities:
 
-1. `api` normalizes GL-family feature routes and structured failures;
-2. `state` is the sole desired/applied/unknown state authority, including
-   dependency-invalidated structural caches;
-3. native/browser providers and lowering own context calls and translate RHI
-   command snapshots through that state authority.
+1. Core `api` defines the portable immediate-execution contract and structured
+   failures; the GL backend selects the available profile and feature routes;
+2. `state` remembers known/unknown driver bindings and invalidates derived
+   cache facts when dependencies change;
+3. native/browser providers own contexts and issue GL calls directly while
+   lowering each Core command. They must not buffer a CPU command stream for
+   later replay.
 
 Desktop GL, GLES, and adopted WebGL2 create separate backend-private providers
 and terminal device identities. A capability exists only when the selected
@@ -28,7 +30,7 @@ RHI. Context loss is device loss.
 ## Consequences
 
 The backend can use the highest available GL 4.x or ES 3.x context while
-retaining the GL 4.0 / ES 3.0 / WebGL2 floor. State caching is an optimization,
-not a second command semantics: cache misses, raw access, retirement, and loss
-must invalidate facts conservatively. Runtime evidence remains required per
+retaining the GL 4.0 / ES 3.0 / WebGL2 floor. State caching records native
+state, not commands: cache misses, raw access, retirement, and loss must
+invalidate facts conservatively. Runtime evidence remains required per
 provider route and belongs in conformance results, not this ADR.

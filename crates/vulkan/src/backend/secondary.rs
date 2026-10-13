@@ -4,6 +4,9 @@
 //! never touch the primary encoder's externally synchronized pool.  A closed
 //! work item retains that pool and every native object referenced by its
 //! commands until the parent recorded work has passed its submission fence.
+//! This module validates inheritance compatibility but does not schedule work,
+//! derive resource barriers, or permit a secondary buffer outside its matching
+//! primary dynamic-rendering scope.
 
 use super::*;
 
@@ -31,6 +34,8 @@ impl Drop for SecondaryWork {
         // The parent encoder retains this work through its completion fence,
         // so this pool cannot be destroyed while the queue can execute
         // `command`. The retained references drop immediately afterwards.
+        // SAFETY: retained parent work holds this Arc until its submission
+        // fence; this final owner destroys a pool no queue can still execute.
         unsafe { self.device.device.destroy_command_pool(self.pool, None) };
     }
 }
@@ -53,6 +58,8 @@ pub struct VulkanSecondaryEncoder {
 impl Drop for VulkanSecondaryEncoder {
     fn drop(&mut self) {
         if self.pool != vk::CommandPool::null() {
+            // SAFETY: an unclosed secondary has never been handed to a parent;
+            // this encoder exclusively owns its transient pool.
             unsafe { self.device.device.destroy_command_pool(self.pool, None) };
         }
     }
@@ -75,6 +82,8 @@ impl api::SecondaryBackend for Vulkan {
             ),
             None => None,
         };
+        // SAFETY: DeviceState owns the live device and this worker receives an
+        // independent pool for the selected graphics queue family.
         let pool = unsafe {
             device.0.device.create_command_pool(
                 &vk::CommandPoolCreateInfo::default()
@@ -88,9 +97,13 @@ impl api::SecondaryBackend for Vulkan {
             .command_pool(pool)
             .level(vk::CommandBufferLevel::SECONDARY)
             .command_buffer_count(1);
+        // SAFETY: `pool` was just created on this live device and `alloc`
+        // requests exactly one secondary buffer from that still-owned pool.
         let command = match unsafe { device.0.device.allocate_command_buffers(&alloc) } {
             Ok(buffers) => buffers[0],
             Err(error) => {
+                // SAFETY: allocation failed, so no command buffer can retain
+                // this local pool and this path is its sole owner.
                 unsafe { device.0.device.destroy_command_pool(pool, None) };
                 return Err(vk_error(error));
             }
@@ -109,7 +122,11 @@ impl api::SecondaryBackend for Vulkan {
                     | vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE,
             )
             .inheritance_info(&legacy_inheritance);
+        // SAFETY: `command` was allocated from `pool`; inheritance describes
+        // the checked secondary signature and is borrowed only for this call.
         if let Err(error) = unsafe { device.0.device.begin_command_buffer(command, &begin) } {
+            // SAFETY: a failed begin cannot make the command executable; this
+            // function still uniquely owns the pool and its allocated buffer.
             unsafe { device.0.device.destroy_command_pool(pool, None) };
             return Err(vk_error(error));
         }
@@ -135,6 +152,8 @@ impl api::SecondaryBackend for Vulkan {
         if !pipeline.matches_secondary(&encoder.signature) {
             return Err(Error::InvalidState);
         }
+        // SAFETY: the pipeline was checked against this encoder's inheritance
+        // signature and is retained until the parent submission completes.
         unsafe {
             encoder.device.device.cmd_bind_pipeline(
                 encoder.command,
@@ -162,6 +181,8 @@ impl api::SecondaryBackend for Vulkan {
             .as_ref()
             .ok_or(Error::InvalidState)?
             .validate_group(slot, group)?;
+        // SAFETY: layout/group compatibility and offsets are checked above;
+        // retaining the group keeps the native descriptor set alive.
         unsafe {
             encoder.device.device.cmd_bind_descriptor_sets(
                 encoder.command,
@@ -191,6 +212,8 @@ impl api::SecondaryBackend for Vulkan {
         {
             return Err(Error::InvalidRange);
         }
+        // SAFETY: VERTEX usage and byte range were checked and the buffer is
+        // retained by the closed work item before it can be submitted.
         unsafe {
             encoder.device.device.cmd_bind_vertex_buffers(
                 encoder.command,
@@ -225,6 +248,8 @@ impl api::SecondaryBackend for Vulkan {
         {
             return Err(Error::InvalidRange);
         }
+        // SAFETY: checked index alignment, range and usage match the selected
+        // native index type; retaining the buffer protects its handle.
         unsafe {
             encoder.device.device.cmd_bind_index_buffer(
                 encoder.command,
@@ -252,6 +277,8 @@ impl api::SecondaryBackend for Vulkan {
         {
             return Err(Error::InvalidRange);
         }
+        // SAFETY: viewport values were range checked; negative height performs
+        // the documented top-left-to-Vulkan coordinate conversion.
         unsafe {
             encoder.device.device.cmd_set_viewport(
                 encoder.command,
@@ -273,6 +300,8 @@ impl api::SecondaryBackend for Vulkan {
         if rect.width == 0 || rect.height == 0 {
             return Err(Error::InvalidRange);
         }
+        // SAFETY: the live secondary command buffer owns this dynamic state and
+        // the nonzero scissor extent was checked above.
         unsafe {
             encoder.device.device.cmd_set_scissor(
                 encoder.command,
@@ -304,6 +333,8 @@ impl api::SecondaryBackend for Vulkan {
             .as_ref()
             .ok_or(Error::InvalidState)?
             .validate(stages, offset, bytes)?;
+        // SAFETY: the active pipeline supplied this layout and validation
+        // checked the pushed byte range and stage visibility.
         unsafe {
             encoder.device.device.cmd_push_constants(
                 encoder.command,
@@ -327,6 +358,8 @@ impl api::SecondaryBackend for Vulkan {
         {
             return Err(Error::InvalidState);
         }
+        // SAFETY: an inherited-compatible pipeline is bound and the checked
+        // ranges produce non-underflowing Vulkan draw counts.
         unsafe {
             encoder.device.device.cmd_draw(
                 encoder.command,
@@ -352,6 +385,8 @@ impl api::SecondaryBackend for Vulkan {
         {
             return Err(Error::InvalidState);
         }
+        // SAFETY: an index buffer is bound, a compatible pipeline is active,
+        // and checked ranges map directly to native draw parameters.
         unsafe {
             encoder.device.device.cmd_draw_indexed(
                 encoder.command,
@@ -369,6 +404,8 @@ impl api::SecondaryBackend for Vulkan {
         if encoder.layout.is_none() {
             return Err(Error::InvalidState);
         }
+        // SAFETY: this encoder exclusively owns its begun secondary command
+        // buffer and has recorded only commands admitted by the invariants.
         unsafe { encoder.device.device.end_command_buffer(encoder.command) }.map_err(vk_error)?;
         let work = VulkanSecondaryWork(std::sync::Arc::new(SecondaryWork {
             device: encoder.device.clone(),
@@ -389,6 +426,8 @@ impl api::SecondaryBackend for Vulkan {
         if !encoder.raster || encoder.secondary_signature.as_ref() != Some(&work.0.signature) {
             return Err(Error::InvalidState);
         }
+        // SAFETY: the primary pass opted into secondary contents and checked
+        // the exact inheritance signature; retaining `work` protects its pool.
         unsafe {
             encoder
                 .device

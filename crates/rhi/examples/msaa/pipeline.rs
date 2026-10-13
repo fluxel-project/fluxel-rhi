@@ -1,3 +1,8 @@
+//! Shader and raster-pipeline construction for the multisample Voyager scene.
+//!
+//! Attachment allocation and per-frame recording are deliberately kept in
+//! sibling modules so pipeline state has one owner.
+
 use super::MsaaBackend;
 use fluxel_rhi::api::*;
 

@@ -19,6 +19,8 @@ pub(crate) fn texture_to_buffer(
     dst: &Dx12Buffer,
     layout: api::TexelCopyBufferLayout,
 ) -> Result<()> {
+    // SAFETY: Core validated the source region's device identity; clone retains
+    // native texture storage through the command list and completion boundary.
     let texture = unsafe { src.texture.native_ref() }.0.clone();
     let desc = &texture.desc;
     let native_format = match desc.format {
@@ -90,6 +92,8 @@ pub(crate) fn texture_to_buffer(
         false,
         subresource,
     );
+    // SAFETY: source/target locations own COM clones, all ranges were checked,
+    // and READBACK storage is permanently COPY_DEST for this direct copy.
     unsafe {
         encoder.list.CopyTextureRegion(
             &target,

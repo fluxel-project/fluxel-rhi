@@ -1,4 +1,8 @@
 //! Vulkan pipeline layouts and push-constant range validation.
+//!
+//! A pipeline layout retains its descriptor-set layouts and validated push-range
+//! contract. It can therefore validate later bind/push commands without a
+//! global descriptor or resource-state tracker.
 
 use super::super::{DeviceState, VulkanDevice, vk_error};
 use super::binding::{VulkanBindGroup, VulkanBindGroupLayout};
@@ -68,6 +72,8 @@ impl VulkanPipelineLayout {
 }
 impl Drop for Layout {
     fn drop(&mut self) {
+        // SAFETY: recorded pipelines retain this layout until fence retirement;
+        // this final Arc still owns the live DeviceState used for destruction.
         unsafe {
             self.device
                 .device
@@ -80,6 +86,8 @@ pub(crate) fn create_layout(
     device: &VulkanDevice,
     desc: &api::PipelineLayoutDesc<'_, super::super::Vulkan>,
 ) -> Result<VulkanPipelineLayout> {
+    // SAFETY: DeviceState retains the VkInstance owning `physical`; querying
+    // immutable physical-device properties has no resource lifetime effect.
     let limits = unsafe {
         device
             .0
@@ -124,12 +132,18 @@ pub(crate) fn create_layout(
     let groups: Arc<[_]> = desc
         .groups
         .iter()
-        .map(|group| unsafe { group.native_ref() }.clone())
+        .map(|group| {
+            // SAFETY: `Device::create_pipeline_layout` checked every group
+            // DeviceId against `device` before entering this backend function.
+            unsafe { group.native_ref() }.clone()
+        })
         .collect();
     let sets: Vec<_> = groups.iter().map(VulkanBindGroupLayout::native).collect();
     let info = vk::PipelineLayoutCreateInfo::default()
         .set_layouts(&sets)
         .push_constant_ranges(&native_ranges);
+    // SAFETY: the set-layout and push-range slices outlive this call, and all
+    // handles belong to the live DeviceState retained by the resulting Layout.
     let layout =
         unsafe { device.0.device.create_pipeline_layout(&info, None) }.map_err(vk_error)?;
     Ok(VulkanPipelineLayout(Arc::new(Layout {

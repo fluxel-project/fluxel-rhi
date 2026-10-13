@@ -1,4 +1,7 @@
-//! Statically typed RHI contract component.
+//! Raster-pass attachment, viewport, and load/store vocabulary.
+//!
+//! The renderer determines pass order and resource transitions. Backends lower
+//! this immutable pass description without deriving a second hazard model.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{

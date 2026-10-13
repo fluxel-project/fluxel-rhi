@@ -1,4 +1,9 @@
 //! Vulkan dynamic-rendering raster-pipeline creation.
+//!
+//! This module builds one dynamic-rendering pipeline from a Core descriptor.
+//! The pipeline retains its layout and stores the render-target signature used
+//! by secondary-command validation; encoders keep the pipeline alive until the
+//! submission fence proves native command execution complete.
 
 use super::super::{DeviceState, VulkanDevice, VulkanShader, vk_error};
 use super::layout::{PushConstants, VulkanPipelineLayout};
@@ -42,6 +47,8 @@ struct Raster {
 }
 impl Drop for Raster {
     fn drop(&mut self) {
+        // SAFETY: encoders retain the Raster Arc through fence retirement, so
+        // no in-flight command buffer can still reference this pipeline.
         unsafe { self.device.device.destroy_pipeline(self.pipeline, None) }
     }
 }
@@ -69,17 +76,19 @@ pub(crate) fn create_raster(
         .map(|s| CString::new(s.entry.as_str()))
         .transpose()
         .map_err(|_| Error::Shader("shader entry contains NUL".into()))?;
-    let vs = stage(
-        unsafe { desc.vertex.module.native_ref() },
-        &vertex_name,
-        vk::ShaderStageFlags::VERTEX,
-    )?;
+    // SAFETY: `Device::raster_pipeline` checked every stage and layout DeviceId
+    // before this backend future; the shader borrow is needed only for creation.
+    let vertex_shader = unsafe { desc.vertex.module.native_ref() };
+    let vs = stage(vertex_shader, &vertex_name, vk::ShaderStageFlags::VERTEX)?;
     let fs = desc
         .fragment
         .as_ref()
         .map(|s| {
+            // SAFETY: the public raster-pipeline constructor checked this
+            // optional fragment module against the device before this call.
+            let shader = unsafe { s.module.native_ref() };
             stage(
-                unsafe { s.module.native_ref() },
+                shader,
                 fragment_name.as_ref().expect("fragment name exists"),
                 vk::ShaderStageFlags::FRAGMENT,
             )
@@ -246,6 +255,9 @@ pub(crate) fn create_raster(
     if depth.is_some() {
         rendering = rendering.depth_attachment_format(vk::Format::D32_SFLOAT);
     }
+    // SAFETY: Core validated this layout's DeviceId; keeping a clone below
+    // retains all dependent descriptor layouts for the native pipeline lifetime.
+    let layout = unsafe { desc.layout.native_ref() }.clone();
     let mut info = vk::GraphicsPipelineCreateInfo::default()
         .stages(&stages)
         .vertex_input_state(&vi)
@@ -255,11 +267,13 @@ pub(crate) fn create_raster(
         .rasterization_state(&raster)
         .multisample_state(&ms)
         .color_blend_state(&cb)
-        .layout(unsafe { desc.layout.native_ref() }.native())
+        .layout(layout.native())
         .push_next(&mut rendering);
     if let Some(depth) = depth.as_ref() {
         info = info.depth_stencil_state(depth);
     }
+    // SAFETY: every create-info slice and pNext structure above remains alive
+    // for the call, and all Vulkan handles belong to this live DeviceState.
     let pipeline = unsafe {
         device
             .0
@@ -270,7 +284,7 @@ pub(crate) fn create_raster(
     Ok(VulkanRasterPipeline(Arc::new(Raster {
         device: device.0.clone(),
         pipeline,
-        layout: unsafe { desc.layout.native_ref() }.clone(),
+        layout,
         color_formats: Arc::from(
             desc.color_targets
                 .iter()

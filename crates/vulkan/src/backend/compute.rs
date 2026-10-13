@@ -32,6 +32,8 @@ impl api::ComputeOps<Vulkan> for VulkanCompute {
         if !e.compute {
             return Err(Error::InvalidState);
         }
+        // SAFETY: `e` owns a recording primary command buffer; the pipeline
+        // retains this device and was created for its COMPUTE bind point.
         unsafe {
             e.device.device.cmd_bind_pipeline(
                 e.command,
@@ -62,6 +64,8 @@ impl api::ComputeOps<Vulkan> for VulkanCompute {
             .as_ref()
             .ok_or(Error::InvalidState)?
             .validate_group(slot, group)?;
+        // SAFETY: the validated group/layout pair belongs to this pipeline and
+        // encoder; offsets were checked against retained buffer ranges above.
         unsafe {
             e.device.device.cmd_bind_descriptor_sets(
                 e.command,
@@ -83,6 +87,8 @@ impl api::ComputeOps<Vulkan> for VulkanCompute {
         if groups.contains(&0) {
             return Err(Error::InvalidRange);
         }
+        // SAFETY: an active compute pass owns this recording command buffer and
+        // the nonzero dispatch counts were validated against the Core contract.
         unsafe {
             e.device
                 .device
@@ -102,6 +108,8 @@ impl api::ComputeOps<Vulkan> for VulkanCompute {
             .as_ref()
             .ok_or(Error::InvalidState)?;
         let stages = ranges.validate(api::StageMask::COMPUTE, offset, bytes)?;
+        // SAFETY: PushConstants validates the supplied bytes against the live
+        // pipeline layout's declared COMPUTE ranges before this native record.
         unsafe {
             e.device
                 .device

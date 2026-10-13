@@ -1,6 +1,8 @@
 # ADR-0015: Freeze plan-scoped transient lifetimes with a dedicated fallback
 
-**Status:** Accepted
+**Status:** Historical design target. The current Core API does not expose the
+`TransientLifetime` and `SubmissionPlanBuilder` described below; this record
+does not claim an implemented backend capability.
 
 ## Context
 

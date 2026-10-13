@@ -1,3 +1,8 @@
+//! Explicit mip-chain texture allocation and generation helpers.
+//!
+//! This module describes only the generated texture and its transitions; the
+//! tunnel pipeline and outer frame lifecycle live in sibling modules.
+
 use super::MipmapBackend;
 use fluxel_rhi::api::*;
 

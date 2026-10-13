@@ -1,4 +1,10 @@
 //! DXGI HWND swapchain implementation for the surface SPI.
+//!
+//! `SurfaceState` owns swapchain generations and the current exclusive image
+//! lease. An `ImageLease` clears acquisition on drop unless Present consumes
+//! it, while generation checks reject stale images after reconfiguration.
+//! DXGI owns presentation timing; this module creates no frame scheduler and
+//! keeps only the resources required for the live swapchain generation.
 
 use std::{
     future::{Ready, ready},
@@ -54,6 +60,8 @@ pub(crate) struct ImageLease {
     handed: bool,
 }
 
+// SAFETY: the caller supplies a live Win32 window handle and keeps its host
+// window alive until this surface and all outstanding images have retired.
 pub(crate) unsafe fn create_surface(
     device: &api::Device<Dx12>,
     handle: RawWindowHandle,
@@ -61,7 +69,11 @@ pub(crate) unsafe fn create_surface(
     let RawWindowHandle::Win32(Win32WindowHandle { hwnd, .. }) = handle else {
         return Err(Error::Unsupported("a Win32 window handle"));
     };
+    // SAFETY: the device is the typed owner of its native state; cloning it
+    // keeps device/queue/fence alive for the surface's entire lifetime.
     let native = unsafe { device.native_ref() }.clone();
+    // SAFETY: factory creation has no borrowed input and returns a COM object
+    // owned by this newly created SurfaceState.
     let factory = unsafe { CreateDXGIFactory2::<IDXGIFactory4>(DXGI_CREATE_FACTORY_FLAGS(0)) }
         .map_err(error)?;
     let state = Arc::new(SurfaceState {
@@ -76,6 +88,8 @@ pub(crate) unsafe fn create_surface(
             acquired: false,
         }),
     });
+    // SAFETY: `state` is newly allocated for this same device id and becomes
+    // the only native surface payload owned by the returned typed Surface.
     Ok(unsafe {
         api::Surface::from_native(device.id(), api::SurfaceId::allocate()?, Dx12Surface(state))
     })
@@ -91,6 +105,8 @@ impl Drop for ImageLease {
     }
 }
 
+// SAFETY: `SurfaceState` serializes generation changes with handoff and Drop;
+// each image owns exactly one acquired slot and releases it at most once.
 unsafe impl api::NativeImageLease for Dx12SurfaceImage {
     fn try_handoff(&mut self, generation: u64) -> Result<()> {
         if self.0.generation != generation || self.0.handed {
@@ -100,6 +116,8 @@ unsafe impl api::NativeImageLease for Dx12SurfaceImage {
         if inner.generation != generation || !inner.acquired {
             return Err(Error::SurfaceOutdated);
         }
+        // SAFETY: the mutex proves this is the current generation's exclusive
+        // acquired image, and the swapchain COM object remains in `inner`.
         unsafe {
             inner
                 .chain
@@ -165,7 +183,11 @@ impl api::SurfaceBackend for Dx12 {
         let Some(chain) = i.chain.as_ref() else {
             return ready(Err(Error::SurfaceLost));
         };
+        // SAFETY: the mutex keeps this configured swapchain generation stable;
+        // querying its current index has no ownership side effect.
         let index = unsafe { chain.GetCurrentBackBufferIndex() };
+        // SAFETY: `chain` is retained by the current generation and `index`
+        // came from that chain, so GetBuffer returns an owned COM reference.
         let resource = match unsafe { chain.GetBuffer::<ID3D12Resource>(index) } {
             Ok(value) => value,
             Err(e) => return ready(Err(error(e))),
@@ -203,6 +225,8 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
     if i.acquired {
         return Err(Error::InvalidState);
     }
+    // SAFETY: the surface retains its device/fence; this side-effect-free
+    // query is the completion proof used before invalidating swapchain buffers.
     let completed = unsafe { s.0.device.0.fence.GetCompletedValue() };
     if completed == u64::MAX {
         return Err(Error::DeviceLost);
@@ -219,6 +243,8 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
         return Err(Error::InvalidState);
     }
     let resized = if let Some(chain) = i.chain.as_ref() {
+        // SAFETY: there is no acquired image and all recorded work is proven
+        // complete above, satisfying DXGI's old-backbuffer release requirement.
         unsafe { chain.ResizeBuffers(2, d.extent[0], d.extent[1], format, flags) }
             .map_err(error)?;
         true
@@ -239,6 +265,8 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
             AlphaMode: DXGI_ALPHA_MODE_IGNORE,
             Flags: flags.0 as u32,
         };
+        // SAFETY: the host HWND lifetime is the public surface constructor's
+        // contract; queue/factory are retained by SurfaceState and `desc` is local.
         let chain = unsafe {
             s.0.factory
                 .CreateSwapChainForHwnd(&s.0.device.0.queue, s.0.hwnd, &desc, None, None)
@@ -259,6 +287,8 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
             .ok_or(Error::SurfaceLost)?
             .cast()
             .map_err(error)?;
+        // SAFETY: latency is a cast of the retained current swapchain and the
+        // configured value has already passed the RHI capability validation.
         unsafe { latency.SetMaximumFrameLatency(d.maximum_frame_latency) }.map_err(error)?;
         rebuild_rtvs(&s.0.device, &mut i)
     })();
@@ -283,6 +313,8 @@ fn invalidate(inner: &mut Inner) {
     inner.generation = inner.generation.wrapping_add(1);
 }
 fn rebuild_rtvs(device: &Dx12Device, inner: &mut Inner) -> Result<()> {
+    // SAFETY: the initialized two-entry RTV heap descriptor is local and the
+    // returned COM heap remains in `inner` for this swapchain generation.
     let heap = unsafe {
         device
             .0
@@ -295,12 +327,14 @@ fn rebuild_rtvs(device: &Dx12Device, inner: &mut Inner) -> Result<()> {
             })
     }
     .map_err(error)?;
+    // SAFETY: the retained device only reads its immutable RTV increment size.
     let increment = unsafe {
         device
             .0
             .native
             .GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV)
     } as usize;
+    // SAFETY: the newly created heap is non-empty and remains alive in `inner`.
     let start = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
     let chain = inner.chain.as_ref().ok_or(Error::SurfaceLost)?;
     let mut rtvs = Vec::with_capacity(2);
@@ -308,7 +342,11 @@ fn rebuild_rtvs(device: &Dx12Device, inner: &mut Inner) -> Result<()> {
         let handle = D3D12_CPU_DESCRIPTOR_HANDLE {
             ptr: start.ptr + index * increment,
         };
+        // SAFETY: indices are the two buffers declared in the current chain;
+        // each call returns an owned COM reference used during this descriptor write.
         let resource = unsafe { chain.GetBuffer::<ID3D12Resource>(index as u32) }.map_err(error)?;
+        // SAFETY: resource and destination CPU handle belong to the current
+        // device/generation, and the heap remains retained after this call.
         unsafe {
             device
                 .0

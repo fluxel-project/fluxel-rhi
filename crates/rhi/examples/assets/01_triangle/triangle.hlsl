@@ -1,3 +1,4 @@
+// Native DXIL/SPIR-V triangle path. Attribute locations match example 01.
 struct VertexInput {
     float3 position : LOCATION0;
     float3 color : LOCATION1;

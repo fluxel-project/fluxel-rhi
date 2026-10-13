@@ -1,3 +1,8 @@
+//! GPU resource ownership and per-frame command recording for example 10.
+//!
+//! It records native indexed-indirect work against a caller-owned surface;
+//! the host performs submission, presentation, and completion observation.
+
 use super::{
     ktx::{Ktx, frame_uniform},
     pipeline::*,

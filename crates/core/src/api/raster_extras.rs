@@ -1,4 +1,7 @@
-//! Statically typed RHI contract component.
+//! Optional raster features such as indirect draws and multiview.
+//!
+//! These operations are admitted only by backend capabilities. Their ordering,
+//! resource state, and fallback policy remain outside Core.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -131,6 +134,9 @@ impl<B: Backend> RasterExtras<'_, B> {
         if offset % 4 != 0
             || (count != 0 && (stride < indirect_argument_size(indexed) || stride % 4 != 0))
         {
+            // Validate the portable command-word layout before lowering: native
+            // APIs otherwise disagree on whether malformed stride is ignored,
+            // clamped, or diagnosed after partial command recording.
             return Err(Error::InvalidRange);
         }
         pass.call(|e| B::Extras::multi_draw(e, &args.native, offset, count, stride, indexed))

@@ -45,6 +45,9 @@ unsafe extern "system" fn wake_on_fence(
 ) {
     // The registration owns this Arc reference until callbacks have drained.
     let waker = {
+        // SAFETY: `Registration` converts its owning Arc into this exact raw
+        // pointer and drains every thread-pool callback before recovering it.
+        // Therefore this callback observes a live WakeState for its duration.
         let state = unsafe { &*(context.cast::<WakeState>()) };
         state.notified.store(true, Ordering::Release);
         state.waker.lock().unwrap_or_else(|p| p.into_inner()).take()
@@ -52,6 +55,8 @@ unsafe extern "system" fn wake_on_fence(
     // Waker::wake may synchronously finish and drop this future. Release the
     // waiter's cleanup gate before invoking user executor code; no context is
     // accessed after this point.
+    // SAFETY: this is the thread-pool callback instance supplied by Windows;
+    // disassociating it before wake prevents Drop from deadlocking on itself.
     unsafe { DisassociateCurrentThreadFromCallback(callback) };
     if let Some(waker) = waker {
         waker.wake();
@@ -67,6 +72,9 @@ struct Registration {
 
 impl Drop for Registration {
     fn drop(&mut self) {
+        // SAFETY: this Registration exclusively owns `wait`, its event, and
+        // the Arc raw pointer. Cancelling and draining callbacks first proves
+        // no callback can read `context` before it is converted back to Arc.
         unsafe {
             SetThreadpoolWait(self.wait, None, None);
             WaitForThreadpoolWaitCallbacks(self.wait, true);
@@ -88,10 +96,14 @@ pub(crate) struct AbandonedFenceEvent {
 
 // A HANDLE is an OS value; this type only transfers and closes it. It never
 // dereferences the handle from another thread.
+// SAFETY: the event HANDLE is transferred as an owned OS value. No thread
+// dereferences it, and retirement closes it only after fence observation.
 unsafe impl Send for AbandonedFenceEvent {}
 
 impl Drop for AbandonedFenceEvent {
     fn drop(&mut self) {
+        // SAFETY: this type owns the event HANDLE after the future transfers
+        // it; retirement only drops it once its fence can no longer signal it.
         unsafe {
             let _ = CloseHandle(self.event);
         }
@@ -110,6 +122,8 @@ pub struct Dx12FenceFuture {
 // thread-pool wait and drains its callback before either native handle or the
 // callback context can be released, so moving a pending future only changes
 // which executor thread polls or drops it.
+// SAFETY: D3D12 fence/device interfaces are free-threaded; registration Drop
+// drains the callback before its context or HANDLE can be released.
 unsafe impl Send for Dx12FenceFuture {}
 
 impl Dx12FenceFuture {
@@ -129,12 +143,16 @@ impl Dx12FenceFuture {
     }
 
     pub(super) fn new(device: Dx12Device, fence: ID3D12Fence, value: u64) -> Self {
+        // SAFETY: this future owns a cloned fence COM interface; querying it
+        // is side-effect free and `fence_progress` handles device removal.
         let completed = unsafe { fence.GetCompletedValue() };
         match fence_progress(completed, value) {
             Err(error) => return Self::immediate(device, fence, value, Err(error)),
             Ok(true) => return Self::immediate(device, fence, value, Ok(())),
             Ok(false) => {}
         }
+        // SAFETY: no borrowed pointers are supplied; the returned event HANDLE
+        // is owned by this future/registration on every success path.
         let event = match unsafe { CreateEventW(None, false, false, None) } {
             Ok(event) => event,
             Err(error) => {
@@ -146,11 +164,15 @@ impl Dx12FenceFuture {
             waker: Mutex::new(None),
         });
         let context = Arc::into_raw(state.clone());
+        // SAFETY: `context` was produced by Arc::into_raw and remains owned by
+        // Registration until callback drain; callback ABI matches wake_on_fence.
         let wait = match unsafe {
             CreateThreadpoolWait(Some(wake_on_fence), Some(context.cast_mut().cast()), None)
         } {
             Ok(wait) => wait,
             Err(error) => {
+                // SAFETY: threadpool wait was not created, so this path solely
+                // recovers the raw Arc once and closes the still-owned event.
                 unsafe {
                     drop(Arc::from_raw(context));
                     let _ = CloseHandle(event);
@@ -164,7 +186,11 @@ impl Dx12FenceFuture {
             context,
             state,
         };
+        // SAFETY: Registration owns wait/event and callback context; Windows
+        // borrows the event until registration Drop cancels and drains the wait.
         unsafe { SetThreadpoolWait(wait, Some(event), None) };
+        // SAFETY: fence is retained by this future and event lifetime is
+        // extended by either the registration or abandoned-event device store.
         match unsafe { fence.SetEventOnCompletion(value, event) } {
             Ok(()) => Self {
                 device,
@@ -186,6 +212,7 @@ impl Drop for Dx12FenceFuture {
         // event, including a concurrent retire pass.
         drop(registration);
         if let Some(event) = event {
+            // SAFETY: the future owns this cloned fence; query is read-only.
             let completed = unsafe { self.fence.GetCompletedValue() };
             if matches!(fence_progress(completed, self.value), Ok(false)) {
                 self.device
@@ -198,6 +225,8 @@ impl Drop for Dx12FenceFuture {
                         event,
                     });
             } else {
+                // SAFETY: completion already proves Windows will not signal
+                // this event again; this future still owns the HANDLE exactly once.
                 unsafe {
                     let _ = CloseHandle(event);
                 }
@@ -218,6 +247,8 @@ impl Future for Dx12FenceFuture {
             }
             return Poll::Ready(result.clone());
         }
+        // SAFETY: `this` owns a cloned fence COM interface and this read has no
+        // queue-side effect.
         let completed = unsafe { this.fence.GetCompletedValue() };
         match fence_progress(completed, this.value) {
             Err(error) => return Poll::Ready(Err(error)),
@@ -237,6 +268,7 @@ impl Future for Dx12FenceFuture {
             .lock()
             .unwrap_or_else(|p| p.into_inner()) = Some(context.waker().clone());
         if registration.state.notified.load(Ordering::Acquire) {
+            // SAFETY: as above, the future retains the fence for this poll.
             let completed = unsafe { this.fence.GetCompletedValue() };
             if !fence_progress(completed, this.value)? {
                 return Poll::Ready(Err(Error::Backend(
@@ -325,6 +357,8 @@ mod tests {
             let _queue = device.0.queue_lock.lock().unwrap();
             let value = device.0.next_fence.fetch_add(1, Ordering::Relaxed);
             assert_eq!(value, 1);
+            // SAFETY: test holds the same queue lock used in production, and
+            // the test device owns both queue and fence interfaces.
             unsafe { device.0.queue.Signal(&device.0.fence, value) }.unwrap();
         }
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -399,6 +433,7 @@ mod tests {
         let mut issued = values.into_inner().unwrap();
         issued.sort_unstable();
         assert_eq!(issued, (3..19).collect::<Vec<_>>());
+        // SAFETY: the test device retains the fence; this final query is read-only.
         assert_eq!(unsafe { device.0.fence.GetCompletedValue() }, 18);
         assert!(device.0.abandoned_fence_events.lock().unwrap().is_empty());
     }

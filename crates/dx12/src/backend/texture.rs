@@ -1,3 +1,12 @@
+//! Texture allocation and view-descriptor ownership for the DX12 backend.
+//!
+//! A `TextureState` owns its D3D12 resource; every `TextureViewState` retains
+//! that state and any private descriptor heap needed by its view.  Descriptor
+//! heaps therefore outlive all command lists retaining the view.  This module
+//! validates format, dimensions and native allocation flags, but leaves
+//! cross-operation layout transitions to `encoder::transition` and makes no
+//! render-graph lifetime or aliasing decisions.
+
 use super::{Dx12Device, Dx12Texture, Dx12TextureView};
 use fluxel_rhi_core::api::{self, Error, Result};
 use std::sync::Arc;
@@ -108,6 +117,8 @@ pub(crate) fn create(dv: &Dx12Device, d: &api::TextureDesc) -> Result<Dx12Textur
         None
     };
     let mut resource = None;
+    // SAFETY: heap/resource descriptors are fully initialized local values;
+    // D3D12 writes the created COM reference to the valid `resource` output.
     unsafe {
         dv.0.native.CreateCommittedResource(
             &heap,
@@ -158,6 +169,9 @@ pub(crate) fn create_view(
         return Err(Error::Unsupported("DX12 D2/D2Array texture view"));
     }
     if depth {
+        // A view owns its private one-entry heap. This avoids a global mutable
+        // CPU descriptor allocator and keeps the descriptor alive with the view.
+        // SAFETY: the descriptor heap descriptor is fully initialized.
         let heap = unsafe {
             dv.0.native
                 .CreateDescriptorHeap::<ID3D12DescriptorHeap>(&D3D12_DESCRIPTOR_HEAP_DESC {
@@ -168,8 +182,12 @@ pub(crate) fn create_view(
                 })
         }
         .map_err(err)?;
+        // SAFETY: the newly created one-entry heap is non-empty and retained
+        // in the returned view state.
         let dsv = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
         let desc = depth_dsv_desc(v, texture.desc.samples)?;
+        // SAFETY: texture and heap are retained by the returned view and the
+        // validated DSV descriptor names only the requested subresources.
         unsafe {
             dv.0.native
                 .CreateDepthStencilView(&texture.resource, Some(&desc), dsv)
@@ -198,11 +216,13 @@ pub(crate) fn create_view(
         .usage
         .contains(api::TextureUsage::TEXTURE_BINDING)
     {
+        // SAFETY: the initialized one-entry SRV heap is owned by this view.
         let heap = unsafe {
             dv.0.native
                 .CreateDescriptorHeap::<ID3D12DescriptorHeap>(&shader_heap_desc)
         }
         .map_err(err)?;
+        // SAFETY: `heap` is non-empty and remains owned by the view.
         let srv = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
         let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
             Format: dxgi_format(texture.desc.format),
@@ -234,6 +254,8 @@ pub(crate) fn create_view(
                 }
             },
         };
+        // SAFETY: the validated SRV range belongs to retained texture storage
+        // and the destination CPU handle belongs to the retained heap.
         unsafe {
             dv.0.native
                 .CreateShaderResourceView(&texture.resource, Some(&desc), srv)
@@ -247,11 +269,13 @@ pub(crate) fn create_view(
         .usage
         .contains(api::TextureUsage::STORAGE_BINDING)
     {
+        // SAFETY: the initialized one-entry UAV heap is owned by this view.
         let heap = unsafe {
             dv.0.native
                 .CreateDescriptorHeap::<ID3D12DescriptorHeap>(&shader_heap_desc)
         }
         .map_err(err)?;
+        // SAFETY: `heap` is non-empty and remains owned by the view.
         let uav = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
         let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
             Format: dxgi_format(texture.desc.format),
@@ -263,6 +287,8 @@ pub(crate) fn create_view(
                 },
             },
         };
+        // SAFETY: validated UAV format/mip and retained resource/heap make
+        // this descriptor write independent of caller lifetimes.
         unsafe {
             dv.0.native
                 .CreateUnorderedAccessView(&texture.resource, None, Some(&desc), uav)
@@ -279,6 +305,7 @@ pub(crate) fn create_view(
         if v.mips.end != v.mips.start + 1 {
             return Err(Error::Unsupported("DX12 RTV view requires one mip"));
         }
+        // SAFETY: the initialized one-entry RTV heap is owned by this view.
         let heap = unsafe {
             dv.0.native
                 .CreateDescriptorHeap::<ID3D12DescriptorHeap>(&D3D12_DESCRIPTOR_HEAP_DESC {
@@ -289,6 +316,7 @@ pub(crate) fn create_view(
                 })
         }
         .map_err(err)?;
+        // SAFETY: `heap` is non-empty and remains owned by the view.
         let rtv = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
         let desc = D3D12_RENDER_TARGET_VIEW_DESC {
             Format: dxgi_format(texture.desc.format),
@@ -327,6 +355,8 @@ pub(crate) fn create_view(
                 }
             },
         };
+        // SAFETY: the validated RTV descriptor refers to retained texture
+        // storage and writes only into this view's retained descriptor heap.
         unsafe {
             dv.0.native
                 .CreateRenderTargetView(&texture.resource, Some(&desc), rtv)
@@ -475,6 +505,8 @@ fn supported_sample_counts(dv: &Dx12Device, d: &api::TextureDesc) -> Vec<u32> {
                 Flags: D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE,
                 NumQualityLevels: 0,
             };
+            // SAFETY: `quality` is the exact feature struct required by this
+            // query and stays mutable/alive for the synchronous D3D12 call.
             unsafe {
                 dv.0.native.CheckFeatureSupport(
                     D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS,
@@ -541,6 +573,8 @@ mod tests {
         };
         let desc = depth_dsv_desc(&view, 1).unwrap();
         assert_eq!(desc.ViewDimension, D3D12_DSV_DIMENSION_TEXTURE2DARRAY);
+        // SAFETY: `depth_dsv_desc` initialized the union's Texture2DArray arm
+        // for the asserted view dimension immediately above.
         let array = unsafe { desc.Anonymous.Texture2DArray };
         assert_eq!(array.FirstArraySlice, 3);
         assert_eq!(array.ArraySize, 2);

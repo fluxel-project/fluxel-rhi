@@ -1,6 +1,11 @@
 # ADR-0012: Keep RHI limited to portable execution
 
-**Status:** Accepted (clarified)
+**Status:** Superseded by the current [RHI design](../design-rhi.md).
+
+The `command::ResourceUse` collection and backend hazard derivation described
+below are historical. RenderGraph plans hazards and resource states; the RHI
+executes explicit commands and transitions without collecting uses or building
+a second dependency graph.
 
 > Clarification (post-foundation target): this ADR keeps RHI free of
 > RenderGraph-owned declarations and renderer policy. It does not require

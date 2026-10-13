@@ -1,3 +1,11 @@
+//! Direct command encoder construction and generic command recording.
+//!
+//! The methods here translate validated Core operations straight to the native
+//! command list.  Resource transitions are supplied explicitly by the graph;
+//! this module does not keep a global state tracker or derive future uses from
+//! creation flags.  References retained by `Dx12Encoder` are GPU-lifetime
+//! keep-alives, released only after the submission fence retires the work.
+
 use super::*;
 impl api::CommandBackend for Dx12 {
     fn begin_encoder(device: &Dx12Device, lane: LaneId) -> Result<Dx12Encoder, Error> {
@@ -17,6 +25,8 @@ impl api::CommandBackend for Dx12 {
                     if barrier_op.ownership.is_some() {
                         return Err(Error::Unsupported("DX12 buffer ownership transfer"));
                     }
+                    // SAFETY: Core checked the target's device identity; this
+                    // borrows its native state only while a clone is retained below.
                     let buffer = unsafe { barrier_op.target.buffer.native_ref() };
                     if barrier_op.target.range != (0..buffer.size) {
                         return Err(Error::Unsupported("DX12 partial buffer transition"));
@@ -35,6 +45,8 @@ impl api::CommandBackend for Dx12 {
                     if barrier_op.ownership.is_some() {
                         return Err(Error::Unsupported("DX12 texture ownership transfer"));
                     }
+                    // SAFETY: as for buffers, the typed texture is same-device
+                    // and its clone enters encoder lifetime retention below.
                     let texture = unsafe { barrier_op.target.texture.native_ref() };
                     let desc = &texture.0.desc;
                     if barrier_op.target.aspects != api::TextureAspects::COLOR {
@@ -133,6 +145,8 @@ impl api::CommandBackend for Dx12 {
             D3D12_RESOURCE_STATE_COMMON,
             D3D12_RESOURCE_STATE_COPY_DEST,
         );
+        // SAFETY: both resources are retained by the encoder and range checks
+        // above ensure the native copy does not address outside either buffer.
         unsafe {
             encoder
                 .list
@@ -154,6 +168,8 @@ impl api::CommandBackend for Dx12 {
         layout: api::TexelCopyBufferLayout,
         bytes: &[u8],
     ) -> Result<(), Error> {
+        // SAFETY: Core tied the region to this device; the clone stored below
+        // keeps the texture and its COM resource alive through submission.
         let texture = unsafe { dst.texture.native_ref() };
         if texture.0.desc.format != api::TextureFormat::Rgba8Unorm
             || dst.aspect != api::TextureAspects::COLOR
@@ -196,12 +212,15 @@ impl api::CommandBackend for Dx12 {
             .checked_mul(texture.0.desc.mip_levels)
             .and_then(|layer| layer.checked_add(dst.mip))
             .ok_or(Error::InvalidRange)?;
+        // SAFETY: the retained resource exposes an immutable descriptor only.
         let desc = unsafe { texture.0.resource.GetDesc() };
         let mut footprint = D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default();
         let mut rows = 0;
         let mut row_size = 0;
         let mut total = 0;
         let mut device = None;
+        // SAFETY: the resource is retained and D3D12 writes the device COM
+        // reference only into the valid local Option output slot.
         unsafe {
             texture
                 .0
@@ -210,6 +229,8 @@ impl api::CommandBackend for Dx12 {
         }
         .map_err(native_error)?;
         let device = device.ok_or_else(|| Error::Backend("texture has no D3D12 device".into()))?;
+        // SAFETY: all footprint out-pointers are valid locals and `desc` is
+        // an immutable descriptor for the retained texture resource.
         unsafe {
             device.GetCopyableFootprints(
                 &desc,
@@ -235,6 +256,8 @@ impl api::CommandBackend for Dx12 {
             .ok_or(Error::InvalidRange)?;
         let upload = texture_upload_buffer(&device, upload_bytes)?;
         let mut mapped = std::ptr::null_mut();
+        // SAFETY: upload heap storage is CPU writable and Map initializes the
+        // local pointer for the no-read range before row copies below.
         unsafe {
             upload.Map(
                 0,
@@ -251,12 +274,16 @@ impl api::CommandBackend for Dx12 {
             let source = source_base
                 .checked_add(row.checked_mul(source_pitch).ok_or(Error::InvalidRange)?)
                 .ok_or(Error::InvalidRange)?;
+            // SAFETY: `row` is bounded by the checked footprint height and
+            // RowPitch, so the calculated address stays within the mapped upload range.
             let target = unsafe {
                 mapped
                     .cast::<u8>()
                     .add(row * footprint.Footprint.RowPitch as usize)
             };
             let source_end = source.checked_add(row_bytes).ok_or(Error::InvalidRange)?;
+            // SAFETY: source slice bounds and destination row bounds were
+            // checked above; the two allocations cannot overlap.
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     bytes[source..source_end].as_ptr(),
@@ -265,6 +292,8 @@ impl api::CommandBackend for Dx12 {
                 );
             }
         }
+        // SAFETY: the mapped upload allocation is no longer accessed after
+        // this one matching Unmap call.
         unsafe {
             upload.Unmap(0, None);
         }
@@ -281,11 +310,15 @@ impl api::CommandBackend for Dx12 {
             false,
             subresource,
         );
+        // SAFETY: copy locations own cloned COM references; both resources are
+        // retained and are in the explicit COPY states around this call.
         unsafe {
             encoder
                 .list
                 .CopyTextureRegion(&target, dst.origin[0], dst.origin[1], 0, &source, None);
         }
+        // SAFETY: destroy exactly the cloned COM references installed in the
+        // FFI unions after D3D12 synchronously consumed the locations.
         unsafe {
             ManuallyDrop::drop(&mut source.pResource);
             ManuallyDrop::drop(&mut target.pResource);
@@ -309,6 +342,8 @@ impl api::CommandBackend for Dx12 {
         if filter != api::FilterMode::Linear {
             return Err(Error::Unsupported("DX12 mip blit filter"));
         }
+        // SAFETY: Core validated both regions against this encoder's device;
+        // cloning state extends source and target lifetime through the blit.
         let source = unsafe { src.texture.native_ref() }.0.clone();
         let target = unsafe { dst.texture.native_ref() }.0.clone();
         validate_mip_blit(&source, &src, true)?;

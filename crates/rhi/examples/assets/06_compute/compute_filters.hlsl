@@ -1,3 +1,4 @@
+// Three native compute kernels share sampled source t0 and storage destination u1.
 Texture2D<float4> source_image : register(t0);
 #ifdef FLUXEL_VULKAN
 [[vk::image_format("rgba8")]]

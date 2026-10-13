@@ -1,3 +1,12 @@
+//! D3D12 queue submission, fence facts, and fence-retired work ownership.
+//!
+//! A Core `SubmissionPlan` has already fixed command order and dependencies.
+//! This module executes that order on the one direct queue; it neither builds a
+//! DAG nor caches a second command representation.  `queue_lock` serializes
+//! native execute/present/signal ordering and fence allocation.  Recorded work
+//! remains in `in_flight` until `GetCompletedValue` proves its fence complete;
+//! `u64::MAX` is device removal, never completion.
+
 use super::*;
 impl api::CompletionBackend for Dx12 {
     type WaitFuture<'a>
@@ -7,6 +16,8 @@ impl api::CompletionBackend for Dx12 {
     fn completion_status(device: &Dx12Device, point: &Dx12Completion) -> CompletionState {
         // GetCompletedValue is native queue evidence; no host-side counter is
         // treated as completion.
+        // SAFETY: `point` retains this fence COM interface; querying a fence
+        // has no ownership or queue-order side effect.
         match super::fence_wait::fence_progress(
             unsafe { point.fence.GetCompletedValue() },
             point.value,
@@ -42,6 +53,8 @@ impl api::CompletionBackend for Dx12 {
 }
 
 pub(super) fn retire(device: &Dx12Device) {
+    // SAFETY: the device state owns this fence for every in-flight record;
+    // querying it is side-effect free and device removal is handled below.
     let completed = unsafe { device.0.fence.GetCompletedValue() };
     device
         .0
@@ -82,6 +95,8 @@ fn signal_queue(device: &Dx12Device) -> Result<u64, Error> {
             |next| next.checked_add(1),
         )
         .map_err(|_| Error::InvalidRange)?;
+    // SAFETY: `queue_lock` holds the queue's external synchronization boundary,
+    // and the device owns both queue and fence for their whole shared lifetime.
     unsafe { device.0.queue.Signal(&device.0.fence, value) }.map_err(native_error)?;
     Ok(value)
 }
@@ -93,6 +108,8 @@ fn checkpoint(
     lane_frontiers: &[(LaneId, api::StepId)],
 ) -> api::Checkpoint<Dx12> {
     api::Checkpoint {
+        // SAFETY: this completion point carries only a cloned device-owned
+        // fence and the monotonically allocated value serialized above.
         point: unsafe {
             CompletionPoint::from_native(
                 device_id,
@@ -122,6 +139,8 @@ fn retain_indeterminate(device: &Dx12Device, issued: Vec<Dx12RecordedWork>) {
 impl DeferredBackend for Dx12 {
     type NativeRecordedWork = Dx12RecordedWork;
     fn finish_encoder(mut encoder: Dx12Encoder, lane: LaneId) -> Result<Dx12RecordedWork, Error> {
+        // SAFETY: `encoder` exclusively owns its still-open list; Core calls
+        // this once before any list can cross the queue boundary.
         unsafe { encoder.list.Close() }.map_err(native_error)?;
         encoder.closed = true;
         Ok(Dx12RecordedWork { lane, encoder })
@@ -152,6 +171,8 @@ impl DeferredBackend for Dx12 {
                     let mut lists = Vec::with_capacity(work.len());
                     let mut lane = None;
                     for record in work {
+                        // SAFETY: Core constructed `record` for this device and
+                        // submission consumes it exactly once into native work.
                         let native = unsafe { record.into_native() };
                         if !native.encoder.closed {
                             device
@@ -162,6 +183,9 @@ impl DeferredBackend for Dx12 {
                                 .push((u64::MAX, issued));
                             return SubmitOutcome::Indeterminate {
                                 error: Error::InvalidState,
+                                // SAFETY: no handoff was attempted; the empty
+                                // marker only records that native state cannot
+                                // be proven after a malformed recorded list.
                                 uncertain: unsafe {
                                     api::NativeUncertainty::from_native(plan.id().device, ())
                                 },
@@ -187,6 +211,9 @@ impl DeferredBackend for Dx12 {
                             .queue_lock
                             .lock()
                             .unwrap_or_else(|p| p.into_inner());
+                        // SAFETY: queue access is serialized by `queue_lock`;
+                        // every list is closed and retained in `issued` until
+                        // the fence established below retires it.
                         unsafe {
                             device.0.queue.ExecuteCommandLists(
                                 &lists.into_iter().map(Some).collect::<Vec<_>>(),
@@ -202,11 +229,15 @@ impl DeferredBackend for Dx12 {
                     if accepted.is_empty() {
                         return SubmitOutcome::Indeterminate {
                             error: Error::InvalidState,
+                            // SAFETY: no native present was issued, so this is
+                            // an explicit indeterminate marker for Core recovery.
                             uncertain: unsafe {
                                 api::NativeUncertainty::from_native(plan.id().device, ())
                             },
                         };
                     }
+                    // SAFETY: `binding` is the exclusive current image lease;
+                    // this is its single native DXGI handoff attempt.
                     if let Err(error) = unsafe { binding.try_handoff() } {
                         device
                             .0
@@ -216,6 +247,8 @@ impl DeferredBackend for Dx12 {
                             .push((u64::MAX, issued));
                         return SubmitOutcome::Indeterminate {
                             error,
+                            // SAFETY: Present may have reached DXGI before its
+                            // error was observed; preserve that uncertainty.
                             uncertain: unsafe {
                                 api::NativeUncertainty::from_native(plan.id().device, ())
                             },
@@ -241,6 +274,8 @@ impl DeferredBackend for Dx12 {
                     }
                     return SubmitOutcome::Indeterminate {
                         error: Error::Unsupported("DX12 sparse bind"),
+                        // SAFETY: earlier lists may already be queued, so report
+                        // uncertainty instead of claiming a clean rejection.
                         uncertain: unsafe {
                             api::NativeUncertainty::from_native(plan.id().device, ())
                         },
@@ -254,6 +289,8 @@ impl DeferredBackend for Dx12 {
                         retain_indeterminate(device, issued);
                         return SubmitOutcome::Indeterminate {
                             error,
+                            // SAFETY: Signal failure follows issued queue work;
+                            // callers must treat the retained prefix as uncertain.
                             uncertain: unsafe {
                                 api::NativeUncertainty::from_native(plan.id().device, ())
                             },
@@ -278,6 +315,8 @@ impl DeferredBackend for Dx12 {
                         retain_indeterminate(device, issued);
                         return SubmitOutcome::Indeterminate {
                             error,
+                            // SAFETY: final retention Signal can fail after
+                            // execution; preserve the exact uncertainty fact.
                             uncertain: unsafe {
                                 api::NativeUncertainty::from_native(plan.id().device, ())
                             },
@@ -315,6 +354,8 @@ impl DeferredBackend for Dx12 {
             presents,
         })
     }
+    // SAFETY: this route issues no native work and returns the owning tail
+    // unchanged, so it cannot advance or discard the accepted frontier.
     unsafe fn resume(_: &Dx12Device, tail: api::DeferredTail<Self>) -> SubmitOutcome<Self> {
         SubmitOutcome::Rejected {
             error: Error::Unsupported("DX12 submit resume"),

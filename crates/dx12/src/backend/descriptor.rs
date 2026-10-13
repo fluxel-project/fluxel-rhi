@@ -22,6 +22,8 @@ use super::{Dx12, Dx12BindGroup, Dx12BindGroupLayout, Dx12Buffer, Dx12Device};
 
 #[path = "descriptor_array.rs"]
 mod descriptor_array;
+#[path = "descriptor/write.rs"]
+mod write;
 
 const VIEW_CAPACITY: u32 = 65_536;
 const SAMPLER_CAPACITY: u32 = 2_048;
@@ -90,6 +92,8 @@ impl Heap {
     }
 
     fn cpu(&self, index: u32) -> D3D12_CPU_DESCRIPTOR_HANDLE {
+        // SAFETY: this non-empty heap is retained by `self`; descriptor handles
+        // are stable for its lifetime and index arithmetic is bounded by allocate.
         let mut handle = unsafe { self.native.GetCPUDescriptorHandleForHeapStart() };
         handle.ptr += usize::try_from(index.saturating_mul(self.increment)).unwrap_or(0);
         handle
@@ -109,8 +113,12 @@ pub(crate) fn create_heaps(device: &ID3D12Device) -> Result<DescriptorHeaps> {
             Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
             NodeMask: 0,
         };
+        // SAFETY: `desc` is fully initialized and D3D12 returns an owned COM
+        // heap whose lifetime is held by the returned Arc<Heap>.
         let native = unsafe { device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&desc) }
             .map_err(native_error)?;
+        // SAFETY: the device owns the heap type and this query only reads its
+        // immutable descriptor increment size.
         let increment = unsafe { device.GetDescriptorHandleIncrementSize(ty) };
         Ok(Arc::new(Heap {
             native,
@@ -207,6 +215,8 @@ impl BindGroupState {
     pub(crate) fn view_gpu(
         &self,
     ) -> windows::Win32::Graphics::Direct3D12::D3D12_GPU_DESCRIPTOR_HANDLE {
+        // SAFETY: the shader-visible view heap is retained by this bind group;
+        // its allocation range was checked when the group was created.
         let mut handle = unsafe { self.heaps.views.native.GetGPUDescriptorHandleForHeapStart() };
         handle.ptr += u64::from(self.view_start.saturating_mul(self.heaps.views.increment));
         handle
@@ -225,6 +235,8 @@ impl BindGroupState {
     pub(crate) fn sampler_gpu(
         &self,
     ) -> windows::Win32::Graphics::Direct3D12::D3D12_GPU_DESCRIPTOR_HANDLE {
+        // SAFETY: equivalent sampler heap ownership/allocation invariant as
+        // `view_gpu`; the resulting GPU handle borrows no Rust memory.
         let mut handle = unsafe {
             self.heaps
                 .samplers
@@ -348,6 +360,8 @@ pub(crate) fn create_bind_group(
     device: &Dx12Device,
     desc: &api::BindGroupDesc<'_, Dx12>,
 ) -> Result<Dx12BindGroup> {
+    // SAFETY: Core validated the same-device layout; cloning retains its
+    // immutable native metadata independently of the descriptor borrow.
     let layout = unsafe { desc.layout.native_ref() }.0.clone();
     if desc.entries.len() != layout.slots.len() {
         return Err(Error::InvalidState);
@@ -365,7 +379,7 @@ pub(crate) fn create_bind_group(
                     return Ok(count);
                 }
                 count
-                    .checked_add(resource_descriptor_count(slot, &entry.resource)?)
+                    .checked_add(write::resource_descriptor_count(slot, &entry.resource)?)
                     .ok_or(Error::InvalidRange)
             })?;
     let sampler_count = layout
@@ -399,12 +413,14 @@ pub(crate) fn create_bind_group(
                 .release(sampler_start, sampler_count);
             return Err(Error::InvalidState);
         }
-        let descriptor_count = resource_descriptor_count(slot, &entry.resource)?;
+        let descriptor_count = write::resource_descriptor_count(slot, &entry.resource)?;
         if slot.class == DescriptorClass::Srv {
-            validate_sampled_view_dimension(slot, &entry.resource)?;
+            write::validate_sampled_view_dimension(slot, &entry.resource)?;
         }
         match (slot.class, &entry.resource) {
             (DescriptorClass::Cbv, api::BindingResource::Buffer { buffer, range }) => {
+                // SAFETY: Core guarantees the binding buffer belongs to this
+                // device; clones below retain it until bind-group destruction.
                 let native_buffer = unsafe { buffer.native_ref() };
                 if native_buffer.usage.0 & api::BufferUsage::UNIFORM.0 == 0 {
                     return Err(Error::Unsupported(
@@ -445,10 +461,14 @@ pub(crate) fn create_bind_group(
                     return Err(Error::InvalidRange);
                 }
                 let cbv = D3D12_CONSTANT_BUFFER_VIEW_DESC {
+                    // SAFETY: the retained buffer is a live same-device COM
+                    // resource, and its virtual address is immutable.
                     BufferLocation: unsafe { native_buffer.resource.GetGPUVirtualAddress() }
                         .saturating_add(range.start),
                     SizeInBytes: native_bytes as u32,
                 };
+                // SAFETY: the CBV range/alignment was checked above and the
+                // destination handle belongs to this group's reserved heap slot.
                 unsafe {
                     device.0.native.CreateConstantBufferView(
                         Some(&cbv),
@@ -468,11 +488,15 @@ pub(crate) fn create_bind_group(
             (DescriptorClass::Srv, api::BindingResource::TextureView(view))
                 if slot.descriptor_count == 1 =>
             {
+                // SAFETY: this same-device view is retained below; only its
+                // already-created SRV source descriptor is borrowed here.
                 let native = unsafe { view.native_ref() };
                 let source = native
                     .0
                     .srv
                     .ok_or(Error::Unsupported("DX12 sampled texture without SRV"))?;
+                // SAFETY: both descriptor handles belong to live same-device
+                // heaps and CopyDescriptorsSimple copies exactly one descriptor.
                 unsafe {
                     device.0.native.CopyDescriptorsSimple(
                         1,
@@ -495,11 +519,14 @@ pub(crate) fn create_bind_group(
                 textures.extend(retained);
             }
             (DescriptorClass::Uav, api::BindingResource::TextureView(view)) => {
+                // SAFETY: same device/view lifetime invariant as the SRV path.
                 let native = unsafe { view.native_ref() };
                 let source = native
                     .0
                     .uav
                     .ok_or(Error::Unsupported("DX12 storage texture without UAV"))?;
+                // SAFETY: source UAV and reserved destination heap slot are
+                // retained for this group's lifetime.
                 unsafe {
                     device.0.native.CopyDescriptorsSimple(
                         1,
@@ -512,7 +539,11 @@ pub(crate) fn create_bind_group(
                 textures.push(native.clone());
             }
             (DescriptorClass::Sampler, api::BindingResource::Sampler(sampler)) => {
+                // SAFETY: Core validated sampler device identity; the native
+                // sampler descriptor heap is retained by the cloned sampler.
                 let native = unsafe { sampler.native_ref() };
+                // SAFETY: source and destination sampler heap handles are live
+                // and each describes one descriptor in the same D3D12 device.
                 unsafe {
                     device.0.native.CopyDescriptorsSimple(
                         1,
@@ -547,55 +578,6 @@ pub(crate) fn create_bind_group(
         sampler_count,
         heaps: device.0.descriptors.clone(),
     })))
-}
-
-fn resource_descriptor_count(
-    slot: &BindingSlot,
-    resource: &api::BindingResource<'_, Dx12>,
-) -> Result<u32> {
-    if !slot.runtime_sized {
-        return Ok(slot.descriptor_count);
-    }
-    let api::BindingResource::Array(values) = resource else {
-        return Err(Error::InvalidState);
-    };
-    let count = u32::try_from(values.len()).map_err(|_| Error::InvalidRange)?;
-    if count == 0 || count > descriptor_array::RUNTIME_SRV_CAPACITY {
-        return Err(Error::Unsupported(
-            "DX12 runtime sampled texture array length",
-        ));
-    }
-    Ok(count)
-}
-
-fn validate_sampled_view_dimension(
-    slot: &BindingSlot,
-    resource: &api::BindingResource<'_, Dx12>,
-) -> Result<()> {
-    let expected = slot.view_dimension.ok_or(Error::InvalidState)?;
-    match resource {
-        api::BindingResource::TextureView(view) => validate_sampled_view(view, expected),
-        api::BindingResource::Array(views) => {
-            for view in views.iter().flatten() {
-                let api::BindingResource::TextureView(view) = view else {
-                    return Err(Error::Unsupported("DX12 sampled texture array resource"));
-                };
-                validate_sampled_view(view, expected)?;
-            }
-            Ok(())
-        }
-        _ => Err(Error::Unsupported("DX12 sampled texture binding resource")),
-    }
-}
-
-fn validate_sampled_view(
-    view: &api::TextureView<Dx12>,
-    expected: api::TextureViewDimension,
-) -> Result<()> {
-    if unsafe { view.native_ref() }.0.desc.dimension != expected {
-        return Err(Error::InvalidState);
-    }
-    Ok(())
 }
 
 fn native_error(error: windows::core::Error) -> Error {

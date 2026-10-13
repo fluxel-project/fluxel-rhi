@@ -1,4 +1,7 @@
-//! Statically typed RHI contract component.
+//! Surface configuration and exclusive image-acquisition contract.
+//!
+//! A surface image lease is valid for one configuration generation. The host
+//! owns window lifetime; the renderer chooses frame pacing and retirement.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -105,6 +108,9 @@ impl<B: SurfaceBackend> Surface<B> {
     }
     pub async fn acquire(&mut self) -> Result<SurfaceImage<B>> {
         let native = B::acquire(&mut self.native).await?;
+        // Read the generation after acquisition: a backend's atomic acquire
+        // transaction is the authority for the lease generation it returned.
+        // Caching an earlier value would let a resize race mint a stale lease.
         Ok(SurfaceImage {
             device: self.device,
             surface: self.id,

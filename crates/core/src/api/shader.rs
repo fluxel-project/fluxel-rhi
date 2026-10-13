@@ -1,4 +1,7 @@
-//! Statically typed RHI contract component.
+//! Shader-module creation and source artifact contract.
+//!
+//! Backend-specific compilation remains behind the SPI. This module does not
+//! select platform shader dialects or introduce a cross-backend compiler.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -82,6 +85,9 @@ impl<B: ShaderBackend> Device<B> {
                 return Err(Error::Unsupported("shader format/profile/ABI"));
             }
         };
+        // Do not try another route after the selected compiler fails. A retry
+        // could silently compile a different ABI than the backend advertised.
+        // SAFETY: the SPI created this shader for this device.
         Ok(unsafe { Shader::from_native(self.id, native) })
     }
 }

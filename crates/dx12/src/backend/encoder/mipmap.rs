@@ -1,3 +1,12 @@
+//! Internal graphics lowering for a restricted linear mip blit.
+//!
+//! This is an implementation detail of the public copy operation.  It accepts
+//! only complete RGBA8 color mips and records one fullscreen draw directly in
+//! the caller's command list.  The root signature and PSO are immutable
+//! device-lifetime objects cached by `MipBlitCache`; descriptor heaps remain
+//! encoder-owned because each draw rewrites them and they must survive GPU
+//! execution.  This module neither plans mip chains nor tracks resource state.
+
 use super::*;
 use std::sync::{Arc, Mutex};
 
@@ -106,13 +115,20 @@ fn create_pipeline(device: &ID3D12Device) -> Result<MipBlitPipeline, Error> {
         Flags: D3D12_ROOT_SIGNATURE_FLAG_NONE,
     };
     let mut blob = None;
+    // SAFETY: `root_desc` points only into the local `ranges`/`params` arrays,
+    // which remain alive through serialization; D3D12 copies the result into
+    // the returned blob.
     unsafe {
         D3D12SerializeRootSignature(&root_desc, D3D_ROOT_SIGNATURE_VERSION_1, &mut blob, None)
     }
     .map_err(native_error)?;
     let blob = blob.ok_or(Error::OutOfMemory)?;
+    // SAFETY: the blob owns this pointer and its reported byte range until the
+    // blob is dropped after `CreateRootSignature` has copied the serialized data.
     let bytes =
         unsafe { std::slice::from_raw_parts(blob.GetBufferPointer().cast(), blob.GetBufferSize()) };
+    // SAFETY: `bytes` is the validated serialized root signature above and
+    // `device` owns the native factory call.
     let root = unsafe { device.CreateRootSignature::<ID3D12RootSignature>(0, bytes) }
         .map_err(native_error)?;
     let vs = include_bytes!("../../assets/mipmap.vs.dxil");
@@ -179,6 +195,8 @@ fn create_pipeline(device: &ID3D12Device) -> Result<MipBlitPipeline, Error> {
         },
         ..Default::default()
     };
+    // SAFETY: every pointer in `pso` references local shader/format data that
+    // remains live for this call; D3D12 copies pipeline state at creation.
     let state = unsafe { device.CreateGraphicsPipelineState::<ID3D12PipelineState>(&pso) }
         .map_err(native_error)?;
     Ok(MipBlitPipeline { root, state })
@@ -197,11 +215,15 @@ pub(crate) fn linear_mip_blit(
     // D3D12 has no fixed-function scaled blit.  This tiny native fullscreen
     // pass samples the source with a linear sampler and writes the destination.
     let mut device = None;
+    // SAFETY: `source` is retained by the encoder and the out parameter is a
+    // valid Option slot for the COM interface returned by D3D12.
     unsafe { source.GetDevice::<ID3D12Device>(&mut device) }.map_err(native_error)?;
     let device = device.ok_or(Error::OutOfMemory)?;
     let pipeline = encoder.mip_blit_cache.get_or_create(&device)?;
     let root = &pipeline.root;
     let state = &pipeline.state;
+    // SAFETY: descriptor-heap descriptors are fully initialized and D3D12
+    // returns independently owned COM heaps retained by this encoder.
     let views = unsafe {
         device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&D3D12_DESCRIPTOR_HEAP_DESC {
             Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
@@ -211,6 +233,7 @@ pub(crate) fn linear_mip_blit(
         })
     }
     .map_err(native_error)?;
+    // SAFETY: same ownership and descriptor-initialization invariant as `views`.
     let samplers = unsafe {
         device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&D3D12_DESCRIPTOR_HEAP_DESC {
             Type: D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
@@ -220,6 +243,8 @@ pub(crate) fn linear_mip_blit(
         })
     }
     .map_err(native_error)?;
+    // SAFETY: the RTV heap descriptor is initialized; its COM reference is
+    // retained until the command list using its handle is fence-retired.
     let rtv_heap = unsafe {
         device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&D3D12_DESCRIPTOR_HEAP_DESC {
             Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
@@ -229,9 +254,14 @@ pub(crate) fn linear_mip_blit(
         })
     }
     .map_err(native_error)?;
+    // SAFETY: each non-empty heap above remains alive through all descriptor
+    // writes and command recording below, so its start handles remain valid.
     let srv = unsafe { views.GetCPUDescriptorHandleForHeapStart() };
     let sh = unsafe { samplers.GetCPUDescriptorHandleForHeapStart() };
+    // SAFETY: identical non-empty retained-heap invariant as `srv` and `sh`.
     let rtv = unsafe { rtv_heap.GetCPUDescriptorHandleForHeapStart() };
+    // SAFETY: source/target resources and all three heaps are retained by the
+    // encoder; the view ranges name validated mip indices and initialized descriptors.
     unsafe {
         device.CreateShaderResourceView(
             source,
@@ -294,6 +324,8 @@ pub(crate) fn linear_mip_blit(
         D3D12_RESOURCE_STATE_COPY_DEST,
         D3D12_RESOURCE_STATE_RENDER_TARGET,
     );
+    // SAFETY: this encoder exclusively records `list`; root state, descriptor
+    // heaps, and attachment handles above remain retained through submission.
     unsafe {
         list.OMSetRenderTargets(1, Some(&rtv), false, None);
         list.SetGraphicsRootSignature(root);

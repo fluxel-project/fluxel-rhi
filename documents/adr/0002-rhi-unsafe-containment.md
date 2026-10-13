@@ -9,9 +9,11 @@ represented by leaked HAL handles in application-facing APIs.
 
 ## Decision
 
-Keep HAL/native types and all `unsafe` within the private RHI implementation
-boundary (`imp` and its private submodules). Public APIs expose opaque,
-device-affine resources, pipelines, bindings, leases, and structured errors.
+Keep HAL/native types and backend `unsafe` within each backend crate's private
+native boundary. The public Core API exposes opaque, device-affine resources,
+pipelines, bindings, leases, and structured errors. A few documented unsafe
+Core constructors and accessors form the backend-only bridge; callers must
+uphold their device identity and exclusive-lease contracts.
 
 ## Alternatives
 
@@ -20,7 +22,7 @@ device-affine resources, pipelines, bindings, leases, and structured errors.
 
 ## Consequences
 
-The RHI must validate device identity, usage, state, ranges, alignment,
+The backend must validate device identity, usage, state, ranges, alignment,
 thread serialization, and lifetime before native calls. Renderer and
 RenderGraph can state portable contracts without inheriting HAL safety rules.
 

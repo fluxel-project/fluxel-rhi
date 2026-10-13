@@ -1,4 +1,10 @@
 //! Root-signature and pipeline-layout lowering.
+//!
+//! Core layout groups are lowered to DXIL register spaces and root parameters.
+//! The resulting state is immutable and shared by pipelines. This module keeps
+//! the backing range vectors alive until serialization has copied them, then
+//! owns only the native root signature and its mapping metadata; it does not
+//! allocate descriptors or choose dynamic bindings at record time.
 use fluxel_rhi_core::api::{self, Error, Result};
 use std::sync::Arc;
 use windows::Win32::Graphics::Direct3D12::*;
@@ -37,6 +43,8 @@ pub(crate) fn create_pipeline_layout(
     let mut parameters: Vec<D3D12_ROOT_PARAMETER> = Vec::with_capacity(desc.groups.len());
     let mut tables = Vec::with_capacity(desc.groups.len());
     for (group, layout) in desc.groups.iter().enumerate() {
+        // SAFETY: the Core descriptor is tied to this device; this borrow is
+        // used only while synchronously building an independent root signature.
         let native = unsafe { layout.native_ref() };
         let state = &native.0;
         let view_ranges: Vec<D3D12_DESCRIPTOR_RANGE> = state
@@ -178,6 +186,9 @@ pub(crate) fn create_pipeline_layout(
         Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
     };
     let mut blob = None;
+    // SAFETY: all pointers in `root_desc` point at vectors retained until this
+    // synchronous serializer returns; D3D12 receives a fully initialized ABI
+    // descriptor and writes only to the supplied COM out parameter.
     unsafe {
         D3D12SerializeRootSignature(&root_desc, D3D_ROOT_SIGNATURE_VERSION_1, &mut blob, None)
     }
@@ -185,8 +196,12 @@ pub(crate) fn create_pipeline_layout(
     let blob = blob.ok_or_else(|| {
         Error::Backend("D3D12 root-signature serialization returned no blob".into())
     })?;
+    // SAFETY: the serializer owns `blob`; its documented buffer pointer and
+    // size remain valid while `blob` stays in scope for CreateRootSignature.
     let bytes =
         unsafe { std::slice::from_raw_parts(blob.GetBufferPointer().cast(), blob.GetBufferSize()) };
+    // SAFETY: the blob byte range remains live for this synchronous creation
+    // call, and the returned COM object takes ownership of native state.
     let root = unsafe {
         device
             .0

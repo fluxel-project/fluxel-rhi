@@ -1,3 +1,4 @@
+// WebGPU mirror-display pass sampling the color target rendered by the first pass.
 struct Transform {
     projection: mat4x4<f32>,
     view: mat4x4<f32>,

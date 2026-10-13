@@ -1,4 +1,7 @@
-//! Statically typed RHI contract component.
+//! Narrow backend-native interoperation escape hatch.
+//!
+//! Calls are unsafe because callers cross the RHI ownership boundary. Core
+//! neither validates foreign native commands nor tracks their state changes.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -21,6 +24,9 @@ pub trait NativeInteropBackend: Backend {
         device: &Self::NativeDevice,
         request: NativeInteropRequest,
     ) -> Result<Self::NativeInteropGuard>;
+    /// # Safety
+    /// The guard must remain alive and the backend must expose the returned
+    /// pointer only under its native thread, lifetime, and synchronization rules.
     unsafe fn raw_pointer(guard: &Self::NativeInteropGuard) -> *mut std::ffi::c_void;
 }
 pub struct NativeInteropGuard<B: NativeInteropBackend> {
@@ -32,6 +38,7 @@ impl<B: NativeInteropBackend> NativeInteropGuard<B> {
     /// Caller maintains native synchronization, lifetime and backend state
     /// invalidation; raw access never bypasses the renderer's retirement rule.
     pub unsafe fn raw_pointer(&self) -> *mut std::ffi::c_void {
+        // SAFETY: this public unsafe method transfers the backend guard's raw-access contract.
         unsafe { B::raw_pointer(&self.native) }
     }
 }

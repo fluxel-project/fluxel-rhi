@@ -23,6 +23,8 @@ pub(crate) fn copy_buffer(
     {
         return Err(Error::InvalidRange);
     }
+    // SAFETY: both retained buffers belong to this recording device; Core has
+    // selected CopySrc/CopyDst states and the validated ranges fit allocations.
     unsafe {
         encoder.device.device.cmd_copy_buffer(
             encoder.command,
@@ -62,6 +64,8 @@ pub(crate) fn write_buffer(
             memory: api::MemoryClass::Upload,
         },
     )?;
+    // SAFETY: this freshly allocated upload buffer owns host-visible coherent
+    // memory and no GPU submission can observe it before the copy is recorded.
     let mapped = unsafe {
         encoder.device.device.map_memory(
             upload.0.memory,
@@ -71,11 +75,15 @@ pub(crate) fn write_buffer(
         )
     }
     .map_err(vk_error)?;
+    // SAFETY: the mapping covers `bytes.len()` from offset zero; copy then
+    // unmap completes before this allocation is used by any recorded command.
     unsafe {
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.cast(), bytes.len());
         encoder.device.device.unmap_memory(upload.0.memory);
     }
     before_transfer(encoder);
+    // SAFETY: encoder owns a recording command buffer; upload and destination
+    // are retained by it through fence completion and ranges were checked above.
     unsafe {
         encoder.device.device.cmd_copy_buffer(
             encoder.command,
@@ -100,6 +108,8 @@ fn before_transfer(encoder: &VulkanEncoder) {
     let barrier = vk::MemoryBarrier::default()
         .src_access_mask(vk::AccessFlags::MEMORY_WRITE)
         .dst_access_mask(vk::AccessFlags::TRANSFER_READ | vk::AccessFlags::TRANSFER_WRITE);
+    // SAFETY: this barrier is recorded into the owned command buffer and names
+    // no resource handle, only the explicit Core transfer ordering boundary.
     unsafe {
         encoder.device.device.cmd_pipeline_barrier(
             encoder.command,
@@ -117,6 +127,8 @@ fn after_upload(encoder: &VulkanEncoder) {
     let barrier = vk::MemoryBarrier::default()
         .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
         .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE);
+    // SAFETY: this post-copy barrier remains within the same recording command
+    // buffer and does not infer a later resource state.
     unsafe {
         encoder.device.device.cmd_pipeline_barrier(
             encoder.command,

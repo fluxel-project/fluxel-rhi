@@ -12,6 +12,8 @@ pub(crate) fn begin_occlusion(
     if slot >= set.0.count || encoder.active_occlusion.is_some() {
         return Err(Error::InvalidState);
     }
+    // SAFETY: set is same-device and retained by encoder; slot is checked and
+    // this open list has no other active occlusion query.
     unsafe {
         encoder
             .list
@@ -24,6 +26,8 @@ pub(crate) fn begin_occlusion(
 
 pub(crate) fn end_occlusion(encoder: &mut Dx12Encoder) -> Result<()> {
     let (set, slot) = encoder.active_occlusion.take().ok_or(Error::InvalidState)?;
+    // SAFETY: `active_occlusion` proves this exact retained query/slot began
+    // on this command list and is ended once here.
     unsafe {
         encoder
             .list
@@ -66,6 +70,8 @@ pub(crate) fn resolve(
             D3D12_RESOURCE_STATE_COPY_DEST,
         );
     }
+    // SAFETY: set/destination are retained below, slot and byte range were
+    // validated, and the destination is in COPY_DEST for this native command.
     unsafe {
         encoder.list.ResolveQueryData(
             &set.0.heap,

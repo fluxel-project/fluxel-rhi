@@ -1,5 +1,7 @@
-// Original glTF rock field, planet, stars, depth, and 8,192 instances via RHI.
-// The workload lives in `instancing/`; this entry owns the native host only.
+//! Instanced glTF rock field with planet, stars, depth, and 8,192 instances.
+//!
+//! The workload lives in `instancing/`; this entry owns platform startup and
+//! does not own GPU scheduling, resource retirement, or window lifetime.
 mod common;
 #[path = "common/gltf.rs"]
 mod gltf;

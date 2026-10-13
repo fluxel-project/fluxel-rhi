@@ -1,3 +1,4 @@
+// Native UFO stage; each secondary recording supplies its own transform record.
 cbuffer Transform : register(b0) { float4x4 mvp; float4 tint; };
 struct Input { float3 position : LOCATION0; float3 normal : LOCATION1; float2 uv : LOCATION2; float3 color : LOCATION3; };
 struct Output { float4 position : SV_Position; float3 normal : NORMAL0; float3 color : COLOR0; float3 view : TEXCOORD0; float3 light : TEXCOORD1; };

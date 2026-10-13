@@ -1,3 +1,8 @@
+//! Embedded data-URI buffer and image decoding for example glTF assets.
+//!
+//! It accepts the deliberately narrow media subset documented by the parent
+//! loader and leaves texture format selection to the consuming example.
+
 use super::*;
 
 pub(super) fn decode_buffers(document: &Value) -> Result<Vec<Vec<u8>>, GltfError> {

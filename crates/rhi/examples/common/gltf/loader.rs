@@ -1,3 +1,8 @@
+//! Scene traversal and mesh assembly for the constrained embedded glTF loader.
+//!
+//! Media and accessor decoding remain in sibling modules. This module builds
+//! the example mesh representation and intentionally does not create GPU data.
+
 use super::*;
 
 pub fn load_embedded_model(bytes: &[u8], options: LoadOptions) -> Result<EmbeddedModel, GltfError> {

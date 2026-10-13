@@ -1,3 +1,8 @@
+//! Tunnel-scene resource and pipeline construction for runtime mip generation.
+//!
+//! Mip storage creation is delegated to `resources`; frame recording and
+//! explicit blits remain in `recording`.
+
 use super::{MipChain, MipmapBackend};
 use fluxel_rhi::api::*;
 

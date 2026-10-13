@@ -1,4 +1,7 @@
 //! Direct native indirect draw calls; WebGPU has no native multi-draw command.
+//!
+//! Calls operate on the currently open native raster pass and retain the
+//! argument buffer with that encoder; they never expand an indirect draw on CPU.
 
 use fluxel_rhi_core::api::{self, Error, Result};
 use wasm_bindgen::JsValue;

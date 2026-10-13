@@ -1,3 +1,12 @@
+//! Direct command-list allocation and encoder-owned lifetime retention.
+//!
+//! Each encoder owns exactly one allocator/list pair until it becomes
+//! `Dx12RecordedWork`.  Submission keeps that work alive through its fence;
+//! only retired work returns the pair to `DirectCommandPool`.  The pool reuses
+//! native D3D12 objects but does not retain, reorder, or replay commands.
+//! Resource references on `Dx12Encoder` exist solely to keep the native
+//! objects and descriptor suballocations valid until GPU completion.
+
 use super::*;
 use std::sync::{Arc, Mutex};
 
@@ -21,6 +30,8 @@ impl DirectCommandPool {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .pop()
         {
+            // SAFETY: a pair enters `available` only after the submission
+            // fence retired its prior work; the mutex grants exclusive reset.
             unsafe {
                 allocator.Reset().map_err(native_error)?;
                 list.Reset(&allocator, None).map_err(native_error)?;
@@ -28,6 +39,8 @@ impl DirectCommandPool {
             return Ok((allocator, list));
         }
 
+        // SAFETY: this device created both objects. The returned allocator and
+        // initially-open list are owned by the newly constructed encoder.
         unsafe {
             let allocator = device
                 .CreateCommandAllocator::<ID3D12CommandAllocator>(D3D12_COMMAND_LIST_TYPE_DIRECT)
@@ -167,6 +180,8 @@ impl api::RasterExtrasOps<Dx12> for RasterExtras {
             .chunks_exact(4)
             .map(|word| u32::from_le_bytes(word.try_into().expect("exact DWORD")))
             .collect();
+        // SAFETY: values remains live throughout the synchronous call; prior
+        // range checks prove the root-constant offset and DWORD count fit layout.
         unsafe {
             encoder.list.SetGraphicsRoot32BitConstants(
                 range.root,

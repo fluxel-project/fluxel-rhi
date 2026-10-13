@@ -1,4 +1,9 @@
 //! Native D3D12 occlusion queries for the command path.
+//!
+//! Query-set ownership ends with its Rust handle, while individual begin/end
+//! commands are encoded by the command module. This layer only creates and
+//! validates the native heap; it deliberately does not infer pass boundaries
+//! or completion, which remain Core and submission concerns.
 use super::{Dx12, Dx12Buffer, Dx12Device, Dx12QuerySet};
 use fluxel_rhi_core::api::{self, Error, Result};
 use std::{ops::Range, sync::Arc};
@@ -23,6 +28,9 @@ impl api::QueryBackend for Dx12 {
             NodeMask: 0,
         };
         let mut heap = None;
+        // SAFETY: `native` is fully initialized, `heap` is valid writable
+        // storage for the returned COM pointer, and `device` owns the D3D12
+        // device for the duration of this synchronous call.
         unsafe { device.0.native.CreateQueryHeap(&native, &mut heap) }.map_err(err)?;
         let heap = heap.ok_or(Error::OutOfMemory)?;
         Ok(Dx12QuerySet(Arc::new(QuerySetState {

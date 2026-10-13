@@ -1,4 +1,8 @@
 //! Completion-gated WebGPU readback buffer mapping.
+//!
+//! Mapping begins only after the caller supplies a completion point covering the
+//! encoded copy. Query resolve sources use private MAP_READ staging because the
+//! WebGPU usage rules forbid MAP_READ and QUERY_RESOLVE on one buffer.
 
 use std::{future::Future, ops::Range, pin::Pin};
 

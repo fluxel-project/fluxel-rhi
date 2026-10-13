@@ -1,4 +1,10 @@
 //! Fixed-function raster PSO lowering and public pipeline validation.
+//!
+//! This module translates the supported Core raster subset into immutable D3D12
+//! PSOs. It rejects state without a faithful native representation instead of
+//! introducing emulation. Temporary ABI arrays and DXIL slices remain alive
+//! through synchronous PSO creation; the completed pipeline then owns its COM
+//! objects and layout mapping for later command encoding.
 use fluxel_rhi_core::api::{self, Error, Result};
 use std::{
     future::{Ready, ready},
@@ -214,6 +220,8 @@ fn create_raster(
         StencilPassOp: D3D12_STENCIL_OP_KEEP,
         StencilFunc: D3D12_COMPARISON_FUNC_ALWAYS,
     };
+    // SAFETY: Core validated the layout belongs to this device; cloning the
+    // Arc retains its root signature after the public descriptor borrow ends.
     let layout = unsafe { desc.layout.native_ref() }.0.clone();
     let root = layout.root.clone();
     let depth_state = D3D12_DEPTH_STENCIL_DESC {
@@ -289,6 +297,9 @@ fn create_raster(
     let state = if desc.multiview.is_some() {
         create_view_instanced_pso(&device.0.native, &pso, &root, &view_locations)?
     } else {
+        // SAFETY: all PSO pointer fields refer to locals retained for the
+        // synchronous D3D12 creation call, and the root COM clone remains
+        // manually owned until it is explicitly dropped below.
         unsafe {
             device
                 .0
@@ -297,6 +308,8 @@ fn create_raster(
         }
         .map_err(native_error)?
     };
+    // SAFETY: CreateGraphicsPipelineState has consumed the descriptor; this
+    // releases exactly the COM clone stored in the ManuallyDrop field.
     unsafe { ManuallyDrop::drop(&mut pso.pRootSignature) };
     Ok(Dx12RasterPipeline(Arc::new(RasterPipelineState {
         root,
@@ -361,6 +374,8 @@ fn comparison(v: api::CompareFunction) -> D3D12_COMPARISON_FUNC {
     }
 }
 fn stage<'a>(s: &'a api::PipelineStage<Dx12>, need: api::ShaderStage) -> Result<&'a [u8]> {
+    // SAFETY: Core's pipeline descriptor validates device identity. The return
+    // slice borrows the stage, which outlives PSO construction in create_raster.
     let n = unsafe { s.module.native_ref() };
     if !n
         .entries

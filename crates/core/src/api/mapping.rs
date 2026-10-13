@@ -1,4 +1,7 @@
-//! Statically typed RHI contract component.
+//! Host mapping and readback contracts.
+//!
+//! Mapping is valid only after the caller has obtained the required completion
+//! evidence. This module exposes no implicit wait or resource-retirement rule.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -70,6 +73,8 @@ impl<B: MappingBackend> MapLease<B> {
 impl<B: MappingBackend> Drop for MapLease<B> {
     fn drop(&mut self) {
         if let Some(map) = self.native.take() {
+            // Taking first makes Drop idempotent if an explicit release path
+            // is added later; the native mapping still receives one unmap.
             B::unmap(map);
         }
     }
@@ -131,6 +136,8 @@ impl<B: ReadbackBackend> CommandEncoder<B> {
         }
         let result = B::encode_readback(self.ready()?, &src.native, range);
         if result.is_err() {
+            // Readback encoding may allocate or record a partial native copy,
+            // so it follows the encoder's sticky failure discipline.
             self.poisoned = true;
         }
         Ok(ReadbackTicket {

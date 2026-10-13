@@ -1,3 +1,4 @@
+// Fullscreen display pass for the source and three compute results in example 06.
 Texture2D image : register(t1); SamplerState image_sampler : register(s2);
 struct In { float3 position:LOCATION0; float2 uv:LOCATION1; };
 struct Out { float4 position:SV_Position; float2 uv:LOCATION0; };

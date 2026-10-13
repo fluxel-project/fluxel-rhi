@@ -1,4 +1,8 @@
 //! Native Vulkan compute-pipeline creation.
+//!
+//! The created pipeline retains its layout. Shader modules need only survive
+//! `vkCreateComputePipelines`, while an encoder retains the resulting pipeline
+//! through submission completion.
 
 use super::super::{DeviceState, VulkanDevice, VulkanShader, vk_error};
 use super::layout::VulkanPipelineLayout;
@@ -29,6 +33,8 @@ struct Compute {
 }
 impl Drop for Compute {
     fn drop(&mut self) {
+        // SAFETY: encoders retain the Compute Arc through fence retirement, so
+        // no in-flight command buffer can still reference this pipeline.
         unsafe { self.device.device.destroy_pipeline(self.pipeline, None) }
     }
 }
@@ -43,9 +49,13 @@ pub(crate) fn create_compute(
     {
         return Err(Error::Unsupported("Vulkan compute pipeline option"));
     }
+    // SAFETY: `ComputeDomain::create_pipeline` checked the shader and layout
+    // DeviceIds against `device`; this borrow survives pipeline creation only.
     let shader: &VulkanShader = unsafe { desc.compute.module.native_ref() };
     let entry = CString::new(desc.compute.entry.as_str())
         .map_err(|_| Error::Shader("shader entry contains NUL".into()))?;
+    // SAFETY: the same Core validation checked this layout's DeviceId. Cloning
+    // it retains descriptor layouts for the lifetime of the native pipeline.
     let layout = unsafe { desc.layout.native_ref() }.clone();
     let stage = vk::PipelineShaderStageCreateInfo::default()
         .stage(vk::ShaderStageFlags::COMPUTE)
@@ -54,6 +64,8 @@ pub(crate) fn create_compute(
     let info = vk::ComputePipelineCreateInfo::default()
         .stage(stage)
         .layout(layout.native());
+    // SAFETY: `stage`, `entry`, and `layout` remain live throughout the call;
+    // all native handles belong to the live DeviceState and no cache is used.
     let pipeline = unsafe {
         device
             .0

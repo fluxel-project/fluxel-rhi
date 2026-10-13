@@ -1,3 +1,4 @@
+// WebGPU visual fallback uses one layered texture instead of native runtime arrays.
 struct Uniforms {
     projection: mat4x4<f32>,
     view: mat4x4<f32>,

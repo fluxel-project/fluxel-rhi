@@ -1,4 +1,7 @@
-//! Statically typed RHI contract component.
+//! Optional ray-tracing pipeline and acceleration-structure contract.
+//!
+//! This module carries device-local operations only. Scene scheduling and
+//! memory residency decisions remain renderer or backend concerns.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -156,6 +159,9 @@ impl<B: Backend> Device<B> {
 }
 impl<B: Backend> RayDomain<'_, B> {
     pub async fn create_pipeline(&self, desc: RayPipelineDesc<B>) -> Result<RayPipeline<B>> {
+        // Shader tables refer to the executable pipeline's shader identities;
+        // accepting a foreign module would defer a deterministic ownership
+        // error until a backend-specific trace operation.
         if desc.layout.device != self.device.id
             || desc
                 .shaders
@@ -169,6 +175,7 @@ impl<B: Backend> RayDomain<'_, B> {
             return Err(Error::WrongDevice);
         }
         let native = B::Ray::create_pipeline(&self.device.native, &desc).await?;
+        // SAFETY: the SPI created this pipeline for this exact native device.
         Ok(unsafe { RayPipeline::from_native(self.device.id, native) })
     }
     pub fn sizes(&self, desc: &AccelerationDesc<B>) -> Result<AccelerationSizes> {
@@ -179,6 +186,7 @@ impl<B: Backend> RayDomain<'_, B> {
         desc: &AccelerationDesc<B>,
     ) -> Result<AccelerationStructure<B>> {
         let native = B::Ray::create_acceleration(&self.device.native, desc)?;
+        // SAFETY: the SPI created this acceleration structure for this device.
         Ok(unsafe { AccelerationStructure::from_native(self.device.id, native) })
     }
     pub fn build(

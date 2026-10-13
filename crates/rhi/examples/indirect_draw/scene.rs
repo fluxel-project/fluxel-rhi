@@ -1,3 +1,8 @@
+//! CPU scene assembly and indirect-argument generation for example 10.
+//!
+//! This module translates the embedded assets into typed CPU payloads. It does
+//! not allocate GPU resources or decide submission order.
+
 use crate::gltf;
 use fluxel_rhi::api::*;
 

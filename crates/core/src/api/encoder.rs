@@ -1,4 +1,8 @@
-//! Statically typed RHI contract component.
+//! Command encoder ownership and backend recording protocol.
+//!
+//! Encoders record work for one device and become unusable after finish or
+//! abandonment. They do not schedule passes, infer hazards, or retain a CPU
+//! replay stream beyond the backend's native recorded work.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -133,6 +137,10 @@ impl<B: CommandBackend> CommandEncoder<B> {
         })
     }
     pub(crate) fn ready(&mut self) -> Result<&mut B::NativeEncoder> {
+        // A pass owns the native encoder until it finishes; allowing another
+        // command here would make pass nesting backend-dependent. A poisoned
+        // encoder also cannot be safely resumed because a native call may have
+        // changed only part of the driver's state.
         if self.poisoned || self.in_pass {
             return Err(Error::InvalidState);
         }
@@ -144,11 +152,15 @@ impl<B: CommandBackend> CommandEncoder<B> {
     ) -> Result<()> {
         let result = f(self.ready()?);
         if result.is_err() {
+            // Keep the failure sticky. Retrying a later command could hide the
+            // point at which native recording became partially observable.
             self.poisoned = true;
         }
         result
     }
     pub fn transition_resources(&mut self, ops: &[ResourceTransition<'_, B>]) -> Result<()> {
+        // Core validates provenance and lane endpoints only. It deliberately
+        // does not inspect neighboring commands to infer missing transitions.
         if ops.iter().any(|op| !op.valid_for(self.device, self.lane)) {
             return Err(Error::WrongDevice);
         }

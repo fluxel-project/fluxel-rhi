@@ -1,20 +1,15 @@
 //! Native Vulkan submission and fence-owned command lifetimes.
+//!
+//! `submit_gate` keeps one Core plan contiguous while `queue_gate` covers each
+//! externally synchronized queue call. Core owns work ordering; this module
+//! only lowers its plan and retains issued native work until fence completion.
 
 use super::{DeviceState, Vulkan, VulkanDevice, VulkanEncoder, vk_error};
 use ash::vk;
 use fluxel_rhi_core::api::{
-    self, CompletionState, DeferredBackend, Error, Result, RetryableSubmit, StepPayload,
-    SubmitOutcome,
+    self, DeferredBackend, Error, Result, RetryableSubmit, StepPayload, SubmitOutcome,
 };
-use std::{
-    future::Future,
-    pin::Pin,
-    sync::{
-        Arc, Mutex, OnceLock,
-        mpsc::{self, Sender},
-    },
-    task::{Context, Poll, Waker},
-};
+use std::sync::Arc;
 
 pub struct RecordedWork {
     pub(super) encoder: VulkanEncoder,
@@ -24,110 +19,10 @@ impl RecordedWork {
         self.encoder.command
     }
 }
-struct WaitState {
-    result: Option<Result<()>>,
-    wakers: Vec<Waker>,
-}
 
-#[derive(Clone)]
-pub struct Completion(Arc<FenceState>);
-struct FenceState {
-    device: Arc<DeviceState>,
-    fence: vk::Fence,
-    wait: Mutex<WaitState>,
-}
-impl Drop for FenceState {
-    fn drop(&mut self) {
-        unsafe { self.device.device.destroy_fence(self.fence, None) };
-    }
-}
-impl Completion {
-    fn new(device: Arc<DeviceState>, fence: vk::Fence) -> Self {
-        Self(Arc::new(FenceState {
-            device,
-            fence,
-            wait: Mutex::new(WaitState {
-                result: None,
-                wakers: Vec::new(),
-            }),
-        }))
-    }
-
-    fn publish(&self, result: Result<()>) {
-        let wakers = {
-            let mut wait = self.0.wait.lock().unwrap_or_else(|p| p.into_inner());
-            wait.result = Some(result);
-            std::mem::take(&mut wait.wakers)
-        };
-        for waker in wakers {
-            waker.wake();
-        }
-    }
-
-    fn result(&self) -> Option<Result<()>> {
-        self.0
-            .wait
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .result
-            .clone()
-    }
-}
-pub struct FenceFuture {
-    completion: Option<Completion>,
-    immediate: Option<Result<()>>,
-}
-impl FenceFuture {
-    fn pending(completion: Completion) -> Self {
-        Self {
-            completion: Some(completion),
-            immediate: None,
-        }
-    }
-    fn immediate(result: Result<()>) -> Self {
-        Self {
-            completion: None,
-            immediate: Some(result),
-        }
-    }
-}
-impl Future for FenceFuture {
-    type Output = Result<()>;
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        if let Some(result) = &this.immediate {
-            return Poll::Ready(result.clone());
-        }
-        let completion = this
-            .completion
-            .as_ref()
-            .expect("completion future has a fence");
-        let mut wait = completion.0.wait.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(result) = &wait.result {
-            Poll::Ready(result.clone())
-        } else {
-            if !wait.wakers.iter().any(|waker| waker.will_wake(cx.waker())) {
-                wait.wakers.push(cx.waker().clone());
-            }
-            Poll::Pending
-        }
-    }
-}
-
-/// One bounded observer for submitted Vulkan fences.
-///
-/// It owns only fences and already-recorded native work.  In particular it
-/// never chooses queue order, submits commands, or interprets recorded work.
-/// A dropped `FenceFuture` leaves its `Completion` in this queue, so command
-/// pools and upload allocations still remain alive until the GPU is finished.
-struct FenceWaiter {
-    sender: Sender<FenceJob>,
-}
-
-struct FenceJob {
-    completion: Completion,
-    work: Vec<RecordedWork>,
-}
+mod completion;
+pub(super) use completion::Completion;
+use completion::{fence_waiter, retain_until_fence};
 
 struct PendingPresentSignal {
     device: Arc<DeviceState>,
@@ -136,131 +31,12 @@ struct PendingPresentSignal {
 impl Drop for PendingPresentSignal {
     fn drop(&mut self) {
         if let Some(semaphore) = self.semaphore.take() {
+            // SAFETY: this guard owns a semaphore that has not been handed to
+            // a surface lease, so no queued present operation can use it.
             unsafe { self.device.device.destroy_semaphore(semaphore, None) };
         }
     }
 }
-
-static FENCE_WAITER: OnceLock<std::result::Result<FenceWaiter, String>> = OnceLock::new();
-
-fn fence_waiter() -> Result<&'static FenceWaiter> {
-    match FENCE_WAITER.get_or_init(|| {
-        let (sender, receiver) = mpsc::channel::<FenceJob>();
-        std::thread::Builder::new()
-            .name("fluxel-vulkan-fence-waiter".into())
-            .spawn(move || {
-                for job in receiver {
-                    let result = unsafe {
-                        job.completion.0.device.device.wait_for_fences(
-                            &[job.completion.0.fence],
-                            true,
-                            u64::MAX,
-                        )
-                    }
-                    .map_err(vk_error);
-                    // Completion represents GPU evidence only.  Optional
-                    // visual capture is test instrumentation and must never
-                    // turn completed GPU work into a failed RHI completion.
-                    let completed = result.is_ok();
-                    job.completion.publish(result);
-                    if completed {
-                        let _ = super::capture::write_completed(&job.work);
-                    }
-                    drop(job.work);
-                }
-            })
-            .map(|_| FenceWaiter { sender })
-            .map_err(|error| format!("Vulkan fence waiter: {error}"))
-    }) {
-        Ok(waiter) => Ok(waiter),
-        Err(message) => Err(Error::Backend(message.clone())),
-    }
-}
-
-// The waiter is only a native completion observer and owner of already issued
-// command pools/uploads. It never schedules GPU commands or replays CPU work.
-fn retain_until_fence(completion: Completion, work: Vec<RecordedWork>) {
-    let job = FenceJob {
-        completion: completion.clone(),
-        work,
-    };
-    match fence_waiter() {
-        Ok(waiter) => match waiter.sender.send(job) {
-            Ok(()) => {}
-            Err(error) => {
-                // A native submission may already reference this work. Never
-                // drop it on an observer failure; leaking this exceptional
-                // ownership is safer than a synchronous host wait or an early
-                // Vulkan command-pool destruction.
-                std::mem::forget(error.0);
-                completion.publish(Err(Error::Backend(
-                    "Vulkan fence waiter unavailable".into(),
-                )));
-            }
-        },
-        Err(error) => {
-            std::mem::forget(job);
-            completion.publish(Err(error));
-        }
-    }
-}
-
-impl api::CompletionBackend for Vulkan {
-    type WaitFuture<'a> = FenceFuture;
-
-    fn completion_status(_: &VulkanDevice, point: &Completion) -> CompletionState {
-        match point.result() {
-            Some(Ok(())) => CompletionState::Complete,
-            Some(Err(error)) => CompletionState::Failed(error),
-            None => match unsafe { point.0.device.device.get_fence_status(point.0.fence) } {
-                Ok(true) => CompletionState::Complete,
-                Ok(false) => CompletionState::Pending,
-                Err(error) => CompletionState::Failed(vk_error(error)),
-            },
-        }
-    }
-
-    fn wait_completion<'a>(_: &'a VulkanDevice, point: &'a Completion) -> Self::WaitFuture<'a> {
-        FenceFuture::pending(point.clone())
-    }
-
-    fn wait_idle(device: &VulkanDevice) -> Self::WaitFuture<'_> {
-        let fence = match unsafe {
-            device
-                .0
-                .device
-                .create_fence(&vk::FenceCreateInfo::default(), None)
-        } {
-            Ok(fence) => fence,
-            Err(error) => return FenceFuture::immediate(Err(vk_error(error))),
-        };
-        let completion = Completion::new(device.0.clone(), fence);
-        let result = {
-            let _submit = device
-                .0
-                .submit_gate
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            let _queue = device
-                .0
-                .queue_gate
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            unsafe {
-                device
-                    .0
-                    .device
-                    .queue_submit(device.0.graphics_queue, &[], fence)
-            }
-        };
-        if let Err(error) = result {
-            return FenceFuture::immediate(Err(vk_error(error)));
-        }
-        retain_until_fence(completion.clone(), Vec::new());
-        FenceFuture::pending(completion)
-    }
-}
-
 impl DeferredBackend for Vulkan {
     type NativeRecordedWork = RecordedWork;
 
@@ -268,6 +44,8 @@ impl DeferredBackend for Vulkan {
         if encoder.raster {
             return Err(Error::InvalidState);
         }
+        // SAFETY: VulkanEncoder exclusively owns its begun command buffer and
+        // Core has established that no raster pass remains active.
         unsafe { encoder.device.device.end_command_buffer(encoder.command) }.map_err(vk_error)?;
         Ok(RecordedWork { encoder })
     }
@@ -276,6 +54,8 @@ impl DeferredBackend for Vulkan {
         device: &VulkanDevice,
         packet: api::SubmitPacket<Self>,
     ) -> SubmitOutcome<Self> {
+        // SAFETY: Core transfers each recorded work item exactly once after
+        // validating the packet's backend, device and lane identities.
         // A Vulkan queue is already an ordered executor.  The Core plan has
         // chosen the order and synchronization; this backend only lowers its
         // one graphics-lane prefix and never reconstructs a dependency graph.
@@ -324,6 +104,8 @@ impl DeferredBackend for Vulkan {
             if step_fences[step.index as usize].is_some() {
                 continue;
             }
+            // SAFETY: DeviceState owns the logical device and Completion takes
+            // ownership of the unpublished fence before it can be submitted.
             let fence = match unsafe {
                 device
                     .0
@@ -340,6 +122,7 @@ impl DeferredBackend for Vulkan {
             };
             step_fences[step.index as usize] = Some(Completion::new(device.0.clone(), fence));
         }
+        // SAFETY: as above, the terminal Completion owns this unpublished fence.
         let terminal_fence = match unsafe {
             device
                 .0
@@ -359,6 +142,8 @@ impl DeferredBackend for Vulkan {
             .iter()
             .any(|step| matches!(&step.payload, StepPayload::Present(_)))
         {
+            // SAFETY: PendingPresentSignal owns this semaphore until the image
+            // lease accepts the explicit handoff below.
             match unsafe {
                 device
                     .0
@@ -417,6 +202,8 @@ impl DeferredBackend for Vulkan {
                     .queue_gate
                     .lock()
                     .unwrap_or_else(|p| p.into_inner());
+                // SAFETY: queue_gate serializes this idle probe with every
+                // queue submit and present call, as Vulkan external sync needs.
                 unsafe { device.0.device.queue_wait_idle(device.0.graphics_queue) }
             };
             if idle.is_err() {
@@ -424,6 +211,8 @@ impl DeferredBackend for Vulkan {
             }
             SubmitOutcome::Indeterminate {
                 error,
+                // SAFETY: this plan belongs to the device; unit evidence only
+                // records that a prior native queue call may have been accepted.
                 uncertain: unsafe { api::NativeUncertainty::from_native(plan.id().device, ()) },
             }
         };
@@ -433,11 +222,11 @@ impl DeferredBackend for Vulkan {
             match bound.payload {
                 StepPayload::Commands(records) => {
                     let start = issued.len();
-                    issued.extend(
-                        records
-                            .into_iter()
-                            .map(|record| unsafe { record.into_native() }),
-                    );
+                    issued.extend(records.into_iter().map(|record| {
+                        // SAFETY: the packet owns each recorded work item
+                        // and Vulkan submission consumes it exactly once.
+                        unsafe { record.into_native() }
+                    }));
                     let commands = issued[start..]
                         .iter()
                         .map(RecordedWork::command)
@@ -450,6 +239,8 @@ impl DeferredBackend for Vulkan {
                                 .queue_gate
                                 .lock()
                                 .unwrap_or_else(|p| p.into_inner());
+                            // SAFETY: queue_gate serializes submission and `issued`
+                            // retains every command buffer until its fence completes.
                             unsafe {
                                 device.0.device.queue_submit(
                                     device.0.graphics_queue,
@@ -470,6 +261,8 @@ impl DeferredBackend for Vulkan {
                         .expect("validated one Vulkan present");
                     let signal = pending.semaphore.expect("present signal is still owned");
                     if let Err(error) =
+                        // SAFETY: Core validated the binding's device; borrow the
+                        // exclusive image lease only for semaphore handoff.
                         unsafe { binding.image().native_ref() }.set_present_wait(signal)
                     {
                         return indeterminate(error, issued);
@@ -485,6 +278,8 @@ impl DeferredBackend for Vulkan {
                             .queue_gate
                             .lock()
                             .unwrap_or_else(|p| p.into_inner());
+                        // SAFETY: queue_gate serializes this signal-only submit;
+                        // PendingPresentSignal retains the semaphore until handoff.
                         unsafe {
                             device.0.device.queue_submit(
                                 device.0.graphics_queue,
@@ -496,6 +291,8 @@ impl DeferredBackend for Vulkan {
                     if let Err(error) = result {
                         return indeterminate(vk_error(error), issued);
                     }
+                    // SAFETY: the handoff is irrevocable only after queue signal
+                    // submission succeeded, which is true on this path.
                     if let Err(error) = unsafe { binding.try_handoff() } {
                         return indeterminate(error, issued);
                     }
@@ -523,11 +320,13 @@ impl DeferredBackend for Vulkan {
                         .queue_gate
                         .lock()
                         .unwrap_or_else(|p| p.into_inner());
+                    // SAFETY: queue_gate serializes the marker and Completion
+                    // owns its fence until the observer records completion.
                     unsafe {
                         device.0.device.queue_submit(
                             device.0.graphics_queue,
                             &[],
-                            completion.0.fence,
+                            completion.fence(),
                         )
                     }
                 };
@@ -535,6 +334,8 @@ impl DeferredBackend for Vulkan {
                     return indeterminate(vk_error(error), issued);
                 }
                 checkpoints.push(api::Checkpoint {
+                    // SAFETY: this marker fence belongs to the plan's device and
+                    // follows the recorded lane frontier in native queue order.
                     point: unsafe {
                         api::CompletionPoint::from_native(plan.id().device, completion.clone())
                     },
@@ -555,11 +356,13 @@ impl DeferredBackend for Vulkan {
                 .queue_gate
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
+            // SAFETY: queue_gate serializes this terminal marker; `issued` is
+            // retained until its fence completes.
             unsafe {
                 device
                     .0
                     .device
-                    .queue_submit(device.0.graphics_queue, &[], terminal_fence.0.fence)
+                    .queue_submit(device.0.graphics_queue, &[], terminal_fence.fence())
             }
         };
         if let Err(error) = terminal {
@@ -568,6 +371,8 @@ impl DeferredBackend for Vulkan {
         retain_until_fence(terminal_fence.clone(), issued);
         if matches!(request, api::CompletionRequest::End) {
             checkpoints.push(api::Checkpoint {
+                // SAFETY: terminal_fence belongs to this plan and follows every
+                // accepted native queue operation.
                 point: unsafe {
                     api::CompletionPoint::from_native(plan.id().device, terminal_fence)
                 },
@@ -583,6 +388,8 @@ impl DeferredBackend for Vulkan {
         })
     }
 
+    // SAFETY: Core supplies a tail associated with this backend/device; it is
+    // returned unchanged because partial Vulkan resume is unsupported.
     unsafe fn resume(_: &VulkanDevice, tail: api::DeferredTail<Self>) -> SubmitOutcome<Self> {
         SubmitOutcome::Rejected {
             error: Error::Unsupported("Vulkan partial submission resume"),

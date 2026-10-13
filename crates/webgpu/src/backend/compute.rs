@@ -42,20 +42,18 @@ impl api::ComputeOps<WebGpu> for WebGpuCompute {
                 return Err(Error::Unsupported("WebGPU compute constants"));
             }
             let pipeline = object();
-            field(
-                &pipeline,
-                "layout",
-                unsafe { desc.layout.native_ref() }.clone(),
-            )?;
+            // SAFETY: Core's `ComputeOps` entry validates the layout and shader
+            // DeviceIds against `device` before this backend call.
+            let layout = unsafe { desc.layout.native_ref() }.clone();
+            field(&pipeline, "layout", layout)?;
             if let Some(label) = &desc.label {
                 field(&pipeline, "label", JsValue::from_str(label))?;
             }
             let stage = object();
-            field(
-                &stage,
-                "module",
-                unsafe { desc.compute.module.native_ref() }.clone(),
-            )?;
+            // SAFETY: Core validated this shader's DeviceId against `device`;
+            // the clone is retained by the browser pipeline descriptor.
+            let module = unsafe { desc.compute.module.native_ref() }.clone();
+            field(&stage, "module", module)?;
             field(&stage, "entryPoint", JsValue::from_str(&desc.compute.entry))?;
             field(&pipeline, "compute", stage)?;
             let promise = js::call1(&device.0.device, "createComputePipelineAsync", &pipeline)

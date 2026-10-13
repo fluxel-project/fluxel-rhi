@@ -76,6 +76,8 @@ fn submit(
         device: device.id(),
         ordinal: NEXT_PLAN.fetch_add(1, Ordering::Relaxed),
     };
+    // SAFETY: this helper creates a unique plan id and exactly one valid
+    // commands step for the device/lane supplied by the fixture.
     let plan = unsafe {
         SubmissionPlan::from_compiled(
             id,
@@ -87,6 +89,8 @@ fn submit(
         )
     };
     let step = plan.step(0);
+    // SAFETY: work was recorded by the same device/lane and is consumed once
+    // by the plan constructed immediately above.
     let outcome = unsafe {
         device.queue().submit(SubmitPacket {
             plan,
@@ -308,6 +312,8 @@ fn generic_copies_round_trip_real_gpu_bytes() {
     let point = submit(&device, lane, encoder.finish().unwrap());
     block_on(device.wait_completion(&point)).unwrap();
     assert_eq!(
+        // SAFETY: completion was awaited above; ticket and completion point
+        // were both produced by this device's preceding readback submission.
         unsafe { block_on(device.read_after(buffer_ticket, &point)).unwrap() }.bytes,
         expected
     );
@@ -315,6 +321,7 @@ fn generic_copies_round_trip_real_gpu_bytes() {
     expected_texture[..4].copy_from_slice(&expected[4..8]);
     expected_texture[256..260].copy_from_slice(&expected[260..264]);
     assert_eq!(
+        // SAFETY: same completed-device/ticket invariant as the buffer readback.
         unsafe { block_on(device.read_after(texture_ticket, &point)).unwrap() }.bytes,
         expected_texture
     );

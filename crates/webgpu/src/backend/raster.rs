@@ -1,4 +1,8 @@
 //! Direct WebGPU raster-pass and draw lowering.
+//!
+//! Core admits attachment and query-set DeviceIds before `begin_raster`. This
+//! module turns that single live pass into WebGPU calls and retains every raw
+//! attachment identity in the owning command encoder through queue completion.
 
 use std::ops::Range;
 
@@ -37,15 +41,29 @@ impl api::RasterBackend for WebGpu {
             };
             let attachment = object();
             let view = match &color.view {
-                api::AttachmentView::Texture(view) => unsafe { view.native_ref() }.raw.clone(),
-                api::AttachmentView::Surface(image) => unsafe { image.native_ref() }.view.clone(),
+                api::AttachmentView::Texture(view) => {
+                    // SAFETY: `CommandEncoder::begin_raster` checked this view's
+                    // DeviceId; its cloned JS view enters `keep_alive` below.
+                    unsafe { view.native_ref() }.raw.clone()
+                }
+                api::AttachmentView::Surface(image) => {
+                    // SAFETY: `begin_raster` checked this lease's DeviceId and
+                    // current generation; only its cloned view is retained.
+                    unsafe { image.native_ref() }.view.clone()
+                }
             };
             field(&attachment, "view", view.clone())?;
             encoder.keep_alive.push(view);
             if let Some(resolve) = &color.resolve_target {
                 let target = match resolve {
-                    api::AttachmentView::Texture(view) => unsafe { view.native_ref() }.raw.clone(),
+                    api::AttachmentView::Texture(view) => {
+                        // SAFETY: `begin_raster` checked this view's DeviceId;
+                        // its cloned JS view enters `keep_alive` below.
+                        unsafe { view.native_ref() }.raw.clone()
+                    }
                     api::AttachmentView::Surface(image) => {
+                        // SAFETY: `begin_raster` checked this lease's DeviceId
+                        // and current generation before entering this SPI call.
                         unsafe { image.native_ref() }.view.clone()
                     }
                 };
@@ -85,6 +103,8 @@ impl api::RasterBackend for WebGpu {
         }
         field(&native, "colorAttachments", colors.into())?;
         if let Some(set) = desc.occlusion_query_set {
+            // SAFETY: `begin_raster` checked the query set DeviceId; this clone
+            // is retained by the native encoder until queue completion.
             let raw = unsafe { set.native_ref() }.raw.clone();
             field(&native, "occlusionQuerySet", raw.clone())?;
             encoder.keep_alive.push(raw);
@@ -100,8 +120,16 @@ impl api::RasterBackend for WebGpu {
             };
             let attachment = object();
             let view = match &depth.view {
-                api::AttachmentView::Texture(view) => unsafe { view.native_ref() }.raw.clone(),
-                api::AttachmentView::Surface(image) => unsafe { image.native_ref() }.view.clone(),
+                api::AttachmentView::Texture(view) => {
+                    // SAFETY: `begin_raster` checked this view's DeviceId; the
+                    // JS clone is retained by the native encoder below.
+                    unsafe { view.native_ref() }.raw.clone()
+                }
+                api::AttachmentView::Surface(image) => {
+                    // SAFETY: `begin_raster` checked this lease's DeviceId and
+                    // current generation before the pass descriptor was built.
+                    unsafe { image.native_ref() }.view.clone()
+                }
             };
             field(&attachment, "view", view.clone())?;
             encoder.keep_alive.push(view);
@@ -134,9 +162,11 @@ impl api::RasterBackend for WebGpu {
             field(&native, "depthStencilAttachment", attachment)?;
         }
         encoder.pass = Some(js::call1(&encoder.raw, "beginRenderPass", &native).map_err(error)?);
-        encoder.occlusion_query_set = desc
-            .occlusion_query_set
-            .map(|set| unsafe { set.native_ref() }.raw.clone());
+        encoder.occlusion_query_set = desc.occlusion_query_set.map(|set| {
+            // SAFETY: `begin_raster` checked the query set DeviceId; this clone
+            // only identifies the current pass until `end_raster` clears it.
+            unsafe { set.native_ref() }.raw.clone()
+        });
         Ok(())
     }
 

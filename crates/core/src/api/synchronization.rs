@@ -1,4 +1,7 @@
-//! Statically typed RHI contract component.
+//! Explicit cross-operation GPU synchronization vocabulary.
+//!
+//! RenderGraph supplies barriers and ownership transfers. Core preserves that
+//! intent for backends and does not infer hazards or maintain global state.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -178,6 +181,9 @@ pub enum ResourceTransition<'a, B: Backend> {
 impl<B: Backend> ResourceTransition<'_, B> {
     pub(crate) fn valid_for(&self, device: DeviceId, lane: LaneId) -> bool {
         let ownership_ok = |o: Option<OwnershipTransfer>| {
+            // Ownership is directional: release is issued by the source lane
+            // and acquire by the destination. Core checks endpoints but leaves
+            // ordering and memory scopes to the compiled plan.
             o.is_none_or(|x| match x {
                 OwnershipTransfer::Release { from, to } => from == lane && to.device == device,
                 OwnershipTransfer::Acquire { from, to } => to == lane && from.device == device,

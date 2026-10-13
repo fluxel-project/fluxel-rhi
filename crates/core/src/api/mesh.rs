@@ -1,4 +1,7 @@
-//! Statically typed RHI contract component.
+//! Optional mesh-shader pipeline and draw contract.
+//!
+//! Capability checks occur before creation; graph scheduling and fallback
+//! selection remain with the renderer.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -75,6 +78,8 @@ impl<B: Backend> Device<B> {
 }
 impl<B: Backend> MeshDomain<'_, B> {
     pub async fn create_pipeline(&self, desc: MeshPipelineDesc<B>) -> Result<MeshPipeline<B>> {
+        // Task, mesh, fragment, layout, and cache must share one device even
+        // when an optional stage is omitted from the executable pipeline.
         if desc.layout.device != self.device.id
             || desc.mesh.module.device != self.device.id
             || desc
@@ -93,6 +98,7 @@ impl<B: Backend> MeshDomain<'_, B> {
             return Err(Error::WrongDevice);
         }
         let native = B::Mesh::create_pipeline(&self.device.native, &desc).await?;
+        // SAFETY: the SPI created this pipeline for this exact native device.
         Ok(unsafe { MeshPipeline::from_native(self.device.id, native) })
     }
     pub fn bind_pipeline(&self, pass: &mut RasterPass<'_, B>, p: &MeshPipeline<B>) -> Result<()>
