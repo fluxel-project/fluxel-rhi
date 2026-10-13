@@ -7,6 +7,9 @@ license = "MIT OR Apache-2.0"
 description = "Vulkan backend for Fluxel RHI"
 repository = "https://github.com/fluxel-project/fluxel-rhi"
 
+[features]
+hardware-tests = []
+
 [dependencies]
 ash = "=0.38.0"
 fluxel-rhi-core = { path = "../core" }

@@ -8,7 +8,7 @@ use std::{
 use ash::vk;
 use fluxel_rhi_core::api::{self, Error, ReadbackData, Result};
 
-use super::{Vulkan, VulkanBuffer, VulkanDevice, VulkanEncoder, vk_error};
+use super::{Vulkan, VulkanBuffer, VulkanDevice, VulkanEncoder, resource, vk_error};
 
 pub struct VulkanReadback {
     buffer: VulkanBuffer,
@@ -31,9 +31,75 @@ impl api::ReadbackBackend for Vulkan {
             return Err(Error::InvalidRange);
         }
         if !source.0.usage.contains(api::BufferUsage::MAP_READ) {
-            return Err(Error::Unsupported(
-                "Vulkan readback requires MAP_READ buffer",
-            ));
+            if !source.0.usage.contains(api::BufferUsage::COPY_SRC) {
+                return Err(Error::Unsupported("Vulkan readback requires COPY_SRC"));
+            }
+            let size = range.end - range.start;
+            if size == 0 {
+                return Err(Error::InvalidRange);
+            }
+            let staging = resource::create_buffer(
+                &encoder.owner,
+                &api::BufferDesc {
+                    label: Some("Vulkan readback staging".into()),
+                    size,
+                    usage: api::BufferUsage::COPY_DST.union(api::BufferUsage::MAP_READ),
+                    memory: api::MemoryClass::Readback,
+                },
+            )?;
+            let ready = vk::BufferMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::MEMORY_WRITE)
+                .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .buffer(source.0.buffer)
+                .offset(range.start)
+                .size(size);
+            unsafe {
+                encoder.device.device.cmd_pipeline_barrier(
+                    encoder.command,
+                    vk::PipelineStageFlags::ALL_COMMANDS,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[ready],
+                    &[],
+                );
+                encoder.device.device.cmd_copy_buffer(
+                    encoder.command,
+                    source.0.buffer,
+                    staging.0.buffer,
+                    &[vk::BufferCopy {
+                        src_offset: range.start,
+                        dst_offset: 0,
+                        size,
+                    }],
+                );
+            }
+            let host = vk::BufferMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .dst_access_mask(vk::AccessFlags::HOST_READ)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .buffer(staging.0.buffer)
+                .offset(0)
+                .size(size);
+            unsafe {
+                encoder.device.device.cmd_pipeline_barrier(
+                    encoder.command,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::HOST,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[host],
+                    &[],
+                );
+            }
+            encoder.buffers.extend([source.clone(), staging.clone()]);
+            return Ok(VulkanReadback {
+                buffer: staging,
+                range: 0..size,
+            });
         }
         encoder.buffers.push(source.clone());
         Ok(VulkanReadback {

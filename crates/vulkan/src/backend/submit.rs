@@ -9,7 +9,10 @@ use fluxel_rhi_core::api::{
 use std::{
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex, OnceLock,
+        mpsc::{self, Sender},
+    },
     task::{Context, Poll, Waker},
 };
 
@@ -21,7 +24,6 @@ impl RecordedWork {
         self.encoder.command
     }
 }
-
 struct WaitState {
     result: Option<Result<()>>,
     wakers: Vec<Waker>,
@@ -71,7 +73,6 @@ impl Completion {
             .clone()
     }
 }
-
 pub struct FenceFuture {
     completion: Option<Completion>,
     immediate: Option<Result<()>>,
@@ -113,50 +114,94 @@ impl Future for FenceFuture {
     }
 }
 
+/// One bounded observer for submitted Vulkan fences.
+///
+/// It owns only fences and already-recorded native work.  In particular it
+/// never chooses queue order, submits commands, or interprets recorded work.
+/// A dropped `FenceFuture` leaves its `Completion` in this queue, so command
+/// pools and upload allocations still remain alive until the GPU is finished.
+struct FenceWaiter {
+    sender: Sender<FenceJob>,
+}
+
+struct FenceJob {
+    completion: Completion,
+    work: Vec<RecordedWork>,
+}
+
+struct PendingPresentSignal {
+    device: Arc<DeviceState>,
+    semaphore: Option<vk::Semaphore>,
+}
+impl Drop for PendingPresentSignal {
+    fn drop(&mut self) {
+        if let Some(semaphore) = self.semaphore.take() {
+            unsafe { self.device.device.destroy_semaphore(semaphore, None) };
+        }
+    }
+}
+
+static FENCE_WAITER: OnceLock<std::result::Result<FenceWaiter, String>> = OnceLock::new();
+
+fn fence_waiter() -> Result<&'static FenceWaiter> {
+    match FENCE_WAITER.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel::<FenceJob>();
+        std::thread::Builder::new()
+            .name("fluxel-vulkan-fence-waiter".into())
+            .spawn(move || {
+                for job in receiver {
+                    let result = unsafe {
+                        job.completion.0.device.device.wait_for_fences(
+                            &[job.completion.0.fence],
+                            true,
+                            u64::MAX,
+                        )
+                    }
+                    .map_err(vk_error);
+                    // Completion represents GPU evidence only.  Optional
+                    // visual capture is test instrumentation and must never
+                    // turn completed GPU work into a failed RHI completion.
+                    let completed = result.is_ok();
+                    job.completion.publish(result);
+                    if completed {
+                        let _ = super::capture::write_completed(&job.work);
+                    }
+                    drop(job.work);
+                }
+            })
+            .map(|_| FenceWaiter { sender })
+            .map_err(|error| format!("Vulkan fence waiter: {error}"))
+    }) {
+        Ok(waiter) => Ok(waiter),
+        Err(message) => Err(Error::Backend(message.clone())),
+    }
+}
+
 // The waiter is only a native completion observer and owner of already issued
 // command pools/uploads. It never schedules GPU commands or replays CPU work.
 fn retain_until_fence(completion: Completion, work: Vec<RecordedWork>) {
-    let retained = Arc::new(Mutex::new(Some(work)));
-    let worker_retained = retained.clone();
-    let worker_completion = completion.clone();
-    let spawned = std::thread::Builder::new()
-        .name("fluxel-vulkan-fence".into())
-        .spawn(move || {
-            let result = unsafe {
-                worker_completion.0.device.device.wait_for_fences(
-                    &[worker_completion.0.fence],
-                    true,
-                    u64::MAX,
-                )
+    let job = FenceJob {
+        completion: completion.clone(),
+        work,
+    };
+    match fence_waiter() {
+        Ok(waiter) => match waiter.sender.send(job) {
+            Ok(()) => {}
+            Err(error) => {
+                // A native submission may already reference this work. Never
+                // drop it on an observer failure; leaking this exceptional
+                // ownership is safer than a synchronous host wait or an early
+                // Vulkan command-pool destruction.
+                std::mem::forget(error.0);
+                completion.publish(Err(Error::Backend(
+                    "Vulkan fence waiter unavailable".into(),
+                )));
             }
-            .map_err(vk_error)
-            .and_then(|()| {
-                let guard = worker_retained.lock().unwrap_or_else(|p| p.into_inner());
-                super::capture::write_completed(guard.as_deref().unwrap_or(&[]))
-            });
-            worker_retained
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .take();
-            worker_completion.publish(result);
-        });
-    if spawned.is_err() {
-        // Thread creation failure is exceptional. Wait here so a failed spawn
-        // cannot release command pools or staging while the GPU still uses them.
-        let result = unsafe {
-            completion
-                .0
-                .device
-                .device
-                .wait_for_fences(&[completion.0.fence], true, u64::MAX)
+        },
+        Err(error) => {
+            std::mem::forget(job);
+            completion.publish(Err(error));
         }
-        .map_err(vk_error)
-        .and_then(|()| {
-            let guard = retained.lock().unwrap_or_else(|p| p.into_inner());
-            super::capture::write_completed(guard.as_deref().unwrap_or(&[]))
-        });
-        retained.lock().unwrap_or_else(|p| p.into_inner()).take();
-        completion.publish(result);
     }
 }
 
@@ -191,6 +236,11 @@ impl api::CompletionBackend for Vulkan {
         };
         let completion = Completion::new(device.0.clone(), fence);
         let result = {
+            let _submit = device
+                .0
+                .submit_gate
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             let _queue = device
                 .0
                 .queue_gate
@@ -226,27 +276,77 @@ impl DeferredBackend for Vulkan {
         device: &VulkanDevice,
         packet: api::SubmitPacket<Self>,
     ) -> SubmitOutcome<Self> {
-        let supported = packet.steps.len() == 2
-            && matches!(&packet.steps[0].payload, StepPayload::Commands(work) if !work.is_empty())
-            && matches!(&packet.steps[1].payload, StepPayload::Present(_))
-            && matches!(
-                packet.completion,
-                api::CompletionRequest::End | api::CompletionRequest::None
-            )
-            && packet.plan.steps()[0].lane == packet.plan.steps()[1].lane;
-        if !supported {
+        // A Vulkan queue is already an ordered executor.  The Core plan has
+        // chosen the order and synchronization; this backend only lowers its
+        // one graphics-lane prefix and never reconstructs a dependency graph.
+        let has_commands = packet
+            .steps
+            .iter()
+            .any(|step| matches!(&step.payload, StepPayload::Commands(work) if !work.is_empty()));
+        let plan_shape = has_commands
+            && packet
+                .steps
+                .iter()
+                .enumerate()
+                .all(|(index, bound)| match &bound.payload {
+                    StepPayload::Commands(_) => {
+                        packet.plan.steps()[index].lane == packet.plan.steps()[0].lane
+                    }
+                    StepPayload::Present(_) => {
+                        index + 1 == packet.steps.len()
+                            && packet.plan.steps()[index].lane == packet.plan.steps()[0].lane
+                    }
+                    StepPayload::SparseBind(_) => false,
+                })
+            && packet
+                .steps
+                .iter()
+                .filter(|step| matches!(&step.payload, StepPayload::Present(_)))
+                .count()
+                <= 1;
+        if !plan_shape {
             return SubmitOutcome::Rejected {
-                error: Error::Unsupported("Vulkan single-lane commands then present submission"),
+                error: Error::Unsupported("Vulkan single graphics-queue submission plan"),
                 work: RetryableSubmit::Fresh(packet),
             };
         }
-        let fence = match unsafe {
+        let requested = match &packet.completion {
+            api::CompletionRequest::Steps(steps) => steps.as_ref(),
+            _ => &[],
+        };
+        // Allocate every native synchronization object before issuing any
+        // queue operation.  Allocation failure remains a clean retryable
+        // rejection, rather than creating a half-lowered packet.
+        let mut step_fences = (0..packet.steps.len())
+            .map(|_| None)
+            .collect::<Vec<Option<Completion>>>();
+        for step in requested {
+            if step_fences[step.index as usize].is_some() {
+                continue;
+            }
+            let fence = match unsafe {
+                device
+                    .0
+                    .device
+                    .create_fence(&vk::FenceCreateInfo::default(), None)
+            } {
+                Ok(fence) => fence,
+                Err(error) => {
+                    return SubmitOutcome::Rejected {
+                        error: vk_error(error),
+                        work: RetryableSubmit::Fresh(packet),
+                    };
+                }
+            };
+            step_fences[step.index as usize] = Some(Completion::new(device.0.clone(), fence));
+        }
+        let terminal_fence = match unsafe {
             device
                 .0
                 .device
                 .create_fence(&vk::FenceCreateInfo::default(), None)
         } {
-            Ok(fence) => fence,
+            Ok(fence) => Completion::new(device.0.clone(), fence),
             Err(error) => {
                 return SubmitOutcome::Rejected {
                     error: vk_error(error),
@@ -254,56 +354,202 @@ impl DeferredBackend for Vulkan {
                 };
             }
         };
-        let render_done = match unsafe {
-            device
-                .0
-                .device
-                .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-        } {
-            Ok(semaphore) => semaphore,
-            Err(error) => {
-                unsafe { device.0.device.destroy_fence(fence, None) };
-                return SubmitOutcome::Rejected {
-                    error: vk_error(error),
-                    work: RetryableSubmit::Fresh(packet),
-                };
+        let present_signal = if packet
+            .steps
+            .iter()
+            .any(|step| matches!(&step.payload, StepPayload::Present(_)))
+        {
+            match unsafe {
+                device
+                    .0
+                    .device
+                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
+            } {
+                Ok(semaphore) => Some(semaphore),
+                Err(error) => {
+                    return SubmitOutcome::Rejected {
+                        error: vk_error(error),
+                        work: RetryableSubmit::Fresh(packet),
+                    };
+                }
             }
+        } else {
+            None
         };
-        if let StepPayload::Present(binding) = &packet.steps[1].payload {
-            if let Err(error) =
-                unsafe { binding.image().native_ref() }.set_present_wait(render_done)
-            {
-                unsafe { device.0.device.destroy_semaphore(render_done, None) };
-                return SubmitOutcome::Rejected {
-                    error,
-                    work: RetryableSubmit::Fresh(packet),
-                };
-            }
+        let mut present_signal = present_signal.map(|semaphore| PendingPresentSignal {
+            device: device.0.clone(),
+            semaphore: Some(semaphore),
+        });
+        if let Err(error) = fence_waiter() {
+            return SubmitOutcome::Rejected {
+                error,
+                work: RetryableSubmit::Fresh(packet),
+            };
         }
-        let completion = Completion::new(device.0.clone(), fence);
         let api::SubmitPacket {
             plan,
             steps,
             completion: request,
         } = packet;
-        let mut steps = steps.into_iter();
-        let first = steps.next().expect("validated commands step");
-        let second = steps.next().expect("validated present step");
-        let command_id = first.step;
-        let present_id = second.step;
-        let StepPayload::Commands(recorded) = first.payload else {
-            unreachable!()
+        let mut issued = Vec::new();
+        let mut accepted = Vec::new();
+        let mut presents = Vec::new();
+        let mut checkpoints = Vec::new();
+        let mut lane_frontiers = Vec::new();
+        // Hold the plan-level gate from the first queue issue through its
+        // terminal marker.  Each native queue call still takes `queue_gate`,
+        // so Surface present and wait-idle retain their narrow external
+        // synchronization boundary without allowing another plan to splice
+        // commands between this plan's explicit transitions.
+        let _submit = device
+            .0
+            .submit_gate
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let indeterminate = |error, issued: Vec<RecordedWork>| {
+            // vkQueueSubmit may have crossed the driver boundary even on an
+            // error.  Keep command pools and their uploads alive unless an
+            // externally synchronized queue-idle probe proves retirement.
+            let idle = {
+                let _queue = device
+                    .0
+                    .queue_gate
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                unsafe { device.0.device.queue_wait_idle(device.0.graphics_queue) }
+            };
+            if idle.is_err() {
+                std::mem::forget(issued);
+            }
+            SubmitOutcome::Indeterminate {
+                error,
+                uncertain: unsafe { api::NativeUncertainty::from_native(plan.id().device, ()) },
+            }
         };
-        let work: Vec<RecordedWork> = recorded
-            .into_iter()
-            .map(|item| unsafe { item.into_native() })
-            .collect();
-        let commands: Vec<vk::CommandBuffer> = work.iter().map(RecordedWork::command).collect();
-        let signals = [render_done];
-        let info = vk::SubmitInfo::default()
-            .command_buffers(&commands)
-            .signal_semaphores(&signals);
-        let issued = {
+
+        for bound in steps {
+            let id = bound.step;
+            match bound.payload {
+                StepPayload::Commands(records) => {
+                    let start = issued.len();
+                    issued.extend(
+                        records
+                            .into_iter()
+                            .map(|record| unsafe { record.into_native() }),
+                    );
+                    let commands = issued[start..]
+                        .iter()
+                        .map(RecordedWork::command)
+                        .collect::<Vec<_>>();
+                    if !commands.is_empty() {
+                        let info = vk::SubmitInfo::default().command_buffers(&commands);
+                        let result = {
+                            let _queue = device
+                                .0
+                                .queue_gate
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner());
+                            unsafe {
+                                device.0.device.queue_submit(
+                                    device.0.graphics_queue,
+                                    &[info],
+                                    vk::Fence::null(),
+                                )
+                            }
+                        };
+                        if let Err(error) = result {
+                            return indeterminate(vk_error(error), issued);
+                        }
+                    }
+                    accepted.push(id);
+                }
+                StepPayload::Present(mut binding) => {
+                    let pending = present_signal
+                        .as_mut()
+                        .expect("validated one Vulkan present");
+                    let signal = pending.semaphore.expect("present signal is still owned");
+                    if let Err(error) =
+                        unsafe { binding.image().native_ref() }.set_present_wait(signal)
+                    {
+                        return indeterminate(error, issued);
+                    }
+                    // The surface image now owns the semaphore even if queue
+                    // submission or handoff later fails.
+                    pending.semaphore = None;
+                    let signals = [signal];
+                    let info = vk::SubmitInfo::default().signal_semaphores(&signals);
+                    let result = {
+                        let _queue = device
+                            .0
+                            .queue_gate
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner());
+                        unsafe {
+                            device.0.device.queue_submit(
+                                device.0.graphics_queue,
+                                &[info],
+                                vk::Fence::null(),
+                            )
+                        }
+                    };
+                    if let Err(error) = result {
+                        return indeterminate(vk_error(error), issued);
+                    }
+                    if let Err(error) = unsafe { binding.try_handoff() } {
+                        return indeterminate(error, issued);
+                    }
+                    accepted.push(id);
+                    presents.push(api::PresentReceipt {
+                        step: Some(id),
+                        accepted: true,
+                    });
+                }
+                StepPayload::SparseBind(_) => unreachable!("submission shape was validated"),
+            }
+
+            if matches!(
+                plan.steps()[id.index as usize].kind,
+                api::StepKind::Commands
+            ) {
+                let lane = plan.steps()[id.index as usize].lane;
+                lane_frontiers.retain(|(existing, _)| *existing != lane);
+                lane_frontiers.push((lane, id));
+            }
+            if let Some(completion) = step_fences[id.index as usize].take() {
+                let result = {
+                    let _queue = device
+                        .0
+                        .queue_gate
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    unsafe {
+                        device.0.device.queue_submit(
+                            device.0.graphics_queue,
+                            &[],
+                            completion.0.fence,
+                        )
+                    }
+                };
+                if let Err(error) = result {
+                    return indeterminate(vk_error(error), issued);
+                }
+                checkpoints.push(api::Checkpoint {
+                    point: unsafe {
+                        api::CompletionPoint::from_native(plan.id().device, completion.clone())
+                    },
+                    covers: api::CompletionCoverage {
+                        lane_frontiers: lane_frontiers.clone(),
+                    },
+                });
+                retain_until_fence(completion, Vec::new());
+            }
+        }
+
+        // A terminal fence is needed even for CompletionRequest::None: it is
+        // the native proof that command pools, uploads and descriptors may be
+        // released.  Its marker follows every accepted queue operation.
+        let terminal = {
             let _queue = device
                 .0
                 .queue_gate
@@ -313,54 +559,27 @@ impl DeferredBackend for Vulkan {
                 device
                     .0
                     .device
-                    .queue_submit(device.0.graphics_queue, &[info], fence)
+                    .queue_submit(device.0.graphics_queue, &[], terminal_fence.0.fence)
             }
         };
-        if let Err(error) = issued {
-            // Vulkan may have crossed the queue boundary. Only release native
-            // objects after the queue is known idle, even on the error route.
-            if unsafe { device.0.device.queue_wait_idle(device.0.graphics_queue) }.is_err() {
-                // There is no completion evidence. Keep command pools and
-                // staging alive rather than releasing GPU-referenced memory.
-                std::mem::forget(work);
-            }
-            return SubmitOutcome::Indeterminate {
-                error: vk_error(error),
-                uncertain: unsafe { api::NativeUncertainty::from_native(plan.id().device, ()) },
-            };
+        if let Err(error) = terminal {
+            return indeterminate(vk_error(error), issued);
         }
-        retain_until_fence(completion.clone(), work);
-        let StepPayload::Present(mut binding) = second.payload else {
-            unreachable!()
-        };
-        if let Err(error) = unsafe { binding.try_handoff() } {
-            return SubmitOutcome::Indeterminate {
-                error,
-                uncertain: unsafe { api::NativeUncertainty::from_native(plan.id().device, ()) },
-            };
-        }
-        let checkpoints = if matches!(request, api::CompletionRequest::End) {
-            vec![api::Checkpoint {
-                point: unsafe { api::CompletionPoint::from_native(plan.id().device, completion) },
-                covers: api::CompletionCoverage {
-                    // The fence proves render submission completion. The
-                    // present receipt separately proves handoff acceptance;
-                    // this fence does not prove display timing.
-                    lane_frontiers: vec![(plan.steps()[0].lane, command_id)],
+        retain_until_fence(terminal_fence.clone(), issued);
+        if matches!(request, api::CompletionRequest::End) {
+            checkpoints.push(api::Checkpoint {
+                point: unsafe {
+                    api::CompletionPoint::from_native(plan.id().device, terminal_fence)
                 },
-            }]
-        } else {
-            Vec::new()
-        };
+                covers: api::CompletionCoverage { lane_frontiers },
+            });
+        }
         SubmitOutcome::Accepted(api::SubmissionReceipt {
             device: plan.id().device,
             index: None,
-            accepted: vec![command_id, present_id],
+            accepted,
             checkpoints,
-            presents: vec![api::PresentReceipt {
-                step: Some(present_id),
-                accepted: true,
-            }],
+            presents,
         })
     }
 

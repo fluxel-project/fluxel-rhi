@@ -4,7 +4,7 @@
 //! device.  It deliberately does not track resource state: Core transitions
 //! carry the states selected by RenderGraph.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use ash::vk;
 use fluxel_rhi_core::api::{self, Error, Result};
@@ -38,42 +38,12 @@ impl VulkanTexture {
     pub(super) fn desc(&self) -> &api::TextureDesc {
         &self.0.desc
     }
-    /// Returns whether this is the first native use of one subresource.
-    /// This is deliberately limited to Vulkan's `UNDEFINED` initial layout;
-    /// all later layouts remain Core's explicit-transition responsibility.
-    pub(super) fn take_initial_layout(&self, mip: u32, layer: u32) -> Result<bool> {
-        let index = usize::try_from(mip)
-            .ok()
-            .and_then(|mip| mip.checked_mul(self.0.desc.array_layers as usize))
-            .and_then(|base| base.checked_add(layer as usize))
-            .ok_or(Error::InvalidRange)?;
-        let mut initialized = self.0.initialized.lock().map_err(|_| Error::DeviceLost)?;
-        let item = initialized.get_mut(index).ok_or(Error::InvalidRange)?;
-        let was_initial = !*item;
-        *item = true;
-        Ok(was_initial)
-    }
-    pub(super) fn mark_initialized(
-        &self,
-        mips: std::ops::Range<u32>,
-        layers: std::ops::Range<u32>,
-    ) -> Result<()> {
-        let mut initialized = self.0.initialized.lock().map_err(|_| Error::DeviceLost)?;
-        for mip in mips {
-            for layer in layers.clone() {
-                let index = mip as usize * self.0.desc.array_layers as usize + layer as usize;
-                *initialized.get_mut(index).ok_or(Error::InvalidRange)? = true;
-            }
-        }
-        Ok(())
-    }
 }
 struct TextureState {
     device: Arc<DeviceState>,
     pub(super) image: vk::Image,
     memory: vk::DeviceMemory,
     pub(super) desc: api::TextureDesc,
-    initialized: Mutex<Vec<bool>>,
 }
 impl Drop for TextureState {
     fn drop(&mut self) {
@@ -384,10 +354,6 @@ pub(super) fn create_texture(
         image,
         memory,
         desc: desc.clone(),
-        initialized: Mutex::new(vec![
-            false;
-            desc.mip_levels as usize * desc.array_layers as usize
-        ]),
     })))
 }
 

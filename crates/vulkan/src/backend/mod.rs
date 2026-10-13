@@ -69,6 +69,11 @@ struct DeviceState {
     /// Serializes Vulkan queue submission and fence allocation only. It is
     /// not a graph scheduler and must never span host completion waits.
     queue_gate: Mutex<()>,
+    /// Keeps one Core submission plan contiguous on the native queue.  It is
+    /// separate from `queue_gate`: presentation and other one-shot queue
+    /// calls still use the narrower gate, while a plan never interleaves its
+    /// explicit resource-state sequence with another submitter.
+    submit_gate: Mutex<()>,
 }
 
 macro_rules! native_arc {
@@ -330,19 +335,19 @@ impl api::CommandBackend for Vulkan {
         copy::copy_buffer(e, src, so, dst, doff, bytes)
     }
     fn copy_texture(
-        _: &mut VulkanEncoder,
-        _: api::TextureRegion<'_, Self>,
-        _: api::TextureRegion<'_, Self>,
+        e: &mut VulkanEncoder,
+        src: api::TextureRegion<'_, Self>,
+        dst: api::TextureRegion<'_, Self>,
     ) -> Result<()> {
-        Err(Error::Unsupported("Vulkan texture copy"))
+        copy::copy_texture(e, src, dst)
     }
     fn buffer_to_texture(
-        _: &mut VulkanEncoder,
-        _: &VulkanBuffer,
-        _: api::TexelCopyBufferLayout,
-        _: api::TextureRegion<'_, Self>,
+        e: &mut VulkanEncoder,
+        src: &VulkanBuffer,
+        layout: api::TexelCopyBufferLayout,
+        dst: api::TextureRegion<'_, Self>,
     ) -> Result<()> {
-        Err(Error::Unsupported("Vulkan buffer-to-texture"))
+        copy::buffer_to_texture(e, src, layout, dst)
     }
     fn texture_to_buffer(
         encoder: &mut VulkanEncoder,
@@ -579,6 +584,7 @@ impl InstanceBackend for Vulkan {
                         .min(limits.max_descriptor_set_sampled_images),
                     max_draw_indirect_count: limits.max_draw_indirect_count,
                     queue_gate: Mutex::new(()),
+                    submit_gate: Mutex::new(()),
                 })),
                 DeviceCapabilities {
                     compute: true,

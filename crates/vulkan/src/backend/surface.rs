@@ -7,7 +7,7 @@
 
 use std::{
     future::{Ready, ready},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
 };
 
 use ash::vk;
@@ -15,6 +15,8 @@ use fluxel_rhi_core::api::{self, Error, Result};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle};
 
 use super::{Vulkan, VulkanDevice, vk_error};
+mod acquire;
+use acquire::{AcquireFuture, AcquireWait};
 
 #[derive(Clone)]
 pub struct VulkanSurface(pub(crate) Arc<SurfaceState>);
@@ -24,6 +26,7 @@ pub(crate) struct SurfaceState {
     swapchain_loader: ash::khr::swapchain::Device,
     surface: vk::SurfaceKHR,
     inner: Mutex<Inner>,
+    acquire_sender: mpsc::Sender<Arc<AcquireWait>>,
 }
 struct Inner {
     swapchain: vk::SwapchainKHR,
@@ -39,6 +42,7 @@ struct Inner {
     generation: u64,
     acquired: bool,
     abandoned: bool,
+    presented: bool,
 }
 struct RetiredSwapchain {
     chain: vk::SwapchainKHR,
@@ -99,11 +103,13 @@ pub(crate) unsafe fn create_surface(
     }
     let swapchain_loader =
         ash::khr::swapchain::Device::new(&native.0.instance.instance, &native.0.device);
+    let (acquire_sender, acquire_receiver) = mpsc::channel();
     let state = Arc::new(SurfaceState {
         device: native,
         surface_loader,
         swapchain_loader,
         surface,
+        acquire_sender,
         inner: Mutex::new(Inner {
             swapchain: vk::SwapchainKHR::null(),
             images: Vec::new(),
@@ -116,8 +122,10 @@ pub(crate) unsafe fn create_surface(
             generation: 0,
             acquired: false,
             abandoned: false,
+            presented: false,
         }),
     });
+    acquire::start_worker(Arc::downgrade(&state), acquire_receiver)?;
     Ok(unsafe {
         api::Surface::from_native(
             device.id(),
@@ -131,6 +139,12 @@ impl Drop for SurfaceState {
     fn drop(&mut self) {
         let inner = self.inner.get_mut().unwrap_or_else(|e| e.into_inner());
         unsafe {
+            let _queue = self
+                .device
+                .0
+                .queue_gate
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let _ = self.device.0.device.device_wait_idle();
             for view in inner.views.drain(..) {
                 self.device.0.device.destroy_image_view(view, None);
@@ -249,6 +263,7 @@ unsafe impl api::NativeImageLease for VulkanSurfaceImage {
         match present {
             Ok(_) => {
                 inner.acquired = false;
+                inner.presented = true;
                 self.handed = true;
                 Ok(())
             }
@@ -265,7 +280,7 @@ unsafe impl api::NativeImageLease for VulkanSurfaceImage {
 
 impl api::SurfaceBackend for Vulkan {
     type ConfigureFuture<'a> = Ready<Result<()>>;
-    type AcquireFuture<'a> = Ready<Result<VulkanSurfaceImage>>;
+    type AcquireFuture<'a> = AcquireFuture<'a>;
     fn generation(surface: &VulkanSurface) -> u64 {
         surface
             .0
@@ -290,7 +305,7 @@ impl api::SurfaceBackend for Vulkan {
         ready(configure(&surface.0, config))
     }
     fn acquire<'a>(surface: &'a mut VulkanSurface) -> Self::AcquireFuture<'a> {
-        ready(acquire(surface))
+        AcquireFuture::new(surface)
     }
 }
 
@@ -507,11 +522,49 @@ fn configure(state: &SurfaceState, config: &api::SurfaceConfig) -> Result<()> {
         let mut waits: Vec<_> = inner.present_waits.drain(..).flatten().collect();
         waits.extend(inner.orphaned_waits.drain(..));
         let old_views = std::mem::take(&mut inner.views);
-        inner.retired.push(RetiredSwapchain {
+        let retired = RetiredSwapchain {
             chain: old,
             views: old_views,
             wait_semaphores: waits,
-        });
+        };
+        if inner.presented {
+            // Without a present fence, keep this chain until presentation of
+            // the new chain is proved finished by reacquiring its image.
+            inner.retired.push(retired);
+        } else {
+            // A chain never handed to presentation only has queue work. The
+            // cold resize path may wait for that work and reclaim it now.
+            let idle = {
+                let _queue = state
+                    .device
+                    .0
+                    .queue_gate
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                unsafe {
+                    state
+                        .device
+                        .0
+                        .device
+                        .queue_wait_idle(state.device.0.graphics_queue)
+                }
+            };
+            if idle.is_ok() {
+                unsafe {
+                    for view in retired.views {
+                        state.device.0.device.destroy_image_view(view, None);
+                    }
+                    for semaphore in retired.wait_semaphores {
+                        state.device.0.device.destroy_semaphore(semaphore, None);
+                    }
+                    state
+                        .swapchain_loader
+                        .destroy_swapchain(retired.chain, None);
+                }
+            } else {
+                inner.retired.push(retired);
+            }
+        }
         inner.swapchain = vk::SwapchainKHR::null();
         inner.images.clear();
     }
@@ -556,84 +609,8 @@ fn configure(state: &SurfaceState, config: &api::SurfaceConfig) -> Result<()> {
     inner.format = format;
     inner.generation = next_generation;
     inner.abandoned = false;
+    inner.presented = false;
     Ok(())
-}
-fn acquire(surface: &VulkanSurface) -> Result<VulkanSurfaceImage> {
-    let state = &surface.0;
-    let mut inner = state.inner.lock().unwrap_or_else(|e| e.into_inner());
-    if inner.acquired || inner.swapchain == vk::SwapchainKHR::null() {
-        return Err(Error::InvalidState);
-    }
-    if inner.abandoned {
-        return Err(Error::SurfaceOutdated);
-    }
-    // The current Core surface SPI represents acquire as a cold Ready future.
-    // Use a fence and wait for ownership once here. Submission separately
-    // signals a render-finished semaphore that presentation waits on. Passing neither a
-    // fence nor semaphore to vkAcquireNextImageKHR is invalid Vulkan.
-    let fence = unsafe {
-        state
-            .device
-            .0
-            .device
-            .create_fence(&vk::FenceCreateInfo::default(), None)
-    }
-    .map_err(vk_error)?;
-    let acquired = unsafe {
-        state.swapchain_loader.acquire_next_image(
-            inner.swapchain,
-            u64::MAX,
-            vk::Semaphore::null(),
-            fence,
-        )
-    };
-    let result = match acquired {
-        Ok((index, _)) => unsafe {
-            state
-                .device
-                .0
-                .device
-                .wait_for_fences(&[fence], true, u64::MAX)
-        }
-        .map(|_| index),
-        Err(error) => Err(error),
-    };
-    unsafe { state.device.0.device.destroy_fence(fence, None) };
-    let index = result.map_err(|error| match error {
-        vk::Result::ERROR_OUT_OF_DATE_KHR => Error::SurfaceOutdated,
-        vk::Result::ERROR_SURFACE_LOST_KHR => Error::SurfaceLost,
-        _ => vk_error(error),
-    })?;
-    if let Some(semaphore) = inner.present_waits[index as usize].take() {
-        // Waiting for this acquire fence proves the preceding presentation of
-        // the same image has consumed its wait semaphore.
-        unsafe { state.device.0.device.destroy_semaphore(semaphore, None) };
-        for retired in inner.retired.drain(..) {
-            unsafe {
-                for view in retired.views {
-                    state.device.0.device.destroy_image_view(view, None);
-                }
-                for semaphore in retired.wait_semaphores {
-                    state.device.0.device.destroy_semaphore(semaphore, None);
-                }
-                state
-                    .swapchain_loader
-                    .destroy_swapchain(retired.chain, None);
-            }
-        }
-    }
-    inner.acquired = true;
-    Ok(VulkanSurfaceImage {
-        state: surface.0.clone(),
-        image_index: index,
-        image: inner.images[index as usize],
-        view: inner.views[index as usize],
-        extent: inner.extent,
-        format: inner.format,
-        generation: inner.generation,
-        handed: false,
-        present_wait: Mutex::new(None),
-    })
 }
 fn from_format(format: vk::Format) -> Option<api::TextureFormat> {
     match format {

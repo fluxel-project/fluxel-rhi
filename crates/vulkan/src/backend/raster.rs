@@ -258,16 +258,24 @@ impl api::RasterBackend for Vulkan {
                 return Err(Error::Unsupported("Vulkan texture resolve target"));
             }
         };
-        let clear = match color.load {
-            api::LoadOp::Clear(api::ClearColor::Float(v)) => vk::ClearValue {
-                color: vk::ClearColorValue { float32: v },
-            },
+        let (color_load, clear) = match color.load {
+            api::LoadOp::Clear(api::ClearColor::Float(v)) => (
+                vk::AttachmentLoadOp::CLEAR,
+                vk::ClearValue {
+                    color: vk::ClearColorValue { float32: v },
+                },
+            ),
+            api::LoadOp::Load => (vk::AttachmentLoadOp::LOAD, vk::ClearValue::default()),
+            api::LoadOp::Discard => (vk::AttachmentLoadOp::DONT_CARE, vk::ClearValue::default()),
             _ => return Err(Error::Unsupported("Vulkan raster load operation")),
         };
+        if color_load == vk::AttachmentLoadOp::LOAD && surface.is_some() {
+            return Err(Error::Unsupported("Vulkan surface attachment Load"));
+        }
         let mut attachment = vk::RenderingAttachmentInfo::default()
             .image_view(color_view)
             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .load_op(color_load)
             .store_op(if resolve.is_some() {
                 vk::AttachmentStoreOp::DONT_CARE
             } else {
@@ -284,12 +292,14 @@ impl api::RasterBackend for Vulkan {
             if depth.stencil.is_some() || depth.depth_read_only || depth.stencil_read_only {
                 return Err(Error::Unsupported("Vulkan depth/stencil pass state"));
             }
-            let Some((api::LoadOp::Clear(value), store)) = depth.depth else {
+            let Some((load, store)) = depth.depth else {
                 return Err(Error::Unsupported("Vulkan depth load operation"));
             };
-            if !matches!(store, api::StoreOp::Discard) {
-                return Err(Error::Unsupported("Vulkan depth store operation"));
-            }
+            let (depth_load, value) = match load {
+                api::LoadOp::Clear(value) => (vk::AttachmentLoadOp::CLEAR, value),
+                api::LoadOp::Load => (vk::AttachmentLoadOp::LOAD, 0.0),
+                api::LoadOp::Discard => (vk::AttachmentLoadOp::DONT_CARE, 0.0),
+            };
             let api::AttachmentView::Texture(view) = &depth.view else {
                 return Err(Error::Unsupported("Vulkan depth surface attachment"));
             };
@@ -300,43 +310,45 @@ impl api::RasterBackend for Vulkan {
             {
                 return Err(Error::InvalidRange);
             }
-            // 07 clears then discards its depth attachments every pass.  The
-            // old depth contents therefore carry no meaning, so Vulkan may
-            // discard them with UNDEFINED instead of tracking a cross-frame
-            // layout. Load/Store depth attachments need an explicit state
-            // contract before this backend can support them.
-            let to_depth = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::empty())
-                .dst_access_mask(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE)
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(native.image())
-                .subresource_range(
-                    vk::ImageSubresourceRange::default()
-                        .aspect_mask(vk::ImageAspectFlags::DEPTH)
-                        .level_count(1)
-                        .layer_count(multiview_layers),
-                );
-            unsafe {
-                e.device.device.cmd_pipeline_barrier(
-                    e.command,
-                    vk::PipelineStageFlags::TOP_OF_PIPE,
-                    vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[to_depth],
-                );
+            // Discarding the old contents is valid only for Clear/Discard.
+            // Load uses the caller's explicit DepthStencilAttachment layout.
+            if depth_load != vk::AttachmentLoadOp::LOAD {
+                let to_depth = vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::empty())
+                    .dst_access_mask(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE)
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(native.image())
+                    .subresource_range(
+                        vk::ImageSubresourceRange::default()
+                            .aspect_mask(vk::ImageAspectFlags::DEPTH)
+                            .level_count(1)
+                            .layer_count(multiview_layers),
+                    );
+                unsafe {
+                    e.device.device.cmd_pipeline_barrier(
+                        e.command,
+                        vk::PipelineStageFlags::TOP_OF_PIPE,
+                        vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                        vk::DependencyFlags::empty(),
+                        &[],
+                        &[],
+                        &[to_depth],
+                    );
+                }
             }
             e.attachments.push(native.clone());
             Some(
                 vk::RenderingAttachmentInfo::default()
                     .image_view(native.native())
                     .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-                    .load_op(vk::AttachmentLoadOp::CLEAR)
-                    .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                    .load_op(depth_load)
+                    .store_op(match store {
+                        api::StoreOp::Store => vk::AttachmentStoreOp::STORE,
+                        api::StoreOp::Discard => vk::AttachmentStoreOp::DONT_CARE,
+                    })
                     .clear_value(vk::ClearValue {
                         depth_stencil: vk::ClearDepthStencilValue {
                             depth: value,

@@ -131,7 +131,6 @@ pub(super) fn resolve(
             .0
             .usage
             .contains(api::BufferUsage::QUERY_RESOLVE)
-        || !destination.0.usage.contains(api::BufferUsage::MAP_READ)
     {
         return Err(Error::InvalidRange);
     }
