@@ -41,6 +41,7 @@ impl<B: MipmapBackend> Tunnel<B> {
             },
             multiview_mask: None,
             timestamp_writes: None,
+            occlusion_query_set: None,
             secondary_inheritance: None,
         })?;
         pass.set_pipeline(&self.pipeline)?;

@@ -171,7 +171,6 @@ impl<B: InstancingBackend> Instancing<B> {
                 ),
                 sampled_transition(&self.planet, 0..1, 0..1),
             ])?;
-            self.uploaded = true;
         }
         encoder.write_buffer(&self.uniform, 0, &uniform(extent, time))?;
         let colors = [Some(ColorAttachment {
@@ -199,6 +198,7 @@ impl<B: InstancingBackend> Instancing<B> {
             },
             multiview_mask: None,
             timestamp_writes: None,
+            occlusion_query_set: None,
             secondary_inheritance: None,
         })?;
         pass.viewport(Viewport {
@@ -242,6 +242,10 @@ impl<B: InstancingBackend> Instancing<B> {
         )?;
         pass.finish()?;
         encoder.finish()
+    }
+
+    pub fn mark_submitted(&mut self) {
+        self.uploaded = true;
     }
 }
 fn sampled_transition<B: InstancingBackend>(

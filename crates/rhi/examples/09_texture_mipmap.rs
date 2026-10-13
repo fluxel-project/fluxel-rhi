@@ -13,6 +13,57 @@ pub(crate) const VS: &[u8] = include_bytes!("assets/09_texture_mipmap/tunnel.vs.
 pub(crate) const PS: &[u8] = include_bytes!("assets/09_texture_mipmap/tunnel.ps.dxil");
 pub(crate) const VS_SPIRV: &[u8] = include_bytes!("assets/09_texture_mipmap/tunnel.vs.spv");
 pub(crate) const PS_SPIRV: &[u8] = include_bytes!("assets/09_texture_mipmap/tunnel.ps.spv");
+pub(crate) const WGSL: &[u8] = include_bytes!("assets/09_texture_mipmap/tunnel.wgsl");
+
+/// Draws the textured tunnel into a host-owned browser canvas.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn run_webgpu_texture_mipmap(
+    canvas: web_sys::HtmlCanvasElement,
+    frames: u32,
+) -> std::result::Result<(), wasm_bindgen::JsValue> {
+    use fluxel_rhi::webgpu::{WebGpu, WebGpuInstance};
+
+    let run = async {
+        if frames == 0 {
+            return Err(Error::InvalidRange);
+        }
+        let device = WebGpuInstance::new()?.open_default().await?;
+        let lane = device
+            .lanes()
+            .iter()
+            .find(|lane| lane.class == LaneClass::Graphics)
+            .map(|lane| lane.id)
+            .ok_or(Error::Unsupported("WebGPU graphics lane"))?;
+        let extent = [canvas.width(), canvas.height()];
+        let mut surface = WebGpu::surface_from_canvas(&device, canvas)?;
+        let format = surface
+            .capabilities()?
+            .formats
+            .into_iter()
+            .next()
+            .ok_or(Error::Unsupported("WebGPU canvas format"))?;
+        let config = SurfaceConfig {
+            extent,
+            format,
+            present_mode: PresentMode::Fifo,
+            alpha_mode: CompositeAlphaMode::Opaque,
+            color_space: ColorSpace::Srgb,
+            usage: SurfaceUsage::RENDER_ATTACHMENT,
+            maximum_frame_latency: 2,
+        };
+        surface.configure(&config).await?;
+        let mut tunnel = Tunnel::<WebGpu>::new(&device, lane, format, extent).await?;
+        for _ in 0..frames {
+            let image = surface.acquire().await?;
+            let work = tunnel.record(&device, &image, extent)?;
+            common::submit_and_present_async(&device, lane, work, image).await?;
+        }
+        Ok(())
+    };
+    run.await
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
+}
 #[cfg(windows)]
 fn run<B: texture_mipmap::MipmapBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
     let config = SurfaceConfig {

@@ -12,6 +12,7 @@ const TRIANGLE_VS: &[u8] = include_bytes!("assets/01_triangle/triangle_vs.dxil")
 const TRIANGLE_PS: &[u8] = include_bytes!("assets/01_triangle/triangle_ps.dxil");
 const TRIANGLE_VS_SPV: &[u8] = include_bytes!("assets/01_triangle/triangle_vs.spv");
 const TRIANGLE_PS_SPV: &[u8] = include_bytes!("assets/01_triangle/triangle_ps.spv");
+const TRIANGLE_WGSL: &[u8] = include_bytes!("assets/01_triangle/triangle.wgsl");
 
 /// Requirements for the raster-only baseline.
 pub trait TriangleBackend:
@@ -49,22 +50,24 @@ impl<B: TriangleBackend> Triangle<B> {
             usage: BufferUsage(BufferUsage::INDEX.0 | BufferUsage::COPY_DST.0),
             memory: MemoryClass::Device,
         })?;
-        let vertex_shader = common::native_shader(
+        let vertex_shader = common::native_shader_with_wgsl(
             device,
             "triangle vertex shader",
             "vs_main",
             ShaderStage::Vertex,
             TRIANGLE_VS,
             TRIANGLE_VS_SPV,
+            TRIANGLE_WGSL,
         )
         .await?;
-        let fragment_shader = common::native_shader(
+        let fragment_shader = common::native_shader_with_wgsl(
             device,
             "triangle fragment shader",
             "ps_main",
             ShaderStage::Fragment,
             TRIANGLE_PS,
             TRIANGLE_PS_SPV,
+            TRIANGLE_WGSL,
         )
         .await?;
         let layout = device.create_pipeline_layout(&PipelineLayoutDesc {
@@ -163,6 +166,7 @@ impl<B: TriangleBackend> Triangle<B> {
             },
             multiview_mask: None,
             timestamp_writes: None,
+            occlusion_query_set: None,
             secondary_inheritance: None,
         })?;
         pass.viewport(Viewport {
@@ -186,6 +190,56 @@ impl<B: TriangleBackend> Triangle<B> {
         pass.finish()?;
         encoder.finish()
     }
+}
+
+/// Draws the same typed example into a host-owned browser canvas.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn run_webgpu_triangle(
+    canvas: web_sys::HtmlCanvasElement,
+    frames: u32,
+) -> std::result::Result<(), wasm_bindgen::JsValue> {
+    use fluxel_rhi::webgpu::{WebGpu, WebGpuInstance};
+
+    let run = async {
+        if frames == 0 {
+            return Err(Error::InvalidRange);
+        }
+        let device = WebGpuInstance::new()?.open_default().await?;
+        let lane = device
+            .lanes()
+            .iter()
+            .find(|lane| lane.class == LaneClass::Graphics)
+            .map(|lane| lane.id)
+            .ok_or(Error::Unsupported("WebGPU graphics lane"))?;
+        let extent = [canvas.width(), canvas.height()];
+        let mut surface = WebGpu::surface_from_canvas(&device, canvas)?;
+        let format = surface
+            .capabilities()?
+            .formats
+            .into_iter()
+            .next()
+            .ok_or(Error::Unsupported("WebGPU canvas format"))?;
+        let config = SurfaceConfig {
+            extent,
+            format,
+            present_mode: PresentMode::Fifo,
+            alpha_mode: CompositeAlphaMode::Opaque,
+            color_space: ColorSpace::Srgb,
+            usage: SurfaceUsage::RENDER_ATTACHMENT,
+            maximum_frame_latency: 2,
+        };
+        surface.configure(&config).await?;
+        let triangle = Triangle::<WebGpu>::new(&device, lane, format).await?;
+        for _ in 0..frames {
+            let image = surface.acquire().await?;
+            let work = triangle.record(&device, &image, extent)?;
+            common::submit_and_present_async(&device, lane, work, image).await?;
+        }
+        Ok(())
+    };
+    run.await
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
 }
 
 fn triangle_vertices() -> [u8; 72] {

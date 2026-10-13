@@ -282,6 +282,7 @@ impl<B: IndirectBackend> Workload<B> {
             render_area: area(extent),
             multiview_mask: None,
             timestamp_writes: None,
+            occlusion_query_set: None,
             secondary_inheritance: None,
         };
         self.encode_scene(&mut e, d, &pass, extent)?;

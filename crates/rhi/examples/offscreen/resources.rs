@@ -30,7 +30,7 @@ pub(crate) fn uniform_entry(b: u32, v: Vec<ShaderStage>) -> BindGroupLayoutEntry
         v,
         BindingType::UniformBuffer {
             dynamic_offset: false,
-            min_size: 64,
+            min_size: 208,
         },
     )
 }
@@ -62,7 +62,16 @@ pub(crate) async fn shader<B: OffscreenBackend>(
     s: ShaderStage,
     clip_distance: bool,
 ) -> Result<Shader<B>> {
-    for (format, bytes) in [(ShaderFormat::Dxil, dxil), (ShaderFormat::SpirV, spirv)] {
+    let wgsl: &[u8] = if e.starts_with("mirror_") {
+        include_bytes!("../assets/07_offscreen/mirror.wgsl")
+    } else {
+        include_bytes!("../assets/07_offscreen/phong.wgsl")
+    };
+    for (format, bytes) in [
+        (ShaderFormat::Dxil, dxil),
+        (ShaderFormat::Wgsl, wgsl),
+        (ShaderFormat::SpirV, spirv),
+    ] {
         let desc = ShaderDesc {
             label: Some(n.into()),
             format,
@@ -72,7 +81,7 @@ pub(crate) async fn shader<B: OffscreenBackend>(
                 stage: s,
                 workgroup_size: None,
             }],
-            required_features: clip_distance
+            required_features: (clip_distance && format != ShaderFormat::Wgsl)
                 .then(|| "shaderClipDistance".into())
                 .into_iter()
                 .collect(),
@@ -81,7 +90,7 @@ pub(crate) async fn shader<B: OffscreenBackend>(
             return d.shader(desc).await;
         }
     }
-    Err(Error::Unsupported("DXIL or SPIR-V shader route"))
+    Err(Error::Unsupported("07 shader route"))
 }
 pub(crate) async fn pipe<B: OffscreenBackend>(
     d: &Device<B>,

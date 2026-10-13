@@ -13,7 +13,16 @@ pub(super) async fn shader<B: MsaaBackend>(
         ShaderStage::Fragment => crate::PS_SPIRV,
         _ => return Err(Error::InvalidState),
     };
-    crate::common::native_shader(device, label, entry, stage, bytes, spirv).await
+    crate::common::native_shader_with_wgsl(
+        device,
+        label,
+        entry,
+        stage,
+        bytes,
+        spirv,
+        include_bytes!("../assets/08_msaa/msaa.wgsl"),
+    )
+    .await
 }
 pub(super) async fn pipeline<B: MsaaBackend>(
     device: &Device<B>,

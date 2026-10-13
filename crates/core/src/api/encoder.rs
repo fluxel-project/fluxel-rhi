@@ -332,6 +332,9 @@ impl<B: RasterBackend> CommandEncoder<B> {
                 .timestamp_writes
                 .as_ref()
                 .is_some_and(|t| t.set.device != self.device)
+            || desc
+                .occlusion_query_set
+                .is_some_and(|set| set.device != self.device)
         {
             return Err(Error::WrongDevice);
         }

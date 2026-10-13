@@ -338,6 +338,7 @@ impl<B: ComputeBackend> Compute<B> {
             },
             multiview_mask: None,
             timestamp_writes: None,
+            occlusion_query_set: None,
             secondary_inheritance: None,
         })?;
         raster.set_pipeline(&self.display_pipeline)?;

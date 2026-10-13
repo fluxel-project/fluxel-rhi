@@ -370,7 +370,6 @@ where
     )
 }
 
-#[cfg(windows)]
 fn submit_capture_and_present<B: DeferredBackend>(
     device: &Device<B>,
     lane: LaneId,
@@ -441,6 +440,65 @@ fn submit_capture_and_present<B: DeferredBackend>(
         | SubmitOutcome::PartiallyAccepted { error, .. }
         | SubmitOutcome::Indeterminate { error, .. } => Err(error),
     }
+}
+
+/// Renders the visible dragon and verifies one native GPU-to-CPU screenshot.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn run_webgpu_screenshot(
+    canvas: web_sys::HtmlCanvasElement,
+    frames: u32,
+) -> std::result::Result<(), wasm_bindgen::JsValue> {
+    use fluxel_rhi::webgpu::{WebGpu, WebGpuInstance};
+
+    let run = async {
+        if frames == 0 {
+            return Err(Error::InvalidRange);
+        }
+        let device = WebGpuInstance::new()?.open_default().await?;
+        let lane = device
+            .lanes()
+            .iter()
+            .find(|lane| lane.class == LaneClass::Graphics)
+            .map(|lane| lane.id)
+            .ok_or(Error::Unsupported("WebGPU graphics lane"))?;
+        let extent = [canvas.width(), canvas.height()];
+        let mut surface = WebGpu::surface_from_canvas(&device, canvas)?;
+        let format = surface
+            .capabilities()?
+            .formats
+            .into_iter()
+            .next()
+            .ok_or(Error::Unsupported("WebGPU canvas format"))?;
+        surface
+            .configure(&SurfaceConfig {
+                extent,
+                format,
+                present_mode: PresentMode::Fifo,
+                alpha_mode: CompositeAlphaMode::Opaque,
+                color_space: ColorSpace::Srgb,
+                usage: SurfaceUsage::RENDER_ATTACHMENT,
+                maximum_frame_latency: 2,
+            })
+            .await?;
+        let mut screenshot = Screenshot::<WebGpu>::new(&device, lane, extent).await?;
+        for frame in 0..frames {
+            let image = surface.acquire().await?;
+            let record = screenshot.record(&device, &image, frame == 0)?;
+            let completion = submit_capture_and_present(&device, lane, record.work, image)?;
+            device.wait_completion(&completion).await?;
+            if let Some(ticket) = record.ticket {
+                let data = unsafe { device.read_after(ticket, &completion).await? };
+                let rgb = ppm_rgb(&data.bytes, screenshot.row_pitch as usize, extent, false)?;
+                if !rgb.starts_with(b"P6\n") || rgb.len() <= 64 {
+                    return Err(Error::InvalidState);
+                }
+            }
+        }
+        Ok(())
+    };
+    run.await
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
 }
 #[cfg(not(windows))]
 fn main() {

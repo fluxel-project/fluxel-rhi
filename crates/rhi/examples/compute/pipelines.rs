@@ -13,6 +13,8 @@ const EDGE_SPIRV: &[u8] = include_bytes!("../assets/06_compute/edgedetect.spv");
 const SHARPEN_SPIRV: &[u8] = include_bytes!("../assets/06_compute/sharpen.spv");
 const DISPLAY_VS_SPIRV: &[u8] = include_bytes!("../assets/06_compute/display_vs.spv");
 const DISPLAY_PS_SPIRV: &[u8] = include_bytes!("../assets/06_compute/display_ps.spv");
+const FILTERS_WGSL: &[u8] = include_bytes!("../assets/06_compute/filters.wgsl");
+const DISPLAY_WGSL: &[u8] = include_bytes!("../assets/06_compute/display.wgsl");
 
 pub(super) async fn filters<B: ComputeBackend>(
     device: &Device<B>,
@@ -37,6 +39,7 @@ pub(super) async fn display<B: ComputeBackend>(
         ShaderStage::Vertex,
         DISPLAY_VS,
         DISPLAY_VS_SPIRV,
+        DISPLAY_WGSL,
     )
     .await?;
     let ps = shader(
@@ -46,6 +49,7 @@ pub(super) async fn display<B: ComputeBackend>(
         ShaderStage::Fragment,
         DISPLAY_PS,
         DISPLAY_PS_SPIRV,
+        DISPLAY_WGSL,
     )
     .await?;
     device
@@ -111,7 +115,16 @@ async fn compute_pipeline<B: ComputeBackend>(
     dxil: &[u8],
     spirv: &[u8],
 ) -> Result<ComputePipeline<B>> {
-    let shader = shader(device, entry, entry, ShaderStage::Compute, dxil, spirv).await?;
+    let shader = shader(
+        device,
+        entry,
+        entry,
+        ShaderStage::Compute,
+        dxil,
+        spirv,
+        FILTERS_WGSL,
+    )
+    .await?;
     device
         .compute()
         .ok_or(Error::Unsupported("compute"))?
@@ -136,8 +149,13 @@ async fn shader<B: ComputeBackend>(
     stage: ShaderStage,
     dxil: &[u8],
     spirv: &[u8],
+    wgsl: &[u8],
 ) -> Result<Shader<B>> {
-    for (format, bytes) in [(ShaderFormat::Dxil, dxil), (ShaderFormat::SpirV, spirv)] {
+    for (format, bytes) in [
+        (ShaderFormat::Dxil, dxil),
+        (ShaderFormat::Wgsl, wgsl),
+        (ShaderFormat::SpirV, spirv),
+    ] {
         let desc = ShaderDesc {
             label: Some(label.into()),
             format,
@@ -153,5 +171,5 @@ async fn shader<B: ComputeBackend>(
             return device.shader(desc).await;
         }
     }
-    Err(Error::Unsupported("06 DXIL or SPIR-V shader route"))
+    Err(Error::Unsupported("06 shader route"))
 }

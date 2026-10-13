@@ -13,6 +13,9 @@ const PLANET_VS_SPV: &[u8] = include_bytes!("../assets/03_instancing/planet_vs.s
 const PLANET_PS_SPV: &[u8] = include_bytes!("../assets/03_instancing/planet_ps.spv");
 const STAR_VS_SPV: &[u8] = include_bytes!("../assets/03_instancing/star_vs.spv");
 const STAR_PS_SPV: &[u8] = include_bytes!("../assets/03_instancing/star_ps.spv");
+const ROCK_WGSL: &[u8] = include_bytes!("../assets/03_instancing/rock.wgsl");
+const PLANET_WGSL: &[u8] = include_bytes!("../assets/03_instancing/planet.wgsl");
+const STAR_WGSL: &[u8] = include_bytes!("../assets/03_instancing/stars.wgsl");
 
 pub(crate) async fn scene_pipelines<B: InstancingBackend>(
     device: &Device<B>,
@@ -44,6 +47,7 @@ pub(crate) async fn scene_pipelines<B: InstancingBackend>(
         ROCK_PS,
         ROCK_VS_SPV,
         ROCK_PS_SPV,
+        ROCK_WGSL,
         true,
     )
     .await?;
@@ -64,6 +68,7 @@ pub(crate) async fn scene_pipelines<B: InstancingBackend>(
         PLANET_PS,
         PLANET_VS_SPV,
         PLANET_PS_SPV,
+        PLANET_WGSL,
         true,
     )
     .await?;
@@ -82,6 +87,7 @@ pub(crate) async fn scene_pipelines<B: InstancingBackend>(
         STAR_PS,
         STAR_VS_SPV,
         STAR_PS_SPV,
+        STAR_WGSL,
         true,
     )
     .await?;
@@ -135,6 +141,7 @@ async fn pipeline<B: InstancingBackend>(
     fragment_dxil: &[u8],
     vertex_spirv: &[u8],
     fragment_spirv: &[u8],
+    wgsl: &[u8],
     depth: bool,
 ) -> Result<RasterPipeline<B>> {
     let (vertex_entry, fragment_entry) = match label {
@@ -153,26 +160,28 @@ async fn pipeline<B: InstancingBackend>(
             label: Some(label.into()),
             layout,
             vertex: PipelineStage {
-                module: crate::common::native_shader(
+                module: crate::common::native_shader_with_wgsl(
                     device,
                     label,
                     vertex_entry,
                     ShaderStage::Vertex,
                     vertex_dxil,
                     vertex_spirv,
+                    wgsl,
                 )
                 .await?,
                 entry: vertex_entry.into(),
                 constants: vec![],
             },
             fragment: Some(PipelineStage {
-                module: crate::common::native_shader(
+                module: crate::common::native_shader_with_wgsl(
                     device,
                     label,
                     fragment_entry,
                     ShaderStage::Fragment,
                     fragment_dxil,
                     fragment_spirv,
+                    wgsl,
                 )
                 .await?,
                 entry: fragment_entry.into(),

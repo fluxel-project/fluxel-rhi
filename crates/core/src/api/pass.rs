@@ -93,6 +93,9 @@ pub struct RasterPassDesc<'a, B: Backend> {
     pub render_area: Rect,
     pub multiview_mask: Option<u32>,
     pub timestamp_writes: Option<PassTimestampWrites<'a, B>>,
+    /// Query set fixed at render-pass creation for backends such as WebGPU.
+    /// Individual query slots are begun and ended through `Queries`.
+    pub occlusion_query_set: Option<&'a QuerySet<B>>,
     /// Required when this pass executes inherited secondary raster work.  The
     /// backend validates this declaration against its real attachments.
     pub secondary_inheritance: Option<SecondaryRasterDesc>,

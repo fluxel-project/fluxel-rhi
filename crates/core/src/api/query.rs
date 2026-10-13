@@ -61,6 +61,18 @@ pub struct QuerySet<B: Backend> {
     pub(crate) device: DeviceId,
     pub(crate) native: B::NativeQuerySet,
 }
+impl<B: Backend> QuerySet<B> {
+    /// Backend bridge for native pass descriptors that must declare a query
+    /// set before any individual query slot is begun.
+    ///
+    /// # Safety
+    /// Call only from `B`'s implementation and retain the owning `QuerySet`
+    /// for every native use.
+    #[doc(hidden)]
+    pub unsafe fn native_ref(&self) -> &B::NativeQuerySet {
+        &self.native
+    }
+}
 pub struct Queries<'a, B: QueryBackend> {
     device: &'a Device<B>,
 }

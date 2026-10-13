@@ -25,10 +25,10 @@ impl<B: MipmapBackend> Tunnel<B> {
         format: TextureFormat,
         extent: [u32; 2],
     ) -> Result<Self> {
-        let image = super::resources::parse_ktx(crate::IMAGE)?;
-        let model = crate::gltf::load_embedded_model(
-            crate::MODEL,
-            crate::gltf::LoadOptions::PRETRANSFORM_FLIP_Y,
+        let image = super::resources::parse_ktx(super::super::IMAGE)?;
+        let model = super::super::gltf::load_embedded_model(
+            super::super::MODEL,
+            super::super::gltf::LoadOptions::PRETRANSFORM_FLIP_Y,
         )
         .map_err(|error| Error::Backend(error.to_string()))?;
         let chain = MipChain::new(device, lane, image.width, image.height)?;
@@ -105,7 +105,7 @@ impl<B: MipmapBackend> Tunnel<B> {
                     vec![ShaderStage::Vertex],
                     BindingType::UniformBuffer {
                         dynamic_offset: false,
-                        min_size: 64,
+                        min_size: 224,
                     },
                 ),
                 entry(
@@ -156,18 +156,18 @@ impl<B: MipmapBackend> Tunnel<B> {
         })?;
         let vs = shader(
             device,
-            "09 tunnel crate::VS",
-            crate::VS,
-            crate::VS_SPIRV,
+            "09 tunnel vertex shader",
+            super::super::VS,
+            super::super::VS_SPIRV,
             "vs_main",
             ShaderStage::Vertex,
         )
         .await?;
         let ps = shader(
             device,
-            "09 tunnel crate::PS",
-            crate::PS,
-            crate::PS_SPIRV,
+            "09 tunnel fragment shader",
+            super::super::PS,
+            super::super::PS_SPIRV,
             "ps_main",
             ShaderStage::Fragment,
         )
@@ -316,5 +316,14 @@ async fn shader<B: MipmapBackend>(
     entry: &str,
     stage: ShaderStage,
 ) -> Result<Shader<B>> {
-    crate::common::native_shader(device, label, entry, stage, dxil, spirv).await
+    super::super::common::native_shader_with_wgsl(
+        device,
+        label,
+        entry,
+        stage,
+        dxil,
+        spirv,
+        super::super::WGSL,
+    )
+    .await
 }

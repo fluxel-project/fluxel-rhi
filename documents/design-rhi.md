@@ -7,7 +7,8 @@
 `fluxel_rhi_core::api` is the single Core API namespace. The facade re-exports it as
 `fluxel_rhi::api`; applications use that namespace and select a concrete backend at
 initialization. On Windows the facade exposes `fluxel_rhi::dx12::Dx12` and
-`fluxel_rhi::vulkan::Vulkan` behind their optional features.
+`fluxel_rhi::vulkan::Vulkan`; browser WASM exposes `fluxel_rhi::webgpu::WebGpu`.
+Each route has an optional feature.
 
 The API is statically dispatched: `Device<B>`, resources, pipelines, encoders and
 recorded work retain their concrete `Backend` type. RenderGraph or its host owns graph
@@ -52,8 +53,11 @@ backend-wide Y flip into DX12.
   SPIR-V, Win32 WSI, command buffer, descriptor, pipeline, and fence-backed
   submission paths. All 15 numbered examples have Vulkan validation-layer
   runtime and GPU readback evidence.
+- `crates/webgpu` is an active browser backend. It creates real `GPUDevice`
+  resources, records native command/pass encoders, submits to `GPUQueue`, uses
+  canvas presentation, and observes completion through browser promises.
 
-GL, Metal, and WebGPU are not active workspace backends. Documentation and CI
+GL and Metal are not active workspace backends. Documentation and CI
 must not treat source paths or compile checks as hardware execution evidence.
 
 ## Implemented DX12 baseline

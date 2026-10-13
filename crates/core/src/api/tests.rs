@@ -390,6 +390,7 @@ mod type_contract_tests {
                 },
                 multiview_mask: None,
                 timestamp_writes: None,
+                occlusion_query_set: None,
                 secondary_inheritance: None,
             })
             .unwrap();

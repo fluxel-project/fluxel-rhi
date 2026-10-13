@@ -108,6 +108,39 @@ pub async fn native_shader<B: ShaderBackend>(
     Err(Error::Unsupported("DXIL or SPIR-V shader route"))
 }
 
+/// Picks one native shader artifact, including WGSL for browser WebGPU.
+pub async fn native_shader_with_wgsl<B: ShaderBackend>(
+    device: &Device<B>,
+    label: &str,
+    entry: &str,
+    stage: ShaderStage,
+    dxil: &[u8],
+    spirv: &[u8],
+    wgsl: &[u8],
+) -> Result<Shader<B>> {
+    for (format, bytes) in [
+        (ShaderFormat::Dxil, dxil),
+        (ShaderFormat::Wgsl, wgsl),
+        (ShaderFormat::SpirV, spirv),
+    ] {
+        let desc = ShaderDesc {
+            label: Some(label.into()),
+            format,
+            bytes: Arc::from(bytes),
+            entries: vec![ShaderEntryPoint {
+                name: entry.into(),
+                stage,
+                workgroup_size: None,
+            }],
+            required_features: vec![],
+        };
+        if !matches!(device.shader_route(&desc), ShaderRoute::Unsupported) {
+            return device.shader(desc).await;
+        }
+    }
+    Err(Error::Unsupported("DXIL, SPIR-V, or WGSL shader route"))
+}
+
 /// Submits one recorded frame on a single queue, then presents its surface lease.
 /// The example waits for the requested end checkpoint before reusing frame data.
 pub fn submit_and_present<B: DeferredBackend>(
@@ -116,6 +149,73 @@ pub fn submit_and_present<B: DeferredBackend>(
     work: RecordedWork<B>,
     image: SurfaceImage<B>,
 ) -> Result<()> {
+    let outcome = issue_submit_and_present(device, lane, work, image)?;
+    match outcome {
+        SubmitOutcome::Accepted(receipt) => {
+            validate_present_receipt(&receipt)?;
+            if receipt.checkpoints.is_empty() {
+                block_on(device.wait_idle())?;
+            } else {
+                for checkpoint in &receipt.checkpoints {
+                    block_on(device.wait_completion(&checkpoint.point))?;
+                }
+            }
+            Ok(())
+        }
+        SubmitOutcome::Rejected { error, .. } => Err(error),
+        SubmitOutcome::PartiallyAccepted { error, .. }
+        | SubmitOutcome::Indeterminate { error, .. } => {
+            block_on(device.wait_idle())?;
+            Err(error)
+        }
+    }
+}
+
+/// Browser hosts await completion without blocking their event loop.
+#[cfg(target_arch = "wasm32")]
+pub async fn submit_and_present_async<B: DeferredBackend>(
+    device: &Device<B>,
+    lane: LaneId,
+    work: RecordedWork<B>,
+    image: SurfaceImage<B>,
+) -> Result<()> {
+    let outcome = issue_submit_and_present(device, lane, work, image)?;
+    match outcome {
+        SubmitOutcome::Accepted(receipt) => {
+            validate_present_receipt(&receipt)?;
+            if receipt.checkpoints.is_empty() {
+                device.wait_idle().await?;
+            } else {
+                for checkpoint in &receipt.checkpoints {
+                    device.wait_completion(&checkpoint.point).await?;
+                }
+            }
+            Ok(())
+        }
+        SubmitOutcome::Rejected { error, .. } => Err(error),
+        SubmitOutcome::PartiallyAccepted { error, .. }
+        | SubmitOutcome::Indeterminate { error, .. } => {
+            device.wait_idle().await?;
+            Err(error)
+        }
+    }
+}
+
+fn validate_present_receipt<B: DeferredBackend>(
+    receipt: &fluxel_rhi::api::SubmissionReceipt<B>,
+) -> Result<()> {
+    if receipt.accepted.len() != 2 || receipt.presents.len() != 1 || !receipt.presents[0].accepted {
+        return Err(Error::InvalidState);
+    }
+    Ok(())
+}
+
+fn issue_submit_and_present<B: DeferredBackend>(
+    device: &Device<B>,
+    lane: LaneId,
+    work: RecordedWork<B>,
+    image: SurfaceImage<B>,
+) -> Result<SubmitOutcome<B>> {
     if lane.device != device.id() || image.device() != device.id() {
         return Err(Error::WrongDevice);
     }
@@ -161,37 +261,11 @@ pub fn submit_and_present<B: DeferredBackend>(
     ];
     // The host retains all demo resources and this surface until the requested
     // completion is observed. That fulfills the native submission lifetime rule.
-    let outcome = unsafe {
+    Ok(unsafe {
         device.queue().submit(SubmitPacket {
             plan,
             steps,
             completion: CompletionRequest::End,
         })
-    };
-    match outcome {
-        SubmitOutcome::Accepted(receipt) => {
-            if receipt.accepted.len() != 2
-                || receipt.presents.len() != 1
-                || !receipt.presents[0].accepted
-            {
-                return Err(Error::InvalidState);
-            }
-            if receipt.checkpoints.is_empty() {
-                block_on(device.wait_idle())?;
-            } else {
-                for checkpoint in &receipt.checkpoints {
-                    block_on(device.wait_completion(&checkpoint.point))?;
-                }
-            }
-            Ok(())
-        }
-        SubmitOutcome::Rejected { error, .. } => Err(error),
-        SubmitOutcome::PartiallyAccepted { error, .. }
-        | SubmitOutcome::Indeterminate { error, .. } => {
-            // Some native work may have crossed the queue boundary. Keep the
-            // demo's resources alive through device idle before surfacing it.
-            block_on(device.wait_idle())?;
-            Err(error)
-        }
-    }
+    })
 }

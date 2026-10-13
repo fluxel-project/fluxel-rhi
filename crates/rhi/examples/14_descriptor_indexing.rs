@@ -10,6 +10,7 @@ const VS: &[u8] = include_bytes!("assets/14_descriptor_indexing/descriptor_index
 const PS: &[u8] = include_bytes!("assets/14_descriptor_indexing/descriptor_indexing.ps.dxil");
 const VS_SPIRV: &[u8] = include_bytes!("assets/14_descriptor_indexing/descriptor_indexing.vs.spv");
 const PS_SPIRV: &[u8] = include_bytes!("assets/14_descriptor_indexing/descriptor_indexing.ps.spv");
+const WGSL: &[u8] = include_bytes!("assets/14_descriptor_indexing/descriptor_indexing.wgsl");
 pub trait DescriptorIndexingBackend:
     Backend + ResourceBackend + ShaderBackend + PipelineBackend + RasterBackend + DeferredBackend
 {
@@ -100,6 +101,10 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
         format: TextureFormat,
         extent: [u32; 2],
     ) -> Result<Self> {
+        // Standard WebGPU has fixed texture-array layers, but no runtime-sized
+        // descriptor array. Keep the actual capability false and use a visual
+        // equivalent 32-layer texture for the browser demo.
+        #[cfg(not(target_arch = "wasm32"))]
         require_descriptor_indexing(d)?;
         let vertex = d.create_buffer(&buffer(
             "14 cube vertices",
@@ -116,7 +121,48 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
             256,
             BufferUsage::UNIFORM.union(BufferUsage::COPY_DST),
         ))?;
+        #[cfg(not(target_arch = "wasm32"))]
         let layout = descriptor_indexing_layout(d)?;
+        #[cfg(target_arch = "wasm32")]
+        let layout = d.create_bind_group_layout(&BindGroupLayoutDesc {
+            label: Some("14 WebGPU fixed texture layers".into()),
+            entries: vec![
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: vec![ShaderStage::Vertex],
+                    ty: BindingType::UniformBuffer {
+                        dynamic_offset: false,
+                        min_size: 192,
+                    },
+                    count: BindingCount::One,
+                    partially_bound: false,
+                    nonuniform_indexing: false,
+                },
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: vec![ShaderStage::Fragment],
+                    ty: BindingType::Sampler {
+                        filtering: true,
+                        comparison: false,
+                    },
+                    count: BindingCount::One,
+                    partially_bound: false,
+                    nonuniform_indexing: false,
+                },
+                BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: vec![ShaderStage::Fragment],
+                    ty: BindingType::SampledTexture {
+                        sample: TextureSampleType::Float,
+                        dimension: TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: BindingCount::One,
+                    partially_bound: false,
+                    nonuniform_indexing: false,
+                },
+            ],
+        })?;
         let sampler = d.create_sampler(&SamplerDesc {
             label: Some("14 nearest sampler".into()),
             address: [AddressMode::Repeat; 3],
@@ -130,12 +176,20 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
         })?;
         let (mut textures, mut views) =
             (Vec::with_capacity(TEXTURES), Vec::with_capacity(TEXTURES));
-        for i in 0..TEXTURES {
+        for i in 0..if cfg!(target_arch = "wasm32") {
+            1
+        } else {
+            TEXTURES
+        } {
             let t = d.create_texture(&TextureDesc {
                 label: Some(format!("14 image {i}")),
                 dimension: TextureDimension::D2,
                 extent: [3, 3, 1],
-                array_layers: 1,
+                array_layers: if cfg!(target_arch = "wasm32") {
+                    TEXTURES as u32
+                } else {
+                    1
+                },
                 format: TextureFormat::Rgba8Unorm,
                 mip_levels: 1,
                 samples: 1,
@@ -146,10 +200,18 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
                 &t,
                 &TextureViewDesc {
                     format: TextureFormat::Rgba8Unorm,
-                    dimension: TextureViewDimension::D2,
+                    dimension: if cfg!(target_arch = "wasm32") {
+                        TextureViewDimension::D2Array
+                    } else {
+                        TextureViewDimension::D2
+                    },
                     aspects: TextureAspects::COLOR,
                     mips: 0..1,
-                    layers: 0..1,
+                    layers: 0..if cfg!(target_arch = "wasm32") {
+                        TEXTURES as u32
+                    } else {
+                        1
+                    },
                 },
             )?);
             textures.push(t)
@@ -168,12 +230,16 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
             },
             BindGroupEntry {
                 binding: 2,
-                resource: BindingResource::Array(
-                    views
-                        .iter()
-                        .map(|v| Some(BindingResource::TextureView(v)))
-                        .collect(),
-                ),
+                resource: if cfg!(target_arch = "wasm32") {
+                    BindingResource::TextureView(&views[0])
+                } else {
+                    BindingResource::Array(
+                        views
+                            .iter()
+                            .map(|v| Some(BindingResource::TextureView(v)))
+                            .collect(),
+                    )
+                },
             },
         ];
         let group = d.create_bind_group(&BindGroupDesc {
@@ -220,13 +286,22 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
         if upload_geometry {
             e.write_buffer(&self.vertex, 0, &cube_vertices())?;
             e.write_buffer(&self.index, 0, &cube_indices())?;
-            for (i, t) in self.textures.iter().enumerate() {
+            for i in 0..TEXTURES {
+                let t = &self.textures[if cfg!(target_arch = "wasm32") { 0 } else { i }];
                 let p = texture_pixels(i as u8);
                 e.write_texture(
                     TextureRegion {
                         texture: t,
                         mip: 0,
-                        origin: [0; 3],
+                        origin: [
+                            0,
+                            0,
+                            if cfg!(target_arch = "wasm32") {
+                                i as u32
+                            } else {
+                                0
+                            },
+                        ],
                         extent: [3, 3, 1],
                         aspect: TextureAspects::COLOR,
                     },
@@ -264,6 +339,7 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
             },
             multiview_mask: None,
             timestamp_writes: None,
+            occlusion_query_set: None,
             secondary_inheritance: None,
         })?;
         p.viewport(Viewport {
@@ -342,22 +418,24 @@ async fn pipeline<B: DescriptorIndexingBackend>(
     layout: PipelineLayout<B>,
     format: TextureFormat,
 ) -> Result<RasterPipeline<B>> {
-    let vs = common::native_shader(
+    let vs = common::native_shader_with_wgsl(
         d,
         "14 descriptor vertex",
         "vs_main",
         ShaderStage::Vertex,
         VS,
         VS_SPIRV,
+        WGSL,
     )
     .await?;
-    let ps = common::native_shader(
+    let ps = common::native_shader_with_wgsl(
         d,
         "14 descriptor fragment",
         "ps_main",
         ShaderStage::Fragment,
         PS,
         PS_SPIRV,
+        WGSL,
     )
     .await?;
     d.raster_pipeline(RasterPipelineDesc {
@@ -587,6 +665,59 @@ fn matrices(extent: [u32; 2], _time: f32) -> [u8; 256] {
         b[i * 4..i * 4 + 4].copy_from_slice(&x.to_ne_bytes())
     }
     b
+}
+/// Browser visual equivalent using one 32-layer texture. This does not claim
+/// runtime-sized descriptor indexing support from WebGPU.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn run_webgpu_descriptor_indexing(
+    canvas: web_sys::HtmlCanvasElement,
+    frames: u32,
+) -> std::result::Result<(), wasm_bindgen::JsValue> {
+    use fluxel_rhi::webgpu::{WebGpu, WebGpuInstance};
+    let run = async {
+        if frames == 0 {
+            return Err(Error::InvalidRange);
+        }
+        let device = WebGpuInstance::new()?.open_default().await?;
+        let lane = device
+            .lanes()
+            .iter()
+            .find(|lane| lane.class == LaneClass::Graphics)
+            .map(|lane| lane.id)
+            .ok_or(Error::Unsupported("WebGPU graphics lane"))?;
+        let extent = [canvas.width(), canvas.height()];
+        let mut surface = WebGpu::surface_from_canvas(&device, canvas)?;
+        let format = surface
+            .capabilities()?
+            .formats
+            .into_iter()
+            .next()
+            .ok_or(Error::Unsupported("WebGPU canvas format"))?;
+        surface
+            .configure(&SurfaceConfig {
+                extent,
+                format,
+                present_mode: PresentMode::Fifo,
+                alpha_mode: CompositeAlphaMode::Opaque,
+                color_space: ColorSpace::Srgb,
+                usage: SurfaceUsage::RENDER_ATTACHMENT,
+                maximum_frame_latency: 2,
+            })
+            .await?;
+        let mut scene = DescriptorIndexing::<WebGpu>::new(&device, lane, format, extent).await?;
+        for frame in 0..frames {
+            let image = surface.acquire().await?;
+            let (work, uploaded) = scene.record(&device, &image, extent, frame as f32 / 60.0)?;
+            common::submit_and_present_async(&device, lane, work, image).await?;
+            if uploaded {
+                scene.mark_uploaded();
+            }
+        }
+        Ok(())
+    };
+    run.await
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
 }
 #[cfg(windows)]
 fn run<B: DescriptorIndexingBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {

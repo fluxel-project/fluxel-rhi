@@ -1,5 +1,5 @@
-//! Original glTF rock field, planet, stars, depth, and 8,192 instances via RHI.
-//! The workload lives in `instancing/`; this entry owns the native host only.
+// Original glTF rock field, planet, stars, depth, and 8,192 instances via RHI.
+// The workload lives in `instancing/`; this entry owns the native host only.
 mod common;
 #[path = "common/gltf.rs"]
 mod gltf;
@@ -7,6 +7,47 @@ mod instancing;
 
 use fluxel_rhi::api::*;
 use instancing::Instancing;
+
+/// Draws the instanced rock field into a host-owned browser canvas.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn run_webgpu_instancing(
+    canvas: web_sys::HtmlCanvasElement,
+    frames: u32,
+) -> std::result::Result<(), wasm_bindgen::JsValue> {
+    use fluxel_rhi::webgpu::{WebGpu, WebGpuInstance};
+
+    let run = async {
+        if frames == 0 {
+            return Err(Error::InvalidRange);
+        }
+        let device = WebGpuInstance::new()?.open_default().await?;
+        let lane = device.lanes()[0].id;
+        let extent = [canvas.width(), canvas.height()];
+        let mut surface = WebGpu::surface_from_canvas(&device, canvas)?;
+        let format = surface.capabilities()?.formats[0];
+        let config = SurfaceConfig {
+            extent,
+            format,
+            present_mode: PresentMode::Fifo,
+            alpha_mode: CompositeAlphaMode::Opaque,
+            color_space: ColorSpace::Srgb,
+            usage: SurfaceUsage::RENDER_ATTACHMENT,
+            maximum_frame_latency: 2,
+        };
+        surface.configure(&config).await?;
+        let mut scene = Instancing::<WebGpu>::new(&device, lane, format, extent).await?;
+        for frame in 0..frames {
+            let image = surface.acquire().await?;
+            let work = scene.record(&device, &image, extent, frame as f32 / 60.0)?;
+            common::submit_and_present_async(&device, lane, work, image).await?;
+            scene.mark_submitted();
+        }
+        Ok(())
+    };
+    run.await
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
+}
 
 #[cfg(windows)]
 fn run<B: instancing::InstancingBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
@@ -46,7 +87,9 @@ fn run<B: instancing::InstancingBackend, H: common::ExampleHost<B>>(host: H) -> 
                 extent,
                 started.elapsed().as_secs_f32(),
             )?;
-            common::submit_and_present(device, lane, work, image)
+            common::submit_and_present(device, lane, work, image)?;
+            scene.as_mut().ok_or(Error::InvalidState)?.mark_submitted();
+            Ok(())
         },
     )
 }

@@ -19,6 +19,7 @@ const VS_SPIRV: &[u8] = include_bytes!("assets/11_occlusion_query/occlusion.vs.s
 const SIMPLE_PS_SPIRV: &[u8] = include_bytes!("assets/11_occlusion_query/simple.ps.spv");
 const MESH_PS_SPIRV: &[u8] = include_bytes!("assets/11_occlusion_query/mesh.ps.spv");
 const OCCLUDER_PS_SPIRV: &[u8] = include_bytes!("assets/11_occlusion_query/occluder.ps.spv");
+const WGSL: &[u8] = include_bytes!("assets/11_occlusion_query/occlusion.wgsl");
 pub trait OcclusionBackend:
     Backend
     + ResourceBackend
@@ -75,6 +76,58 @@ pub struct Frame<B: OcclusionBackend> {
     work: RecordedWork<B>,
     ticket: ReadbackTicket<B>,
 }
+
+/// Draws the native-query workload into a host-owned browser canvas.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn run_webgpu_occlusion_query(
+    canvas: web_sys::HtmlCanvasElement,
+    frames: u32,
+) -> std::result::Result<(), wasm_bindgen::JsValue> {
+    use fluxel_rhi::webgpu::{WebGpu, WebGpuInstance};
+
+    let run = async {
+        if frames == 0 {
+            return Err(Error::InvalidRange);
+        }
+        let device = WebGpuInstance::new()?.open_default().await?;
+        let lane = device
+            .lanes()
+            .iter()
+            .find(|lane| lane.class == LaneClass::Graphics)
+            .map(|lane| lane.id)
+            .ok_or(Error::Unsupported("WebGPU graphics lane"))?;
+        let extent = [canvas.width(), canvas.height()];
+        let mut surface = WebGpu::surface_from_canvas(&device, canvas)?;
+        let format = surface
+            .capabilities()?
+            .formats
+            .into_iter()
+            .next()
+            .ok_or(Error::Unsupported("WebGPU canvas format"))?;
+        let config = SurfaceConfig {
+            extent,
+            format,
+            present_mode: PresentMode::Fifo,
+            alpha_mode: CompositeAlphaMode::Opaque,
+            color_space: ColorSpace::Srgb,
+            usage: SurfaceUsage::RENDER_ATTACHMENT,
+            maximum_frame_latency: 2,
+        };
+        surface.configure(&config).await?;
+        let mut workload = Workload::<WebGpu>::new(&device, lane, format).await?;
+        for _ in 0..frames {
+            let image = surface.acquire().await?;
+            let Frame { work, ticket } = workload.record(&device, &image, extent)?;
+            let completion = submit(&device, lane, work, image)?;
+            workload.consume_async(&device, ticket, &completion).await?;
+        }
+        Ok(())
+    };
+    run.await
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
+}
+
 impl<B: OcclusionBackend> Workload<B> {
     pub async fn new(d: &Device<B>, lane: LaneId, format: TextureFormat) -> Result<Self> {
         let q = d
@@ -135,33 +188,44 @@ impl<B: OcclusionBackend> Workload<B> {
         let plane_uniform = make("11 occluder transform", 256, BufferUsage::UNIFORM)?;
         let teapot_uniform = make("11 teapot transform", 256, BufferUsage::UNIFORM)?;
         let sphere_uniform = make("11 sphere transform", 256, BufferUsage::UNIFORM)?;
-        let vs =
-            common::native_shader(d, "11 VS", "vs_main", ShaderStage::Vertex, VS, VS_SPIRV).await?;
-        let simple_ps = common::native_shader(
+        let vs = common::native_shader_with_wgsl(
+            d,
+            "11 VS",
+            "vs_main",
+            ShaderStage::Vertex,
+            VS,
+            VS_SPIRV,
+            WGSL,
+        )
+        .await?;
+        let simple_ps = common::native_shader_with_wgsl(
             d,
             "11 simple PS",
             "simple_ps",
             ShaderStage::Fragment,
             SIMPLE_PS,
             SIMPLE_PS_SPIRV,
+            WGSL,
         )
         .await?;
-        let mesh_ps = common::native_shader(
+        let mesh_ps = common::native_shader_with_wgsl(
             d,
             "11 mesh PS",
             "mesh_ps",
             ShaderStage::Fragment,
             MESH_PS,
             MESH_PS_SPIRV,
+            WGSL,
         )
         .await?;
-        let occluder_ps = common::native_shader(
+        let occluder_ps = common::native_shader_with_wgsl(
             d,
             "11 occluder PS",
             "occluder_ps",
             ShaderStage::Fragment,
             OCCLUDER_PS,
             OCCLUDER_PS_SPIRV,
+            WGSL,
         )
         .await?;
         let layout = d.create_bind_group_layout(&BindGroupLayoutDesc {
@@ -171,7 +235,9 @@ impl<B: OcclusionBackend> Workload<B> {
                 visibility: vec![ShaderStage::Vertex],
                 ty: BindingType::UniformBuffer {
                     dynamic_offset: false,
-                    min_size: 64,
+                    // WGSL uniform structures have a 16-byte final alignment;
+                    // the 240 bytes of fields therefore occupy a 256-byte binding.
+                    min_size: 256,
                 },
                 count: BindingCount::One,
                 partially_bound: false,
@@ -309,8 +375,11 @@ impl<B: OcclusionBackend> Workload<B> {
         let results = d.create_buffer(&BufferDesc {
             label: Some("11 resolved occlusion results".into()),
             size: 16,
-            usage: BufferUsage::QUERY_RESOLVE.union(BufferUsage::MAP_READ),
-            memory: MemoryClass::Readback,
+            // WebGPU cannot map a QUERY_RESOLVE buffer directly: MAP_READ
+            // buffers may only also carry COPY_DST.  ReadbackBackend copies
+            // this resolve target to its MAP_READ staging allocation.
+            usage: BufferUsage::QUERY_RESOLVE.union(BufferUsage::COPY_SRC),
+            memory: MemoryClass::Device,
         })?;
         Ok(Self {
             lane,
@@ -450,6 +519,9 @@ impl<B: OcclusionBackend> Workload<B> {
             },
             multiview_mask: None,
             timestamp_writes: None,
+            // WebGPU declares the query set when beginning this render pass;
+            // begin_occlusion/end_occlusion below select its individual slots.
+            occlusion_query_set: Some(&self.queries),
             secondary_inheritance: None,
         })?;
         p.viewport(Viewport {
@@ -524,6 +596,7 @@ impl<B: OcclusionBackend> Workload<B> {
             },
             multiview_mask: None,
             timestamp_writes: None,
+            occlusion_query_set: None,
             secondary_inheritance: None,
         })?;
         p.viewport(Viewport {
@@ -582,6 +655,19 @@ impl<B: OcclusionBackend> Workload<B> {
     ) -> Result<()> {
         common::block_on(d.wait_completion(c))?;
         let v = common::block_on(unsafe { d.read_after(ticket, c) })?.bytes;
+        self.consume_bytes(&v)
+    }
+    async fn consume_async(
+        &mut self,
+        d: &Device<B>,
+        ticket: ReadbackTicket<B>,
+        c: &CompletionPoint<B>,
+    ) -> Result<()> {
+        d.wait_completion(c).await?;
+        let readback = unsafe { d.read_after(ticket, c) }.await?;
+        self.consume_bytes(&readback.bytes)
+    }
+    fn consume_bytes(&mut self, v: &[u8]) -> Result<()> {
         if v.len() != 16 {
             return Err(Error::Backend("occlusion result size".into()));
         }

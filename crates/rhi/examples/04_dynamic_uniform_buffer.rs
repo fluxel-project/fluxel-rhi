@@ -9,6 +9,7 @@ const VS: &[u8] = include_bytes!("assets/04_dynamic_uniform_buffer/dynamic_unifo
 const PS: &[u8] = include_bytes!("assets/04_dynamic_uniform_buffer/dynamic_uniform.ps.dxil");
 const VS_SPV: &[u8] = include_bytes!("assets/04_dynamic_uniform_buffer/dynamic_uniform.vs.spv");
 const PS_SPV: &[u8] = include_bytes!("assets/04_dynamic_uniform_buffer/dynamic_uniform.ps.spv");
+const WGSL: &[u8] = include_bytes!("assets/04_dynamic_uniform_buffer/dynamic_uniform.wgsl");
 pub const OBJECT_COUNT: u32 = 125;
 pub const MODEL_BYTES: u64 = 64;
 pub trait DynamicUniformBackend:
@@ -35,6 +36,46 @@ pub struct DynamicUniforms<B: DynamicUniformBackend> {
     pipeline: RasterPipeline<B>,
     lane: LaneId,
     alignment: u64,
+}
+
+/// Draws the dynamic uniform cube grid into a host-owned browser canvas.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn run_webgpu_dynamic_uniforms(
+    canvas: web_sys::HtmlCanvasElement,
+    frames: u32,
+) -> std::result::Result<(), wasm_bindgen::JsValue> {
+    use fluxel_rhi::webgpu::{WebGpu, WebGpuInstance};
+
+    let run = async {
+        if frames == 0 {
+            return Err(Error::InvalidRange);
+        }
+        let device = WebGpuInstance::new()?.open_default().await?;
+        let lane = device.lanes()[0].id;
+        let extent = [canvas.width(), canvas.height()];
+        let mut surface = WebGpu::surface_from_canvas(&device, canvas)?;
+        let format = surface.capabilities()?.formats[0];
+        let config = SurfaceConfig {
+            extent,
+            format,
+            present_mode: PresentMode::Fifo,
+            alpha_mode: CompositeAlphaMode::Opaque,
+            color_space: ColorSpace::Srgb,
+            usage: SurfaceUsage::RENDER_ATTACHMENT,
+            maximum_frame_latency: 2,
+        };
+        surface.configure(&config).await?;
+        let workload = DynamicUniforms::<WebGpu>::new(&device, lane, format).await?;
+        for frame in 0..frames {
+            let image = surface.acquire().await?;
+            let work = workload.record(&device, &image, extent, frame as f32 / 60.0)?;
+            common::submit_and_present_async(&device, lane, work, image).await?;
+        }
+        Ok(())
+    };
+    run.await
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
 }
 impl<B: DynamicUniformBackend> DynamicUniforms<B> {
     pub async fn new(d: &Device<B>, lane: LaneId, format: TextureFormat) -> Result<Self> {
@@ -167,6 +208,7 @@ impl<B: DynamicUniformBackend> DynamicUniforms<B> {
             },
             multiview_mask: None,
             timestamp_writes: None,
+            occlusion_query_set: None,
             secondary_inheritance: None,
         })?;
         p.viewport(Viewport {
@@ -230,7 +272,7 @@ async fn shader<B: DynamicUniformBackend>(
     name: &str,
     stage: ShaderStage,
 ) -> Result<Shader<B>> {
-    common::native_shader(d, name, name, stage, dxil, spirv).await
+    common::native_shader_with_wgsl(d, name, name, stage, dxil, spirv, WGSL).await
 }
 async fn make_pipeline<B: DynamicUniformBackend>(
     d: &Device<B>,

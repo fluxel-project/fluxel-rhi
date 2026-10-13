@@ -8,11 +8,12 @@ description = "Fluxel's statically dispatched RHI facade"
 repository = "https://github.com/fluxel-project/fluxel-rhi"
 
 [features]
-# Cargo cannot select a default feature by target; on non-Windows the facade
-# exposes no provider until another backend is implemented.
+# Cargo cannot select a default feature by target. Browser callers explicitly
+# enable `webgpu`; Windows callers may also explicitly select `vulkan`.
 default = ["dx12"]
 dx12 = ["dep:fluxel-rhi-dx12"]
 vulkan = ["dep:fluxel-rhi-vulkan"]
+webgpu = ["dep:fluxel-rhi-webgpu"]
 examples = []
 
 [dependencies]
@@ -21,6 +22,15 @@ base64 = "0.22"
 serde_json = "1"
 png = "0.17"
 fluxel-rhi-vulkan = { path = "../vulkan", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+fluxel-rhi-webgpu = { path = "../webgpu", optional = true }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 fluxel-rhi-dx12 = { path = "../dx12", optional = true }

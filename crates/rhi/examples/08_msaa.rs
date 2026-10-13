@@ -1,7 +1,6 @@
-//! The SaschaWillems multisampled Voyager scene, lowered through RHI.
-//!
-//! The scene renders the original `voyager.gltf` mesh into a multisampled
-//! color/depth pair and resolves the color attachment into the acquired frame.
+// The SaschaWillems multisampled Voyager scene, lowered through RHI.
+// The scene renders the original `voyager.gltf` mesh into a multisampled
+// color/depth pair and resolves the color attachment into the acquired frame.
 mod common;
 #[path = "common/gltf.rs"]
 mod gltf;
@@ -15,6 +14,46 @@ pub(crate) const VS: &[u8] = include_bytes!("assets/08_msaa/msaa.vs.dxil");
 pub(crate) const PS: &[u8] = include_bytes!("assets/08_msaa/msaa.ps.dxil");
 pub(crate) const VS_SPIRV: &[u8] = include_bytes!("assets/08_msaa/msaa.vs.spv");
 pub(crate) const PS_SPIRV: &[u8] = include_bytes!("assets/08_msaa/msaa.ps.spv");
+
+/// Draws the multisampled Voyager into a host-owned browser canvas.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn run_webgpu_msaa(
+    canvas: web_sys::HtmlCanvasElement,
+    frames: u32,
+) -> std::result::Result<(), wasm_bindgen::JsValue> {
+    use fluxel_rhi::webgpu::{WebGpu, WebGpuInstance};
+
+    let run = async {
+        if frames == 0 {
+            return Err(Error::InvalidRange);
+        }
+        let device = WebGpuInstance::new()?.open_default().await?;
+        let lane = device.lanes()[0].id;
+        let extent = [canvas.width(), canvas.height()];
+        let mut surface = WebGpu::surface_from_canvas(&device, canvas)?;
+        let format = surface.capabilities()?.formats[0];
+        let config = SurfaceConfig {
+            extent,
+            format,
+            present_mode: PresentMode::Fifo,
+            alpha_mode: CompositeAlphaMode::Opaque,
+            color_space: ColorSpace::Srgb,
+            usage: SurfaceUsage::RENDER_ATTACHMENT,
+            maximum_frame_latency: 2,
+        };
+        surface.configure(&config).await?;
+        let mut demo = Msaa::<WebGpu>::new(&device, lane, format, extent).await?;
+        for frame in 0..frames {
+            let image = surface.acquire().await?;
+            let work = demo.record(&device, &image, extent, frame as f32 / 60.0)?;
+            common::submit_and_present_async(&device, lane, work, image).await?;
+        }
+        Ok(())
+    };
+    run.await
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
+}
 #[cfg(windows)]
 fn run<B: MsaaBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
     let config = SurfaceConfig {

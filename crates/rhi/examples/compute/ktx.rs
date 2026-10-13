@@ -8,12 +8,19 @@ pub(super) struct Ktx {
 }
 
 pub(super) fn load_rgba8() -> Result<Ktx> {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/examples/assets/textures/vulkan_11_rgba.ktx"
-    );
-    let bytes = std::fs::read(path).map_err(|error| Error::Backend(format!("{path}: {error}")))?;
-    parse_rgba8(&bytes)
+    #[cfg(target_arch = "wasm32")]
+    return parse_rgba8(include_bytes!("../assets/textures/vulkan_11_rgba.ktx"));
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/assets/textures/vulkan_11_rgba.ktx"
+        );
+        let bytes =
+            std::fs::read(path).map_err(|error| Error::Backend(format!("{path}: {error}")))?;
+        parse_rgba8(&bytes)
+    }
 }
 
 fn parse_rgba8(bytes: &[u8]) -> Result<Ktx> {

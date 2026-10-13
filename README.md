@@ -2,13 +2,14 @@
 
 Fluxel RHI provides a statically typed GPU execution API for Fluxel. RenderGraph and Renderer choose work, synchronization, and resource lifetimes; RHI reports device capabilities, creates native resources, executes commands, presents images, and reports completion.
 
-The workspace currently contains four crates:
+The workspace currently contains five crates:
 
 | Crate | Responsibility |
 | --- | --- |
 | `fluxel-rhi-core` | Portable types and backend contracts in `api` |
 | `fluxel-rhi-dx12` | Direct3D 12 implementation |
 | `fluxel-rhi-vulkan` | Vulkan implementation |
+| `fluxel-rhi-webgpu` | Browser WebGPU implementation |
 | `fluxel-rhi` | Public facade that reexports `api` and the selected backends |
 
 The public contract is split by concern under [`crates/core/src/api`](crates/core/src/api/mod.rs). Backend implementations use the same descriptors and operation meanings as the public API. A native host selects a concrete backend once; resources, encoders, and submissions retain that backend type.
@@ -24,5 +25,10 @@ cargo run -p fluxel-rhi --features examples,vulkan --example 01_triangle -- --ba
 ```
 
 The numbered examples are in [`crates/rhi/examples`](crates/rhi/examples). All 15 select DX12 or Vulkan at startup with `--backend dx12|vulkan` and use `fluxel_rhi::api::*` for GPU work. `--frames 2` closes the native window after two frames. Some examples need local model and texture assets; see the [asset instructions](crates/rhi/examples/assets/README.md).
+
+The same numbered scenes have browser WebGPU entries and Chrome integration
+tests. See the [example instructions](crates/rhi/examples/README.md) for the
+WASM test command and the explicitly labeled browser visual fallbacks for
+features outside WebGPU's native capability set.
 
 The [RHI design](documents/design-rhi.md) describes responsibilities and capability rules. DX12 implementation details are divided into focused modules under [`crates/dx12/src/backend`](crates/dx12/src/backend.rs).

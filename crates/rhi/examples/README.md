@@ -1,10 +1,11 @@
 # RHI examples
 
-The 15 numbered examples use the statically typed `fluxel_rhi::api` and the
-shared `fluxel-host` window lifecycle. DX12 is the established Windows route.
-Vulkan support was migrated one example at a time. All examples 01–15 have
-been run for two frames on Vulkan with the Khronos validation layer and
-GPU-image readback comparison against the local C++ captures.
+The 15 numbered examples use the statically typed `fluxel_rhi::api`. Native
+examples use the shared `fluxel-host` window lifecycle. Browser examples use
+an HTML canvas owned by the caller. DX12 and Vulkan are the native Windows
+routes; WebGPU runs in a browser. The Vulkan examples 01–15 have been run for
+two frames with the Khronos validation layer and GPU-image readback comparison
+against the local C++ captures.
 
 From the workspace root on Windows:
 
@@ -24,6 +25,30 @@ examples 01–15. Backend selection happens once at startup; GPU objects and
 command recording retain their concrete backend type. The example host and
 submission helper live in `common/`. The GPU workload remains in each
 numbered example or its small sibling modules.
+
+WebGPU browser tests run the same scene workloads through the browser's real
+`GPUDevice`, native command encoders, and canvas presentation. Install the
+`wasm32-unknown-unknown` Rust target and `wasm-bindgen-test-runner`, then set
+`CHROMEDRIVER` to a compatible ChromeDriver binary and configure the runner to
+launch Chrome with WebGPU enabled. A `webdriver.json` for the third variable
+can contain `{"goog:chromeOptions":{"args":["--enable-unsafe-webgpu","--disable-gpu-sandbox"]}}`.
+For example:
+
+```powershell
+$env:CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER = 'wasm-bindgen-test-runner'
+$env:CHROMEDRIVER = 'C:\path\to\chromedriver.exe'
+$env:WASM_BINDGEN_TEST_WEBDRIVER_JSON = 'C:\path\to\webdriver.json'
+cargo test -p fluxel-rhi --target wasm32-unknown-unknown --features 'webgpu examples' --test webgpu_triangle -- --nocapture
+```
+
+Each `webgpu_*` integration test presents three frames. The browser route
+uses WGSL where the existing SPIR-V shaders cannot be translated faithfully.
+WebGPU has no push constants, native parallel secondary command recording,
+runtime-sized descriptor arrays, or native multiview. Examples 05, 13, 14,
+and 15 use explicitly scoped browser paths that preserve the visible scene
+with ordinary uniform bindings, sequential primary recording, fixed texture
+layers, and one render pass per eye respectively. Their native capability
+flags remain false for those unavailable operations.
 
 Examples 01–15 use checked-in DXIL for DX12 and SPIR-V for Vulkan. The SPIR-V
 blobs are built from adjacent HLSL sources with `compile-spirv.ps1`; the

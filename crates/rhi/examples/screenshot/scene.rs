@@ -1,6 +1,6 @@
 //! The C++ screenshot scene: one pretransformed Chinese-dragon draw.
 
-use crate::{ScreenshotBackend, gltf};
+use super::super::{ScreenshotBackend, gltf};
 use fluxel_rhi::api::*;
 
 const DRAGON: &[u8] = include_bytes!("../assets/models/chinesedragon.gltf");
@@ -190,6 +190,7 @@ impl<B: ScreenshotBackend> DragonScene<B> {
             },
             multiview_mask: None,
             timestamp_writes: None,
+            occlusion_query_set: None,
             secondary_inheritance: None,
         })?;
         pass.viewport(Viewport {
@@ -263,7 +264,7 @@ async fn pipeline<B: ScreenshotBackend>(
     layout: PipelineLayout<B>,
     format: TextureFormat,
 ) -> Result<RasterPipeline<B>> {
-    let vertex = crate::common::native_shader(
+    let vertex = super::super::common::native_shader(
         device,
         "12 screenshot vertex",
         "vs_main",
@@ -272,7 +273,7 @@ async fn pipeline<B: ScreenshotBackend>(
         VS_SPIRV,
     )
     .await?;
-    let fragment = crate::common::native_shader(
+    let fragment = super::super::common::native_shader(
         device,
         "12 screenshot fragment",
         "ps_main",

@@ -15,6 +15,10 @@ const DISPLAY_PS: &[u8] = include_bytes!("assets/15_multiview/display_ps.dxil");
 const DISPLAY_VS_SPIRV: &[u8] = include_bytes!("assets/15_multiview/display_vs.spv");
 const DISPLAY_PS_SPIRV: &[u8] = include_bytes!("assets/15_multiview/display_ps.spv");
 const ROOM: &[u8] = include_bytes!("assets/models/sampleroom.gltf");
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+const WEBGPU_SCENE_WGSL: &[u8] = include_bytes!("assets/15_multiview/scene.wgsl");
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+const WEBGPU_DISPLAY_WGSL: &[u8] = include_bytes!("assets/15_multiview/display.wgsl");
 
 pub trait MultiviewBackend:
     Backend
@@ -325,6 +329,7 @@ impl<B: MultiviewBackend> Multiview<B> {
             },
             multiview_mask: Some(0b11),
             timestamp_writes: None,
+            occlusion_query_set: None,
             secondary_inheritance: None,
         })?;
         scene.viewport(Viewport {
@@ -378,6 +383,7 @@ impl<B: MultiviewBackend> Multiview<B> {
             },
             multiview_mask: None,
             timestamp_writes: None,
+            occlusion_query_set: None,
             secondary_inheritance: None,
         })?;
         display.viewport(Viewport {
@@ -643,6 +649,12 @@ fn two_eye_matrices(extent: [u32; 2]) -> [u8; 272] {
     }
     bytes
 }
+
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[path = "multiview/webgpu.rs"]
+mod webgpu;
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+pub use webgpu::run_webgpu_multiview;
 #[cfg(windows)]
 fn run<B: MultiviewBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
     let config = SurfaceConfig {

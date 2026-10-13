@@ -9,6 +9,7 @@ const VS: &[u8] = include_bytes!("assets/02_texture/texture.vs.dxil");
 const PS: &[u8] = include_bytes!("assets/02_texture/texture.ps.dxil");
 const VS_SPV: &[u8] = include_bytes!("assets/02_texture/texture.vs.spv");
 const PS_SPV: &[u8] = include_bytes!("assets/02_texture/texture.ps.spv");
+const WGSL: &[u8] = include_bytes!("assets/02_texture/texture.wgsl");
 pub trait TextureBackend:
     Backend + ResourceBackend + ShaderBackend + PipelineBackend + RasterBackend + DeferredBackend
 {
@@ -254,6 +255,7 @@ impl<B: TextureBackend> TextureExample<B> {
             },
             multiview_mask: None,
             timestamp_writes: None,
+            occlusion_query_set: None,
             secondary_inheritance: None,
         })?;
         r.viewport(Viewport {
@@ -340,8 +342,19 @@ async fn pipeline<B: TextureBackend>(
     vs: &[u8],
     ps: &[u8],
 ) -> Result<RasterPipeline<B>> {
-    let a = common::native_shader(d, "vs", "vs_main", ShaderStage::Vertex, vs, VS_SPV).await?;
-    let b = common::native_shader(d, "ps", "fs_main", ShaderStage::Fragment, ps, PS_SPV).await?;
+    let a =
+        common::native_shader_with_wgsl(d, "vs", "vs_main", ShaderStage::Vertex, vs, VS_SPV, WGSL)
+            .await?;
+    let b = common::native_shader_with_wgsl(
+        d,
+        "ps",
+        "fs_main",
+        ShaderStage::Fragment,
+        ps,
+        PS_SPV,
+        WGSL,
+    )
+    .await?;
     d.raster_pipeline(RasterPipelineDesc {
         label: Some("02 pipeline".into()),
         layout,
@@ -459,6 +472,15 @@ fn load_ktx() -> Result<(Vec<u8>, u32, u32)> {
         "/examples/assets/textures/metalplate01_rgba.ktx"
     );
     let bytes = std::fs::read(path).map_err(|error| Error::Backend(format!("{path}: {error}")))?;
+    parse_ktx(&bytes)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn load_ktx() -> Result<(Vec<u8>, u32, u32)> {
+    parse_ktx(include_bytes!("assets/textures/metalplate01_rgba.ktx"))
+}
+
+fn parse_ktx(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
     const MAGIC: &[u8; 12] = b"\xABKTX 11\xBB\r\n\x1A\n";
     if bytes.len() < 68 || &bytes[..12] != MAGIC || &bytes[12..16] != b"\x01\x02\x03\x04" {
         return Err(Error::Unsupported("KTX1 little-endian RGBA8 texture"));
@@ -483,6 +505,52 @@ fn load_ktx() -> Result<(Vec<u8>, u32, u32)> {
         return Err(Error::InvalidRange);
     }
     Ok((bytes[offset + 4..offset + 4 + size].to_vec(), width, height))
+}
+
+/// Draws the textured example into a host-owned browser canvas.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn run_webgpu_texture(
+    canvas: web_sys::HtmlCanvasElement,
+    frames: u32,
+) -> std::result::Result<(), wasm_bindgen::JsValue> {
+    use fluxel_rhi::webgpu::{WebGpu, WebGpuInstance};
+
+    let run = async {
+        if frames == 0 {
+            return Err(Error::InvalidRange);
+        }
+        let (rgba, width, height) = load_ktx()?;
+        let pixels = TexturePixels {
+            rgba: &rgba,
+            width,
+            height,
+        };
+        let device = WebGpuInstance::new()?.open_default().await?;
+        let lane = device.lanes()[0].id;
+        let extent = [canvas.width(), canvas.height()];
+        let mut surface = WebGpu::surface_from_canvas(&device, canvas)?;
+        let format = surface.capabilities()?.formats[0];
+        let config = SurfaceConfig {
+            extent,
+            format,
+            present_mode: PresentMode::Fifo,
+            alpha_mode: CompositeAlphaMode::Opaque,
+            color_space: ColorSpace::Srgb,
+            usage: SurfaceUsage::RENDER_ATTACHMENT,
+            maximum_frame_latency: 2,
+        };
+        surface.configure(&config).await?;
+        let example = TextureExample::<WebGpu>::new(&device, lane, format, pixels).await?;
+        for _ in 0..frames {
+            let image = surface.acquire().await?;
+            let work = example.record(&device, &image, extent, pixels)?;
+            common::submit_and_present_async(&device, lane, work, image).await?;
+        }
+        Ok(())
+    };
+    run.await
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
 }
 
 #[cfg(windows)]

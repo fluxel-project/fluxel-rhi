@@ -91,7 +91,7 @@ impl<B: MsaaBackend> Msaa<B> {
                     vec![ShaderStage::Vertex, ShaderStage::Fragment],
                     BindingType::UniformBuffer {
                         dynamic_offset: false,
-                        min_size: 64,
+                        min_size: 144,
                     },
                 ),
                 layout_entry(

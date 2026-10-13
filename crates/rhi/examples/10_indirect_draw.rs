@@ -1,7 +1,6 @@
-//! The native indexed-indirect plant scene.
-//!
-//! Scene resources, KTX parsing, pipelines, and frame recording live in the
-//! sibling modules so this entry point only owns platform startup.
+// The native indexed-indirect plant scene.
+// Scene resources, KTX parsing, pipelines, and frame recording live in the
+// sibling modules so this entry point only owns platform startup.
 mod common;
 #[path = "common/gltf.rs"]
 mod gltf;
@@ -15,6 +14,46 @@ mod scene;
 mod workload;
 
 use fluxel_rhi::api::*;
+
+/// Draws the indexed-indirect plant scene into a host-owned browser canvas.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn run_webgpu_indirect(
+    canvas: web_sys::HtmlCanvasElement,
+    frames: u32,
+) -> std::result::Result<(), wasm_bindgen::JsValue> {
+    use fluxel_rhi::webgpu::{WebGpu, WebGpuInstance};
+
+    let run = async {
+        if frames == 0 {
+            return Err(Error::InvalidRange);
+        }
+        let device = WebGpuInstance::new()?.open_default().await?;
+        let lane = device.lanes()[0].id;
+        let extent = [canvas.width(), canvas.height()];
+        let mut surface = WebGpu::surface_from_canvas(&device, canvas)?;
+        let format = surface.capabilities()?.formats[0];
+        let config = SurfaceConfig {
+            extent,
+            format,
+            present_mode: PresentMode::Fifo,
+            alpha_mode: CompositeAlphaMode::Opaque,
+            color_space: ColorSpace::Srgb,
+            usage: SurfaceUsage::RENDER_ATTACHMENT,
+            maximum_frame_latency: 2,
+        };
+        surface.configure(&config).await?;
+        let mut demo = workload::Workload::<WebGpu>::new(&device, lane, format, extent).await?;
+        for frame in 0..frames {
+            let image = surface.acquire().await?;
+            let work = demo.record(&device, &image, extent, frame as f32 / 60.0)?;
+            common::submit_and_present_async(&device, lane, work, image).await?;
+        }
+        Ok(())
+    };
+    run.await
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
+}
 
 #[cfg(windows)]
 fn run<B: workload::IndirectBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {

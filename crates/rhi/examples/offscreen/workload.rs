@@ -354,6 +354,7 @@ impl<B: OffscreenBackend> Offscreen<B> {
             },
             multiview_mask: None,
             timestamp_writes: None,
+            occlusion_query_set: None,
             secondary_inheritance: None,
         })?;
         p.viewport(Viewport {
@@ -422,6 +423,7 @@ impl<B: OffscreenBackend> Offscreen<B> {
             },
             multiview_mask: None,
             timestamp_writes: None,
+            occlusion_query_set: None,
             secondary_inheritance: None,
         })?;
         p.viewport(Viewport {

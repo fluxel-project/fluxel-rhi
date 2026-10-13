@@ -15,6 +15,8 @@ const VS_SPIRV: &[u8] = include_bytes!("assets/13_multithreaded_recording/ufo_vs
 const PS_SPIRV: &[u8] = include_bytes!("assets/13_multithreaded_recording/ufo_ps.spv");
 const STAR_VS_SPIRV: &[u8] = include_bytes!("assets/13_multithreaded_recording/stars_vs.spv");
 const STAR_PS_SPIRV: &[u8] = include_bytes!("assets/13_multithreaded_recording/stars_ps.spv");
+const UFO_WGSL: &[u8] = include_bytes!("assets/13_multithreaded_recording/ufo.wgsl");
+const STARS_WGSL: &[u8] = include_bytes!("assets/13_multithreaded_recording/stars.wgsl");
 const UFO_COUNT: u32 = 512;
 const WORKERS: u32 = 8;
 const STRIDE: u64 = 96;
@@ -353,6 +355,7 @@ impl<B: SecondaryExampleBackend> Multithreaded<B> {
             },
             multiview_mask: None,
             timestamp_writes: None,
+            occlusion_query_set: None,
             secondary_inheritance: Some(self.inheritance.clone()),
         })?;
         for packet in &packets {
@@ -384,7 +387,14 @@ fn buffer<B: SecondaryExampleBackend>(
         memory: MemoryClass::Device,
     })
 }
-fn depth<B: SecondaryExampleBackend>(
+
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[path = "multithreaded_recording/webgpu.rs"]
+mod webgpu;
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+pub use webgpu::run_webgpu_multithreaded_recording;
+
+fn depth<B: ResourceBackend>(
     d: &Device<B>,
     extent: [u32; 2],
 ) -> Result<(Texture<B>, TextureView<B>)> {
@@ -411,6 +421,7 @@ fn depth<B: SecondaryExampleBackend>(
     )?;
     Ok((texture, view))
 }
+
 fn disabled_stencil() -> StencilFaceState {
     StencilFaceState {
         compare: CompareFunction::Always,
@@ -515,7 +526,7 @@ async fn pipeline<B: SecondaryExampleBackend>(
     })
     .await
 }
-fn transforms(extent: [u32; 2], frame: u32) -> Vec<u8> {
+pub(crate) fn transforms(extent: [u32; 2], frame: u32) -> Vec<u8> {
     let mut out = vec![0; UFO_COUNT as usize * UNIFORM as usize];
     let p = perspective(
         60f32.to_radians(),
@@ -564,7 +575,7 @@ fn transforms(extent: [u32; 2], frame: u32) -> Vec<u8> {
     }
     out
 }
-fn star_matrix(extent: [u32; 2]) -> [f32; 16] {
+pub(crate) fn star_matrix(extent: [u32; 2]) -> [f32; 16] {
     let projection = perspective(
         60f32.to_radians(),
         extent[0].max(1) as f32 / extent[1].max(1) as f32,
@@ -575,12 +586,12 @@ fn star_matrix(extent: [u32; 2]) -> [f32; 16] {
     // scales its unit sphere by two. This camera has no rotation.
     multiply(projection, scale(2.0))
 }
-fn matrix_bytes(value: [f32; 16]) -> [u8; 64] {
+pub(crate) fn matrix_bytes(value: [f32; 16]) -> [u8; 64] {
     let mut bytes = [0; 64];
     matrix(&mut bytes, value);
     bytes
 }
-fn instance_tint(index: u32) -> [f32; 4] {
+pub(crate) fn instance_tint(index: u32) -> [f32; 4] {
     // C++ samples three independent uniform components for every object.
     // Deriving all three from stable salts preserves that distribution without
     // coupling colours to worker execution order.
@@ -592,10 +603,10 @@ fn instance_tint(index: u32) -> [f32; 4] {
         1.0,
     ]
 }
-fn hash01(value: f32) -> f32 {
+pub(crate) fn hash01(value: f32) -> f32 {
     (value.sin() * 43_758.547).fract().abs()
 }
-fn perspective(fov: f32, aspect: f32, near: f32, far: f32) -> [f32; 16] {
+pub(crate) fn perspective(fov: f32, aspect: f32, near: f32, far: f32) -> [f32; 16] {
     let f = 1. / (fov * 0.5).tan();
     [
         f / aspect,
@@ -616,21 +627,21 @@ fn perspective(fov: f32, aspect: f32, near: f32, far: f32) -> [f32; 16] {
         0.,
     ]
 }
-fn translate(x: f32, y: f32, z: f32) -> [f32; 16] {
+pub(crate) fn translate(x: f32, y: f32, z: f32) -> [f32; 16] {
     [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., x, y, z, 1.]
 }
-fn scale(s: f32) -> [f32; 16] {
+pub(crate) fn scale(s: f32) -> [f32; 16] {
     [s, 0., 0., 0., 0., s, 0., 0., 0., 0., s, 0., 0., 0., 0., 1.]
 }
-fn rotate_y(a: f32) -> [f32; 16] {
+pub(crate) fn rotate_y(a: f32) -> [f32; 16] {
     let (s, c) = a.sin_cos();
     [c, 0., -s, 0., 0., 1., 0., 0., s, 0., c, 0., 0., 0., 0., 1.]
 }
-fn rotate_x(a: f32) -> [f32; 16] {
+pub(crate) fn rotate_x(a: f32) -> [f32; 16] {
     let (s, c) = a.sin_cos();
     [1., 0., 0., 0., 0., c, s, 0., 0., -s, c, 0., 0., 0., 0., 1.]
 }
-fn multiply(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
+pub(crate) fn multiply(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
     let mut r = [0.; 16];
     for c in 0..4 {
         for row in 0..4 {
@@ -639,7 +650,7 @@ fn multiply(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
     }
     r
 }
-fn matrix(bytes: &mut [u8], m: [f32; 16]) {
+pub(crate) fn matrix(bytes: &mut [u8], m: [f32; 16]) {
     for (i, v) in m.into_iter().enumerate() {
         bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
     }
