@@ -38,7 +38,7 @@ pub async fn run_webgpu_dynamic_uniforms(
             maximum_frame_latency: 2,
         };
         surface.configure(&config).await?;
-        let workload = DynamicUniforms::<WebGpu>::new(&device, lane, format).await?;
+        let workload = DynamicUniforms::<WebGpu>::new(&device, lane, format, extent).await?;
         for frame in 0..frames {
             let image = surface.acquire().await?;
             let work = workload.record(&device, &image, extent, frame as f32 / 60.0)?;

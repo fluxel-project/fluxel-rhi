@@ -7,11 +7,30 @@ mod compute;
 ))]
 #[path = "immediate.rs"]
 mod immediate;
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[path = "raster_fallback.rs"]
+mod raster_fallback;
 #[path = "../utils/mod.rs"]
 mod utils;
 
-use compute::{Compute, ComputeBackend};
+use compute::Compute;
+#[cfg(windows)]
+use compute::ComputeBackend;
 use fluxel_rhi::api::*;
+
+/// Runs the same source/filter comparison with fragment shaders on WebGL2.
+/// WebGL2 has no compute stage or storage textures, so its capability bits
+/// remain false and this path performs an explicitly visible raster fallback.
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn run_webgl2_compute_fallback(
+    canvas: web_sys::HtmlCanvasElement,
+    frames: u32,
+) -> std::result::Result<(), wasm_bindgen::JsValue> {
+    raster_fallback::run(canvas, frames)
+        .await
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
+}
 
 /// Runs the storage-texture filters in a host-owned browser canvas.
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]

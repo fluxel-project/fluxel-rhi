@@ -1,6 +1,6 @@
 //! Browser evidence for 10_indirect_draw.
 
-#![cfg(target_arch = "wasm32")]
+#![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 
 // Compile the example as a real module so its module documentation and
 // relative sibling paths retain the same meaning as its binary target.

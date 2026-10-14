@@ -32,13 +32,39 @@ pub(crate) fn lower_primitive(
         CullMode::Front => GlCullMode::Front,
         CullMode::Back => GlCullMode::Back,
     };
-    // Front-facing tests and culling use GL's same winding selector. Viewport
-    // origin conversion adjusts the rectangle, not this declaration.
+    // Keep the public winding value when lowering to GL. The GL viewport uses
+    // a positive height and adjusts its origin for the upper-left public
+    // rectangle; flipping this enum as well reverses face culling a second time.
     let front = match value.front_face {
         FrontFace::Ccw => GlFrontFace::CounterClockwise,
         FrontFace::Cw => GlFrontFace::Clockwise,
     };
     Ok((topology, cull, front))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_front_face_is_preserved_for_positive_height_gl_viewports() {
+        let lower = |front_face| {
+            lower_primitive(PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face,
+                cull_mode: CullMode::None,
+                unclipped_depth: false,
+                polygon_mode: api::PolygonMode::Fill,
+                conservative: false,
+            })
+            .unwrap()
+            .2
+        };
+
+        assert_eq!(lower(FrontFace::Ccw), GlFrontFace::CounterClockwise);
+        assert_eq!(lower(FrontFace::Cw), GlFrontFace::Clockwise);
+    }
 }
 
 /// Converts Core blend factors without approximating dual-source factors.

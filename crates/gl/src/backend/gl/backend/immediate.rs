@@ -39,7 +39,10 @@ unsafe impl ImmediateBackend for Gl {
         }
     }
 
-    fn close_immediate(encoder: GlEncoder, reason: ImmediateCloseReason) -> ImmediateClose<Self> {
+    fn close_immediate(
+        mut encoder: GlEncoder,
+        reason: ImmediateCloseReason,
+    ) -> ImmediateClose<Self> {
         if encoder.indeterminate {
             // SAFETY: at least one direct native call returned after entering
             // the provider boundary, so its acceptance cannot be reclassified
@@ -50,7 +53,31 @@ unsafe impl ImmediateBackend for Gl {
             };
         }
         match reason {
-            ImmediateCloseReason::Finished => ImmediateClose::Issued,
+            ImmediateCloseReason::Finished => {
+                #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+                if let Some(browser) = encoder.browser.take() {
+                    let issued = encoder.issued;
+                    if let Err(error) = browser.close_scope() {
+                        return if issued {
+                            ImmediateClose::Indeterminate {
+                                error,
+                                // SAFETY: the immediate prefix was already
+                                // issued, and failure to close its owner scope
+                                // leaves native acceptance uncertain.
+                                uncertain: unsafe {
+                                    NativeUncertainty::from_native(encoder.device, ())
+                                },
+                            }
+                        } else {
+                            ImmediateClose::Failed {
+                                error,
+                                issued: false,
+                            }
+                        };
+                    }
+                }
+                ImmediateClose::Issued
+            }
             ImmediateCloseReason::Aborted => ImmediateClose::Failed {
                 error: Error::InvalidState,
                 issued: encoder.issued,

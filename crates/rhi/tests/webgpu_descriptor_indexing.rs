@@ -1,5 +1,5 @@
 //! Browser visual-equivalence test for the 32-layer WebGPU fallback.
-#![cfg(target_arch = "wasm32")]
+#![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 
 #[path = "../examples/14_descriptor_indexing/main.rs"]
 mod descriptor_indexing;

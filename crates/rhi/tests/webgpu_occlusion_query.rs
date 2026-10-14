@@ -1,6 +1,6 @@
 //! Headless-browser evidence for the native WebGPU occlusion-query workload.
 
-#![cfg(target_arch = "wasm32")]
+#![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 
 #[path = "../examples/11_occlusion_query/main.rs"]
 mod occlusion_query;

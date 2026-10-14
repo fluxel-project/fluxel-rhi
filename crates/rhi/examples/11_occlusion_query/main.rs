@@ -75,8 +75,8 @@ pub struct Workload<B: OcclusionWorkloadBackend> {
     simple_pipeline: RasterPipeline<B>,
     mesh_pipeline: RasterPipeline<B>,
     occluder_pipeline: RasterPipeline<B>,
-    queries: QuerySet<B>,
-    results: Buffer<B>,
+    queries: Option<QuerySet<B>>,
+    results: Option<Buffer<B>>,
     visible: [bool; 2],
 }
 pub struct Frame<B: OcclusionBackend> {
@@ -135,9 +135,22 @@ pub async fn run_webgpu_occlusion_query(
         .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
 }
 
+/// Displays the occlusion-query scene on WebGL2 without claiming query support.
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn run_webgl2_occlusion_fallback(
+    canvas: web_sys::HtmlCanvasElement,
+    frames: u32,
+) -> std::result::Result<(), wasm_bindgen::JsValue> {
+    immediate::run_webgl2(canvas, frames)
+        .await
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
+}
+
 #[cfg(any(
     feature = "native-gl-wgl",
-    all(target_os = "linux", feature = "native-gles-egl")
+    all(target_os = "linux", feature = "native-gles-egl"),
+    all(target_arch = "wasm32", feature = "webgl2")
 ))]
 mod immediate;
 mod workload;

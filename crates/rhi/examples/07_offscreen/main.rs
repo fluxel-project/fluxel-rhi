@@ -33,7 +33,8 @@ impl<T> OffscreenBackend for T where T: OffscreenWorkloadBackend + DeferredBacke
 
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),
-    all(target_os = "linux", feature = "native-gles-egl")
+    all(target_os = "linux", feature = "native-gles-egl"),
+    all(target_arch = "wasm32", feature = "webgl2")
 ))]
 #[path = "immediate.rs"]
 mod immediate;
@@ -53,6 +54,18 @@ pub(crate) fn main_gl() {
         eprintln!("07_offscreen: {error:?}");
         std::process::exit(1);
     }
+}
+
+/// Draws the shared two-pass mirror scene through WebGL2 immediate commands.
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn run_webgl2_offscreen(
+    canvas: web_sys::HtmlCanvasElement,
+    frames: u32,
+) -> std::result::Result<(), wasm_bindgen::JsValue> {
+    immediate::run_webgl2(canvas, frames)
+        .await
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
 }
 
 #[path = "resources.rs"]

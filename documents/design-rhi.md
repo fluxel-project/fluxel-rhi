@@ -134,6 +134,22 @@ not store commands for later execution. Async completion waits yield to the
 single-threaded runtime while the GPU is unfinished; polling must not block that
 thread waiting for a fence.
 
+## Browser WebGL2 context lifecycle
+
+The Host owns canvas creation, DOM event registration, CSS sizing, and restoration
+policy. One `GlInstance` represents one WebGL context generation. The Host listens
+for `webglcontextlost`; when restoration is desired it calls `preventDefault()`
+and forwards the event to `GlInstance::notify_context_lost()`. This makes the
+old device terminal, wakes pending completion observers with `DeviceLost`, and
+makes its surface leases stale. The Host must not reuse resources from that
+generation.
+
+After `webglcontextrestored`, the Host creates a new `GlInstance`, Core
+`Instance`, device, and surface for the same canvas. Resize remains a Host
+lifecycle event: update the canvas backing size and reconfigure the RHI surface
+before acquiring another image. An out-of-band backing-size change makes
+`acquire()` return `SurfaceOutdated` until that reconfiguration succeeds.
+
 The caller provides ordered work and transitions. RHI does not construct a render graph,
 perform global hazard analysis, or decide resource retirement. Submission and
 presentation are separate public operations; a present consumes the acquired surface

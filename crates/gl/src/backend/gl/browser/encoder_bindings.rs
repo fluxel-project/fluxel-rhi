@@ -40,50 +40,6 @@ impl BrowserEncoder {
         })
     }
 
-    /// Binds an RGBA8 sampled texture to a named ESSL sampler uniform.
-    ///
-    /// WebGL combines texture and sampler through one sampler uniform. The
-    /// lookup validates the linked program before the direct issue closure
-    /// changes the active unit, texture binding, sampler binding, and uniform.
-    pub(crate) fn bind_rgba8_texture_named(
-        &mut self,
-        program: &BrowserRasterProgram,
-        uniform: &str,
-        unit: u32,
-        texture: &BrowserTexture,
-        sampler: &BrowserSampler,
-    ) -> Result<()> {
-        self.same_owner(&program.owner)?;
-        self.same_owner(&texture.owner)?;
-        self.same_owner(&sampler.owner)?;
-        self.require_raster()?;
-        if unit > i32::MAX as u32 {
-            return Err(Error::InvalidRange);
-        }
-        let target = match texture.desc.dimension {
-            GlTextureDimension::D2 => Gl::TEXTURE_2D,
-            GlTextureDimension::D2Array => Gl::TEXTURE_2D_ARRAY,
-            _ => return Err(Error::Unsupported("WebGL2 sampled texture dimension")),
-        };
-        let active_unit = Gl::TEXTURE0.checked_add(unit).ok_or(Error::InvalidRange)?;
-        let location = {
-            let mut state = self.owner.state.borrow_mut();
-            state.ensure_encoder(self.epoch)?;
-            state.ensure_active()?;
-            state
-                .context
-                .raw
-                .get_uniform_location(&program.raw, uniform)
-                .ok_or(Error::InvalidState)?
-        };
-        self.with_context("bind_rgba8_texture_named", |raw| {
-            raw.active_texture(active_unit);
-            raw.bind_texture(target, Some(&texture.raw));
-            raw.bind_sampler(unit, Some(&sampler.raw));
-            raw.uniform1i(Some(&location), unit as i32);
-        })
-    }
-
     /// Binds a named ESSL uniform block to one WebGL indexed buffer point.
     ///
     /// This is the direct lowering for 02's `Scene` uniform. The range check
@@ -92,7 +48,6 @@ impl BrowserEncoder {
     pub(crate) fn bind_uniform_buffer_named(
         &mut self,
         program: &BrowserRasterProgram,
-        block: &str,
         binding: u32,
         buffer: &BrowserBuffer,
         offset: u64,
@@ -105,21 +60,7 @@ impl BrowserEncoder {
         if size == 0 || end > buffer.size {
             return Err(Error::InvalidRange);
         }
-        let block_index = {
-            let mut state = self.owner.state.borrow_mut();
-            state.ensure_encoder(self.epoch)?;
-            state.ensure_active()?;
-            let index = state
-                .context
-                .raw
-                .get_uniform_block_index(&program.raw, block);
-            if index == Gl::INVALID_INDEX {
-                return Err(Error::InvalidState);
-            }
-            index
-        };
         self.with_context("bind_uniform_buffer_named", |raw| {
-            raw.uniform_block_binding(&program.raw, block_index, binding);
             raw.bind_buffer_range_with_f64_and_f64(
                 Gl::UNIFORM_BUFFER,
                 binding,

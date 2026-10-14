@@ -1,6 +1,6 @@
 //! Browser evidence for the sequential WebGPU stereo fallback of example 15.
 
-#![cfg(target_arch = "wasm32")]
+#![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 
 #[path = "../examples/15_multiview/main.rs"]
 mod multiview;

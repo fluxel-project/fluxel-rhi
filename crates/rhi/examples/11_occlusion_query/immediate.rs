@@ -16,6 +16,116 @@ use super::{OcclusionWorkloadBackend, Workload, utils};
 
 static NEXT_PLAN: AtomicU64 = AtomicU64::new(1);
 
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+pub(super) async fn run_webgl2(canvas: web_sys::HtmlCanvasElement, frames: u32) -> Result<()> {
+    use fluxel_rhi::gl::GlInstance;
+
+    if frames == 0 {
+        return Err(Error::InvalidRange);
+    }
+    let extent = [canvas.width(), canvas.height()];
+    let native = GlInstance::from_webgl2_canvas(canvas)?;
+    // SAFETY: all browser GL calls stay on this future's JavaScript owner
+    // thread, and the instance/device retain the canvas context owner.
+    let instance = unsafe { Instance::<Gl>::from_native(InstanceId::allocate()?, native) };
+    let adapter = instance
+        .enumerate()?
+        .into_iter()
+        .next()
+        .ok_or(Error::Unsupported("WebGL2 adapter"))?;
+    let device = instance
+        .open(DeviceRequest {
+            adapter: adapter.id,
+            required_features: vec![],
+        })
+        .await?;
+    let lane = device
+        .lanes()
+        .iter()
+        .find(|lane| lane.class == LaneClass::Graphics)
+        .map(|lane| lane.id)
+        .ok_or(Error::Unsupported("WebGL2 graphics lane"))?;
+    if device.capabilities().occlusion {
+        return Err(Error::InvalidState);
+    }
+    let format = TextureFormat::Rgba8Unorm;
+    let mut surface = Gl::surface(&device)?;
+    surface
+        .configure(&SurfaceConfig {
+            extent,
+            format,
+            present_mode: PresentMode::Fifo,
+            alpha_mode: CompositeAlphaMode::Opaque,
+            color_space: ColorSpace::Srgb,
+            usage: SurfaceUsage::RENDER_ATTACHMENT,
+            maximum_frame_latency: 1,
+        })
+        .await?;
+    let mut workload = Workload::<Gl>::new_visual_fallback(&device, lane, format).await?;
+    for _ in 0..frames {
+        let image = surface.acquire().await?;
+        let ordinal = NEXT_PLAN
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| Error::OutOfMemory)?;
+        // SAFETY: both steps target the same current GL context and execute in
+        // the order issued by this owner-thread adapter.
+        let plan = unsafe {
+            SubmissionPlan::from_compiled(
+                PlanId {
+                    device: device.id(),
+                    ordinal,
+                },
+                Arc::from([
+                    StepDesc {
+                        lane,
+                        kind: StepKind::Commands,
+                        waits: vec![],
+                    },
+                    StepDesc {
+                        lane,
+                        kind: StepKind::Present,
+                        waits: vec![],
+                    },
+                ]),
+            )
+        };
+        // SAFETY: rendering and presentation occur immediately on this GL
+        // owner thread while the acquired image lease stays alive.
+        let mut session = unsafe { device.immediate(plan, CompletionRequest::End)? };
+        let mut commands = session.begin_commands().map_err(immediate_error)?;
+        if workload
+            .encode_scene(&device, commands.commands(), &image, extent)?
+            .is_some()
+        {
+            return Err(Error::InvalidState);
+        }
+        match commands.close() {
+            ImmediateRunOutcome::Issued(_) => {}
+            outcome => return Err(immediate_error(outcome)),
+        }
+        match session.present(PresentBinding::new(image)) {
+            ImmediatePresentResult::Run(ImmediateRunOutcome::Issued(_)) => {}
+            ImmediatePresentResult::Run(outcome) => return Err(immediate_error(outcome)),
+            ImmediatePresentResult::Rejected { error, .. } => return Err(error),
+        }
+        let prefix = match session.finish() {
+            ImmediateFinishOutcome::Issued(prefix) => prefix,
+            ImmediateFinishOutcome::Failed(outcome) => return Err(immediate_error(outcome)),
+            ImmediateFinishOutcome::AlreadyReported => return Err(Error::InvalidState),
+        };
+        let point = prefix
+            .checkpoints
+            .into_iter()
+            .next()
+            .map(|c| c.point)
+            .ok_or(Error::InvalidState)?;
+        device.wait_completion(&point).await?;
+    }
+    Ok(())
+}
+
 fn immediate_error(outcome: ImmediateRunOutcome<Gl>) -> Error {
     match outcome {
         ImmediateRunOutcome::Issued(_) => Error::InvalidState,

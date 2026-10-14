@@ -7,6 +7,18 @@ mod scene;
 #[allow(unused_imports)]
 pub use scene::*;
 
+/// Runs the sequential visible-scene fallback on a caller-owned WebGL2 canvas.
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn run_webgl2_multithreaded_recording(
+    canvas: web_sys::HtmlCanvasElement,
+    frames: u32,
+) -> std::result::Result<(), wasm_bindgen::JsValue> {
+    scene::run_webgl2_multithreaded_recording(canvas, frames)
+        .await
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
+}
+
 #[cfg(windows)]
 fn main() {
     #[cfg(feature = "native-gl-wgl")]

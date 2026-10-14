@@ -36,6 +36,7 @@ pub(super) fn set_viewport(encoder: &mut GlEncoder, viewport: Viewport) -> Resul
             .with_native("set GL viewport", |provider| provider.set_viewport(native))
             .map_err(native_error);
         if result.is_ok() {
+            encoder.raster_viewport = Some(native);
             encoder.issued = true;
         } else {
             encoder.indeterminate = true;
@@ -52,6 +53,7 @@ pub(super) fn set_viewport(encoder: &mut GlEncoder, viewport: Viewport) -> Resul
                 .ok_or(Error::InvalidState)?
                 .set_viewport(viewport);
             if result.is_ok() {
+                encoder.raster_viewport = Some(native);
                 encoder.issued = true;
             } else {
                 encoder.indeterminate = true;
@@ -86,6 +88,7 @@ pub(super) fn set_scissor(encoder: &mut GlEncoder, scissor: Rect) -> Result<()> 
             })
             .map_err(native_error);
         if result.is_ok() {
+            encoder.raster_scissor = Some(native);
             encoder.issued = true;
         } else {
             encoder.indeterminate = true;
@@ -102,6 +105,7 @@ pub(super) fn set_scissor(encoder: &mut GlEncoder, scissor: Rect) -> Result<()> 
                 .ok_or(Error::InvalidState)?
                 .set_scissor(scissor);
             if result.is_ok() {
+                encoder.raster_scissor = Some(native);
                 encoder.issued = true;
             } else {
                 encoder.indeterminate = true;

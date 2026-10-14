@@ -80,11 +80,43 @@ impl BrowserEncoder {
             GlTextureDimension::D2Array => Gl::TEXTURE_2D_ARRAY,
             _ => return Err(Error::Unsupported("WebGL2 texture dimension")),
         };
-        self.with_context("write_texture_region", |raw| {
+        // WebGL2 forbids UNPACK_FLIP_Y_WEBGL for a non-null ArrayBufferView
+        // passed to texSubImage3D. Array textures therefore flip each layer's
+        // rows on the CPU at this native boundary; 2D uploads keep the browser
+        // pixel-store conversion.
+        let flipped_layers = if matches!(destination.desc.dimension, GlTextureDimension::D2Array) {
+            let row_bytes = usize::try_from(extent[0])
+                .ok()
+                .and_then(|width| width.checked_mul(4))
+                .ok_or(Error::InvalidRange)?;
+            let layer_bytes = row_bytes
+                .checked_mul(extent[1] as usize)
+                .ok_or(Error::InvalidRange)?;
+            let mut flipped = vec![0; bytes.len()];
+            for layer in 0..extent[2] as usize {
+                let start = layer.checked_mul(layer_bytes).ok_or(Error::InvalidRange)?;
+                for row in 0..extent[1] as usize {
+                    let source = start + row * row_bytes;
+                    let destination = start + (extent[1] as usize - row - 1) * row_bytes;
+                    flipped[destination..destination + row_bytes]
+                        .copy_from_slice(&bytes[source..source + row_bytes]);
+                }
+            }
+            Some(flipped)
+        } else {
+            None
+        };
+        let upload_bytes = flipped_layers.as_deref().unwrap_or(bytes);
+        self.with_context("prepare_texture_region_upload", |raw| {
             raw.bind_texture(target, Some(&destination.raw));
             raw.bind_buffer(Gl::PIXEL_UNPACK_BUFFER, None);
             raw.pixel_storei(Gl::UNPACK_ALIGNMENT, 1);
-            raw.pixel_storei(Gl::UNPACK_FLIP_Y_WEBGL, 1);
+            raw.pixel_storei(
+                Gl::UNPACK_FLIP_Y_WEBGL,
+                i32::from(matches!(destination.desc.dimension, GlTextureDimension::D2)),
+            );
+        })?;
+        let upload = self.with_context("write_texture_region", |raw| {
             match destination.desc.dimension {
                 GlTextureDimension::D2 => {
                     let _ = raw
@@ -97,7 +129,7 @@ impl BrowserEncoder {
                             extent[1] as i32,
                             Gl::RGBA,
                             Gl::UNSIGNED_BYTE,
-                            Some(bytes),
+                            Some(upload_bytes),
                         );
                 }
                 GlTextureDimension::D2Array => {
@@ -112,13 +144,17 @@ impl BrowserEncoder {
                         extent[2] as i32,
                         Gl::RGBA,
                         Gl::UNSIGNED_BYTE,
-                        Some(bytes),
+                        Some(upload_bytes),
                     );
                 }
                 _ => unreachable!(),
             }
+        });
+        let restore = self.with_context("restore_texture_region_unpack_state", |raw| {
             raw.pixel_storei(Gl::UNPACK_FLIP_Y_WEBGL, 0);
             raw.pixel_storei(Gl::UNPACK_ALIGNMENT, 4);
-        })
+        });
+        upload?;
+        restore
     }
 }

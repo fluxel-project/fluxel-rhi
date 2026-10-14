@@ -1,6 +1,6 @@
 //! Headless-browser evidence for the shared 02_texture WebGPU entry.
 
-#![cfg(target_arch = "wasm32")]
+#![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 
 #[path = "../examples/02_texture/main.rs"]
 mod texture;

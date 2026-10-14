@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fluxel_rhi::api::*;
 use fluxel_rhi::gl::Gl;
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+use fluxel_rhi::gl::GlInstance;
 
 use super::{Offscreen, utils};
 
@@ -78,6 +80,7 @@ fn issue_frame(
     }
 }
 
+#[cfg(any(windows, all(target_os = "linux", feature = "native-gles-egl")))]
 pub(super) fn run_gl() -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
@@ -122,4 +125,62 @@ pub(super) fn run_gl() -> Result<()> {
             )
         },
     )
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+pub(super) async fn run_webgl2(canvas: web_sys::HtmlCanvasElement, frames: u32) -> Result<()> {
+    if frames == 0 {
+        return Err(Error::InvalidRange);
+    }
+    let extent = [canvas.width(), canvas.height()];
+    if extent.contains(&0) {
+        return Err(Error::SurfaceLost);
+    }
+    let native = GlInstance::from_webgl2_canvas(canvas)?;
+    // SAFETY: the canvas-backed owner remains retained by the instance,
+    // device, and surface while all immediate GL calls run on this browser thread.
+    let instance = unsafe { Instance::<Gl>::from_native(InstanceId::allocate()?, native) };
+    let adapter = instance
+        .enumerate()?
+        .into_iter()
+        .next()
+        .ok_or(Error::Unsupported("WebGL2 adapter"))?;
+    let device = instance
+        .open(DeviceRequest {
+            adapter: adapter.id,
+            required_features: vec![],
+        })
+        .await?;
+    let lane = device
+        .lanes()
+        .iter()
+        .find(|lane| lane.class == LaneClass::Graphics)
+        .map(|lane| lane.id)
+        .ok_or(Error::Unsupported("WebGL2 graphics lane"))?;
+    let format = TextureFormat::Rgba8Unorm;
+    let mut surface = Gl::surface(&device)?;
+    surface
+        .configure(&SurfaceConfig {
+            extent,
+            format,
+            present_mode: PresentMode::Fifo,
+            alpha_mode: CompositeAlphaMode::Opaque,
+            color_space: ColorSpace::Srgb,
+            usage: SurfaceUsage::RENDER_ATTACHMENT,
+            maximum_frame_latency: 1,
+        })
+        .await?;
+    let mut workload = Offscreen::<Gl>::new(&device, lane, format, extent).await?;
+    for frame in 0..frames {
+        let image = surface.acquire().await?;
+        issue_frame(
+            &device,
+            lane,
+            &mut workload,
+            image,
+            extent,
+            frame as f32 / 60.0,
+        )?;
+    }
+    Ok(())
 }

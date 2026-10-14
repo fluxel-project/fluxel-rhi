@@ -1,6 +1,6 @@
 //! Headed-browser evidence for the shared `01_triangle` WebGPU wasm entry.
 
-#![cfg(target_arch = "wasm32")]
+#![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 
 #[path = "../examples/01_triangle/main.rs"]
 mod triangle;

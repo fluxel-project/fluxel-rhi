@@ -1,6 +1,6 @@
 //! Headless-browser evidence for the shared 03_instancing WebGPU entry.
 
-#![cfg(target_arch = "wasm32")]
+#![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 
 #[path = "../examples/03_instancing/main.rs"]
 mod example;

@@ -399,163 +399,25 @@ async fn pipeline_wgsl<B: SequentialExampleBackend>(
     .await
 }
 
+#[cfg(any(
+    all(windows, feature = "native-gl-wgl"),
+    all(target_os = "linux", feature = "native-gles-egl")
+))]
+#[path = "sequential/native_gl.rs"]
+mod native_gl;
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[path = "sequential/webgl2.rs"]
+mod webgl2;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
-#[wasm_bindgen::prelude::wasm_bindgen]
-pub async fn run_webgpu_multithreaded_recording(
-    canvas: web_sys::HtmlCanvasElement,
-    frames: u32,
-) -> std::result::Result<(), wasm_bindgen::JsValue> {
-    use fluxel_rhi::webgpu::{WebGpu, WebGpuInstance};
-    async fn run(canvas: web_sys::HtmlCanvasElement, frames: u32) -> Result<()> {
-        let d = WebGpuInstance::new()?.open_default().await?;
-        let lane = d
-            .lanes()
-            .iter()
-            .find(|x| x.class == LaneClass::Graphics)
-            .map(|x| x.id)
-            .ok_or(Error::Unsupported("WebGPU graphics lane"))?;
-        let extent = [canvas.width(), canvas.height()];
-        let mut surface = WebGpu::surface_from_canvas(&d, canvas)?;
-        let format = surface
-            .capabilities()?
-            .formats
-            .into_iter()
-            .next()
-            .ok_or(Error::Unsupported("WebGPU canvas format"))?;
-        surface
-            .configure(&SurfaceConfig {
-                extent,
-                format,
-                present_mode: PresentMode::Fifo,
-                alpha_mode: CompositeAlphaMode::Opaque,
-                color_space: ColorSpace::Srgb,
-                usage: SurfaceUsage::RENDER_ATTACHMENT,
-                maximum_frame_latency: 2,
-            })
-            .await?;
-        let mut scene = Sequential::<WebGpu>::new(&d, format).await?;
-        for _ in 0..frames {
-            let image = surface.acquire().await?;
-            let mut encoder = d.encoder(lane)?;
-            let uploaded_geometry = scene.encode(&d, &image, &mut encoder, extent)?;
-            let work = encoder.finish()?;
-            if uploaded_geometry {
-                scene.mark_uploaded();
-            }
-            utils::submit_and_present_async(&d, lane, work, image).await?;
-        }
-        Ok(())
-    }
-    run(canvas, frames)
-        .await
-        .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("{e:?}")))
-}
+#[path = "sequential/webgpu.rs"]
+mod webgpu;
 
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),
     all(target_os = "linux", feature = "native-gles-egl")
 ))]
-pub fn run_gl_multithreaded_recording() -> Result<()> {
-    use std::{
-        cell::RefCell,
-        rc::Rc,
-        sync::{
-            Arc,
-            atomic::{AtomicU64, Ordering},
-        },
-    };
-
-    use fluxel_rhi::gl::Gl;
-
-    static NEXT_PLAN: AtomicU64 = AtomicU64::new(1);
-    fn outcome_error(outcome: ImmediateRunOutcome<Gl>) -> Error {
-        match outcome {
-            ImmediateRunOutcome::Issued(_) => Error::InvalidState,
-            ImmediateRunOutcome::Failed { error, .. }
-            | ImmediateRunOutcome::Indeterminate { error, .. } => error,
-        }
-    }
-
-    let config = SurfaceConfig {
-        extent: [1280, 720],
-        format: TextureFormat::Rgba8Unorm,
-        present_mode: PresentMode::Fifo,
-        alpha_mode: CompositeAlphaMode::Opaque,
-        color_space: ColorSpace::Srgb,
-        usage: SurfaceUsage::RENDER_ATTACHMENT,
-        maximum_frame_latency: 1,
-    };
-    let scene = Rc::new(RefCell::new(None::<Sequential<Gl>>));
-    let dropped = Rc::clone(&scene);
-    utils::gl_api::run_native(
-        "Sequential UFO recording fallback",
-        config.clone(),
-        move || *dropped.borrow_mut() = None,
-        move |device, _, image, extent| {
-            let lane = device
-                .lanes()
-                .iter()
-                .find(|lane| lane.class == LaneClass::Graphics)
-                .map(|lane| lane.id)
-                .ok_or(Error::Unsupported("GL graphics lane"))?;
-            if scene.borrow().is_none() {
-                let next = utils::block_on(Sequential::<Gl>::new(device, config.format))?;
-                *scene.borrow_mut() = Some(next);
-            }
-            let ordinal = NEXT_PLAN
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                    value.checked_add(1)
-                })
-                .map_err(|_| Error::OutOfMemory)?;
-            // SAFETY: this single-threaded WGL callback owns the context and
-            // issues both plan steps consecutively on its graphics lane.
-            let plan = unsafe {
-                SubmissionPlan::from_compiled(
-                    PlanId {
-                        device: device.id(),
-                        ordinal,
-                    },
-                    Arc::from([
-                        StepDesc {
-                            lane,
-                            kind: StepKind::Commands,
-                            waits: vec![],
-                        },
-                        StepDesc {
-                            lane,
-                            kind: StepKind::Present,
-                            waits: vec![],
-                        },
-                    ]),
-                )
-            };
-            // SAFETY: immediate encoding and presentation happen on the
-            // current WGL context before the callback returns.
-            let mut session = unsafe { device.immediate(plan, CompletionRequest::End)? };
-            let mut commands = session.begin_commands().map_err(outcome_error)?;
-            let uploaded_geometry = scene
-                .borrow_mut()
-                .as_mut()
-                .ok_or(Error::InvalidState)?
-                .encode(device, &image, commands.commands(), extent)?;
-            match commands.close() {
-                ImmediateRunOutcome::Issued(_) => {}
-                outcome => return Err(outcome_error(outcome)),
-            }
-            if uploaded_geometry {
-                scene
-                    .borrow_mut()
-                    .as_mut()
-                    .ok_or(Error::InvalidState)?
-                    .mark_uploaded();
-            }
-            match session.present(PresentBinding::new(image)) {
-                ImmediatePresentResult::Run(ImmediateRunOutcome::Issued(_)) => {}
-                ImmediatePresentResult::Run(outcome) => return Err(outcome_error(outcome)),
-                ImmediatePresentResult::Rejected { error, .. } => return Err(error),
-            }
-            let point = utils::immediate_end_checkpoint(session.finish())?;
-            utils::block_on(device.wait_completion(&point))
-        },
-    )
-}
+pub use native_gl::run_gl_multithreaded_recording;
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+pub use webgl2::run_webgl2_multithreaded_recording;
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+pub use webgpu::run_webgpu_multithreaded_recording;

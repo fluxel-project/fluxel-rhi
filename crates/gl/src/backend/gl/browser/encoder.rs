@@ -10,11 +10,13 @@ use web_sys::{WebGl2RenderingContext as Gl, WebGlBuffer, WebGlProgram, WebGlVert
 
 use super::completion::BrowserCompletion;
 use super::owner::{
-    BrowserBuffer, BrowserEncoder, BrowserFence, BrowserOwner, BrowserRasterProgram,
-    BrowserSampler, BrowserTexture, BrowserVertexArray,
+    BrowserBuffer, BrowserEncoder, BrowserOwner, BrowserRasterProgram, BrowserSampler,
+    BrowserTexture, BrowserVertexArray,
 };
 
+mod blit;
 mod raster;
+mod readback;
 mod upload;
 
 impl BrowserEncoder {
@@ -287,6 +289,11 @@ impl BrowserEncoder {
         self.with_context("begin_default_raster", |raw| {
             raw.bind_framebuffer(Gl::FRAMEBUFFER, None);
             raw.viewport(0, 0, extent[0] as i32, extent[1] as i32);
+            // WebGL clears respect scissor and color write masks. A prior pass
+            // may have left either state narrowed, while Core clear ops cover
+            // the new pass render area independently of prior draw state.
+            raw.disable(Gl::SCISSOR_TEST);
+            raw.color_mask(true, true, true, true);
             if let Some(clear) = clear {
                 match clear {
                     ClearColor::Float(value) => {
@@ -448,48 +455,34 @@ impl BrowserEncoder {
         Ok(())
     }
 
-    /// Closes the scope and returns conservative fence evidence for all issued
-    /// work. A fence is never created for an empty encoder.
-    pub(crate) fn finish(mut self) -> Result<Option<BrowserCompletion>> {
+    /// Releases a normally closed immediate scope without inserting hidden
+    /// completion work. Submission checkpoints are installed separately by
+    /// the SPI only when the caller requested them.
+    pub(crate) fn close_scope(mut self) -> Result<()> {
+        if self.surface_depth_pass.is_some() || self.offscreen_pass.is_some() {
+            return Err(Error::InvalidState);
+        }
         let mut state = self.owner.state.borrow_mut();
         state.ensure_encoder(self.epoch)?;
+        if state.raster_extent.is_some() {
+            return Err(Error::InvalidState);
+        }
         state.active_encoder = None;
         self.closed = true;
-        if !self.issued {
-            return Ok(None);
-        }
-        state.ensure_active()?;
-        let Some(raw) = state
-            .context
-            .raw
-            .fence_sync(Gl::SYNC_GPU_COMMANDS_COMPLETE, 0)
-        else {
-            // Commands were already issued. Without a fence, the owner cannot
-            // prove their completion to Core, so keep no usable device rather
-            // than allowing later resource retirement to race that prefix.
-            state.mark_lost();
-            return Err(Error::DeviceLost);
-        };
-        state.context.raw.flush();
-        if state.context.raw.is_context_lost() || state.context.raw.get_error() != Gl::NO_ERROR {
-            state.context.raw.delete_sync(Some(&raw));
-            state.mark_lost();
-            return Err(Error::DeviceLost);
-        }
-        let serial = state.allocate_completion()?;
-        state.completions.insert(
-            serial,
-            BrowserFence {
-                raw,
-                wakers: Default::default(),
-                poll_scheduled: false,
-            },
-        );
-        Ok(Some(BrowserCompletion::pending(self.owner.clone(), serial)))
+        Ok(())
     }
 
     /// Aborts an unclosed scope. Work already issued stays ordered by WebGL.
     pub(crate) fn abort(mut self) {
+        // Raster-pass FBOs are encoder-owned. They must be retired before the
+        // active epoch is released; otherwise a dropped immediate scope could
+        // strand a browser FBO even though its caller-owned attachments remain
+        // valid resources.
+        if self.surface_depth_pass.is_some() {
+            self.abort_surface_depth_raster();
+        } else if self.offscreen_pass.is_some() {
+            self.abort_offscreen_raster();
+        }
         if let Ok(mut state) = self.owner.state.try_borrow_mut() {
             if state.active_encoder == Some(self.epoch) {
                 state.active_encoder = None;
@@ -543,6 +536,18 @@ impl BrowserEncoder {
 impl Drop for BrowserEncoder {
     fn drop(&mut self) {
         if !self.closed {
+            // `Drop` covers a failed immediate command path that Core did not
+            // get to close explicitly. Context loss invalidates every WebGL
+            // object, so dropping the JS handles is the only safe cleanup then;
+            // otherwise retire our FBO before releasing the active epoch.
+            let lost = self.owner.state.borrow().lost;
+            if !lost {
+                if self.surface_depth_pass.is_some() {
+                    self.abort_surface_depth_raster();
+                } else if self.offscreen_pass.is_some() {
+                    self.abort_offscreen_raster();
+                }
+            }
             if let Ok(mut state) = self.owner.state.try_borrow_mut() {
                 if state.active_encoder == Some(self.epoch) {
                     state.active_encoder = None;

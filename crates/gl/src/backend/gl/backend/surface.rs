@@ -199,6 +199,8 @@ unsafe impl api::NativeImageLease for GlSurfaceImage {
         if !self.is_current(generation) {
             return Err(Error::SurfaceOutdated);
         }
+        #[cfg(all(feature = "native-gles-egl", not(target_arch = "wasm32")))]
+        capture_default_framebuffer_if_requested(self)?;
         let mut state = self.surface.0.borrow_mut();
         state.live = None;
         self.handed_off = true;
@@ -218,6 +220,35 @@ unsafe impl api::NativeImageLease for GlSurfaceImage {
                 }) if live_generation == generation && serial == self.serial
             )
     }
+}
+
+/// Opt-in local visual diagnostics for EGL runs where compositor capture is
+/// unavailable. Reading happens before the lease handoff, while the exact
+/// default framebuffer is still authenticated; normal runs perform no I/O.
+#[cfg(all(feature = "native-gles-egl", not(target_arch = "wasm32")))]
+fn capture_default_framebuffer_if_requested(image: &GlSurfaceImage) -> Result<()> {
+    let Some(path) = std::env::var_os("FLUXEL_RHI_GL_CAPTURE_PATH") else {
+        return Ok(());
+    };
+
+    let target = image.default_target()?;
+    let device = image.surface.0.borrow().device.clone();
+    let readback = device
+        .0
+        .with_native("capture GL surface for local diagnostics", |provider| {
+            provider.read_default_framebuffer(target)
+        })
+        .map_err(native_error)?;
+    let capacity = 32usize
+        .checked_add(readback.bytes.len().saturating_mul(3) / 4)
+        .ok_or(Error::OutOfMemory)?;
+    let mut ppm = format!("P6\n{} {}\n255\n", target.width, target.height).into_bytes();
+    ppm.reserve(capacity);
+    for rgba in readback.bytes.chunks_exact(4) {
+        ppm.extend_from_slice(&rgba[..3]);
+    }
+    std::fs::write(path, ppm)
+        .map_err(|error| Error::Backend(format!("writing GL diagnostic capture failed: {error}")))
 }
 
 #[cfg(not(all(target_arch = "wasm32", feature = "webgl2")))]

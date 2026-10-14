@@ -2,8 +2,8 @@
 
 The 15 numbered examples use the statically typed `fluxel_rhi::api`. Native
 examples use the shared `fluxel-host` window lifecycle. Browser examples use
-an HTML canvas owned by the caller. DX12, Vulkan, and desktop GL4+ are native
-Windows routes; WebGPU runs in a browser. An example is accepted for a backend only
+an HTML canvas owned by the caller. DX12, Vulkan, and desktop GL4+ use native
+Windows routes; GLES3+ uses EGL; WebGPU and WebGL2 run in a browser. An example is accepted for a backend only
 after a real GPU run, saved frames inspected against the C++ reference (apart
 from its HUD), and a check of relevant native diagnostics. Static scenes are
 judged by their visible result; animated scenes are judged by scene content
@@ -19,12 +19,12 @@ example changes require rerunning affected backend paths.
 
 | Backend | Current evidence | Remaining gate |
 | --- | --- | --- |
-| DX12 | Commit `956f277a7ada5ec7decda7a8544e59a9fc2e9ee1` is pushed. All 15 examples ran on a real GPU with the D3D12 debug layer and were visually checked against C++; the complete WGSL manifest regenerates DXIL/SPIR-V byte-for-byte and checks shader ABI. The 08/12 ID 820 messages are clear-value performance hints and do not affect output. | Complete. Rerun only paths affected by a later shared change. |
-| Vulkan | All 15 examples ran for two frames on a real GPU with `VK_LAYER_KHRONOS_validation`; each produced zero validation diagnostics and was visually checked against C++ with the HUD excluded. The 09 anisotropic sampler path and 14 explicit upload-to-sampling transitions were fixed and rechecked. Example 13 was visually verified from swapchain GPU readback because the desktop capture was occluded. Example 07 preserves the reference's intentional 7×7 reflection blur. | Complete for this candidate. Continue to WebGPU after the Vulkan changes are committed and pushed. |
-| WebGPU | All 15 browser tests passed on Chrome 155.0.8059.40 using an AMD RDNA 3 adapter (`isFallbackAdapter = false`); each presented three frames at 1280×720. Fresh captures were visually compared with the C++ references with the HUD excluded. The sampler anisotropy path and WASM animation clock were fixed. | Complete for this candidate. Continue to GL after this backend commit is pushed. |
-| GL4+ | WGL on AMD Radeon 780M (driver 32.0.21028.2002) passed the concentrated 01–15 real-GPU run and independent backend review. All examples have visually reviewed 1280×720 captures against C++ references with the HUD excluded. Example 11 matches the C++ occlusion-query samples (teapot 246605, sphere 2878). Example 12's readback image matches the C++ dragon outside the HUD: RGB MAE 0.001/255, P95 0/255, 93 differing pixels among 748,800. Examples 13–15 use sequential recording, fixed texture-array, and per-eye stereo fallbacks without claiming unavailable native capabilities. Example 15 matches the C++ reference outside the HUD and window border: RGB MAE 0.001/255, P95 0/255. | Complete for the WGL profile on the tested AMD Radeon 780M. |
-| GLES3+ | EGL/GLES 3.1 on Mesa D3D12 over AMD Radeon 780M passed all 15 examples for two frames. Saved 1280×720 default-framebuffer captures were inspected against the GL4+ and C++ reference scenes with the HUD excluded. Compute storage-image output and occlusion-query visibility readback both ran on the GLES device. GLES exposes the native boolean visibility result; exact positive sample counts are not portable across backends. | Complete for the tested Mesa D3D12 GLES 3.1 profile. This does not establish WebGL2 completion. |
-| WebGL2 | Compile-only evidence for examples 09–12. | No visual pass yet. Examples 09 blit, 10 indirect draw, 11 query/readback, and 12 buffer readback are not claimed as supported. |
+| DX12 | Commit `956f277a7ada5ec7decda7a8544e59a9fc2e9ee1` is pushed. All 15 examples ran on a real GPU with the D3D12 debug layer and were visually checked against C++; the complete WGSL manifest regenerates DXIL/SPIR-V byte-for-byte and checks shader ABI. The 08/12 ID 820 messages are clear-value performance hints and do not affect output. The current worktree was rebuilt on 2026-10-15 and all 15 examples exited successfully for two frames with `FLUXEL_DX12_DEBUG=1`. The desktop was occluded, so this run is execution evidence only. | Complete for the pushed visual candidate; current worktree regression passed execution only. |
+| Vulkan | All 15 examples ran for two frames on a real GPU with `VK_LAYER_KHRONOS_validation`; each produced zero validation diagnostics and was visually checked against C++ with the HUD excluded. The 09 anisotropic sampler path and 14 explicit upload-to-sampling transitions were fixed and rechecked. Example 13 was visually verified from swapchain GPU readback because the desktop capture was occluded. Example 07 preserves the reference's intentional 7×7 reflection blur. On 2026-10-15, the current worktree was rebuilt and all 15 examples exited successfully for two frames with `VK_LAYER_KHRONOS_validation`. The desktop was occluded, so this run adds no visual evidence. | Complete for the pushed visual candidate; current worktree regression passed execution only. |
+| WebGPU | All 15 browser tests passed on Chrome 155.0.8059.40 using an AMD RDNA 3 adapter (`isFallbackAdapter = false`); each presented three frames at 1280×720. Fresh captures were visually compared with the C++ references with the HUD excluded. The sampler anisotropy path and WASM animation clock were fixed. On 2026-10-15, all 15 tests passed again on the current worktree in Chrome 155, presenting three frames each. | Complete for the pushed visual candidate; current worktree regression passed. |
+| GL4+ | WGL on AMD Radeon 780M (driver 32.0.21028.2002) passed the concentrated 01–15 real-GPU run and independent backend review. All examples have visually reviewed 1280×720 captures against C++ references with the HUD excluded. Example 11 matches the C++ occlusion-query samples (teapot 246605, sphere 2878). Example 12's readback image matches the C++ dragon outside the HUD: RGB MAE 0.001/255, P95 0/255, 93 differing pixels among 748,800. Examples 13–15 use sequential recording, fixed texture-array, and per-eye stereo fallbacks without claiming unavailable native capabilities. Example 15 matches the C++ reference outside the HUD and window border: RGB MAE 0.001/255, P95 0/255. The current worktree was rebuilt on 2026-10-15 and all 15 WGL examples exited successfully for two frames. This adds runtime evidence, not new visual captures. | Complete for the WGL profile on the tested AMD Radeon 780M; current worktree regression passed execution only. |
+| GLES3+ | EGL/GLES 3.1 on Mesa D3D12 over AMD Radeon 780M ran all 15 examples for two frames on the current tree. Opt-in `glReadPixels` captures saved each example's last presented default-framebuffer image before presentation; the PNGs were opened beside the C++ references and the visible scene content matches with the HUD excluded. The corrected GL front-face lowering is included. Compute storage-image output and occlusion-query visibility readback ran on GLES; the native visibility result is boolean, so exact positive sample counts are not portable. | Visual and execution checks pass for the tested Mesa D3D12 GLES 3.1 profile. This does not establish WebGL2 completion. |
+| WebGL2 | Examples 01–15 ran for three frames on Chrome 155.0.8059.40; the current full browser suite has 16 test targets and 20 passing tests, including screenshot row-layout fixtures and four Surface/context lifecycle cases. The lifecycle checks verify exclusive leases, resize/reconfiguration, generation changes, rejection of acquire after an external canvas resize, and terminal behavior after host-notified or driver-detected context loss. The full suite passed after correcting GL front-face lowering and the immediate texture-copy path; the 15 browser captures were opened side-by-side with the WebGPU candidates and visually match the expected scenes. Example 07’s dragon and reflection now match after preserving the public `FrontFace` value. Example 08’s single-sample fallback matches the WebGPU composition; WebGL2 still does not claim multisample attachment support. Example 12’s readback fixture performs two partial, vertically offset copies with a stale 1×1 scissor enabled, then verifies upper-left row ordering, exact destination bytes, byte offset, and row padding. Example 06 uses a WGSL raster-filter fallback because WebGL2 lacks compute/storage-texture support. Example 10 uses indexed draws with CPU-owned indirect arguments and keeps `indirect_draw = false`. Example 11 uses an immediate visual fallback and keeps `occlusion = false`; it does not claim query-result support. Examples 13–15 retain sequential/fixed-resource fallbacks and make no native secondary-command, runtime descriptor-indexing, or multiview claims. | Visual review is complete for the tested WebGL2 scenes; native capability gaps remain explicitly unsupported and use documented visual fallbacks. |
 
 The verified DX12 candidate reports only D3D12 message ID 820 for the offscreen color
 targets in examples 08 and 12. It is a performance hint about the optional
@@ -33,9 +33,9 @@ the clear still produces the requested image. The rest of the captured DX12
 examples produced no D3D12 debug messages.
 
 The local captures, run logs, hardware details, and exact worktree state are
-recorded under the ignored `临时/` directory during development. These local
-files are not part of a published backend claim. The reference images come
-from the local C++ Vulkan example build; the HUD is excluded from comparison.
+retained in an ignored local verification archive and are not part of a
+published backend claim. The reference images come from the local C++ Vulkan
+example build; the HUD is excluded from comparison.
 
 From the workspace root on Windows:
 
@@ -104,23 +104,23 @@ fallback. `tools/examples/fetch-assets.ps1` obtains the pinned external
 models and textures required by some examples. Those assets remain local; see
 [assets/README.md](assets/README.md).
 
-| Example | Workload |
+| Example | What it demonstrates |
 | --- | --- |
-| 01 triangle | Indexed triangle with surface presentation |
-| 02 texture | Textured and lit quad with uniform and sampler bindings |
-| 03 instancing | glTF rock field, planet, stars, depth testing, and instanced draws |
-| 04 dynamic uniform buffer | Cube grid with a distinct dynamic uniform offset for each draw |
-| 05 push constants | Per-draw push constants on backends that expose them |
-| 06 compute | Compute dispatch followed by display of the generated texture |
-| 07 offscreen | Offscreen scene pass sampled by a display pass |
-| 08 msaa | Multisample anti-aliasing (MSAA) with resolve into a presentation texture |
-| 09 texture mipmap | Mipmap generation and filtered sampling across mip levels |
-| 10 indirect draw | Native GPU indirect drawing commands |
-| 11 occlusion query | GPU occlusion queries with result readback |
-| 12 screenshot | Render-target texture readback into a screenshot file |
-| 13 multithreaded recording | Secondary or native parallel command recording, with a documented sequential fallback |
-| 14 descriptor indexing | Capability-gated runtime indexing into a texture descriptor array, with a fixed texture-array visual fallback |
-| 15 multiview | Capability-gated native multiview rendering with sequential per-eye visual fallbacks |
+| 01 triangle | Draws an indexed triangle and presents it to the surface. |
+| 02 texture | Lights a textured quad using a uniform buffer, a sampled texture, and a sampler. |
+| 03 instancing | Renders a planet, a field of instanced rocks, and stars with depth testing. |
+| 04 dynamic uniform buffer | Draws a grid of cubes, selecting a different dynamic uniform-buffer range for each draw. |
+| 05 push constants | Changes per-draw transforms through push constants where the backend supports them, with a uniform-buffer fallback elsewhere. |
+| 06 compute | Runs emboss, edge-detection, and sharpening compute filters, then displays the source and filtered images side by side. |
+| 07 offscreen | Renders a dragon and reflective floor into an offscreen target, then samples that image while drawing the final scene. |
+| 08 msaa | Renders the Voyager model with multisample anti-aliasing (MSAA) and resolves the result for presentation. |
+| 09 texture mipmap | Generates texture mip levels and shows how filtered sampling changes across a moving tunnel. |
+| 10 indirect draw | Renders a field of plants using GPU-generated indirect draw commands on capable backends. |
+| 11 occlusion query | Uses occlusion queries to determine whether scene objects are visible and reads back the query results. |
+| 12 screenshot | Renders a dragon into a texture, copies the rendered image to a readback buffer, and saves a screenshot. |
+| 13 multithreaded recording | Compares secondary or parallel command recording where available and uses sequential primary recording as the documented fallback. |
+| 14 descriptor indexing | Selects textures through runtime descriptor indexing where available and uses a fixed texture array as the visual fallback. |
+| 15 multiview | Renders a stereo scene with native multiview where available and renders each eye in a separate pass as the fallback. |
 
 Follow the public coordinate contract in `documents/design-rhi.md` when
 interpreting a vertical flip or front-face difference. A backend must adapt

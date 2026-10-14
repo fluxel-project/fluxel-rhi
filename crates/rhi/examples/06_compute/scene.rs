@@ -7,6 +7,13 @@ use fluxel_rhi::api::*;
 
 pub use workload::Compute;
 
+/// Shares the example's checked KTX decoding with its WebGL2 raster fallback.
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+pub(super) fn load_fallback_image() -> Result<(u32, u32, Vec<u8>)> {
+    let image = ktx::load_rgba8()?;
+    Ok((image.width, image.height, image.pixels))
+}
+
 pub trait ComputeBackend:
     Backend + ResourceBackend + ShaderBackend + PipelineBackend + CommandBackend + RasterBackend
 {

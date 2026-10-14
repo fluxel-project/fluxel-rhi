@@ -25,8 +25,8 @@ pub struct Msaa<B: MsaaBackend> {
     groups: Vec<BindGroup<B>>,
     material_textures: [Texture<B>; 2],
     pipeline: RasterPipeline<B>,
-    color: Texture<B>,
-    color_view: TextureView<B>,
+    color: Option<Texture<B>>,
+    color_view: Option<TextureView<B>>,
     depth: Texture<B>,
     depth_view: TextureView<B>,
     vertex_len: u64,
@@ -52,10 +52,35 @@ impl<B: MsaaBackend> Msaa<B> {
         surface_format: TextureFormat,
         extent: [u32; 2],
     ) -> Result<Self> {
-        if extent.contains(&0) {
+        let samples = supported_samples(device, surface_format)?;
+        Self::new_with_samples(device, lane, surface_format, extent, samples).await
+    }
+
+    /// Builds the same Voyager workload with an explicitly selected sample count.
+    ///
+    /// Browser WebGL2 uses one sample because its native API has multisample
+    /// renderbuffers but no multisample texture storage, which is the current
+    /// Core attachment representation. That path preserves the scene while
+    /// leaving the backend's MSAA capability unclaimed.
+    pub async fn new_single_sample(
+        device: &Device<B>,
+        lane: LaneId,
+        surface_format: TextureFormat,
+        extent: [u32; 2],
+    ) -> Result<Self> {
+        Self::new_with_samples(device, lane, surface_format, extent, 1).await
+    }
+
+    async fn new_with_samples(
+        device: &Device<B>,
+        lane: LaneId,
+        surface_format: TextureFormat,
+        extent: [u32; 2],
+        samples: u32,
+    ) -> Result<Self> {
+        if extent.contains(&0) || samples == 0 {
             return Err(Error::InvalidRange);
         }
-        let samples = supported_samples(device, surface_format)?;
         let model = super::gltf::load_embedded_model(
             super::VOYAGER,
             super::gltf::LoadOptions::PRETRANSFORM_FLIP_Y,
@@ -164,7 +189,12 @@ impl<B: MsaaBackend> Msaa<B> {
             push_constants: &[],
         })?;
         let pipeline = pipeline::pipeline(device, pipeline_layout, surface_format, samples).await?;
-        let (color, color_view) = color_target(device, extent, surface_format, samples)?;
+        let (color, color_view) = if samples > 1 {
+            let (color, view) = color_target(device, extent, surface_format, samples)?;
+            (Some(color), Some(view))
+        } else {
+            (None, None)
+        };
         let (depth, depth_view) = depth_target(device, extent, samples)?;
         Ok(Self {
             lane,

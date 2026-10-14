@@ -9,6 +9,10 @@ Example 15 keeps separate WGSL display entry points for native multiview and
 the sequential per-eye fallback. The artifact manifest compiles the native
 variant; WebGPU and GL use the fallback WGSL directly.
 
+Example 06 also keeps `filters_raster.wgsl` as a WGSL fragment-stage fallback
+for WebGL2, whose API does not expose compute or storage textures. It runs the
+same visible filter beside the source image without claiming those capabilities.
+
 The external model and texture assets described below are separate from these
 shader binaries.
 

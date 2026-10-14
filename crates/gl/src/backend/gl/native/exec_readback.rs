@@ -179,7 +179,7 @@ impl NativeGlProvider {
     /// frame. The default framebuffer remains an external drawable: it is
     /// bound only for this owner-thread operation and never enters the owned
     /// framebuffer or texture tables.
-    pub(super) fn read_default_framebuffer(
+    pub(crate) fn read_default_framebuffer(
         &mut self,
         target: crate::backend::gl::api::GlDefaultFramebufferTarget,
     ) -> Result<GlReadback, GlError> {

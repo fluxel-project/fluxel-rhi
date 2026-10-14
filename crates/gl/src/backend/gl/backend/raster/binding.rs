@@ -274,7 +274,6 @@ pub(super) fn bind_browser_group(
                 .iter()
                 .find(|value| value.location == assignment.logical)
                 .ok_or(Error::InvalidState)?;
-            let name = logical.names.first().ok_or(Error::InvalidState)?;
             match (entry.slot, assignment.executable) {
                 (
                     GlBindingSlot::UniformBuffer { .. },
@@ -305,7 +304,6 @@ pub(super) fn bind_browser_group(
                     }
                     browser.bind_uniform_buffer_named(
                         &pipeline.browser_program,
-                        name,
                         point,
                         &buffer.browser,
                         u64::from(offset),
@@ -327,13 +325,7 @@ pub(super) fn bind_browser_group(
                     else {
                         return Err(Error::InvalidState);
                     };
-                    browser.bind_rgba8_texture_named(
-                        &pipeline.browser_program,
-                        name,
-                        unit,
-                        &view.texture.browser,
-                        &sampler.browser,
-                    )?;
+                    browser.bind_rgba8_texture(unit, &view.texture.browser, &sampler.browser)?;
                 }
                 (GlBindingSlot::Sampler, GlExecutableBindingLocation::TextureUnit(_)) => {}
                 _ => return Err(Error::Unsupported("WebGL2 reflected binding kind")),

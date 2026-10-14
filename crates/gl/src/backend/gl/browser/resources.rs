@@ -3,7 +3,7 @@
 //! These constructors create WebGL objects immediately for one `BrowserOwner`.
 //! They never cache commands or transfer JavaScript handles into Core.
 
-use crate::backend::gl::api::GlFamilyApi as _;
+use crate::backend::gl::api::{GlBufferDesc, GlBufferUsage, GlFamilyApi as _};
 use fluxel_rhi_core::api::{Error, Result};
 use web_sys::WebGl2RenderingContext as Gl;
 
@@ -14,19 +14,30 @@ use super::owner::{
 
 impl BrowserOwner {
     /// Allocates a dynamic byte-addressable buffer for the static backend.
-    pub(crate) fn create_buffer(&self, bytes: u64) -> Result<BrowserBuffer> {
+    pub(crate) fn create_buffer(&self, desc: GlBufferDesc) -> Result<BrowserBuffer> {
+        self.drain_pending_deletes()?;
         let mut state = self.state.borrow_mut();
         state.ensure_active()?;
+        let is_index = desc.usage.contains(GlBufferUsage::INDEX);
+        let target = if is_index {
+            // ELEMENT_ARRAY_BUFFER is VAO state. Resource creation happens
+            // outside a raster pass, and the default VAO prevents allocating
+            // an index buffer from replacing a pipeline VAO's live binding.
+            state.context.raw.bind_vertex_array(None);
+            Gl::ELEMENT_ARRAY_BUFFER
+        } else {
+            Gl::ARRAY_BUFFER
+        };
         let raw = state
             .context
             .raw
             .create_buffer()
             .ok_or(Error::OutOfMemory)?;
-        state.context.raw.bind_buffer(Gl::ARRAY_BUFFER, Some(&raw));
+        state.context.raw.bind_buffer(target, Some(&raw));
         state
             .context
             .raw
-            .buffer_data_with_f64(Gl::ARRAY_BUFFER, bytes as f64, Gl::DYNAMIC_DRAW);
+            .buffer_data_with_f64(target, desc.size as f64, Gl::DYNAMIC_DRAW);
         if state.context.raw.get_error() != Gl::NO_ERROR {
             state.context.raw.delete_buffer(Some(&raw));
             return Err(Error::Backend("WebGL2 buffer allocation failed".into()));
@@ -34,7 +45,8 @@ impl BrowserOwner {
         Ok(BrowserBuffer {
             owner: self.clone(),
             raw,
-            size: bytes,
+            size: desc.size,
+            lifetime: std::rc::Rc::new(()),
         })
     }
 
@@ -47,6 +59,7 @@ impl BrowserOwner {
     ) -> Result<BrowserTexture> {
         use super::super::api::GlTextureDimension;
 
+        self.drain_pending_deletes()?;
         // The SPI can be called without Core's support probe. Validate the
         // complete descriptor before allocating a browser object so oversized
         // mip chains cannot reach WebGL as lossy integer arguments.
@@ -99,6 +112,19 @@ impl BrowserOwner {
             ),
             _ => unreachable!(),
         }
+        // A sampler may request mip filtering even when this immutable image
+        // intentionally has one level. Clamp the texture's mip range to the
+        // storage actually allocated; otherwise WebGL treats the texture as
+        // incomplete and samples black for ordinary glTF material textures.
+        state
+            .context
+            .raw
+            .tex_parameteri(target, Gl::TEXTURE_BASE_LEVEL, 0);
+        state.context.raw.tex_parameteri(
+            target,
+            Gl::TEXTURE_MAX_LEVEL,
+            desc.mip_level_count as i32 - 1,
+        );
         if state.context.raw.get_error() != Gl::NO_ERROR {
             state.context.raw.delete_texture(Some(&raw));
             return Err(Error::Backend(
@@ -109,6 +135,7 @@ impl BrowserOwner {
             owner: self.clone(),
             raw,
             desc,
+            lifetime: std::rc::Rc::new(()),
         })
     }
 
@@ -118,6 +145,7 @@ impl BrowserOwner {
         descriptor: &super::super::api::GlProgramDescriptor,
     ) -> Result<(BrowserRasterProgram, super::super::api::GlProgramReflection)> {
         use super::super::api::GlShaderApi as _;
+        self.drain_pending_deletes()?;
         let mut state = self.state.borrow_mut();
         state.ensure_active()?;
         let (id, reflection) = state
@@ -134,6 +162,7 @@ impl BrowserOwner {
             BrowserRasterProgram {
                 owner: self.clone(),
                 raw,
+                lifetime: std::rc::Rc::new(()),
             },
             reflection,
         ))
@@ -142,6 +171,7 @@ impl BrowserOwner {
     /// Creates a vertex-array container. Attribute and index bindings are set
     /// through the immediate encoder so their GL calls remain owner-local.
     pub(crate) fn create_vertex_array(&self) -> Result<BrowserVertexArray> {
+        self.drain_pending_deletes()?;
         let mut state = self.state.borrow_mut();
         state.ensure_active()?;
         let raw = state
@@ -152,6 +182,7 @@ impl BrowserOwner {
         Ok(BrowserVertexArray {
             owner: self.clone(),
             raw,
+            lifetime: std::rc::Rc::new(()),
         })
     }
 
@@ -160,6 +191,7 @@ impl BrowserOwner {
         &self,
         desc: super::super::api::GlSamplerDesc,
     ) -> Result<BrowserSampler> {
+        self.drain_pending_deletes()?;
         let mut state = self.state.borrow_mut();
         state.ensure_active()?;
         let raw = state
@@ -175,6 +207,7 @@ impl BrowserOwner {
         Ok(BrowserSampler {
             owner: self.clone(),
             raw,
+            lifetime: std::rc::Rc::new(()),
         })
     }
 }

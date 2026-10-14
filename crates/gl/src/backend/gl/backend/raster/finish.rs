@@ -36,6 +36,12 @@ pub(super) fn abort(encoder: &mut GlEncoder) {
             encoder.raster_pipeline = None;
             return;
         }
+        if browser.has_owned_framebuffer_pass() {
+            browser.abort_offscreen_raster();
+            encoder.raster_extent = None;
+            encoder.raster_pipeline = None;
+            return;
+        }
     }
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
     if let Some(pass) = encoder.surface_depth_pass.take() {

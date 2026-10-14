@@ -70,6 +70,15 @@ impl GlInstance {
             .map_err(|error| api::Error::Backend(format!("{error:?}")))?;
         Ok(Self::from_browser_owner(BrowserOwner::new(discovery)))
     }
+
+    /// Marks this WebGL2 device generation terminal after the host receives
+    /// `webglcontextlost` (and calls `preventDefault`). Pending completion
+    /// waiters are woken and all surface leases become stale. After
+    /// `webglcontextrestored`, create a new `GlInstance`, Core `Instance`,
+    /// device, and surface; the old objects cannot be reused.
+    pub fn notify_context_lost(&self) {
+        self.0.owner.mark_context_lost();
+    }
 }
 
 #[cfg(feature = "native-gles-egl")]

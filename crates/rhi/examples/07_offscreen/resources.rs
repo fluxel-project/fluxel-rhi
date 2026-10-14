@@ -187,7 +187,7 @@ pub(crate) async fn pipe<B: OffscreenWorkloadBackend>(
         },
         depth_stencil: Some(DepthStencilState {
             format: TextureFormat::Depth32Float,
-            depth_write_enabled: true,
+            depth_write_enabled: n != "07 dragon",
             depth_compare: CompareFunction::LessEqual,
             stencil_front: face,
             stencil_back: face,

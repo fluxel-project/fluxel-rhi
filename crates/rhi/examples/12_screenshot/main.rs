@@ -7,7 +7,8 @@
 mod gltf;
 #[cfg(any(
     feature = "native-gl-wgl",
-    all(target_os = "linux", feature = "native-gles-egl")
+    all(target_os = "linux", feature = "native-gles-egl"),
+    all(target_arch = "wasm32", feature = "webgl2")
 ))]
 mod immediate;
 #[path = "../utils/mod.rs"]
@@ -546,6 +547,20 @@ pub async fn run_webgpu_screenshot(
         Ok(())
     };
     run.await
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
+}
+
+/// Renders the shared dragon scene through WebGL2 immediate commands, copies
+/// its RGBA8 target into a padded readback buffer, and verifies that buffer
+/// after the frame completion point.
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn run_webgl2_screenshot(
+    canvas: web_sys::HtmlCanvasElement,
+    frames: u32,
+) -> std::result::Result<(), wasm_bindgen::JsValue> {
+    immediate::run_webgl2(canvas, frames)
+        .await
         .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
 }
 #[cfg(all(target_os = "linux", feature = "native-gles-egl"))]

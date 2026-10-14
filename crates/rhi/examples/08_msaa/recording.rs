@@ -26,7 +26,12 @@ impl<B: MsaaBackend> Msaa<B> {
         if extent.contains(&0) {
             return Err(Error::InvalidRange);
         }
-        let (color, color_view) = color_target(device, extent, format, self.samples)?;
+        let (color, color_view) = if self.samples > 1 {
+            let (color, view) = color_target(device, extent, format, self.samples)?;
+            (Some(color), Some(view))
+        } else {
+            (None, None)
+        };
         let (depth, depth_view) = depth_target(device, extent, self.samples)?;
         self.color = color;
         self.color_view = color_view;
@@ -125,10 +130,11 @@ impl<B: MsaaBackend> Msaa<B> {
             encoder.transition_resources(&reads)?;
         }
         encoder.write_buffer(&self.uniform, 0, &transform(extent, time))?;
-        if initialize_color {
+        if self.samples > 1 && initialize_color {
+            let color = self.color.as_ref().ok_or(Error::InvalidState)?;
             encoder.transition_resources(&[ResourceTransition::Texture(TextureBarrier {
                 target: Subresources {
-                    texture: &self.color,
+                    texture: color,
                     aspects: TextureAspects::COLOR,
                     mips: 0..1,
                     layers: 0..1,
@@ -151,11 +157,20 @@ impl<B: MsaaBackend> Msaa<B> {
                 ownership: None,
             })])?;
         }
+        let (view, resolve_target, store) = if self.samples > 1 {
+            (
+                AttachmentView::Texture(self.color_view.as_ref().ok_or(Error::InvalidState)?),
+                Some(AttachmentView::Surface(image)),
+                StoreOp::Discard,
+            )
+        } else {
+            (AttachmentView::Surface(image), None, StoreOp::Store)
+        };
         let colors = [Some(ColorAttachment {
-            view: AttachmentView::Texture(&self.color_view),
-            resolve_target: Some(AttachmentView::Surface(image)),
+            view,
+            resolve_target,
             load: LoadOp::Clear(ClearColor::Float([0.98, 0.98, 1.0, 1.0])),
-            store: StoreOp::Discard,
+            store,
         })];
         let depth = DepthStencilAttachment {
             view: AttachmentView::Texture(&self.depth_view),

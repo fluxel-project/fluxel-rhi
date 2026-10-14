@@ -35,7 +35,8 @@ pub trait WgslStereoBackend: StereoBackend {}
 
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),
-    all(target_os = "linux", feature = "native-gles-egl")
+    all(target_os = "linux", feature = "native-gles-egl"),
+    all(target_arch = "wasm32", feature = "webgl2")
 ))]
 impl WgslStereoBackend for fluxel_rhi::gl::Gl {}
 
@@ -445,6 +446,16 @@ use resources::*;
 mod per_eye;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub use per_eye::run_webgpu_multiview;
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn run_webgl2_multiview(
+    canvas: web_sys::HtmlCanvasElement,
+    frames: u32,
+) -> std::result::Result<(), wasm_bindgen::JsValue> {
+    per_eye::run_webgl2_multiview(canvas, frames)
+        .await
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
+}
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),
     all(target_os = "linux", feature = "native-gles-egl")

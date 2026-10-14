@@ -413,6 +413,8 @@ mod sequential;
     all(target_os = "linux", feature = "native-gles-egl")
 ))]
 pub use sequential::run_gl_multithreaded_recording;
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+pub use sequential::run_webgl2_multithreaded_recording;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub use sequential::run_webgpu_multithreaded_recording;
 

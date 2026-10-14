@@ -8,6 +8,7 @@ use fluxel_rhi::api::*;
 
 pub const INDEXED_INDIRECT_STRIDE: u32 = 20;
 pub const PLANT_INSTANCES: u32 = 2048;
+pub const INSTANCE_STRIDE_BYTES: u64 = 32;
 pub(crate) const PLANTS: &[u8] = include_bytes!("../assets/models/plants.gltf");
 pub(crate) const GROUND: &[u8] = include_bytes!("../assets/models/plane_circle.gltf");
 pub(crate) const SKY: &[u8] = include_bytes!("../assets/models/sphere.gltf");
@@ -145,7 +146,7 @@ impl<B: ResourceBackend> IndirectScene<B> {
 }
 pub(crate) fn instance_bytes(draws: u32, layers: u32) -> Vec<u8> {
     let count = draws.saturating_mul(PLANT_INSTANCES);
-    let mut out = Vec::with_capacity(count as usize * 32);
+    let mut out = Vec::with_capacity(count as usize * INSTANCE_STRIDE_BYTES as usize);
     // Match the C++ sample's one continuous random-engine stream.  Reseeding
     // per instance creates correlated positions and can place foliage directly
     // around the fixed first-person camera.

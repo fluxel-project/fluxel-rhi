@@ -19,6 +19,11 @@ pub struct GlEncoder {
     /// Current pass extent is transient immediate state used only to construct
     /// a provider descriptor. It is not a recorded command or scheduler.
     pub(crate) raster_extent: Option<[u32; 2]>,
+    /// Dynamic viewport/scissor survive pipeline selection just as they do in
+    /// Core. `None` means no raster pass is active; a pass starts with the full
+    /// target viewport and disabled scissor.
+    pub(crate) raster_viewport: Option<crate::backend::gl::api::GlViewport>,
+    pub(crate) raster_scissor: Option<crate::backend::gl::api::GlScissorRect>,
     /// Vertex-input setters describe the one mutable GL VAO. They are applied
     /// directly before draw because a VAO validation requires all slots at
     /// once; this is state, never retained draw work.
@@ -66,6 +71,8 @@ impl GlEncoder {
             issued: false,
             indeterminate: false,
             raster_extent: None,
+            raster_viewport: None,
+            raster_scissor: None,
             vertex_bindings: Vec::new(),
             index_binding: None,
             #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
@@ -83,6 +90,25 @@ impl GlEncoder {
             #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
             browser: None,
         }
+    }
+
+    pub(crate) fn begin_raster_state(&mut self, extent: [u32; 2]) {
+        self.raster_extent = Some(extent);
+        self.raster_viewport = Some(crate::backend::gl::api::GlViewport {
+            x: 0,
+            y: 0,
+            width: extent[0],
+            height: extent[1],
+            min_depth: 0.0f32.to_bits(),
+            max_depth: 1.0f32.to_bits(),
+        });
+        self.raster_scissor = None;
+    }
+
+    pub(crate) fn end_raster_state(&mut self) {
+        self.raster_extent = None;
+        self.raster_viewport = None;
+        self.raster_scissor = None;
     }
 }
 

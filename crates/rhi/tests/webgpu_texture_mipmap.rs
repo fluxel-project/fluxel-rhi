@@ -1,6 +1,6 @@
 //! Headless-browser evidence for the shared WebGPU texture-mipmap entry.
 
-#![cfg(target_arch = "wasm32")]
+#![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 
 #[path = "../examples/09_texture_mipmap/main.rs"]
 mod texture_mipmap;

@@ -1,6 +1,6 @@
 //! Browser evidence for 07_offscreen.
 
-#![cfg(target_arch = "wasm32")]
+#![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 
 #[path = "../examples/07_offscreen/main.rs"]
 mod example;

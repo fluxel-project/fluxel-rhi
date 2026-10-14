@@ -8,9 +8,9 @@ use super::{
     pipeline::*,
     scene::{
         GROUND_PS, GROUND_PS_SPIRV, GROUND_TEX, GROUND_VS, GROUND_VS_SPIRV, GROUND_WGSL,
-        INDEXED_INDIRECT_STRIDE, IndirectScene, PLANT_TEX, PLANTS_PS, PLANTS_PS_SPIRV, PLANTS_VS,
-        PLANTS_VS_SPIRV, PLANTS_WGSL, SKY_PS, SKY_PS_SPIRV, SKY_VS, SKY_VS_SPIRV, SKY_WGSL,
-        instance_bytes,
+        INDEXED_INDIRECT_STRIDE, INSTANCE_STRIDE_BYTES, IndirectScene, PLANT_TEX, PLANTS_PS,
+        PLANTS_PS_SPIRV, PLANTS_VS, PLANTS_VS_SPIRV, PLANTS_WGSL, SKY_PS, SKY_PS_SPIRV, SKY_VS,
+        SKY_VS_SPIRV, SKY_WGSL, instance_bytes,
     },
 };
 use fluxel_rhi::api::*;
@@ -57,9 +57,6 @@ impl<B: IndirectWorkloadBackend> Workload<B> {
         format: TextureFormat,
         extent: [u32; 2],
     ) -> Result<Self> {
-        if !d.capabilities().indirect_draw {
-            return Err(Error::Unsupported("indexed indirect draw"));
-        }
         let plant_ktx = Ktx::parse(PLANT_TEX)?;
         let ground_ktx = Ktx::parse(GROUND_TEX)?;
         if plant_ktx.layers < 1 || ground_ktx.layers != 1 {
@@ -372,26 +369,93 @@ impl<B: IndirectWorkloadBackend> Workload<B> {
             IndexFormat::Uint32,
         )?;
         let draw_count = (self.scene.argument_data.len() / INDEXED_INDIRECT_STRIDE as usize) as u32;
-        let extras = d
-            .raster_extras()
-            .ok_or(Error::Unsupported("indexed indirect draw"))?;
-        if d.capabilities().multi_draw {
-            extras.multi_draw(
-                &mut p,
-                &self.scene.arguments,
-                0,
-                draw_count,
-                INDEXED_INDIRECT_STRIDE,
-                true,
-            )?;
-        } else {
-            for draw in 0..draw_count {
-                extras.draw_indirect(
+        if d.capabilities().indirect_draw {
+            let extras = d
+                .raster_extras()
+                .ok_or(Error::Unsupported("indexed indirect draw backend"))?;
+            if d.capabilities().multi_draw {
+                extras.multi_draw(
                     &mut p,
                     &self.scene.arguments,
-                    u64::from(draw) * u64::from(INDEXED_INDIRECT_STRIDE),
+                    0,
+                    draw_count,
+                    INDEXED_INDIRECT_STRIDE,
                     true,
                 )?;
+            } else {
+                for draw in 0..draw_count {
+                    extras.draw_indirect(
+                        &mut p,
+                        &self.scene.arguments,
+                        u64::from(draw) * u64::from(INDEXED_INDIRECT_STRIDE),
+                        true,
+                    )?;
+                }
+            }
+        } else {
+            // WebGL2 has instanced indexed draws but no GPU indirect command.
+            // Decode the scene-owned arguments before issuing ordinary draws;
+            // this is an explicit visual fallback and leaves the capability
+            // false. Rebase binding 1 because WebGL2 has no base-instance verb.
+            if self.scene.argument_data.is_empty()
+                || self.scene.argument_data.len() % INDEXED_INDIRECT_STRIDE as usize != 0
+            {
+                return Err(Error::InvalidRange);
+            }
+            if self.scene.plant_indices_data.len() % 4 != 0 {
+                return Err(Error::InvalidRange);
+            }
+            let index_count_total = u32::try_from(self.scene.plant_indices_data.len() / 4)
+                .map_err(|_| Error::InvalidRange)?;
+            for argument in self
+                .scene
+                .argument_data
+                .chunks_exact(INDEXED_INDIRECT_STRIDE as usize)
+            {
+                let word = |index: usize| -> Result<u32> {
+                    let start = index.checked_mul(4).ok_or(Error::InvalidRange)?;
+                    let bytes: [u8; 4] = argument
+                        .get(start..start + 4)
+                        .ok_or(Error::InvalidRange)?
+                        .try_into()
+                        .map_err(|_| Error::InvalidRange)?;
+                    Ok(u32::from_le_bytes(bytes))
+                };
+                let index_count = word(0)?;
+                let instance_count = word(1)?;
+                let first_index = word(2)?;
+                let base_vertex = i32::from_le_bytes(
+                    argument
+                        .get(12..16)
+                        .ok_or(Error::InvalidRange)?
+                        .try_into()
+                        .map_err(|_| Error::InvalidRange)?,
+                );
+                let first_instance = word(4)?;
+                if base_vertex != 0 {
+                    return Err(Error::Unsupported("WebGL2 indexed base vertex fallback"));
+                }
+                let index_end = first_index
+                    .checked_add(index_count)
+                    .ok_or(Error::InvalidRange)?;
+                if index_end > index_count_total {
+                    return Err(Error::InvalidRange);
+                }
+                let instance_offset = u64::from(first_instance)
+                    .checked_mul(INSTANCE_STRIDE_BYTES)
+                    .ok_or(Error::InvalidRange)?;
+                let instance_end = instance_offset
+                    .checked_add(
+                        u64::from(instance_count)
+                            .checked_mul(INSTANCE_STRIDE_BYTES)
+                            .ok_or(Error::InvalidRange)?,
+                    )
+                    .ok_or(Error::InvalidRange)?;
+                if instance_end > self.scene.instance_data.len() as u64 {
+                    return Err(Error::InvalidRange);
+                }
+                p.set_vertex_buffer(1, &self.scene.instances, instance_offset..instance_end)?;
+                p.draw_indexed(first_index..index_end, 0, 0..instance_count)?;
             }
         }
         p.finish()

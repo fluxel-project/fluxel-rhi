@@ -472,20 +472,14 @@ impl GlRasterPipeline {
     }
 
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
-    pub(crate) fn native_with_viewport(
+    pub(crate) fn native_with_dynamic_state(
         &self,
-        width: u32,
-        height: u32,
+        viewport: crate::backend::gl::api::GlViewport,
+        scissor: Option<crate::backend::gl::api::GlScissorRect>,
     ) -> crate::backend::gl::api::GlRasterPipeline {
         let mut state = self.raster.clone();
-        state.viewport = crate::backend::gl::api::GlViewport {
-            x: 0,
-            y: 0,
-            width,
-            height,
-            min_depth: 0.0f32.to_bits(),
-            max_depth: 1.0f32.to_bits(),
-        };
+        state.viewport = viewport;
+        state.scissor = scissor;
         crate::backend::gl::api::GlRasterPipeline {
             program: self.program,
             vertex_array: self.vertex_array,

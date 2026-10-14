@@ -123,6 +123,16 @@ impl WebGl2BrowserDiscovery {
             &JsValue::TRUE,
         )
         .map_err(|value| js_error("configure WebGL2 context", value))?;
+        // BrowserSurface advertises only CompositeAlphaMode::Opaque. Disable
+        // the default canvas alpha channel so canvas compositing cannot apply
+        // a second, implicit blend to RHI output.
+        Reflect::set(&options, &JsValue::from_str("alpha"), &JsValue::FALSE)
+            .map_err(|value| js_error("configure WebGL2 context", value))?;
+        // The RHI canvas target is single-sampled; multisampling is explicit
+        // through texture attachments and resolves, never a hidden browser
+        // default-framebuffer sample count.
+        Reflect::set(&options, &JsValue::from_str("antialias"), &JsValue::FALSE)
+            .map_err(|value| js_error("configure WebGL2 context", value))?;
         let value = canvas
             .get_context_with_context_options("webgl2", &options)
             .map_err(|value| js_error("create WebGL2 context", value))?

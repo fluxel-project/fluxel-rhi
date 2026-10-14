@@ -16,7 +16,6 @@ use super::super::api::{
 };
 use super::discovery::WebGl2BrowserDiscovery;
 use super::objects::BrowserProgram;
-use super::shader_abi::adapt_vertex_clip_depth;
 
 /// ESSL 3.0 sampler uniform types this backend can bind and reflect.
 const SAMPLER_TYPES: &[u32] = &[
@@ -197,15 +196,10 @@ impl WebGl2BrowserDiscovery {
         let Some(raw) = self.raw.create_shader(kind) else {
             return Err(GlError::OutOfMemory { operation: op });
         };
-        let source_text = if source.stage == GlShaderStage::Vertex {
-            adapt_vertex_clip_depth(&source.text).map_err(|reason| GlError::Shader {
-                stage: shader_stage_name(source.stage),
-                log: reason.into(),
-            })?
-        } else {
-            source.text.clone()
-        };
-        self.raw.shader_source(&raw, &source_text);
+        // The Core GL shader lowering already adapts WebGPU's 0..w clip depth
+        // to GL's -w..w convention. Applying a second wrapper here would clip
+        // valid z=0 positions and double-transform every other vertex.
+        self.raw.shader_source(&raw, &source.text);
         self.raw.compile_shader(&raw);
         let compiled = self
             .shader_bool(op, &raw, Gl::COMPILE_STATUS)
@@ -355,8 +349,9 @@ impl WebGl2BrowserDiscovery {
         // sampler groups receive consecutive units in layout order.
         let mut assignments = Vec::new();
         let mut next_unit = 0u32;
+        let mut paired_texture_units = std::collections::BTreeMap::new();
         let max_units = self.discovery().limits().max_combined_texture_image_units;
-        for binding in &descriptor.layout.bindings {
+        for (logical_index, binding) in descriptor.layout.bindings.iter().enumerate() {
             match binding.kind {
                 GlShaderResourceKind::UniformBuffer => {
                     let index = binding.names.iter().find_map(|name| {
@@ -369,15 +364,28 @@ impl WebGl2BrowserDiscovery {
                             "declared uniform block is missing from the linked program",
                         ));
                     };
+                    let point = u32::try_from(logical_index)
+                        .map_err(|_| GlError::OutOfMemory { operation: op })?;
+                    self.raw.uniform_block_binding(program, index, point);
                     assignments.push(GlExecutableBindingAssignment {
                         logical: binding.location,
-                        executable: GlExecutableBindingLocation::UniformBlock(index),
+                        executable: GlExecutableBindingLocation::UniformBlock(point),
                     });
                     blocks.retain(|name| !binding.names.iter().any(|candidate| candidate == name));
                 }
                 GlShaderResourceKind::Sampler
                 | GlShaderResourceKind::Texture
                 | GlShaderResourceKind::CombinedTextureSampler => {
+                    if let Some(pair) = binding.pair {
+                        if let Some(&unit) = paired_texture_units.get(&pair) {
+                            paired_texture_units.insert(binding.location, unit);
+                            assignments.push(GlExecutableBindingAssignment {
+                                logical: binding.location,
+                                executable: GlExecutableBindingLocation::TextureUnit(unit),
+                            });
+                            continue;
+                        }
+                    }
                     let declared_size = binding.array_count.max(1);
                     let found = samplers
                         .iter()
@@ -424,9 +432,19 @@ impl WebGl2BrowserDiscovery {
                         logical: binding.location,
                         executable: GlExecutableBindingLocation::TextureUnit(unit),
                     });
-                    samplers.retain(|(name, _)| {
-                        !binding.names.iter().any(|candidate| candidate == name)
-                    });
+                    paired_texture_units.insert(binding.location, unit);
+                    if let Some(pair) = binding.pair {
+                        paired_texture_units.insert(pair, unit);
+                    }
+                    let Some(position) =
+                        samplers.iter().position(|(name, _)| name == &uniform_name)
+                    else {
+                        return Err(Self::validation(
+                            op,
+                            "sampler disappeared during reflection",
+                        ));
+                    };
+                    samplers.remove(position);
                 }
                 // The one refusal in this loop, and it is not a stub.  A WebGL2
                 // program is never a compute program, so a layout naming a

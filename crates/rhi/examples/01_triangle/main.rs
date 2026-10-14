@@ -264,8 +264,8 @@ fn triangle_vertices() -> [u8; 72] {
     // WebGPU/DX12 framebuffer coordinates put +NDC Y at the top, hence the
     // source Vulkan projection's Y inversion is represented in these values.
     let values = [
-        0.3897_f32, -0.6928, 0.0, 1.0, 0.0, 0.0, -0.3897, -0.6928, 0.0, 0.0, 1.0, 0.0, 0.0, 0.6928,
-        0.0, 0.0, 0.0, 1.0,
+        0.3897_f32, -0.6928, 0.5, 1.0, 0.0, 0.0, -0.3897, -0.6928, 0.5, 0.0, 1.0, 0.0, 0.0, 0.6928,
+        0.5, 0.0, 0.0, 1.0,
     ];
     let mut bytes = [0; 72];
     for (index, value) in values.into_iter().enumerate() {

@@ -31,7 +31,7 @@ use draw::issue_draw;
 use dynamic::{set_scissor, set_viewport};
 use layout::matches as bind_group_layout_matches;
 #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
-use surface_depth::begin_browser_surface_raster;
+use surface_depth::{begin_browser_surface_raster, lower_browser_view};
 #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 use surface_depth::{
     lower_native_attachment, lower_native_view, validate_native_surface_depth_view,
@@ -66,11 +66,13 @@ impl RasterBackend for Gl {
         let AttachmentView::Surface(surface) = &color.view else {
             #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
             return begin_native_offscreen_raster(encoder, desc, color);
-            #[cfg(not(any(
-                all(windows, feature = "native-gl-wgl"),
-                feature = "native-gles-egl"
-            )))]
-            return Err(Error::Unsupported("GL offscreen raster target"));
+            #[cfg(not(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl")))]
+            {
+                #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+                return begin_browser_offscreen_raster(encoder, desc, color);
+                #[cfg(not(all(target_arch = "wasm32", feature = "webgl2")))]
+                return Err(Error::Unsupported("GL offscreen raster target"));
+            }
         };
         if color.resolve_target.is_some() {
             return Err(Error::Unsupported("GL resolve into a surface pass"));
@@ -182,7 +184,7 @@ impl RasterBackend for Gl {
                 .map_err(native_error);
             match result {
                 Ok(()) => {
-                    encoder.raster_extent = Some([target.width, target.height]);
+                    encoder.begin_raster_state([target.width, target.height]);
                     encoder.raster_pipeline = None;
                     encoder.vertex_bindings.clear();
                     encoder.index_binding = None;
@@ -201,7 +203,7 @@ impl RasterBackend for Gl {
             #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
             {
                 begin_browser_surface_raster(encoder, target, color, desc.depth_stencil.as_ref())?;
-                encoder.raster_extent = Some([target.width, target.height]);
+                encoder.begin_raster_state([target.width, target.height]);
                 encoder.raster_pipeline = None;
                 encoder.vertex_bindings.clear();
                 encoder.index_binding = None;
@@ -218,10 +220,13 @@ impl RasterBackend for Gl {
     }
 
     fn set_pipeline(encoder: &mut GlEncoder, pipeline: &GlRasterPipeline) -> Result<()> {
-        let [width, height] = encoder.raster_extent.ok_or(Error::InvalidState)?;
+        encoder.raster_extent.ok_or(Error::InvalidState)?;
         #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
         {
-            let native = pipeline.native_with_viewport(width, height);
+            let viewport = encoder
+                .raster_viewport
+                .expect("active raster pass has a viewport");
+            let native = pipeline.native_with_dynamic_state(viewport, encoder.raster_scissor);
             use crate::backend::gl::api::GlRasterCommandApi as _;
             let result = encoder
                 .state
@@ -261,14 +266,13 @@ impl RasterBackend for Gl {
                     encoder.indeterminate = true;
                     return Err(error);
                 }
-                let _ = (width, height);
                 encoder.raster_pipeline = Some(pipeline.clone());
                 encoder.issued = true;
                 Ok(())
             }
             #[cfg(not(all(target_arch = "wasm32", feature = "webgl2")))]
             {
-                let _ = (encoder, pipeline, width, height);
+                let _ = (encoder, pipeline);
                 Err(Error::Unsupported("GL platform context"))
             }
         }
@@ -305,6 +309,15 @@ impl RasterBackend for Gl {
         );
         #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
         return bind_browser_group(encoder, &pipeline, index, group, dynamic_offsets);
+        #[cfg(not(any(
+            all(windows, feature = "native-gl-wgl"),
+            feature = "native-gles-egl",
+            all(target_arch = "wasm32", feature = "webgl2")
+        )))]
+        {
+            let _ = (encoder, pipeline, index, group, dynamic_offsets);
+            Err(Error::Unsupported("GL platform context"))
+        }
     }
 
     fn set_vertex_buffer(
@@ -589,7 +602,7 @@ impl RasterBackend for Gl {
             } else {
                 result
             };
-            encoder.raster_extent = None;
+            encoder.end_raster_state();
             encoder.raster_pipeline = None;
             match result {
                 Ok(()) => {
@@ -609,10 +622,12 @@ impl RasterBackend for Gl {
                 let browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
                 let result = if browser.has_surface_depth_pass() {
                     browser.end_surface_depth_raster()
+                } else if browser.has_owned_framebuffer_pass() {
+                    browser.end_offscreen_raster()
                 } else {
                     browser.end_raster()
                 };
-                encoder.raster_extent = None;
+                encoder.end_raster_state();
                 encoder.raster_pipeline = None;
                 encoder.occlusion_query_set = None;
                 if result.is_err() {
@@ -628,6 +643,78 @@ impl RasterBackend for Gl {
     fn abort_raster(encoder: &mut GlEncoder) {
         finish::abort(encoder);
     }
+}
+
+/// Attaches the caller's single-sample WebGL textures to a short-lived FBO and
+/// begins the pass immediately.  The FBO is encoder-owned; texture wrappers are
+/// retained by the browser encoder only until matching end/abort cleanup.
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+fn begin_browser_offscreen_raster(
+    encoder: &mut GlEncoder,
+    desc: &RasterPassDesc<'_, Gl>,
+    color: &api::ColorAttachment<'_, Gl>,
+) -> Result<()> {
+    let AttachmentView::Texture(color_view) = color.view else {
+        return Err(Error::Unsupported("WebGL2 offscreen color attachment view"));
+    };
+    if color.resolve_target.is_some() {
+        return Err(Error::Unsupported("WebGL2 offscreen resolve target"));
+    }
+    // SAFETY: Core holds the view borrow for this call and the encoder clones
+    // the browser wrapper into its active-pass lifetime record before return.
+    let color_view = unsafe { color_view.native_ref() }.clone();
+    let color_texture = &color_view.texture.browser;
+    let extent = [
+        color_view.texture.desc.extent.width,
+        color_view.texture.desc.extent.height,
+    ];
+    let clear = match color.load {
+        LoadOp::Clear(value) => Some(value),
+        LoadOp::Load => None,
+        LoadOp::Discard => return Err(Error::Unsupported("WebGL2 offscreen color load discard")),
+    };
+    if matches!(
+        clear,
+        Some(api::ClearColor::Uint(_) | api::ClearColor::Sint(_))
+    ) {
+        return Err(Error::Unsupported("WebGL2 integer offscreen clear"));
+    }
+    let depth = lower_browser_view(desc.depth_stencil.as_ref())?;
+    let depth_texture = depth.as_ref().map(|view| &view.texture.browser);
+    let depth_clear = desc
+        .depth_stencil
+        .as_ref()
+        .and_then(|attachment| attachment.depth)
+        .map(|(load, _)| match load {
+            LoadOp::Clear(value) if value.is_finite() && (0.0..=1.0).contains(&value) => {
+                Ok(Some(value))
+            }
+            LoadOp::Load => Ok(None),
+            LoadOp::Clear(_) => Err(Error::InvalidRange),
+            LoadOp::Discard => Err(Error::Unsupported("WebGL2 offscreen depth load discard")),
+        })
+        .transpose()?
+        .flatten();
+    let browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
+    if let Err(error) =
+        browser.begin_offscreen_raster(color_texture, depth_texture, extent, clear, depth_clear)
+    {
+        // The browser may have bound or cleared an FBO before it reports an
+        // error. This immediate prefix cannot safely be treated as a rejection.
+        encoder.indeterminate = true;
+        return Err(error);
+    }
+    encoder.begin_raster_state(extent);
+    encoder.raster_pipeline = None;
+    encoder.vertex_bindings.clear();
+    encoder.index_binding = None;
+    encoder.issued = true;
+    encoder.occlusion_query_set = desc.occlusion_query_set.map(|set| {
+        // SAFETY: the browser encoder retains the cloned query-set owner until
+        // the matching immediate end; Core keeps the descriptor borrowed here.
+        unsafe { set.native_ref() }.clone()
+    });
+    Ok(())
 }
 
 /// Attaches the caller's texture views to a temporary FBO and begins the pass
@@ -741,7 +828,7 @@ fn begin_native_offscreen_raster(
         Ok(framebuffer) => {
             encoder.offscreen_framebuffer = Some(framebuffer);
             encoder.offscreen_resolve = resolve;
-            encoder.raster_extent = Some([color_view.width, color_view.height]);
+            encoder.begin_raster_state([color_view.width, color_view.height]);
             encoder.raster_pipeline = None;
             encoder.vertex_bindings.clear();
             encoder.index_binding = None;

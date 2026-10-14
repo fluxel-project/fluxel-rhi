@@ -56,7 +56,7 @@ impl ResourceBackend for Gl {
         {
             #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
             {
-                let browser = device.0.owner.create_buffer(desc.size)?;
+                let browser = device.0.owner.create_buffer(desc)?;
                 return Ok(GlBuffer::from_inner(GlBufferInner {
                     state: device.0.clone(),
                     desc,

@@ -16,7 +16,8 @@ use fluxel_rhi::api::*;
 
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),
-    all(target_os = "linux", feature = "native-gles-egl")
+    all(target_os = "linux", feature = "native-gles-egl"),
+    all(target_arch = "wasm32", feature = "webgl2")
 ))]
 mod immediate;
 
@@ -68,6 +69,19 @@ pub async fn run_webgpu_indirect(
         Ok(())
     };
     run.await
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
+}
+
+/// Draws the same plant scene with ordinary indexed draws when WebGL2 lacks
+/// indirect-draw commands. The device continues to report `indirect_draw=false`.
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn run_webgl2_indirect_fallback(
+    canvas: web_sys::HtmlCanvasElement,
+    frames: u32,
+) -> std::result::Result<(), wasm_bindgen::JsValue> {
+    immediate::run_webgl2(canvas, frames)
+        .await
         .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
 }
 

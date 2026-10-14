@@ -645,6 +645,8 @@ mod tests {
             textureStore(result_image, vec2<i32>(id.xy), color);
         }
     "#;
+    const WEBGL2_RASTER_FALLBACK_WGSL: &str =
+        include_str!("../../../../../rhi/examples/assets/06_compute/filters_raster.wgsl");
 
     fn desc(entry: &str, stage: ShaderStage) -> ShaderDesc {
         ShaderDesc {
@@ -669,6 +671,20 @@ mod tests {
                 name: "cs".into(),
                 stage: ShaderStage::Compute,
                 workgroup_size: Some([1, 1, 1]),
+            }],
+            required_features: Vec::new(),
+        }
+    }
+
+    fn raster_fallback_desc(entry: &str) -> ShaderDesc {
+        ShaderDesc {
+            label: Some("06-webgl2-raster-fallback-test".into()),
+            format: ShaderFormat::Wgsl,
+            bytes: Arc::from(WEBGL2_RASTER_FALLBACK_WGSL.as_bytes()),
+            entries: vec![ShaderEntryPoint {
+                name: entry.into(),
+                stage: ShaderStage::Fragment,
+                workgroup_size: None,
             }],
             required_features: Vec::new(),
         }
@@ -733,5 +749,18 @@ mod tests {
                 .iter()
                 .any(|binding| binding.binding == 1 && binding.image_unit == Some(0))
         );
+    }
+
+    #[test]
+    fn webgl2_raster_filter_fallback_lowers_texture_loads_to_es_300() {
+        use crate::backend::gl::profile::GlProfile;
+
+        for entry in ["emboss_fs", "edgedetect_fs", "sharpen_fs"] {
+            let (fragment, _) =
+                lower_wgsl(GlProfile::WebGl2, &raster_fallback_desc(entry)).unwrap();
+            assert!(fragment.text.contains("#version 300 es"));
+            assert!(fragment.text.contains("textureSize("), "{}", fragment.text);
+            assert!(fragment.text.contains("texelFetch("), "{}", fragment.text);
+        }
     }
 }

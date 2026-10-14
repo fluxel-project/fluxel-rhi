@@ -1,8 +1,8 @@
 //! Synchronous readback tickets for the owner-thread GL backend.
 //!
-//! GL command verbs execute at the call site, so buffer readback copies bytes
-//! into a ticket immediately. Core still requires a covering completion point
-//! before exposing the ticket, preserving the public lifetime contract.
+//! GL command verbs execute at the call site. Native paths capture their bytes
+//! immediately; WebGL2 retains the source buffer and defers the blocking host
+//! copy until `map_readback`, after the caller's completion proof.
 
 use std::{future::Ready, ops::Range, rc::Rc};
 
@@ -17,7 +17,17 @@ use super::{
 /// CPU bytes captured at the exact immediate command position.
 pub struct GlReadbackTicket {
     _state: Rc<GlDeviceState>,
-    bytes: Vec<u8>,
+    source: GlReadbackSource,
+}
+
+enum GlReadbackSource {
+    Bytes(Vec<u8>),
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    Browser {
+        buffer: crate::backend::gl::browser::BrowserBuffer,
+        offset: u64,
+        size: u64,
+    },
 }
 
 impl ReadbackBackend for Gl {
@@ -67,22 +77,52 @@ impl ReadbackBackend for Gl {
             encoder.issued = true;
             return Ok(GlReadbackTicket {
                 _state: encoder.state.clone(),
-                bytes,
+                source: GlReadbackSource::Bytes(bytes),
             });
         }
-        #[cfg(not(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl")))]
+        #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+        {
+            let _browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
+            return Ok(GlReadbackTicket {
+                _state: encoder.state.clone(),
+                source: GlReadbackSource::Browser {
+                    buffer: source.browser.clone(),
+                    offset: range.start,
+                    size,
+                },
+            });
+        }
+        #[cfg(not(any(
+            all(windows, feature = "native-gl-wgl"),
+            feature = "native-gles-egl",
+            all(target_arch = "wasm32", feature = "webgl2")
+        )))]
         {
             let _ = (encoder, source, range, size);
             Err(Error::Unsupported("GL buffer readback platform"))
         }
     }
 
-    fn map_readback<'a>(_: &'a GlDevice, ticket: GlReadbackTicket) -> Self::ReadbackFuture<'a> {
-        let len = ticket.bytes.len() as u64;
-        std::future::ready(Ok(ReadbackData {
-            bytes: ticket.bytes,
-            row_pitch: len,
-            slice_pitch: len,
+    fn map_readback<'a>(
+        device: &'a GlDevice,
+        ticket: GlReadbackTicket,
+    ) -> Self::ReadbackFuture<'a> {
+        let result = match ticket.source {
+            GlReadbackSource::Bytes(bytes) => Ok(bytes),
+            #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+            GlReadbackSource::Browser {
+                buffer,
+                offset,
+                size,
+            } => device.0.owner.read_buffer(&buffer, offset, size),
+        };
+        std::future::ready(result.map(|bytes| {
+            let len = bytes.len() as u64;
+            ReadbackData {
+                bytes,
+                row_pitch: len,
+                slice_pitch: len,
+            }
         }))
     }
 }

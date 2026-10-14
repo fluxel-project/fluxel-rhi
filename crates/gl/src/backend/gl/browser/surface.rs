@@ -108,7 +108,10 @@ impl BrowserSurface {
     pub(crate) fn capabilities(&self) -> Result<SurfaceCapabilities> {
         self.owner.drawing_buffer_extent()?;
         Ok(SurfaceCapabilities {
-            formats: vec![TextureFormat::Rgba8UnormSrgb],
+            // The canvas default framebuffer has an implementation-selected
+            // RGBA8 backing store. The Core format is a shader/output contract,
+            // not a request to reallocate that browser-owned storage.
+            formats: vec![TextureFormat::Rgba8UnormSrgb, TextureFormat::Rgba8Unorm],
             present_modes: vec![PresentMode::Fifo],
             alpha_modes: vec![CompositeAlphaMode::Opaque],
             color_spaces: vec![ColorSpace::Srgb],
@@ -122,7 +125,10 @@ impl BrowserSurface {
     /// the backing store. `configure` verifies the actual chosen canvas size.
     pub(crate) fn supports_config(&self, config: &SurfaceConfig) -> Support<()> {
         if config.extent.contains(&0)
-            || !matches!(config.format, TextureFormat::Rgba8UnormSrgb)
+            || !matches!(
+                config.format,
+                TextureFormat::Rgba8UnormSrgb | TextureFormat::Rgba8Unorm
+            )
             || !matches!(config.present_mode, PresentMode::Fifo)
             || !matches!(config.alpha_mode, CompositeAlphaMode::Opaque)
             || !matches!(config.color_space, ColorSpace::Srgb)
@@ -160,7 +166,7 @@ impl BrowserSurface {
 impl BrowserSurfaceImage {
     /// Tests whether this lease still names the surface's current configuration.
     pub(crate) fn is_current_for(&self, generation: u64) -> bool {
-        generation == self.generation && !self.handed_off && {
+        generation == self.generation && !self.handed_off && self.surface.owner.is_active() && {
             let state = self.surface.state.borrow();
             state.generation == self.generation && state.live_serial == Some(self.serial)
         }
@@ -171,6 +177,7 @@ impl BrowserSurfaceImage {
     /// `BrowserCompletion` produced by the encoder. A flush failure leaves the
     /// lease live so Core can return a clean present rejection.
     pub(crate) fn try_handoff(&mut self, generation: u64) -> Result<()> {
+        self.surface.owner.ensure_active()?;
         if !self.is_current_for(generation) {
             return Err(Error::SurfaceOutdated);
         }

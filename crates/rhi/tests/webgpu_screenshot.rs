@@ -1,5 +1,5 @@
 //! Browser proof of the offscreen render and completed GPU readback path.
-#![cfg(target_arch = "wasm32")]
+#![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 
 #[path = "../examples/12_screenshot/main.rs"]
 mod screenshot;

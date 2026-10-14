@@ -1,6 +1,6 @@
 //! Headless-browser evidence for the WebGPU dynamic-uniform equivalent of 05.
 
-#![cfg(target_arch = "wasm32")]
+#![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 
 #[path = "../examples/05_push_constants/main.rs"]
 mod push_constants;

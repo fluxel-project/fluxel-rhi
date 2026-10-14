@@ -9,6 +9,13 @@
 //! Context loss is terminal for this owner. A restored browser context creates
 //! a fresh owner and Core `DeviceId`; native objects cannot be reused after
 //! `mark_context_lost`.
+//!
+//! Resource wrappers share a small `Rc` lifetime token. The final wrapper
+//! release deletes its WebGL name on this owner thread while the context is
+//! live. If a reentrant drop overlaps an active `RefCell` borrow, only that
+//! native deletion is deferred until the next encoder begins or the final
+//! owner handle is dropped; this is not a deferred command stream. Context
+//! loss skips deletion because the browser already invalidated those names.
 
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc, task::Waker};
 
@@ -28,6 +35,30 @@ use super::discovery::WebGl2BrowserDiscovery;
 #[derive(Clone)]
 pub(crate) struct BrowserOwner {
     pub(super) state: Rc<RefCell<BrowserOwnerState>>,
+    /// Final drops can happen while an encoder temporarily mutably borrows
+    /// `state`. Queue only the native names, then delete them at the next
+    /// owner entry after the current immediate call has returned.
+    pending_deletes: Rc<RefCell<Vec<BrowserDelete>>>,
+}
+
+enum BrowserDelete {
+    Buffer(WebGlBuffer),
+    Texture(WebGlTexture),
+    Program(WebGlProgram),
+    VertexArray(WebGlVertexArrayObject),
+    Sampler(WebGlSampler),
+}
+
+impl BrowserDelete {
+    fn issue(self, gl: &Gl) {
+        match self {
+            Self::Buffer(raw) => gl.delete_buffer(Some(&raw)),
+            Self::Texture(raw) => gl.delete_texture(Some(&raw)),
+            Self::Program(raw) => gl.delete_program(Some(&raw)),
+            Self::VertexArray(raw) => gl.delete_vertex_array(Some(&raw)),
+            Self::Sampler(raw) => gl.delete_sampler(Some(&raw)),
+        }
+    }
 }
 
 /// A context-local encoder scope. Its existence proves that calls are made
@@ -40,6 +71,11 @@ pub(crate) struct BrowserEncoder {
     /// The owned color target used only while a surface pass has a Core depth
     /// texture. WebGL cannot attach that depth texture to framebuffer zero.
     pub(super) surface_depth_pass: Option<BrowserSurfaceDepthPass>,
+    /// The FBO used by a pass whose color attachment is a Core texture.  The
+    /// caller owns both attachments; the encoder owns only this short-lived
+    /// framebuffer and retains wrappers to keep the borrowed views live until
+    /// the immediate pass closes.
+    pub(super) offscreen_pass: Option<BrowserOffscreenPass>,
 }
 
 pub(super) struct BrowserSurfaceDepthPass {
@@ -51,12 +87,26 @@ pub(super) struct BrowserSurfaceDepthPass {
     pub(super) extent: [u32; 2],
 }
 
+/// Owner-local lifetime facts for one single-sample offscreen raster pass.
+///
+/// This is deliberately pass state, rather than a command packet: WebGL calls
+/// have already been issued by the time it is constructed.  `framebuffer` is
+/// deleted on either end or abort; `color` and `depth` are only retained to
+/// prevent a caller from dropping their Core views while WebGL still uses them.
+pub(super) struct BrowserOffscreenPass {
+    pub(super) framebuffer: WebGlFramebuffer,
+    pub(super) color: BrowserTexture,
+    pub(super) depth: Option<BrowserTexture>,
+    pub(super) extent: [u32; 2],
+}
+
 /// A WebGL buffer tied to exactly one browser owner.
 #[derive(Clone)]
 pub(crate) struct BrowserBuffer {
     pub(super) owner: BrowserOwner,
     pub(super) raw: WebGlBuffer,
     pub(super) size: u64,
+    pub(super) lifetime: Rc<()>,
 }
 
 /// RGBA8 texture storage tied to exactly one browser owner.
@@ -65,6 +115,7 @@ pub(crate) struct BrowserTexture {
     pub(super) owner: BrowserOwner,
     pub(super) raw: WebGlTexture,
     pub(super) desc: GlTextureDesc,
+    pub(super) lifetime: Rc<()>,
 }
 
 /// Linked ESSL 3.00 raster program owned by one browser context.
@@ -72,6 +123,7 @@ pub(crate) struct BrowserTexture {
 pub(crate) struct BrowserRasterProgram {
     pub(super) owner: BrowserOwner,
     pub(super) raw: WebGlProgram,
+    pub(super) lifetime: Rc<()>,
 }
 
 /// Vertex array state owned by one browser context.
@@ -79,6 +131,7 @@ pub(crate) struct BrowserRasterProgram {
 pub(crate) struct BrowserVertexArray {
     pub(super) owner: BrowserOwner,
     pub(super) raw: WebGlVertexArrayObject,
+    pub(super) lifetime: Rc<()>,
 }
 
 /// Sampler state tied to one browser context.
@@ -86,6 +139,7 @@ pub(crate) struct BrowserVertexArray {
 pub(crate) struct BrowserSampler {
     pub(super) owner: BrowserOwner,
     pub(super) raw: WebGlSampler,
+    pub(super) lifetime: Rc<()>,
 }
 
 pub(super) struct BrowserOwnerState {
@@ -125,6 +179,7 @@ impl BrowserOwner {
                 quarantined: Vec::new(),
                 raster_extent: None,
             })),
+            pending_deletes: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
@@ -148,6 +203,7 @@ impl BrowserOwner {
 
     /// Opens one direct-issue scope for the sole graphics lane.
     pub(crate) fn begin_encoder(&self, lane: LaneId) -> Result<BrowserEncoder> {
+        self.drain_pending_deletes()?;
         let mut state = self.state.borrow_mut();
         state.ensure_active()?;
         state.retire_quarantined();
@@ -168,6 +224,7 @@ impl BrowserOwner {
             closed: false,
             issued: false,
             surface_depth_pass: None,
+            offscreen_pass: None,
         })
     }
 
@@ -177,10 +234,114 @@ impl BrowserOwner {
         self.state.borrow_mut().mark_lost();
     }
 
+    /// Makes passive GL queries follow the same terminal path as host loss
+    /// notifications, including waking completion observers.
+    pub(crate) fn ensure_active(&self) -> Result<()> {
+        self.state.borrow_mut().ensure_active()
+    }
+
+    /// Reports whether this context can still back surface images and work.
+    pub(crate) fn is_active(&self) -> bool {
+        self.ensure_active().is_ok()
+    }
+
+    /// Reads a browser buffer only when Core calls `map_readback`, which is
+    /// reached after the caller has established the ticket's completion point.
+    pub(crate) fn read_buffer(
+        &self,
+        source: &BrowserBuffer,
+        offset: u64,
+        size: u64,
+    ) -> Result<Vec<u8>> {
+        self.drain_pending_deletes()?;
+        if !Rc::ptr_eq(&self.state, &source.owner.state) {
+            return Err(Error::WrongDevice);
+        }
+        if offset.checked_add(size).is_none_or(|end| end > source.size) {
+            return Err(Error::InvalidRange);
+        }
+        let mut bytes = vec![0; usize::try_from(size).map_err(|_| Error::OutOfMemory)?];
+        let mut state = self.state.borrow_mut();
+        state.ensure_active()?;
+        state
+            .context
+            .raw
+            .bind_buffer(Gl::COPY_READ_BUFFER, Some(&source.raw));
+        state.context.raw.get_buffer_sub_data_with_f64_and_u8_array(
+            Gl::COPY_READ_BUFFER,
+            offset as f64,
+            &mut bytes,
+        );
+        if state.context.raw.is_context_lost() {
+            state.mark_lost();
+            return Err(Error::DeviceLost);
+        }
+        if state.context.raw.get_error() != Gl::NO_ERROR {
+            return Err(Error::Backend("WebGL2 buffer readback failed".into()));
+        }
+        Ok(bytes)
+    }
+
+    fn delete_if_active(&self, delete: BrowserDelete) {
+        let Ok(mut state) = self.state.try_borrow_mut() else {
+            // A wrapper can be released from a re-entrant browser callback.
+            // Defer the name so it is not leaked and do not mutate GL state
+            // until the current immediate owner borrow has ended.
+            self.pending_deletes.borrow_mut().push(delete);
+            return;
+        };
+        if state.ensure_active().is_ok() {
+            self.issue_pending_deletes(&mut state);
+            delete.issue(&state.context.raw);
+        }
+    }
+
+    pub(super) fn drain_pending_deletes(&self) -> Result<()> {
+        let mut state = self
+            .state
+            .try_borrow_mut()
+            .map_err(|_| Error::InvalidState)?;
+        state.ensure_active()?;
+        self.issue_pending_deletes(&mut state);
+        if state.context.raw.is_context_lost() {
+            state.mark_lost();
+            return Err(Error::DeviceLost);
+        }
+        Ok(())
+    }
+
+    fn issue_pending_deletes(&self, state: &mut BrowserOwnerState) {
+        let pending = std::mem::take(&mut *self.pending_deletes.borrow_mut());
+        for delete in pending {
+            delete.issue(&state.context.raw);
+        }
+    }
+
+    fn delete_buffer(&self, raw: &WebGlBuffer) {
+        self.delete_if_active(BrowserDelete::Buffer(raw.clone()));
+    }
+
+    fn delete_texture(&self, raw: &WebGlTexture) {
+        self.delete_if_active(BrowserDelete::Texture(raw.clone()));
+    }
+
+    fn delete_program(&self, raw: &WebGlProgram) {
+        self.delete_if_active(BrowserDelete::Program(raw.clone()));
+    }
+
+    fn delete_vertex_array(&self, raw: &WebGlVertexArrayObject) {
+        self.delete_if_active(BrowserDelete::VertexArray(raw.clone()));
+    }
+
+    fn delete_sampler(&self, raw: &WebGlSampler) {
+        self.delete_if_active(BrowserDelete::Sampler(raw.clone()));
+    }
+
     /// Configures the canvas backing store and returns the browser-selected
     /// drawing-buffer extent.  CSS layout and DOM resize notifications remain
     /// Host concerns; this changes only the RHI rendering backing store.
     pub(crate) fn resize_drawing_buffer(&self, extent: [u32; 2]) -> Result<[u32; 2]> {
+        self.drain_pending_deletes()?;
         let mut state = self.state.borrow_mut();
         state.ensure_active()?;
         state.context.canvas.set_width(extent[0]);
@@ -198,6 +359,7 @@ impl BrowserOwner {
     /// Returns the actual canvas drawing-buffer extent.  A zero dimension is
     /// treated by the surface layer as suspended rather than as an image lease.
     pub(crate) fn drawing_buffer_extent(&self) -> Result<[u32; 2]> {
+        self.drain_pending_deletes()?;
         let mut state = self.state.borrow_mut();
         state.ensure_active()?;
         Ok([
@@ -209,6 +371,7 @@ impl BrowserOwner {
     /// Publishes commands already issued to the browser's GL queue without
     /// claiming GPU completion. Completion is established only by a fence.
     pub(crate) fn flush(&self) -> Result<()> {
+        self.drain_pending_deletes()?;
         let mut state = self.state.borrow_mut();
         state.ensure_active()?;
         state.context.raw.flush();
@@ -227,6 +390,7 @@ impl BrowserOwner {
     /// immediate encoder nor invents a queue wait. An open encoder is refused
     /// because its caller still owns the exact issued-prefix contract.
     pub(crate) fn completion_after_current_commands(&self) -> Result<BrowserCompletion> {
+        self.drain_pending_deletes()?;
         let mut state = self.state.borrow_mut();
         state.ensure_active()?;
         if state.active_encoder.is_some() {
@@ -241,7 +405,13 @@ impl BrowserOwner {
             return Err(Error::DeviceLost);
         };
         state.context.raw.flush();
-        if state.context.raw.is_context_lost() || state.context.raw.get_error() != Gl::NO_ERROR {
+        if state.context.raw.is_context_lost() {
+            // A lost context invalidates this new sync; only drop its JS handle.
+            drop(raw);
+            state.mark_lost();
+            return Err(Error::DeviceLost);
+        }
+        if state.context.raw.get_error() != Gl::NO_ERROR {
             state.context.raw.delete_sync(Some(&raw));
             state.mark_lost();
             return Err(Error::DeviceLost);
@@ -268,6 +438,9 @@ impl BrowserOwner {
         if !Rc::ptr_eq(&self.state, &completion.owner().state) {
             return CompletionState::Failed(Error::WrongDevice);
         }
+        if let Err(error) = self.drain_pending_deletes() {
+            return completion.store_terminal(Err(error));
+        }
         let mut state = self.state.borrow_mut();
         if state.ensure_active().is_err() {
             return completion.store_terminal(Err(Error::DeviceLost));
@@ -284,22 +457,53 @@ impl BrowserOwner {
             Gl::ALREADY_SIGNALED | Gl::CONDITION_SATISFIED => {
                 let fence = state.completions.remove(&serial).expect("live fence");
                 state.context.raw.delete_sync(Some(&fence.raw));
-                for (_, waker) in fence.wakers {
+                let wakers = fence.wakers;
+                // Waking can synchronously poll this same completion. Release
+                // the owner state and publish its terminal result first, so
+                // re-entrant poll cannot observe a missing fence as InvalidState.
+                drop(state);
+                completion.store_terminal(Ok(()));
+                for (_, waker) in wakers {
                     waker.wake();
                 }
-                completion.store_terminal(Ok(()))
+                CompletionState::Complete
             }
             Gl::TIMEOUT_EXPIRED => CompletionState::Pending,
             _ => {
-                if let Some(fence) = state.completions.remove(&serial) {
-                    state.context.raw.delete_sync(Some(&fence.raw));
-                    for (_, waker) in fence.wakers {
+                if state.context.raw.is_context_lost() {
+                    let wakers = std::mem::take(&mut state.completions)
+                        .into_values()
+                        .flat_map(|fence| fence.wakers.into_values())
+                        .collect::<Vec<_>>();
+                    // Context loss invalidates GLsync objects. Drop their JS
+                    // handles without deleteSync and publish one terminal
+                    // device-loss fact to every observer.
+                    state.mark_lost();
+                    drop(state);
+                    completion.store_terminal(Err(Error::DeviceLost));
+                    for waker in wakers {
                         waker.wake();
                     }
+                    return CompletionState::Failed(Error::DeviceLost);
                 }
+                let wakers = if let Some(fence) = state.completions.remove(&serial) {
+                    state.context.raw.delete_sync(Some(&fence.raw));
+                    fence.wakers
+                } else {
+                    BTreeMap::new()
+                };
+                // See the signalled branch above: a task wake may poll this
+                // owner immediately, so it cannot run while state is borrowed.
+                drop(state);
                 completion.store_terminal(Err(Error::Backend(
                     "WebGL2 clientWaitSync returned an unknown result".into(),
-                )))
+                )));
+                for (_, waker) in wakers {
+                    waker.wake();
+                }
+                CompletionState::Failed(Error::Backend(
+                    "WebGL2 clientWaitSync returned an unknown result".into(),
+                ))
             }
         }
     }
@@ -323,27 +527,31 @@ impl BrowserOwner {
     ) -> CompletionState {
         let status = self.completion_status(completion);
         if matches!(status, CompletionState::Pending) {
-            let mut state = self.state.borrow_mut();
-            let key = match registration {
-                Some(key) => *key,
-                None => match state.allocate_waiter() {
-                    Ok(key) => {
-                        *registration = Some(key);
-                        key
-                    }
-                    Err(error) => return CompletionState::Failed(error),
-                },
-            };
-            let Some(fence) = state.completions.get_mut(&completion.serial()) else {
-                return CompletionState::Failed(Error::InvalidState);
-            };
-            let update = fence
-                .wakers
-                .get(&key)
-                .is_none_or(|existing| !existing.will_wake(waker));
-            if update {
-                fence.wakers.insert(key, waker.clone());
+            {
+                let mut state = self.state.borrow_mut();
+                let key = match registration {
+                    Some(key) => *key,
+                    None => match state.allocate_waiter() {
+                        Ok(key) => {
+                            *registration = Some(key);
+                            key
+                        }
+                        Err(error) => return CompletionState::Failed(error),
+                    },
+                };
+                let Some(fence) = state.completions.get_mut(&completion.serial()) else {
+                    return CompletionState::Failed(Error::InvalidState);
+                };
+                let update = fence
+                    .wakers
+                    .get(&key)
+                    .is_none_or(|existing| !existing.will_wake(waker));
+                if update {
+                    fence.wakers.insert(key, waker.clone());
+                }
             }
+            // Scheduling immediately polls the owner in some browser
+            // runtimes, so the registration borrow must have ended first.
             self.schedule_completion_poll(completion.clone());
         }
         status
@@ -354,6 +562,7 @@ impl BrowserOwner {
         completion: &BrowserCompletion,
         registration: u64,
     ) {
+        let _ = self.drain_pending_deletes();
         if let Some(fence) = self
             .state
             .borrow_mut()
@@ -369,6 +578,9 @@ impl BrowserOwner {
     /// makes the owner terminal: continuing would permit a later resource
     /// release to race an unprovable issued prefix.
     pub(super) fn quarantine_issued(&self) {
+        if self.drain_pending_deletes().is_err() {
+            return;
+        }
         let mut state = self.state.borrow_mut();
         if state.ensure_active().is_err() {
             return;
@@ -382,7 +594,12 @@ impl BrowserOwner {
             return;
         };
         state.context.raw.flush();
-        if state.context.raw.is_context_lost() || state.context.raw.get_error() != Gl::NO_ERROR {
+        if state.context.raw.is_context_lost() {
+            drop(raw);
+            state.mark_lost();
+            return;
+        }
+        if state.context.raw.get_error() != Gl::NO_ERROR {
             state.context.raw.delete_sync(Some(&raw));
             state.mark_lost();
             return;
@@ -411,12 +628,14 @@ impl BrowserOwner {
             return;
         }
         let Some(window) = web_sys::window() else {
-            if let Some(fence) = self.state.borrow_mut().completions.get_mut(&serial) {
-                fence.poll_scheduled = false;
-            }
+            self.fail_completion_schedule(
+                &completion,
+                "WebGL2 completion polling requires a browser Window",
+            );
             return;
         };
         let owner = self.clone();
+        let callback_completion = completion.clone();
         let callback = wasm_bindgen::closure::Closure::once_into_js(move || {
             if let Some(fence) = owner.state.borrow_mut().completions.get_mut(&serial) {
                 fence.poll_scheduled = false;
@@ -427,10 +646,10 @@ impl BrowserOwner {
                 return;
             }
             if matches!(
-                owner.completion_status(&completion),
+                owner.completion_status(&callback_completion),
                 CompletionState::Pending
             ) {
-                owner.schedule_completion_poll(completion);
+                owner.schedule_completion_poll(callback_completion);
             }
         });
         // `Closure::once_into_js` transfers the callback to the browser timer;
@@ -441,9 +660,28 @@ impl BrowserOwner {
             .set_timeout_with_callback_and_timeout_and_arguments_0(callback, 16)
             .is_err()
         {
-            if let Some(fence) = self.state.borrow_mut().completions.get_mut(&serial) {
-                fence.poll_scheduled = false;
+            self.fail_completion_schedule(
+                &completion,
+                "scheduling WebGL2 completion polling failed",
+            );
+        }
+    }
+
+    /// Turns an unavailable browser timer into a terminal result. The sync is
+    /// quarantined, so this error cannot release resources still in flight.
+    fn fail_completion_schedule(&self, completion: &BrowserCompletion, message: &'static str) {
+        let wakers = {
+            let mut state = self.state.borrow_mut();
+            if let Some(fence) = state.completions.remove(&completion.serial()) {
+                state.quarantined.push(fence.raw);
+                fence.wakers.into_values().collect::<Vec<_>>()
+            } else {
+                Vec::new()
             }
+        };
+        completion.store_terminal(Err(Error::Backend(message.into())));
+        for waker in wakers {
+            waker.wake();
         }
     }
 
@@ -454,6 +692,65 @@ impl BrowserOwner {
         let mut state = self.state.borrow_mut();
         if let Some(fence) = state.completions.remove(&serial) {
             state.quarantined.push(fence.raw);
+        }
+    }
+}
+
+impl Drop for BrowserBuffer {
+    fn drop(&mut self) {
+        if Rc::strong_count(&self.lifetime) == 1 {
+            self.owner.delete_buffer(&self.raw);
+        }
+    }
+}
+
+impl Drop for BrowserOwner {
+    fn drop(&mut self) {
+        // A final resource can be released reentrantly while an encoder holds
+        // the state borrow. In that case no owner entry may follow, so retry
+        // queued native deletes when the last owner handle leaves scope. The
+        // encoder itself owns a clone and therefore keeps this from running
+        // until its immediate GL borrow has ended.
+        if Rc::strong_count(&self.state) != 1 {
+            return;
+        }
+        let Ok(mut state) = self.state.try_borrow_mut() else {
+            return;
+        };
+        if state.ensure_active().is_ok() {
+            self.issue_pending_deletes(&mut state);
+        }
+    }
+}
+
+impl Drop for BrowserTexture {
+    fn drop(&mut self) {
+        if Rc::strong_count(&self.lifetime) == 1 {
+            self.owner.delete_texture(&self.raw);
+        }
+    }
+}
+
+impl Drop for BrowserRasterProgram {
+    fn drop(&mut self) {
+        if Rc::strong_count(&self.lifetime) == 1 {
+            self.owner.delete_program(&self.raw);
+        }
+    }
+}
+
+impl Drop for BrowserVertexArray {
+    fn drop(&mut self) {
+        if Rc::strong_count(&self.lifetime) == 1 {
+            self.owner.delete_vertex_array(&self.raw);
+        }
+    }
+}
+
+impl Drop for BrowserSampler {
+    fn drop(&mut self) {
+        if Rc::strong_count(&self.lifetime) == 1 {
+            self.owner.delete_sampler(&self.raw);
         }
     }
 }
@@ -493,7 +790,14 @@ impl BrowserOwnerState {
     fn retire_quarantined(&mut self) {
         let mut keep = Vec::new();
         for raw in std::mem::take(&mut self.quarantined) {
-            match self.context.raw.client_wait_sync_with_f64(&raw, 0, 0.0) {
+            let status = self.context.raw.client_wait_sync_with_f64(&raw, 0, 0.0);
+            if self.context.raw.is_context_lost() {
+                // The local `raw` and remaining iterator values are dropped
+                // without deleteSync after loss invalidates every sync handle.
+                self.mark_lost();
+                return;
+            }
+            match status {
                 Gl::TIMEOUT_EXPIRED => keep.push(raw),
                 _ => self.context.raw.delete_sync(Some(&raw)),
             }

@@ -457,6 +457,16 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
 mod support;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub use support::run_webgpu_descriptor_indexing;
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn run_webgl2_descriptor_indexing(
+    canvas: web_sys::HtmlCanvasElement,
+    frames: u32,
+) -> std::result::Result<(), wasm_bindgen::JsValue> {
+    support::run_webgl2_descriptor_indexing(canvas, frames)
+        .await
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
+}
 use support::*;
 
 #[cfg(windows)]

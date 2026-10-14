@@ -11,7 +11,9 @@ use fluxel_rhi_core::api::{
     TextureRegion,
 };
 
-use super::{Gl, GlDevice, spi::native_error, types::*};
+#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+use super::spi::native_error;
+use super::{Gl, GlDevice, types::*};
 
 /// Lowers a Core texture region without changing the public coordinate system.
 /// Native and browser executors perform their profile-specific Y conversion at
@@ -23,11 +25,6 @@ fn lower_region(value: TextureRegion<'_, Gl>) -> Result<crate::backend::gl::api:
     // immutable backend allocation identity and descriptor for lowering.
     let texture = unsafe { value.texture.native_ref() };
     crate::backend::gl::translate::lower_texture_region(texture.id, texture.desc, &value)
-}
-
-#[cfg(not(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl")))]
-fn lower_region(_: TextureRegion<'_, Gl>) -> Result<crate::backend::gl::api::GlTextureRegion> {
-    Err(Error::Unsupported("native GL texture region"))
 }
 
 impl CommandBackend for Gl {
@@ -332,11 +329,11 @@ impl CommandBackend for Gl {
         src: TextureRegion<'_, Gl>,
         dst: TextureRegion<'_, Gl>,
     ) -> Result<()> {
-        let src = lower_region(src)?;
-        let dst = lower_region(dst)?;
         #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
         {
             use crate::backend::gl::api::GlCopyDomainApi as _;
+            let src = lower_region(src)?;
+            let dst = lower_region(dst)?;
             let result = encoder
                 .state
                 .with_native("copy GL texture", |provider| {
@@ -350,7 +347,54 @@ impl CommandBackend for Gl {
             }
             return result;
         }
-        #[cfg(not(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl")))]
+        #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+        {
+            // WebGL2 has no texture-copy entry point. Its owner implements this
+            // exact-size copy with short-lived FBOs and a nearest framebuffer
+            // blit. Keep the operation inside this synchronous encoder call.
+            // SAFETY: Core retains both Texture borrows for the duration of
+            // this function; each browser wrapper is only inspected/used now.
+            let source = unsafe { src.texture.native_ref() };
+            // SAFETY: same Core borrow guarantee as for `source`.
+            let destination = unsafe { dst.texture.native_ref() };
+            if src.aspect != api::TextureAspects::COLOR || dst.aspect != api::TextureAspects::COLOR
+            {
+                return Err(Error::Unsupported(
+                    "WebGL2 texture copy supports color aspects only",
+                ));
+            }
+            if src.origin[2] != 0
+                || dst.origin[2] != 0
+                || src.extent[2] != 1
+                || dst.extent[2] != 1
+                || src.extent != dst.extent
+            {
+                return Err(Error::InvalidRange);
+            }
+            let browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
+            let result = browser.blit_texture_regions(
+                &source.browser,
+                src.mip,
+                [src.origin[0], src.origin[1]],
+                [src.extent[0], src.extent[1]],
+                &destination.browser,
+                dst.mip,
+                [dst.origin[0], dst.origin[1]],
+                [dst.extent[0], dst.extent[1]],
+                crate::backend::gl::api::GlFilterMode::Nearest,
+            );
+            if result.is_ok() {
+                encoder.issued = true;
+            } else {
+                encoder.indeterminate = true;
+            }
+            return result;
+        }
+        #[cfg(not(any(
+            all(windows, feature = "native-gl-wgl"),
+            feature = "native-gles-egl",
+            all(target_arch = "wasm32", feature = "webgl2")
+        )))]
         Err(Error::Unsupported("GL platform context"))
     }
 
@@ -502,7 +546,49 @@ impl CommandBackend for Gl {
             }
             return result;
         }
-        #[cfg(not(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl")))]
+        #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+        {
+            // SAFETY: Core holds both texture borrows through this synchronous
+            // blit. The browser wrappers are used immediately and never retained.
+            let source = unsafe { src.texture.native_ref() };
+            let destination = unsafe { dst.texture.native_ref() };
+            if src.aspect != api::TextureAspects::COLOR || dst.aspect != api::TextureAspects::COLOR
+            {
+                return Err(Error::Unsupported(
+                    "WebGL2 texture blit supports color aspects only",
+                ));
+            }
+            if src.origin[2] != 0 || dst.origin[2] != 0 || src.extent[2] != 1 || dst.extent[2] != 1
+            {
+                return Err(Error::InvalidRange);
+            }
+            let browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
+            let result = browser.blit_texture_regions(
+                &source.browser,
+                src.mip,
+                [src.origin[0], src.origin[1]],
+                [src.extent[0], src.extent[1]],
+                &destination.browser,
+                dst.mip,
+                [dst.origin[0], dst.origin[1]],
+                [dst.extent[0], dst.extent[1]],
+                match filter {
+                    api::FilterMode::Nearest => crate::backend::gl::api::GlFilterMode::Nearest,
+                    api::FilterMode::Linear => crate::backend::gl::api::GlFilterMode::Linear,
+                },
+            );
+            if result.is_ok() {
+                encoder.issued = true;
+            } else {
+                encoder.indeterminate = true;
+            }
+            return result;
+        }
+        #[cfg(not(any(
+            all(windows, feature = "native-gl-wgl"),
+            feature = "native-gles-egl",
+            all(target_arch = "wasm32", feature = "webgl2")
+        )))]
         {
             let _ = (encoder, src, dst, filter);
             Err(Error::Unsupported("GL texture blit platform"))
@@ -601,7 +687,58 @@ impl CommandBackend for Gl {
             }
             return result;
         }
-        #[cfg(not(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl")))]
+        #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+        {
+            // SAFETY: Core retains `src.texture` for the complete synchronous
+            // immediate verb. The browser wrapper is borrowed only while
+            // `readPixels` and the destination `bufferSubData` execute.
+            let source = unsafe { src.texture.native_ref() };
+            use crate::backend::gl::api::{
+                GlBufferUsage, GlFormat, GlTextureDimension, GlTextureUsage,
+            };
+            if !Rc::ptr_eq(&encoder.state, &source.state)
+                || !Rc::ptr_eq(&encoder.state, &dst.state)
+                || !source.desc.usage.contains(GlTextureUsage::COPY_SOURCE)
+                || !dst.desc.usage.contains(GlBufferUsage::COPY_DESTINATION)
+                || !matches!(
+                    source.desc.format,
+                    GlFormat::Rgba8Unorm | GlFormat::Rgba8Srgb
+                )
+                || source.desc.dimension != GlTextureDimension::D2
+                || src.aspect != api::TextureAspects::COLOR
+            {
+                return Err(Error::Unsupported(
+                    "WebGL2 texture-to-buffer requires an RGBA8 2D color rectangle",
+                ));
+            }
+            if src.origin[2] != 0 || src.extent[2] != 1 {
+                return Err(Error::InvalidRange);
+            }
+            let browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
+            let result = browser.copy_rgba8_texture_to_buffer(
+                &source.browser,
+                src.mip,
+                [src.origin[0], src.origin[1]],
+                [src.extent[0], src.extent[1]],
+                &dst.browser,
+                layout.offset,
+                layout.bytes_per_row,
+                layout.rows_per_image,
+            );
+            if result.is_ok() {
+                encoder.issued = true;
+            } else {
+                // readPixels may have reached the context before a following
+                // buffer upload or error observation failed.
+                encoder.indeterminate = true;
+            }
+            return result;
+        }
+        #[cfg(not(any(
+            all(windows, feature = "native-gl-wgl"),
+            feature = "native-gles-egl",
+            all(target_arch = "wasm32", feature = "webgl2")
+        )))]
         {
             let _ = (encoder, src, dst, layout);
             Err(Error::Unsupported("GL texture-to-buffer platform"))

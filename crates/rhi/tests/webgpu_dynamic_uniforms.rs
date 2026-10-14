@@ -1,6 +1,6 @@
 //! Browser evidence for 04_dynamic_uniform_buffer.
 
-#![cfg(target_arch = "wasm32")]
+#![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 
 #[path = "../examples/04_dynamic_uniform_buffer/main.rs"]
 mod dynamic_uniforms;

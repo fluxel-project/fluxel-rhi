@@ -28,7 +28,6 @@ mod owner;
 mod provider;
 mod renderbuffer_facts;
 mod resources;
-mod shader_abi;
 mod surface;
 mod surface_core;
 

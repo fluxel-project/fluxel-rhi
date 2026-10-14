@@ -1,5 +1,5 @@
 //! Browser evidence for the WebGPU sequential-primary fallback of example 13.
-#![cfg(target_arch = "wasm32")]
+#![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 #[path = "../examples/13_multithreaded_recording/main.rs"]
 mod example;
 use wasm_bindgen::JsCast;

@@ -3,7 +3,7 @@
 //! The resulting objects are reusable scene state. Per-frame commands stay in
 //! `workload`, preserving the example's per-frame recording boundary.
 
-use super::{ktx::Ktx, workload::IndirectWorkloadBackend};
+use super::{ktx::Ktx, scene::INSTANCE_STRIDE_BYTES, workload::IndirectWorkloadBackend};
 use fluxel_rhi::api::*;
 
 pub(crate) fn buffer<B: IndirectWorkloadBackend>(
@@ -175,7 +175,7 @@ pub(crate) async fn pipeline<B: IndirectWorkloadBackend>(
     }];
     if instanced {
         vertex_buffers.push(VertexBufferLayout {
-            stride: 32,
+            stride: INSTANCE_STRIDE_BYTES,
             step_mode: VertexStepMode::Instance,
             attributes: vec![
                 VertexAttribute {
