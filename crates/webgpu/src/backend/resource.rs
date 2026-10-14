@@ -353,8 +353,18 @@ impl api::ResourceBackend for WebGpu {
     }
 
     fn create_sampler(device: &WebGpuDevice, desc: &api::SamplerDesc) -> Result<JsValue> {
-        if desc.border.is_some() || desc.anisotropy > 1 {
-            return Err(Error::Unsupported("WebGPU sampler border or anisotropy"));
+        if desc.border.is_some() {
+            return Err(Error::Unsupported("WebGPU sampler border color"));
+        }
+        if !(1..=16).contains(&desc.anisotropy) {
+            return Err(Error::InvalidRange);
+        }
+        if desc.anisotropy > 1
+            && (desc.mag_filter != api::FilterMode::Linear
+                || desc.min_filter != api::FilterMode::Linear
+                || desc.mip_filter != api::FilterMode::Linear)
+        {
+            return Err(Error::InvalidState);
         }
         let object = descriptor();
         for (field_name, mode) in ["addressModeU", "addressModeV", "addressModeW"]
@@ -395,6 +405,11 @@ impl api::ResourceBackend for WebGpu {
             &object,
             "lodMaxClamp",
             JsValue::from_f64(desc.lod.end as f64),
+        )?;
+        field(
+            &object,
+            "maxAnisotropy",
+            JsValue::from_f64(desc.anisotropy as f64),
         )?;
         if let Some(compare) = desc.compare {
             field(

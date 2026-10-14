@@ -1,6 +1,6 @@
 //! Persistent GPU resources and frame recording for the instanced rock-field scene.
 use super::*;
-use crate::instancing::{pipeline, resources};
+use super::{pipeline, resources};
 
 pub struct Instancing<B: InstancingBackend> {
     rock_vertices: Buffer<B>,

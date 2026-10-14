@@ -128,7 +128,7 @@ pub(crate) async fn shader<B: IndirectBackend>(
     entry: &str,
     stage: ShaderStage,
 ) -> Result<Shader<B>> {
-    crate::common::native_shader(d, label, entry, stage, dxil, spirv).await
+    super::common::native_shader(d, label, entry, stage, dxil, spirv).await
 }
 pub(crate) async fn pipeline<B: IndirectBackend>(
     d: &Device<B>,

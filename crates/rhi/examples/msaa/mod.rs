@@ -58,9 +58,9 @@ impl<B: MsaaBackend> Msaa<B> {
             return Err(Error::InvalidRange);
         }
         let samples = supported_samples(device, surface_format)?;
-        let model = crate::gltf::load_embedded_model(
-            crate::VOYAGER,
-            crate::gltf::LoadOptions::PRETRANSFORM_FLIP_Y,
+        let model = super::gltf::load_embedded_model(
+            super::VOYAGER,
+            super::gltf::LoadOptions::PRETRANSFORM_FLIP_Y,
         )
         .map_err(|error| Error::Backend(error.to_string()))?;
         let vertex_len = model.vertices.len() as u64;

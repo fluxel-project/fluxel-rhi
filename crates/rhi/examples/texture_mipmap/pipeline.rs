@@ -5,8 +5,6 @@
 
 use super::{MipChain, MipmapBackend};
 use fluxel_rhi::api::*;
-use std::time::Instant;
-
 pub struct Tunnel<B: MipmapBackend> {
     pub(super) lane: LaneId,
     pub(super) chain: MipChain<B>,
@@ -28,7 +26,7 @@ pub struct Tunnel<B: MipmapBackend> {
     pub(super) rotation_turns: f32,
     /// Sampling wall-clock time here keeps the workload self-contained: the
     /// native host deliberately exposes no renderer frame clock to examples.
-    pub(super) last_frame: Option<Instant>,
+    pub(super) last_frame: Option<f64>,
 }
 impl<B: MipmapBackend> Tunnel<B> {
     pub async fn new(

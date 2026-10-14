@@ -2,7 +2,8 @@
 
 #![cfg(target_arch = "wasm32")]
 
-include!("../examples/03_instancing.rs");
+#[path = "../examples/03_instancing.rs"]
+mod example;
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
@@ -20,7 +21,7 @@ async fn instancing_draws_and_presents_three_webgpu_frames() {
     canvas.set_width(1280);
     canvas.set_height(720);
     document.body().unwrap().append_child(&canvas).unwrap();
-    let result = run_webgpu_instancing(canvas.clone(), 3).await;
+    let result = example::run_webgpu_instancing(canvas.clone(), 3).await;
     canvas.remove();
     result.expect("03_instancing must draw and present three WebGPU frames");
 }

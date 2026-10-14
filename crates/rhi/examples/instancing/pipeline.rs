@@ -160,7 +160,7 @@ async fn pipeline<B: InstancingBackend>(
             label: Some(label.into()),
             layout,
             vertex: PipelineStage {
-                module: crate::common::native_shader_with_wgsl(
+                module: super::super::common::native_shader_with_wgsl(
                     device,
                     label,
                     vertex_entry,
@@ -174,7 +174,7 @@ async fn pipeline<B: InstancingBackend>(
                 constants: vec![],
             },
             fragment: Some(PipelineStage {
-                module: crate::common::native_shader_with_wgsl(
+                module: super::super::common::native_shader_with_wgsl(
                     device,
                     label,
                     fragment_entry,

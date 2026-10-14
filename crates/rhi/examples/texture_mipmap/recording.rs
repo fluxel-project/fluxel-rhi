@@ -14,15 +14,14 @@ impl<B: MipmapBackend> Tunnel<B> {
         extent: [u32; 2],
     ) -> Result<RecordedWork<B>> {
         self.resize_depth(device, extent)?;
-        let now = std::time::Instant::now();
+        let now = frame_time_seconds();
         if let Some(last_frame) = self.last_frame.replace(now) {
             // `texturemipmapgen` advances its timer by elapsed seconds * 0.05
             // and then rotates by `timer * 360°`.  Retaining that relation
             // preserves the source animation without making the RHI own a
             // frame clock.
-            self.rotation_turns = (self.rotation_turns
-                + now.saturating_duration_since(last_frame).as_secs_f32() * 0.05)
-                .rem_euclid(1.0);
+            self.rotation_turns =
+                (self.rotation_turns + (now - last_frame).max(0.0) as f32 * 0.05).rem_euclid(1.0);
         }
         let mut encoder = device.encoder(self.lane)?;
         if !self.initialized {
@@ -91,6 +90,24 @@ impl<B: MipmapBackend> Tunnel<B> {
         self.initialized = true;
         Ok(work)
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn frame_time_seconds() -> f64 {
+    web_sys::window()
+        .and_then(|window| window.performance())
+        .map(|performance| performance.now() / 1000.0)
+        .unwrap_or(0.0)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn frame_time_seconds() -> f64 {
+    use std::sync::OnceLock;
+    static START: OnceLock<std::time::Instant> = OnceLock::new();
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs_f64()
 }
 /// Matches the source sample's first-person camera and its three-matrix
 /// texturemipmapgen uniform block.

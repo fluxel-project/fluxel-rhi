@@ -14,11 +14,11 @@ pub(super) async fn shader<B: MsaaBackend>(
     stage: ShaderStage,
 ) -> Result<Shader<B>> {
     let spirv = match stage {
-        ShaderStage::Vertex => crate::VS_SPIRV,
-        ShaderStage::Fragment => crate::PS_SPIRV,
+        ShaderStage::Vertex => super::super::VS_SPIRV,
+        ShaderStage::Fragment => super::super::PS_SPIRV,
         _ => return Err(Error::InvalidState),
     };
-    crate::common::native_shader_with_wgsl(
+    super::super::common::native_shader_with_wgsl(
         device,
         label,
         entry,
@@ -38,7 +38,7 @@ pub(super) async fn pipeline<B: MsaaBackend>(
     let vs = shader(
         device,
         "08 voyager vertex shader",
-        crate::VS,
+        super::super::VS,
         "vs_main",
         ShaderStage::Vertex,
     )
@@ -46,7 +46,7 @@ pub(super) async fn pipeline<B: MsaaBackend>(
     let ps = shader(
         device,
         "08 voyager fragment shader",
-        crate::PS,
+        super::super::PS,
         "ps_main",
         ShaderStage::Fragment,
     )

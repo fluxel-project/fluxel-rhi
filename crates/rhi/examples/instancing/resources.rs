@@ -1,6 +1,6 @@
 //! glTF/KTX asset loading, texture resources, and instance data for example 03.
+use super::super::gltf;
 use super::*;
-use crate::gltf;
 
 pub(crate) const ROCK: &[u8] = include_bytes!("../assets/models/rock01.gltf");
 pub(crate) const PLANET: &[u8] = include_bytes!("../assets/models/lavaplanet.gltf");

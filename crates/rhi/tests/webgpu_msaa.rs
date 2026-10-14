@@ -2,7 +2,8 @@
 
 #![cfg(target_arch = "wasm32")]
 
-include!("../examples/08_msaa.rs");
+#[path = "../examples/08_msaa.rs"]
+mod example;
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
@@ -20,7 +21,7 @@ async fn msaa_draws_three_webgpu_frames() {
     canvas.set_width(1280);
     canvas.set_height(720);
     document.body().unwrap().append_child(&canvas).unwrap();
-    let result = run_webgpu_msaa(canvas.clone(), 3).await;
+    let result = example::run_webgpu_msaa(canvas.clone(), 3).await;
     canvas.remove();
     result.expect("08 MSAA must draw three WebGPU frames");
 }

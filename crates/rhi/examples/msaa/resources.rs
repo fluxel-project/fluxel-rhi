@@ -7,7 +7,7 @@ use super::MsaaBackend;
 use fluxel_rhi::api::*;
 use std::io::Cursor;
 
-pub(super) fn decode_material_image(image: &crate::gltf::EmbeddedImage) -> Result<Vec<u8>> {
+pub(super) fn decode_material_image(image: &super::super::gltf::EmbeddedImage) -> Result<Vec<u8>> {
     if image.mime_type != "image/png" {
         return Err(Error::Unsupported("08_msaa requires embedded PNG images"));
     }

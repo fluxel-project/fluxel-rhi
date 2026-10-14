@@ -41,9 +41,9 @@ impl<B: MsaaBackend> Msaa<B> {
         self.resize(device, self.surface_format, extent)?;
         let mut encoder = device.encoder(self.lane)?;
         if !self.uploaded {
-            let model = crate::gltf::load_embedded_model(
-                crate::VOYAGER,
-                crate::gltf::LoadOptions::PRETRANSFORM_FLIP_Y,
+            let model = super::super::gltf::load_embedded_model(
+                super::super::VOYAGER,
+                super::super::gltf::LoadOptions::PRETRANSFORM_FLIP_Y,
             )
             .map_err(|error| Error::Backend(error.to_string()))?;
             encoder.write_buffer(&self.vertex, 0, &model.vertices)?;

@@ -3,7 +3,7 @@
 //! This module translates the embedded assets into typed CPU payloads. It does
 //! not allocate GPU resources or decide submission order.
 
-use crate::gltf;
+use super::gltf;
 use fluxel_rhi::api::*;
 
 pub const INDEXED_INDIRECT_STRIDE: u32 = 20;
