@@ -14,13 +14,27 @@ impl<B: MipmapBackend> Tunnel<B> {
         extent: [u32; 2],
     ) -> Result<RecordedWork<B>> {
         self.resize_depth(device, extent)?;
+        let now = std::time::Instant::now();
+        if let Some(last_frame) = self.last_frame.replace(now) {
+            // `texturemipmapgen` advances its timer by elapsed seconds * 0.05
+            // and then rotates by `timer * 360°`.  Retaining that relation
+            // preserves the source animation without making the RHI own a
+            // frame clock.
+            self.rotation_turns = (self.rotation_turns
+                + now.saturating_duration_since(last_frame).as_secs_f32() * 0.05)
+                .rem_euclid(1.0);
+        }
         let mut encoder = device.encoder(self.lane)?;
         if !self.initialized {
             encoder.write_buffer(&self.vertices, 0, &self.vertex_data)?;
             encoder.write_buffer(&self.indices, 0, &self.index_data)?;
             self.chain.encode_generation(&mut encoder, &self.pixels)?;
         }
-        encoder.write_buffer(&self.uniform, 0, &tunnel_camera(extent))?;
+        encoder.write_buffer(
+            &self.uniform,
+            0,
+            &tunnel_camera(extent, self.rotation_turns),
+        )?;
         let colors = [Some(ColorAttachment {
             view: AttachmentView::Surface(image),
             resolve_target: None,
@@ -80,7 +94,7 @@ impl<B: MipmapBackend> Tunnel<B> {
 }
 /// Matches the source sample's first-person camera and its three-matrix
 /// texturemipmapgen uniform block.
-fn tunnel_camera(extent: [u32; 2]) -> [u8; 256] {
+fn tunnel_camera(extent: [u32; 2], rotation_turns: f32) -> [u8; 256] {
     let aspect = extent[0].max(1) as f32 / extent[1].max(1) as f32;
     let f = 1.0 / (60f32.to_radians() * 0.5).tan();
     let near = 0.1;
@@ -124,10 +138,8 @@ fn tunnel_camera(extent: [u32; 2]) -> [u8; 256] {
         1.,
     ];
     // Reference animation: `rotate(identity, timer * 360°, +X)`.
-    // Keep a fixed initial pose for the two-frame visual comparison.
-    let model = [
-        1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
-    ];
+    let (s, c) = (rotation_turns * 360.0).to_radians().sin_cos();
+    let model = [1., 0., 0., 0., 0., c, s, 0., 0., -s, c, 0., 0., 0., 0., 1.];
     let mut bytes = [0; 256];
     for (index, value) in projection.into_iter().chain(view).chain(model).enumerate() {
         bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());

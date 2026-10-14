@@ -3,9 +3,36 @@
 The 15 numbered examples use the statically typed `fluxel_rhi::api`. Native
 examples use the shared `fluxel-host` window lifecycle. Browser examples use
 an HTML canvas owned by the caller. DX12 and Vulkan are the native Windows
-routes; WebGPU runs in a browser. The Vulkan examples 01–15 have been run for
-two frames with the Khronos validation layer and GPU-image readback comparison
-against the local C++ captures.
+routes; WebGPU runs in a browser. An example is accepted for a backend only
+after a real GPU run, saved frames inspected against the C++ reference (apart
+from its HUD), and a check of relevant native diagnostics. Static scenes are
+judged by their visible result; animated scenes are judged by scene content
+and motion rather than exact pixel-by-pixel frame alignment. Compilation or a
+clean process exit alone is not visual evidence.
+
+## Verification status
+
+This table distinguishes earlier repository evidence from the current visual
+alignment work. It is updated as each backend is completed. The current
+working tree is not yet a frozen verification candidate.
+
+| Backend | Current evidence | Remaining gate |
+| --- | --- | --- |
+| DX12 | All 15 examples have real-GPU captures with the D3D12 debug layer. The complete WGSL manifest (01–15, with a separate 15 display job) regenerates DXIL/SPIR-V byte-for-byte and checks shader ABI. Recent WGSL DX12 captures show the same visible result as C++ across all 15: the 05 sphere ring, 13 UFO field, 14 descriptor-array cubes, and 15 stereo scene were specifically rechecked. 07/09/10 are animated or camera-driven and differ in exact frame state; their scene content and visual effect match. | Run the final 15-example diagnostic and visual pass on the exact candidate SHA, then submit and push DX12 before starting Vulkan. |
+| Vulkan | Earlier implementation captures exist, but no current-candidate verification has started. Vulkan work is intentionally gated on the completed and pushed DX12 pass. | Start after DX12 is complete and pushed; validate all 15 against the frozen shared examples. |
+| WebGPU | Earlier browser integration tests and examples exist; the recent WGSL and example changes have not received a complete browser visual pass. | Defer until Vulkan is finished. |
+| GL4+ / WebGL2 | No complete 15-example visual pass has been accepted. | Defer until WebGPU is finished. |
+
+The current DX12 run reports only D3D12 message ID 820 for the offscreen color
+targets in examples 08 and 12. It is a performance hint about the optional
+optimized clear value; the API does not declare a fixed pass clear color, and
+the clear still produces the requested image. The rest of the captured DX12
+examples produced no D3D12 debug messages.
+
+The local captures, run logs, hardware details, and exact worktree state are
+recorded under the ignored `临时/` directory during development. These local
+files are not part of a published backend claim. The reference images come
+from the local C++ Vulkan example build; the HUD is excluded from comparison.
 
 From the workspace root on Windows:
 
@@ -41,20 +68,27 @@ $env:WASM_BINDGEN_TEST_WEBDRIVER_JSON = 'C:\path\to\webdriver.json'
 cargo test -p fluxel-rhi --target wasm32-unknown-unknown --features 'webgpu examples' --test webgpu_triangle -- --nocapture
 ```
 
-Each `webgpu_*` integration test presents three frames. The browser route
-uses WGSL where the existing SPIR-V shaders cannot be translated faithfully.
-WebGPU has no push constants, native parallel secondary command recording,
-runtime-sized descriptor arrays, or native multiview. Examples 05, 13, 14,
-and 15 use explicitly scoped browser paths that preserve the visible scene
-with ordinary uniform bindings, sequential primary recording, fixed texture
+Each `webgpu_*` integration test presents three frames. The current RHI WebGPU
+path does not expose immediate data, native parallel secondary command
+recording, descriptor indexing, or native multiview. Examples 05, 13, 14, and
+15 use explicit WGSL/browser paths that preserve the visible scene with
+ordinary uniform bindings, sequential primary recording, fixed texture
 layers, and one render pass per eye respectively. Their native capability
-flags remain false for those unavailable operations.
+flags remain false for those unavailable operations. Native 14 and 15 shader
+variants are generated from WGSL capability variants; they do not add
+HLSL or GLSL source files.
 
-Examples 01–15 use checked-in DXIL for DX12 and SPIR-V for Vulkan. The SPIR-V
-blobs are built from adjacent HLSL sources with `compile-spirv.ps1`; the
-script also validates the result for Vulkan 1.3. `fetch-assets.ps1` obtains
-the pinned external models and textures required by some examples. Those
-assets remain local; see [assets/README.md](assets/README.md).
+DX12 consumes checked-in DXIL and Vulkan consumes checked-in SPIR-V. WGSL is
+the maintained shader source for all numbered examples. The
+`wgsl-artifacts/manifest.psd1` manifest covers 01–15, including separate
+multiview scene and display jobs. `compile-wgsl.ps1` uses Naga,
+SPIRV-Tools, SPIRV-Cross, and DXC with binding and vertex ABI checks, plus
+Naga IR lowering for the native push-constant path in 05. The complete
+manifest regenerates the checked-in DXIL/SPIR-V artifacts byte-for-byte in
+no-write verification. Native artifacts are generated outputs, not additional
+maintained shader sources. `fetch-assets.ps1` obtains the pinned external
+models and textures required by some examples. Those assets remain local; see
+[assets/README.md](assets/README.md).
 
 | Example | Workload |
 | --- | --- |
@@ -74,9 +108,6 @@ assets remain local; see [assets/README.md](assets/README.md).
 | 14 descriptor indexing | Capability-gated runtime descriptor indexing |
 | 15 multiview | Capability-gated multiview rasterization |
 
-The visual reference is the local `SaschaWillems/Vulkan` C++ checkout. Compare
-actual frames with the reference captures under `临时/参考效果/`; the C++ HUD in
-the upper-left corner is outside the rendering comparison. Follow the public
-coordinate contract in `documents/design-rhi.md` when interpreting a vertical
-flip or front-face difference. A backend must adapt its native viewport and
-winding rather than changing the example's shared scene data.
+Follow the public coordinate contract in `documents/design-rhi.md` when
+interpreting a vertical flip or front-face difference. A backend must adapt
+its native viewport and winding rather than changing shared scene data.

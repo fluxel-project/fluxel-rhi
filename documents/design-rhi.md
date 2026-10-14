@@ -30,6 +30,8 @@ rightward and Y downward. `Viewport` and `Rect` use framebuffer coordinates;
 `FrontFace` describes winding in framebuffer coordinates. For 2D textures,
 texel `(0, 0)` is the upper-left texel and texel Y increases downward. Upload
 row zero maps to that row; texture readback preserves this logical row order.
+For sampled 2D textures, normalized `v = 0` addresses the upper edge and
+`v = 1` the lower edge, including WGSL shaders lowered by a backend.
 
 Backends preserve these observable semantics when lowering to native APIs.
 DX12 already uses the matching native graphics convention. Vulkan uses a
@@ -102,10 +104,12 @@ native operations. The backend does not track a global resource-state history.
 
 ## Shader and pipeline boundary
 
-`ShaderDesc` declares the artifact format and entry points. DX12 currently accepts DXIL
-on its direct route. Examples that need DX12 use checked-in HLSL source and DXIL assets;
-WGSL or GLSL must not be described as directly executable on DX12 unless a real
-translation route is implemented and selected.
+`ShaderDesc` declares the artifact format and entry points. The numbered examples
+maintain WGSL as their shader source and generate checked-in DXIL and SPIR-V artifacts
+for the native DX12 and Vulkan routes. This offline lowering does not claim that DX12
+executes WGSL directly: the runtime DX12 route consumes DXIL, while WebGPU consumes
+WGSL. Other backends select a supported runtime or generated artifact route explicitly;
+generated native binaries are not additional maintained shader sources.
 
 Pipeline and binding descriptors describe the native operation honestly: vertex layouts,
 texture view dimensions, sampler and uniform bindings, attachment formats, depth/stencil

@@ -1,5 +1,5 @@
-// WebGPU translation of dynamic_uniform.hlsl.  Both buffers are 64-byte
-// matrices; binding 1 is selected by the command's dynamic offset.
+// Both buffers are 64-byte matrices; binding 1 is selected by the command's
+// dynamic offset.
 struct Camera {
     vp: mat4x4<f32>,
 };

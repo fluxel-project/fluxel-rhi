@@ -5,10 +5,12 @@
 use fluxel_rhi::api::*;
 
 pub(super) fn quad() -> [u8; 128] {
-    // Same position / UV / normal records as the C++ textured quad.
+    // Core's framebuffer and sampled-texture Y both point down. The C++
+    // positive-height Vulkan viewport put its +Y vertices on the lower half;
+    // with Core's WebGPU-style viewport the upper vertices need texture v=0.
     let x: [f32; 32] = [
-        1., 1., 0., 1., 1., 0., 0., 1., -1., 1., 0., 0., 1., 0., 0., 1., -1., -1., 0., 0., 0., 0.,
-        0., 1., 1., -1., 0., 1., 0., 0., 0., 1.,
+        1., 1., 0., 1., 0., 0., 0., 1., -1., 1., 0., 0., 0., 0., 0., 1., -1., -1., 0., 0., 1., 0.,
+        0., 1., 1., -1., 0., 1., 1., 0., 0., 1.,
     ];
     let mut b = [0; 128];
     for (i, v) in x.into_iter().enumerate() {

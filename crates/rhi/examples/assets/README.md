@@ -1,10 +1,9 @@
 # Example assets
 
-The checked-in `.spv` files for examples 01–15 are compiled from the
-neighboring project-owned HLSL sources. Rebuild and validate them with
-`../compile-spirv.ps1` using the Vulkan SDK's `dxc.exe` and `spirv-val.exe`.
-Their Vulkan descriptor set/binding numbers match the examples' bind-group
-indices and layout entries. The checked-in DXIL files remain the DX12 path.
+All numbered example shaders are maintained as WGSL. The manifest and
+`../compile-wgsl.ps1` generate and ABI-check the checked-in SPIR-V and DXIL
+artifacts from those sources; the binaries are backend build outputs, not
+parallel shader sources.
 
 The external model and texture assets described below are separate from these
 shader binaries.

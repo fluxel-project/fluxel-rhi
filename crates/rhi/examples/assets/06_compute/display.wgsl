@@ -1,4 +1,4 @@
-// WebGPU fullscreen display pass; bindings mirror display.hlsl.
+// Fullscreen display pass for presenting a selected compute output.
 @group(0) @binding(1) var image: texture_2d<f32>;
 @group(0) @binding(2) var image_sampler: sampler;
 

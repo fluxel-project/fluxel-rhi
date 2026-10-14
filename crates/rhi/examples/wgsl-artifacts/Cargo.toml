@@ -1,0 +1,12 @@
+[package]
+name = "fluxel-example-wgsl-artifacts"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# This package stays outside the repository workspace on purpose. It is a
+# reproducible asset generator, not a runtime dependency of fluxel-rhi.
+[workspace]
+
+[dependencies]
+naga = { version = "=27.0.3", features = ["hlsl-out", "spv-out", "wgsl-in"] }

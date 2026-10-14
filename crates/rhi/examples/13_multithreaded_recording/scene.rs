@@ -187,8 +187,10 @@ impl<B: SecondaryExampleBackend> Multithreaded<B> {
                 format,
                 VS,
                 VS_SPIRV,
+                UFO_WGSL,
                 PS,
                 PS_SPIRV,
+                UFO_WGSL,
                 // This imported mesh omits the C++ loader's FlipY because the
                 // RHI uses Y-up NDC.  With Fluxel's projection and Vulkan's
                 // negative viewport that reverses its source-facing winding;
@@ -229,8 +231,10 @@ impl<B: SecondaryExampleBackend> Multithreaded<B> {
                 format,
                 STAR_VS,
                 STAR_VS_SPIRV,
+                STARS_WGSL,
                 STAR_PS,
                 STAR_PS_SPIRV,
+                STARS_WGSL,
                 CullMode::Back,
                 vec![VertexBufferLayout {
                     stride: STRIDE,
@@ -458,29 +462,41 @@ async fn pipeline<B: SecondaryExampleBackend>(
     format: TextureFormat,
     vs_dxil: &[u8],
     vs_spirv: &[u8],
+    vs_wgsl: &[u8],
     ps_dxil: &[u8],
     ps_spirv: &[u8],
+    ps_wgsl: &[u8],
     cull_mode: CullMode,
     vertex_buffers: Vec<VertexBufferLayout>,
 ) -> Result<RasterPipeline<B>> {
-    let vs = common::native_shader(
+    let vs = common::native_shader_with_wgsl(
         d,
         &format!("{name} vs"),
         "vs_main",
         ShaderStage::Vertex,
         vs_dxil,
         vs_spirv,
+        vs_wgsl,
     )
-    .await?;
-    let ps = common::native_shader(
+    .await
+    .map_err(|error| {
+        eprintln!("{name} vertex shader creation: {error:?}");
+        error
+    })?;
+    let ps = common::native_shader_with_wgsl(
         d,
         &format!("{name} ps"),
         "ps_main",
         ShaderStage::Fragment,
         ps_dxil,
         ps_spirv,
+        ps_wgsl,
     )
-    .await?;
+    .await
+    .map_err(|error| {
+        eprintln!("{name} fragment shader creation: {error:?}");
+        error
+    })?;
     d.raster_pipeline(RasterPipelineDesc {
         label: Some(name.into()),
         layout,
@@ -530,6 +546,10 @@ async fn pipeline<B: SecondaryExampleBackend>(
         cache: None,
     })
     .await
+    .map_err(|error| {
+        eprintln!("{name} raster pipeline creation: {error:?}");
+        error
+    })
 }
 
 mod host;

@@ -407,18 +407,29 @@ impl api::RasterBackend for Dx12 {
     }
     fn viewport(encoder: &mut Dx12Encoder, v: api::Viewport) -> Result<(), Error> {
         let viewport = validate_viewport(v)?;
+        // View instancing selects viewport slots 0 and 1. Reapply both after
+        // the caller overrides the pass default, or the second view is clipped.
         // SAFETY: `validate_viewport` checked finite dimensions and this open
         // command list is exclusively owned by the encoder.
         unsafe {
-            encoder.list.RSSetViewports(&[viewport]);
+            if encoder.raster_multiview.is_some() {
+                encoder.list.RSSetViewports(&[viewport, viewport]);
+            } else {
+                encoder.list.RSSetViewports(&[viewport]);
+            }
         }
         Ok(())
     }
     fn scissor(encoder: &mut Dx12Encoder, r: api::Rect) -> Result<(), Error> {
         let rect = validate_scissor(r)?;
+        // Match the two viewport slots selected by the view-instanced PSO.
         // SAFETY: `validate_scissor` checked integer bounds for this list.
         unsafe {
-            encoder.list.RSSetScissorRects(&[rect]);
+            if encoder.raster_multiview.is_some() {
+                encoder.list.RSSetScissorRects(&[rect, rect]);
+            } else {
+                encoder.list.RSSetScissorRects(&[rect]);
+            }
         }
         Ok(())
     }

@@ -77,6 +77,10 @@ impl Default for DirectCommandPool {
 }
 /// until this value crosses the queue boundary.
 pub struct Dx12Encoder {
+    /// Retains the native device for backend-private allocations such as a
+    /// readback staging resource. This is ownership only: it does not make
+    /// the encoder a resource scheduler or state tracker.
+    pub(crate) device: Dx12Device,
     pub(crate) allocator: ID3D12CommandAllocator,
     pub(crate) list: ID3D12GraphicsCommandList,
     direct_commands: Arc<DirectCommandPool>,
@@ -198,6 +202,7 @@ impl Dx12Encoder {
     pub(crate) fn new(device: &Dx12Device) -> Result<Self, Error> {
         let (allocator, list) = device.0.direct_commands.acquire(&device.0.native)?;
         Ok(Self {
+            device: device.clone(),
             allocator,
             list,
             direct_commands: device.0.direct_commands.clone(),

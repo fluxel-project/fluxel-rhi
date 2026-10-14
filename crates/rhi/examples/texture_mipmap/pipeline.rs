@@ -5,6 +5,7 @@
 
 use super::{MipChain, MipmapBackend};
 use fluxel_rhi::api::*;
+use std::time::Instant;
 
 pub struct Tunnel<B: MipmapBackend> {
     pub(super) lane: LaneId,
@@ -22,6 +23,12 @@ pub struct Tunnel<B: MipmapBackend> {
     pub(super) index_count: u32,
     pub(super) pixels: Vec<u8>,
     pub(super) initialized: bool,
+    /// Source sample time in turns.  The tunnel rolls slowly about its local
+    /// X axis, so the reference's apparent perspective changes over time.
+    pub(super) rotation_turns: f32,
+    /// Sampling wall-clock time here keeps the workload self-contained: the
+    /// native host deliberately exposes no renderer frame clock to examples.
+    pub(super) last_frame: Option<Instant>,
 }
 impl<B: MipmapBackend> Tunnel<B> {
     pub async fn new(
@@ -49,12 +56,15 @@ impl<B: MipmapBackend> Tunnel<B> {
         )?;
         let sampler = device.create_sampler(&SamplerDesc {
             label: Some("09 mip sampler".into()),
-            address: [AddressMode::Repeat; 3],
+            // The source cycles the metal plate with mirrored seams.  Plain
+            // repeat changes every second tile and makes the tunnel visibly
+            // differ at the broad, near-camera rings.
+            address: [AddressMode::MirrorRepeat; 3],
             mag_filter: FilterMode::Linear,
             min_filter: FilterMode::Linear,
             mip_filter: FilterMode::Linear,
             lod: 0.0..chain.levels() as f32,
-            anisotropy: 1,
+            anisotropy: 16,
             compare: None,
             border: None,
         })?;
@@ -270,6 +280,8 @@ impl<B: MipmapBackend> Tunnel<B> {
             index_count,
             pixels: image.pixels,
             initialized: false,
+            rotation_turns: 0.0,
+            last_frame: None,
         })
     }
 

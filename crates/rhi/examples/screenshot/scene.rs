@@ -8,6 +8,7 @@ const VS: &[u8] = include_bytes!("../assets/12_screenshot/screenshot_vs.dxil");
 const PS: &[u8] = include_bytes!("../assets/12_screenshot/screenshot_ps.dxil");
 const VS_SPIRV: &[u8] = include_bytes!("../assets/12_screenshot/screenshot.vs.spv");
 const PS_SPIRV: &[u8] = include_bytes!("../assets/12_screenshot/screenshot.ps.spv");
+const WGSL: &[u8] = include_bytes!("../assets/12_screenshot/screenshot.wgsl");
 
 pub(crate) struct DragonScene<B: ScreenshotBackend> {
     vertices: Buffer<B>,
@@ -264,22 +265,24 @@ async fn pipeline<B: ScreenshotBackend>(
     layout: PipelineLayout<B>,
     format: TextureFormat,
 ) -> Result<RasterPipeline<B>> {
-    let vertex = super::super::common::native_shader(
+    let vertex = super::super::common::native_shader_with_wgsl(
         device,
         "12 screenshot vertex",
         "vs_main",
         ShaderStage::Vertex,
         VS,
         VS_SPIRV,
+        WGSL,
     )
     .await?;
-    let fragment = super::super::common::native_shader(
+    let fragment = super::super::common::native_shader_with_wgsl(
         device,
         "12 screenshot fragment",
         "ps_main",
         ShaderStage::Fragment,
         PS,
         PS_SPIRV,
+        WGSL,
     )
     .await?;
     let stencil = StencilFaceState {

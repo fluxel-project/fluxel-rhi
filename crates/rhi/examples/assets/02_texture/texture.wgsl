@@ -1,4 +1,4 @@
-// WebGPU equivalent of texture.hlsl; group 0 preserves the scene/texture ABI.
+// Textured quad shader; group 0 matches the scene's public resource layout.
 struct Scene {
     projection: mat4x4<f32>,
     model_view: mat4x4<f32>,
