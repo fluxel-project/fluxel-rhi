@@ -137,6 +137,7 @@ pub(crate) fn lower_program_bindings(
                 kind,
                 array_count: 1,
                 pair,
+                image_unit: None,
             }
         })
         .collect())

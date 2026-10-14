@@ -224,15 +224,26 @@ fn validate_webgl2_fixed_state(
 }
 
 /// Replaces placeholder ABI names with the names Naga actually emitted for
-/// this pair of entry points. GLSL 400/ES 300 cannot express WebGPU resource
-/// bindings directly, so native program reflection requires these names.
+/// this pair of entry points. Native program reflection needs those names;
+/// Naga's explicit storage-image unit is carried beside them for bind groups.
 pub(crate) fn with_naga_binding_names(
     mut layout: crate::backend::gl::api::GlPipelineLayout,
     shaders: &[&super::types::GlShader],
 ) -> Result<crate::backend::gl::api::GlPipelineLayout> {
     for binding in &mut layout.bindings {
         let mut names = Vec::new();
+        let mut image_units = Vec::new();
         for shader in shaders {
+            image_units.extend(
+                shader
+                    .naga_bindings
+                    .iter()
+                    .filter(|value| {
+                        value.group == binding.location.group
+                            && value.binding == binding.location.binding
+                    })
+                    .filter_map(|value| value.image_unit),
+            );
             names.extend(
                 shader
                     .naga_bindings
@@ -248,6 +259,14 @@ pub(crate) fn with_naga_binding_names(
             names.sort();
             names.dedup();
             binding.names = names;
+        }
+        if !image_units.is_empty() {
+            image_units.sort_unstable();
+            image_units.dedup();
+            if image_units.len() != 1 {
+                return Err(Error::InvalidState);
+            }
+            binding.image_unit = image_units.first().copied();
         }
     }
     Ok(layout)

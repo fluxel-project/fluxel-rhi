@@ -314,6 +314,7 @@ impl<T> PushBackend for T where
 }
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),
+    all(target_os = "linux", feature = "native-gles-egl"),
     all(target_arch = "wasm32", feature = "webgl2")
 ))]
 mod immediate;
@@ -324,7 +325,15 @@ mod workload;
 use workload::PushWorkload;
 
 /// Reports the unavailable native target on unsupported hosts.
-#[cfg(not(windows))]
+#[cfg(all(target_os = "linux", feature = "native-gles-egl"))]
+pub fn run() {
+    if let Err(error) = immediate::run() {
+        eprintln!("05_push_constants: {error:?}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
 pub fn run() {
     eprintln!("05_push_constants requires Windows and DX12");
 }

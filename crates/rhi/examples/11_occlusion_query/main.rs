@@ -135,7 +135,10 @@ pub async fn run_webgpu_occlusion_query(
         .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
 }
 
-#[cfg(feature = "native-gl-wgl")]
+#[cfg(any(
+    feature = "native-gl-wgl",
+    all(target_os = "linux", feature = "native-gles-egl")
+))]
 mod immediate;
 mod workload;
 
@@ -350,7 +353,15 @@ fn main() {
         std::process::exit(1);
     }
 }
-#[cfg(not(windows))]
+#[cfg(all(target_os = "linux", feature = "native-gles-egl"))]
+fn main() {
+    if let Err(error) = immediate::run() {
+        eprintln!("11_occlusion_query: {error:?}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
 fn main() {
     eprintln!("11_occlusion_query requires Windows and DX12")
 }

@@ -6,6 +6,26 @@
 use super::*;
 
 impl EglGlesContext {
+    pub(crate) fn load_unmap_buffer(
+        &self,
+    ) -> Result<crate::backend::gl::native::context::UnmapBufferFn, GlError> {
+        let address = self
+            .lease
+            .egl
+            .get_proc_address("glUnmapBuffer")
+            .map(|function| function as *const () as *const core::ffi::c_void)
+            .unwrap_or(core::ptr::null());
+        if address.is_null() {
+            return Err(GlError::Driver {
+                operation: "load glUnmapBuffer",
+                message: "EGL did not expose the GLES 3.0 core entry point".into(),
+            });
+        }
+        // SAFETY: GLES 3.0 requires this core entry point and its ABI is
+        // `GLboolean glUnmapBuffer(GLenum)`; the current EGL loader resolved it.
+        Ok(unsafe { core::mem::transmute(address) })
+    }
+
     /// Returns the requested GLES profile.  Actual driver strings are verified
     /// at construction, rather than inferred from EGL configuration bits.
     pub(crate) const fn profile(&self) -> GlFamilyProfile {

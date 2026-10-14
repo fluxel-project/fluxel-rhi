@@ -1,5 +1,5 @@
 //! Offscreen scene resource, shader, pipeline, and transform helpers.
-use super::super::*;
+use super::*;
 
 pub(crate) fn buf<B: OffscreenWorkloadBackend>(
     d: &Device<B>,

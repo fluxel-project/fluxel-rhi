@@ -3,9 +3,9 @@
 //! The returned work is submitted by the host. This workload therefore does
 //! not own presentation, completion waiting, or cross-frame retirement.
 
-use super::super::gltf;
-use super::super::*;
+use super::gltf;
 use super::resources::*;
+use super::*;
 
 pub struct Offscreen<B: OffscreenWorkloadBackend> {
     lane: LaneId,

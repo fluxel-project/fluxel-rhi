@@ -13,11 +13,17 @@ mod utils;
 use fluxel_rhi::api::*;
 use msaa::{Msaa, MsaaDeferredBackend};
 
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(
+    all(windows, feature = "native-gl-wgl"),
+    all(target_os = "linux", feature = "native-gles-egl")
+))]
 #[path = "immediate.rs"]
 mod immediate;
 
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(
+    all(windows, feature = "native-gl-wgl"),
+    all(target_os = "linux", feature = "native-gles-egl")
+))]
 fn main_gl() {
     if let Err(error) = immediate::run() {
         eprintln!("08_msaa: {error:?}");
@@ -139,7 +145,12 @@ fn main() {
         std::process::exit(1)
     }
 }
-#[cfg(not(windows))]
+#[cfg(all(target_os = "linux", feature = "native-gles-egl"))]
+fn main() {
+    main_gl();
+}
+
+#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
 fn main() {
     eprintln!("08_msaa requires Windows");
 }

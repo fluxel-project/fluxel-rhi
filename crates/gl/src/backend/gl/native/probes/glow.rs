@@ -38,7 +38,6 @@ struct ProbeScratch<'a> {
     framebuffer: Option<glow::NativeFramebuffer>,
     /// Indexed bindings that must be unbound before the objects are deleted.
     storage_bound: bool,
-    image_bound: bool,
 }
 
 impl<'a> ProbeScratch<'a> {
@@ -52,7 +51,6 @@ impl<'a> ProbeScratch<'a> {
             renderbuffer: None,
             framebuffer: None,
             storage_bound: false,
-            image_bound: false,
         }
     }
 }
@@ -77,10 +75,10 @@ impl Drop for ProbeScratch<'_> {
             if self.storage_bound {
                 gl.bind_buffer_base(glow::SHADER_STORAGE_BUFFER, 0, None);
             }
-            if self.image_bound {
-                gl.bind_image_texture(0, None, 0, false, 0, glow::READ_ONLY, glow::RGBA8);
-                gl.bind_image_texture(1, None, 0, false, 0, glow::READ_ONLY, glow::RGBA8);
-            }
+            // Deleting each texture below also detaches it from image units.
+            // Avoid a redundant bind-image-to-zero call: GLES drivers may
+            // reject that form even though image-unit ownership is released
+            // when the texture object is deleted.
             gl.bind_texture(glow::TEXTURE_2D, None);
             if self.renderbuffer.is_some() {
                 gl.bind_renderbuffer(glow::RENDERBUFFER, None);
@@ -265,7 +263,15 @@ impl NativeGlProbes for GlowProbes<'_> {
     fn binds_shader_storage(&self, source: &'static str) -> ProbeAnswer {
         use glow::HasContext as _;
         let mut scratch = ProbeScratch::new(self.gl);
-        let stages = [(glow::FRAGMENT_SHADER, source)];
+        let vertex = if is_es_shader(source) {
+            ES_VERTEX
+        } else {
+            DESKTOP_VERTEX
+        };
+        let stages = [
+            (glow::VERTEX_SHADER, vertex),
+            (glow::FRAGMENT_SHADER, source),
+        ];
         if !self.link_program(&stages, &mut scratch) {
             return ProbeAnswer::Failed;
         }
@@ -295,13 +301,22 @@ impl NativeGlProbes for GlowProbes<'_> {
     fn binds_image_load_store(&self, source: &'static str) -> ProbeAnswer {
         use glow::HasContext as _;
         let mut scratch = ProbeScratch::new(self.gl);
-        let stages = [(glow::FRAGMENT_SHADER, source)];
+        let vertex = if is_es_shader(source) {
+            ES_VERTEX
+        } else {
+            DESKTOP_VERTEX
+        };
+        let stages = [
+            (glow::VERTEX_SHADER, vertex),
+            (glow::FRAGMENT_SHADER, source),
+        ];
         if !self.link_program(&stages, &mut scratch) {
             return ProbeAnswer::Failed;
         }
         // SAFETY: current-context contract; the route gate guarantees image
         // units and the rgba8 image format are valid on this context.
-        let errored = unsafe {
+        let mut errored = false;
+        unsafe {
             for unit in 0..2u32 {
                 let texture = self.gl.create_texture();
                 let Ok(texture) = texture else {
@@ -309,17 +324,9 @@ impl NativeGlProbes for GlowProbes<'_> {
                 };
                 scratch.textures.push(texture);
                 self.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-                self.gl.tex_image_2d(
-                    glow::TEXTURE_2D,
-                    0,
-                    glow::RGBA8 as i32,
-                    4,
-                    4,
-                    0,
-                    glow::RGBA,
-                    glow::UNSIGNED_BYTE,
-                    glow::PixelUnpackData::Slice(None),
-                );
+                self.gl
+                    .tex_storage_2d(glow::TEXTURE_2D, 1, glow::RGBA8, 4, 4);
+                errored |= self.gl.get_error() != glow::NO_ERROR;
                 self.gl.bind_image_texture(
                     unit,
                     Some(texture),
@@ -329,10 +336,9 @@ impl NativeGlProbes for GlowProbes<'_> {
                     glow::READ_ONLY,
                     glow::RGBA8,
                 );
+                errored |= self.gl.get_error() != glow::NO_ERROR;
             }
-            scratch.image_bound = true;
-            self.take_error()
-        };
+        }
         if errored {
             ProbeAnswer::Failed
         } else {
@@ -436,6 +442,13 @@ impl NativeGlProbes for GlowProbes<'_> {
             ProbeAnswer::Passed
         }
     }
+}
+
+fn is_es_shader(source: &str) -> bool {
+    source
+        .lines()
+        .next()
+        .is_some_and(|version| version.trim_end().ends_with(" es"))
 }
 
 impl GlowProbes<'_> {

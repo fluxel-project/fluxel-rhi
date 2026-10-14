@@ -8,8 +8,8 @@
 use super::exec_vertex::{indexed_draw_offset, indexed_draw_span, indexed_draw_type};
 use super::provider::{ActiveRaster, NativeGlProvider};
 use crate::backend::gl::api::{
-    GlCullMode, GlDepthStencilState, GlDrawCommand, GlError, GlFamilyApi as _, GlFrontFace,
-    GlMultiDraw, GlMultiDrawApi, GlRasterCommandApi, GlRasterPipeline, GlRasterState,
+    GlCullMode, GlDepthStencilState, GlDrawCommand, GlError, GlFamilyApi as _, GlFamilyProfile,
+    GlFrontFace, GlMultiDraw, GlMultiDrawApi, GlRasterCommandApi, GlRasterPipeline, GlRasterState,
     GlRasterValidationInfo, GlScissorRect, GlStencilFaceState, GlVertexBufferMetadata, GlViewport,
     issue_single_draws,
 };
@@ -588,7 +588,14 @@ impl NativeGlProvider {
                     "explicit sample masks have no typed command in this provider",
                 ));
             }
-            self.gl.enable(glow::MULTISAMPLE);
+            // GLES keeps multisample rasterization enabled for multisampled
+            // targets and does not define the desktop GL_MULTISAMPLE toggle.
+            if !matches!(
+                self.discovery.context().profile(),
+                GlFamilyProfile::Embedded { .. }
+            ) {
+                self.gl.enable(glow::MULTISAMPLE);
+            }
             if state.multisample.alpha_to_coverage_enabled {
                 self.gl.enable(glow::SAMPLE_ALPHA_TO_COVERAGE);
             } else {

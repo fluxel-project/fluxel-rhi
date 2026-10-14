@@ -315,6 +315,7 @@ fn run<B: TriangleBackend + DeferredBackend, H: utils::ExampleHost<B>>(host: H) 
 
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),
+    all(target_os = "linux", feature = "native-gles-egl"),
     all(target_arch = "wasm32", feature = "webgl2")
 ))]
 #[path = "immediate.rs"]
@@ -363,7 +364,15 @@ fn main() {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(all(target_os = "linux", feature = "native-gles-egl"))]
+fn main() {
+    if let Err(error) = immediate::run() {
+        eprintln!("01_triangle: {error:?}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
 fn main() {
     eprintln!("01_triangle requires Windows and DX12");
 }

@@ -65,7 +65,7 @@ fn frame(
         ImmediateFinishOutcome::AlreadyReported => Err(Error::InvalidState),
     }
 }
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "linux", feature = "native-gles-egl")))]
 pub(super) fn run() -> Result<()> {
     let (rgba, w, h) = load_ktx()?;
     let cfg = SurfaceConfig {
@@ -79,7 +79,7 @@ pub(super) fn run() -> Result<()> {
     };
     let ex = Rc::new(RefCell::new(None));
     let drop_ex = ex.clone();
-    utils::gl_api::run_wgl(
+    utils::gl_api::run_native(
         "Textured quad",
         cfg.clone(),
         move || *drop_ex.borrow_mut() = None,

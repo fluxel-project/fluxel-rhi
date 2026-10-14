@@ -63,6 +63,7 @@ const COLOR_ATTACHMENTS: [(&str, u32); 2] = [
     ("GL_BACK_LEFT", glow_const::BACK_LEFT),
     ("GL_FRONT_LEFT", glow_const::FRONT_LEFT),
 ];
+const GLES_COLOR_ATTACHMENTS: [(&str, u32); 1] = [("GL_BACK", glow_const::BACK)];
 
 /// The four colour component widths, in the order the typed value holds them.
 ///
@@ -127,9 +128,10 @@ const OPTIONAL_ATTACHMENTS: [(&str, u32, u32); 2] = [
 fn color_buffer(
     query: &impl NativeGlQuery,
     facts: &mut BTreeSet<String>,
+    attachments: &[(&'static str, u32)],
 ) -> Option<(&'static str, u32)> {
     let mut refused: Vec<String> = Vec::new();
-    for (name, attachment) in COLOR_ATTACHMENTS {
+    for &(name, attachment) in attachments {
         match query.drawable_attachment(attachment, glow_const::FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE)
         {
             // An object type of `GL_NONE` is the driver saying this buffer is not
@@ -200,7 +202,10 @@ fn record_optional_attachment(
 }
 
 /// The drawable's typed facts, with the strings they were observed alongside.
-pub(super) fn observe(query: &impl NativeGlQuery) -> (GlSurfaceFacts, BTreeSet<String>) {
+pub(super) fn observe(
+    query: &impl NativeGlQuery,
+    profile: crate::backend::gl::api::GlFamilyProfile,
+) -> (GlSurfaceFacts, BTreeSet<String>) {
     let mut facts = BTreeSet::new();
     let unavailable = |facts: BTreeSet<String>| (GlSurfaceFacts::Unavailable, facts);
     let Some(binding) = query.integer(glow_const::DRAW_FRAMEBUFFER_BINDING) else {
@@ -211,7 +216,13 @@ pub(super) fn observe(query: &impl NativeGlQuery) -> (GlSurfaceFacts, BTreeSet<S
         facts.insert("gl.surface-facts-unavailable=draw-framebuffer-bound".into());
         return unavailable(facts);
     }
-    let Some((buffer, attachment)) = color_buffer(query, &mut facts) else {
+    // GLES names the default framebuffer's color buffer GL_BACK. Desktop core
+    // profiles use the explicit GL_BACK_LEFT/GL_FRONT_LEFT attachment names.
+    let attachments = match profile {
+        crate::backend::gl::api::GlFamilyProfile::Embedded { .. } => &GLES_COLOR_ATTACHMENTS[..],
+        _ => &COLOR_ATTACHMENTS[..],
+    };
+    let Some((buffer, attachment)) = color_buffer(query, &mut facts, attachments) else {
         return unavailable(facts);
     };
     // The required set is read together and reported together: a partial surface

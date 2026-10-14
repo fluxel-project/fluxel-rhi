@@ -408,7 +408,10 @@ fn buffer<B: SecondaryExampleBackend>(
 
 #[path = "sequential.rs"]
 mod sequential;
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(
+    all(windows, feature = "native-gl-wgl"),
+    all(target_os = "linux", feature = "native-gles-egl")
+))]
 pub use sequential::run_gl_multithreaded_recording;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub use sequential::run_webgpu_multithreaded_recording;

@@ -451,7 +451,10 @@ pub async fn run_webgpu_multithreaded_recording(
         .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("{e:?}")))
 }
 
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(
+    all(windows, feature = "native-gl-wgl"),
+    all(target_os = "linux", feature = "native-gles-egl")
+))]
 pub fn run_gl_multithreaded_recording() -> Result<()> {
     use std::{
         cell::RefCell,
@@ -484,7 +487,7 @@ pub fn run_gl_multithreaded_recording() -> Result<()> {
     };
     let scene = Rc::new(RefCell::new(None::<Sequential<Gl>>));
     let dropped = Rc::clone(&scene);
-    utils::gl_api::run_wgl(
+    utils::gl_api::run_native(
         "Sequential UFO recording fallback",
         config.clone(),
         move || *dropped.borrow_mut() = None,

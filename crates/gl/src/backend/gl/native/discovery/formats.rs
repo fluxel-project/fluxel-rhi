@@ -533,6 +533,7 @@ pub(crate) mod glow_const {
     /// buffers are consistent with the `FRONT`/`BACK` values the latter records
     /// (`GL_FRONT` is `0x0404`, so `GL_FRONT_LEFT`/`GL_BACK_LEFT` are the two
     /// entries below it).
+    pub const BACK: u32 = 0x0405;
     pub const BACK_LEFT: u32 = 0x0402;
     pub const FRONT_LEFT: u32 = 0x0400;
     pub const DEPTH: u32 = 0x1801;

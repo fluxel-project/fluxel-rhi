@@ -277,7 +277,7 @@ fn discover_with_query_pair(
     // the snapshot's only durable free-form fact set. It is an observation about
     // the surface rather than about the context, and it is recorded at all
     // because FBO 0 has no `GlFormatTable` row that could carry it.
-    let (surface, surface_strings) = surface_facts::observe(query);
+    let (surface, surface_strings) = surface_facts::observe(query, profile);
     flags.other.extend(surface_strings);
     // The desktop requirement is recorded next to the observed facts so a report
     // that shows a desktop context can see, in the same record, the GL 4.0

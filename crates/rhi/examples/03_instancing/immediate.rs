@@ -105,13 +105,16 @@ fn config() -> SurfaceConfig {
     }
 }
 
-#[cfg(all(windows, feature = "native-gl-wgl"))]
-pub(super) fn run_wgl() -> Result<()> {
+#[cfg(any(
+    all(windows, feature = "native-gl-wgl"),
+    all(target_os = "linux", feature = "native-gles-egl")
+))]
+pub(super) fn run_native() -> Result<()> {
     let config = config();
     let scene = std::rc::Rc::new(std::cell::RefCell::new(None));
     let dropped_scene = std::rc::Rc::clone(&scene);
     let started = std::time::Instant::now();
-    crate::utils::gl_api::run_wgl(
+    crate::utils::gl_api::run_native(
         "Instanced rock field",
         config.clone(),
         move || *dropped_scene.borrow_mut() = None,

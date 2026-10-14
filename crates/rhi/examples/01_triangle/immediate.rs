@@ -77,7 +77,7 @@ fn issue_gl_frame(
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "linux", feature = "native-gles-egl")))]
 pub(super) fn run() -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
@@ -90,7 +90,7 @@ pub(super) fn run() -> Result<()> {
     };
     let triangle = std::rc::Rc::new(std::cell::RefCell::new(None));
     let dropped_triangle = std::rc::Rc::clone(&triangle);
-    utils::gl_api::run_wgl(
+    utils::gl_api::run_native(
         "Basic indexed triangle",
         config.clone(),
         move || *dropped_triangle.borrow_mut() = None,

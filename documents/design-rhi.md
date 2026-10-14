@@ -66,9 +66,10 @@ backend-wide Y flip into DX12.
   examples, including sequential fallbacks where native multiview, secondary
   recording, or runtime descriptor indexing is unavailable. The concentrated
   01–15 WGL run and final independent review are complete for the tested AMD
-  Radeon 780M profile. EGL/GLES and browser WebGL2 have selected compilation
-  evidence, but no complete 15-example real-GPU visual pass; WGL evidence must
-  not be generalized to those profiles.
+  Radeon 780M profile. EGL/GLES 3.1 has also passed all 15 examples on the same
+  GPU through Mesa D3D12, with two-frame execution and visual comparison against
+  the GL4+ and C++ references. Browser WebGL2 remains a separate profile and is
+  not covered by either native route's evidence.
 
 Metal is not an active workspace backend. Documentation and CI must not treat
 source paths or compile checks as hardware execution evidence.
@@ -90,6 +91,13 @@ Optional operations remain capability-gated. In particular, callers must check t
 published indirect, multi-draw, push-constant, query, descriptor-indexing, multiview,
 secondary-recording, and format support before selecting a workload. A compiling API
 call is not evidence that every backend or descriptor can execute it.
+
+Occlusion-query resolve values are unsigned integers. The portable contract is
+that zero means no samples passed and any nonzero value means at least one
+sample passed; the exact nonzero value is backend-defined. A backend may expose
+the native sample count or a native boolean visibility result. Code that needs
+only visibility must test for nonzero and must not compare exact counts across
+backends.
 
 ## Command and synchronization boundary
 

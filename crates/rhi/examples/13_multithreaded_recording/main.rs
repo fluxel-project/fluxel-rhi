@@ -24,7 +24,15 @@ fn main() {
     scene::run();
 }
 
-#[cfg(not(windows))]
+#[cfg(all(target_os = "linux", feature = "native-gles-egl"))]
+fn main() {
+    if let Err(error) = scene::run_gl_multithreaded_recording() {
+        eprintln!("13_multithreaded_recording: {error:?}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
 fn main() {
     scene::run();
 }

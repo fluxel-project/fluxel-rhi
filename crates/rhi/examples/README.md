@@ -22,7 +22,9 @@ example changes require rerunning affected backend paths.
 | DX12 | Commit `956f277a7ada5ec7decda7a8544e59a9fc2e9ee1` is pushed. All 15 examples ran on a real GPU with the D3D12 debug layer and were visually checked against C++; the complete WGSL manifest regenerates DXIL/SPIR-V byte-for-byte and checks shader ABI. The 08/12 ID 820 messages are clear-value performance hints and do not affect output. | Complete. Rerun only paths affected by a later shared change. |
 | Vulkan | All 15 examples ran for two frames on a real GPU with `VK_LAYER_KHRONOS_validation`; each produced zero validation diagnostics and was visually checked against C++ with the HUD excluded. The 09 anisotropic sampler path and 14 explicit upload-to-sampling transitions were fixed and rechecked. Example 13 was visually verified from swapchain GPU readback because the desktop capture was occluded. Example 07 preserves the reference's intentional 7×7 reflection blur. | Complete for this candidate. Continue to WebGPU after the Vulkan changes are committed and pushed. |
 | WebGPU | All 15 browser tests passed on Chrome 155.0.8059.40 using an AMD RDNA 3 adapter (`isFallbackAdapter = false`); each presented three frames at 1280×720. Fresh captures were visually compared with the C++ references with the HUD excluded. The sampler anisotropy path and WASM animation clock were fixed. | Complete for this candidate. Continue to GL after this backend commit is pushed. |
-| GL4+ / WebGL2 | WGL on AMD Radeon 780M (driver 32.0.21028.2002) passed the concentrated 01–15 real-GPU run and independent backend review. All examples have visually reviewed 1280×720 captures against C++ references with the HUD excluded. Example 11 matches the C++ occlusion-query samples (teapot 246605, sphere 2878). Example 12's readback image matches the C++ dragon outside the HUD: RGB MAE 0.001/255, P95 0/255, 93 differing pixels among 748,800. Examples 13–15 use sequential recording, fixed texture-array, and per-eye stereo fallbacks without claiming unavailable native capabilities. Example 15 matches the C++ reference outside the HUD and window border: RGB MAE 0.001/255, P95 0/255. | GL4+ is complete for the WGL profile on the tested AMD Radeon 780M. This does not establish GLES3+ or WebGL2 completion. WebGL2 has compile-only evidence for 09–12 and no visual pass; 09 blit, 10 indirect draw, 11 query/readback, and 12 buffer readback are not claimed as supported there. |
+| GL4+ | WGL on AMD Radeon 780M (driver 32.0.21028.2002) passed the concentrated 01–15 real-GPU run and independent backend review. All examples have visually reviewed 1280×720 captures against C++ references with the HUD excluded. Example 11 matches the C++ occlusion-query samples (teapot 246605, sphere 2878). Example 12's readback image matches the C++ dragon outside the HUD: RGB MAE 0.001/255, P95 0/255, 93 differing pixels among 748,800. Examples 13–15 use sequential recording, fixed texture-array, and per-eye stereo fallbacks without claiming unavailable native capabilities. Example 15 matches the C++ reference outside the HUD and window border: RGB MAE 0.001/255, P95 0/255. | Complete for the WGL profile on the tested AMD Radeon 780M. |
+| GLES3+ | EGL/GLES 3.1 on Mesa D3D12 over AMD Radeon 780M passed all 15 examples for two frames. Saved 1280×720 default-framebuffer captures were inspected against the GL4+ and C++ reference scenes with the HUD excluded. Compute storage-image output and occlusion-query visibility readback both ran on the GLES device. GLES exposes the native boolean visibility result; exact positive sample counts are not portable across backends. | Complete for the tested Mesa D3D12 GLES 3.1 profile. This does not establish WebGL2 completion. |
+| WebGL2 | Compile-only evidence for examples 09–12. | No visual pass yet. Examples 09 blit, 10 indirect draw, 11 query/readback, and 12 buffer readback are not claimed as supported. |
 
 The verified DX12 candidate reports only D3D12 message ID 820 for the offscreen color
 targets in examples 08 and 12. It is a performance hint about the optional
@@ -54,6 +56,13 @@ examples that expose that path. Backend selection happens once at startup; GPU o
 command recording retain their concrete backend type. The example host and
 submission helper live in `utils/`. Each GPU workload and its private modules
 live within that example's numbered directory.
+
+On Linux, the EGL/GLES immediate examples use the same host lifecycle and
+accept `--backend gles`:
+
+```bash
+cargo run -p fluxel-rhi --no-default-features --features examples,native-gles-egl --example 01_triangle -- --backend gles --frames 2
+```
 
 WebGPU browser tests run the same scene workloads through the browser's real
 `GPUDevice`, native command encoders, and canvas presentation. Install the

@@ -31,14 +31,23 @@ impl<T> OffscreenWorkloadBackend for T where
 pub trait OffscreenBackend: OffscreenWorkloadBackend + DeferredBackend {}
 impl<T> OffscreenBackend for T where T: OffscreenWorkloadBackend + DeferredBackend {}
 
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(
+    all(windows, feature = "native-gl-wgl"),
+    all(target_os = "linux", feature = "native-gles-egl")
+))]
 #[path = "immediate.rs"]
 mod immediate;
 
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(
+    all(windows, feature = "native-gl-wgl"),
+    all(target_os = "linux", feature = "native-gles-egl")
+))]
 pub(crate) use immediate::run_gl;
 
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(
+    all(windows, feature = "native-gl-wgl"),
+    all(target_os = "linux", feature = "native-gles-egl")
+))]
 pub(crate) fn main_gl() {
     if let Err(error) = run_gl() {
         eprintln!("07_offscreen: {error:?}");
@@ -46,14 +55,11 @@ pub(crate) fn main_gl() {
     }
 }
 
-mod offscreen {
-    #[path = "../resources.rs"]
-    pub(crate) mod resources;
-    #[path = "../workload.rs"]
-    mod workload;
-    pub(crate) use workload::Offscreen;
-}
-use offscreen::Offscreen;
+#[path = "resources.rs"]
+mod resources;
+#[path = "workload.rs"]
+mod workload;
+use workload::Offscreen;
 
 /// Draws the mirror scene into a host-owned browser canvas.
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
@@ -159,7 +165,12 @@ fn main() {
         std::process::exit(1)
     }
 }
-#[cfg(not(windows))]
+#[cfg(all(target_os = "linux", feature = "native-gles-egl"))]
+fn main() {
+    main_gl();
+}
+
+#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
 fn main() {
     eprintln!("07_offscreen requires Windows");
 }

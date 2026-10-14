@@ -265,6 +265,7 @@ impl<B: PushBackend> PushWorkload<B> {
 
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),
+    all(target_os = "linux", feature = "native-gles-egl"),
     all(target_arch = "wasm32", feature = "webgl2")
 ))]
 impl PushWorkload<fluxel_rhi::gl::Gl> {

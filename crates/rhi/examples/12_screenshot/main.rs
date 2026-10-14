@@ -5,7 +5,10 @@
 //! after the caller supplies completion evidence for that encoder.
 #[path = "../utils/gltf.rs"]
 mod gltf;
-#[cfg(feature = "native-gl-wgl")]
+#[cfg(any(
+    feature = "native-gl-wgl",
+    all(target_os = "linux", feature = "native-gles-egl")
+))]
 mod immediate;
 #[path = "../utils/mod.rs"]
 mod utils;
@@ -545,7 +548,15 @@ pub async fn run_webgpu_screenshot(
     run.await
         .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
 }
-#[cfg(not(windows))]
+#[cfg(all(target_os = "linux", feature = "native-gles-egl"))]
+fn main() {
+    if let Err(error) = immediate::run() {
+        eprintln!("12_screenshot: {error:?}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
 fn main() {
     eprintln!("12_screenshot requires a backend implementing ReadbackBackend");
 }

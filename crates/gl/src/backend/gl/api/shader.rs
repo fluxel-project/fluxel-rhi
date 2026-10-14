@@ -98,6 +98,9 @@ pub(crate) struct GlLogicalBinding {
     /// The other logical half of a WGSL texture/sampler pair. Both entries
     /// resolve to one GLSL sampler uniform and therefore one texture unit.
     pub pair: Option<GlBindingLocation>,
+    /// Explicit GLSL image-unit binding emitted by Naga for storage images.
+    /// ES image uniforms cannot be assigned with `glUniform1i`.
+    pub image_unit: Option<u32>,
 }
 /// An executable GL assignment selected after program link.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -173,6 +176,8 @@ pub(crate) enum GlShaderValidationError {
     DuplicateLogicalBinding,
     DuplicateLogicalAssignment,
     DuplicateExecutableAssignment,
+    MissingStorageImageUnit,
+    StorageImageUnitMismatch,
     DuplicateVertexLocation,
     DuplicateFragmentOutputLocation,
     ZeroVertexColumns,
@@ -291,6 +296,19 @@ impl GlProgramReflection {
                 }
             }
         }
+        for binding in &layout.bindings {
+            if matches!(binding.kind, GlShaderResourceKind::StorageImage(_)) {
+                let Some(unit) = binding.image_unit else {
+                    return Err(GlShaderValidationError::MissingStorageImageUnit);
+                };
+                if !self.assignments.iter().any(|assignment| {
+                    assignment.logical == binding.location
+                        && assignment.executable == GlExecutableBindingLocation::ImageUnit(unit)
+                }) {
+                    return Err(GlShaderValidationError::StorageImageUnitMismatch);
+                }
+            }
+        }
         let mut inputs = BTreeSet::new();
         for input in &self.vertex_inputs {
             if input.columns == 0 {
@@ -341,6 +359,7 @@ mod tests {
             kind: GlShaderResourceKind::UniformBuffer,
             array_count: 1,
             pair: None,
+            image_unit: None,
         };
         let layout = GlPipelineLayout {
             bindings: vec![binding.clone(), binding],
@@ -495,6 +514,7 @@ mod tests {
                     kind: GlShaderResourceKind::UniformBuffer,
                     array_count: 1,
                     pair: None,
+                    image_unit: None,
                 },
                 GlLogicalBinding {
                     names: vec!["b".into()],
@@ -502,6 +522,7 @@ mod tests {
                     kind: GlShaderResourceKind::UniformBuffer,
                     array_count: 1,
                     pair: None,
+                    image_unit: None,
                 },
             ],
         };
@@ -522,6 +543,44 @@ mod tests {
         assert_eq!(
             reflection.validate_against(&layout),
             Err(GlShaderValidationError::DuplicateExecutableAssignment)
+        );
+    }
+
+    #[test]
+    fn storage_image_assignment_matches_its_explicit_glsl_unit() {
+        let location = GlBindingLocation {
+            group: 0,
+            binding: 1,
+        };
+        let layout = GlPipelineLayout {
+            bindings: vec![GlLogicalBinding {
+                names: vec!["output_image".into()],
+                location,
+                kind: GlShaderResourceKind::StorageImage(GlStorageImageAccess::WriteOnly),
+                array_count: 1,
+                pair: None,
+                image_unit: Some(0),
+            }],
+        };
+        let make_reflection = |unit| GlProgramReflection {
+            vertex_inputs: vec![],
+            fragment_outputs: vec![],
+            assignments: vec![GlExecutableBindingAssignment {
+                logical: location,
+                executable: GlExecutableBindingLocation::ImageUnit(unit),
+            }],
+        };
+
+        assert!(make_reflection(0).validate_against(&layout).is_ok());
+        assert_eq!(
+            make_reflection(1).validate_against(&layout),
+            Err(GlShaderValidationError::StorageImageUnitMismatch)
+        );
+        let mut missing = layout;
+        missing.bindings[0].image_unit = None;
+        assert_eq!(
+            make_reflection(0).validate_against(&missing),
+            Err(GlShaderValidationError::MissingStorageImageUnit)
         );
     }
 }

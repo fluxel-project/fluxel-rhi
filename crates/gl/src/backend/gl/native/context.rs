@@ -4,6 +4,10 @@ use crate::backend::gl::api::{GlContextLifecycle, GlError, OwnerThreadIdentity};
 use core::marker::PhantomData;
 use std::rc::Rc;
 
+/// Native `glUnmapBuffer` signature used where `glow` does not expose its
+/// corruption status return value.
+pub(crate) type UnmapBufferFn = unsafe extern "system" fn(u32) -> u8;
+
 /// Which platform family owns the current native context.
 ///
 /// This is diagnostic provenance only.  It deliberately does not carry a WGL
@@ -43,6 +47,7 @@ pub(crate) trait NativeContextOwner {
     fn owner_thread(&self) -> OwnerThreadIdentity;
     fn make_current(&mut self, operation: &'static str) -> Result<(), GlError>;
     fn load_glow(&mut self) -> Result<glow::Context, GlError>;
+    fn load_unmap_buffer(&self) -> Result<UnmapBufferFn, GlError>;
     fn swap_buffers(&mut self) -> Result<(), GlError>;
     /// Records or recreates the drawable at the Host-confirmed extent.
     fn resize_drawable(&mut self, extent: [u32; 2]) -> Result<(), GlError>;
@@ -94,6 +99,15 @@ impl NativeContextOwner for NativePlatformContext {
             Self::Wgl(context) => context.load_glow(),
             #[cfg(feature = "native-gles-egl")]
             Self::Egl(context) => context.load_glow().map_err(|error| error.into_gl_error()),
+        }
+    }
+
+    fn load_unmap_buffer(&self) -> Result<UnmapBufferFn, GlError> {
+        match self {
+            #[cfg(all(windows, feature = "native-gl-wgl"))]
+            Self::Wgl(context) => context.load_unmap_buffer(),
+            #[cfg(feature = "native-gles-egl")]
+            Self::Egl(context) => context.load_unmap_buffer(),
         }
     }
 

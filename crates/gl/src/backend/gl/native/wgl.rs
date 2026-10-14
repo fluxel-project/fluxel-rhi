@@ -431,6 +431,10 @@ impl super::context::NativeContextOwner for WglContextSurface {
         WglContextSurface::load_glow(self)
     }
 
+    fn load_unmap_buffer(&self) -> Result<super::context::UnmapBufferFn, GlError> {
+        WglContextSurface::load_unmap_buffer(self)
+    }
+
     fn swap_buffers(&mut self) -> Result<(), GlError> {
         WglContextSurface::present(self)
     }

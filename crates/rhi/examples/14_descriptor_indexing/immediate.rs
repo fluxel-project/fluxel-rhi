@@ -41,7 +41,7 @@ pub(super) fn run() -> Result<()> {
     let start = Instant::now();
     let scene = Rc::new(RefCell::new(None::<DescriptorIndexing<Gl>>));
     let dropped = Rc::clone(&scene);
-    utils::gl_api::run_wgl(
+    utils::gl_api::run_native(
         "Fixed texture-array fallback",
         config.clone(),
         move || *dropped.borrow_mut() = None,

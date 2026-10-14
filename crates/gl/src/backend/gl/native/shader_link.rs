@@ -256,7 +256,6 @@ impl NativeGlProvider {
             let max_units = self.discovery.limits().max_combined_texture_image_units;
             // Image units are their own namespace, so this counter starts at
             // zero independently of the sampler one above.
-            let mut next_image_unit = 0u32;
             let max_image_units = self.discovery.limits().max_image_units;
             for (logical_index, binding) in descriptor.layout.bindings.iter().enumerate() {
                 match binding.kind {
@@ -423,24 +422,16 @@ impl NativeGlProvider {
                         // written here rather than left to the binding path --
                         // and that is also what keeps the shader and the
                         // adapter agreeing on a unit no declaration fixes.
-                        let unit = next_image_unit;
-                        next_image_unit = unit
-                            .checked_add(1)
-                            .ok_or(GlError::OutOfMemory { operation: op })?;
-                        if next_image_unit > max_image_units {
+                        let unit = binding.image_unit.ok_or(GlError::Unsupported {
+                            operation: op,
+                            reason: "storage image has no explicit GLSL image-unit binding",
+                        })?;
+                        if unit >= max_image_units {
                             return Err(Self::validation(
                                 op,
                                 "storage image assignments exceed the discovered image unit count",
                             ));
                         }
-                        let name = binding.names.first().expect("nonempty GL ABI names");
-                        let Some(location) = self.gl.get_uniform_location(program, name) else {
-                            return Err(GlError::Driver {
-                                operation: op,
-                                message: "storage image uniform has no location".into(),
-                            });
-                        };
-                        self.gl.uniform_1_i32(Some(&location), unit as i32);
                         assignments.push(GlExecutableBindingAssignment {
                             logical: binding.location,
                             executable: GlExecutableBindingLocation::ImageUnit(unit),

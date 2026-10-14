@@ -47,7 +47,7 @@ impl ReadbackBackend for Gl {
             .end
             .checked_sub(range.start)
             .ok_or(Error::InvalidRange)?;
-        #[cfg(all(windows, feature = "native-gl-wgl"))]
+        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
         {
             use crate::backend::gl::api::{GlBufferRange, GlCopyDomainApi as _};
             let result = encoder.state.with_native("read GL buffer", |provider| {
@@ -70,7 +70,7 @@ impl ReadbackBackend for Gl {
                 bytes,
             });
         }
-        #[cfg(not(all(windows, feature = "native-gl-wgl")))]
+        #[cfg(not(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl")))]
         {
             let _ = (encoder, source, range, size);
             Err(Error::Unsupported("GL buffer readback platform"))

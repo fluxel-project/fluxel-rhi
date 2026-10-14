@@ -19,7 +19,10 @@ use fluxel_rhi::api::{
     SurfaceImage,
 };
 
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(
+    all(windows, feature = "native-gl-wgl"),
+    all(target_os = "linux", feature = "native-gles-egl")
+))]
 pub mod gl_api;
 
 #[cfg(windows)]

@@ -14,10 +14,16 @@ mod workload;
 
 use fluxel_rhi::api::*;
 
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(
+    all(windows, feature = "native-gl-wgl"),
+    all(target_os = "linux", feature = "native-gles-egl")
+))]
 mod immediate;
 
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(
+    all(windows, feature = "native-gl-wgl"),
+    all(target_os = "linux", feature = "native-gles-egl")
+))]
 fn main_gl() {
     if let Err(error) = immediate::run() {
         eprintln!("10_indirect_draw: {error:?}");
@@ -136,7 +142,12 @@ fn main() {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(all(target_os = "linux", feature = "native-gles-egl"))]
+fn main() {
+    main_gl();
+}
+
+#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
 fn main() {
     eprintln!("10_indirect_draw requires Windows");
 }

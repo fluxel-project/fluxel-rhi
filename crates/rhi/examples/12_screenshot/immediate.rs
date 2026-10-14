@@ -83,7 +83,7 @@ fn issue_frame(
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "linux", feature = "native-gles-egl")))]
 pub(super) fn run() -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
@@ -99,7 +99,7 @@ pub(super) fn run() -> Result<()> {
     let dropped = Rc::clone(&screenshot);
     let captured = Rc::new(RefCell::new(false));
     let captured_frame = Rc::clone(&captured);
-    utils::gl_api::run_wgl(
+    utils::gl_api::run_native(
         "Screenshot readback",
         config.clone(),
         move || *dropped.borrow_mut() = None,
@@ -137,7 +137,7 @@ pub(super) fn run() -> Result<()> {
     )
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
 pub(super) fn run() -> Result<()> {
     Err(Error::Unsupported("12 GL WGL host"))
 }

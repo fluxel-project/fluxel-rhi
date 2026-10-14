@@ -166,10 +166,17 @@ fn lower_wgsl(
     .validate(&module)
     .map_err(|error| Error::Shader(error.emit_to_string(source)))?;
     let version = naga_version(profile, entry.stage)?;
+    let expected_stage = naga_stage(entry.stage)?;
+    let entry_index = module
+        .entry_points
+        .iter()
+        .position(|candidate| candidate.name == entry.name && candidate.stage == expected_stage)
+        .ok_or(Error::Unsupported("WGSL GL entry point"))?;
+    let image_units = naga_storage_image_units(&module, info.get_entry_point(entry_index))?;
     let options = naga::back::glsl::Options {
         version,
         writer_flags: naga::back::glsl::WriterFlags::empty(),
-        binding_map: Default::default(),
+        binding_map: image_units.clone(),
         zero_initialize_workgroup_memory: true,
     };
     let pipeline = naga::back::glsl::PipelineOptions {
@@ -209,7 +216,7 @@ fn lower_wgsl(
         })
         .collect::<std::collections::HashSet<_>>();
     let text = super::shader_texture_origin::lower(&text, &sampled_images, &storage_images);
-    let bindings = collect_naga_bindings(&module, reflection);
+    let bindings = collect_naga_bindings(&module, reflection, &image_units);
     let mut lowered = crate::backend::gl::api::GlShaderSource {
         stage: gl_stage(entry.stage)?,
         dialect: gl_dialect(version),
@@ -218,6 +225,7 @@ fn lower_wgsl(
         text,
         debug_name: desc.label.clone(),
     };
+    apply_embedded_precision_defaults(&mut lowered);
     apply_naga_clip_depth_abi(&mut lowered)?;
     lowered.source_hash = crate::backend::gl::api::GlShaderKey(source_key(
         lowered.text.as_bytes(),
@@ -252,17 +260,24 @@ fn is_storage_image(module: &naga::Module, global: naga::Handle<naga::GlobalVari
 fn collect_naga_bindings(
     module: &naga::Module,
     reflection: naga::back::glsl::ReflectionInfo,
+    image_units: &naga::back::glsl::BindingMap,
 ) -> Vec<GlNagaBindingName> {
     let mut bindings = Vec::new();
     for (global, name) in reflection.uniforms {
-        push_binding(&mut bindings, module, global, name);
+        push_binding(&mut bindings, module, global, name, image_units);
     }
     for (name, mapping) in reflection.texture_mapping {
         // GLSL has a combined texture/sampler uniform. Both WebGPU bindings
         // must resolve to that one reflected name for layout validation.
-        push_binding(&mut bindings, module, mapping.texture, name.clone());
+        push_binding(
+            &mut bindings,
+            module,
+            mapping.texture,
+            name.clone(),
+            image_units,
+        );
         if let Some(sampler) = mapping.sampler {
-            push_binding(&mut bindings, module, sampler, name);
+            push_binding(&mut bindings, module, sampler, name, image_units);
         }
     }
     bindings.sort_by(|left, right| {
@@ -279,14 +294,46 @@ fn push_binding(
     module: &naga::Module,
     global: naga::Handle<naga::GlobalVariable>,
     name: String,
+    image_units: &naga::back::glsl::BindingMap,
 ) {
     if let Some(binding) = module.global_variables[global].binding {
         output.push(GlNagaBindingName {
             group: binding.group,
             binding: binding.binding,
             name,
+            image_unit: image_units.get(&binding).copied().map(u32::from),
         });
     }
+}
+
+/// Assigns active WGSL storage images dense GLSL image units in logical
+/// group/binding order. GLES image uniforms cannot be updated with
+/// `glUniform1i`; the same unit is emitted as a GLSL binding qualifier and
+/// carried into bind-group execution.
+fn naga_storage_image_units(
+    module: &naga::Module,
+    entry: &naga::valid::FunctionInfo,
+) -> Result<naga::back::glsl::BindingMap> {
+    let mut resources = module
+        .global_variables
+        .iter()
+        .filter_map(|(handle, global)| {
+            let binding = global.binding.as_ref()?;
+            (!entry[handle].is_empty() && is_storage_image(module, handle))
+                .then_some(binding.clone())
+        })
+        .collect::<Vec<_>>();
+    resources.sort_by_key(|binding| (binding.group, binding.binding));
+    resources.dedup();
+    resources
+        .into_iter()
+        .enumerate()
+        .map(|(unit, binding)| {
+            let unit =
+                u8::try_from(unit).map_err(|_| Error::Unsupported("too many storage images"))?;
+            Ok((binding, unit))
+        })
+        .collect()
 }
 
 fn naga_version(
@@ -397,6 +444,7 @@ fn compile_direct(device: &GlDevice, desc: &ShaderDesc) -> Result<GlShader> {
     };
     let profile = shader_profile(device).ok_or(Error::Unsupported("GL platform context"))?;
     let (_, mut source) = crate::backend::gl::translate::lower_shader_source(profile, desc, entry)?;
+    apply_embedded_precision_defaults(&mut source);
     apply_public_clip_depth_abi(&mut source)?;
     source.source_hash = crate::backend::gl::api::GlShaderKey(source_key(
         source.text.as_bytes(),
@@ -470,6 +518,61 @@ fn apply_public_clip_depth_abi(source: &mut crate::backend::gl::api::GlShaderSou
     Ok(())
 }
 
+/// Gives GLSL ES defined defaults for unqualified scalar types.
+///
+/// Desktop GLSL supplies a default float precision; GLSL ES fragment shaders
+/// do not. Naga leaves source-level precision choices open, so native GLES and
+/// browser WebGL apply the same backend policy before compiling the source.
+/// Explicit author precision statements remain authoritative.
+fn apply_embedded_precision_defaults(source: &mut crate::backend::gl::api::GlShaderSource) {
+    if !matches!(
+        source.dialect,
+        crate::backend::gl::api::GlShaderDialect::Embedded { .. }
+    ) {
+        return;
+    }
+    let mut declarations = Vec::new();
+    let mut body = String::with_capacity(source.text.len());
+    for line in source.text.split_inclusive('\n') {
+        if line.trim_start().starts_with("precision ") {
+            declarations.push(line.to_owned());
+        } else {
+            body.push_str(line);
+        }
+    }
+    let has_default = |ty: &str| {
+        declarations.iter().any(|line| {
+            line.trim_end()
+                .strip_suffix(';')
+                .is_some_and(|declaration| declaration.split_whitespace().last() == Some(ty))
+        })
+    };
+    let has_float_default = has_default("float");
+    let has_int_default = has_default("int");
+    if !has_float_default {
+        declarations.push("precision highp float;\n".into());
+    }
+    if !has_int_default {
+        declarations.push("precision highp int;\n".into());
+    }
+
+    // Naga and the texture-origin lowering can place helper functions before
+    // Naga's default precision declarations. GLSL ES requires defaults before
+    // every use, so move all precision declarations after directives/comments.
+    let mut insertion = 0;
+    for line in body.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+            insertion += line.len();
+        } else {
+            break;
+        }
+    }
+    let declarations = declarations.concat();
+    body.insert_str(insertion, &declarations);
+    source.text = body;
+}
+
 fn source_key(bytes: &[u8], entry: &str) -> [u8; 32] {
     let mut state = 0xcbf2_9ce4_8422_2325_u64;
     for byte in bytes.iter().chain(entry.as_bytes()) {
@@ -489,7 +592,8 @@ mod tests {
 
     use fluxel_rhi_core::api::{ShaderDesc, ShaderEntryPoint, ShaderFormat, ShaderStage};
 
-    use super::{lower_wgsl, source_key};
+    use super::{apply_embedded_precision_defaults, lower_wgsl, source_key};
+    use crate::backend::gl::api::{GlShaderDialect, GlShaderKey, GlShaderSource, GlShaderStage};
 
     const TEXTURED_WGSL: &str = r#"
         struct Scene { value: f32, };
@@ -503,6 +607,35 @@ mod tests {
             return textureSample(color_texture, color_sampler, vec2f(scene.value));
         }
     "#;
+
+    #[test]
+    fn embedded_precision_defaults_follow_version_and_extensions() {
+        let mut source = GlShaderSource {
+            stage: GlShaderStage::Fragment,
+            dialect: GlShaderDialect::Embedded { version: 300 },
+            entry_point: "main".into(),
+            source_hash: GlShaderKey([0; 32]),
+            text: "#version 300 es\n#extension GL_EXT_texture_norm16 : enable\nout vec4 color;\n"
+                .into(),
+            debug_name: None,
+        };
+        apply_embedded_precision_defaults(&mut source);
+        assert!(source.text.contains(
+            "#extension GL_EXT_texture_norm16 : enable\nprecision highp float;\nprecision highp int;\nout vec4 color;"
+        ));
+
+        let mut desktop = GlShaderSource {
+            stage: GlShaderStage::Vertex,
+            dialect: GlShaderDialect::Desktop { version: 400 },
+            entry_point: "main".into(),
+            source_hash: GlShaderKey([0; 32]),
+            text: "#version 400 core\nvoid main() {}\n".into(),
+            debug_name: None,
+        };
+        let original = desktop.text.clone();
+        apply_embedded_precision_defaults(&mut desktop);
+        assert_eq!(desktop.text, original);
+    }
     const COMPUTE_WGSL: &str = r#"
         @group(0) @binding(0) var source_image: texture_2d<f32>;
         @group(0) @binding(1) var result_image: texture_storage_2d<rgba8unorm, write>;
@@ -589,7 +722,16 @@ mod tests {
         assert!(compute.text.contains("fluxel_internal_flip_texel("));
         assert!(compute.text.contains("textureSize("));
         assert!(compute.text.contains("imageSize("), "{}", compute.text);
+        assert!(
+            compute.text.contains("layout(binding = 0,rgba8)"),
+            "{}",
+            compute.text
+        );
         assert!(bindings.iter().any(|binding| binding.binding == 0));
-        assert!(bindings.iter().any(|binding| binding.binding == 1));
+        assert!(
+            bindings
+                .iter()
+                .any(|binding| binding.binding == 1 && binding.image_unit == Some(0))
+        );
     }
 }

@@ -29,6 +29,7 @@ pub struct TexturePixels<'a> {
 }
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),
+    all(target_os = "linux", feature = "native-gles-egl"),
     all(target_arch = "wasm32", feature = "webgl2")
 ))]
 #[path = "immediate.rs"]
@@ -324,7 +325,15 @@ pub fn run() {
 }
 
 /// Reports the unavailable native target on unsupported hosts.
-#[cfg(not(windows))]
+#[cfg(all(target_os = "linux", feature = "native-gles-egl"))]
+pub fn run() {
+    if let Err(error) = immediate::run() {
+        eprintln!("02_texture: {error:?}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
 pub fn run() {
     eprintln!("02_texture requires Windows and DX12");
 }

@@ -33,7 +33,10 @@ impl<T> StereoBackend for T where
 /// Backends that use the sequential stereo fallback and compile its WGSL source.
 pub trait WgslStereoBackend: StereoBackend {}
 
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(
+    all(windows, feature = "native-gl-wgl"),
+    all(target_os = "linux", feature = "native-gles-egl")
+))]
 impl WgslStereoBackend for fluxel_rhi::gl::Gl {}
 
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
@@ -442,7 +445,10 @@ use resources::*;
 mod per_eye;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub use per_eye::run_webgpu_multiview;
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(
+    all(windows, feature = "native-gl-wgl"),
+    all(target_os = "linux", feature = "native-gles-egl")
+))]
 mod immediate;
 
 #[cfg(windows)]
@@ -520,7 +526,15 @@ fn main() {
         std::process::exit(1);
     }
 }
-#[cfg(not(windows))]
+#[cfg(all(target_os = "linux", feature = "native-gles-egl"))]
+fn main() {
+    if let Err(error) = immediate::run() {
+        eprintln!("15_multiview: {error:?}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
 fn main() {
     eprintln!("15_multiview requires Windows and a backend with multiview support");
 }

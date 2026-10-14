@@ -588,7 +588,7 @@ impl<B: OcclusionWorkloadBackend> Workload<B> {
         ];
         if std::env::var_os("FLUXEL_QUERY_TRACE").is_some() {
             println!(
-                "occlusion samples: teapot={} sphere={}",
+                "occlusion results: teapot={} sphere={}",
                 passed[0], passed[1]
             );
         }

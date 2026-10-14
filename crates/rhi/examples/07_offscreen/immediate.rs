@@ -93,7 +93,7 @@ pub(super) fn run_gl() -> Result<()> {
     let start = std::time::Instant::now();
     let workload = Rc::new(RefCell::new(None));
     let dropped_workload = Rc::clone(&workload);
-    utils::gl_api::run_wgl(
+    utils::gl_api::run_native(
         "Offscreen mirror rendering",
         config.clone(),
         move || *dropped_workload.borrow_mut() = None,

@@ -85,7 +85,7 @@ fn issue_frame(
     workload.consume(device, ticket, &point)
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "linux", feature = "native-gles-egl")))]
 pub(super) fn run() -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
@@ -98,7 +98,7 @@ pub(super) fn run() -> Result<()> {
     };
     let workload = Rc::new(RefCell::new(None));
     let dropped_workload = Rc::clone(&workload);
-    utils::gl_api::run_wgl(
+    utils::gl_api::run_native(
         "Occlusion queries",
         config.clone(),
         move || *dropped_workload.borrow_mut() = None,
@@ -123,7 +123,7 @@ pub(super) fn run() -> Result<()> {
     )
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
 pub(super) fn run() -> Result<()> {
     Err(Error::Unsupported("11 GL WGL host"))
 }

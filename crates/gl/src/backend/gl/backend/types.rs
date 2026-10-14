@@ -38,13 +38,20 @@ impl GlInstance {
         let gl = context
             .load_glow()
             .map_err(|error| fluxel_rhi_core::api::Error::Backend(format!("{error:?}")))?;
+        let unmap_buffer = context
+            .load_unmap_buffer()
+            .map_err(|error| fluxel_rhi_core::api::Error::Backend(format!("{error:?}")))?;
         let stamp = context.context_stamp();
         // SAFETY: `make_current` above established that this exact platform
         // context is current and exclusively used by this thread. The provider
         // is retained beside that owner and every later operation repeats the
         // currentness transition before touching its GL names.
         let provider = unsafe {
-            crate::backend::gl::native::provider::NativeGlProvider::from_current(gl, stamp)
+            crate::backend::gl::native::provider::NativeGlProvider::from_current(
+                gl,
+                stamp,
+                unmap_buffer,
+            )
         }
         .map_err(|error| fluxel_rhi_core::api::Error::Backend(format!("{error:?}")))?;
         Ok(Self(Rc::new(GlDeviceState {
@@ -622,6 +629,8 @@ pub(crate) struct GlNagaBindingName {
     pub(crate) group: u32,
     pub(crate) binding: u32,
     pub(crate) name: String,
+    /// Unit encoded in the GLSL declaration for an image uniform.
+    pub(crate) image_unit: Option<u32>,
 }
 
 impl core::ops::Deref for GlShader {

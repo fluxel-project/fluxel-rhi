@@ -14,8 +14,15 @@ use std::{
     },
 };
 
+/// Identifies the measurement recorded by a query set.
 #[derive(Clone, Copy, Debug)]
 pub enum QueryKind {
+    /// Tests whether rasterized samples passed the fragment tests.
+    ///
+    /// Resolved values are unsigned integers. Zero means no samples passed;
+    /// any nonzero value means at least one sample passed. The exact nonzero
+    /// value is backend-defined: a backend may expose its sample count or the
+    /// native visibility predicate when only a boolean query is available.
     Occlusion,
     Timestamp,
     PipelineStatistics,

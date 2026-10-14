@@ -31,11 +31,53 @@ impl NativeGlProvider {
             usize::try_from(source.size)
                 .map_err(|_| GlError::OutOfMemory { operation: OP })?
         ];
-        // SAFETY: current-context contract; the exact byte slice was validated.
-        unsafe {
-            self.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(name));
-            self.gl
-                .get_buffer_sub_data(glow::COPY_READ_BUFFER, offset, &mut out);
+        // SAFETY: current context; the validated live buffer is bound to the
+        // copy-read target used by the read route below.
+        unsafe { self.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(name)) };
+        #[cfg(all(
+            feature = "native-gles-egl",
+            not(all(windows, feature = "native-gl-wgl"))
+        ))]
+        {
+            let length = i32::try_from(source.size)
+                .map_err(|_| Self::validation(OP, "read size exceeds GLsizeiptr"))?;
+            // SAFETY: the buffer and range were validated above and are bound
+            // to COPY_READ_BUFFER on this current GLES context. GLES 3.0 has
+            // mapBufferRange but not desktop GetBufferSubData; the mapping is
+            // copied before it is unmapped and never escapes this call.
+            let data_intact = unsafe {
+                let mapped = self.gl.map_buffer_range(
+                    glow::COPY_READ_BUFFER,
+                    offset,
+                    length,
+                    glow::MAP_READ_BIT,
+                );
+                if mapped.is_null() {
+                    return Err(GlError::Driver {
+                        operation: OP,
+                        message: "GLES buffer read mapping returned null".into(),
+                    });
+                }
+                core::ptr::copy_nonoverlapping(mapped, out.as_mut_ptr(), out.len());
+                (self.unmap_buffer)(glow::COPY_READ_BUFFER) != 0
+            };
+            if !data_intact {
+                return Err(GlError::Driver {
+                    operation: OP,
+                    message: "GLES buffer read mapping reported corrupted data".into(),
+                });
+            }
+        }
+        #[cfg(any(
+            not(feature = "native-gles-egl"),
+            all(windows, feature = "native-gl-wgl")
+        ))]
+        {
+            // SAFETY: current-context contract; the exact byte slice was validated.
+            unsafe {
+                self.gl
+                    .get_buffer_sub_data(glow::COPY_READ_BUFFER, offset, &mut out);
+            }
         }
         self.driver_error(OP)?;
         Ok(out)

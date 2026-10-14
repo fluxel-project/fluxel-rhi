@@ -77,7 +77,7 @@ fn issue_frame(
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "linux", feature = "native-gles-egl")))]
 pub(super) fn run() -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
@@ -90,7 +90,7 @@ pub(super) fn run() -> Result<()> {
     };
     let tunnel = Rc::new(RefCell::new(None));
     let dropped_tunnel = Rc::clone(&tunnel);
-    utils::gl_api::run_wgl(
+    utils::gl_api::run_native(
         "GPU generated mipmaps",
         config.clone(),
         move || *dropped_tunnel.borrow_mut() = None,
@@ -120,7 +120,7 @@ pub(super) fn run() -> Result<()> {
     )
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
 pub(super) fn run() -> Result<()> {
     Err(Error::Unsupported("09 GL WGL host"))
 }

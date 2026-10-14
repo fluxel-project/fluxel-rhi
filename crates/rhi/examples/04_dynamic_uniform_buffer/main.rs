@@ -537,6 +537,7 @@ fn run<B: DynamicUniformBackend + DeferredBackend, H: utils::ExampleHost<B>>(
 
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),
+    all(target_os = "linux", feature = "native-gles-egl"),
     all(target_arch = "wasm32", feature = "webgl2")
 ))]
 #[path = "immediate.rs"]
@@ -580,7 +581,15 @@ fn main() {
         std::process::exit(1)
     }
 }
-#[cfg(not(windows))]
+#[cfg(all(target_os = "linux", feature = "native-gles-egl"))]
+fn main() {
+    if let Err(error) = immediate::run() {
+        eprintln!("04_dynamic_uniform_buffer: {error:?}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
 fn main() {
     eprintln!("04_dynamic_uniform_buffer requires Windows and DX12");
 }

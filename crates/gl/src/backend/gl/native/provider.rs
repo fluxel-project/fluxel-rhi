@@ -29,6 +29,7 @@ pub(crate) struct NativeGlProvider {
     /// avoids a self-reference between a thread-affine surface and its object
     /// tables when the pair is constructed on `NativeOwnerWorker`.
     pub(super) gl: glow::Context,
+    pub(super) unmap_buffer: super::context::UnmapBufferFn,
     pub(super) discovery: GlDiscoverySnapshot,
     pub(super) lifecycle: GlContextLifecycle,
     pub(super) owner: OwnerThreadIdentity,
@@ -182,10 +183,11 @@ impl NativeGlProvider {
     pub(crate) unsafe fn from_current(
         gl: glow::Context,
         stamp: ContextStamp,
+        unmap_buffer: super::context::UnmapBufferFn,
     ) -> Result<Self, NativeDiscoveryError> {
         // SAFETY: forwarded from this constructor's current-context contract.
         let discovery = unsafe { discover_current_glow(&gl, stamp) }?;
-        Ok(Self::assemble(gl, discovery))
+        Ok(Self::assemble(gl, discovery, unmap_buffer))
     }
 
     /// Assembles the provider over an already-collected discovery snapshot.
@@ -199,13 +201,19 @@ impl NativeGlProvider {
     pub(crate) unsafe fn from_discovered(
         gl: glow::Context,
         discovery: GlDiscoverySnapshot,
+        unmap_buffer: super::context::UnmapBufferFn,
     ) -> Self {
-        Self::assemble(gl, discovery)
+        Self::assemble(gl, discovery, unmap_buffer)
     }
 
-    fn assemble(gl: glow::Context, discovery: GlDiscoverySnapshot) -> Self {
+    fn assemble(
+        gl: glow::Context,
+        discovery: GlDiscoverySnapshot,
+        unmap_buffer: super::context::UnmapBufferFn,
+    ) -> Self {
         Self {
             gl,
+            unmap_buffer,
             discovery,
             lifecycle: GlContextLifecycle::Active,
             owner: OwnerThreadIdentity::current(),

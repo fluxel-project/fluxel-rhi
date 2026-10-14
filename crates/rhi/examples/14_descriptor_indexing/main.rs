@@ -3,7 +3,10 @@
 //! This module first proves the required descriptor capabilities, then owns
 //! scene resources and recording. The host remains responsible for surface
 //! lifetime, submission policy, and completion-driven retirement.
-#[cfg(feature = "native-gl-wgl")]
+#[cfg(any(
+    feature = "native-gl-wgl",
+    all(target_os = "linux", feature = "native-gles-egl")
+))]
 mod immediate;
 #[path = "../utils/mod.rs"]
 mod utils;
@@ -533,7 +536,15 @@ fn main() {
         std::process::exit(1)
     }
 }
-#[cfg(not(windows))]
+#[cfg(all(target_os = "linux", feature = "native-gles-egl"))]
+fn main() {
+    if let Err(error) = immediate::run() {
+        eprintln!("14_descriptor_indexing: {error:?}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
 fn main() {
     eprintln!("14_descriptor_indexing requires Windows and runtime descriptor indexing")
 }

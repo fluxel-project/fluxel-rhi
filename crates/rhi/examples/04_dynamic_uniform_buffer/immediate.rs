@@ -10,7 +10,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "linux", feature = "native-gles-egl")))]
 use std::{cell::RefCell, rc::Rc};
 
 use fluxel_rhi::api::*;
@@ -85,7 +85,7 @@ fn issue_frame(
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "linux", feature = "native-gles-egl")))]
 pub(super) fn run() -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
@@ -99,7 +99,7 @@ pub(super) fn run() -> Result<()> {
     let workload = Rc::new(RefCell::new(None));
     let dropped_workload = Rc::clone(&workload);
     let started = std::time::Instant::now();
-    super::utils::gl_api::run_wgl(
+    super::utils::gl_api::run_native(
         "Dynamic uniform buffers",
         config.clone(),
         move || *dropped_workload.borrow_mut() = None,

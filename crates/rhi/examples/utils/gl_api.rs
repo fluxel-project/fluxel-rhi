@@ -1,4 +1,4 @@
-//! Win32 WGL host for immediate-mode GL examples.
+//! Native WGL/EGL host for immediate-mode GL-family examples.
 //!
 //! The adopted WGL context remains on the native event-loop thread. Each
 //! redraw acquires one surface lease and invokes the example's immediate
@@ -8,7 +8,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use fluxel_host::{HostApplication, HostContext, HostRuntime, WindowConfig, WindowEvent};
+use fluxel_host::{
+    HostApplication, HostContext, HostRuntime, HostWindow, WindowConfig, WindowEvent,
+};
 use fluxel_rhi::{
     api::{
         Device, DeviceRequest, Error, Instance, InstanceId, Result, Surface, SurfaceConfig,
@@ -16,6 +18,9 @@ use fluxel_rhi::{
     },
     gl::{Gl, GlInstance},
 };
+#[cfg(target_os = "linux")]
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+#[cfg(windows)]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use super::block_on;
@@ -24,6 +29,7 @@ type Draw = dyn FnMut(&Device<Gl>, &mut Surface<Gl>, SurfaceImage<Gl>, [u32; 2])
 type Destroy = dyn FnMut();
 
 #[repr(C)]
+#[cfg(windows)]
 struct ClientRect {
     left: i32,
     top: i32,
@@ -31,6 +37,7 @@ struct ClientRect {
     bottom: i32,
 }
 
+#[cfg(windows)]
 unsafe extern "system" {
     fn GetClientRect(window: *mut core::ffi::c_void, rect: *mut ClientRect) -> i32;
 }
@@ -40,41 +47,56 @@ unsafe extern "system" {
 /// WGL owns no resizable swapchain: after the native owner began reporting
 /// `GetClientRect`, Core configuration must use the same physical client size
 /// rather than the requested winit window extent.
-fn client_extent(window: &(impl HasWindowHandle + ?Sized)) -> Result<[u32; 2]> {
-    let raw = window
-        .window_handle()
-        .map_err(|error| Error::Backend(error.to_string()))?
-        .as_raw();
-    let RawWindowHandle::Win32(handle) = raw else {
-        return Err(Error::Unsupported("Win32 WGL window handle"));
-    };
-    let mut rect = ClientRect {
-        left: 0,
-        top: 0,
-        right: 0,
-        bottom: 0,
-    };
-    // SAFETY: `handle` was borrowed from the live HostWindow for this callback;
-    // the RECT is valid writable memory for the duration of the Win32 query.
-    if unsafe { GetClientRect(handle.hwnd.get() as *mut _, &mut rect) } == 0 {
-        return Err(Error::Backend("GetClientRect failed".into()));
+fn client_extent(window: &HostWindow, requested: [u32; 2]) -> Result<[u32; 2]> {
+    #[cfg(windows)]
+    let _ = requested;
+    #[cfg(windows)]
+    {
+        let raw = window
+            .window_handle()
+            .map_err(|error| Error::Backend(error.to_string()))?
+            .as_raw();
+        let RawWindowHandle::Win32(handle) = raw else {
+            return Err(Error::Unsupported("Win32 WGL window handle"));
+        };
+        let mut rect = ClientRect {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        // SAFETY: `handle` was borrowed from the live HostWindow for this callback;
+        // the RECT is valid writable memory for the duration of the Win32 query.
+        if unsafe { GetClientRect(handle.hwnd.get() as *mut _, &mut rect) } == 0 {
+            return Err(Error::Backend("GetClientRect failed".into()));
+        }
+        let width = u32::try_from(
+            rect.right
+                .checked_sub(rect.left)
+                .ok_or(Error::SurfaceLost)?,
+        )
+        .map_err(|_| Error::SurfaceLost)?;
+        let height = u32::try_from(
+            rect.bottom
+                .checked_sub(rect.top)
+                .ok_or(Error::SurfaceLost)?,
+        )
+        .map_err(|_| Error::SurfaceLost)?;
+        if width == 0 || height == 0 {
+            return Err(Error::SurfaceLost);
+        }
+        Ok([width, height])
     }
-    let width = u32::try_from(
-        rect.right
-            .checked_sub(rect.left)
-            .ok_or(Error::SurfaceLost)?,
-    )
-    .map_err(|_| Error::SurfaceLost)?;
-    let height = u32::try_from(
-        rect.bottom
-            .checked_sub(rect.top)
-            .ok_or(Error::SurfaceLost)?,
-    )
-    .map_err(|_| Error::SurfaceLost)?;
-    if width == 0 || height == 0 {
-        return Err(Error::SurfaceLost);
+    #[cfg(target_os = "linux")]
+    {
+        let _ = requested;
+        let extent = window.inner_size();
+        if extent.contains(&0) {
+            Err(Error::SurfaceLost)
+        } else {
+            Ok(extent)
+        }
     }
-    Ok([width, height])
 }
 
 struct Application {
@@ -92,6 +114,7 @@ struct Application {
 
 impl Application {
     fn fail(&self, host: &HostContext<'_>, error: Error) {
+        eprintln!("native GL host callback failed: {error:?}");
         if let Ok(mut slot) = self.failure.lock() {
             *slot = Some(error);
         }
@@ -100,26 +123,50 @@ impl Application {
 
     fn open(&mut self, host: &HostContext<'_>) -> Result<()> {
         let window = host.window().ok_or(Error::SurfaceLost)?;
-        self.config.extent = client_extent(window)?;
+        self.config.extent = client_extent(window, self.config.extent)?;
         // SAFETY: `Application` retains the host window through this one
         // surface lifecycle. It drops the surface and device on destruction,
         // and all callbacks, GL calls, and final resource drops stay on the
         // HostRuntime owner thread.
+        #[cfg(windows)]
         let native = unsafe { GlInstance::from_wgl_window(window, self.config.extent)? };
+        #[cfg(target_os = "linux")]
+        let native = unsafe {
+            let display = window
+                .display_handle()
+                .map_err(|error| Error::Backend(error.to_string()))?
+                .as_raw();
+            let window_handle = window
+                .window_handle()
+                .map_err(|error| Error::Backend(error.to_string()))?
+                .as_raw();
+            GlInstance::from_egl_window(display, window_handle)?
+        };
         let instance = unsafe { Instance::<Gl>::from_native(InstanceId::allocate()?, native) };
         let adapter = instance
-            .enumerate()?
+            .enumerate()
+            .map_err(|error| {
+                eprintln!("native GL enumerate failed: {error:?}");
+                error
+            })?
             .into_iter()
             .next()
-            .ok_or(Error::Unsupported("WGL adapter"))?;
+            .ok_or(Error::Unsupported("native GL adapter"))?;
         let device = block_on(instance.open(DeviceRequest {
             adapter: adapter.id,
             required_features: Vec::new(),
-        }))?;
-        let mut surface = Gl::surface(&device)?;
+        }))
+        .map_err(|error| {
+            eprintln!("native GL device open failed: {error:?}");
+            error
+        })?;
+        let mut surface = Gl::surface(&device).map_err(|error| {
+            eprintln!("native GL surface creation failed: {error:?}");
+            error
+        })?;
         if let Err(error) = block_on(surface.configure(&self.config)) {
             eprintln!(
-                "WGL initial configure failed for {:?}: {error:?}",
+                "native GL initial configure failed for {:?}: {error:?}",
                 self.config.extent
             );
             return Err(error);
@@ -144,9 +191,10 @@ impl Application {
                 // No GPU work has been issued for this lease, so reconfigure
                 // against the actual client rectangle and acquire once more.
                 let previous = self.config.extent;
-                self.config.extent = client_extent(host.window().ok_or(Error::SurfaceLost)?)?;
+                self.config.extent =
+                    client_extent(host.window().ok_or(Error::SurfaceLost)?, self.config.extent)?;
                 eprintln!(
-                    "WGL acquire observed a resized drawable: {previous:?} -> {:?}",
+                    "native GL acquire observed a resized drawable: {previous:?} -> {:?}",
                     self.config.extent
                 );
                 block_on(surface.configure(&self.config))?;
@@ -155,10 +203,13 @@ impl Application {
                     error
                 })?
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                eprintln!("native GL surface acquire failed: {error:?}");
+                return Err(error);
+            }
         };
         (self.draw)(device, surface, image, self.config.extent).map_err(|error| {
-            eprintln!("WGL immediate frame failed after acquire: {error:?}");
+            eprintln!("native GL immediate frame failed after acquire: {error:?}");
             error
         })?;
         self.frames += 1;
@@ -174,12 +225,15 @@ impl Application {
         if width == 0 || height == 0 {
             return Ok(());
         }
-        // The Host event is a notification, not proof of the physical WGL
-        // drawable size. Both this path and the backend now query the live
-        // Win32 client rectangle before accepting a configuration generation.
-        self.config.extent = client_extent(host.window().ok_or(Error::SurfaceLost)?)?;
+        // On Windows, query the physical client rectangle instead of trusting
+        // a requested size. On Linux, winit reports physical resize extents.
+        self.config.extent =
+            client_extent(host.window().ok_or(Error::SurfaceLost)?, [width, height])?;
         if let Some(surface) = self.surface.as_mut() {
-            block_on(surface.configure(&self.config))?;
+            block_on(surface.configure(&self.config)).map_err(|error| {
+                eprintln!("native GL resize configure failed: {error:?}");
+                error
+            })?;
         }
         Ok(())
     }
@@ -263,8 +317,13 @@ fn frame_limit() -> Result<Option<u64>> {
                 frames = Some((count != 0).then_some(count).ok_or(Error::InvalidRange)?);
             }
             "--backend" => {
-                if args.next().as_deref() != Some("gl") {
-                    return Err(Error::Unsupported("WGL GL example backend"));
+                let backend = args.next();
+                #[cfg(windows)]
+                let accepted = backend.as_deref() == Some("gl");
+                #[cfg(target_os = "linux")]
+                let accepted = backend.as_deref() == Some("gles");
+                if !accepted {
+                    return Err(Error::Unsupported("native GL example backend"));
                 }
             }
             _ => return Err(Error::Unsupported("example command-line argument")),
@@ -273,11 +332,11 @@ fn frame_limit() -> Result<Option<u64>> {
     Ok(frames)
 }
 
-/// Runs one WGL example using the adopted window drawable.
+/// Runs one native GL-family example using the adopted window drawable.
 ///
 /// The callback must issue and finish its [`fluxel_rhi::api::ImmediateSession`]
 /// before returning, handing the acquired lease to its plan's present step.
-pub fn run_wgl(
+pub fn run_native(
     title: &str,
     config: SurfaceConfig,
     drop_resources: impl FnMut() + 'static,

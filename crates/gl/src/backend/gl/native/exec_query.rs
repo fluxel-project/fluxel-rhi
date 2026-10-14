@@ -5,6 +5,19 @@
 //! ordering and completion point used before a result is consumed.
 
 use super::super::provider::{NativeGlProvider, QueryTarget};
+
+const GLES_ANY_SAMPLES_PASSED: u32 = 0x8C2F;
+
+fn occlusion_query_target(provider: &NativeGlProvider) -> u32 {
+    if matches!(
+        provider.discovery().context().profile(),
+        crate::backend::gl::api::GlFamilyProfile::Embedded { .. }
+    ) {
+        GLES_ANY_SAMPLES_PASSED
+    } else {
+        glow::SAMPLES_PASSED
+    }
+}
 use crate::backend::gl::api::{
     GlElapsedQueryApi, GlError, GlFamilyApi as _, GlOcclusionQueryApi, GlQueryObjectsApi,
     GlQueryResult, GlTimestampQueryApi, QueryId,
@@ -143,7 +156,7 @@ impl GlOcclusionQueryApi for NativeGlProvider {
             None => return Err(Self::validation(OP, "query disappeared")),
         };
         // SAFETY: current-context contract; the query is live and idle.
-        unsafe { self.gl.begin_query(glow::SAMPLES_PASSED, raw) };
+        unsafe { self.gl.begin_query(occlusion_query_target(self), raw) };
         self.driver_error(OP)?;
         if let Some(entry) = self.queries.get_mut(&query) {
             entry.target = Some(QueryTarget::SamplesPassed);
@@ -170,7 +183,7 @@ impl GlOcclusionQueryApi for NativeGlProvider {
             ));
         }
         // SAFETY: current-context contract.
-        unsafe { self.gl.end_query(glow::SAMPLES_PASSED) };
+        unsafe { self.gl.end_query(occlusion_query_target(self)) };
         self.driver_error(OP)
     }
 }

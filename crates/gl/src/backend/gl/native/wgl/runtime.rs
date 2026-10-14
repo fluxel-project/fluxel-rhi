@@ -6,6 +6,21 @@
 use super::*;
 
 impl WglContextSurface {
+    pub(crate) fn load_unmap_buffer(
+        &self,
+    ) -> Result<crate::backend::gl::native::context::UnmapBufferFn, GlError> {
+        let address = super::load_wgl_symbol("glUnmapBuffer");
+        if address.is_null() {
+            return Err(GlError::Driver {
+                operation: "load glUnmapBuffer",
+                message: "WGL did not expose the required core entry point".into(),
+            });
+        }
+        // SAFETY: desktop GL 1.5+ requires this core entry point and its ABI is
+        // `GLboolean glUnmapBuffer(GLenum)`; the WGL loader filters invalid sentinels.
+        Ok(unsafe { core::mem::transmute(address) })
+    }
+
     /// Runs discovery or a future executor while this RHI-owned context is current.
     pub(crate) fn with_current<T>(
         &self,

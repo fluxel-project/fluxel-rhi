@@ -261,6 +261,10 @@ impl super::context::NativeContextOwner for EglGlesContext {
         EglGlesContext::load_glow(self).map_err(EglProviderError::into_gl_error)
     }
 
+    fn load_unmap_buffer(&self) -> Result<super::context::UnmapBufferFn, GlError> {
+        EglGlesContext::load_unmap_buffer(self)
+    }
+
     fn swap_buffers(&mut self) -> Result<(), GlError> {
         EglGlesContext::swap_buffers(self)
     }

@@ -38,7 +38,7 @@ pub(super) fn run() -> Result<()> {
     };
     let scene = Rc::new(RefCell::new(None::<StereoFallback<Gl>>));
     let dropped = Rc::clone(&scene);
-    utils::gl_api::run_wgl(
+    utils::gl_api::run_native(
         "Sequential stereo fallback",
         config.clone(),
         move || *dropped.borrow_mut() = None,

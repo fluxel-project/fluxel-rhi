@@ -1,7 +1,10 @@
 //! Three real storage-texture filters shown beside their KTX source image.
 #[path = "scene.rs"]
 mod compute;
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(
+    all(windows, feature = "native-gl-wgl"),
+    all(target_os = "linux", feature = "native-gles-egl")
+))]
 #[path = "immediate.rs"]
 mod immediate;
 #[path = "../utils/mod.rs"]
@@ -116,7 +119,15 @@ fn main() {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(all(target_os = "linux", feature = "native-gles-egl"))]
+fn main() {
+    if let Err(error) = immediate::run() {
+        eprintln!("06_compute: {error:?}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
 fn main() {
     eprintln!("06_compute requires Windows and DX12");
 }
