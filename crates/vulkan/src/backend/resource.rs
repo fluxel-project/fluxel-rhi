@@ -449,10 +449,30 @@ pub(super) fn create_sampler(
     device: &VulkanDevice,
     desc: &api::SamplerDesc,
 ) -> Result<VulkanSampler> {
-    if desc.anisotropy != 1 || desc.compare.is_some() || desc.border.is_some() {
+    if desc.compare.is_some() || desc.border.is_some() {
+        return Err(Error::Unsupported("Vulkan comparison or border sampler"));
+    }
+    if desc.anisotropy == 0 || desc.anisotropy > 16 {
         return Err(Error::Unsupported(
-            "Vulkan anisotropic, comparison, or border sampler",
+            "Vulkan sampler anisotropy outside 1..=16",
         ));
+    }
+    if desc.anisotropy > 1 {
+        if !device.0.sampler_anisotropy
+            || f32::from(desc.anisotropy) > device.0.max_sampler_anisotropy
+        {
+            return Err(Error::Unsupported(
+                "Vulkan sampler anisotropy exceeds device support",
+            ));
+        }
+        if desc.min_filter != api::FilterMode::Linear
+            || desc.mag_filter != api::FilterMode::Linear
+            || desc.mip_filter != api::FilterMode::Linear
+        {
+            return Err(Error::Unsupported(
+                "Vulkan anisotropic sampler requires linear min/mag/mip filtering",
+            ));
+        }
     }
     if desc
         .address
@@ -474,8 +494,8 @@ pub(super) fn create_sampler(
         .address_mode_w(address(desc.address[2])?)
         .min_lod(desc.lod.start)
         .max_lod(desc.lod.end)
-        .max_anisotropy(1.0)
-        .anisotropy_enable(false);
+        .max_anisotropy(f32::from(desc.anisotropy))
+        .anisotropy_enable(desc.anisotropy > 1);
     // SAFETY: all fields come from the supported sampler descriptor and the
     // resulting handle is owned by the returned SamplerState.
     let sampler = unsafe { device.0.device.create_sampler(&info, None) }.map_err(vk_error)?;

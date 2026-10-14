@@ -63,6 +63,9 @@ struct DeviceState {
     graphics_family: u32,
     shader_clip_distance: bool,
     multi_draw_indirect: bool,
+    /// Enabled only when the physical device supports sampler anisotropy.
+    sampler_anisotropy: bool,
+    max_sampler_anisotropy: f32,
     /// Enabled at device creation, so dynamic rendering may broadcast one
     /// graphics invocation to the layers selected by `RenderingInfo::view_mask`.
     multiview: bool,

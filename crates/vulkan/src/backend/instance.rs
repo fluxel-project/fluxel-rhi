@@ -84,6 +84,7 @@ impl InstanceBackend for Vulkan {
                 dynamic_rendering,
                 shader_clip_distance,
                 multi_draw_indirect,
+                sampler_anisotropy,
                 descriptor_indexing,
                 multiview,
                 max_multiview_views,
@@ -106,6 +107,7 @@ impl InstanceBackend for Vulkan {
                 };
                 let shader_clip_distance = available.features.shader_clip_distance == vk::TRUE;
                 let multi_draw_indirect = available.features.multi_draw_indirect == vk::TRUE;
+                let sampler_anisotropy = available.features.sampler_anisotropy == vk::TRUE;
                 let dynamic_rendering = available13.dynamic_rendering == vk::TRUE;
                 let descriptor_indexing = available_descriptor_indexing.runtime_descriptor_array
                     == vk::TRUE
@@ -131,6 +133,7 @@ impl InstanceBackend for Vulkan {
                     dynamic_rendering,
                     shader_clip_distance,
                     multi_draw_indirect,
+                    sampler_anisotropy,
                     descriptor_indexing,
                     multiview,
                     max_multiview_views,
@@ -141,7 +144,8 @@ impl InstanceBackend for Vulkan {
             }
             let enabled_features = vk::PhysicalDeviceFeatures::default()
                 .shader_clip_distance(shader_clip_distance)
-                .multi_draw_indirect(multi_draw_indirect);
+                .multi_draw_indirect(multi_draw_indirect)
+                .sampler_anisotropy(sampler_anisotropy);
             let priorities = [1.0_f32];
             let queue = vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(family)
@@ -191,6 +195,8 @@ impl InstanceBackend for Vulkan {
                     graphics_family: family,
                     shader_clip_distance,
                     multi_draw_indirect,
+                    sampler_anisotropy,
+                    max_sampler_anisotropy: limits.max_sampler_anisotropy,
                     multiview,
                     descriptor_indexing,
                     max_sampled_images: limits

@@ -318,6 +318,31 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
                 )?
             }
         }
+        // The first frame uploads each image; later frames reuse it after the
+        // previous pass returned it to Common. Keep the declared source usage
+        // aligned with the real producer before sampling on both paths.
+        let texture_source = if upload_geometry {
+            TextureUses {
+                stages: StageMask::COPY,
+                accesses: AccessMask::COPY_WRITE,
+            }
+        } else {
+            TextureUses {
+                stages: StageMask::ALL_COMMANDS,
+                accesses: AccessMask::EMPTY,
+            }
+        };
+        let sampled = texture_transitions(
+            &self.textures,
+            ImageLayout::Common,
+            ImageLayout::ShaderReadOnly,
+            texture_source,
+            TextureUses {
+                stages: StageMask::FRAGMENT,
+                accesses: AccessMask::SHADER_READ,
+            },
+        );
+        e.transition_resources(&sampled)?;
         e.write_buffer(&self.uniform, 0, &matrices(extent, time))?;
         let colors = [Some(ColorAttachment {
             view: AttachmentView::Surface(image),
@@ -374,6 +399,20 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
         )?;
         p.draw_indexed(0..INDICES_PER_CUBE * CUBES as u32, 0, 0..1)?;
         p.finish()?;
+        let common = texture_transitions(
+            &self.textures,
+            ImageLayout::ShaderReadOnly,
+            ImageLayout::Common,
+            TextureUses {
+                stages: StageMask::FRAGMENT,
+                accesses: AccessMask::SHADER_READ,
+            },
+            TextureUses {
+                stages: StageMask::ALL_COMMANDS,
+                accesses: AccessMask::EMPTY,
+            },
+        );
+        e.transition_resources(&common)?;
         let work = e.finish()?;
         Ok((work, upload_geometry))
     }
@@ -382,6 +421,36 @@ impl<B: DescriptorIndexingBackend> DescriptorIndexing<B> {
         self.uploaded = true;
     }
 }
+
+fn texture_transitions<B: DescriptorIndexingBackend>(
+    textures: &[Texture<B>],
+    from_layout: ImageLayout,
+    to_layout: ImageLayout,
+    from: TextureUses,
+    to: TextureUses,
+) -> Vec<ResourceTransition<'_, B>> {
+    textures
+        .iter()
+        .map(|texture| {
+            ResourceTransition::Texture(TextureBarrier {
+                target: Subresources {
+                    texture,
+                    aspects: TextureAspects::COLOR,
+                    mips: 0..1,
+                    layers: 0..if cfg!(target_arch = "wasm32") {
+                        TEXTURES as u32
+                    } else {
+                        1
+                    },
+                },
+                usage: StateTransition { from, to },
+                layout: Some((from_layout, to_layout)),
+                ownership: None,
+            })
+        })
+        .collect()
+}
+
 #[path = "descriptor_indexing/support.rs"]
 mod support;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]

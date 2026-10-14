@@ -13,17 +13,18 @@ clean process exit alone is not visual evidence.
 ## Verification status
 
 This table distinguishes earlier repository evidence from the current visual
-alignment work. It is updated as each backend is completed. The current
-working tree is not yet a frozen verification candidate.
+alignment work. It is updated as each backend is completed. The DX12 and
+Vulkan rows refer to their committed verification candidates; later shared
+example changes require rerunning affected backend paths.
 
 | Backend | Current evidence | Remaining gate |
 | --- | --- | --- |
-| DX12 | All 15 examples have real-GPU captures with the D3D12 debug layer. The complete WGSL manifest (01–15, with a separate 15 display job) regenerates DXIL/SPIR-V byte-for-byte and checks shader ABI. Recent WGSL DX12 captures show the same visible result as C++ across all 15: the 05 sphere ring, 13 UFO field, 14 descriptor-array cubes, and 15 stereo scene were specifically rechecked. 07/09/10 are animated or camera-driven and differ in exact frame state; their scene content and visual effect match. | Run the final 15-example diagnostic and visual pass on the exact candidate SHA, then submit and push DX12 before starting Vulkan. |
-| Vulkan | Earlier implementation captures exist, but no current-candidate verification has started. Vulkan work is intentionally gated on the completed and pushed DX12 pass. | Start after DX12 is complete and pushed; validate all 15 against the frozen shared examples. |
+| DX12 | Commit `956f277a7ada5ec7decda7a8544e59a9fc2e9ee1` is pushed. All 15 examples ran on a real GPU with the D3D12 debug layer and were visually checked against C++; the complete WGSL manifest regenerates DXIL/SPIR-V byte-for-byte and checks shader ABI. The 08/12 ID 820 messages are clear-value performance hints and do not affect output. | Complete. Rerun only paths affected by a later shared change. |
+| Vulkan | All 15 examples ran for two frames on a real GPU with `VK_LAYER_KHRONOS_validation`; each produced zero validation diagnostics and was visually checked against C++ with the HUD excluded. The 09 anisotropic sampler path and 14 explicit upload-to-sampling transitions were fixed and rechecked. Example 13 was visually verified from swapchain GPU readback because the desktop capture was occluded. Example 07 preserves the reference's intentional 7×7 reflection blur. | Complete for this candidate. Continue to WebGPU after the Vulkan changes are committed and pushed. |
 | WebGPU | Earlier browser integration tests and examples exist; the recent WGSL and example changes have not received a complete browser visual pass. | Defer until Vulkan is finished. |
 | GL4+ / WebGL2 | No complete 15-example visual pass has been accepted. | Defer until WebGPU is finished. |
 
-The current DX12 run reports only D3D12 message ID 820 for the offscreen color
+The verified DX12 candidate reports only D3D12 message ID 820 for the offscreen color
 targets in examples 08 and 12. It is a performance hint about the optional
 optimized clear value; the API does not declare a fixed pass clear color, and
 the clear still produces the requested image. The rest of the captured DX12
