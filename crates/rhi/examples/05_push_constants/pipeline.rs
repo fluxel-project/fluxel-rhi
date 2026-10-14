@@ -24,7 +24,7 @@ async fn shader<B: PushBackend>(
     entry: &str,
     stage: ShaderStage,
 ) -> Result<Shader<B>> {
-    common::native_shader_with_wgsl(d, "05 shader", entry, stage, dxil, spirv, WGSL).await
+    utils::native_shader_with_wgsl(d, "05 shader", entry, stage, dxil, spirv, WGSL).await
 }
 pub(super) async fn create_pipeline<B: PushBackend>(
     d: &Device<B>,

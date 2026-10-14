@@ -2,7 +2,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-#[path = "../examples/01_triangle.rs"]
+#[path = "../examples/01_triangle/main.rs"]
 mod triangle;
 
 use wasm_bindgen::JsCast;

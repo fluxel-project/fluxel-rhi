@@ -2,7 +2,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-#[path = "../examples/05_push_constants.rs"]
+#[path = "../examples/05_push_constants/main.rs"]
 mod push_constants;
 
 use wasm_bindgen::JsCast;

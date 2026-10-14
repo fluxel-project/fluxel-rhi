@@ -1,5 +1,5 @@
-// WebGPU's sequential eye fallback for 15_multiview. Each native pass binds
-// one eye's matrices and writes one 2D array layer.
+// Sequential eye fallback for 15_multiview. Each ordinary pass binds one
+// eye's matrices and writes its independent 2D color target.
 struct Eye {
     projection: mat4x4<f32>,
     modelview: mat4x4<f32>,

@@ -24,7 +24,7 @@ cargo test -p fluxel-rhi-core --lib
 cargo run -p fluxel-rhi --features examples,vulkan --example 01_triangle -- --backend vulkan --frames 2
 ```
 
-The numbered examples are in [`crates/rhi/examples`](crates/rhi/examples). All 15 select DX12 or Vulkan at startup with `--backend dx12|vulkan` and use `fluxel_rhi::api::*` for GPU work. `--frames 2` closes the native window after two frames. Some examples need local model and texture assets; see the [asset instructions](crates/rhi/examples/assets/README.md).
+The numbered examples are in [`crates/rhi/examples`](crates/rhi/examples). All 15 select DX12 or Vulkan at startup with `--backend dx12|vulkan` and use `fluxel_rhi::api::*` for GPU work. `--frames 2` closes the native window after two frames. Some examples need local model and texture assets; see the [asset instructions](crates/rhi/examples/assets/README.md). Reproducible example tooling, including asset fetching and WGSL artifact generation, lives in [`tools/examples`](tools/examples).
 
 The same numbered scenes have browser WebGPU entries and Chrome integration
 tests. See the [example instructions](crates/rhi/examples/README.md) for the

@@ -14,6 +14,9 @@ default = ["dx12"]
 dx12 = ["dep:fluxel-rhi-dx12"]
 vulkan = ["dep:fluxel-rhi-vulkan"]
 webgpu = ["dep:fluxel-rhi-webgpu"]
+native-gl-wgl = ["dep:fluxel-rhi-gl", "fluxel-rhi-gl/native-gl-wgl"]
+native-gles-egl = ["dep:fluxel-rhi-gl", "fluxel-rhi-gl/native-gles-egl"]
+webgl2 = ["dep:fluxel-rhi-gl", "fluxel-rhi-gl/webgl2"]
 examples = []
 
 [dependencies]
@@ -22,6 +25,7 @@ base64 = "0.22"
 serde_json = "1"
 png = "0.17"
 fluxel-rhi-vulkan = { path = "../vulkan", optional = true }
+fluxel-rhi-gl = { path = "../gl", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 fluxel-rhi-webgpu = { path = "../webgpu", optional = true }
@@ -39,75 +43,75 @@ raw-window-handle = "=0.6.2"
 
 [[example]]
 name = "01_triangle"
-path = "examples/01_triangle.rs"
+path = "examples/01_triangle/main.rs"
 required-features = ["examples"]
 
 [[example]]
 name = "02_texture"
-path = "examples/02_texture.rs"
+path = "examples/02_texture/main.rs"
 required-features = ["examples"]
 
 [[example]]
 name = "03_instancing"
-path = "examples/03_instancing.rs"
+path = "examples/03_instancing/main.rs"
 required-features = ["examples"]
 
 [[example]]
 name = "04_dynamic_uniform_buffer"
-path = "examples/04_dynamic_uniform_buffer.rs"
+path = "examples/04_dynamic_uniform_buffer/main.rs"
 required-features = ["examples"]
 
 [[example]]
 name = "05_push_constants"
-path = "examples/05_push_constants.rs"
+path = "examples/05_push_constants/main.rs"
 required-features = ["examples"]
 
 [[example]]
 name = "06_compute"
-path = "examples/06_compute.rs"
+path = "examples/06_compute/main.rs"
 required-features = ["examples"]
 
 [[example]]
 name = "07_offscreen"
-path = "examples/07_offscreen.rs"
+path = "examples/07_offscreen/main.rs"
 required-features = ["examples"]
 
 [[example]]
 name = "08_msaa"
-path = "examples/08_msaa.rs"
+path = "examples/08_msaa/main.rs"
 required-features = ["examples"]
 
 [[example]]
 name = "09_texture_mipmap"
-path = "examples/09_texture_mipmap.rs"
+path = "examples/09_texture_mipmap/main.rs"
 required-features = ["examples"]
 
 [[example]]
 name = "10_indirect_draw"
-path = "examples/10_indirect_draw.rs"
+path = "examples/10_indirect_draw/main.rs"
 required-features = ["examples"]
 
 [[example]]
 name = "11_occlusion_query"
-path = "examples/11_occlusion_query.rs"
+path = "examples/11_occlusion_query/main.rs"
 required-features = ["examples"]
 
 [[example]]
 name = "12_screenshot"
-path = "examples/12_screenshot.rs"
+path = "examples/12_screenshot/main.rs"
 required-features = ["examples"]
 
 [[example]]
 name = "13_multithreaded_recording"
-path = "examples/13_multithreaded_recording.rs"
+path = "examples/13_multithreaded_recording/main.rs"
 required-features = ["examples"]
 
 [[example]]
 name = "14_descriptor_indexing"
-path = "examples/14_descriptor_indexing.rs"
+path = "examples/14_descriptor_indexing/main.rs"
 required-features = ["examples"]
 
 [[example]]
 name = "15_multiview"
-path = "examples/15_multiview.rs"
+path = "examples/15_multiview/main.rs"
 required-features = ["examples"]

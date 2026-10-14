@@ -2,7 +2,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-#[path = "../examples/06_compute.rs"]
+#[path = "../examples/06_compute/main.rs"]
 mod compute;
 
 use wasm_bindgen::JsCast;

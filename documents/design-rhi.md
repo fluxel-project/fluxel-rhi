@@ -8,12 +8,15 @@
 `fluxel_rhi::api`; applications use that namespace and select a concrete backend at
 initialization. On Windows the facade exposes `fluxel_rhi::dx12::Dx12` and
 `fluxel_rhi::vulkan::Vulkan`; browser WASM exposes `fluxel_rhi::webgpu::WebGpu`.
-Each route has an optional feature.
+The GL-family route is exposed behind its WGL, EGL or WebGL2 feature. Each route
+has an optional feature.
 
 The API is statically dispatched: `Device<B>`, resources, pipelines, encoders and
 recorded work retain their concrete `Backend` type. RenderGraph or its host owns graph
 scheduling, hazard analysis, lifetime policy and frame pacing. The RHI creates native
-objects, encodes the supplied operations, submits them, and reports support or failure.
+objects, issues or records the supplied operations according to the backend,
+and reports support or failure. Deferred backends submit recorded native work;
+GL reports work already issued through its immediate session.
 
 A backend must keep public descriptors, support queries and command results aligned. A
 feature is advertised only if the corresponding native route exists. Format- and
@@ -58,9 +61,17 @@ backend-wide Y flip into DX12.
 - `crates/webgpu` is an active browser backend. It creates real `GPUDevice`
   resources, records native command/pass encoders, submits to `GPUQueue`, uses
   canvas presentation, and observes completion through browser promises.
+- `crates/gl` implements the current static Core API for the GL family. The WGL
+  GL4+ route has individual real-GPU execution and visual evidence for all 15
+  examples, including sequential fallbacks where native multiview, secondary
+  recording, or runtime descriptor indexing is unavailable. The concentrated
+  01–15 WGL run and final independent review are complete for the tested AMD
+  Radeon 780M profile. EGL/GLES and browser WebGL2 have selected compilation
+  evidence, but no complete 15-example real-GPU visual pass; WGL evidence must
+  not be generalized to those profiles.
 
-GL and Metal are not active workspace backends. Documentation and CI
-must not treat source paths or compile checks as hardware execution evidence.
+Metal is not an active workspace backend. Documentation and CI must not treat
+source paths or compile checks as hardware execution evidence.
 
 ## Implemented DX12 baseline
 
@@ -82,11 +93,38 @@ call is not evidence that every backend or descriptor can execute it.
 
 ## Command and synchronization boundary
 
-`CommandEncoder` records copies, uploads, transitions and pass commands. Raster passes
-own their attachment/load-store contract; a pipeline, bind group, vertex/index buffers,
-viewport/scissor and draw are lowered by the selected backend. The extras interface
-holds optional raster operations such as indirect and multi-draw, with independent
-capability facts.
+`CommandEncoder` supplies copies, uploads, transitions and pass commands. Deferred
+backends record native commands; GL executes each command as the encoder method is
+called. Raster passes own their attachment/load-store contract; a pipeline, bind
+group, vertex/index buffers, viewport/scissor and draw are lowered by the selected
+backend. The extras interface holds optional raster operations such as indirect
+and multi-draw, with independent capability facts.
+
+## GL immediate execution
+
+GL 4.x, GLES 3.x and WebGL2 run on their context owner thread in a single-threaded
+async runtime. The GL backend implements `ImmediateBackend` and does not implement
+`DeferredBackend`; the deferred `Queue<Gl>::submit` path is therefore unavailable
+at the type level. DX12, Vulkan and WebGPU use the deferred path and do not expose
+`ImmediateBackend` merely to share GL's execution model.
+This is a static trait distinction, not a runtime mode enum: those backends
+have no `Immediate` choice or fallback.
+
+Each GL encoder operation validates and issues its GL/WebGL calls before returning.
+Closing an encoder or finishing an `ImmediateSession` reports the work already
+issued; it does not submit, replay, reorder or batch a Rust command list. The GL
+backend has no GPU queue submission operation. Presentation still performs the
+platform's swap/present operation, and a requested completion point may require
+a native fence and flush so that GPU completion can be observed. These are
+separate from command submission and must not turn into an internal scheduler.
+
+Context and resource owners are thread-affine. `Rc` and local borrowing can enforce
+that ownership; the backend does not add a cross-thread command worker, blocking
+mutex around GL calls, CPU command cache or deferred replay. Its state cache may
+remember known native bindings and invalidate them after uncertainty, but it may
+not store commands for later execution. Async completion waits yield to the
+single-threaded runtime while the GPU is unfinished; polling must not block that
+thread waiting for a fence.
 
 The caller provides ordered work and transitions. RHI does not construct a render graph,
 perform global hazard analysis, or decide resource retirement. Submission and

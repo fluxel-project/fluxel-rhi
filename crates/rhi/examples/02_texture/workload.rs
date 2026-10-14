@@ -19,6 +19,7 @@ impl<B: TextureBackend> TextureExample<B> {
         lane: LaneId,
         format: TextureFormat,
         p: TexturePixels<'_>,
+        wgsl: Option<(&[u8], &[u8])>,
     ) -> Result<Self> {
         if p.width == 0 || p.height == 0 || p.rgba.len() != p.width as usize * p.height as usize * 4
         {
@@ -161,6 +162,7 @@ impl<B: TextureBackend> TextureExample<B> {
             }],
             VS,
             PS,
+            wgsl,
         )
         .await?;
         Ok(Self {
@@ -173,14 +175,17 @@ impl<B: TextureBackend> TextureExample<B> {
             lane,
         })
     }
-    pub fn record(
+    /// Issues the common textured workload into an open encoder.
+    ///
+    /// Immediate backends call this directly; deferred callers finish their
+    /// native recorded work in `record`.
+    pub fn issue(
         &self,
-        d: &Device<B>,
+        e: &mut CommandEncoder<B>,
         image: &SurfaceImage<B>,
         extent: [u32; 2],
         p: TexturePixels<'_>,
-    ) -> Result<RecordedWork<B>> {
-        let mut e = d.encoder(self.lane)?;
+    ) -> Result<()> {
         e.write_buffer(&self.vertex, 0, &quad())?;
         e.write_buffer(&self.index, 0, &[0, 0, 1, 0, 2, 0, 2, 0, 3, 0, 0, 0])?;
         e.write_buffer(&self.uniform, 0, &texture_transform(extent))?;
@@ -266,6 +271,21 @@ impl<B: TextureBackend> TextureExample<B> {
                 accesses: AccessMask::EMPTY,
             },
         )])?;
+        Ok(())
+    }
+
+    pub fn record(
+        &self,
+        d: &Device<B>,
+        image: &SurfaceImage<B>,
+        extent: [u32; 2],
+        p: TexturePixels<'_>,
+    ) -> Result<RecordedWork<B>>
+    where
+        B: DeferredBackend,
+    {
+        let mut e = d.encoder(self.lane)?;
+        self.issue(&mut e, image, extent, p)?;
         e.finish()
     }
 }

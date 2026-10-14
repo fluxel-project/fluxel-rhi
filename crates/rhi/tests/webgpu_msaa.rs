@@ -2,7 +2,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-#[path = "../examples/08_msaa.rs"]
+#[path = "../examples/08_msaa/main.rs"]
 mod example;
 
 use wasm_bindgen::JsCast;

@@ -2,7 +2,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-#[path = "../examples/11_occlusion_query.rs"]
+#[path = "../examples/11_occlusion_query/main.rs"]
 mod occlusion_query;
 
 use wasm_bindgen::JsCast;

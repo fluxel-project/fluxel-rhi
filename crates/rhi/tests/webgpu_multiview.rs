@@ -2,7 +2,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-#[path = "../examples/15_multiview.rs"]
+#[path = "../examples/15_multiview/main.rs"]
 mod multiview;
 
 use wasm_bindgen::JsCast;

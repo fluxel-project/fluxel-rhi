@@ -1,0 +1,521 @@
+//! Deterministic recorder construction, allocation, and validation helpers.
+//!
+//! This private implementation models provider-side preconditions for API
+//! tests. It does not emulate a driver or execute GPU work.
+
+use super::*;
+
+impl MockGlFamilyApi {
+    pub fn from_discovery(discovery: GlDiscoverySnapshot) -> Self {
+        Self {
+            stamp: discovery.context_stamp(),
+            discovery,
+            lifecycle: GlContextLifecycle::Active,
+            owner: OwnerThreadIdentity::current(),
+            next_slot: 0,
+            buffers: BTreeMap::new(),
+            textures: BTreeMap::new(),
+            render_buffers: BTreeMap::new(),
+            samplers: BTreeSet::new(),
+            shaders: BTreeSet::new(),
+            programs: BTreeSet::new(),
+            vaos: BTreeSet::new(),
+            framebuffers: BTreeMap::new(),
+            queries: BTreeSet::new(),
+            fences: GlFenceLeaseBook::default(),
+            syncs: BTreeSet::new(),
+            surface: GlSurfaceLeaseBook::new(),
+            surface_size: GlSurfaceSize {
+                width: 1,
+                height: 1,
+            },
+            surface_suspended: false,
+            pass_active: false,
+            pass_framebuffer: None,
+            installed_compute_program: None,
+            current_program: None,
+            installed_raster_program: None,
+            bound_vertex_array: None,
+            advanced_raster: GlAdvancedRasterCapabilities {
+                base_vertex: false,
+                first_instance: false,
+            },
+            pixel_store: GlPixelStoreState::DEFAULT,
+            calls: vec![],
+            next_error: None,
+            query_results: BTreeMap::new(),
+            fence_statuses: BTreeMap::new(),
+            next_reflection: None,
+        }
+    }
+    pub fn try_with_compute_storage(self) -> Result<MockComputeStorageApi, GlError> {
+        MockComputeStorageApi::new(self)
+    }
+    pub fn calls(&self) -> &[MockCall] {
+        &self.calls
+    }
+    pub fn clear_calls(&mut self) {
+        self.calls.clear()
+    }
+    pub fn fail_next(&mut self, error: GlError) {
+        self.next_error = Some(error)
+    }
+    /// Injects the deterministic answer one query observation returns.
+    pub fn inject_query_result(&mut self, query: QueryId, result: GlQueryResult) {
+        self.query_results.insert(query, result);
+    }
+    /// Injects the deterministic answer one fence observation returns.
+    ///
+    /// Completion is injected rather than simulated because the recorder has no
+    /// submission queue: nothing it records can actually finish, so a
+    /// completion-safe release path can only be exercised if the test names the
+    /// fence that has completed.  Keying by `SyncId` rather than by lease means
+    /// an injected completion survives re-issuing a lease for the same fence,
+    /// which is what a driver-side signal does.  The map is kept to cover
+    /// exactly the live fence set: `destroy_fence` removes the entry.
+    pub fn inject_fence_status(&mut self, fence: SyncId, status: GlFenceStatus) {
+        self.fence_statuses.insert(fence, status);
+    }
+    /// Injects the reflection the next `create_program` call returns.
+    pub fn set_next_program_reflection(&mut self, reflection: GlProgramReflection) {
+        self.next_reflection = Some(reflection);
+    }
+    /// Records which optional draw offsets this context proved.
+    ///
+    /// The seam exists because the recorder owns no context query for these
+    /// facts, exactly like the injected fence completion and program
+    /// reflection.  Without it a caller could only ever observe the
+    /// fail-closed default, and the gate itself would stay untested.
+    pub fn set_advanced_raster_capabilities(&mut self, capabilities: GlAdvancedRasterCapabilities) {
+        self.advanced_raster = capabilities;
+    }
+    /// The injected answer for one fence, defaulting to `Pending`.
+    ///
+    /// `Pending` is the only honest default: the recorder has no submission
+    /// queue, so nothing it records can complete on its own.  A default of
+    /// `Complete` would make every completion-safe release test pass without
+    /// the wait ever being modelled.
+    pub(super) fn fence_status(&self, fence: SyncId) -> GlFenceStatus {
+        self.fence_statuses
+            .get(&fence)
+            .copied()
+            .unwrap_or(GlFenceStatus::Pending)
+    }
+    pub(super) fn owner(&self, op: &'static str) -> Result<(), GlError> {
+        let actual = OwnerThreadIdentity::current();
+        (actual == self.owner)
+            .then_some(())
+            .ok_or(GlError::WrongThread {
+                operation: op,
+                expected: self.owner,
+                actual,
+            })
+    }
+    /// Makes `program` the modelled driver's current program, if it is not.
+    ///
+    /// One writer for the one slot, so the recorder cannot hold two beliefs about
+    /// which program is current.  It records nothing when the slot already holds
+    /// this program, which is what makes a redundant re-assertion invisible in
+    /// the trace exactly as the real provider's comparison makes it free.
+    pub(super) fn select_program(&mut self, program: ProgramId) {
+        if self.current_program != Some(program) {
+            self.current_program = Some(program);
+            self.calls.push(MockCall::SelectProgram(program));
+        }
+    }
+    pub(super) fn ready(&mut self, op: &'static str) -> Result<(), GlError> {
+        self.owner(op)?;
+        if let Some(e) = self.next_error.take() {
+            self.error(e.clone());
+            return Err(e);
+        }
+        match self.lifecycle {
+            GlContextLifecycle::Active => Ok(()),
+            GlContextLifecycle::Lost | GlContextLifecycle::Restoring => {
+                self.error_result(GlError::ContextLost { operation: op })
+            }
+            GlContextLifecycle::Disposed => self.error_result(GlError::Disposed { operation: op }),
+            GlContextLifecycle::Poisoned => self.error_result(GlError::Poisoned { operation: op }),
+            _ => self.invalid(op, "context is not active"),
+        }
+    }
+    pub(super) fn error_result<T>(&mut self, e: GlError) -> Result<T, GlError> {
+        self.error(e.clone());
+        Err(e)
+    }
+    pub(super) fn invalid<T>(
+        &mut self,
+        op: &'static str,
+        message: &'static str,
+    ) -> Result<T, GlError> {
+        self.error_result(GlError::Validation {
+            operation: op,
+            message: message.into(),
+        })
+    }
+    pub(super) fn error(&mut self, e: GlError) {
+        if matches!(e, GlError::ContextLost { .. }) {
+            self.lifecycle = GlContextLifecycle::Lost;
+        }
+        self.calls.push(MockCall::Error(e));
+    }
+    pub(super) fn slot(&mut self) -> Result<u32, GlError> {
+        let slot = self.next_slot;
+        self.next_slot = self.next_slot.checked_add(1).ok_or(GlError::OutOfMemory {
+            operation: "mock-slot",
+        })?;
+        Ok(slot)
+    }
+    pub(super) fn stamp(&mut self, op: &'static str, actual: ContextStamp) -> Result<(), GlError> {
+        if actual.device != self.stamp.device {
+            self.error_result(GlError::WrongContext {
+                operation: op,
+                object: actual,
+                current: self.stamp,
+            })
+        } else if actual != self.stamp {
+            self.error_result(GlError::StaleObject {
+                operation: op,
+                object: actual,
+                current: self.stamp,
+            })
+        } else {
+            Ok(())
+        }
+    }
+    pub(super) fn buffer(
+        &mut self,
+        op: &'static str,
+        id: BufferId,
+    ) -> Result<GlBufferDesc, GlError> {
+        self.stamp(op, id.context)?;
+        match self.buffers.get(&id).copied() {
+            Some(desc) => Ok(desc),
+            None => self.invalid(op, "buffer is not live"),
+        }
+    }
+    pub(super) fn texture(
+        &mut self,
+        op: &'static str,
+        id: TextureId,
+    ) -> Result<GlTextureDesc, GlError> {
+        self.stamp(op, id.context)?;
+        match self.textures.get(&id).copied() {
+            Some(desc) => Ok(desc),
+            None => self.invalid(op, "texture is not live"),
+        }
+    }
+    pub(super) fn render_buffer(
+        &mut self,
+        op: &'static str,
+        id: RenderbufferId,
+    ) -> Result<GlRenderBufferDesc, GlError> {
+        self.stamp(op, id.context)?;
+        match self.render_buffers.get(&id).copied() {
+            Some(desc) => Ok(desc),
+            None => self.invalid(op, "renderbuffer is not live"),
+        }
+    }
+    pub(super) fn binding_limits(&self) -> GlBindingLimits {
+        let limits = self.discovery.limits();
+        GlBindingLimits {
+            max_texture_units: limits.max_combined_texture_image_units,
+            max_uniform_buffer_bindings: limits.max_uniform_buffer_bindings,
+            uniform_buffer_offset_alignment: limits.uniform_buffer_offset_alignment,
+        }
+    }
+    pub(super) fn invalid_binding(
+        &mut self,
+        op: &'static str,
+        error: GlBindingValidationError,
+    ) -> GlError {
+        let error = GlError::Validation {
+            operation: op,
+            message: error.message().into(),
+        };
+        self.error(error.clone());
+        error
+    }
+    pub(super) fn live<K: GlObjectKind, F: FnOnce(&Self) -> bool>(
+        &mut self,
+        op: &'static str,
+        id: ObjectIdentity<K>,
+        exists: F,
+    ) -> Result<(), GlError> {
+        self.stamp(op, id.context)?;
+        if exists(self) {
+            Ok(())
+        } else {
+            self.invalid(op, "object is not live")
+        }
+    }
+    pub(super) fn reset_objects(&mut self) {
+        self.buffers.clear();
+        self.textures.clear();
+        self.render_buffers.clear();
+        self.samplers.clear();
+        self.shaders.clear();
+        self.programs.clear();
+        self.vaos.clear();
+        self.framebuffers.clear();
+        self.queries.clear();
+        self.syncs.clear();
+        self.fences.revoke_all();
+        self.pass_active = false;
+        self.pass_framebuffer = None;
+        self.installed_compute_program = None;
+        self.current_program = None;
+        self.installed_raster_program = None;
+        self.bound_vertex_array = None;
+        // The new epoch has to requery every optional fact, and the recorder
+        // cannot requery anything: keeping the previous context's answers would
+        // let a restored context accept an offset it never proved.
+        self.advanced_raster = GlAdvancedRasterCapabilities {
+            base_vertex: false,
+            first_instance: false,
+        };
+        self.query_results.clear();
+        // Every fence is revoked above, so no surviving lease can name an
+        // injected status; clearing keeps the oracle describing exactly the
+        // live fence set rather than a previous context's observations.
+        self.fence_statuses.clear();
+        let _ = self.surface.invalidate_generation();
+    }
+    /// Validates one attachment view exactly as the executable backends do:
+    /// the named allocation must be live, the view's format, extent, mip
+    /// level, layer selection, and sample count must match it, and the format
+    /// must carry renderable evidence for the storage class the view names
+    /// (Phase C oracle parity).
+    ///
+    /// Both storage classes run the same rule sequence, so a descriptor is
+    /// rejected for the same reason whichever one backs it. A texture addresses
+    /// a mip level and may span layers; a renderbuffer has neither, so its only
+    /// addressable view is level 0, layer 0, of exactly one layer. The sequence
+    /// and every message are the providers' own, so a differential test compares
+    /// one rejection rather than two spellings of it.
+    pub(super) fn validate_attachment(
+        &mut self,
+        op: &'static str,
+        view: GlTextureView,
+    ) -> Result<(), GlError> {
+        match view.target {
+            GlAttachmentTarget::Texture(texture) => {
+                let desc = self.texture(op, texture)?;
+                if desc.format != view.format {
+                    return self
+                        .invalid(op, "attachment view format does not match the allocation");
+                }
+                let Some(mip) = desc.mip_extent(view.mip_level) else {
+                    return self.invalid(op, "attachment mip level is invalid");
+                };
+                if view.width != mip.width || view.height != mip.height {
+                    return self.invalid(
+                        op,
+                        "attachment view extent does not match the allocation extent",
+                    );
+                }
+                if view.array_layer != 0 || desc.dimension != GlTextureDimension::D2 {
+                    return self.error_result(GlError::Unsupported {
+                        operation: op,
+                        reason: "layered attachments are not part of this framebuffer slice",
+                    });
+                }
+                if desc.sample_count != view.sample_count {
+                    return self
+                        .invalid(op, "attachment sample count does not match the allocation");
+                }
+                // Keyed at the view's own sample count, not at 1: the evidence
+                // table is keyed by (kind, format, sample_count), and the check
+                // above has already required this view's count to equal the
+                // allocation's. A recorder that looked up sample count 1 here
+                // would accept a multisample attachment the executable backends
+                // reject, which is the one thing the shared oracle must not do.
+                self.require_renderable_attachment(
+                    op,
+                    GlFormatResourceKind::Texture,
+                    view.format,
+                    view.sample_count,
+                )
+            }
+            GlAttachmentTarget::Renderbuffer(renderbuffer) => {
+                let desc = self.render_buffer(op, renderbuffer)?;
+                if desc.format != view.format {
+                    return self
+                        .invalid(op, "attachment view format does not match the allocation");
+                }
+                if view.mip_level != 0 {
+                    return self.invalid(op, "attachment mip level is invalid");
+                }
+                if view.width != desc.width || view.height != desc.height {
+                    return self.invalid(
+                        op,
+                        "attachment view extent does not match the allocation extent",
+                    );
+                }
+                if view.array_layer != 0 || view.layer_count != 1 {
+                    return self.error_result(GlError::Unsupported {
+                        operation: op,
+                        reason: "layered attachments are not part of this framebuffer slice",
+                    });
+                }
+                if desc.samples != view.sample_count {
+                    return self
+                        .invalid(op, "attachment sample count does not match the allocation");
+                }
+                self.require_renderable_attachment(
+                    op,
+                    GlFormatResourceKind::Renderbuffer,
+                    view.format,
+                    view.sample_count,
+                )
+            }
+        }
+    }
+
+    /// The last rule every attachment runs: this context has renderable evidence.
+    pub(super) fn require_renderable_attachment(
+        &mut self,
+        op: &'static str,
+        kind: GlFormatResourceKind,
+        format: GlFormat,
+        sample_count: u32,
+    ) -> Result<(), GlError> {
+        let facts = self.discovery.formats().get_for(kind, format, sample_count);
+        if facts.is_none_or(|facts| !facts.renderable) {
+            return self.error_result(GlError::Unsupported {
+                operation: op,
+                reason: "attachment format lacks renderable evidence on this context",
+            });
+        }
+        Ok(())
+    }
+    pub(super) fn format_facts(
+        &mut self,
+        op: &'static str,
+        desc: GlTextureDesc,
+    ) -> Result<GlFormatCapabilities, GlError> {
+        self.discovery
+            .formats()
+            .get_for(
+                GlFormatResourceKind::Texture,
+                desc.format,
+                desc.sample_count,
+            )
+            .ok_or_else(|| GlError::Validation {
+                operation: op,
+                message: "no exact discovered format fact for texture allocation".into(),
+            })
+            .inspect_err(|error| self.error(error.clone()))
+    }
+    pub(super) fn validate_buffer_allocation(&mut self, desc: GlBufferDesc) -> Result<(), GlError> {
+        let capabilities = self.discovery.capabilities();
+        if desc.usage.contains(GlBufferUsage::STORAGE)
+            && !capabilities.supports(GlCapability::StorageBuffer)
+        {
+            return self.invalid(
+                "create-buffer",
+                "storage buffer usage lacks proved storage-buffer capability",
+            );
+        }
+        if desc.usage.contains(GlBufferUsage::INDIRECT)
+            && !capabilities.supports(GlCapability::IndirectDraw)
+            && !capabilities.supports(GlCapability::IndirectDispatch)
+        {
+            return self.invalid(
+                "create-buffer",
+                "indirect buffer usage lacks proved indirect capability",
+            );
+        }
+        Ok(())
+    }
+    pub(super) fn validate_texture_allocation(
+        &mut self,
+        desc: GlTextureDesc,
+    ) -> Result<(), GlError> {
+        let facts = self.format_facts("create-texture", desc)?;
+        if desc.usage.contains(GlTextureUsage::SAMPLED) && !facts.sampled {
+            return self.invalid(
+                "create-texture",
+                "format is not sampled for this sample count",
+            );
+        }
+        if desc.usage.contains(GlTextureUsage::RENDER_ATTACHMENT) && !facts.renderable {
+            return self.invalid(
+                "create-texture",
+                "format is not renderable for this sample count",
+            );
+        }
+        if desc.usage.contains(GlTextureUsage::COPY_SOURCE) && !facts.copy_source {
+            return self.invalid("create-texture", "format is not a copy source");
+        }
+        if desc.usage.contains(GlTextureUsage::COPY_DESTINATION) && !facts.copy_destination {
+            return self.invalid("create-texture", "format is not a copy destination");
+        }
+        if desc.usage.contains(GlTextureUsage::STORAGE_BINDING)
+            && (!self
+                .discovery
+                .capabilities()
+                .supports(GlCapability::StorageImage)
+                || (!facts.storage_read && !facts.storage_write))
+        {
+            return self.invalid(
+                "create-texture",
+                "storage texture usage lacks proved image capability or exact format access",
+            );
+        }
+        Ok(())
+    }
+    pub(super) fn validate_storage_image_binding(
+        &mut self,
+        binding: u32,
+        image: GlStorageImageBinding,
+    ) -> Result<(), GlError> {
+        if !self
+            .discovery
+            .capabilities()
+            .supports(GlCapability::StorageImage)
+        {
+            return self.invalid(
+                "bind-storage-image",
+                "discovery did not prove storage-image capability",
+            );
+        }
+        let desc = self.texture("bind-storage-image", image.texture)?;
+        image.validate(
+            binding,
+            GlStorageImageLimits {
+                max_image_units: self.discovery.limits().max_image_units,
+            },
+            self.discovery.formats(),
+        )?;
+        if !desc.usage.contains(GlTextureUsage::STORAGE_BINDING)
+            || desc.format != image.format
+            || desc.sample_count != image.sample_count
+            || image.level >= desc.mip_level_count
+        {
+            return self.invalid(
+                "bind-storage-image",
+                "texture usage, format, sample count, or mip level is invalid for storage",
+            );
+        }
+        let Some(mip_extent) = desc.mip_extent(image.level) else {
+            return self.invalid("bind-storage-image", "storage image mip level is invalid");
+        };
+        let supports_layered = matches!(
+            desc.dimension,
+            GlTextureDimension::D3 | GlTextureDimension::D2Array | GlTextureDimension::Cube
+        );
+        if (image.layered && !supports_layered)
+            || (!image.layered
+                && image
+                    .layer
+                    .is_none_or(|layer| layer >= mip_extent.depth_or_layers))
+        {
+            return self.invalid(
+                "bind-storage-image",
+                "storage image layer selection is invalid for the texture shape",
+            );
+        }
+        Ok(())
+    }
+}

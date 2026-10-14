@@ -2,11 +2,12 @@
 //! The primary uploads shared input, while eight workers create 512 indexed draws.
 //! The workload does not schedule workers outside the secondary-recording
 //! contract, nor does it own the host surface or resource retirement.
-#[path = "../common/mod.rs"]
-mod common;
-#[path = "../common/gltf.rs"]
+#[path = "../utils/gltf.rs"]
 mod gltf;
+#[path = "math.rs"]
 mod math;
+#[path = "../utils/mod.rs"]
+mod utils;
 use fluxel_rhi::api::*;
 use math::*;
 
@@ -47,6 +48,14 @@ impl<T> SecondaryExampleBackend for T where
         + RasterBackend
         + DeferredBackend
         + SecondaryBackend
+{
+}
+pub trait SequentialExampleBackend:
+    Backend + ResourceBackend + ShaderBackend + PipelineBackend + CommandBackend + RasterBackend
+{
+}
+impl<T> SequentialExampleBackend for T where
+    T: Backend + ResourceBackend + ShaderBackend + PipelineBackend + CommandBackend + RasterBackend
 {
 }
 pub fn require_parallel_secondary_recording<B: Backend>(device: &Device<B>) -> Result<()> {
@@ -397,11 +406,12 @@ fn buffer<B: SecondaryExampleBackend>(
     })
 }
 
+#[path = "sequential.rs"]
+mod sequential;
+#[cfg(all(windows, feature = "native-gl-wgl"))]
+pub use sequential::run_gl_multithreaded_recording;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
-#[path = "../multithreaded_recording/webgpu.rs"]
-mod webgpu;
-#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
-pub use webgpu::run_webgpu_multithreaded_recording;
+pub use sequential::run_webgpu_multithreaded_recording;
 
 fn depth<B: ResourceBackend>(
     d: &Device<B>,
@@ -469,7 +479,7 @@ async fn pipeline<B: SecondaryExampleBackend>(
     cull_mode: CullMode,
     vertex_buffers: Vec<VertexBufferLayout>,
 ) -> Result<RasterPipeline<B>> {
-    let vs = common::native_shader_with_wgsl(
+    let vs = utils::native_shader_with_wgsl(
         d,
         &format!("{name} vs"),
         "vs_main",
@@ -483,7 +493,7 @@ async fn pipeline<B: SecondaryExampleBackend>(
         eprintln!("{name} vertex shader creation: {error:?}");
         error
     })?;
-    let ps = common::native_shader_with_wgsl(
+    let ps = utils::native_shader_with_wgsl(
         d,
         &format!("{name} ps"),
         "ps_main",
@@ -552,6 +562,7 @@ async fn pipeline<B: SecondaryExampleBackend>(
     })
 }
 
+#[path = "host.rs"]
 mod host;
 
 /// Selects and runs the native backend host.

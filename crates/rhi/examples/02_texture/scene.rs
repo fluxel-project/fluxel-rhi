@@ -3,8 +3,8 @@
 //! `TexturePixels` carries decoded KTX texels; the workload records a real
 //! texture upload and textured indexed draw.  The native host supplies the
 //! acquired surface and submits the returned work.
-#[path = "../common/mod.rs"]
-mod common;
+#[path = "../utils/mod.rs"]
+mod utils;
 use fluxel_rhi::api::*;
 mod data;
 use data::*;
@@ -14,16 +14,11 @@ const VS_SPV: &[u8] = include_bytes!("../assets/02_texture/texture.vs.spv");
 const PS_SPV: &[u8] = include_bytes!("../assets/02_texture/texture.ps.spv");
 const WGSL: &[u8] = include_bytes!("../assets/02_texture/texture.wgsl");
 pub trait TextureBackend:
-    Backend + ResourceBackend + ShaderBackend + PipelineBackend + RasterBackend + DeferredBackend
+    Backend + ResourceBackend + ShaderBackend + PipelineBackend + RasterBackend
 {
 }
 impl<T> TextureBackend for T where
-    T: Backend
-        + ResourceBackend
-        + ShaderBackend
-        + PipelineBackend
-        + RasterBackend
-        + DeferredBackend
+    T: Backend + ResourceBackend + ShaderBackend + PipelineBackend + RasterBackend
 {
 }
 #[derive(Clone, Copy)]
@@ -31,6 +26,24 @@ pub struct TexturePixels<'a> {
     pub rgba: &'a [u8],
     pub width: u32,
     pub height: u32,
+}
+#[cfg(any(
+    all(windows, feature = "native-gl-wgl"),
+    all(target_arch = "wasm32", feature = "webgl2")
+))]
+#[path = "immediate.rs"]
+mod immediate;
+
+/// Draws the shared WGSL texture scene through the immediate WebGL2 backend.
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn run_webgl2_texture(
+    canvas: web_sys::HtmlCanvasElement,
+    frames: u32,
+) -> std::result::Result<(), wasm_bindgen::JsValue> {
+    immediate::run_browser(canvas, frames)
+        .await
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
 }
 mod workload;
 pub use workload::TextureExample;
@@ -85,18 +98,26 @@ pub(super) async fn pipeline<B: TextureBackend>(
     v: Vec<VertexBufferLayout>,
     vs: &[u8],
     ps: &[u8],
+    wgsl: Option<(&[u8], &[u8])>,
 ) -> Result<RasterPipeline<B>> {
-    let a =
-        common::native_shader_with_wgsl(d, "vs", "vs_main", ShaderStage::Vertex, vs, VS_SPV, WGSL)
-            .await?;
-    let b = common::native_shader_with_wgsl(
+    let a = shader_for(
+        d,
+        "vs",
+        "vs_main",
+        ShaderStage::Vertex,
+        vs,
+        VS_SPV,
+        wgsl.map(|x| x.0),
+    )
+    .await?;
+    let b = shader_for(
         d,
         "ps",
         "fs_main",
         ShaderStage::Fragment,
         ps,
         PS_SPV,
-        WGSL,
+        wgsl.map(|x| x.1),
     )
     .await?;
     d.raster_pipeline(RasterPipelineDesc {
@@ -141,6 +162,39 @@ pub(super) async fn pipeline<B: TextureBackend>(
     .await
 }
 
+async fn shader_for<B: TextureBackend>(
+    device: &Device<B>,
+    label: &str,
+    native_entry: &str,
+    stage: ShaderStage,
+    native: &[u8],
+    spirv: &[u8],
+    wgsl: Option<&[u8]>,
+) -> Result<Shader<B>> {
+    if let Some(source) = wgsl {
+        let desc = ShaderDesc {
+            label: Some(label.into()),
+            format: ShaderFormat::Wgsl,
+            bytes: std::sync::Arc::from(source),
+            entries: vec![ShaderEntryPoint {
+                name: if matches!(stage, ShaderStage::Vertex) {
+                    "vs_main"
+                } else {
+                    "fs_main"
+                }
+                .into(),
+                stage,
+                workgroup_size: None,
+            }],
+            required_features: vec![],
+        };
+        if !matches!(device.shader_route(&desc), ShaderRoute::Unsupported) {
+            return device.shader(desc).await;
+        }
+    }
+    utils::native_shader_with_wgsl(device, label, native_entry, stage, native, spirv, WGSL).await
+}
+
 /// Draws the textured example into a host-owned browser canvas.
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 #[wasm_bindgen::prelude::wasm_bindgen]
@@ -175,11 +229,11 @@ pub async fn run_webgpu_texture(
             maximum_frame_latency: 2,
         };
         surface.configure(&config).await?;
-        let example = TextureExample::<WebGpu>::new(&device, lane, format, pixels).await?;
+        let example = TextureExample::<WebGpu>::new(&device, lane, format, pixels, None).await?;
         for _ in 0..frames {
             let image = surface.acquire().await?;
             let work = example.record(&device, &image, extent, pixels)?;
-            common::submit_and_present_async(&device, lane, work, image).await?;
+            utils::submit_and_present_async(&device, lane, work, image).await?;
         }
         Ok(())
     };
@@ -188,7 +242,7 @@ pub async fn run_webgpu_texture(
 }
 
 #[cfg(windows)]
-fn run_host<B: TextureBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
+fn run_host<B: TextureBackend + DeferredBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
     let (rgba, width, height) = match load_ktx() {
         Ok(value) => value,
         Err(error) => return Err(error),
@@ -203,7 +257,7 @@ fn run_host<B: TextureBackend, H: common::ExampleHost<B>>(host: H) -> Result<()>
         maximum_frame_latency: 2,
     };
     let mut example: Option<TextureExample<B>> = None;
-    common::run_example(
+    utils::run_example(
         host,
         "Textured quad",
         config.clone(),
@@ -220,18 +274,19 @@ fn run_host<B: TextureBackend, H: common::ExampleHost<B>>(host: H) -> Result<()>
                 height,
             };
             if example.is_none() {
-                example = Some(common::block_on(TextureExample::new(
+                example = Some(utils::block_on(TextureExample::new(
                     device,
                     lane,
                     config.format,
                     pixels,
+                    None,
                 ))?);
             }
             let work = example
                 .as_ref()
                 .ok_or(Error::InvalidState)?
                 .record(device, &image, extent, pixels)?;
-            common::submit_and_present(device, lane, work, image)
+            utils::submit_and_present(device, lane, work, image)
         },
     )
 }
@@ -239,13 +294,26 @@ fn run_host<B: TextureBackend, H: common::ExampleHost<B>>(host: H) -> Result<()>
 /// Runs the native Cargo example target.
 #[cfg(windows)]
 pub fn run() {
-    let result = match common::windows_api::selected_backend() {
-        Ok(common::windows_api::SelectedBackend::Dx12) => {
-            run_host::<fluxel_rhi::dx12::Dx12, _>(common::windows_api::Dx12Host)
+    #[cfg(feature = "native-gl-wgl")]
+    if std::env::args()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .any(|a| a[0] == "--backend" && a[1] == "gl")
+    {
+        if let Err(error) = immediate::run() {
+            eprintln!("02_texture: {error:?}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let result: Result<()> = match utils::windows_api::selected_backend() {
+        #[cfg(feature = "dx12")]
+        Ok(utils::windows_api::SelectedBackend::Dx12) => {
+            run_host::<fluxel_rhi::dx12::Dx12, _>(utils::windows_api::Dx12Host)
         }
         #[cfg(feature = "vulkan")]
-        Ok(common::windows_api::SelectedBackend::Vulkan) => {
-            run_host::<fluxel_rhi::vulkan::Vulkan, _>(common::windows_api::VulkanHost)
+        Ok(utils::windows_api::SelectedBackend::Vulkan) => {
+            run_host::<fluxel_rhi::vulkan::Vulkan, _>(utils::windows_api::VulkanHost)
         }
         Err(error) => Err(error),
     };

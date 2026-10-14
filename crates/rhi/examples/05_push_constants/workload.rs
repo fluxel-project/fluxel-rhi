@@ -183,7 +183,10 @@ impl<B: PushBackend> PushWorkload<B> {
         d: &Device<B>,
         image: &SurfaceImage<B>,
         extent: [u32; 2],
-    ) -> Result<RecordedWork<B>> {
+    ) -> Result<RecordedWork<B>>
+    where
+        B: DeferredBackend,
+    {
         let mut encoder = d.encoder(self.lane)?;
         if !self.uploaded {
             encoder.write_buffer(&self.vertex, 0, &self.source_vertices)?;
@@ -257,5 +260,79 @@ impl<B: PushBackend> PushWorkload<B> {
             )?;
         }
         encoder.finish()
+    }
+}
+
+#[cfg(any(
+    all(windows, feature = "native-gl-wgl"),
+    all(target_arch = "wasm32", feature = "webgl2")
+))]
+impl PushWorkload<fluxel_rhi::gl::Gl> {
+    /// Issues the existing dynamic-uniform fallback on GL's owner thread.
+    /// Every encoder call reaches GL before returning; no recorded work is
+    /// produced or kept for a later queue submission.
+    pub(super) fn issue(
+        &mut self,
+        encoder: &mut CommandEncoder<fluxel_rhi::gl::Gl>,
+        image: &SurfaceImage<fluxel_rhi::gl::Gl>,
+        extent: [u32; 2],
+    ) -> Result<()> {
+        if !self.dynamic_uniforms {
+            return Err(Error::InvalidState);
+        }
+        if !self.uploaded {
+            encoder.write_buffer(&self.vertex, 0, &self.source_vertices)?;
+            encoder.write_buffer(&self.index, 0, &self.source_indices)?;
+            self.uploaded = true;
+        }
+        encoder.write_buffer(&self.camera, 0, &camera_bytes(extent))?;
+        let draw_data = self.draw_data.as_ref().ok_or(Error::InvalidState)?;
+        for (index, sphere) in sphere_ring().into_iter().enumerate() {
+            let offset = self
+                .dynamic_uniform_alignment
+                .checked_mul(index as u64)
+                .ok_or(Error::InvalidRange)?;
+            encoder.write_buffer(draw_data, offset, &sphere.bytes())?;
+        }
+        let colors = [Some(ColorAttachment {
+            view: AttachmentView::Surface(image),
+            resolve_target: None,
+            load: LoadOp::Clear(ClearColor::Float([0.025, 0.025, 0.025, 1.0])),
+            store: StoreOp::Store,
+        })];
+        let pass = RasterPassDesc {
+            label: Some("05 GL dynamic-uniform spheres"),
+            colors: &colors,
+            depth_stencil: Some(DepthStencilAttachment {
+                view: AttachmentView::Texture(&self.depth_view),
+                depth: Some((LoadOp::Clear(1.0), StoreOp::Discard)),
+                stencil: None,
+                depth_read_only: false,
+                stencil_read_only: false,
+            }),
+            render_area: Rect {
+                x: 0,
+                y: 0,
+                width: extent[0],
+                height: extent[1],
+            },
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            secondary_inheritance: None,
+        };
+        encode_sphere_ring_dynamic_uniform(
+            encoder,
+            &pass,
+            &self.pipeline,
+            &self.group,
+            self.draw_group.as_ref().ok_or(Error::InvalidState)?,
+            self.dynamic_uniform_alignment,
+            &self.vertex,
+            self.source_vertices.len() as u64,
+            &self.index,
+            self.source_indices.len() as u64,
+            (self.source_indices.len() / 4) as u32,
+        )
     }
 }

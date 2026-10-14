@@ -2,7 +2,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-#[path = "../examples/02_texture.rs"]
+#[path = "../examples/02_texture/main.rs"]
 mod texture;
 
 use wasm_bindgen::JsCast;

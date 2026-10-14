@@ -5,7 +5,8 @@
 //! enum. RenderGraph and renderer code own scheduling, hazard analysis, frame
 //! policy, and resource lifetime planning; the RHI executes the resulting work.
 //!
-//! Direct3D 12 and Vulkan are native Windows backends; WebGPU runs in browsers.
+//! Direct3D 12, Vulkan, and GL-family backends run on supported native routes;
+//! WebGPU and WebGL2 run in browsers.
 
 #![deny(missing_docs)]
 
@@ -31,4 +32,15 @@ pub mod vulkan {
 pub mod webgpu {
     /// WebGPU backend implementation and construction entry points.
     pub use fluxel_rhi_webgpu::*;
+}
+
+/// Desktop GL, GLES, and WebGL2 share one statically typed immediate backend.
+#[cfg(any(
+    feature = "native-gl-wgl",
+    feature = "native-gles-egl",
+    feature = "webgl2"
+))]
+pub mod gl {
+    /// The GL-family backend and current-context construction entry points.
+    pub use fluxel_rhi_gl::*;
 }

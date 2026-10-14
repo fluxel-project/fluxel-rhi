@@ -2,7 +2,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-#[path = "../examples/09_texture_mipmap.rs"]
+#[path = "../examples/09_texture_mipmap/main.rs"]
 mod texture_mipmap;
 
 use wasm_bindgen::JsCast;

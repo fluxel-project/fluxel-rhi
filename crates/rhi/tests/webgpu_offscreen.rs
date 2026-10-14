@@ -2,7 +2,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-#[path = "../examples/07_offscreen.rs"]
+#[path = "../examples/07_offscreen/main.rs"]
 mod example;
 
 use wasm_bindgen::JsCast;

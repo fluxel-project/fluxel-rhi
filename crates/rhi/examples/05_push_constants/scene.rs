@@ -6,10 +6,10 @@
 //! The native host owns surface lifetime and submission; this module only owns
 //! scene resources and command construction.
 
-#[path = "../common/mod.rs"]
-mod common;
-#[path = "../common/gltf.rs"]
+#[path = "../utils/gltf.rs"]
 mod gltf;
+#[path = "../utils/mod.rs"]
+mod utils;
 
 use fluxel_rhi::api::*;
 
@@ -149,7 +149,7 @@ fn encode_sphere_ring_dynamic_uniform<B>(
     index_count: u32,
 ) -> Result<()>
 where
-    B: RasterBackend + DeferredBackend,
+    B: RasterBackend,
 {
     let mut raster = encoder.begin_raster(pass)?;
     raster.viewport(Viewport {
@@ -224,7 +224,7 @@ pub async fn run_webgpu_push_constants(
         for _ in 0..frames {
             let image = surface.acquire().await?;
             let work = workload.record(&device, &image, extent)?;
-            common::submit_and_present_async(&device, lane, work, image).await?;
+            utils::submit_and_present_async(&device, lane, work, image).await?;
         }
         Ok(())
     };
@@ -233,7 +233,7 @@ pub async fn run_webgpu_push_constants(
 }
 
 #[cfg(windows)]
-fn run_host<B: PushBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
+fn run_host<B: PushBackend + DeferredBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Bgra8Unorm,
@@ -244,7 +244,7 @@ fn run_host<B: PushBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
         maximum_frame_latency: 2,
     };
     let mut workload: Option<PushWorkload<B>> = None;
-    common::run_example(
+    utils::run_example(
         host,
         "Push constants",
         config.clone(),
@@ -256,7 +256,7 @@ fn run_host<B: PushBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
                 .map(|lane| lane.id)
                 .ok_or(Error::Unsupported("graphics lane"))?;
             if workload.is_none() {
-                workload = Some(common::block_on(PushWorkload::new(
+                workload = Some(utils::block_on(PushWorkload::new(
                     device,
                     lane,
                     config.format,
@@ -267,7 +267,7 @@ fn run_host<B: PushBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
                 .as_mut()
                 .ok_or(Error::InvalidState)?
                 .record(device, &image, extent)?;
-            common::submit_and_present(device, lane, work, image)
+            utils::submit_and_present(device, lane, work, image)
         },
     )
 }
@@ -275,13 +275,26 @@ fn run_host<B: PushBackend, H: common::ExampleHost<B>>(host: H) -> Result<()> {
 /// Runs the native Cargo example target.
 #[cfg(windows)]
 pub fn run() {
-    let result = match common::windows_api::selected_backend() {
-        Ok(common::windows_api::SelectedBackend::Dx12) => {
-            run_host::<fluxel_rhi::dx12::Dx12, _>(common::windows_api::Dx12Host)
+    #[cfg(feature = "native-gl-wgl")]
+    if std::env::args()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .any(|args| args[0] == "--backend" && args[1] == "gl")
+    {
+        if let Err(error) = immediate::run() {
+            eprintln!("05_push_constants: {error:?}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let result: Result<()> = match utils::windows_api::selected_backend() {
+        #[cfg(feature = "dx12")]
+        Ok(utils::windows_api::SelectedBackend::Dx12) => {
+            run_host::<fluxel_rhi::dx12::Dx12, _>(utils::windows_api::Dx12Host)
         }
         #[cfg(feature = "vulkan")]
-        Ok(common::windows_api::SelectedBackend::Vulkan) => {
-            run_host::<fluxel_rhi::vulkan::Vulkan, _>(common::windows_api::VulkanHost)
+        Ok(utils::windows_api::SelectedBackend::Vulkan) => {
+            run_host::<fluxel_rhi::vulkan::Vulkan, _>(utils::windows_api::VulkanHost)
         }
         Err(error) => Err(error),
     };
@@ -292,18 +305,20 @@ pub fn run() {
 }
 
 pub trait PushBackend:
-    Backend + ResourceBackend + ShaderBackend + PipelineBackend + RasterBackend + DeferredBackend
+    Backend + ResourceBackend + ShaderBackend + PipelineBackend + RasterBackend
 {
 }
 impl<T> PushBackend for T where
-    T: Backend
-        + ResourceBackend
-        + ShaderBackend
-        + PipelineBackend
-        + RasterBackend
-        + DeferredBackend
+    T: Backend + ResourceBackend + ShaderBackend + PipelineBackend + RasterBackend
 {
 }
+#[cfg(any(
+    all(windows, feature = "native-gl-wgl"),
+    all(target_arch = "wasm32", feature = "webgl2")
+))]
+mod immediate;
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+pub use immediate::run_webgl2_push_constants;
 mod pipeline;
 mod workload;
 use workload::PushWorkload;

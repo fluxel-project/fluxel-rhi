@@ -2,7 +2,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-#[path = "../examples/04_dynamic_uniform_buffer.rs"]
+#[path = "../examples/04_dynamic_uniform_buffer/main.rs"]
 mod dynamic_uniforms;
 
 use wasm_bindgen::JsCast;

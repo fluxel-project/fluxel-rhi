@@ -1,9 +1,13 @@
 # Example assets
 
 All numbered example shaders are maintained as WGSL. The manifest and
-`../compile-wgsl.ps1` generate and ABI-check the checked-in SPIR-V and DXIL
+`../../../../tools/examples/compile-wgsl.ps1` generate and ABI-check the checked-in SPIR-V and DXIL
 artifacts from those sources; the binaries are backend build outputs, not
 parallel shader sources.
+
+Example 15 keeps separate WGSL display entry points for native multiview and
+the sequential per-eye fallback. The artifact manifest compiles the native
+variant; WebGPU and GL use the fallback WGSL directly.
 
 The external model and texture assets described below are separate from these
 shader binaries.
@@ -18,11 +22,11 @@ resources are required.
 
 ## Fetching exact local bytes
 
-Run the reproducible Windows fetcher from `crates/rhi/examples` when the
+Run the reproducible Windows fetcher from the workspace root when the
 binary assets are not present:
 
 ```powershell
-.\fetch-assets.ps1
+.\tools\examples\fetch-assets.ps1
 ```
 
 It downloads only the 20 resources listed below from the pinned commit and
@@ -33,7 +37,7 @@ file. Use `-Destination <path>` to populate a separate local asset directory.
 The fetched binaries are deliberately excluded from version control. The
 upstream asset pack does not identify a redistributable license for each file;
 its Vulkan scene models and derived work specifically require permission for
-use or distribution. `fetch-assets.ps1` obtains the exact local bytes needed
+use or distribution. `tools/examples/fetch-assets.ps1` obtains the exact local bytes needed
 to build the examples, but it does not grant a license to redistribute them.
 
 | Example | Resources |

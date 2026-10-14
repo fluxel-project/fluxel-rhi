@@ -1,7 +1,7 @@
 //! Browser proof of the offscreen render and completed GPU readback path.
 #![cfg(target_arch = "wasm32")]
 
-#[path = "../examples/12_screenshot.rs"]
+#[path = "../examples/12_screenshot/main.rs"]
 mod screenshot;
 
 use wasm_bindgen::JsCast;

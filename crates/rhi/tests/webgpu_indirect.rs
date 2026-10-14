@@ -2,7 +2,9 @@
 
 #![cfg(target_arch = "wasm32")]
 
-#[path = "../examples/10_indirect_draw.rs"]
+// Compile the example as a real module so its module documentation and
+// relative sibling paths retain the same meaning as its binary target.
+#[path = "../examples/10_indirect_draw/main.rs"]
 mod example;
 
 use wasm_bindgen::JsCast;

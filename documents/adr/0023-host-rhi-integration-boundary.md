@@ -18,7 +18,7 @@ Backend-specific native handles and surface registration stay behind the
 backend boundary. Core exposes `Surface`, `SurfaceImage`, and `PresentBinding`
 without depending on a host or browser session type.
 
-The current Windows examples put this integration in `examples/common`; the
+The current Windows examples put this integration in `examples/utils`; the
 DX12 and Vulkan constructors explicitly mark raw-window-handle lifetime as an
 unsafe caller obligation. WebGPU accepts a browser canvas through its backend
 constructor. These routes are platform integration code, not another RHI
