@@ -19,16 +19,14 @@
 
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc, task::Waker};
 
-use fluxel_rhi_core::api::{CompletionState, Error, LaneId, Result};
-use wasm_bindgen::JsCast;
+use fluxel_rhi_core::api::{Error, LaneId, Result};
 use web_sys::{
     WebGl2RenderingContext as Gl, WebGlBuffer, WebGlFramebuffer, WebGlProgram, WebGlSampler,
     WebGlSync, WebGlTexture, WebGlVertexArrayObject,
 };
 
-use super::super::api::{GlDiscoverySnapshot, GlTextureDesc};
+use super::super::api::GlDiscoverySnapshot;
 use super::super::profile::GlProfile;
-use super::completion::{BrowserCompletion, BrowserCompletionFuture};
 use super::discovery::WebGl2BrowserDiscovery;
 
 /// Browser-local owner for one WebGL2 context.
@@ -100,48 +98,6 @@ pub(super) struct BrowserOffscreenPass {
     pub(super) extent: [u32; 2],
 }
 
-/// A WebGL buffer tied to exactly one browser owner.
-#[derive(Clone)]
-pub(crate) struct BrowserBuffer {
-    pub(super) owner: BrowserOwner,
-    pub(super) raw: WebGlBuffer,
-    pub(super) size: u64,
-    pub(super) lifetime: Rc<()>,
-}
-
-/// RGBA8 texture storage tied to exactly one browser owner.
-#[derive(Clone)]
-pub(crate) struct BrowserTexture {
-    pub(super) owner: BrowserOwner,
-    pub(super) raw: WebGlTexture,
-    pub(super) desc: GlTextureDesc,
-    pub(super) lifetime: Rc<()>,
-}
-
-/// Linked ESSL 3.00 raster program owned by one browser context.
-#[derive(Clone)]
-pub(crate) struct BrowserRasterProgram {
-    pub(super) owner: BrowserOwner,
-    pub(super) raw: WebGlProgram,
-    pub(super) lifetime: Rc<()>,
-}
-
-/// Vertex array state owned by one browser context.
-#[derive(Clone)]
-pub(crate) struct BrowserVertexArray {
-    pub(super) owner: BrowserOwner,
-    pub(super) raw: WebGlVertexArrayObject,
-    pub(super) lifetime: Rc<()>,
-}
-
-/// Sampler state tied to one browser context.
-#[derive(Clone)]
-pub(crate) struct BrowserSampler {
-    pub(super) owner: BrowserOwner,
-    pub(super) raw: WebGlSampler,
-    pub(super) lifetime: Rc<()>,
-}
-
 pub(super) struct BrowserOwnerState {
     pub(super) context: WebGl2BrowserDiscovery,
     pub(super) lost: bool,
@@ -162,6 +118,13 @@ pub(super) struct BrowserFence {
     pub(super) wakers: BTreeMap<u64, Waker>,
     pub(super) poll_scheduled: bool,
 }
+
+mod completion;
+mod resources;
+
+pub(crate) use resources::{
+    BrowserBuffer, BrowserRasterProgram, BrowserSampler, BrowserTexture, BrowserVertexArray,
+};
 
 impl BrowserOwner {
     /// Takes ownership of an already-created WebGL2 context on its browser
@@ -384,324 +347,6 @@ impl BrowserOwner {
             Err(Error::Backend("WebGL2 flush failed".into()))
         }
     }
-
-    /// Places a completion fence after commands already issued to this WebGL
-    /// context. This is host-observation evidence only; it neither closes an
-    /// immediate encoder nor invents a queue wait. An open encoder is refused
-    /// because its caller still owns the exact issued-prefix contract.
-    pub(crate) fn completion_after_current_commands(&self) -> Result<BrowserCompletion> {
-        self.drain_pending_deletes()?;
-        let mut state = self.state.borrow_mut();
-        state.ensure_active()?;
-        if state.active_encoder.is_some() {
-            return Err(Error::InvalidState);
-        }
-        let Some(raw) = state
-            .context
-            .raw
-            .fence_sync(Gl::SYNC_GPU_COMMANDS_COMPLETE, 0)
-        else {
-            state.mark_lost();
-            return Err(Error::DeviceLost);
-        };
-        state.context.raw.flush();
-        if state.context.raw.is_context_lost() {
-            // A lost context invalidates this new sync; only drop its JS handle.
-            drop(raw);
-            state.mark_lost();
-            return Err(Error::DeviceLost);
-        }
-        if state.context.raw.get_error() != Gl::NO_ERROR {
-            state.context.raw.delete_sync(Some(&raw));
-            state.mark_lost();
-            return Err(Error::DeviceLost);
-        }
-        let serial = state.allocate_completion()?;
-        state.completions.insert(
-            serial,
-            BrowserFence {
-                raw,
-                wakers: BTreeMap::new(),
-                poll_scheduled: false,
-            },
-        );
-        Ok(BrowserCompletion::pending(self.clone(), serial))
-    }
-
-    /// Polls a browser fence without waiting. A terminal result belongs to
-    /// the completion handle, rather than the GLsync map, so cloned points can
-    /// be observed repeatedly after the native sync is reclaimed.
-    pub(crate) fn completion_status(&self, completion: &BrowserCompletion) -> CompletionState {
-        if let Some(status) = completion.terminal_status() {
-            return status;
-        }
-        if !Rc::ptr_eq(&self.state, &completion.owner().state) {
-            return CompletionState::Failed(Error::WrongDevice);
-        }
-        if let Err(error) = self.drain_pending_deletes() {
-            return completion.store_terminal(Err(error));
-        }
-        let mut state = self.state.borrow_mut();
-        if state.ensure_active().is_err() {
-            return completion.store_terminal(Err(Error::DeviceLost));
-        }
-        let serial = completion.serial();
-        let Some(fence) = state.completions.get(&serial) else {
-            return completion.store_terminal(Err(Error::InvalidState));
-        };
-        match state
-            .context
-            .raw
-            .client_wait_sync_with_f64(&fence.raw, 0, 0.0)
-        {
-            Gl::ALREADY_SIGNALED | Gl::CONDITION_SATISFIED => {
-                let fence = state.completions.remove(&serial).expect("live fence");
-                state.context.raw.delete_sync(Some(&fence.raw));
-                let wakers = fence.wakers;
-                // Waking can synchronously poll this same completion. Release
-                // the owner state and publish its terminal result first, so
-                // re-entrant poll cannot observe a missing fence as InvalidState.
-                drop(state);
-                completion.store_terminal(Ok(()));
-                for (_, waker) in wakers {
-                    waker.wake();
-                }
-                CompletionState::Complete
-            }
-            Gl::TIMEOUT_EXPIRED => CompletionState::Pending,
-            _ => {
-                if state.context.raw.is_context_lost() {
-                    let wakers = std::mem::take(&mut state.completions)
-                        .into_values()
-                        .flat_map(|fence| fence.wakers.into_values())
-                        .collect::<Vec<_>>();
-                    // Context loss invalidates GLsync objects. Drop their JS
-                    // handles without deleteSync and publish one terminal
-                    // device-loss fact to every observer.
-                    state.mark_lost();
-                    drop(state);
-                    completion.store_terminal(Err(Error::DeviceLost));
-                    for waker in wakers {
-                        waker.wake();
-                    }
-                    return CompletionState::Failed(Error::DeviceLost);
-                }
-                let wakers = if let Some(fence) = state.completions.remove(&serial) {
-                    state.context.raw.delete_sync(Some(&fence.raw));
-                    fence.wakers
-                } else {
-                    BTreeMap::new()
-                };
-                // See the signalled branch above: a task wake may poll this
-                // owner immediately, so it cannot run while state is borrowed.
-                drop(state);
-                completion.store_terminal(Err(Error::Backend(
-                    "WebGL2 clientWaitSync returned an unknown result".into(),
-                )));
-                for (_, waker) in wakers {
-                    waker.wake();
-                }
-                CompletionState::Failed(Error::Backend(
-                    "WebGL2 clientWaitSync returned an unknown result".into(),
-                ))
-            }
-        }
-    }
-
-    /// Returns a cancellable, nonblocking wait for this owner's fence.
-    pub(crate) fn wait_completion(
-        &self,
-        completion: &BrowserCompletion,
-    ) -> BrowserCompletionFuture {
-        BrowserCompletionFuture {
-            completion: completion.clone(),
-            registration: None,
-        }
-    }
-
-    pub(super) fn register_completion_waker(
-        &self,
-        completion: &BrowserCompletion,
-        registration: &mut Option<u64>,
-        waker: &Waker,
-    ) -> CompletionState {
-        let status = self.completion_status(completion);
-        if matches!(status, CompletionState::Pending) {
-            {
-                let mut state = self.state.borrow_mut();
-                let key = match registration {
-                    Some(key) => *key,
-                    None => match state.allocate_waiter() {
-                        Ok(key) => {
-                            *registration = Some(key);
-                            key
-                        }
-                        Err(error) => return CompletionState::Failed(error),
-                    },
-                };
-                let Some(fence) = state.completions.get_mut(&completion.serial()) else {
-                    return CompletionState::Failed(Error::InvalidState);
-                };
-                let update = fence
-                    .wakers
-                    .get(&key)
-                    .is_none_or(|existing| !existing.will_wake(waker));
-                if update {
-                    fence.wakers.insert(key, waker.clone());
-                }
-            }
-            // Scheduling immediately polls the owner in some browser
-            // runtimes, so the registration borrow must have ended first.
-            self.schedule_completion_poll(completion.clone());
-        }
-        status
-    }
-
-    pub(super) fn unregister_completion_waker(
-        &self,
-        completion: &BrowserCompletion,
-        registration: u64,
-    ) {
-        let _ = self.drain_pending_deletes();
-        if let Some(fence) = self
-            .state
-            .borrow_mut()
-            .completions
-            .get_mut(&completion.serial())
-        {
-            fence.wakers.remove(&registration);
-        }
-    }
-
-    /// Retains a fence for work whose issuing encoder was abandoned before it
-    /// could return completion evidence to Core. Failure to create that fence
-    /// makes the owner terminal: continuing would permit a later resource
-    /// release to race an unprovable issued prefix.
-    pub(super) fn quarantine_issued(&self) {
-        if self.drain_pending_deletes().is_err() {
-            return;
-        }
-        let mut state = self.state.borrow_mut();
-        if state.ensure_active().is_err() {
-            return;
-        }
-        let Some(raw) = state
-            .context
-            .raw
-            .fence_sync(Gl::SYNC_GPU_COMMANDS_COMPLETE, 0)
-        else {
-            state.mark_lost();
-            return;
-        };
-        state.context.raw.flush();
-        if state.context.raw.is_context_lost() {
-            drop(raw);
-            state.mark_lost();
-            return;
-        }
-        if state.context.raw.get_error() != Gl::NO_ERROR {
-            state.context.raw.delete_sync(Some(&raw));
-            state.mark_lost();
-            return;
-        }
-        state.quarantined.push(raw);
-    }
-
-    /// Schedules one bounded browser-task observation for a pending fence.
-    /// The task owns a completion clone only until it runs. If all callers
-    /// cancel their waits, it finds no waker and does not schedule another.
-    fn schedule_completion_poll(&self, completion: BrowserCompletion) {
-        let serial = completion.serial();
-        let should_schedule = {
-            let mut state = self.state.borrow_mut();
-            let Some(fence) = state.completions.get_mut(&serial) else {
-                return;
-            };
-            if fence.poll_scheduled {
-                false
-            } else {
-                fence.poll_scheduled = true;
-                true
-            }
-        };
-        if !should_schedule {
-            return;
-        }
-        let Some(window) = web_sys::window() else {
-            self.fail_completion_schedule(
-                &completion,
-                "WebGL2 completion polling requires a browser Window",
-            );
-            return;
-        };
-        let owner = self.clone();
-        let callback_completion = completion.clone();
-        let callback = wasm_bindgen::closure::Closure::once_into_js(move || {
-            if let Some(fence) = owner.state.borrow_mut().completions.get_mut(&serial) {
-                fence.poll_scheduled = false;
-                if fence.wakers.is_empty() {
-                    return;
-                }
-            } else {
-                return;
-            }
-            if matches!(
-                owner.completion_status(&callback_completion),
-                CompletionState::Pending
-            ) {
-                owner.schedule_completion_poll(callback_completion);
-            }
-        });
-        // `Closure::once_into_js` transfers the callback to the browser timer;
-        // `setTimeout` retains it until invocation. The conversion only borrows
-        // that live JS function for this synchronous registration.
-        let callback: &js_sys::Function = callback.unchecked_ref();
-        if window
-            .set_timeout_with_callback_and_timeout_and_arguments_0(callback, 16)
-            .is_err()
-        {
-            self.fail_completion_schedule(
-                &completion,
-                "scheduling WebGL2 completion polling failed",
-            );
-        }
-    }
-
-    /// Turns an unavailable browser timer into a terminal result. The sync is
-    /// quarantined, so this error cannot release resources still in flight.
-    fn fail_completion_schedule(&self, completion: &BrowserCompletion, message: &'static str) {
-        let wakers = {
-            let mut state = self.state.borrow_mut();
-            if let Some(fence) = state.completions.remove(&completion.serial()) {
-                state.quarantined.push(fence.raw);
-                fence.wakers.into_values().collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            }
-        };
-        completion.store_terminal(Err(Error::Backend(message.into())));
-        for waker in wakers {
-            waker.wake();
-        }
-    }
-
-    /// Moves an unobserved completion fence to the owner-local quarantine.
-    /// This runs only when its final public handle is dropped; a later direct
-    /// issue scope polls and deletes the sync without retaining user state.
-    pub(super) fn orphan_completion(&self, serial: u64) {
-        let mut state = self.state.borrow_mut();
-        if let Some(fence) = state.completions.remove(&serial) {
-            state.quarantined.push(fence.raw);
-        }
-    }
-}
-
-impl Drop for BrowserBuffer {
-    fn drop(&mut self) {
-        if Rc::strong_count(&self.lifetime) == 1 {
-            self.owner.delete_buffer(&self.raw);
-        }
-    }
 }
 
 impl Drop for BrowserOwner {
@@ -719,38 +364,6 @@ impl Drop for BrowserOwner {
         };
         if state.ensure_active().is_ok() {
             self.issue_pending_deletes(&mut state);
-        }
-    }
-}
-
-impl Drop for BrowserTexture {
-    fn drop(&mut self) {
-        if Rc::strong_count(&self.lifetime) == 1 {
-            self.owner.delete_texture(&self.raw);
-        }
-    }
-}
-
-impl Drop for BrowserRasterProgram {
-    fn drop(&mut self) {
-        if Rc::strong_count(&self.lifetime) == 1 {
-            self.owner.delete_program(&self.raw);
-        }
-    }
-}
-
-impl Drop for BrowserVertexArray {
-    fn drop(&mut self) {
-        if Rc::strong_count(&self.lifetime) == 1 {
-            self.owner.delete_vertex_array(&self.raw);
-        }
-    }
-}
-
-impl Drop for BrowserSampler {
-    fn drop(&mut self) {
-        if Rc::strong_count(&self.lifetime) == 1 {
-            self.owner.delete_sampler(&self.raw);
         }
     }
 }
