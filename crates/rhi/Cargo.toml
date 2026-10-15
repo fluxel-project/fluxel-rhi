@@ -14,6 +14,7 @@ default = ["dx12"]
 dx12 = ["dep:fluxel-rhi-dx12"]
 vulkan = ["dep:fluxel-rhi-vulkan"]
 webgpu = ["dep:fluxel-rhi-webgpu"]
+metal = ["dep:fluxel-rhi-metal"]
 native-gl-wgl = ["dep:fluxel-rhi-gl", "fluxel-rhi-gl/native-gl-wgl"]
 native-gles-egl = ["dep:fluxel-rhi-gl", "fluxel-rhi-gl/native-gles-egl"]
 webgl2 = ["dep:fluxel-rhi-gl", "fluxel-rhi-gl/webgl2"]
@@ -44,6 +45,16 @@ raw-window-handle = "=0.6.2"
 [target.'cfg(target_os = "linux")'.dependencies]
 fluxel-host = { git = "https://github.com/fluxel-project/fluxel-host", rev = "9518020ed84d2d065ad6244e4b8a56356a4e67ee", features = ["winit-runtime"] }
 raw-window-handle = "=0.6.2"
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+fluxel-rhi-metal = { path = "../metal", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+fluxel-host = { git = "https://github.com/fluxel-project/fluxel-host", rev = "9518020ed84d2d065ad6244e4b8a56356a4e67ee", features = ["winit-runtime"] }
+raw-window-handle = "=0.6.2"
+objc2 = "=0.6.3"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSResponder", "NSView", "objc2-quartz-core"] }
+objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "CAMetalLayer"] }
 
 [[example]]
 name = "01_triangle"

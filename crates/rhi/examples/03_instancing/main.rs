@@ -76,7 +76,7 @@ pub async fn run_webgl2_instancing(
         .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
 fn run<B: instancing::InstancingBackend + DeferredBackend, H: utils::ExampleHost<B>>(
     host: H,
 ) -> Result<()> {
@@ -154,6 +154,14 @@ fn main() {
     }
 }
 
+#[cfg(all(target_os = "macos", feature = "metal"))]
+fn main() {
+    if let Err(error) = run::<fluxel_rhi::metal::Metal, _>(utils::metal_api::MetalHost) {
+        eprintln!("03_instancing: {error:?}");
+        std::process::exit(1);
+    }
+}
+
 #[cfg(all(target_os = "linux", feature = "native-gles-egl"))]
 fn main() {
     if let Err(error) = immediate::run_native() {
@@ -162,7 +170,11 @@ fn main() {
     }
 }
 
-#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
+#[cfg(not(any(
+    windows,
+    all(target_os = "macos", feature = "metal"),
+    all(target_os = "linux", feature = "native-gles-egl")
+)))]
 fn main() {
     eprintln!("03_instancing requires Windows and DX12");
 }

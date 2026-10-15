@@ -336,7 +336,7 @@ async fn make_pipeline<B: DynamicUniformBackend>(
     })
     .await
 }
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
 fn run<B: DynamicUniformBackend + DeferredBackend, H: utils::ExampleHost<B>>(
     host: H,
 ) -> Result<()> {
@@ -379,6 +379,14 @@ fn run<B: DynamicUniformBackend + DeferredBackend, H: utils::ExampleHost<B>>(
             utils::submit_and_present(device, lane, work, image)
         },
     )
+}
+
+#[cfg(all(target_os = "macos", feature = "metal"))]
+fn main() {
+    if let Err(error) = run::<fluxel_rhi::metal::Metal, _>(utils::metal_api::MetalHost) {
+        eprintln!("04_dynamic_uniform_buffer: {error:?}");
+        std::process::exit(1);
+    }
 }
 
 #[cfg(any(
@@ -435,7 +443,11 @@ fn main() {
     }
 }
 
-#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
+#[cfg(not(any(
+    windows,
+    all(target_os = "macos", feature = "metal"),
+    all(target_os = "linux", feature = "native-gles-egl")
+)))]
 fn main() {
     eprintln!("04_dynamic_uniform_buffer requires Windows and DX12");
 }

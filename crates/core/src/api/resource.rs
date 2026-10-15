@@ -270,10 +270,14 @@ pub enum TextureSampleType {
 #[derive(Clone, Debug)]
 pub enum BindingType {
     UniformBuffer {
+        /// When true, each bind operation consumes one dynamic offset for this
+        /// binding, ordered by ascending binding number within its group.
         dynamic_offset: bool,
         min_size: u64,
     },
     StorageBuffer {
+        /// When true, each bind operation consumes one dynamic offset for this
+        /// binding, ordered by ascending binding number within its group.
         dynamic_offset: bool,
         min_size: u64,
         access: StorageAccess,

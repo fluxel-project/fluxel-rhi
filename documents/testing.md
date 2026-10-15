@@ -1,11 +1,12 @@
 # RHI testing
 
-The workspace contains Core, DX12, Vulkan, WebGPU, and the typed facade. GL and Metal are not active backends in this checkout.
+The workspace contains Core, DX12, Vulkan, WebGPU, the GL family, an in-progress Metal backend, and the typed facade. Metal source compilation is not a substitute for macOS SDK linking or Apple GPU execution.
 
 Run portable checks and build the numbered examples from the workspace root:
 
 ```powershell
 cargo test -p fluxel-rhi-core
+cargo test -p fluxel-rhi-metal
 cargo check --workspace
 cargo build -p fluxel-rhi --features examples,vulkan --examples
 ```
@@ -28,6 +29,8 @@ cargo test -p fluxel-rhi-webgpu --target wasm32-unknown-unknown -- --nocapture
 cargo test -p fluxel-rhi --target wasm32-unknown-unknown --features 'webgpu examples' --test webgpu_triangle -- --nocapture
 ```
 
-Run each numbered `webgpu_*` integration test for its scene. These tests present three frames through a real browser GPU device. Keep the corresponding browser screenshot and compare it with `临时/参考效果/cpp/` while excluding the C++ HUD. Examples 05, 13, 14, and 15 have explicit browser visual fallbacks; their tests do not prove the unavailable push-constant, secondary-command, runtime-descriptor-array, or multiview capabilities.
+Run each numbered `webgpu_*` integration test for its scene. These tests present three frames through a real browser GPU device. Keep the corresponding browser screenshot and compare it with local C++ reference captures while excluding the C++ HUD. Examples 05, 13, 14, and 15 have explicit browser visual fallbacks; their tests do not prove the unavailable push-constant, secondary-command, runtime-descriptor-array, or multiview capabilities.
 
 Record the commit, platform, adapter, command, validation result, and observed image or readback for each hardware claim. Classify the result as pass, unsupported, skipped, or failure. Keep portable API tests in `crates/core/src/api/tests.rs`; put native checks beside the backend they exercise.
+
+Metal validation additionally requires a macOS SDK link, focused real-GPU readback assertions, and all 15 native examples with inspected screenshots before the backend can be marked complete. An Apple-target cross-check from another host proves type correctness only.

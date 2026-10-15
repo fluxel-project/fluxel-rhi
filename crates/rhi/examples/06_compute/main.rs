@@ -14,7 +14,7 @@ mod raster_fallback;
 mod utils;
 
 use compute::Compute;
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
 use compute::ComputeBackend;
 use fluxel_rhi::api::*;
 
@@ -72,7 +72,7 @@ pub async fn run_webgpu_compute(
         .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
 fn run<B: ComputeBackend + DeferredBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
@@ -105,6 +105,14 @@ fn run<B: ComputeBackend + DeferredBackend, H: utils::ExampleHost<B>>(host: H) -
             utils::submit_and_present(device, lane, work, image)
         },
     )
+}
+
+#[cfg(all(target_os = "macos", feature = "metal"))]
+fn main() {
+    if let Err(error) = run::<fluxel_rhi::metal::Metal, _>(utils::metal_api::MetalHost) {
+        eprintln!("06_compute: {error:?}");
+        std::process::exit(1);
+    }
 }
 
 #[cfg(windows)]
@@ -146,7 +154,11 @@ fn main() {
     }
 }
 
-#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
+#[cfg(not(any(
+    windows,
+    all(target_os = "macos", feature = "metal"),
+    all(target_os = "linux", feature = "native-gles-egl")
+)))]
 fn main() {
-    eprintln!("06_compute requires Windows and DX12");
+    eprintln!("06_compute requires a supported native or browser backend");
 }

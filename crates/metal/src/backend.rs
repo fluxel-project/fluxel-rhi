@@ -1,0 +1,348 @@
+//! Metal instance and device ownership.
+//!
+//! This module owns adapter discovery and one native command queue per device.
+//! Resource creation, command lowering, completion, and Surface lifetimes are
+//! split into private modules so each native boundary owns its invariants.
+
+use std::{
+    future::{Ready, ready},
+    sync::{Arc, Mutex},
+};
+
+use fluxel_rhi_core::api::{
+    self, AdapterInfo, Backend, DeviceCapabilities, DeviceId, DeviceRequest, Error,
+    InstanceBackend, InstanceId,
+};
+#[cfg(target_vendor = "apple")]
+use fluxel_rhi_core::api::{AdapterId, LaneClass, LaneId, LaneInfo, WaitRoute};
+#[cfg(target_vendor = "apple")]
+use objc2_metal::MTLDevice as _;
+
+/// Static type for the native Apple Metal backend.
+pub struct Metal;
+
+/// Process-local Metal adapter snapshot.
+#[derive(Clone)]
+pub struct MetalInstance {
+    _state: Arc<InstanceState>,
+}
+
+struct InstanceState {
+    #[cfg(target_vendor = "apple")]
+    devices: Vec<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>>>,
+}
+
+/// Native Metal device and its direct command queue.
+#[derive(Clone)]
+pub struct MetalDevice {
+    _state: Arc<DeviceState>,
+}
+
+mod binding_abi;
+mod bindings;
+mod compute;
+mod copy;
+mod encoder;
+mod pipeline;
+mod query;
+mod readback;
+mod resource;
+mod sampler;
+mod shader;
+mod submit;
+mod surface;
+mod texture;
+
+pub(crate) use bindings::{MetalBindGroup, MetalBindGroupLayout, MetalPipelineLayout};
+pub(crate) use encoder::MetalCommandEncoder;
+pub(crate) use pipeline::{MetalComputePipeline, MetalRasterPipeline};
+pub(crate) use resource::MetalBuffer;
+pub(crate) use sampler::MetalSampler;
+pub use surface::MetalSurface;
+pub(crate) use texture::{MetalTexture, MetalTextureView};
+
+struct DeviceState {
+    #[cfg(target_vendor = "apple")]
+    _device: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>>,
+    #[cfg(target_vendor = "apple")]
+    _queue: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandQueue>>,
+    #[cfg(target_vendor = "apple")]
+    queue_gate: std::sync::Mutex<()>,
+    #[cfg(target_vendor = "apple")]
+    indirect_dispatch_supported: bool,
+}
+
+#[derive(Clone)]
+/// Compiled native Metal shader library.
+pub struct MetalShader {
+    #[cfg(target_vendor = "apple")]
+    pub(crate) _library:
+        objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLLibrary>>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) entries: Vec<api::ShaderEntryPoint>,
+}
+
+/// A unique, generation-bound lease for an acquired `CAMetalDrawable`.
+///
+/// The lease stays private to the backend and transfers to native Present at
+/// most once; the held drawable also keeps its texture alive during encoding.
+pub struct MetalSurfaceImage {
+    generation: u64,
+    surface_generation: Arc<Mutex<u64>>,
+    handed_off: bool,
+    #[cfg(target_vendor = "apple")]
+    drawable:
+        objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_quartz_core::CAMetalDrawable>>,
+    #[cfg(target_vendor = "apple")]
+    texture: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLTexture>>,
+}
+
+// SAFETY: the lease is exclusively borrowed at handoff and shares the origin
+// Surface's generation lock, which serializes stale-lease validation with
+// native reconfiguration.
+unsafe impl api::NativeImageLease for MetalSurfaceImage {
+    fn try_handoff(&mut self, generation: u64) -> api::Result<()> {
+        let current = self
+            .surface_generation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !lease_generation_is_current(self.generation, generation, *current, self.handed_off) {
+            return Err(Error::InvalidState);
+        }
+        self.handed_off = true;
+        Ok(())
+    }
+
+    fn is_current(&self, generation: u64) -> bool {
+        let current = self
+            .surface_generation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        lease_generation_is_current(self.generation, generation, *current, self.handed_off)
+    }
+}
+
+fn lease_generation_is_current(
+    image_generation: u64,
+    core_generation: u64,
+    current_generation: u64,
+    handed_off: bool,
+) -> bool {
+    image_generation == core_generation && current_generation == image_generation && !handed_off
+}
+
+impl Backend for Metal {
+    type NativeDevice = MetalDevice;
+    type NativeBuffer = MetalBuffer;
+    type NativeTexture = MetalTexture;
+    type NativeTextureView = MetalTextureView;
+    type NativeSampler = MetalSampler;
+    type NativeBindGroupLayout = MetalBindGroupLayout;
+    type NativeBindGroup = MetalBindGroup;
+    type NativePipelineLayout = MetalPipelineLayout;
+    type NativeShader = MetalShader;
+    type NativeRasterPipeline = MetalRasterPipeline;
+    type NativeComputePipeline = MetalComputePipeline;
+    type NativeMeshPipeline = ();
+    type NativeRayPipeline = ();
+    type NativePipelineCache = ();
+    type NativeAcceleration = ();
+    type NativeSparseAllocation = ();
+    type NativeQuerySet = ();
+    type NativeEncoder = MetalCommandEncoder;
+    type NativeCompletion = submit::Completion;
+    type NativeSurface = MetalSurface;
+    type NativeSurfaceImage = MetalSurfaceImage;
+    type NativeUncertainty = ();
+    type Compute = compute::Compute;
+    type Mesh = api::Unavailable;
+    type Ray = api::Unavailable;
+    type Extras = api::Unavailable;
+}
+
+impl InstanceBackend for Metal {
+    type NativeInstance = MetalInstance;
+    type OpenFuture<'a> = Ready<api::Result<(MetalDevice, DeviceCapabilities)>>;
+
+    fn enumerate(instance: &MetalInstance, scope: InstanceId) -> api::Result<Vec<AdapterInfo>> {
+        #[cfg(target_vendor = "apple")]
+        {
+            Ok(instance
+                ._state
+                .devices
+                .iter()
+                .enumerate()
+                .map(|(ordinal, device)| AdapterInfo {
+                    id: AdapterId {
+                        instance: scope,
+                        ordinal: ordinal as u64,
+                    },
+                    name: device.name().to_string(),
+                })
+                .collect())
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            let _ = (instance, scope);
+            Ok(Vec::new())
+        }
+    }
+
+    fn open<'a>(
+        instance: &'a MetalInstance,
+        id: DeviceId,
+        request: &'a DeviceRequest,
+    ) -> Self::OpenFuture<'a> {
+        #[cfg(target_vendor = "apple")]
+        {
+            let result = (|| {
+                let native = instance
+                    ._state
+                    .devices
+                    .get(request.adapter.ordinal as usize)
+                    .cloned()
+                    .ok_or(Error::WrongDevice)?;
+                if !request.required_features.is_empty() {
+                    return Err(Error::Unsupported("requested Metal feature"));
+                }
+                let queue = native.newCommandQueue().ok_or(Error::OutOfMemory)?;
+                let indirect_dispatch_supported = compute::supports_indirect_dispatch(&native);
+                let mut caps = DeviceCapabilities::default();
+                caps.limits.max_buffer_bytes = native.maxBufferLength() as u64;
+                caps.limits.max_texture_dimension_2d = 8192;
+                caps.limits.max_texture_array_layers = 2048;
+                // These limits match the fixed MSL group-slot ABI rather than
+                // the device's larger descriptor capacities.
+                caps.limits.max_bind_groups = 4;
+                caps.limits.max_bindings_per_group = 7;
+                caps.limits.max_color_attachments = 1;
+                caps.limits.max_vertex_buffers = binding_abi::MAX_VERTEX_BUFFERS as u32;
+                caps.limits.max_vertex_attributes = binding_abi::MAX_VERTEX_ATTRIBUTES;
+                // Metal's required constant-buffer alignment varies by GPU
+                // family. Report 32 bytes, the conservative bound for the
+                // Apple and Mac families supported by this backend.
+                caps.limits.uniform_offset_alignment = bindings::UNIFORM_OFFSET_ALIGNMENT;
+                let max_threads = native.maxThreadsPerThreadgroup();
+                caps.limits.max_compute_workgroup_size = [
+                    max_threads.width as u32,
+                    max_threads.height as u32,
+                    max_threads.depth as u32,
+                ];
+                caps.limits.max_compute_workgroups = [65_535; 3];
+                caps.compute = true;
+                caps.storage_textures = true;
+                let caps = DeviceCapabilities {
+                    lanes: Arc::from([LaneInfo {
+                        id: LaneId {
+                            device: id,
+                            ordinal: 0,
+                        },
+                        class: LaneClass::Graphics,
+                        routes: vec![(
+                            LaneId {
+                                device: id,
+                                ordinal: 0,
+                            },
+                            WaitRoute::SameQueue,
+                        )],
+                    }]),
+                    ..caps
+                };
+                Ok((
+                    MetalDevice {
+                        _state: Arc::new(DeviceState {
+                            _device: native,
+                            _queue: queue,
+                            queue_gate: std::sync::Mutex::new(()),
+                            indirect_dispatch_supported,
+                        }),
+                    },
+                    caps,
+                ))
+            })();
+            ready(result)
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            let _ = (instance, id, request);
+            ready(Err(Error::Unsupported("Metal requires an Apple target")))
+        }
+    }
+}
+
+impl MetalInstance {
+    /// Discovers the Metal devices visible to this process.
+    pub fn new() -> api::Result<Self> {
+        #[cfg(target_vendor = "apple")]
+        {
+            let devices = objc2_metal::MTLCreateSystemDefaultDevice()
+                .into_iter()
+                .collect();
+            Ok(Self {
+                _state: Arc::new(InstanceState { devices }),
+            })
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            Ok(Self {
+                _state: Arc::new(InstanceState {}),
+            })
+        }
+    }
+
+    /// Creates a typed Core instance with a fresh identity.
+    pub fn instance(&self) -> api::Result<api::Instance<Metal>> {
+        // SAFETY: the returned Core instance retains a clone of the native
+        // instance state, and the allocated ID is unique for this process.
+        Ok(unsafe { api::Instance::from_native(api::InstanceId::allocate()?, self.clone()) })
+    }
+
+    /// Opens the first Metal adapter exposed by this instance.
+    pub async fn open_default(&self) -> api::Result<api::Device<Metal>> {
+        let instance = self.instance()?;
+        let adapter = instance
+            .enumerate()?
+            .into_iter()
+            .next()
+            .ok_or(api::Error::Unsupported("a Metal adapter"))?;
+        instance
+            .open(api::DeviceRequest {
+                adapter: adapter.id,
+                required_features: Vec::new(),
+            })
+            .await
+    }
+}
+
+impl Metal {
+    /// Creates a typed Surface for a host-owned AppKit `CAMetalLayer`.
+    ///
+    /// The host must keep the AppKit view alive until the Surface and all
+    /// acquired drawable leases have been dropped.
+    #[cfg(target_vendor = "apple")]
+    pub fn surface_from_layer(
+        device: &api::Device<Self>,
+        layer: objc2::rc::Retained<objc2_quartz_core::CAMetalLayer>,
+    ) -> api::Result<api::Surface<Self>> {
+        // SAFETY: this is the owning backend; the layer association uses the
+        // supplied device's native Metal device, and the Surface retains it.
+        let native_device = unsafe { device.native_ref() };
+        let native = MetalSurface::from_layer(native_device, layer)?;
+        // SAFETY: `native` was created for `device`; the allocated surface ID
+        // is unique and Surface owns the retained CAMetalLayer association.
+        Ok(unsafe { api::Surface::from_native(device.id(), api::SurfaceId::allocate()?, native) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lease_generation_is_current;
+
+    #[test]
+    fn surface_reconfiguration_invalidates_old_image_leases() {
+        assert!(lease_generation_is_current(4, 4, 4, false));
+        assert!(!lease_generation_is_current(4, 4, 5, false));
+        assert!(!lease_generation_is_current(5, 4, 5, false));
+        assert!(!lease_generation_is_current(5, 5, 5, true));
+    }
+}

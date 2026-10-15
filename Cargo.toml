@@ -6,6 +6,7 @@ members = [
     "crates/vulkan",
     "crates/webgpu",
     "crates/gl",
+    "crates/metal",
     "crates/rhi",
 ]
 

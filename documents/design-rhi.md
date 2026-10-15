@@ -8,8 +8,10 @@
 `fluxel_rhi::api`; applications use that namespace and select a concrete backend at
 initialization. On Windows the facade exposes `fluxel_rhi::dx12::Dx12` and
 `fluxel_rhi::vulkan::Vulkan`; browser WASM exposes `fluxel_rhi::webgpu::WebGpu`.
-The GL-family route is exposed behind its WGL, EGL or WebGL2 feature. Each route
-has an optional feature.
+The GL-family route is exposed behind its WGL, EGL or WebGL2 feature. On Apple
+targets, `fluxel_rhi::metal::Metal` is exposed behind the `metal` feature; this
+backend is still in implementation and has no hardware conformance claim. Each
+route has an optional feature.
 
 The API is statically dispatched: `Device<B>`, resources, pipelines, encoders and
 recorded work retain their concrete `Backend` type. RenderGraph or its host owns graph
@@ -61,6 +63,11 @@ backend-wide Y flip into DX12.
 - `crates/webgpu` is an active browser backend. It creates real `GPUDevice`
   resources, records native command/pass encoders, submits to `GPUQueue`, uses
   canvas presentation, and observes completion through browser promises.
+- `crates/metal` is an in-progress native backend. Its current source has direct
+  Metal command encoding, a limited resource/pipeline subset, completion
+  observation, and a `CAMetalLayer` path. It has not passed macOS SDK linking,
+  real Apple GPU execution, or example visual review; compile checks are not
+  hardware evidence.
 - `crates/gl` implements the current static Core API for the GL family. The WGL
   GL4+ route has individual real-GPU execution and visual evidence for all 15
   examples, including sequential fallbacks where native multiview, secondary
@@ -70,9 +77,6 @@ backend-wide Y flip into DX12.
   GPU through Mesa D3D12, with two-frame execution and visual comparison against
   the GL4+ and C++ references. Browser WebGL2 remains a separate profile and is
   not covered by either native route's evidence.
-
-Metal is not an active workspace backend. Documentation and CI must not treat
-source paths or compile checks as hardware execution evidence.
 
 ## Implemented DX12 baseline
 
@@ -177,6 +181,18 @@ Pipeline and binding descriptors describe the native operation honestly: vertex 
 texture view dimensions, sampler and uniform bindings, attachment formats, depth/stencil
 state, and raster state are all part of the route. A backend rejects unsupported formats,
 view dimensions, layouts or state combinations instead of substituting a no-op.
+
+## Dynamic buffer binding offsets
+
+For a bind group, `set_bind_group` receives one dynamic offset for each layout
+entry whose uniform or storage buffer type enables `dynamic_offset`. The slice
+is ordered by ascending binding number, independent of visibility or shader
+stage. A backend adds each value to the bound buffer range's start offset,
+checks the result against the backend's reported buffer-offset alignment, and
+ensures the complete bound range remains inside the native allocation. The
+bound range size and layout minimum size do not change when an offset is
+applied. A missing, extra, misaligned, overflowing, or out-of-allocation offset
+returns a structured error before issuing the native binding call.
 
 ## Future work
 

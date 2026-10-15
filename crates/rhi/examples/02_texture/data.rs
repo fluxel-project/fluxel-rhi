@@ -85,6 +85,11 @@ pub(super) fn load_ktx() -> Result<(Vec<u8>, u32, u32)> {
     parse_ktx(&bytes)
 }
 
+#[cfg(all(target_os = "macos", feature = "metal"))]
+pub(super) fn load_ktx() -> Result<(Vec<u8>, u32, u32)> {
+    parse_ktx(include_bytes!("../assets/textures/metalplate01_rgba.ktx"))
+}
+
 #[cfg(target_os = "linux")]
 pub(super) fn load_ktx() -> Result<(Vec<u8>, u32, u32)> {
     parse_ktx(include_bytes!("../assets/textures/metalplate01_rgba.ktx"))

@@ -13,7 +13,12 @@ fn main() {
     scene::run();
 }
 
-#[cfg(not(windows))]
+#[cfg(all(target_os = "macos", feature = "metal"))]
+fn main() {
+    scene::run_metal();
+}
+
+#[cfg(not(any(windows, all(target_os = "macos", feature = "metal"))))]
 fn main() {
     scene::run();
 }

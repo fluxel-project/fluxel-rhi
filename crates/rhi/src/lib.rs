@@ -6,7 +6,8 @@
 //! policy, and resource lifetime planning; the RHI executes the resulting work.
 //!
 //! Direct3D 12, Vulkan, and GL-family backends run on supported native routes;
-//! WebGPU and WebGL2 run in browsers.
+//! WebGPU and WebGL2 run in browsers. The Metal route is under implementation
+//! and still requires macOS SDK linking and Apple GPU conformance evidence.
 
 #![deny(missing_docs)]
 
@@ -43,4 +44,11 @@ pub mod webgpu {
 pub mod gl {
     /// The GL-family backend and current-context construction entry points.
     pub use fluxel_rhi_gl::*;
+}
+
+/// Apple Metal backend using statically typed native resources and commands.
+#[cfg(all(feature = "metal", target_vendor = "apple"))]
+pub mod metal {
+    /// Metal backend implementation and construction entry points.
+    pub use fluxel_rhi_metal::*;
 }

@@ -469,8 +469,11 @@ pub async fn run_webgl2_descriptor_indexing(
 }
 use support::*;
 
-#[cfg(windows)]
-fn run<B: DescriptorIndexingBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
+#[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
+fn run<B: DescriptorIndexingBackend, H: utils::ExampleHost<B>>(
+    host: H,
+    fixed_texture_array: bool,
+) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Bgra8Unorm,
@@ -499,7 +502,7 @@ fn run<B: DescriptorIndexingBackend, H: utils::ExampleHost<B>>(host: H) -> Resul
                     lane,
                     config.format,
                     e,
-                    false,
+                    fixed_texture_array,
                 ))?)
             }
             let (w, uploaded_geometry) = scene.as_mut().ok_or(Error::InvalidState)?.record(
@@ -516,6 +519,15 @@ fn run<B: DescriptorIndexingBackend, H: utils::ExampleHost<B>>(host: H) -> Resul
         },
     )
 }
+
+#[cfg(all(target_os = "macos", feature = "metal"))]
+fn main() {
+    if let Err(error) = run::<fluxel_rhi::metal::Metal, _>(utils::metal_api::MetalHost, true) {
+        eprintln!("14_descriptor_indexing: {error:?}");
+        std::process::exit(1);
+    }
+}
+
 #[cfg(windows)]
 fn main() {
     #[cfg(feature = "native-gl-wgl")]
@@ -533,11 +545,11 @@ fn main() {
     let r: Result<()> = match utils::windows_api::selected_backend() {
         #[cfg(feature = "dx12")]
         Ok(utils::windows_api::SelectedBackend::Dx12) => {
-            run::<fluxel_rhi::dx12::Dx12, _>(utils::windows_api::Dx12Host)
+            run::<fluxel_rhi::dx12::Dx12, _>(utils::windows_api::Dx12Host, false)
         }
         #[cfg(feature = "vulkan")]
         Ok(utils::windows_api::SelectedBackend::Vulkan) => {
-            run::<fluxel_rhi::vulkan::Vulkan, _>(utils::windows_api::VulkanHost)
+            run::<fluxel_rhi::vulkan::Vulkan, _>(utils::windows_api::VulkanHost, false)
         }
         Err(error) => Err(error),
     };
@@ -554,7 +566,11 @@ fn main() {
     }
 }
 
-#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
+#[cfg(not(any(
+    windows,
+    all(target_os = "macos", feature = "metal"),
+    all(target_os = "linux", feature = "native-gles-egl")
+)))]
 fn main() {
     eprintln!("14_descriptor_indexing requires Windows and runtime descriptor indexing")
 }

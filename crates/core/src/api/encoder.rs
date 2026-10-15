@@ -392,6 +392,13 @@ impl<B: RasterBackend> RasterPass<'_, B> {
         }
         self.call(|e| B::set_pipeline(e, &p.native))
     }
+    /// Binds a group and applies dynamic buffer offsets.
+    ///
+    /// `offsets` must contain exactly one value for each layout binding whose
+    /// buffer type enables `dynamic_offset`, in ascending binding-number order.
+    /// Each value is added to that buffer resource's bound range start; the
+    /// backend validates alignment and that the resulting range stays in the
+    /// allocation.
     pub fn set_bind_group(&mut self, slot: u32, g: &BindGroup<B>, offsets: &[u32]) -> Result<()> {
         if g.device != self.encoder.device {
             return Err(Error::WrongDevice);

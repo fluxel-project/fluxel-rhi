@@ -205,7 +205,7 @@ pub async fn run_webgl2_msaa_fallback(
     run.await
         .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
 }
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
 fn run<B: MsaaDeferredBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
@@ -247,6 +247,13 @@ fn run<B: MsaaDeferredBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> 
         },
     )
 }
+#[cfg(all(target_os = "macos", feature = "metal"))]
+fn main() {
+    if let Err(error) = run::<fluxel_rhi::metal::Metal, _>(utils::metal_api::MetalHost) {
+        eprintln!("08_msaa: {error:?}");
+        std::process::exit(1);
+    }
+}
 #[cfg(windows)]
 fn main() {
     #[cfg(feature = "native-gl-wgl")]
@@ -279,7 +286,11 @@ fn main() {
     main_gl();
 }
 
-#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
+#[cfg(not(any(
+    windows,
+    all(target_os = "macos", feature = "metal"),
+    all(target_os = "linux", feature = "native-gles-egl")
+)))]
 fn main() {
-    eprintln!("08_msaa requires Windows");
+    eprintln!("08_msaa requires a supported native or browser backend");
 }

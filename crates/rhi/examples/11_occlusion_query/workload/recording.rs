@@ -13,7 +13,7 @@ impl<B: OcclusionWorkloadBackend> Workload<B> {
         B: OcclusionBackend,
     {
         let mut e = d.encoder(self.lane)?;
-        let ticket = self.encode(d, &mut e, image, extent)?;
+        let ticket = self.encode_scene(d, &mut e, image, extent)?;
         Ok(Frame {
             work: e.finish()?,
             ticket,

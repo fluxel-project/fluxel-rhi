@@ -278,7 +278,7 @@ fn triangle_indices() -> [u8; 6] {
     [0, 0, 1, 0, 2, 0]
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
 fn run<B: TriangleBackend + DeferredBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
@@ -364,6 +364,14 @@ fn main() {
     }
 }
 
+#[cfg(all(target_os = "macos", feature = "metal"))]
+fn main() {
+    if let Err(error) = run::<fluxel_rhi::metal::Metal, _>(utils::metal_api::MetalHost) {
+        eprintln!("01_triangle: {error:?}");
+        std::process::exit(1);
+    }
+}
+
 #[cfg(all(target_os = "linux", feature = "native-gles-egl"))]
 fn main() {
     if let Err(error) = immediate::run() {
@@ -372,7 +380,11 @@ fn main() {
     }
 }
 
-#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
+#[cfg(not(any(
+    windows,
+    all(target_os = "macos", feature = "metal"),
+    all(target_os = "linux", feature = "native-gles-egl")
+)))]
 fn main() {
     eprintln!("01_triangle requires Windows and DX12");
 }

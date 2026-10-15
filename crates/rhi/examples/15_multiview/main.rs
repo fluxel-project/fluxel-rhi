@@ -43,6 +43,9 @@ impl WgslStereoBackend for fluxel_rhi::gl::Gl {}
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 impl WgslStereoBackend for fluxel_rhi::webgpu::WebGpu {}
 
+#[cfg(all(target_os = "macos", feature = "metal"))]
+impl WgslStereoBackend for fluxel_rhi::metal::Metal {}
+
 pub trait MultiviewBackend:
     Backend
     + ResourceBackend
@@ -456,57 +459,22 @@ pub async fn run_webgl2_multiview(
         .await
         .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
 }
+#[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
+mod host;
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),
     all(target_os = "linux", feature = "native-gles-egl")
 ))]
 mod immediate;
 
-#[cfg(windows)]
-fn run<B: MultiviewBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
-    let config = SurfaceConfig {
-        extent: [1280, 720],
-        format: TextureFormat::Bgra8Unorm,
-        present_mode: PresentMode::Fifo,
-        alpha_mode: CompositeAlphaMode::Opaque,
-        color_space: ColorSpace::Srgb,
-        usage: SurfaceUsage::RENDER_ATTACHMENT,
-        maximum_frame_latency: 2,
-    };
-    let mut scene: Option<Multiview<B>> = None;
-    utils::run_example(
-        host,
-        "Multiview rendering",
-        config.clone(),
-        move |device, _, image, extent| {
-            require_multiview(device, 2)?;
-            let lane = device
-                .lanes()
-                .iter()
-                .find(|lane| lane.class == LaneClass::Graphics)
-                .map(|lane| lane.id)
-                .ok_or(Error::Unsupported("graphics lane"))?;
-            if scene
-                .as_ref()
-                .is_none_or(|example| example.extent() != extent)
-            {
-                scene = Some(utils::block_on(Multiview::new(
-                    device,
-                    lane,
-                    config.format,
-                    extent,
-                ))?);
-            }
-            let example = scene.as_mut().ok_or(Error::InvalidState)?;
-            let (work, uploaded_geometry) = example.record(device, &image)?;
-            utils::submit_and_present(device, lane, work, image)?;
-            if uploaded_geometry {
-                example.mark_uploaded();
-            }
-            Ok(())
-        },
-    )
+#[cfg(all(target_os = "macos", feature = "metal"))]
+fn main() {
+    if let Err(error) = host::run_metal_stereo_fallback() {
+        eprintln!("15_multiview: {error:?}");
+        std::process::exit(1);
+    }
 }
+
 #[cfg(windows)]
 fn main() {
     #[cfg(feature = "native-gl-wgl")]
@@ -524,11 +492,11 @@ fn main() {
     let result: Result<()> = match utils::windows_api::selected_backend() {
         #[cfg(feature = "dx12")]
         Ok(utils::windows_api::SelectedBackend::Dx12) => {
-            run::<fluxel_rhi::dx12::Dx12, _>(utils::windows_api::Dx12Host)
+            host::run::<fluxel_rhi::dx12::Dx12, _>(utils::windows_api::Dx12Host)
         }
         #[cfg(feature = "vulkan")]
         Ok(utils::windows_api::SelectedBackend::Vulkan) => {
-            run::<fluxel_rhi::vulkan::Vulkan, _>(utils::windows_api::VulkanHost)
+            host::run::<fluxel_rhi::vulkan::Vulkan, _>(utils::windows_api::VulkanHost)
         }
         Err(error) => Err(error),
     };
@@ -545,7 +513,11 @@ fn main() {
     }
 }
 
-#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
+#[cfg(not(any(
+    windows,
+    all(target_os = "macos", feature = "metal"),
+    all(target_os = "linux", feature = "native-gles-egl")
+)))]
 fn main() {
-    eprintln!("15_multiview requires Windows and a backend with multiview support");
+    eprintln!("15_multiview requires a supported native or browser backend");
 }

@@ -37,6 +37,8 @@ pub trait ComputeOps<B: Backend> {
         offsets: &[u32],
     ) -> Result<()>;
     fn dispatch(encoder: &mut B::NativeEncoder, groups: [u32; 3]) -> Result<()>;
+    /// Dispatches group counts from a four-byte-aligned, 12-byte `[u32; 3]`
+    /// record in a buffer with `BufferUsage::INDIRECT`.
     fn dispatch_indirect(
         encoder: &mut B::NativeEncoder,
         args: &B::NativeBuffer,
@@ -154,6 +156,13 @@ impl<B: CommandBackend> ComputePass<'_, B> {
         }
         self.call(|e| B::Compute::set_pipeline(e, &p.native))
     }
+    /// Binds a group and applies dynamic buffer offsets.
+    ///
+    /// `offsets` must contain exactly one value for each layout binding whose
+    /// buffer type enables `dynamic_offset`, in ascending binding-number order.
+    /// Each value is added to that buffer resource's bound range start; the
+    /// backend validates alignment and that the resulting range stays in the
+    /// allocation.
     pub fn set_bind_group(
         &mut self,
         slot: u32,
@@ -171,6 +180,10 @@ impl<B: CommandBackend> ComputePass<'_, B> {
     pub fn push_constants(&mut self, offset: u32, bytes: &[u8]) -> Result<()> {
         self.call(|e| B::Compute::set_push_constants(e, offset, bytes))
     }
+    /// Reads three `u32` workgroup counts from `buffer` at `offset`.
+    ///
+    /// The offset must be four-byte aligned, the complete 12-byte record must
+    /// fit the buffer, and the buffer must include `BufferUsage::INDIRECT`.
     pub fn dispatch_indirect(&mut self, buffer: &Buffer<B>, offset: u64) -> Result<()> {
         if buffer.device != self.encoder.device {
             return Err(Error::WrongDevice);

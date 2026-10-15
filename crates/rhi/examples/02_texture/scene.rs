@@ -242,7 +242,7 @@ pub async fn run_webgpu_texture(
         .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
 fn run_host<B: TextureBackend + DeferredBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
     let (rgba, width, height) = match load_ktx() {
         Ok(value) => value,
@@ -324,6 +324,15 @@ pub fn run() {
     }
 }
 
+#[cfg(all(target_os = "macos", feature = "metal"))]
+pub fn run() {
+    let result = run_host::<fluxel_rhi::metal::Metal, _>(utils::metal_api::MetalHost);
+    if let Err(error) = result {
+        eprintln!("02_texture: {error:?}");
+        std::process::exit(1);
+    }
+}
+
 /// Reports the unavailable native target on unsupported hosts.
 #[cfg(all(target_os = "linux", feature = "native-gles-egl"))]
 pub fn run() {
@@ -333,7 +342,11 @@ pub fn run() {
     }
 }
 
-#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
+#[cfg(not(any(
+    windows,
+    all(target_os = "macos", feature = "metal"),
+    all(target_os = "linux", feature = "native-gles-egl")
+)))]
 pub fn run() {
     eprintln!("02_texture requires Windows and DX12");
 }

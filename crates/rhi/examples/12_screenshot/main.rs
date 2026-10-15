@@ -319,6 +319,13 @@ fn aligned_row_pitch(width: u32) -> Result<u32> {
         .map(|n| n & !255)
         .ok_or(Error::InvalidRange)
 }
+#[cfg(all(target_os = "macos", feature = "metal"))]
+fn main() {
+    if let Err(error) = run::<fluxel_rhi::metal::Metal, _>(utils::metal_api::MetalHost) {
+        eprintln!("12_screenshot: {error:?}");
+        std::process::exit(1);
+    }
+}
 #[cfg(windows)]
 fn main() {
     #[cfg(feature = "native-gl-wgl")]
@@ -350,7 +357,7 @@ fn main() {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
 fn run<B, H>(host: H) -> Result<()>
 where
     B: ScreenshotBackend,
@@ -571,7 +578,11 @@ fn main() {
     }
 }
 
-#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
+#[cfg(not(any(
+    windows,
+    all(target_os = "macos", feature = "metal"),
+    all(target_os = "linux", feature = "native-gles-egl")
+)))]
 fn main() {
     eprintln!("12_screenshot requires a backend implementing ReadbackBackend");
 }

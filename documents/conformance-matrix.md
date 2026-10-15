@@ -1,6 +1,6 @@
 # RHI conformance matrix
 
-**Scope:** current checkout. The facade exposes DX12 and Vulkan on Windows and WebGPU in browsers. GL and Metal are not active workspace backends.
+**Scope:** the DX12, Vulkan, and WebGPU columns summarize their recorded example paths. GL4+, GLES3+, and WebGL2 have separate profile evidence in `crates/rhi/examples/README.md`. Metal is an in-progress backend with no macOS link or real-GPU evidence yet, so it is intentionally not represented as a passing matrix column.
 
 `Pass` means a recorded native run, not successful compilation. `Unsupported` requires an explicit capability or operation result. A successful example proves its exercised path only, not every operation in the backend API.
 

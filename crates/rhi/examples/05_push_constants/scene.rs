@@ -232,7 +232,7 @@ pub async fn run_webgpu_push_constants(
         .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
 fn run_host<B: PushBackend + DeferredBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
@@ -270,6 +270,14 @@ fn run_host<B: PushBackend + DeferredBackend, H: utils::ExampleHost<B>>(host: H)
             utils::submit_and_present(device, lane, work, image)
         },
     )
+}
+
+#[cfg(all(target_os = "macos", feature = "metal"))]
+pub fn run_metal() {
+    if let Err(error) = run_host::<fluxel_rhi::metal::Metal, _>(utils::metal_api::MetalHost) {
+        eprintln!("05_push_constants: {error:?}");
+        std::process::exit(1);
+    }
 }
 
 /// Runs the native Cargo example target.
@@ -333,7 +341,11 @@ pub fn run() {
     }
 }
 
-#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
+#[cfg(not(any(
+    windows,
+    all(target_os = "macos", feature = "metal"),
+    all(target_os = "linux", feature = "native-gles-egl")
+)))]
 pub fn run() {
     eprintln!("05_push_constants requires Windows and DX12");
 }

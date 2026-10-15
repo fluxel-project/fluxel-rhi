@@ -81,7 +81,7 @@ pub struct Workload<B: OcclusionWorkloadBackend> {
 }
 pub struct Frame<B: OcclusionBackend> {
     work: RecordedWork<B>,
-    ticket: ReadbackTicket<B>,
+    ticket: Option<ReadbackTicket<B>>,
 }
 
 /// Draws the native-query workload into a host-owned browser canvas.
@@ -127,7 +127,9 @@ pub async fn run_webgpu_occlusion_query(
             let image = surface.acquire().await?;
             let Frame { work, ticket } = workload.record(&device, &image, extent)?;
             let completion = submit(&device, lane, work, image)?;
-            workload.consume_async(&device, ticket, &completion).await?;
+            workload
+                .consume_async(&device, ticket.ok_or(Error::InvalidState)?, &completion)
+                .await?;
         }
         Ok(())
     };
@@ -297,7 +299,7 @@ fn transform(
     bytes[224..228].copy_from_slice(&visible.to_ne_bytes());
     bytes
 }
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
 fn run<B: OcclusionBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
     let cfg = SurfaceConfig {
         extent: [1280, 720],
@@ -321,7 +323,12 @@ fn run<B: OcclusionBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
                 .map(|x| x.id)
                 .ok_or(Error::Unsupported("graphics lane"))?;
             if work.is_none() {
-                work = Some(utils::block_on(Workload::new(d, lane, cfg.format))?)
+                let workload = if d.queries(QueryKind::Occlusion).is_some() {
+                    utils::block_on(Workload::new(d, lane, cfg.format))?
+                } else {
+                    utils::block_on(Workload::new_visual_fallback(d, lane, cfg.format))?
+                };
+                work = Some(workload);
             }
             let w = work.as_mut().ok_or(Error::InvalidState)?;
             let Frame {
@@ -332,9 +339,21 @@ fn run<B: OcclusionBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
             // result path explicit here so the next frame's visibility is
             // based on native query evidence.
             let point = submit(d, lane, recorded, image)?;
-            w.consume(d, ticket, &point)
+            if let Some(ticket) = ticket {
+                w.consume(d, ticket, &point)
+            } else {
+                utils::block_on(d.wait_completion(&point))
+            }
         },
     )
+}
+
+#[cfg(all(target_os = "macos", feature = "metal"))]
+fn main() {
+    if let Err(error) = run::<fluxel_rhi::metal::Metal, _>(utils::metal_api::MetalHost) {
+        eprintln!("11_occlusion_query: {error:?}");
+        std::process::exit(1);
+    }
 }
 #[cfg(windows)]
 fn main() {
@@ -374,9 +393,13 @@ fn main() {
     }
 }
 
-#[cfg(not(any(windows, all(target_os = "linux", feature = "native-gles-egl"))))]
+#[cfg(not(any(
+    windows,
+    all(target_os = "macos", feature = "metal"),
+    all(target_os = "linux", feature = "native-gles-egl")
+)))]
 fn main() {
-    eprintln!("11_occlusion_query requires Windows and DX12")
+    eprintln!("11_occlusion_query requires a supported native or browser backend")
 }
 fn submit<B: DeferredBackend>(
     d: &Device<B>,

@@ -4,6 +4,48 @@
 //! in the parent module.
 use super::*;
 
+#[cfg(all(target_os = "macos", feature = "metal"))]
+pub(super) fn run_metal() -> Result<()> {
+    let config = SurfaceConfig {
+        extent: [1280, 720],
+        format: TextureFormat::Bgra8Unorm,
+        present_mode: PresentMode::Fifo,
+        alpha_mode: CompositeAlphaMode::Opaque,
+        color_space: ColorSpace::Srgb,
+        usage: SurfaceUsage::RENDER_ATTACHMENT,
+        maximum_frame_latency: 2,
+    };
+    let mut scene: Option<sequential::Sequential<fluxel_rhi::metal::Metal>> = None;
+    utils::run_example(
+        utils::metal_api::MetalHost,
+        "Sequential UFO command fallback",
+        config.clone(),
+        move |device, _, image, extent| {
+            let lane = device
+                .lanes()
+                .iter()
+                .find(|lane| lane.class == LaneClass::Graphics)
+                .map(|lane| lane.id)
+                .ok_or(Error::Unsupported("graphics lane"))?;
+            if scene.is_none() {
+                scene = Some(utils::block_on(sequential::Sequential::new(
+                    device,
+                    config.format,
+                ))?);
+            }
+            let scene = scene.as_mut().ok_or(Error::InvalidState)?;
+            let mut encoder = device.encoder(lane)?;
+            let uploaded = scene.encode(device, &image, &mut encoder, extent)?;
+            let work = encoder.finish()?;
+            utils::submit_and_present(device, lane, work, image)?;
+            if uploaded {
+                scene.mark_uploaded();
+            }
+            Ok(())
+        },
+    )
+}
+
 #[cfg(windows)]
 fn run_host<B: SecondaryExampleBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()>
 where
@@ -70,7 +112,15 @@ pub(super) fn run() {
     }
 }
 /// Reports the unavailable native target on unsupported hosts.
-#[cfg(not(windows))]
+#[cfg(all(target_os = "macos", feature = "metal"))]
+pub(super) fn run() {
+    if let Err(error) = run_metal() {
+        eprintln!("13_multithreaded_recording: {error:?}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(not(any(windows, all(target_os = "macos", feature = "metal"))))]
 pub(super) fn run() {
     eprintln!(
         "13_multithreaded_recording requires Windows and a backend with secondary raster commands"

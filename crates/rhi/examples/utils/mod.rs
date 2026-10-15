@@ -28,6 +28,9 @@ pub mod gl_api;
 #[cfg(windows)]
 pub mod windows_api;
 
+#[cfg(all(target_os = "macos", feature = "metal"))]
+pub mod metal_api;
+
 static NEXT_PLAN: AtomicU64 = AtomicU64::new(1);
 
 /// Drives a cold-path RHI future on the current native host thread.
