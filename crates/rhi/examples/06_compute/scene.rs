@@ -5,7 +5,7 @@ mod workload;
 
 use fluxel_rhi::api::*;
 
-pub use workload::Compute;
+pub use workload::{Compute, FrameInitialization};
 
 /// Shares the example's checked KTX decoding with its WebGL2 raster fallback.
 #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]

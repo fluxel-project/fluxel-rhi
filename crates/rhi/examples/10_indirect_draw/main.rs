@@ -13,6 +13,7 @@ mod utils;
 mod workload;
 
 use fluxel_rhi::api::*;
+pub use workload::{IndirectBackend, Workload};
 
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),

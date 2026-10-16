@@ -387,7 +387,7 @@ impl<B: SecondaryExampleBackend> Multithreaded<B> {
         Ok((work, upload_geometry))
     }
 
-    fn mark_uploaded(&mut self) {
+    pub fn mark_uploaded(&mut self) {
         self.uploaded = true;
     }
 }
@@ -408,6 +408,7 @@ fn buffer<B: SecondaryExampleBackend>(
 
 #[path = "sequential.rs"]
 mod sequential;
+pub use sequential::Sequential;
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),
     all(target_os = "linux", feature = "native-gles-egl")

@@ -80,8 +80,8 @@ pub struct Workload<B: OcclusionWorkloadBackend> {
     visible: [bool; 2],
 }
 pub struct Frame<B: OcclusionBackend> {
-    work: RecordedWork<B>,
-    ticket: Option<ReadbackTicket<B>>,
+    pub work: RecordedWork<B>,
+    pub ticket: Option<ReadbackTicket<B>>,
 }
 
 /// Draws the native-query workload into a host-owned browser canvas.

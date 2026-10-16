@@ -4,6 +4,14 @@
 
 ## Public API and ownership
 
+Runtime binding arrays use `BindingCount::RuntimeSized { max_count }`. The
+nonzero `max_count` is a caller-selected layout capacity; a bind group supplies
+a nonempty prefix no longer than that capacity. Shaders may index only the
+supplied elements. Backends validate the requested capacity against native
+layout support instead of declaring an array as large as the driver's maximum.
+This bound is shared by Core validation and every backend; it does not change
+the shader's runtime-array declaration or introduce allocation policy in Core.
+
 `fluxel_rhi_core::api` is the single Core API namespace. The facade re-exports it as
 `fluxel_rhi::api`; applications use that namespace and select a concrete backend at
 initialization. On Windows the facade exposes `fluxel_rhi::dx12::Dx12` and

@@ -110,13 +110,14 @@ impl<B: ResourceBackend> Device<B> {
                     return Err(Error::Unsupported("binding arrays"));
                 }
                 BindingCount::Fixed(_) => {}
-                BindingCount::RuntimeSized if !self.caps.runtime_sized_binding_arrays => {
+                BindingCount::RuntimeSized { max_count: 0 } => return Err(Error::InvalidRange),
+                BindingCount::RuntimeSized { .. } if !self.caps.runtime_sized_binding_arrays => {
                     return Err(Error::Unsupported("runtime-sized binding arrays"));
                 }
-                BindingCount::RuntimeSized if index + 1 != desc.entries.len() => {
+                BindingCount::RuntimeSized { .. } if index + 1 != desc.entries.len() => {
                     return Err(Error::InvalidState);
                 }
-                BindingCount::RuntimeSized => {}
+                BindingCount::RuntimeSized { .. } => {}
             }
             if entry.nonuniform_indexing
                 && !self
@@ -168,8 +169,11 @@ impl<B: ResourceBackend> Device<B> {
                         return Err(Error::InvalidState);
                     }
                 }
-                BindingCount::RuntimeSized => {
+                BindingCount::RuntimeSized { max_count } => {
                     let values = array.ok_or(Error::InvalidState)?;
+                    if values.len() > max_count as usize {
+                        return Err(Error::InvalidRange);
+                    }
                     if values.is_empty()
                         || (!layout.partially_bound && values.iter().any(Option::is_none))
                     {

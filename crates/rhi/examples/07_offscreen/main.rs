@@ -72,7 +72,7 @@ pub async fn run_webgl2_offscreen(
 mod resources;
 #[path = "workload.rs"]
 mod workload;
-use workload::Offscreen;
+pub use workload::Offscreen;
 
 /// Draws the mirror scene into a host-owned browser canvas.
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]

@@ -2,7 +2,7 @@
 mod pipeline;
 mod recording;
 mod resources;
-pub(crate) use recording::FrameCommit;
+pub use recording::FrameCommit;
 
 use fluxel_rhi::api::*;
 use resources::*;

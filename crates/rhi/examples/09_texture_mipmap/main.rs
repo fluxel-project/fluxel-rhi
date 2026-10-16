@@ -6,7 +6,7 @@ mod scene;
 mod utils;
 
 use fluxel_rhi::api::*;
-use scene::Tunnel;
+pub use scene::{MipmapWorkloadBackend, Tunnel};
 
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),

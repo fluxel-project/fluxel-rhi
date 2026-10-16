@@ -7,7 +7,7 @@
 
 use fluxel_rhi_core::api::{self, Error, Result};
 
-use super::{BindingSlot, Dx12, descriptor_array};
+use super::{BindingSlot, Dx12};
 
 pub(super) fn resource_descriptor_count(
     slot: &BindingSlot,
@@ -20,10 +20,8 @@ pub(super) fn resource_descriptor_count(
         return Err(Error::InvalidState);
     };
     let count = u32::try_from(values.len()).map_err(|_| Error::InvalidRange)?;
-    if count == 0 || count > descriptor_array::RUNTIME_SRV_CAPACITY {
-        return Err(Error::Unsupported(
-            "DX12 runtime sampled texture array length",
-        ));
+    if count == 0 || count > slot.descriptor_count {
+        return Err(Error::InvalidRange);
     }
     Ok(count)
 }

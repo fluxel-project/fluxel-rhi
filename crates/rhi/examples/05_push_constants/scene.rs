@@ -330,7 +330,7 @@ mod immediate;
 pub use immediate::run_webgl2_push_constants;
 mod pipeline;
 mod workload;
-use workload::PushWorkload;
+pub use workload::PushWorkload;
 
 /// Reports the unavailable native target on unsupported hosts.
 #[cfg(all(target_os = "linux", feature = "native-gles-egl"))]

@@ -132,7 +132,12 @@ impl VulkanInstance {
             ash::khr::surface::NAME.as_ptr(),
             ash::khr::win32_surface::NAME.as_ptr(),
         ];
-        #[cfg(not(windows))]
+        #[cfg(target_os = "android")]
+        let extensions = [
+            ash::khr::surface::NAME.as_ptr(),
+            ash::khr::android_surface::NAME.as_ptr(),
+        ];
+        #[cfg(not(any(windows, target_os = "android")))]
         let extensions = [ash::khr::surface::NAME.as_ptr()];
         let info = vk::InstanceCreateInfo::default()
             .application_info(&app)
@@ -168,11 +173,12 @@ impl VulkanInstance {
 }
 
 impl Vulkan {
-    /// Creates a Vulkan WSI surface for a Win32 window owned by the caller.
+    /// Creates a Vulkan WSI surface for a Win32 or Android native window owned by the caller.
     ///
     /// # Safety
     /// Both raw handles remain valid until the surface and every image lease
-    /// originating from it have been destroyed.
+    /// originating from it have been destroyed. Android callers must retain
+    /// the `ANativeWindow` for the same interval.
     pub unsafe fn surface_from_raw_window_handle(
         device: &api::Device<Self>,
         window: raw_window_handle::RawWindowHandle,

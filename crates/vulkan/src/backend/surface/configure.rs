@@ -60,8 +60,24 @@ pub(super) fn configure(state: &SurfaceState, config: &api::SurfaceConfig) -> Re
         .image_array_layers(1)
         .image_usage(usage)
         .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-        .pre_transform(caps.current_transform)
-        .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+        // Keep the framebuffer axes aligned with the public RHI viewport
+        // whenever the WSI permits identity. Applying the Android display's
+        // current transform here rotates the rendered scene a second time on
+        // devices whose native window and physical display orientations differ.
+        .pre_transform(
+            if caps
+                .supported_transforms
+                .contains(vk::SurfaceTransformFlagsKHR::IDENTITY)
+            {
+                vk::SurfaceTransformFlagsKHR::IDENTITY
+            } else {
+                caps.current_transform
+            },
+        )
+        .composite_alpha(
+            super::composite_alpha(config.alpha_mode)
+                .ok_or(Error::Unsupported("Vulkan composite alpha mode"))?,
+        )
         .present_mode(vk::PresentModeKHR::FIFO)
         .clipped(true)
         .old_swapchain(old);

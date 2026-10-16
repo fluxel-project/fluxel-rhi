@@ -6,7 +6,8 @@
 use super::*;
 
 use super::pipeline::{buffer, camera_bytes, create_pipeline};
-pub(super) struct PushWorkload<B: PushBackend> {
+/// Reusable sphere-ring workload shared by deferred and immediate hosts.
+pub struct PushWorkload<B: PushBackend> {
     lane: LaneId,
     vertex: Buffer<B>,
     index: Buffer<B>,
@@ -24,7 +25,7 @@ pub(super) struct PushWorkload<B: PushBackend> {
     dynamic_uniform_alignment: u64,
 }
 impl<B: PushBackend> PushWorkload<B> {
-    pub(super) async fn new(
+    pub async fn new(
         d: &Device<B>,
         lane: LaneId,
         format: TextureFormat,
@@ -178,7 +179,7 @@ impl<B: PushBackend> PushWorkload<B> {
             dynamic_uniform_alignment,
         })
     }
-    pub(super) fn record(
+    pub fn record(
         &mut self,
         d: &Device<B>,
         image: &SurfaceImage<B>,
@@ -266,13 +267,14 @@ impl<B: PushBackend> PushWorkload<B> {
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),
     all(target_os = "linux", feature = "native-gles-egl"),
+    all(target_os = "android", feature = "native-gles-egl"),
     all(target_arch = "wasm32", feature = "webgl2")
 ))]
 impl PushWorkload<fluxel_rhi::gl::Gl> {
     /// Issues the existing dynamic-uniform fallback on GL's owner thread.
     /// Every encoder call reaches GL before returning; no recorded work is
     /// produced or kept for a later queue submission.
-    pub(super) fn issue(
+    pub fn issue(
         &mut self,
         encoder: &mut CommandEncoder<fluxel_rhi::gl::Gl>,
         image: &SurfaceImage<fluxel_rhi::gl::Gl>,

@@ -1,4 +1,4 @@
-//! Vulkan Win32 surface and swapchain ownership.
+//! Vulkan Win32 and Android surface and swapchain ownership.
 //!
 //! A swapchain image stays an exclusive `SurfaceImage` lease.  It is never
 //! manufactured as a portable TextureView, so presentation lifetime remains
@@ -20,7 +20,11 @@ use std::{
 
 use ash::vk;
 use fluxel_rhi_core::api::{self, Error, Result};
-use raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle};
+#[cfg(target_os = "android")]
+use raw_window_handle::AndroidNdkWindowHandle;
+#[cfg(windows)]
+use raw_window_handle::Win32WindowHandle;
+use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use super::{Vulkan, VulkanDevice, vk_error};
 mod acquire;
@@ -82,28 +86,49 @@ pub(crate) unsafe fn create_surface(
     // SAFETY: the public caller promises that these borrowed raw handles stay
     // valid for the surface and every originating image lease.  This function
     // copies only their numeric Win32 values into Vulkan's create structure.
-    let RawWindowHandle::Win32(Win32WindowHandle {
-        hwnd, hinstance, ..
-    }) = window
-    else {
-        return Err(Error::Unsupported("a Win32 Vulkan window handle"));
-    };
-    if !matches!(display, RawDisplayHandle::Windows(_)) {
-        return Err(Error::Unsupported("a Windows display handle"));
-    }
     // SAFETY: this backend bridge reads the native VulkanDevice belonging to
     // `device`; cloning it retains the dispatch owners for the new surface.
     let native = unsafe { device.native_ref() }.clone();
-    let win32 = ash::khr::win32_surface::Instance::new(
-        &native.0.instance.entry,
-        &native.0.instance.instance,
-    );
-    let info = vk::Win32SurfaceCreateInfoKHR::default()
-        .hwnd(hwnd.get() as vk::HWND)
-        .hinstance(hinstance.map_or(0, |v| v.get()) as vk::HINSTANCE);
-    // SAFETY: `info` contains the validated live HWND/HINSTANCE pair above and
-    // `win32` retains the Vulkan instance used to create this surface.
-    let surface = unsafe { win32.create_win32_surface(&info, None) }.map_err(vk_error)?;
+    let surface = match (window, display) {
+        #[cfg(windows)]
+        (
+            RawWindowHandle::Win32(Win32WindowHandle {
+                hwnd, hinstance, ..
+            }),
+            RawDisplayHandle::Windows(_),
+        ) => {
+            let win32 = ash::khr::win32_surface::Instance::new(
+                &native.0.instance.entry,
+                &native.0.instance.instance,
+            );
+            let info = vk::Win32SurfaceCreateInfoKHR::default()
+                .hwnd(hwnd.get() as vk::HWND)
+                .hinstance(hinstance.map_or(0, |v| v.get()) as vk::HINSTANCE);
+            // SAFETY: the caller retains this validated live HWND/HINSTANCE pair.
+            unsafe { win32.create_win32_surface(&info, None) }.map_err(vk_error)?
+        }
+        #[cfg(target_os = "android")]
+        (
+            RawWindowHandle::AndroidNdk(AndroidNdkWindowHandle {
+                a_native_window, ..
+            }),
+            RawDisplayHandle::Android(_),
+        ) => {
+            let android = ash::khr::android_surface::Instance::new(
+                &native.0.instance.entry,
+                &native.0.instance.instance,
+            );
+            let info =
+                vk::AndroidSurfaceCreateInfoKHR::default().window(a_native_window.as_ptr().cast());
+            // SAFETY: the caller retains the ANativeWindow until SurfaceState is dropped.
+            unsafe { android.create_android_surface(&info, None) }.map_err(vk_error)?
+        }
+        _ => {
+            return Err(Error::Unsupported(
+                "a Vulkan window handle for this platform",
+            ));
+        }
+    };
     let surface_loader =
         ash::khr::surface::Instance::new(&native.0.instance.entry, &native.0.instance.instance);
     // SAFETY: physical device, queue family, and surface all belong to the
@@ -385,14 +410,31 @@ fn capabilities(state: &SurfaceState) -> Result<api::SurfaceCapabilities> {
         } else {
             vec![]
         },
-        alpha_modes: if caps
-            .supported_composite_alpha
-            .contains(vk::CompositeAlphaFlagsKHR::OPAQUE)
-        {
-            vec![api::CompositeAlphaMode::Opaque]
-        } else {
-            vec![]
-        },
+        alpha_modes: [
+            (
+                vk::CompositeAlphaFlagsKHR::OPAQUE,
+                api::CompositeAlphaMode::Opaque,
+            ),
+            (
+                vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED,
+                api::CompositeAlphaMode::Premultiplied,
+            ),
+            (
+                vk::CompositeAlphaFlagsKHR::POST_MULTIPLIED,
+                api::CompositeAlphaMode::Postmultiplied,
+            ),
+            (
+                vk::CompositeAlphaFlagsKHR::INHERIT,
+                api::CompositeAlphaMode::Inherit,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(flag, mode)| {
+            caps.supported_composite_alpha
+                .contains(flag)
+                .then_some(mode)
+        })
+        .collect(),
         color_spaces: if srgb {
             vec![api::ColorSpace::Srgb]
         } else {
@@ -428,7 +470,6 @@ fn validate_config(
         return Err("zero-sized Vulkan surface");
     }
     if config.present_mode != api::PresentMode::Fifo
-        || config.alpha_mode != api::CompositeAlphaMode::Opaque
         || config.color_space != api::ColorSpace::Srgb
         || config.usage != api::SurfaceUsage::RENDER_ATTACHMENT
         || config.maximum_frame_latency == 0
@@ -445,9 +486,8 @@ fn validate_config(
             .get_physical_device_surface_capabilities(state.device.0.physical, state.surface)
     }
     .map_err(|_| "Vulkan surface capabilities")?;
-    if !caps
-        .supported_composite_alpha
-        .contains(vk::CompositeAlphaFlagsKHR::OPAQUE)
+    if !composite_alpha(config.alpha_mode)
+        .is_some_and(|flag| caps.supported_composite_alpha.contains(flag))
         || !caps
             .supported_usage_flags
             .contains(vk::ImageUsageFlags::COLOR_ATTACHMENT)
@@ -494,6 +534,15 @@ fn validate_config(
         return Err("Vulkan FIFO presentation");
     }
     Ok(())
+}
+
+pub(super) fn composite_alpha(mode: api::CompositeAlphaMode) -> Option<vk::CompositeAlphaFlagsKHR> {
+    Some(match mode {
+        api::CompositeAlphaMode::Opaque => vk::CompositeAlphaFlagsKHR::OPAQUE,
+        api::CompositeAlphaMode::Premultiplied => vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED,
+        api::CompositeAlphaMode::Postmultiplied => vk::CompositeAlphaFlagsKHR::POST_MULTIPLIED,
+        api::CompositeAlphaMode::Inherit => vk::CompositeAlphaFlagsKHR::INHERIT,
+    })
 }
 fn from_format(format: vk::Format) -> Option<api::TextureFormat> {
     match format {

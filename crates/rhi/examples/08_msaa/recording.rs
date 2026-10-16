@@ -8,7 +8,7 @@ use super::{Msaa, MsaaBackend, MsaaDeferredBackend};
 use fluxel_rhi::api::*;
 
 #[derive(Clone, Copy)]
-pub(crate) struct FrameCommit {
+pub struct FrameCommit {
     uploaded: bool,
     color_state_initialized: bool,
 }

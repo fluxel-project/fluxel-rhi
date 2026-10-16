@@ -15,7 +15,7 @@ use super::{
 };
 use fluxel_rhi::api::*;
 
-pub(crate) trait IndirectWorkloadBackend:
+pub trait IndirectWorkloadBackend:
     Backend + ResourceBackend + ShaderBackend + PipelineBackend + RasterBackend + CommandBackend
 {
 }
@@ -24,14 +24,14 @@ impl<T> IndirectWorkloadBackend for T where
 {
 }
 
-pub(crate) trait IndirectBackend: IndirectWorkloadBackend + DeferredBackend {}
+pub trait IndirectBackend: IndirectWorkloadBackend + DeferredBackend {}
 impl<T> IndirectBackend for T where T: IndirectWorkloadBackend + DeferredBackend {}
 
-pub(crate) struct FrameCommit;
+pub struct FrameCommit;
 
 /// Complete plant/ground/sky workload.  Plant texture layers are uploaded as
 /// individual array subresources, then sampled by the instance layer attribute.
-pub(crate) struct Workload<B: IndirectWorkloadBackend> {
+pub struct Workload<B: IndirectWorkloadBackend> {
     lane: LaneId,
     scene: IndirectScene<B>,
     uniform: Buffer<B>,
@@ -51,7 +51,7 @@ pub(crate) struct Workload<B: IndirectWorkloadBackend> {
     uploaded: bool,
 }
 impl<B: IndirectWorkloadBackend> Workload<B> {
-    pub(crate) async fn new(
+    pub async fn new(
         d: &Device<B>,
         lane: LaneId,
         format: TextureFormat,
@@ -219,7 +219,7 @@ impl<B: IndirectWorkloadBackend> Workload<B> {
             uploaded: false,
         })
     }
-    pub(crate) fn record(
+    pub fn record(
         &mut self,
         d: &Device<B>,
         image: &SurfaceImage<B>,
@@ -238,7 +238,7 @@ impl<B: IndirectWorkloadBackend> Workload<B> {
 
     /// Issues the shared scene through the supplied deferred or immediate
     /// encoder. Upload state is published only after the caller closes it.
-    pub(crate) fn encode(
+    pub fn encode(
         &mut self,
         e: &mut CommandEncoder<B>,
         d: &Device<B>,
@@ -314,7 +314,7 @@ impl<B: IndirectWorkloadBackend> Workload<B> {
         Ok(FrameCommit)
     }
 
-    pub(crate) fn commit_frame(&mut self, _: FrameCommit) {
+    pub fn commit_frame(&mut self, _: FrameCommit) {
         self.uploaded = true;
     }
     fn encode_scene(

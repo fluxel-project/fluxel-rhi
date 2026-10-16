@@ -5,7 +5,7 @@
 use super::*;
 
 /// C++ workload executed sequentially when secondary recording is unavailable.
-pub(super) struct Sequential<B: SequentialExampleBackend> {
+pub struct Sequential<B: SequentialExampleBackend> {
     vertices: Buffer<B>,
     indices: Buffer<B>,
     transforms: Buffer<B>,
@@ -24,7 +24,7 @@ pub(super) struct Sequential<B: SequentialExampleBackend> {
 }
 
 impl<B: SequentialExampleBackend> Sequential<B> {
-    pub(super) async fn new(d: &Device<B>, format: TextureFormat) -> Result<Self> {
+    pub async fn new(d: &Device<B>, format: TextureFormat) -> Result<Self> {
         let source = gltf::LoadOptions::CPP_PORT.with_flip_y(false);
         let u =
             gltf::load_embedded_model(UFO, source).map_err(|x| Error::Backend(x.to_string()))?;
@@ -181,7 +181,7 @@ impl<B: SequentialExampleBackend> Sequential<B> {
             frame: 0,
         })
     }
-    pub(super) fn encode(
+    pub fn encode(
         &mut self,
         d: &Device<B>,
         image: &SurfaceImage<B>,
@@ -257,7 +257,7 @@ impl<B: SequentialExampleBackend> Sequential<B> {
         Ok(uploaded_geometry)
     }
 
-    pub(super) fn mark_uploaded(&mut self) {
+    pub fn mark_uploaded(&mut self) {
         self.uploaded = true;
     }
 }

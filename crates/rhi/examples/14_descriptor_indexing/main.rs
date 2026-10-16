@@ -83,7 +83,9 @@ pub fn descriptor_indexing_layout<B: Backend + ResourceBackend>(
                     dimension: TextureViewDimension::D2,
                     multisampled: false,
                 },
-                count: BindingCount::RuntimeSized,
+                count: BindingCount::RuntimeSized {
+                    max_count: TEXTURES as u32,
+                },
                 partially_bound: false,
                 nonuniform_indexing: true,
             },
@@ -405,7 +407,7 @@ impl<B: DescriptorSceneBackend> DescriptorIndexing<B> {
         Ok(upload_geometry)
     }
 
-    fn mark_uploaded(&mut self) {
+    pub fn mark_uploaded(&mut self) {
         self.uploaded = true;
     }
 }

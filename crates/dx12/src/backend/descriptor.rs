@@ -300,7 +300,7 @@ pub(crate) fn create_bind_group_layout(
                     class: DescriptorClass::Srv,
                     dynamic_offset: false,
                     descriptor_count,
-                    runtime_sized: matches!(entry.count, api::BindingCount::RuntimeSized),
+                    runtime_sized: matches!(entry.count, api::BindingCount::RuntimeSized { .. }),
                     view_dimension: Some(dimension),
                 });
             }

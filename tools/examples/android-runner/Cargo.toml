@@ -1,0 +1,40 @@
+[package]
+name = "fluxel-android-rhi-capture"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = ["vulkan"]
+vulkan = ["fluxel-rhi/vulkan"]
+gles = ["fluxel-rhi/native-gles-egl", "native-gles-egl"]
+native-gles-egl = []
+native-gl-wgl = []
+metal = []
+webgpu = []
+webgl2 = []
+demo02 = []
+demo03 = []
+demo04 = []
+demo05 = []
+demo06 = []
+demo07 = []
+demo08 = []
+demo09 = []
+demo10 = []
+demo11 = []
+demo12 = []
+demo13 = []
+demo14 = []
+
+[dependencies]
+fluxel-rhi = { path = "../../../crates/rhi", default-features = false, features = ["examples"] }
+winit = { version = "=0.30.13", features = ["android-native-activity"] }
+raw-window-handle = "=0.6.2"
+base64 = "0.22"
+serde_json = "1"
+png = "0.17"
+
+[workspace]

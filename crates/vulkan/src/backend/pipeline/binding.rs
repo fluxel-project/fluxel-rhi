@@ -11,13 +11,11 @@ use ash::vk;
 use fluxel_rhi_core::api::{self, Error, Result};
 use std::{ops::Range, sync::Arc};
 
-#[derive(Clone)]
-pub struct VulkanBindGroupLayout(pub(crate) Arc<GroupLayout>);
-impl VulkanBindGroupLayout {
-    pub(crate) fn native(&self) -> vk::DescriptorSetLayout {
-        self.0.layout
-    }
-}
+mod layout;
+
+pub use layout::VulkanBindGroupLayout;
+pub(crate) use layout::create_group_layout;
+
 #[derive(Clone)]
 pub struct VulkanBindGroup(Arc<Group>);
 impl VulkanBindGroup {
@@ -81,100 +79,6 @@ impl Drop for Group {
         unsafe { self.device.device.destroy_descriptor_pool(self.pool, None) }
     }
 }
-pub(crate) struct GroupLayout {
-    device: Arc<DeviceState>,
-    pub(crate) layout: vk::DescriptorSetLayout,
-    entries: Arc<[api::BindGroupLayoutEntry]>,
-}
-impl Drop for GroupLayout {
-    fn drop(&mut self) {
-        // SAFETY: Group keeps its layout alive, so this final Arc can destroy
-        // the native layout while its retained DeviceState is still valid.
-        unsafe {
-            self.device
-                .device
-                .destroy_descriptor_set_layout(self.layout, None)
-        }
-    }
-}
-
-pub(crate) fn create_group_layout(
-    device: &VulkanDevice,
-    desc: &api::BindGroupLayoutDesc,
-) -> Result<VulkanBindGroupLayout> {
-    let bindings: Result<Vec<_>> = desc
-        .entries
-        .iter()
-        .map(|e| {
-            if e.partially_bound {
-                return Err(Error::Unsupported("Vulkan partially-bound descriptors"));
-            }
-            // The public contract permits arrays of several binding kinds,
-            // but this native path only lowers sampled-image arrays.  Reject
-            // other kinds while creating the layout instead of advertising a
-            // layout that would fail later during descriptor writes.
-            if !matches!(e.count, api::BindingCount::One)
-                && !matches!(&e.ty, api::BindingType::SampledTexture { .. })
-            {
-                return Err(Error::Unsupported("Vulkan descriptor array binding type"));
-            }
-            if e.nonuniform_indexing && !matches!(&e.ty, api::BindingType::SampledTexture { .. }) {
-                return Err(Error::Unsupported("Vulkan nonuniform binding type"));
-            }
-            let descriptor_count = match e.count {
-                api::BindingCount::One => 1,
-                api::BindingCount::Fixed(count) => {
-                    if count > device.0.max_sampled_images {
-                        return Err(Error::InvalidRange);
-                    }
-                    count
-                }
-                // Vulkan requires an upper bound in the layout even though
-                // the set is allocated with its actual variable count.
-                api::BindingCount::RuntimeSized => {
-                    if !device.0.descriptor_indexing {
-                        return Err(Error::Unsupported("Vulkan descriptor indexing"));
-                    }
-                    device.0.max_sampled_images
-                }
-            };
-            if descriptor_count == 0 {
-                return Err(Error::InvalidRange);
-            }
-            Ok(vk::DescriptorSetLayoutBinding::default()
-                .binding(e.binding)
-                .descriptor_type(dtype(&e.ty)?)
-                .descriptor_count(descriptor_count)
-                .stage_flags(stages(&e.visibility)?))
-        })
-        .collect();
-    let bindings = bindings?;
-    let binding_flags: Vec<_> = desc
-        .entries
-        .iter()
-        .map(|entry| match entry.count {
-            api::BindingCount::RuntimeSized => {
-                vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT
-            }
-            _ => vk::DescriptorBindingFlags::empty(),
-        })
-        .collect();
-    let mut flags =
-        vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
-    let info = vk::DescriptorSetLayoutCreateInfo::default()
-        .bindings(&bindings)
-        .push_next(&mut flags);
-    // SAFETY: `bindings` and the matching flag array stay alive for the call;
-    // DeviceState owns a live logical device and the descriptor data was
-    // validated above before constructing Vulkan create-info structures.
-    let layout =
-        unsafe { device.0.device.create_descriptor_set_layout(&info, None) }.map_err(vk_error)?;
-    Ok(VulkanBindGroupLayout(Arc::new(GroupLayout {
-        device: device.0.clone(),
-        layout,
-        entries: Arc::from(desc.entries.clone()),
-    })))
-}
 pub(crate) fn create_group(
     device: &VulkanDevice,
     desc: &api::BindGroupDesc<'_, super::super::Vulkan>,
@@ -187,11 +91,16 @@ pub(crate) fn create_group(
     let mut variable_count = None;
     for (layout_entry, entry) in entries.as_ref().iter().zip(desc.entries) {
         let descriptor_count = resource_count(&layout_entry.count, &entry.resource)?;
-        if matches!(layout_entry.count, api::BindingCount::RuntimeSized) {
+        if matches!(layout_entry.count, api::BindingCount::RuntimeSized { .. }) {
             if variable_count.replace(descriptor_count).is_some() {
                 return Err(Error::InvalidState);
             }
-            if descriptor_count > device.0.max_sampled_images {
+            if descriptor_count
+                > layout
+                    .0
+                    .runtime_descriptor_count
+                    .ok_or(Error::InvalidState)?
+            {
                 return Err(Error::InvalidRange);
             }
         }
@@ -499,7 +408,7 @@ fn resource_count<B: api::Backend>(
         {
             Ok(*expected)
         }
-        (api::BindingCount::RuntimeSized, api::BindingResource::Array(values))
+        (api::BindingCount::RuntimeSized { .. }, api::BindingResource::Array(values))
             if !values.is_empty() =>
         {
             u32::try_from(values.len()).map_err(|_| Error::InvalidRange)
@@ -526,19 +435,4 @@ fn dtype(t: &api::BindingType) -> Result<vk::DescriptorType> {
         api::BindingType::Sampler { .. } => vk::DescriptorType::SAMPLER,
         _ => return Err(Error::Unsupported("Vulkan binding type")),
     })
-}
-fn stages(s: &[api::ShaderStage]) -> Result<vk::ShaderStageFlags> {
-    let mut flags = vk::ShaderStageFlags::empty();
-    for stage in s {
-        flags |= match stage {
-            api::ShaderStage::Vertex => vk::ShaderStageFlags::VERTEX,
-            api::ShaderStage::Fragment => vk::ShaderStageFlags::FRAGMENT,
-            api::ShaderStage::Compute => vk::ShaderStageFlags::COMPUTE,
-            _ => return Err(Error::Unsupported("Vulkan descriptor shader stage")),
-        };
-    }
-    if flags.is_empty() {
-        return Err(Error::InvalidRange);
-    }
-    Ok(flags)
 }

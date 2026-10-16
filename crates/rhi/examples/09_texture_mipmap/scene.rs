@@ -8,7 +8,7 @@ mod resources;
 
 use fluxel_rhi::api::*;
 pub use pipeline::Tunnel;
-pub(crate) use recording::FrameCommit;
+pub use recording::FrameCommit;
 pub use resources::MipChain;
 
 pub trait MipmapWorkloadBackend:

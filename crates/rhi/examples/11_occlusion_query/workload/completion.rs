@@ -3,7 +3,7 @@
 use super::*;
 
 impl<B: OcclusionWorkloadBackend> Workload<B> {
-    pub(crate) fn consume(
+    pub fn consume(
         &mut self,
         d: &Device<B>,
         ticket: ReadbackTicket<B>,

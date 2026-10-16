@@ -6,7 +6,7 @@
 use super::{MipmapBackend, MipmapWorkloadBackend, Tunnel};
 use fluxel_rhi::api::*;
 
-pub(crate) struct FrameCommit;
+pub struct FrameCommit;
 
 impl<B: MipmapWorkloadBackend> Tunnel<B> {
     pub fn record(

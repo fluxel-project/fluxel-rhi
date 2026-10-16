@@ -11,7 +11,7 @@ mod msaa;
 mod utils;
 
 use fluxel_rhi::api::*;
-use msaa::{Msaa, MsaaDeferredBackend};
+pub use msaa::{Msaa, MsaaDeferredBackend};
 
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),

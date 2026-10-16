@@ -303,7 +303,13 @@ pub enum BindingType {
 pub enum BindingCount {
     One,
     Fixed(u32),
-    RuntimeSized,
+    /// A nonempty array whose length is chosen when the bind group is created.
+    /// `max_count` is the nonzero layout capacity, not the shader's array length.
+    /// Shaders may access only the supplied elements; backends use this explicit
+    /// bound instead of reserving the physical device's largest possible layout.
+    RuntimeSized {
+        max_count: u32,
+    },
 }
 #[derive(Clone, Debug)]
 pub struct BindGroupLayoutEntry {

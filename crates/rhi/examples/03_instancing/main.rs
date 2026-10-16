@@ -10,7 +10,8 @@ mod instancing;
 mod utils;
 
 use fluxel_rhi::api::*;
-use instancing::Instancing;
+/// Exposes the unchanged workload to native host integrations such as the Android capture runner.
+pub use instancing::Instancing;
 
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),

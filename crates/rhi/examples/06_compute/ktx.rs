@@ -8,10 +8,10 @@ pub(super) struct Ktx {
 }
 
 pub(super) fn load_rgba8() -> Result<Ktx> {
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
     return parse_rgba8(include_bytes!("../assets/textures/vulkan_11_rgba.ktx"));
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
