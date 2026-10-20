@@ -137,15 +137,7 @@ impl<B: ResourceBackend> Device<B> {
         })
     }
     pub fn create_bind_group(&self, desc: &BindGroupDesc<'_, B>) -> Result<BindGroup<B>> {
-        // Validate every recursively nested binding before native allocation so
-        // a backend never observes a cross-device descriptor after creating a
-        // partially owned bind group.
-        if desc.layout.device != self.id
-            || !desc
-                .entries
-                .iter()
-                .all(|v| binding_resource_device(&v.resource, self.id))
-        {
+        if desc.layout.device != self.id {
             return Err(Error::WrongDevice);
         }
         if desc.entries.len() != desc.layout.entries.len() {
@@ -154,6 +146,11 @@ impl<B: ResourceBackend> Device<B> {
         for (layout, entry) in desc.layout.entries.iter().zip(desc.entries) {
             if layout.binding != entry.binding || !binding_matches(&layout.ty, &entry.resource) {
                 return Err(Error::InvalidState);
+            }
+            // Check shape first, so provenance never traverses an arbitrarily
+            // nested descriptor tree. All checks precede native allocation.
+            if !binding_resource_device(&entry.resource, self.id) {
+                return Err(Error::WrongDevice);
             }
             let array = match &entry.resource {
                 BindingResource::Array(values) => Some(values),

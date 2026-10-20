@@ -13,8 +13,6 @@ mod raster_fallback;
 #[path = "../utils/mod.rs"]
 mod utils;
 
-#[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
-use compute::ComputeBackend;
 pub use compute::{Compute, ComputeBackend, FrameInitialization};
 use fluxel_rhi::api::*;
 

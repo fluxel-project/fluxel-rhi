@@ -17,6 +17,13 @@ use std::{
 #[path = "tests/binding_arrays.rs"]
 mod binding_arrays;
 
+#[path = "tests/ergonomics.rs"]
+mod ergonomics;
+#[path = "tests/multiqueue_validation.rs"]
+mod multiqueue_validation;
+#[path = "tests/query_validation.rs"]
+mod query_validation;
+
 #[cfg(test)]
 mod type_contract_tests {
     use super::*;
@@ -410,9 +417,12 @@ mod type_contract_tests {
                 secondary_inheritance: None,
             })
             .unwrap();
-        assert!(matches!(pass.draw(4..3, 0..1), Err(Error::InvalidRange)));
         assert!(matches!(
-            pass.draw_indexed(0..1, 0, 2..1),
+            pass.draw(Range { start: 4, end: 3 }, 0..1),
+            Err(Error::InvalidRange)
+        ));
+        assert!(matches!(
+            pass.draw_indexed(0..1, 0, Range { start: 2, end: 1 }),
             Err(Error::InvalidRange)
         ));
         DRAW_CALLS.with(|calls| assert_eq!(calls.get(), 0));

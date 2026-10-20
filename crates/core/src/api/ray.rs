@@ -49,6 +49,31 @@ pub enum AccelerationInput<B: Backend> {
     Blas(Vec<AccelerationGeometry<B>>),
     Tlas(Vec<AccelerationInstance<B>>),
 }
+impl<B: Backend> AccelerationInput<B> {
+    fn validate_device(&self, device: DeviceId) -> Result<()> {
+        let foreign = match self {
+            Self::Blas(geometries) => geometries.iter().any(|geometry| match geometry {
+                AccelerationGeometry::Triangles {
+                    vertices, indices, ..
+                } => {
+                    vertices.device != device
+                        || indices
+                            .as_ref()
+                            .is_some_and(|(buffer, _)| buffer.device != device)
+                }
+                AccelerationGeometry::Aabbs { data, .. } => data.device != device,
+            }),
+            Self::Tlas(instances) => instances
+                .iter()
+                .any(|instance| instance.blas.device != device),
+        };
+        if foreign {
+            Err(Error::WrongDevice)
+        } else {
+            Ok(())
+        }
+    }
+}
 #[derive(Clone)]
 pub struct AccelerationDesc<B: Backend> {
     pub input: AccelerationInput<B>,
@@ -179,12 +204,14 @@ impl<B: Backend> RayDomain<'_, B> {
         Ok(unsafe { RayPipeline::from_native(self.device.id, native) })
     }
     pub fn sizes(&self, desc: &AccelerationDesc<B>) -> Result<AccelerationSizes> {
+        desc.input.validate_device(self.device.id)?;
         B::Ray::acceleration_sizes(&self.device.native, desc)
     }
     pub fn create_acceleration(
         &self,
         desc: &AccelerationDesc<B>,
     ) -> Result<AccelerationStructure<B>> {
+        desc.input.validate_device(self.device.id)?;
         let native = B::Ray::create_acceleration(&self.device.native, desc)?;
         // SAFETY: the SPI created this acceleration structure for this device.
         Ok(unsafe { AccelerationStructure::from_native(self.device.id, native) })
@@ -205,6 +232,7 @@ impl<B: Backend> RayDomain<'_, B> {
         {
             return Err(Error::WrongDevice);
         }
+        desc.input.validate_device(self.device.id)?;
         encoder.call(|e| B::Ray::build_acceleration(e, &dst.native, &scratch.native, desc))
     }
     pub fn trace(
@@ -226,3 +254,7 @@ impl<B: Backend> RayDomain<'_, B> {
         encoder.call(|e| B::Ray::trace(e, &pipeline.native, &table.native, dims))
     }
 }
+
+#[cfg(test)]
+#[path = "tests/ray_validation.rs"]
+mod tests;

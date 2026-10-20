@@ -16,7 +16,7 @@ RHI conformance evidence. Renderer and RenderGraph decisions remain in the
 - [ADR-0011: Build the GL family through three private layers](0011-gl-family-three-layer-boundary.md)
 - [ADR-0012: Keep RHI limited to portable execution](0012-pure-rhi-execution-boundary.md) — superseded boundary details
 - [ADR-0013: Make only future-event operations asynchronous](0013-async-operation-boundary.md)
-- [ADR-0014: Treat device loss as a terminal device identity state](0014-terminal-device-loss.md)
+- [ADR-0014: Treat device loss as a terminal device identity state](0014-terminal-device-loss.md) — lifecycle principle; historical protocol target
 - [ADR-0015: Freeze plan-scoped transient lifetimes with dedicated fallback](0015-plan-scoped-transient-allocation.md) — historical design target
 - [ADR-0016: Publish capabilities only with lowering closure](0016-capability-claims-require-lowering-closure.md)
 - [ADR-0017: Keep presentation frames separate from textures and completion](0017-presentation-is-not-a-texture-view.md)

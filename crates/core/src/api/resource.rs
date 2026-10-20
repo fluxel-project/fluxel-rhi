@@ -15,6 +15,7 @@ use std::{
 };
 
 // Resource creation Usage is immutable; Uses below is per-operation state.
+/// Immutable buffer creation uses. Combine flags with `|` or `union`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BufferUsage(pub u64);
 impl BufferUsage {
@@ -38,6 +39,7 @@ impl BufferUsage {
         (self.0 & other.0) == other.0
     }
 }
+/// Immutable texture creation uses. Combine flags with `|` or `union`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TextureUsage(pub u64);
 impl TextureUsage {
@@ -53,6 +55,24 @@ impl TextureUsage {
         (self.0 & other.0) == other.0
     }
 }
+
+macro_rules! resource_flag_ops {
+    ($t:ty) => {
+        impl std::ops::BitOr for $t {
+            type Output = Self;
+            fn bitor(self, rhs: Self) -> Self {
+                Self(self.0 | rhs.0)
+            }
+        }
+        impl std::ops::BitOrAssign for $t {
+            fn bitor_assign(&mut self, rhs: Self) {
+                self.0 |= rhs.0;
+            }
+        }
+    };
+}
+resource_flag_ops!(BufferUsage);
+resource_flag_ops!(TextureUsage);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum TextureFormat {
@@ -152,6 +172,7 @@ pub enum TextureViewDimension {
     CubeArray,
     D3,
 }
+/// Texture aspects; combine depth and stencil with `|` when both are needed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TextureAspects(pub u8);
 impl TextureAspects {
@@ -159,6 +180,7 @@ impl TextureAspects {
     pub const DEPTH: Self = Self(2);
     pub const STENCIL: Self = Self(4);
 }
+resource_flag_ops!(TextureAspects);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MemoryClass {
     Device,
@@ -334,6 +356,8 @@ pub enum BindingResource<'a, B: Backend> {
     TextureView(&'a TextureView<B>),
     Sampler(&'a Sampler<B>),
     Acceleration(&'a AccelerationStructure<B>),
+    /// A single descriptor-array dimension. Present elements must be concrete
+    /// resources, never another `Array`; holes require a partially bound layout.
     Array(Vec<Option<BindingResource<'a, B>>>),
 }
 pub struct BindGroupEntry<'a, B: Backend> {
@@ -382,9 +406,9 @@ pub(crate) fn binding_matches<B: Backend>(
         BindingResource::Array(values) => values
             .iter()
             .flatten()
-            // Type matching is recursive because a backend descriptor array
-            // must not hide one incompatible element behind its outer array.
-            .all(|value| binding_matches(ty, value)),
+            // Native descriptor arrays have one dimension. Reject nesting even
+            // when the inner array is empty or contains only optional holes.
+            .all(|value| !matches!(value, BindingResource::Array(_)) && binding_matches(ty, value)),
         BindingResource::Buffer { .. } => matches!(
             ty,
             BindingType::UniformBuffer { .. } | BindingType::StorageBuffer { .. }

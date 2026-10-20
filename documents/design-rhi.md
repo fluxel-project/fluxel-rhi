@@ -371,6 +371,13 @@ Core and native layout creation validate the same bound. Capacity belongs to
 the caller's workload, rather than being inferred from a driver maximum or
 turned into a Core allocation policy.
 
+Binding arrays have exactly one dimension: present elements are concrete
+resources, including when the layout allows holes. Nested arrays, even empty
+ones, are rejected before native allocation. Resource provenance checks then
+apply to every supplied element. Acceleration inputs follow the same ownership
+rule: sizes, creation, and build all validate geometry buffers and referenced
+BLAS identities before calling the ray SPI.
+
 Dynamic buffer offsets follow ascending binding number, independent of layout
 entry order or shader visibility. Each is added to the bound range start;
 alignment, overflow, and allocation bounds are validated without changing the
@@ -395,6 +402,21 @@ Occlusion query results guarantee zero for no samples passed and nonzero for
 visibility. Exact positive values can represent native counts or boolean
 visibility and are not comparable across backends. This preserves the useful
 portable fact without inventing precision that a native route cannot provide.
+
+The query domain retains its selected kind; query sets retain kind and slot
+count. Core rejects mismatched creation/operations, zero counts, and empty,
+inverted, or out-of-bounds ranges. Raster-pass query declarations also validate
+kind, device, and timestamp slots before native recording. Backends remain
+responsible for supported query routes, active-query sequencing, resolve layout,
+alignment, and native limits. Retaining this small immutable metadata gives
+callers consistent input validation without creating a query scheduler in Core.
+
+Both ordinary queue and multi-queue submission validate the same work packet
+before native acceptance: step count/order, payload ownership and kind, lane,
+surface lease, and completion selection. Multi-queue signal/wait validation is
+additional to this shared integrity check. Invalid input returns the original
+owning packet as a clean rejection; native partial/uncertain acceptance remains
+the backend's responsibility.
 
 ## Verification and extension boundary
 

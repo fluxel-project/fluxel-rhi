@@ -1,6 +1,16 @@
 # ADR-0014: Treat device loss as a terminal device identity state
 
-**Status:** Accepted
+**Status:** Accepted lifecycle principle; historical protocol target, not a
+completed cross-backend Core contract.
+
+The current authority is [the RHI design](../design-rhi.md) and
+[`core::api`](../../crates/core/src/api/mod.rs). Core uses `DeviceId` and does
+not expose generic `status()` or `loss_info()` methods. The protocol below
+records the original target, not APIs or uniform wake-up guarantees already
+implemented by every backend. WebGL2's implemented terminal-generation behavior
+is described separately in the current design. A shared loss-query API requires
+agreement on native loss authority, observation semantics, and pending-operation
+wake-up behavior across backends before it can be claimed as supported.
 
 ## Context
 

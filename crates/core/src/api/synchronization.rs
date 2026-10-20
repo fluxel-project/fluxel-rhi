@@ -75,6 +75,11 @@ macro_rules! mask_ops {
                 self.union(rhs)
             }
         }
+        impl std::ops::BitOrAssign for $t {
+            fn bitor_assign(&mut self, rhs: Self) {
+                self.0 |= rhs.0;
+            }
+        }
     };
 }
 mask_ops!(StageMask);

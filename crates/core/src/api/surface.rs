@@ -39,6 +39,7 @@ pub enum ColorSpace {
     ExtendedLinearSrgb,
     Hdr10,
 }
+/// Surface image uses, combinable with `|` and `|=`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SurfaceUsage(pub u32);
 impl SurfaceUsage {
@@ -47,6 +48,17 @@ impl SurfaceUsage {
     pub const COPY_DST: Self = Self(4);
     pub const TEXTURE_BINDING: Self = Self(8);
     pub const STORAGE_BINDING: Self = Self(16);
+}
+impl std::ops::BitOr for SurfaceUsage {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+impl std::ops::BitOrAssign for SurfaceUsage {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
 }
 #[derive(Clone, Debug)]
 pub struct SurfaceConfig {

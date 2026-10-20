@@ -16,6 +16,7 @@ use std::{
 };
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// A portable failure that can be displayed or propagated as a standard error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Unsupported(&'static str),
@@ -30,6 +31,26 @@ pub enum Error {
     Shader(String),
     Backend(String),
 }
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsupported(reason) => write!(f, "unsupported: {reason}"),
+            Self::WrongDevice => f.write_str("resource belongs to a different device"),
+            Self::WrongLane => f.write_str("work belongs to a different lane"),
+            Self::InvalidState => f.write_str("invalid state"),
+            Self::InvalidRange => f.write_str("invalid range"),
+            Self::DeviceLost => f.write_str("device lost"),
+            Self::SurfaceLost => f.write_str("surface lost"),
+            Self::SurfaceOutdated => f.write_str("surface outdated"),
+            Self::OutOfMemory => f.write_str("out of memory"),
+            Self::Shader(message) => write!(f, "shader error: {message}"),
+            Self::Backend(message) => write!(f, "backend error: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DeviceId(u64);

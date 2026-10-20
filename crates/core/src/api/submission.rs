@@ -315,10 +315,10 @@ impl<B: DeferredBackend> BoundStep<B> {
         }
         match (&self.payload, desc.kind) {
             (StepPayload::Commands(work), StepKind::Commands) => {
-                if work
-                    .iter()
-                    .any(|w| w.device != device || w.lane != desc.lane)
-                {
+                if work.iter().any(|w| w.device != device) {
+                    return Err(Error::WrongDevice);
+                }
+                if work.iter().any(|w| w.lane != desc.lane) {
                     return Err(Error::WrongLane);
                 }
             }
@@ -354,7 +354,7 @@ pub struct SubmitPacket<B: DeferredBackend> {
 impl<B: DeferredBackend> SubmitPacket<B> {
     /// Checks only binding integrity. The compiled graph and synchronization
     /// choices remain the RenderGraph's responsibility.
-    fn validate(&self, device: DeviceId) -> Result<()> {
+    pub(super) fn validate(&self, device: DeviceId) -> Result<()> {
         // Do this before native submission so a clean rejection can return the
         // unchanged owning packet. Once native submission begins, only the
         // backend can state which prefix has become externally observable.

@@ -163,6 +163,9 @@ impl<B: MultiQueueBackend> MultiQueueDomain<'_, B> {
     /// # Safety
     /// Same resource lifetime and scheduling obligations as Queue::submit.
     pub unsafe fn submit(&self, packet: MultiQueuePacket<B>) -> MultiQueueSubmitOutcome<B> {
+        if let Err(error) = packet.work.validate(self.device.id) {
+            return MultiQueueSubmitOutcome::Rejected { error, packet };
+        }
         let plan = &packet.work.plan;
         let valid = plan.id.device == self.device.id
             && packet.signals.iter().all(|signal| {

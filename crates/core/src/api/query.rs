@@ -15,7 +15,7 @@ use std::{
 };
 
 /// Identifies the measurement recorded by a query set.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QueryKind {
     /// Tests whether rasterized samples passed the fragment tests.
     ///
@@ -27,6 +27,7 @@ pub enum QueryKind {
     Timestamp,
     PipelineStatistics,
 }
+/// A nonempty set of slots that all record the same measurement.
 pub struct QueryDesc {
     pub kind: QueryKind,
     pub count: u32,
@@ -70,8 +71,31 @@ pub trait QueryBackend: CommandBackend {
 pub struct QuerySet<B: Backend> {
     pub(crate) device: DeviceId,
     pub(crate) native: B::NativeQuerySet,
+    kind: QueryKind,
+    count: u32,
 }
 impl<B: Backend> QuerySet<B> {
+    /// The measurement recorded by this set.
+    pub fn kind(&self) -> QueryKind {
+        self.kind
+    }
+    /// The number of query slots in this set.
+    pub fn count(&self) -> u32 {
+        self.count
+    }
+
+    fn validate_slot(&self, slot: u32) -> Result<()> {
+        if slot >= self.count {
+            return Err(Error::InvalidRange);
+        }
+        Ok(())
+    }
+    fn validate_range(&self, slots: &Range<u32>) -> Result<()> {
+        if slots.start >= slots.end || slots.end > self.count {
+            return Err(Error::InvalidRange);
+        }
+        Ok(())
+    }
     /// Backend bridge for native pass descriptors that must declare a query
     /// set before any individual query slot is begun.
     ///
@@ -83,15 +107,36 @@ impl<B: Backend> QuerySet<B> {
         &self.native
     }
 }
+/// Operations for the query kind selected by [`Device::queries`].
+///
+/// Creation and operations reject a different kind before invoking the backend.
+/// Query ranges must be nonempty and within the set; individual slots must be
+/// less than its count. Backends validate native alignment and pass state.
 pub struct Queries<'a, B: QueryBackend> {
     device: &'a Device<B>,
+    kind: QueryKind,
 }
 impl<B: QueryBackend> Device<B> {
+    /// Opens a domain for a supported query kind on this device.
     pub fn queries(&self, kind: QueryKind) -> Option<Queries<'_, B>> {
-        B::query_supported(&self.native, kind).then_some(Queries { device: self })
+        B::query_supported(&self.native, kind).then_some(Queries { device: self, kind })
     }
 }
 impl<B: QueryBackend> Queries<'_, B> {
+    fn require_kind(&self, kind: QueryKind) -> Result<()> {
+        if self.kind != kind {
+            return Err(Error::InvalidState);
+        }
+        Ok(())
+    }
+    fn validate_set(&self, set: &QuerySet<B>) -> Result<()> {
+        if set.device != self.device.id {
+            return Err(Error::WrongDevice);
+        }
+        self.require_kind(set.kind)
+    }
+    /// Resets a nonempty slot range of a set created for this domain kind.
+    /// The encoder and set must belong to this device.
     pub fn reset(
         &self,
         encoder: &mut CommandEncoder<B>,
@@ -101,12 +146,21 @@ impl<B: QueryBackend> Queries<'_, B> {
         if encoder.device != self.device.id || set.device != self.device.id {
             return Err(Error::WrongDevice);
         }
+        self.validate_set(set)?;
+        set.validate_range(&slots)?;
         encoder.call(|e| B::reset_queries(e, &set.native, slots))
     }
+    /// Creates a nonempty set whose kind must match this domain.
     pub fn create(&self, desc: &QueryDesc) -> Result<QuerySet<B>> {
+        self.require_kind(desc.kind)?;
+        if desc.count == 0 {
+            return Err(Error::InvalidRange);
+        }
         Ok(QuerySet {
             device: self.device.id,
             native: B::create_query_set(&self.device.native, desc)?,
+            kind: desc.kind,
+            count: desc.count,
         })
     }
     pub fn timestamp(
@@ -118,6 +172,9 @@ impl<B: QueryBackend> Queries<'_, B> {
         if encoder.device != self.device.id || set.device != self.device.id {
             return Err(Error::WrongDevice);
         }
+        self.require_kind(QueryKind::Timestamp)?;
+        self.validate_set(set)?;
+        set.validate_slot(slot)?;
         encoder.call(|e| B::write_timestamp(e, &set.native, slot))
     }
     pub fn begin_occlusion(
@@ -132,6 +189,9 @@ impl<B: QueryBackend> Queries<'_, B> {
         if pass.encoder.device != self.device.id || set.device != self.device.id {
             return Err(Error::WrongDevice);
         }
+        self.require_kind(QueryKind::Occlusion)?;
+        self.validate_set(set)?;
+        set.validate_slot(slot)?;
         pass.call(|e| B::begin_occlusion(e, &set.native, slot))
     }
     pub fn end_occlusion(&self, pass: &mut RasterPass<'_, B>) -> Result<()>
@@ -141,6 +201,7 @@ impl<B: QueryBackend> Queries<'_, B> {
         if pass.encoder.device != self.device.id {
             return Err(Error::WrongDevice);
         }
+        self.require_kind(QueryKind::Occlusion)?;
         pass.call(B::end_occlusion)
     }
     pub fn begin_statistics(
@@ -152,14 +213,20 @@ impl<B: QueryBackend> Queries<'_, B> {
         if encoder.device != self.device.id || set.device != self.device.id {
             return Err(Error::WrongDevice);
         }
+        self.require_kind(QueryKind::PipelineStatistics)?;
+        self.validate_set(set)?;
+        set.validate_slot(slot)?;
         encoder.call(|e| B::begin_statistics(e, &set.native, slot))
     }
     pub fn end_statistics(&self, encoder: &mut CommandEncoder<B>) -> Result<()> {
         if encoder.device != self.device.id {
             return Err(Error::WrongDevice);
         }
+        self.require_kind(QueryKind::PipelineStatistics)?;
         encoder.call(B::end_statistics)
     }
+    /// Resolves a nonempty slot range of this domain kind into a device-local buffer.
+    /// Buffer usage, alignment, pass state, and native result layout are checked by the backend.
     pub fn resolve(
         &self,
         encoder: &mut CommandEncoder<B>,
@@ -174,6 +241,8 @@ impl<B: QueryBackend> Queries<'_, B> {
         {
             return Err(Error::WrongDevice);
         }
+        self.validate_set(set)?;
+        set.validate_range(&slots)?;
         encoder.call(|e| B::resolve_queries(e, &set.native, slots, &dst.native, offset))
     }
 }

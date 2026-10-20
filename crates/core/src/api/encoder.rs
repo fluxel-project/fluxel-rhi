@@ -350,6 +350,22 @@ impl<B: RasterBackend> CommandEncoder<B> {
         {
             return Err(Error::WrongDevice);
         }
+        if let Some(writes) = &desc.timestamp_writes {
+            if writes.set.kind() != QueryKind::Timestamp {
+                return Err(Error::InvalidState);
+            }
+            if writes.begin.is_some_and(|slot| slot >= writes.set.count())
+                || writes.end.is_some_and(|slot| slot >= writes.set.count())
+            {
+                return Err(Error::InvalidRange);
+            }
+        }
+        if desc
+            .occlusion_query_set
+            .is_some_and(|set| set.kind() != QueryKind::Occlusion)
+        {
+            return Err(Error::InvalidState);
+        }
         if desc.colors.iter().flatten().any(|a| {
             !a.view.is_current() || a.resolve_target.as_ref().is_some_and(|v| !v.is_current())
         }) || desc
