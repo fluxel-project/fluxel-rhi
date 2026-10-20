@@ -1,0 +1,14 @@
+   Compiling fluxel-rhi-core v0.16.0 (E:\moyy\program\rust\fluxel\fluxel-rhi\crates\core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.90s
+     Running unittests src\lib.rs (target\debug\deps\fluxel_rhi_core-5cd57b83823e0ddf.exe)
+
+running 7 tests
+test api::tests::binding_arrays::runtime_array_group_validates_actual_length_and_holes_before_backend ... ok
+test api::tests::binding_arrays::runtime_array_layout_validates_capacity_capability_and_position ... ok
+test api::tests::type_contract_tests::concrete_shared_and_local_profiles_typecheck ... ok
+test api::tests::type_contract_tests::dropped_immediate_session_reports_issued_prefix_to_backend ... ok
+test api::tests::type_contract_tests::raster_draw_rejects_inverted_ranges_before_backend ... ok
+test api::tests::type_contract_tests::stale_surface_lease_cannot_enter_plan_present ... ok
+test api::tests::type_contract_tests::deferred_binding_rejects_wrong_lane_and_foreign_tail ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

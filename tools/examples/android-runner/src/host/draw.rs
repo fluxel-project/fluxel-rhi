@@ -6,9 +6,32 @@ use super::*;
 impl App {
     pub(super) fn draw(&mut self) -> Result<()> {
         let gpu = self.gpu.as_mut().ok_or(Error::SurfaceLost)?;
+        #[cfg(feature = "demo15")]
+        if gpu.scene.extent() != gpu.extent {
+            utils::block_on(gpu.device.wait_idle())?;
+            #[cfg(feature = "vulkan")]
+            {
+                gpu.scene = utils::block_on(multiview::Multiview::new(
+                    &gpu.device,
+                    gpu.lane,
+                    gpu.format,
+                    gpu.extent,
+                ))?;
+            }
+            #[cfg(feature = "gles")]
+            {
+                gpu.scene = utils::block_on(multiview::per_eye::StereoFallback::new(
+                    &gpu.device,
+                    gpu.format,
+                    gpu.extent,
+                ))?;
+            }
+        }
         let image = utils::block_on(gpu.surface.acquire())?;
         #[cfg(feature = "vulkan")]
         {
+            #[cfg(feature = "demo15")]
+            let (work, uploaded) = gpu.scene.record(&gpu.device, &image)?;
             #[cfg(feature = "demo14")]
             let (work, uploaded) = gpu.scene.record(&gpu.device, &image, gpu.extent, 0.0)?;
             #[cfg(feature = "demo13")]
@@ -39,7 +62,8 @@ impl App {
                 not(feature = "demo11"),
                 not(feature = "demo12"),
                 not(feature = "demo13"),
-                not(feature = "demo14")
+                not(feature = "demo14"),
+                not(feature = "demo15")
             ))]
             #[cfg(not(feature = "demo03"))]
             let work = gpu.scene.record(&gpu.device, &image, gpu.extent)?;
@@ -112,7 +136,7 @@ impl App {
             if uploaded {
                 gpu.scene.mark_uploaded();
             }
-            #[cfg(feature = "demo14")]
+            #[cfg(any(feature = "demo14", feature = "demo15"))]
             if uploaded {
                 gpu.scene.mark_uploaded();
             }
@@ -156,6 +180,8 @@ impl App {
                 | ImmediateRunOutcome::Indeterminate { error, .. } => error,
                 _ => Error::InvalidState,
             })?;
+            #[cfg(feature = "demo15")]
+            let uploaded = gpu.scene.encode(commands.commands(), &image)?;
             #[cfg(feature = "demo14")]
             let uploaded =
                 gpu.scene
@@ -181,7 +207,8 @@ impl App {
                 not(feature = "demo11"),
                 not(feature = "demo12"),
                 not(feature = "demo13"),
-                not(feature = "demo14")
+                not(feature = "demo14"),
+                not(feature = "demo15")
             ))]
             #[cfg(not(feature = "demo03"))]
             gpu.scene.encode(commands.commands(), &image, gpu.extent)?;
@@ -251,7 +278,7 @@ impl App {
             if !matches!(commands.close(), ImmediateRunOutcome::Issued(_)) {
                 return Err(Error::InvalidState);
             }
-            #[cfg(feature = "demo14")]
+            #[cfg(any(feature = "demo14", feature = "demo15"))]
             if uploaded {
                 gpu.scene.mark_uploaded();
             }

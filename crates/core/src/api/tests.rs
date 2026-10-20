@@ -14,6 +14,9 @@ use std::{
     },
 };
 
+#[path = "tests/binding_arrays.rs"]
+mod binding_arrays;
+
 #[cfg(test)]
 mod type_contract_tests {
     use super::*;
@@ -36,7 +39,7 @@ mod type_contract_tests {
             true
         }
     }
-    struct TestLease {
+    pub(super) struct TestLease {
         current: Arc<AtomicU64>,
         handed_off: bool,
     }
@@ -54,7 +57,7 @@ mod type_contract_tests {
         }
     }
 
-    struct NativeShared;
+    pub(super) struct NativeShared;
     struct GlLocal;
     impl Backend for NativeShared {
         type NativeDevice = Arc<()>;

@@ -34,3 +34,14 @@ Run each numbered `webgpu_*` integration test for its scene. These tests present
 Record the commit, platform, adapter, command, validation result, and observed image or readback for each hardware claim. Classify the result as pass, unsupported, skipped, or failure. Keep portable API tests in `crates/core/src/api/tests.rs`; put native checks beside the backend they exercise.
 
 Metal validation additionally requires a macOS SDK link, focused real-GPU readback assertions, and all 15 native examples with inspected screenshots before the backend can be marked complete. An Apple-target cross-check from another host proves type correctness only.
+
+## Android emulator example checks
+
+The [2026-10-20 evidence packet](evidence/android-2026-10-20/README.md) records
+Vulkan, GLES and WebGL2 examples 01–15, native readbacks, focused clear-mask GPU
+regressions, and Android HOME/return checks. WebGPU adapter acquisition returned
+null in that emulator's WebView; it is not a WebGPU pass. Use the native
+`tools/examples/android/run-capture.ps1` or browser
+`tools/examples/android/browser/run_capture.py` helper for one route at a time.
+The browser export stops after three frames for capture; WebGL2 example 13 is
+sequential drawing, despite its historical multithreaded-recording filename.

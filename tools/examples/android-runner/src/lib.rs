@@ -4,6 +4,10 @@
 //! surface, and GPU resources on the Android event-loop thread.
 #![allow(dead_code)]
 
+#[cfg(feature = "demo15")]
+#[path = "../../../../crates/rhi/examples/15_multiview/main.rs"]
+mod multiview;
+
 #[cfg(feature = "demo14")]
 #[path = "../../../../crates/rhi/examples/14_descriptor_indexing/main.rs"]
 mod descriptor_indexing;
@@ -59,7 +63,8 @@ mod texture_mipmap;
     not(feature = "demo11"),
     not(feature = "demo12"),
     not(feature = "demo13"),
-    not(feature = "demo14")
+    not(feature = "demo14"),
+    not(feature = "demo15")
 ))]
 #[path = "../../../../crates/rhi/examples/01_triangle/main.rs"]
 mod triangle;
@@ -83,7 +88,8 @@ use std::sync::Arc;
     not(feature = "demo11"),
     not(feature = "demo12"),
     not(feature = "demo13"),
-    not(feature = "demo14")
+    not(feature = "demo14"),
+    not(feature = "demo15")
 ))]
 type Scene<B> = triangle::Triangle<B>;
 #[cfg(feature = "demo02")]
@@ -114,6 +120,10 @@ type Scene<B> = multithreaded_recording::Multithreaded<B>;
 type Scene<B> = multithreaded_recording::Sequential<B>;
 #[cfg(feature = "demo14")]
 type Scene<B> = descriptor_indexing::DescriptorIndexing<B>;
+#[cfg(all(feature = "demo15", feature = "vulkan"))]
+type Scene<B> = multiview::Multiview<B>;
+#[cfg(all(feature = "demo15", feature = "gles"))]
+type Scene<B> = multiview::per_eye::StereoFallback<B>;
 
 #[cfg(feature = "demo02")]
 const TEXTURE_WGSL: &[u8] =

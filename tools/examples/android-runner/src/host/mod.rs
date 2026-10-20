@@ -71,12 +71,14 @@ struct App {
     gpu: Option<Gpu>,
     frames: u64,
     capture_path: Option<std::path::PathBuf>,
+    surface_lost_deadline: Option<std::time::Instant>,
 }
 
-impl ApplicationHandler for App {
-    fn suspended(&mut self, event: &ActiveEventLoop) {
-        // Android may invalidate ANativeWindow after this callback returns.
-        // Drain native work and release the adopted surface while it is valid.
+impl App {
+    // A native surface may disappear before Android delivers suspended(). Stop
+    // drawing immediately and retain all GPU objects until queued work drains.
+    // Recovery waits for resumed(), when a new ANativeWindow is available.
+    fn retire_gpu(&mut self, event: &ActiveEventLoop) {
         if let Some(gpu) = self.gpu.take() {
             if let Err(error) = utils::block_on(gpu.device.wait_idle()) {
                 eprintln!("RHI_SUSPEND_ERROR={error:?}");
@@ -85,7 +87,28 @@ impl ApplicationHandler for App {
         }
         self.frames = 0;
     }
+
+    fn surface_lost(&mut self, event: &ActiveEventLoop, operation: &str) {
+        eprintln!("RHI_SURFACE_LOST={operation}; awaiting suspension or resume");
+        self.retire_gpu(event);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        self.surface_lost_deadline = Some(deadline);
+        event.set_control_flow(ControlFlow::WaitUntil(deadline));
+    }
+}
+
+impl ApplicationHandler for App {
+    fn suspended(&mut self, event: &ActiveEventLoop) {
+        // Android may invalidate ANativeWindow after this callback returns.
+        // Drain native work and release the adopted surface while it is valid.
+        self.retire_gpu(event);
+        self.surface_lost_deadline = None;
+        event.set_control_flow(ControlFlow::Wait);
+        eprintln!("RHI_SUSPENDED");
+    }
     fn resumed(&mut self, event: &ActiveEventLoop) {
+        self.surface_lost_deadline = None;
+        event.set_control_flow(ControlFlow::Poll);
         if self.gpu.is_none() {
             if let Err(error) = self.init(event) {
                 eprintln!("RHI_INIT_ERROR={error:?}");
@@ -93,17 +116,39 @@ impl ApplicationHandler for App {
             }
         }
     }
+    fn about_to_wait(&mut self, event: &ActiveEventLoop) {
+        if self
+            .surface_lost_deadline
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            eprintln!("RHI_DRAW_ERROR=surface lost without Android lifecycle transition");
+            self.surface_lost_deadline = None;
+            event.exit();
+        }
+    }
     fn window_event(
         &mut self,
         event: &ActiveEventLoop,
-        _: winit::window::WindowId,
+        window_id: winit::window::WindowId,
         value: WindowEvent,
     ) {
+        // Ignore redraw and resize events queued for a retired Android window.
+        if self
+            .gpu
+            .as_ref()
+            .is_none_or(|gpu| gpu.window.id() != window_id)
+        {
+            return;
+        }
         match value {
             WindowEvent::RedrawRequested => {
                 if let Err(error) = self.draw() {
-                    eprintln!("RHI_DRAW_ERROR={error:?}");
-                    event.exit();
+                    if matches!(error, Error::SurfaceLost) {
+                        self.surface_lost(event, "draw");
+                    } else {
+                        eprintln!("RHI_DRAW_ERROR={error:?}");
+                        event.exit();
+                    }
                     return;
                 }
                 if let Some(gpu) = &self.gpu {
@@ -116,6 +161,10 @@ impl ApplicationHandler for App {
                     if size.width > 0 && size.height > 0 {
                         let caps = match gpu.surface.capabilities() {
                             Ok(c) => c,
+                            Err(Error::SurfaceLost) => {
+                                self.surface_lost(event, "resize capabilities");
+                                return;
+                            }
                             Err(e) => {
                                 eprintln!("RHI_RESIZE_ERROR={e:?}");
                                 event.exit();
@@ -144,8 +193,12 @@ impl ApplicationHandler for App {
                             maximum_frame_latency: latency,
                         };
                         if let Err(e) = utils::block_on(gpu.surface.configure(&config)) {
-                            eprintln!("RHI_RESIZE_ERROR={e:?}");
-                            event.exit();
+                            if matches!(e, Error::SurfaceLost) {
+                                self.surface_lost(event, "resize configure");
+                            } else {
+                                eprintln!("RHI_RESIZE_ERROR={e:?}");
+                                event.exit();
+                            }
                         }
                     }
                 }

@@ -46,3 +46,7 @@ pub(crate) use surface::{BrowserSurface, BrowserSurfaceImage};
 pub(crate) fn supports_texture_storage(format: crate::backend::gl::api::GlFormat) -> bool {
     format_map::internal_format(format).is_some()
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/gl/webgl2_clear_masks.rs"]
+mod webgl2_clear_masks;

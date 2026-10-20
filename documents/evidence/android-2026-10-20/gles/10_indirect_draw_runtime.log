@@ -1,0 +1,4 @@
+--------- beginning of main
+10-20 15:26:08.586  8244  8262 I RustStdoutStderr: GLES_ADAPTER=Qualcomm Adreno (TM) 750 (OpenGL ES 3.1 v1)
+10-20 15:26:08.863  8244  8262 I RustStdoutStderr: RHI_FRAME_OK=1
+10-20 15:26:08.905  8244  8262 I RustStdoutStderr: RHI_FRAME_OK=2

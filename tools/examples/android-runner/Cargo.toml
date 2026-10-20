@@ -28,6 +28,7 @@ demo11 = []
 demo12 = []
 demo13 = []
 demo14 = []
+demo15 = []
 
 [dependencies]
 fluxel-rhi = { path = "../../../crates/rhi", default-features = false, features = ["examples"] }

@@ -1,9 +1,10 @@
 //! Native framebuffer, render-pass, and blit execution.
 //!
 //! Pass load/clear executes exactly once per pass through the `glClearBuffer*`
-//! commands, which honor scissor state but ignore color and depth masks; the
-//! pass therefore disables scissor around its clears, and pipeline
-//! application restores the scissor group afterwards. Resolve stays an
+//! commands, which honor scissor and color, depth, and stencil write masks.
+//! Pass begin disables scissor, enables writes for cleared attachments, and
+//! invalidates cached pipeline state so the next pipeline restores its masks.
+//! Resolve stays an
 //! explicit `glBlitFramebuffer` from the multisample source, per the shared
 //! framebuffer contract.
 
@@ -206,6 +207,7 @@ impl GlFramebufferApi for NativeGlProvider {
             }
         }
         let raw = record.map(|record| record.raw);
+        let draw_buffers = record.map(|record| record.descriptor.draw_buffers.clone());
         let discard_color: Vec<bool> = descriptor
             .color_attachments
             .iter()
@@ -222,24 +224,41 @@ impl GlFramebufferApi for NativeGlProvider {
                     )
                 });
 
+        // Clear setup mutates fixed GL state independently of the cached
+        // pipeline. Invalidate before mutation, including on an error path,
+        // so the next pipeline reapplies scissor and write masks in full.
+        self.context_state.pipeline_failed();
         // SAFETY: current-context contract; the framebuffer is live and the
-        // clears are total (scissor disabled) exactly once per pass begin.
+        // clears are total exactly once per pass begin.
         unsafe {
             self.gl.bind_framebuffer(glow::FRAMEBUFFER, raw);
-            if let Some(record) = record.filter(|record| !record.descriptor.draw_buffers.is_empty())
-            {
-                let constants: Vec<u32> = record
-                    .descriptor
-                    .draw_buffers
+            if let Some(draw_buffers) = draw_buffers.filter(|buffers| !buffers.is_empty()) {
+                let constants: Vec<u32> = draw_buffers
                     .iter()
                     .map(|index| draw_buffer_constant(*index))
                     .collect();
                 self.gl.draw_buffers(&constants);
             }
-            // glClearBuffer* honors scissor only; make pass-load clears total.
-            // The installed pipeline re-applies the scissor group after pass
-            // begin.
+            // ClearBuffer obeys the same scissor and write masks as Clear.
+            // Shared GL uses one global color mask for all attachments.
             self.gl.disable(glow::SCISSOR_TEST);
+            if descriptor
+                .color_attachments
+                .iter()
+                .any(|a| a.load == GlLoadOp::Clear)
+            {
+                self.gl.color_mask(true, true, true, true);
+            }
+            if let Some(attachment) = &descriptor.depth_stencil_attachment {
+                if attachment.depth_load == GlLoadOp::Clear {
+                    self.gl.depth_mask(true);
+                }
+                if attachment.stencil_load == GlLoadOp::Clear
+                    && has_stencil_plane(attachment.view.format)
+                {
+                    self.gl.stencil_mask(u32::MAX);
+                }
+            }
             for (index, attachment) in descriptor.color_attachments.iter().enumerate() {
                 if attachment.load == GlLoadOp::Clear {
                     let clear = &attachment.clear;
@@ -271,10 +290,10 @@ impl GlFramebufferApi for NativeGlProvider {
                         0,
                         &[f32::from_bits(attachment.clear.depth)],
                     ),
-                    (false, true) => self.gl.clear_buffer_u32_slice(
+                    (false, true) => self.gl.clear_buffer_i32_slice(
                         glow::STENCIL,
                         0,
-                        &[attachment.clear.stencil],
+                        &[attachment.clear.stencil as i32],
                     ),
                     (false, false) => {}
                 }

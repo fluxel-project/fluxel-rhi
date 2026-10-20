@@ -1,0 +1,410 @@
+{
+  "scope": "Android emulator example evidence; excludes arbitrary capability conformance and renderer integration.",
+  "runs": [
+    {
+      "backend": "vulkan",
+      "demo": "01_triangle",
+      "candidate": "vulkan-final",
+      "image_sha256": "f0651d0fda8488a401dbf9b18508fef82530072455a5ea057194a464fa357d31",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "D2E2E2DC7EB75C4E3FA543AFA27380EF9F457D371D60910815D72BE9837F05D9"
+    },
+    {
+      "backend": "vulkan",
+      "demo": "02_texture",
+      "candidate": "vulkan-final",
+      "image_sha256": "9e1119f3305a0cb8b6c99b6a6506d0fca9e101857f596dc1ffa7648b6af2982a",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "8EA630A26D212743CA02AD582C6D0D680E600CE9D4A82CFAEEE421DA92E8BA13"
+    },
+    {
+      "backend": "vulkan",
+      "demo": "03_instancing",
+      "candidate": "vulkan-final",
+      "image_sha256": "2b2d346117ac91131dc37e919c568311c051b1b0652e0218fb95af3d869ca643",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "52DBC2163209FCBE2DAD3C19123D755C47D91C0B94626C630BC2B39E490448B5"
+    },
+    {
+      "backend": "vulkan",
+      "demo": "04_dynamic_uniform_buffer",
+      "candidate": "vulkan-final",
+      "image_sha256": "e507f33def7656aec09ff5ebde886c751fd7d63a0f5b437cae6b5ab38c19f21e",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "B7A5F3FC545A3835F34BA93072038F7E9AC0BB1C7F46D688F803844547C76C17"
+    },
+    {
+      "backend": "vulkan",
+      "demo": "05_push_constants",
+      "candidate": "vulkan-final",
+      "image_sha256": "828737abc44e0e83b7cb5bf5c9e57ad232f500fa12f8bf120f0143bba0519c4e",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "1B7C505B14F9CFF77BC25AB0D2206F1DA64622C4AFD20D1B4CA644B1352D3C0E"
+    },
+    {
+      "backend": "vulkan",
+      "demo": "06_compute",
+      "candidate": "vulkan-final",
+      "image_sha256": "3828baff252313370a511e78adfac83d54943abe2a50b16754fe58c8b5b017af",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "856A30EE16198F4DC2394758868ECAE78CC0787E626D4CFC1AA6B285721EBA18"
+    },
+    {
+      "backend": "vulkan",
+      "demo": "07_offscreen",
+      "candidate": "vulkan-final",
+      "image_sha256": "6ddc468468a9c7312a2a40cbd391ad70c1b2dcba49beb2f860eaf87cb0addd16",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "A80C084E53F8C9CA2695DC8178FB774CEA58606B67A972E249F6980EE79CA9A9"
+    },
+    {
+      "backend": "vulkan",
+      "demo": "08_msaa",
+      "candidate": "vulkan-final",
+      "image_sha256": "f64d8b0dac0305d7b2fb67db33208a6b39f8d2a8d5123e85e6e0defc25ec2f90",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "4C4821BE56348FE56B072BC679CE6CBC1B947F68D4653AAD5F62D76987067442"
+    },
+    {
+      "backend": "vulkan",
+      "demo": "09_texture_mipmap",
+      "candidate": "vulkan-final",
+      "image_sha256": "3bdf021774f7b4c24b480921efd62ba41f852fb2b4ce2dee7da82c7400c8be72",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "9F9BA0CA2C9922329E048A294094E0EDE70E9E02A1A14F02B10290A1B1908458"
+    },
+    {
+      "backend": "vulkan",
+      "demo": "10_indirect_draw",
+      "candidate": "vulkan-final",
+      "image_sha256": "3fe72ce072f4ea1ed7d121d34f8cb9eb4418374d8c9607b1f15e7979461705ed",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "5B2770B96FF20FC0F0D0691A107C1A93EABDDC4817746B1DA808382AE753AD74"
+    },
+    {
+      "backend": "vulkan",
+      "demo": "11_occlusion_query",
+      "candidate": "vulkan-final",
+      "image_sha256": "81b6ab871397e7025bffa6a5bd5c383946f8e0c76d8c3a3a0c3b43e348eb532b",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "AC14141B8A5B4D6637AAF9F23203B82DC0FE89CFFA21875B0536DD0D2965493C"
+    },
+    {
+      "backend": "vulkan",
+      "demo": "12_screenshot",
+      "candidate": "vulkan-final",
+      "image_sha256": "57bfdbfa71c0f825d7ed9a8c0cec76c59156f40a5a1dde9b396421e9812dc1d5",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "DBCC77A1497314A4DCC551E187A2C5E2DEBAAB609F3EBFE73758DCEE9E6CF730"
+    },
+    {
+      "backend": "vulkan",
+      "demo": "13_multithreaded_recording",
+      "candidate": "vulkan-final",
+      "image_sha256": "5c0385106c10e1559ad71abeb494944bbc25513e05590c1ca02fab6e9b2f5ac8",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "DECA49FB09B05B1A25537E883BEBFBBEA9AA0DC08EC07E131165B9DFD6301830"
+    },
+    {
+      "backend": "vulkan",
+      "demo": "14_descriptor_indexing",
+      "candidate": "vulkan-final",
+      "image_sha256": "cc148ed19390d0f0ea06c56517d1cd86db544a6871884a21a1e9c38ec1b56b97",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "1917341BAED8E638654B683EC66953D6ADE0DA832F1B2965837118D3FC9F2D66"
+    },
+    {
+      "backend": "vulkan",
+      "demo": "15_multiview",
+      "candidate": "vulkan-final",
+      "image_sha256": "632e819737b8ab5366bdb739bd317429ead4377f791f78af977aa3cea041bc12",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "28F668343C5E6844A956411BCF1C5D65C5A1C5DF2BC29BB226CA47A9D52B1ED2"
+    },
+    {
+      "backend": "gles",
+      "demo": "01_triangle",
+      "candidate": "gles-clear-fix",
+      "image_sha256": "d0901b47bb625b59f5d39c28312a28f4c926914b1a160fccd9b9a6fc17d8c655",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "B0FB84F9CCF0D14048230195364B35DB4399AD8D7679E6F037110E3A5288DF24"
+    },
+    {
+      "backend": "gles",
+      "demo": "02_texture",
+      "candidate": "gles-clear-fix",
+      "image_sha256": "5e2ff6fd3a0bd2c939181adcc1a917e9d0883816d0a80eab52a7bd1f91f2d41e",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "6650560C424BA6E2085A159988AB9A46063F6CAD1651BEFA223DE98D9BD03477"
+    },
+    {
+      "backend": "gles",
+      "demo": "03_instancing",
+      "candidate": "gles-clear-fix",
+      "image_sha256": "91fbaf837f7d509e21cebbd79d21cc780a9a9d9ae4abaf796a05ee1289c5ad48",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "3099A6F77B62EB702783C6CB9CD49B08F4B2D4C6D2B3C39DEA5A32A70FA3B211"
+    },
+    {
+      "backend": "gles",
+      "demo": "04_dynamic_uniform_buffer",
+      "candidate": "gles-clear-fix",
+      "image_sha256": "0713bf24d0a3c2633babd6ffa6fc0178aad20d6a82f5f8477802a53858559ab9",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "A589646BD0D09A1461952577A65ACBDD17C862FA57846335ED6A211A28299B5F"
+    },
+    {
+      "backend": "gles",
+      "demo": "05_push_constants",
+      "candidate": "gles-clear-fix",
+      "image_sha256": "3a218d1c7661d62320c72cbcf658e2656fc6a7c07f0dc633e20fb5548028d9b3",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "3D5328F90C529FD6374ABF271D413186C428A31E66E004CF7901C95F1C0B124C"
+    },
+    {
+      "backend": "gles",
+      "demo": "06_compute",
+      "candidate": "gles-clear-fix",
+      "image_sha256": "083d84176e9ac3d5c9608b1dbf94572ffabfb4c058e48721d2a31312d068a5e6",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "69E2291FD91587848391063C6EF38A18D51C0A82899AB70D245AF76008FF4CD4"
+    },
+    {
+      "backend": "gles",
+      "demo": "07_offscreen",
+      "candidate": "gles-clear-fix",
+      "image_sha256": "05d2a9b0135e58590dc47618ecfff8816b3948a1f9d630d2564ecef9ed8a60e0",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "EC63178F6947B6BEFF1D1784F437CC5754382ECD0769D7EA69501D4EBD394328"
+    },
+    {
+      "backend": "gles",
+      "demo": "08_msaa",
+      "candidate": "gles-clear-fix",
+      "image_sha256": "96f86c0370309997d4f120aab1d3e8bd41506934dbe8b1444cfdd20bb6eeddc8",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "DC8615716D8018D81D96D5DC944B63BE85A11EDBFECF675EDA67EBFD808FBF3B"
+    },
+    {
+      "backend": "gles",
+      "demo": "09_texture_mipmap",
+      "candidate": "gles-clear-fix",
+      "image_sha256": "88a26a93fcec48ffd3167fea12f7dd7722449444739c6c4d45f62728d83375aa",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "9F492CC1FE4F67AC342B2DA2E028288637FF59D7587583C6B39B72657A8914DE"
+    },
+    {
+      "backend": "gles",
+      "demo": "10_indirect_draw",
+      "candidate": "gles-clear-fix",
+      "image_sha256": "a0ae7765942e8868d25a3ff9ae54566682b1c3d054517558f0a22c5a2d36222a",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "E031C5569809FE4D4B5AE3DDE4AB181D1F351DEDAD591336CCEB951887E2CE12"
+    },
+    {
+      "backend": "gles",
+      "demo": "11_occlusion_query",
+      "candidate": "gles-clear-fix",
+      "image_sha256": "339d02e308a7bec59f887abe4743f02bd6a8839c9563f6f2a159452b1e5facf1",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "9177B46793A66EF5DA894C752942865BB10713954EB395A5C509D4BD08E02989"
+    },
+    {
+      "backend": "gles",
+      "demo": "12_screenshot",
+      "candidate": "gles-clear-fix",
+      "image_sha256": "a5986c2d11e9c407d44d535cc00013da2ee93d946174ceec0a8a6e468c6f60e9",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "ADB98A1BF013BE70129A13FBE69DF8CCA08113D5F2E6C0A92F66406842D75600"
+    },
+    {
+      "backend": "gles",
+      "demo": "13_multithreaded_recording",
+      "candidate": "gles-clear-fix",
+      "image_sha256": "d7cce4e733a56d5e01740948f10f4fe6a802a68b863d825c26050c8fd5c195e4",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "E2E4145AAE4A03C89E9B1C4E821ED996E96BD900701D71195D169A137D5B9F40"
+    },
+    {
+      "backend": "gles",
+      "demo": "14_descriptor_indexing",
+      "candidate": "gles-clear-fix",
+      "image_sha256": "2270e95ee6f52b97bafce06bae68280892d6bdb54b138605401b7aace30425c4",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "6CAED24B61CBAB33B358C432DF60A45BB20E852261F209CCEC9A45582774B268"
+    },
+    {
+      "backend": "gles",
+      "demo": "15_multiview",
+      "candidate": "gles-clear-fix",
+      "image_sha256": "306a4bbcdcf4ef003a9d2120b304f031f64b2f2fb1bfbb37476dfc5706a3e4f8",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames_at_least": 2,
+      "apk_sha256": "84241D944411CEE1D57F97308DAD0E7C2C55240F28CEDEAA38864C13E8707E5D"
+    },
+    {
+      "backend": "webgl2",
+      "demo": "01_triangle",
+      "candidate": "webgl2-final",
+      "image_sha256": "c2bfa4db5076af9e8b37e668865bf0a232c77fbbe63177f531ef72c682325ff0",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames": 3,
+      "changed_pixels": 124002
+    },
+    {
+      "backend": "webgl2",
+      "demo": "02_texture",
+      "candidate": "webgl2-final",
+      "image_sha256": "b97d953770624101c12feece479fe02a61260e3d7ce24f79b84d2524b8b6f128",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames": 3,
+      "changed_pixels": 245590
+    },
+    {
+      "backend": "webgl2",
+      "demo": "03_instancing",
+      "candidate": "webgl2-final",
+      "image_sha256": "32062dba117e53cdf9b5d486e3e2bccc4c7406777444757d885f42daafbbd2df",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames": 3,
+      "changed_pixels": 292588
+    },
+    {
+      "backend": "webgl2",
+      "demo": "04_dynamic_uniform_buffer",
+      "candidate": "webgl2-final",
+      "image_sha256": "2b09c694921872057b4e98b722a14c69c3c2edfce1561c30e236c2b89bba7a64",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames": 3,
+      "changed_pixels": 298858
+    },
+    {
+      "backend": "webgl2",
+      "demo": "05_push_constants",
+      "candidate": "webgl2-final",
+      "image_sha256": "b82db63583ea753bb5559c8c4d14e994957fe646cb75ef04d2ce58c2d6f819df",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames": 3,
+      "changed_pixels": 51880
+    },
+    {
+      "backend": "webgl2",
+      "demo": "06_compute",
+      "candidate": "webgl2-final",
+      "image_sha256": "6e988b29da38ef842edc6c53e0d66f8a5cb8d33c034a0339307ae149c8ca2205",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames": 3,
+      "changed_pixels": 778752
+    },
+    {
+      "backend": "webgl2",
+      "demo": "07_offscreen",
+      "candidate": "webgl2-final",
+      "image_sha256": "33b9b16f850e039a3f995d10ae9d298e75387b1f1f783cb36ff88bbfb1a401b6",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames": 3,
+      "changed_pixels": 659668
+    },
+    {
+      "backend": "webgl2",
+      "demo": "08_msaa",
+      "candidate": "webgl2-final",
+      "image_sha256": "113df665651dafd99a1405d1ee3a91ac39ec91c7da0223f5ae24f2417b3c5175",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames": 3,
+      "changed_pixels": 71781
+    },
+    {
+      "backend": "webgl2",
+      "demo": "09_texture_mipmap",
+      "candidate": "webgl2-final",
+      "image_sha256": "8a388b336cd0b399d91d8befea5a7a12f6ac1532a62b24db56741c810aa2441f",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames": 3,
+      "changed_pixels": 920640
+    },
+    {
+      "backend": "webgl2",
+      "demo": "10_indirect_draw",
+      "candidate": "webgl2-final",
+      "image_sha256": "2955b3482d221ba8b84e41c7b95fc692a8b75d481a81cef070185eed6627bed8",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames": 3,
+      "changed_pixels": 921593
+    },
+    {
+      "backend": "webgl2",
+      "demo": "11_occlusion_query",
+      "candidate": "webgl2-final",
+      "image_sha256": "f86b1ec79da4ba3ee5e7695248a2c40a08179fa51838ed56b8b7da1b6d498ca8",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames": 3,
+      "changed_pixels": 316244
+    },
+    {
+      "backend": "webgl2",
+      "demo": "12_screenshot",
+      "candidate": "webgl2-final",
+      "image_sha256": "cdf88003d8015a7a453b5666a950b43adba13e9606fa9e42e7f6c706fb7efe1f",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames": 3,
+      "changed_pixels": 239293
+    },
+    {
+      "backend": "webgl2",
+      "demo": "13_multithreaded_recording",
+      "candidate": "webgl2-13-final",
+      "image_sha256": "1dd0a5ab131ac7f1f9c3d352a5de567cfa6afd70125a02643df0ab0ac45ac5b3",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames": 3,
+      "changed_pixels": 911271
+    },
+    {
+      "backend": "webgl2",
+      "demo": "14_descriptor_indexing",
+      "candidate": "webgl2-14-confirm",
+      "image_sha256": "6d9e90bd8e652df785644d522c183190fa0d37ea3b09d541d4c78dbd5efbc35a",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames": 3,
+      "changed_pixels": 255396
+    },
+    {
+      "backend": "webgl2",
+      "demo": "15_multiview",
+      "candidate": "webgl2-final",
+      "image_sha256": "1c2b71daf0440c2dbb84d09a7c6000fe01c76fa51a235102f71b0d2afa70eeb3",
+      "source_base": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+      "completed_frames": 3,
+      "changed_pixels": 440704
+    }
+  ]
+}

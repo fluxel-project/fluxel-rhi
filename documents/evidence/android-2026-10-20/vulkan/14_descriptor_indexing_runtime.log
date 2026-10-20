@@ -1,0 +1,6 @@
+--------- beginning of main
+10-20 15:05:47.334  5541  5560 I RustStdoutStderr: VULKAN_ADAPTER=Adreno (TM) 750
+10-20 15:05:47.461  5541  5560 I RustStdoutStderr: VULKAN_SURFACE_CAPS formats=[Rgba8Unorm, Rgba8UnormSrgb] alpha=[Inherit] usages=SurfaceUsage(1) extent=[1920, 1080]..[1920, 1080]
+10-20 15:05:47.717  5541  5560 I RustStdoutStderr: RHI_DESCRIPTOR_MODE=native-indexing
+10-20 15:05:47.948  5541  5560 I RustStdoutStderr: RHI_FRAME_OK=1
+10-20 15:05:48.153  5541  5560 I RustStdoutStderr: RHI_FRAME_OK=2

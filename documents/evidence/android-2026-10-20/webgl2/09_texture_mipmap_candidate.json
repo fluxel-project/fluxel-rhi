@@ -1,0 +1,33 @@
+{
+  "head": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+  "backend": "webgl2",
+  "demo": "09_texture_mipmap",
+  "serial": "emulator-5554",
+  "changed_file_sha256": {
+    "crates/core/src/api/tests.rs": "02bd313e528b89901faa12c82ee8a8a7385cc390a808c9e0d34e47d9240e8924",
+    "crates/core/src/api/tests/binding_arrays.rs": "9039c8617a7e36ae0b98ad9a5a8acc7f17561c996748a4aa617f1c46dc7e8148",
+    "crates/gl/src/backend/gl/browser/exec_framebuffer.rs": "9507e0345fa344def25318b5c86956c2c480c8519f94c52c29b8905bdc60818d",
+    "crates/gl/src/backend/gl/browser/mod.rs": "426956ad3a3566f5a988104a7b0e8466aacb6dca05ac9001dbc55f19d5481246",
+    "crates/gl/src/backend/gl/native/exec_framebuffer.rs": "861733682cee0e539739dad907c81146d1c65fa98069176106df0ecfd798ab3a",
+    "crates/gl/tests/gl/webgl2_clear_masks.rs": "ec749b74693ef6fc95eca8801dff011a97d24d9015520c43194bc752198b7e87",
+    "crates/gl/tests/gl/wgl_core.rs": "237f6acfa6aaf95aed094001a7dedec785272f384937d0934f3d9823193b9da2",
+    "crates/rhi/examples/15_multiview/main.rs": "7f6e0ecbb27af5fc238f628f7806707f00d599a1a6a4c93f7766ce93b9a6974a",
+    "crates/rhi/examples/15_multiview/per_eye.rs": "80fa37cff2f859fa6bb18d82febfa185db3fe2a066e5644b8bb428eff15b6d0b",
+    "tools/examples/android-runner/Cargo.toml": "2b9f1786a7d32a09f72610de9443f6a6962305caf59c8dc8269bd1f117f05fe0",
+    "tools/examples/android-runner/README.md": "20d42ece5424da25b0b14b3e97a06b28a1b40dfb514790e70c624a867493e77a",
+    "tools/examples/android-runner/src/host/draw.rs": "a32c80d352ec99c65588325f62eabf9b488e3df36dcb003bdb02407d16430e85",
+    "tools/examples/android-runner/src/host/initialize.rs": "48d66b7835e7472236192098fa00cfdd2170827aa0021f88645abc2440b07df8",
+    "tools/examples/android-runner/src/host/mod.rs": "185485aab6209393497aaacabbbb08c6207e601486b8f3b4de2d960a239315cf",
+    "tools/examples/android-runner/src/lib.rs": "f993c9988955a6c52b56c7534f92736614f411df3c14eef4ee7612ce582e6791",
+    "tools/examples/android/browser/browser_runner.py": "35709898d75133bc62b96fac5f3755ca6f7f59381a018804eb26aa292a312baf",
+    "tools/examples/android/browser/run_capture.py": "43210b59ad4a5d0914b9f409b3ce0c837466cdcfc5ef5dc4ac767cb3f4dc2238",
+    "tools/examples/android/run-capture.ps1": "bb97bb956d9a8a82e708b628aa7e99f3007132f5f8e5295c8117eb3618ca5501"
+  },
+  "bundle_sha256": {
+    "demo.d.ts": "24314dcf7a758b20cc99009a6b682d80af9970a8aa0e8c54dde707db84bb225f",
+    "demo.js": "e760459ac5e87bba21f8b8feff2dc2918e77a8fa16531cba02d52619e68e6212",
+    "demo_bg.wasm": "8cb605b117ff2a56114e719c6cd7a68112724d587386d4bc6c0c8100fc33d932",
+    "demo_bg.wasm.d.ts": "1f0cfbce64a79492b20db5caa7e027617d6a923eebd292f4a05df607b8e9ce92"
+  },
+  "capture_semantics": "Two display samples after the awaited three-frame export and page report."
+}

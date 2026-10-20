@@ -80,7 +80,8 @@ impl App {
                 not(feature = "demo11"),
                 not(feature = "demo12"),
                 not(feature = "demo13"),
-                not(feature = "demo14")
+                not(feature = "demo14"),
+                not(feature = "demo15")
             ))]
             let scene = utils::block_on(triangle::Triangle::new(&device, lane, format))?;
             #[cfg(feature = "demo02")]
@@ -131,6 +132,11 @@ impl App {
                 ))?
             };
             Gpu {
+                #[cfg(feature = "demo15")]
+                scene: {
+                    eprintln!("RHI_MULTIVIEW_MODE=native");
+                    utils::block_on(multiview::Multiview::new(&device, lane, format, extent))?
+                },
                 #[cfg(feature = "demo14")]
                 scene: {
                     let fallback =
@@ -158,7 +164,12 @@ impl App {
                 window: window.clone(),
                 device,
                 surface,
-                #[cfg(not(any(feature = "demo12", feature = "demo13", feature = "demo14")))]
+                #[cfg(not(any(
+                    feature = "demo12",
+                    feature = "demo13",
+                    feature = "demo14",
+                    feature = "demo15"
+                )))]
                 scene,
                 #[cfg(feature = "demo03")]
                 time: std::time::Instant::now(),
@@ -242,7 +253,8 @@ impl App {
                 not(feature = "demo11"),
                 not(feature = "demo12"),
                 not(feature = "demo13"),
-                not(feature = "demo14")
+                not(feature = "demo14"),
+                not(feature = "demo15")
             ))]
             let scene = utils::block_on(triangle::Triangle::new(&device, lane, format))?;
             #[cfg(feature = "demo02")]
@@ -294,6 +306,13 @@ impl App {
                 ))?
             };
             Gpu {
+                #[cfg(feature = "demo15")]
+                scene: {
+                    eprintln!("RHI_MULTIVIEW_MODE=sequential-stereo");
+                    utils::block_on(multiview::per_eye::StereoFallback::new(
+                        &device, format, extent,
+                    ))?
+                },
                 #[cfg(feature = "demo14")]
                 scene: {
                     eprintln!("RHI_DESCRIPTOR_MODE=fixed-texture-array");
@@ -310,7 +329,12 @@ impl App {
                 window: window.clone(),
                 device,
                 surface,
-                #[cfg(not(any(feature = "demo12", feature = "demo13", feature = "demo14")))]
+                #[cfg(not(any(
+                    feature = "demo12",
+                    feature = "demo13",
+                    feature = "demo14",
+                    feature = "demo15"
+                )))]
                 scene,
                 #[cfg(feature = "demo03")]
                 time: std::time::Instant::now(),

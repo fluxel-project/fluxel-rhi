@@ -1,0 +1,39 @@
+{
+  "captured_at_utc": "2026-10-20T07:25:49.7383979Z",
+  "changed_file_sha256": {
+    "crates/core/src/api/tests.rs": "02BD313E528B89901FAA12C82EE8A8A7385CC390A808C9E0D34E47D9240E8924",
+    "tools/examples/android-runner/Cargo.toml": "2B9F1786A7D32A09F72610DE9443F6A6962305CAF59C8DC8269BD1F117F05FE0",
+    "tools/examples/android-runner/src/host/draw.rs": "A32C80D352EC99C65588325F62EABF9B488E3DF36DCB003BDB02407D16430E85",
+    "tools/examples/android-runner/README.md": "3A176E925952635A896B98473BA937BA96AF7E6D55F9E64282B80A63EE2310C5",
+    "crates/gl/tests/gl/wgl_core.rs": "8B3312BB5B7945F34C985E3653C343DE2526B636BF20EEE587E64DC45F54668B",
+    "crates/core/src/api/tests/binding_arrays.rs": "9039C8617A7E36AE0B98AD9A5A8ACC7F17561C996748A4AA617F1C46DC7E8148",
+    "tools/examples/android-runner/src/host/mod.rs": "185485AAB6209393497AAACABBBB08C6207E601486B8F3B4DE2D960A239315CF",
+    "tools/examples/android-runner/src/host/initialize.rs": "48D66B7835E7472236192098FA00CFDD2170827AA0021F88645ABC2440B07DF8",
+    "tools/examples/android/run-capture.ps1": "BB97BB956D9A8A82E708B628AA7E99F3007132F5F8E5295C8117EB3618CA5501",
+    "crates/gl/src/backend/gl/native/exec_framebuffer.rs": "861733682CEE0E539739DAD907C81146D1C65FA98069176106DF0ECFD798AB3A",
+    "crates/rhi/examples/15_multiview/per_eye.rs": "80FA37CFF2F859FA6BB18D82FEBFA185DB3FE2A066E5644B8BB428EFF15B6D0B",
+    "tools/examples/android-runner/src/lib.rs": "F993C9988955A6C52B56C7534F92736614F411DF3C14EEF4EE7612CE582E6791",
+    "crates/rhi/examples/15_multiview/main.rs": "7F6E0ECBB27AF5FC238F628F7806707F00D599A1A6A4C93F7766CE93B9A6974A"
+  },
+  "head": "7a189f92eb3e910b99c2716e349418ab1c04d262",
+  "demo": "08_msaa",
+  "worktree": [
+    " M crates/core/src/api/tests.rs",
+    " M crates/gl/src/backend/gl/native/exec_framebuffer.rs",
+    " M crates/gl/tests/gl/wgl_core.rs",
+    " M crates/rhi/examples/15_multiview/main.rs",
+    " M crates/rhi/examples/15_multiview/per_eye.rs",
+    " M tools/examples/android-runner/Cargo.toml",
+    " M tools/examples/android-runner/README.md",
+    " M tools/examples/android-runner/src/host/draw.rs",
+    " M tools/examples/android-runner/src/host/initialize.rs",
+    " M tools/examples/android-runner/src/host/mod.rs",
+    " M tools/examples/android-runner/src/lib.rs",
+    " M tools/examples/android/run-capture.ps1",
+    "?? crates/core/src/api/tests/"
+  ],
+  "serial": "emulator-5554",
+  "backend": "gles",
+  "library_sha256": "427E65245D41D64FB3DE0E7077F832789B7263F7EEC2B90B5FAEB94F6FBDEECF",
+  "apk_sha256": "DC8615716D8018D81D96D5DC944B63BE85A11EDBFECF675EDA67EBFD808FBF3B"
+}

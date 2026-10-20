@@ -1,0 +1,12 @@
+Running headless tests in Chrome on `http://127.0.0.1:58349/`
+Try find `webdriver.json` for configure browser's capabilities:
+Ok
+Loading Wasm module...
+using deprecated parameters for the initialization function; pass a single object instead
+
+running 1 test
+Invoking test: backend::gl::browser::webgl2_clear_masks::clear_depth_ignores_old_mask_and_restores_pipeline
+WEBGL_VERSION=WebGL 2.0 (OpenGL ES 3.0 Chromium); WEBGL_RENDERER=WebKit WebGL; WEBGL_UNMASKED_RENDERER=Google Inc. (AMD) / ANGLE (AMD, AMD Radeon 780M Graphics (0x00001900) Direct3D11 vs_5_0 ps_5_0, D3D11)
+test backend::gl::browser::webgl2_clear_masks::clear_depth_ignores_old_mask_and_restores_pipeline ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.07s

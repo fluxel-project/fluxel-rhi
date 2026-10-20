@@ -1,9 +1,9 @@
 //! Browser framebuffer, render-pass, and blit execution.
 //!
 //! Pass load/clear executes exactly once per pass through the `clearBuffer*`
-//! commands, which honor scissor state but ignore color and depth masks; the
-//! pass therefore disables scissor around its clears, and pipeline
-//! application restores the scissor group afterwards. Resolve stays an
+//! commands, which honor scissor and color, depth, and stencil write masks.
+//! Pass begin disables scissor and enables writes for cleared attachments;
+//! pipeline installation reapplies the complete raster state. Resolve stays an
 //! explicit `blit_framebuffer` from the multisample source, per the shared
 //! framebuffer contract.
 
@@ -222,9 +222,26 @@ impl GlFramebufferApi for WebGl2BrowserDiscovery {
                 .collect();
             self.raw.draw_buffers(&attachment_list(&constants));
         }
-        // clearBuffer* honors scissor only; make pass-load clears total. The
-        // installed pipeline re-applies the scissor group after pass begin.
+        // clearBuffer* observes the same write masks as clear. The browser
+        // provider installs every pipeline state block on the next bind.
         self.raw.disable(Gl::SCISSOR_TEST);
+        if descriptor
+            .color_attachments
+            .iter()
+            .any(|a| a.load == GlLoadOp::Clear)
+        {
+            self.raw.color_mask(true, true, true, true);
+        }
+        if let Some(attachment) = &descriptor.depth_stencil_attachment {
+            if attachment.depth_load == GlLoadOp::Clear {
+                self.raw.depth_mask(true);
+            }
+            if attachment.stencil_load == GlLoadOp::Clear
+                && format_map::has_stencil_plane(attachment.view.format)
+            {
+                self.raw.stencil_mask(u32::MAX);
+            }
+        }
         for (index, attachment) in descriptor.color_attachments.iter().enumerate() {
             if attachment.load == GlLoadOp::Clear {
                 let clear = &attachment.clear;
@@ -256,10 +273,10 @@ impl GlFramebufferApi for WebGl2BrowserDiscovery {
                     0,
                     &[f32::from_bits(attachment.clear.depth)],
                 ),
-                (false, true) => self.raw.clear_bufferuiv_with_u32_array(
+                (false, true) => self.raw.clear_bufferiv_with_i32_array(
                     Gl::STENCIL,
                     0,
-                    &[attachment.clear.stencil],
+                    &[attachment.clear.stencil as i32],
                 ),
                 (false, false) => {}
             }

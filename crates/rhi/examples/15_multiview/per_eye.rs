@@ -7,7 +7,7 @@ use super::*;
 
 /// Two ordinary per-eye passes preserve the visible stereo workload without
 /// claiming that the backend supports native multiview.
-pub(super) struct StereoFallback<B: super::WgslStereoBackend> {
+pub(crate) struct StereoFallback<B: super::WgslStereoBackend> {
     vertices: Buffer<B>,
     indices: Buffer<B>,
     vertex_bytes: Arc<[u8]>,
@@ -29,7 +29,7 @@ pub(super) struct StereoFallback<B: super::WgslStereoBackend> {
 }
 
 impl<B: super::WgslStereoBackend> StereoFallback<B> {
-    pub(super) async fn new(
+    pub(crate) async fn new(
         device: &Device<B>,
         format: TextureFormat,
         extent: [u32; 2],
@@ -195,7 +195,7 @@ impl<B: super::WgslStereoBackend> StereoFallback<B> {
         })
     }
 
-    pub(super) fn encode(
+    pub(crate) fn encode(
         &mut self,
         encoder: &mut CommandEncoder<B>,
         image: &SurfaceImage<B>,
@@ -278,11 +278,11 @@ impl<B: super::WgslStereoBackend> StereoFallback<B> {
         Ok(first_upload)
     }
 
-    pub(super) fn mark_uploaded(&mut self) {
+    pub(crate) fn mark_uploaded(&mut self) {
         self.uploaded = true;
     }
 
-    pub(super) fn extent(&self) -> [u32; 2] {
+    pub(crate) fn extent(&self) -> [u32; 2] {
         self.extent
     }
 }

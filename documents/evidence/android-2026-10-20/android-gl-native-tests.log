@@ -1,0 +1,1624 @@
+    Blocking waiting for file lock on build directory
+   Compiling fluxel-rhi-gl v0.16.0 (E:\moyy\program\rust\fluxel\fluxel-rhi\crates\gl)
+warning: unused imports: `MockCall`, `MockComputeStorageApi`, and `MockGlFamilyApi`
+  --> crates\gl\src\backend\gl\api\mod.rs:48:23
+   |
+48 | pub(crate) use mock::{MockCall, MockComputeStorageApi, MockGlFamilyApi};
+   |                       ^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `Error` and `IndexFormat`
+ --> crates\gl\src\backend\gl\backend\raster\draw.rs:6:28
+  |
+6 | use fluxel_rhi_core::api::{Error, IndexFormat, Result};
+  |                            ^^^^^  ^^^^^^^^^^^
+
+warning: unused import: `ClearColor`
+ --> crates\gl\src\backend\gl\backend\raster\surface_depth.rs:8:50
+  |
+8 | use fluxel_rhi_core::api::{self, AttachmentView, ClearColor, Error, LoadOp, Result};
+  |                                                  ^^^^^^^^^^
+
+warning: unused imports: `GlSurfaceImage` and `GlSurface`
+  --> crates\gl\src\backend\gl\backend\mod.rs:26:26
+   |
+26 | pub(crate) use surface::{GlSurface, GlSurfaceImage};
+   |                          ^^^^^^^^^  ^^^^^^^^^^^^^^
+
+warning: unused import: `GlDeviceState`
+  --> crates\gl\src\backend\gl\backend\mod.rs:28:34
+   |
+28 | pub(crate) use types::{GlDevice, GlDeviceState};
+   |                                  ^^^^^^^^^^^^^
+
+warning: unused imports: `BufferId`, `FramebufferId`, `ProgramId`, `QueryId`, `RenderbufferId`, `SamplerId`, `TextureId`, and `VertexArrayId`
+  --> crates\gl\src\backend\gl\state\context.rs:9:5
+   |
+ 9 |     BufferId, FramebufferId, ProgramId, QueryId, RenderbufferId, SamplerId, TextureId,
+   |     ^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^  ^^^^^^^  ^^^^^^^^^^^^^^  ^^^^^^^^^  ^^^^^^^^^
+10 |     VertexArrayId,
+   |     ^^^^^^^^^^^^^
+
+warning: unused import: `depth_attachment_point`
+  --> crates\gl\src\backend\gl\native\exec_framebuffer.rs:12:23
+   |
+12 | use super::resource::{depth_attachment_point, has_stencil_plane};
+   |                       ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `GlAttachmentTarget`, `GlDepthStencilAttachment`, `GlTextureDimension`, and `GlTextureView`
+  --> crates\gl\src\backend\gl\native\exec_framebuffer.rs:14:20
+   |
+14 |     FramebufferId, GlAttachmentTarget, GlBlitMask, GlBlitRegion, GlDepthStencilAttachment, GlError,
+   |                    ^^^^^^^^^^^^^^^^^^                            ^^^^^^^^^^^^^^^^^^^^^^^^
+15 |     GlFamilyApi as _, GlFilterMode, GlFramebufferApi, GlFramebufferDescriptor, GlLoadOp,
+16 |     GlPassAttachmentView, GlRenderPassDescriptor, GlRenderTarget, GlStoreOp, GlTextureDimension,
+   |                                                                              ^^^^^^^^^^^^^^^^^^
+17 |     GlTextureView,
+   |     ^^^^^^^^^^^^^
+
+warning: unused imports: `BufferId`, `GlBindingApi`, `GlBindingLimits`, `GlBufferUsage`, `GlExecutableBindingAssignment`, `GlExecutableBindingLocation`, `GlShaderResourceKind`, `GlTextureTarget`, `SamplerId`, `TextureId`, `validate_texture_unit`, `validate_uniform_buffer_binding`, and `validate_uniform_range`
+  --> crates\gl\src\backend\gl\native\exec_shader.rs:11:5
+   |
+11 |     BufferId, GlBindingApi, GlBindingLimits, GlBufferUsage, GlError, GlExecutableBindingAssignment,
+   |     ^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+12 |     GlExecutableBindingLocation, GlFamilyApi as _, GlProgramDescriptor, GlProgramKind,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+13 |     GlProgramReflection, GlShaderApi, GlShaderResourceKind, GlShaderSource, GlShaderStage,
+   |                                       ^^^^^^^^^^^^^^^^^^^^
+14 |     GlTextureTarget, ProgramId, SamplerId, ShaderId, TextureId, validate_texture_unit,
+   |     ^^^^^^^^^^^^^^^             ^^^^^^^^^            ^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^
+15 |     validate_uniform_buffer_binding, validate_uniform_range,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `CurrentContextGuard`, `NativeContextKind`, and `NativeContext`
+  --> crates\gl\src\backend\gl\native\mod.rs:36:5
+   |
+36 |     CurrentContextGuard, NativeContext, NativeContextKind, NativeContextOwner,
+   |     ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `NativeEntryPoint` and `NativeEntryPoints`
+  --> crates\gl\src\backend\gl\native\mod.rs:39:31
+   |
+39 | pub(crate) use entry_points::{NativeEntryPoint, NativeEntryPoints};
+   |                               ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `NativeProfileError` and `parse_native_profile`
+  --> crates\gl\src\backend\gl\native\mod.rs:40:24
+   |
+40 | pub(crate) use probe::{NativeProfileError, parse_native_profile};
+   |                        ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `GlResourceApi as _`, `GlSamplerDesc`, and `self`
+  --> crates\gl\src\backend\gl\native\resource.rs:11:5
+   |
+11 |     self, BufferId, GlBufferDesc, GlError, GlFamilyApi as _, GlRenderBufferDesc,
+   |     ^^^^
+12 |     GlResourceApi as _, GlSamplerApi as _, GlSamplerDesc, GlTextureDesc, RenderbufferId, SamplerId,
+   |     ^^^^^^^^^^^^^^^^^^                     ^^^^^^^^^^^^^
+
+warning: unused import: `GlSamplerApi`
+  --> crates\gl\src\backend\gl\native\resource.rs:12:25
+   |
+12 |     GlResourceApi as _, GlSamplerApi as _, GlSamplerDesc, GlTextureDesc, RenderbufferId, SamplerId,
+   |                         ^^^^^^^^^^^^
+
+warning: variable does not need to be mutable
+  --> crates\gl\src\backend\gl\backend\command.rs:27:13
+   |
+27 |         let mut encoder = GlEncoder::new(device.0.clone(), lane.device);
+   |             ----^^^^^^^
+   |             |
+   |             help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+  --> crates\gl\src\backend\gl\backend\immediate.rs:43:9
+   |
+43 |         mut encoder: GlEncoder,
+   |         ----^^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: unused variable: `pipeline`
+  --> crates\gl\src\backend\gl\backend\raster\draw.rs:13:5
+   |
+13 |     pipeline: &GlRasterPipeline,
+   |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_pipeline`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `device`
+   --> crates\gl\src\backend\gl\backend\readback.rs:107:9
+    |
+107 |         device: &'a GlDevice,
+    |         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_device`
+
+warning: methods `owner_thread`, `extensions`, and `context_lost` are never used
+   --> crates\gl\src\backend\gl\api\mod.rs:72:8
+    |
+ 64 | pub(crate) trait GlFamilyApi {
+    |                  ----------- methods in this trait
+...
+ 72 |     fn owner_thread(&self) -> OwnerThreadIdentity;
+    |        ^^^^^^^^^^^^
+...
+105 |     fn extensions(&self) -> &GlExtensionSet {
+    |        ^^^^^^^^^^
+...
+111 |     fn context_lost(&mut self) -> Result<(), GlError>;
+    |        ^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variants `Cube` and `D3` are never constructed
+  --> crates\gl\src\backend\gl\api\binding.rs:13:5
+   |
+11 | pub(crate) enum GlTextureTarget {
+   |                 --------------- variants in this enum
+12 |     D2,
+13 |     Cube,
+   |     ^^^^
+14 |     D3,
+   |     ^^
+   |
+   = note: `GlTextureTarget` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: variant `Rgb8` is never constructed
+  --> crates\gl\src\backend\gl\api\copy.rs:10:5
+   |
+ 7 | pub(crate) enum GlPixelFormat {
+   |                 ------------- variant in this enum
+...
+10 |     Rgb8,
+   |     ^^^^
+   |
+   = note: `GlPixelFormat` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `validate_for_transfer` is never used
+   --> crates\gl\src\backend\gl\api\copy.rs:202:19
+    |
+178 | impl GlPixelStoreState {
+    | ---------------------- method in this implementation
+...
+202 |     pub(crate) fn validate_for_transfer(
+    |                   ^^^^^^^^^^^^^^^^^^^^^
+
+warning: variants `UploadSourceTooShort` and `ImageHeightTooShort` are never constructed
+   --> crates\gl\src\backend\gl\api\copy.rs:243:5
+    |
+238 | pub(crate) enum GlCopyValidationError {
+    |                 --------------------- variants in this enum
+...
+243 |     UploadSourceTooShort,
+    |     ^^^^^^^^^^^^^^^^^^^^
+...
+248 |     ImageHeightTooShort,
+    |     ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `GlCopyValidationError` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `pixel_store` is never used
+   --> crates\gl\src\backend\gl\api\copy.rs:290:8
+    |
+264 | pub(crate) trait GlCopyDomainApi: GlFamilyApi {
+    |                  --------------- method in this trait
+...
+290 |     fn pixel_store(&self) -> GlPixelStoreState;
+    |        ^^^^^^^^^^^
+
+warning: methods `shading_language_version` and `driver_or_browser` are never used
+  --> crates\gl\src\backend\gl\api\discovery.rs:50:19
+   |
+20 | impl GlContextInfo {
+   | ------------------ methods in this implementation
+...
+50 |     pub(crate) fn shading_language_version(&self) -> &str {
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+62 |     pub(crate) fn driver_or_browser(&self) -> &str {
+   |                   ^^^^^^^^^^^^^^^^^
+
+warning: method `rebind_for_test` is never used
+   --> crates\gl\src\backend\gl\api\discovery.rs:343:19
+    |
+290 | impl GlDiscoverySnapshot {
+    | ------------------------ method in this implementation
+...
+343 |     pub(super) fn rebind_for_test(&self, stamp: ContextStamp) -> Self {
+    |                   ^^^^^^^^^^^^^^^
+
+warning: variants `Inactive` and `Restoring` are never constructed
+  --> crates\gl\src\backend\gl\api\error.rs:9:5
+   |
+ 7 | pub enum GlContextLifecycle {
+   |          ------------------ variants in this enum
+ 8 |     /// Context exists but has not accepted work.
+ 9 |     Inactive,
+   |     ^^^^^^^^
+...
+17 |     Restoring,
+   |     ^^^^^^^^^
+   |
+   = note: `GlContextLifecycle` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `accepts_commands` is never used
+  --> crates\gl\src\backend\gl\api\error.rs:26:18
+   |
+24 | impl GlContextLifecycle {
+   | ----------------------- method in this implementation
+25 |     /// Returns whether commands may be issued in this lifecycle state.
+26 |     pub const fn accepts_commands(self) -> bool {
+   |                  ^^^^^^^^^^^^^^^^
+
+warning: variant `Timeout` is never constructed
+   --> crates\gl\src\backend\gl\api\error.rs:112:5
+    |
+ 54 | pub enum GlError {
+    |          ------- variant in this enum
+...
+112 |     Timeout { operation: &'static str },
+    |     ^^^^^^^
+    |
+    = note: `GlError` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `iter` is never used
+   --> crates\gl\src\backend\gl\api\formats.rs:146:19
+    |
+ 78 | impl GlFormatTable {
+    | ------------------ method in this implementation
+...
+146 |     pub(crate) fn iter(&self) -> impl Iterator<Item = GlFormatCapabilities> + '_ {
+    |                   ^^^^
+
+warning: variants `EmptyBlitMask`, `BlitFilterIncompatible`, and `IdenticalBlitTargets` are never constructed
+   --> crates\gl\src\backend\gl\api\framebuffer.rs:211:5
+    |
+191 | pub(crate) enum GlFramebufferValidationError {
+    |                 ---------------------------- variants in this enum
+...
+211 |     EmptyBlitMask,
+    |     ^^^^^^^^^^^^^
+212 |     BlitFilterIncompatible,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+213 |     IdenticalBlitTargets,
+    |     ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `GlFramebufferValidationError` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: struct `GlDrawArraysIndirectAbi` is never constructed
+  --> crates\gl\src\backend\gl\api\indirect.rs:26:19
+   |
+26 | pub(crate) struct GlDrawArraysIndirectAbi {
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `GlDrawElementsIndirectAbi` is never constructed
+  --> crates\gl\src\backend\gl\api\indirect.rs:35:19
+   |
+35 | pub(crate) struct GlDrawElementsIndirectAbi {
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `GlIndirectCountRange` is never constructed
+   --> crates\gl\src\backend\gl\api\indirect.rs:169:19
+    |
+169 | pub(crate) struct GlIndirectCountRange {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+
+warning: method `validate` is never used
+   --> crates\gl\src\backend\gl\api\indirect.rs:185:19
+    |
+174 | impl GlIndirectCountRange {
+    | ------------------------- method in this implementation
+...
+185 |     pub(crate) fn validate(self, operation: &'static str) -> Result<(), GlError> {
+    |                   ^^^^^^^^
+
+warning: trait `GlDispatchIndirectApi` is never used
+   --> crates\gl\src\backend\gl\api\indirect.rs:206:18
+    |
+206 | pub(crate) trait GlDispatchIndirectApi: GlFamilyApi {
+    |                  ^^^^^^^^^^^^^^^^^^^^^
+
+warning: trait `GlMultiDrawIndirectApi` is never used
+   --> crates\gl\src\backend\gl\api\indirect.rs:210:18
+    |
+210 | pub(crate) trait GlMultiDrawIndirectApi: GlFamilyApi {
+    |                  ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: trait `GlMultiDrawCountApi` is never used
+   --> crates\gl\src\backend\gl\api\indirect.rs:213:18
+    |
+213 | pub(crate) trait GlMultiDrawCountApi: GlFamilyApi {
+    |                  ^^^^^^^^^^^^^^^^^^^
+
+warning: method `bits` is never used
+  --> crates\gl\src\backend\gl\api\limits.rs:14:25
+   |
+ 8 | impl GlFiniteF32 {
+   | ---------------- method in this implementation
+...
+14 |     pub(crate) const fn bits(self) -> u32 {
+   |                         ^^^^
+
+warning: enum `MockCall` is never used
+  --> crates\gl\src\backend\gl\api\mock\mod.rs:37:10
+   |
+37 | pub enum MockCall {
+   |          ^^^^^^^^
+
+warning: struct `MockGlFamilyApi` is never constructed
+   --> crates\gl\src\backend\gl\api\mock\mod.rs:190:12
+    |
+190 | pub struct MockGlFamilyApi {
+    |            ^^^^^^^^^^^^^^^
+
+warning: struct `MockComputeStorageApi` is never constructed
+  --> crates\gl\src\backend\gl\api\mock\compute_storage.rs:16:12
+   |
+16 | pub struct MockComputeStorageApi {
+   |            ^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `new`, `calls`, `clear_calls`, and `into_inner` are never used
+  --> crates\gl\src\backend\gl\api\mock\compute_storage.rs:20:12
+   |
+19 | impl MockComputeStorageApi {
+   | -------------------------- associated items in this implementation
+20 |     pub fn new(inner: MockGlFamilyApi) -> Result<Self, GlError> {
+   |            ^^^
+...
+31 |     pub fn calls(&self) -> &[MockCall] {
+   |            ^^^^^
+...
+38 |     pub fn clear_calls(&mut self) {
+   |            ^^^^^^^^^^^
+...
+41 |     pub fn into_inner(self) -> MockGlFamilyApi {
+   |            ^^^^^^^^^^
+
+warning: methods `require_indirect_capability`, `require_indirect_pass`, `indirect_buffer`, and `require_multi_draw_count` are never used
+  --> crates\gl\src\backend\gl\api\mock\indirect.rs:29:19
+   |
+22 | impl MockGlFamilyApi {
+   | -------------------- methods in this implementation
+...
+29 |     pub(super) fn require_indirect_capability(
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+53 |     pub(super) fn require_indirect_pass(&mut self, op: &'static str) -> Result<(), GlError> {
+   |                   ^^^^^^^^^^^^^^^^^^^^^
+...
+71 |     pub(super) fn indirect_buffer(
+   |                   ^^^^^^^^^^^^^^^
+...
+95 |     fn require_multi_draw_count(&mut self, op: &'static str, draws: u32) -> Result<(), GlError> {
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `draw_is_empty` is never used
+  --> crates\gl\src\backend\gl\api\mock\render_pass.rs:15:4
+   |
+15 | fn draw_is_empty(draw: GlDrawCommand) -> bool {
+   |    ^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> crates\gl\src\backend\gl\api\mock\recorder.rs:9:12
+    |
+  8 | impl MockGlFamilyApi {
+    | -------------------- associated items in this implementation
+  9 |     pub fn from_discovery(discovery: GlDiscoverySnapshot) -> Self {
+    |            ^^^^^^^^^^^^^^
+...
+ 51 |     pub fn try_with_compute_storage(self) -> Result<MockComputeStorageApi, GlError> {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 54 |     pub fn calls(&self) -> &[MockCall] {
+    |            ^^^^^
+...
+ 57 |     pub fn clear_calls(&mut self) {
+    |            ^^^^^^^^^^^
+...
+ 60 |     pub fn fail_next(&mut self, error: GlError) {
+    |            ^^^^^^^^^
+...
+ 64 |     pub fn inject_query_result(&mut self, query: QueryId, result: GlQueryResult) {
+    |            ^^^^^^^^^^^^^^^^^^^
+...
+ 76 |     pub fn inject_fence_status(&mut self, fence: SyncId, status: GlFenceStatus) {
+    |            ^^^^^^^^^^^^^^^^^^^
+...
+ 80 |     pub fn set_next_program_reflection(&mut self, reflection: GlProgramReflection) {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 89 |     pub fn set_advanced_raster_capabilities(&mut self, capabilities: GlAdvancedRasterCapabilities) {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 98 |     pub(super) fn fence_status(&self, fence: SyncId) -> GlFenceStatus {
+    |                   ^^^^^^^^^^^^
+...
+104 |     pub(super) fn owner(&self, op: &'static str) -> Result<(), GlError> {
+    |                   ^^^^^
+...
+120 |     pub(super) fn select_program(&mut self, program: ProgramId) {
+    |                   ^^^^^^^^^^^^^^
+...
+126 |     pub(super) fn ready(&mut self, op: &'static str) -> Result<(), GlError> {
+    |                   ^^^^^
+...
+142 |     pub(super) fn error_result<T>(&mut self, e: GlError) -> Result<T, GlError> {
+    |                   ^^^^^^^^^^^^
+...
+146 |     pub(super) fn invalid<T>(
+    |                   ^^^^^^^
+...
+156 |     pub(super) fn error(&mut self, e: GlError) {
+    |                   ^^^^^
+...
+162 |     pub(super) fn slot(&mut self) -> Result<u32, GlError> {
+    |                   ^^^^
+...
+169 |     pub(super) fn stamp(&mut self, op: &'static str, actual: ContextStamp) -> Result<(), GlError> {
+    |                   ^^^^^
+...
+186 |     pub(super) fn buffer(
+    |                   ^^^^^^
+...
+197 |     pub(super) fn texture(
+    |                   ^^^^^^^
+...
+208 |     pub(super) fn render_buffer(
+    |                   ^^^^^^^^^^^^^
+...
+219 |     pub(super) fn binding_limits(&self) -> GlBindingLimits {
+    |                   ^^^^^^^^^^^^^^
+...
+227 |     pub(super) fn invalid_binding(
+    |                   ^^^^^^^^^^^^^^^
+...
+239 |     pub(super) fn live<K: GlObjectKind, F: FnOnce(&Self) -> bool>(
+    |                   ^^^^
+...
+252 |     pub(super) fn reset_objects(&mut self) {
+    |                   ^^^^^^^^^^^^^
+...
+296 |     pub(super) fn validate_attachment(
+    |                   ^^^^^^^^^^^^^^^^^^^
+...
+376 |     pub(super) fn require_renderable_attachment(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+392 |     pub(super) fn format_facts(
+    |                   ^^^^^^^^^^^^
+...
+410 |     pub(super) fn validate_buffer_allocation(&mut self, desc: GlBufferDesc) -> Result<(), GlError> {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+431 |     pub(super) fn validate_texture_allocation(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+468 |     pub(super) fn validate_storage_image_binding(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `issue_single_draws` is never used
+   --> crates\gl\src\backend\gl\api\multi_draw.rs:134:15
+    |
+134 | pub(crate) fn issue_single_draws(
+    |               ^^^^^^^^^^^^^^^^^^
+
+warning: trait `GlMultiDrawApi` is never used
+   --> crates\gl\src\backend\gl\api\multi_draw.rs:152:18
+    |
+152 | pub(crate) trait GlMultiDrawApi: GlRasterCommandApi {
+    |                  ^^^^^^^^^^^^^^
+
+warning: method `get` is never used
+  --> crates\gl\src\backend\gl\api\object.rs:44:18
+   |
+34 | impl DeviceIdentity {
+   | ------------------- method in this implementation
+...
+44 |     pub const fn get(self) -> u64 {
+   |                  ^^^
+
+warning: methods `checked_next` and `get` are never used
+  --> crates\gl\src\backend\gl\api\object.rs:58:18
+   |
+53 | impl ContextEpoch {
+   | ----------------- methods in this implementation
+...
+58 |     pub const fn checked_next(self) -> Option<Self> {
+   |                  ^^^^^^^^^^^^
+...
+69 |     pub const fn get(self) -> u64 {
+   |                  ^^^
+
+warning: method `is_zero` is never used
+  --> crates\gl\src\backend\gl\api\presentation.rs:16:18
+   |
+15 | impl GlSurfaceSize {
+   | ------------------ method in this implementation
+16 |     pub const fn is_zero(self) -> bool {
+   |                  ^^^^^^^
+
+warning: enum `GlSurfaceAcquire` is never used
+   --> crates\gl\src\backend\gl\api\presentation.rs:113:17
+    |
+113 | pub(crate) enum GlSurfaceAcquire {
+    |                 ^^^^^^^^^^^^^^^^
+
+warning: function `acquire_position` is never used
+   --> crates\gl\src\backend\gl\api\presentation.rs:132:15
+    |
+132 | pub(crate) fn acquire_position(
+    |               ^^^^^^^^^^^^^^^^
+
+warning: trait `GlSurfacePresentationApi` is never used
+   --> crates\gl\src\backend\gl\api\presentation.rs:161:18
+    |
+161 | pub(crate) trait GlSurfacePresentationApi: GlFamilyApi {
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: variants `Pending` and `Unknown` are never constructed
+  --> crates\gl\src\backend\gl\api\query.rs:7:5
+   |
+ 6 | pub(crate) enum GlQueryResult {
+   |                 ------------- variants in this enum
+ 7 |     Pending,
+   |     ^^^^^^^
+...
+11 |     Unknown,
+   |     ^^^^^^^
+   |
+   = note: `GlQueryResult` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `query_result` is never used
+  --> crates\gl\src\backend\gl\api\query.rs:22:8
+   |
+19 | pub(crate) trait GlQueryObjectsApi: GlFamilyApi {
+   |                  ----------------- method in this trait
+...
+22 |     fn query_result(&mut self, query: QueryId) -> Result<GlQueryResult, GlError>;
+   |        ^^^^^^^^^^^^
+
+warning: trait `GlElapsedQueryApi` is never used
+  --> crates\gl\src\backend\gl\api\query.rs:32:18
+   |
+32 | pub(crate) trait GlElapsedQueryApi: GlFamilyApi {
+   |                  ^^^^^^^^^^^^^^^^^
+
+warning: trait `GlTimestampQueryApi` is never used
+  --> crates\gl\src\backend\gl\api\query.rs:38:18
+   |
+38 | pub(crate) trait GlTimestampQueryApi: GlFamilyApi {
+   |                  ^^^^^^^^^^^^^^^^^^^
+
+warning: trait `GlAdvancedRasterApi` is never used
+   --> crates\gl\src\backend\gl\api\raster.rs:296:18
+    |
+296 | pub(crate) trait GlAdvancedRasterApi: GlRasterCommandApi {
+    |                  ^^^^^^^^^^^^^^^^^^^
+
+warning: variant `Cube` is never constructed
+  --> crates\gl\src\backend\gl\api\resource_texture.rs:14:5
+   |
+10 | pub(crate) enum GlTextureDimension {
+   |                 ------------------ variant in this enum
+...
+14 |     Cube,
+   |     ^^^^
+   |
+   = note: `GlTextureDimension` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: variant `All` is never constructed
+   --> crates\gl\src\backend\gl\api\resource_texture.rs:172:5
+    |
+171 | pub(crate) enum GlTextureAspect {
+    |                 --------------- variant in this enum
+172 |     All,
+    |     ^^^
+    |
+    = note: `GlTextureAspect` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: variants `Sampler`, `Texture`, and `StorageBuffer` are never constructed
+  --> crates\gl\src\backend\gl\api\shader.rs:56:5
+   |
+54 | pub(crate) enum GlShaderResourceKind {
+   |                 -------------------- variants in this enum
+55 |     UniformBuffer,
+56 |     Sampler,
+   |     ^^^^^^^
+57 |     Texture,
+   |     ^^^^^^^
+...
+84 |     StorageBuffer(GlStorageBufferUsage),
+   |     ^^^^^^^^^^^^^
+   |
+   = note: `GlShaderResourceKind` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: variant `ReadWrite` is never constructed
+  --> crates\gl\src\backend\gl\api\storage.rs:13:5
+   |
+11 | pub(crate) enum GlStorageBufferUsage {
+   |                 -------------------- variant in this enum
+12 |     ReadOnly,
+13 |     ReadWrite,
+   |     ^^^^^^^^^
+   |
+   = note: `GlStorageBufferUsage` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: trait `GlStorageBufferApi` is never used
+   --> crates\gl\src\backend\gl\api\storage.rs:103:18
+    |
+103 | pub(crate) trait GlStorageBufferApi: GlFamilyApi {
+    |                  ^^^^^^^^^^^^^^^^^^
+
+warning: methods `union` and `contains` are never used
+  --> crates\gl\src\backend\gl\api\sync.rs:29:18
+   |
+11 | impl GlMemoryBarrier {
+   | -------------------- methods in this implementation
+...
+29 |     pub const fn union(self, other: Self) -> Self {
+   |                  ^^^^^
+...
+32 |     pub const fn contains(self, other: Self) -> bool {
+   |                  ^^^^^^^^
+
+warning: variant `Failed` is never constructed
+  --> crates\gl\src\backend\gl\api\sync.rs:58:5
+   |
+55 | pub(crate) enum GlFenceStatus {
+   |                 ------------- variant in this enum
+...
+58 |     Failed,
+   |     ^^^^^^
+   |
+   = note: `GlFenceStatus` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: struct `GlWaitBound` is never constructed
+  --> crates\gl\src\backend\gl\api\sync.rs:62:19
+   |
+62 | pub(crate) struct GlWaitBound {
+   |                   ^^^^^^^^^^^
+
+warning: associated constant `POLL` is never used
+  --> crates\gl\src\backend\gl\api\sync.rs:66:15
+   |
+65 | impl GlWaitBound {
+   | ---------------- associated constant in this implementation
+66 |     pub const POLL: Self = Self { nanoseconds: 0 };
+   |               ^^^^
+
+warning: methods `wait_fence`, `memory_barrier_by_region`, and `texture_barrier` are never used
+   --> crates\gl\src\backend\gl\api\sync.rs:118:8
+    |
+112 | pub(crate) trait GlSyncApi: GlFamilyApi {
+    |                  --------- methods in this trait
+...
+118 |     fn wait_fence(
+    |        ^^^^^^^^^^
+...
+126 |     fn memory_barrier_by_region(&mut self, barriers: GlMemoryBarrier) -> Result<(), GlError>;
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^
+127 |     /// Texture feedback ordering, distinct from memory visibility barriers.
+128 |     fn texture_barrier(&mut self) -> Result<(), GlError>;
+    |        ^^^^^^^^^^^^^^^
+
+warning: multiple variants are never constructed
+  --> crates\gl\src\backend\gl\api\vertex.rs:8:5
+   |
+ 7 | pub(crate) enum GlVertexFormat {
+   |                 -------------- variants in this enum
+ 8 |     Uint8x2,
+   |     ^^^^^^^
+ 9 |     Uint8x4,
+   |     ^^^^^^^
+10 |     Sint8x2,
+   |     ^^^^^^^
+11 |     Sint8x4,
+   |     ^^^^^^^
+...
+14 |     Snorm8x2,
+   |     ^^^^^^^^
+15 |     Snorm8x4,
+   |     ^^^^^^^^
+16 |     Uint16x2,
+   |     ^^^^^^^^
+17 |     Uint16x4,
+   |     ^^^^^^^^
+18 |     Sint16x2,
+   |     ^^^^^^^^
+19 |     Sint16x4,
+   |     ^^^^^^^^
+20 |     Unorm16x2,
+   |     ^^^^^^^^^
+21 |     Unorm16x4,
+   |     ^^^^^^^^^
+22 |     Snorm16x2,
+   |     ^^^^^^^^^
+23 |     Snorm16x4,
+   |     ^^^^^^^^^
+24 |     Float16x2,
+   |     ^^^^^^^^^
+25 |     Float16x4,
+   |     ^^^^^^^^^
+   |
+   = note: `GlVertexFormat` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `bind_vertex_array` is never used
+   --> crates\gl\src\backend\gl\api\vertex.rs:258:8
+    |
+255 | pub(crate) trait GlVertexApi: GlFamilyApi {
+    |                  ----------- method in this trait
+...
+258 |     fn bind_vertex_array(
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: variant `Unsupported` is never constructed
+  --> crates\gl\src\backend\gl\backend\completion.rs:67:5
+   |
+60 | enum GlCompletionEvidence {
+   |      -------------------- variant in this enum
+...
+67 |     Unsupported,
+   |     ^^^^^^^^^^^
+   |
+   = note: `GlCompletionEvidence` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: field `depth` is never read
+   --> crates\gl\src\backend\gl\backend\encoder.rs:123:16
+    |
+116 | pub(crate) struct GlSurfaceDepthPass {
+    |                   ------------------ field in this struct
+...
+123 |     pub(crate) depth: GlTextureView,
+    |                ^^^^^
+
+warning: trait `PipelineLayoutNativeRef` is never used
+   --> crates\gl\src\backend\gl\backend\pipeline.rs:386:7
+    |
+386 | trait PipelineLayoutNativeRef {
+    |       ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `0` is never read
+   --> crates\gl\src\backend\gl\backend\types.rs:195:26
+    |
+195 |           pub struct $name(pub(crate) Rc<GlDeviceState>);
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+199 | / native_handle!(
+200 | |     GlMeshPipeline,
+    | |     -------------- field in this struct
+201 | |     GlRayPipeline,
+202 | |     GlPipelineCache,
+203 | |     GlAcceleration,
+204 | |     GlSparseAllocation,
+205 | | );
+    | |_- in this macro invocation
+    |
+    = help: consider removing this field
+    = note: `GlMeshPipeline` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+    = note: this warning originates in the macro `native_handle` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: field `0` is never read
+   --> crates\gl\src\backend\gl\backend\types.rs:195:26
+    |
+195 |           pub struct $name(pub(crate) Rc<GlDeviceState>);
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+199 | / native_handle!(
+200 | |     GlMeshPipeline,
+201 | |     GlRayPipeline,
+    | |     ------------- field in this struct
+202 | |     GlPipelineCache,
+203 | |     GlAcceleration,
+204 | |     GlSparseAllocation,
+205 | | );
+    | |_- in this macro invocation
+    |
+    = help: consider removing this field
+    = note: `GlRayPipeline` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+    = note: this warning originates in the macro `native_handle` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: field `0` is never read
+   --> crates\gl\src\backend\gl\backend\types.rs:195:26
+    |
+195 |           pub struct $name(pub(crate) Rc<GlDeviceState>);
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+199 | / native_handle!(
+200 | |     GlMeshPipeline,
+201 | |     GlRayPipeline,
+202 | |     GlPipelineCache,
+    | |     --------------- field in this struct
+203 | |     GlAcceleration,
+204 | |     GlSparseAllocation,
+205 | | );
+    | |_- in this macro invocation
+    |
+    = help: consider removing this field
+    = note: `GlPipelineCache` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+    = note: this warning originates in the macro `native_handle` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: field `0` is never read
+   --> crates\gl\src\backend\gl\backend\types.rs:195:26
+    |
+195 |           pub struct $name(pub(crate) Rc<GlDeviceState>);
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+199 | / native_handle!(
+200 | |     GlMeshPipeline,
+201 | |     GlRayPipeline,
+202 | |     GlPipelineCache,
+203 | |     GlAcceleration,
+    | |     -------------- field in this struct
+204 | |     GlSparseAllocation,
+205 | | );
+    | |_- in this macro invocation
+    |
+    = help: consider removing this field
+    = note: `GlAcceleration` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+    = note: this warning originates in the macro `native_handle` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: field `0` is never read
+   --> crates\gl\src\backend\gl\backend\types.rs:195:26
+    |
+195 |           pub struct $name(pub(crate) Rc<GlDeviceState>);
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+199 | / native_handle!(
+200 | |     GlMeshPipeline,
+201 | |     GlRayPipeline,
+202 | |     GlPipelineCache,
+203 | |     GlAcceleration,
+204 | |     GlSparseAllocation,
+    | |     ------------------ field in this struct
+205 | | );
+    | |_- in this macro invocation
+    |
+    = help: consider removing this field
+    = note: `GlSparseAllocation` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+    = note: this warning originates in the macro `native_handle` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: field `vertex_layout` is never read
+   --> crates\gl\src\backend\gl\backend\types.rs:449:16
+    |
+438 | pub struct GlRasterPipelineInner {
+    |            --------------------- field in this struct
+...
+449 |     pub(crate) vertex_layout: crate::backend::gl::api::GlVertexLayout,
+    |                ^^^^^^^^^^^^^
+
+warning: field `key` is never read
+   --> crates\gl\src\backend\gl\backend\types.rs:612:16
+    |
+608 | pub struct GlShaderInner {
+    |            ------------- field in this struct
+...
+612 |     pub(crate) key: crate::backend::gl::api::GlShaderKey,
+    |                ^^^
+
+warning: struct `GlFormatEvidence` is never constructed
+  --> crates\gl\src\backend\gl\capabilities.rs:22:19
+   |
+22 | pub(crate) struct GlFormatEvidence {
+   |                   ^^^^^^^^^^^^^^^^
+
+warning: struct `GlLoweringClosure` is never constructed
+  --> crates\gl\src\backend\gl\capabilities.rs:31:19
+   |
+31 | pub(crate) struct GlLoweringClosure {
+   |                   ^^^^^^^^^^^^^^^^^
+
+warning: struct `GlCapabilitySnapshot` is never constructed
+  --> crates\gl\src\backend\gl\capabilities.rs:44:19
+   |
+44 | pub(crate) struct GlCapabilitySnapshot {
+   |                   ^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `into_capabilities` and `format` are never used
+  --> crates\gl\src\backend\gl\capabilities.rs:59:19
+   |
+53 | impl GlCapabilitySnapshot {
+   | ------------------------- methods in this implementation
+...
+59 |     pub(crate) fn into_capabilities(self, device: DeviceId) -> DeviceCapabilities {
+   |                   ^^^^^^^^^^^^^^^^^
+...
+95 |     pub(crate) fn format(&self, format: GlFormat) -> Option<GlFormatEvidence> {
+   |                   ^^^^^^
+
+warning: struct `GlFeatureProbe` is never constructed
+  --> crates\gl\src\backend\gl\facts.rs:10:19
+   |
+10 | pub(crate) struct GlFeatureProbe {
+   |                   ^^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+  --> crates\gl\src\backend\gl\facts.rs:17:19
+   |
+16 | impl GlFeatureProbe {
+   | ------------------- associated items in this implementation
+17 |     pub(crate) fn new(profile: GlProfile) -> Self {
+   |                   ^^^
+...
+24 |     pub(crate) fn profile(&self) -> GlProfile {
+   |                   ^^^^^^^
+...
+27 |     pub(crate) fn report_extension(&mut self, extension: GlExtension) {
+   |                   ^^^^^^^^^^^^^^^^
+...
+30 |     pub(crate) fn report_function(&mut self, function: GlFunction) {
+   |                   ^^^^^^^^^^^^^^^
+...
+33 |     pub(crate) fn supports(&self, feature: GlFeature) -> bool {
+   |                   ^^^^^^^^
+...
+36 |     pub(crate) fn missing_function(&self, feature: GlFeature) -> Option<GlFunction> {
+   |                   ^^^^^^^^^^^^^^^^
+...
+39 |     pub(crate) fn selected_route(&self, feature: GlFeature) -> Option<SelectedRoute> {
+   |                   ^^^^^^^^^^^^^^
+
+warning: variants `MultiDrawIndirect`, `MultiDraw`, `SamplerAnisotropy`, `CompressionAstcLdr`, `CompressionAstcHdr`, and `Multiview` are never constructed
+   --> crates\gl\src\backend\gl\features\mod.rs:117:5
+    |
+111 | pub(crate) enum GlFeature {
+    |                 --------- variants in this enum
+...
+117 |     MultiDrawIndirect,
+    |     ^^^^^^^^^^^^^^^^^
+118 |     MultiDraw,
+    |     ^^^^^^^^^
+...
+122 |     SamplerAnisotropy,
+    |     ^^^^^^^^^^^^^^^^^
+...
+128 |     CompressionAstcLdr,
+    |     ^^^^^^^^^^^^^^^^^^
+129 |     CompressionAstcHdr,
+    |     ^^^^^^^^^^^^^^^^^^
+130 |     Multiview,
+    |     ^^^^^^^^^
+    |
+    = note: `GlFeature` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: associated items `DESKTOP_MINIMUM`, `GLES_MINIMUM`, and `accepts` are never used
+  --> crates\gl\src\backend\gl\profile.rs:33:22
+   |
+32 | impl GlProfile {
+   | -------------- associated items in this implementation
+33 |     pub(crate) const DESKTOP_MINIMUM: GlVersion = GlVersion::new(4, 0);
+   |                      ^^^^^^^^^^^^^^^
+34 |     pub(crate) const GLES_MINIMUM: GlVersion = GlVersion::new(3, 0);
+   |                      ^^^^^^^^^^^^
+...
+37 |     pub(crate) const fn accepts(self) -> bool {
+   |                         ^^^^^^^
+
+warning: variants `Shader` and `Sync` are never constructed
+  --> crates\gl\src\backend\gl\state\cache.rs:15:5
+   |
+10 | pub(crate) enum ResourceRef {
+   |                 ----------- variants in this enum
+...
+15 |     Shader(ShaderId),
+   |     ^^^^^^
+...
+20 |     Sync(SyncId),
+   |     ^^^^
+   |
+   = note: `ResourceRef` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: methods `len`, `live_bytes`, `drain`, and `purge` are never used
+   --> crates\gl\src\backend\gl\state\cache.rs:79:19
+    |
+ 69 | impl<K: Clone + Eq + std::hash::Hash, V> StructuralCache<K, V> {
+    | -------------------------------------------------------------- methods in this implementation
+...
+ 79 |     pub(crate) fn len(&self) -> usize {
+    |                   ^^^
+...
+ 82 |     pub(crate) const fn live_bytes(&self) -> u64 {
+    |                         ^^^^^^^^^^
+...
+203 |     pub(crate) fn drain(&mut self, c: &mut CacheCounters) -> Vec<(K, V)> {
+    |                   ^^^^^
+...
+221 |     pub(crate) fn purge(&mut self, c: &mut CacheCounters) {
+    |                   ^^^^^
+
+warning: variants `VertexArray`, `DrawFramebuffer`, and `ReadFramebuffer` are never constructed
+   --> crates\gl\src\backend\gl\state\context.rs:104:5
+    |
+103 | pub(crate) enum DerivedCacheKind {
+    |                 ---------------- variants in this enum
+104 |     VertexArray,
+    |     ^^^^^^^^^^^
+105 |     DrawFramebuffer,
+    |     ^^^^^^^^^^^^^^^
+106 |     ReadFramebuffer,
+    |     ^^^^^^^^^^^^^^^
+    |
+    = note: `DerivedCacheKind` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: multiple methods are never used
+   --> crates\gl\src\backend\gl\state\context.rs:170:19
+    |
+136 | impl ContextState {
+    | ----------------- methods in this implementation
+...
+170 |     pub(crate) fn pass_failed(&mut self) {
+    |                   ^^^^^^^^^^^
+...
+173 |     pub(crate) fn end_pass(&mut self) {
+    |                   ^^^^^^^^
+...
+178 |     pub(crate) const fn draw(&self) -> bool {
+    |                         ^^^^
+...
+181 |     pub(crate) const fn dispatch(&self) -> bool {
+    |                         ^^^^^^^^
+...
+184 |     pub(crate) const fn clear(&self) -> bool {
+    |                         ^^^^^
+...
+187 |     pub(crate) const fn query_command(&self) -> bool {
+    |                         ^^^^^^^^^^^^^
+...
+190 |     pub(crate) const fn barrier(&self) -> bool {
+    |                         ^^^^^^^
+...
+255 |     pub(crate) fn prepare_geometry(&self, wanted: CanonicalBlockId) -> bool {
+    |                   ^^^^^^^^^^^^^^^^
+...
+262 |     pub(crate) fn commit_geometry(&mut self, wanted: CanonicalBlockId) {
+    |                   ^^^^^^^^^^^^^^^
+...
+265 |     pub(crate) fn geometry_failed(&mut self) {
+    |                   ^^^^^^^^^^^^^^^
+...
+287 |     pub(crate) fn prepare_pixel_transfer(&self, wanted: PixelTransferPacket) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+294 |     pub(crate) fn commit_pixel_transfer(&mut self, wanted: PixelTransferPacket) {
+    |                   ^^^^^^^^^^^^^^^^^^^^^
+...
+299 |     pub(crate) const fn prepare_query_command(&self, _: CanonicalBlockId) -> bool {
+    |                         ^^^^^^^^^^^^^^^^^^^^^
+...
+302 |     pub(crate) fn commit_query_begin(&mut self, target: CanonicalBlockId) {
+    |                   ^^^^^^^^^^^^^^^^^^
+...
+305 |     pub(crate) fn commit_query_end(&mut self) {
+    |                   ^^^^^^^^^^^^^^^^
+...
+308 |     pub(crate) fn query_failed(&mut self) {
+    |                   ^^^^^^^^^^^^
+...
+320 |     pub(crate) fn prepare_texture_slot(
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+334 |     pub(crate) fn commit_texture_slot(&mut self, unit: u32, binding: CanonicalBlockId) {
+    |                   ^^^^^^^^^^^^^^^^^^^
+...
+361 |     pub(crate) fn prepare_storage_slot(&self, index: u32, binding: CanonicalBlockId) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+368 |     pub(crate) fn commit_storage_slot(&mut self, index: u32, binding: CanonicalBlockId) {
+    |                   ^^^^^^^^^^^^^^^^^^^
+...
+371 |     pub(crate) fn prepare_image_slot(&self, index: u32, binding: CanonicalBlockId) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^
+...
+378 |     pub(crate) fn commit_image_slot(&mut self, index: u32, binding: CanonicalBlockId) {
+    |                   ^^^^^^^^^^^^^^^^^
+...
+398 |     pub(crate) fn retire_bind_group(&mut self, group: BindGroupKey) {
+    |                   ^^^^^^^^^^^^^^^^^
+...
+403 |     pub(crate) fn register_derived(
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: variants `TextureRetired`, `RenderbufferRetired`, `FramebufferRetired`, `QueryRetired`, `ProgramRetired`, and `VertexArrayRetired` are never constructed
+  --> crates\gl\src\backend\gl\state\event.rs:11:5
+   |
+ 9 | pub(crate) enum StateEvent {
+   |                 ---------- variants in this enum
+10 |     BufferRetired(BufferId),
+11 |     TextureRetired(TextureId),
+   |     ^^^^^^^^^^^^^^
+12 |     RenderbufferRetired(RenderbufferId),
+   |     ^^^^^^^^^^^^^^^^^^^
+13 |     FramebufferRetired(FramebufferId),
+   |     ^^^^^^^^^^^^^^^^^^
+14 |     QueryRetired(QueryId),
+   |     ^^^^^^^^^^^^
+15 |     SamplerRetired(SamplerId),
+16 |     ProgramRetired(ProgramId),
+   |     ^^^^^^^^^^^^^^
+17 |     VertexArrayRetired(VertexArrayId),
+   |     ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `StateEvent` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: associated function `declaring` is never used
+  --> crates\gl\src\backend\gl\state\event.rs:48:25
+   |
+47 | impl ScopedRawAccess {
+   | -------------------- associated function in this implementation
+48 |     pub(crate) const fn declaring(domains: DirtyDomains) -> Self {
+   |                         ^^^^^^^^^
+
+warning: associated items `EMPTY`, `insert`, `remove`, `extend`, and `is_empty` are never used
+  --> crates\gl\src\backend\gl\state\knowledge.rs:58:22
+   |
+57 | impl DirtyDomains {
+   | ----------------- associated items in this implementation
+58 |     pub(crate) const EMPTY: Self = Self(0);
+   |                      ^^^^^
+...
+66 |     pub(crate) fn insert(&mut self, domain: StateDomain) {
+   |                   ^^^^^^
+...
+69 |     pub(crate) fn remove(&mut self, domain: StateDomain) {
+   |                   ^^^^^^
+...
+72 |     pub(crate) fn extend(&mut self, other: Self) {
+   |                   ^^^^^^
+...
+75 |     pub(crate) const fn is_empty(self) -> bool {
+   |                         ^^^^^^^^
+
+warning: variant `Oracle` is never constructed
+   --> crates\gl\src\backend\gl\state\knowledge.rs:120:5
+    |
+118 | pub(crate) enum ExecutionMode {
+    |                 ------------- variant in this enum
+119 |     Optimized,
+120 |     Oracle,
+    |     ^^^^^^
+    |
+    = note: `ExecutionMode` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: variant `Desktop` is never constructed
+  --> crates\gl\src\backend\gl\native\context.rs:19:5
+   |
+17 | pub(crate) enum NativeContextKind {
+   |                 ----------------- variant in this enum
+18 |     /// A desktop context adopted from WGL/GLX/CGL or an equivalent host.
+19 |     Desktop,
+   |     ^^^^^^^
+   |
+   = note: `NativeContextKind` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: methods `kind` and `owner_thread` are never used
+  --> crates\gl\src\backend\gl\native\context.rs:45:8
+   |
+44 | pub(crate) trait NativeContextOwner {
+   |                  ------------------ methods in this trait
+45 |     fn kind(&self) -> NativeContextKind;
+   |        ^^^^
+46 |     fn context_stamp(&self) -> crate::backend::gl::api::ContextStamp;
+47 |     fn owner_thread(&self) -> OwnerThreadIdentity;
+   |        ^^^^^^^^^^^^
+
+warning: struct `NativeContext` is never constructed
+   --> crates\gl\src\backend\gl\native\context.rs:205:19
+    |
+205 | pub(crate) struct NativeContext<'a> {
+    |                   ^^^^^^^^^^^^^
+
+warning: associated items `adopt_current`, `glow`, `kind`, `lifecycle`, `mark_lost`, and `assert_ready` are never used
+   --> crates\gl\src\backend\gl\native\context.rs:218:19
+    |
+212 | impl<'a> NativeContext<'a> {
+    | -------------------------- associated items in this implementation
+...
+218 |     pub(crate) fn adopt_current(gl: &'a glow::Context, guard: CurrentContextGuard) -> Self {
+    |                   ^^^^^^^^^^^^^
+...
+226 |     pub(crate) fn glow(&self, operation: &'static str) -> Result<&glow::Context, GlError> {
+    |                   ^^^^
+...
+231 |     pub(crate) const fn kind(&self) -> NativeContextKind {
+    |                         ^^^^
+...
+235 |     pub(crate) const fn lifecycle(&self) -> GlContextLifecycle {
+    |                         ^^^^^^^^^
+...
+242 |     pub(crate) fn mark_lost(&mut self) {
+    |                   ^^^^^^^^^
+...
+246 |     pub(crate) fn assert_ready(&self, operation: &'static str) -> Result<(), GlError> {
+    |                   ^^^^^^^^^^^^
+
+warning: function `discover_with_query` is never used
+   --> crates\gl\src\backend\gl\native\discovery.rs:202:15
+    |
+202 | pub(super) fn discover_with_query(
+    |               ^^^^^^^^^^^^^^^^^^^
+
+warning: function `discover_with_query_identified` is never used
+   --> crates\gl\src\backend\gl\native\discovery.rs:210:15
+    |
+210 | pub(super) fn discover_with_query_identified(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `NativeOnly` is never constructed
+   --> crates\gl\src\backend\gl\native\discovery.rs:219:8
+    |
+219 | struct NativeOnly<'a, Q: NativeGlQuery + NativeGlProbes>(&'a Q);
+    |        ^^^^^^^^^^
+
+warning: variant `Integer` is never constructed
+   --> crates\gl\src\backend\gl\native\discovery.rs:582:5
+    |
+579 | pub(super) enum TextureSampleClass {
+    |                 ------------------ variant in this enum
+...
+582 |     Integer,
+    |     ^^^^^^^
+    |
+    = note: `TextureSampleClass` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: function `texture_sample_class` is never used
+   --> crates\gl\src\backend\gl\native\discovery.rs:588:21
+    |
+588 | pub(super) const fn texture_sample_class(format: GlFormat) -> TextureSampleClass {
+    |                     ^^^^^^^^^^^^^^^^^^^^
+
+warning: variants `StorageBuffer`, `IndirectDispatch`, `TimerQuery`, `DebugOutput`, and `Robustness` are never constructed
+  --> crates\gl\src\backend\gl\native\entry_points.rs:12:5
+   |
+10 | pub(crate) enum NativeEntryPoint {
+   |                 ---------------- variants in this enum
+11 |     Compute,
+12 |     StorageBuffer,
+   |     ^^^^^^^^^^^^^
+13 |     StorageImage,
+14 |     IndirectDispatch,
+   |     ^^^^^^^^^^^^^^^^
+15 |     DrawIndirect,
+16 |     TimerQuery,
+   |     ^^^^^^^^^^
+17 |     DebugOutput,
+   |     ^^^^^^^^^^^
+18 |     Robustness,
+   |     ^^^^^^^^^^
+   |
+   = note: `NativeEntryPoint` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: function `dispatch_indirect_offset` is never used
+   --> crates\gl\src\backend\gl\native\exec_compute.rs:421:15
+    |
+421 | pub(super) fn dispatch_indirect_offset(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `upload_compressed_mip` is never used
+   --> crates\gl\src\backend\gl\native\exec_copy_texture.rs:147:19
+    |
+ 43 | impl NativeGlProvider {
+    | --------------------- method in this implementation
+...
+147 |     pub(super) fn upload_compressed_mip(
+    |                   ^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `read_default_framebuffer` is never used
+   --> crates\gl\src\backend\gl\native\exec_readback.rs:182:19
+    |
+177 | impl NativeGlProvider {
+    | --------------------- method in this implementation
+...
+182 |     pub(crate) fn read_default_framebuffer(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `SAMPLER_TYPES` is never used
+  --> crates\gl\src\backend\gl\native\exec_shader.rs:22:7
+   |
+22 | const SAMPLER_TYPES: &[u32] = &[
+   |       ^^^^^^^^^^^^^
+
+warning: function `vertex_input_columns` is never used
+  --> crates\gl\src\backend\gl\native\exec_shader.rs:34:4
+   |
+34 | fn vertex_input_columns(type_: u32) -> Option<u8> {
+   |    ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `is_sampler_type` is never used
+  --> crates\gl\src\backend\gl\native\exec_shader.rs:44:4
+   |
+44 | fn is_sampler_type(type_: u32) -> bool {
+   |    ^^^^^^^^^^^^^^^
+
+warning: function `base_uniform_name` is never used
+  --> crates\gl\src\backend\gl\native\exec_shader.rs:49:4
+   |
+49 | fn base_uniform_name(name: &str) -> &str {
+   |    ^^^^^^^^^^^^^^^^^
+
+warning: constant `MAX_WAIT_TIMEOUT_NS` is never used
+  --> crates\gl\src\backend\gl\native\exec_sync.rs:19:7
+   |
+19 | const MAX_WAIT_TIMEOUT_NS: i32 = i32::MAX;
+   |       ^^^^^^^^^^^^^^^^^^^
+
+warning: method `require_timer_capability` is never used
+   --> crates\gl\src\backend\gl\native\exec_query.rs:268:8
+    |
+265 | impl NativeGlProvider {
+    | --------------------- method in this implementation
+...
+268 |     fn require_timer_capability(&self, operation: &'static str) -> Result<(), GlError> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: fields `unmap_buffer` and `surface_suspended` are never read
+  --> crates\gl\src\backend\gl\native\provider.rs:32:16
+   |
+25 | pub(crate) struct NativeGlProvider {
+   |                   ---------------- fields in this struct
+...
+32 |     pub(super) unmap_buffer: super::context::UnmapBufferFn,
+   |                ^^^^^^^^^^^^
+...
+50 |     pub(super) surface_suspended: bool,
+   |                ^^^^^^^^^^^^^^^^^
+
+warning: field `reflection` is never read
+   --> crates\gl\src\backend\gl\native\provider.rs:112:16
+    |
+106 | pub(super) struct NativeProgram {
+    |                   ------------- field in this struct
+...
+112 |     pub(super) reflection: crate::backend::gl::api::GlProgramReflection,
+    |                ^^^^^^^^^^
+
+warning: variants `TimeElapsed` and `Timestamp` are never constructed
+   --> crates\gl\src\backend\gl\native\provider.rs:135:5
+    |
+133 | pub(super) enum QueryTarget {
+    |                 ----------- variants in this enum
+134 |     SamplesPassed,
+135 |     TimeElapsed,
+    |     ^^^^^^^^^^^
+136 |     Timestamp,
+    |     ^^^^^^^^^
+    |
+    = note: `QueryTarget` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: enum `SurfaceAcquireAttempt` is never used
+   --> crates\gl\src\backend\gl\native\surface.rs:166:17
+    |
+166 | pub(super) enum SurfaceAcquireAttempt {
+    |                 ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `surface_acquire_attempt` is never used
+   --> crates\gl\src\backend\gl\native\surface.rs:183:15
+    |
+183 | pub(super) fn surface_acquire_attempt(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `current` is never used
+  --> crates\gl\src\backend\gl\native\wgl.rs:56:8
+   |
+44 | impl CurrentBindingArbiter {
+   | -------------------------- method in this implementation
+...
+56 |     fn current(&self) -> Option<usize> {
+   |        ^^^^^^^
+
+warning: struct `WglEvidence` is never constructed
+   --> crates\gl\src\backend\gl\native\wgl.rs:197:19
+    |
+197 | pub(crate) struct WglEvidence {
+    |                   ^^^^^^^^^^^
+
+warning: associated function `open_with_minimum_desktop_version` is never used
+   --> crates\gl\src\backend\gl\native\wgl.rs:250:19
+    |
+220 | impl WglContextSurface {
+    | ---------------------- associated function in this implementation
+...
+250 |     pub(crate) fn open_with_minimum_desktop_version(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `EVIDENCE_VERTEX` is never used
+   --> crates\gl\src\backend\gl\native\wgl.rs:458:7
+    |
+458 | const EVIDENCE_VERTEX: &str = "#version 400 core\nvoid main() { const vec2 p[3]=vec2[3](vec2(-0.6,-0.5),vec2(0.6,-0.5),vec2(0.0,0.0...
+    |       ^^^^^^^^^^^^^^^
+
+warning: constant `EVIDENCE_FRAGMENT` is never used
+   --> crates\gl\src\backend\gl\native\wgl.rs:459:7
+    |
+459 | const EVIDENCE_FRAGMENT: &str = "#version 400 core\nout vec4 o; void main() { o=vec4(48.0/255.0,176.0/255.0,112.0/255.0,1.0); }";
+    |       ^^^^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+   --> crates\gl\src\backend\gl\native\wgl\runtime.rs:25:19
+    |
+  8 | impl WglContextSurface {
+    | ---------------------- methods in this implementation
+...
+ 25 |     pub(crate) fn with_current<T>(
+    |                   ^^^^^^^^^^^^
+...
+ 76 |     pub(crate) fn set_swap_interval(&self, interval: i32) -> Result<bool, GlError> {
+    |                   ^^^^^^^^^^^^^^^^^
+...
+120 |     pub(crate) fn suspend(&self) -> Result<(), GlError> {
+    |                   ^^^^^^^
+...
+132 |     pub(crate) fn resume(&self) -> Result<(), GlError> {
+    |                   ^^^^^^
+...
+146 |     pub(crate) fn extent(&self) -> [u32; 2] {
+    |                   ^^^^^^
+...
+159 |     pub(crate) fn owner_thread(&self) -> OwnerThreadIdentity {
+    |                   ^^^^^^^^^^^^
+...
+166 |     pub(crate) fn evidence(&self) -> WglEvidence {
+    |                   ^^^^^^^^
+...
+266 |     pub(crate) fn draw_evidence(
+    |                   ^^^^^^^^^^^^^
+
+warning: function `compile_evidence_shader` is never used
+ --> crates\gl\src\backend\gl\native\wgl\support.rs:8:15
+  |
+8 | pub(super) fn compile_evidence_shader(
+  |               ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `is_supported_desktop_test_version` is never used
+   --> crates\gl\src\backend\gl\native\wgl\support.rs:141:21
+    |
+141 | pub(super) const fn is_supported_desktop_test_version(version: GlVersion) -> bool {
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `fluxel-rhi-gl` (lib test) generated 129 warnings (run `cargo fix --lib -p fluxel-rhi-gl --tests` to apply 17 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.47s
+     Running unittests src\lib.rs (target\debug\deps\fluxel_rhi_gl-159e100f19ca733b.exe)
+
+running 140 tests
+test backend::gl::api::binding::tests::texture_units_are_bounded_by_the_discovered_count ... ok
+test backend::gl::api::copy::tests::an_expressible_stride_is_described_as_the_callers_own_pitch ... ok
+test backend::gl::api::binding::tests::uniform_ranges_resolve_size_zero_to_the_allocation_end ... ok
+test backend::gl::api::copy::tests::a_zero_extent_is_refused_as_a_shape_rather_than_underflowing ... ok
+test backend::gl::api::compute::tests::rejects_bad_preflight_values ... ok
+test backend::gl::api::binding::tests::uniform_slots_and_offsets_are_checked_before_ranges ... ok
+test backend::gl::api::copy::tests::an_unexpressible_stride_is_described_as_tight_not_as_the_callers ... ok
+test backend::gl::api::copy::tests::pixel_store_alignments_are_checked ... ok
+test backend::gl::api::copy::tests::readback_requires_the_exact_returned_length ... ok
+test backend::gl::api::copy::tests::readback_size_includes_last_image_only_once ... ok
+test backend::gl::api::copy::tests::the_row_length_is_present_exactly_when_the_stride_is_mappable ... ok
+test backend::gl::api::extensions::tests::every_typed_name_maps_back_from_its_own_registry_spelling ... ok
+test backend::gl::api::formats::tests::compressed_encoded_sizes_use_exact_blocks_and_reject_zero_extents ... ok
+test backend::gl::api::extensions::tests::only_the_second_multiview_revision_reaches_the_typed_name ... ok
+test backend::gl::api::extensions::tests::compressed_extension_names_preserve_native_and_web_registry_identity ... ok
+test backend::gl::api::extensions::tests::draft_names_are_recorded_in_the_ledger_without_a_typed_route ... ok
+test backend::gl::api::copy::tests::unmappable_rows_need_an_explicit_bounded_repack ... ok
+test backend::gl::api::extensions::tests::resolve_requires_the_exact_evidence_its_route_asks_for ... ok
+test backend::gl::api::extensions::tests::a_typed_route_is_legal_only_inside_its_own_family ... ok
+test backend::gl::api::formats::tests::compressed_family_metadata_cannot_enable_a_different_exact_format ... ok
+test backend::gl::api::formats::tests::compressed_formats_preserve_exact_block_layout_and_color_space ... ok
+test backend::gl::api::formats::tests::gles3_core_guarantee_is_exactly_etc2_and_eac ... ok
+test backend::gl::api::formats::tests::renderbuffer_multisampling_does_not_prove_texture_multisampling ... ok
+test backend::gl::api::framebuffer::tests::a_view_serving_no_layer_is_not_a_view ... ok
+test backend::gl::api::formats::tests::static_guarantees_cannot_claim_storage_images ... ok
+test backend::gl::api::framebuffer::tests::attachment_views_must_agree_on_their_layer_count ... ok
+test backend::gl::api::framebuffer::tests::blit_regions_and_masks_fail_closed_before_gl ... ok
+test backend::gl::api::framebuffer::tests::clear_value_retains_float_bits ... ok
+test backend::gl::api::framebuffer::tests::draw_buffers_selection_is_bounded_unique_and_in_range ... ok
+test backend::gl::api::framebuffer::tests::multiview_view_count_is_gated_by_the_proved_limit ... ok
+test backend::gl::api::framebuffer::tests::rejects_empty_framebuffer ... ok
+test backend::gl::api::framebuffer::tests::resolve_targets_are_single_layer ... ok
+test backend::gl::api::framebuffer::tests::single_view_passes_never_need_the_multiview_limit ... ok
+test backend::gl::api::indirect::tests::accepts_a_whole_dispatch_record_inside_its_range ... ok
+test backend::gl::api::indirect::tests::dispatch_record_is_three_work_group_counts ... ok
+test backend::gl::api::indirect::tests::overflowing_dispatch_offsets_are_rejected_not_wrapped ... ok
+test backend::gl::api::indirect::tests::rejects_dispatch_commands_outside_the_buffer_role ... ok
+test backend::gl::api::indirect::tests::rejects_dispatch_records_that_do_not_fit_their_range ... ok
+test backend::gl::api::indirect::tests::rejects_misaligned_indirect_offset ... ok
+test backend::gl::api::multi_draw::tests::a_batch_keeps_its_draws_in_submission_order ... ok
+test backend::gl::api::multi_draw::tests::a_batch_mixing_shapes_is_rejected ... ok
+test backend::gl::api::multi_draw::tests::a_batch_with_no_draw_is_not_a_batch ... ok
+test backend::gl::api::multi_draw::tests::an_index_offset_beyond_the_parameter_slot_stays_the_providers_rule ... ok
+test backend::gl::api::multi_draw::tests::every_draw_of_the_batch_must_be_a_real_draw ... ok
+test backend::gl::api::multi_draw::tests::instance_counts_are_needed_exactly_when_a_draw_runs_several_instances ... ok
+test backend::gl::api::multi_draw::tests::per_draw_values_must_survive_one_parameter_slot ... ok
+test backend::gl::api::object::tests::typed_identities_keep_only_fluxel_owned_metadata ... ok
+test backend::gl::api::object::tests::object_kinds_have_distinct_static_identity_types ... ok
+test backend::gl::api::presentation::tests::a_presentation_source_must_be_a_single_sample_2d_texture_of_the_acquired_extent ... ok
+test backend::gl::api::presentation::tests::resize_invalidates_an_old_acquire_lease ... ok
+test backend::gl::api::presentation::tests::a_refused_lease_names_the_operation_that_was_attempted ... ok
+test backend::gl::api::raster::tests::advanced_offset_is_capability_gated ... ok
+test backend::gl::api::raster::tests::indexed_draw_keeps_base_and_instance_offsets ... ok
+test backend::gl::api::raster::tests::excess_color_targets_are_not_write_mask_failures ... ok
+test backend::gl::api::query::tests::disjoint_is_not_a_zero_elapsed_time ... ok
+test backend::gl::api::resource::tests::consumption_roles_combine_because_the_gl_family_stores_untyped_bytes ... ok
+test backend::gl::api::resource::tests::mapping_roles_are_rejected_beside_each_other_and_beside_gpu_use ... ok
+test backend::gl::api::resource::tests::mip_count_and_multisample_dimension_are_bounded ... ok
+test backend::gl::api::resource::tests::every_role_reports_a_distinct_usage_bit ... ok
+test backend::gl::api::resource::tests::multisample_textures_cannot_have_mips ... ok
+test backend::gl::api::resource::tests::rejects_overflowing_buffer_ranges_before_use ... ok
+test backend::gl::api::resource::tests::renderbuffer_descriptors_reject_zero_extent_and_samples ... ok
+test backend::gl::api::resource::tests::the_reported_conflict_pair_is_deterministic_and_named ... ok
+test backend::gl::api::resource::tests::staging_roles_stay_legal_next_to_a_mapping ... ok
+test backend::gl::api::sampler::tests::anisotropy_uses_the_acquirable_typed_extension ... ok
+test backend::gl::api::sampler::tests::rejects_nan_lod ... ok
+test backend::gl::api::sampler::tests::preserves_anisotropy_float_validation ... ok
+test backend::gl::api::shader::tests::accepts_compatible_lowered_dialect_for_profile ... ok
+test backend::gl::api::shader::tests::program_kind_routes_stage_validation ... ok
+test backend::gl::api::shader::tests::rejects_duplicate_executable_assignments ... ok
+test backend::gl::api::storage::tests::rejects_unaligned_storage_buffer_range ... ok
+test backend::gl::api::shader::tests::storage_image_assignment_matches_its_explicit_glsl_unit ... ok
+test backend::gl::api::shader::tests::rejects_empty_lowered_entry_point ... ok
+test backend::gl::api::shader::tests::rejects_duplicate_logical_bindings ... ok
+test backend::gl::api::sync::tests::by_region_refuses_non_local_visibility_classes ... ok
+test backend::gl::api::sync::tests::revoked_lease_is_rejected ... ok
+test backend::gl::api::vertex::tests::a_buffer_must_declare_the_role_it_is_bound_for ... ok
+test backend::gl::backend::resource::binding::tests::group_index_keeps_same_numbered_uniforms_distinct ... ok
+test backend::gl::api::vertex::tests::missing_binding_metadata_is_distinct_from_an_exceeded_offset ... ok
+test backend::gl::backend::resource::binding::tests::texture_load_layout_needs_no_sampler_binding ... ok
+test backend::gl::api::vertex::tests::rejects_duplicate_buffer_slots ... ok
+test backend::gl::api::vertex::tests::attribute_is_hashable_structural_state ... ok
+test backend::gl::backend::resource::binding::tests::texture_load_layout_does_not_require_a_sampler_resource ... ok
+test backend::gl::backend::shader::tests::embedded_precision_defaults_follow_version_and_extensions ... ok
+test backend::gl::features::compute::tests::compute_extension_still_requires_its_entrypoint ... ok
+test backend::gl::features::compute::tests::compute_is_core_in_43_and_gles31_but_not_webgl2 ... ok
+test backend::gl::features::debug::tests::debug_route_needs_push_pop_and_label ... ok
+test backend::gl::features::debug::tests::webgl2_does_not_infer_khr_debug_from_browser_profile ... ok
+test backend::gl::features::draw::tests::indirect_count_is_never_in_gles_core ... ok
+test backend::gl::backend::shader_texture_origin::tests::keeps_array_layer_while_flipping_texture_rows ... ok
+test backend::gl::features::draw::tests::indirect_draw_obeys_profile_floor_and_both_tokens ... ok
+test backend::gl::backend::shader_texture_origin::tests::rewrites_only_reflected_2d_texture_operations ... ok
+test backend::gl::features::query::tests::occlusion_query_needs_every_entrypoint_even_at_core_floor ... ok
+test backend::gl::features::query::tests::webgl2_does_not_inherit_gles_query_core_route ... ok
+test backend::gl::features::sync::tests::barriers_are_profile_and_token_precise ... ok
+test backend::gl::features::sync::tests::sync_accepts_core_and_arb_but_needs_every_token ... ok
+test backend::gl::features::sync::tests::texture_barrier_retains_core_arb_and_nv_tokens ... ok
+test backend::gl::features::texture::tests::bc_aggregate_requires_every_bc_family_and_both_upload_tokens ... ok
+test backend::gl::features::texture::tests::etc2_is_gles30_and_gl43_core_but_not_webgl2_by_inference ... ok
+test backend::gl::native::context::tests::currentness_guard_preserves_platform_provenance ... ok
+test backend::gl::native::discovery::limits::optional_limit_route_tests::gles30_has_no_es31_limit_route ... ok
+test backend::gl::native::discovery::limits::optional_limit_route_tests::gles31_enables_its_core_limit_routes ... ok
+test backend::gl::native::entry_points::tests::one_missing_symbol_closes_only_its_group ... ok
+test backend::gl::native::entry_points::tests::typed_extension_cannot_cross_profile_family ... ok
+test backend::gl::native::probe::tests::keeps_newer_versions_instead_of_downgrading_to_floor ... ok
+test backend::gl::native::probe::tests::malformed_es_prefix_does_not_become_desktop_gl ... ok
+test backend::gl::native::probe::tests::rejects_older_native_profiles_before_any_command_path ... ok
+test backend::gl::native::probes::glow_probes::tests::a_failed_acquisition_is_not_revived_by_a_probe ... ok
+test backend::gl::native::probes::glow_probes::tests::a_merely_reported_name_is_never_promoted_by_a_probe ... ok
+test backend::gl::native::probes::glow_probes::tests::a_passed_probe_is_what_lets_the_extension_route_resolve ... ok
+test backend::gl::native::probes::glow_probes::tests::a_passed_probe_promotes_an_acquired_extension_to_probed ... ok
+test backend::gl::native::probes::glow_probes::tests::a_probe_only_promotes_the_extension_it_belongs_to ... ok
+test backend::gl::native::probes::glow_probes::tests::a_probe_that_did_not_pass_leaves_the_ledger_acquired ... ok
+test backend::gl::native::wgl_core_conformance::wgl_clear_ignores_and_restores_pipeline_write_masks ... ignored, requires an explicit WGL hardware-test run
+test backend::gl::native::probes::glow_probes::tests::a_route_illegal_for_the_profile_is_never_promoted ... ok
+test backend::gl::native::wgl_core_conformance::wgl_typed_device_surface_and_empty_immediate_step ... ignored, requires an explicit WGL hardware-test run
+test backend::gl::state::cache::tests::lru_and_dependency_invalidation_are_deterministic ... ok
+test backend::gl::state::context::tests::bind_groups_flush_only_after_acknowledgement ... ok
+test backend::gl::state::context::tests::compute_domain_invalidation_forces_raster_program_restore ... ok
+test backend::gl::state::context::tests::compute_program_change_forces_raster_program_restore ... ok
+test backend::gl::state::context::tests::current_program_invalidation_preserves_fixed_raster_skip_decisions ... ok
+test backend::gl::state::context::tests::dynamic_draw_invalidation_cannot_take_a_stale_pipeline_identity_hit ... ok
+test backend::gl::backend::shader::tests::naga_compute_lowering_flips_texture_load_and_storage_store_rows ... ok
+test backend::gl::state::context::tests::pass_begin_is_never_elided ... ok
+test backend::gl::state::context::tests::one_changed_leaf_produces_one_lowering_call_and_identity_hit_none ... ok
+test backend::gl::state::context::tests::pipeline_identity_is_a_collision_free_first_gate ... ok
+test backend::gl::state::context::tests::pipeline_miss_diffs_canonical_blocks_not_the_whole_pipeline ... ok
+test backend::gl::state::context::tests::raw_binding_access_forces_sampler_rebind ... ok
+test backend::gl::state::context::tests::retirement_erases_cached_object_binding_and_dependent_group ... ok
+test backend::gl::state::context::tests::sampler_cache_is_unit_scoped_and_generation_safe ... ok
+test backend::gl::state::context::tests::structurally_equal_pipeline_leaves_share_canonical_ids ... ok
+test backend::gl::state::context::tests::uniform_cache_key_includes_buffer_generation_and_range ... ok
+test backend::gl::state::event::tests::undeclared_raw_access_is_never_trusted ... ok
+test backend::gl::state::knowledge::tests::domains_have_unique_bits ... ok
+test backend::gl::state::knowledge::tests::unknown_never_agrees ... ok
+test backend::gl::translate::tests::array_upload_z_becomes_the_subresource_base_once ... ok
+test backend::gl::translate::tests::volume_upload_keeps_z_as_a_region_coordinate ... ok
+test backend::gl::translate_raster::tests::public_front_face_is_preserved_for_positive_height_gl_viewports ... ok
+test backend::gl::backend::shader::tests::naga_lowers_wgsl_for_each_supported_glsl_profile ... ok
+test backend::gl::backend::shader::tests::webgl2_raster_filter_fallback_lowers_texture_loads_to_es_300 ... ok
+
+test result: ok. 138 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.02s

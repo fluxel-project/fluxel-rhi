@@ -1,6 +1,6 @@
 param(
     [ValidateSet("vulkan", "gles")][string]$Backend = "vulkan",
-    [ValidateSet("01_triangle", "02_texture", "03_instancing", "04_dynamic_uniform_buffer", "05_push_constants", "06_compute", "07_offscreen", "08_msaa", "09_texture_mipmap", "10_indirect_draw", "11_occlusion_query", "12_screenshot", "13_multithreaded_recording", "14_descriptor_indexing")][string]$Demo = "01_triangle",
+    [ValidateSet("01_triangle", "02_texture", "03_instancing", "04_dynamic_uniform_buffer", "05_push_constants", "06_compute", "07_offscreen", "08_msaa", "09_texture_mipmap", "10_indirect_draw", "11_occlusion_query", "12_screenshot", "13_multithreaded_recording", "14_descriptor_indexing", "15_multiview")][string]$Demo = "01_triangle",
     [string]$Serial = "emulator-5554",
     [string]$Evidence = ""
 )
@@ -16,7 +16,7 @@ $out = Join-Path $root "target/android-rhi-capture/$Backend"
 $stage = Join-Path $out "stage"
 $libDir = Join-Path $stage "lib/x86_64"
 New-Item -ItemType Directory -Force -Path $libDir | Out-Null
-$featureList = switch ($Demo) { "02_texture" { "$Backend,demo02" } "03_instancing" { "$Backend,demo03" } "04_dynamic_uniform_buffer" { "$Backend,demo04" } "05_push_constants" { "$Backend,demo05" } "06_compute" { "$Backend,demo06" } "07_offscreen" { "$Backend,demo07" } "08_msaa" { "$Backend,demo08" } "09_texture_mipmap" { "$Backend,demo09" } "10_indirect_draw" { "$Backend,demo10" } "11_occlusion_query" { "$Backend,demo11" } "12_screenshot" { "$Backend,demo12" } "13_multithreaded_recording" { "$Backend,demo13" } "14_descriptor_indexing" { "$Backend,demo14" } default { $Backend } }
+$featureList = switch ($Demo) { "02_texture" { "$Backend,demo02" } "03_instancing" { "$Backend,demo03" } "04_dynamic_uniform_buffer" { "$Backend,demo04" } "05_push_constants" { "$Backend,demo05" } "06_compute" { "$Backend,demo06" } "07_offscreen" { "$Backend,demo07" } "08_msaa" { "$Backend,demo08" } "09_texture_mipmap" { "$Backend,demo09" } "10_indirect_draw" { "$Backend,demo10" } "11_occlusion_query" { "$Backend,demo11" } "12_screenshot" { "$Backend,demo12" } "13_multithreaded_recording" { "$Backend,demo13" } "14_descriptor_indexing" { "$Backend,demo14" } "15_multiview" { "$Backend,demo15" } default { $Backend } }
 $cargoArgs = @("build", "--manifest-path", (Join-Path $PSScriptRoot "../android-runner/Cargo.toml"), "--target", "x86_64-linux-android", "--release", "--no-default-features", "--features", $featureList)
 Push-Location $root
 try { cargo @cargoArgs; if ($LASTEXITCODE -ne 0) { throw "Android $Backend APK library build failed." } }
@@ -39,11 +39,34 @@ adb -s $Serial shell am start -n org.fluxel.rhicapture/android.app.NativeActivit
 Start-Sleep -Seconds 5
 $logs = adb -s $Serial logcat -d -s RustStdoutStderr:I
 $logs | Set-Content (Join-Path $out "logcat.txt")
-if ($logs -match "RHI_(INIT|DRAW|RESIZE)_ERROR|EVENT_LOOP_ERROR") { throw "RHI reported an Android runtime error; inspect $out/logcat.txt" }
-if (-not ($logs -match "RHI_FRAME_OK=2")) { throw "The Android workload did not confirm two completed frames; inspect $out/logcat.txt" }
-if (-not $Evidence) { $Evidence = Join-Path $root "临时/当前验证/android/2026-10-15/native-captures/$Backend" }
+if (-not $Evidence) { $Evidence = Join-Path $root "target/android-evidence/$Backend/$Demo" }
 New-Item -ItemType Directory -Force -Path $Evidence | Out-Null
+$Evidence = (Resolve-Path -LiteralPath $Evidence).Path
 $logs | Set-Content (Join-Path $Evidence "${Demo}_runtime.log")
+$changedFiles = @(
+    git -C $root diff --name-only HEAD
+    git -C $root ls-files --others --exclude-standard
+) | Sort-Object -Unique
+$sourceHashes = @{}
+foreach ($relativePath in $changedFiles) {
+    $sourcePath = Join-Path $root $relativePath
+    if (Test-Path -LiteralPath $sourcePath -PathType Leaf) {
+        $sourceHashes[$relativePath] = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash
+    }
+}
+@{
+    backend = $Backend
+    demo = $Demo
+    serial = $Serial
+    captured_at_utc = [DateTime]::UtcNow.ToString("o")
+    head = (git -C $root rev-parse HEAD)
+    worktree = @(git -C $root status --short --untracked-files=normal)
+    changed_file_sha256 = $sourceHashes
+    apk_sha256 = (Get-FileHash -LiteralPath $apk -Algorithm SHA256).Hash
+    library_sha256 = (Get-FileHash -LiteralPath (Join-Path $libDir "libfluxel_android_rhi_capture.so") -Algorithm SHA256).Hash
+} | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $Evidence "${Demo}_candidate.json")
+if ($logs -match "RHI_(INIT|DRAW|RESIZE|SUSPEND)_ERROR|EVENT_LOOP_ERROR") { throw "RHI reported an Android runtime error; inspect $Evidence/${Demo}_runtime.log" }
+if (-not ($logs -match "RHI_FRAME_OK=2")) { throw "The Android workload did not confirm two completed frames; inspect $Evidence/${Demo}_runtime.log" }
 if ($Demo -eq "12_screenshot") {
     $readbackLine = $logs | Where-Object { $_ -match "RHI_READBACK_OK=" } | Select-Object -First 1
     if (-not $readbackLine) { throw "The screenshot example did not confirm completed GPU readback." }

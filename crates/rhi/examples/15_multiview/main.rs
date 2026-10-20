@@ -35,7 +35,10 @@ pub trait WgslStereoBackend: StereoBackend {}
 
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),
-    all(target_os = "linux", feature = "native-gles-egl"),
+    all(
+        any(target_os = "linux", target_os = "android"),
+        feature = "native-gles-egl"
+    ),
     all(target_arch = "wasm32", feature = "webgl2")
 ))]
 impl WgslStereoBackend for fluxel_rhi::gl::Gl {}
@@ -433,7 +436,7 @@ impl<B: MultiviewBackend> Multiview<B> {
         let work = encoder.finish()?;
         Ok((work, uploads_geometry))
     }
-    fn mark_uploaded(&mut self) {
+    pub(crate) fn mark_uploaded(&mut self) {
         self.uploaded = true;
     }
     pub fn extent(&self) -> [u32; 2] {
@@ -446,7 +449,7 @@ impl<B: MultiviewBackend> Multiview<B> {
 mod resources;
 use resources::*;
 
-mod per_eye;
+pub(crate) mod per_eye;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub use per_eye::run_webgpu_multiview;
 #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]

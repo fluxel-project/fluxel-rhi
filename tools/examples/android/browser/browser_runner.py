@@ -89,13 +89,27 @@ try {
 
 def demo_page(backend: str, demo: str, entry: str) -> str:
     """Return a page that loads one wasm-bindgen web package and verifies it."""
-    return f"""<!doctype html><meta charset=\"utf-8\"><title>Fluxel {demo} {backend}</title>
-<style>html,body{{margin:0;background:#000}}canvas{{display:block}}</style><pre id=\"result\">loading</pre><canvas id=\"image\" width=\"1280\" height=\"720\"></canvas>
+    mode = {
+        "05_push_constants": "dynamic-uniform fallback",
+        "06_compute": "raster filter fallback",
+        "08_msaa": "single-sample fallback",
+        "10_indirect_draw": "direct draw fallback",
+        "11_occlusion_query": "visibility fallback",
+        "13_multithreaded_recording": "sequential drawing fallback",
+        "14_descriptor_indexing": "fixed texture-array fallback",
+        "15_multiview": "sequential stereo fallback",
+    }.get(demo, "example scene") if backend == "webgl2" else "example scene"
+    return f"""<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Fluxel {demo} {backend}</title>
+<style>html,body{{margin:0;background:#000;color:#fff}}canvas{{display:block;width:100%;height:auto}}pre{{margin:0;font-size:12px;white-space:pre-wrap;max-height:6em;overflow:auto}}</style><pre id=\"result\">loading</pre><canvas id=\"image\" width=\"1280\" height=\"720\"></canvas>
 <script type=\"module\">
 const result = document.querySelector('#result');
 const canvas = document.querySelector('#image');
 async function report(payload) {{
-  result.textContent = JSON.stringify(payload, null, 2);
+  payload.runId = new URLSearchParams(location.search).get('run');
+  payload.executionMode = '{mode}';
+  result.textContent = payload.state === 'success'
+    ? '{demo.split('_', 1)[0]} | {backend} | {mode} — completed 3 frames; stopped for capture'
+    : JSON.stringify(payload, null, 2);
   await fetch('/report', {{method:'POST', headers:{{'content-type':'application/json'}}, body:JSON.stringify(payload)}});
 }}
 function webgl2Readback() {{
@@ -118,7 +132,9 @@ try {{
   if (typeof module['{entry}'] !== 'function') throw new Error('missing wasm export: {entry}');
   await module['{entry}'](canvas, 3);
   const verification = {'webgl2Readback()' if backend == 'webgl2' else '{webgpu:true}'};
-  await report({{state:'success', backend:'{backend}', demo:'{demo}', entry:'{entry}', secureContext:isSecureContext, verification}});
+  // Allow the final canvas and status to reach Android's browser compositor.
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  await report({{state:'success', backend:'{backend}', demo:'{demo}', entry:'{entry}', requestedFrames:3, canvasExtent:[canvas.width,canvas.height], userAgent:navigator.userAgent, secureContext:isSecureContext, verification}});
 }} catch (error) {{
   await report({{state:'error', backend:'{backend}', demo:'{demo}', entry:'{entry}', secureContext:isSecureContext, error:String(error), stack:error?.stack || null}});
 }}
@@ -143,6 +159,7 @@ class BrowserHandler(SimpleHTTPRequestHandler):
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
             return

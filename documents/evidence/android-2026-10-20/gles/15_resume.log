@@ -1,0 +1,10 @@
+--------- beginning of main
+10-20 15:27:04.202  8718  8737 I RustStdoutStderr: GLES_ADAPTER=Qualcomm Adreno (TM) 750 (OpenGL ES 3.1 v1)
+10-20 15:27:04.202  8718  8737 I RustStdoutStderr: RHI_MULTIVIEW_MODE=sequential-stereo
+10-20 15:27:04.253  8718  8737 I RustStdoutStderr: RHI_FRAME_OK=1
+10-20 15:27:04.274  8718  8737 I RustStdoutStderr: RHI_FRAME_OK=2
+10-20 15:28:39.392  8718  8737 I RustStdoutStderr: RHI_SUSPENDED
+10-20 15:28:41.191  8718  8737 I RustStdoutStderr: GLES_ADAPTER=Qualcomm Adreno (TM) 750 (OpenGL ES 3.1 v1)
+10-20 15:28:41.191  8718  8737 I RustStdoutStderr: RHI_MULTIVIEW_MODE=sequential-stereo
+10-20 15:28:41.249  8718  8737 I RustStdoutStderr: RHI_FRAME_OK=1
+10-20 15:28:41.260  8718  8737 I RustStdoutStderr: RHI_FRAME_OK=2
