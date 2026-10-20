@@ -1,212 +1,414 @@
-# Fluxel RHI execution contract
+# Fluxel RHI architecture and design rationale
 
-**Status:** current implementation and design boundary.
+This document describes the current source architecture and its reasons. The
+public contract lives in [`core::api`](../crates/core/src/api/mod.rs); support
+queries and native implementation determine which operations a device can
+execute. API vocabulary alone is not an implementation or conformance claim.
 
-## Public API and ownership
+## Overall design
 
-Runtime binding arrays use `BindingCount::RuntimeSized { max_count }`. The
-nonzero `max_count` is a caller-selected layout capacity; a bind group supplies
-a nonempty prefix no longer than that capacity. Shaders may index only the
-supplied elements. Backends validate the requested capacity against native
-layout support instead of declaring an array as large as the driver's maximum.
-This bound is shared by Core validation and every backend; it does not change
-the shader's runtime-array declaration or introduce allocation policy in Core.
+### RHI is the execution boundary
 
-`fluxel_rhi_core::api` is the single Core API namespace. The facade re-exports it as
-`fluxel_rhi::api`; applications use that namespace and select a concrete backend at
-initialization. On Windows the facade exposes `fluxel_rhi::dx12::Dx12` and
-`fluxel_rhi::vulkan::Vulkan`; browser WASM exposes `fluxel_rhi::webgpu::WebGpu`.
-The GL-family route is exposed behind its WGL, EGL or WebGL2 feature. On Apple
-targets, `fluxel_rhi::metal::Metal` is exposed behind the `metal` feature; this
-backend is still in implementation and has no hardware conformance claim. Each
-route has an optional feature.
+Fluxel separates decisions about GPU work from the mechanisms that execute it.
+RHI accepts resources, ordered operations, explicit synchronization intent, and
+surface actions. It lowers them to a selected native API and reports acceptance,
+failure, presentation, and completion facts. Keeping that boundary below the
+RenderGraph avoids two competing schedulers or resource-state planners.
 
-The API is statically dispatched: `Device<B>`, resources, pipelines, encoders and
-recorded work retain their concrete `Backend` type. RenderGraph or its host owns graph
-scheduling, hazard analysis, lifetime policy and frame pacing. The RHI creates native
-objects, issues or records the supplied operations according to the backend,
-and reports support or failure. Deferred backends submit recorded native work;
-GL reports work already issued through its immediate session.
+| Owner | Architectural responsibility |
+| --- | --- |
+| Host and platform adapter | Window/canvas ownership, borrowed native handles, event delivery, resize, foreground/background, and restoration policy |
+| RenderGraph and Renderer | Resource usage planning, hazards, execution order, frame pacing, and retirement decisions based on completion evidence |
+| Assets | Persistent resource identity, typed asset handles, caching, and CPU/GPU residency |
+| RHI Core | Shared operation meanings, typed handles, device identity, capability contracts, and backend execution interfaces |
+| RHI backend | Native resources, encoding or immediate execution, synchronization mechanisms, surface leases, and native in-flight ownership |
 
-A backend must keep public descriptors, support queries and command results aligned. A
-feature is advertised only if the corresponding native route exists. Format- and
-descriptor-specific limits belong in support queries or operation results. `Unsupported`
-is the required result for a route that is absent.
+The host does not depend on RHI. A host-to-RHI adapter borrows a window handle
+and establishes a surface. Browser and Android integration similarly connects
+platform events to backend operations without moving GPU implementation into
+the platform layer. Native window lifetime and GPU completion remain separate
+obligations.
 
-## Graphics coordinate convention
+### Dependency and dispatch structure
 
-The public raster contract follows the [WebGPU coordinate systems](https://www.w3.org/TR/webgpu/#coordinate-systems):
-after perspective division, NDC X and Y are in `[-1, 1]`, NDC Y points up,
-and NDC Z is in `[0, 1]`.
-The framebuffer and viewport origin is the upper-left pixel, with X increasing
-rightward and Y downward. `Viewport` and `Rect` use framebuffer coordinates;
-`FrontFace` describes winding in framebuffer coordinates. For 2D textures,
-texel `(0, 0)` is the upper-left texel and texel Y increases downward. Upload
-row zero maps to that row; texture readback preserves this logical row order.
-For sampled 2D textures, normalized `v = 0` addresses the upper edge and
-`v = 1` the lower edge, including WGSL shaders lowered by a backend.
+The workspace has seven crates. Each backend depends on Core; the facade
+reexports Core and enabled backends. Core does not depend on a backend, a host,
+a renderer, or an application async runtime.
 
-Backends preserve these observable semantics when lowering to native APIs.
-DX12 already uses the matching native graphics convention. Vulkan uses a
-negative-height viewport for the public framebuffer Y direction and maps
-front-face winding in framebuffer coordinates.
-Backends with a different convention must adapt viewport, winding, depth, and copy
-lowering without changing the public contract. The RHI does not prescribe
-world-space handedness, camera direction, matrix storage, or multiplication
-order: those belong to the application's shader ABI and scene data. In
-particular, matching a Vulkan example's screenshot must not introduce a
-backend-wide Y flip into DX12.
+```text
+Application / Renderer / platform integration
+                    |
+             fluxel-rhi facade
+              /           \
+             v             v
+           Core <------ selected backend(s)
 
-## Current repository shape
+Backends: DX12, Vulkan, WebGPU, GL family, Metal
+Arrows show dependencies; every backend implements Core's contracts.
+```
 
-- `crates/core/src/api/` defines the public vocabulary and backend SPI traits.
-- `crates/rhi` is the typed facade and contains the numbered runnable examples.
-- `crates/dx12` is an active native backend. Its lowering is organized under
-  `backend/`, including `encoder/`, `pipeline`, `texture`, `descriptor`, `sampler`,
-  `surface`, `query`, and `readback`.
-- `crates/vulkan` is an active, still incomplete native backend with real device, resource,
-  SPIR-V, Win32 WSI, command buffer, descriptor, pipeline, and fence-backed
-  submission paths. All 15 numbered examples have Vulkan validation-layer
-  runtime and GPU readback evidence.
-- `crates/webgpu` is an active browser backend. It creates real `GPUDevice`
-  resources, records native command/pass encoders, submits to `GPUQueue`, uses
-  canvas presentation, and observes completion through browser promises.
-- `crates/metal` is an in-progress native backend. Its current source has direct
-  Metal command encoding, a limited resource/pipeline subset, completion
-  observation, and a `CAMetalLayer` path. It has not passed macOS SDK linking,
-  real Apple GPU execution, or example visual review; compile checks are not
-  hardware evidence.
-- `crates/gl` implements the current static Core API for the GL family. The WGL
-  GL4+ route has individual real-GPU execution and visual evidence for all 15
-  examples, including sequential fallbacks where native multiview, secondary
-  recording, or runtime descriptor indexing is unavailable. The concentrated
-  01–15 WGL run and final independent review are complete for the tested AMD
-  Radeon 780M profile. EGL/GLES 3.1 has also passed all 15 examples on the same
-  GPU through Mesa D3D12, with two-frame execution and visual comparison against
-  the GL4+ and C++ references. Browser WebGL2 remains a separate profile and is
-  not covered by either native route's evidence.
+`Device<B>` and its resources keep the backend type through execution. This
+lets each backend retain native representation and thread-affinity constraints
+without a mandatory backend enum, downcast registry, or global `Send + Sync`
+requirement. Applications that need runtime backend choice perform that choice
+at their integration boundary. Per-device capabilities remain dynamic: two
+devices of the same backend can expose different limits and routes.
 
-## Implemented DX12 baseline
+Core associates resources with a `DeviceId`; adapter, lane, plan, and step
+identities express narrower ownership relationships. Type parameters prevent
+cross-backend mixing, while identity checks reject cross-device mixing within
+one backend. Unsafe native imports and execution bridges still require the
+caller to uphold their lifetime and synchronization invariants. The typed API
+does not substitute for RenderGraph hazard analysis.
 
-The DX12 backend has real resource creation, descriptor/bind-group creation, DXIL shader
-and raster-pipeline creation, command-list recording, graphics submission, surface
-acquire/present, texture upload/copy routes, depth and color attachments, samplers,
-readback, queries, mip generation, and raster indirect commands. Support remains
-operation and descriptor dependent.
+### Two execution models, one operation meaning
 
-Examples exercise this baseline through `fluxel_rhi::api`. For example 10, the running
-path loads the plant, ground and sky glTF assets; uploads the KTX mip chains and plant
-texture array; encodes sky, ground and indexed-indirect plant passes; and presents the
-surface image. Its DX12 route uses real `ExecuteIndirect` records.
+DX12, Vulkan, WebGPU, and Metal record native commands through the deferred
+backend contract. GL4, GLES, and WebGL2 issue native calls during encoder
+operations through `ImmediateBackend`. The distinction is in trait availability:
+GL does not implement deferred submission, and deferred backends do not acquire
+an immediate mode merely for interface symmetry.
 
-Optional operations remain capability-gated. In particular, callers must check the
-published indirect, multi-draw, push-constant, query, descriptor-indexing, multiview,
-secondary-recording, and format support before selecting a workload. A compiling API
-call is not evidence that every backend or descriptor can execute it.
+A GL encoder remembers pass state, bindings, and execution facts. It does not
+collect a Rust command log for replay on another thread. Finishing an immediate
+session reports work already issued; it cannot roll that work back. Deferred
+recording also does not imply parallel recording support: that is a separate
+capability. Browser thread affinity and GPU command recording are independent
+properties, which is why WebGPU and WebGL2 use different models.
 
-Occlusion-query resolve values are unsigned integers. The portable contract is
-that zero means no samples passed and any nonzero value means at least one
-sample passed; the exact nonzero value is backend-defined. A backend may expose
-the native sample count or a native boolean visibility result. Code that needs
-only visibility must test for nonzero and must not compare exact counts across
-backends.
+### Plans, failure, and completion
 
-## Command and synchronization boundary
+[`SubmissionPlan`](../crates/core/src/api/submission.rs) is a reusable ordered
+execution description produced by a caller that has already resolved graph
+dependencies. Its steps identify lanes, work kinds, and waits on preceding
+steps. Its unsafe compiled-plan boundary requires a realizable layout; RHI
+does not sort another DAG or infer resource hazards. A backend may reject plan
+shapes that its native path cannot execute.
 
-`CommandEncoder` supplies copies, uploads, transitions and pass commands. Deferred
-backends record native commands; GL executes each command as the encoder method is
-called. Raster passes own their attachment/load-store contract; a pipeline, bind
-group, vertex/index buffers, viewport/scissor and draw are lowered by the selected
-backend. The extras interface holds optional raster operations such as indirect
-and multi-draw, with independent capability facts.
+Completion selection belongs to each execution, independently of plan topology.
+A completion point is host-observable evidence; it is not interchangeable with
+a GPU queue wait. Receipts expose accepted steps and completion coverage by
+lane so that the caller can reason about work actually issued.
 
-## GL immediate execution
+Execution is not an atomic transaction. A failure after a native call may leave
+an issued prefix, or native acceptance may be uncertain. Deferred and immediate
+outcomes preserve those distinctions instead of reporting a clean rejection
+after irreversible effects. This prevents unsafe reuse or retirement based on
+an error that conceals in-flight work.
 
-GL 4.x, GLES 3.x and WebGL2 run on their context owner thread in a single-threaded
-async runtime. The GL backend implements `ImmediateBackend` and does not implement
-`DeferredBackend`; the deferred `Queue<Gl>::submit` path is therefore unavailable
-at the type level. DX12, Vulkan and WebGPU use the deferred path and do not expose
-`ImmediateBackend` merely to share GL's execution model.
-This is a static trait distinction, not a runtime mode enum: those backends
-have no `Immediate` choice or fallback.
+Backends retain native objects needed by accepted work until native completion
+or a terminal failure establishes their disposition. This safety floor is
+separate from the Renderer's resource retirement policy and from unsafe caller
+obligations. Returning from encoding, presenting an image, or dropping a
+completion observer does not establish GPU completion. Observation uses futures
+without imposing a particular executor; context-affine futures can remain local.
 
-Each GL encoder operation validates and issues its GL/WebGL calls before returning.
-Closing an encoder or finishing an `ImmediateSession` reports the work already
-issued; it does not submit, replay, reorder or batch a Rust command list. The GL
-backend has no GPU queue submission operation. Presentation still performs the
-platform's swap/present operation, and a requested completion point may require
-a native fence and flush so that GPU completion can be observed. These are
-separate from command submission and must not turn into an internal scheduler.
+### Surface images are exclusive leases
 
-Context and resource owners are thread-affine. `Rc` and local borrowing can enforce
-that ownership; the backend does not add a cross-thread command worker, blocking
-mutex around GL calls, CPU command cache or deferred replay. Its state cache may
-remember known native bindings and invalidate them after uncertainty, but it may
-not store commands for later execution. Async completion waits yield to the
-single-threaded runtime while the GPU is unfinished; polling must not block that
-thread waiting for a fence.
+[`Surface`](../crates/core/src/api/surface.rs) separates the host-owned drawable
+from a device-owned presentation path. An acquired image is an exclusive lease
+for one surface generation, rather than an ordinary reusable texture view.
+Presentation or abandonment consumes that ownership relationship.
 
-## Browser WebGL2 context lifecycle
+Configuration and generation publication form one native transaction. A failed
+or cancelled configure must not publish a half-configured generation, and
+acquire observes the generation after native acquisition. This closes resize
+and acquisition races without transferring window ownership or frame pacing
+to RHI. Backend lease validation rejects stale use after reconfiguration or loss.
 
-The Host owns canvas creation, DOM event registration, CSS sizing, and restoration
-policy. One `GlInstance` represents one WebGL context generation. The Host listens
-for `webglcontextlost`; when restoration is desired it calls `preventDefault()`
-and forwards the event to `GlInstance::notify_context_lost()`. This makes the
-old device terminal, wakes pending completion observers with `DeviceLost`, and
-makes its surface leases stale. The Host must not reuse resources from that
-generation.
+## Crate and backend designs
 
-After `webglcontextrestored`, the Host creates a new `GlInstance`, Core
-`Instance`, device, and surface for the same canvas. Resize remains a Host
-lifecycle event: update the canvas backing size and reconfigure the RHI surface
-before acquiring another image. An out-of-band backing-size change makes
-`acquire()` return `SurfaceOutdated` until that reconfiguration succeeds.
+### `crates/core`: common semantics and the trust boundary
 
-The caller provides ordered work and transitions. RHI does not construct a render graph,
-perform global hazard analysis, or decide resource retirement. Submission and
-presentation are separate public operations; a present consumes the acquired surface
-image associated with the submitted work.
+[`api`](../crates/core/src/api/mod.rs) contains both caller-facing types and
+backend SPI, divided by concern: creation, shaders, passes, execution,
+synchronization, surfaces, mapping, and optional operation domains. Sharing the
+descriptors and result meanings avoids translation between subtly different
+definitions of the same operation.
 
-Generic buffer and texture copies consume resources already transitioned to
-`CopySrc` and `CopyDst`; recording a copy leaves those states unchanged. The
-caller supplies any later transition. Convenience `write_buffer` and
-`write_texture` own their temporary upload transition instead. On DX12 their
-destination starts and ends in `COMMON`, and callers must not invoke them while
-that destination is in a different explicit state. DX12 surface presentation
-and pass-local resolve operations retain the transitions required by those
-native operations. The backend does not track a global resource-state history.
+Core handles wrap backend-native objects and add identity and structural
+validation. Native representation remains an associated backend type. Resource
+creation consults support before calling the native constructor; optional
+domains such as compute use typed capability access. An unavailable domain has
+an explicit representation instead of a successful no-op implementation.
+Structured errors distinguish unsupported work, invalid identity/state/ranges,
+device loss, and surface lifecycle failures.
 
-## Shader and pipeline boundary
+Core leaves native ownership machinery private. Browser tokens, GL contexts,
+COM pointers, Vulkan handles, and Metal objects do not become portable resource
+concepts. The unsafe SPI is the boundary at which a backend proves native
+execution and lifetime invariants; Core supplies common checks without
+pretending that all GPU correctness can be established locally.
 
-`ShaderDesc` declares the artifact format and entry points. The numbered examples
-maintain WGSL as their shader source and generate checked-in DXIL and SPIR-V artifacts
-for the native DX12 and Vulkan routes. This offline lowering does not claim that DX12
-executes WGSL directly: the runtime DX12 route consumes DXIL, while WebGPU consumes
-WGSL. Other backends select a supported runtime or generated artifact route explicitly;
-generated native binaries are not additional maintained shader sources.
+### `crates/rhi`: a thin integration facade
 
-Pipeline and binding descriptors describe the native operation honestly: vertex layouts,
-texture view dimensions, sampler and uniform bindings, attachment formats, depth/stencil
-state, and raster state are all part of the route. A backend rejects unsupported formats,
-view dimensions, layouts or state combinations instead of substituting a no-op.
+The [facade](../crates/rhi/src/lib.rs) reexports `api` and feature-selected
+backend modules, with target guards for platform-specific implementations.
+It introduces no second resource model or runtime dispatcher. Consumers use a
+single public namespace while choosing dependencies and backend types explicitly.
 
-## Dynamic buffer binding offsets
+The numbered examples live here because they exercise the integration boundary:
+the same scene and maintained WGSL source should exercise different execution
+implementations. Host adapters, browser entry points, and capture helpers are
+example integration code rather than Core policy. Native shader artifacts are
+generated inputs, not separately maintained scene implementations. Explicit
+visual fallbacks demonstrate a scene on a smaller capability set without
+claiming that the backend implements the missing feature.
 
-For a bind group, `set_bind_group` receives one dynamic offset for each layout
-entry whose uniform or storage buffer type enables `dynamic_offset`. The slice
-is ordered by ascending binding number, independent of visibility or shader
-stage. A backend adds each value to the bound buffer range's start offset,
-checks the result against the backend's reported buffer-offset alignment, and
-ensures the complete bound range remains inside the native allocation. The
-bound range size and layout minimum size do not change when an offset is
-applied. A missing, extra, misaligned, overflowing, or out-of-allocation offset
-returns a structured error before issuing the native binding call.
+### `crates/dx12`: explicit native command lists and fence ownership
 
-## Future work
+The [DX12 backend](../crates/dx12/src/backend.rs) lowers directly to native
+resources, descriptors, pipelines, command lists, and a direct queue. Descriptor
+binding namespaces agree with the DXIL shader ABI: bind groups map to register
+spaces and bindings to registers. Keeping that agreement explicit avoids an
+invisible remapping layer between shader artifacts and resource layouts.
 
-The API contains vocabulary for several operations whose portable coverage is incomplete.
-Those declarations are design surface, not a claim that every backend implements them.
-Adding a provider requires a real backend crate, facade exposure, descriptor-consistent
-support answers, native lowering, and hardware evidence. Expanding DX12 follows the same
-rule: expose a capability only after creation, recording, submission and observable
-failure behavior are implemented together.
+The encoder translates supplied transitions rather than maintaining a global
+resource-state history. Generic copies consume the caller's copy states;
+convenience uploads have their own narrower state contract. Planning stays in
+the caller while temporary upload resources remain backend-owned.
+
+The [submission path](../crates/dx12/src/backend/encoder/submit.rs) serializes
+native execute/present/signal operations and retains allocators, referenced
+objects, and uploads through fence completion. A signal failure after execution
+cannot be treated as unissued work. Device removal is also distinct from a
+successfully reached fence value. These distinctions determine safe lifetime
+release and prevent a success-shaped queue abstraction from concealing loss.
+
+Runtime shaders consume DXIL. The examples' WGSL-to-DXIL toolchain is offline;
+it does not add runtime WGSL compilation. DX12's native raster conventions
+already match the public coordinate contract, making it a useful scene baseline
+without making DX12-specific behavior part of that contract.
+
+### `crates/vulkan`: native command buffers with explicit queue constraints
+
+The [Vulkan backend](../crates/vulkan/src/backend/mod.rs) retains instance and
+device ownership through native child objects. Device creation selects an actual
+graphics queue and enables queried native features. The current raster path
+uses dynamic rendering, avoiding a second persistent render-pass compatibility
+model behind the public attachment descriptions.
+
+Command buffers record supplied operations directly. A negative-height viewport
+and corresponding front-face lowering preserve the common framebuffer
+convention. Runtime shaders consume SPIR-V; generated example binaries preserve
+the maintained WGSL source without introducing a runtime compiler fallback.
+
+Submission uses distinct serialization for execution-plan ordering and Vulkan's
+native queue external-synchronization requirement. These locks satisfy native
+ordering obligations; they do not constitute a task scheduler. Fence-backed
+in-flight ownership preserves accepted work through completion. The current
+single-queue route rejects unsupported plan shapes and partial-tail resume
+instead of presenting an emulated multi-lane implementation.
+
+Descriptor layout creation uses the caller's explicit runtime-array capacity.
+This is an operational allocation bound, not the largest integer a driver can
+report as a limit. Matching Core validation and the actual native layout avoids
+turning a broad capability limit into an unusable descriptor allocation.
+
+### `crates/webgpu`: browser ownership with deferred native encoding
+
+The [WebGPU backend](../crates/webgpu/src/backend/mod.rs) keeps JavaScript
+objects on their browser owner thread. It records real `GPUCommandEncoder` and
+pass encoder operations into one-shot command buffers, then submits them to
+`GPUQueue`. Thread-local ownership does not require immediate GPU execution or
+a CPU replay representation.
+
+Native JavaScript objects referenced by submissions remain in flight until the
+queue completion promise settles. Dropping a Rust observer does not cancel
+submitted work or release its execution dependencies early. Promise completion
+covers a native queue prefix; it does not provide an arbitrary cross-lane
+timeline semaphore. The supported plan subset reflects that native mechanism.
+
+The browser manages native resource transitions, so explicit public usage intent
+does not justify adding a backend-wide hazard planner. WGSL goes to the native
+WebGPU shader route. Validation failures and device loss remain observable
+failures rather than reasons to silently retry using another backend.
+
+A canvas current texture participates in the surface lease/generation contract.
+DOM ownership, CSS size, animation scheduling, and restoration strategy stay
+with the host. Adapter acquisition can fail in a particular browser environment;
+the application must then choose another backend explicitly, rather than
+turning `Device<WebGpu>` into a hidden GL implementation.
+
+### `crates/gl`: shared semantics across three context profiles
+
+The [GL-family implementation](../crates/gl/src/backend/gl/mod.rs) shares one
+typed `Gl` backend across desktop GL, GLES, and WebGL2. Actual version,
+extensions, and callable entry points jointly determine support. Shared
+implementation avoids three public APIs, while profile-specific admission
+prevents desktop features from leaking into GLES or WebGL2 capability answers.
+
+The implementation separates typed GL-family operations, private native
+providers, Core SPI adaptation, and state knowledge. Encoders issue calls on
+the context owner thread. They neither dispatch to a command worker nor record
+a deferred Rust command stream. Native context ownership can use local
+borrowing and `Rc` without a mutex that falsely suggests cross-thread GL access
+is valid.
+
+The native providers' state mirror records what state is known to be applied. It begins
+unknown and invalidates affected domains after uncertainty, external mutation,
+resource deletion, or context loss. Context/slot/generation identity prevents
+reuse of a numeric GL object name from resurrecting stale cache entries. This
+is a binding/state optimization, not a resource hazard graph.
+
+For example, attachment clears depend on native write masks as well as scissor.
+The native provider establishes the masks needed by the clear, then invalidates pipeline
+knowledge so that a subsequent bind restores the requested masks. Remembering
+only the last requested pipeline would incorrectly suppress that restoration.
+Cached intent and established native state are different architectural facts.
+The browser's direct Core encoder establishes its required state separately;
+it does not use this native-provider mirror. Shared semantics do not imply an
+identical state-cache implementation across providers.
+
+WGSL is lowered through Naga to the admitted GLSL profile, with reflected
+bindings and backend coordinate adaptation. Texture sampling, texel access,
+storage access where supported, and copy row order must agree on the upper-left
+texture convention. Backend adaptation avoids per-scene flips that would
+diverge across APIs.
+
+#### Desktop GL4 / WGL
+
+The WGL provider owns the current-context relationship and borrows the native
+drawable for presentation. Desktop extensions can expose capabilities beyond
+GLES, but only when the required native route is available. Immediate execution
+and context affinity remain unchanged by the desktop profile's larger feature
+set. Native fences establish completion independently of buffer swapping.
+
+#### GLES / EGL
+
+EGL owns a different context/drawable boundary while reusing GL-family lowering
+and state semantics. GLES limits and extensions are queried for the actual
+context, including Android contexts. This avoids both a lowest-common-
+denominator public API and accidental inheritance of desktop-only features.
+Android window and foreground/background events belong to platform integration;
+the backend handles the resulting drawable and device operations.
+
+#### Browser WebGL2
+
+WebGL2 uses browser-thread JavaScript objects and the immediate contract. The
+browser implementation includes a typed GL-family provider and a Core
+`BrowserOwner`/`BrowserEncoder` execution path; they have distinct native call
+boundaries and need their own validation. Neither is a deferred CPU command log.
+
+WebGL2 has no native compute or secondary command recording route. Example 13's
+historical `multithreaded_recording` name does not change this: its WebGL2 scene
+uses sequential drawing. A finite capture may intentionally stop after frame
+export; a stationary capture alone does not establish a blocked GPU.
+
+One `GlInstance` represents one context generation. The host forwards loss via
+`notify_context_lost()` and calls `preventDefault()` on the browser loss event
+when restoration is desired. Loss makes the old device terminal, invalidates
+old leases/resources, and wakes observers with `DeviceLost`. After restoration,
+the host creates a new instance, device, and surface, then reconstructs resources
+from CPU-side data. Restoration is not resurrection of old native objects.
+
+Canvas backing-size changes require surface reconfiguration before acquisition;
+out-of-band changes produce `SurfaceOutdated`. Animation callbacks and browser
+presentation are not GPU completion evidence. Fence polling yields to the owner
+thread's async execution. Internal lifetime fences may exist even when the
+caller requests no public completion checkpoint: native safety and optional
+host observation are separate requirements.
+
+### `crates/metal`: direct encoding with a bounded binding ABI
+
+The [Metal backend](../crates/metal/src/backend.rs) uses a native device, command
+queue, command buffers, and pass encoders. Native tracked resource ordering
+implements supplied execution intent without introducing a custom command
+spine or graph. Completion handlers settle observations; dropping an observer
+does not cancel issued work. Explicit retention covers dependencies such as
+indirect argument resources where encoding alone is insufficient.
+
+The shader route lowers WGSL through Naga to MSL and invokes the native compiler;
+direct Metal source is also supported. A fixed binding ABI maps scalar bindings
+using `7 * group + binding`: four groups occupy buffer slots 0–27, leaving slots
+28–30 for vertex buffers. The disjoint partition prevents vertex input from
+overwriting resource bindings. Arrays and layouts outside the implemented ABI
+are rejected rather than hidden behind an unimplemented argument-buffer model.
+
+The current submission subset is graphics-lane command steps with optional
+presentation, without partial-tail resume. The source contains a `CAMetalLayer`
+surface path. This is an implementation boundary, not completed platform
+acceptance: macOS SDK linking, real Apple GPU execution, and example visual
+review remain unverified. Other backends' evidence cannot close that gap.
+
+## Shared observable semantics and their reasons
+
+### Coordinates belong to the backend adaptation
+
+The public convention uses NDC X/Y in `[-1, 1]`, Y upward, and Z in `[0, 1]`.
+Framebuffer and viewport coordinates start at the upper-left and increase
+downward in Y; `FrontFace` describes framebuffer winding. Texture texel `(0, 0)`,
+upload row zero, and readback row zero refer to the upper-left row. Normalized
+texture `v = 0` addresses the upper edge.
+
+Backends adapt native viewport, winding, depth, shader access, and copy lowering
+to these meanings. Keeping adaptation there lets the same shader and scene
+express the same image across APIs. World handedness, camera direction, matrix
+storage, and multiplication order remain application shader ABI decisions.
+
+### Shader language and feature vocabulary are not universal support
+
+[`ShaderDesc`](../crates/core/src/api/shader.rs) describes the supplied artifact;
+route selection distinguishes direct native input, supported Naga lowering, and
+unsupported input. A selected compiler's failure is reported rather than retried
+through another route that may interpret the program differently. Maintained
+WGSL examples and generated native artifacts are a source-management decision,
+distinct from each backend's runtime format support.
+
+The same rule applies to compute, mesh, ray tracing, sparse resources, queries,
+indirect commands, and secondary recording. Public types make native operations
+expressible; only implemented per-device routes establish support. Descriptor-
+specific limits remain checked at creation or execution. Capability answers
+support workload selection rather than merely describing what the upstream
+native API could theoretically do.
+
+### Binding bounds are caller intent, validated against native limits
+
+`BindingCount::RuntimeSized { max_count }` supplies a nonzero layout capacity.
+A bind group supplies a nonempty prefix within that bound; shaders may access
+only supplied elements, and partially bound holes require explicit support.
+Core and native layout creation validate the same bound. Capacity belongs to
+the caller's workload, rather than being inferred from a driver maximum or
+turned into a Core allocation policy.
+
+Dynamic buffer offsets follow ascending binding number, independent of layout
+entry order or shader visibility. Each is added to the bound range start;
+alignment, overflow, and allocation bounds are validated without changing the
+range size or minimum binding size. This gives one binding ABI across native
+descriptor schemes rather than exposing each driver's offset ordering.
+
+### Copies, mapping, and queries preserve precise evidence
+
+Generic copies require caller-established `CopySrc`/`CopyDst` states and leave
+those states unchanged. The caller supplies subsequent transitions. Convenience
+uploads own temporary upload transitions; on DX12 their destination starts and
+ends in `COMMON`. Pass-local resolve and surface presentation retain their
+native transition requirements. These local contracts avoid a hidden global
+state tracker while keeping temporary transfer mechanics inside the backend.
+
+Mapping requires the caller to establish completion and absence of incompatible
+GPU access. A map lease controls CPU access and unmapping; cancellation must not
+strand native mapping state. Mapping availability is not evidence that earlier
+GPU work completed unless the operation's contract supplies that evidence.
+
+Occlusion query results guarantee zero for no samples passed and nonzero for
+visibility. Exact positive values can represent native counts or boolean
+visibility and are not comparable across backends. This preserves the useful
+portable fact without inventing precision that a native route cannot provide.
+
+## Verification and extension boundary
+
+The [testing guide](testing.md), [conformance matrix](conformance-matrix.md),
+[example instructions](../crates/rhi/examples/README.md), and
+[Android evidence packet](evidence/android-2026-10-20/README.md) record verification
+scope separately from architecture. The Android packet covers the tested Vulkan,
+GLES, and WebGL2 example routes; WebGPU adapter acquisition was unavailable in
+that environment. It does not imply universal Android driver support or close
+renderer-owned restoration integration.
+
+Compilation, successful submission, and native validation alone do not prove
+correct GPU output or presentation. A new route needs consistent public support
+answers, native creation/execution/lifetime behavior, focused real-GPU output
+checks, and surface/visual evidence where applicable. Extending a backend must
+preserve these ownership boundaries; a consumer fallback or another backend's
+successful run cannot stand in for its missing native implementation.
