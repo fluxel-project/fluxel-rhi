@@ -35,6 +35,21 @@ completion requests. It does not establish multi-queue conformance, arbitrary
 plans, or native partial/indeterminate recovery. The RenderGraph's compiler,
 hazard analysis, and resource-retirement tests belong to its own repository.
 
+The [failure-boundary evidence](evidence/execution-failure-2026-10-21/README.md)
+adds exact None/Partial/Unknown slot tests, clean presentation rejection/retry,
+and image/value/checkpoint/uncertainty Drop ordering through failure drain.
+The ignored GPU fixtures were explicitly executed; `#[ignore]` controls routine
+test selection and is not evidence that they have never run. The earlier
+[migration packet](evidence/execution-api-2026-10-21/README.md) also retains actual
+GPU test logs, with its separate native visual-capture limitations.
+
+A reproducible CPU-only validation diagnostic is in
+[`tools/benchmarks/execution-validation`](../tools/benchmarks/execution-validation/README.md).
+It measures synthetic single-lane plans with and without predecessor waits,
+not Execution wrapper overhead, native GL calls, or real RenderGraph workloads.
+No validation cache, registration system, or structural optimization follows
+from this diagnostic alone.
+
 The additive common execution entry has its own mock tests for immediate native
 call timing, partial/uncertain effects, presentation lease retry, cancellation,
 and unchanged deferred recovery ownership. Its real-GPU fixture uses the same

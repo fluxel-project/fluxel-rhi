@@ -24,6 +24,26 @@ pub enum ExecutionStatus {
     Unknown,
 }
 
+/// The native effect of an unsuccessful execution step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepEffect {
+    /// The step is known to have had no native effect.
+    None,
+    /// Some native work was issued, without completing the step.
+    Partial,
+    /// The native effect cannot be determined.
+    Unknown,
+}
+
+/// A failed step and the extent of its known native effect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FailedStep {
+    /// The execution slot in the compiled plan.
+    pub step: StepId,
+    /// Effect of the unsuccessful slot, not GPU completion.
+    pub effect: StepEffect,
+}
+
 /// A zero-copy view of facts reported by an execution operation.
 ///
 /// `None` means the source does not establish that fact; `Some(&[])` means
@@ -32,6 +52,8 @@ pub enum ExecutionStatus {
 pub struct ExecutionFacts<'a, B: Backend> {
     /// Classification of the source operation, not GPU completion status.
     pub status: ExecutionStatus,
+    /// Failed slot when the source can identify one.
+    pub failed_step: Option<FailedStep>,
     /// Steps known to have been completely accepted or successfully issued.
     /// This is not necessarily the complete execution history.
     pub accepted: Option<&'a [StepId]>,
@@ -50,6 +72,7 @@ impl<B: Backend> SubmissionReceipt<B> {
     pub fn facts(&self) -> ExecutionFacts<'_, B> {
         ExecutionFacts {
             status: ExecutionStatus::Unknown,
+            failed_step: None,
             accepted: Some(&self.accepted),
             affected: None,
             checkpoints: Some(&self.checkpoints),
@@ -72,6 +95,7 @@ impl<B: DeferredBackend> SubmitOutcome<B> {
             },
             Self::Rejected { .. } => ExecutionFacts {
                 status: ExecutionStatus::Rejected,
+                failed_step: None,
                 accepted: Some(&[]),
                 affected: Some(&[]),
                 checkpoints: None,
@@ -79,6 +103,7 @@ impl<B: DeferredBackend> SubmitOutcome<B> {
             },
             Self::Indeterminate { .. } => ExecutionFacts {
                 status: ExecutionStatus::Indeterminate,
+                failed_step: None,
                 accepted: None,
                 affected: None,
                 checkpoints: None,
@@ -93,6 +118,7 @@ impl<B: Backend> IssuedPrefix<B> {
     pub fn facts(&self) -> ExecutionFacts<'_, B> {
         ExecutionFacts {
             status: ExecutionStatus::Unknown,
+            failed_step: None,
             accepted: None,
             affected: Some(&self.steps),
             checkpoints: Some(&self.checkpoints),
@@ -107,6 +133,7 @@ impl<B: Backend> ImmediateRunOutcome<B> {
         match self {
             Self::Issued(step) => ExecutionFacts {
                 status: ExecutionStatus::Accepted,
+                failed_step: None,
                 accepted: Some(std::slice::from_ref(step)),
                 affected: Some(std::slice::from_ref(step)),
                 checkpoints: None,
@@ -118,6 +145,7 @@ impl<B: Backend> ImmediateRunOutcome<B> {
             },
             Self::Indeterminate { prefix, .. } => ExecutionFacts {
                 status: ExecutionStatus::Indeterminate,
+                failed_step: None,
                 accepted: None,
                 affected: Some(prefix),
                 checkpoints: None,
@@ -133,12 +161,14 @@ impl<B: Backend> ImmediateFinishOutcome<B> {
         match self {
             Self::Issued(prefix) => ExecutionFacts {
                 status: ExecutionStatus::Accepted,
+                failed_step: None,
                 accepted: Some(&prefix.steps),
                 ..prefix.facts()
             },
             Self::Failed(outcome) => outcome.facts(),
             Self::AlreadyReported => ExecutionFacts {
                 status: ExecutionStatus::AlreadyReported,
+                failed_step: None,
                 accepted: None,
                 affected: None,
                 checkpoints: None,

@@ -208,6 +208,7 @@ impl<B: DeferredBackend> ExecutionOutcome<B> for DeferredExecutionOutcome<B> {
             Self::Submitted(outcome) => outcome.facts(),
             Self::Unsubmitted { .. } => ExecutionFacts {
                 status: ExecutionStatus::Rejected,
+                failed_step: None,
                 accepted: Some(&[]),
                 affected: Some(&[]),
                 checkpoints: None,
@@ -334,13 +335,17 @@ pub struct ImmediateExecutionState<B: ImmediateBackend> {
     cursor: usize,
     failure: Option<ImmediateRunOutcome<B>>,
     error: Option<Error>,
+    failed_slot: Option<StepId>,
+    rejected_present: Option<(StepId, Error)>,
 }
 
 /// The session result and, if different, the original command encoding error.
 pub struct ImmediateExecutionOutcome<B: ImmediateBackend> {
     /// Number of steps fully issued before a possible failing step.
     pub completed_steps: usize,
-    /// Original encoding error, including errors not representable by close.
+    /// The unsuccessful slot and its known native effect, if identifiable.
+    pub failed_step: Option<FailedStep>,
+    /// Original encoding error or unretried clean presentation rejection.
     pub error: Option<Error>,
     /// Successful presentation handoffs. On failure this is only the known
     /// completed prefix; absence is not proof about an uncertain current step.
@@ -353,6 +358,7 @@ impl<B: ImmediateBackend> ExecutionOutcome<B> for ImmediateExecutionOutcome<B> {
     fn facts(&self) -> ExecutionFacts<'_, B> {
         let mut facts = self.outcome.facts();
         facts.presents = Some(&self.presents);
+        facts.failed_step = self.failed_step;
         if facts.accepted.is_none() {
             if let Some(prefix) = facts.affected {
                 if self.completed_steps <= prefix.len() {
@@ -398,6 +404,8 @@ impl<B: ExecutionBackend + ImmediateBackend> ExecutionMode<B> for ImmediateExecu
             cursor: 0,
             failure: None,
             error: None,
+            failed_slot: None,
+            rejected_present: None,
         })
     }
     fn commands<F: FnOnce(&mut CommandEncoder<B>) -> Result<()>>(
@@ -420,6 +428,7 @@ impl<B: ExecutionBackend + ImmediateBackend> ExecutionMode<B> for ImmediateExecu
             Ok(encoder) => encoder,
             Err(outcome) => {
                 let error = run_error(&outcome);
+                state.failed_slot = Some(step);
                 state.failure = Some(outcome);
                 return Err(error);
             }
@@ -428,6 +437,7 @@ impl<B: ExecutionBackend + ImmediateBackend> ExecutionMode<B> for ImmediateExecu
             // Dropping closes the active native encoder and retains the native
             // result in the session; keep the original callback error as well.
             drop(encoder);
+            state.failed_slot = Some(step);
             state.error = Some(error.clone());
             return Err(error);
         }
@@ -438,6 +448,7 @@ impl<B: ExecutionBackend + ImmediateBackend> ExecutionMode<B> for ImmediateExecu
             }
             outcome => {
                 let error = run_error(&outcome);
+                state.failed_slot = Some(step);
                 state.failure = Some(outcome);
                 Err(error)
             }
@@ -463,16 +474,22 @@ impl<B: ExecutionBackend + ImmediateBackend> ExecutionMode<B> for ImmediateExecu
             });
         }
         match state.session.present(binding) {
-            ImmediatePresentResult::Rejected { error, binding } => Err(PresentError {
-                error,
-                binding: Some(binding),
-            }),
+            ImmediatePresentResult::Rejected { error, binding } => {
+                state.rejected_present = Some((step, error.clone()));
+                Err(PresentError {
+                    error,
+                    binding: Some(binding),
+                })
+            }
             ImmediatePresentResult::Run(ImmediateRunOutcome::Issued(_)) => {
+                state.rejected_present = None;
                 state.cursor += 1;
                 Ok(())
             }
             ImmediatePresentResult::Run(outcome) => {
                 let error = run_error(&outcome);
+                state.rejected_present = None;
+                state.failed_slot = Some(step);
                 state.failure = Some(outcome);
                 Err(PresentError {
                     error,
@@ -492,14 +509,30 @@ impl<B: ExecutionBackend + ImmediateBackend> ExecutionMode<B> for ImmediateExecu
                 })
             })
             .collect();
+        let failure_effect = state.session.failure_effect();
         let result = state.session.finish();
         let outcome = match state.failure {
             Some(failure) => ImmediateFinishOutcome::Failed(failure),
             None => result,
         };
+        let failed_step = state
+            .failed_slot
+            .map(|step| FailedStep {
+                step,
+                effect: failure_effect.unwrap_or(StepEffect::Unknown),
+            })
+            .or_else(|| {
+                state.rejected_present.as_ref().map(|(step, _)| FailedStep {
+                    step: *step,
+                    effect: StepEffect::None,
+                })
+            });
         ImmediateExecutionOutcome {
             completed_steps: state.cursor,
-            error: state.error,
+            failed_step,
+            error: state
+                .error
+                .or_else(|| state.rejected_present.map(|(_, error)| error)),
             presents,
             outcome,
         }

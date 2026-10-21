@@ -55,7 +55,9 @@ across these models. GL calls native APIs inside `commands`; deferred backends
 record native work and submit it at `finish`. No CPU command stream, replay,
 per-step fence, or implicit idle wait is added. Borrowed `facts()` observations
 share acceptance and completion evidence while retaining model-specific recovery
-ownership. Existing recording, submission, and immediate-session APIs remain
+ownership. Failed-step facts distinguish no effect, partial issue, and unknown
+effect; completion evidence does not turn a failed step into success.
+Existing recording, submission, and immediate-session APIs remain
 available for advanced execution. See the [execution contract](documents/design-rhi.md#common-execution-entry).
 
 Support queries describe implemented native routes. An example may select an

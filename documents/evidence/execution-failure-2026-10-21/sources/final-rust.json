@@ -1,0 +1,13 @@
+{
+  "base_commit": "c9d25e52b6d620a63f58216cc5b376791a34bc7d",
+  "normalization": "CRLF to LF before SHA-256",
+  "files": {
+    "crates/core/src/api/execution/mod.rs": "0b6a75f8e71fccfcfb5775b080d58e30580dc228b89a4a68ebbbbf19d295d9fe",
+    "crates/core/src/api/execution/tests.rs": "6d44517aa281168b7998406a0e1ede2e1a28ad60227f29758ecdfcfe4694c13b",
+    "crates/core/src/api/execution_facts.rs": "016b761c2bf002af525643bb9ddd08aae9213bda41d1df8cd3ed6b3cf1c50178",
+    "crates/core/src/api/immediate.rs": "1afc0cdd3381be485b986bf4878e170610236840a74de8dafb9cf7093d651e83",
+    "crates/core/src/api/tests.rs": "e561d8648e2e8839003dff39935dcb86127b473f76a8c93baa8d43fce5c1acf4",
+    "crates/rhi/tests/execution_failure_lifetimes.rs": "d6787fa02eedca9582638f6e1a7dfcd3d56a0592cfa648edc605049cde0fc560",
+    "tools/benchmarks/execution-validation/src/main.rs": "0340943da70aab1a39f0c92b2e1b083070e73ae975d65def939ca1ca789e0a78"
+  }
+}

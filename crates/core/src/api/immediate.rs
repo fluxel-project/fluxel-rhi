@@ -128,6 +128,7 @@ pub struct ImmediateSession<B: ImmediateBackend> {
     completion: CompletionRequest,
     failed: bool,
     terminal: Option<ImmediateRunOutcome<B>>,
+    failure_effect: Option<StepEffect>,
     closed: bool,
 }
 impl<B: ImmediateBackend> Device<B> {
@@ -153,6 +154,7 @@ impl<B: ImmediateBackend> Device<B> {
             completion,
             failed: false,
             terminal: None,
+            failure_effect: None,
             closed: false,
         })
     }
@@ -189,6 +191,11 @@ impl<B: ImmediateBackend> ImmediateSession<B> {
                 ImmediateRunOutcome::Issued(step)
             }
             ImmediateClose::Failed { error, issued } => {
+                self.failure_effect = Some(if issued {
+                    StepEffect::Partial
+                } else {
+                    StepEffect::None
+                });
                 // A close failure can still have issued native commands. Keep
                 // that prefix rather than returning an ordinary retryable
                 // error, because later work may already observe its effects.
@@ -199,6 +206,7 @@ impl<B: ImmediateBackend> ImmediateSession<B> {
                 self.fail(error)
             }
             ImmediateClose::Indeterminate { error, uncertain } => {
+                self.failure_effect = Some(StepEffect::Unknown);
                 self.failed = true;
                 self.history_count += 1;
                 ImmediateRunOutcome::Indeterminate {
@@ -209,7 +217,14 @@ impl<B: ImmediateBackend> ImmediateSession<B> {
             }
         }
     }
+    pub(crate) fn failure_effect(&self) -> Option<StepEffect> {
+        self.failure_effect
+    }
     pub(crate) fn fail(&mut self, error: Error) -> ImmediateRunOutcome<B> {
+        // The current operation failed before issuing unless its caller has
+        // already recorded a more precise effect. Emergency checkpoint
+        // uncertainty concerns the prefix, not the failing slot itself.
+        self.failure_effect.get_or_insert(StepEffect::None);
         self.failed = true;
         let steps = self.take_issued_steps();
         // Once a session has issued any prefix, failure must carry completion
@@ -243,6 +258,7 @@ impl<B: ImmediateBackend> ImmediateSession<B> {
             WaitInstallOutcome::Ready { issued } => issued,
             WaitInstallOutcome::Rejected(error) => return Err(self.fail(error)),
             WaitInstallOutcome::Indeterminate { error, uncertain } => {
+                self.failure_effect = Some(StepEffect::Unknown);
                 self.failed = true;
                 self.history_count += 1;
                 return Err(ImmediateRunOutcome::Indeterminate {
@@ -403,7 +419,10 @@ impl<B: ImmediateBackend> Drop for ImmediateEncoder<'_, B> {
             // A dropped encoder is always an error, even if its native close
             // reports that its already issued commands were accepted.
             let terminal = match terminal {
-                ImmediateRunOutcome::Issued(_) => self.session.fail(Error::InvalidState),
+                ImmediateRunOutcome::Issued(_) => {
+                    self.session.failure_effect = Some(StepEffect::Partial);
+                    self.session.fail(Error::InvalidState)
+                }
                 other => other,
             };
             self.session.terminal = Some(terminal);

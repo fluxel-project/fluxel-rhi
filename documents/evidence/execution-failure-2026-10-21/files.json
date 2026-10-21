@@ -1,0 +1,42 @@
+[
+  {
+    "path": ".gitattributes",
+    "bytes": 92,
+    "sha256": "dbb44f13b59a23ec79b709d3ae4c48ea3344ac41192f9288b78b215b3dd768e6"
+  },
+  {
+    "path": "diagnostics/validation-samples.csv",
+    "bytes": 6007,
+    "sha256": "70a9ce9240f0c9d90c5c016bc4ff798a6a7ffe251f17f7b8dfff2adc4772b240"
+  },
+  {
+    "path": "diagnostics/validation-summary.md",
+    "bytes": 3143,
+    "sha256": "1c682c664d09c77756b556cac82e2851c0c47da8264286d13b561f061844234c"
+  },
+  {
+    "path": "logs/core-test.log",
+    "bytes": 4092,
+    "sha256": "074ceabfa4b58c2b469bc4c6cc0360043ec89a497d6d82507e5f7a02ed671a7c"
+  },
+  {
+    "path": "logs/gpu-test.log",
+    "bytes": 89245,
+    "sha256": "54ab354fd2cd09f8b3ed3feb6c7ac7e7935367082873bce18d01ce518a7291b6"
+  },
+  {
+    "path": "logs/host-test.log",
+    "bytes": 1358,
+    "sha256": "788e24dfaac975f4866cf182d01083294d4a67b4b821f028661dcebacecdb28e"
+  },
+  {
+    "path": "README.md",
+    "bytes": 4322,
+    "sha256": "39eed7c7c5fe26a8ac3c0a7de8824f04145dbcf61555cf17e52f5f1c9306e0ac"
+  },
+  {
+    "path": "sources/final-rust.json",
+    "bytes": 942,
+    "sha256": "8a8d78a5b2ddd98c56df8180d751af7f6982bb5755f93ccdc29f23fe34a5a20f"
+  }
+]

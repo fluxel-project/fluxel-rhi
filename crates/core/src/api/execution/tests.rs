@@ -1,8 +1,8 @@
 //! Facade behavior under the existing immediate and deferred mock SPIs.
 use super::*;
 use crate::api::tests::type_contract_tests::{
-    GL_ABANDONED, GL_CHECKPOINTS, GL_CLOSE_FAILURE, GL_DEVICE, GL_TRANSITIONS, GlLocal,
-    NativeShared,
+    GL_ABANDONED, GL_CHECKPOINT_UNKNOWN, GL_CHECKPOINTS, GL_CLOSE_FAILURE, GL_DEVICE,
+    GL_EMERGENCY_UNKNOWN, GL_TRANSITIONS, GL_WAIT_REJECT, GlLocal, NativeShared,
 };
 use std::{cell::Cell, rc::Rc, sync::Arc};
 
@@ -47,6 +47,9 @@ fn immediate() -> Device<GlLocal> {
     let id = DeviceId::allocate().unwrap();
     GL_DEVICE.with(|device| device.set(Some(id)));
     GL_CLOSE_FAILURE.with(|mode| mode.set(0));
+    GL_WAIT_REJECT.with(|v| v.set(false));
+    GL_CHECKPOINT_UNKNOWN.with(|v| v.set(false));
+    GL_EMERGENCY_UNKNOWN.with(|v| v.set(false));
     GL_CHECKPOINTS.with(|calls| calls.set(0));
     GL_TRANSITIONS.with(|calls| calls.set(0));
     GL_ABANDONED.with(|calls| calls.set(0));
@@ -95,6 +98,17 @@ fn immediate_failed_and_indeterminate_close_preserve_known_prefix() {
         assert_eq!(outcome.completed_steps, 1);
         let facts = outcome.facts();
         assert_eq!(facts.status, expected);
+        assert_eq!(
+            facts.failed_step,
+            Some(FailedStep {
+                step: plan.step(1),
+                effect: if failure == 1 {
+                    StepEffect::Partial
+                } else {
+                    StepEffect::Unknown
+                },
+            })
+        );
         assert_eq!(facts.accepted.unwrap(), &[plan.step(0)]);
         if failure == 1 {
             assert_eq!(facts.affected.unwrap(), &[plan.step(0), plan.step(1)]);
@@ -153,6 +167,13 @@ fn immediate_callback_runs_now_and_original_failure_survives_close() {
     let facts = outcome.facts();
     assert_eq!(facts.accepted.unwrap(), &[plan.step(0)]);
     assert_eq!(facts.status, ExecutionStatus::Failed);
+    assert_eq!(
+        facts.failed_step,
+        Some(FailedStep {
+            step: plan.step(1),
+            effect: StepEffect::None
+        })
+    );
 }
 
 #[test]
@@ -174,6 +195,13 @@ fn failed_callback_cannot_become_success_even_if_abort_issued() {
     assert_eq!(outcome.facts().status, ExecutionStatus::Failed);
     assert_eq!(outcome.facts().accepted.unwrap(), &[]);
     assert_eq!(outcome.facts().affected.unwrap(), &[plan.step(0)]);
+    assert_eq!(
+        outcome.facts().failed_step,
+        Some(FailedStep {
+            step: plan.step(0),
+            effect: StepEffect::Partial
+        })
+    );
 }
 
 #[test]
@@ -341,4 +369,100 @@ fn rejected_present_keeps_lease_for_retry() {
     assert_eq!(presents.len(), 1);
     assert_eq!(presents[0].step, Some(plan.step(1)));
     assert!(presents[0].accepted);
+}
+
+#[test]
+fn clean_present_rejection_is_reported_and_successful_retry_clears_it() {
+    for retry in [false, true] {
+        let device = immediate();
+        let plan = plan(&device, &[StepKind::Commands, StepKind::Present]);
+        // SAFETY: this mock execution has no GPU resource obligations.
+        let mut execution =
+            unsafe { device.begin_execution(plan.clone(), CompletionRequest::None) }.unwrap();
+        execution.commands(plan.step(0), |_| Ok(())).unwrap();
+        let foreign = PresentBinding::new(SurfaceImage {
+            device: DeviceId::allocate().unwrap(),
+            surface: SurfaceId::allocate().unwrap(),
+            generation: 0,
+            native: (),
+        });
+        let rejected = match execution.present(plan.step(1), foreign) {
+            Err(rejected) => rejected,
+            Ok(()) => panic!("foreign image accepted"),
+        };
+        assert_eq!(rejected.error, Error::WrongDevice);
+        assert!(rejected.binding.is_some());
+        if retry {
+            let local = PresentBinding::new(SurfaceImage {
+                device: device.id(),
+                surface: SurfaceId::allocate().unwrap(),
+                generation: 0,
+                native: (),
+            });
+            assert!(execution.present(plan.step(1), local).is_ok());
+        }
+        // SAFETY: this mock execution has no GPU resource obligations.
+        let outcome = unsafe { execution.finish() };
+        if retry {
+            assert_eq!(outcome.error(), None);
+            assert_eq!(outcome.facts().failed_step, None);
+            assert_eq!(outcome.facts().status, ExecutionStatus::Accepted);
+        } else {
+            assert_eq!(outcome.error(), Some(&Error::WrongDevice));
+            assert_eq!(
+                outcome.facts().failed_step,
+                Some(FailedStep {
+                    step: plan.step(1),
+                    effect: StepEffect::None,
+                })
+            );
+            assert_eq!(outcome.facts().accepted.unwrap(), &[plan.step(0)]);
+        }
+    }
+}
+
+#[test]
+fn unknown_emergency_checkpoint_does_not_obscure_a_clean_step_rejection() {
+    let device = immediate();
+    let plan = plan(&device, &[StepKind::Commands, StepKind::Commands]);
+    // SAFETY: this mock references no GPU resources.
+    let mut execution =
+        unsafe { device.begin_execution(plan.clone(), CompletionRequest::None) }.unwrap();
+    execution.commands(plan.step(0), |_| Ok(())).unwrap();
+    GL_WAIT_REJECT.with(|v| v.set(true));
+    GL_EMERGENCY_UNKNOWN.with(|v| v.set(true));
+    assert!(
+        execution
+            .commands(plan.step(1), |_| panic!("rejected wait invoked callback"))
+            .is_err()
+    );
+    // SAFETY: this mock references no GPU resources.
+    let outcome = unsafe { execution.finish() };
+    let facts = outcome.facts();
+    assert_eq!(facts.status, ExecutionStatus::Indeterminate);
+    assert_eq!(facts.accepted.unwrap(), &[plan.step(0)]);
+    assert_eq!(
+        facts.failed_step,
+        Some(FailedStep {
+            step: plan.step(1),
+            effect: StepEffect::None
+        })
+    );
+}
+
+#[test]
+fn completion_checkpoint_failure_does_not_invent_a_failed_step() {
+    let device = immediate();
+    let plan = plan(&device, &[StepKind::Commands]);
+    // SAFETY: this mock references no GPU resources.
+    let mut execution =
+        unsafe { device.begin_execution(plan.clone(), CompletionRequest::None) }.unwrap();
+    execution.commands(plan.step(0), |_| Ok(())).unwrap();
+    GL_CHECKPOINT_UNKNOWN.with(|v| v.set(true));
+    // SAFETY: this mock references no GPU resources.
+    let outcome = unsafe { execution.finish() };
+    let facts = outcome.facts();
+    assert_eq!(facts.status, ExecutionStatus::Indeterminate);
+    assert_eq!(facts.accepted.unwrap(), &[plan.step(0)]);
+    assert_eq!(facts.failed_step, None);
 }

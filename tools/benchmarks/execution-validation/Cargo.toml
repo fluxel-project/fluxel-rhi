@@ -1,0 +1,10 @@
+[package]
+name = "execution-validation-diagnostic"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+fluxel-rhi-core = { path = "../../../crates/core" }

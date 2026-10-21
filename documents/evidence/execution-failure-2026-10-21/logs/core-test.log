@@ -1,0 +1,46 @@
+   Compiling fluxel-rhi-core v0.16.0 (E:\moyy\program\rust\fluxel\fluxel-rhi\crates\core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.04s
+     Running unittests src\lib.rs (target\debug\deps\fluxel_rhi_core-5cd57b83823e0ddf.exe)
+
+running 38 tests
+test api::execution::tests::unsupported_sparse_plan_fails_before_commands_can_issue ... ok
+test api::execution::tests::invalid_order_is_rejected_before_invoking_the_callback ... ok
+test api::execution::tests::immediate_callback_runs_now_and_original_failure_survives_close ... ok
+test api::execution::tests::completion_checkpoint_failure_does_not_invent_a_failed_step ... ok
+test api::execution::tests::dropped_immediate_execution_is_abandoned_without_idle_or_checkpoint ... ok
+test api::execution::tests::failed_callback_cannot_become_success_even_if_abort_issued ... ok
+test api::execution::tests::clean_present_rejection_is_reported_and_successful_retry_clears_it ... ok
+test api::execution::tests::immediate_failed_and_indeterminate_close_preserve_known_prefix ... ok
+test api::execution::tests::recorded_commands_wrong_lane_preserves_work ... ok
+test api::execution::tests::deferred_failure_never_submits_and_preserves_recorded_steps ... ok
+test api::execution::tests::recorded_commands_rejection_preserves_recordings_and_allows_retry ... ok
+test api::execution::tests::rejected_present_keeps_lease_for_retry ... ok
+test api::execution::tests::unknown_emergency_checkpoint_does_not_obscure_a_clean_step_rejection ... ok
+test api::execution_facts::tests::issue_failure_reports_effects_without_claiming_complete_steps ... ok
+test api::execution::tests::immediate_native_call_occurs_before_finish_without_step_checkpoint ... ok
+test api::execution_facts::tests::receipt_alone_does_not_claim_full_submission_acceptance ... ok
+test api::ray::tests::nested_inputs_are_checked_by_every_ray_entry_before_backend ... ok
+test api::tests::binding_arrays::arrays_reject_nested_descriptors_without_losing_leaf_validation ... ok
+test api::tests::binding_arrays::runtime_array_group_validates_actual_length_and_holes_before_backend ... ok
+test api::tests::binding_arrays::runtime_array_layout_validates_capacity_capability_and_position ... ok
+test api::tests::ergonomics::error_implements_standard_error_and_reports_details ... ok
+test api::tests::ergonomics::flags_support_or_and_or_assign ... ok
+test api::tests::execution_contract::compiled_order_and_waits_reach_spi_unchanged_for_each_execution ... ok
+test api::tests::execution_contract::facade_retains_partial_and_indeterminate_native_outcomes ... ok
+test api::tests::execution_contract::indeterminate_token_stays_owned_until_caller_drains ... ok
+test api::tests::execution_contract::invalid_inputs_never_reach_spi_and_tail_can_resume_after_frontier ... ok
+test api::tests::execution_contract::supplied_multi_lane_frontiers_are_validated_without_scheduling ... ok
+test api::tests::multiqueue_validation::invalid_work_is_rejected_before_multi_queue_backend ... ok
+test api::tests::multiqueue_validation::reused_plan_routes_distinct_owned_tokens_to_backend ... ok
+test api::tests::multiqueue_validation::signal_and_wait_metadata_are_checked_before_backend ... ok
+test api::tests::query_validation::query_domain_and_bounds_are_checked_before_backend ... ok
+test api::tests::query_validation::raster_pass_rejects_invalid_query_metadata_before_backend ... ok
+test api::tests::type_contract_tests::concrete_shared_and_local_profiles_typecheck ... ok
+test api::tests::type_contract_tests::deferred_binding_rejects_wrong_lane_and_foreign_tail ... ok
+test api::tests::type_contract_tests::dropped_immediate_session_reports_issued_prefix_to_backend ... ok
+test api::tests::type_contract_tests::immediate_validates_waits_and_lanes_before_execution ... ok
+test api::tests::type_contract_tests::raster_draw_rejects_inverted_ranges_before_backend ... ok
+test api::tests::type_contract_tests::stale_surface_lease_cannot_enter_plan_present ... ok
+
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

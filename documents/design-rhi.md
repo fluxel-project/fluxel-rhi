@@ -126,6 +126,23 @@ Checkpoint coverage for affected work is a lifetime observation, not proof that
 all intended commands in a failed step ran. `ExecutionStatus::Accepted` never
 means the GPU has completed the work.
 
+`ExecutionFacts::failed_step` additionally reports an identifiable failed slot
+with `StepEffect::None`, `Partial`, or `Unknown`. The optional field being absent
+means the source cannot identify a failed slot, or no slot failed; it does not
+prove absence of native work. A known clean step rejection stays None even if
+an emergency checkpoint for earlier work is indeterminate. Conversely, failure
+to create completion evidence after all steps does not invent a failing step.
+Legacy owning outcomes do not gain fields or lose recovery payloads; their
+borrowed views remain conservative when they lack boundary information.
+
+A clean immediate Present rejection returns its lease and permits retry. If
+execution ends without a successful retry, its original rejection error and
+no-effect slot remain observable. Successful retry clears that transient
+rejection. This metadata introduces no command recording, native wait, or new
+recovery policy. The newer facts/outcome structs gain the failed-step field;
+external struct-literal constructors must initialize it, while the older Core
+execution SPI and owning submission enums keep their signatures.
+
 The entry rejects SparseBind steps before issue. Sparse operations, native
 multi-queue tokens, parallel recording continue to use their existing explicit APIs.
 `recorded_commands` is a Deferred-only binding operation on the common entry; it

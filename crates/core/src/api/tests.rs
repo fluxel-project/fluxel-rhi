@@ -40,6 +40,9 @@ pub(crate) mod type_contract_tests {
         pub(crate) static GL_TRANSITIONS: Cell<usize> = const { Cell::new(0) };
         pub(crate) static GL_CHECKPOINTS: Cell<usize> = const { Cell::new(0) };
         pub(crate) static GL_CLOSE_FAILURE: Cell<u8> = const { Cell::new(0) };
+        pub(crate) static GL_WAIT_REJECT: Cell<bool> = const { Cell::new(false) };
+        pub(crate) static GL_CHECKPOINT_UNKNOWN: Cell<bool> = const { Cell::new(false) };
+        pub(crate) static GL_EMERGENCY_UNKNOWN: Cell<bool> = const { Cell::new(false) };
         pub(crate) static GL_DEVICE: Cell<Option<DeviceId>> = const { Cell::new(None) };
         pub(crate) static GL_ABANDONED: Cell<usize> = const { Cell::new(0) };
     }
@@ -318,7 +321,11 @@ pub(crate) mod type_contract_tests {
     // SAFETY: this fixture reports every issued prefix deterministically.
     unsafe impl ImmediateBackend for GlLocal {
         fn install_waits(_: &Rc<()>, _: LaneId, _: &[StepWait]) -> WaitInstallOutcome<Self> {
-            WaitInstallOutcome::Ready { issued: false }
+            if GL_WAIT_REJECT.with(|v| v.replace(false)) {
+                WaitInstallOutcome::Rejected(Error::Backend("wait rejected".into()))
+            } else {
+                WaitInstallOutcome::Ready { issued: false }
+            }
         }
         fn close_immediate(_: Rc<()>, reason: ImmediateCloseReason) -> ImmediateClose<Self> {
             if matches!(reason, ImmediateCloseReason::Aborted)
@@ -370,7 +377,14 @@ pub(crate) mod type_contract_tests {
             _: &CompletionRequest,
         ) -> CheckpointOutcome<Self> {
             GL_CHECKPOINTS.with(|calls| calls.set(calls.get() + 1));
-            CheckpointOutcome::Covered(Vec::new())
+            if GL_CHECKPOINT_UNKNOWN.with(|v| v.replace(false)) {
+                CheckpointOutcome::Indeterminate(NativeUncertainty {
+                    device: GL_DEVICE.with(|id| id.get().unwrap()),
+                    native: (),
+                })
+            } else {
+                CheckpointOutcome::Covered(Vec::new())
+            }
         }
         fn emergency_checkpoint(
             _: &Rc<()>,
@@ -378,7 +392,14 @@ pub(crate) mod type_contract_tests {
             _: &[StepId],
         ) -> CheckpointOutcome<Self> {
             GL_CHECKPOINTS.with(|calls| calls.set(calls.get() + 1));
-            CheckpointOutcome::Covered(Vec::new())
+            if GL_EMERGENCY_UNKNOWN.with(|v| v.replace(false)) {
+                CheckpointOutcome::Indeterminate(NativeUncertainty {
+                    device: GL_DEVICE.with(|id| id.get().unwrap()),
+                    native: (),
+                })
+            } else {
+                CheckpointOutcome::Covered(Vec::new())
+            }
         }
         fn abandon_session(_: &Rc<()>, _: &SubmissionPlan<Self>, issued: &[StepId]) {
             ABANDONED_STEPS.with(|count| count.set(issued.len()));
