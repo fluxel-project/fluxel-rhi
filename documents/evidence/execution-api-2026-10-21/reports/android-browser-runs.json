@@ -1,0 +1,62 @@
+[
+  {
+    "demo": "01_triangle",
+    "exit": 0
+  },
+  {
+    "demo": "02_texture",
+    "exit": 0
+  },
+  {
+    "demo": "03_instancing",
+    "exit": 0
+  },
+  {
+    "demo": "04_dynamic_uniform_buffer",
+    "exit": 0
+  },
+  {
+    "demo": "05_push_constants",
+    "exit": 0
+  },
+  {
+    "demo": "06_compute",
+    "exit": 0
+  },
+  {
+    "demo": "07_offscreen",
+    "exit": 0
+  },
+  {
+    "demo": "08_msaa",
+    "exit": 0
+  },
+  {
+    "demo": "09_texture_mipmap",
+    "exit": 0
+  },
+  {
+    "demo": "10_indirect_draw",
+    "exit": 0
+  },
+  {
+    "demo": "11_occlusion_query",
+    "exit": 0
+  },
+  {
+    "demo": "12_screenshot",
+    "exit": 0
+  },
+  {
+    "demo": "13_multithreaded_recording",
+    "exit": 0
+  },
+  {
+    "demo": "14_descriptor_indexing",
+    "exit": 0
+  },
+  {
+    "demo": "15_multiview",
+    "exit": 0
+  }
+]

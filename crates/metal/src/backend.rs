@@ -346,3 +346,7 @@ mod tests {
         assert!(!lease_generation_is_current(5, 5, 5, true));
     }
 }
+
+impl fluxel_rhi_core::api::ExecutionBackend for Metal {
+    type Mode = fluxel_rhi_core::api::DeferredExecution;
+}

@@ -171,6 +171,9 @@ impl SurfaceBackend for Mock {
         ready(Ok(Token::new(surface)))
     }
 }
+impl ExecutionBackend for Mock {
+    type Mode = DeferredExecution;
+}
 impl DeferredBackend for Mock {
     type NativeRecordedWork = ();
     fn finish_encoder(_: (), _: LaneId) -> Result<()> {
@@ -426,8 +429,15 @@ fn issue(mode: Mode) -> (Arc<State>, utils::FrameSubmission<Mock>) {
         ordinal: 0,
     };
     // SAFETY: this isolated fixture associates its unique id with the mock.
-    let device =
-        unsafe { Device::<Mock>::from_native(id, state.clone(), DeviceCapabilities::default()) };
+    let capabilities = DeviceCapabilities {
+        lanes: Arc::from([LaneInfo {
+            id: lane,
+            class: LaneClass::Graphics,
+            routes: Vec::new(),
+        }]),
+        ..DeviceCapabilities::default()
+    };
+    let device = unsafe { Device::<Mock>::from_native(id, state.clone(), capabilities) };
     // SAFETY: the mock surface belongs to the same fixture device.
     let mut surface =
         unsafe { Surface::<Mock>::from_native(id, SurfaceId::allocate().unwrap(), state.clone()) };
@@ -435,6 +445,37 @@ fn issue(mode: Mode) -> (Arc<State>, utils::FrameSubmission<Mock>) {
     let work = device.encoder(lane).unwrap().finish().unwrap();
     let frame = utils::submit_frame(&device, lane, work, image).unwrap();
     (state, frame)
+}
+
+#[test]
+fn common_execution_drains_failure_while_retaining_uncertainty() {
+    let state = Arc::new(State {
+        mode: Mode::Indeterminate,
+        waits: AtomicUsize::new(0),
+        retained: AtomicUsize::new(0),
+    });
+    let id = DeviceId::allocate().unwrap();
+    let lane = LaneId {
+        device: id,
+        ordinal: 0,
+    };
+    let capabilities = DeviceCapabilities {
+        lanes: Arc::from([LaneInfo {
+            id: lane,
+            class: LaneClass::Graphics,
+            routes: Vec::new(),
+        }]),
+        ..DeviceCapabilities::default()
+    };
+    // SAFETY: these mock native objects belong to the fixture's unique device.
+    let device = unsafe { Device::<Mock>::from_native(id, state.clone(), capabilities) };
+    let mut surface =
+        unsafe { Surface::<Mock>::from_native(id, SurfaceId::allocate().unwrap(), state.clone()) };
+    let image = utils::block_on(surface.acquire()).unwrap();
+    let result = utils::execute_frame(&device, lane, image, CompletionRequest::End, |_, _| Ok(()));
+    assert!(matches!(result, Err(Error::DeviceLost)));
+    assert_eq!(state.waits.load(Ordering::SeqCst), 1);
+    assert_eq!(state.retained.load(Ordering::SeqCst), 0);
 }
 
 #[test]

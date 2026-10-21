@@ -1,5 +1,11 @@
 # RHI conformance matrix
 
+
+The optional common execution entry is verified separately from native feature
+capabilities. Its migration scope, source fingerprints, hardware readbacks and
+platform limits are recorded in the [2026-10-21 execution packet](evidence/execution-api-2026-10-21/README.md).
+It does not add GL deferred recording, native multi-queue support, or Metal GPU acceptance.
+
 **Scope:** the DX12, Vulkan, and WebGPU columns summarize their recorded example paths. GL4+, GLES3+, and WebGL2 have separate profile evidence in `crates/rhi/examples/README.md`. Metal is an in-progress backend with no macOS link or real-GPU evidence yet, so it is intentionally not represented as a passing matrix column.
 
 `Pass` means a recorded native run, not successful compilation. `Unsupported` requires an explicit capability or operation result. A successful example proves its exercised path only, not every operation in the backend API.

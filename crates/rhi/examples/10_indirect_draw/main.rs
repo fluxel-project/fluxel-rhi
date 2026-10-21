@@ -88,7 +88,12 @@ pub async fn run_webgl2_indirect_fallback(
 }
 
 #[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
-fn run<B: workload::IndirectBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
+fn run<
+    B: workload::IndirectBackend + ExecutionBackend<Mode = DeferredExecution>,
+    H: utils::ExampleHost<B>,
+>(
+    host: H,
+) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Bgra8Unorm,

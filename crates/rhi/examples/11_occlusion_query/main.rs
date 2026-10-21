@@ -315,7 +315,12 @@ fn transform(
     bytes
 }
 #[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
-fn run<B: OcclusionBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
+fn run<
+    B: OcclusionBackend + ExecutionBackend<Mode = DeferredExecution>,
+    H: utils::ExampleHost<B>,
+>(
+    host: H,
+) -> Result<()> {
     let cfg = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Rgba8Unorm,

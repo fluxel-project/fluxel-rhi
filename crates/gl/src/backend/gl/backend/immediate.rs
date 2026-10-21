@@ -24,18 +24,17 @@ unsafe impl ImmediateBackend for Gl {
         lane: api::LaneId,
         waits: &[StepWait],
     ) -> WaitInstallOutcome<Self> {
-        // One adopted GL context has one ordered graphics lane. Core's plan has
-        // already ordered its steps; any explicit foreign-lane wait would need
-        // a native sync route that this baseline has not proved.
+        // Core validates the full plan and its lanes before entering this SPI.
+        // This backend exposes exactly one lane, so all valid predecessors
+        // precede this call on the same native context. Ordering does not replace
+        // the renderer's explicit resource visibility transitions.
         if waits
             .iter()
             .any(|wait| wait.previous.plan.device != lane.device)
         {
             WaitInstallOutcome::Rejected(Error::WrongLane)
-        } else if waits.is_empty() {
-            WaitInstallOutcome::Ready { issued: false }
         } else {
-            WaitInstallOutcome::Rejected(Error::Unsupported("GL explicit step waits"))
+            WaitInstallOutcome::Ready { issued: false }
         }
     }
 
@@ -91,8 +90,11 @@ unsafe impl ImmediateBackend for Gl {
         waits: &[StepWait],
         mut binding: PresentBinding<Self>,
     ) -> std::result::Result<ImmediateClose<Self>, (Error, PresentBinding<Self>)> {
-        if !waits.is_empty() {
-            return Err((Error::Unsupported("GL explicit step waits"), binding));
+        if waits
+            .iter()
+            .any(|wait| wait.previous.plan.device != lane.device)
+        {
+            return Err((Error::WrongLane, binding));
         }
         // SAFETY: Core validated the exclusive, current image before entering
         // this SPI. `try_handoff` is the irreversible boundary: only after it

@@ -472,7 +472,10 @@ pub async fn run_webgl2_descriptor_indexing(
 use support::*;
 
 #[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
-fn run<B: DescriptorIndexingBackend, H: utils::ExampleHost<B>>(
+fn run<
+    B: DescriptorIndexingBackend + ExecutionBackend<Mode = DeferredExecution>,
+    H: utils::ExampleHost<B>,
+>(
     host: H,
     fixed_texture_array: bool,
 ) -> Result<()> {

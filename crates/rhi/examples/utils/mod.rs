@@ -172,3 +172,6 @@ pub use submission::{
 #[path = "lifecycle.rs"]
 mod lifecycle;
 pub use lifecycle::GpuScope;
+#[path = "execution.rs"]
+mod execution;
+pub use execution::{execute_frame, execution_end_checkpoint, validate_execution_outcome};

@@ -77,6 +77,10 @@ pub enum ImmediateFinishOutcome<B: Backend> {
 /// Every emergency checkpoint must cover the complete reported prefix; if the
 /// backend cannot prove coverage it must return Indeterminate.
 pub unsafe trait ImmediateBackend: CommandBackend + CompletionBackend {
+    /// Core calls this after validating that every wait names an earlier step
+    /// of this plan and that every plan lane belongs to the device. Backends
+    /// must still implement or reject cross-lane synchronization. A wait does
+    /// not replace the resource visibility transitions supplied by the caller.
     /// Rejected means no native effect was issued. Any ambiguous native issue
     /// must return Indeterminate, never a plain error.
     fn install_waits(
@@ -135,9 +139,10 @@ impl<B: ImmediateBackend> Device<B> {
         plan: SubmissionPlan<B>,
         completion: CompletionRequest,
     ) -> Result<ImmediateSession<B>> {
-        if plan.id.device != self.id {
-            return Err(Error::WrongDevice);
-        }
+        // Validate the reusable topology once, before any native operation.
+        // A wait orders execution; resource visibility still requires the
+        // explicit transitions supplied by the renderer.
+        plan.validate_for_execution(self)?;
         completion.validate(&plan)?;
         Ok(ImmediateSession {
             device: self.clone(),

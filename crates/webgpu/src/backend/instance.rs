@@ -268,3 +268,7 @@ fn limit_u64(limits: &JsValue, name: &str) -> u64 {
         .filter(|value| value.is_finite() && *value >= 0.0)
         .map_or(0, |value| value as u64)
 }
+
+impl fluxel_rhi_core::api::ExecutionBackend for WebGpu {
+    type Mode = fluxel_rhi_core::api::DeferredExecution;
+}

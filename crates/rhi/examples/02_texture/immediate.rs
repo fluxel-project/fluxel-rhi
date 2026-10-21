@@ -1,17 +1,9 @@
 //! WGL immediate route for the textured-quad example.
 use super::{TextureExample, TexturePixels, data::load_ktx, utils};
 use fluxel_rhi::api::*;
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{cell::RefCell, rc::Rc};
 const WGSL: &[u8] = include_bytes!("../assets/02_texture/texture.wgsl");
 
-static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-fn err(x: ImmediateRunOutcome<fluxel_rhi::gl::Gl>) -> Error {
-    match x {
-        ImmediateRunOutcome::Issued(_) => Error::InvalidState,
-        ImmediateRunOutcome::Failed { error, .. }
-        | ImmediateRunOutcome::Indeterminate { error, .. } => error,
-    }
-}
 fn frame(
     d: &Device<fluxel_rhi::gl::Gl>,
     lane: LaneId,
@@ -20,51 +12,13 @@ fn frame(
     extent: [u32; 2],
     p: TexturePixels<'_>,
 ) -> Result<()> {
-    let n = NEXT
-        .fetch_update(
-            std::sync::atomic::Ordering::Relaxed,
-            std::sync::atomic::Ordering::Relaxed,
-            |x| x.checked_add(1),
-        )
-        .map_err(|_| Error::OutOfMemory)?;
-    let plan = unsafe {
-        SubmissionPlan::from_compiled(
-            PlanId {
-                device: d.id(),
-                ordinal: n,
-            },
-            Arc::from([
-                StepDesc {
-                    lane,
-                    kind: StepKind::Commands,
-                    waits: vec![],
-                },
-                StepDesc {
-                    lane,
-                    kind: StepKind::Present,
-                    waits: vec![],
-                },
-            ]),
-        )
-    };
-    let mut s = unsafe { d.immediate(plan, CompletionRequest::None)? };
-    let mut c = s.begin_commands().map_err(err)?;
-    e.issue(c.commands(), &image, extent, p)?;
-    match c.close() {
-        ImmediateRunOutcome::Issued(_) => {}
-        x => return Err(err(x)),
-    };
-    match s.present(PresentBinding::new(image)) {
-        ImmediatePresentResult::Run(ImmediateRunOutcome::Issued(_)) => {}
-        ImmediatePresentResult::Run(x) => return Err(err(x)),
-        ImmediatePresentResult::Rejected { error, .. } => return Err(error),
-    };
-    match s.finish() {
-        ImmediateFinishOutcome::Issued(_) => Ok(()),
-        ImmediateFinishOutcome::Failed(x) => Err(err(x)),
-        ImmediateFinishOutcome::AlreadyReported => Err(Error::InvalidState),
-    }
+    let (_, outcome) =
+        utils::execute_frame(d, lane, image, CompletionRequest::None, |encoder, image| {
+            e.issue(encoder, image, extent, p)
+        })?;
+    utils::validate_execution_outcome(&outcome)
 }
+
 #[cfg(any(windows, all(target_os = "linux", feature = "native-gles-egl")))]
 pub(super) fn run() -> Result<()> {
     let (rgba, w, h) = load_ktx()?;

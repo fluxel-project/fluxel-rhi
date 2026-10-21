@@ -1,0 +1,2 @@
+# Keep evidence bytes identical to their SHA-256 index.
+* -text whitespace=cr-at-eol,-blank-at-eof

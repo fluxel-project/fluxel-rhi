@@ -337,7 +337,10 @@ async fn make_pipeline<B: DynamicUniformBackend>(
     .await
 }
 #[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
-fn run<B: DynamicUniformBackend + DeferredBackend, H: utils::ExampleHost<B>>(
+fn run<
+    B: DynamicUniformBackend + DeferredBackend + ExecutionBackend<Mode = DeferredExecution>,
+    H: utils::ExampleHost<B>,
+>(
     host: H,
 ) -> Result<()> {
     let config = SurfaceConfig {

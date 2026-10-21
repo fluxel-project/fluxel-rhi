@@ -10,10 +10,7 @@ pub async fn run_webgl2_multithreaded_recording(
     frames: u32,
 ) -> Result<()> {
     use fluxel_rhi::gl::{Gl, GlInstance};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
-    static NEXT_PLAN: AtomicU64 = AtomicU64::new(1);
     if frames == 0 {
         return Err(Error::InvalidRange);
     }
@@ -59,60 +56,17 @@ pub async fn run_webgl2_multithreaded_recording(
     let scope = utils::GpuScope::new(&device);
     for _ in 0..frames {
         let image = surface.acquire().await?;
-        let ordinal = NEXT_PLAN
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                value.checked_add(1)
-            })
-            .map_err(|_| Error::OutOfMemory)?;
-        // SAFETY: this single-lane plan orders direct commands before the
-        // matching surface present on the current browser owner thread.
-        let plan = unsafe {
-            SubmissionPlan::from_compiled(
-                PlanId {
-                    device: device.id(),
-                    ordinal,
-                },
-                Arc::from([
-                    StepDesc {
-                        lane,
-                        kind: StepKind::Commands,
-                        waits: vec![],
-                    },
-                    StepDesc {
-                        lane,
-                        kind: StepKind::Present,
-                        waits: vec![],
-                    },
-                ]),
-            )
-        };
-        // SAFETY: the image and workload stay alive until immediate commands
-        // close and the end checkpoint completes below.
-        let mut session = unsafe { device.immediate(plan, CompletionRequest::End)? };
-        let mut commands = session.begin_commands().map_err(|outcome| match outcome {
-            ImmediateRunOutcome::Issued(_) => Error::InvalidState,
-            ImmediateRunOutcome::Failed { error, .. }
-            | ImmediateRunOutcome::Indeterminate { error, .. } => error,
-        })?;
-        let mut encoder = commands.commands();
-        let uploaded = scene.encode(&device, &image, &mut encoder, extent)?;
-        drop(encoder);
-        match commands.close() {
-            ImmediateRunOutcome::Issued(_) => {
-                if uploaded {
-                    scene.mark_uploaded();
-                }
-            }
-            ImmediateRunOutcome::Failed { error, .. }
-            | ImmediateRunOutcome::Indeterminate { error, .. } => return Err(error),
+        let (uploaded, outcome) = utils::execute_frame(
+            &device,
+            lane,
+            image,
+            CompletionRequest::End,
+            |encoder, image| scene.encode(&device, image, encoder, extent),
+        )?;
+        let point = utils::execution_end_checkpoint(&outcome)?;
+        if uploaded {
+            scene.mark_uploaded();
         }
-        match session.present(PresentBinding::new(image)) {
-            ImmediatePresentResult::Run(ImmediateRunOutcome::Issued(_)) => {}
-            ImmediatePresentResult::Run(ImmediateRunOutcome::Failed { error, .. })
-            | ImmediatePresentResult::Run(ImmediateRunOutcome::Indeterminate { error, .. })
-            | ImmediatePresentResult::Rejected { error, .. } => return Err(error),
-        }
-        let point = utils::immediate_end_checkpoint(session.finish())?;
         device.wait_completion(&point).await?;
     }
     scope.finish().await;

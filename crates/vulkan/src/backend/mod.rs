@@ -450,3 +450,7 @@ fn vk_error(error: vk::Result) -> Error {
         _ => Error::Backend(format!("Vulkan: {error:?}")),
     }
 }
+
+impl fluxel_rhi_core::api::ExecutionBackend for Vulkan {
+    type Mode = fluxel_rhi_core::api::DeferredExecution;
+}

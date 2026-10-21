@@ -17,6 +17,21 @@ These examples exercise the RenderGraph-facing RHI contract. Explicit plans,
 steps, lanes, waits, and completion facts are intentional. The shared example
 host supplies a fixed test workload; its helpers are not public Core APIs.
 
+All 15 examples now use Core's statically dispatched common execution entry.
+The shared `execute_frame` helper invokes each GL encoding closure immediately;
+its plan contains an explicit same-lane Commands -> Present dependency. Deferred
+submission binds already recorded native work through `recorded_commands` and
+finishes the same plan shape. Example 13 keeps its native parallel secondary
+recording, while GL keeps the documented sequential fallback. Capability
+fallbacks and each scene's shader/command generation are unchanged.
+
+The common entry does not introduce a CPU command cache, replay, scheduling,
+normal-path idle wait, or per-step fence. `present` hands off an immediate image
+now but only binds a deferred image until finish; its final acceptance is read
+from the owning execution outcome. Encoding failure still finishes the execution
+and retains that outcome through the standalone host's failure drain. Borrowed
+`facts()` observations do not replace the owning retry/uncertainty payloads.
+
 Deferred recording does not publish persistent upload or layout state. Pending
 state commits are applied only after the host confirms successful execution.
 Partial and indeterminate outcomes retain their original acceptance evidence
@@ -24,8 +39,9 @@ until issued work is drained; the standalone host then terminates the failed
 frame rather than retrying or reusing speculative state. Attachment resources,
 secondary work, and readback tickets remain owned through completion.
 
-The harness deliberately waits each frame. Immediate host teardown and browser
-entry-point exit also require actual completion. A failed drain is not a safe
+Deferred frame submission deliberately drains each frame. Immediate workloads
+request completion where readback or per-frame resource reuse requires it;
+host teardown and browser entry-point exit also require actual completion. A failed drain is not a safe
 release condition: native examples abort, and a browser cancellation or failed
 drain traps without unwinding the in-flight scene. Discard/reload that failed
 WASM instance instead of continuing its invocation. This is an example host
@@ -33,58 +49,28 @@ failure policy, not RHI scheduling, device recovery, or renderer retirement.
 
 ## Verification status
 
-This table distinguishes earlier repository evidence from the current visual
-alignment work. It is updated as each backend is completed. The DX12 and
-Vulkan rows refer to their committed verification candidates; later shared
-example changes require rerunning affected backend paths.
+The common execution migration is recorded in the
+[2026-10-21 evidence packet](../../../documents/evidence/execution-api-2026-10-21/README.md).
+Its source fingerprints identify the tested worktree based on `efc4dbb`;
+compilation alone does not establish runtime or visual conformance.
 
-| Backend | Current evidence | Remaining gate |
+| Route | Migration regression | Limit |
 | --- | --- | --- |
-| DX12 | Commit `956f277a7ada5ec7decda7a8544e59a9fc2e9ee1` is pushed. All 15 examples ran on a real GPU with the D3D12 debug layer and were visually checked against C++; the complete WGSL manifest regenerates DXIL/SPIR-V byte-for-byte and checks shader ABI. On the current `eeed5bf538ea99e64ecb682f223764495d353799` worktree, all 15 examples exited successfully for two frames with `FLUXEL_DX12_DEBUG=1`. ID 820 in examples 08/12 is a performance hint: D3D12's resource descriptor uses a zero color clear value while those passes clear to other values. D3D12 still clears correctly; this is not a GPU-capability failure. The process-termination live-object summary lacks object names and is not sufficient evidence of a leak. The desktop was locked during the current run, so it adds no visual evidence. | Complete for the pushed visual candidate; current worktree execution regression passed. Revisit optimized clear values only if clear performance warrants a public resource contract change. |
-| Vulkan | All 15 examples ran for two frames on a real GPU with `VK_LAYER_KHRONOS_validation`; the pushed visual candidate was checked against C++ with the HUD excluded. The 09 anisotropic sampler path and 14 explicit upload-to-sampling transitions were fixed and rechecked. Example 13 was visually verified from swapchain GPU readback because desktop capture was occluded. Example 07 preserves the reference's intentional 7×7 reflection blur. On the current `eeed5bf538ea99e64ecb682f223764495d353799` worktree, all 15 examples exited successfully for two frames with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`. The backend does not install a Vulkan debug messenger, so this run cannot claim zero validation diagnostics. Desktop was locked, so it adds no visual evidence. | Complete for the pushed visual candidate; current worktree execution regression passed. |
-| WebGPU | All 15 browser tests passed on Chrome 155.0.8059.40 using an AMD RDNA 3 adapter (`isFallbackAdapter = false`); each presented three frames at 1280×720. Captures were visually compared with the C++ references with the HUD excluded. The sampler anisotropy path and WASM animation clock were fixed. On the current `eeed5bf538ea99e64ecb682f223764495d353799` worktree, all 15 tests passed again in Chrome 155, presenting three frames each. This rerun did not produce a new screenshot set. | Complete for the pushed visual candidate; current worktree execution regression passed. |
-| Metal | The initial backend implementation includes adapter/device/queue creation, WGSL→MSL translation, native shader-library compilation, MTLBuffer allocation, 2D textures/views in a limited RGBA/BGRA/Depth32 plus render-only Depth32FloatStencil8 on Apple2/Mac2-family devices, texture-to-texture blit, buffer-to-texture blit, aligned texture upload and texture-to-buffer copy, completion-gated buffer readback, samplers, scalar bind groups, dynamic uniform offsets, a narrow TriangleList pipeline with Depth32 and combined Depth32FloatStencil8 attachment/pipeline state, including stencil operations and pass load/store, device-queried 2/4/8-sample textures and color resolve, cull/blend/write-mask lowering, and direct plus indirect compute dispatch with declared workgroup sizes and `rgba8unorm` write-only storage textures. Indirect dispatch is enabled only when the device reports the required Metal GPU family; it validates the 12-byte argument range and retains its buffer through GPU completion. Direct command encoding, Commands plus one Present step, CAMetalLayer acquire, and asynchronous marker-based completion are implemented. The AppKit host routes all examples 01–15 to its retained `CAMetalLayer`. Examples 05, 10, 11, 13, 14 and 15 use explicit visual fallbacks for native capabilities Metal does not advertise; these paths do not claim native push constants, indirect draws, occlusion queries, secondary commands, runtime descriptor indexing, or multiview. The opt-in `crates/metal/tests/hardware.rs` fixture checks submitted GPU buffer bytes through completion-gated readback (`cargo test -p fluxel-rhi-metal --features hardware-tests --test hardware`). The fixture type-checks for `aarch64-apple-darwin`; there has been no macOS SDK link, Apple GPU run, Metal example execution, or visual review. | In progress; run the focused fixture on Apple GPU, fix any runtime failures, then complete all 15 examples with inspected screenshots and diagnostics. |
-| GL4+ | WGL on AMD Radeon 780M (driver 32.0.21028.2002) passed the concentrated 01–15 real-GPU run and independent backend review. All examples have visually reviewed 1280×720 captures against C++ references with the HUD excluded. Example 11 matches the C++ occlusion-query samples (teapot 246605, sphere 2878). Example 12's readback image matches the C++ dragon outside the HUD: RGB MAE 0.001/255, P95 0/255, 93 differing pixels among 748,800. Examples 13–15 use sequential recording, fixed texture-array, and per-eye stereo fallbacks without claiming unavailable native capabilities. Example 15 matches the C++ reference outside the HUD and window border: RGB MAE 0.001/255, P95 0/255. The current worktree was rebuilt on 2026-10-15 and all 15 WGL examples exited successfully for two frames. This adds runtime evidence, not new visual captures. | Complete for the WGL profile on the tested AMD Radeon 780M; current worktree regression passed execution only. |
-| GLES3+ | EGL/GLES 3.1 on Mesa D3D12 over AMD Radeon 780M ran all 15 examples for two frames on the current tree. Opt-in `glReadPixels` captures saved each example's last presented default-framebuffer image before presentation; the PNGs were opened beside the C++ references and the visible scene content matches with the HUD excluded. The corrected GL front-face lowering is included. Compute storage-image output and occlusion-query visibility readback ran on GLES; the native visibility result is boolean, so exact positive sample counts are not portable. | Visual and execution checks pass for the tested Mesa D3D12 GLES 3.1 profile. This does not establish WebGL2 completion. |
-| WebGL2 | Examples 01–15 ran for three frames on Chrome 155.0.8059.40; the current full browser suite has 16 test targets and 20 passing tests, including screenshot row-layout fixtures and four Surface/context lifecycle cases. The lifecycle checks verify exclusive leases, resize/reconfiguration, generation changes, rejection of acquire after an external canvas resize, and terminal behavior after host-notified or driver-detected context loss. The full suite passed after correcting GL front-face lowering and the immediate texture-copy path; the 15 browser captures were opened side-by-side with the WebGPU candidates and visually match the expected scenes. Example 07’s dragon and reflection now match after preserving the public `FrontFace` value. Example 08’s single-sample fallback matches the WebGPU composition; WebGL2 still does not claim multisample attachment support. Example 12’s readback fixture performs two partial, vertically offset copies with a stale 1×1 scissor enabled, then verifies upper-left row ordering, exact destination bytes, byte offset, and row padding. Example 06 uses a WGSL raster-filter fallback because WebGL2 lacks compute/storage-texture support. Example 10 uses indexed draws with CPU-owned indirect arguments and keeps `indirect_draw = false`. Example 11 uses an immediate visual fallback and keeps `occlusion = false`; it does not claim query-result support. Examples 13–15 retain sequential/fixed-resource fallbacks and make no native secondary-command, runtime descriptor-indexing, or multiview claims. | Visual review is complete for the tested WebGL2 scenes; native capability gaps remain explicitly unsupported and use documented visual fallbacks. |
+| Windows DX12 / Vulkan / WGL | All 15 examples per route completed three frames; shared execution GPU fixtures checked exact buffer readback | New desktop visual captures were blocked by the Windows lock screen; invalid lock-screen images are not acceptance evidence |
+| Desktop browser WebGPU / WebGL2 | All 15 examples per route completed three frames with inspected screenshots on the AMD hardware adapter | Capability fallbacks remain explicit |
+| WSL GLES | All 15 completed three frames with inspected framebuffer captures on Mesa D3D12 / AMD Radeon 780M | This is the tested GLES driver route, not every EGL implementation |
+| Android emulator Vulkan / GLES | All 15 per route completed two frames with inspected screenshots; example 12 completed GPU readback | Emulator-reported Adreno 750 is not physical-device acceptance |
+| Android browser WebGL2 | All 15 completed three frames with nonempty drawing-buffer readback and inspected screenshots | WebView 146 has no available WebGPU adapter |
+| Metal | Backend selects deferred execution; source integration is maintained | Apple GPU and visual acceptance remain unavailable |
 
-The verified DX12 candidate reports only D3D12 message ID 820 for the offscreen color
-targets in examples 08 and 12. It is a performance hint about the optional
-optimized clear value; the API does not declare a fixed pass clear color, and
-the clear still produces the requested image. The rest of the captured DX12
-examples produced no D3D12 debug messages.
-
-The local captures, run logs, hardware details, and exact worktree state are
-retained in an ignored local verification archive and are not part of a
-published backend claim. The reference images come from the local C++ Vulkan
-example build; the HUD is excluded from comparison.
-
-### Current full execution regression
-
-On 2026-10-15, all 15 examples were rerun from the directory-reorganized tree
-at HEAD `eeed5bf538ea99e64ecb682f223764495d353799`. DX12 and Vulkan each ran
-two frames per example; WebGPU presented three frames per browser test. No
-DX12, Vulkan, WebGPU, or example source files differed from that HEAD during
-these runs. The worktree also contained unrelated, uncommitted Metal crate
-work. These results verify execution only; they do not bind a future commit
-that changes the tested sources.
-
-| Backend | Device and diagnostics | Result record |
-| --- | --- | --- |
-| DX12 | AMD Radeon 780M, driver 32.0.21028.2002; `FLUXEL_DX12_DEBUG=1`. All 15 processes exited successfully. The 08/12 ID 820 performance hints remain as described above. Windows was locked during the attempted capture, so that image is invalid. Logs retained in the ignored local verification archive. |
-| Vulkan | AMD Radeon 780M, AMD proprietary driver 25.10.28.02; Khronos validation layer selected. All 15 processes exited successfully. The backend does not install a debug messenger, so diagnostic cleanliness is unverified. Windows was locked; no visual evidence was added. Logs retained in the ignored local verification archive. |
-| WebGPU | Chrome and ChromeDriver 155.0.8059.40; real AMD adapter, not a fallback adapter. All 15 browser tests passed and presented three frames. This rerun saved no new screenshots. Logs retained in the ignored local verification archive. |
-
-The current worktree run is not a replacement for opening and reviewing new
-visual captures. Prior pushed-candidate visual evidence remains recorded in
-the backend rows above.
-
-After adding the Apple/Metal host route to examples 01–15, each changed example
-was regressed on the already supported backends: DX12 and Vulkan each presented
-two frames, and Chrome 155 WebGPU presented three frames (all fifteen focused
-browser tests passed). These focused reruns verify execution only and produced
-no new visual captures. Exact commands and working-tree diff fingerprints are
-recorded in the ignored local verification archive.
+Earlier visual baselines and platform-specific capability evidence remain in
+[the testing guide](../../../documents/testing.md),
+[the previous execution packet](../../../documents/evidence/rhi-execution-2026-10-20/README.md),
+and [the Android packet](../../../documents/evidence/android-2026-10-20/README.md).
+Historical evidence is not relabeled as migration-candidate visual evidence.
+The Vulkan backend does not install a debug messenger in these runs, so no
+validation-cleanliness claim is made. Existing DX12 optimized-clear performance
+hints do not establish incorrect output or new native capabilities.
 
 From the workspace root on Windows:
 

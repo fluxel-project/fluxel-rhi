@@ -5,7 +5,6 @@
 //! to the browser owner thread; no CPU command stream is retained or replayed.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use fluxel_rhi::api::*;
 use fluxel_rhi::gl::{Gl, GlInstance};
@@ -15,7 +14,6 @@ use super::{compute, utils};
 const DISPLAY_WGSL: &[u8] = include_bytes!("../assets/06_compute/display.wgsl");
 const FILTER_WGSL: &[u8] = include_bytes!("../assets/06_compute/filters_raster.wgsl");
 const FILTER_ENTRIES: [&str; 3] = ["emboss_fs", "edgedetect_fs", "sharpen_fs"];
-static NEXT_PLAN: AtomicU64 = AtomicU64::new(1);
 
 struct RasterWorkload {
     source: Texture<Gl>,
@@ -341,24 +339,19 @@ pub(super) async fn run(canvas: web_sys::HtmlCanvasElement, frames: u32) -> Resu
     let scope = utils::GpuScope::new(&device);
     for _ in 0..frames {
         let image = surface.acquire().await?;
-        let plan = immediate_plan(&device, lane)?;
-        // SAFETY: the acquired lease and workload remain live until the
-        // immediate command scope closes and the following Present consumes it.
-        let mut session = unsafe { device.immediate(plan, CompletionRequest::End)? };
-        let mut commands = session.begin_commands().map_err(immediate_error)?;
-        workload
-            .encode(commands.commands(), &image, extent)
-            .map_err(|error| Error::Backend(format!("06 WebGL2 raster frame: {error:?}")))?;
-        match commands.close() {
-            ImmediateRunOutcome::Issued(_) => workload.commit_frame(),
-            outcome => return Err(immediate_error(outcome)),
-        }
-        match session.present(PresentBinding::new(image)) {
-            ImmediatePresentResult::Run(ImmediateRunOutcome::Issued(_)) => {}
-            ImmediatePresentResult::Run(outcome) => return Err(immediate_error(outcome)),
-            ImmediatePresentResult::Rejected { error, .. } => return Err(error),
-        }
-        let point = utils::immediate_end_checkpoint(session.finish())?;
+        let (_, outcome) = utils::execute_frame(
+            &device,
+            lane,
+            image,
+            CompletionRequest::End,
+            |commands, image| {
+                workload
+                    .encode(commands, image, extent)
+                    .map_err(|error| Error::Backend(format!("06 WebGL2 raster frame: {error:?}")))
+            },
+        )?;
+        workload.commit_frame();
+        let point = utils::execution_end_checkpoint(&outcome)?;
         device.wait_completion(&point).await?;
     }
     scope.finish().await;
@@ -428,43 +421,6 @@ async fn raster_pipeline(
             cache: None,
         })
         .await
-}
-
-fn immediate_plan(device: &Device<Gl>, lane: LaneId) -> Result<SubmissionPlan<Gl>> {
-    let ordinal = NEXT_PLAN
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-            value.checked_add(1)
-        })
-        .map_err(|_| Error::OutOfMemory)?;
-    // SAFETY: both steps use the one adopted GL graphics lane in issue order.
-    Ok(unsafe {
-        SubmissionPlan::from_compiled(
-            PlanId {
-                device: device.id(),
-                ordinal,
-            },
-            Arc::from([
-                StepDesc {
-                    lane,
-                    kind: StepKind::Commands,
-                    waits: vec![],
-                },
-                StepDesc {
-                    lane,
-                    kind: StepKind::Present,
-                    waits: vec![],
-                },
-            ]),
-        )
-    })
-}
-
-fn immediate_error(outcome: ImmediateRunOutcome<Gl>) -> Error {
-    match outcome {
-        ImmediateRunOutcome::Issued(_) => Error::InvalidState,
-        ImmediateRunOutcome::Failed { error, .. }
-        | ImmediateRunOutcome::Indeterminate { error, .. } => error,
-    }
 }
 
 fn draw_half(

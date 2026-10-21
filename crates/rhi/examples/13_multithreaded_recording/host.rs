@@ -47,7 +47,12 @@ pub(super) fn run_metal() -> Result<()> {
 }
 
 #[cfg(windows)]
-fn run_host<B: SecondaryExampleBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()>
+fn run_host<
+    B: SecondaryExampleBackend + ExecutionBackend<Mode = DeferredExecution>,
+    H: utils::ExampleHost<B>,
+>(
+    host: H,
+) -> Result<()>
 where
     B::NativeDevice: Send + Sync,
     B::NativeRasterPipeline: Send + Sync,

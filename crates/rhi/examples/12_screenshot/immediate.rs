@@ -4,28 +4,13 @@
 //! call site. The immediate session then supplies Core's completion evidence
 //! before the ticket is exposed as a file.
 
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    sync::Arc,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::{cell::RefCell, rc::Rc};
 
 #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
 use fluxel_rhi::gl::GlInstance;
 use fluxel_rhi::{api::*, gl::Gl};
 
 use super::{Screenshot, ScreenshotWorkloadBackend, utils};
-
-static NEXT_PLAN: AtomicU64 = AtomicU64::new(1);
-
-fn run_error(outcome: ImmediateRunOutcome<Gl>) -> Error {
-    match outcome {
-        ImmediateRunOutcome::Issued(_) => Error::InvalidState,
-        ImmediateRunOutcome::Failed { error, .. }
-        | ImmediateRunOutcome::Indeterminate { error, .. } => error,
-    }
-}
 
 fn issue_frame(
     device: &Device<Gl>,
@@ -35,49 +20,19 @@ fn issue_frame(
     capture: bool,
 ) -> Result<CompletionPoint<Gl>> {
     screenshot.ensure_ticket_available()?;
-    let ordinal = NEXT_PLAN
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-            value.checked_add(1)
-        })
-        .map_err(|_| Error::OutOfMemory)?;
-    // SAFETY: both plan steps use this context-owned lane and are issued in
-    // order by the WGL owner thread.
-    let plan = unsafe {
-        SubmissionPlan::from_compiled(
-            PlanId {
-                device: device.id(),
-                ordinal,
-            },
-            Arc::from([
-                StepDesc {
-                    lane,
-                    kind: StepKind::Commands,
-                    waits: vec![],
-                },
-                StepDesc {
-                    lane,
-                    kind: StepKind::Present,
-                    waits: vec![],
-                },
-            ]),
-        )
-    };
-    // SAFETY: all commands execute on the current WGL context; the acquired
-    // surface lease is retained until the following Present step.
-    let mut session = unsafe { device.immediate(plan, CompletionRequest::End)? };
-    let mut commands = session.begin_commands().map_err(run_error)?;
-    let ticket = screenshot.encode(commands.commands(), &image, capture)?;
-    screenshot.retain_ticket(ticket)?;
-    match commands.close() {
-        ImmediateRunOutcome::Issued(_) => screenshot.commit_frame(capture),
-        outcome => return Err(run_error(outcome)),
-    }
-    match session.present(PresentBinding::new(image)) {
-        ImmediatePresentResult::Run(ImmediateRunOutcome::Issued(_)) => {}
-        ImmediatePresentResult::Run(outcome) => return Err(run_error(outcome)),
-        ImmediatePresentResult::Rejected { error, .. } => return Err(error),
-    }
-    let point = utils::immediate_end_checkpoint(session.finish())?;
+    let (_, outcome) = utils::execute_frame(
+        device,
+        lane,
+        image,
+        CompletionRequest::End,
+        |encoder, image| {
+            let ticket = screenshot.encode(encoder, image, capture)?;
+            screenshot.retain_ticket(ticket)?;
+            Ok(())
+        },
+    )?;
+    let point = utils::execution_end_checkpoint(&outcome)?;
+    screenshot.commit_frame(capture);
     Ok(point)
 }
 

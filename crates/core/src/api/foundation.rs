@@ -126,6 +126,20 @@ pub struct LaneInfo {
     pub class: LaneClass,
     pub routes: Vec<(LaneId, WaitRoute)>,
 }
+impl LaneInfo {
+    /// Same-lane ordering is inherent to a lane; other routes must be
+    /// explicitly advertised. This does not imply resource memory visibility.
+    pub fn route_to(&self, target: LaneId) -> WaitRoute {
+        if target == self.id {
+            WaitRoute::SameQueue
+        } else {
+            self.routes
+                .iter()
+                .find(|(lane, _)| *lane == target)
+                .map_or(WaitRoute::Unsupported, |(_, route)| *route)
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SurfaceId(u64);
@@ -338,8 +352,7 @@ impl<B: Backend> Device<B> {
             .lanes
             .iter()
             .find(|lane| lane.id == from)
-            .and_then(|lane| lane.routes.iter().find(|(target, _)| *target == to))
-            .map_or(WaitRoute::Unsupported, |(_, route)| *route)
+            .map_or(WaitRoute::Unsupported, |lane| lane.route_to(to))
     }
 }
 

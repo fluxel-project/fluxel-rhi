@@ -1,12 +1,10 @@
-//! GL immediate session for the sphere-ring dynamic-uniform fallback.
+//! GL execution for the sphere-ring dynamic-uniform fallback.
 //!
 //! GL has no public push constants. The existing WebGPU WGSL and one aligned
-//! uniform record per draw preserve the sixteen-sphere workload. The session
+//! uniform record per draw preserve the sixteen-sphere workload. The backend
 //! issues each command on the context owner thread and presents the acquired
 //! lease; it stores no CPU command stream or deferred submission.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(any(windows, all(target_os = "linux", feature = "native-gles-egl")))]
 use std::{cell::RefCell, rc::Rc};
 
@@ -17,16 +15,6 @@ use fluxel_rhi::gl::GlInstance;
 
 use super::{PushWorkload, utils};
 
-static NEXT_PLAN: AtomicU64 = AtomicU64::new(1);
-
-fn immediate_error(outcome: ImmediateRunOutcome<Gl>) -> Error {
-    match outcome {
-        ImmediateRunOutcome::Issued(_) => Error::InvalidState,
-        ImmediateRunOutcome::Failed { error, .. }
-        | ImmediateRunOutcome::Indeterminate { error, .. } => error,
-    }
-}
-
 fn issue_frame(
     device: &Device<Gl>,
     lane: LaneId,
@@ -34,55 +22,16 @@ fn issue_frame(
     image: SurfaceImage<Gl>,
     extent: [u32; 2],
 ) -> Result<()> {
-    let ordinal = NEXT_PLAN
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-            value.checked_add(1)
-        })
-        .map_err(|_| Error::OutOfMemory)?;
-    // SAFETY: both steps run on the single adopted GL lane, in the supplied
-    // order. The image is consumed by present before this function returns.
-    let plan = unsafe {
-        SubmissionPlan::from_compiled(
-            PlanId {
-                device: device.id(),
-                ordinal,
-            },
-            Arc::from([
-                StepDesc {
-                    lane,
-                    kind: StepKind::Commands,
-                    waits: vec![],
-                },
-                StepDesc {
-                    lane,
-                    kind: StepKind::Present,
-                    waits: vec![],
-                },
-            ]),
-        )
-    };
-    // SAFETY: the commands step closes before present, and the session is
-    // consumed before returning. GL verbs issue immediately in this scope.
-    let mut session = unsafe { device.immediate(plan, CompletionRequest::None)? };
-    let mut commands = session.begin_commands().map_err(immediate_error)?;
-    workload.issue(commands.commands(), &image, extent)?;
-    match commands.close() {
-        ImmediateRunOutcome::Issued(_) => {}
-        outcome => return Err(immediate_error(outcome)),
-    }
-    match session.present(PresentBinding::new(image)) {
-        ImmediatePresentResult::Run(ImmediateRunOutcome::Issued(_)) => {}
-        ImmediatePresentResult::Run(outcome) => return Err(immediate_error(outcome)),
-        ImmediatePresentResult::Rejected { error, .. } => return Err(error),
-    }
-    match session.finish() {
-        ImmediateFinishOutcome::Issued(_) => {
-            workload.commit_frame();
-            Ok(())
-        }
-        ImmediateFinishOutcome::Failed(outcome) => Err(immediate_error(outcome)),
-        ImmediateFinishOutcome::AlreadyReported => Err(Error::InvalidState),
-    }
+    let (_, outcome) = utils::execute_frame(
+        device,
+        lane,
+        image,
+        CompletionRequest::None,
+        |encoder, image| workload.issue(encoder, image, extent),
+    )?;
+    utils::validate_execution_outcome(&outcome)?;
+    workload.commit_frame();
+    Ok(())
 }
 
 #[cfg(any(windows, all(target_os = "linux", feature = "native-gles-egl")))]

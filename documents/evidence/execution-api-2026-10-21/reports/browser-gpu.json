@@ -1,0 +1,20 @@
+{
+  "webgl": {
+    "renderer": "ANGLE (AMD, AMD Radeon 780M Graphics (0x00001900) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "vendor": "Google Inc. (AMD)",
+    "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)"
+  },
+  "webgpu": {
+    "fallback": null,
+    "info": {
+      "architecture": "rdna-3",
+      "description": "",
+      "device": "",
+      "isFallbackAdapter": false,
+      "subgroupMatrixConfigs": [],
+      "subgroupMaxSize": 64,
+      "subgroupMinSize": 32,
+      "vendor": "amd"
+    }
+  }
+}

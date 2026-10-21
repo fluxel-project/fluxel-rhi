@@ -78,7 +78,10 @@ pub async fn run_webgl2_instancing(
 }
 
 #[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
-fn run<B: instancing::InstancingBackend + DeferredBackend, H: utils::ExampleHost<B>>(
+fn run<
+    B: instancing::InstancingBackend + DeferredBackend + ExecutionBackend<Mode = DeferredExecution>,
+    H: utils::ExampleHost<B>,
+>(
     host: H,
 ) -> Result<()> {
     let config = SurfaceConfig {

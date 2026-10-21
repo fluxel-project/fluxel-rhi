@@ -591,3 +591,7 @@ impl api::ShaderBackend for Dx12 {
 fn native_error(error: windows::core::Error) -> Error {
     Error::Backend(format!("Direct3D 12: {error}"))
 }
+
+impl fluxel_rhi_core::api::ExecutionBackend for Dx12 {
+    type Mode = fluxel_rhi_core::api::DeferredExecution;
+}

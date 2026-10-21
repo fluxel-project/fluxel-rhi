@@ -125,7 +125,7 @@ impl<B: ScreenshotWorkloadBackend> Screenshot<B> {
     }
 
     /// Issues the shared screenshot scene through the caller's active encoder.
-    /// GL calls this from an ImmediateSession; deferred backends call it from
+    /// GL calls this through the common Execution entry; deferred backends call it from
     /// `record` below. The scene and transfer order are shared by both paths.
     pub fn encode(
         &mut self,
@@ -389,7 +389,7 @@ fn main() {
 #[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
 fn run<B, H>(host: H) -> Result<()>
 where
-    B: ScreenshotBackend,
+    B: ScreenshotBackend + ExecutionBackend<Mode = DeferredExecution>,
     H: utils::ExampleHost<B>,
 {
     let config = SurfaceConfig {

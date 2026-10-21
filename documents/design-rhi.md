@@ -82,6 +82,80 @@ recording also does not imply parallel recording support: that is a separate
 capability. Browser thread affinity and GPU command recording are independent
 properties, which is why WebGPU and WebGL2 use different models.
 
+### Common execution entry
+
+`Device<B>::begin_execution(plan, completion)` opens the optional
+`Execution<B>` interface for already ordered Commands/Present plans. All shipped
+backend types select their native `ExecutionMode` through the separate
+`ExecutionBackend` trait; existing `Backend` implementations gain no required
+associated types. Calls remain statically dispatched. The interface does not
+compile a graph, choose fallback passes, or retire resources.
+
+| Operation | Deferred mode | Immediate mode |
+| --- | --- | --- |
+| `commands(step, encode)` | Invoke `encode` now, retain its native RecordedWork | Invoke `encode` now; each command calls the native API immediately |
+| `present(step, binding)` | Retain the exclusive binding for submission | Perform native presentation handoff now |
+| `finish()` | Submit the collected native work and bindings | Close the session and obtain requested completion evidence |
+
+The closure is never stored. Deferred storage contains native recordings and
+bindings, not a portable CPU instruction list. Immediate state tracks the plan,
+cursor and terminal result; it adds no replay buffer, per-step fence, GPU idle
+wait, or scheduler. Successful presentation facts are assembled from the
+already known cursor at finish, not from per-command event objects.
+
+The common shape intentionally preserves different irreversible boundaries.
+`commands` success is not GPU completion, and deferred `present` success means
+that the binding was stored, not that native presentation was accepted.
+`PresentError` returns a binding only when handoff did not consume it. Callers
+must finish even after an encoding error to obtain native effects and completion
+or uncertainty evidence; early return with `?` must not release referenced
+resources. Starting/finishing execution retains the explicit unsafe lifetime
+contract of the underlying APIs. No host wait is hidden in this entry.
+
+Both owning outcome types implement `ExecutionOutcome`: `facts()` borrows
+reported observations and `error()` exposes a failure without backend branching.
+The owning result preserves the original SubmitOutcome or immediate finish
+result, including retryable native work and uncertainty. Its borrowed facts do
+not clone checkpoints. `None` means a fact is unavailable, not an empty set.
+Accepted steps, affected native work and GPU completion are distinct: an
+immediate failure can affect a step without completely issuing it. The common
+entry additionally knows the successfully closed prefix, so it does not publish
+the failing step as accepted. Legacy outcome accessors remain conservative when
+the old value does not contain enough information to identify that boundary.
+Checkpoint coverage for affected work is a lifetime observation, not proof that
+all intended commands in a failed step ran. `ExecutionStatus::Accepted` never
+means the GPU has completed the work.
+
+The entry rejects SparseBind steps before issue. Sparse operations, native
+multi-queue tokens, parallel recording continue to use their existing explicit APIs.
+`recorded_commands` is a Deferred-only binding operation on the common entry; it
+accepts already recorded native work without conversion and returns ownership
+on a validation failure. This deliberately bounds the common entry;
+it does not remove advanced execution or make GL pretend to support deferred
+recording. All 15 examples use this entry: GL issues the shared encoding closure directly,
+while the deferred submission helper binds existing native recordings through
+`recorded_commands`. Example 13 retains its parallel secondary recording.
+
+### Ordered dependencies and visibility
+
+`SubmissionPlan::validate_for_execution` checks device ownership, declared lanes,
+and predecessor indices before execution starts. The common entry and legacy
+ImmediateSession use this check; it does not sort steps or infer hazards.
+Validation runs at execution initialization, not at each draw.
+
+A lane intrinsically orders its own work. `LaneInfo::route_to` and
+`Device::wait_route` therefore report SameQueue for a valid same-lane pair even
+when its explicit cross-lane route table is empty. This does not advertise a
+foreign-lane native wait. GL exposes one context lane: after Core validates the
+whole ordered plan, same-lane StepWait dependencies need no extra native wait.
+The wait descriptors still reach the backend SPI unchanged.
+
+Ordering and resource visibility are separate obligations. Explicit
+ResourceTransition operations still lower required memory barriers; a same-lane
+wait neither invents those transitions nor makes unsupported visibility or
+cross-lane paths available. The unsafe compiled-plan boundary continues to
+require a natively realizable layout.
+
 ### Plans, failure, and completion
 
 [`SubmissionPlan`](../crates/core/src/api/submission.rs) is a reusable ordered

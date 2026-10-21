@@ -7,6 +7,12 @@ requirement. The page POSTs structured capability and completion JSON back to
 the local Python server. It also performs a WebGL2 drawing-buffer readback;
 success is not inferred from a screenshot alone.
 
+All numbered WebGL2 entries use the shared statically dispatched Core execution
+entry. Their encoding closures call GL immediately; the browser helper only
+adapts canvas lifecycle, captures, and observable results. It does not cache or
+replay RHI commands. The current migration evidence is linked from the
+[example guide](../../../../crates/rhi/examples/README.md#verification-status).
+
 The scripts are local developer tools. Generated wasm bundles and screenshots
 belong under the ignored local verification archive, not this directory.
 

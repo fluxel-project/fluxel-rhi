@@ -1,0 +1,272 @@
+[
+  {
+    "backend": "dx12",
+    "example": "01_triangle",
+    "exit": 0,
+    "exe_sha256": "18adf0560543ebbc85385620fe88daf614601992618f484fc99702eee2bcdb56"
+  },
+  {
+    "backend": "dx12",
+    "example": "02_texture",
+    "exit": 0,
+    "exe_sha256": "f3418b44089c96c6008ea70d1ea8d89fdb1b63cd5ca22cfe6d43ed301796aee8"
+  },
+  {
+    "backend": "dx12",
+    "example": "03_instancing",
+    "exit": 0,
+    "exe_sha256": "ad58b9014673ee698184be19a6ba2030e6a44655d45bf4661717e51538b9435f"
+  },
+  {
+    "backend": "dx12",
+    "example": "04_dynamic_uniform_buffer",
+    "exit": 0,
+    "exe_sha256": "4b3765d69384bb09d41570435b96157826b69efad3e19d0ed651f54358e36f7d"
+  },
+  {
+    "backend": "dx12",
+    "example": "05_push_constants",
+    "exit": 0,
+    "exe_sha256": "47ece178e664304ea150a223bd9d43e28c952f02748a14a0a1ba782daa074fe4"
+  },
+  {
+    "backend": "dx12",
+    "example": "06_compute",
+    "exit": 0,
+    "exe_sha256": "cd720bfa7eed6b34700c567ad3ff5d7f695adc23ad1dcbc60f7ab794786cdc16"
+  },
+  {
+    "backend": "dx12",
+    "example": "07_offscreen",
+    "exit": 0,
+    "exe_sha256": "7b6045ae0573ae80cfbcfbc856976de415d2b35d0dda015a631cf6f9d2eb2004"
+  },
+  {
+    "backend": "dx12",
+    "example": "08_msaa",
+    "exit": 0,
+    "exe_sha256": "47467bad11d498eb4010b8a0f67a350071d4a1eb3ef65d2b9639095285d089c1"
+  },
+  {
+    "backend": "dx12",
+    "example": "09_texture_mipmap",
+    "exit": 0,
+    "exe_sha256": "23df91c1b3192450e77927861347cf960795f52055b69c9cfc9e8debf19e08b7"
+  },
+  {
+    "backend": "dx12",
+    "example": "10_indirect_draw",
+    "exit": 0,
+    "exe_sha256": "d3e422493aa54ea6dc57be1a188758c49ed3deb02896e7e89d9a174e1fff7f5c"
+  },
+  {
+    "backend": "dx12",
+    "example": "11_occlusion_query",
+    "exit": 0,
+    "exe_sha256": "97d002495be807f408b5685f5d336dfbbc6b075bc73bb1e16c5884eb6128522c"
+  },
+  {
+    "backend": "dx12",
+    "example": "12_screenshot",
+    "exit": 0,
+    "exe_sha256": "8c7e1b8753fc99e342d1d9fd36256b5cd1ebfe2613bcd215fc95ac6020cf75e3"
+  },
+  {
+    "backend": "dx12",
+    "example": "13_multithreaded_recording",
+    "exit": 0,
+    "exe_sha256": "62674512205fcf4f60ff3dabb1217444535180ad62095cae9f65f98d74bb67c1"
+  },
+  {
+    "backend": "dx12",
+    "example": "14_descriptor_indexing",
+    "exit": 0,
+    "exe_sha256": "bbffda67b460390a72c4a7e104de39cd06208e3e059336df57a6a8787886c8e3"
+  },
+  {
+    "backend": "dx12",
+    "example": "15_multiview",
+    "exit": 0,
+    "exe_sha256": "3ee351c17151b02dc3909adc7f9034024dcecc38c23643a7fcfcb8cc46ed3e92"
+  },
+  {
+    "backend": "vulkan",
+    "example": "01_triangle",
+    "exit": 0,
+    "exe_sha256": "18adf0560543ebbc85385620fe88daf614601992618f484fc99702eee2bcdb56"
+  },
+  {
+    "backend": "vulkan",
+    "example": "02_texture",
+    "exit": 0,
+    "exe_sha256": "f3418b44089c96c6008ea70d1ea8d89fdb1b63cd5ca22cfe6d43ed301796aee8"
+  },
+  {
+    "backend": "vulkan",
+    "example": "03_instancing",
+    "exit": 0,
+    "exe_sha256": "ad58b9014673ee698184be19a6ba2030e6a44655d45bf4661717e51538b9435f"
+  },
+  {
+    "backend": "vulkan",
+    "example": "04_dynamic_uniform_buffer",
+    "exit": 0,
+    "exe_sha256": "4b3765d69384bb09d41570435b96157826b69efad3e19d0ed651f54358e36f7d"
+  },
+  {
+    "backend": "vulkan",
+    "example": "05_push_constants",
+    "exit": 0,
+    "exe_sha256": "47ece178e664304ea150a223bd9d43e28c952f02748a14a0a1ba782daa074fe4"
+  },
+  {
+    "backend": "vulkan",
+    "example": "06_compute",
+    "exit": 0,
+    "exe_sha256": "cd720bfa7eed6b34700c567ad3ff5d7f695adc23ad1dcbc60f7ab794786cdc16"
+  },
+  {
+    "backend": "vulkan",
+    "example": "07_offscreen",
+    "exit": 0,
+    "exe_sha256": "7b6045ae0573ae80cfbcfbc856976de415d2b35d0dda015a631cf6f9d2eb2004"
+  },
+  {
+    "backend": "vulkan",
+    "example": "08_msaa",
+    "exit": 0,
+    "exe_sha256": "47467bad11d498eb4010b8a0f67a350071d4a1eb3ef65d2b9639095285d089c1"
+  },
+  {
+    "backend": "vulkan",
+    "example": "09_texture_mipmap",
+    "exit": 0,
+    "exe_sha256": "23df91c1b3192450e77927861347cf960795f52055b69c9cfc9e8debf19e08b7"
+  },
+  {
+    "backend": "vulkan",
+    "example": "10_indirect_draw",
+    "exit": 0,
+    "exe_sha256": "d3e422493aa54ea6dc57be1a188758c49ed3deb02896e7e89d9a174e1fff7f5c"
+  },
+  {
+    "backend": "vulkan",
+    "example": "11_occlusion_query",
+    "exit": 0,
+    "exe_sha256": "97d002495be807f408b5685f5d336dfbbc6b075bc73bb1e16c5884eb6128522c"
+  },
+  {
+    "backend": "vulkan",
+    "example": "12_screenshot",
+    "exit": 0,
+    "exe_sha256": "8c7e1b8753fc99e342d1d9fd36256b5cd1ebfe2613bcd215fc95ac6020cf75e3"
+  },
+  {
+    "backend": "vulkan",
+    "example": "13_multithreaded_recording",
+    "exit": 0,
+    "exe_sha256": "62674512205fcf4f60ff3dabb1217444535180ad62095cae9f65f98d74bb67c1"
+  },
+  {
+    "backend": "vulkan",
+    "example": "14_descriptor_indexing",
+    "exit": 0,
+    "exe_sha256": "bbffda67b460390a72c4a7e104de39cd06208e3e059336df57a6a8787886c8e3"
+  },
+  {
+    "backend": "vulkan",
+    "example": "15_multiview",
+    "exit": 0,
+    "exe_sha256": "3ee351c17151b02dc3909adc7f9034024dcecc38c23643a7fcfcb8cc46ed3e92"
+  },
+  {
+    "backend": "gl",
+    "example": "01_triangle",
+    "exit": 0,
+    "exe_sha256": "18adf0560543ebbc85385620fe88daf614601992618f484fc99702eee2bcdb56"
+  },
+  {
+    "backend": "gl",
+    "example": "02_texture",
+    "exit": 0,
+    "exe_sha256": "f3418b44089c96c6008ea70d1ea8d89fdb1b63cd5ca22cfe6d43ed301796aee8"
+  },
+  {
+    "backend": "gl",
+    "example": "03_instancing",
+    "exit": 0,
+    "exe_sha256": "ad58b9014673ee698184be19a6ba2030e6a44655d45bf4661717e51538b9435f"
+  },
+  {
+    "backend": "gl",
+    "example": "04_dynamic_uniform_buffer",
+    "exit": 0,
+    "exe_sha256": "4b3765d69384bb09d41570435b96157826b69efad3e19d0ed651f54358e36f7d"
+  },
+  {
+    "backend": "gl",
+    "example": "05_push_constants",
+    "exit": 0,
+    "exe_sha256": "47ece178e664304ea150a223bd9d43e28c952f02748a14a0a1ba782daa074fe4"
+  },
+  {
+    "backend": "gl",
+    "example": "06_compute",
+    "exit": 0,
+    "exe_sha256": "cd720bfa7eed6b34700c567ad3ff5d7f695adc23ad1dcbc60f7ab794786cdc16"
+  },
+  {
+    "backend": "gl",
+    "example": "07_offscreen",
+    "exit": 0,
+    "exe_sha256": "7b6045ae0573ae80cfbcfbc856976de415d2b35d0dda015a631cf6f9d2eb2004"
+  },
+  {
+    "backend": "gl",
+    "example": "08_msaa",
+    "exit": 0,
+    "exe_sha256": "47467bad11d498eb4010b8a0f67a350071d4a1eb3ef65d2b9639095285d089c1"
+  },
+  {
+    "backend": "gl",
+    "example": "09_texture_mipmap",
+    "exit": 0,
+    "exe_sha256": "23df91c1b3192450e77927861347cf960795f52055b69c9cfc9e8debf19e08b7"
+  },
+  {
+    "backend": "gl",
+    "example": "10_indirect_draw",
+    "exit": 0,
+    "exe_sha256": "d3e422493aa54ea6dc57be1a188758c49ed3deb02896e7e89d9a174e1fff7f5c"
+  },
+  {
+    "backend": "gl",
+    "example": "11_occlusion_query",
+    "exit": 0,
+    "exe_sha256": "97d002495be807f408b5685f5d336dfbbc6b075bc73bb1e16c5884eb6128522c"
+  },
+  {
+    "backend": "gl",
+    "example": "12_screenshot",
+    "exit": 0,
+    "exe_sha256": "8c7e1b8753fc99e342d1d9fd36256b5cd1ebfe2613bcd215fc95ac6020cf75e3"
+  },
+  {
+    "backend": "gl",
+    "example": "13_multithreaded_recording",
+    "exit": 0,
+    "exe_sha256": "62674512205fcf4f60ff3dabb1217444535180ad62095cae9f65f98d74bb67c1"
+  },
+  {
+    "backend": "gl",
+    "example": "14_descriptor_indexing",
+    "exit": 0,
+    "exe_sha256": "bbffda67b460390a72c4a7e104de39cd06208e3e059336df57a6a8787886c8e3"
+  },
+  {
+    "backend": "gl",
+    "example": "15_multiview",
+    "exit": 0,
+    "exe_sha256": "3ee351c17151b02dc3909adc7f9034024dcecc38c23643a7fcfcb8cc46ed3e92"
+  }
+]

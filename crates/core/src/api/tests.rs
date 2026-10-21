@@ -27,7 +27,7 @@ mod multiqueue_validation;
 mod query_validation;
 
 #[cfg(test)]
-mod type_contract_tests {
+pub(crate) mod type_contract_tests {
     use super::*;
     use std::{
         cell::Cell,
@@ -37,6 +37,11 @@ mod type_contract_tests {
     thread_local! {
         static ABANDONED_STEPS: Cell<usize> = const { Cell::new(0) };
         static DRAW_CALLS: Cell<usize> = const { Cell::new(0) };
+        pub(crate) static GL_TRANSITIONS: Cell<usize> = const { Cell::new(0) };
+        pub(crate) static GL_CHECKPOINTS: Cell<usize> = const { Cell::new(0) };
+        pub(crate) static GL_CLOSE_FAILURE: Cell<u8> = const { Cell::new(0) };
+        pub(crate) static GL_DEVICE: Cell<Option<DeviceId>> = const { Cell::new(None) };
+        pub(crate) static GL_ABANDONED: Cell<usize> = const { Cell::new(0) };
     }
 
     // SAFETY: the unit test lease has no native state and always accepts handoff.
@@ -48,7 +53,7 @@ mod type_contract_tests {
             true
         }
     }
-    pub(super) struct TestLease {
+    pub(crate) struct TestLease {
         current: Arc<AtomicU64>,
         handed_off: bool,
     }
@@ -66,8 +71,8 @@ mod type_contract_tests {
         }
     }
 
-    pub(super) struct NativeShared;
-    struct GlLocal;
+    pub(crate) struct NativeShared;
+    pub(crate) struct GlLocal;
     impl Backend for NativeShared {
         type NativeDevice = Arc<()>;
         type NativeBuffer = Arc<()>;
@@ -175,6 +180,7 @@ mod type_contract_tests {
             Ok(Rc::new(()))
         }
         fn transition(_: &mut Rc<()>, _: &[ResourceTransition<'_, Self>]) -> Result<()> {
+            GL_TRANSITIONS.with(|calls| calls.set(calls.get() + 1));
             Ok(())
         }
         fn copy_buffer(
@@ -315,6 +321,32 @@ mod type_contract_tests {
             WaitInstallOutcome::Ready { issued: false }
         }
         fn close_immediate(_: Rc<()>, reason: ImmediateCloseReason) -> ImmediateClose<Self> {
+            if matches!(reason, ImmediateCloseReason::Aborted)
+                && GL_CLOSE_FAILURE.with(|mode| mode.get()) == 3
+            {
+                GL_CLOSE_FAILURE.with(|mode| mode.set(0));
+                return ImmediateClose::Issued;
+            }
+            if matches!(reason, ImmediateCloseReason::Finished) {
+                match GL_CLOSE_FAILURE.with(|mode| mode.replace(0)) {
+                    1 => {
+                        return ImmediateClose::Failed {
+                            error: Error::Backend("partial close".into()),
+                            issued: true,
+                        };
+                    }
+                    2 => {
+                        return ImmediateClose::Indeterminate {
+                            error: Error::Backend("uncertain close".into()),
+                            uncertain: NativeUncertainty {
+                                device: GL_DEVICE.with(|id| id.get().unwrap()),
+                                native: (),
+                            },
+                        };
+                    }
+                    _ => {}
+                }
+            }
             match reason {
                 ImmediateCloseReason::Finished => ImmediateClose::Issued,
                 ImmediateCloseReason::Aborted => ImmediateClose::Failed {
@@ -337,6 +369,7 @@ mod type_contract_tests {
             _: &[StepId],
             _: &CompletionRequest,
         ) -> CheckpointOutcome<Self> {
+            GL_CHECKPOINTS.with(|calls| calls.set(calls.get() + 1));
             CheckpointOutcome::Covered(Vec::new())
         }
         fn emergency_checkpoint(
@@ -344,10 +377,12 @@ mod type_contract_tests {
             _: &SubmissionPlan<Self>,
             _: &[StepId],
         ) -> CheckpointOutcome<Self> {
+            GL_CHECKPOINTS.with(|calls| calls.set(calls.get() + 1));
             CheckpointOutcome::Covered(Vec::new())
         }
         fn abandon_session(_: &Rc<()>, _: &SubmissionPlan<Self>, issued: &[StepId]) {
             ABANDONED_STEPS.with(|count| count.set(issued.len()));
+            GL_ABANDONED.with(|count| count.set(count.get() + 1));
         }
     }
     fn assert_send_sync<T: Send + Sync>() {}
@@ -570,17 +605,125 @@ mod type_contract_tests {
         }
     }
     #[test]
+    fn immediate_validates_waits_and_lanes_before_execution() {
+        let id = DeviceId::allocate().unwrap();
+        let lane = LaneId {
+            device: id,
+            ordinal: 0,
+        };
+        let info = LaneInfo {
+            id: lane,
+            class: LaneClass::Graphics,
+            routes: Vec::new(),
+        };
+        assert_eq!(info.route_to(lane), WaitRoute::SameQueue);
+        assert_eq!(
+            info.route_to(LaneId {
+                device: id,
+                ordinal: 1
+            }),
+            WaitRoute::Unsupported
+        );
+        let caps = DeviceCapabilities {
+            lanes: Arc::from([info]),
+            ..DeviceCapabilities::default()
+        };
+        // SAFETY: the fixture owns the native witness and its matching ID.
+        let device = unsafe { Device::<GlLocal>::from_native(id, Rc::new(()), caps) };
+        let plan_id = PlanId {
+            device: id,
+            ordinal: 19,
+        };
+        let scope = AccessScope {
+            stages: StageMask::ALL_COMMANDS,
+            accesses: AccessMask::ALL,
+        };
+        let make_plan = |second_lane, previous| {
+            // SAFETY: malformed fixtures intentionally exercise Core validation only.
+            unsafe {
+                SubmissionPlan::from_compiled(
+                    plan_id,
+                    Arc::from([
+                        StepDesc {
+                            lane,
+                            kind: StepKind::Commands,
+                            waits: vec![],
+                        },
+                        StepDesc {
+                            lane: second_lane,
+                            kind: StepKind::Commands,
+                            waits: vec![StepWait {
+                                previous,
+                                destination: scope,
+                            }],
+                        },
+                    ]),
+                )
+            }
+        };
+        let valid = make_plan(
+            lane,
+            StepId {
+                plan: plan_id,
+                index: 0,
+            },
+        );
+        // SAFETY: mock session has no GPU resources and both steps are closed.
+        let mut session = unsafe { device.immediate(valid, CompletionRequest::None) }.unwrap();
+        for _ in 0..2 {
+            let encoder = session.begin_commands().ok().unwrap();
+            assert!(matches!(encoder.close(), ImmediateRunOutcome::Issued(_)));
+        }
+        assert!(matches!(
+            session.finish(),
+            ImmediateFinishOutcome::Issued(_)
+        ));
+        let forward = make_plan(
+            lane,
+            StepId {
+                plan: plan_id,
+                index: 1,
+            },
+        );
+        // SAFETY: rejected before issuing native work.
+        assert!(matches!(
+            unsafe { device.immediate(forward, CompletionRequest::None) },
+            Err(Error::InvalidState)
+        ));
+        let other_lane = make_plan(
+            LaneId {
+                device: id,
+                ordinal: 1,
+            },
+            StepId {
+                plan: plan_id,
+                index: 0,
+            },
+        );
+        // SAFETY: rejected before issuing native work.
+        assert!(matches!(
+            unsafe { device.immediate(other_lane, CompletionRequest::None) },
+            Err(Error::WrongLane)
+        ));
+    }
+    #[test]
     fn dropped_immediate_session_reports_issued_prefix_to_backend() {
         ABANDONED_STEPS.with(|count| count.set(0));
         let device_id = DeviceId::allocate().unwrap();
-        // SAFETY: the fixture pairs this native device with its newly allocated ID.
-        let device = unsafe {
-            Device::<GlLocal>::from_native(device_id, Rc::new(()), DeviceCapabilities::default())
-        };
         let lane = LaneId {
             device: device_id,
             ordinal: 0,
         };
+        let caps = DeviceCapabilities {
+            lanes: Arc::from([LaneInfo {
+                id: lane,
+                class: LaneClass::Graphics,
+                routes: Vec::new(),
+            }]),
+            ..DeviceCapabilities::default()
+        };
+        // SAFETY: the fixture pairs this native device with its newly allocated ID.
+        let device = unsafe { Device::<GlLocal>::from_native(device_id, Rc::new(()), caps) };
         // SAFETY: this test provides an ordered, device-local compiled plan.
         let plan = unsafe {
             SubmissionPlan::<GlLocal>::from_compiled(

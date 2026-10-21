@@ -1,27 +1,11 @@
 //! Immediate GL routes for the instanced rock-field example.
 //!
-//! Both WGL and WebGL2 create one immediate session per acquired surface
-//! image. The shared workload issues native calls as it runs and keeps no Rust
-//! command replay list; its shaders remain the checked-in WebGPU WGSL assets.
-
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+//! WGL and WebGL2 use the shared execution facade. Commands issue native calls
+//! as they run; shaders remain the checked-in WebGPU WGSL assets.
 
 use fluxel_rhi::api::*;
 
 use super::Instancing;
-
-static NEXT_PLAN: AtomicU64 = AtomicU64::new(1);
-
-fn immediate_failure(outcome: ImmediateRunOutcome<fluxel_rhi::gl::Gl>) -> Error {
-    match outcome {
-        ImmediateRunOutcome::Issued(_) => Error::InvalidState,
-        ImmediateRunOutcome::Failed { error, .. }
-        | ImmediateRunOutcome::Indeterminate { error, .. } => error,
-    }
-}
 
 fn issue_frame(
     device: &Device<fluxel_rhi::gl::Gl>,
@@ -31,57 +15,16 @@ fn issue_frame(
     extent: [u32; 2],
     time: f32,
 ) -> Result<()> {
-    let ordinal = NEXT_PLAN
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-            value.checked_add(1)
-        })
-        .map_err(|_| Error::OutOfMemory)?;
-    // SAFETY: this is a precompiled, one-lane command/present order. The
-    // scene retains every resource until the host tears down its context.
-    let plan = unsafe {
-        SubmissionPlan::from_compiled(
-            PlanId {
-                device: device.id(),
-                ordinal,
-            },
-            Arc::from([
-                StepDesc {
-                    lane,
-                    kind: StepKind::Commands,
-                    waits: vec![],
-                },
-                StepDesc {
-                    lane,
-                    kind: StepKind::Present,
-                    waits: vec![],
-                },
-            ]),
-        )
-    };
-    // SAFETY: this function closes the only command step, consumes the
-    // acquired lease exactly once, and finishes before its borrowed scene can
-    // be released. Completion is intentionally omitted because the sample
-    // never reuses or retires frame-local storage.
-    let mut session = unsafe { device.immediate(plan, CompletionRequest::None)? };
-    let mut immediate = session.begin_commands().map_err(immediate_failure)?;
-    scene.issue(immediate.commands(), &image, extent, time)?;
-    match immediate.close() {
-        ImmediateRunOutcome::Issued(_) => {}
-        other => return Err(immediate_failure(other)),
-    }
-    match session.present(PresentBinding::new(image)) {
-        ImmediatePresentResult::Run(ImmediateRunOutcome::Issued(_)) => {}
-        ImmediatePresentResult::Run(other) => return Err(immediate_failure(other)),
-        ImmediatePresentResult::Rejected { error, .. } => return Err(error),
-    }
-    match session.finish() {
-        ImmediateFinishOutcome::Issued(_) => {
-            scene.mark_submitted();
-            Ok(())
-        }
-        ImmediateFinishOutcome::Failed(outcome) => Err(immediate_failure(outcome)),
-        ImmediateFinishOutcome::AlreadyReported => Err(Error::InvalidState),
-    }
+    let (_, outcome) = super::utils::execute_frame(
+        device,
+        lane,
+        image,
+        CompletionRequest::None,
+        |encoder, image| scene.issue(encoder, image, extent, time),
+    )?;
+    super::utils::validate_execution_outcome(&outcome)?;
+    scene.mark_submitted();
+    Ok(())
 }
 
 fn graphics_lane(device: &Device<fluxel_rhi::gl::Gl>) -> Result<LaneId> {

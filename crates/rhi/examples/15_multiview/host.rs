@@ -6,7 +6,12 @@
 use super::*;
 
 #[cfg(windows)]
-pub(super) fn run<B: MultiviewBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
+pub(super) fn run<
+    B: MultiviewBackend + ExecutionBackend<Mode = DeferredExecution>,
+    H: utils::ExampleHost<B>,
+>(
+    host: H,
+) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Bgra8Unorm,

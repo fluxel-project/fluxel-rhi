@@ -26,3 +26,7 @@ mod types;
 pub(crate) use surface::{GlSurface, GlSurfaceImage};
 pub use types::{Gl, GlInstance};
 pub(crate) use types::{GlDevice, GlDeviceState};
+
+impl fluxel_rhi_core::api::ExecutionBackend for Gl {
+    type Mode = fluxel_rhi_core::api::ImmediateExecution;
+}

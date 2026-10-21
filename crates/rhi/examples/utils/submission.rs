@@ -105,15 +105,7 @@ impl<B: DeferredBackend> FrameCompletion<B> {
 
 /// Issues a fixed Commands -> Present frame, retaining the structured result.
 /// The scene must retain all recording dependencies until `complete` finishes.
-pub fn submit_frame<B: DeferredBackend>(
-    device: &Device<B>,
-    lane: LaneId,
-    work: RecordedWork<B>,
-    image: SurfaceImage<B>,
-) -> Result<FrameSubmission<B>> {
-    if lane.device != device.id() || image.device() != device.id() {
-        return Err(Error::WrongDevice);
-    }
+pub(super) fn frame_plan<B: Backend>(device: DeviceId, lane: LaneId) -> Result<SubmissionPlan<B>> {
     let ordinal = NEXT_PLAN
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             value.checked_add(1)
@@ -122,11 +114,8 @@ pub fn submit_frame<B: DeferredBackend>(
     // SAFETY: this harness selects the actual graphics lane and explicitly
     // supplies the command-to-present dependency. Resource barriers stay in
     // the scene, and no graph or cross-lane ordering is inferred here.
-    let id = PlanId {
-        device: device.id(),
-        ordinal,
-    };
-    let plan = unsafe {
+    let id = PlanId { device, ordinal };
+    Ok(unsafe {
         SubmissionPlan::from_compiled(
             id,
             Arc::from([
@@ -148,25 +137,37 @@ pub fn submit_frame<B: DeferredBackend>(
                 },
             ]),
         )
-    };
-    let packet = SubmitPacket {
-        steps: vec![
-            BoundStep {
-                step: plan.step(0),
-                payload: StepPayload::Commands(vec![work]),
-            },
-            BoundStep {
-                step: plan.step(1),
-                payload: StepPayload::Present(PresentBinding::new(image)),
-            },
-        ],
-        plan,
-        completion: CompletionRequest::End,
-    };
+    })
+}
+
+pub fn submit_frame<B: DeferredBackend + ExecutionBackend<Mode = DeferredExecution>>(
+    device: &Device<B>,
+    lane: LaneId,
+    work: RecordedWork<B>,
+    image: SurfaceImage<B>,
+) -> Result<FrameSubmission<B>> {
+    if lane.device != device.id() || image.device() != device.id() {
+        return Err(Error::WrongDevice);
+    }
+    let plan = frame_plan::<B>(device.id(), lane)?;
+    let id = plan.id();
+    let command = plan.step(0);
+    let present = plan.step(1);
     // SAFETY: scene owners remain alive throughout the following explicit
     // drain. Failed/uncertain acceptance cannot escape without that proof;
     // cancellation or a failed drain terminates before caller resources drop.
-    let outcome = unsafe { device.queue().submit(packet) };
+    let mut execution = unsafe { device.begin_execution(plan, CompletionRequest::End)? };
+    if let Err(failure) = execution.recorded_commands(command, vec![work]) {
+        return Err(failure.error);
+    }
+    if let Err(failure) = execution.present(present, PresentBinding::new(image)) {
+        return Err(failure.error);
+    }
+    // SAFETY: ownership and lifetime obligations are identical to direct submit.
+    let outcome = match unsafe { execution.finish() } {
+        DeferredExecutionOutcome::Submitted(outcome) => outcome,
+        DeferredExecutionOutcome::Unsubmitted { error, .. } => return Err(error),
+    };
     Ok(FrameSubmission {
         device: device.clone(),
         outcome: Some(outcome),
@@ -175,7 +176,7 @@ pub fn submit_frame<B: DeferredBackend>(
     })
 }
 
-pub fn submit_and_present<B: DeferredBackend>(
+pub fn submit_and_present<B: DeferredBackend + ExecutionBackend<Mode = DeferredExecution>>(
     device: &Device<B>,
     lane: LaneId,
     work: RecordedWork<B>,
@@ -183,7 +184,9 @@ pub fn submit_and_present<B: DeferredBackend>(
 ) -> Result<()> {
     block_on(submit_and_present_async(device, lane, work, image))
 }
-pub async fn submit_and_present_async<B: DeferredBackend>(
+pub async fn submit_and_present_async<
+    B: DeferredBackend + ExecutionBackend<Mode = DeferredExecution>,
+>(
     device: &Device<B>,
     lane: LaneId,
     work: RecordedWork<B>,
@@ -195,7 +198,7 @@ pub async fn submit_and_present_async<B: DeferredBackend>(
         .into_presented()
         .map(|_| ())
 }
-pub fn submit_and_present_point<B: DeferredBackend>(
+pub fn submit_and_present_point<B: DeferredBackend + ExecutionBackend<Mode = DeferredExecution>>(
     device: &Device<B>,
     lane: LaneId,
     work: RecordedWork<B>,
@@ -203,7 +206,9 @@ pub fn submit_and_present_point<B: DeferredBackend>(
 ) -> Result<CompletionPoint<B>> {
     block_on(submit_and_present_point_async(device, lane, work, image))
 }
-pub async fn submit_and_present_point_async<B: DeferredBackend>(
+pub async fn submit_and_present_point_async<
+    B: DeferredBackend + ExecutionBackend<Mode = DeferredExecution>,
+>(
     device: &Device<B>,
     lane: LaneId,
     work: RecordedWork<B>,

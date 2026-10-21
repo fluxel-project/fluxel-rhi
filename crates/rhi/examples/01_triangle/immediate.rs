@@ -1,21 +1,11 @@
 //! Immediate WGL workload for the indexed-triangle example.
 //!
-//! This module owns only GL-specific direct-session issuance. The sibling
-//! owns resources, pipeline construction, and the shared draw calls.
+//! This module selects the GL context and uses the shared execution facade.
+//! The sibling owns resources, pipeline construction, and draw calls.
 
 use fluxel_rhi::api::*;
 
 use super::{Triangle, utils};
-
-static NEXT_PLAN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
-fn immediate_failure(outcome: ImmediateRunOutcome<fluxel_rhi::gl::Gl>) -> Error {
-    match outcome {
-        ImmediateRunOutcome::Issued(_) => Error::InvalidState,
-        ImmediateRunOutcome::Failed { error, .. }
-        | ImmediateRunOutcome::Indeterminate { error, .. } => error,
-    }
-}
 
 fn issue_gl_frame(
     device: &Device<fluxel_rhi::gl::Gl>,
@@ -24,57 +14,14 @@ fn issue_gl_frame(
     image: SurfaceImage<fluxel_rhi::gl::Gl>,
     extent: [u32; 2],
 ) -> Result<()> {
-    let plan_ordinal = NEXT_PLAN
-        .fetch_update(
-            std::sync::atomic::Ordering::Relaxed,
-            std::sync::atomic::Ordering::Relaxed,
-            |ordinal| ordinal.checked_add(1),
-        )
-        .map_err(|_| Error::OutOfMemory)?;
-    // SAFETY: this one-context plan has an already compiled direct order. The
-    // closure retains the triangle and its buffers until each session has
-    // completed its present handoff; `None` intentionally creates no
-    // per-frame host fence because the sample never reclaims those resources.
-    let plan = unsafe {
-        SubmissionPlan::from_compiled(
-            PlanId {
-                device: device.id(),
-                ordinal: plan_ordinal,
-            },
-            std::sync::Arc::from([
-                StepDesc {
-                    lane,
-                    kind: StepKind::Commands,
-                    waits: vec![],
-                },
-                StepDesc {
-                    lane,
-                    kind: StepKind::Present,
-                    waits: vec![],
-                },
-            ]),
-        )
-    };
-    // SAFETY: this function explicitly closes the only command step, presents
-    // its exclusive lease, and finishes before returning. The captured
-    // triangle outlives every issued GL call for the lifetime of the host.
-    let mut session = unsafe { device.immediate(plan, CompletionRequest::None)? };
-    let mut immediate = session.begin_commands().map_err(immediate_failure)?;
-    triangle.encode(immediate.commands(), &image, extent)?;
-    match immediate.close() {
-        ImmediateRunOutcome::Issued(_) => {}
-        other => return Err(immediate_failure(other)),
-    }
-    match session.present(PresentBinding::new(image)) {
-        ImmediatePresentResult::Run(ImmediateRunOutcome::Issued(_)) => {}
-        ImmediatePresentResult::Run(other) => return Err(immediate_failure(other)),
-        ImmediatePresentResult::Rejected { error, .. } => return Err(error),
-    }
-    match session.finish() {
-        ImmediateFinishOutcome::Issued(_) => Ok(()),
-        ImmediateFinishOutcome::Failed(outcome) => Err(immediate_failure(outcome)),
-        ImmediateFinishOutcome::AlreadyReported => Err(Error::InvalidState),
-    }
+    let (_, outcome) = utils::execute_frame(
+        device,
+        lane,
+        image,
+        CompletionRequest::None,
+        |encoder, image| triangle.encode(encoder, image, extent),
+    )?;
+    utils::validate_execution_outcome(&outcome)
 }
 
 #[cfg(any(windows, all(target_os = "linux", feature = "native-gles-egl")))]

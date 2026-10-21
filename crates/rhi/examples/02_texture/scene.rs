@@ -243,7 +243,12 @@ pub async fn run_webgpu_texture(
 }
 
 #[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
-fn run_host<B: TextureBackend + DeferredBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
+fn run_host<
+    B: TextureBackend + DeferredBackend + ExecutionBackend<Mode = DeferredExecution>,
+    H: utils::ExampleHost<B>,
+>(
+    host: H,
+) -> Result<()> {
     let (rgba, width, height) = match load_ktx() {
         Ok(value) => value,
         Err(error) => return Err(error),

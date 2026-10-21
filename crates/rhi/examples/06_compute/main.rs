@@ -72,7 +72,12 @@ pub async fn run_webgpu_compute(
 }
 
 #[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
-fn run<B: ComputeBackend + DeferredBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
+fn run<
+    B: ComputeBackend + DeferredBackend + ExecutionBackend<Mode = DeferredExecution>,
+    H: utils::ExampleHost<B>,
+>(
+    host: H,
+) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Bgra8Unorm,

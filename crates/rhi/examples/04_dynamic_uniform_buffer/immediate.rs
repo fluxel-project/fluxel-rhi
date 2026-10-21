@@ -2,30 +2,15 @@
 //!
 //! Resource and pipeline construction stays in the parent module so the GL
 //! route uses the same WGSL source, buffers, bind-group layout, and draw
-//! workload as deferred backends.  This module owns only the immediate-session
-//! skeleton: GL calls are issued while the session is open and presentation
-//! hands off the acquired default-framebuffer lease.
+//! workload as deferred backends. The common execution facade issues GL calls
+//! directly and hands off the acquired default-framebuffer lease.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
 #[cfg(any(windows, all(target_os = "linux", feature = "native-gles-egl")))]
 use std::{cell::RefCell, rc::Rc};
 
 use fluxel_rhi::api::*;
 
 use super::DynamicUniforms;
-
-static NEXT_PLAN: AtomicU64 = AtomicU64::new(1);
-
-fn immediate_error(outcome: ImmediateRunOutcome<fluxel_rhi::gl::Gl>) -> Error {
-    match outcome {
-        ImmediateRunOutcome::Issued(_) => Error::InvalidState,
-        ImmediateRunOutcome::Failed { error, .. }
-        | ImmediateRunOutcome::Indeterminate { error, .. } => error,
-    }
-}
 
 fn issue_frame(
     device: &Device<fluxel_rhi::gl::Gl>,
@@ -35,54 +20,14 @@ fn issue_frame(
     extent: [u32; 2],
     time: f32,
 ) -> Result<()> {
-    let ordinal = NEXT_PLAN
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-            value.checked_add(1)
-        })
-        .map_err(|_| Error::OutOfMemory)?;
-    // SAFETY: the direct command then present steps are fully ordered on the
-    // one GL lane. This closure completes both steps before returning, and no
-    // command is retained for later execution.
-    let plan = unsafe {
-        SubmissionPlan::from_compiled(
-            PlanId {
-                device: device.id(),
-                ordinal,
-            },
-            Arc::from([
-                StepDesc {
-                    lane,
-                    kind: StepKind::Commands,
-                    waits: vec![],
-                },
-                StepDesc {
-                    lane,
-                    kind: StepKind::Present,
-                    waits: vec![],
-                },
-            ]),
-        )
-    };
-    // SAFETY: `issue_frame` closes the sole encoder and consumes `image` via
-    // the matching present step before it returns, satisfying the compiled
-    // plan's immediate-session ownership contract.
-    let mut session = unsafe { device.immediate(plan, CompletionRequest::None)? };
-    let mut commands = session.begin_commands().map_err(immediate_error)?;
-    workload.encode(commands.commands(), &image, extent, time)?;
-    match commands.close() {
-        ImmediateRunOutcome::Issued(_) => {}
-        outcome => return Err(immediate_error(outcome)),
-    }
-    match session.present(PresentBinding::new(image)) {
-        ImmediatePresentResult::Run(ImmediateRunOutcome::Issued(_)) => {}
-        ImmediatePresentResult::Run(outcome) => return Err(immediate_error(outcome)),
-        ImmediatePresentResult::Rejected { error, .. } => return Err(error),
-    }
-    match session.finish() {
-        ImmediateFinishOutcome::Issued(_) => Ok(()),
-        ImmediateFinishOutcome::Failed(outcome) => Err(immediate_error(outcome)),
-        ImmediateFinishOutcome::AlreadyReported => Err(Error::InvalidState),
-    }
+    let (_, outcome) = super::utils::execute_frame(
+        device,
+        lane,
+        image,
+        CompletionRequest::None,
+        |encoder, image| workload.encode(encoder, image, extent, time),
+    )?;
+    super::utils::validate_execution_outcome(&outcome)
 }
 
 #[cfg(any(windows, all(target_os = "linux", feature = "native-gles-egl")))]

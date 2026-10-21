@@ -35,6 +35,22 @@ completion requests. It does not establish multi-queue conformance, arbitrary
 plans, or native partial/indeterminate recovery. The RenderGraph's compiler,
 hazard analysis, and resource-retirement tests belong to its own repository.
 
+The additive common execution entry has its own mock tests for immediate native
+call timing, partial/uncertain effects, presentation lease retry, cancellation,
+and unchanged deferred recovery ownership. Its real-GPU fixture uses the same
+four-step Commands plan with explicit same-lane waits and exact buffer readback
+on DX12, Vulkan, and WGL; WGL additionally exercises a clear/present sequence.
+
+```powershell
+cargo test -p fluxel-rhi --features vulkan,native-gl-wgl --test unified_execution_gpu -- --ignored --nocapture
+```
+
+This headless readback/Present smoke does not establish arbitrary cross-lane
+synchronization, browser execution, or visual correctness. The optional common
+entry does not add native multi-queue or Sparse support. All 15 examples now use the common entry. Their deferred path retains native
+pre-recording, including example 13 secondary work, and binds it without a
+portable command conversion. GL passes encoding closures directly.
+
 The [execution evidence packet](evidence/rhi-execution-2026-10-20/README.md)
 records the tested candidates and keeps GPU evidence separate from mocks.
 

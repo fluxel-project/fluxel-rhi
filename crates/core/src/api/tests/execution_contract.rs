@@ -9,6 +9,9 @@ use std::{
 };
 
 struct Witness;
+impl ExecutionBackend for Witness {
+    type Mode = DeferredExecution;
+}
 impl Backend for Witness {
     type NativeDevice = Arc<()>;
     type NativeBuffer = Arc<()>;
@@ -252,6 +255,54 @@ fn fixture() -> (Device<Witness>, LaneId, SubmissionPlan<Witness>) {
     // SAFETY: fake native device is paired with the freshly allocated ID.
     let device = unsafe { Device::from_native(id, Arc::new(()), DeviceCapabilities::default()) };
     (device, lane, plan)
+}
+
+#[test]
+fn facade_retains_partial_and_indeterminate_native_outcomes() {
+    for mode in [1, 2] {
+        let (original, lane, plan) = fixture();
+        let mut caps = DeviceCapabilities::default();
+        caps.lanes = vec![LaneInfo {
+            id: lane,
+            class: LaneClass::Graphics,
+            routes: vec![],
+        }]
+        .into();
+        // SAFETY: this replacement describes the same mock device and lane.
+        let device = unsafe { Device::<Witness>::from_native(original.id(), Arc::new(()), caps) };
+        TRACE.with_borrow_mut(|trace| trace.mode = mode);
+        // SAFETY: mock recording references no resources.
+        let mut execution =
+            unsafe { device.begin_execution(plan.clone(), CompletionRequest::None) }.unwrap();
+        for index in 0..3 {
+            execution.commands(plan.step(index), |_| Ok(())).unwrap();
+        }
+        TRACE.with_borrow(|trace| assert!(trace.calls.is_empty()));
+        // SAFETY: the mock has no resource lifetime obligations.
+        let outcome = unsafe { execution.finish() };
+        TRACE.with_borrow(|trace| assert_eq!(trace.calls.len(), 1));
+        assert!(outcome.error().is_some());
+        if mode == 1 {
+            assert_eq!(outcome.facts().status, ExecutionStatus::PartiallyAccepted);
+            match outcome {
+                DeferredExecutionOutcome::Submitted(SubmitOutcome::PartiallyAccepted {
+                    accepted,
+                    tail,
+                    ..
+                }) => {
+                    assert_eq!(accepted.accepted, vec![plan.step(0)]);
+                    assert_eq!(tail.pending.len(), 2);
+                    assert_eq!(tail.accepted_frontier.len(), 1);
+                }
+                _ => panic!("partial submission lost its owning outcome"),
+            }
+        } else {
+            assert_eq!(outcome.facts().status, ExecutionStatus::Indeterminate);
+            TRACE.with_borrow(|trace| assert_eq!(trace.dropped, 0));
+            drop(outcome);
+            TRACE.with_borrow(|trace| assert_eq!(trace.dropped, 1));
+        }
+    }
 }
 fn packet(
     plan: &SubmissionPlan<Witness>,

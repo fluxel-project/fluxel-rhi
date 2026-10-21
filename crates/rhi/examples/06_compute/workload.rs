@@ -316,7 +316,7 @@ impl<B: ComputeBackend> Compute<B> {
     }
 
     /// Builds one deferred work item. Immediate GL callers use `encode`
-    /// directly through an ImmediateSession and commit the returned frame
+    /// directly through the common Execution entry and commit the returned frame
     /// initialization only after that command step closes successfully.
     pub fn record(
         &mut self,

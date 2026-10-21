@@ -234,7 +234,12 @@ pub async fn run_webgpu_push_constants(
 }
 
 #[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
-fn run_host<B: PushBackend + DeferredBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
+fn run_host<
+    B: PushBackend + DeferredBackend + ExecutionBackend<Mode = DeferredExecution>,
+    H: utils::ExampleHost<B>,
+>(
+    host: H,
+) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Bgra8Unorm,

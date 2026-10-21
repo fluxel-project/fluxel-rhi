@@ -49,6 +49,15 @@ WebGL2 does not provide native multithreaded command recording. WebGPU records
 native commands even though browser objects belong to one thread. Separate
 traits represent these different execution contracts.
 
+For ordered Commands/Present plans, the optional statically dispatched
+`Device::begin_execution` interface shares `commands`, `present`, and `finish`
+across these models. GL calls native APIs inside `commands`; deferred backends
+record native work and submit it at `finish`. No CPU command stream, replay,
+per-step fence, or implicit idle wait is added. Borrowed `facts()` observations
+share acceptance and completion evidence while retaining model-specific recovery
+ownership. Existing recording, submission, and immediate-session APIs remain
+available for advanced execution. See the [execution contract](documents/design-rhi.md#common-execution-entry).
+
 Support queries describe implemented native routes. An example may select an
 explicit visual fallback for an unavailable feature; that does not enable the
 feature in the backend. Metal has no completed Apple GPU or visual acceptance.

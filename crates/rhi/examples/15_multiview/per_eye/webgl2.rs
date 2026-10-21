@@ -7,12 +7,7 @@ use super::*;
 #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
 pub async fn run_webgl2_multiview(canvas: web_sys::HtmlCanvasElement, frames: u32) -> Result<()> {
     use fluxel_rhi::gl::{Gl, GlInstance};
-    use std::sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    };
 
-    static NEXT_PLAN: AtomicU64 = AtomicU64::new(1);
     if frames == 0 {
         return Err(Error::InvalidRange);
     }
@@ -61,69 +56,15 @@ pub async fn run_webgl2_multiview(canvas: web_sys::HtmlCanvasElement, frames: u3
     let scope = utils::GpuScope::new(&device);
     for _ in 0..frames {
         let image = surface.acquire().await?;
-        let ordinal = NEXT_PLAN
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                value.checked_add(1)
-            })
-            .map_err(|_| Error::OutOfMemory)?;
-        // SAFETY: one command step and one present step execute on the same
-        // browser graphics lane, in the precompiled order.
-        let plan = unsafe {
-            SubmissionPlan::from_compiled(
-                PlanId {
-                    device: device.id(),
-                    ordinal,
-                },
-                Arc::from([
-                    StepDesc {
-                        lane,
-                        kind: StepKind::Commands,
-                        waits: vec![],
-                    },
-                    StepDesc {
-                        lane,
-                        kind: StepKind::Present,
-                        waits: vec![],
-                    },
-                ]),
-            )
-        };
-        // SAFETY: the encoder and presentation call run on the canvas owner
-        // thread and finish before this iteration releases the acquired image.
-        let mut session = unsafe { device.immediate(plan, CompletionRequest::None)? };
-        let mut commands = session.begin_commands().map_err(|outcome| match outcome {
-            ImmediateRunOutcome::Issued(_) => Error::InvalidState,
-            ImmediateRunOutcome::Failed { error, .. }
-            | ImmediateRunOutcome::Indeterminate { error, .. } => error,
-        })?;
-        let mut encoder = commands.commands();
-        let uploaded = scene.encode(&mut encoder, &image)?;
-        drop(encoder);
-        match commands.close() {
-            ImmediateRunOutcome::Issued(_) => {
-                if uploaded {
-                    scene.mark_uploaded();
-                }
-            }
-            ImmediateRunOutcome::Failed { error, .. }
-            | ImmediateRunOutcome::Indeterminate { error, .. } => return Err(error),
-        }
-        match session.present(PresentBinding::new(image)) {
-            ImmediatePresentResult::Run(ImmediateRunOutcome::Issued(_)) => {}
-            ImmediatePresentResult::Run(ImmediateRunOutcome::Failed { error, .. })
-            | ImmediatePresentResult::Run(ImmediateRunOutcome::Indeterminate { error, .. })
-            | ImmediatePresentResult::Rejected { error, .. } => return Err(error),
-        }
-        match session.finish() {
-            ImmediateFinishOutcome::Issued(_) => {}
-            ImmediateFinishOutcome::Failed(ImmediateRunOutcome::Failed { error, .. })
-            | ImmediateFinishOutcome::Failed(ImmediateRunOutcome::Indeterminate {
-                error, ..
-            }) => {
-                return Err(error);
-            }
-            ImmediateFinishOutcome::Failed(ImmediateRunOutcome::Issued(_))
-            | ImmediateFinishOutcome::AlreadyReported => return Err(Error::InvalidState),
+        let (uploaded, _outcome) = utils::execute_frame(
+            &device,
+            lane,
+            image,
+            CompletionRequest::None,
+            |encoder, image| scene.encode(encoder, image),
+        )?;
+        if uploaded {
+            scene.mark_uploaded();
         }
     }
     scope.finish().await;

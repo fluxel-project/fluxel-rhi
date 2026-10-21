@@ -6,15 +6,11 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use fluxel_rhi::api::*;
 use fluxel_rhi::gl::Gl;
 
 use super::{OcclusionWorkloadBackend, Workload, utils};
-
-static NEXT_PLAN: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
 pub(super) async fn run_webgl2(canvas: web_sys::HtmlCanvasElement, frames: u32) -> Result<()> {
@@ -65,75 +61,26 @@ pub(super) async fn run_webgl2(canvas: web_sys::HtmlCanvasElement, frames: u32) 
     let scope = utils::GpuScope::new(&device);
     for _ in 0..frames {
         let image = surface.acquire().await?;
-        let ordinal = NEXT_PLAN
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                value.checked_add(1)
-            })
-            .map_err(|_| Error::OutOfMemory)?;
-        // SAFETY: both steps target the same current GL context and execute in
-        // the order issued by this owner-thread adapter.
-        let plan = unsafe {
-            SubmissionPlan::from_compiled(
-                PlanId {
-                    device: device.id(),
-                    ordinal,
-                },
-                Arc::from([
-                    StepDesc {
-                        lane,
-                        kind: StepKind::Commands,
-                        waits: vec![],
-                    },
-                    StepDesc {
-                        lane,
-                        kind: StepKind::Present,
-                        waits: vec![],
-                    },
-                ]),
-            )
-        };
-        // SAFETY: rendering and presentation occur immediately on this GL
-        // owner thread while the acquired image lease stays alive.
-        let mut session = unsafe { device.immediate(plan, CompletionRequest::End)? };
-        let mut commands = session.begin_commands().map_err(immediate_error)?;
-        let ticket = workload.encode_scene(&device, commands.commands(), &image, extent)?;
-        let unexpected_ticket = ticket.is_some();
-        workload.retain_ticket(ticket)?;
-        if unexpected_ticket {
-            return Err(Error::InvalidState);
-        }
-        match commands.close() {
-            ImmediateRunOutcome::Issued(_) => {}
-            outcome => return Err(immediate_error(outcome)),
-        }
-        match session.present(PresentBinding::new(image)) {
-            ImmediatePresentResult::Run(ImmediateRunOutcome::Issued(_)) => {}
-            ImmediatePresentResult::Run(outcome) => return Err(immediate_error(outcome)),
-            ImmediatePresentResult::Rejected { error, .. } => return Err(error),
-        }
-        let prefix = match session.finish() {
-            ImmediateFinishOutcome::Issued(prefix) => prefix,
-            ImmediateFinishOutcome::Failed(outcome) => return Err(immediate_error(outcome)),
-            ImmediateFinishOutcome::AlreadyReported => return Err(Error::InvalidState),
-        };
-        let point = prefix
-            .checkpoints
-            .into_iter()
-            .next()
-            .map(|c| c.point)
-            .ok_or(Error::InvalidState)?;
+        let (_, outcome) = utils::execute_frame(
+            &device,
+            lane,
+            image,
+            CompletionRequest::End,
+            |encoder, image| {
+                let ticket = workload.encode_scene(&device, encoder, image, extent)?;
+                let unexpected = ticket.is_some();
+                workload.retain_ticket(ticket)?;
+                if unexpected {
+                    return Err(Error::InvalidState);
+                }
+                Ok(())
+            },
+        )?;
+        let point = utils::execution_end_checkpoint(&outcome)?;
         device.wait_completion(&point).await?;
     }
     scope.finish().await;
     Ok(())
-}
-
-fn immediate_error(outcome: ImmediateRunOutcome<Gl>) -> Error {
-    match outcome {
-        ImmediateRunOutcome::Issued(_) => Error::InvalidState,
-        ImmediateRunOutcome::Failed { error, .. }
-        | ImmediateRunOutcome::Indeterminate { error, .. } => error,
-    }
 }
 
 fn issue_frame(
@@ -143,58 +90,18 @@ fn issue_frame(
     image: SurfaceImage<Gl>,
     extent: [u32; 2],
 ) -> Result<()> {
-    let ordinal = NEXT_PLAN
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-            value.checked_add(1)
-        })
-        .map_err(|_| Error::OutOfMemory)?;
-    // SAFETY: both plan steps target this one context-owned graphics lane and
-    // execute in the order in which the adapter calls them.
-    let plan = unsafe {
-        SubmissionPlan::from_compiled(
-            PlanId {
-                device: device.id(),
-                ordinal,
-            },
-            Arc::from([
-                StepDesc {
-                    lane,
-                    kind: StepKind::Commands,
-                    waits: vec![],
-                },
-                StepDesc {
-                    lane,
-                    kind: StepKind::Present,
-                    waits: vec![],
-                },
-            ]),
-        )
-    };
-    // SAFETY: every command below is issued directly on the current WGL
-    // context; the acquired surface image stays leased through Present.
-    let mut session = unsafe { device.immediate(plan, CompletionRequest::End)? };
-    let mut commands = session.begin_commands().map_err(immediate_error)?;
-    let ticket = workload.encode(device, commands.commands(), &image, extent)?;
-    workload.retain_ticket(Some(ticket))?;
-    match commands.close() {
-        ImmediateRunOutcome::Issued(_) => {}
-        outcome => return Err(immediate_error(outcome)),
-    }
-    match session.present(PresentBinding::new(image)) {
-        ImmediatePresentResult::Run(ImmediateRunOutcome::Issued(_)) => {}
-        ImmediatePresentResult::Run(outcome) => return Err(immediate_error(outcome)),
-        ImmediatePresentResult::Rejected { error, .. } => return Err(error),
-    }
-    let point = match session.finish() {
-        ImmediateFinishOutcome::Issued(prefix) => prefix
-            .checkpoints
-            .into_iter()
-            .next()
-            .map(|checkpoint| checkpoint.point)
-            .ok_or(Error::InvalidState)?,
-        ImmediateFinishOutcome::Failed(outcome) => return Err(immediate_error(outcome)),
-        ImmediateFinishOutcome::AlreadyReported => return Err(Error::InvalidState),
-    };
+    let (_, outcome) = utils::execute_frame(
+        device,
+        lane,
+        image,
+        CompletionRequest::End,
+        |encoder, image| {
+            let ticket = workload.encode(device, encoder, image, extent)?;
+            workload.retain_ticket(Some(ticket))?;
+            Ok(())
+        },
+    )?;
+    let point = utils::execution_end_checkpoint(&outcome)?;
     utils::block_on(device.wait_completion(&point))?;
     let ticket = workload
         .take_completed_ticket()

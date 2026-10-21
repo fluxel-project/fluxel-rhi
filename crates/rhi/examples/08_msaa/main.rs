@@ -87,12 +87,6 @@ pub async fn run_webgl2_msaa_fallback(
     frames: u32,
 ) -> std::result::Result<(), wasm_bindgen::JsValue> {
     use fluxel_rhi::gl::{Gl, GlInstance};
-    use std::sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    };
-
-    static NEXT_PLAN: AtomicU64 = AtomicU64::new(1);
     let run = async {
         if frames == 0 || canvas.width() == 0 || canvas.height() == 0 {
             return Err(Error::InvalidRange);
@@ -136,71 +130,16 @@ pub async fn run_webgl2_msaa_fallback(
         let scope = utils::GpuScope::new(&device);
         for frame in 0..frames {
             let image = surface.acquire().await?;
-            let ordinal = NEXT_PLAN
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                    value.checked_add(1)
-                })
-                .map_err(|_| Error::OutOfMemory)?;
-            // SAFETY: command and present steps target one immediate GL lane
-            // and are issued in this exact order on the canvas owner thread.
-            let plan = unsafe {
-                SubmissionPlan::from_compiled(
-                    PlanId {
-                        device: device.id(),
-                        ordinal,
-                    },
-                    Arc::from([
-                        StepDesc {
-                            lane,
-                            kind: StepKind::Commands,
-                            waits: vec![],
-                        },
-                        StepDesc {
-                            lane,
-                            kind: StepKind::Present,
-                            waits: vec![],
-                        },
-                    ]),
-                )
-            };
-            // SAFETY: this session and its acquired image remain on the GL
-            // owner thread until the immediate present consumes the lease.
-            let mut session = unsafe { device.immediate(plan, CompletionRequest::None)? };
-            let mut commands = session.begin_commands().map_err(|outcome| match outcome {
-                ImmediateRunOutcome::Issued(_) => Error::InvalidState,
-                ImmediateRunOutcome::Failed { error, .. }
-                | ImmediateRunOutcome::Indeterminate { error, .. } => error,
-            })?;
-            let commit = demo.encode(
-                commands.commands(),
+            let (commit, _) = utils::execute_frame(
                 &device,
-                &image,
-                extent,
-                frame as f32 / 60.0,
+                lane,
+                image,
+                CompletionRequest::None,
+                |commands, image| {
+                    demo.encode(commands, &device, image, extent, frame as f32 / 60.0)
+                },
             )?;
-            match commands.close() {
-                ImmediateRunOutcome::Issued(_) => demo.commit_frame(commit),
-                ImmediateRunOutcome::Failed { error, .. }
-                | ImmediateRunOutcome::Indeterminate { error, .. } => return Err(error),
-            }
-            match session.present(PresentBinding::new(image)) {
-                ImmediatePresentResult::Run(ImmediateRunOutcome::Issued(_)) => {}
-                ImmediatePresentResult::Run(ImmediateRunOutcome::Failed { error, .. })
-                | ImmediatePresentResult::Run(ImmediateRunOutcome::Indeterminate {
-                    error, ..
-                })
-                | ImmediatePresentResult::Rejected { error, .. } => return Err(error),
-            }
-            match session.finish() {
-                ImmediateFinishOutcome::Issued(_) => {}
-                ImmediateFinishOutcome::Failed(ImmediateRunOutcome::Failed { error, .. })
-                | ImmediateFinishOutcome::Failed(ImmediateRunOutcome::Indeterminate {
-                    error,
-                    ..
-                }) => return Err(error),
-                ImmediateFinishOutcome::Failed(ImmediateRunOutcome::Issued(_))
-                | ImmediateFinishOutcome::AlreadyReported => return Err(Error::InvalidState),
-            }
+            demo.commit_frame(commit);
         }
         scope.finish().await;
         Ok(())
@@ -209,7 +148,12 @@ pub async fn run_webgl2_msaa_fallback(
         .map_err(|error| wasm_bindgen::JsValue::from_str(&format!("{error:?}")))
 }
 #[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
-fn run<B: MsaaDeferredBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
+fn run<
+    B: MsaaDeferredBackend + ExecutionBackend<Mode = DeferredExecution>,
+    H: utils::ExampleHost<B>,
+>(
+    host: H,
+) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Bgra8Unorm,

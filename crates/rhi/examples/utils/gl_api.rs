@@ -340,7 +340,7 @@ fn frame_limit() -> Result<Option<u64>> {
 
 /// Runs one native GL-family example using the adopted window drawable.
 ///
-/// The callback must issue and finish its [`fluxel_rhi::api::ImmediateSession`]
+/// The callback must issue and finish its [`fluxel_rhi::api::Execution`]
 /// before returning, handing the acquired lease to its plan's present step.
 pub fn run_native(
     title: &str,

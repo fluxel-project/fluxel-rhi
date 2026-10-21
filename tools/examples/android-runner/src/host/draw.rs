@@ -159,149 +159,145 @@ impl App {
         }
         #[cfg(feature = "gles")]
         {
-            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-            // SAFETY: the two steps refer to this device and its one current
-            // GLES lane. They are issued once in command-then-present order.
-            let plan = unsafe {
-                SubmissionPlan::from_compiled(
-                    PlanId {
-                        device: gpu.device.id(),
-                        ordinal: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-                    },
-                    Arc::from([
-                        StepDesc {
-                            lane: gpu.lane,
-                            kind: StepKind::Commands,
-                            waits: vec![],
-                        },
-                        StepDesc {
-                            lane: gpu.lane,
-                            kind: StepKind::Present,
-                            waits: vec![],
-                        },
-                    ]),
-                )
-            };
-            // SAFETY: immediate commands and present execute synchronously on this EGL owner thread.
             let completion = if cfg!(any(feature = "demo11", feature = "demo12")) {
                 CompletionRequest::End
             } else {
                 CompletionRequest::None
             };
-            let mut session = unsafe { gpu.device.immediate(plan, completion)? };
-            let mut commands = session.begin_commands().map_err(|x| match x {
-                ImmediateRunOutcome::Failed { error, .. }
-                | ImmediateRunOutcome::Indeterminate { error, .. } => error,
-                _ => Error::InvalidState,
-            })?;
-            #[cfg(feature = "demo15")]
-            let uploaded = gpu.scene.encode(commands.commands(), &image)?;
-            #[cfg(feature = "demo14")]
-            let uploaded =
-                gpu.scene
-                    .encode(&gpu.device, &image, commands.commands(), gpu.extent, 0.0)?;
-            #[cfg(feature = "demo13")]
-            let uploaded =
-                gpu.scene
-                    .encode(&gpu.device, &image, commands.commands(), gpu.extent)?;
-            #[cfg(feature = "demo12")]
-            {
-                gpu.scene.ensure_ticket_available()?;
-                let ticket = gpu
-                    .scene
-                    .encode(commands.commands(), &image, self.frames == 0)?;
-                gpu.scene.retain_ticket(ticket)?;
-            }
-            #[cfg(all(
-                not(feature = "demo02"),
-                not(feature = "demo03"),
-                not(feature = "demo04"),
-                not(feature = "demo05"),
-                not(feature = "demo06"),
-                not(feature = "demo07"),
-                not(feature = "demo08"),
-                not(feature = "demo09"),
-                not(feature = "demo10"),
-                not(feature = "demo11"),
-                not(feature = "demo12"),
-                not(feature = "demo13"),
-                not(feature = "demo14"),
-                not(feature = "demo15")
-            ))]
-            #[cfg(not(feature = "demo03"))]
-            gpu.scene.encode(commands.commands(), &image, gpu.extent)?;
+            #[cfg(any(feature = "demo13", feature = "demo14", feature = "demo15"))]
+            let mut uploaded = false;
             #[cfg(feature = "demo06")]
-            let initialized =
-                gpu.scene
-                    .encode(commands.commands(), &gpu.device, &image, gpu.extent)?;
-            #[cfg(feature = "demo07")]
-            gpu.scene.encode(
-                commands.commands(),
+            let mut initialized = None;
+            #[cfg(any(feature = "demo08", feature = "demo09", feature = "demo10"))]
+            let mut commit = None;
+            let (_, outcome) = utils::execute_frame(
                 &gpu.device,
-                &image,
-                gpu.extent,
-                gpu.time.elapsed().as_secs_f32(),
-            )?;
-            #[cfg(feature = "demo08")]
-            let commit = gpu.scene.encode(
-                commands.commands(),
-                &gpu.device,
-                &image,
-                gpu.extent,
-                gpu.time.elapsed().as_secs_f32(),
-            )?;
-            #[cfg(feature = "demo09")]
-            let commit = gpu
-                .scene
-                .encode(commands.commands(), &gpu.device, &image, gpu.extent)?;
-            #[cfg(feature = "demo10")]
-            let commit = gpu.scene.encode(
-                commands.commands(),
-                &gpu.device,
-                &image,
-                gpu.extent,
-                gpu.time.elapsed().as_secs_f32(),
-            )?;
-            #[cfg(feature = "demo11")]
-            {
-                gpu.scene.ensure_ticket_available()?;
-                let ticket =
-                    gpu.scene
-                        .encode_scene(&gpu.device, commands.commands(), &image, gpu.extent)?;
-                gpu.scene.retain_ticket(ticket)?;
-            }
-            #[cfg(feature = "demo02")]
-            gpu.scene.issue(
-                commands.commands(),
-                &image,
-                gpu.extent,
-                texture::TexturePixels {
-                    rgba: &gpu.pixels,
-                    width: gpu.pixel_extent[0],
-                    height: gpu.pixel_extent[1],
+                gpu.lane,
+                image,
+                completion,
+                |commands, image| {
+                    #[cfg(feature = "demo15")]
+                    {
+                        uploaded = gpu.scene.encode(commands, &image)?;
+                    }
+                    #[cfg(feature = "demo14")]
+                    {
+                        uploaded =
+                            gpu.scene
+                                .encode(&gpu.device, &image, commands, gpu.extent, 0.0)?;
+                    }
+                    #[cfg(feature = "demo13")]
+                    {
+                        uploaded = gpu
+                            .scene
+                            .encode(&gpu.device, &image, commands, gpu.extent)?;
+                    }
+                    #[cfg(feature = "demo12")]
+                    {
+                        gpu.scene.ensure_ticket_available()?;
+                        let ticket = gpu.scene.encode(commands, &image, self.frames == 0)?;
+                        gpu.scene.retain_ticket(ticket)?;
+                    }
+                    #[cfg(all(
+                        not(feature = "demo02"),
+                        not(feature = "demo03"),
+                        not(feature = "demo04"),
+                        not(feature = "demo05"),
+                        not(feature = "demo06"),
+                        not(feature = "demo07"),
+                        not(feature = "demo08"),
+                        not(feature = "demo09"),
+                        not(feature = "demo10"),
+                        not(feature = "demo11"),
+                        not(feature = "demo12"),
+                        not(feature = "demo13"),
+                        not(feature = "demo14"),
+                        not(feature = "demo15")
+                    ))]
+                    #[cfg(not(feature = "demo03"))]
+                    gpu.scene.encode(commands, &image, gpu.extent)?;
+                    #[cfg(feature = "demo06")]
+                    {
+                        initialized =
+                            Some(
+                                gpu.scene
+                                    .encode(commands, &gpu.device, &image, gpu.extent)?,
+                            );
+                    }
+                    #[cfg(feature = "demo07")]
+                    gpu.scene.encode(
+                        commands,
+                        &gpu.device,
+                        &image,
+                        gpu.extent,
+                        gpu.time.elapsed().as_secs_f32(),
+                    )?;
+                    #[cfg(feature = "demo08")]
+                    {
+                        commit = Some(gpu.scene.encode(
+                            commands,
+                            &gpu.device,
+                            &image,
+                            gpu.extent,
+                            gpu.time.elapsed().as_secs_f32(),
+                        )?);
+                    }
+                    #[cfg(feature = "demo09")]
+                    {
+                        commit =
+                            Some(
+                                gpu.scene
+                                    .encode(commands, &gpu.device, &image, gpu.extent)?,
+                            );
+                    }
+                    #[cfg(feature = "demo10")]
+                    {
+                        commit = Some(gpu.scene.encode(
+                            commands,
+                            &gpu.device,
+                            &image,
+                            gpu.extent,
+                            gpu.time.elapsed().as_secs_f32(),
+                        )?);
+                    }
+                    #[cfg(feature = "demo11")]
+                    {
+                        gpu.scene.ensure_ticket_available()?;
+                        let ticket =
+                            gpu.scene
+                                .encode_scene(&gpu.device, commands, &image, gpu.extent)?;
+                        gpu.scene.retain_ticket(ticket)?;
+                    }
+                    #[cfg(feature = "demo02")]
+                    gpu.scene.issue(
+                        commands,
+                        &image,
+                        gpu.extent,
+                        texture::TexturePixels {
+                            rgba: &gpu.pixels,
+                            width: gpu.pixel_extent[0],
+                            height: gpu.pixel_extent[1],
+                        },
+                    )?;
+                    #[cfg(feature = "demo04")]
+                    gpu.scene.encode(
+                        commands,
+                        &image,
+                        gpu.extent,
+                        gpu.time.elapsed().as_secs_f32(),
+                    )?;
+                    #[cfg(feature = "demo05")]
+                    gpu.scene.issue(commands, &image, gpu.extent)?;
+                    #[cfg(feature = "demo03")]
+                    gpu.scene.issue(
+                        commands,
+                        &image,
+                        gpu.extent,
+                        gpu.time.elapsed().as_secs_f32(),
+                    )?;
+                    Ok(())
                 },
             )?;
-            #[cfg(feature = "demo04")]
-            gpu.scene.encode(
-                commands.commands(),
-                &image,
-                gpu.extent,
-                gpu.time.elapsed().as_secs_f32(),
-            )?;
-            #[cfg(feature = "demo05")]
-            gpu.scene.issue(commands.commands(), &image, gpu.extent)?;
-            #[cfg(feature = "demo03")]
-            gpu.scene.issue(
-                commands.commands(),
-                &image,
-                gpu.extent,
-                gpu.time.elapsed().as_secs_f32(),
-            )?;
-            match commands.close() {
-                ImmediateRunOutcome::Issued(_) => {}
-                ImmediateRunOutcome::Failed { error, .. }
-                | ImmediateRunOutcome::Indeterminate { error, .. } => return Err(error),
-            }
             #[cfg(feature = "demo12")]
             gpu.scene.commit_frame(self.frames == 0);
             #[cfg(any(feature = "demo14", feature = "demo15"))]
@@ -313,43 +309,21 @@ impl App {
                 gpu.scene.mark_uploaded();
             }
             #[cfg(feature = "demo06")]
-            gpu.scene.commit_frame(initialized);
+            gpu.scene
+                .commit_frame(initialized.ok_or(Error::InvalidState)?);
             #[cfg(any(feature = "demo05", feature = "demo07"))]
             gpu.scene.commit_frame();
             #[cfg(feature = "demo08")]
-            gpu.scene.commit_frame(commit);
+            gpu.scene.commit_frame(commit.ok_or(Error::InvalidState)?);
             #[cfg(feature = "demo09")]
-            gpu.scene.commit_frame(commit);
+            gpu.scene.commit_frame(commit.ok_or(Error::InvalidState)?);
             #[cfg(feature = "demo10")]
-            gpu.scene.commit_frame(commit);
+            gpu.scene.commit_frame(commit.ok_or(Error::InvalidState)?);
             #[cfg(feature = "demo03")]
             gpu.scene.mark_submitted();
-            match session.present(PresentBinding::new(image)) {
-                ImmediatePresentResult::Run(ImmediateRunOutcome::Issued(_)) => {}
-                ImmediatePresentResult::Run(ImmediateRunOutcome::Failed { error, .. })
-                | ImmediatePresentResult::Run(ImmediateRunOutcome::Indeterminate {
-                    error, ..
-                })
-                | ImmediatePresentResult::Rejected { error, .. } => return Err(error),
-            }
-            let _prefix = match session.finish() {
-                ImmediateFinishOutcome::Issued(prefix) => prefix,
-                ImmediateFinishOutcome::Failed(ImmediateRunOutcome::Failed { error, .. })
-                | ImmediateFinishOutcome::Failed(ImmediateRunOutcome::Indeterminate {
-                    error,
-                    ..
-                }) => return Err(error),
-                ImmediateFinishOutcome::Failed(ImmediateRunOutcome::Issued(_))
-                | ImmediateFinishOutcome::AlreadyReported => return Err(Error::InvalidState),
-            };
             #[cfg(feature = "demo11")]
             {
-                let point = _prefix
-                    .checkpoints
-                    .into_iter()
-                    .next()
-                    .map(|checkpoint| checkpoint.point)
-                    .ok_or(Error::InvalidState)?;
+                let point = utils::execution_end_checkpoint(&outcome)?;
                 utils::block_on(gpu.device.wait_completion(&point))?;
                 if let Some(ticket) = gpu.scene.take_completed_ticket() {
                     gpu.scene.consume(&gpu.device, ticket, &point)?;
@@ -357,12 +331,7 @@ impl App {
             }
             #[cfg(feature = "demo12")]
             {
-                let point = _prefix
-                    .checkpoints
-                    .into_iter()
-                    .next()
-                    .map(|checkpoint| checkpoint.point)
-                    .ok_or(Error::InvalidState)?;
+                let point = utils::execution_end_checkpoint(&outcome)?;
                 utils::block_on(gpu.device.wait_completion(&point))?;
                 if let Some(ticket) = gpu.scene.take_completed_ticket() {
                     let path = self.capture_path.as_ref().ok_or(Error::InvalidState)?;

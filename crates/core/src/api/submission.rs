@@ -70,6 +70,35 @@ impl<B: Backend> SubmissionPlan<B> {
     }
 }
 
+impl<B: Backend> SubmissionPlan<B> {
+    /// Validate the device-local ordered topology before executing it.
+    ///
+    /// This checks identity, lane membership and predecessor indices; it does
+    /// not infer hazards, resource transitions, or cross-lane synchronization.
+    pub fn validate_for_execution(&self, device: &Device<B>) -> Result<()> {
+        if self.id.device != device.id {
+            return Err(Error::WrongDevice);
+        }
+        if self.steps.len() > u32::MAX as usize {
+            return Err(Error::InvalidRange);
+        }
+        for (index, step) in self.steps.iter().enumerate() {
+            if step.lane.device != device.id {
+                return Err(Error::WrongDevice);
+            }
+            if !device.lanes().iter().any(|lane| lane.id == step.lane) {
+                return Err(Error::WrongLane);
+            }
+            for wait in &step.waits {
+                if wait.previous.plan != self.id || wait.previous.index as usize >= index {
+                    return Err(Error::InvalidState);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Host observation only. It cannot be used as a GPU queue wait.
 pub struct CompletionPoint<B: Backend> {
     pub(crate) device: DeviceId,

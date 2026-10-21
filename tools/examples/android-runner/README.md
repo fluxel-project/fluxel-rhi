@@ -1,8 +1,9 @@
 # Android native example capture runner
 
 This standalone Cargo workspace builds a NativeActivity APK for one shared RHI
-example at a time. It uses Vulkan deferred commands or GLES immediate commands
-on the Android window owner thread. The numbered example owns its scene and
+example at a time. It uses the shared execution API for Vulkan native recordings and GLES
+immediate commands on the Android window owner thread. GLES commands reach the
+GL API during encoding; they are not buffered or replayed by the runner. The numbered example owns its scene and
 WGSL-derived shaders; this runner owns window adoption, presentation, completion,
 and capture plumbing.
 
@@ -21,7 +22,16 @@ The screenshots include Android system UI. Builds and APKs remain in ignored
 target directories. Fetch example assets with `tools/examples/fetch-assets.ps1`
 before building scenes that use external models or textures.
 
-## Verification checkpoint
+## Common execution migration
+
+On 2026-10-21, Vulkan and GLES examples 01-15 each completed two frames using
+the common execution entry. Both example 12 routes completed GPU readback;
+screenshots and readbacks were inspected. The runner publishes pending scene
+state only after execution acceptance and retains failure outcomes through the
+shared standalone-host drain policy. See the
+[migration evidence](../../../documents/evidence/execution-api-2026-10-21/README.md).
+
+## Earlier platform verification checkpoint
 
 - Vulkan examples 01–15 completed two frames each on the Android 14 emulator
   reporting Adreno 750 at 1920×1080. Saved screenshots were inspected against

@@ -279,7 +279,12 @@ fn triangle_indices() -> [u8; 6] {
 }
 
 #[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
-fn run<B: TriangleBackend + DeferredBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
+fn run<
+    B: TriangleBackend + DeferredBackend + ExecutionBackend<Mode = DeferredExecution>,
+    H: utils::ExampleHost<B>,
+>(
+    host: H,
+) -> Result<()> {
     let config = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Bgra8Unorm,

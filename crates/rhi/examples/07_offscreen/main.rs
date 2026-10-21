@@ -116,7 +116,12 @@ pub async fn run_webgpu_offscreen(
 }
 
 #[cfg(any(windows, all(target_os = "macos", feature = "metal")))]
-fn run<B: OffscreenBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
+fn run<
+    B: OffscreenBackend + ExecutionBackend<Mode = DeferredExecution>,
+    H: utils::ExampleHost<B>,
+>(
+    host: H,
+) -> Result<()> {
     let c = SurfaceConfig {
         extent: [1280, 720],
         format: TextureFormat::Bgra8Unorm,
