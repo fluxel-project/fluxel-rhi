@@ -58,6 +58,7 @@ pub async fn run_webgl2_multiview(canvas: web_sys::HtmlCanvasElement, frames: u3
         })
         .await?;
     let mut scene = StereoFallback::<Gl>::new(&device, format, extent).await?;
+    let scope = utils::GpuScope::new(&device);
     for _ in 0..frames {
         let image = surface.acquire().await?;
         let ordinal = NEXT_PLAN
@@ -125,5 +126,6 @@ pub async fn run_webgl2_multiview(canvas: web_sys::HtmlCanvasElement, frames: u3
             | ImmediateFinishOutcome::AlreadyReported => return Err(Error::InvalidState),
         }
     }
+    scope.finish().await;
     Ok(())
 }

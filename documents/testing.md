@@ -11,6 +11,33 @@ cargo check --workspace
 cargo build -p fluxel-rhi --features examples,vulkan --examples
 ```
 
+## Compiled execution plans
+
+Core's execution fixtures consume hand-authored compiled plans; they do not
+build a RenderGraph. They check unchanged step/wait/payload delivery, plan reuse
+with different completion requests, invalid packet/tail/frontier rejection,
+partial-tail resume, and uncertainty ownership. Multi-queue fixtures check static
+signal metadata and token ownership only: no native backend currently implements
+that optional SPI, and `StepId` does not identify an execution instance.
+
+The example host has separate fault-injection tests. On Windows, ignored GPU
+fixtures execute a four-command plan four times with independent resources,
+submitting all executions before waiting and checking every readback:
+
+```powershell
+cargo test -p fluxel-rhi --no-default-features --test frame_submission
+cargo test -p fluxel-rhi --features vulkan --test execution_plans_gpu -- --ignored --nocapture
+```
+
+The latter runs the enabled DX12 and Vulkan routes on an actual GPU. It proves
+the tested single-lane plan, explicit dependencies, plan reuse, and End/Steps
+completion requests. It does not establish multi-queue conformance, arbitrary
+plans, or native partial/indeterminate recovery. The RenderGraph's compiler,
+hazard analysis, and resource-retirement tests belong to its own repository.
+
+The [execution evidence packet](evidence/rhi-execution-2026-10-20/README.md)
+records the tested candidates and keeps GPU evidence separate from mocks.
+
 On Windows, run a finite native workload with explicit backend selection:
 
 ```powershell

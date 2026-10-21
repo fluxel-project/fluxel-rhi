@@ -149,6 +149,10 @@ impl<B: ScreenshotWorkloadBackend> DragonScene<B> {
         )
     }
 
+    pub(crate) fn mark_uploaded(&mut self) {
+        self.uploaded = true;
+    }
+
     fn upload_and_transform(
         &mut self,
         encoder: &mut CommandEncoder<B>,
@@ -157,7 +161,6 @@ impl<B: ScreenshotWorkloadBackend> DragonScene<B> {
         if !self.uploaded {
             encoder.write_buffer(&self.vertices, 0, &self.source_vertices)?;
             encoder.write_buffer(&self.indices, 0, &self.source_indices)?;
-            self.uploaded = true;
         }
         encoder.write_buffer(&self.transform, 0, &camera_bytes(extent))
     }

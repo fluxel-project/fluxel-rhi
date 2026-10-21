@@ -323,15 +323,14 @@ impl<B: ComputeBackend> Compute<B> {
         device: &Device<B>,
         image: &SurfaceImage<B>,
         surface_extent: [u32; 2],
-    ) -> Result<RecordedWork<B>>
+    ) -> Result<(RecordedWork<B>, FrameInitialization)>
     where
         B: DeferredBackend,
     {
         let mut encoder = device.encoder(self.lane)?;
         let initialized = self.encode(&mut encoder, device, image, surface_extent)?;
         let work = encoder.finish()?;
-        self.commit_frame(initialized);
-        Ok(work)
+        Ok((work, initialized))
     }
 
     pub fn commit_frame(&mut self, initialized: FrameInitialization) {

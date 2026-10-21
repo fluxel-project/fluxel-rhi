@@ -338,6 +338,7 @@ pub(super) async fn run(canvas: web_sys::HtmlCanvasElement, frames: u32) -> Resu
     let mut workload = RasterWorkload::new(&device, format)
         .await
         .map_err(|error| Error::Backend(format!("06 WebGL2 raster setup: {error:?}")))?;
+    let scope = utils::GpuScope::new(&device);
     for _ in 0..frames {
         let image = surface.acquire().await?;
         let plan = immediate_plan(&device, lane)?;
@@ -360,6 +361,7 @@ pub(super) async fn run(canvas: web_sys::HtmlCanvasElement, frames: u32) -> Resu
         let point = utils::immediate_end_checkpoint(session.finish())?;
         device.wait_completion(&point).await?;
     }
+    scope.finish().await;
     Ok(())
 }
 

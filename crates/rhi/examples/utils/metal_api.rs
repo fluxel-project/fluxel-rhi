@@ -82,6 +82,7 @@ impl Application {
         let device = self.device.as_ref().ok_or(Error::DeviceLost)?;
         let surface = self.surface.as_mut().ok_or(Error::SurfaceLost)?;
         let image = block_on(surface.acquire())?;
+        let _scope = super::GpuScope::new(device);
         (self.draw)(device, surface, image, self.config.extent)?;
         self.frames += 1;
         if self.frame_limit.is_some_and(|limit| self.frames >= limit) {
@@ -131,6 +132,9 @@ impl HostApplication for Application {
         let result = match event {
             WindowEvent::SurfaceCreated => self.open(host),
             WindowEvent::SurfaceDestroyed => {
+                if let Some(device) = self.device.as_ref() {
+                    drop(super::GpuScope::new(device));
+                }
                 self.surface = None;
                 self.device = None;
                 self.view = None;

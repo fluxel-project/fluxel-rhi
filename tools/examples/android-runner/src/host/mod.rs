@@ -4,8 +4,6 @@
 
 mod draw;
 mod initialize;
-#[cfg(feature = "vulkan")]
-mod submission;
 
 use super::*;
 use winit::{
@@ -78,12 +76,11 @@ impl App {
     // A native surface may disappear before Android delivers suspended(). Stop
     // drawing immediately and retain all GPU objects until queued work drains.
     // Recovery waits for resumed(), when a new ANativeWindow is available.
-    fn retire_gpu(&mut self, event: &ActiveEventLoop) {
+    fn retire_gpu(&mut self, _event: &ActiveEventLoop) {
         if let Some(gpu) = self.gpu.take() {
-            if let Err(error) = utils::block_on(gpu.device.wait_idle()) {
-                eprintln!("RHI_SUSPEND_ERROR={error:?}");
-                event.exit();
-            }
+            // The guard drains before the scene and borrowed native window drop.
+            // A failed drain aborts instead of releasing potentially in-flight data.
+            drop(utils::GpuScope::new(&gpu.device));
         }
         self.frames = 0;
     }

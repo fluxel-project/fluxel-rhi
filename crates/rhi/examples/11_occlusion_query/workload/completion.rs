@@ -3,6 +3,25 @@
 use super::*;
 
 impl<B: OcclusionWorkloadBackend> Workload<B> {
+    pub(crate) fn ensure_ticket_available(&self) -> Result<()> {
+        if self.pending_ticket.is_some() {
+            Err(Error::InvalidState)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn retain_ticket(&mut self, ticket: Option<ReadbackTicket<B>>) -> Result<()> {
+        self.ensure_ticket_available()?;
+        self.pending_ticket = ticket;
+        Ok(())
+    }
+
+    /// Call only after the submitted frame's completion has been observed.
+    pub(crate) fn take_completed_ticket(&mut self) -> Option<ReadbackTicket<B>> {
+        self.pending_ticket.take()
+    }
+
     pub fn consume(
         &mut self,
         d: &Device<B>,

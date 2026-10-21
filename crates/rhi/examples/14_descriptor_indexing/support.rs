@@ -399,6 +399,7 @@ pub async fn run_webgl2_descriptor_indexing(
         })
         .await?;
     let mut scene = DescriptorIndexing::<Gl>::new(&device, lane, format, extent, true).await?;
+    let scope = utils::GpuScope::new(&device);
     for frame in 0..frames {
         let image = surface.acquire().await?;
         let ordinal = NEXT_PLAN
@@ -466,5 +467,6 @@ pub async fn run_webgl2_descriptor_indexing(
             | ImmediateFinishOutcome::AlreadyReported => return Err(Error::InvalidState),
         }
     }
+    scope.finish().await;
     Ok(())
 }

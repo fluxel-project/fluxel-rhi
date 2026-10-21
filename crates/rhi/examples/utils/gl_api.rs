@@ -208,6 +208,9 @@ impl Application {
                 return Err(error);
             }
         };
+        // The closure owns the scene. Wait even when immediate encoding has
+        // already issued commands before returning an error.
+        let _scope = super::GpuScope::new(device);
         (self.draw)(device, surface, image, self.config.extent).map_err(|error| {
             eprintln!("native GL immediate frame failed after acquire: {error:?}");
             error
@@ -263,6 +266,9 @@ impl HostApplication for Application {
                 // A new WGL drawable needs a new context and fresh example
                 // resources. This narrow first-example host exits instead of
                 // accidentally reusing an old device through its draw closure.
+                if let Some(device) = self.device.as_ref() {
+                    drop(super::GpuScope::new(device));
+                }
                 (self.drop_resources)();
                 self.surface = None;
                 self.device = None;

@@ -192,7 +192,6 @@ impl<B: PushBackend> PushWorkload<B> {
         if !self.uploaded {
             encoder.write_buffer(&self.vertex, 0, &self.source_vertices)?;
             encoder.write_buffer(&self.index, 0, &self.source_indices)?;
-            self.uploaded = true;
         }
         encoder.write_buffer(&self.camera, 0, &camera_bytes(extent))?;
         if let Some(draw_data) = &self.draw_data {
@@ -262,6 +261,11 @@ impl<B: PushBackend> PushWorkload<B> {
         }
         encoder.finish()
     }
+
+    /// Publish the upload only after the command step has been accepted.
+    pub fn commit_frame(&mut self) {
+        self.uploaded = true;
+    }
 }
 
 #[cfg(any(
@@ -286,7 +290,6 @@ impl PushWorkload<fluxel_rhi::gl::Gl> {
         if !self.uploaded {
             encoder.write_buffer(&self.vertex, 0, &self.source_vertices)?;
             encoder.write_buffer(&self.index, 0, &self.source_indices)?;
-            self.uploaded = true;
         }
         encoder.write_buffer(&self.camera, 0, &camera_bytes(extent))?;
         let draw_data = self.draw_data.as_ref().ok_or(Error::InvalidState)?;

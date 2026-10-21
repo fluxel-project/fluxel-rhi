@@ -11,6 +11,26 @@ judged by their visible result; animated scenes are judged by scene content
 and motion rather than exact pixel-by-pixel frame alignment. Compilation or a
 clean process exit alone is not visual evidence.
 
+## Execution contract
+
+These examples exercise the RenderGraph-facing RHI contract. Explicit plans,
+steps, lanes, waits, and completion facts are intentional. The shared example
+host supplies a fixed test workload; its helpers are not public Core APIs.
+
+Deferred recording does not publish persistent upload or layout state. Pending
+state commits are applied only after the host confirms successful execution.
+Partial and indeterminate outcomes retain their original acceptance evidence
+until issued work is drained; the standalone host then terminates the failed
+frame rather than retrying or reusing speculative state. Attachment resources,
+secondary work, and readback tickets remain owned through completion.
+
+The harness deliberately waits each frame. Immediate host teardown and browser
+entry-point exit also require actual completion. A failed drain is not a safe
+release condition: native examples abort, and a browser cancellation or failed
+drain traps without unwinding the in-flight scene. Discard/reload that failed
+WASM instance instead of continuing its invocation. This is an example host
+failure policy, not RHI scheduling, device recovery, or renderer retirement.
+
 ## Verification status
 
 This table distinguishes earlier repository evidence from the current visual

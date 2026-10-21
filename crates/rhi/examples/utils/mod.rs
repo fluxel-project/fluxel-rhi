@@ -5,18 +5,12 @@
 //! static dispatch in every hot path.
 
 use std::future::Future;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
 
 use fluxel_rhi::api::{
-    AccessMask, AccessScope, Backend, BoundStep, CompletionPoint, CompletionRequest,
-    DeferredBackend, Device, Error, ImmediateBackend, ImmediateFinishOutcome, ImmediateRunOutcome,
-    LaneId, PlanId, PresentBinding, RecordedWork, Result, Shader, ShaderBackend, ShaderDesc,
-    ShaderEntryPoint, ShaderFormat, ShaderRoute, ShaderStage, StageMask, StepDesc, StepKind,
-    StepPayload, StepWait, SubmissionPlan, SubmitOutcome, SubmitPacket, Surface, SurfaceConfig,
-    SurfaceImage,
+    Backend, CompletionPoint, Device, Error, ImmediateBackend, ImmediateFinishOutcome,
+    ImmediateRunOutcome, Result, Shader, ShaderBackend, ShaderDesc, ShaderEntryPoint, ShaderFormat,
+    ShaderRoute, ShaderStage, Surface, SurfaceConfig, SurfaceImage,
 };
 
 #[cfg(any(
@@ -30,8 +24,6 @@ pub mod windows_api;
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
 pub mod metal_api;
-
-static NEXT_PLAN: AtomicU64 = AtomicU64::new(1);
 
 /// Drives a cold-path RHI future on the current native host thread.
 pub fn block_on<F: Future>(future: F) -> F::Output {
@@ -171,133 +163,12 @@ pub async fn native_shader_with_wgsl<B: ShaderBackend>(
     Err(Error::Unsupported("DXIL, SPIR-V, or WGSL shader route"))
 }
 
-/// Submits one recorded frame on a single queue, then presents its surface lease.
-/// The example waits for the requested end checkpoint before reusing frame data.
-pub fn submit_and_present<B: DeferredBackend>(
-    device: &Device<B>,
-    lane: LaneId,
-    work: RecordedWork<B>,
-    image: SurfaceImage<B>,
-) -> Result<()> {
-    let outcome = issue_submit_and_present(device, lane, work, image)?;
-    match outcome {
-        SubmitOutcome::Accepted(receipt) => {
-            validate_present_receipt(&receipt)?;
-            if receipt.checkpoints.is_empty() {
-                block_on(device.wait_idle())?;
-            } else {
-                for checkpoint in &receipt.checkpoints {
-                    block_on(device.wait_completion(&checkpoint.point))?;
-                }
-            }
-            Ok(())
-        }
-        SubmitOutcome::Rejected { error, .. } => Err(error),
-        SubmitOutcome::PartiallyAccepted { error, .. }
-        | SubmitOutcome::Indeterminate { error, .. } => {
-            block_on(device.wait_idle())?;
-            Err(error)
-        }
-    }
-}
-
-/// Browser hosts await completion without blocking their event loop.
-#[cfg(target_arch = "wasm32")]
-pub async fn submit_and_present_async<B: DeferredBackend>(
-    device: &Device<B>,
-    lane: LaneId,
-    work: RecordedWork<B>,
-    image: SurfaceImage<B>,
-) -> Result<()> {
-    let outcome = issue_submit_and_present(device, lane, work, image)?;
-    match outcome {
-        SubmitOutcome::Accepted(receipt) => {
-            validate_present_receipt(&receipt)?;
-            if receipt.checkpoints.is_empty() {
-                device.wait_idle().await?;
-            } else {
-                for checkpoint in &receipt.checkpoints {
-                    device.wait_completion(&checkpoint.point).await?;
-                }
-            }
-            Ok(())
-        }
-        SubmitOutcome::Rejected { error, .. } => Err(error),
-        SubmitOutcome::PartiallyAccepted { error, .. }
-        | SubmitOutcome::Indeterminate { error, .. } => {
-            device.wait_idle().await?;
-            Err(error)
-        }
-    }
-}
-
-fn validate_present_receipt<B: DeferredBackend>(
-    receipt: &fluxel_rhi::api::SubmissionReceipt<B>,
-) -> Result<()> {
-    if receipt.accepted.len() != 2 || receipt.presents.len() != 1 || !receipt.presents[0].accepted {
-        return Err(Error::InvalidState);
-    }
-    Ok(())
-}
-
-fn issue_submit_and_present<B: DeferredBackend>(
-    device: &Device<B>,
-    lane: LaneId,
-    work: RecordedWork<B>,
-    image: SurfaceImage<B>,
-) -> Result<SubmitOutcome<B>> {
-    if lane.device != device.id() || image.device() != device.id() {
-        return Err(Error::WrongDevice);
-    }
-    let id = PlanId {
-        device: device.id(),
-        ordinal: NEXT_PLAN.fetch_add(1, Ordering::Relaxed),
-    };
-    let present_wait = StepWait {
-        previous: fluxel_rhi::api::StepId { plan: id, index: 0 },
-        destination: AccessScope {
-            stages: StageMask::ALL_COMMANDS,
-            accesses: AccessMask::ALL,
-        },
-    };
-    // SAFETY: both steps target the same ordered graphics lane. The present
-    // dependency names this plan's command step, making the compiled order
-    // realizable by native queue order without backend DAG reconstruction.
-    let plan = unsafe {
-        SubmissionPlan::from_compiled(
-            id,
-            Arc::from([
-                StepDesc {
-                    lane,
-                    kind: StepKind::Commands,
-                    waits: vec![],
-                },
-                StepDesc {
-                    lane,
-                    kind: StepKind::Present,
-                    waits: vec![present_wait],
-                },
-            ]),
-        )
-    };
-    let steps = vec![
-        BoundStep {
-            step: plan.step(0),
-            payload: StepPayload::Commands(vec![work]),
-        },
-        BoundStep {
-            step: plan.step(1),
-            payload: StepPayload::Present(PresentBinding::new(image)),
-        },
-    ];
-    // SAFETY: the host retains resources referenced by `work` and the image
-    // lease until the end checkpoint completes. Both bound steps belong to
-    // this plan and device, fulfilling the native submission contract.
-    Ok(unsafe {
-        device.queue().submit(SubmitPacket {
-            plan,
-            steps,
-            completion: CompletionRequest::End,
-        })
-    })
-}
+#[path = "submission.rs"]
+mod submission;
+pub use submission::{
+    FrameCompletion, FrameSubmission, submit_and_present, submit_and_present_async,
+    submit_and_present_point, submit_and_present_point_async, submit_frame,
+};
+#[path = "lifecycle.rs"]
+mod lifecycle;
+pub use lifecycle::GpuScope;

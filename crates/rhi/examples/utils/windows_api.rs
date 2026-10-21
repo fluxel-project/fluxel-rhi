@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use fluxel_host::{HostApplication, HostContext, HostRuntime, WindowConfig, WindowEvent};
 use fluxel_rhi::api::{
-    Device, Error, Result, Surface, SurfaceBackend, SurfaceConfig, SurfaceImage,
+    CompletionBackend, Device, Error, Result, Surface, SurfaceBackend, SurfaceConfig, SurfaceImage,
 };
 #[cfg(feature = "dx12")]
 use fluxel_rhi::dx12::{Dx12, Dx12Instance};
@@ -58,7 +58,7 @@ pub fn selected_backend() -> Result<SelectedBackend> {
     }
 }
 
-trait WindowsBackend: SurfaceBackend + Sized + 'static {
+trait WindowsBackend: SurfaceBackend + CompletionBackend + Sized + 'static {
     fn open() -> Result<Device<Self>>;
     /// # Safety
     ///
@@ -161,6 +161,9 @@ impl<B: WindowsBackend> Application<B> {
         let device = self.device.as_ref().ok_or(Error::DeviceLost)?;
         let surface = self.surface.as_mut().ok_or(Error::SurfaceLost)?;
         let image = block_on(surface.acquire())?;
+        // The draw closure owns scene resources. Keep it live until even a
+        // failed or partially accepted frame has reached idle.
+        let _scope = super::GpuScope::new(device);
         (self.draw)(device, surface, image, self.config.extent)?;
         self.frames += 1;
         if self.frame_limit.is_some_and(|limit| self.frames >= limit) {
@@ -212,6 +215,9 @@ impl<B: WindowsBackend> HostApplication for Application<B> {
         let result = match event {
             WindowEvent::SurfaceCreated => self.open(host),
             WindowEvent::SurfaceDestroyed => {
+                if let Some(device) = self.device.as_ref() {
+                    drop(super::GpuScope::new(device));
+                }
                 self.surface = None;
                 self.device = None;
                 Ok(())

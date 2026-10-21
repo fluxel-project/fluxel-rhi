@@ -1,0 +1,117 @@
+[
+  {
+    "path": "logs/core-test.log",
+    "bytes": 2496,
+    "sha256": "11329da736e8f37eacaf5e0208df77f545a935bbecdbb165543dae67124e8d1d"
+  },
+  {
+    "path": "logs/execution-plans-gpu.log",
+    "bytes": 14220,
+    "sha256": "8cd548460aeb9b67378d801b5b435e5f640873c1864603d164ca777bde622bb5"
+  },
+  {
+    "path": "logs/fault-tests.log",
+    "bytes": 642,
+    "sha256": "907ffb19502785489ce1126b09386444f83b042743420bbd66f087747def27b2"
+  },
+  {
+    "path": "logs/gles-runs.log",
+    "bytes": 319,
+    "sha256": "5522664d8e4000d57bed51f9789d9558bf8d1a30fef7d8a41437bf3ca1b2c9a9"
+  },
+  {
+    "path": "README.md",
+    "bytes": 4397,
+    "sha256": "b1bf9ccf68cb43a370dc23e695c414f4f3f13f982bd30c2e41255a3ec588c357"
+  },
+  {
+    "path": "reports/browser-gpu.json",
+    "bytes": 515,
+    "sha256": "a1564461cec03552c0b244e30bfcf572f1148d2b97b84f26bd0fd5ea2e855eb5"
+  },
+  {
+    "path": "reports/gles-renderer.log",
+    "bytes": 495,
+    "sha256": "bf3a0c6d5cd3e480b87b7a769a84647639d3ebf9101c97aa03c54234f4639a14"
+  },
+  {
+    "path": "reports/gles-visual.json",
+    "bytes": 5889,
+    "sha256": "ba450daa4f58822b1a3793675c0c0ce192ce07dea4e8e596bd9b0771b3a7757c"
+  },
+  {
+    "path": "reports/native-runs.json",
+    "bytes": 64101,
+    "sha256": "af2b728b7900b71d5e6f029fcda278e28329e6efd8451ac9c483fc61fffb89e6"
+  },
+  {
+    "path": "reports/webgl2-runs.json",
+    "bytes": 3526,
+    "sha256": "10912b0bd0d1778332abf3c1990380c1ad7fced2126eb48eeac21bd3d31a76e5"
+  },
+  {
+    "path": "reports/webgpu-runs.json",
+    "bytes": 358,
+    "sha256": "d0aa82f9a1a044b453c5ea239d8c567119e32501a464467b6895b9ac02d73e99"
+  },
+  {
+    "path": "sources/browser-build.json",
+    "bytes": 62409,
+    "sha256": "df849effca68761615856aaad6cc319662c84f2efe711eaf6f254b2c3d975874"
+  },
+  {
+    "path": "sources/browser-wasm.json",
+    "bytes": 1357,
+    "sha256": "0db5b4b7e64a17b7e3d081298e3adf7a74fd7ef78806cf02788a32a7ba44c371"
+  },
+  {
+    "path": "sources/final-rust.json",
+    "bytes": 6168,
+    "sha256": "c0e03b6d4487581382e6bc485daa081b92b7c5e5ccd74bd7e183eb74bc887216"
+  },
+  {
+    "path": "sources/gles-build.json",
+    "bytes": 91909,
+    "sha256": "f43a68ab7b36b4b3afd89a4d373fc0b7e7478fff6c71ec7b09be3873f77f4123"
+  },
+  {
+    "path": "sources/native-build.json",
+    "bytes": 43728,
+    "sha256": "125f5091e046817aaf10cd4e0ba4ca09dd74ee73bdb8d50f765783fe534874a6"
+  },
+  {
+    "path": "visual/dx12-contact.png",
+    "bytes": 1128583,
+    "sha256": "16e76de1ccc9b6267fcd1b5c460fa2a4071e57d2edbae3ee6c8b30108032bef3"
+  },
+  {
+    "path": "visual/gl-contact.png",
+    "bytes": 1100882,
+    "sha256": "398e67570552353d7c2ecdf800d8db9d19dc4564df4158e6fadf465665c5a8a7"
+  },
+  {
+    "path": "visual/gles-contact.jpg",
+    "bytes": 169049,
+    "sha256": "1c14c62c97260db5b4f0a0c68588d3e0ca1e84c09c9b4578690ae45ec5b01d76"
+  },
+  {
+    "path": "visual/vulkan-contact.png",
+    "bytes": 1098366,
+    "sha256": "f906e81af89fd6e65604f0fb33babf452accda1b2a245188a3093efeef5025fd"
+  },
+  {
+    "path": "visual/webgl2-contact.png",
+    "bytes": 659854,
+    "sha256": "a2d0de0c98805f85b3a77ba4acb4083f30e59309c6a2e294c4c4489e4ee1196d"
+  },
+  {
+    "path": "visual/webgpu-contact.png",
+    "bytes": 657526,
+    "sha256": "fdd57c1d35f73ffe204ec763341c1449d92cc6f75eac38061fcae66ba928e374"
+  },
+  {
+    "path": ".gitattributes",
+    "bytes": 108,
+    "sha256": "44a0d0bd0a3929ddaf1cd7988e2e3fede037940b483ab224bd46e07b5a625da1"
+  }
+]

@@ -284,7 +284,6 @@ impl<B: OffscreenWorkloadBackend> Offscreen<B> {
         let mut encoder = d.encoder(self.lane)?;
         self.encode(&mut encoder, d, image, extent, time)?;
         let work = encoder.finish()?;
-        self.commit_frame();
         Ok(work)
     }
 

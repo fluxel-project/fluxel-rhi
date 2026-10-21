@@ -1,0 +1,13 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
+     Running tests\frame_submission.rs (target\debug\deps\frame_submission-3acd9393010359a5.exe)
+
+running 6 tests
+test clean_rejection_does_not_wait_idle ... ok
+test accepted_malformed_partial_and_uncertain_drain_before_policy ... ok
+test fail_stop_child ... ok
+test external_backend_can_consume_validated_native_signal ... ok
+test success_requires_a_receipt_for_the_submitted_frame ... ok
+test cancellation_and_failed_drain_terminate_without_unwinding ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+

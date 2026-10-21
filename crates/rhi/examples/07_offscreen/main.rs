@@ -107,6 +107,7 @@ pub async fn run_webgpu_offscreen(
             let image = surface.acquire().await?;
             let work = demo.record(&device, &image, extent, frame as f32 / 60.0)?;
             utils::submit_and_present_async(&device, lane, work, image).await?;
+            demo.commit_frame();
         }
         Ok(())
     };
@@ -147,7 +148,9 @@ fn run<B: OffscreenBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
                 e,
                 start.elapsed().as_secs_f32(),
             )?;
-            utils::submit_and_present(d, l, w, i)
+            utils::submit_and_present(d, l, w, i)?;
+            x.as_mut().ok_or(Error::InvalidState)?.commit_frame();
+            Ok(())
         },
     )
 }

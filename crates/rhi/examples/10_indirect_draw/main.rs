@@ -64,8 +64,9 @@ pub async fn run_webgpu_indirect(
         let mut demo = workload::Workload::<WebGpu>::new(&device, lane, format, extent).await?;
         for frame in 0..frames {
             let image = surface.acquire().await?;
-            let work = demo.record(&device, &image, extent, frame as f32 / 60.0)?;
+            let (work, commit) = demo.record(&device, &image, extent, frame as f32 / 60.0)?;
             utils::submit_and_present_async(&device, lane, work, image).await?;
+            demo.commit_frame(commit);
         }
         Ok(())
     };
@@ -118,13 +119,18 @@ fn run<B: workload::IndirectBackend, H: utils::ExampleHost<B>>(host: H) -> Resul
                     extent,
                 ))?);
             }
-            let work = workload.as_mut().ok_or(Error::InvalidState)?.record(
+            let (work, commit) = workload.as_mut().ok_or(Error::InvalidState)?.record(
                 device,
                 &image,
                 extent,
                 started.elapsed().as_secs_f32(),
             )?;
-            utils::submit_and_present(device, lane, work, image)
+            utils::submit_and_present(device, lane, work, image)?;
+            workload
+                .as_mut()
+                .ok_or(Error::InvalidState)?
+                .commit_frame(commit);
+            Ok(())
         },
     )
 }

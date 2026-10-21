@@ -225,6 +225,7 @@ pub async fn run_webgpu_push_constants(
             let image = surface.acquire().await?;
             let work = workload.record(&device, &image, extent)?;
             utils::submit_and_present_async(&device, lane, work, image).await?;
+            workload.commit_frame();
         }
         Ok(())
     };
@@ -267,7 +268,9 @@ fn run_host<B: PushBackend + DeferredBackend, H: utils::ExampleHost<B>>(host: H)
                 .as_mut()
                 .ok_or(Error::InvalidState)?
                 .record(device, &image, extent)?;
-            utils::submit_and_present(device, lane, work, image)
+            utils::submit_and_present(device, lane, work, image)?;
+            workload.as_mut().ok_or(Error::InvalidState)?.commit_frame();
+            Ok(())
         },
     )
 }

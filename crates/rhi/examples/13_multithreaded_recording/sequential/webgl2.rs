@@ -56,6 +56,7 @@ pub async fn run_webgl2_multithreaded_recording(
         })
         .await?;
     let mut scene = Sequential::<Gl>::new(&device, format).await?;
+    let scope = utils::GpuScope::new(&device);
     for _ in 0..frames {
         let image = surface.acquire().await?;
         let ordinal = NEXT_PLAN
@@ -86,8 +87,8 @@ pub async fn run_webgl2_multithreaded_recording(
             )
         };
         // SAFETY: the image and workload stay alive until immediate commands
-        // close and present consumes the image lease below.
-        let mut session = unsafe { device.immediate(plan, CompletionRequest::None)? };
+        // close and the end checkpoint completes below.
+        let mut session = unsafe { device.immediate(plan, CompletionRequest::End)? };
         let mut commands = session.begin_commands().map_err(|outcome| match outcome {
             ImmediateRunOutcome::Issued(_) => Error::InvalidState,
             ImmediateRunOutcome::Failed { error, .. }
@@ -111,17 +112,9 @@ pub async fn run_webgl2_multithreaded_recording(
             | ImmediatePresentResult::Run(ImmediateRunOutcome::Indeterminate { error, .. })
             | ImmediatePresentResult::Rejected { error, .. } => return Err(error),
         }
-        match session.finish() {
-            ImmediateFinishOutcome::Issued(_) => {}
-            ImmediateFinishOutcome::Failed(ImmediateRunOutcome::Failed { error, .. })
-            | ImmediateFinishOutcome::Failed(ImmediateRunOutcome::Indeterminate {
-                error, ..
-            }) => {
-                return Err(error);
-            }
-            ImmediateFinishOutcome::Failed(ImmediateRunOutcome::Issued(_))
-            | ImmediateFinishOutcome::AlreadyReported => return Err(Error::InvalidState),
-        }
+        let point = utils::immediate_end_checkpoint(session.finish())?;
+        device.wait_completion(&point).await?;
     }
+    scope.finish().await;
     Ok(())
 }

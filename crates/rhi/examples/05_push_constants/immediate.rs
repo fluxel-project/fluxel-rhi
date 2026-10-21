@@ -76,7 +76,10 @@ fn issue_frame(
         ImmediatePresentResult::Rejected { error, .. } => return Err(error),
     }
     match session.finish() {
-        ImmediateFinishOutcome::Issued(_) => Ok(()),
+        ImmediateFinishOutcome::Issued(_) => {
+            workload.commit_frame();
+            Ok(())
+        }
         ImmediateFinishOutcome::Failed(outcome) => Err(immediate_error(outcome)),
         ImmediateFinishOutcome::AlreadyReported => Err(Error::InvalidState),
     }
@@ -173,10 +176,12 @@ pub async fn run_webgl2_push_constants(
         let mut surface = Gl::surface(&device)?;
         surface.configure(&config).await?;
         let mut workload = PushWorkload::<Gl>::new(&device, lane, config.format, extent).await?;
+        let scope = utils::GpuScope::new(&device);
         for _ in 0..frames {
             let image = surface.acquire().await?;
             issue_frame(&device, lane, &mut workload, image, extent)?;
         }
+        scope.finish().await;
         Ok(())
     }
     run(canvas, frames)

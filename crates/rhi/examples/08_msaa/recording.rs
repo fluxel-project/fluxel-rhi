@@ -48,15 +48,14 @@ impl<B: MsaaBackend> Msaa<B> {
         image: &SurfaceImage<B>,
         extent: [u32; 2],
         time: f32,
-    ) -> Result<RecordedWork<B>>
+    ) -> Result<(RecordedWork<B>, FrameCommit)>
     where
         B: MsaaDeferredBackend,
     {
         let mut encoder = device.encoder(self.lane)?;
         let commit = self.encode(&mut encoder, device, image, extent, time)?;
         let work = encoder.finish()?;
-        self.commit_frame(commit);
-        Ok(work)
+        Ok((work, commit))
     }
 
     /// Records the shared workload into a caller-owned encoder. The immediate

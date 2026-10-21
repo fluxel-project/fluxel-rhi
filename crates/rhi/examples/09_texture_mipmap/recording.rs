@@ -14,15 +14,14 @@ impl<B: MipmapWorkloadBackend> Tunnel<B> {
         device: &Device<B>,
         image: &SurfaceImage<B>,
         extent: [u32; 2],
-    ) -> Result<RecordedWork<B>>
+    ) -> Result<(RecordedWork<B>, FrameCommit)>
     where
         B: MipmapBackend,
     {
         let mut encoder = device.encoder(self.lane)?;
         let commit = self.encode(&mut encoder, device, image, extent)?;
         let work = encoder.finish()?;
-        self.commit_frame(commit);
-        Ok(work)
+        Ok((work, commit))
     }
 
     /// Records the same mip-generation and tunnel verbs into an immediate

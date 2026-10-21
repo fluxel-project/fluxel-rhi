@@ -62,6 +62,7 @@ pub(super) async fn run_webgl2(canvas: web_sys::HtmlCanvasElement, frames: u32) 
         })
         .await?;
     let mut workload = Workload::<Gl>::new_visual_fallback(&device, lane, format).await?;
+    let scope = utils::GpuScope::new(&device);
     for _ in 0..frames {
         let image = surface.acquire().await?;
         let ordinal = NEXT_PLAN
@@ -95,10 +96,10 @@ pub(super) async fn run_webgl2(canvas: web_sys::HtmlCanvasElement, frames: u32) 
         // owner thread while the acquired image lease stays alive.
         let mut session = unsafe { device.immediate(plan, CompletionRequest::End)? };
         let mut commands = session.begin_commands().map_err(immediate_error)?;
-        if workload
-            .encode_scene(&device, commands.commands(), &image, extent)?
-            .is_some()
-        {
+        let ticket = workload.encode_scene(&device, commands.commands(), &image, extent)?;
+        let unexpected_ticket = ticket.is_some();
+        workload.retain_ticket(ticket)?;
+        if unexpected_ticket {
             return Err(Error::InvalidState);
         }
         match commands.close() {
@@ -123,6 +124,7 @@ pub(super) async fn run_webgl2(canvas: web_sys::HtmlCanvasElement, frames: u32) 
             .ok_or(Error::InvalidState)?;
         device.wait_completion(&point).await?;
     }
+    scope.finish().await;
     Ok(())
 }
 
@@ -173,6 +175,7 @@ fn issue_frame(
     let mut session = unsafe { device.immediate(plan, CompletionRequest::End)? };
     let mut commands = session.begin_commands().map_err(immediate_error)?;
     let ticket = workload.encode(device, commands.commands(), &image, extent)?;
+    workload.retain_ticket(Some(ticket))?;
     match commands.close() {
         ImmediateRunOutcome::Issued(_) => {}
         outcome => return Err(immediate_error(outcome)),
@@ -192,6 +195,10 @@ fn issue_frame(
         ImmediateFinishOutcome::Failed(outcome) => return Err(immediate_error(outcome)),
         ImmediateFinishOutcome::AlreadyReported => return Err(Error::InvalidState),
     };
+    utils::block_on(device.wait_completion(&point))?;
+    let ticket = workload
+        .take_completed_ticket()
+        .ok_or(Error::InvalidState)?;
     workload.consume(device, ticket, &point)
 }
 

@@ -1,0 +1,2342 @@
+[
+  {
+    "backend": "dx12",
+    "example": "01_triangle",
+    "exe_sha256": "2fe1d9ad5e7304b3f6cbc39bc3740cb979132b0dfb182b5a4dd43b92ae1379ef",
+    "captures": [
+      {
+        "path": "dx12\\01_triangle\\frame-1.png",
+        "time_since_launch": 1.427,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          36.05188326188238,
+          36.05188326188238,
+          24.57334099093156
+        ],
+        "sha256": "7926a160c29a33545fce97231b8310bcbed2b5ab8f5d6615d225ac75f3f24771"
+      },
+      {
+        "path": "dx12\\01_triangle\\frame-2.png",
+        "time_since_launch": 2.066,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          36.05188326188238,
+          36.05188326188238,
+          24.57334099093156
+        ],
+        "sha256": "7926a160c29a33545fce97231b8310bcbed2b5ab8f5d6615d225ac75f3f24771"
+      },
+      {
+        "path": "dx12\\01_triangle\\frame-3.png",
+        "time_since_launch": 3.004,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          36.052210981065556,
+          36.052210981065556,
+          24.573721127695098
+        ],
+        "sha256": "a0a931d4cd93506b12974a821e14be7deb703b8b61e89c4c313b2f890fab7fe5"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "dx12",
+    "example": "02_texture",
+    "exe_sha256": "f38eb42f54eb7a5b04d7eb21ad7cb1182bb0ab5d9f509bce6ec82fc59a558e26",
+    "captures": [
+      {
+        "path": "dx12\\02_texture\\frame-1.png",
+        "time_since_launch": 1.423,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          45.497491739768904,
+          41.046177884940654,
+          42.02439565593911
+        ],
+        "sha256": "66d4dc4a8b1c734a720654ec56067a7861be064dcc240a98112ff101399e549f"
+      },
+      {
+        "path": "dx12\\02_texture\\frame-2.png",
+        "time_since_launch": 2.084,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          45.497491739768904,
+          41.046177884940654,
+          42.02439565593911
+        ],
+        "sha256": "66d4dc4a8b1c734a720654ec56067a7861be064dcc240a98112ff101399e549f"
+      },
+      {
+        "path": "dx12\\02_texture\\frame-3.png",
+        "time_since_launch": 2.747,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          45.497491739768904,
+          41.046177884940654,
+          42.02439565593911
+        ],
+        "sha256": "66d4dc4a8b1c734a720654ec56067a7861be064dcc240a98112ff101399e549f"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "dx12",
+    "example": "03_instancing",
+    "exe_sha256": "c506c6e03ef83df18d5fa192be82331b7c79e5d76dded6c62ec12a9e5f2e532f",
+    "captures": [
+      {
+        "path": "dx12\\03_instancing\\frame-1.png",
+        "time_since_launch": 1.42,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          29.815690049759464,
+          28.60230105863452,
+          27.546248279408818
+        ],
+        "sha256": "0dc534577104edc60285cfd098a3426eaa821d95fb9fcac2a0a1a1bab5d1d85b"
+      },
+      {
+        "path": "dx12\\03_instancing\\frame-2.png",
+        "time_since_launch": 2.079,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          30.01532894758272,
+          28.828852225846976,
+          27.794679512131435
+        ],
+        "sha256": "4130a6ebab6fcf75e3c29c4ce7c95c95b5c42ac4a22d62857e6bc96eb3723b9f"
+      },
+      {
+        "path": "dx12\\03_instancing\\frame-3.png",
+        "time_since_launch": 2.761,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          29.93322985087903,
+          28.74606176319333,
+          27.719488633647597
+        ],
+        "sha256": "6d1ecacb8a8dfe6e7c882d4ead1ae5e8bc841b11207d41d801c775702ca6529e"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "dx12",
+    "example": "04_dynamic_uniform_buffer",
+    "exe_sha256": "8d569edc6ecfebe7ded0b6ed134c9bfb8948571db93286dab89d9700e5126467",
+    "captures": [
+      {
+        "path": "dx12\\04_dynamic_uniform_buffer\\frame-1.png",
+        "time_since_launch": 1.499,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          51.8747539313943,
+          47.183939541448225,
+          44.047162853904624
+        ],
+        "sha256": "b9df73e0e2a4b358ac344fa1c8c6376c33712b5cd3123bc7fb56af95f6ad97cd"
+      },
+      {
+        "path": "dx12\\04_dynamic_uniform_buffer\\frame-2.png",
+        "time_since_launch": 2.35,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          52.95278307085361,
+          47.03964649403682,
+          43.926800559432024
+        ],
+        "sha256": "ee9f8c2dcb609e1327dd43fa41c0b73cf1ac391587d4195e70c91754e33cbbc1"
+      },
+      {
+        "path": "dx12\\04_dynamic_uniform_buffer\\frame-3.png",
+        "time_since_launch": 3.151,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          53.217097016721546,
+          48.19680112633751,
+          42.964675087587295
+        ],
+        "sha256": "8fab9a6794b5c9c8614f22d5d4ab8f99d5b3865537b517d7a748218b62cbfa20"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "dx12",
+    "example": "05_push_constants",
+    "exe_sha256": "b627845ae86865212bbd722d6524405dded5c9d368cbc920a55ae441e52de8fe",
+    "captures": [
+      {
+        "path": "dx12\\05_push_constants\\frame-1.png",
+        "time_since_launch": 1.673,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          31.82613297341469,
+          32.56283526846903,
+          38.24188153367873
+        ],
+        "sha256": "362ec3d12d946154a60f8e51f7155e8801cdee9b4f819194b059bb5470f3a77d"
+      },
+      {
+        "path": "dx12\\05_push_constants\\frame-2.png",
+        "time_since_launch": 2.574,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          31.82613297341469,
+          32.56283526846903,
+          38.24188153367873
+        ],
+        "sha256": "362ec3d12d946154a60f8e51f7155e8801cdee9b4f819194b059bb5470f3a77d"
+      },
+      {
+        "path": "dx12\\05_push_constants\\frame-3.png",
+        "time_since_launch": 3.498,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          31.82613297341469,
+          32.56283526846903,
+          38.24188153367873
+        ],
+        "sha256": "362ec3d12d946154a60f8e51f7155e8801cdee9b4f819194b059bb5470f3a77d"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "dx12",
+    "example": "06_compute",
+    "exe_sha256": "fe23c65a2c0385bdfe1daf5754d71ff2273c39d3f72ec471e2a3d9ed5fb5e822",
+    "captures": [
+      {
+        "path": "dx12\\06_compute\\frame-1.png",
+        "time_since_launch": 1.414,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          85.5594179665674,
+          85.43958686047526,
+          84.42504284599808
+        ],
+        "sha256": "bac64e6230eed8281775b785857317216ed0282aa1f1b96e9d46e005f0f0ae08"
+      },
+      {
+        "path": "dx12\\06_compute\\frame-2.png",
+        "time_since_launch": 2.073,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          85.5594179665674,
+          85.43958686047526,
+          84.42504284599808
+        ],
+        "sha256": "bac64e6230eed8281775b785857317216ed0282aa1f1b96e9d46e005f0f0ae08"
+      },
+      {
+        "path": "dx12\\06_compute\\frame-3.png",
+        "time_since_launch": 2.725,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          85.5594179665674,
+          85.43958686047526,
+          84.42504284599808
+        ],
+        "sha256": "bac64e6230eed8281775b785857317216ed0282aa1f1b96e9d46e005f0f0ae08"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "dx12",
+    "example": "07_offscreen",
+    "exe_sha256": "176c64f06944adb657c79b23104f3af2475b1962ac1dcb41928a7abe878f2029",
+    "captures": [
+      {
+        "path": "dx12\\07_offscreen\\frame-1.png",
+        "time_since_launch": 1.396,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          47.684321897884956,
+          4.761687367888213,
+          4.76360063055245
+        ],
+        "sha256": "6b32a1432fa0e85401b047786e07e2b4979b1c6fdbf5a972cf278c8f78890ff9"
+      },
+      {
+        "path": "dx12\\07_offscreen\\frame-2.png",
+        "time_since_launch": 2.034,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          46.78621886877421,
+          4.700815260733806,
+          4.702754756047214
+        ],
+        "sha256": "f4ef83cf2742e1eb9c9989e1a84560437e68063f4888abd990b0321bb8b7e737"
+      },
+      {
+        "path": "dx12\\07_offscreen\\frame-3.png",
+        "time_since_launch": 2.687,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          45.43851850705025,
+          4.630553870475598,
+          4.63252432183574
+        ],
+        "sha256": "31ec1fcb728b2c82b42e8ee62457ae996a688516e4c97ee9a36b0b7cb6cea01e"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "dx12",
+    "example": "08_msaa",
+    "exe_sha256": "cbadb5fb784dbec7326a037470755b70eabab199c460adc63fcfc03c3abdde8e",
+    "captures": [
+      {
+        "path": "dx12\\08_msaa\\frame-1.png",
+        "time_since_launch": 1.404,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          47.19380997362247,
+          47.26952907333248,
+          48.99085885519463
+        ],
+        "sha256": "608035c2b037aa5af821a1f975e2c5003f093c356120c4580fb1cc9a079d424c"
+      },
+      {
+        "path": "dx12\\08_msaa\\frame-2.png",
+        "time_since_launch": 2.056,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          47.19380997362247,
+          47.26952907333248,
+          48.99085885519463
+        ],
+        "sha256": "608035c2b037aa5af821a1f975e2c5003f093c356120c4580fb1cc9a079d424c"
+      },
+      {
+        "path": "dx12\\08_msaa\\frame-3.png",
+        "time_since_launch": 2.706,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          47.19380997362247,
+          47.26952907333248,
+          48.99085885519463
+        ],
+        "sha256": "608035c2b037aa5af821a1f975e2c5003f093c356120c4580fb1cc9a079d424c"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "dx12",
+    "example": "09_texture_mipmap",
+    "exe_sha256": "7978a438a3fbc8eaec60596cce2259d97dad1fce799b172dd0e3bb36e3a02b2d",
+    "captures": [
+      {
+        "path": "dx12\\09_texture_mipmap\\frame-1.png",
+        "time_since_launch": 1.494,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          22.206008250600405,
+          12.966330436943219,
+          9.462164348701844
+        ],
+        "sha256": "93efdd21c76533a3b932410d91628db4484f9a78b6352ea8cb8102eb6a432169"
+      },
+      {
+        "path": "dx12\\09_texture_mipmap\\frame-2.png",
+        "time_since_launch": 2.232,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          22.117933648604385,
+          12.882753596742234,
+          9.437275493762883
+        ],
+        "sha256": "5cba3508b97cb2259eaaee13f4692a9e39304612fb5252324072e36856fef653"
+      },
+      {
+        "path": "dx12\\09_texture_mipmap\\frame-3.png",
+        "time_since_launch": 2.965,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          21.89948572180262,
+          12.813313095059733,
+          9.482257625630059
+        ],
+        "sha256": "fda2e2065bbbe7ccca247898456ee8dae8546f141423f7887bd61f8da72e6af7"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "dx12",
+    "example": "10_indirect_draw",
+    "exe_sha256": "db9a27f0ad2a0a9f0e515e9e008a0eab683e8c8e92b065193cd45e4111e50a4c",
+    "captures": [
+      {
+        "path": "dx12\\10_indirect_draw\\frame-1.png",
+        "time_since_launch": 1.515,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          34.67259054781029,
+          40.40131482009847,
+          61.10661606065309
+        ],
+        "sha256": "cc1127bea13fd67470f05582e4356f80c4c82057b4bc26cd39f1f2ccfe171dc6"
+      },
+      {
+        "path": "dx12\\10_indirect_draw\\frame-2.png",
+        "time_since_launch": 2.27,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          34.67259054781029,
+          40.40131482009847,
+          61.10661606065309
+        ],
+        "sha256": "cc1127bea13fd67470f05582e4356f80c4c82057b4bc26cd39f1f2ccfe171dc6"
+      },
+      {
+        "path": "dx12\\10_indirect_draw\\frame-3.png",
+        "time_since_launch": 3.046,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          34.67259054781029,
+          40.40131482009847,
+          61.10661606065309
+        ],
+        "sha256": "cc1127bea13fd67470f05582e4356f80c4c82057b4bc26cd39f1f2ccfe171dc6"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "dx12",
+    "example": "11_occlusion_query",
+    "exe_sha256": "b91f40b831488b59953fee0699ed0ac0c6cb481d0f190db1bf5c8aeae04cb8fe",
+    "captures": [
+      {
+        "path": "dx12\\11_occlusion_query\\frame-1.png",
+        "time_since_launch": 1.448,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          36.82103636458636,
+          15.698244066696914,
+          97.44669580413347
+        ],
+        "sha256": "c35990cab87c757434b79662072e6010c0bb04fc9770946a83db5648d595bc9f"
+      },
+      {
+        "path": "dx12\\11_occlusion_query\\frame-2.png",
+        "time_since_launch": 2.181,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          36.82103636458636,
+          15.698244066696914,
+          97.44669580413347
+        ],
+        "sha256": "c35990cab87c757434b79662072e6010c0bb04fc9770946a83db5648d595bc9f"
+      },
+      {
+        "path": "dx12\\11_occlusion_query\\frame-3.png",
+        "time_since_launch": 2.899,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          36.82103636458636,
+          15.698244066696914,
+          97.44669580413347
+        ],
+        "sha256": "c35990cab87c757434b79662072e6010c0bb04fc9770946a83db5648d595bc9f"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "dx12",
+    "example": "12_screenshot",
+    "exe_sha256": "b1a99f6ed6ca5e816f5069ab5573504e21a94d6b77beb37accfbc23dcd6db1df",
+    "captures": [
+      {
+        "path": "dx12\\12_screenshot\\frame-1.png",
+        "time_since_launch": 1.727,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          19.798672763846525,
+          20.05494342505654,
+          19.54958055816038
+        ],
+        "sha256": "f283866a387b6626bfc0245ec7be89db63bc42726abfbeb22a4f123149dcec0b"
+      },
+      {
+        "path": "dx12\\12_screenshot\\frame-2.png",
+        "time_since_launch": 2.464,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          66.80565896142956,
+          10.28372981534086,
+          10.28372981534086
+        ],
+        "sha256": "ad2c71ae45044ba5b17be3edf9aa2276c5237084835fe1ec925e106fb89940d7"
+      },
+      {
+        "path": "dx12\\12_screenshot\\frame-3.png",
+        "time_since_launch": 3.173,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          66.80566871579553,
+          10.28404007415926,
+          10.28404007415926
+        ],
+        "sha256": "84c5beb834bdff5b5965076700888b677cd59c5660f1ab55fb6fee483e85c6d7"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native-final12"
+  },
+  {
+    "backend": "dx12",
+    "example": "13_multithreaded_recording",
+    "exe_sha256": "0d5524df82516364959915f7a48e10437a8e6196cd79cde3e528bc62347176b3",
+    "captures": [
+      {
+        "path": "dx12\\13_multithreaded_recording\\frame-1.png",
+        "time_since_launch": 1.478,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          27.86973358936895,
+          27.59579256199769,
+          35.14610739838037
+        ],
+        "sha256": "f253fcc0d04813047e0581ca07bd120c435aba62997964d83f57177b2290ebdf"
+      },
+      {
+        "path": "dx12\\13_multithreaded_recording\\frame-2.png",
+        "time_since_launch": 2.191,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          27.508104550699642,
+          28.091663370493094,
+          35.55990902160475
+        ],
+        "sha256": "f05e2c4daba1ac11e808e8f5568650969d9a82aacb8dcfff4debb9492401ddfe"
+      },
+      {
+        "path": "dx12\\13_multithreaded_recording\\frame-3.png",
+        "time_since_launch": 2.889,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          28.38196001200875,
+          29.942241563011084,
+          36.547862755377615
+        ],
+        "sha256": "ac0bc6f0d2e1e6b809c0ccf6140ec66530adf61b75848c5bd2798c5da8b2ab6c"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "dx12",
+    "example": "14_descriptor_indexing",
+    "exe_sha256": "76c5e95c080646aa2d9e608e531b8b8e3e3161102b1bd8def71cbfe2cacc5114",
+    "captures": [
+      {
+        "path": "dx12\\14_descriptor_indexing\\frame-1.png",
+        "time_since_launch": 1.388,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          71.47862993793193,
+          71.18162274050952,
+          73.47074283846541
+        ],
+        "sha256": "a77966b2a5c63d10b3947c57eec983126f902f811b2329384f9235f66760a96e"
+      },
+      {
+        "path": "dx12\\14_descriptor_indexing\\frame-2.png",
+        "time_since_launch": 2.029,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          71.47862993793193,
+          71.18162274050952,
+          73.47074283846541
+        ],
+        "sha256": "a77966b2a5c63d10b3947c57eec983126f902f811b2329384f9235f66760a96e"
+      },
+      {
+        "path": "dx12\\14_descriptor_indexing\\frame-3.png",
+        "time_since_launch": 2.664,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          71.47862993793193,
+          71.18162274050952,
+          73.47074283846541
+        ],
+        "sha256": "a77966b2a5c63d10b3947c57eec983126f902f811b2329384f9235f66760a96e"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "dx12",
+    "example": "15_multiview",
+    "exe_sha256": "757143403e3c507b68ab283e63fd072e3eb44d093746ad31528aa2889273bd7d",
+    "captures": [
+      {
+        "path": "dx12\\15_multiview\\frame-1.png",
+        "time_since_launch": 1.412,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          71.52130615262145,
+          73.27684775321177,
+          80.78435367882543
+        ],
+        "sha256": "c44e8d828f92bc5a45cd09f969beb84890de1036488c47c3397270592529ea8c"
+      },
+      {
+        "path": "dx12\\15_multiview\\frame-2.png",
+        "time_since_launch": 2.075,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          71.52130615262145,
+          73.27684775321177,
+          80.78435367882543
+        ],
+        "sha256": "c44e8d828f92bc5a45cd09f969beb84890de1036488c47c3397270592529ea8c"
+      },
+      {
+        "path": "dx12\\15_multiview\\frame-3.png",
+        "time_since_launch": 2.736,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          71.52130615262145,
+          73.27684775321177,
+          80.78435367882543
+        ],
+        "sha256": "c44e8d828f92bc5a45cd09f969beb84890de1036488c47c3397270592529ea8c"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "vulkan",
+    "example": "01_triangle",
+    "exe_sha256": "2fe1d9ad5e7304b3f6cbc39bc3740cb979132b0dfb182b5a4dd43b92ae1379ef",
+    "captures": [
+      {
+        "path": "vulkan\\01_triangle\\frame-1.png",
+        "time_since_launch": 1.389,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          36.05148421174361,
+          36.05200086670718,
+          24.573721127695098
+        ],
+        "sha256": "6564800b032cec34f9e9c1eb81ffb6ae8ae4765887075868a88d6abdf747f396"
+      },
+      {
+        "path": "vulkan\\01_triangle\\frame-2.png",
+        "time_since_launch": 2.03,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          36.05148421174361,
+          36.05200086670718,
+          24.573721127695098
+        ],
+        "sha256": "6564800b032cec34f9e9c1eb81ffb6ae8ae4765887075868a88d6abdf747f396"
+      },
+      {
+        "path": "vulkan\\01_triangle\\frame-3.png",
+        "time_since_launch": 2.677,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          36.05148421174361,
+          36.05200086670718,
+          24.573721127695098
+        ],
+        "sha256": "6564800b032cec34f9e9c1eb81ffb6ae8ae4765887075868a88d6abdf747f396"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "vulkan",
+    "example": "02_texture",
+    "exe_sha256": "f38eb42f54eb7a5b04d7eb21ad7cb1182bb0ab5d9f509bce6ec82fc59a558e26",
+    "captures": [
+      {
+        "path": "vulkan\\02_texture\\frame-1.png",
+        "time_since_launch": 1.404,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          45.497214840172035,
+          41.046010198574116,
+          42.02439565593911
+        ],
+        "sha256": "0e36544856c84a56385a1b78ab8537a2a10b2adcc959546eefcba4d843599741"
+      },
+      {
+        "path": "vulkan\\02_texture\\frame-2.png",
+        "time_since_launch": 2.063,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          45.497214840172035,
+          41.046010198574116,
+          42.02439565593911
+        ],
+        "sha256": "0e36544856c84a56385a1b78ab8537a2a10b2adcc959546eefcba4d843599741"
+      },
+      {
+        "path": "vulkan\\02_texture\\frame-3.png",
+        "time_since_launch": 2.724,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          45.497214840172035,
+          41.046010198574116,
+          42.02439565593911
+        ],
+        "sha256": "0e36544856c84a56385a1b78ab8537a2a10b2adcc959546eefcba4d843599741"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "vulkan",
+    "example": "03_instancing",
+    "exe_sha256": "c506c6e03ef83df18d5fa192be82331b7c79e5d76dded6c62ec12a9e5f2e532f",
+    "captures": [
+      {
+        "path": "vulkan\\03_instancing\\frame-1.png",
+        "time_since_launch": 1.42,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          29.81388895326718,
+          28.609897877374877,
+          27.550437329534557
+        ],
+        "sha256": "1c64603d27925d0d0f40581008f4a9551d9ea67a06647a652e45880970cf97a8"
+      },
+      {
+        "path": "vulkan\\03_instancing\\frame-2.png",
+        "time_since_launch": 2.093,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          30.018176803067952,
+          28.83242417748839,
+          27.798192439234175
+        ],
+        "sha256": "c16a99840867499b99583666d18cff1860f65f618ff49716d9a3a3ef28824b40"
+      },
+      {
+        "path": "vulkan\\03_instancing\\frame-3.png",
+        "time_since_launch": 2.762,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          29.91564673284608,
+          28.72725186861492,
+          27.704905101203046
+        ],
+        "sha256": "246653878886dbac8d62d0bc8e4335a7d6618bfd9361b839463a3b7ce997e2a0"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "vulkan",
+    "example": "04_dynamic_uniform_buffer",
+    "exe_sha256": "8d569edc6ecfebe7ded0b6ed134c9bfb8948571db93286dab89d9700e5126467",
+    "captures": [
+      {
+        "path": "vulkan\\04_dynamic_uniform_buffer\\frame-1.png",
+        "time_since_launch": 1.53,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          51.88092372093189,
+          47.183050864368646,
+          44.04327019965067
+        ],
+        "sha256": "c35432bcf512801ebc8820035bec1f390293ea0dbb9707ec7e1d104058d0f854"
+      },
+      {
+        "path": "vulkan\\04_dynamic_uniform_buffer\\frame-2.png",
+        "time_since_launch": 2.305,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          52.97284613404752,
+          47.04989831526375,
+          43.91927075612709
+        ],
+        "sha256": "340499348b785fc3b589f1012a71a24603539604091028bf3945ac7221d385d7"
+      },
+      {
+        "path": "vulkan\\04_dynamic_uniform_buffer\\frame-3.png",
+        "time_since_launch": 3.089,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          53.28406867747985,
+          48.178861508726065,
+          42.98498275752743
+        ],
+        "sha256": "4c02de1dc9abcca0793b3f6a240682527a16b5be0b76662e498c36cb34575ee5"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "vulkan",
+    "example": "05_push_constants",
+    "exe_sha256": "b627845ae86865212bbd722d6524405dded5c9d368cbc920a55ae441e52de8fe",
+    "captures": [
+      {
+        "path": "vulkan\\05_push_constants\\frame-1.png",
+        "time_since_launch": 1.394,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          31.825406211645838,
+          32.56258792544882,
+          38.24188153367873
+        ],
+        "sha256": "bb95148e55d5b49132e09e2fc987ce6b35036a8aa46246bc2e7c31497921f220"
+      },
+      {
+        "path": "vulkan\\05_push_constants\\frame-2.png",
+        "time_since_launch": 2.032,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          31.825406211645838,
+          32.56258792544882,
+          38.24188153367873
+        ],
+        "sha256": "bb95148e55d5b49132e09e2fc987ce6b35036a8aa46246bc2e7c31497921f220"
+      },
+      {
+        "path": "vulkan\\05_push_constants\\frame-3.png",
+        "time_since_launch": 2.67,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          31.825406211645838,
+          32.56258792544882,
+          38.24188153367873
+        ],
+        "sha256": "bb95148e55d5b49132e09e2fc987ce6b35036a8aa46246bc2e7c31497921f220"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "vulkan",
+    "example": "06_compute",
+    "exe_sha256": "fe23c65a2c0385bdfe1daf5754d71ff2273c39d3f72ec471e2a3d9ed5fb5e822",
+    "captures": [
+      {
+        "path": "vulkan\\06_compute\\frame-1.png",
+        "time_since_launch": 1.416,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          85.56048449354897,
+          85.44010084637594,
+          84.42536395352059
+        ],
+        "sha256": "7d509327ecd7b345787c035627380e1ec8407e2ccb144e44718f27f6545c4c91"
+      },
+      {
+        "path": "vulkan\\06_compute\\frame-2.png",
+        "time_since_launch": 2.086,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          85.56048449354897,
+          85.44010084637594,
+          84.42536395352059
+        ],
+        "sha256": "7d509327ecd7b345787c035627380e1ec8407e2ccb144e44718f27f6545c4c91"
+      },
+      {
+        "path": "vulkan\\06_compute\\frame-3.png",
+        "time_since_launch": 2.755,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          85.56475914486248,
+          85.44404119610158,
+          84.42929394765663
+        ],
+        "sha256": "c6417ed77e2d2d69ca38d10aef8b010936e587d89f42966d018feaf568de2a26"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "vulkan",
+    "example": "07_offscreen",
+    "exe_sha256": "176c64f06944adb657c79b23104f3af2475b1962ac1dcb41928a7abe878f2029",
+    "captures": [
+      {
+        "path": "vulkan\\07_offscreen\\frame-1.png",
+        "time_since_launch": 1.455,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          47.618640868463714,
+          4.756498802625204,
+          4.755166707557861
+        ],
+        "sha256": "1b0392fca6bc7da06d7aec828d6c6d7fc0ec0b48ccb076e3bce7e8990228ee63"
+      },
+      {
+        "path": "vulkan\\07_offscreen\\frame-2.png",
+        "time_since_launch": 2.131,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          46.64136304687265,
+          4.693287628670557,
+          4.691936159596913
+        ],
+        "sha256": "cc595e9fced21aa39b07c7ccad1174c911bbb04bb641e7b6147ca598a859e692"
+      },
+      {
+        "path": "vulkan\\07_offscreen\\frame-3.png",
+        "time_since_launch": 2.804,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          45.21398633237974,
+          4.608364625086313,
+          4.606986566798188
+        ],
+        "sha256": "310c78eb3988b3bd132366e1f18d6a049f6f47be4a43d3c965c5125d0f4e2cf6"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "vulkan",
+    "example": "08_msaa",
+    "exe_sha256": "cbadb5fb784dbec7326a037470755b70eabab199c460adc63fcfc03c3abdde8e",
+    "captures": [
+      {
+        "path": "vulkan\\08_msaa\\frame-1.png",
+        "time_since_launch": 1.453,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          47.192790153497256,
+          47.26925856459893,
+          48.990837670091786
+        ],
+        "sha256": "0cad296185e11ee5b87f74b1a478915efbd9ea40b6792e8560f2d90b210ee18d"
+      },
+      {
+        "path": "vulkan\\08_msaa\\frame-2.png",
+        "time_since_launch": 2.1,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          47.192790153497256,
+          47.26925856459893,
+          48.990837670091786
+        ],
+        "sha256": "0cad296185e11ee5b87f74b1a478915efbd9ea40b6792e8560f2d90b210ee18d"
+      },
+      {
+        "path": "vulkan\\08_msaa\\frame-3.png",
+        "time_since_launch": 2.759,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          47.192790153497256,
+          47.26925856459893,
+          48.990837670091786
+        ],
+        "sha256": "0cad296185e11ee5b87f74b1a478915efbd9ea40b6792e8560f2d90b210ee18d"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "vulkan",
+    "example": "09_texture_mipmap",
+    "exe_sha256": "7978a438a3fbc8eaec60596cce2259d97dad1fce799b172dd0e3bb36e3a02b2d",
+    "captures": [
+      {
+        "path": "vulkan\\09_texture_mipmap\\frame-1.png",
+        "time_since_launch": 1.506,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          22.20605878654736,
+          12.980659859265415,
+          9.46188719230837
+        ],
+        "sha256": "e93b05f6426bca28f464b447b1f80333d2b25a35041d5492002123ac45f1e0e5"
+      },
+      {
+        "path": "vulkan\\09_texture_mipmap\\frame-2.png",
+        "time_since_launch": 2.254,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          22.152142190464186,
+          12.909364642819902,
+          9.427412731098025
+        ],
+        "sha256": "e5453b72e8b65519bbd12cc063dde2c1ca15cb77c2f48ce3158acc8f55f8f19d"
+      },
+      {
+        "path": "vulkan\\09_texture_mipmap\\frame-3.png",
+        "time_since_launch": 2.996,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          21.93655343784179,
+          12.8287816603483,
+          9.46782709998326
+        ],
+        "sha256": "a834434f6fe2284399f39a38a96d40ef04cbc0e3e23705171b051635fb74504c"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "vulkan",
+    "example": "10_indirect_draw",
+    "exe_sha256": "db9a27f0ad2a0a9f0e515e9e008a0eab683e8c8e92b065193cd45e4111e50a4c",
+    "captures": [
+      {
+        "path": "vulkan\\10_indirect_draw\\frame-1.png",
+        "time_since_launch": 1.535,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          34.67310169279969,
+          40.401509795427195,
+          61.10661606065309
+        ],
+        "sha256": "e8e47bf06ccf1946b64f403801a658f42f4f53e08eede1675cd0a52dc695dd05"
+      },
+      {
+        "path": "vulkan\\10_indirect_draw\\frame-2.png",
+        "time_since_launch": 2.284,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          34.67310169279969,
+          40.401509795427195,
+          61.10661606065309
+        ],
+        "sha256": "e8e47bf06ccf1946b64f403801a658f42f4f53e08eede1675cd0a52dc695dd05"
+      },
+      {
+        "path": "vulkan\\10_indirect_draw\\frame-3.png",
+        "time_since_launch": 3.023,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          34.67310169279969,
+          40.401509795427195,
+          61.10661606065309
+        ],
+        "sha256": "e8e47bf06ccf1946b64f403801a658f42f4f53e08eede1675cd0a52dc695dd05"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "vulkan",
+    "example": "11_occlusion_query",
+    "exe_sha256": "b91f40b831488b59953fee0699ed0ac0c6cb481d0f190db1bf5c8aeae04cb8fe",
+    "captures": [
+      {
+        "path": "vulkan\\11_occlusion_query\\frame-1.png",
+        "time_since_launch": 1.481,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          36.821690905982756,
+          15.69885250227281,
+          97.44669441203514
+        ],
+        "sha256": "61f917ac5123324f4dc2f9430d307871af80af5a01e54b0fe182d830db093099"
+      },
+      {
+        "path": "vulkan\\11_occlusion_query\\frame-2.png",
+        "time_since_launch": 2.21,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          36.821690905982756,
+          15.69885250227281,
+          97.44669441203514
+        ],
+        "sha256": "61f917ac5123324f4dc2f9430d307871af80af5a01e54b0fe182d830db093099"
+      },
+      {
+        "path": "vulkan\\11_occlusion_query\\frame-3.png",
+        "time_since_launch": 2.931,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          36.821690905982756,
+          15.69885250227281,
+          97.44669441203514
+        ],
+        "sha256": "61f917ac5123324f4dc2f9430d307871af80af5a01e54b0fe182d830db093099"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "vulkan",
+    "example": "12_screenshot",
+    "exe_sha256": "b1a99f6ed6ca5e816f5069ab5573504e21a94d6b77beb37accfbc23dcd6db1df",
+    "captures": [
+      {
+        "path": "vulkan\\12_screenshot\\frame-1.png",
+        "time_since_launch": 1.838,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          66.8056784700879,
+          10.284350323148836,
+          10.284350323148836
+        ],
+        "sha256": "0ca5b3a50a5ec84121d16f78099c9f2246c7ee0fd95cb06dc79171cd310035be"
+      },
+      {
+        "path": "vulkan\\12_screenshot\\frame-2.png",
+        "time_since_launch": 2.547,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          66.8056784700879,
+          10.284350323148836,
+          10.284350323148836
+        ],
+        "sha256": "0ca5b3a50a5ec84121d16f78099c9f2246c7ee0fd95cb06dc79171cd310035be"
+      },
+      {
+        "path": "vulkan\\12_screenshot\\frame-3.png",
+        "time_since_launch": 3.264,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          66.8056784700879,
+          10.284350323148836,
+          10.284350323148836
+        ],
+        "sha256": "0ca5b3a50a5ec84121d16f78099c9f2246c7ee0fd95cb06dc79171cd310035be"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native-final12"
+  },
+  {
+    "backend": "vulkan",
+    "example": "13_multithreaded_recording",
+    "exe_sha256": "0d5524df82516364959915f7a48e10437a8e6196cd79cde3e528bc62347176b3",
+    "captures": [
+      {
+        "path": "vulkan\\13_multithreaded_recording\\frame-1.png",
+        "time_since_launch": 1.676,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          28.928411852820215,
+          28.840076547375663,
+          35.971084280585536
+        ],
+        "sha256": "f6071a1d48b8ebaf36db1e9673ff56ddc4450992efc52f92afefcad88cff4944"
+      },
+      {
+        "path": "vulkan\\13_multithreaded_recording\\frame-2.png",
+        "time_since_launch": 3.003,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          28.634542892085705,
+          28.386485421945768,
+          35.77534501729213
+        ],
+        "sha256": "fb90e0ad158b22e167aba7d88d51ff00fe70a254f82bc2b98b6aa0bd333ab472"
+      },
+      {
+        "path": "vulkan\\13_multithreaded_recording\\frame-3.png",
+        "time_since_launch": 4.362,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          28.438127273979912,
+          28.166027849634546,
+          35.61528237285595
+        ],
+        "sha256": "46836b25b2b387ae57617132bd86337baf2455b8ad7e295bf33fec52a176c70c"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "vulkan",
+    "example": "14_descriptor_indexing",
+    "exe_sha256": "76c5e95c080646aa2d9e608e531b8b8e3e3161102b1bd8def71cbfe2cacc5114",
+    "captures": [
+      {
+        "path": "vulkan\\14_descriptor_indexing\\frame-1.png",
+        "time_since_launch": 1.385,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          71.47848492309447,
+          71.1816232494111,
+          73.47074961632684
+        ],
+        "sha256": "82262720101884ae485ad88dd34a742c964f1f38330fda5dcd94ecfaf6787161"
+      },
+      {
+        "path": "vulkan\\14_descriptor_indexing\\frame-2.png",
+        "time_since_launch": 2.018,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          71.47848492309447,
+          71.1816232494111,
+          73.47074961632684
+        ],
+        "sha256": "82262720101884ae485ad88dd34a742c964f1f38330fda5dcd94ecfaf6787161"
+      },
+      {
+        "path": "vulkan\\14_descriptor_indexing\\frame-3.png",
+        "time_since_launch": 2.656,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          71.47848492309447,
+          71.1816232494111,
+          73.47074961632684
+        ],
+        "sha256": "82262720101884ae485ad88dd34a742c964f1f38330fda5dcd94ecfaf6787161"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "vulkan",
+    "example": "15_multiview",
+    "exe_sha256": "757143403e3c507b68ab283e63fd072e3eb44d093746ad31528aa2889273bd7d",
+    "captures": [
+      {
+        "path": "vulkan\\15_multiview\\frame-1.png",
+        "time_since_launch": 1.419,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          71.52126685681553,
+          73.27683465531013,
+          80.78436267121411
+        ],
+        "sha256": "977e1911c7588e2aaa3e26aa1b1852581eb82e91199012cbd7ccf7a896450152"
+      },
+      {
+        "path": "vulkan\\15_multiview\\frame-2.png",
+        "time_since_launch": 2.087,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          71.52126685681553,
+          73.27683465531013,
+          80.78436267121411
+        ],
+        "sha256": "977e1911c7588e2aaa3e26aa1b1852581eb82e91199012cbd7ccf7a896450152"
+      },
+      {
+        "path": "vulkan\\15_multiview\\frame-3.png",
+        "time_since_launch": 2.756,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          71.52126685681553,
+          73.27683465531013,
+          80.78436267121411
+        ],
+        "sha256": "977e1911c7588e2aaa3e26aa1b1852581eb82e91199012cbd7ccf7a896450152"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "gl",
+    "example": "01_triangle",
+    "exe_sha256": "2fe1d9ad5e7304b3f6cbc39bc3740cb979132b0dfb182b5a4dd43b92ae1379ef",
+    "captures": [
+      {
+        "path": "gl\\01_triangle\\frame-1.png",
+        "time_since_launch": 1.448,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          36.052210981065556,
+          36.052210981065556,
+          24.573721127695098
+        ],
+        "sha256": "a0a931d4cd93506b12974a821e14be7deb703b8b61e89c4c313b2f890fab7fe5"
+      },
+      {
+        "path": "gl\\01_triangle\\frame-2.png",
+        "time_since_launch": 2.072,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          36.052210981065556,
+          36.052210981065556,
+          24.573721127695098
+        ],
+        "sha256": "a0a931d4cd93506b12974a821e14be7deb703b8b61e89c4c313b2f890fab7fe5"
+      },
+      {
+        "path": "gl\\01_triangle\\frame-3.png",
+        "time_since_launch": 2.713,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          36.052210981065556,
+          36.052210981065556,
+          24.573721127695098
+        ],
+        "sha256": "a0a931d4cd93506b12974a821e14be7deb703b8b61e89c4c313b2f890fab7fe5"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "gl",
+    "example": "02_texture",
+    "exe_sha256": "f38eb42f54eb7a5b04d7eb21ad7cb1182bb0ab5d9f509bce6ec82fc59a558e26",
+    "captures": [
+      {
+        "path": "gl\\02_texture\\frame-1.png",
+        "time_since_launch": 1.473,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          45.497491739768904,
+          41.04573958164013,
+          42.02391414618461
+        ],
+        "sha256": "01b57d5c64197da19c311785f280a890a11ddfe302d4baa666da47fbd35ef7e7"
+      },
+      {
+        "path": "gl\\02_texture\\frame-2.png",
+        "time_since_launch": 2.141,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          45.497491739768904,
+          41.04573958164013,
+          42.02391414618461
+        ],
+        "sha256": "01b57d5c64197da19c311785f280a890a11ddfe302d4baa666da47fbd35ef7e7"
+      },
+      {
+        "path": "gl\\02_texture\\frame-3.png",
+        "time_since_launch": 2.79,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          45.497491739768904,
+          41.04573958164013,
+          42.02391414618461
+        ],
+        "sha256": "01b57d5c64197da19c311785f280a890a11ddfe302d4baa666da47fbd35ef7e7"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "gl",
+    "example": "03_instancing",
+    "exe_sha256": "c506c6e03ef83df18d5fa192be82331b7c79e5d76dded6c62ec12a9e5f2e532f",
+    "captures": [
+      {
+        "path": "gl\\03_instancing\\frame-1.png",
+        "time_since_launch": 1.493,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          29.842374525458062,
+          28.63387298385188,
+          27.581986084416005
+        ],
+        "sha256": "b0fa33b62f2d6c20a0fa9fa663ce3fbf9a49f6095282915ef46b766715c22bf9"
+      },
+      {
+        "path": "gl\\03_instancing\\frame-2.png",
+        "time_since_launch": 2.222,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          30.03182354340808,
+          28.846932820660886,
+          27.818517662819442
+        ],
+        "sha256": "f52f8b108da370c27f68ed74d0fc0fe2168d8948ef5213552de5c6849b6ac96d"
+      },
+      {
+        "path": "gl\\03_instancing\\frame-3.png",
+        "time_since_launch": 2.885,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          29.83860609239051,
+          28.650968327634427,
+          27.623692957512365
+        ],
+        "sha256": "a753edd77e80da4c38348ba7bc6b44788df7a95b7e7779f1de957051c33afa73"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "gl",
+    "example": "04_dynamic_uniform_buffer",
+    "exe_sha256": "8d569edc6ecfebe7ded0b6ed134c9bfb8948571db93286dab89d9700e5126467",
+    "captures": [
+      {
+        "path": "gl\\04_dynamic_uniform_buffer\\frame-1.png",
+        "time_since_launch": 1.495,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          51.86844481842447,
+          47.186066504879726,
+          44.05023475973899
+        ],
+        "sha256": "a94fd5cda5807ffd49cf9f8a9e7945b128354219126f8dc1fbdac2ddb0a94c62"
+      },
+      {
+        "path": "gl\\04_dynamic_uniform_buffer\\frame-2.png",
+        "time_since_launch": 2.237,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          52.949851337922944,
+          47.0190956053305,
+          43.932465717892725
+        ],
+        "sha256": "3426a11920ff4c123e2403aacbc33011f6dc3be65a67ee7af2db6da22daa142e"
+      },
+      {
+        "path": "gl\\04_dynamic_uniform_buffer\\frame-3.png",
+        "time_since_launch": 2.989,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          53.34841812694521,
+          48.16781428806927,
+          42.94455683958044
+        ],
+        "sha256": "bdacb5ba2fba6dd3b5966fd85e003d069bb48c9c7fc03b81e0bc46b29a537288"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "gl",
+    "example": "05_push_constants",
+    "exe_sha256": "b627845ae86865212bbd722d6524405dded5c9d368cbc920a55ae441e52de8fe",
+    "captures": [
+      {
+        "path": "gl\\05_push_constants\\frame-1.png",
+        "time_since_launch": 1.444,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          31.82613297341469,
+          32.56283526846903,
+          38.24188153367873
+        ],
+        "sha256": "954f346fec02b1c932e903e79dfdfca5231d6432215183a3b669d8f232d15c76"
+      },
+      {
+        "path": "gl\\05_push_constants\\frame-2.png",
+        "time_since_launch": 2.106,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          31.82613297341469,
+          32.56283526846903,
+          38.24188153367873
+        ],
+        "sha256": "954f346fec02b1c932e903e79dfdfca5231d6432215183a3b669d8f232d15c76"
+      },
+      {
+        "path": "gl\\05_push_constants\\frame-3.png",
+        "time_since_launch": 2.818,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          31.82613297341469,
+          32.56283526846903,
+          38.24188153367873
+        ],
+        "sha256": "954f346fec02b1c932e903e79dfdfca5231d6432215183a3b669d8f232d15c76"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "gl",
+    "example": "06_compute",
+    "exe_sha256": "fe23c65a2c0385bdfe1daf5754d71ff2273c39d3f72ec471e2a3d9ed5fb5e822",
+    "captures": [
+      {
+        "path": "gl\\06_compute\\frame-1.png",
+        "time_since_launch": 1.468,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          85.575065080783,
+          85.44126469775036,
+          84.42770920141815
+        ],
+        "sha256": "d3b3e5a0e4b3c91d2fe6319b76da37de45621cef0260ece95080fcc73ec1295a"
+      },
+      {
+        "path": "gl\\06_compute\\frame-2.png",
+        "time_since_launch": 2.129,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          85.575065080783,
+          85.44126469775036,
+          84.42770920141815
+        ],
+        "sha256": "d3b3e5a0e4b3c91d2fe6319b76da37de45621cef0260ece95080fcc73ec1295a"
+      },
+      {
+        "path": "gl\\06_compute\\frame-3.png",
+        "time_since_launch": 2.819,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          85.575065080783,
+          85.44126469775036,
+          84.42770920141815
+        ],
+        "sha256": "d3b3e5a0e4b3c91d2fe6319b76da37de45621cef0260ece95080fcc73ec1295a"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "gl",
+    "example": "07_offscreen",
+    "exe_sha256": "176c64f06944adb657c79b23104f3af2475b1962ac1dcb41928a7abe878f2029",
+    "captures": [
+      {
+        "path": "gl\\07_offscreen\\frame-1.png",
+        "time_since_launch": 1.479,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          47.61699226077567,
+          4.760935105795627,
+          4.760935105795627
+        ],
+        "sha256": "358cecec26a6da2ad7f12961c7ca4711cf73f3c69ab72667540d2b060703ac5e"
+      },
+      {
+        "path": "gl\\07_offscreen\\frame-2.png",
+        "time_since_launch": 2.135,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          46.621162397093585,
+          4.698909445893789,
+          4.698909445893789
+        ],
+        "sha256": "1a0a48357b677c8c61d9bab6c691472534ea1c29f88041069420e054945eaf54"
+      },
+      {
+        "path": "gl\\07_offscreen\\frame-3.png",
+        "time_since_launch": 2.783,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          45.26426630348774,
+          4.61327780420445,
+          4.61327780420445
+        ],
+        "sha256": "b6cfe3b1a25c1ec85fa6c060b282962fc9f9aebf5f262a70f56af79b1db9b8df"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "gl",
+    "example": "08_msaa",
+    "exe_sha256": "cbadb5fb784dbec7326a037470755b70eabab199c460adc63fcfc03c3abdde8e",
+    "captures": [
+      {
+        "path": "gl\\08_msaa\\frame-1.png",
+        "time_since_launch": 1.436,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          47.197094418277246,
+          47.2733304728672,
+          48.9988861298957
+        ],
+        "sha256": "7a81b9bd70be63da465fb2726724f8aa6e09ce8f15e2ad55b12a57aa1f8f0307"
+      },
+      {
+        "path": "gl\\08_msaa\\frame-2.png",
+        "time_since_launch": 2.139,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          47.19845462656382,
+          47.2746839991789,
+          49.000026401823916
+        ],
+        "sha256": "93be983c7d0b8919faf82a7c5cd90d0b8a01f86211f4edf0f5108ffac4920ea8"
+      },
+      {
+        "path": "gl\\08_msaa\\frame-3.png",
+        "time_since_launch": 2.842,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          47.19845462656382,
+          47.2746839991789,
+          49.000026401823916
+        ],
+        "sha256": "93be983c7d0b8919faf82a7c5cd90d0b8a01f86211f4edf0f5108ffac4920ea8"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "gl",
+    "example": "09_texture_mipmap",
+    "exe_sha256": "7978a438a3fbc8eaec60596cce2259d97dad1fce799b172dd0e3bb36e3a02b2d",
+    "captures": [
+      {
+        "path": "gl\\09_texture_mipmap\\frame-1.png",
+        "time_since_launch": 1.534,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          22.184472098644235,
+          12.920291366414908,
+          9.43069857295212
+        ],
+        "sha256": "fa840d93836dc8dc0b866ec0e1e6965cde72196840e5b0d119d731c67883eb67"
+      },
+      {
+        "path": "gl\\09_texture_mipmap\\frame-2.png",
+        "time_since_launch": 2.33,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          22.005470258029167,
+          12.828525650500438,
+          9.423830852878934
+        ],
+        "sha256": "16843f65e5324b1c879fd4ebc2ec99cf6d12ace4772d3f4dba3127a7cf193533"
+      },
+      {
+        "path": "gl\\09_texture_mipmap\\frame-3.png",
+        "time_since_launch": 3.128,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          21.98661129449643,
+          12.850319866047005,
+          9.457413593059014
+        ],
+        "sha256": "12fa0afea40d4b1360824906f6d4dc6560bf648467de452772879375dbdef014"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "gl",
+    "example": "10_indirect_draw",
+    "exe_sha256": "db9a27f0ad2a0a9f0e515e9e008a0eab683e8c8e92b065193cd45e4111e50a4c",
+    "captures": [
+      {
+        "path": "gl\\10_indirect_draw\\frame-1.png",
+        "time_since_launch": 1.5,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          34.675893381005096,
+          40.39598740246965,
+          61.11535236229342
+        ],
+        "sha256": "08dd7e3a7959481d144607a858e2ccb8bc28579d41e27a92b8cd9448493ecb9d"
+      },
+      {
+        "path": "gl\\10_indirect_draw\\frame-2.png",
+        "time_since_launch": 2.295,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          34.675893381005096,
+          40.39598740246965,
+          61.11535236229342
+        ],
+        "sha256": "08dd7e3a7959481d144607a858e2ccb8bc28579d41e27a92b8cd9448493ecb9d"
+      },
+      {
+        "path": "gl\\10_indirect_draw\\frame-3.png",
+        "time_since_launch": 3.074,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          34.675893381005096,
+          40.39598740246965,
+          61.11535236229342
+        ],
+        "sha256": "08dd7e3a7959481d144607a858e2ccb8bc28579d41e27a92b8cd9448493ecb9d"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "gl",
+    "example": "11_occlusion_query",
+    "exe_sha256": "b91f40b831488b59953fee0699ed0ac0c6cb481d0f190db1bf5c8aeae04cb8fe",
+    "captures": [
+      {
+        "path": "gl\\11_occlusion_query\\frame-1.png",
+        "time_since_launch": 1.536,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          36.81957168911906,
+          15.690848751696358,
+          97.44714723066582
+        ],
+        "sha256": "c5a53a76bcbffd335823b06b0a9f89f6d289a6e06c57e84af20e67eb24ccb4ad"
+      },
+      {
+        "path": "gl\\11_occlusion_query\\frame-2.png",
+        "time_since_launch": 2.358,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          36.81957168911906,
+          15.690848751696358,
+          97.44714723066582
+        ],
+        "sha256": "c5a53a76bcbffd335823b06b0a9f89f6d289a6e06c57e84af20e67eb24ccb4ad"
+      },
+      {
+        "path": "gl\\11_occlusion_query\\frame-3.png",
+        "time_since_launch": 3.127,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          36.81957168911906,
+          15.690848751696358,
+          97.44714723066582
+        ],
+        "sha256": "c5a53a76bcbffd335823b06b0a9f89f6d289a6e06c57e84af20e67eb24ccb4ad"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "gl",
+    "example": "12_screenshot",
+    "exe_sha256": "b1a99f6ed6ca5e816f5069ab5573504e21a94d6b77beb37accfbc23dcd6db1df",
+    "captures": [
+      {
+        "path": "gl\\12_screenshot\\frame-1.png",
+        "time_since_launch": 1.68,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          66.8056784700879,
+          10.284350323148836,
+          10.284350323148836
+        ],
+        "sha256": "aedb865ff2e70302a5c85cc905b96fe2aed590171f5e0b97d32af8d7ce98ea58"
+      },
+      {
+        "path": "gl\\12_screenshot\\frame-2.png",
+        "time_since_launch": 2.498,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          66.8056784700879,
+          10.284350323148836,
+          10.284350323148836
+        ],
+        "sha256": "aedb865ff2e70302a5c85cc905b96fe2aed590171f5e0b97d32af8d7ce98ea58"
+      },
+      {
+        "path": "gl\\12_screenshot\\frame-3.png",
+        "time_since_launch": 3.37,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          66.8056784700879,
+          10.284350323148836,
+          10.284350323148836
+        ],
+        "sha256": "aedb865ff2e70302a5c85cc905b96fe2aed590171f5e0b97d32af8d7ce98ea58"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native-final12"
+  },
+  {
+    "backend": "gl",
+    "example": "13_multithreaded_recording",
+    "exe_sha256": "0d5524df82516364959915f7a48e10437a8e6196cd79cde3e528bc62347176b3",
+    "captures": [
+      {
+        "path": "gl\\13_multithreaded_recording\\frame-1.png",
+        "time_since_launch": 1.611,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          28.477025434623027,
+          28.19394485018508,
+          35.62379672648434
+        ],
+        "sha256": "1e96fc923e104f3522b94fd1f687a75ce924b564ea1ae12f1cf67c1f8a8cd2fb"
+      },
+      {
+        "path": "gl\\13_multithreaded_recording\\frame-2.png",
+        "time_since_launch": 2.503,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          28.062591620117697,
+          27.58929021142402,
+          35.14123625888067
+        ],
+        "sha256": "085da6dce79510c0ef82b82c13268901c54f1300e2e8ee5dadc6305d64ba3260"
+      },
+      {
+        "path": "gl\\13_multithreaded_recording\\frame-3.png",
+        "time_since_launch": 3.231,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          27.908013036880046,
+          27.730385543445248,
+          35.32197784633045
+        ],
+        "sha256": "d45740d3ac04713efde7666f42a046e00001c59cbe8d12fd2a42517ddfe3c117"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "gl",
+    "example": "14_descriptor_indexing",
+    "exe_sha256": "76c5e95c080646aa2d9e608e531b8b8e3e3161102b1bd8def71cbfe2cacc5114",
+    "captures": [
+      {
+        "path": "gl\\14_descriptor_indexing\\frame-1.png",
+        "time_since_launch": 1.464,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          71.47891701112528,
+          71.18198956699143,
+          73.47115435004255
+        ],
+        "sha256": "226d563b95ab2fb957957806d61f16e33579c62fc524fdbd6918af684b18f135"
+      },
+      {
+        "path": "gl\\14_descriptor_indexing\\frame-2.png",
+        "time_since_launch": 2.187,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          71.47891701112528,
+          71.18198956699143,
+          73.47115435004255
+        ],
+        "sha256": "226d563b95ab2fb957957806d61f16e33579c62fc524fdbd6918af684b18f135"
+      },
+      {
+        "path": "gl\\14_descriptor_indexing\\frame-3.png",
+        "time_since_launch": 2.866,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          71.47891701112528,
+          71.18198956699143,
+          73.47115435004255
+        ],
+        "sha256": "226d563b95ab2fb957957806d61f16e33579c62fc524fdbd6918af684b18f135"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  },
+  {
+    "backend": "gl",
+    "example": "15_multiview",
+    "exe_sha256": "757143403e3c507b68ab283e63fd072e3eb44d093746ad31528aa2889273bd7d",
+    "captures": [
+      {
+        "path": "gl\\15_multiview\\frame-1.png",
+        "time_since_launch": 1.538,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          71.52225714263767,
+          73.27794462326217,
+          80.78564184171454
+        ],
+        "sha256": "ae42621ec401f5e9d71c2d4615487aaf0e18fc1bcb64596e32f554f9d1ac4c33"
+      },
+      {
+        "path": "gl\\15_multiview\\frame-2.png",
+        "time_since_launch": 2.301,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          71.52225714263767,
+          73.27794462326217,
+          80.78564184171454
+        ],
+        "sha256": "ae42621ec401f5e9d71c2d4615487aaf0e18fc1bcb64596e32f554f9d1ac4c33"
+      },
+      {
+        "path": "gl\\15_multiview\\frame-3.png",
+        "time_since_launch": 3.077,
+        "size": [
+          1280,
+          720
+        ],
+        "rgb_stddev": [
+          71.52225714263767,
+          73.27794462326217,
+          80.78564184171454
+        ],
+        "sha256": "ae42621ec401f5e9d71c2d4615487aaf0e18fc1bcb64596e32f554f9d1ac4c33"
+      }
+    ],
+    "smoke_exit": 0,
+    "close_exit": 0,
+    "local_evidence_set": "native"
+  }
+]

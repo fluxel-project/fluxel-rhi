@@ -16,16 +16,7 @@ mod utils;
 mod workload;
 
 use fluxel_rhi::api::*;
-use std::{
-    fs,
-    path::Path,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
-
-static NEXT_CAPTURE_PLAN: AtomicU64 = AtomicU64::new(1);
+use std::{fs, path::Path};
 
 pub trait ScreenshotWorkloadBackend:
     Backend
@@ -64,6 +55,8 @@ pub struct Screenshot<B: ScreenshotWorkloadBackend> {
     target: Texture<B>,
     target_view: TextureView<B>,
     readback: Buffer<B>,
+    // Immediate readbacks remain owned by the scene until GPU completion.
+    pending_ticket: Option<ReadbackTicket<B>>,
     scene: workload::DragonScene<B>,
     layout: ImageLayout,
     row_pitch: u32,
@@ -122,6 +115,7 @@ impl<B: ScreenshotWorkloadBackend> Screenshot<B> {
             target,
             target_view,
             readback,
+            pending_ticket: None,
             scene,
             // An ordinary Vulkan image starts undefined.  Every later state
             // change is explicit in `transition` below.
@@ -141,6 +135,7 @@ impl<B: ScreenshotWorkloadBackend> Screenshot<B> {
     ) -> Result<Option<ReadbackTicket<B>>> {
         self.transition(
             encoder,
+            self.layout,
             ImageLayout::ColorAttachment,
             TextureUses {
                 stages: StageMask::COLOR_OUTPUT,
@@ -153,6 +148,7 @@ impl<B: ScreenshotWorkloadBackend> Screenshot<B> {
         let ticket = if capture {
             self.transition(
                 encoder,
+                ImageLayout::ColorAttachment,
                 ImageLayout::CopySrc,
                 TextureUses {
                     stages: StageMask::COPY,
@@ -173,12 +169,13 @@ impl<B: ScreenshotWorkloadBackend> Screenshot<B> {
     }
 
     fn transition(
-        &mut self,
+        &self,
         encoder: &mut CommandEncoder<B>,
+        previous: ImageLayout,
         next: ImageLayout,
         after: TextureUses,
     ) -> Result<()> {
-        let before = match self.layout {
+        let before = match previous {
             ImageLayout::Undefined => TextureUses {
                 stages: StageMask::EMPTY,
                 accesses: AccessMask::EMPTY,
@@ -208,11 +205,42 @@ impl<B: ScreenshotWorkloadBackend> Screenshot<B> {
                 from: before,
                 to: after,
             },
-            layout: Some((self.layout, next)),
+            layout: Some((previous, next)),
             ownership: None,
         })])?;
-        self.layout = next;
         Ok(())
+    }
+
+    /// Checks the slot before recording any new readback commands.
+    pub(crate) fn ensure_ticket_available(&self) -> Result<()> {
+        if self.pending_ticket.is_some() {
+            Err(Error::InvalidState)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Keeps the readback ticket alive with the scene until completion is observed.
+    pub(crate) fn retain_ticket(&mut self, ticket: Option<ReadbackTicket<B>>) -> Result<()> {
+        if self.pending_ticket.is_some() {
+            return Err(Error::InvalidState);
+        }
+        self.pending_ticket = ticket;
+        Ok(())
+    }
+
+    /// Takes the ticket only after the caller has observed completion of its frame.
+    pub(crate) fn take_completed_ticket(&mut self) -> Option<ReadbackTicket<B>> {
+        self.pending_ticket.take()
+    }
+
+    pub fn commit_frame(&mut self, capture: bool) {
+        self.layout = if capture {
+            ImageLayout::CopySrc
+        } else {
+            ImageLayout::ColorAttachment
+        };
+        self.scene.mark_uploaded();
     }
 
     /// Waits for `completion` and writes the original demo's binary PPM image.
@@ -243,6 +271,7 @@ impl<B: ScreenshotBackend> Screenshot<B> {
         image: &SurfaceImage<B>,
         capture: bool,
     ) -> Result<ScreenshotRecord<B>> {
+        self.ensure_ticket_available()?;
         let mut encoder = device.encoder(self.lane)?;
         let ticket = self.encode(&mut encoder, image, capture)?;
         Ok(ScreenshotRecord {
@@ -403,8 +432,10 @@ where
             let workload = screenshot.as_mut().expect("initialized above");
             let capture = requested && !saved;
             let record = workload.record(device, &image, capture)?;
-            let completion = submit_capture_and_present(device, lane, record.work, image)?;
-            if let Some(ticket) = record.ticket {
+            workload.retain_ticket(record.ticket)?;
+            let completion = utils::submit_and_present_point(device, lane, record.work, image)?;
+            workload.commit_frame(capture);
+            if let Some(ticket) = workload.take_completed_ticket() {
                 utils::block_on(device.wait_completion(&completion))?;
                 utils::block_on(workload.save_ppm_after(
                     device,
@@ -417,83 +448,6 @@ where
             Ok(())
         },
     )
-}
-
-fn submit_capture_and_present<B: DeferredBackend>(
-    device: &Device<B>,
-    lane: LaneId,
-    work: RecordedWork<B>,
-    image: SurfaceImage<B>,
-) -> Result<CompletionPoint<B>> {
-    if lane.device != device.id() || image.device() != device.id() {
-        return Err(Error::WrongDevice);
-    }
-    let id = PlanId {
-        device: device.id(),
-        ordinal: NEXT_CAPTURE_PLAN.fetch_add(1, Ordering::Relaxed),
-    };
-    // SAFETY: the two steps share one device-local lane and present explicitly
-    // waits for commands, so this compiled order is realizable by that queue.
-    let plan = unsafe {
-        SubmissionPlan::from_compiled(
-            id,
-            Arc::from([
-                StepDesc {
-                    lane,
-                    kind: StepKind::Commands,
-                    waits: vec![],
-                },
-                StepDesc {
-                    lane,
-                    kind: StepKind::Present,
-                    waits: vec![StepWait {
-                        previous: fluxel_rhi::api::StepId { plan: id, index: 0 },
-                        destination: AccessScope {
-                            stages: StageMask::ALL_COMMANDS,
-                            accesses: AccessMask::ALL,
-                        },
-                    }],
-                },
-            ]),
-        )
-    };
-    // SAFETY: the caller retains screenshot resources and the acquired image
-    // until the returned end checkpoint completes; every bound step is from
-    // this plan and device.
-    let result = unsafe {
-        device.queue().submit(SubmitPacket {
-            steps: vec![
-                BoundStep {
-                    step: plan.step(0),
-                    payload: StepPayload::Commands(vec![work]),
-                },
-                BoundStep {
-                    step: plan.step(1),
-                    payload: StepPayload::Present(PresentBinding::new(image)),
-                },
-            ],
-            plan,
-            completion: CompletionRequest::End,
-        })
-    };
-    match result {
-        SubmitOutcome::Accepted(receipt)
-            if receipt.accepted.len() == 2
-                && receipt.presents.len() == 1
-                && receipt.presents[0].accepted =>
-        {
-            receipt
-                .checkpoints
-                .into_iter()
-                .next()
-                .map(|checkpoint| checkpoint.point)
-                .ok_or(Error::InvalidState)
-        }
-        SubmitOutcome::Accepted(_) => Err(Error::InvalidState),
-        SubmitOutcome::Rejected { error, .. }
-        | SubmitOutcome::PartiallyAccepted { error, .. }
-        | SubmitOutcome::Indeterminate { error, .. } => Err(error),
-    }
 }
 
 /// Renders the visible dragon and verifies one native GPU-to-CPU screenshot.
@@ -539,9 +493,12 @@ pub async fn run_webgpu_screenshot(
         for frame in 0..frames {
             let image = surface.acquire().await?;
             let record = screenshot.record(&device, &image, frame == 0)?;
-            let completion = submit_capture_and_present(&device, lane, record.work, image)?;
+            screenshot.retain_ticket(record.ticket)?;
+            let completion =
+                utils::submit_and_present_point_async(&device, lane, record.work, image).await?;
+            screenshot.commit_frame(frame == 0);
             device.wait_completion(&completion).await?;
-            if let Some(ticket) = record.ticket {
+            if let Some(ticket) = screenshot.take_completed_ticket() {
                 // SAFETY: `completion` is the end checkpoint returned for
                 // `record` and was awaited above, so it covers this ticket.
                 let data = unsafe { device.read_after(ticket, &completion).await? };

@@ -101,6 +101,10 @@ pub trait CommandBackend: Backend {
     ) -> Result<()> {
         Err(Error::Unsupported("clear_buffer"))
     }
+    /// Reserved optional standalone color-clear route; defaults to unsupported.
+    /// This legacy shape has no array-layer range or depth/stencil clear value
+    /// and must not be treated as a general subresource clear contract. Current
+    /// backends use render-pass attachment load clears instead.
     fn clear_texture(
         _: &mut Self::NativeEncoder,
         _: &Self::NativeTexture,
@@ -212,6 +216,13 @@ impl<B: CommandBackend> CommandEncoder<B> {
         }
         self.call(|e| B::clear_buffer(e, &dst.native, range, value))
     }
+    /// Requests the backend's optional standalone color-clear route.
+    ///
+    /// No current backend implements this operation. This descriptor cannot
+    /// express array-layer selection or depth/stencil values; aspect flags do
+    /// not establish support. Use attachment load operations for implemented
+    /// pass clears. A general standalone clear needs a complete contract before
+    /// adding native lowering; Core does not derive one from adjacent commands.
     pub fn clear_texture(
         &mut self,
         dst: &Texture<B>,

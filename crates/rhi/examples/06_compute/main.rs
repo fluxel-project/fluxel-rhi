@@ -61,8 +61,9 @@ pub async fn run_webgpu_compute(
         let mut demo = Compute::<WebGpu>::new(&device, lane, format).await?;
         for _ in 0..frames {
             let image = surface.acquire().await?;
-            let work = demo.record(&device, &image, extent)?;
+            let (work, commit) = demo.record(&device, &image, extent)?;
             utils::submit_and_present_async(&device, lane, work, image).await?;
+            demo.commit_frame(commit);
         }
         Ok(())
     };
@@ -96,11 +97,15 @@ fn run<B: ComputeBackend + DeferredBackend, H: utils::ExampleHost<B>>(host: H) -
             if demo.is_none() {
                 demo = Some(utils::block_on(Compute::new(device, lane, config.format))?);
             }
-            let work = demo
+            let (work, commit) = demo
                 .as_mut()
                 .ok_or(Error::InvalidState)?
                 .record(device, &image, extent)?;
-            utils::submit_and_present(device, lane, work, image)
+            utils::submit_and_present(device, lane, work, image)?;
+            demo.as_mut()
+                .ok_or(Error::InvalidState)?
+                .commit_frame(commit);
+            Ok(())
         },
     )
 }

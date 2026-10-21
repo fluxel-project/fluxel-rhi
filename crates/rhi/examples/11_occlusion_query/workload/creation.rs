@@ -299,6 +299,7 @@ impl<B: OcclusionWorkloadBackend> Workload<B> {
         };
         Ok(Self {
             lane,
+            attachments: None,
             plane_vertices,
             plane_indices,
             teapot_vertices,
@@ -325,6 +326,7 @@ impl<B: OcclusionWorkloadBackend> Workload<B> {
             occluder_pipeline,
             queries: q,
             results,
+            pending_ticket: None,
             visible: [true; 2],
         })
     }

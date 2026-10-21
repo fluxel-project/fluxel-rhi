@@ -42,10 +42,10 @@ pub async fn run_webgpu_multithreaded_recording(
             let mut encoder = d.encoder(lane)?;
             let uploaded_geometry = scene.encode(&d, &image, &mut encoder, extent)?;
             let work = encoder.finish()?;
+            utils::submit_and_present_async(&d, lane, work, image).await?;
             if uploaded_geometry {
                 scene.mark_uploaded();
             }
-            utils::submit_and_present_async(&d, lane, work, image).await?;
         }
         Ok(())
     }

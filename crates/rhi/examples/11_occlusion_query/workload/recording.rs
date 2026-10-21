@@ -41,9 +41,31 @@ impl<B: OcclusionWorkloadBackend> Workload<B> {
         image: &SurfaceImage<B>,
         extent: [u32; 2],
     ) -> Result<Option<ReadbackTicket<B>>> {
+        self.ensure_ticket_available()?;
         if extent.contains(&0) {
             return Err(Error::InvalidRange);
         }
+        {
+            let (display_depth, display_depth_view) = depth(d, extent)?;
+            let query = if self.queries.is_some() {
+                let (color, color_view) = color(d, extent, "11 query color")?;
+                let (depth, depth_view) = depth(d, extent)?;
+                Some(QueryAttachments {
+                    color,
+                    color_view,
+                    _depth: depth,
+                    depth_view,
+                })
+            } else {
+                None
+            };
+            self.attachments = Some(Attachments {
+                _display_depth: display_depth,
+                display_depth_view,
+                query,
+            });
+        }
+        let attachments = self.attachments.as_ref().ok_or(Error::InvalidState)?;
         if self.visible == [true, true] {
             let options = gltf::LoadOptions::CPP_PORT.with_flip_y(false);
             let plane = gltf::load_embedded_model(PLANE, options)
@@ -86,7 +108,6 @@ impl<B: OcclusionWorkloadBackend> Workload<B> {
                 self.visible[1],
             ),
         )?;
-        let (_display_depth, display_depth_view) = depth(d, extent)?;
         if let (Some(query_set), Some(_results)) = (&self.queries, &self.results) {
             // The C++ sample queries into a pass that it clears before display.
             // Core has no intra-pass attachment clear yet, so use a disposable
@@ -94,11 +115,10 @@ impl<B: OcclusionWorkloadBackend> Workload<B> {
             // The scratch color exists only to reproduce query-pass depth/order;
             // RGBA8 is the GL backend's proven attachment format, while the
             // caller-owned surface retains the requested display format.
-            let (query_color, query_color_view) = color(d, extent, "11 query color")?;
-            let (_query_depth, query_depth_view) = depth(d, extent)?;
+            let query = attachments.query.as_ref().ok_or(Error::InvalidState)?;
             e.transition_resources(&[ResourceTransition::Texture(TextureBarrier {
                 target: Subresources {
-                    texture: &query_color,
+                    texture: &query.color,
                     aspects: TextureAspects::COLOR,
                     mips: 0..1,
                     layers: 0..1,
@@ -117,13 +137,13 @@ impl<B: OcclusionWorkloadBackend> Workload<B> {
                 ownership: None,
             })])?;
             let colors = [Some(ColorAttachment {
-                view: AttachmentView::Texture(&query_color_view),
+                view: AttachmentView::Texture(&query.color_view),
                 resolve_target: None,
                 load: LoadOp::Clear(ClearColor::Float([0., 0., 0., 0.])),
                 store: StoreOp::Store,
             })];
             let da = DepthStencilAttachment {
-                view: AttachmentView::Texture(&query_depth_view),
+                view: AttachmentView::Texture(&query.depth_view),
                 depth: Some((LoadOp::Clear(1.), StoreOp::Discard)),
                 stencil: None,
                 depth_read_only: false,
@@ -205,7 +225,7 @@ impl<B: OcclusionWorkloadBackend> Workload<B> {
             store: StoreOp::Store,
         })];
         let depth = DepthStencilAttachment {
-            view: AttachmentView::Texture(&display_depth_view),
+            view: AttachmentView::Texture(&attachments.display_depth_view),
             depth: Some((LoadOp::Clear(1.), StoreOp::Discard)),
             stencil: None,
             depth_read_only: false,

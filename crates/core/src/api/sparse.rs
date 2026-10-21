@@ -71,20 +71,27 @@ pub struct GpuWait<B: MultiQueueBackend> {
     pub signal: GpuSignalPoint<B>,
     pub destination: AccessScope,
 }
-/// No Clone: one producer signal is declared for one exact consumer.
+/// A single-use signal for an explicitly selected consumer execution.
+///
+/// Step IDs identify positions in reusable plans, not individual executions.
+/// The renderer must associate this token with the correct producer and
+/// consumer executions, including when plan executions overlap. Core checks
+/// the static identities but does not keep an execution registry.
 pub struct GpuSignalPoint<B: MultiQueueBackend> {
     device: DeviceId,
-    pub producer: StepId,
-    pub producer_lane: LaneId,
-    pub consumer: StepId,
-    pub consumer_lane: LaneId,
+    producer: StepId,
+    producer_lane: LaneId,
+    consumer: StepId,
+    consumer_lane: LaneId,
     native: B::NativeGpuSignal,
 }
 impl<B: MultiQueueBackend> GpuSignalPoint<B> {
     /// # Safety
     /// The accepted producer installed a real GPU-waitable signal for exactly
-    /// this consumer before returning this point. Native signal storage stays
-    /// valid until consumed or safely abandoned.
+    /// this particular consumer execution before returning this point. The
+    /// metadata must describe the native signal and its actual producer and
+    /// consumer executions, not merely matching reusable plan positions.
+    /// Native signal storage stays valid until consumed or safely abandoned.
     pub unsafe fn from_native(
         device: DeviceId,
         producer: StepId,
@@ -101,6 +108,33 @@ impl<B: MultiQueueBackend> GpuSignalPoint<B> {
             consumer_lane,
             native,
         }
+    }
+    /// Producer position in the reusable plan, not an execution identifier.
+    pub fn producer(&self) -> StepId {
+        self.producer
+    }
+    /// Native producer lane.
+    pub fn producer_lane(&self) -> LaneId {
+        self.producer_lane
+    }
+    /// Consumer position in the reusable plan, not an execution identifier.
+    pub fn consumer(&self) -> StepId {
+        self.consumer
+    }
+    /// Native consumer lane.
+    pub fn consumer_lane(&self) -> LaneId {
+        self.consumer_lane
+    }
+    /// Transfers the one-shot native signal to the backend wait installation.
+    ///
+    /// # Safety
+    /// Only the owning backend may consume this signal while lowering a
+    /// validated packet. Install it for its declared consumer execution at most
+    /// once and keep the native signal alive until the native wait completes or
+    /// the backend safely abandons it.
+    #[doc(hidden)]
+    pub unsafe fn into_native(self) -> B::NativeGpuSignal {
+        self.native
     }
 }
 pub struct MultiQueuePacket<B: MultiQueueBackend> {
@@ -143,7 +177,9 @@ pub enum MultiQueueSubmitOutcome<B: MultiQueueBackend> {
 pub trait MultiQueueBackend: DeferredBackend {
     type NativeGpuSignal;
     /// # Safety
-    /// Signals are installed before producer acceptance and bind one consumer.
+    /// Signals are installed before producer acceptance and bind one specific
+    /// consumer execution. Returned metadata must describe that native signal
+    /// truthfully; the backend must not substitute a signal from another run.
     unsafe fn submit_multi(
         device: &Self::NativeDevice,
         packet: MultiQueuePacket<Self>,
@@ -161,49 +197,70 @@ impl<B: MultiQueueBackend> Device<B> {
 }
 impl<B: MultiQueueBackend> MultiQueueDomain<'_, B> {
     /// # Safety
-    /// Same resource lifetime and scheduling obligations as Queue::submit.
+    /// Same resource lifetime and scheduling obligations as Queue::submit. The
+    /// caller must route each consumed signal to its intended consumer execution
+    /// at most once, retaining the true producer/consumer relationship even
+    /// when the same plan is submitted more than once. StepId equality alone
+    /// cannot prove that relationship; Core does not track execution instances.
     pub unsafe fn submit(&self, packet: MultiQueuePacket<B>) -> MultiQueueSubmitOutcome<B> {
         if let Err(error) = packet.work.validate(self.device.id) {
             return MultiQueueSubmitOutcome::Rejected { error, packet };
         }
         let plan = &packet.work.plan;
-        let valid = plan.id.device == self.device.id
-            && packet.signals.iter().all(|signal| {
-                signal.producer.plan == plan.id
-                    && signal.consumer.plan.device == self.device.id
-                    && signal.consumer_lane.device == self.device.id
-                    && plan
-                        .steps
-                        .get(signal.producer.index as usize)
-                        .is_some_and(|producer| {
-                            self.device.wait_route(producer.lane, signal.consumer_lane)
-                                != WaitRoute::Unsupported
-                        })
-            })
-            && packet.waits.iter().all(|wait| {
+        let validate = || -> Result<()> {
+            for signal in &packet.signals {
+                if signal.producer.plan.device != self.device.id
+                    || signal.consumer.plan.device != self.device.id
+                    || signal.consumer_lane.device != self.device.id
+                {
+                    return Err(Error::WrongDevice);
+                }
+                if signal.producer.plan != plan.id {
+                    return Err(Error::InvalidState);
+                }
+                let producer = plan
+                    .steps
+                    .get(signal.producer.index as usize)
+                    .ok_or(Error::InvalidState)?;
+                if producer.lane.device != self.device.id {
+                    return Err(Error::WrongDevice);
+                }
+                if self.device.wait_route(producer.lane, signal.consumer_lane)
+                    == WaitRoute::Unsupported
+                {
+                    return Err(Error::WrongLane);
+                }
+            }
+            for wait in &packet.waits {
                 let signal = &wait.signal;
-                signal.device == self.device.id
-                    && signal.producer.plan.device == self.device.id
-                    && signal.producer_lane.device == self.device.id
-                    && signal.consumer.plan == plan.id
-                    && plan
-                        .steps
-                        .get(signal.consumer.index as usize)
-                        .is_some_and(|step| {
-                            step.lane == signal.consumer_lane
-                                && self
-                                    .device
-                                    .wait_route(signal.producer_lane, signal.consumer_lane)
-                                    != WaitRoute::Unsupported
-                        })
-            });
-        if !valid {
-            // Reject before SPI entry so an invalid cross-lane signal graph is
-            // returned intact instead of becoming a partial native submission.
-            return MultiQueueSubmitOutcome::Rejected {
-                error: Error::WrongDevice,
-                packet,
-            };
+                if signal.device != self.device.id
+                    || signal.producer.plan.device != self.device.id
+                    || signal.consumer.plan.device != self.device.id
+                    || signal.producer_lane.device != self.device.id
+                    || signal.consumer_lane.device != self.device.id
+                {
+                    return Err(Error::WrongDevice);
+                }
+                if signal.consumer.plan != plan.id {
+                    return Err(Error::InvalidState);
+                }
+                let consumer = plan
+                    .steps
+                    .get(signal.consumer.index as usize)
+                    .ok_or(Error::InvalidState)?;
+                if consumer.lane != signal.consumer_lane
+                    || self
+                        .device
+                        .wait_route(signal.producer_lane, signal.consumer_lane)
+                        == WaitRoute::Unsupported
+                {
+                    return Err(Error::WrongLane);
+                }
+            }
+            Ok(())
+        };
+        if let Err(error) = validate() {
+            return MultiQueueSubmitOutcome::Rejected { error, packet };
         }
         // SAFETY: packet validation above established this queue's device ownership.
         unsafe { B::submit_multi(&self.device.native, packet) }

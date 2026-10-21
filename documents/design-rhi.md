@@ -15,6 +15,12 @@ surface actions. It lowers them to a selected native API and reports acceptance,
 failure, presentation, and completion facts. Keeping that boundary below the
 RenderGraph avoids two competing schedulers or resource-state planners.
 
+RenderGraph is the intended consumer. API ergonomics means preserving its
+compiled execution structure with minimal conversion, not minimizing example
+source length. Explicit steps, waits, lanes, and completion selection carry
+necessary execution facts. Standalone frame helpers and termination policy
+belong to the examples; they do not add scheduling or convenience APIs to Core.
+
 | Owner | Architectural responsibility |
 | --- | --- |
 | Host and platform adapter | Window/canvas ownership, borrowed native handles, event delivery, resize, foreground/background, and restoration policy |
@@ -85,6 +91,16 @@ steps. Its unsafe compiled-plan boundary requires a realizable layout; RHI
 does not sort another DAG or infer resource hazards. A backend may reject plan
 shapes that its native path cannot execute.
 
+`PlanId` and `StepId` name reusable topology, not an individual execution.
+Completion points and native signal tokens carry facts about actual submitted
+work. A multi-queue signal's identity metadata is read-only after native creation;
+when plans overlap, the caller must associate each token with its intended
+producer and consumer executions. Static step equality cannot prove that
+association. Core validates device, topology, lane, and route facts without
+maintaining an execution registry or inferring cross-submission dependencies.
+No current native backend implements the optional multi-queue signal SPI;
+mock contract tests must not be read as native multi-queue conformance.
+
 Completion selection belongs to each execution, independently of plan topology.
 A completion point is host-observable evidence; it is not interchangeable with
 a GPU queue wait. Receipts expose accepted steps and completion coverage by
@@ -154,6 +170,22 @@ example integration code rather than Core policy. Native shader artifacts are
 generated inputs, not separately maintained scene implementations. Explicit
 visual fallbacks demonstrate a scene on a smaller capability set without
 claiming that the backend implements the missing feature.
+
+Example recording returns the native work and any pending resource-state commit
+separately. The deferred host publishes that commit only after successful
+acceptance and its deliberately serial completion wait. Partial or uncertain
+acceptance does not permit reuse of speculative state: the example retains the
+full outcome, drains issued work, and terminates the failed frame. A production
+RenderGraph can instead use the accepted prefix and its own recovery policy.
+
+Frame-local attachments and readback tickets stay in the scene through actual
+completion. Immediate execution needs the same lifetime proof even though no
+deferred submission occurs. Native host teardown drains before dropping the
+scene. Browser examples explicitly drain on their normal exit; cancellation or
+failure without completion proof traps without unwinding the in-flight scene.
+The host must discard that failed WASM instance. A failed idle wait is not
+completion evidence. This conservative example policy is not an RHI device-loss
+or resource-retirement manager.
 
 ### `crates/dx12`: explicit native command lists and fence ownership
 
@@ -361,6 +393,16 @@ expressible; only implemented per-device routes establish support. Descriptor-
 specific limits remain checked at creation or execution. Capability answers
 support workload selection rather than merely describing what the upstream
 native API could theoretically do.
+
+Some optional vocabulary still lacks a complete usable native route. Standalone
+texture clear is unsupported by current backends, and its legacy descriptor
+does not express depth/stencil values or array-layer ranges. Native encoder
+interop lacks a target-encoder path, and external textures lack a complete
+public view/binding chain. These require a real consumer and a complete RHI
+contract before implementation, rather than renderer-side emulation or partial
+capability claims. Generic device-loss state queries likewise remain a lifecycle
+design target; `DeviceLost` errors and backend-specific loss handling do not
+establish a universal status/notification protocol.
 
 ### Binding bounds are caller intent, validated against native limits
 

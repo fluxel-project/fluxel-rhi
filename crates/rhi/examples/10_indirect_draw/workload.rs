@@ -225,15 +225,14 @@ impl<B: IndirectWorkloadBackend> Workload<B> {
         image: &SurfaceImage<B>,
         extent: [u32; 2],
         time: f32,
-    ) -> Result<RecordedWork<B>>
+    ) -> Result<(RecordedWork<B>, FrameCommit)>
     where
         B: IndirectBackend,
     {
         let mut encoder = d.encoder(self.lane)?;
         let commit = self.encode(&mut encoder, d, image, extent, time)?;
         let work = encoder.finish()?;
-        self.commit_frame(commit);
-        Ok(work)
+        Ok((work, commit))
     }
 
     /// Issues the shared scene through the supplied deferred or immediate

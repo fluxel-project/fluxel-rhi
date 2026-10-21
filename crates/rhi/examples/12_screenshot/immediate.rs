@@ -33,7 +33,8 @@ fn issue_frame(
     screenshot: &mut Screenshot<Gl>,
     image: SurfaceImage<Gl>,
     capture: bool,
-) -> Result<(CompletionPoint<Gl>, Option<ReadbackTicket<Gl>>)> {
+) -> Result<CompletionPoint<Gl>> {
+    screenshot.ensure_ticket_available()?;
     let ordinal = NEXT_PLAN
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             value.checked_add(1)
@@ -66,8 +67,9 @@ fn issue_frame(
     let mut session = unsafe { device.immediate(plan, CompletionRequest::End)? };
     let mut commands = session.begin_commands().map_err(run_error)?;
     let ticket = screenshot.encode(commands.commands(), &image, capture)?;
+    screenshot.retain_ticket(ticket)?;
     match commands.close() {
-        ImmediateRunOutcome::Issued(_) => {}
+        ImmediateRunOutcome::Issued(_) => screenshot.commit_frame(capture),
         outcome => return Err(run_error(outcome)),
     }
     match session.present(PresentBinding::new(image)) {
@@ -76,7 +78,7 @@ fn issue_frame(
         ImmediatePresentResult::Rejected { error, .. } => return Err(error),
     }
     let point = utils::immediate_end_checkpoint(session.finish())?;
-    Ok((point, ticket))
+    Ok(point)
 }
 
 #[cfg(any(windows, all(target_os = "linux", feature = "native-gles-egl")))]
@@ -124,12 +126,11 @@ pub(super) fn run() -> Result<()> {
             let mut slot = screenshot.borrow_mut();
             let (workload, _) = slot.as_mut().ok_or(Error::InvalidState)?;
             let capture = capture_requested && !*captured_frame.borrow();
-            let (point, ticket) = issue_frame(device, lane, workload, image, capture)?;
-            if let Some(ticket) = ticket {
+            let point = issue_frame(device, lane, workload, image, capture)?;
+            utils::block_on(device.wait_completion(&point))?;
+            if let Some(ticket) = workload.take_completed_ticket() {
                 utils::block_on(workload.save_ppm_after(device, ticket, &point, "screenshot.ppm"))?;
                 *captured_frame.borrow_mut() = true;
-            } else {
-                utils::block_on(device.wait_completion(&point))?;
             }
             Ok(())
         },
@@ -190,11 +191,12 @@ pub(super) async fn run_webgl2(canvas: web_sys::HtmlCanvasElement, frames: u32) 
     let mut screenshot =
         Screenshot::<Gl>::new_with_surface_format(&device, lane, extent, TextureFormat::Rgba8Unorm)
             .await?;
+    let scope = utils::GpuScope::new(&device);
     for frame in 0..frames {
         let image = surface.acquire().await?;
-        let (point, ticket) = issue_frame(&device, lane, &mut screenshot, image, frame == 0)?;
+        let point = issue_frame(&device, lane, &mut screenshot, image, frame == 0)?;
         device.wait_completion(&point).await?;
-        if let Some(ticket) = ticket {
+        if let Some(ticket) = screenshot.take_completed_ticket() {
             // SAFETY: `point` is the End checkpoint returned by this exact
             // immediate session and was awaited immediately above.
             let data = unsafe { device.read_after(ticket, &point).await? };
@@ -216,6 +218,7 @@ pub(super) async fn run_webgl2(canvas: web_sys::HtmlCanvasElement, frames: u32) 
             }
         }
     }
+    scope.finish().await;
     Ok(())
 }
 

@@ -1,15 +1,20 @@
 # Fluxel RHI
 
-Fluxel RHI is the GPU execution layer of Fluxel. It creates native resources,
+Fluxel RHI is the GPU execution layer consumed by Fluxel's RenderGraph. It creates native resources,
 executes caller-planned work, presents surface images, and reports completion.
 RenderGraph and Renderer own scheduling, hazard analysis, frame policy, and
 resource retirement; RHI supplies the native mechanisms and observable results
 that those decisions require.
 
-Applications select a concrete backend at initialization. `Device<B>`, resources,
+Renderer integrations select a concrete backend at initialization. `Device<B>`, resources,
 encoders, and recorded work retain that type. Device identity checks catch
 cross-device use even when two devices use the same backend. Capabilities remain
 specific to the actual device and requested descriptor.
+
+The integration criterion is whether a compiled RenderGraph plan maps directly
+to RHI execution without rebuilding dependencies or transferring scheduling and
+retirement policy into RHI. Examples are conformance workloads, not a reason to
+replace explicit steps, waits, lanes, or completion facts with application APIs.
 
 ## Workspace
 

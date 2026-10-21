@@ -180,9 +180,11 @@ pub(super) async fn run_webgl2(canvas: web_sys::HtmlCanvasElement, frames: u32) 
     let mut surface = Gl::surface(&device)?;
     surface.configure(&config).await?;
     let workload = DynamicUniforms::new(&device, lane, config.format, extent).await?;
+    let scope = super::utils::GpuScope::new(&device);
     for frame in 0..frames {
         let image = surface.acquire().await?;
         issue_frame(&device, lane, &workload, image, extent, frame as f32 / 60.0)?;
     }
+    scope.finish().await;
     Ok(())
 }

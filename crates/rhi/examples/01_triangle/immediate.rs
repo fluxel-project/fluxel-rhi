@@ -169,9 +169,11 @@ pub(super) async fn run_browser(canvas: web_sys::HtmlCanvasElement, frames: u32)
     };
     surface.configure(&config).await?;
     let triangle = Triangle::new(&device, lane, format).await?;
+    let scope = utils::GpuScope::new(&device);
     for _ in 0..frames {
         let image = surface.acquire().await?;
         issue_gl_frame(&device, lane, &triangle, image, extent)?;
     }
+    scope.finish().await;
     Ok(())
 }

@@ -19,6 +19,8 @@ mod binding_arrays;
 
 #[path = "tests/ergonomics.rs"]
 mod ergonomics;
+#[path = "tests/execution_contract.rs"]
+mod execution_contract;
 #[path = "tests/multiqueue_validation.rs"]
 mod multiqueue_validation;
 #[path = "tests/query_validation.rs"]

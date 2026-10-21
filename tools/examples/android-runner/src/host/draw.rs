@@ -6,6 +6,7 @@ use super::*;
 impl App {
     pub(super) fn draw(&mut self) -> Result<()> {
         let gpu = self.gpu.as_mut().ok_or(Error::SurfaceLost)?;
+        let _scope = utils::GpuScope::new(&gpu.device);
         #[cfg(feature = "demo15")]
         if gpu.scene.extent() != gpu.extent {
             utils::block_on(gpu.device.wait_idle())?;
@@ -39,9 +40,12 @@ impl App {
             #[cfg(feature = "demo12")]
             {
                 let frame = gpu.scene.record(&gpu.device, &image, self.frames == 0)?;
-                let point = submission::submit_frame(&gpu.device, gpu.lane, frame.work, image)?;
+                gpu.scene.retain_ticket(frame.ticket)?;
+                let point =
+                    utils::submit_and_present_point(&gpu.device, gpu.lane, frame.work, image)?;
+                gpu.scene.commit_frame(self.frames == 0);
                 utils::block_on(gpu.device.wait_completion(&point))?;
-                if let Some(ticket) = frame.ticket {
+                if let Some(ticket) = gpu.scene.take_completed_ticket() {
                     let path = self.capture_path.as_ref().ok_or(Error::InvalidState)?;
                     std::fs::create_dir_all(path.parent().ok_or(Error::InvalidState)?)
                         .map_err(|error| Error::Backend(error.to_string()))?;
@@ -68,7 +72,7 @@ impl App {
             #[cfg(not(feature = "demo03"))]
             let work = gpu.scene.record(&gpu.device, &image, gpu.extent)?;
             #[cfg(feature = "demo06")]
-            let work = gpu.scene.record(&gpu.device, &image, gpu.extent)?;
+            let (work, commit) = gpu.scene.record(&gpu.device, &image, gpu.extent)?;
             #[cfg(feature = "demo07")]
             let work = gpu.scene.record(
                 &gpu.device,
@@ -77,16 +81,16 @@ impl App {
                 gpu.time.elapsed().as_secs_f32(),
             )?;
             #[cfg(feature = "demo08")]
-            let work = gpu.scene.record(
+            let (work, commit) = gpu.scene.record(
                 &gpu.device,
                 &image,
                 gpu.extent,
                 gpu.time.elapsed().as_secs_f32(),
             )?;
             #[cfg(feature = "demo09")]
-            let work = gpu.scene.record(&gpu.device, &image, gpu.extent)?;
+            let (work, commit) = gpu.scene.record(&gpu.device, &image, gpu.extent)?;
             #[cfg(feature = "demo10")]
-            let work = gpu.scene.record(
+            let (work, commit) = gpu.scene.record(
                 &gpu.device,
                 &image,
                 gpu.extent,
@@ -96,11 +100,12 @@ impl App {
             let frame = gpu.scene.record(&gpu.device, &image, gpu.extent)?;
             #[cfg(feature = "demo11")]
             {
-                let point = submission::submit_frame(&gpu.device, gpu.lane, frame.work, image)?;
-                if let Some(ticket) = frame.ticket {
+                gpu.scene.retain_ticket(frame.ticket)?;
+                let point =
+                    utils::submit_and_present_point(&gpu.device, gpu.lane, frame.work, image)?;
+                utils::block_on(gpu.device.wait_completion(&point))?;
+                if let Some(ticket) = gpu.scene.take_completed_ticket() {
                     gpu.scene.consume(&gpu.device, ticket, &point)?;
-                } else {
-                    utils::block_on(gpu.device.wait_completion(&point))?;
                 }
             }
             #[cfg(feature = "demo02")]
@@ -132,6 +137,15 @@ impl App {
             )?;
             #[cfg(not(any(feature = "demo11", feature = "demo12")))]
             utils::submit_and_present(&gpu.device, gpu.lane, work, image)?;
+            #[cfg(any(feature = "demo05", feature = "demo07"))]
+            gpu.scene.commit_frame();
+            #[cfg(any(
+                feature = "demo06",
+                feature = "demo08",
+                feature = "demo09",
+                feature = "demo10"
+            ))]
+            gpu.scene.commit_frame(commit);
             #[cfg(feature = "demo13")]
             if uploaded {
                 gpu.scene.mark_uploaded();
@@ -191,9 +205,13 @@ impl App {
                 gpu.scene
                     .encode(&gpu.device, &image, commands.commands(), gpu.extent)?;
             #[cfg(feature = "demo12")]
-            let ticket = gpu
-                .scene
-                .encode(commands.commands(), &image, self.frames == 0)?;
+            {
+                gpu.scene.ensure_ticket_available()?;
+                let ticket = gpu
+                    .scene
+                    .encode(commands.commands(), &image, self.frames == 0)?;
+                gpu.scene.retain_ticket(ticket)?;
+            }
             #[cfg(all(
                 not(feature = "demo02"),
                 not(feature = "demo03"),
@@ -245,9 +263,13 @@ impl App {
                 gpu.time.elapsed().as_secs_f32(),
             )?;
             #[cfg(feature = "demo11")]
-            let ticket =
-                gpu.scene
-                    .encode_scene(&gpu.device, commands.commands(), &image, gpu.extent)?;
+            {
+                gpu.scene.ensure_ticket_available()?;
+                let ticket =
+                    gpu.scene
+                        .encode_scene(&gpu.device, commands.commands(), &image, gpu.extent)?;
+                gpu.scene.retain_ticket(ticket)?;
+            }
             #[cfg(feature = "demo02")]
             gpu.scene.issue(
                 commands.commands(),
@@ -275,9 +297,13 @@ impl App {
                 gpu.extent,
                 gpu.time.elapsed().as_secs_f32(),
             )?;
-            if !matches!(commands.close(), ImmediateRunOutcome::Issued(_)) {
-                return Err(Error::InvalidState);
+            match commands.close() {
+                ImmediateRunOutcome::Issued(_) => {}
+                ImmediateRunOutcome::Failed { error, .. }
+                | ImmediateRunOutcome::Indeterminate { error, .. } => return Err(error),
             }
+            #[cfg(feature = "demo12")]
+            gpu.scene.commit_frame(self.frames == 0);
             #[cfg(any(feature = "demo14", feature = "demo15"))]
             if uploaded {
                 gpu.scene.mark_uploaded();
@@ -288,7 +314,7 @@ impl App {
             }
             #[cfg(feature = "demo06")]
             gpu.scene.commit_frame(initialized);
-            #[cfg(feature = "demo07")]
+            #[cfg(any(feature = "demo05", feature = "demo07"))]
             gpu.scene.commit_frame();
             #[cfg(feature = "demo08")]
             gpu.scene.commit_frame(commit);
@@ -298,15 +324,23 @@ impl App {
             gpu.scene.commit_frame(commit);
             #[cfg(feature = "demo03")]
             gpu.scene.mark_submitted();
-            if !matches!(
-                session.present(PresentBinding::new(image)),
-                ImmediatePresentResult::Run(ImmediateRunOutcome::Issued(_))
-            ) {
-                return Err(Error::InvalidState);
+            match session.present(PresentBinding::new(image)) {
+                ImmediatePresentResult::Run(ImmediateRunOutcome::Issued(_)) => {}
+                ImmediatePresentResult::Run(ImmediateRunOutcome::Failed { error, .. })
+                | ImmediatePresentResult::Run(ImmediateRunOutcome::Indeterminate {
+                    error, ..
+                })
+                | ImmediatePresentResult::Rejected { error, .. } => return Err(error),
             }
             let _prefix = match session.finish() {
                 ImmediateFinishOutcome::Issued(prefix) => prefix,
-                _ => return Err(Error::InvalidState),
+                ImmediateFinishOutcome::Failed(ImmediateRunOutcome::Failed { error, .. })
+                | ImmediateFinishOutcome::Failed(ImmediateRunOutcome::Indeterminate {
+                    error,
+                    ..
+                }) => return Err(error),
+                ImmediateFinishOutcome::Failed(ImmediateRunOutcome::Issued(_))
+                | ImmediateFinishOutcome::AlreadyReported => return Err(Error::InvalidState),
             };
             #[cfg(feature = "demo11")]
             {
@@ -316,10 +350,9 @@ impl App {
                     .next()
                     .map(|checkpoint| checkpoint.point)
                     .ok_or(Error::InvalidState)?;
-                if let Some(ticket) = ticket {
+                utils::block_on(gpu.device.wait_completion(&point))?;
+                if let Some(ticket) = gpu.scene.take_completed_ticket() {
                     gpu.scene.consume(&gpu.device, ticket, &point)?;
-                } else {
-                    utils::block_on(gpu.device.wait_completion(&point))?;
                 }
             }
             #[cfg(feature = "demo12")]
@@ -331,7 +364,7 @@ impl App {
                     .map(|checkpoint| checkpoint.point)
                     .ok_or(Error::InvalidState)?;
                 utils::block_on(gpu.device.wait_completion(&point))?;
-                if let Some(ticket) = ticket {
+                if let Some(ticket) = gpu.scene.take_completed_ticket() {
                     let path = self.capture_path.as_ref().ok_or(Error::InvalidState)?;
                     std::fs::create_dir_all(path.parent().ok_or(Error::InvalidState)?)
                         .map_err(|error| Error::Backend(error.to_string()))?;

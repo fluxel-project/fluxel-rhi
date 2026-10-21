@@ -8,11 +8,6 @@ mod gltf;
 #[path = "../utils/mod.rs"]
 mod utils;
 use fluxel_rhi::api::*;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
-static NEXT_PLAN: AtomicU64 = AtomicU64::new(1);
 const PLANE: &[u8] = include_bytes!("../assets/models/plane_z.gltf");
 const TEAPOT: &[u8] = include_bytes!("../assets/models/teapot.gltf");
 const SPHERE: &[u8] = include_bytes!("../assets/models/sphere.gltf");
@@ -51,6 +46,7 @@ pub trait OcclusionBackend: OcclusionWorkloadBackend + DeferredBackend {}
 impl<T> OcclusionBackend for T where T: OcclusionWorkloadBackend + DeferredBackend {}
 pub struct Workload<B: OcclusionWorkloadBackend> {
     lane: LaneId,
+    attachments: Option<Attachments<B>>,
     plane_vertices: Buffer<B>,
     plane_indices: Buffer<B>,
     teapot_vertices: Buffer<B>,
@@ -77,7 +73,23 @@ pub struct Workload<B: OcclusionWorkloadBackend> {
     occluder_pipeline: RasterPipeline<B>,
     queries: Option<QuerySet<B>>,
     results: Option<Buffer<B>>,
+    pending_ticket: Option<ReadbackTicket<B>>,
     visible: [bool; 2],
+}
+
+// The host waits for each frame before recording the next one. Keep both
+// texture and view alive until that completion is observed.
+struct Attachments<B: OcclusionWorkloadBackend> {
+    _display_depth: Texture<B>,
+    display_depth_view: TextureView<B>,
+    query: Option<QueryAttachments<B>>,
+}
+
+struct QueryAttachments<B: OcclusionWorkloadBackend> {
+    color: Texture<B>,
+    color_view: TextureView<B>,
+    _depth: Texture<B>,
+    depth_view: TextureView<B>,
 }
 pub struct Frame<B: OcclusionBackend> {
     pub work: RecordedWork<B>,
@@ -126,10 +138,13 @@ pub async fn run_webgpu_occlusion_query(
         for _ in 0..frames {
             let image = surface.acquire().await?;
             let Frame { work, ticket } = workload.record(&device, &image, extent)?;
-            let completion = submit(&device, lane, work, image)?;
-            workload
-                .consume_async(&device, ticket.ok_or(Error::InvalidState)?, &completion)
-                .await?;
+            workload.retain_ticket(ticket)?;
+            let completion =
+                utils::submit_and_present_point_async(&device, lane, work, image).await?;
+            let ticket = workload
+                .take_completed_ticket()
+                .ok_or(Error::InvalidState)?;
+            workload.consume_async(&device, ticket, &completion).await?;
         }
         Ok(())
     };
@@ -335,11 +350,12 @@ fn run<B: OcclusionBackend, H: utils::ExampleHost<B>>(host: H) -> Result<()> {
                 work: recorded,
                 ticket,
             } = w.record(d, &image, extent)?;
+            w.retain_ticket(ticket)?;
             // The harness waits for the frame completion.  Keep the query
             // result path explicit here so the next frame's visibility is
             // based on native query evidence.
-            let point = submit(d, lane, recorded, image)?;
-            if let Some(ticket) = ticket {
+            let point = utils::submit_and_present_point(d, lane, recorded, image)?;
+            if let Some(ticket) = w.take_completed_ticket() {
                 w.consume(d, ticket, &point)
             } else {
                 utils::block_on(d.wait_completion(&point))
@@ -400,73 +416,4 @@ fn main() {
 )))]
 fn main() {
     eprintln!("11_occlusion_query requires a supported native or browser backend")
-}
-fn submit<B: DeferredBackend>(
-    d: &Device<B>,
-    lane: LaneId,
-    work: RecordedWork<B>,
-    image: SurfaceImage<B>,
-) -> Result<CompletionPoint<B>> {
-    let id = PlanId {
-        device: d.id(),
-        ordinal: NEXT_PLAN.fetch_add(1, Ordering::Relaxed),
-    };
-    // SAFETY: commands and present are consecutive steps on `lane`; their
-    // wait names the same plan and establishes the required queue ordering.
-    let plan = unsafe {
-        SubmissionPlan::from_compiled(
-            id,
-            Arc::from([
-                StepDesc {
-                    lane,
-                    kind: StepKind::Commands,
-                    waits: vec![],
-                },
-                StepDesc {
-                    lane,
-                    kind: StepKind::Present,
-                    waits: vec![StepWait {
-                        previous: StepId { plan: id, index: 0 },
-                        destination: AccessScope {
-                            stages: StageMask::ALL_COMMANDS,
-                            accesses: AccessMask::ALL,
-                        },
-                    }],
-                },
-            ]),
-        )
-    };
-    // SAFETY: `work` and `image` were created on `d`; the caller retains scene
-    // resources through the returned end checkpoint, so native work outlives
-    // neither its device nor its referenced resources.
-    match unsafe {
-        d.queue().submit(SubmitPacket {
-            steps: vec![
-                BoundStep {
-                    step: plan.step(0),
-                    payload: StepPayload::Commands(vec![work]),
-                },
-                BoundStep {
-                    step: plan.step(1),
-                    payload: StepPayload::Present(PresentBinding::new(image)),
-                },
-            ],
-            plan,
-            completion: CompletionRequest::End,
-        })
-    } {
-        SubmitOutcome::Accepted(r)
-            if r.accepted.len() == 2 && r.presents.len() == 1 && r.presents[0].accepted =>
-        {
-            r.checkpoints
-                .into_iter()
-                .next()
-                .map(|x| x.point)
-                .ok_or(Error::InvalidState)
-        }
-        SubmitOutcome::Accepted(_) => Err(Error::InvalidState),
-        SubmitOutcome::Rejected { error, .. }
-        | SubmitOutcome::PartiallyAccepted { error, .. }
-        | SubmitOutcome::Indeterminate { error, .. } => Err(error),
-    }
 }

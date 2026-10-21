@@ -76,6 +76,7 @@ pub(super) async fn run_webgl2(canvas: web_sys::HtmlCanvasElement, frames: u32) 
         })
         .await?;
     let mut workload = Workload::<Gl>::new(&device, lane, format, extent).await?;
+    let scope = utils::GpuScope::new(&device);
     for frame in 0..frames {
         let image = surface.acquire().await?;
         let ordinal = NEXT_PLAN
@@ -135,6 +136,7 @@ pub(super) async fn run_webgl2(canvas: web_sys::HtmlCanvasElement, frames: u32) 
             .ok_or(Error::InvalidState)?;
         device.wait_completion(&point).await?;
     }
+    scope.finish().await;
     Ok(())
 }
 

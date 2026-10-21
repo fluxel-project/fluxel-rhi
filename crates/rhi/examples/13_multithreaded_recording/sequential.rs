@@ -21,6 +21,8 @@ pub struct Sequential<B: SequentialExampleBackend> {
     counts: [u32; 2],
     uploaded: bool,
     frame: u32,
+    // Replaced only after the preceding frame has completed.
+    depth: Option<([u32; 2], Texture<B>, TextureView<B>)>,
 }
 
 impl<B: SequentialExampleBackend> Sequential<B> {
@@ -179,6 +181,7 @@ impl<B: SequentialExampleBackend> Sequential<B> {
             counts,
             uploaded: false,
             frame: 0,
+            depth: None,
         })
     }
     pub fn encode(
@@ -198,7 +201,15 @@ impl<B: SequentialExampleBackend> Sequential<B> {
         e.write_buffer(&self.transforms, 0, &transforms(extent, self.frame))?;
         e.write_buffer(&self.star_uniform, 0, &matrix_bytes(star_matrix(extent)))?;
         self.frame = self.frame.wrapping_add(1);
-        let (depth, view) = depth(d, extent)?;
+        if self
+            .depth
+            .as_ref()
+            .is_none_or(|(size, _, _)| *size != extent)
+        {
+            let (texture, view) = depth(d, extent)?;
+            self.depth = Some((extent, texture, view));
+        }
+        let view = &self.depth.as_ref().ok_or(Error::InvalidState)?.2;
         let colors = [Some(ColorAttachment {
             view: AttachmentView::Surface(image),
             resolve_target: None,
@@ -209,7 +220,7 @@ impl<B: SequentialExampleBackend> Sequential<B> {
             label: Some("13 sequential primary pass"),
             colors: &colors,
             depth_stencil: Some(DepthStencilAttachment {
-                view: AttachmentView::Texture(&view),
+                view: AttachmentView::Texture(view),
                 depth: Some((LoadOp::Clear(1.), StoreOp::Discard)),
                 stencil: None,
                 depth_read_only: false,
@@ -253,7 +264,6 @@ impl<B: SequentialExampleBackend> Sequential<B> {
             p.draw_indexed(0..self.counts[0], 0, 0..1)?;
         }
         p.finish()?;
-        let _ = depth;
         Ok(uploaded_geometry)
     }
 

@@ -89,6 +89,9 @@ pub struct Multithreaded<B: SecondaryExampleBackend> {
     stars: RasterPipeline<B>,
     inheritance: SecondaryRasterDesc,
     frame: u32,
+    // The host waits for each frame before recording the next one.
+    depth: Option<([u32; 2], Texture<B>, TextureView<B>)>,
+    packets: Vec<SecondaryRasterWork<B>>,
 }
 impl<B: SecondaryExampleBackend> Multithreaded<B> {
     pub async fn new(d: &Device<B>, lane: LaneId, format: TextureFormat) -> Result<Self> {
@@ -263,6 +266,8 @@ impl<B: SecondaryExampleBackend> Multithreaded<B> {
                 multiview_mask: None,
             },
             frame: 0,
+            depth: None,
+            packets: Vec::new(),
         })
     }
     pub fn record(
@@ -354,12 +359,20 @@ impl<B: SecondaryExampleBackend> Multithreaded<B> {
             load: LoadOp::Clear(ClearColor::Float([0., 0., 0., 1.])),
             store: StoreOp::Store,
         })];
-        let (depth, depth_view) = depth(d, extent)?;
+        if self
+            .depth
+            .as_ref()
+            .is_none_or(|(size, _, _)| *size != extent)
+        {
+            let (texture, view) = depth(d, extent)?;
+            self.depth = Some((extent, texture, view));
+        }
+        let depth_view = &self.depth.as_ref().ok_or(Error::InvalidState)?.2;
         let mut pass = e.begin_raster(&RasterPassDesc {
             label: Some("13 primary UFO bundle executor"),
             colors: &colors,
             depth_stencil: Some(DepthStencilAttachment {
-                view: AttachmentView::Texture(&depth_view),
+                view: AttachmentView::Texture(depth_view),
                 depth: Some((LoadOp::Clear(1.0), StoreOp::Discard)),
                 stencil: None,
                 depth_read_only: false,
@@ -380,10 +393,9 @@ impl<B: SecondaryExampleBackend> Multithreaded<B> {
             domain.execute(&mut pass, packet)?;
         }
         pass.finish()?;
-        // The view retains the texture until native recording has retained the
-        // attachment.  Keep the local binding alive through `finish` as well.
-        let _ = depth;
         let work = e.finish()?;
+        // Retain secondary work and its attachment through the host completion wait.
+        self.packets = packets;
         Ok((work, upload_geometry))
     }
 
