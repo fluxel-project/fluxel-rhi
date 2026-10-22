@@ -231,10 +231,32 @@ where
     let particle_blas = ray.create_acceleration(&particle_desc)?;
     let ps = ray.sizes(&particle_desc)?;
     let pscratch = buffer(ps.scratch_bytes, BufferUsage::ACCEL_SCRATCH)?;
+    let quad_data = bytes(&super::particle_acceleration::quad_vertices(sim));
+    let quad_buffer = buffer(
+        quad_data.len() as u64,
+        BufferUsage::ACCEL_BUILD_INPUT | BufferUsage::COPY_DST,
+    )?;
+    let quad_desc = AccelerationDesc {
+        input: AccelerationInput::Blas(vec![AccelerationGeometry::Triangles {
+            vertices: quad_buffer.clone(),
+            vertex_offset: 0,
+            vertex_count: (particles::MAX_PARTICLES * 6) as u32,
+            vertex_format: VertexFormat::Float32(3),
+            stride: 12,
+            indices: None,
+            opaque: false,
+        }]),
+        fast_trace: true,
+        allow_update: false,
+    };
+    let quad_blas = ray.create_acceleration(&quad_desc)?;
+    let qs = ray.sizes(&quad_desc)?;
+    let qscratch = buffer(qs.scratch_bytes, BufferUsage::ACCEL_SCRATCH)?;
     let tlas_desc = AccelerationDesc {
         input: AccelerationInput::Tlas(super::particle_acceleration::instances(
             &blas,
             &particle_blas,
+            &quad_blas,
             sim,
         )),
         fast_trace: true,
@@ -403,6 +425,7 @@ where
     let mut enc = device.encoder(lane)?;
     enc.write_buffer(&vertex, 0, &vertex_data)?;
     enc.write_buffer(&bounds, 0, &bounds_data)?;
+    enc.write_buffer(&quad_buffer, 0, &quad_data)?;
     enc.write_buffer(&normal, 0, &normal_data)?;
     enc.write_buffer(&particle, 0, &particle_data)?;
     enc.write_buffer(&constants, 0, &cb)?;
@@ -423,6 +446,22 @@ where
         })
     };
     enc.transition_resources(&[
+        barrier(
+            &quad_buffer,
+            quad_data.len() as u64,
+            BufferUses {
+                stages: StageMask::ACCELERATION,
+                accesses: AccessMask::ACCEL_READ,
+            },
+        ),
+        barrier(
+            &qscratch,
+            qs.scratch_bytes,
+            BufferUses {
+                stages: StageMask::ACCELERATION,
+                accesses: AccessMask::ACCEL_WRITE,
+            },
+        ),
         barrier(
             &bounds,
             24,
@@ -505,6 +544,18 @@ where
         ),
     ])?;
     ray.build(&mut enc, &blas, &bscratch, &blas_desc)?;
+    ray.build(&mut enc, &quad_blas, &qscratch, &quad_desc)?;
+    enc.transition_resources(&[ResourceTransition::Acceleration {
+        target: &quad_blas,
+        before: AccessScope {
+            stages: StageMask::ACCELERATION,
+            accesses: AccessMask::ACCEL_WRITE,
+        },
+        after: AccessScope {
+            stages: StageMask::ACCELERATION,
+            accesses: AccessMask::ACCEL_READ,
+        },
+    }])?;
     ray.build(&mut enc, &particle_blas, &pscratch, &particle_desc)?;
     enc.transition_resources(&[ResourceTransition::Acceleration {
         target: &particle_blas,

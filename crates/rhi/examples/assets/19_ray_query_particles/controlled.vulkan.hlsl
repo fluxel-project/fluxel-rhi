@@ -66,8 +66,7 @@ float3 rotateByQuaternion(float4 q, float3 v) {
     return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
 }
 float4 particleLayer(float3 origin, float3 direction, float maxT, float pathLength, bool secondary) {
-    // Primary geometry is evaluated in software; secondary particles use the
-    // procedural candidates from the particle instance mask, as in the source.
+    // Primary quads and secondary procedural bounds have separate instance masks.
     // The reference defaults to four MLAB fragments. Each entry stores
     // premultiplied color, transmittance, and ray distance.
     float4 layers[4];
@@ -82,22 +81,19 @@ float4 particleLayer(float3 origin, float3 direction, float maxT, float pathLeng
     particleRay.TMin = 0;
     particleRay.TMax = maxT;
     RayQuery<RAY_FLAG_NONE> particleQuery;
-    if (secondary) particleQuery.TraceRayInline(scene, RAY_FLAG_NONE, 4, particleRay);
-    uint i = 0;
-    while (secondary ? particleQuery.Proceed() : i < dimensions.z) {
+    particleQuery.TraceRayInline(scene, RAY_FLAG_NONE, secondary ? 4 : 2, particleRay);
+    while (particleQuery.Proceed()) {
         uint particleIndex;
+        float t;
+        float2 uv;
         if (secondary) {
             if (particleQuery.CandidateType() != CANDIDATE_PROCEDURAL_PRIMITIVE) continue;
             particleIndex = particleQuery.CandidateInstanceID();
             if (particleIndex >= dimensions.z) continue;
-        } else {
-            particleIndex = i++;
-        }
-        Particle p = particles[particleIndex];
-        float3 right = cos(p.rotation.x) * cameraRight.xyz + sin(p.rotation.x) * cameraUp.xyz;
-        float3 up = -sin(p.rotation.x) * cameraRight.xyz + cos(p.rotation.x) * cameraUp.xyz;
-        float3 normal = normalize(cross(right, up));
-        if (secondary) {
+            Particle p = particles[particleIndex];
+            float3 right = cos(p.rotation.x) * cameraRight.xyz + sin(p.rotation.x) * cameraUp.xyz;
+            float3 up = -sin(p.rotation.x) * cameraRight.xyz + cos(p.rotation.x) * cameraUp.xyz;
+            float3 normal = normalize(cross(right, up));
             float3 virtualCamera = origin - direction * pathLength;
             float3 facingNormal = normalize(virtualCamera - p.centerRadius.xyz);
             if (dot(normal, facingNormal) < 0.0) normal = -normal;
@@ -107,14 +103,26 @@ float4 particleLayer(float3 origin, float3 direction, float maxT, float pathLeng
             right = rotateByQuaternion(q, right);
             up = rotateByQuaternion(q, up);
             normal = facingNormal;
+            float denominator = dot(direction, normal);
+            if (abs(denominator) < 1e-6) continue;
+            t = dot(p.centerRadius.xyz - origin, normal) / denominator;
+            if (t <= 0 || t >= maxT) continue;
+            float3 delta = origin + direction * t - p.centerRadius.xyz;
+            uv = float2(dot(delta, right), -dot(delta, up)) / p.centerRadius.w * 0.5 + 0.5;
+            if (any(uv < 0) || any(uv >= 1)) continue;
+        } else {
+            if (particleQuery.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
+            uint primitive = particleQuery.CandidatePrimitiveIndex();
+            particleIndex = primitive / 2;
+            if (particleIndex >= dimensions.z) continue;
+            t = particleQuery.CandidateTriangleRayT();
+            float2 bary = particleQuery.CandidateTriangleBarycentrics();
+            // Quad vertices are (top-left, top-right, bottom-right) and
+            // (top-left, bottom-right, bottom-left), respectively.
+            uv = (primitive & 1) == 0 ? float2(bary.x + bary.y, bary.y)
+                                      : float2(bary.x, bary.x + bary.y);
         }
-        float denominator = dot(direction, normal);
-        if (abs(denominator) < 1e-6) continue;
-        float t = dot(p.centerRadius.xyz - origin, normal) / denominator;
-        if (t <= 0 || t >= maxT) continue;
-        float3 delta = origin + direction * t - p.centerRadius.xyz;
-        float2 uv = float2(dot(delta, right), -dot(delta, up)) / p.centerRadius.w * 0.5 + 0.5;
-        if (any(uv < 0) || any(uv >= 1)) continue;
+        Particle p = particles[particleIndex];
         float footprint = (pathLength + t) * (0.7853981634 / 709.0);
         float mip = log2(256.0 * footprint / p.centerRadius.w);
         float4 smoke = sampleSmoke(uv, mip);

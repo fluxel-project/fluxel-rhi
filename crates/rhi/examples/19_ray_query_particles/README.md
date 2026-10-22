@@ -22,9 +22,10 @@ region. The reference captures must have the same dimensions and fixed camera.
 The sample uses the original scene and environment map, smooth mesh normals,
 particle simulation and smoke texture, the default four-fragment MLAB blending,
 and linear-to-sRGB output conversion. This is a visual subset, not an exact
-port: primary smoke uses software camera-facing plane intersections rather
-than the source triangle candidates. Secondary smoke uses a procedural AABB
-BLAS, per-particle TLAS instances, and inline ray-query candidates. Smoke uses a generated linear-space mip chain and ray-footprint selection.
+port: primary smoke uses a dynamically rebuilt triangle BLAS and inline
+non-opaque triangle candidates. Secondary smoke uses a procedural AABB BLAS,
+per-particle TLAS instances, and inline ray-query candidates. Smoke uses a
+generated linear-space mip chain and ray-footprint selection.
 Secondary reflections remain visually different from the source. It does not
 implement the UI or all original material and particle orientation modes. DX12
 and Vulkan use adapted HLSL shaders. Set

@@ -5,6 +5,7 @@ use fluxel_rhi::api::*;
 pub fn instances<B: Backend>(
     scene: &AccelerationStructure<B>,
     particle: &AccelerationStructure<B>,
+    quads: &AccelerationStructure<B>,
     sim: &particles::Simulation,
 ) -> Vec<AccelerationInstance<B>> {
     let mut instances = vec![AccelerationInstance {
@@ -15,6 +16,14 @@ pub fn instances<B: Backend>(
         shader_table_offset: 0,
         flags: AccelerationInstanceFlags::NONE,
     }];
+    instances.push(AccelerationInstance {
+        blas: quads.clone(),
+        transform: [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.]],
+        mask: 2,
+        custom_index: 0,
+        shader_table_offset: 0,
+        flags: AccelerationInstanceFlags::NONE,
+    });
     for (index, p) in sim.particles.iter().filter(|p| p.active).enumerate() {
         let r = p.radius;
         instances.push(AccelerationInstance {
@@ -30,7 +39,7 @@ pub fn instances<B: Backend>(
             flags: AccelerationInstanceFlags::NONE,
         });
     }
-    while instances.len() <= particles::MAX_PARTICLES {
+    while instances.len() < particles::MAX_PARTICLES + 2 {
         instances.push(AccelerationInstance {
             blas: particle.clone(),
             transform: [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.]],
@@ -41,4 +50,31 @@ pub fn instances<B: Backend>(
         });
     }
     instances
+}
+
+/// Expanded non-indexed triangles; unused slots are degenerate. Their order
+/// matches the compact particle information buffer and primitiveIndex / 2.
+pub fn quad_vertices(sim: &particles::Simulation) -> Vec<f32> {
+    let mut out = Vec::with_capacity(particles::MAX_PARTICLES * 18);
+    let camera_right = [0.7071, 0.0, -0.7071];
+    let camera_up = [-0.24184, 0.93969, -0.24184];
+    for p in sim.particles.iter().filter(|p| p.active) {
+        let (sin, cos) = p.rotation.sin_cos();
+        let right: [f32; 3] =
+            std::array::from_fn(|i| (cos * camera_right[i] + sin * camera_up[i]) * p.radius);
+        let up: [f32; 3] =
+            std::array::from_fn(|i| (-sin * camera_right[i] + cos * camera_up[i]) * p.radius);
+        for (x, y) in [
+            (-1., 1.),
+            (1., 1.),
+            (1., -1.),
+            (-1., 1.),
+            (1., -1.),
+            (-1., -1.),
+        ] {
+            out.extend((0..3).map(|i| p.position[i] + x * right[i] + y * up[i]));
+        }
+    }
+    out.resize(particles::MAX_PARTICLES * 18, 0.);
+    out
 }
