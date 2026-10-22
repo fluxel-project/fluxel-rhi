@@ -100,8 +100,8 @@ fn acceleration_capability_is_independent_of_ray_and_query() {
     ));
 }
 
-struct Mock;
-struct MockRay;
+pub(crate) struct Mock;
+pub(crate) struct MockRay;
 impl Backend for Mock {
     type NativeDevice = ();
     type NativeBuffer = ();

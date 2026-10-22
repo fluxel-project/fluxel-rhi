@@ -113,7 +113,7 @@ impl<B: ShaderBackend> Device<B> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::type_contract_tests::NativeShared;
+    use super::super::tests::ray_validation::Mock;
     use super::*;
     use std::{
         cell::Cell,
@@ -121,10 +121,10 @@ mod tests {
         task::{Context, Poll, Waker},
     };
     thread_local! { static ROUTES: Cell<usize> = const { Cell::new(0) }; }
-    impl ShaderBackend for NativeShared {
-        type DirectFuture<'a> = Ready<Result<Arc<()>>>;
-        type NagaFuture<'a> = Ready<Result<Arc<()>>>;
-        fn shader_route(_: &Arc<()>, _: &ShaderDesc) -> ShaderRoute {
+    impl ShaderBackend for Mock {
+        type DirectFuture<'a> = Ready<Result<()>>;
+        type NagaFuture<'a> = Ready<Result<()>>;
+        fn shader_route(_: &(), _: &ShaderDesc) -> ShaderRoute {
             ROUTES.with(|v| v.set(v.get() + 1));
             ShaderRoute::Direct(ShaderTarget {
                 format: ShaderFormat::Dxil,
@@ -133,14 +133,14 @@ mod tests {
             })
         }
         fn compile_direct<'a>(
-            _: &'a Arc<()>,
+            _: &'a (),
             _: &'a ShaderDesc,
             _: &'a ShaderTarget,
         ) -> Self::DirectFuture<'a> {
-            ready(Ok(Arc::new(())))
+            ready(Ok(()))
         }
         fn compile_naga<'a>(
-            _: &'a Arc<()>,
+            _: &'a (),
             _: &'a ShaderDesc,
             _: &'a ShaderTarget,
         ) -> Self::NagaFuture<'a> {
@@ -151,9 +151,9 @@ mod tests {
     fn ray_query_requirement_is_checked_before_shader_backend() {
         ROUTES.with(|v| v.set(0));
         let device = |supported| unsafe {
-            Device::<NativeShared>::from_native(
+            Device::<Mock>::from_native(
                 DeviceId::allocate().unwrap(),
-                Arc::new(()),
+                (),
                 DeviceCapabilities {
                     ray_query: supported,
                     ..Default::default()
