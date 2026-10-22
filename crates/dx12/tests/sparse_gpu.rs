@@ -344,7 +344,15 @@ fn all_mips_case(layers: u32, layer: u32) {
         view_formats: vec![],
     }) {
         Ok(texture) => texture,
-        Err(Error::Unsupported(_)) if layers > 1 => return,
+        Err(Error::Unsupported(reason)) if layers > 1 => {
+            assert!(matches!(
+                reason,
+                "DX12 sparse array mip smaller than tile"
+                    | "DX12 sparse packed array mip tail"
+                    | "DX12 sparse array mip layout"
+            ));
+            return;
+        }
         Err(error) => panic!("sparse texture creation failed: {error:?}"),
     };
     let tiling = sparse.tiling(&texture).unwrap();

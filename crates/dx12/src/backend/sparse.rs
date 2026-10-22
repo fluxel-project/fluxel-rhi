@@ -1,5 +1,7 @@
 //! Sparse texture allocations and queue mappings.
 use super::*;
+#[path = "sparse/array.rs"]
+mod array;
 use std::sync::Mutex;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::{
@@ -242,10 +244,10 @@ impl api::SparseBackend for Dx12 {
         if block_bytes.is_some() && desc.usage.contains(api::TextureUsage::RENDER_ATTACHMENT) {
             return Err(api::Error::Unsupported("DX12 sparse compressed attachment"));
         }
-        if (block_bytes.is_some()
+        if block_bytes.is_some()
             && (desc.extent[0] % 4 != 0
                 || desc.extent[1] % 4 != 0
-                || desc.usage.contains(api::TextureUsage::STORAGE_BINDING)))
+                || desc.usage.contains(api::TextureUsage::STORAGE_BINDING))
         {
             return Err(api::Error::Unsupported("DX12 sparse BC texture layout"));
         }
@@ -367,6 +369,9 @@ impl api::SparseBackend for Dx12 {
                 flags
             },
         };
+        if !is_3d {
+            array::validate_array_mips(device, desc, native, depth)?;
+        }
         let mut resource = None;
         // SAFETY: descriptor is fully initialized and result storage is valid.
         unsafe {

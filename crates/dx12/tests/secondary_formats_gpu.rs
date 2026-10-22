@@ -248,13 +248,16 @@ fn run(depth_format: TextureFormat) {
             layers: 0..1,
         },
         usage: StateTransition {
-            from: empty,
+            from: TextureUses {
+                stages: StageMask::FRAGMENT,
+                accesses: AccessMask::DEPTH_WRITE,
+            },
             to: TextureUses {
                 stages: StageMask::FRAGMENT,
                 accesses: AccessMask::DEPTH_WRITE,
             },
         },
-        layout: Some((ImageLayout::Common, ImageLayout::DepthStencilAttachment)),
+        layout: Some((ImageLayout::DepthStencilAttachment, ImageLayout::DepthStencilAttachment)),
         ownership: None,
     })])
     .unwrap();

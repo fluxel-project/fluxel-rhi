@@ -252,15 +252,15 @@ fn run(secondary_path: bool, mask: u32) {
         },
         usage: StateTransition {
             from: TextureUses {
-                stages: StageMask::EMPTY,
-                accesses: AccessMask::EMPTY,
+                stages: StageMask::FRAGMENT,
+                accesses: AccessMask::DEPTH_WRITE,
             },
             to: TextureUses {
                 stages: StageMask::FRAGMENT,
                 accesses: AccessMask::DEPTH_WRITE,
             },
         },
-        layout: Some((ImageLayout::Common, ImageLayout::DepthStencilAttachment)),
+        layout: Some((ImageLayout::DepthStencilAttachment, ImageLayout::DepthStencilAttachment)),
         ownership: None,
     })])
     .unwrap();
