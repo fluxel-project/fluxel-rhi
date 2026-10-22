@@ -1,0 +1,20 @@
+{
+  "candidate-count.bin": "516335f30b2672e96b27e6bd15ff1fe16ca5f1a923b327567014d9649e07065a",
+  "candidate-count.hlsl": "3ec2c30bf399ea66766c667423cfac26b80860b538b09474146b5c2c5bf2a5b9",
+  "capture.py": "8c58b9f9fd75157225ed0ba9f81197fdcea02b07633d256ccf3f4eeb56b23127",
+  "corrected-120.png": "4a0d31e3f4f0f0ad3aa8c5a1a2fdc2a6ef9177e6d6a3262819ce77165f2226f8",
+  "corrected-240.png": "aca6d1b1dc68d461ec11347fe19bec52c6cec8a776437917cb38aa9f27f00c09",
+  "corrected-360.png": "8c5931ba334c9f13b049e4f0e144cf7a862c52b43d9a10aeda19f53a1b945092",
+  "executable-sha256.json": "a15aace4bf305a168ba82d01d461ead7787b380f4860cd926c5ed13fad9f4b22",
+  "frame-360-state.txt": "11ba9bfe39e0d126f9106cd83c7888fae64d0af15a9537c00a27c9c09d979084",
+  "instrumented-stride0.patch": "7ab4c48a36c8db991a53e4fce0c49a3c963aaeeb4f70ef5f22ca3c5884c7816d",
+  "instrumented-stride24.cpp": "0d50288d801f3927ff8d152d5c327dae62b445bcdce390ac7583ef35dc6fb572",
+  "instrumented-stride24.patch": "2967e1d9e94fcde1fd7e4839b44fe4374d934d78733c7397448a6a478916b5c6",
+  "normal-shader.bin": "06acdb514b080965b1ba8040bf0f88bb6af405114dddff0d0ca9d6135b8c5751",
+  "README.md": "c74f8f742f6c6ea7eacdd7fdb2f3d3b7bf8066019c898878d2794e231ac609ba",
+  "stride0-count-repeated.png": "658dbcd975e6477388ed5dd71af15c627f75bce7f86a7b64a41e44d316711cc9",
+  "stride0-count.png": "658dbcd975e6477388ed5dd71af15c627f75bce7f86a7b64a41e44d316711cc9",
+  "stride0-tlas.txt": "ce0e0980897faf87ae37a85ecf42228338c2862be328c5291990d8e9a5d57292",
+  "stride24-count.png": "1c8694d91386f65b496da4a1ac79c0f4ea6493673125f0db6223d3e1c813d2b0",
+  "stride24-tlas.txt": "ce0e0980897faf87ae37a85ecf42228338c2862be328c5291990d8e9a5d57292"
+}

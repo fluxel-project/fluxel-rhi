@@ -14,9 +14,10 @@ cargo run -p fluxel-rhi --example 19_ray_query_particles --features examples
 ```
 
 The program writes `ray-query-particles-01.png` through `-03.png` to the
-current directory. The animation uses deterministic 1/60 second steps; the
-reference uses actual frame durations. `compare.py REFERENCE ACTUAL` requires
-Pillow and checks color error outside the reference UI and motion in the smoke
+current directory. Fixed-sequence mode uses deterministic 1/60 second steps;
+the original application otherwise uses actual frame durations.
+`compare.py REFERENCE ACTUAL` requires Pillow and checks color error outside
+the reference UI and motion in the smoke
 region. The reference captures must have the same dimensions and fixed camera.
 
 The sample uses the original scene and environment map, smooth mesh normals,
@@ -26,8 +27,13 @@ port: primary smoke uses a dynamically rebuilt triangle BLAS and inline
 non-opaque triangle candidates. Secondary smoke uses a procedural AABB BLAS,
 per-particle TLAS instances, and inline ray-query candidates. Smoke uses a
 generated linear-space mip chain and ray-footprint selection.
-Secondary reflections remain visually different from the source. It does not
-implement the UI or all original material and particle orientation modes. DX12
+On the tested AMD GPU, the unmodified NVIDIA sample's AABB stride 0 produced
+no visible secondary particle candidates. With only that reference stride set
+to 24 bytes, the three RHI frames have mean RGB errors of 0.885, 0.949 and
+0.855 outside the UI; they are still not pixel-identical. See the
+[source-bound comparison](../../../../documents/evidence/rhi-advanced-0.17/demo19-reference-stride/README.md).
+The sample does not implement the UI or all original material and particle
+orientation modes. DX12
 and Vulkan use adapted HLSL shaders. Set
 `FLUXEL_RAY_QUERY_PRESENT=1` to run an animation in a window using actual
 frame durations and reuse scene resources across frames. As in the source,
