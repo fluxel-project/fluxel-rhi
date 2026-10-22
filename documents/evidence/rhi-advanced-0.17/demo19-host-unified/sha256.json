@@ -1,0 +1,21 @@
+{
+  "Cargo.lock": "675cc860c332a18078041791eb7e9497276a8c7b675d8cc83e29e040f4ab9e44",
+  "crates/dx12/Cargo.toml": "62fe60abc3db5702091de0729d26cc2389f469cc781ebb27d5d630cb01665701",
+  "crates/gl/Cargo.toml": "3b69f5d3412fb1cf09aba3c26b29c93faae66dde422e71744201ccfda3b252eb",
+  "crates/rhi/Cargo.toml": "7f7e018298351aa6c22fcde4bafb18495e7c3effb37a5f5dcbde1336a7837c30",
+  "crates/rhi/examples/19_ray_query_particles/main.rs": "2713a37b5079b73441dd9b746ce4cf3ce0ff1068a9f45b1f22be952fbcbc0345",
+  "crates/rhi/examples/19_ray_query_particles/live.rs": "c37fd78428625611094f6a05f119545e84b68785f34d46b5f4c00a0626d92044",
+  "crates/rhi/examples/19_ray_query_particles/ui.rs": "8647311ac4ebba9e3c0882c3fa9db01cfc2457a274df896a770feb894e37b9d8",
+  "crates/rhi/examples/19_ray_query_particles/controlled.hlsl": "bc51f43c6cf48639db66adbb341d9dc7d73a2879935e1d70c7058b70a835ea35",
+  "crates/rhi/examples/19_ray_query_particles/controlled.dxil": "5cf2f9e55a3ecad8166cd43e9a0eb67f0e55a92fa003949c8a9f33da1b1c2e7c",
+  "crates/rhi/examples/assets/19_ray_query_particles/controlled.spv": "ade9df63bd37a2affc86b3d556ee967090dd786fc8997a41bf5a0699c92109f2",
+  "target/debug/examples/19_ray_query_particles.exe": "d08890eb1bfd3358c6fee7a47c28e995dac4387d34247c8f2ce06fca6c5a4faf",
+  "documents/evidence/rhi-advanced-0.17/demo19-host-unified/dx12/fixed.log": "0f6000b6de461ca9c8b328fb73e97bfcec96ddc2455cc7090643f8c5d13a0660",
+  "documents/evidence/rhi-advanced-0.17/demo19-host-unified/vulkan/fixed.log": "0f6000b6de461ca9c8b328fb73e97bfcec96ddc2455cc7090643f8c5d13a0660",
+  "documents/evidence/rhi-advanced-0.17/demo19-interactive/dx12/ray-query-particles-01.png": "2d4c5ccdb1d71e55c920770f714ac6e06381ac82f752548b2a001b04536dd7ad",
+  "documents/evidence/rhi-advanced-0.17/demo19-interactive/dx12/ray-query-particles-02.png": "70af98f20ced4b97701687d2db94dc1a659959e768f2c9708ff4cabf1b24f4a0",
+  "documents/evidence/rhi-advanced-0.17/demo19-interactive/dx12/ray-query-particles-03.png": "9bc66a8b56d3fa311a71e435aea03916dbe2fd0417cc5c8781ab2d586f323b84",
+  "documents/evidence/rhi-advanced-0.17/demo19-interactive/vulkan/ray-query-particles-01.png": "6c325c73d3fee143c8fc9e8fb40995f37f704cc5d80f24a042524e433a978312",
+  "documents/evidence/rhi-advanced-0.17/demo19-interactive/vulkan/ray-query-particles-02.png": "8121d45b743d7b53f549e08c00c81ce25561526017b633ada33437071685ffa8",
+  "documents/evidence/rhi-advanced-0.17/demo19-interactive/vulkan/ray-query-particles-03.png": "a31ff090536b080f6a75d10100379571fe3b260dd7f15ac4adb8905880107cc9"
+}
