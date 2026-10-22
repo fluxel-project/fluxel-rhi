@@ -1,9 +1,7 @@
 //! Independent Metal queue submission using per-step native GPU events.
 //!
-//! The route accepts same-packet command and present steps with at most four
-//! waits per recording. A fresh event belongs to one producer execution, so
-//! overlapping uses of the same Core plan cannot alias. Cross-packet GPU
-//! tokens are rejected. Apple GPU and presentation acceptance is still pending.
+//! Fresh per-execution events synchronize command and present steps, including
+//! cross-packet waits. Apple GPU and presentation acceptance is still pending.
 use super::{Metal, MetalDevice};
 use fluxel_rhi_core::api::{self, MultiQueueBackend, MultiQueueSubmitOutcome as Outcome};
 
@@ -42,6 +40,78 @@ impl std::task::Wake for ReleaseOnFailure {
     }
 }
 
+#[cfg(target_vendor = "apple")]
+struct SparseDispatch {
+    ready: super::submit::Completion,
+    done: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLSharedEvent>>,
+    queue: std::sync::Arc<
+        std::sync::Mutex<
+            objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTL4CommandQueue>>,
+        >,
+    >,
+    binds: std::sync::Mutex<Option<Vec<super::sparse::PreparedSparseBind>>>,
+}
+// SAFETY: this one-shot callback owns retained native resources. Access to the
+// mapping queue is serialized by its shared mutex, each bind's mutable mapping
+// bookkeeping is separately locked, and the event supports cross-thread signals.
+// No Objective-C encoder is shared; GPU dependencies are explicit.
+#[cfg(target_vendor = "apple")]
+unsafe impl Send for SparseDispatch {}
+#[cfg(target_vendor = "apple")]
+unsafe impl Sync for SparseDispatch {}
+#[cfg(target_vendor = "apple")]
+impl SparseDispatch {
+    fn observe(self: &std::sync::Arc<Self>) {
+        use objc2_metal::{MTL4CommandQueue as _, MTLSharedEvent as _};
+        let waker = std::task::Waker::from(self.clone());
+        let Some(result) = self.ready.watch(&waker) else {
+            return;
+        };
+        let Some(binds) = self.binds.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+            return;
+        };
+        if result.is_err() {
+            self.done.setSignaledValue(1);
+            return;
+        }
+        let queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        for bind in &binds {
+            bind.enqueue(&queue);
+        }
+        let retained_queue = queue.clone();
+        let event = self.done.clone();
+        let retained_event = event.clone();
+        let callback = block2::RcBlock::new(
+            move |_: std::ptr::NonNull<
+                objc2::runtime::ProtocolObject<dyn objc2_metal::MTLSharedEvent>,
+            >,
+                  _: u64| {
+                let _ = (&binds, &retained_queue, &retained_event);
+            },
+        );
+        let listener = objc2_metal::MTLSharedEventListener::new();
+        // SAFETY: Metal copies the callback; it retains mappings and the queue until signal completion.
+        unsafe {
+            event.notifyListener_atValue_block(
+                &listener,
+                1,
+                block2::RcBlock::as_ptr(&callback).cast(),
+            )
+        };
+        let native = objc2::runtime::ProtocolObject::<dyn objc2_metal::MTLEvent>::from_ref(&*event);
+        queue.signalEvent_value(native, 1);
+    }
+}
+#[cfg(target_vendor = "apple")]
+impl std::task::Wake for SparseDispatch {
+    fn wake(self: std::sync::Arc<Self>) {
+        self.observe();
+    }
+    fn wake_by_ref(self: &std::sync::Arc<Self>) {
+        self.observe();
+    }
+}
+
 impl MultiQueueBackend for Metal {
     type NativeGpuSignal = MetalGpuSignal;
 
@@ -60,176 +130,47 @@ impl MultiQueueBackend for Metal {
         #[cfg(target_vendor = "apple")]
         {
             use api::{CompletionCoverage, CompletionPoint, CompletionRequest, StepPayload};
-            use objc2_metal::{
-                MTL4CommandQueue as _, MTLCommandBuffer as _, MTLCommandQueue as _, MTLDevice as _,
-                MTLSharedEvent as _,
-            };
+            use objc2_metal::{MTLCommandBuffer as _, MTLCommandQueue as _, MTLDevice as _};
             let _gate = device
                 ._state
                 .queue_gate
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
-            if device
-                ._state
-                .sparse_pending
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .as_ref()
-                .is_some_and(|p| p.result().is_none())
-            {
-                return Outcome::Rejected {
-                    error: api::Error::InvalidState,
-                    packet,
-                };
-            }
             let plan = packet.work.plan.clone();
-            if packet
+            let start = packet
                 .work
                 .steps
-                .iter()
-                .any(|s| matches!(s.payload, StepPayload::SparseBind(_)))
-            {
-                if packet.work.steps.len() != 1
-                    || !packet.waits.is_empty()
-                    || !packet.signals.is_empty()
-                    || plan.steps()[0].lane.ordinal != 0
-                    || !plan.steps()[0].waits.is_empty()
-                    || !super::sparse::placement_supported(device)
-                {
-                    return Outcome::Rejected {
-                        error: api::Error::Unsupported(
-                            "Metal sparse requires an isolated graphics step",
-                        ),
-                        packet,
-                    };
-                }
-                let frontiers = device
-                    ._state
-                    .lane_frontier
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
-                if frontiers
-                    .iter()
-                    .flatten()
-                    .any(|p| !matches!(p.result(), Some(Ok(()))))
-                {
-                    return Outcome::Rejected {
-                        error: api::Error::InvalidState,
-                        packet,
-                    };
-                }
-                drop(frontiers);
-                let StepPayload::SparseBind(binds) = &packet.work.steps[0].payload else {
-                    unreachable!()
-                };
-                if binds.len() != 1 {
-                    return Outcome::Rejected {
-                        error: api::Error::Unsupported("Metal sparse requires one mapping bind"),
-                        packet,
-                    };
-                }
-                let mut prepared = Vec::new();
-                for bind in binds {
-                    match super::sparse::prepare_bind(bind) {
-                        Ok(item) => prepared.push(item),
-                        Err(error) => return Outcome::Rejected { error, packet },
-                    }
-                }
-                let (Some(queue), Some(event)) = (
-                    device._state._device.newMTL4CommandQueue(),
-                    device._state._device.newSharedEvent(),
-                ) else {
-                    return Outcome::Rejected {
-                        error: api::Error::OutOfMemory,
-                        packet,
-                    };
-                };
-                let done = super::submit::Completion::new();
-                let done_callback = done.clone();
-                let retained_queue = queue.clone();
-                let retained_event = event.clone();
-                let prepared = std::sync::Arc::new(prepared);
-                let retained = prepared.clone();
-                let callback = block2::RcBlock::new(
-                    move |_: std::ptr::NonNull<
-                        objc2::runtime::ProtocolObject<dyn objc2_metal::MTLSharedEvent>,
-                    >,
-                          _: u64| {
-                        let _ = (&retained, &retained_queue, &retained_event);
-                        done_callback.publish(Ok(()));
-                    },
-                );
-                let listener = objc2_metal::MTLSharedEventListener::new();
-                // SAFETY: Metal retains the block. It retains every mapping and
-                // its old/new heaps until the actual Metal 4 signal is observed.
-                unsafe {
-                    event.notifyListener_atValue_block(
-                        &listener,
-                        1,
-                        block2::RcBlock::as_ptr(&callback).cast(),
-                    )
-                };
-                *device
-                    ._state
-                    .sparse_pending
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner()) = Some(done.clone());
-                for bind in prepared.iter() {
-                    bind.enqueue(&queue);
-                }
-                let native_event =
-                    objc2::runtime::ProtocolObject::<dyn objc2_metal::MTLEvent>::from_ref(&*event);
-                queue.signalEvent_value(native_event, 1);
-                let step = packet.work.steps[0].step;
-                let requested = match &packet.work.completion {
-                    CompletionRequest::None => false,
-                    CompletionRequest::End => true,
-                    CompletionRequest::Steps(steps) => steps.contains(&step),
-                };
-                let checkpoints = if requested {
+                .first()
+                .map_or(plan.steps().len(), |step| step.step.index as usize);
+            let end = start + packet.work.steps.len();
+            let plan_steps = &plan.steps()[start..end];
+            if plan_steps.is_empty() {
+                let checkpoints = if matches!(packet.work.completion, CompletionRequest::End) {
+                    let done = super::submit::Completion::new();
+                    done.publish(Ok(()));
                     vec![api::Checkpoint {
-                        point: unsafe {
-                            CompletionPoint::from_native(plan.id().device, done.clone())
-                        },
+                        // SAFETY: an empty packet has no GPU work to complete.
+                        point: unsafe { CompletionPoint::from_native(plan.id().device, done) },
                         covers: CompletionCoverage {
-                            lane_frontiers: vec![(plan.steps()[0].lane, step)],
+                            lane_frontiers: Vec::new(),
                         },
                     }]
                 } else {
                     Vec::new()
                 };
-                device
-                    ._state
-                    .lane_frontier
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())[0] = Some(done);
                 return Outcome::Accepted(api::MultiQueueReceipt {
                     work: api::SubmissionReceipt {
                         device: plan.id().device,
                         index: None,
-                        accepted: vec![step],
+                        accepted: Vec::new(),
                         checkpoints,
                         presents: Vec::new(),
                     },
                     signals: Vec::new(),
                 });
             }
-            if plan.steps().is_empty() && !matches!(packet.work.completion, CompletionRequest::None)
-            {
-                return Outcome::Rejected {
-                    error: api::Error::Unsupported("Metal empty multi-queue completion"),
-                    packet,
-                };
-            }
-            if !packet.waits.is_empty() || !packet.signals.is_empty() {
-                return Outcome::Rejected {
-                    error: api::Error::Unsupported("Metal cross-packet GPU signals"),
-                    packet,
-                };
-            }
-            let mut present_count = 0;
             for (i, bound) in packet.work.steps.iter().enumerate() {
-                let desc = &plan.steps()[i];
+                let desc = &plan_steps[i];
                 if desc.lane.ordinal > 1 {
                     return Outcome::Rejected {
                         error: api::Error::WrongLane,
@@ -238,27 +179,8 @@ impl MultiQueueBackend for Metal {
                 }
                 let records = match &bound.payload {
                     StepPayload::Commands(records) => records.as_slice(),
-                    StepPayload::Present(_) if desc.lane.ordinal == 0 => {
-                        present_count += 1;
-                        if present_count > 1 {
-                            return Outcome::Rejected {
-                                error: api::Error::Unsupported(
-                                    "Metal multi-queue multiple presents",
-                                ),
-                                packet,
-                            };
-                        }
-                        &[]
-                    }
-                    // Metal 4 event waits can time out and let mappings run
-                    // before their producer finishes. Reject before handoff until
-                    // mapping submission is gated by host-observed success.
-                    StepPayload::SparseBind(_) => {
-                        return Outcome::Rejected {
-                            error: api::Error::Unsupported("Metal sparse mapping synchronization"),
-                            packet,
-                        };
-                    }
+                    StepPayload::Present(_) if desc.lane.ordinal == 0 => &[],
+                    StepPayload::SparseBind(_) if super::sparse::placement_supported(device) => &[],
                     _ => {
                         return Outcome::Rejected {
                             error: api::Error::Unsupported("Metal multi-queue step"),
@@ -272,12 +194,6 @@ impl MultiQueueBackend for Metal {
                     if work.lane != desc.lane.ordinal {
                         return Outcome::Rejected {
                             error: api::Error::WrongLane,
-                            packet,
-                        };
-                    }
-                    if desc.waits.len() > work.wait_slots.len() {
-                        return Outcome::Rejected {
-                            error: api::Error::Unsupported("Metal command wait slot limit"),
                             packet,
                         };
                     }
@@ -312,10 +228,12 @@ impl MultiQueueBackend for Metal {
                 }
                 sparse.push(items);
             }
-            let has_sparse = sparse.iter().any(|items| !items.is_empty());
+            let has_sparse = plan_steps
+                .iter()
+                .any(|step| step.kind == api::StepKind::SparseBind);
             let sparse_queue = if has_sparse {
                 match device._state._device.newMTL4CommandQueue() {
-                    Some(queue) => Some(queue),
+                    Some(queue) => Some(std::sync::Arc::new(std::sync::Mutex::new(queue))),
                     None => {
                         return Outcome::Rejected {
                             error: api::Error::OutOfMemory,
@@ -345,11 +263,11 @@ impl MultiQueueBackend for Metal {
                     present_commands.push((bound.step, command));
                 }
             }
-            let mut events = Vec::with_capacity(plan.steps().len());
-            let mut markers = Vec::with_capacity(plan.steps().len());
-            let mut waits = Vec::with_capacity(plan.steps().len());
-            let mut sparse_bridges = Vec::with_capacity(plan.steps().len());
-            for desc in plan.steps() {
+            let mut events = Vec::with_capacity(plan_steps.len());
+            let mut markers = Vec::with_capacity(plan_steps.len());
+            let mut waits = Vec::with_capacity(plan_steps.len());
+            let mut sparse_bridges = Vec::with_capacity(plan_steps.len());
+            for desc in plan_steps {
                 let queue = if desc.lane.ordinal == 0 {
                     &device._state._queue
                 } else {
@@ -384,11 +302,15 @@ impl MultiQueueBackend for Metal {
                     sparse_bridges.push(None);
                 }
             }
-            for (i, desc) in plan.steps().iter().enumerate() {
-                for edge in &desc.waits {
+            for (i, desc) in plan_steps.iter().enumerate() {
+                for edge in desc
+                    .waits
+                    .iter()
+                    .filter(|edge| edge.previous.index as usize >= start)
+                {
                     let event =
                         objc2::runtime::ProtocolObject::<dyn objc2_metal::MTLEvent>::from_ref(
-                            &*events[edge.previous.index as usize],
+                            &*events[edge.previous.index as usize - start],
                         );
                     waits[i].encodeWaitForEvent_value(event, 1);
                 }
@@ -396,26 +318,20 @@ impl MultiQueueBackend for Metal {
                     &*events[i],
                 );
                 markers[i].encodeSignalEvent_value(event, 2);
-                if let StepPayload::Commands(records) = &packet.work.steps[i].payload {
-                    for record in records {
-                        // SAFETY: packet provenance was checked during preflight.
-                        let work = unsafe { record.native_ref() };
-                        for (slot, edge) in work.wait_slots.iter().zip(&desc.waits) {
-                            let event = objc2::runtime::ProtocolObject::<dyn objc2_metal::MTLEvent>::from_ref(&**slot);
-                            markers[edge.previous.index as usize].encodeSignalEvent_value(event, 2);
-                        }
-                    }
-                }
                 if let StepPayload::Present(binding) = &packet.work.steps[i].payload {
                     let command = &present_commands
                         .iter()
                         .find(|(step, _)| *step == packet.work.steps[i].step)
                         .expect("present preallocated")
                         .1;
-                    for edge in &desc.waits {
+                    for edge in desc
+                        .waits
+                        .iter()
+                        .filter(|edge| edge.previous.index as usize >= start)
+                    {
                         let event =
                             objc2::runtime::ProtocolObject::<dyn objc2_metal::MTLEvent>::from_ref(
-                                &*events[edge.previous.index as usize],
+                                &*events[edge.previous.index as usize - start],
                             );
                         command.encodeWaitForEvent_value(event, 1);
                     }
@@ -440,27 +356,26 @@ impl MultiQueueBackend for Metal {
                     bridge.encodeWaitForEvent_value(done, 1);
                 }
             }
-            let step_completions: Vec<_> = plan
-                .steps()
+            let step_completions: Vec<_> = plan_steps
                 .iter()
                 .map(|_| super::submit::Completion::new())
                 .collect();
             let mut last = [None, None];
-            for (i, desc) in plan.steps().iter().enumerate() {
+            for (i, desc) in plan_steps.iter().enumerate() {
                 last[desc.lane.ordinal as usize] = Some(i);
             }
-            let completions: Vec<_> = (0..plan.steps().len())
+            let completions: Vec<_> = (0..plan_steps.len())
                 .filter(|&i| match &packet.work.completion {
                     CompletionRequest::None => false,
                     CompletionRequest::End => last.contains(&Some(i)),
-                    CompletionRequest::Steps(steps) => steps.contains(&plan.step(i)),
+                    CompletionRequest::Steps(steps) => steps.contains(&plan.step(start + i)),
                 })
                 .map(|i| (i, step_completions[i].clone()))
                 .collect();
             let mut signal_points = Vec::with_capacity(packet.signals.len());
             for request in &packet.signals {
-                let producer_index = request.producer.index as usize;
-                let lane = plan.steps()[producer_index].lane;
+                let producer_index = request.producer.index as usize - start;
+                let lane = plan_steps[producer_index].lane;
                 // SAFETY: marker on the exact producer execution signals this fresh event.
                 signal_points.push(unsafe {
                     api::GpuSignalPoint::from_native(
@@ -477,39 +392,28 @@ impl MultiQueueBackend for Metal {
                 });
             }
             let mut external: Vec<Vec<super::submit::Completion>> =
-                (0..plan.steps().len()).map(|_| Vec::new()).collect();
-            let mut packet = packet;
-            for bound in &mut packet.work.steps {
-                if let StepPayload::Present(binding) = &mut bound.payload {
-                    // SAFETY: all native allocations succeeded and only one handoff is allowed.
-                    if let Err(error) = unsafe { binding.try_handoff() } {
-                        return Outcome::Rejected { error, packet };
-                    }
-                }
-            }
-            for wait in packet.waits {
-                let i = wait.signal.consumer().index as usize;
-                // SAFETY: Core validated this single-use token for the consumer execution.
-                let signal = unsafe { wait.signal.into_native() };
+                (0..plan_steps.len()).map(|_| Vec::new()).collect();
+            for wait in &packet.waits {
+                let i = wait.signal.consumer().index as usize - start;
+                // SAFETY: Core validates token provenance; borrowing does not consume it.
+                let signal = unsafe { wait.signal.native_ref() };
                 let event = objc2::runtime::ProtocolObject::<dyn objc2_metal::MTLEvent>::from_ref(
                     &*signal.event,
                 );
                 waits[i].encodeWaitForEvent_value(event, 1);
-                external[i].push(signal.producer);
+                external[i].push(signal.producer.clone());
             }
-            for (completion, event) in step_completions.iter().zip(events.iter()) {
-                std::sync::Arc::new(ReleaseOnFailure {
-                    completion: completion.clone(),
-                    event: event.clone(),
-                })
-                .observe();
-            }
+            let api::MultiQueuePacket {
+                work,
+                signals: signal_requests,
+                waits: mut remaining_waits,
+            } = packet;
             let api::SubmitPacket {
                 plan,
                 steps,
-                completion: _,
-            } = packet.work;
-            let mut accepted = Vec::new();
+                completion,
+            } = work;
+            let mut accepted: Vec<api::StepId> = Vec::new();
             let mut checkpoints = Vec::new();
             let mut lane_frontier = device
                 ._state
@@ -517,15 +421,105 @@ impl MultiQueueBackend for Metal {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone();
-            for (i, bound) in steps.into_iter().enumerate() {
-                let desc = &plan.steps()[i];
+            let mut pending = steps.into_iter().enumerate();
+            while let Some((i, mut bound)) = pending.next() {
+                if let StepPayload::Present(binding) = &mut bound.payload {
+                    // SAFETY: allocations were preflighted; handoff is performed only at this issue boundary.
+                    if let Err(error) = unsafe { binding.try_handoff() } {
+                        let mut tail = vec![bound];
+                        tail.extend(pending.map(|(_, step)| step));
+                        if accepted.is_empty() {
+                            return Outcome::Rejected {
+                                error,
+                                packet: api::MultiQueuePacket {
+                                    work: api::SubmitPacket {
+                                        plan,
+                                        steps: tail,
+                                        completion,
+                                    },
+                                    signals: signal_requests,
+                                    waits: remaining_waits,
+                                },
+                            };
+                        }
+                        let mut accepted_signals = Vec::new();
+                        let mut remaining_signals = Vec::new();
+                        for (request, point) in signal_requests.into_iter().zip(signal_points) {
+                            if (request.producer.index as usize) < start + i {
+                                accepted_signals.push(point);
+                            } else {
+                                remaining_signals.push(request);
+                            }
+                        }
+                        for lane in 0..2 {
+                            if let Some(last_step) = accepted
+                                .iter()
+                                .rev()
+                                .find(|step| plan.steps()[step.index as usize].lane.ordinal == lane)
+                            {
+                                let index = last_step.index as usize - start;
+                                checkpoints.push(api::Checkpoint {
+                                    // SAFETY: the completion covers the accepted lane prefix.
+                                    point: unsafe {
+                                        CompletionPoint::from_native(
+                                            plan.id().device,
+                                            step_completions[index].clone(),
+                                        )
+                                    },
+                                    covers: CompletionCoverage {
+                                        lane_frontiers: vec![(plan_steps[index].lane, *last_step)],
+                                    },
+                                });
+                            }
+                        }
+                        let presents = present_commands
+                            .iter()
+                            .filter(|(step, _)| accepted.contains(step))
+                            .map(|(step, _)| api::PresentReceipt {
+                                step: Some(*step),
+                                accepted: true,
+                            })
+                            .collect();
+                        return Outcome::PartiallyAccepted {
+                            error,
+                            accepted: api::MultiQueueReceipt {
+                                work: api::SubmissionReceipt {
+                                    device: plan.id().device,
+                                    index: None,
+                                    accepted,
+                                    checkpoints,
+                                    presents,
+                                },
+                                signals: accepted_signals,
+                            },
+                            unaccepted: api::MultiQueueTail {
+                                plan,
+                                pending: tail,
+                                remaining_signals,
+                                remaining_waits,
+                                completion,
+                            },
+                        };
+                    }
+                }
+                remaining_waits.retain(|wait| wait.signal.consumer() != bound.step);
+                std::sync::Arc::new(ReleaseOnFailure {
+                    completion: step_completions[i].clone(),
+                    event: events[i].clone(),
+                })
+                .observe();
+                let desc = &plan_steps[i];
                 let mut covered = Vec::new();
                 covered.extend(external[i].iter().cloned());
                 if let Some(previous) = &lane_frontier[desc.lane.ordinal as usize] {
                     covered.push(previous.clone());
                 }
-                for edge in &desc.waits {
-                    covered.push(step_completions[edge.previous.index as usize].clone());
+                for edge in desc
+                    .waits
+                    .iter()
+                    .filter(|edge| edge.previous.index as usize >= start)
+                {
+                    covered.push(step_completions[edge.previous.index as usize - start].clone());
                 }
                 covered.push(super::submit::track_command(device, &waits[i], None));
                 waits[i].commit();
@@ -537,17 +531,6 @@ impl MultiQueueBackend for Metal {
                 for record in records {
                     // SAFETY: the validated one-shot packet transfers its recording once.
                     let work = unsafe { record.into_native() };
-                    for (j, slot) in work.wait_slots.iter().enumerate() {
-                        if let Some(edge) = desc.waits.get(j) {
-                            std::sync::Arc::new(ReleaseOnFailure {
-                                completion: step_completions[edge.previous.index as usize].clone(),
-                                event: slot.clone(),
-                            })
-                            .observe();
-                        } else {
-                            slot.setSignaledValue(1);
-                        }
-                    }
                     let query_commit =
                         std::sync::Arc::new(super::query::commit_ops(&work.query_ops, work.lane));
                     work.retain_indirect_arguments_until_completed();
@@ -574,43 +557,19 @@ impl MultiQueueBackend for Metal {
                         command.commit();
                     }
                 }
-                if let Some((ready, done, bridge)) = &sparse_bridges[i] {
-                    let queue = sparse_queue.as_ref().expect("sparse queue prepared");
-                    let ready =
-                        objc2::runtime::ProtocolObject::<dyn objc2_metal::MTLEvent>::from_ref(
-                            &**ready,
-                        );
-                    let done_event =
-                        objc2::runtime::ProtocolObject::<dyn objc2_metal::MTLEvent>::from_ref(
-                            &**done,
-                        );
-                    queue.waitForEvent_value(ready, 1);
-                    for bind in &sparse[i] {
-                        bind.enqueue(queue);
-                    }
-                    let retained = std::mem::take(&mut sparse[i]);
-                    let retained_queue = queue.clone();
-                    let retained_event = done.clone();
-                    let callback = block2::RcBlock::new(
-                        move |_: std::ptr::NonNull<
-                            objc2::runtime::ProtocolObject<dyn objc2_metal::MTLSharedEvent>,
-                        >,
-                              _: u64| {
-                            let _ = (&retained, &retained_queue, &retained_event);
-                        },
-                    );
-                    let listener = objc2_metal::MTLSharedEventListener::new();
-                    // SAFETY: Metal copies the block and holds the native objects
-                    // until the mapping queue actually signals completion. On
-                    // device failure an unsignaled event intentionally retains them.
-                    unsafe {
-                        done.notifyListener_atValue_block(
-                            &listener,
-                            1,
-                            block2::RcBlock::as_ptr(&callback).cast(),
-                        )
-                    };
-                    queue.signalEvent_value(done_event, 1);
+                if let Some((_ready, done, bridge)) = &sparse_bridges[i] {
+                    let ready = super::submit::Completion::new();
+                    super::submit::join_into(&ready, covered.clone());
+                    std::sync::Arc::new(SparseDispatch {
+                        ready,
+                        done: done.clone(),
+                        queue: sparse_queue
+                            .as_ref()
+                            .expect("sparse queue prepared")
+                            .clone(),
+                        binds: std::sync::Mutex::new(Some(std::mem::take(&mut sparse[i]))),
+                    })
+                    .observe();
                     covered.push(super::submit::track_command(device, bridge, None));
                     bridge.commit();
                 }
@@ -627,7 +586,7 @@ impl MultiQueueBackend for Metal {
                 accepted.push(bound.step);
                 if let Some((_, point)) = completions.iter().find(|(index, _)| *index == i) {
                     // A marker proves only its own queue prefix, not unordered other lanes.
-                    let lane = plan.steps()[i].lane;
+                    let lane = plan_steps[i].lane;
                     checkpoints.push(api::Checkpoint {
                         point: unsafe {
                             CompletionPoint::from_native(plan.id().device, point.clone())

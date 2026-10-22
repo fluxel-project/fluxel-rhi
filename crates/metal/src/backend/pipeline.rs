@@ -1,13 +1,8 @@
-//! Conservative native raster-pipeline creation.
+//! Metal raster pipeline creation and immutable attachment state.
 //!
-//! Descriptors outside the implemented TriangleList, one color target, and
-//! supported attachment/sample subset fail before native creation. Depth32,
-//! device-supported 1/2/4/8-sample rasterization with full sample masks, color
-//! resolve, blending, color masks, and face culling lower to native state.
-//! Combined Depth32/stencil state lowers to Metal. Partial sample masks and
-//! dual-source blend remain unsupported.
-//! This module creates immutable native state and does not record or schedule
-//! work.
+//! Resource bindings and vertex input occupy disjoint native buffer slots.
+//! Pipeline creation preserves color attachment slots, including holes, and
+//! command encoding checks the matching render pass signature.
 
 use std::future::{Ready, ready};
 
@@ -22,6 +17,22 @@ pub struct MetalRasterPipeline {
         objc2::runtime::ProtocolObject<dyn objc2_metal::MTLRenderPipelineState>,
     >,
     #[cfg(target_vendor = "apple")]
+    pub(crate) bindings: Vec<super::shader::variant::StageBindings>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) layout: super::bindings::MetalPipelineLayout,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) vertex_buffer_base: usize,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) view_count: Option<u32>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) primitive_type: objc2_metal::MTLPrimitiveType,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) polygon_mode: api::PolygonMode,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) unclipped_depth: bool,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) strip_index_format: Option<api::IndexFormat>,
+    #[cfg(target_vendor = "apple")]
     pub(crate) cull_mode: api::CullMode,
     #[cfg(target_vendor = "apple")]
     pub(crate) front_face: api::FrontFace,
@@ -32,9 +43,13 @@ pub struct MetalRasterPipeline {
     #[cfg(target_vendor = "apple")]
     pub(crate) depth_bias: (i32, f32, f32),
     #[cfg(target_vendor = "apple")]
+    pub(crate) writes_depth: bool,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) writes_stencil: bool,
+    #[cfg(target_vendor = "apple")]
     pub(crate) signature: (
         usize,
-        objc2_metal::MTLPixelFormat,
+        Vec<Option<objc2_metal::MTLPixelFormat>>,
         Option<objc2_metal::MTLPixelFormat>,
     ),
 }
@@ -45,6 +60,10 @@ pub struct MetalComputePipeline {
     pub(crate) state: objc2::rc::Retained<
         objc2::runtime::ProtocolObject<dyn objc2_metal::MTLComputePipelineState>,
     >,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) bindings: Vec<super::shader::variant::StageBindings>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) layout: super::bindings::MetalPipelineLayout,
     #[cfg(target_vendor = "apple")]
     pub(crate) workgroup_size: [u32; 3],
 }
@@ -67,16 +86,18 @@ fn create_raster_pipeline(
     validate_desc(desc)?;
     #[cfg(target_vendor = "apple")]
     {
-        use objc2_foundation::NSString;
+        use objc2_foundation::{NSObjectProtocol as _, NSString};
         use objc2_metal::{
             MTLDepthStencilDescriptor, MTLDevice as _, MTLFunction as _, MTLFunctionType,
             MTLLibrary as _, MTLRenderPipelineDescriptor, MTLStencilDescriptor,
             MTLVertexDescriptor,
         };
-        if desc
-            .depth_stencil
-            .is_some_and(|depth| depth.format == api::TextureFormat::Depth32FloatStencil8)
-            && !super::texture::supports_depth32_stencil(device)
+        if desc.depth_stencil.is_some_and(|depth| {
+            matches!(
+                depth.format,
+                api::TextureFormat::Depth32FloatStencil8 | api::TextureFormat::Depth24PlusStencil8
+            )
+        }) && !super::texture::supports_depth32_stencil(device)
         {
             return Err(api::Error::Unsupported(
                 "Metal device family does not support Depth32FloatStencil8",
@@ -90,37 +111,52 @@ fn create_raster_pipeline(
             return Err(api::Error::Unsupported("Metal raster sample count"));
         }
 
-        // SAFETY: Core verified each shader belongs to this device before the SPI call.
+        // SAFETY: Core verified shader and layout device identities.
+        let layout = unsafe { desc.layout.native_ref().clone() };
         let vertex = unsafe { desc.vertex.module.native_ref() };
-        let vertex_name = NSString::from_str(&desc.vertex.entry);
-        let vertex_function = vertex
-            ._library
-            .newFunctionWithName(&vertex_name)
-            .ok_or_else(|| api::Error::Shader("Metal vertex entry not found".into()))?;
+        let (vertex_function, vertex_bindings, _) = super::shader::variant::native_function(
+            device,
+            vertex,
+            &desc.vertex.entry,
+            api::ShaderStage::Vertex,
+            &desc.vertex.constants,
+            &layout,
+            desc.vertex_buffers.len(),
+            desc.multiview.is_some(),
+        )?;
         if vertex_function.functionType() != MTLFunctionType::Vertex {
             return Err(api::Error::Shader(
                 "Metal entry is not a vertex function".into(),
             ));
         }
-
+        let mut stage_bindings = vec![vertex_bindings];
         let fragment_function = if let Some(stage) = &desc.fragment {
             // SAFETY: Core verified the fragment shader belongs to this device.
             let shader = unsafe { stage.module.native_ref() };
-            let name = NSString::from_str(&stage.entry);
-            let function = shader
-                ._library
-                .newFunctionWithName(&name)
-                .ok_or_else(|| api::Error::Shader("Metal fragment entry not found".into()))?;
+            let (function, binding, _) = super::shader::variant::native_function(
+                device,
+                shader,
+                &stage.entry,
+                api::ShaderStage::Fragment,
+                &stage.constants,
+                &layout,
+                0,
+                desc.multiview.is_some(),
+            )?;
             if function.functionType() != MTLFunctionType::Fragment {
                 return Err(api::Error::Shader(
                     "Metal entry is not a fragment function".into(),
                 ));
             }
+            stage_bindings.push(binding);
             Some(function)
         } else {
             None
         };
 
+        let vertex_buffer_base = 31usize
+            .checked_sub(desc.vertex_buffers.len())
+            .ok_or(api::Error::InvalidRange)?;
         let vertex_descriptor = MTLVertexDescriptor::new();
         let attributes = vertex_descriptor.attributes();
         let layouts = vertex_descriptor.layouts();
@@ -130,9 +166,8 @@ fn create_raster_pipeline(
             if layout.stride == 0 || layout.stride > 2048 {
                 return Err(api::Error::InvalidRange);
             }
-            let native_index = binding_abi::vertex_buffer_index(buffer_index as u32)?;
-            // SAFETY: `vertex_buffer_index` bounds this to the disjoint native
-            // vertex range 28–30 supported by this backend ABI.
+            let native_index = vertex_buffer_base + buffer_index;
+            // SAFETY: allocation places vertex buffers within Metal slots 0–30.
             let native_layout = unsafe { layouts.objectAtIndexedSubscript(native_index) };
             // SAFETY: nonzero stride was checked and fits NSUInteger on this target.
             unsafe { native_layout.setStride(layout.stride as usize) };
@@ -164,6 +199,20 @@ fn create_raster_pipeline(
         }
 
         let descriptor = MTLRenderPipelineDescriptor::new();
+        if desc.multiview.is_some() {
+            let native = &device._state._device;
+            if !native.respondsToSelector(objc2::sel!(supportsVertexAmplificationCount:))
+                || !descriptor.respondsToSelector(objc2::sel!(setMaxVertexAmplificationCount:))
+            {
+                return Err(api::Error::Unsupported("Metal vertex amplification count"));
+            }
+            let count = [8usize, 4, 2, 1]
+                .into_iter()
+                .find(|count| native.supportsVertexAmplificationCount(*count))
+                .ok_or(api::Error::Unsupported("Metal vertex amplification count"))?;
+            // SAFETY: selector and device support are checked above.
+            unsafe { descriptor.setMaxVertexAmplificationCount(count) };
+        }
         if device._state.indirect_count_supported {
             descriptor.setSupportIndirectCommandBuffers(true);
         }
@@ -181,11 +230,18 @@ fn create_raster_pipeline(
             .transpose()?;
         let depth_state = if let Some(depth) = desc.depth_stencil {
             let format = depth_format.ok_or(api::Error::Unsupported("Metal depth format"))?;
-            descriptor.setDepthAttachmentPixelFormat(format);
+            if depth.format != api::TextureFormat::Stencil8 {
+                descriptor.setDepthAttachmentPixelFormat(format);
+            }
             let native = MTLDepthStencilDescriptor::new();
             native.setDepthCompareFunction(compare_function(depth.depth_compare));
             native.setDepthWriteEnabled(depth.depth_write_enabled);
-            if depth.format == api::TextureFormat::Depth32FloatStencil8 {
+            if matches!(
+                depth.format,
+                api::TextureFormat::Depth32FloatStencil8
+                    | api::TextureFormat::Depth24PlusStencil8
+                    | api::TextureFormat::Stencil8
+            ) {
                 descriptor.setStencilAttachmentPixelFormat(format);
                 let front = MTLStencilDescriptor::new();
                 configure_stencil_descriptor(
@@ -215,39 +271,131 @@ fn create_raster_pipeline(
             None
         };
         let colors = descriptor.colorAttachments();
-        // SAFETY: validate_desc requires exactly one present color target.
-        let color = unsafe { colors.objectAtIndexedSubscript(0) };
-        let color_format =
-            super::texture::metal_format(desc.color_targets[0].as_ref().unwrap().format)
+        let mut color_formats = Vec::with_capacity(desc.color_targets.len());
+        for (index, target) in desc.color_targets.iter().enumerate() {
+            let Some(target) = target else {
+                color_formats.push(None);
+                continue;
+            };
+            // SAFETY: validate_desc limits the color attachment index to Metal's eight slots.
+            let color = unsafe { colors.objectAtIndexedSubscript(index) };
+            if target.blend.is_some() && !super::texture::is_blendable(target.format) {
+                return Err(api::Error::Unsupported(
+                    "Metal format does not support blending",
+                ));
+            }
+            let format = super::texture::metal_format(target.format)
                 .ok_or(api::Error::Unsupported("Metal color target format"))?;
-        color.setPixelFormat(color_format);
-        color.setWriteMask(write_mask(
-            desc.color_targets[0].as_ref().unwrap().write_mask,
-        )?);
-        if let Some(blend) = desc.color_targets[0].as_ref().unwrap().blend {
-            color.setBlendingEnabled(true);
-            color.setSourceRGBBlendFactor(blend_factor(blend.color.src_factor)?);
-            color.setDestinationRGBBlendFactor(blend_factor(blend.color.dst_factor)?);
-            color.setRgbBlendOperation(blend_operation(blend.color.operation));
-            color.setSourceAlphaBlendFactor(blend_factor(blend.alpha.src_factor)?);
-            color.setDestinationAlphaBlendFactor(blend_factor(blend.alpha.dst_factor)?);
-            color.setAlphaBlendOperation(blend_operation(blend.alpha.operation));
-        } else {
-            color.setBlendingEnabled(false);
+            color.setPixelFormat(format);
+            color.setWriteMask(write_mask(target.write_mask)?);
+            if let Some(blend) = target.blend {
+                color.setBlendingEnabled(true);
+                color.setSourceRGBBlendFactor(blend_factor(blend.color.src_factor, false)?);
+                color.setDestinationRGBBlendFactor(blend_factor(blend.color.dst_factor, false)?);
+                color.setRgbBlendOperation(blend_operation(blend.color.operation));
+                color.setSourceAlphaBlendFactor(blend_factor(blend.alpha.src_factor, true)?);
+                color.setDestinationAlphaBlendFactor(blend_factor(blend.alpha.dst_factor, true)?);
+                color.setAlphaBlendOperation(blend_operation(blend.alpha.operation));
+            } else {
+                color.setBlendingEnabled(false);
+            }
+            color_formats.push(Some(format));
         }
         if let Some(label) = desc.label.as_deref() {
             descriptor.setLabel(Some(&NSString::from_str(label)));
         }
-        let state = device
-            ._state
-            ._device
-            .newRenderPipelineStateWithDescriptor_error(&descriptor)
-            .map_err(|error| api::Error::Backend(format!("Metal raster pipeline: {error:?}")))?;
+        let mut reflection = None;
+        let mut create = || {
+            device
+                ._state
+                ._device
+                .newRenderPipelineStateWithDescriptor_options_reflection_error(
+                    &descriptor,
+                    objc2_metal::MTLPipelineOption::ArgumentInfo
+                        | objc2_metal::MTLPipelineOption::BufferTypeInfo,
+                    Some(&mut reflection),
+                )
+                .map_err(|error| api::Error::Backend(format!("Metal raster pipeline: {error:?}")))
+        };
+        let state = if let Some(cache) = &desc.cache {
+            // SAFETY: Core verified cache provenance before pipeline creation.
+            unsafe { cache.native_ref() }.with_render(&descriptor, create)?
+        } else {
+            create()?
+        };
+        let reflection = reflection.ok_or(api::Error::InvalidState)?;
+        use objc2::runtime::NSObjectProtocol as _;
+        for stage in &mut stage_bindings {
+            match stage.stage {
+                api::ShaderStage::Vertex
+                    if reflection.respondsToSelector(objc2::sel!(vertexBindings)) =>
+                {
+                    super::shader::variant::apply_reflected_alignment(
+                        stage,
+                        &layout,
+                        Some(&reflection.vertexBindings()),
+                        None,
+                    )?
+                }
+                api::ShaderStage::Fragment
+                    if reflection.respondsToSelector(objc2::sel!(fragmentBindings)) =>
+                {
+                    super::shader::variant::apply_reflected_alignment(
+                        stage,
+                        &layout,
+                        Some(&reflection.fragmentBindings()),
+                        None,
+                    )?
+                }
+                api::ShaderStage::Vertex => {
+                    #[allow(deprecated)]
+                    super::shader::variant::apply_reflected_alignment(
+                        stage,
+                        &layout,
+                        None,
+                        reflection.vertexArguments().as_deref(),
+                    )?;
+                }
+                api::ShaderStage::Fragment => {
+                    #[allow(deprecated)]
+                    super::shader::variant::apply_reflected_alignment(
+                        stage,
+                        &layout,
+                        None,
+                        reflection.fragmentArguments().as_deref(),
+                    )?;
+                }
+                _ => return Err(api::Error::InvalidState),
+            }
+        }
+        if stage_bindings.iter().any(|stage| {
+            stage.stage == api::ShaderStage::Vertex
+                && stage.map.entries.iter().any(|(_, _, slot)| {
+                    matches!(
+                        slot.kind,
+                        binding_abi::SlotKind::Buffer | binding_abi::SlotKind::ArgumentBuffer
+                    ) && slot.index as usize >= vertex_buffer_base
+                })
+        }) {
+            return Err(api::Error::Unsupported(
+                "Metal native shader and vertex buffer slot collision",
+            ));
+        }
         Ok(MetalRasterPipeline {
             state,
+            bindings: stage_bindings,
+            layout,
+            vertex_buffer_base,
+            view_count: desc.multiview,
+            primitive_type: primitive_type(desc.primitive.topology),
+            polygon_mode: desc.primitive.polygon_mode,
+            unclipped_depth: desc.primitive.unclipped_depth,
+            strip_index_format: desc.primitive.strip_index_format,
             cull_mode: desc.primitive.cull_mode,
             front_face: desc.primitive.front_face,
             depth_state,
+            writes_depth: desc.depth_stencil.is_some_and(|d| d.depth_write_enabled),
+            writes_stencil: desc.depth_stencil.is_some_and(stencil_writes),
             depth_bias: desc.depth_stencil.map_or((0, 0.0, 0.0), |depth| {
                 (
                     depth.depth_bias_constant,
@@ -255,7 +403,7 @@ fn create_raster_pipeline(
                     depth.depth_bias_clamp,
                 )
             }),
-            signature: (desc.multisample.count as usize, color_format, depth_format),
+            signature: (desc.multisample.count as usize, color_formats, depth_format),
         })
     }
     #[cfg(not(target_vendor = "apple"))]
@@ -266,32 +414,20 @@ fn create_raster_pipeline(
 }
 
 fn validate_desc(desc: &RasterPipelineDesc<Metal>) -> api::Result<()> {
-    if desc.fragment.is_none()
-        || !desc.vertex.constants.is_empty()
-        || desc
-            .fragment
-            .as_ref()
-            .is_some_and(|stage| !stage.constants.is_empty())
-        || desc.cache.is_some()
-        || !matches!(
-            desc.primitive.topology,
-            api::PrimitiveTopology::TriangleList
-        )
-        || desc.primitive.strip_index_format.is_some()
-        || !matches!(desc.primitive.polygon_mode, api::PolygonMode::Fill)
-        || desc.primitive.unclipped_depth
+    if matches!(desc.primitive.polygon_mode, api::PolygonMode::Point)
         || desc.primitive.conservative
         || desc
             .depth_stencil
             .is_some_and(|depth| !supported_depth_state(depth))
         || !supported_sample_count(desc.multisample.count)
-        || !full_sample_mask(desc.multisample.mask)
-        || desc.multiview.is_some()
-        || desc.color_targets.len() != 1
-        || desc.color_targets[0].as_ref().is_none_or(|target| {
-            target.write_mask & !0x0f != 0 || !supported_color_format(target.format)
-        })
-        || desc.vertex_buffers.len() > binding_abi::MAX_VERTEX_BUFFERS
+        || !full_sample_mask(desc.multisample.mask, desc.multisample.count)
+        || desc.color_targets.len() > 8
+        || desc
+            .color_targets
+            .iter()
+            .flatten()
+            .any(|target| target.write_mask & !0x0f != 0 || !supported_color_format(target.format))
+        || desc.vertex_buffers.len() > 31
         || desc
             .vertex_buffers
             .iter()
@@ -307,21 +443,42 @@ pub(super) fn supported_sample_count(count: u32) -> bool {
     matches!(count, 1 | 2 | 4 | 8)
 }
 
-pub(super) fn full_sample_mask(mask: u64) -> bool {
-    matches!(mask, u64::MAX | 0x0000_0000_ffff_ffff)
+pub(super) fn full_sample_mask(mask: u64, count: u32) -> bool {
+    count != 0
+        && count <= 64
+        && (count == 64 && mask == u64::MAX
+            || count < 64 && mask & ((1u64 << count) - 1) == (1u64 << count) - 1)
 }
 
 pub(super) fn supported_depth_state(depth: api::DepthStencilState) -> bool {
     matches!(
         depth.format,
-        api::TextureFormat::Depth32Float | api::TextureFormat::Depth32FloatStencil8
-    ) && (depth.format == api::TextureFormat::Depth32FloatStencil8
-        || (depth.stencil_read_mask == 0
-            && depth.stencil_write_mask == 0
-            && inert_stencil_face(depth.stencil_front)
-            && inert_stencil_face(depth.stencil_back)))
+        api::TextureFormat::Depth16Unorm
+            | api::TextureFormat::Depth24Plus
+            | api::TextureFormat::Depth32Float
+            | api::TextureFormat::Depth24PlusStencil8
+            | api::TextureFormat::Depth32FloatStencil8
+            | api::TextureFormat::Stencil8
+    ) && (matches!(
+        depth.format,
+        api::TextureFormat::Depth24PlusStencil8
+            | api::TextureFormat::Depth32FloatStencil8
+            | api::TextureFormat::Stencil8
+    ) || (depth.stencil_read_mask == 0
+        && depth.stencil_write_mask == 0
+        && inert_stencil_face(depth.stencil_front)
+        && inert_stencil_face(depth.stencil_back)))
         && depth.depth_bias_clamp.is_finite()
         && depth.depth_bias_slope_scale.is_finite()
+}
+
+pub(super) fn stencil_writes(depth: api::DepthStencilState) -> bool {
+    fn writes(face: api::StencilFaceState) -> bool {
+        !matches!(face.fail, api::StencilOperation::Keep)
+            || !matches!(face.depth_fail, api::StencilOperation::Keep)
+            || !matches!(face.pass, api::StencilOperation::Keep)
+    }
+    depth.stencil_write_mask != 0 && (writes(depth.stencil_front) || writes(depth.stencil_back))
 }
 
 fn inert_stencil_face(face: api::StencilFaceState) -> bool {
@@ -329,6 +486,19 @@ fn inert_stencil_face(face: api::StencilFaceState) -> bool {
         && matches!(face.fail, api::StencilOperation::Keep)
         && matches!(face.depth_fail, api::StencilOperation::Keep)
         && matches!(face.pass, api::StencilOperation::Keep)
+}
+
+#[cfg(target_vendor = "apple")]
+pub(super) fn primitive_type(value: api::PrimitiveTopology) -> objc2_metal::MTLPrimitiveType {
+    use api::PrimitiveTopology as P;
+    use objc2_metal::MTLPrimitiveType as M;
+    match value {
+        P::PointList => M::Point,
+        P::LineList => M::Line,
+        P::LineStrip => M::LineStrip,
+        P::TriangleList => M::Triangle,
+        P::TriangleStrip => M::TriangleStrip,
+    }
 }
 
 #[cfg(target_vendor = "apple")]
@@ -401,7 +571,10 @@ pub(super) fn write_mask(mask: u8) -> api::Result<objc2_metal::MTLColorWriteMask
 }
 
 #[cfg(target_vendor = "apple")]
-pub(super) fn blend_factor(value: api::BlendFactor) -> api::Result<objc2_metal::MTLBlendFactor> {
+pub(super) fn blend_factor(
+    value: api::BlendFactor,
+    alpha: bool,
+) -> api::Result<objc2_metal::MTLBlendFactor> {
     use api::BlendFactor as F;
     use objc2_metal::MTLBlendFactor as M;
     Ok(match value {
@@ -415,11 +588,34 @@ pub(super) fn blend_factor(value: api::BlendFactor) -> api::Result<objc2_metal::
         F::OneMinusSrcAlpha => M::OneMinusSourceAlpha,
         F::DstAlpha => M::DestinationAlpha,
         F::OneMinusDstAlpha => M::OneMinusDestinationAlpha,
-        F::Constant => M::BlendColor,
-        F::OneMinusConstant => M::OneMinusBlendColor,
+        F::Constant => {
+            if alpha {
+                M::BlendAlpha
+            } else {
+                M::BlendColor
+            }
+        }
+        F::OneMinusConstant => {
+            if alpha {
+                M::OneMinusBlendAlpha
+            } else {
+                M::OneMinusBlendColor
+            }
+        }
         F::SrcAlphaSaturated => M::SourceAlphaSaturated,
-        F::Src1 | F::OneMinusSrc1 => {
-            return Err(api::Error::Unsupported("Metal dual-source blend"));
+        F::Src1 => {
+            if alpha {
+                M::Source1Alpha
+            } else {
+                M::Source1Color
+            }
+        }
+        F::OneMinusSrc1 => {
+            if alpha {
+                M::OneMinusSource1Alpha
+            } else {
+                M::OneMinusSource1Color
+            }
         }
     })
 }
@@ -438,14 +634,7 @@ pub(super) fn blend_operation(value: api::BlendOperation) -> objc2_metal::MTLBle
 }
 
 pub(super) fn supported_color_format(format: api::TextureFormat) -> bool {
-    matches!(
-        format,
-        api::TextureFormat::Rgba8Unorm
-            | api::TextureFormat::Rgba8UnormSrgb
-            | api::TextureFormat::Bgra8Unorm
-            | api::TextureFormat::Bgra8UnormSrgb
-            | api::TextureFormat::Rgba16Float
-    )
+    super::texture::color_attachment_format(format)
 }
 
 #[cfg(target_vendor = "apple")]
@@ -456,6 +645,50 @@ fn vertex_format(format: api::VertexFormat) -> api::Result<(objc2_metal::MTLVert
         api::VertexFormat::Float32(2) => (Mtl::Float2, 8),
         api::VertexFormat::Float32(3) => (Mtl::Float3, 12),
         api::VertexFormat::Float32(4) => (Mtl::Float4, 16),
+        api::VertexFormat::Uint32(1) => (Mtl::UInt, 4),
+        api::VertexFormat::Uint32(2) => (Mtl::UInt2, 8),
+        api::VertexFormat::Uint32(3) => (Mtl::UInt3, 12),
+        api::VertexFormat::Uint32(4) => (Mtl::UInt4, 16),
+        api::VertexFormat::Sint32(1) => (Mtl::Int, 4),
+        api::VertexFormat::Sint32(2) => (Mtl::Int2, 8),
+        api::VertexFormat::Sint32(3) => (Mtl::Int3, 12),
+        api::VertexFormat::Sint32(4) => (Mtl::Int4, 16),
+        api::VertexFormat::Float16(1) => (Mtl::Half, 2),
+        api::VertexFormat::Float16(2) => (Mtl::Half2, 4),
+        api::VertexFormat::Float16(3) => (Mtl::Half3, 6),
+        api::VertexFormat::Float16(4) => (Mtl::Half4, 8),
+        api::VertexFormat::Uint16(1) => (Mtl::UShort, 2),
+        api::VertexFormat::Uint16(2) => (Mtl::UShort2, 4),
+        api::VertexFormat::Uint16(3) => (Mtl::UShort3, 6),
+        api::VertexFormat::Uint16(4) => (Mtl::UShort4, 8),
+        api::VertexFormat::Sint16(1) => (Mtl::Short, 2),
+        api::VertexFormat::Sint16(2) => (Mtl::Short2, 4),
+        api::VertexFormat::Sint16(3) => (Mtl::Short3, 6),
+        api::VertexFormat::Sint16(4) => (Mtl::Short4, 8),
+        api::VertexFormat::Uint8(1) => (Mtl::UChar, 1),
+        api::VertexFormat::Uint8(2) => (Mtl::UChar2, 2),
+        api::VertexFormat::Uint8(3) => (Mtl::UChar3, 3),
+        api::VertexFormat::Uint8(4) => (Mtl::UChar4, 4),
+        api::VertexFormat::Sint8(1) => (Mtl::Char, 1),
+        api::VertexFormat::Sint8(2) => (Mtl::Char2, 2),
+        api::VertexFormat::Sint8(3) => (Mtl::Char3, 3),
+        api::VertexFormat::Sint8(4) => (Mtl::Char4, 4),
+        api::VertexFormat::Unorm8(1) => (Mtl::UCharNormalized, 1),
+        api::VertexFormat::Unorm8(2) => (Mtl::UChar2Normalized, 2),
+        api::VertexFormat::Unorm8(3) => (Mtl::UChar3Normalized, 3),
+        api::VertexFormat::Unorm8(4) => (Mtl::UChar4Normalized, 4),
+        api::VertexFormat::Snorm8(1) => (Mtl::CharNormalized, 1),
+        api::VertexFormat::Snorm8(2) => (Mtl::Char2Normalized, 2),
+        api::VertexFormat::Snorm8(3) => (Mtl::Char3Normalized, 3),
+        api::VertexFormat::Snorm8(4) => (Mtl::Char4Normalized, 4),
+        api::VertexFormat::Unorm16(1) => (Mtl::UShortNormalized, 2),
+        api::VertexFormat::Unorm16(2) => (Mtl::UShort2Normalized, 4),
+        api::VertexFormat::Unorm16(3) => (Mtl::UShort3Normalized, 6),
+        api::VertexFormat::Unorm16(4) => (Mtl::UShort4Normalized, 8),
+        api::VertexFormat::Snorm16(1) => (Mtl::ShortNormalized, 2),
+        api::VertexFormat::Snorm16(2) => (Mtl::Short2Normalized, 4),
+        api::VertexFormat::Snorm16(3) => (Mtl::Short3Normalized, 6),
+        api::VertexFormat::Snorm16(4) => (Mtl::Short4Normalized, 8),
         _ => return Err(api::Error::Unsupported("Metal vertex format")),
     };
     Ok((format, size))
@@ -473,7 +706,7 @@ mod tests {
         assert!(supported_color_format(TextureFormat::Rgba8Unorm));
         assert!(supported_color_format(TextureFormat::Bgra8UnormSrgb));
         assert!(!supported_color_format(TextureFormat::Depth32Float));
-        assert!(!supported_color_format(TextureFormat::Rgba32Float));
+        assert!(supported_color_format(TextureFormat::Rgba32Float));
     }
 
     #[test]
@@ -524,8 +757,8 @@ mod tests {
         assert!(supported_sample_count(1));
         assert!(supported_sample_count(4));
         assert!(!supported_sample_count(3));
-        assert!(full_sample_mask(u64::from(u32::MAX)));
-        assert!(full_sample_mask(u64::MAX));
-        assert!(!full_sample_mask(0x0f));
+        assert!(full_sample_mask(u64::from(u32::MAX), 4));
+        assert!(full_sample_mask(u64::MAX, 4));
+        assert!(!full_sample_mask(0x0f, 8));
     }
 }

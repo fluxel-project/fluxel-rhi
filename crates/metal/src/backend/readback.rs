@@ -1,6 +1,6 @@
 //! Completion-gated host copies from Metal buffers.
 //!
-//! Encoding adds one direct blit to the current command buffer. The ticket
+//! Encoding adds a native GPU copy to the current command buffer. The ticket
 //! owns shared storage until Core calls `map_readback` after the supplied
 //! completion proof; this module never waits on the GPU or chooses a checkpoint.
 
@@ -45,10 +45,7 @@ impl api::ReadbackBackend for Metal {
         }
         #[cfg(target_vendor = "apple")]
         {
-            use objc2_metal::{
-                MTLBlitCommandEncoder as _, MTLCommandBuffer as _, MTLCommandEncoder as _,
-                MTLDevice as _, MTLResourceOptions,
-            };
+            use objc2_metal::{MTLCommandBuffer as _, MTLDevice as _, MTLResourceOptions};
             if !source.usage.contains(api::BufferUsage::COPY_SRC) {
                 return Err(Error::Unsupported("Metal readback requires COPY_SRC"));
             }
@@ -60,23 +57,14 @@ impl api::ReadbackBackend for Metal {
                 .device()
                 .newBufferWithLength_options(size, MTLResourceOptions::StorageModeShared)
                 .ok_or(Error::OutOfMemory)?;
-            let blit = encoder
-                .command
-                .blitCommandEncoder()
-                .ok_or(Error::OutOfMemory)?;
-            // SAFETY: the requested range was checked against the source size;
-            // staging is newly allocated with exactly `size` bytes. The native
-            // command buffer retains both buffers until GPU execution ends.
-            unsafe {
-                blit.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
-                    &source.raw,
-                    native_source_offset,
-                    &staging,
-                    0,
-                    size,
-                );
-            }
-            blit.endEncoding();
+            super::copy::copy_bytes(
+                &encoder.command,
+                &source.raw,
+                native_source_offset,
+                &staging,
+                0,
+                size,
+            )?;
             Ok(MetalReadback {
                 buffer: staging,
                 #[cfg(target_vendor = "apple")]

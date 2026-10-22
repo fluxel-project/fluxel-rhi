@@ -63,9 +63,14 @@ const _: () = {
 pub struct MetalQuerySet(Arc<QueryState>);
 struct QueryState {
     #[cfg(target_vendor = "apple")]
-    raw: objc2::rc::Retained<
-        objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCounterSampleBuffer>,
+    raw: Option<
+        objc2::rc::Retained<
+            objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCounterSampleBuffer>,
+        >,
     >,
+    #[cfg(target_vendor = "apple")]
+    visibility:
+        Option<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer>>>,
     submitted: Mutex<Submitted>,
     statistics_pass: Option<api::StatisticsPass>,
 }
@@ -88,9 +93,6 @@ impl QueryOp {
         }
     }
     fn apply(&self, slots: &mut [Option<(u32, bool)>], lane: u32) -> Result<()> {
-        if slots.iter().any(|s| s.is_some_and(|(l, _)| l != lane)) {
-            return Err(Error::Unsupported("Metal query set across lanes"));
-        }
         match self {
             Self::Reset(_, r) => {
                 for i in r.clone() {
@@ -98,13 +100,15 @@ impl QueryOp {
                 }
             }
             Self::Write(_, i) => {
-                if slots[*i as usize] != Some((lane, false)) {
+                if !slots[*i as usize].is_some_and(|(_, written)| !written) {
                     return Err(Error::InvalidState);
                 }
                 slots[*i as usize] = Some((lane, true));
             }
             Self::Resolve(_, r) => {
-                if r.clone().any(|i| slots[i as usize] != Some((lane, true))) {
+                if r.clone()
+                    .any(|i| !slots[i as usize].is_some_and(|(_, written)| written))
+                {
                     return Err(Error::InvalidState);
                 }
             }
@@ -163,6 +167,25 @@ pub(super) fn invalidate_ops(commit: &QueryCommit, lane: u32) {
             submitted.generations[*index] = None;
         }
     }
+}
+
+#[cfg(target_vendor = "apple")]
+pub(super) fn configure_occlusion(
+    e: &mut MetalCommandEncoder,
+    desc: &objc2_metal::MTLRenderPassDescriptor,
+    set: Option<&api::QuerySet<Metal>>,
+) -> Result<()> {
+    e.occlusion_set = if let Some(set) = set {
+        // SAFETY: Core validated query set provenance and kind.
+        let native = unsafe { set.native_ref() };
+        let buffer = native.0.visibility.as_deref().ok_or(Error::InvalidState)?;
+        desc.setVisibilityResultBuffer(Some(buffer));
+        Some(native.clone())
+    } else {
+        None
+    };
+    e.occlusion_active = false;
+    Ok(())
 }
 
 #[cfg(target_vendor = "apple")]
@@ -228,7 +251,8 @@ impl QueryBackend for Metal {
     fn query_supported(device: &MetalDevice, kind: QueryKind) -> bool {
         #[cfg(target_vendor = "apple")]
         {
-            kind == QueryKind::Timestamp && supported(device) && timebase().is_some()
+            kind == QueryKind::Occlusion
+                || (kind == QueryKind::Timestamp && supported(device) && timebase().is_some())
         }
         #[cfg(not(target_vendor = "apple"))]
         {
@@ -272,6 +296,36 @@ impl QueryBackend for Metal {
                 MTLCommonCounterSetTimestamp, MTLCounterSampleBufferDescriptor, MTLCounterSet as _,
                 MTLDevice as _, MTLStorageMode,
             };
+            if desc.kind == QueryKind::Occlusion {
+                use objc2_metal::{MTLGPUFamily, MTLResourceOptions};
+                let max_offset = if device._state._device.supportsFamily(MTLGPUFamily::Apple7)
+                    || device._state._device.supportsFamily(MTLGPUFamily::Mac2)
+                {
+                    262144
+                } else {
+                    65528
+                };
+                if u64::from(desc.count.saturating_sub(1)) * 8 > max_offset {
+                    return Err(Error::InvalidRange);
+                }
+                let length = (desc.count as usize)
+                    .checked_mul(8)
+                    .ok_or(Error::InvalidRange)?;
+                let visibility = device
+                    ._state
+                    ._device
+                    .newBufferWithLength_options(length, MTLResourceOptions::StorageModePrivate)
+                    .ok_or(Error::OutOfMemory)?;
+                return Ok(MetalQuerySet(Arc::new(QueryState {
+                    raw: None,
+                    visibility: Some(visibility),
+                    statistics_pass: None,
+                    submitted: Mutex::new(Submitted {
+                        slots: vec![None; desc.count as usize],
+                        generations: vec![None; desc.count as usize],
+                    }),
+                })));
+            }
             if desc.kind != QueryKind::Timestamp || !supported(device) {
                 return Err(Error::Unsupported("Metal timestamp queries"));
             }
@@ -296,7 +350,8 @@ impl QueryBackend for Metal {
                 .newCounterSampleBufferWithDescriptor_error(&native_desc)
                 .map_err(|_| Error::Unsupported("Metal counter sample buffer"))?;
             Ok(MetalQuerySet(Arc::new(QueryState {
-                raw,
+                raw: Some(raw),
+                visibility: None,
                 statistics_pass: None,
                 submitted: Mutex::new(Submitted {
                     slots: vec![None; desc.count as usize],
@@ -315,6 +370,25 @@ impl QueryBackend for Metal {
         set: &MetalQuerySet,
         slots: Range<u32>,
     ) -> Result<()> {
+        #[cfg(target_vendor = "apple")]
+        if let Some(buffer) = &set.0.visibility {
+            use objc2_metal::{
+                MTLBlitCommandEncoder as _, MTLCommandBuffer as _, MTLCommandEncoder as _,
+            };
+            if e.render.is_some() || e.compute.is_some() {
+                return Err(Error::InvalidState);
+            }
+            let blit = e.command.blitCommandEncoder().ok_or(Error::OutOfMemory)?;
+            blit.fillBuffer_range_value(
+                buffer,
+                objc2_foundation::NSRange::new(
+                    slots.start as usize * 8,
+                    (slots.end - slots.start) as usize * 8,
+                ),
+                0,
+            );
+            blit.endEncoding();
+        }
         e.query_ops.push(QueryOp::Reset(set.clone(), slots));
         Ok(())
     }
@@ -331,7 +405,7 @@ impl QueryBackend for Metal {
             // SAFETY: Core checked slot bounds and the command buffer retains encoded resources.
             unsafe {
                 blit.sampleCountersInBuffer_atSampleIndex_withBarrier(
-                    &set.0.raw,
+                    set.0.raw.as_deref().ok_or(Error::InvalidState)?,
                     slot as usize,
                     true,
                 );
@@ -369,10 +443,25 @@ impl QueryBackend for Metal {
                 return Err(Error::InvalidRange);
             }
             let blit = e.command.blitCommandEncoder().ok_or(Error::OutOfMemory)?;
+            if let Some(buffer) = &set.0.visibility {
+                // SAFETY: Core validates the query range, and destination bounds were checked above.
+                unsafe {
+                    blit.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
+                        buffer,
+                        slots.start as usize * 8,
+                        &dst.raw,
+                        offset as usize,
+                        bytes as usize,
+                    );
+                }
+                blit.endEncoding();
+                e.query_ops.push(QueryOp::Resolve(set.clone(), slots));
+                return Ok(());
+            }
             // SAFETY: Core checked slot range; destination usage, alignment and size were checked above.
             unsafe {
                 blit.resolveCounters_inRange_destinationBuffer_destinationOffset(
-                    &set.0.raw,
+                    set.0.raw.as_deref().ok_or(Error::InvalidState)?,
                     objc2_foundation::NSRange::new(
                         slots.start as usize,
                         (slots.end - slots.start) as usize,
@@ -391,11 +480,54 @@ impl QueryBackend for Metal {
             Err(Error::Unsupported("Metal requires an Apple target"))
         }
     }
-    fn begin_occlusion(_: &mut MetalCommandEncoder, _: &MetalQuerySet, _: u32) -> Result<()> {
-        Err(Error::Unsupported("Metal occlusion queries"))
+    fn begin_occlusion(e: &mut MetalCommandEncoder, set: &MetalQuerySet, slot: u32) -> Result<()> {
+        #[cfg(target_vendor = "apple")]
+        {
+            use objc2_metal::MTLRenderCommandEncoder as _;
+            if !e
+                .occlusion_set
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(&current.0, &set.0))
+                || e.occlusion_active
+            {
+                return Err(Error::InvalidState);
+            }
+            e.render
+                .as_ref()
+                .ok_or(Error::InvalidState)?
+                .setVisibilityResultMode_offset(
+                    objc2_metal::MTLVisibilityResultMode::Boolean,
+                    slot as usize * 8,
+                );
+            e.occlusion_active = true;
+            e.query_ops.push(QueryOp::Write(set.clone(), slot));
+            Ok(())
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            let _ = (e, set, slot);
+            Err(Error::Unsupported("Metal requires an Apple target"))
+        }
     }
-    fn end_occlusion(_: &mut MetalCommandEncoder) -> Result<()> {
-        Err(Error::Unsupported("Metal occlusion queries"))
+    fn end_occlusion(e: &mut MetalCommandEncoder) -> Result<()> {
+        #[cfg(target_vendor = "apple")]
+        {
+            use objc2_metal::MTLRenderCommandEncoder as _;
+            if !e.occlusion_active {
+                return Err(Error::InvalidState);
+            }
+            e.render
+                .as_ref()
+                .ok_or(Error::InvalidState)?
+                .setVisibilityResultMode_offset(objc2_metal::MTLVisibilityResultMode::Disabled, 0);
+            e.occlusion_active = false;
+            Ok(())
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            let _ = e;
+            Err(Error::Unsupported("Metal requires an Apple target"))
+        }
     }
     fn begin_statistics(_: &mut MetalCommandEncoder, _: &MetalQuerySet, _: u32) -> Result<()> {
         Err(Error::Unsupported("Metal pipeline statistics"))
@@ -517,7 +649,8 @@ impl api::PassStatisticsBackend for Metal {
                 .newCounterSampleBufferWithDescriptor_error(&desc)
                 .map_err(|_| Error::Unsupported("Metal statistic sample buffer"))?;
             Ok(MetalQuerySet(Arc::new(QueryState {
-                raw,
+                raw: Some(raw),
+                visibility: None,
                 statistics_pass: Some(pass),
                 submitted: Mutex::new(Submitted {
                     slots: vec![None; count as usize],
@@ -580,7 +713,7 @@ impl api::PassStatisticsBackend for Metal {
             // samples per slot, and destination bounds and alignment were checked.
             unsafe {
                 blit.resolveCounters_inRange_destinationBuffer_destinationOffset(
-                    &set.0.raw,
+                    set.0.raw.as_deref().ok_or(Error::InvalidState)?,
                     objc2_foundation::NSRange::new(first as usize, count as usize),
                     &dst.raw,
                     offset as usize,
@@ -612,7 +745,7 @@ pub(super) fn configure_raster_statistics(
     let first = slot.checked_mul(4).ok_or(Error::InvalidRange)? as usize;
     // SAFETY: attachment 0 exists; checked creation allocated four samples per slot.
     let attachment = unsafe { desc.sampleBufferAttachments().objectAtIndexedSubscript(0) };
-    attachment.setSampleBuffer(Some(&set.0.raw));
+    attachment.setSampleBuffer(set.0.raw.as_deref());
     // SAFETY: slot is validated by Core and four samples are allocated for it.
     unsafe {
         attachment.setStartOfVertexSampleIndex(first);
@@ -638,7 +771,7 @@ pub(super) fn configure_compute_statistics(
     let first = slot.checked_mul(2).ok_or(Error::InvalidRange)? as usize;
     // SAFETY: attachment 0 exists; checked creation allocated two samples per slot.
     let attachment = unsafe { desc.sampleBufferAttachments().objectAtIndexedSubscript(0) };
-    attachment.setSampleBuffer(Some(&set.0.raw));
+    attachment.setSampleBuffer(set.0.raw.as_deref());
     // SAFETY: slot is validated by Core and two samples are allocated for it.
     unsafe {
         attachment.setStartOfEncoderSampleIndex(first);
@@ -674,10 +807,7 @@ mod tests {
         validate_ops([(0, &reset), (0, &write), (0, &resolve)].into_iter()).unwrap();
         let first = commit_ops(&[reset.clone(), write.clone()], 0);
         assert!(validate_ops([(0, &resolve)].into_iter()).is_ok());
-        assert!(matches!(
-            validate_ops([(1, &resolve)].into_iter()),
-            Err(Error::Unsupported(_))
-        ));
+        assert!(validate_ops([(1, &resolve)].into_iter()).is_ok());
         invalidate_ops(&first, 0);
         assert!(matches!(
             validate_ops([(0, &resolve)].into_iter()),

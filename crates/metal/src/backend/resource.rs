@@ -17,9 +17,17 @@ use super::{Metal, MetalDevice, sampler, texture};
 pub struct MetalBuffer {
     #[cfg(target_vendor = "apple")]
     pub(crate) raw: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer>>,
-    size: u64,
+    pub(super) size: u64,
     #[cfg(target_vendor = "apple")]
     pub(crate) usage: BufferUsage,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) memory: MemoryClass,
+    #[cfg(target_vendor = "apple")]
+    pub(super) device: std::sync::Arc<super::DeviceState>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) mapped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(target_vendor = "apple")]
+    pub(super) heap: Option<super::memory::MetalHeap>,
 }
 
 impl ResourceBackend for Metal {
@@ -33,6 +41,12 @@ impl ResourceBackend for Metal {
         let max_size = 0;
         if unsupported_buffer_usage(desc.usage) {
             return Support::Unsupported("Metal buffer usage is not implemented");
+        }
+        if (desc.usage.contains(BufferUsage::MAP_READ)
+            || desc.usage.contains(BufferUsage::MAP_WRITE))
+            && desc.memory == api::MemoryClass::Device
+        {
+            return Support::Unsupported("Metal mapping requires the matching host memory class");
         }
         if desc.size == 0 || desc.size > max_size {
             return Support::Unsupported("Metal buffer size is outside the supported range");
@@ -71,6 +85,10 @@ impl ResourceBackend for Metal {
                 raw,
                 size: desc.size,
                 usage: desc.usage,
+                memory: desc.memory,
+                device: device._state.clone(),
+                mapped: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                heap: None,
             })
         }
         #[cfg(not(target_vendor = "apple"))]
@@ -88,11 +106,11 @@ impl ResourceBackend for Metal {
     }
 
     fn create_view(
-        _: &MetalDevice,
+        device: &MetalDevice,
         texture: &super::MetalTexture,
         desc: &TextureViewDesc,
     ) -> api::Result<super::MetalTextureView> {
-        super::texture::create_view(texture, desc)
+        super::texture::create_view(device, texture, desc)
     }
 
     fn create_sampler(
@@ -125,10 +143,7 @@ impl ResourceBackend for Metal {
 }
 
 fn unsupported_buffer_usage(usage: BufferUsage) -> bool {
-    usage.0 == 0
-        || usage.contains(BufferUsage::MAP_READ)
-        || usage.contains(BufferUsage::MAP_WRITE)
-        || usage.contains(BufferUsage::SHADER_TABLE)
+    usage.0 == 0 || usage.contains(BufferUsage::SHADER_TABLE)
 }
 
 impl MetalBuffer {
@@ -150,10 +165,10 @@ mod tests {
     use fluxel_rhi_core::api::BufferUsage;
 
     #[test]
-    fn buffer_support_rejects_mapping_and_shader_tables() {
+    fn buffer_support_accepts_mapping_and_rejects_shader_tables() {
         assert!(unsupported_buffer_usage(BufferUsage(0)));
-        assert!(unsupported_buffer_usage(BufferUsage::MAP_READ));
-        assert!(unsupported_buffer_usage(BufferUsage::MAP_WRITE));
+        assert!(!unsupported_buffer_usage(BufferUsage::MAP_READ));
+        assert!(!unsupported_buffer_usage(BufferUsage::MAP_WRITE));
         assert!(!unsupported_buffer_usage(BufferUsage::ACCEL_BUILD_INPUT));
         assert!(!unsupported_buffer_usage(BufferUsage::ACCEL_SCRATCH));
         assert!(unsupported_buffer_usage(BufferUsage::SHADER_TABLE));

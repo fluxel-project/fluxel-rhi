@@ -23,16 +23,49 @@ type NativeIndexBuffer = (
 
 pub struct MetalCommandEncoder {
     pub(crate) lane: u32,
-    #[cfg(target_vendor = "apple")]
-    pub(super) wait_slots:
-        Vec<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLSharedEvent>>>,
     pub(super) query_ops: Vec<super::query::QueryOp>,
+    #[cfg(target_vendor = "apple")]
+    pub(super) external_buffers: Vec<super::MetalBuffer>,
+    #[cfg(target_vendor = "apple")]
+    pub(super) argument_arrays: Vec<std::sync::Arc<super::argument::ArgumentArray>>,
+    #[cfg(target_vendor = "apple")]
+    pub(super) external_textures: Vec<super::MetalTexture>,
+    #[cfg(target_vendor = "apple")]
+    pub(super) raster_end_timestamp: Option<(super::query::MetalQuerySet, u32)>,
+    #[cfg(target_vendor = "apple")]
+    pub(super) occlusion_set: Option<super::query::MetalQuerySet>,
+    #[cfg(target_vendor = "apple")]
+    pub(super) occlusion_active: bool,
     pub(super) pending_statistics: Option<(super::query::MetalQuerySet, u32, api::StatisticsPass)>,
     pub(crate) accelerations: Vec<super::ray::MetalAcceleration>,
     #[cfg(target_vendor = "apple")]
     pub(super) ray_owner: u64,
     #[cfg(target_vendor = "apple")]
     pub(super) ray_builds: Vec<std::sync::Arc<super::ray::BuildReservation>>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) compute_layout: Option<super::bindings::MetalPipelineLayout>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) compute_push: Vec<u8>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) compute_bindings: Vec<super::shader::variant::StageBindings>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) compute_groups: std::collections::BTreeMap<u32, (super::MetalBindGroup, Vec<u32>)>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) raster_group_count: usize,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) raster_vertex_base: usize,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) raster_vertex_buffers: Vec<Option<(MetalBuffer, u64, u64)>>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) raster_push_ranges: Vec<api::PushConstantRange>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) raster_push: [Vec<u8>; 4],
+    #[cfg(target_vendor = "apple")]
+    pub(crate) raster_read_only: (bool, bool),
+    #[cfg(target_vendor = "apple")]
+    pub(crate) raster_bindings: Vec<super::shader::variant::StageBindings>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) raster_groups: std::collections::BTreeMap<u32, (super::MetalBindGroup, Vec<u32>)>,
     #[cfg(target_vendor = "apple")]
     pub(crate) mesh_threads: Option<([u32; 3], [u32; 3])>,
     #[cfg(target_vendor = "apple")]
@@ -71,13 +104,28 @@ pub struct MetalCommandEncoder {
     #[cfg(target_vendor = "apple")]
     pub(crate) indirect_dispatch_supported: bool,
     #[cfg(target_vendor = "apple")]
+    pub(crate) raster_area: Option<api::Rect>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) raster_view_mask: Option<u32>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) raster_resolves: Vec<(
+        objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLTexture>>,
+        objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLTexture>>,
+        api::Rect,
+        Option<u32>,
+    )>,
+    #[cfg(target_vendor = "apple")]
     pub(crate) raster_signature: Option<(
         usize,
-        objc2_metal::MTLPixelFormat,
+        Vec<Option<objc2_metal::MTLPixelFormat>>,
         Option<objc2_metal::MTLPixelFormat>,
     )>,
     #[cfg(target_vendor = "apple")]
     index_buffer: Option<NativeIndexBuffer>,
+    #[cfg(target_vendor = "apple")]
+    primitive_type: objc2_metal::MTLPrimitiveType,
+    #[cfg(target_vendor = "apple")]
+    strip_index_format: Option<api::IndexFormat>,
 }
 
 impl CommandBackend for Metal {
@@ -87,8 +135,7 @@ impl CommandBackend for Metal {
         }
         #[cfg(target_vendor = "apple")]
         {
-            use objc2::runtime::NSObjectProtocol as _;
-            use objc2_metal::{MTLCommandBuffer as _, MTLCommandQueue as _, MTLDevice as _};
+            use objc2_metal::MTLCommandQueue as _;
             // Metal's `commandBuffer` API returns a buffer that retains every
             // native object encoded into it. Do not replace this with the
             // unretained-reference queue constructor without adding explicit
@@ -99,31 +146,16 @@ impl CommandBackend for Metal {
                 &device._state.compute_queue
             };
             let command = queue.commandBuffer().ok_or(api::Error::OutOfMemory)?;
-            let mut wait_slots = Vec::new();
-            if device
-                ._state
-                ._device
-                .respondsToSelector(objc2::sel!(newSharedEvent))
-            {
-                for _ in 0..4 {
-                    let event = device
-                        ._state
-                        ._device
-                        .newSharedEvent()
-                        .ok_or(api::Error::OutOfMemory)?;
-                    let native =
-                        objc2::runtime::ProtocolObject::<dyn objc2_metal::MTLEvent>::from_ref(
-                            &*event,
-                        );
-                    command.encodeWaitForEvent_value(native, 1);
-                    wait_slots.push(event);
-                }
-            }
             Ok(MetalCommandEncoder {
                 lane: lane.ordinal,
-                wait_slots,
                 query_ops: Vec::new(),
+                external_buffers: Vec::new(),
+                argument_arrays: Vec::new(),
+                external_textures: Vec::new(),
                 pending_statistics: None,
+                raster_end_timestamp: None,
+                occlusion_set: None,
+                occlusion_active: false,
                 accelerations: Vec::new(),
                 ray_owner: {
                     static NEXT: std::sync::atomic::AtomicU64 =
@@ -137,6 +169,18 @@ impl CommandBackend for Metal {
                 },
                 ray_builds: Vec::new(),
                 mesh_threads: None,
+                compute_layout: None,
+                compute_push: Vec::new(),
+                compute_bindings: Vec::new(),
+                compute_groups: std::collections::BTreeMap::new(),
+                raster_group_count: 0,
+                raster_vertex_base: 31,
+                raster_vertex_buffers: Vec::new(),
+                raster_push_ranges: Vec::new(),
+                raster_push: std::array::from_fn(|_| Vec::new()),
+                raster_read_only: (false, false),
+                raster_bindings: Vec::new(),
+                raster_groups: std::collections::BTreeMap::new(),
                 command,
                 prior_commands: Vec::new(),
                 indirect_prepass: None,
@@ -149,7 +193,12 @@ impl CommandBackend for Metal {
                 indirect_arguments: Vec::new(),
                 indirect_dispatch_supported: device._state.indirect_dispatch_supported,
                 raster_signature: None,
+                raster_area: None,
+                raster_view_mask: None,
+                raster_resolves: Vec::new(),
                 index_buffer: None,
+                primitive_type: objc2_metal::MTLPrimitiveType::Triangle,
+                strip_index_format: None,
             })
         }
         #[cfg(not(target_vendor = "apple"))]
@@ -160,25 +209,43 @@ impl CommandBackend for Metal {
     }
 
     fn transition(
-        _: &mut MetalCommandEncoder,
+        encoder: &mut MetalCommandEncoder,
         ops: &[ResourceTransition<'_, Self>],
     ) -> api::Result<()> {
-        // Metal's default tracked resources perform same-queue hazard ordering
-        // natively. Explicit Core transitions therefore need no state mutation
-        // here; ownership transfers and aliasing remain unsupported. Acceleration
-        // structures are allocated as tracked resources, and Metal orders their
-        // builds and subsequent uses across encoders on the same queue.
         for op in ops {
-            match op {
-                ResourceTransition::Global { .. } => {}
-                ResourceTransition::Buffer(barrier) if barrier.ownership.is_none() => {}
-                ResourceTransition::Texture(barrier) if barrier.ownership.is_none() => {}
-                ResourceTransition::Acceleration { before, after, .. }
-                    if acceleration_scope_supported(*before)
-                        && acceleration_scope_supported(*after) => {}
-                _ => return Err(api::Error::Unsupported("Metal ownership/alias transition")),
+            if let ResourceTransition::Acceleration { before, after, .. } = op {
+                if !acceleration_scope_supported(*before) || !acceleration_scope_supported(*after) {
+                    return Err(api::Error::Unsupported(
+                        "Metal acceleration transition scope",
+                    ));
+                }
             }
         }
+        if ops.is_empty() {
+            return Ok(());
+        }
+        // A command-buffer event forms a full native memory boundary. This is
+        // needed for heap aliasing and argument-buffer resources, for which
+        // Metal's automatic hazard tracking alone is insufficient. Metal has no
+        // queue-family ownership; cross-queue order comes from the submitted plan.
+        #[cfg(target_vendor = "apple")]
+        {
+            use objc2::runtime::NSObjectProtocol as _;
+            use objc2_metal::{MTLCommandBuffer as _, MTLDevice as _};
+            let device = encoder.command.device();
+            if !device.respondsToSelector(objc2::sel!(newEvent)) {
+                return Err(api::Error::Unsupported("Metal events unavailable"));
+            }
+            let event = device.newEvent().ok_or(api::Error::OutOfMemory)?;
+            encoder.command.encodeSignalEvent_value(&event, 1);
+            encoder.command.encodeWaitForEvent_value(&event, 1);
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            let _ = encoder;
+            return Err(api::Error::Unsupported("Metal requires an Apple target"));
+        }
+
         Ok(())
     }
 
@@ -195,17 +262,37 @@ impl CommandBackend for Metal {
             use objc2_metal::{
                 MTLBlitCommandEncoder as _, MTLCommandBuffer as _, MTLCommandEncoder as _,
             };
-            if src_offset
-                .checked_add(bytes)
-                .is_none_or(|end| end > src.size())
+            if !src.usage.contains(api::BufferUsage::COPY_SRC)
+                || !dst.usage.contains(api::BufferUsage::COPY_DST)
+                || bytes == 0
+                || src_offset
+                    .checked_add(bytes)
+                    .is_none_or(|end| end > src.size())
                 || dst_offset
                     .checked_add(bytes)
                     .is_none_or(|end| end > dst.size())
             {
                 return Err(api::Error::InvalidRange);
             }
-            if bytes == 0 {
-                return Ok(());
+            if std::ptr::eq(&*src.raw, &*dst.raw)
+                && src_offset < dst_offset + bytes
+                && dst_offset < src_offset + bytes
+            {
+                return Err(api::Error::InvalidRange);
+            }
+            if (src_offset | dst_offset | bytes) & 3 != 0 {
+                let source = usize::try_from(src_offset).map_err(|_| api::Error::InvalidRange)?;
+                let destination =
+                    usize::try_from(dst_offset).map_err(|_| api::Error::InvalidRange)?;
+                let length = usize::try_from(bytes).map_err(|_| api::Error::InvalidRange)?;
+                return super::copy::copy_bytes(
+                    &encoder.command,
+                    &src.raw,
+                    source,
+                    &dst.raw,
+                    destination,
+                    length,
+                );
             }
             let blit = encoder
                 .command
@@ -230,6 +317,14 @@ impl CommandBackend for Metal {
             let _ = (encoder, src, src_offset, dst, dst_offset, bytes);
             Err(api::Error::Unsupported("Metal requires an Apple target"))
         }
+    }
+
+    fn resolve(
+        encoder: &mut MetalCommandEncoder,
+        src: TextureRegion<'_, Metal>,
+        dst: TextureRegion<'_, Metal>,
+    ) -> api::Result<()> {
+        super::copy::resolve(encoder, src, dst)
     }
 
     fn copy_texture(
@@ -288,6 +383,17 @@ impl CommandBackend for Metal {
             // SAFETY: the shared staging allocation is at least bytes.len()
             // bytes, and both pointers are valid and nonoverlapping.
             unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, bytes.len()) };
+            if offset & 3 != 0 || bytes.len() & 3 != 0 {
+                let destination = usize::try_from(offset).map_err(|_| api::Error::InvalidRange)?;
+                return super::copy::copy_bytes(
+                    &encoder.command,
+                    &staging,
+                    0,
+                    &dst.raw,
+                    destination,
+                    bytes.len(),
+                );
+            }
             let blit = encoder
                 .command
                 .blitCommandEncoder()
@@ -334,13 +440,9 @@ impl CommandBackend for Metal {
 }
 
 fn acceleration_scope_supported(scope: api::AccessScope) -> bool {
-    let stages = api::StageMask::ACCELERATION.0 | api::StageMask::COMPUTE.0;
-    let accesses = api::AccessMask::ACCEL_READ.0
-        | api::AccessMask::ACCEL_WRITE.0
-        | api::AccessMask::SHADER_READ.0;
-    scope.stages.0 & !stages == 0
-        && scope.accesses.0 & !accesses == 0
-        && (scope.accesses.0 == 0 || scope.stages.0 != 0)
+    // Native event synchronization is a full boundary and accepts broad scopes
+    // such as ALL_COMMANDS / ALL without requiring stage-specific lowering.
+    scope.accesses.0 == 0 || scope.stages.0 != 0
 }
 
 #[cfg(test)]
@@ -348,7 +450,7 @@ mod acceleration_transition_tests {
     use super::{acceleration_scope_supported, api};
 
     #[test]
-    fn accepts_build_and_compute_read_scopes_only() {
+    fn accepts_build_and_supported_shader_read_scopes() {
         let scope = |stages, accesses| api::AccessScope { stages, accesses };
         assert!(acceleration_scope_supported(scope(
             api::StageMask::ACCELERATION,
@@ -358,7 +460,7 @@ mod acceleration_transition_tests {
             api::StageMask::COMPUTE,
             api::AccessMask::ACCEL_READ
         )));
-        assert!(!acceleration_scope_supported(scope(
+        assert!(acceleration_scope_supported(scope(
             api::StageMask::FRAGMENT,
             api::AccessMask::ACCEL_READ
         )));

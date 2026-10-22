@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 /// Host-side mapping frontier. Mutations must be made in native execution order.
 pub(super) struct MappingState<T> {
-    tiles: HashMap<(u32, u32, u32), T>,
+    tiles: HashMap<(u32, u32, u32, u32, u32), T>,
 }
 impl<T: Clone> MappingState<T> {
     pub(super) fn new() -> Self {
@@ -21,15 +21,17 @@ impl<T: Clone> MappingState<T> {
     pub(super) fn replace(&mut self, regions: &[Region], allocation: Option<&T>) -> Vec<T> {
         let mut old = Vec::new();
         for region in regions {
-            for y in region.origin[1]..region.origin[1] + region.count[1] {
-                for x in region.origin[0]..region.origin[0] + region.count[0] {
-                    let key = (region.mip, x, y);
-                    let previous = match allocation {
-                        Some(a) => self.tiles.insert(key, a.clone()),
-                        None => self.tiles.remove(&key),
-                    };
-                    if let Some(previous) = previous {
-                        old.push(previous);
+            for z in region.origin[2]..region.origin[2] + region.count[2] {
+                for y in region.origin[1]..region.origin[1] + region.count[1] {
+                    for x in region.origin[0]..region.origin[0] + region.count[0] {
+                        let key = (region.mip, region.layer, x, y, z);
+                        let previous = match allocation {
+                            Some(a) => self.tiles.insert(key, a.clone()),
+                            None => self.tiles.remove(&key),
+                        };
+                        if let Some(previous) = previous {
+                            old.push(previous);
+                        }
                     }
                 }
             }
@@ -41,6 +43,7 @@ impl<T: Clone> MappingState<T> {
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Region {
     pub mip: u32,
+    pub layer: u32,
     pub origin: [u32; 3],
     pub count: [u32; 3],
     pub heap_tile_offset: u64,
@@ -48,6 +51,7 @@ pub(super) struct Region {
 
 pub(super) fn validate_regions(
     tiling: &SparseTextureTiling,
+    layers: u32,
     tiles: &[SparseTile],
     allocation_size: Option<u64>,
     allocation_offset: u64,
@@ -67,25 +71,24 @@ pub(super) fn validate_regions(
         if tile.aspect.is_some_and(|a| a != tiling.aspects[0].aspect) {
             return Err(Error::InvalidRange);
         }
-        if tile.layer != 0 || tile.origin[2] != 0 || tile.count[2] != 1 {
+        if tile.layer >= layers {
             return Err(Error::InvalidRange);
         }
         if let Some(grid) = tiling.standard_mip_grids.get(tile.mip as usize) {
-            if tile.count[0] == 0
-                || tile.count[1] == 0
-                || tile.origin[0]
-                    .checked_add(tile.count[0])
-                    .is_none_or(|x| x > grid[0])
-                || tile.origin[1]
-                    .checked_add(tile.count[1])
-                    .is_none_or(|y| y > grid[1])
-            {
+            if (0..3).any(|i| {
+                tile.count[i] == 0
+                    || tile.origin[i]
+                        .checked_add(tile.count[i])
+                        .is_none_or(|end| end > grid[i])
+            }) {
                 return Err(Error::InvalidRange);
             }
-            for y in tile.origin[1]..tile.origin[1] + tile.count[1] {
-                for x in tile.origin[0]..tile.origin[0] + tile.count[0] {
-                    if !used.insert((tile.mip, x, y)) {
-                        return Err(Error::InvalidRange);
+            for z in tile.origin[2]..tile.origin[2] + tile.count[2] {
+                for y in tile.origin[1]..tile.origin[1] + tile.count[1] {
+                    for x in tile.origin[0]..tile.origin[0] + tile.count[0] {
+                        if !used.insert((tile.mip, tile.layer, x, y, z)) {
+                            return Err(Error::InvalidRange);
+                        }
                     }
                 }
             }
@@ -93,7 +96,7 @@ pub(super) fn validate_regions(
             if tile.origin != [0, 0, 0]
                 || tile.count != [tail.tile_count, 1, 1]
                 || tail.tile_count == 0
-                || !used.insert((tile.mip, 0, 0))
+                || !used.insert((tile.mip, tile.layer, 0, 0, 0))
             {
                 return Err(Error::InvalidRange);
             }
@@ -102,9 +105,11 @@ pub(super) fn validate_regions(
         }
         let count = u64::from(tile.count[0])
             .checked_mul(u64::from(tile.count[1]))
+            .and_then(|n| n.checked_mul(u64::from(tile.count[2])))
             .ok_or(Error::InvalidRange)?;
         out.push(Region {
             mip: tile.mip,
+            layer: tile.layer,
             origin: tile.origin,
             count: tile.count,
             heap_tile_offset: if allocation_size.is_some() { cursor } else { 0 },
@@ -149,22 +154,50 @@ mod tests {
     #[test]
     fn offsets_follow_standard_rectangles_and_packed_tail() {
         let tiles = [tile(0, [1, 0, 0], [2, 2, 1]), tile(1, [0, 0, 0], [2, 1, 1])];
-        let regions = validate_regions(&tiling(), &tiles, Some(8 * 65536), 65536).unwrap();
+        let regions = validate_regions(&tiling(), 1, &tiles, Some(8 * 65536), 65536).unwrap();
         assert_eq!(
             (regions[0].heap_tile_offset, regions[1].heap_tile_offset),
             (1, 5)
         );
-        assert!(validate_regions(&tiling(), &tiles, Some(6 * 65536), 65536).is_err());
-        assert!(validate_regions(&tiling(), &tiles, Some(8 * 65536), 1).is_err());
+        assert!(validate_regions(&tiling(), 1, &tiles, Some(6 * 65536), 65536).is_err());
+        assert!(validate_regions(&tiling(), 1, &tiles, Some(8 * 65536), 1).is_err());
     }
     #[test]
     fn rejects_overlap_and_partial_tail_and_checks_unmap_offset() {
         let overlap = [tile(0, [0, 0, 0], [2, 1, 1]), tile(0, [1, 0, 0], [1, 1, 1])];
-        assert!(validate_regions(&tiling(), &overlap, None, 0).is_err());
-        assert!(validate_regions(&tiling(), &[tile(1, [0, 0, 0], [1, 1, 1])], None, 0).is_err());
+        assert!(validate_regions(&tiling(), 1, &overlap, None, 0).is_err());
+        assert!(validate_regions(&tiling(), 1, &[tile(1, [0, 0, 0], [1, 1, 1])], None, 0).is_err());
         assert!(
-            validate_regions(&tiling(), &[tile(0, [0, 0, 0], [1, 1, 1])], None, 65536).is_err()
+            validate_regions(&tiling(), 1, &[tile(0, [0, 0, 0], [1, 1, 1])], None, 65536).is_err()
         );
+    }
+
+    #[test]
+    fn layers_and_depth_tiles_have_independent_ownership() {
+        use std::sync::Arc;
+        let mut geometry = tiling();
+        geometry.standard_mip_grids[0] = [2, 1, 2];
+        let mut state = MappingState::new();
+        let a = Arc::new(());
+        let weak = Arc::downgrade(&a);
+        let first = tile(0, [0, 0, 0], [1, 1, 1]);
+        let mut second = tile(0, [0, 0, 1], [1, 1, 1]);
+        second.layer = 1;
+        let bind = validate_regions(&geometry, 2, &[first, second], Some(2 * 65536), 0).unwrap();
+        assert_eq!(bind[1].heap_tile_offset, 1);
+        state.replace(&bind, Some(&a));
+        drop(a);
+        let unmap =
+            validate_regions(&geometry, 2, &[tile(0, [0, 0, 0], [1, 1, 1])], None, 0).unwrap();
+        drop(state.replace(&unmap, None));
+        assert!(weak.upgrade().is_some());
+        let mut second = tile(0, [0, 0, 1], [1, 1, 1]);
+        second.layer = 1;
+        let unmap = validate_regions(&geometry, 2, &[second], None, 0).unwrap();
+        let pending = state.replace(&unmap, None);
+        assert!(weak.upgrade().is_some());
+        drop(pending);
+        assert!(weak.upgrade().is_none());
     }
 
     #[test]
@@ -176,6 +209,7 @@ mod tests {
         let mut state = MappingState::new();
         let first = validate_regions(
             &tiling(),
+            1,
             &[tile(0, [0, 0, 0], [2, 1, 1])],
             Some(2 * 65536),
             0,
@@ -183,13 +217,19 @@ mod tests {
         .unwrap();
         assert!(state.replace(&first, Some(&a)).is_empty());
         drop(a);
-        let first_tile =
-            validate_regions(&tiling(), &[tile(0, [0, 0, 0], [1, 1, 1])], Some(65536), 0).unwrap();
+        let first_tile = validate_regions(
+            &tiling(),
+            1,
+            &[tile(0, [0, 0, 0], [1, 1, 1])],
+            Some(65536),
+            0,
+        )
+        .unwrap();
         let retained = state.replace(&first_tile, Some(&b));
         drop(retained);
         assert!(weak_a.upgrade().is_some()); // second tile remains mapped
         let second_tile =
-            validate_regions(&tiling(), &[tile(0, [1, 0, 0], [1, 1, 1])], None, 0).unwrap();
+            validate_regions(&tiling(), 1, &[tile(0, [1, 0, 0], [1, 1, 1])], None, 0).unwrap();
         let pending = state.replace(&second_tile, None);
         assert!(weak_a.upgrade().is_some()); // old heap held by in-flight operation
         drop(pending);

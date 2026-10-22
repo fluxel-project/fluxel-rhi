@@ -2,7 +2,13 @@
 //!
 //! Pass lifetime and draw calls are sent directly to the active native render encoder.
 
+mod bindings;
+mod clear_area;
+#[cfg(target_vendor = "apple")]
+mod partial_resolve;
 mod pass;
+#[cfg(target_vendor = "apple")]
+pub(super) use bindings::write_push;
 
 use std::ops::Range;
 
@@ -10,10 +16,69 @@ use fluxel_rhi_core::api::{self, RasterBackend};
 
 use super::{Metal, MetalBuffer, MetalCommandEncoder, MetalRasterPipeline};
 use crate::backend::MetalBindGroup;
+
 #[cfg(target_vendor = "apple")]
-use crate::backend::binding_abi::vertex_buffer_index;
-#[cfg(target_vendor = "apple")]
-use crate::backend::bindings::BoundResource;
+pub(super) fn for_view_batches(
+    encoder: &MetalCommandEncoder,
+    mut draw: impl FnMut(&objc2::runtime::ProtocolObject<dyn objc2_metal::MTLRenderCommandEncoder>),
+) -> api::Result<()> {
+    use objc2_metal::{
+        MTLCommandBuffer as _, MTLDevice as _, MTLRenderCommandEncoder as _,
+        MTLVertexAmplificationViewMapping,
+    };
+    let render = encoder.render.as_ref().ok_or(api::Error::InvalidState)?;
+    let views: Vec<u32> = encoder.raster_view_mask.map_or_else(
+        || vec![0],
+        |mask| (0..32).filter(|view| mask & (1 << view) != 0).collect(),
+    );
+    let max = if encoder.raster_view_mask.is_some() {
+        let device = encoder.command.device();
+        [8, 4, 2, 1]
+            .into_iter()
+            .find(|count| device.supportsVertexAmplificationCount(*count))
+            .ok_or(api::Error::Unsupported(
+                "Metal vertex amplification unavailable",
+            ))?
+    } else {
+        1
+    };
+    for chunk in views.chunks(max) {
+        if encoder.raster_view_mask.is_some() {
+            let mappings: Vec<_> = chunk
+                .iter()
+                .map(|view| MTLVertexAmplificationViewMapping {
+                    viewportArrayIndexOffset: 0,
+                    renderTargetArrayIndexOffset: *view,
+                })
+                .collect();
+            // SAFETY: every batch is bounded by the runtime native amplification limit.
+            unsafe {
+                render.setVertexAmplificationCount_viewMappings(mappings.len(), mappings.as_ptr())
+            };
+        }
+        for stage in &encoder.raster_bindings {
+            if let Some(slot) = stage.map.view_slot {
+                let ptr = std::ptr::NonNull::new(chunk.as_ptr() as *mut _)
+                    .ok_or(api::Error::InvalidState)?;
+                let length = std::mem::size_of_val(chunk);
+                // SAFETY: the pipeline reserves this slot and Metal copies the batch mapping.
+                unsafe {
+                    match stage.stage {
+                        api::ShaderStage::Vertex => {
+                            render.setVertexBytes_length_atIndex(ptr, length, slot as usize)
+                        }
+                        api::ShaderStage::Fragment => {
+                            render.setFragmentBytes_length_atIndex(ptr, length, slot as usize)
+                        }
+                        _ => return Err(api::Error::InvalidState),
+                    }
+                };
+            }
+        }
+        draw(render);
+    }
+    Ok(())
+}
 
 impl RasterBackend for Metal {
     fn begin_raster(
@@ -31,10 +96,36 @@ impl RasterBackend for Metal {
         {
             use objc2_metal::MTLRenderCommandEncoder as _;
             let render = encoder.render.as_ref().ok_or(api::Error::InvalidState)?;
-            if encoder.raster_signature != Some(pipeline.signature) {
+            if encoder.raster_signature.as_ref() != Some(&pipeline.signature) {
+                return Err(api::Error::InvalidState);
+            }
+            match (encoder.raster_view_mask, pipeline.view_count) {
+                (None, None) => {}
+                (Some(mask), Some(count)) if 32 - mask.leading_zeros() <= count => {}
+                _ => return Err(api::Error::InvalidState),
+            }
+            if (encoder.raster_read_only.0 && pipeline.writes_depth)
+                || (encoder.raster_read_only.1 && pipeline.writes_stencil)
+            {
                 return Err(api::Error::InvalidState);
             }
             encoder.mesh_threads = None;
+            encoder.raster_bindings = pipeline.bindings.clone();
+            encoder.raster_group_count = pipeline.layout.groups.len();
+            encoder.raster_vertex_base = pipeline.vertex_buffer_base;
+            encoder.raster_push_ranges = pipeline.layout.push_constants.clone();
+            encoder.primitive_type = pipeline.primitive_type;
+            encoder.strip_index_format = pipeline.strip_index_format;
+            render.setTriangleFillMode(match pipeline.polygon_mode {
+                api::PolygonMode::Fill => objc2_metal::MTLTriangleFillMode::Fill,
+                api::PolygonMode::Line => objc2_metal::MTLTriangleFillMode::Lines,
+                _ => return Err(api::Error::Unsupported("Metal polygon mode")),
+            });
+            render.setDepthClipMode(if pipeline.unclipped_depth {
+                objc2_metal::MTLDepthClipMode::Clamp
+            } else {
+                objc2_metal::MTLDepthClipMode::Clip
+            });
             encoder.raster_pipeline_bound = true;
             render.setRenderPipelineState(&pipeline.state);
             render.setDepthStencilState(pipeline.depth_state.as_deref());
@@ -52,6 +143,24 @@ impl RasterBackend for Metal {
                 api::FrontFace::Cw => objc2_metal::MTLWinding::Clockwise,
                 api::FrontFace::Ccw => objc2_metal::MTLWinding::CounterClockwise,
             });
+            for (slot, binding) in encoder
+                .raster_vertex_buffers
+                .clone()
+                .into_iter()
+                .enumerate()
+            {
+                if let Some((buffer, offset, size)) = binding {
+                    if encoder.raster_vertex_base + slot < 31 {
+                        Self::set_vertex_buffer(encoder, slot as u32, &buffer, offset, size)?;
+                    }
+                }
+            }
+            bindings::bind_raster_push(encoder)?;
+            for (slot, (group, offsets)) in encoder.raster_groups.clone() {
+                if (slot as usize) < pipeline.layout.groups.len() {
+                    Self::set_bind_group(encoder, slot, &group, &offsets)?;
+                }
+            }
             Ok(())
         }
         #[cfg(not(target_vendor = "apple"))]
@@ -67,208 +176,7 @@ impl RasterBackend for Metal {
         group: &MetalBindGroup,
         offsets: &[u32],
     ) -> api::Result<()> {
-        #[cfg(target_vendor = "apple")]
-        {
-            use objc2_metal::MTLRenderCommandEncoder as _;
-            if group_slot >= 4 {
-                return Err(api::Error::InvalidRange);
-            }
-            // Mesh-stage selectors only exist on devices with a successfully
-            // created mesh pipeline. Require it to be bound before these groups.
-            for resource in &group.resources {
-                let visibility = match resource {
-                    BoundResource::Acceleration { .. } => {
-                        return Err(api::Error::Unsupported("Metal raster acceleration binding"));
-                    }
-                    BoundResource::Buffer { visibility, .. }
-                    | BoundResource::Texture { visibility, .. }
-                    | BoundResource::Sampler { visibility, .. } => visibility,
-                };
-                if visibility
-                    .iter()
-                    .any(|stage| matches!(stage, api::ShaderStage::Task))
-                {
-                    return Err(api::Error::Unsupported("Metal object stage binding"));
-                }
-                if encoder.mesh_threads.is_none()
-                    && visibility
-                        .iter()
-                        .any(|s| matches!(s, api::ShaderStage::Task | api::ShaderStage::Mesh))
-                {
-                    return Err(api::Error::InvalidState);
-                }
-            }
-            let dynamic_count = group
-                .resources
-                .iter()
-                .filter(|resource| {
-                    matches!(
-                        resource,
-                        BoundResource::Buffer {
-                            dynamic_offset: true,
-                            ..
-                        }
-                    )
-                })
-                .count();
-            if offsets.len() != dynamic_count {
-                return Err(api::Error::InvalidRange);
-            }
-            // Validate the complete offset slice before changing native encoder
-            // state, so a late bad offset cannot leave a partially rebound group.
-            let mut dynamic_index = 0;
-            for resource in &group.resources {
-                if let BoundResource::Buffer {
-                    offset,
-                    size,
-                    allocation_size,
-                    dynamic_offset: true,
-                    ..
-                } = resource
-                {
-                    crate::backend::bindings::apply_dynamic_uniform_offset(
-                        *offset,
-                        *size,
-                        *allocation_size,
-                        offsets[dynamic_index],
-                    )?;
-                    dynamic_index += 1;
-                }
-            }
-            let render = encoder.render.as_ref().ok_or(api::Error::InvalidState)?;
-            let mut dynamic_index = 0;
-            for resource in &group.resources {
-                match resource {
-                    BoundResource::Acceleration { .. } => {
-                        return Err(api::Error::Unsupported("Metal raster acceleration binding"));
-                    }
-                    BoundResource::Buffer {
-                        binding,
-                        visibility,
-                        raw,
-                        offset,
-                        size,
-                        allocation_size,
-                        dynamic_offset,
-                        ..
-                    } => {
-                        let index = metal_binding_slot(group_slot, *binding)?;
-                        let effective_offset = if *dynamic_offset {
-                            let dynamic = offsets[dynamic_index];
-                            dynamic_index += 1;
-                            crate::backend::bindings::apply_dynamic_uniform_offset(
-                                *offset,
-                                *size,
-                                *allocation_size,
-                                dynamic,
-                            )?
-                        } else {
-                            *offset
-                        };
-                        if visibility.contains(&api::ShaderStage::Vertex) {
-                            // SAFETY: index is within the fixed 28-slot ABI;
-                            // the effective aligned range was validated and the
-                            // retained resource remains alive through completion.
-                            unsafe {
-                                render.setVertexBuffer_offset_atIndex(
-                                    Some(raw),
-                                    effective_offset as usize,
-                                    index as usize,
-                                )
-                            };
-                        }
-                        if visibility.contains(&api::ShaderStage::Task) {
-                            // SAFETY: slot and retained buffer range have been validated above.
-                            unsafe {
-                                render.setObjectBuffer_offset_atIndex(
-                                    Some(raw),
-                                    effective_offset as usize,
-                                    index as usize,
-                                )
-                            };
-                        }
-                        if visibility.contains(&api::ShaderStage::Mesh) {
-                            // SAFETY: slot and retained buffer range have been validated above.
-                            unsafe {
-                                render.setMeshBuffer_offset_atIndex(
-                                    Some(raw),
-                                    effective_offset as usize,
-                                    index as usize,
-                                )
-                            };
-                        }
-                        if visibility.contains(&api::ShaderStage::Fragment) {
-                            // SAFETY: index is within the fixed 28-slot ABI;
-                            // the effective aligned range was validated and the
-                            // retained resource remains alive through completion.
-                            unsafe {
-                                render.setFragmentBuffer_offset_atIndex(
-                                    Some(raw),
-                                    effective_offset as usize,
-                                    index as usize,
-                                )
-                            };
-                        }
-                    }
-                    BoundResource::Texture {
-                        binding,
-                        visibility,
-                        raw,
-                    } => {
-                        let index = metal_binding_slot(group_slot, *binding)? as usize;
-                        if visibility.contains(&api::ShaderStage::Vertex) {
-                            // SAFETY: index is within the fixed 28-slot ABI and
-                            // the texture is retained until command completion.
-                            unsafe { render.setVertexTexture_atIndex(Some(raw), index) };
-                        }
-                        if visibility.contains(&api::ShaderStage::Task) {
-                            // SAFETY: the fixed slot is valid and the resource is retained through completion.
-                            unsafe { render.setObjectTexture_atIndex(Some(raw), index) };
-                        }
-                        if visibility.contains(&api::ShaderStage::Mesh) {
-                            // SAFETY: the fixed slot is valid and the resource is retained through completion.
-                            unsafe { render.setMeshTexture_atIndex(Some(raw), index) };
-                        }
-                        if visibility.contains(&api::ShaderStage::Fragment) {
-                            // SAFETY: index is within the fixed 28-slot ABI and
-                            // the texture is retained until command completion.
-                            unsafe { render.setFragmentTexture_atIndex(Some(raw), index) };
-                        }
-                    }
-                    BoundResource::Sampler {
-                        binding,
-                        visibility,
-                        raw,
-                    } => {
-                        let index = metal_binding_slot(group_slot, *binding)? as usize;
-                        if visibility.contains(&api::ShaderStage::Vertex) {
-                            // SAFETY: index is within the fixed 28-slot ABI and
-                            // the sampler is retained until command completion.
-                            unsafe { render.setVertexSamplerState_atIndex(Some(raw), index) };
-                        }
-                        if visibility.contains(&api::ShaderStage::Task) {
-                            // SAFETY: the fixed slot is valid and the resource is retained through completion.
-                            unsafe { render.setObjectSamplerState_atIndex(Some(raw), index) };
-                        }
-                        if visibility.contains(&api::ShaderStage::Mesh) {
-                            // SAFETY: the fixed slot is valid and the resource is retained through completion.
-                            unsafe { render.setMeshSamplerState_atIndex(Some(raw), index) };
-                        }
-                        if visibility.contains(&api::ShaderStage::Fragment) {
-                            // SAFETY: index is within the fixed 28-slot ABI and
-                            // the sampler is retained until command completion.
-                            unsafe { render.setFragmentSamplerState_atIndex(Some(raw), index) };
-                        }
-                    }
-                }
-            }
-            Ok(())
-        }
-        #[cfg(not(target_vendor = "apple"))]
-        {
-            let _ = (encoder, group_slot, group, offsets);
-            Err(api::Error::Unsupported("Metal requires an Apple target"))
-        }
+        bindings::set_bind_group(encoder, group_slot, group, offsets)
     }
 
     fn set_vertex_buffer(
@@ -281,7 +189,10 @@ impl RasterBackend for Metal {
         #[cfg(target_vendor = "apple")]
         {
             use objc2_metal::MTLRenderCommandEncoder as _;
-            let native_index = vertex_buffer_index(slot)?;
+            let slot = usize::try_from(slot).map_err(|_| api::Error::InvalidRange)?;
+            if slot >= 31 {
+                return Err(api::Error::InvalidRange);
+            }
             if offset
                 .checked_add(size)
                 .is_none_or(|end| end > buffer.size())
@@ -289,15 +200,27 @@ impl RasterBackend for Metal {
                 return Err(api::Error::InvalidRange);
             }
             let render = encoder.render.as_ref().ok_or(api::Error::InvalidState)?;
-            // SAFETY: the public slot maps to a bounded native index outside
-            // the resource-binding range, and the byte range fits the buffer.
-            unsafe {
-                render.setVertexBuffer_offset_atIndex(
-                    Some(&buffer.raw),
-                    offset as usize,
-                    native_index,
-                )
-            };
+            if encoder.raster_vertex_buffers.len() <= slot {
+                encoder.raster_vertex_buffers.resize(slot + 1, None);
+            }
+            encoder.raster_vertex_buffers[slot] = Some((buffer.clone(), offset, size));
+            if encoder.raster_pipeline_bound {
+                let native_index = encoder
+                    .raster_vertex_base
+                    .checked_add(slot)
+                    .ok_or(api::Error::InvalidRange)?;
+                if native_index >= 31 {
+                    return Err(api::Error::InvalidRange);
+                }
+                // SAFETY: slot and range are bounded and the command buffer retains the buffer.
+                unsafe {
+                    render.setVertexBuffer_offset_atIndex(
+                        Some(&buffer.raw),
+                        offset as usize,
+                        native_index,
+                    )
+                };
+            }
             Ok(())
         }
         #[cfg(not(target_vendor = "apple"))]
@@ -374,15 +297,26 @@ impl RasterBackend for Metal {
         #[cfg(target_vendor = "apple")]
         {
             use objc2_metal::{MTLRenderCommandEncoder as _, MTLScissorRect};
+            let area = encoder.raster_area.ok_or(api::Error::InvalidState)?;
+            let x = rect.x.max(area.x).min(area.x.saturating_add(area.width));
+            let y = rect.y.max(area.y).min(area.y.saturating_add(area.height));
+            let right = rect
+                .x
+                .saturating_add(rect.width)
+                .min(area.x.saturating_add(area.width));
+            let bottom = rect
+                .y
+                .saturating_add(rect.height)
+                .min(area.y.saturating_add(area.height));
             encoder
                 .render
                 .as_ref()
                 .ok_or(api::Error::InvalidState)?
                 .setScissorRect(MTLScissorRect {
-                    x: rect.x as usize,
-                    y: rect.y as usize,
-                    width: rect.width as usize,
-                    height: rect.height as usize,
+                    x: x as usize,
+                    y: y as usize,
+                    width: right.saturating_sub(x) as usize,
+                    height: bottom.saturating_sub(y) as usize,
                 });
             Ok(())
         }
@@ -433,19 +367,18 @@ impl RasterBackend for Metal {
     ) -> api::Result<()> {
         #[cfg(target_vendor = "apple")]
         {
-            use objc2_metal::{MTLPrimitiveType, MTLRenderCommandEncoder as _};
-            let render = encoder.render.as_ref().ok_or(api::Error::InvalidState)?;
+            use objc2_metal::MTLRenderCommandEncoder as _;
             // SAFETY: Core validated ordered ranges; this path only exposes the
             // TriangleList pipeline and forwards the declared ranges unchanged.
-            unsafe {
+            for_view_batches(encoder, |render| unsafe {
                 render.drawPrimitives_vertexStart_vertexCount_instanceCount_baseInstance(
-                    MTLPrimitiveType::Triangle,
+                    encoder.primitive_type,
                     vertices.start as usize,
                     (vertices.end - vertices.start) as usize,
                     (instances.end - instances.start) as usize,
                     instances.start as usize,
                 )
-            };
+            })?;
             Ok(())
         }
         #[cfg(not(target_vendor = "apple"))]
@@ -462,11 +395,16 @@ impl RasterBackend for Metal {
     ) -> api::Result<()> {
         #[cfg(target_vendor = "apple")]
         {
-            use objc2_metal::{MTLIndexType, MTLPrimitiveType, MTLRenderCommandEncoder as _};
+            use objc2_metal::{MTLIndexType, MTLRenderCommandEncoder as _};
             let (buffer, base_offset, format, range_size) = encoder
                 .index_buffer
                 .as_ref()
                 .ok_or(api::Error::InvalidState)?;
+            if encoder.strip_index_format.is_some_and(|expected| {
+                std::mem::discriminant(&expected) != std::mem::discriminant(format)
+            }) {
+                return Err(api::Error::InvalidState);
+            }
             let index_size = match format {
                 api::IndexFormat::Uint16 => 2u64,
                 api::IndexFormat::Uint32 => 4u64,
@@ -486,12 +424,11 @@ impl RasterBackend for Metal {
             let byte_offset = base_offset
                 .checked_add(byte_start)
                 .ok_or(api::Error::InvalidRange)?;
-            let render = encoder.render.as_ref().ok_or(api::Error::InvalidState)?;
             // SAFETY: index range was bounded against the retained buffer range;
             // instance and index counts were checked by Core.
-            unsafe {
+            for_view_batches(encoder, |render| unsafe {
                 render.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset_instanceCount_baseVertex_baseInstance(
-                    MTLPrimitiveType::Triangle,
+                    encoder.primitive_type,
                     (indices.end - indices.start) as usize,
                     match format {
                         api::IndexFormat::Uint16 => MTLIndexType::UInt16,
@@ -503,7 +440,7 @@ impl RasterBackend for Metal {
                     base_vertex as isize,
                     instances.start as usize,
                 )
-            };
+            })?;
             Ok(())
         }
         #[cfg(not(target_vendor = "apple"))]
@@ -516,12 +453,29 @@ impl RasterBackend for Metal {
         #[cfg(target_vendor = "apple")]
         {
             use objc2_metal::MTLCommandEncoder as _;
+            if encoder.occlusion_active {
+                return Err(api::Error::InvalidState);
+            }
             let render = encoder.render.take().ok_or(api::Error::InvalidState)?;
             render.endEncoding();
+            for (source, target, area, mask) in std::mem::take(&mut encoder.raster_resolves) {
+                partial_resolve::resolve_area(&encoder.command, &source, &target, area, mask)?;
+            }
+            encoder.occlusion_set = None;
+            if let Some((set, slot)) = encoder.raster_end_timestamp.take() {
+                use api::QueryBackend as _;
+                Metal::write_timestamp(encoder, &set, slot)?;
+            }
             encoder.indirect_prepass = None;
+            encoder.raster_resolves.clear();
+            encoder.raster_area = None;
+            encoder.raster_view_mask = None;
             encoder.raster_signature = None;
             encoder.raster_pipeline_bound = false;
             encoder.mesh_threads = None;
+            encoder.raster_bindings.clear();
+            encoder.raster_groups.clear();
+            encoder.raster_vertex_buffers.clear();
             Ok(())
         }
         #[cfg(not(target_vendor = "apple"))]
@@ -538,9 +492,15 @@ impl RasterBackend for Metal {
                 render.endEncoding();
             }
             encoder.indirect_prepass = None;
+            encoder.raster_resolves.clear();
+            encoder.raster_area = None;
+            encoder.raster_view_mask = None;
             encoder.raster_signature = None;
             encoder.raster_pipeline_bound = false;
             encoder.mesh_threads = None;
+            encoder.occlusion_set = None;
+            encoder.occlusion_active = false;
+            encoder.raster_end_timestamp = None;
         }
         #[cfg(not(target_vendor = "apple"))]
         let _ = encoder;

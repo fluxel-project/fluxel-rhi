@@ -38,13 +38,23 @@ pub struct MetalDevice {
     _state: Arc<DeviceState>,
 }
 
+mod argument;
 mod binding_abi;
 mod bindings;
+mod cache;
+#[cfg(target_vendor = "apple")]
+mod capabilities;
 mod compute;
 mod copy;
 mod encoder;
+mod external;
+mod interop;
+mod mapping;
+mod memory;
 mod mesh;
 mod multi_queue;
+#[cfg(target_vendor = "apple")]
+mod native_array_reflection;
 mod pipeline;
 mod query;
 mod ray;
@@ -52,6 +62,7 @@ mod readback;
 mod resource;
 mod sampler;
 mod shader;
+mod shader_ray_query;
 mod sparse;
 mod submit;
 mod surface;
@@ -59,6 +70,7 @@ mod texture;
 
 pub(crate) use bindings::{MetalBindGroup, MetalBindGroupLayout, MetalPipelineLayout};
 pub(crate) use encoder::MetalCommandEncoder;
+pub use external::{MetalExternalHandle, MetalExternalSync};
 pub(crate) use pipeline::{MetalComputePipeline, MetalRasterPipeline};
 pub(crate) use resource::MetalBuffer;
 pub(crate) use sampler::MetalSampler;
@@ -80,8 +92,6 @@ struct DeviceState {
     #[cfg(target_vendor = "apple")]
     lane_frontier: std::sync::Mutex<[Option<submit::Completion>; 2]>,
     #[cfg(target_vendor = "apple")]
-    sparse_pending: std::sync::Mutex<Option<submit::Completion>>,
-    #[cfg(target_vendor = "apple")]
     submission_tracker: std::sync::Mutex<submit::SubmissionTracker>,
     #[cfg(target_vendor = "apple")]
     indirect_dispatch_supported: bool,
@@ -94,11 +104,13 @@ struct DeviceState {
 pub struct MetalShader {
     #[cfg(target_vendor = "apple")]
     pub(crate) _library:
-        objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLLibrary>>,
+        Option<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLLibrary>>>,
     #[cfg(target_vendor = "apple")]
     pub(crate) entries: Vec<api::ShaderEntryPoint>,
     #[cfg(target_vendor = "apple")]
-    pub(crate) mesh_source: Option<Arc<str>>,
+    pub(crate) entry_names: Vec<(String, String)>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) wgsl_source: Option<Arc<[u8]>>,
 }
 
 /// A unique, generation-bound lease for an acquired `CAMetalDrawable`.
@@ -164,7 +176,7 @@ impl Backend for Metal {
     type NativeComputePipeline = MetalComputePipeline;
     type NativeMeshPipeline = mesh::MetalMeshPipeline;
     type NativeRayPipeline = ();
-    type NativePipelineCache = ();
+    type NativePipelineCache = cache::MetalPipelineCache;
     type NativeAcceleration = ray::MetalAcceleration;
     type NativeSparseAllocation = sparse::MetalSparseAllocation;
     type NativeQuerySet = query::MetalQuerySet;
@@ -233,30 +245,6 @@ impl InstanceBackend for Metal {
                     && native.newSharedEvent().is_some();
                 let indirect_dispatch_supported = compute::supports_indirect_dispatch(&native);
                 let indirect_count_supported = encoder::indirect_count::probe(&native);
-                let mut caps = DeviceCapabilities::default();
-                caps.limits.max_buffer_bytes = native.maxBufferLength() as u64;
-                caps.limits.max_texture_dimension_2d = 8192;
-                caps.limits.max_texture_array_layers = 2048;
-                // These limits match the fixed MSL group-slot ABI rather than
-                // the device's larger descriptor capacities.
-                caps.limits.max_bind_groups = 4;
-                caps.limits.max_bindings_per_group = 7;
-                caps.limits.max_color_attachments = 1;
-                caps.limits.max_vertex_buffers = binding_abi::MAX_VERTEX_BUFFERS as u32;
-                caps.limits.max_vertex_attributes = binding_abi::MAX_VERTEX_ATTRIBUTES;
-                // Metal's required constant-buffer alignment varies by GPU
-                // family. Report 32 bytes, the conservative bound for the
-                // Apple and Mac families supported by this backend.
-                caps.limits.uniform_offset_alignment = bindings::UNIFORM_OFFSET_ALIGNMENT;
-                let max_threads = native.maxThreadsPerThreadgroup();
-                caps.limits.max_compute_workgroup_size = [
-                    max_threads.width as u32,
-                    max_threads.height as u32,
-                    max_threads.depth as u32,
-                ];
-                caps.limits.max_compute_workgroups = [65_535; 3];
-                caps.compute = true;
-                caps.storage_textures = true;
                 let device = MetalDevice {
                     _state: Arc::new(DeviceState {
                         _device: native,
@@ -265,7 +253,6 @@ impl InstanceBackend for Metal {
                         ray_supported,
                         queue_gate: std::sync::Mutex::new(()),
                         lane_frontier: std::sync::Mutex::new([None, None]),
-                        sparse_pending: std::sync::Mutex::new(None),
                         submission_tracker: std::sync::Mutex::new(
                             submit::SubmissionTracker::default(),
                         ),
@@ -273,18 +260,7 @@ impl InstanceBackend for Metal {
                         indirect_count_supported,
                     }),
                 };
-                caps.mesh = mesh::mesh_supported(&device);
-                caps.acceleration_structure = device._state.ray_supported;
-                caps.ray_query = shader::ray_query_supported(&device);
-                caps.timestamp = <Metal as api::QueryBackend>::query_supported(
-                    &device,
-                    api::QueryKind::Timestamp,
-                );
-                caps.multi_queue = multi_queue_supported;
-                caps.multi_draw_count = indirect_count_supported;
-                // Storage bindings currently support whole buffers in compute
-                // shaders; layout creation rejects unsupported stages and offsets.
-                caps.storage_buffers = true;
+                let caps = capabilities::describe(&device, multi_queue_supported);
                 let graphics = LaneId {
                     device: id,
                     ordinal: 0,
@@ -334,9 +310,7 @@ impl MetalInstance {
     pub fn new() -> api::Result<Self> {
         #[cfg(target_vendor = "apple")]
         {
-            let devices = objc2_metal::MTLCreateSystemDefaultDevice()
-                .into_iter()
-                .collect();
+            let devices = objc2_metal::MTLCopyAllDevices().to_vec();
             Ok(Self {
                 _state: Arc::new(InstanceState { devices }),
             })

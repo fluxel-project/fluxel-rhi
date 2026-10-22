@@ -1,6 +1,11 @@
 //! Contract tests for Metal plan acceptance and asynchronous completion state.
 
 use super::*;
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 #[test]
 fn checkpoint_frontier_is_a_snapshot_of_the_accepted_lane_prefix() {
@@ -139,7 +144,7 @@ fn command_plan_accepts_ordered_same_lane_dependencies() {
             ]),
         )
     };
-    assert!(supports_command_plan(&plan));
+    assert!(supports_command_plan(&plan, 0));
 }
 
 #[test]
@@ -172,7 +177,7 @@ fn command_plan_accepts_commands_followed_by_one_present() {
             ]),
         )
     };
-    assert!(supports_command_plan(&plan));
+    assert!(supports_command_plan(&plan, 0));
 }
 
 #[test]
@@ -192,7 +197,7 @@ fn command_plan_rejects_other_step_kinds_and_lanes() {
             }]),
         )
     };
-    assert!(!supports_command_plan(&sparse));
+    assert!(!supports_command_plan(&sparse, 0));
 
     // SAFETY: same as above; the invalid lane is a rejection fixture only.
     let other_lane = unsafe {
@@ -205,5 +210,5 @@ fn command_plan_rejects_other_step_kinds_and_lanes() {
             }]),
         )
     };
-    assert!(!supports_command_plan(&other_lane));
+    assert!(!supports_command_plan(&other_lane, 0));
 }

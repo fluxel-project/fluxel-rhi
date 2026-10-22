@@ -1,20 +1,108 @@
-//! Metal's fixed bind-group ABI and pipeline-layout metadata.
+//! Metal bind-group resources and pipeline-layout metadata.
 //!
-//! WGSL group `g`, binding `b` lowers to Metal resource slot `7 * g + b`.
-//! Each group's binding numbers are kept unchanged so command recording can
-//! bind each resource directly without building a CPU command list. This file
-//! only accepts the scalar resource forms currently lowered by the shader ABI;
-//! resource ownership and encoder binding are implemented by their own paths.
+//! WGSL and native Metal shaders use the same pipeline-specific stage maps.
+//! Resource ownership and encoder binding are implemented by their respective
+//! native paths.
 
 use fluxel_rhi_core::api::{
-    self, BindGroupLayoutDesc, BindGroupLayoutEntry, BindingCount, BindingType, PipelineLayoutDesc,
-    ShaderStage, TextureViewDimension,
+    self, BindGroupLayoutDesc, BindGroupLayoutEntry, BindingType, PipelineLayoutDesc, ShaderStage,
 };
 
-const MAX_GROUPS: usize = 4;
-const MAX_BINDINGS: u32 = 7;
 #[cfg(any(target_vendor = "apple", test))]
 pub(crate) const UNIFORM_OFFSET_ALIGNMENT: u64 = 32;
+
+#[cfg(target_vendor = "apple")]
+pub(crate) fn uniform_offset_alignment(
+    device: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>,
+) -> u64 {
+    use objc2_metal::{MTLDevice as _, MTLGPUFamily};
+    if device.supportsFamily(MTLGPUFamily::Apple2) {
+        4
+    } else {
+        32
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+pub(crate) fn argument_arrays_supported(
+    device: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>,
+) -> bool {
+    use objc2_metal::{MTLArgumentBuffersTier, MTLDevice as _};
+    device.argumentBuffersSupport() == MTLArgumentBuffersTier::Tier2
+}
+
+/// Enforce Metal's per-stage argument-buffer resource limits over the whole layout.
+#[cfg(target_vendor = "apple")]
+pub(crate) fn validate_array_limits(
+    device: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>,
+    layout: &MetalPipelineLayout,
+    stage: ShaderStage,
+) -> api::Result<()> {
+    use objc2_metal::{MTLDevice as _, MTLGPUFamily as F};
+    let apple9 = device.supportsFamily(F::Apple9);
+    let apple7 = device.supportsFamily(F::Apple7);
+    let apple6 = device.supportsFamily(F::Apple6);
+    let apple4 = device.supportsFamily(F::Apple4);
+    let mac = device.supportsFamily(F::Mac2);
+    let buffer_limit = if apple6 || mac {
+        u64::MAX
+    } else if apple4 {
+        96
+    } else {
+        31
+    };
+    let texture_limit = if apple6 || mac {
+        1_000_000
+    } else if apple4 {
+        96
+    } else {
+        31
+    };
+    let sampler_limit = if apple9 {
+        500_000
+    } else if mac {
+        1024
+    } else if apple7 {
+        996
+    } else if apple6 {
+        128
+    } else {
+        16
+    };
+    let mut counts = [0u64; 3];
+    for entry in layout
+        .groups
+        .iter()
+        .flat_map(|group| &group.entries)
+        .filter(|entry| entry.visibility.contains(&stage))
+    {
+        let count = match entry.count {
+            api::BindingCount::One => continue,
+            api::BindingCount::Fixed(n) => n,
+            api::BindingCount::RuntimeSized { max_count } => max_count,
+        };
+        if !argument_arrays_supported(device) {
+            return Err(api::Error::Unsupported("Metal argument buffer tier 2"));
+        }
+        let index = match entry.ty {
+            BindingType::UniformBuffer { .. }
+            | BindingType::StorageBuffer { .. }
+            | BindingType::AccelerationStructure => 0,
+            BindingType::SampledTexture { .. } | BindingType::StorageTexture { .. } => 1,
+            BindingType::Sampler { .. } => 2,
+            BindingType::ExternalTexture => return Err(api::Error::InvalidState),
+        };
+        counts[index] = counts[index]
+            .checked_add(u64::from(count))
+            .ok_or(api::Error::InvalidRange)?;
+    }
+    if counts[0] > buffer_limit || counts[1] > texture_limit || counts[2] > sampler_limit {
+        return Err(api::Error::Unsupported(
+            "Metal per-stage argument buffer resource limit",
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Clone)]
 pub struct MetalBindGroupLayout {
@@ -26,6 +114,7 @@ pub struct MetalBindGroupLayout {
 pub struct MetalPipelineLayout {
     #[allow(dead_code)] // Retained for native pipeline and command binding validation.
     pub(crate) groups: Vec<MetalBindGroupLayout>,
+    pub(crate) push_constants: Vec<api::PushConstantRange>,
 }
 
 #[derive(Clone)]
@@ -39,6 +128,12 @@ pub struct MetalBindGroup {
 #[derive(Clone)]
 #[allow(dead_code)] // Resource handles are consumed by the next encoder implementation slice.
 pub(crate) enum BoundResource {
+    Array {
+        binding: u32,
+        visibility: Vec<api::ShaderStage>,
+        ty: api::BindingType,
+        elements: Vec<Option<BoundResource>>,
+    },
     Acceleration {
         binding: u32,
         visibility: Vec<api::ShaderStage>,
@@ -52,6 +147,8 @@ pub(crate) enum BoundResource {
         size: u64,
         allocation_size: u64,
         dynamic_offset: bool,
+        offset_alignment: u64,
+        view: Option<api::StorageBufferView>,
     },
     Texture {
         binding: u32,
@@ -63,6 +160,77 @@ pub(crate) enum BoundResource {
         visibility: Vec<api::ShaderStage>,
         raw: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLSamplerState>>,
     },
+}
+
+/// Convert one validated binding array into the per-element Metal wrapper ABI.
+#[cfg(target_vendor = "apple")]
+pub(crate) fn argument_elements(
+    ty: &BindingType,
+    elements: &[Option<BoundResource>],
+    capacity: u32,
+    dynamic_offset: Option<u32>,
+) -> api::Result<Vec<super::argument::ArgumentElement>> {
+    use super::argument::ArgumentElement as A;
+    let count = usize::try_from(capacity).map_err(|_| api::Error::InvalidRange)?;
+    if count == 0 {
+        return Err(api::Error::InvalidRange);
+    }
+    let empty = || match ty {
+        BindingType::UniformBuffer { .. } | BindingType::StorageBuffer { .. } => Ok(A::Buffer {
+            raw: None,
+            offset: 0,
+        }),
+        BindingType::SampledTexture { .. } | BindingType::StorageTexture { .. } => {
+            Ok(A::Texture(None))
+        }
+        BindingType::Sampler { .. } => Ok(A::Sampler(None)),
+        BindingType::AccelerationStructure => Ok(A::Acceleration(None)),
+        BindingType::ExternalTexture => Err(api::Error::InvalidState),
+    };
+    let mut result = Vec::new();
+    result
+        .try_reserve_exact(count)
+        .map_err(|_| api::Error::OutOfMemory)?;
+    for element in elements.iter().take(count) {
+        result.push(match element {
+            None => empty()?,
+            Some(BoundResource::Buffer {
+                raw,
+                offset,
+                size,
+                allocation_size,
+                dynamic_offset: dynamic,
+                offset_alignment,
+                ..
+            }) => {
+                let start = if *dynamic {
+                    apply_dynamic_offset(
+                        *offset,
+                        *size,
+                        *allocation_size,
+                        dynamic_offset.ok_or(api::Error::InvalidRange)?,
+                        *offset_alignment,
+                    )?
+                } else {
+                    *offset
+                };
+                A::Buffer {
+                    raw: Some(raw.clone()),
+                    offset: usize::try_from(start).map_err(|_| api::Error::InvalidRange)?,
+                }
+            }
+            Some(BoundResource::Texture { raw, .. }) => A::Texture(Some(raw.clone())),
+            Some(BoundResource::Sampler { raw, .. }) => A::Sampler(Some(raw.clone())),
+            Some(BoundResource::Acceleration { value, .. }) => {
+                A::Acceleration(Some(value.raw.clone()))
+            }
+            Some(BoundResource::Array { .. }) => return Err(api::Error::InvalidState),
+        });
+    }
+    while result.len() < count {
+        result.push(empty()?);
+    }
+    Ok(result)
 }
 
 pub(super) fn create_bind_group(
@@ -78,166 +246,21 @@ pub(super) fn create_bind_group(
         // group entry against that order, which preserves dynamic-offset order.
         for (layout_entry, entry) in layout.entries.iter().zip(desc.entries) {
             let resource = match &entry.resource {
-                api::BindingResource::Buffer { buffer, range } => {
-                    // SAFETY: Core checked the buffer's device identity before
-                    // invoking this backend SPI; the native wrapper is cloned below.
-                    let native = unsafe { buffer.native_ref() };
-                    let (minimum, dynamic_offset) = match layout_entry.ty {
-                        BindingType::UniformBuffer {
-                            min_size,
-                            dynamic_offset,
-                        } => (min_size, dynamic_offset),
-                        BindingType::StorageBuffer {
-                            min_size,
-                            dynamic_offset: false,
-                            ..
-                        } => {
-                            if !valid_storage_buffer_binding(
-                                native.usage,
-                                range.start,
-                                range.end,
-                                native.size(),
-                                min_size,
-                            ) {
-                                return Err(api::Error::InvalidRange);
-                            }
-                            resources.push(BoundResource::Buffer {
-                                binding: entry.binding,
-                                visibility: layout_entry.visibility.clone(),
-                                raw: native.raw.clone(),
-                                offset: 0,
-                                size: native.size(),
-                                allocation_size: native.size(),
-                                dynamic_offset: false,
-                            });
-                            continue;
-                        }
-                        _ => return Err(api::Error::InvalidState),
-                    };
-                    if !valid_uniform_buffer_binding(
-                        native.usage,
-                        range.start,
-                        range.end,
-                        native.size(),
-                        minimum,
-                        UNIFORM_OFFSET_ALIGNMENT,
-                    ) {
-                        return Err(api::Error::InvalidRange);
-                    }
-                    BoundResource::Buffer {
-                        binding: entry.binding,
-                        visibility: layout_entry.visibility.clone(),
-                        raw: native.raw.clone(),
-                        offset: range.start,
-                        size: range.end - range.start,
-                        allocation_size: native.size(),
-                        dynamic_offset,
-                    }
-                }
-                api::BindingResource::TextureView(view) => {
-                    // SAFETY: Core checked the view's device identity before this SPI call.
-                    let native = unsafe { view.native_ref() };
-                    let (dimension, storage) = match layout_entry.ty {
-                        BindingType::SampledTexture {
-                            dimension,
-                            multisampled,
-                            ..
-                        } if !multisampled => (dimension, false),
-                        BindingType::StorageTexture {
-                            format,
-                            dimension: TextureViewDimension::D2,
-                            access: api::StorageAccess::Write,
-                        } if format == native.format => (TextureViewDimension::D2, true),
-                        _ => return Err(api::Error::InvalidState),
-                    };
-                    let usage = if storage {
-                        api::TextureUsage::STORAGE_BINDING
-                    } else {
-                        api::TextureUsage::TEXTURE_BINDING
-                    };
-                    if !native.usage.contains(usage)
-                        || native.dimension != dimension
-                        || (!storage
-                            && !sample_type_matches(
-                                match layout_entry.ty {
-                                    BindingType::SampledTexture { sample, .. } => sample,
-                                    _ => unreachable!(),
-                                },
-                                native.format,
-                            ))
-                    {
-                        return Err(api::Error::InvalidState);
-                    }
-                    BoundResource::Texture {
-                        binding: entry.binding,
-                        visibility: layout_entry.visibility.clone(),
-                        raw: native.raw.clone(),
-                    }
-                }
-                api::BindingResource::Sampler(sampler) => {
-                    // SAFETY: Core checked the sampler's device identity before this SPI call.
-                    let native = unsafe { sampler.native_ref() };
-                    let (filtering, comparison) = match layout_entry.ty {
-                        BindingType::Sampler {
-                            filtering,
-                            comparison,
-                        } => (filtering, comparison),
-                        _ => return Err(api::Error::InvalidState),
-                    };
-                    if native.filtering != filtering || native.comparison != comparison {
-                        return Err(api::Error::InvalidState);
-                    }
-                    BoundResource::Sampler {
-                        binding: entry.binding,
-                        visibility: layout_entry.visibility.clone(),
-                        raw: native.raw.clone(),
-                    }
-                }
-                api::BindingResource::Acceleration(accel) => {
-                    if !matches!(layout_entry.ty, BindingType::AccelerationStructure) {
-                        return Err(api::Error::InvalidState);
-                    }
-                    // SAFETY: Core validated device identity before this SPI call.
-                    let value = unsafe { accel.native_ref().clone() };
-                    BoundResource::Acceleration {
-                        binding: entry.binding,
-                        visibility: layout_entry.visibility.clone(),
-                        value,
-                    }
-                }
-                api::BindingResource::StorageBufferView { buffer, range, .. } => {
-                    let minimum = match layout_entry.ty {
-                        BindingType::StorageBuffer {
-                            min_size,
-                            dynamic_offset: false,
-                            ..
-                        } => min_size,
-                        _ => return Err(api::Error::InvalidState),
-                    };
-                    // SAFETY: Core validated this buffer's device identity.
-                    let native = unsafe { buffer.native_ref() };
-                    if !valid_storage_buffer_binding(
-                        native.usage,
-                        range.start,
-                        range.end,
-                        native.size(),
-                        minimum,
-                    ) {
-                        return Err(api::Error::InvalidRange);
-                    }
-                    BoundResource::Buffer {
-                        binding: entry.binding,
-                        visibility: layout_entry.visibility.clone(),
-                        raw: native.raw.clone(),
-                        offset: 0,
-                        size: native.size(),
-                        allocation_size: native.size(),
-                        dynamic_offset: false,
-                    }
-                }
-                api::BindingResource::Array(_) => {
-                    return Err(api::Error::Unsupported("Metal binding resource form"));
-                }
+                api::BindingResource::Array(values) => BoundResource::Array {
+                    binding: entry.binding,
+                    visibility: layout_entry.visibility.clone(),
+                    ty: layout_entry.ty.clone(),
+                    elements: values
+                        .iter()
+                        .map(|value| {
+                            value
+                                .as_ref()
+                                .map(|v| bind_one(layout_entry, entry.binding, v))
+                                .transpose()
+                        })
+                        .collect::<api::Result<_>>()?,
+                },
+                value => bind_one(layout_entry, entry.binding, value)?,
             };
             resources.push(resource);
         }
@@ -250,34 +273,198 @@ pub(super) fn create_bind_group(
     }
 }
 
-pub(super) fn create_layout(desc: &BindGroupLayoutDesc) -> api::Result<MetalBindGroupLayout> {
-    if desc.entries.len() > MAX_BINDINGS as usize {
-        return Err(api::Error::Unsupported(
-            "Metal bind group exceeds seven slots",
-        ));
-    }
-    for entry in &desc.entries {
-        if matches!(entry.ty, BindingType::StorageBuffer { .. })
-            && entry
-                .visibility
-                .iter()
-                .any(|stage| *stage != ShaderStage::Compute)
-        {
-            return Err(api::Error::Unsupported("Metal storage buffer stage"));
+#[cfg(target_vendor = "apple")]
+fn bind_one(
+    layout_entry: &BindGroupLayoutEntry,
+    binding: u32,
+    resource: &api::BindingResource<'_, super::Metal>,
+) -> api::Result<BoundResource> {
+    let resource = match resource {
+        api::BindingResource::Buffer { buffer, range } => {
+            // SAFETY: Core checked the buffer's device identity before
+            // invoking this backend SPI; the native wrapper is cloned below.
+            let native = unsafe { buffer.native_ref() };
+            let (minimum, dynamic_offset) = match layout_entry.ty {
+                BindingType::UniformBuffer {
+                    min_size,
+                    dynamic_offset,
+                } => (min_size, dynamic_offset),
+                BindingType::StorageBuffer {
+                    min_size,
+                    dynamic_offset,
+                    ..
+                } => {
+                    if !valid_storage_buffer_binding(
+                        native.usage,
+                        range.start,
+                        range.end,
+                        native.size(),
+                        min_size,
+                    ) {
+                        return Err(api::Error::InvalidRange);
+                    }
+                    return Ok(BoundResource::Buffer {
+                        binding: binding,
+                        visibility: layout_entry.visibility.clone(),
+                        raw: native.raw.clone(),
+                        offset: range.start,
+                        size: range.end - range.start,
+                        allocation_size: native.size(),
+                        dynamic_offset,
+                        offset_alignment: 4,
+                        view: None,
+                    });
+                }
+                _ => return Err(api::Error::InvalidState),
+            };
+            if !valid_uniform_buffer_binding(
+                native.usage,
+                range.start,
+                range.end,
+                native.size(),
+                minimum,
+                uniform_offset_alignment(&native.device._device),
+            ) {
+                return Err(api::Error::InvalidRange);
+            }
+            BoundResource::Buffer {
+                binding: binding,
+                visibility: layout_entry.visibility.clone(),
+                raw: native.raw.clone(),
+                offset: range.start,
+                size: range.end - range.start,
+                allocation_size: native.size(),
+                dynamic_offset,
+                offset_alignment: uniform_offset_alignment(&native.device._device),
+                view: None,
+            }
         }
+        api::BindingResource::TextureView(view) => {
+            // SAFETY: Core checked the view's device identity before this SPI call.
+            let native = unsafe { view.native_ref() };
+            let (dimension, storage) = match layout_entry.ty {
+                BindingType::SampledTexture {
+                    dimension,
+                    multisampled,
+                    sample,
+                } => {
+                    let type_matches = if native.aspects == api::TextureAspects::STENCIL {
+                        sample == api::TextureSampleType::Uint
+                    } else {
+                        sample_type_matches(sample, native.format)
+                    };
+                    if multisampled != (native.samples > 1)
+                        || !type_matches
+                        || (sample == api::TextureSampleType::Float && !native.filterable)
+                    {
+                        return Err(api::Error::InvalidState);
+                    }
+                    (dimension, false)
+                }
+                BindingType::StorageTexture {
+                    format, dimension, ..
+                } if format == native.format && native.samples == 1 => (dimension, true),
+                _ => return Err(api::Error::InvalidState),
+            };
+            let usage = if storage {
+                api::TextureUsage::STORAGE_BINDING
+            } else {
+                api::TextureUsage::TEXTURE_BINDING
+            };
+            if !native.usage.contains(usage) || native.dimension != dimension {
+                return Err(api::Error::InvalidState);
+            }
+            BoundResource::Texture {
+                binding: binding,
+                visibility: layout_entry.visibility.clone(),
+                raw: native.sampled_raw.clone(),
+            }
+        }
+        api::BindingResource::Sampler(sampler) => {
+            // SAFETY: Core checked the sampler's device identity before this SPI call.
+            let native = unsafe { sampler.native_ref() };
+            let (filtering, comparison) = match layout_entry.ty {
+                BindingType::Sampler {
+                    filtering,
+                    comparison,
+                } => (filtering, comparison),
+                _ => return Err(api::Error::InvalidState),
+            };
+            if native.filtering != filtering || native.comparison != comparison {
+                return Err(api::Error::InvalidState);
+            }
+            BoundResource::Sampler {
+                binding: binding,
+                visibility: layout_entry.visibility.clone(),
+                raw: native.raw.clone(),
+            }
+        }
+        api::BindingResource::Acceleration(accel) => {
+            if !matches!(layout_entry.ty, BindingType::AccelerationStructure) {
+                return Err(api::Error::InvalidState);
+            }
+            // SAFETY: Core validated device identity before this SPI call.
+            let value = unsafe { accel.native_ref().clone() };
+            BoundResource::Acceleration {
+                binding: binding,
+                visibility: layout_entry.visibility.clone(),
+                value,
+            }
+        }
+        api::BindingResource::StorageBufferView {
+            buffer,
+            range,
+            view,
+        } => {
+            let (minimum, dynamic_offset) = match layout_entry.ty {
+                BindingType::StorageBuffer {
+                    min_size,
+                    dynamic_offset,
+                    ..
+                } => (min_size, dynamic_offset),
+                _ => return Err(api::Error::InvalidState),
+            };
+            // SAFETY: Core validated this buffer's device identity.
+            let native = unsafe { buffer.native_ref() };
+            if !valid_storage_buffer_binding(
+                native.usage,
+                range.start,
+                range.end,
+                native.size(),
+                minimum,
+            ) {
+                return Err(api::Error::InvalidRange);
+            }
+            BoundResource::Buffer {
+                binding: binding,
+                visibility: layout_entry.visibility.clone(),
+                raw: native.raw.clone(),
+                offset: range.start,
+                size: range.end - range.start,
+                allocation_size: native.size(),
+                dynamic_offset,
+                offset_alignment: 4,
+                view: Some(*view),
+            }
+        }
+        api::BindingResource::Array(_) => return Err(api::Error::InvalidState),
+    };
+    Ok(resource)
+}
+
+pub(super) fn create_layout(desc: &BindGroupLayoutDesc) -> api::Result<MetalBindGroupLayout> {
+    for entry in &desc.entries {
         if matches!(entry.ty, BindingType::AccelerationStructure)
-            && entry
-                .visibility
-                .iter()
-                .any(|stage| *stage != ShaderStage::Compute)
+            && entry.visibility.iter().any(|stage| {
+                !matches!(
+                    stage,
+                    ShaderStage::Compute | ShaderStage::Vertex | ShaderStage::Fragment
+                )
+            })
         {
             return Err(api::Error::Unsupported("Metal acceleration binding stage"));
         }
-        if entry.binding >= MAX_BINDINGS
-            || entry.count != BindingCount::One
-            || entry.partially_bound
-            || entry.nonuniform_indexing
-            || entry.visibility.is_empty()
+        if entry.visibility.is_empty()
             || entry.visibility.iter().any(|stage| {
                 !matches!(
                     stage,
@@ -301,14 +488,6 @@ pub(super) fn create_layout(desc: &BindGroupLayoutDesc) -> api::Result<MetalBind
 pub(super) fn create_pipeline_layout(
     desc: &PipelineLayoutDesc<'_, super::Metal>,
 ) -> api::Result<MetalPipelineLayout> {
-    if desc.groups.len() > MAX_GROUPS {
-        return Err(api::Error::Unsupported(
-            "Metal pipeline layout exceeds four groups",
-        ));
-    }
-    if !desc.push_constants.is_empty() {
-        return Err(api::Error::Unsupported("Metal push constants"));
-    }
     Ok(MetalPipelineLayout {
         groups: desc
             .groups
@@ -319,49 +498,18 @@ pub(super) fn create_pipeline_layout(
                 unsafe { group.native_ref().clone() }
             })
             .collect(),
+        push_constants: desc.push_constants.to_vec(),
     })
 }
 
 fn supported_type(ty: &BindingType) -> bool {
     match ty {
-        BindingType::UniformBuffer { .. } | BindingType::AccelerationStructure => true,
-        BindingType::SampledTexture {
-            dimension,
-            multisampled,
-            ..
-        } => {
-            !multisampled
-                && matches!(
-                    dimension,
-                    TextureViewDimension::D2
-                        | TextureViewDimension::D2Array
-                        | TextureViewDimension::Cube
-                        | TextureViewDimension::CubeArray
-                )
-        }
-        BindingType::Sampler {
-            filtering: true,
-            comparison: false,
-        } => true,
-        BindingType::StorageTexture {
-            format: api::TextureFormat::Rgba8Unorm,
-            dimension: TextureViewDimension::D2,
-            access: api::StorageAccess::Write,
-        } => true,
-        BindingType::StorageBuffer {
-            dynamic_offset: false,
-            ..
-        } => true,
-        BindingType::Sampler { .. }
-        | BindingType::StorageBuffer { .. }
-        | BindingType::StorageTexture { .. }
-        | BindingType::ExternalTexture => false,
+        BindingType::ExternalTexture => false,
+        _ => true,
     }
 }
 
-// Restrict to the whole allocation until the MSL ABI supplies binding sizes
-// for runtime arrays and robust accesses. The compute producer needs no
-// subrange; accepting one here would silently permit writes beyond its view.
+// The shader ABI supplies the selected range length to Naga's bounds checks.
 #[allow(dead_code)]
 fn valid_storage_buffer_binding(
     usage: api::BufferUsage,
@@ -371,22 +519,57 @@ fn valid_storage_buffer_binding(
     minimum_size: u64,
 ) -> bool {
     usage.contains(api::BufferUsage::STORAGE)
-        && start == 0
-        && end == allocation_size
-        && end > 0
-        && end >= minimum_size
+        && start.is_multiple_of(4)
+        && start < end
+        && end <= allocation_size
+        && end - start >= minimum_size
 }
 
 #[allow(dead_code)] // Used by the Apple-only bind-group materialization path.
 fn sample_type_matches(sample: api::TextureSampleType, format: api::TextureFormat) -> bool {
     use api::{TextureFormat as F, TextureSampleType as S};
     match sample {
-        S::Float | S::UnfilterableFloat => matches!(
+        S::Depth => matches!(
             format,
-            F::Rgba8Unorm | F::Rgba8UnormSrgb | F::Bgra8Unorm | F::Bgra8UnormSrgb | F::Rgba16Float
+            F::Depth16Unorm
+                | F::Depth24Plus
+                | F::Depth24PlusStencil8
+                | F::Depth32Float
+                | F::Depth32FloatStencil8
         ),
-        S::Depth => format == F::Depth32Float,
-        S::Sint | S::Uint => false,
+        S::Sint => matches!(
+            format,
+            F::R8Sint
+                | F::Rg8Sint
+                | F::Rgba8Sint
+                | F::R16Sint
+                | F::Rg16Sint
+                | F::Rgba16Sint
+                | F::R32Sint
+                | F::Rg32Sint
+                | F::Rgba32Sint
+        ),
+        S::Uint => matches!(
+            format,
+            F::R8Uint
+                | F::Rg8Uint
+                | F::Rgba8Uint
+                | F::R16Uint
+                | F::Rg16Uint
+                | F::Rgba16Uint
+                | F::R32Uint
+                | F::Rg32Uint
+                | F::Rgba32Uint
+                | F::Rgb10a2Uint
+                | F::R64Uint
+                | F::Rg64Uint
+                | F::Stencil8
+        ),
+        S::Float | S::UnfilterableFloat => {
+            !sample_type_matches(S::Depth, format)
+                && !sample_type_matches(S::Sint, format)
+                && !sample_type_matches(S::Uint, format)
+        }
     }
 }
 
@@ -415,7 +598,24 @@ pub(crate) fn apply_dynamic_uniform_offset(
     allocation_size: u64,
     dynamic_offset: u32,
 ) -> api::Result<u64> {
-    if !u64::from(dynamic_offset).is_multiple_of(UNIFORM_OFFSET_ALIGNMENT) {
+    apply_dynamic_offset(
+        bound_start,
+        bound_size,
+        allocation_size,
+        dynamic_offset,
+        UNIFORM_OFFSET_ALIGNMENT,
+    )
+}
+
+#[cfg(any(target_vendor = "apple", test))]
+pub(crate) fn apply_dynamic_offset(
+    bound_start: u64,
+    bound_size: u64,
+    allocation_size: u64,
+    dynamic_offset: u32,
+    alignment: u64,
+) -> api::Result<u64> {
+    if alignment == 0 || !u64::from(dynamic_offset).is_multiple_of(alignment) {
         return Err(api::Error::InvalidRange);
     }
     let start = bound_start
@@ -431,243 +631,4 @@ pub(crate) fn apply_dynamic_uniform_offset(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        UNIFORM_OFFSET_ALIGNMENT, apply_dynamic_uniform_offset, create_layout, sample_type_matches,
-        supported_type, valid_storage_buffer_binding, valid_uniform_buffer_binding,
-    };
-    use fluxel_rhi_core::api::{
-        self, BindGroupLayoutDesc, BindGroupLayoutEntry, BindingCount, BindingType, ShaderStage,
-        StorageAccess, TextureSampleType, TextureViewDimension,
-    };
-
-    fn entry(binding: u32, ty: BindingType) -> BindGroupLayoutEntry {
-        BindGroupLayoutEntry {
-            binding,
-            visibility: vec![ShaderStage::Vertex, ShaderStage::Fragment],
-            ty,
-            count: BindingCount::One,
-            partially_bound: false,
-            nonuniform_indexing: false,
-        }
-    }
-
-    #[test]
-    fn layout_accepts_dynamic_uniform_and_sampled_texture_slots() {
-        let desc = BindGroupLayoutDesc {
-            label: None,
-            entries: vec![
-                entry(
-                    0,
-                    BindingType::UniformBuffer {
-                        dynamic_offset: true,
-                        min_size: 16,
-                    },
-                ),
-                entry(
-                    6,
-                    BindingType::SampledTexture {
-                        sample: TextureSampleType::Float,
-                        dimension: TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                ),
-            ],
-        };
-        assert!(create_layout(&desc).is_ok());
-    }
-
-    #[test]
-    fn layout_rejects_forms_without_a_native_binding_lowering() {
-        let mut desc = BindGroupLayoutDesc {
-            label: None,
-            entries: vec![entry(
-                0,
-                BindingType::StorageBuffer {
-                    dynamic_offset: true,
-                    min_size: 4,
-                    access: StorageAccess::Read,
-                },
-            )],
-        };
-        assert!(matches!(
-            create_layout(&desc),
-            Err(api::Error::Unsupported(_))
-        ));
-        desc.entries[0] = entry(
-            0,
-            BindingType::SampledTexture {
-                sample: TextureSampleType::Float,
-                dimension: TextureViewDimension::D3,
-                multisampled: false,
-            },
-        );
-        assert!(!supported_type(&desc.entries[0].ty));
-    }
-
-    #[test]
-    fn compute_storage_buffers_require_whole_allocation_and_explicit_usage() {
-        let mut item = entry(
-            0,
-            BindingType::StorageBuffer {
-                dynamic_offset: false,
-                min_size: 4,
-                access: StorageAccess::ReadWrite,
-            },
-        );
-        item.visibility = vec![ShaderStage::Compute];
-        assert!(
-            create_layout(&BindGroupLayoutDesc {
-                label: None,
-                entries: vec![item.clone()]
-            })
-            .is_ok()
-        );
-        item.visibility.push(ShaderStage::Fragment);
-        assert!(
-            create_layout(&BindGroupLayoutDesc {
-                label: None,
-                entries: vec![item]
-            })
-            .is_err()
-        );
-        assert!(valid_storage_buffer_binding(
-            api::BufferUsage::STORAGE,
-            0,
-            16,
-            16,
-            4
-        ));
-        assert!(!valid_storage_buffer_binding(
-            api::BufferUsage::STORAGE,
-            4,
-            16,
-            16,
-            4
-        ));
-        assert!(!valid_storage_buffer_binding(
-            api::BufferUsage::COPY_DST,
-            0,
-            16,
-            16,
-            4
-        ));
-    }
-
-    #[test]
-    fn layout_accepts_compute_write_only_rgba8_storage_texture() {
-        let mut storage = entry(
-            1,
-            BindingType::StorageTexture {
-                format: api::TextureFormat::Rgba8Unorm,
-                dimension: TextureViewDimension::D2,
-                access: StorageAccess::Write,
-            },
-        );
-        storage.visibility = vec![ShaderStage::Compute];
-        let desc = BindGroupLayoutDesc {
-            label: None,
-            entries: vec![storage],
-        };
-        assert!(create_layout(&desc).is_ok());
-        let unsupported_format = entry(
-            0,
-            BindingType::StorageTexture {
-                format: api::TextureFormat::Rgba16Float,
-                dimension: TextureViewDimension::D2,
-                access: StorageAccess::Write,
-            },
-        );
-        assert!(!supported_type(&unsupported_format.ty));
-    }
-
-    #[test]
-    fn uniform_binding_requires_usage_valid_range_and_minimum_size() {
-        assert!(valid_uniform_buffer_binding(
-            api::BufferUsage::UNIFORM,
-            256,
-            320,
-            512,
-            64,
-            UNIFORM_OFFSET_ALIGNMENT,
-        ));
-        assert!(!valid_uniform_buffer_binding(
-            api::BufferUsage::COPY_SRC,
-            0,
-            64,
-            64,
-            16,
-            UNIFORM_OFFSET_ALIGNMENT,
-        ));
-        assert!(!valid_uniform_buffer_binding(
-            api::BufferUsage::UNIFORM,
-            6,
-            70,
-            512,
-            64,
-            UNIFORM_OFFSET_ALIGNMENT,
-        ));
-        assert!(!valid_uniform_buffer_binding(
-            api::BufferUsage::UNIFORM,
-            4,
-            68,
-            512,
-            64,
-            UNIFORM_OFFSET_ALIGNMENT,
-        ));
-        assert!(!valid_uniform_buffer_binding(
-            api::BufferUsage::UNIFORM,
-            65,
-            64,
-            512,
-            1,
-            UNIFORM_OFFSET_ALIGNMENT,
-        ));
-        assert!(!valid_uniform_buffer_binding(
-            api::BufferUsage::UNIFORM,
-            0,
-            15,
-            512,
-            16,
-            UNIFORM_OFFSET_ALIGNMENT,
-        ));
-    }
-
-    #[test]
-    fn dynamic_uniform_offset_preserves_range_and_checks_alignment_and_bounds() {
-        assert_eq!(apply_dynamic_uniform_offset(0, 64, 1024, 256), Ok(256));
-        assert_eq!(apply_dynamic_uniform_offset(32, 64, 1024, 32), Ok(64));
-        assert!(matches!(
-            apply_dynamic_uniform_offset(0, 64, 1024, 4),
-            Err(api::Error::InvalidRange)
-        ));
-        assert!(matches!(
-            apply_dynamic_uniform_offset(0, 64, 1024, 2),
-            Err(api::Error::InvalidRange)
-        ));
-        assert!(matches!(
-            apply_dynamic_uniform_offset(960, 64, 1024, 4),
-            Err(api::Error::InvalidRange)
-        ));
-        assert!(matches!(
-            apply_dynamic_uniform_offset(u64::MAX - 3, 8, u64::MAX, 4),
-            Err(api::Error::InvalidRange)
-        ));
-    }
-
-    #[test]
-    fn depth_and_color_sample_types_require_matching_native_formats() {
-        assert!(sample_type_matches(
-            api::TextureSampleType::Depth,
-            api::TextureFormat::Depth32Float
-        ));
-        assert!(!sample_type_matches(
-            api::TextureSampleType::Depth,
-            api::TextureFormat::Rgba8Unorm
-        ));
-        assert!(!sample_type_matches(
-            api::TextureSampleType::Uint,
-            api::TextureFormat::Rgba8Unorm
-        ));
-    }
-}
+mod tests;

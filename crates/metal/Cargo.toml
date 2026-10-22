@@ -12,13 +12,14 @@ hardware-tests = []
 
 [dependencies]
 fluxel-rhi-core = { path = "../core" }
-naga = { version = "=27.0.3", features = ["msl-out", "wgsl-in"] }
+naga = { version = "=30.0.1", features = ["msl-out", "wgsl-in"] }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 objc2 = "=0.6.3"
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSError", "NSRange", "NSString"] }
-objc2-metal = { version = "=0.3.2", default-features = false, features = ["std", "block2", "dispatch2", "MTL4CommandQueue", "MTLAccelerationStructure", "MTLAccelerationStructureCommandEncoder", "MTLAccelerationStructureTypes", "MTLAllocation", "MTLArgument", "MTLArgumentEncoder", "MTLBlitCommandEncoder", "MTLBuffer", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLComputeCommandEncoder", "MTLComputePass", "MTLComputePipeline", "MTLCounters", "MTLDepthStencil", "MTLDevice", "MTLDrawable", "MTLHeap", "MTLEvent", "MTLIndirectCommandBuffer", "MTLLibrary", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLResourceStateCommandEncoder", "MTLSampler", "MTLTexture", "MTLTypes", "MTLVertexDescriptor"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSError", "NSRange", "NSString", "NSURL", "NSData"] }
+objc2-metal = { version = "=0.3.2", default-features = false, features = ["std", "block2", "dispatch2", "MTL4CommandQueue", "MTLAccelerationStructure", "MTLAccelerationStructureCommandEncoder", "MTLAccelerationStructureTypes", "MTLAllocation", "MTLArgument", "MTLArgumentEncoder", "MTLBlitCommandEncoder", "MTLBuffer", "MTLBinaryArchive", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLComputeCommandEncoder", "MTLComputePass", "MTLComputePipeline", "MTLDataType", "MTLFunctionConstantValues", "MTLCounters", "MTLDepthStencil", "MTLDevice", "MTLDrawable", "MTLHeap", "MTLEvent", "MTLIndirectCommandBuffer", "MTLLibrary", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLResourceStateCommandEncoder", "MTLSampler", "MTLTexture", "MTLTypes", "MTLVertexDescriptor", "MTLStageInputOutputDescriptor"] }
 dispatch2 = { version = "=0.3.1", default-features = false, features = ["std", "block2"] }
 objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["CFCGTypes"] }
-objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "CAMetalLayer", "CAMediaTiming", "objc2-core-foundation", "objc2-metal"] }
+objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["std", "CGColorSpace"] }
+objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "CAMetalLayer", "CAMediaTiming", "objc2-core-foundation", "objc2-core-graphics", "objc2-metal"] }
 block2 = { version = "=0.6.2", default-features = false }

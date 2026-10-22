@@ -1,22 +1,29 @@
 //! Metal acceleration structure construction. Pipeline-style tracing is unavailable.
 //!
 //! Native objects and their inputs are retained by Metal command buffers using
-//! retained references. TLAS dependencies are frozen at their first build so
-//! recorded compute encoders can declare the complete indirect resource set.
+//! retained references. TLAS dependencies are retained across completed builds
+//! so recorded encoders can declare all indirect resources that may be used.
 use super::{Metal, MetalBuffer, MetalCommandEncoder, MetalDevice};
 use fluxel_rhi_core::api::{self, RayOps};
 use std::future::{Ready, ready};
+
+#[cfg(target_vendor = "apple")]
+mod vertex;
+#[cfg(target_vendor = "apple")]
+use vertex::acceleration_vertex_format;
 
 #[cfg(any(target_vendor = "apple", test))]
 struct FrozenDependencies<T> {
     phase: std::sync::Arc<std::sync::Mutex<BuildState>>,
     values: std::sync::Mutex<Vec<T>>,
+    #[cfg(target_vendor = "apple")]
+    contributions: std::sync::Mutex<Vec<Vec<u32>>>,
 }
 
 #[cfg(any(target_vendor = "apple", test))]
 enum BuildState {
     Empty,
-    Recording(u64),
+    Recording(u64, bool),
     Submitted,
     Ready,
     Failed,
@@ -28,6 +35,8 @@ impl<T> Default for FrozenDependencies<T> {
         Self {
             phase: std::sync::Arc::new(std::sync::Mutex::new(BuildState::Empty)),
             values: std::sync::Mutex::new(Vec::new()),
+            #[cfg(target_vendor = "apple")]
+            contributions: std::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -37,7 +46,7 @@ impl<T> FrozenDependencies<T> {
     fn with_snapshot<R>(&self, owner: u64, f: impl FnOnce(&[T]) -> R) -> api::Result<R> {
         let guard = self.phase.lock().unwrap_or_else(|p| p.into_inner());
         match &*guard {
-            BuildState::Recording(current) if *current == owner => (),
+            BuildState::Recording(current, _) if *current == owner => (),
             BuildState::Ready => (),
             _ => return Err(api::Error::InvalidState),
         }
@@ -47,29 +56,49 @@ impl<T> FrozenDependencies<T> {
 
     fn freeze(&self, owner: u64, values: Vec<T>) -> api::Result<()> {
         let mut guard = self.phase.lock().unwrap_or_else(|p| p.into_inner());
-        if !matches!(*guard, BuildState::Empty) || values.is_empty() {
-            return Err(api::Error::InvalidState);
-        }
-        *self.values.lock().unwrap_or_else(|p| p.into_inner()) = values;
-        *guard = BuildState::Recording(owner);
+        let previous = match *guard {
+            BuildState::Empty => false,
+            BuildState::Ready => true,
+            _ => return Err(api::Error::InvalidState),
+        };
+        // Preserve all earlier BLAS references: recorded TLAS users declare this
+        // conservative union, and a later rebuild can change its instance list.
+        self.values
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .extend(values);
+        *guard = BuildState::Recording(owner, previous);
         Ok(())
     }
 
     fn abandon(&self, owner: u64) {
         let mut state = self.phase.lock().unwrap_or_else(|p| p.into_inner());
-        if matches!(&*state, BuildState::Recording(current) if *current == owner) {
-            self.values
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clear();
-            *state = BuildState::Empty;
+        if let BuildState::Recording(current, previous) = *state {
+            if current == owner {
+                #[cfg(target_vendor = "apple")]
+                self.contributions
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .pop();
+                if !previous {
+                    self.values
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .clear();
+                }
+                *state = if previous {
+                    BuildState::Ready
+                } else {
+                    BuildState::Empty
+                };
+            }
         }
     }
 
     #[cfg(test)]
     fn submit(&self, owner: u64) {
         let mut state = self.phase.lock().unwrap_or_else(|p| p.into_inner());
-        if matches!(&*state, BuildState::Recording(current) if *current == owner) {
+        if matches!(&*state, BuildState::Recording(current, _) if *current == owner) {
             *state = BuildState::Submitted;
         }
     }
@@ -105,7 +134,7 @@ impl Drop for BuildReservation {
         #[cfg(not(target_vendor = "apple"))]
         {
             let mut state = self.phase.lock().unwrap_or_else(|p| p.into_inner());
-            if matches!(&*state, BuildState::Recording(owner) if *owner == self.owner) {
+            if matches!(&*state, BuildState::Recording(owner, _) if *owner == self.owner) {
                 *state = BuildState::Empty;
             }
         }
@@ -116,7 +145,7 @@ impl Drop for BuildReservation {
 impl BuildReservation {
     pub(super) fn submit(&self) {
         let mut state = self.phase.lock().unwrap_or_else(|p| p.into_inner());
-        if matches!(&*state, BuildState::Recording(owner) if *owner == self.owner) {
+        if matches!(&*state, BuildState::Recording(owner, _) if *owner == self.owner) {
             *state = BuildState::Submitted;
         }
     }
@@ -176,11 +205,126 @@ impl MetalAcceleration {
             }
         })
     }
+    pub(crate) fn declare_render_dependencies(
+        &self,
+        render: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLRenderCommandEncoder>,
+        owner: u64,
+        stages: objc2_metal::MTLRenderStages,
+    ) -> api::Result<()> {
+        use objc2_metal::{MTLRenderCommandEncoder as _, MTLResource, MTLResourceUsage};
+        if !self.is_tlas {
+            return Err(api::Error::InvalidState);
+        }
+        self.dependencies.with_snapshot(owner, |dependencies| {
+            for dependency in dependencies {
+                let resource =
+                    objc2::runtime::ProtocolObject::<dyn MTLResource>::from_ref(&*dependency.raw);
+                render.useResource_usage_stages(resource, MTLResourceUsage::Read, stages);
+            }
+        })
+    }
     pub(crate) fn validate_binding(&self, owner: u64) -> api::Result<()> {
         if !self.is_tlas {
             return Err(api::Error::InvalidState);
         }
         self.dependencies.with_snapshot(owner, |_| ())
+    }
+
+    /// Snapshot per-instance shader table offsets for the matching TLAS build.
+    /// The caller retains this immutable buffer for every command using it.
+    pub(crate) fn query_contributions(
+        &self,
+        owner: u64,
+    ) -> api::Result<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer>>>
+    {
+        use objc2_metal::{MTLBuffer as _, MTLDevice as _, MTLResourceOptions};
+        if !self.is_tlas {
+            return Err(api::Error::InvalidState);
+        }
+        self.dependencies.with_snapshot(owner, |_| {
+            let snapshots = self
+                .dependencies
+                .contributions
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let values = snapshots.last().ok_or(api::Error::InvalidState)?;
+            let size = values
+                .len()
+                .checked_mul(std::mem::size_of::<u32>())
+                .ok_or(api::Error::InvalidRange)?
+                .max(4);
+            let buffer = self
+                .device
+                ._state
+                ._device
+                .newBufferWithLength_options(size, MTLResourceOptions::StorageModeShared)
+                .ok_or(api::Error::OutOfMemory)?;
+            // SAFETY: the newly allocated shared buffer has room for the complete snapshot.
+            unsafe {
+                std::ptr::write_bytes(buffer.contents().as_ptr().cast::<u8>(), 0, size);
+                std::ptr::copy_nonoverlapping(
+                    values.as_ptr(),
+                    buffer.contents().as_ptr().cast::<u32>(),
+                    values.len(),
+                );
+            }
+            Ok(buffer)
+        })?
+    }
+
+    /// Pack each acceleration structure's contribution snapshot after a table
+    /// of u32 element offsets, preserving the order of the binding array.
+    pub(crate) fn query_contribution_array(
+        device: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>,
+        structures: &[Option<Self>],
+        capacity: usize,
+        owner: u64,
+    ) -> api::Result<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer>>>
+    {
+        use objc2_metal::{MTLBuffer as _, MTLDevice as _, MTLResourceOptions};
+        if capacity == 0 || structures.len() > capacity {
+            return Err(api::Error::InvalidRange);
+        }
+        let mut packed = vec![0u32; capacity];
+        for (index, structure) in structures.iter().enumerate() {
+            let Some(structure) = structure else {
+                continue;
+            };
+            if !structure.is_tlas || !std::ptr::eq(device, &*structure.device._state._device) {
+                return Err(api::Error::InvalidState);
+            }
+            structure.dependencies.with_snapshot(owner, |_| {
+                let snapshots = structure
+                    .dependencies
+                    .contributions
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                let values = snapshots.last().ok_or(api::Error::InvalidState)?;
+                packed[index] =
+                    u32::try_from(packed.len()).map_err(|_| api::Error::InvalidRange)?;
+                packed.extend_from_slice(values);
+                if values.is_empty() {
+                    packed.push(0);
+                }
+                Ok::<_, api::Error>(())
+            })??;
+        }
+        let size = packed
+            .len()
+            .checked_mul(std::mem::size_of::<u32>())
+            .ok_or(api::Error::InvalidRange)?;
+        let buffer = device
+            .newBufferWithLength_options(size, MTLResourceOptions::StorageModeShared)
+            .ok_or(api::Error::OutOfMemory)?;
+        // SAFETY: this newly created shared allocation covers every packed u32.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                packed.as_ptr(),
+                buffer.contents().as_ptr().cast::<u32>(),
+                packed.len(),
+            );
+        }
+        Ok(buffer)
     }
 }
 
@@ -278,6 +422,14 @@ impl RayOps<Metal> for MetalRay {
                     native.endEncoding();
                     return Err(error);
                 }
+                let api::AccelerationInput::Tlas(instances) = &input.input else {
+                    unreachable!()
+                };
+                dst.dependencies
+                    .contributions
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push(instances.iter().map(|i| i.shader_table_offset).collect());
                 encoder
                     .ray_builds
                     .push(std::sync::Arc::new(BuildReservation {
@@ -364,14 +516,12 @@ fn native_descriptor(
         MTLResourceOptions,
     };
     let api::AccelerationInput::Tlas(instances) = &desc.input else {
-        return Ok((primitive_descriptor(desc)?.into_super(), None, Vec::new()));
+        return Ok((
+            primitive_descriptor(device, desc)?.into_super(),
+            None,
+            Vec::new(),
+        ));
     };
-    if desc.allow_update {
-        return Err(api::Error::Unsupported("Metal acceleration refit"));
-    }
-    if instances.is_empty() {
-        return Err(api::Error::InvalidRange);
-    }
     let mut records = Vec::with_capacity(instances.len());
     let mut dependencies = Vec::with_capacity(instances.len());
     for (i, instance) in instances.iter().enumerate() {
@@ -414,27 +564,36 @@ fn native_descriptor(
         .len()
         .checked_mul(std::mem::size_of::<Instance>())
         .ok_or(api::Error::InvalidRange)?;
-    // SAFETY: records is nonempty and remains readable for the synchronous copy.
-    let upload = unsafe {
-        device._state._device.newBufferWithBytes_length_options(
-            std::ptr::NonNull::new(records.as_mut_ptr().cast()).ok_or(api::Error::InvalidRange)?,
-            bytes,
-            MTLResourceOptions::StorageModeShared,
+    let upload = if records.is_empty() {
+        None
+    } else {
+        // SAFETY: records is nonempty and remains readable for the synchronous copy.
+        Some(
+            unsafe {
+                device._state._device.newBufferWithBytes_length_options(
+                    std::ptr::NonNull::new(records.as_mut_ptr().cast())
+                        .ok_or(api::Error::InvalidRange)?,
+                    bytes,
+                    MTLResourceOptions::StorageModeShared,
+                )
+            }
+            .ok_or(api::Error::OutOfMemory)?,
         )
-    }
-    .ok_or(api::Error::OutOfMemory)?;
+    };
     let refs: Vec<_> = dependencies.iter().map(|d| &*d.raw).collect();
     let array = NSArray::from_slice(&refs);
     let descriptor = MTLInstanceAccelerationStructureDescriptor::descriptor();
+    descriptor.setUsage(acceleration_usage(desc));
     descriptor.setInstanceDescriptorType(DescriptorType::UserID);
-    descriptor.setInstanceDescriptorBuffer(Some(&upload));
+    descriptor.setInstanceDescriptorBuffer(upload.as_deref());
     descriptor.setInstanceCount(records.len());
     descriptor.setInstancedAccelerationStructures(Some(&array));
-    Ok((descriptor.into_super(), Some(upload), dependencies))
+    Ok((descriptor.into_super(), upload, dependencies))
 }
 
 #[cfg(target_vendor = "apple")]
 fn primitive_descriptor(
+    device: &MetalDevice,
     desc: &api::AccelerationDesc<Metal>,
 ) -> api::Result<objc2::rc::Retained<objc2_metal::MTLPrimitiveAccelerationStructureDescriptor>> {
     use objc2_foundation::NSArray;
@@ -444,17 +603,11 @@ fn primitive_descriptor(
         MTLAccelerationStructureTriangleGeometryDescriptor, MTLIndexType,
         MTLPrimitiveAccelerationStructureDescriptor,
     };
-    if desc.allow_update {
-        return Err(api::Error::Unsupported("Metal acceleration refit"));
-    }
     let api::AccelerationInput::Blas(geometries) = &desc.input else {
         return Err(api::Error::Unsupported(
             "Metal instance acceleration structure",
         ));
     };
-    if geometries.is_empty() {
-        return Err(api::Error::InvalidRange);
-    }
     let mut native = Vec::with_capacity(geometries.len());
     for geometry in geometries {
         if let api::AccelerationGeometry::Aabbs {
@@ -496,25 +649,42 @@ fn primitive_descriptor(
         else {
             unreachable!("all acceleration geometry variants are handled");
         };
-        if !matches!(vertex_format, api::VertexFormat::Float32(3)) {
-            return Err(api::Error::Unsupported("Metal acceleration vertex format"));
-        }
+        let (format, format_size, component_alignment) =
+            acceleration_vertex_format(*vertex_format)?;
         // SAFETY: Core validates the device identity and the descriptor owns the buffer.
         let vertex = unsafe { vertices.native_ref() };
         if !vertex.usage.contains(api::BufferUsage::ACCEL_BUILD_INPUT)
             || *vertex_count == 0
-            || *stride < 12
-            || stride % 4 != 0
+            || *stride < format_size
+            || stride % component_alignment != 0
             || vertex_offset % stride != 0
             || u64::from(vertex_count.saturating_sub(1))
                 .checked_mul(*stride)
                 .and_then(|v| vertex_offset.checked_add(v))
-                .and_then(|v| v.checked_add(12))
+                .and_then(|v| v.checked_add(format_size))
                 .is_none_or(|end| end > vertex.size())
         {
             return Err(api::Error::InvalidRange);
         }
         let geom = MTLAccelerationStructureTriangleGeometryDescriptor::descriptor();
+        use objc2::runtime::NSObjectProtocol as _;
+        use objc2_metal::MTLDevice as _;
+        let extended_formats = device
+            ._state
+            ._device
+            .respondsToSelector(objc2::sel!(supportsFamily:))
+            && device
+                ._state
+                ._device
+                .supportsFamily(objc2_metal::MTLGPUFamily::Metal3)
+            && geom.respondsToSelector(objc2::sel!(setVertexFormat:));
+        if extended_formats {
+            geom.setVertexFormat(format);
+        } else if !matches!(vertex_format, api::VertexFormat::Float32(3)) {
+            return Err(api::Error::Unsupported(
+                "Metal runtime lacks acceleration vertex formats",
+            ));
+        }
         geom.setVertexBuffer(Some(&vertex.raw));
         // SAFETY: range and alignment checked above.
         unsafe {
@@ -530,7 +700,7 @@ fn primitive_descriptor(
                 api::IndexFormat::Uint32 => (4, MTLIndexType::UInt32),
             };
             if !index.usage.contains(api::BufferUsage::ACCEL_BUILD_INPUT)
-                || indices.offset % 4 != 0
+                || indices.offset % width != 0
                 || indices
                     .offset
                     .checked_add(u64::from(indices.count) * width)
@@ -556,8 +726,23 @@ fn primitive_descriptor(
     }
     let array = NSArray::<MTLAccelerationStructureGeometryDescriptor>::from_retained_slice(&native);
     let descriptor = MTLPrimitiveAccelerationStructureDescriptor::descriptor();
+    descriptor.setUsage(acceleration_usage(desc));
     descriptor.setGeometryDescriptors(Some(&array));
     Ok(descriptor)
+}
+
+#[cfg(target_vendor = "apple")]
+fn acceleration_usage(
+    desc: &api::AccelerationDesc<Metal>,
+) -> objc2_metal::MTLAccelerationStructureUsage {
+    let mut usage = objc2_metal::MTLAccelerationStructureUsage::None;
+    if desc.allow_update {
+        usage |= objc2_metal::MTLAccelerationStructureUsage::Refit;
+    }
+    if !desc.fast_trace {
+        usage |= objc2_metal::MTLAccelerationStructureUsage::PreferFastBuild;
+    }
+    usage
 }
 
 #[cfg(any(target_vendor = "apple", test))]

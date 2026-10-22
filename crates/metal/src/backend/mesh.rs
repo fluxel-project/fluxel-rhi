@@ -345,40 +345,33 @@ fn create(
     desc: &api::MeshPipelineDesc<Metal>,
 ) -> api::Result<MetalMeshPipeline> {
     use super::pipeline as p;
-    if desc.task.is_some()
-        || !desc.mesh.constants.is_empty()
-        || desc
-            .fragment
-            .as_ref()
-            .is_none_or(|s| !s.constants.is_empty())
-        || desc.cache.is_some()
-        || !matches!(
-            desc.primitive.topology,
-            api::PrimitiveTopology::TriangleList
-        )
-        || desc.primitive.strip_index_format.is_some()
-        || !matches!(desc.primitive.polygon_mode, api::PolygonMode::Fill)
-        || desc.primitive.unclipped_depth
+    if !matches!(
+        desc.primitive.topology,
+        api::PrimitiveTopology::PointList
+            | api::PrimitiveTopology::LineList
+            | api::PrimitiveTopology::TriangleList
+    ) || desc.primitive.strip_index_format.is_some()
+        || matches!(desc.primitive.polygon_mode, api::PolygonMode::Point)
         || desc.primitive.conservative
         || desc
             .depth_stencil
             .is_some_and(|d| !p::supported_depth_state(d))
         || !p::supported_sample_count(desc.multisample.count)
-        || !p::full_sample_mask(desc.multisample.mask)
-        || desc.targets.len() != 1
-        || desc.targets[0]
-            .as_ref()
-            .is_none_or(|t| t.write_mask & !15 != 0 || !p::supported_color_format(t.format))
+        || !p::full_sample_mask(desc.multisample.mask, desc.multisample.count)
+        || desc.targets.len() > 8
+        || desc
+            .targets
+            .iter()
+            .flatten()
+            .any(|t| t.write_mask & !15 != 0 || !p::supported_color_format(t.format))
     {
         return Err(api::Error::Unsupported("Metal mesh pipeline descriptor"));
     }
     #[cfg(target_vendor = "apple")]
     {
-        use objc2_foundation::NSString;
         use objc2_metal::{
             MTLDepthStencilDescriptor, MTLDevice as _, MTLFunction as _, MTLFunctionType,
-            MTLLibrary as _, MTLMeshRenderPipelineDescriptor, MTLPipelineOption,
-            MTLStencilDescriptor,
+            MTLMeshRenderPipelineDescriptor, MTLPipelineOption, MTLStencilDescriptor,
         };
         let native = &device._state._device;
         if !mesh_supported(device) {
@@ -389,13 +382,17 @@ fn create(
         if !native.supportsTextureSampleCount(desc.multisample.count as usize) {
             return Err(api::Error::Unsupported("Metal mesh sample count"));
         }
-        if desc
-            .depth_stencil
-            .is_some_and(|d| d.format == api::TextureFormat::Depth32FloatStencil8)
-            && !super::texture::supports_depth32_stencil(device)
+        if desc.depth_stencil.is_some_and(|d| {
+            matches!(
+                d.format,
+                api::TextureFormat::Depth32FloatStencil8 | api::TextureFormat::Depth24PlusStencil8
+            )
+        }) && !super::texture::supports_depth32_stencil(device)
         {
             return Err(api::Error::Unsupported("Metal depth stencil format"));
         }
+        // SAFETY: Core checked the layout belongs to this device.
+        let layout = unsafe { desc.layout.native_ref().clone() };
         let function = |stage: &api::PipelineStage<Metal>,
                         expected: api::ShaderStage,
                         native_type: MTLFunctionType|
@@ -407,48 +404,48 @@ fn create(
                 .iter()
                 .find(|e| e.name == stage.entry && e.stage == expected)
                 .ok_or_else(|| api::Error::Shader("Metal mesh entry metadata missing".into()))?;
-            let function = shader
-                ._library
-                .newFunctionWithName(&NSString::from_str(&stage.entry))
-                .ok_or_else(|| api::Error::Shader("Metal mesh function missing".into()))?;
+            let (function, bindings, workgroup) = super::shader::variant::native_function(
+                device,
+                shader,
+                &stage.entry,
+                expected,
+                &stage.constants,
+                &layout,
+                0,
+                false,
+            )?;
             if function.functionType() != native_type {
                 return Err(api::Error::Shader(
                     "Metal mesh function type mismatch".into(),
                 ));
             }
-            Ok((function, entry.workgroup_size))
+            Ok((function, workgroup.or(entry.workgroup_size), bindings))
         };
-        // SAFETY: Core has checked the mesh shader device identity. Only the
-        // exact native source compiled into this library can establish topology.
-        let mesh_shader = unsafe { desc.mesh.module.native_ref() };
-        if !mesh_shader
-            .mesh_source
-            .as_deref()
-            .is_some_and(proves_triangle_mesh)
-        {
-            return Err(api::Error::Unsupported(
-                "Metal mesh shader topology cannot be verified",
-            ));
-        }
-        let (mesh_fn, mesh_threads) =
+        // Metal fixes topology in the mesh function's output type and has no
+        // public reflection API for it. The descriptor must match the native
+        // shader's output topology, as for the remaining native shader ABI.
+        let (mesh_fn, mesh_threads, mesh_bindings) =
             function(&desc.mesh, api::ShaderStage::Mesh, MTLFunctionType::Mesh)?;
         let mesh_threads =
             mesh_threads.ok_or_else(|| api::Error::Shader("Metal mesh threads missing".into()))?;
-        let (object_fn, object_threads) = if let Some(stage) = &desc.task {
-            let (function, threads) =
+        let (object_fn, object_threads, object_bindings) = if let Some(stage) = &desc.task {
+            let (function, threads, bindings) =
                 function(stage, api::ShaderStage::Task, MTLFunctionType::Object)?;
             (
                 Some(function),
                 threads.ok_or_else(|| api::Error::Shader("Metal object threads missing".into()))?,
+                Some(bindings),
             )
         } else {
-            (None, [1, 1, 1])
+            (None, [1, 1, 1], None)
         };
-        let (fragment, _) = function(
-            desc.fragment.as_ref().unwrap(),
-            api::ShaderStage::Fragment,
-            MTLFunctionType::Fragment,
-        )?;
+        let (fragment, fragment_bindings) = if let Some(stage) = &desc.fragment {
+            let (function, _, bindings) =
+                function(stage, api::ShaderStage::Fragment, MTLFunctionType::Fragment)?;
+            (Some(function), Some(bindings))
+        } else {
+            (None, None)
+        };
         let max = native.maxThreadsPerThreadgroup();
         let validate = |v: [u32; 3]| -> api::Result<usize> {
             let product = v
@@ -472,7 +469,7 @@ fn create(
         unsafe {
             descriptor.setMeshFunction(Some(&mesh_fn));
             descriptor.setObjectFunction(object_fn.as_deref());
-            descriptor.setFragmentFunction(Some(&fragment));
+            descriptor.setFragmentFunction(fragment.as_deref());
             descriptor.setRasterSampleCount(desc.multisample.count as usize);
         }
         descriptor.setMaxTotalThreadsPerMeshThreadgroup(mesh_count);
@@ -489,11 +486,18 @@ fn create(
             .transpose()?;
         let depth_state = if let Some(depth) = desc.depth_stencil {
             let format = depth_format.unwrap();
-            descriptor.setDepthAttachmentPixelFormat(format);
+            if depth.format != api::TextureFormat::Stencil8 {
+                descriptor.setDepthAttachmentPixelFormat(format);
+            }
             let state = MTLDepthStencilDescriptor::new();
             state.setDepthCompareFunction(p::compare_function(depth.depth_compare));
             state.setDepthWriteEnabled(depth.depth_write_enabled);
-            if depth.format == api::TextureFormat::Depth32FloatStencil8 {
+            if matches!(
+                depth.format,
+                api::TextureFormat::Depth32FloatStencil8
+                    | api::TextureFormat::Depth24PlusStencil8
+                    | api::TextureFormat::Stencil8
+            ) {
                 descriptor.setStencilAttachmentPixelFormat(format);
                 let front = MTLStencilDescriptor::new();
                 p::configure_stencil_descriptor(
@@ -520,29 +524,55 @@ fn create(
         } else {
             None
         };
-        let target = desc.targets[0].as_ref().unwrap();
-        let color_format = super::texture::metal_format(target.format)
-            .ok_or(api::Error::Unsupported("Metal mesh color format"))?;
-        // SAFETY: the descriptor contract accepts exactly one color target.
-        let color = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(0) };
-        color.setPixelFormat(color_format);
-        color.setWriteMask(p::write_mask(target.write_mask)?);
-        if let Some(blend) = target.blend {
-            color.setBlendingEnabled(true);
-            color.setSourceRGBBlendFactor(p::blend_factor(blend.color.src_factor)?);
-            color.setDestinationRGBBlendFactor(p::blend_factor(blend.color.dst_factor)?);
-            color.setRgbBlendOperation(p::blend_operation(blend.color.operation));
-            color.setSourceAlphaBlendFactor(p::blend_factor(blend.alpha.src_factor)?);
-            color.setDestinationAlphaBlendFactor(p::blend_factor(blend.alpha.dst_factor)?);
-            color.setAlphaBlendOperation(p::blend_operation(blend.alpha.operation));
+        let mut color_formats = Vec::with_capacity(desc.targets.len());
+        for (index, target) in desc.targets.iter().enumerate() {
+            let Some(target) = target else {
+                color_formats.push(None);
+                continue;
+            };
+            if target.blend.is_some() && !super::texture::is_blendable(target.format) {
+                return Err(api::Error::Unsupported(
+                    "Metal format does not support blending",
+                ));
+            }
+            let format = super::texture::metal_format(target.format)
+                .ok_or(api::Error::Unsupported("Metal mesh color format"))?;
+            // SAFETY: validation limits the index to Metal's eight color slots.
+            let color = unsafe {
+                descriptor
+                    .colorAttachments()
+                    .objectAtIndexedSubscript(index)
+            };
+            color.setPixelFormat(format);
+            color.setWriteMask(p::write_mask(target.write_mask)?);
+            if let Some(blend) = target.blend {
+                color.setBlendingEnabled(true);
+                color.setSourceRGBBlendFactor(p::blend_factor(blend.color.src_factor, false)?);
+                color.setDestinationRGBBlendFactor(p::blend_factor(blend.color.dst_factor, false)?);
+                color.setRgbBlendOperation(p::blend_operation(blend.color.operation));
+                color.setSourceAlphaBlendFactor(p::blend_factor(blend.alpha.src_factor, true)?);
+                color
+                    .setDestinationAlphaBlendFactor(p::blend_factor(blend.alpha.dst_factor, true)?);
+                color.setAlphaBlendOperation(p::blend_operation(blend.alpha.operation));
+            }
+            color_formats.push(Some(format));
         }
-        let state = native
-            .newRenderPipelineStateWithMeshDescriptor_options_reflection_error(
-                &descriptor,
-                MTLPipelineOption::None,
-                None,
-            )
-            .map_err(|e| api::Error::Backend(format!("Metal mesh pipeline: {e:?}")))?;
+        let mut reflection = None;
+        let mut create = || {
+            native
+                .newRenderPipelineStateWithMeshDescriptor_options_reflection_error(
+                    &descriptor,
+                    MTLPipelineOption::ArgumentInfo | MTLPipelineOption::BufferTypeInfo,
+                    Some(&mut reflection),
+                )
+                .map_err(|e| api::Error::Backend(format!("Metal mesh pipeline: {e:?}")))
+        };
+        let state = if let Some(cache) = &desc.cache {
+            // SAFETY: Core verified cache provenance before pipeline creation.
+            unsafe { cache.native_ref() }.with_mesh(&descriptor, create)?
+        } else {
+            create()?
+        };
         // The actual native limits may be lower than the general device maximum.
         use objc2_metal::MTLRenderPipelineState as _;
         if mesh_count > state.maxTotalThreadsPerMeshThreadgroup()
@@ -550,11 +580,70 @@ fn create(
         {
             return Err(api::Error::InvalidRange);
         }
+        let mut bindings = vec![mesh_bindings];
+        bindings.extend(object_bindings);
+        bindings.extend(fragment_bindings);
+        let reflection = reflection.ok_or(api::Error::InvalidState)?;
+        use objc2::runtime::NSObjectProtocol as _;
+        for stage in &mut bindings {
+            match stage.stage {
+                api::ShaderStage::Mesh
+                    if reflection.respondsToSelector(objc2::sel!(meshBindings)) =>
+                {
+                    super::shader::variant::apply_reflected_alignment(
+                        stage,
+                        &layout,
+                        Some(&reflection.meshBindings()),
+                        None,
+                    )?
+                }
+                api::ShaderStage::Task
+                    if reflection.respondsToSelector(objc2::sel!(objectBindings)) =>
+                {
+                    super::shader::variant::apply_reflected_alignment(
+                        stage,
+                        &layout,
+                        Some(&reflection.objectBindings()),
+                        None,
+                    )?
+                }
+                api::ShaderStage::Fragment
+                    if reflection.respondsToSelector(objc2::sel!(fragmentBindings)) =>
+                {
+                    super::shader::variant::apply_reflected_alignment(
+                        stage,
+                        &layout,
+                        Some(&reflection.fragmentBindings()),
+                        None,
+                    )?
+                }
+                api::ShaderStage::Fragment => {
+                    #[allow(deprecated)]
+                    super::shader::variant::apply_reflected_alignment(
+                        stage,
+                        &layout,
+                        None,
+                        reflection.fragmentArguments().as_deref(),
+                    )?;
+                }
+                _ => return Err(api::Error::Unsupported("Metal mesh pipeline reflection")),
+            }
+        }
         let raster = super::pipeline::MetalRasterPipeline {
             state,
+            bindings,
+            layout,
+            vertex_buffer_base: 31,
+            view_count: None,
+            primitive_type: p::primitive_type(desc.primitive.topology),
+            polygon_mode: desc.primitive.polygon_mode,
+            unclipped_depth: desc.primitive.unclipped_depth,
+            strip_index_format: desc.primitive.strip_index_format,
             cull_mode: desc.primitive.cull_mode,
             front_face: desc.primitive.front_face,
             depth_state,
+            writes_depth: desc.depth_stencil.is_some_and(|d| d.depth_write_enabled),
+            writes_stencil: desc.depth_stencil.is_some_and(p::stencil_writes),
             depth_bias: desc.depth_stencil.map_or((0, 0.0, 0.0), |d| {
                 (
                     d.depth_bias_constant,
@@ -562,7 +651,7 @@ fn create(
                     d.depth_bias_clamp,
                 )
             }),
-            signature: (desc.multisample.count as usize, color_format, depth_format),
+            signature: (desc.multisample.count as usize, color_formats, depth_format),
         };
         Ok(MetalMeshPipeline {
             raster,

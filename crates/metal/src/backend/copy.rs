@@ -7,10 +7,16 @@ use super::{Metal, MetalTexture};
 use fluxel_rhi_core::api::{self, TextureRegion};
 
 mod buffer;
+#[cfg(target_vendor = "apple")]
+mod byte_copy;
+#[cfg(target_vendor = "apple")]
+pub(super) use byte_copy::copy_bytes;
+#[cfg(target_vendor = "apple")]
+mod multisample_plane;
 mod texture;
 
 pub(super) use buffer::{buffer_to_texture, texture_to_buffer};
-pub(super) use texture::{copy_texture, write_texture};
+pub(super) use texture::{copy_texture, resolve, write_texture};
 
 pub(super) fn validate_region(
     texture: &MetalTexture,
@@ -32,45 +38,120 @@ fn validate_region_fields(
     extent: [u32; 3],
     aspect: api::TextureAspects,
 ) -> api::Result<()> {
-    let expected_aspect = if desc.format == api::TextureFormat::Depth32Float {
-        api::TextureAspects::DEPTH
-    } else {
-        api::TextureAspects::COLOR
-    };
-    let mip_extent = [
+    if mip >= desc.mip_levels || extent.contains(&0) {
+        return Err(api::Error::InvalidRange);
+    }
+    let (bw, bh, _) = block(desc.format, aspect)?;
+    let bounds = [
         (desc.extent[0] >> mip.min(31)).max(1),
         (desc.extent[1] >> mip.min(31)).max(1),
+        if desc.dimension == api::TextureDimension::D3 {
+            (desc.extent[2] >> mip.min(31)).max(1)
+        } else {
+            desc.array_layers
+        },
     ];
-    if desc.dimension != api::TextureDimension::D2
-        || aspect != expected_aspect
-        || mip >= desc.mip_levels
-        || origin[2] >= desc.array_layers
-        || extent[0] == 0
-        || extent[1] == 0
-        || extent[2] != 1
-        || origin[0]
-            .checked_add(extent[0])
-            .is_none_or(|end| end > mip_extent[0])
-        || origin[1]
-            .checked_add(extent[1])
-            .is_none_or(|end| end > mip_extent[1])
-    {
+    if (0..3).any(|i| {
+        origin[i]
+            .checked_add(extent[i])
+            .is_none_or(|end| end > bounds[i])
+    }) {
         return Err(api::Error::InvalidRange);
+    }
+    for (i, unit) in [(0, bw), (1, bh)] {
+        if origin[i] % unit != 0 || (extent[i] % unit != 0 && origin[i] + extent[i] != bounds[i]) {
+            return Err(api::Error::InvalidRange);
+        }
     }
     Ok(())
 }
 
-pub(super) fn bytes_per_texel(format: api::TextureFormat) -> Option<u32> {
-    Some(match format {
-        api::TextureFormat::R8Unorm => 1,
-        api::TextureFormat::Rg8Unorm => 2,
-        api::TextureFormat::Rgba8Unorm
-        | api::TextureFormat::Rgba8UnormSrgb
-        | api::TextureFormat::Bgra8Unorm
-        | api::TextureFormat::Bgra8UnormSrgb => 4,
-        api::TextureFormat::Rgba16Float => 8,
-        _ => return None,
-    })
+pub(super) fn block(
+    format: api::TextureFormat,
+    aspect: api::TextureAspects,
+) -> api::Result<(u32, u32, u32)> {
+    use api::TextureFormat::*;
+    let bytes = match (format, aspect) {
+        (Stencil8 | Depth24PlusStencil8 | Depth32FloatStencil8, api::TextureAspects::STENCIL) => 1,
+        (Depth16Unorm, api::TextureAspects::DEPTH) => 2,
+        (Depth32Float | Depth32FloatStencil8, api::TextureAspects::DEPTH) => 4,
+        // The Vulkan formats chosen for Depth24Plus use a 32-bit packed depth
+        // plane. Other backends may choose a different native representation.
+        (Depth24Plus | Depth24PlusStencil8, api::TextureAspects::DEPTH) => 4,
+        (R8Unorm | R8Snorm | R8Uint | R8Sint, api::TextureAspects::COLOR) => 1,
+        (
+            Rg8Unorm | Rg8Snorm | Rg8Uint | Rg8Sint | R16Unorm | R16Snorm | R16Uint | R16Sint
+            | R16Float,
+            api::TextureAspects::COLOR,
+        ) => 2,
+        (
+            Rgba8Unorm | Rgba8UnormSrgb | Rgba8Snorm | Rgba8Uint | Rgba8Sint | Bgra8Unorm
+            | Bgra8UnormSrgb | Rg16Unorm | Rg16Snorm | Rg16Uint | Rg16Sint | Rg16Float | R32Uint
+            | R32Sint | R32Float | Rgb10a2Unorm | Rgb10a2Uint | Rg11b10Ufloat | Rgb9e5Ufloat,
+            api::TextureAspects::COLOR,
+        ) => 4,
+        (
+            Rgba16Unorm | Rgba16Snorm | Rgba16Uint | Rgba16Sint | Rgba16Float | Rg32Uint | Rg32Sint
+            | Rg32Float | R64Uint,
+            api::TextureAspects::COLOR,
+        ) => 8,
+        (Rgba32Uint | Rgba32Sint | Rgba32Float | Rg64Uint, api::TextureAspects::COLOR) => 16,
+        (
+            Bc1RgbaUnorm | Bc1RgbaUnormSrgb | Bc4RUnorm | Bc4RSnorm | Etc2Rgb8Unorm
+            | Etc2Rgb8UnormSrgb | Etc2Rgb8A1Unorm | Etc2Rgb8A1UnormSrgb | EacR11Unorm | EacR11Snorm,
+            api::TextureAspects::COLOR,
+        ) => return Ok((4, 4, 8)),
+        (
+            Bc2RgbaUnorm | Bc2RgbaUnormSrgb | Bc3RgbaUnorm | Bc3RgbaUnormSrgb | Bc5RgUnorm
+            | Bc5RgSnorm | Bc6hRgbUfloat | Bc6hRgbFloat | Bc7RgbaUnorm | Bc7RgbaUnormSrgb
+            | Etc2Rgba8Unorm | Etc2Rgba8UnormSrgb | EacRg11Unorm | EacRg11Snorm,
+            api::TextureAspects::COLOR,
+        ) => return Ok((4, 4, 16)),
+        (Astc { block, .. }, api::TextureAspects::COLOR) if block[0] != 0 && block[1] != 0 => {
+            return Ok((block[0] as u32, block[1] as u32, 16));
+        }
+        _ => return Err(api::Error::InvalidRange),
+    };
+    Ok((1, 1, bytes))
+}
+
+// Apple Metal feature tables list resolve separately from render and MSAA.
+// Integer formats do not have fixed-function resolve, while 32-bit float and
+// 16-bit normalized formats acquire it on newer Apple families or Mac GPUs.
+pub(super) fn color_resolve_supported(
+    format: api::TextureFormat,
+    apple4: bool,
+    apple9: bool,
+    mac: bool,
+) -> bool {
+    use api::TextureFormat::*;
+    match format {
+        R8Unorm | R8Snorm | Rg8Unorm | Rg8Snorm | Rgba8Unorm | Rgba8UnormSrgb | Rgba8Snorm
+        | Bgra8Unorm | Bgra8UnormSrgb | R16Float | Rg16Float | Rgba16Float | Rgb10a2Unorm
+        | Rg11b10Ufloat => true,
+        R16Unorm | R16Snorm | Rg16Unorm | Rg16Snorm | Rgba16Unorm | Rgba16Snorm => apple4 || mac,
+        R32Float | Rg32Float | Rgba32Float => apple9 || mac,
+        Rgb9e5Ufloat => apple4 || !mac,
+        _ => false,
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+pub(super) fn device_color_resolve_supported(
+    device: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>,
+    format: api::TextureFormat,
+) -> bool {
+    use objc2::runtime::NSObjectProtocol as _;
+    use objc2_metal::{MTLDevice as _, MTLGPUFamily};
+    let float32_resolve = device.supportsFamily(MTLGPUFamily::Apple9)
+        || (device.respondsToSelector(objc2::sel!(supports32BitFloatFiltering))
+            && device.supports32BitFloatFiltering());
+    color_resolve_supported(
+        format,
+        device.supportsFamily(MTLGPUFamily::Apple4),
+        float32_resolve,
+        device.supportsFamily(MTLGPUFamily::Mac1),
+    )
 }
 
 pub(super) fn validate_copy_layout(
@@ -91,6 +172,54 @@ pub(super) fn validate_copy_layout(
         return Err(api::Error::InvalidRange);
     }
     Ok(())
+}
+
+#[cfg(target_vendor = "apple")]
+pub(super) fn blit_options(
+    format: api::TextureFormat,
+    aspect: api::TextureAspects,
+) -> objc2_metal::MTLBlitOption {
+    if matches!(
+        format,
+        api::TextureFormat::Depth24PlusStencil8 | api::TextureFormat::Depth32FloatStencil8
+    ) {
+        if aspect == api::TextureAspects::DEPTH {
+            objc2_metal::MTLBlitOption::DepthFromDepthStencil
+        } else {
+            objc2_metal::MTLBlitOption::StencilFromDepthStencil
+        }
+    } else {
+        objc2_metal::MTLBlitOption::None
+    }
+}
+
+pub(super) fn validate_copy_images(
+    layout: api::TexelCopyBufferLayout,
+    tight_row: u32,
+    rows: u32,
+    images: u32,
+    size: u64,
+) -> api::Result<()> {
+    if images == 0 {
+        return Err(api::Error::InvalidRange);
+    }
+    let stride = u64::from(layout.bytes_per_row)
+        .checked_mul(u64::from(layout.rows_per_image))
+        .ok_or(api::Error::InvalidRange)?;
+    let offset = layout
+        .offset
+        .checked_add(
+            stride
+                .checked_mul(u64::from(images - 1))
+                .ok_or(api::Error::InvalidRange)?,
+        )
+        .ok_or(api::Error::InvalidRange)?;
+    validate_copy_layout(
+        api::TexelCopyBufferLayout { offset, ..layout },
+        tight_row,
+        rows,
+        size,
+    )
 }
 
 #[cfg(any(target_vendor = "apple", test))]
@@ -274,6 +403,47 @@ mod tests {
         assert!(validate_copy_layout(valid, 5, 2, 9).is_err());
         assert!(validate_copy_layout(api_layout(8, 1, 4), 4, 2, 11).is_err());
         assert!(validate_copy_layout(api_layout(u64::MAX, 4, 2), 4, 2, u64::MAX).is_err());
+    }
+
+    #[test]
+    fn resolve_capability_distinguishes_integer_and_family_limits() {
+        use super::color_resolve_supported as supports;
+        assert!(!supports(TextureFormat::Rgba8Uint, true, true, true));
+        assert!(supports(TextureFormat::Rgba8Unorm, false, false, false));
+        assert!(!supports(TextureFormat::R32Float, true, false, false));
+        assert!(supports(TextureFormat::R32Float, true, true, false));
+        assert!(!supports(TextureFormat::Rg16Unorm, false, false, false));
+        assert!(supports(TextureFormat::Rg16Unorm, true, false, false));
+        assert!(supports(TextureFormat::Rgb9e5Ufloat, true, false, true));
+        assert!(!supports(TextureFormat::Rgb9e5Ufloat, false, false, true));
+    }
+
+    #[test]
+    fn validates_compressed_blocks_and_multilayer_footprints() {
+        let mut texture = desc();
+        texture.format = TextureFormat::Bc1RgbaUnorm;
+        assert!(
+            validate_region_fields(&texture, 0, [4, 4, 0], [8, 8, 2], TextureAspects::COLOR)
+                .is_ok()
+        );
+        assert!(
+            validate_region_fields(&texture, 0, [1, 0, 0], [4, 4, 1], TextureAspects::COLOR)
+                .is_err()
+        );
+        let layout = api_layout(0, 16, 3);
+        assert!(super::validate_copy_images(layout, 16, 2, 2, 80).is_ok());
+        assert!(super::validate_copy_images(layout, 16, 2, 2, 79).is_err());
+        texture.dimension = TextureDimension::D3;
+        texture.extent[2] = 8;
+        texture.array_layers = 1;
+        assert!(
+            validate_region_fields(&texture, 1, [0, 0, 1], [4, 4, 3], TextureAspects::COLOR)
+                .is_ok()
+        );
+        assert!(
+            validate_region_fields(&texture, 1, [0, 0, 2], [4, 4, 3], TextureAspects::COLOR)
+                .is_err()
+        );
     }
 
     fn api_layout(offset: u64, bytes_per_row: u32, rows_per_image: u32) -> TexelCopyBufferLayout {

@@ -56,7 +56,7 @@ topologies, shader stages, queue plans, or device tiers.
 | --- | --- | --- |
 | DX12 | Graphics and compute, multiple render targets, indirect drawing and dispatch, queries, secondary recording, texture clears, and pipeline caches | Device-gated descriptor indexing, up to four multiview views, ray pipelines and inline ray queries, mesh shaders, sparse textures, graphics/compute queues, and GPU-count multi-draw |
 | Vulkan | Graphics and compute, multiple render targets, indirect drawing and dispatch, queries, secondary recording, clears, pipeline caches, mapping, placed memory, and native interop | Descriptor indexing, multiview, ray pipelines and inline ray queries, mesh shaders, sparse textures, graphics/compute queues, GPU-count multi-draw, and external resources depend on device features, extensions, formats and queue support. See the [fixture index](documents/evidence/vulkan-completeness-2026-10-22/README.md) for validation scope. |
-| Metal | Graphics and compute, restricted standalone texture clear and compute storage buffers; device-gated mesh dispatch, triangle/AABB acceleration-structure builds, Apple-family timestamp sampling, pass-boundary counter samples, two native command queues, and triangle GPU-count multi-draw through ICBs | Compute storage buffers require a whole-buffer binding without dynamic offset. Multi-queue waits are limited to one packet and four waits per recording; cross-packet tokens are rejected. Ray queries, mesh task/object payload, DXR-style ray pipeline, exact eleven-field pipeline-statistics layout, and sparse mapping are not advertised. Apple-target compilation and static checks only; no Apple GPU runtime acceptance |
+| Metal | Graphics and compute, up to eight render targets, depth/stencil, dynamic uniform/storage offsets, indirect draw and dispatch, standalone clears, copies/resolves, mapping, placement heaps, binary archives, and native interop | Device-gated argument arrays/indexing, mesh/object shaders, acceleration structures and ray queries, multiview, timestamp/occlusion and separate pass counters, cross-packet graphics/compute synchronization, GPU-count multi-draw, placement sparse textures, and external resources. See the [implementation review](documents/evidence/metal-completeness-2026-10-22/README.md) for native boundaries and compile-only evidence. No Metal tests or GPU acceptance were run in this phase, as requested. |
 | Browser WebGPU | Graphics and compute, device-gated indirect drawing, and occlusion queries | The new ray, mesh, sparse, multi-queue, timestamp/statistics, GPU-count, and standalone-clear routes are not implemented here |
 | Desktop GL / GLES | Immediate graphics; compute, indirect drawing, and occlusion depend on the actual context and profile | The new advanced routes are not implemented in the public GL backend |
 | Browser WebGL2 | Immediate graphics through the browser owner | No native compute or new advanced route is exposed |
@@ -78,9 +78,8 @@ metadata, and device extensions and per-resource import support are required.
 The Windows fixtures do not establish Unix GPU coverage.
 
 Metal's GPU-count draw route probes the native conversion shader and both ICB
-command types on the actual device before advertising support. It accepts the
-current triangle-list raster subset and keeps the count and argument buffers
-on the GPU. The runtime probe does not establish visual or synchronization
+command types on the actual device before advertising support. It keeps the count and argument buffers on the GPU and uses the
+active pipeline topology. The runtime probe does not establish visual or synchronization
 correctness; no Apple GPU result is recorded yet.
 
 Metal TLAS dependencies can be consumed while the build and dispatch are
@@ -148,9 +147,9 @@ ASTC require a supporting device for GPU validation.
 
 | Compressed family | DX12 | Vulkan | Metal | WebGPU | GL / GLES | WebGL2 |
 | --- | --- | --- | --- | --- | --- | --- |
-| BC1–BC7 | Device-checked public route | Device-checked public route | No public route | No public route | No public route | No public route |
-| ETC2 / EAC | No DXGI mapping | Device-checked public route; GPU validation pending | No public route | No public route | No public route | No public route |
-| ASTC | No DXGI mapping | Device-checked public route; GPU validation pending | No public route | No public route | No public route | No public route |
+| BC1–BC7 | Device-checked public route | Device-checked public route | Device-checked public route; not GPU tested | No public route | No public route | No public route |
+| ETC2 / EAC | No DXGI mapping | Device-checked public route; GPU validation pending | Apple-family public route; not GPU tested | No public route | No public route | No public route |
+| ASTC | No DXGI mapping | Device-checked public route; GPU validation pending | Apple-family LDR/HDR routes; not GPU tested | No public route | No public route | No public route |
 
 GL implements `ImmediateBackend`; it does not expose deferred queue submission.
 WebGL2 does not provide native multithreaded command recording. WebGPU records

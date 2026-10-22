@@ -17,3 +17,5 @@ pub use backend::Metal;
 pub use backend::MetalInstance;
 /// A native Metal Surface associated with a host-owned `CAMetalLayer`.
 pub use backend::MetalSurface;
+/// Backend-specific external resource and shared-event payloads.
+pub use backend::{MetalExternalHandle, MetalExternalSync};

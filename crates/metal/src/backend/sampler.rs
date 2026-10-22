@@ -1,8 +1,6 @@
 //! Metal sampler descriptor lowering.
 //!
-//! Only address modes and sampler fields with direct Metal equivalents are
-//! accepted. Border sampling remains explicitly unsupported until platform
-//! availability and border-color semantics can be verified on macOS devices.
+//! Border color is gated on the Metal GPU family; clamp-to-zero is native.
 
 use fluxel_rhi_core::api::{self, AddressMode, SamplerDesc};
 #[cfg(target_vendor = "apple")]
@@ -34,7 +32,25 @@ pub(super) fn create_sampler(
         use objc2_foundation::NSString;
         use objc2_metal::{MTLDevice as _, MTLSamplerDescriptor, MTLSamplerMipFilter};
 
+        if desc.address.contains(&AddressMode::ClampToBorder) {
+            use objc2_metal::MTLGPUFamily;
+            if !device._state._device.supportsFamily(MTLGPUFamily::Apple7)
+                && !device._state._device.supportsFamily(MTLGPUFamily::Mac2)
+            {
+                return Err(api::Error::Unsupported("Metal border color GPU family"));
+            }
+        }
+
         let native = MTLSamplerDescriptor::new();
+        if let Some(color) = desc.border {
+            use api::BorderColor;
+            use objc2_metal::MTLSamplerBorderColor as Mtl;
+            native.setBorderColor(match color {
+                BorderColor::TransparentBlack | BorderColor::ZeroInteger => Mtl::TransparentBlack,
+                BorderColor::OpaqueBlack => Mtl::OpaqueBlack,
+                BorderColor::OpaqueWhite => Mtl::OpaqueWhite,
+            });
+        }
         native.setSAddressMode(address(desc.address[0])?);
         native.setTAddressMode(address(desc.address[1])?);
         native.setRAddressMode(address(desc.address[2])?);
@@ -80,12 +96,7 @@ fn valid(desc: &SamplerDesc) -> bool {
         && desc.lod.end.is_finite()
         && desc.lod.start >= 0.0
         && desc.lod.start <= desc.lod.end
-        && desc.address.iter().all(|mode| {
-            matches!(
-                mode,
-                AddressMode::ClampToEdge | AddressMode::Repeat | AddressMode::MirrorRepeat
-            )
-        })
+        && (!desc.address.contains(&AddressMode::ClampToBorder) || desc.border.is_some())
 }
 
 #[cfg(target_vendor = "apple")]
@@ -95,9 +106,8 @@ fn address(mode: AddressMode) -> api::Result<objc2_metal::MTLSamplerAddressMode>
         AddressMode::ClampToEdge => Mtl::ClampToEdge,
         AddressMode::Repeat => Mtl::Repeat,
         AddressMode::MirrorRepeat => Mtl::MirrorRepeat,
-        AddressMode::ClampToBorder | AddressMode::ClampToZero => {
-            return Err(api::Error::Unsupported("Metal sampler border address mode"));
-        }
+        AddressMode::ClampToBorder => Mtl::ClampToBorderColor,
+        AddressMode::ClampToZero => Mtl::ClampToZero,
     })
 }
 
@@ -150,6 +160,8 @@ mod tests {
         let mut invalid = desc();
         invalid.address[0] = AddressMode::ClampToBorder;
         assert!(!valid(&invalid));
+        invalid.border = Some(fluxel_rhi_core::api::BorderColor::OpaqueBlack);
+        assert!(valid(&invalid));
         let mut invalid = desc();
         invalid.anisotropy = 17;
         assert!(!valid(&invalid));

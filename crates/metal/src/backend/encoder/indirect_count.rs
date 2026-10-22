@@ -16,22 +16,94 @@ pub struct RasterExtras;
 impl api::RasterExtrasOps<Metal> for RasterExtras {
     const AVAILABLE: bool = true;
     fn draw_indirect(
-        _: &mut MetalCommandEncoder,
-        _: &MetalBuffer,
-        _: u64,
-        _: bool,
+        encoder: &mut MetalCommandEncoder,
+        args: &MetalBuffer,
+        offset: u64,
+        indexed: bool,
     ) -> api::Result<()> {
-        Err(api::Error::Unsupported("Metal indirect draw"))
+        Self::multi_draw(
+            encoder,
+            args,
+            offset,
+            1,
+            if indexed { 20 } else { 16 },
+            indexed,
+        )
     }
     fn multi_draw(
-        _: &mut MetalCommandEncoder,
-        _: &MetalBuffer,
-        _: u64,
-        _: u32,
-        _: u32,
-        _: bool,
+        encoder: &mut MetalCommandEncoder,
+        args: &MetalBuffer,
+        offset: u64,
+        count: u32,
+        stride: u32,
+        indexed: bool,
     ) -> api::Result<()> {
-        Err(api::Error::Unsupported("Metal multi draw"))
+        #[cfg(target_vendor = "apple")]
+        {
+            use objc2_metal::{MTLIndexType, MTLRenderCommandEncoder as _};
+            let record = if indexed { 20u64 } else { 16u64 };
+            if !args.usage.contains(BufferUsage::INDIRECT)
+                || offset % 4 != 0
+                || stride % 4 != 0
+                || u64::from(stride) < record
+                || (count > 0
+                    && offset
+                        .checked_add(u64::from(count - 1) * u64::from(stride))
+                        .and_then(|v| v.checked_add(record))
+                        .is_none_or(|end| end > args.size()))
+            {
+                return Err(api::Error::InvalidRange);
+            }
+            if !encoder.raster_pipeline_bound || encoder.mesh_threads.is_some() {
+                return Err(api::Error::InvalidState);
+            }
+            let index = if indexed {
+                Some(
+                    encoder
+                        .index_buffer
+                        .as_ref()
+                        .ok_or(api::Error::InvalidState)?,
+                )
+            } else {
+                None
+            };
+            if index.is_some_and(|(_, _, format, _)| {
+                encoder.strip_index_format.is_some_and(|expected| {
+                    std::mem::discriminant(&expected) != std::mem::discriminant(format)
+                })
+            }) {
+                return Err(api::Error::InvalidState);
+            }
+            super::raster::for_view_batches(encoder, |render| {
+                for i in 0..count {
+                    let indirect_offset = offset + u64::from(i) * u64::from(stride);
+                    // SAFETY: argument ranges and alignment were checked; Core owns the
+                    // indirect data contract, and native resources are retained through submission.
+                    unsafe {
+                        if let Some((buffer, base, format, _)) = index {
+                            render.drawIndexedPrimitives_indexType_indexBuffer_indexBufferOffset_indirectBuffer_indirectBufferOffset(
+                            encoder.primitive_type,
+                            match format { api::IndexFormat::Uint16 => MTLIndexType::UInt16, api::IndexFormat::Uint32 => MTLIndexType::UInt32 },
+                            buffer, *base as usize, &args.raw, indirect_offset as usize,
+                        );
+                        } else {
+                            render.drawPrimitives_indirectBuffer_indirectBufferOffset(
+                                encoder.primitive_type,
+                                &args.raw,
+                                indirect_offset as usize,
+                            );
+                        }
+                    }
+                }
+            })?;
+            encoder.indirect_arguments.push(args.raw.clone());
+            Ok(())
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            let _ = (encoder, args, offset, count, stride, indexed);
+            Err(api::Error::Unsupported("Metal requires an Apple target"))
+        }
     }
     fn multi_draw_count(
         encoder: &mut MetalCommandEncoder,
@@ -93,7 +165,7 @@ impl api::RasterExtrasOps<Metal> for RasterExtras {
                 stride,
                 index,
             )?;
-            draws.encode_render(encoder.render.as_ref().ok_or(api::Error::InvalidState)?);
+            super::raster::for_view_batches(encoder, |render| draws.encode_render(render))?;
             encoder.prepared_draws.push(draws);
             Ok(())
         }
@@ -113,12 +185,20 @@ impl api::RasterExtrasOps<Metal> for RasterExtras {
         }
     }
     fn set_push_constants(
-        _: &mut MetalCommandEncoder,
-        _: api::StageMask,
-        _: u32,
-        _: &[u8],
+        encoder: &mut MetalCommandEncoder,
+        stages: api::StageMask,
+        offset: u32,
+        bytes: &[u8],
     ) -> api::Result<()> {
-        Err(api::Error::Unsupported("Metal push constants"))
+        #[cfg(target_vendor = "apple")]
+        {
+            super::raster::write_push(encoder, stages, offset, bytes)
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            let _ = (encoder, stages, offset, bytes);
+            Err(api::Error::Unsupported("Metal requires an Apple target"))
+        }
     }
 }
 

@@ -594,72 +594,65 @@ device supports them.
   Standalone clears use native image clear commands for their admitted formats
   and subresource ranges.
 
-### Metal advanced route status
+### Metal native routes
 
-The Metal source conditionally admits a restricted mesh path on Metal 3 devices.
-Triangle and AABB acceleration structures support one build with fixed
-dependencies, but the WGSL ray-query path is disabled. Naga 27's Metal writer
-lowers queries to a triangle-only intersector, does not advance `proceed`, and
-omits candidate confirmation/generation. A compiled shader does not establish
-correct traversal. WGSL containing ray-query or acceleration-structure types
-returns `Unsupported`, and `ray_query` remains false until a correct native path
-exists. DXR-style pipeline and shader-table operations remain unsupported. The
-TLAS build reserves its dependencies while recording. The same encoder can
-bind it, but a different encoder must wait for successful build completion;
-early recording returns `InvalidState`. Dropping unsubmitted work rolls back
-the reservation and releases its dependencies. Submission failure makes the
-TLAS unusable, and the build status is published before RHI completion. The
-current Core ray descriptor does not define
-the Metal raygen/miss/hit function signatures, payload layout, traversal
-wrapper, or converter-specific descriptor-table and SBT mapping. A loaded
-Metal library alone cannot supply those semantics, and no current Metal
-example consumes a proposed native ray-pipeline ABI. The mesh path accepts
-one color target, a fragment stage,
-triangle output verified from a restricted Metal source grammar, and no
-task/object payload. Apple-family timestamp queries require native counter
-sampling at blit boundaries; a failed sample has an explicit invalid-value
-decode. Restricted standalone texture clears use attachment load clears.
+Metal lowers operations directly to native command buffers. Its stage binding ABI
+allocates independent buffer, texture and sampler namespaces per shader stage;
+vertex inputs share the native buffer budget. Logical bind groups do not reserve
+fixed native slots. Buffer ranges and dynamic offsets retain their bounds, and
+pipeline metadata supplies the shader's alignment and runtime-length table.
+WGSL uses a pinned Naga 30 Metal writer, specialized at pipeline creation.
 
-The dual-queue path exposes graphics and compute queues on devices with native
-shared events. Explicit GPU waits are encoded inside the consumer command
-buffer. Its supported subset is a single packet with at most four waits per
-recording; cross-packet tokens are rejected before native handoff. A failed
-producer may still be followed by already accepted consumer work, and the
-consumer completion carries the failure. This is the execution contract's
-non-atomic failure model, not an implicit rollback.
+Raster supports multiple color attachments, depth/stencil, selected device sample
+counts and multiview amplification batches. Attachment clears and resolves preserve
+regions outside the render area. Standalone clears, texture/buffer copies and
+readback use native paths; byte-granular copies use a GPU compute fallback when
+native buffer blit alignment is stricter than the public operation.
 
-These Metal paths have only Apple-target compilation and static contract
-checks, as requested for this stage. They have no Apple GPU execution,
-presentation, or visual acceptance evidence. Metal 4 placement sparse mapping
-is not advertised. The isolated mapping packet waits for earlier queue work to
-complete on the CPU and prevents later submissions until its mapping event
-completes. Resource-state visibility, mapped-texture destruction, and physical
-heap reuse semantics still need a closed native contract before Core can
-advertise sparse mapping.
+Native object/mesh pipelines use Metal source or libraries. Their output topology
+must match the pipeline descriptor. Acceleration structures support triangles,
+AABBs and instances. TLAS builds reserve dependencies while recording: the same
+encoder may use a pending build, while another encoder must wait for successful
+completion. Unsubmitted reservations roll back, and submission failure invalidates
+the build. WGSL intersection queries carry private per-instance shader-table
+contributions alongside acceleration-structure bindings, including descriptor
+arrays and function parameters. These native details do not enter Core's API.
 
-Core's exact eleven pipeline-statistics fields do not match Metal's
+Converted ray pipelines are excluded from this implementation phase by user
+instruction because the Metal Shader Converter SDK is unavailable. This exclusion
+is not a claim that Metal lacks ray-pipeline capability. Full secondary raster
+recording remains unavailable because Core requires independently pre-recorded
+viewport/scissor state and Metal ICB render commands do not encode that state.
+A parallel render encoder instead requires the actual parent render pass. The
+backend does not replace these contracts with CPU command replay.
+
+Graphics and compute queues synchronize through native shared events, including
+cross-packet dependencies. Failed producers remain visible in consumer completion;
+accepted GPU work is not rolled back. Placement sparse textures require the Metal 4
+queue mapping interface and `supportsPlacementSparse`; older automatic sparse
+heap allocation cannot express the public explicit allocation-offset contract.
+Resource retention covers native command buffers, argument-array contents,
+acceleration dependencies, external imports and sparse mapping completion.
+
+Core's exact eleven pipeline-statistics fields differ from Metal's
 [eight native statistic counters](https://developer.apple.com/documentation/metal/mtlcommoncounterset/statistic).
-Metal also requires sampling at supported pass boundaries, with attachments
-declared before creating the native render or compute encoder. The separate
-`PassStatistics` domain attaches a query to a whole pass and reports the device's
-available fields and a per-value error sentinel. Each raster slot resolves four
-64-byte samples at vertex and fragment stage start and end; each compute slot
-resolves two samples at compute start and end. These are raw native counter
-samples: availability does not guarantee that samples can be subtracted or that
-they provide the fixed eleven-field `PipelineStatistics` result. This route has
-only Apple-target compilation and static checks, with no Apple GPU execution.
-The raw-buffer GPU-count multi-draw command is converted to Metal indirect
-command buffers by a GPU compute pass before the render pass. The backend
-submits the preceding work, conversion pass and render pass in order, retaining
-their resources and combining completion failures. This path is limited to the
-implemented triangle-list raster subset and is advertised only after a device
-probe compiles the conversion shader and creates both indexed and non-indexed
-indirect command buffers. The compute producer uses whole-buffer storage
-bindings without dynamic offsets; other storage-buffer binding shapes are
-rejected. Apple-target compilation and static review do not establish actual
-ICB execution or visual correctness on an Apple GPU. Unsupported
-operations return structured errors rather than inheriting support from
-Metal's general API feature set.
+The separate pass-boundary statistics domain returns available raw counter fields
+and invalid-value sentinels. These samples do not imply the eleven-field query or
+that subtraction is meaningful. Timestamp and occlusion support are checked on
+the device. GPU-count multi-draw converts the raw arguments to native ICBs in a
+GPU pass before raster execution; its buffers must already be in the declared
+indirect-read state before that raster pass.
+
+Mapping uses shared host storage with exclusive mapping leases. Placement heaps,
+binary archives, borrowed native interop and device-compatible external resources
+remain backend-private. Surface support reports native formats, present modes and
+color spaces, including device/OS-gated EDR/PQ configuration. Runtime selectors,
+GPU families, format support, argument-buffer tiers and combined stage resource
+limits remain authoritative.
+
+At the user's request this phase performs compilation and static review without
+Metal tests. There is no Apple GPU, generated-MSL compiler, presentation or visual
+acceptance claim. See the [Metal implementation review](evidence/metal-completeness-2026-10-22/README.md).
 
 ### Binding bounds are caller intent, validated against native limits
 
