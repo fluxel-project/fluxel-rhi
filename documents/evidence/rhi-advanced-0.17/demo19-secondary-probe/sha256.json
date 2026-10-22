@@ -1,0 +1,8 @@
+{
+  "documents\\evidence\\rhi-advanced-0.17\\demo19-secondary-probe\\candidate-frame-360.png": "35d1eabddfd2330f78eb7bab750fef9ca5de9f274e71e87621cfe33604e6dd43",
+  "documents\\evidence\\rhi-advanced-0.17\\demo19-secondary-probe\\rt_particles.probe.bin": "fb1e6bc96175a0f80c62619bafd541870bac579920f6c37d78741343ceb40b7d",
+  "documents\\evidence\\rhi-advanced-0.17\\demo19-secondary-probe\\rt_particles.probe.hlsl": "b7e14909cb54c8bdc31a44def6d4450369e9681c524295fa06ecbd0bb423f034",
+  "documents\\evidence\\rhi-advanced-0.17\\demo19-secondary-probe\\secondary-candidate.patch": "0670798675c3a10e2dd0e4c487b7a163c79f69e0ec52b6b6e8beea193895b8e8",
+  "documents\\evidence\\rhi-advanced-0.17\\demo19-fixed-sequence\\nvidia-frame-360.png": "b0ab533181ad3adced4f2778cde620d321961abae87e3ca7b9603acc1181f5d9",
+  "external NVIDIA rt_particles.exe (not retained)": "64af8c41334b19a0043cd7cd67dbeafa632051cc8cd03de847f7058a8906b89a"
+}

@@ -8,6 +8,12 @@ The [Metal static packet](metal-static-7e98d9e/README.md) binds Core/Metal tests
 and both Apple MSRV target checks to commit `7e98d9ebbf03685d76cb412aa625af1ed5a2257b`.
 It contains no Apple GPU execution evidence.
 
+The [secondary particle probe](demo19-secondary-probe/README.md) retains a
+source-bound NVIDIA shader instrument and screenshot for the original DX12
+fixed frame 360. No secondary particle candidate is visible in the unobscured
+view on the tested AMD GPU. This does not establish why the RHI adaptation
+shows secondary smoke; that visual mismatch remains open.
+
 The remaining files in this directory are **pre-freeze working-tree evidence**. The source tree was based on `0b70fa880a44b588efe3758044e604aa3cf7c855` and continued to change during collection. Those screenshots, builds and tests cannot be attributed to a single final commit. `files.json` records SHA-256, byte size and the original local path of each copied artifact; paths inside copied reports refer to the local archive and are retained as historical provenance.
 
 Windows runs used an AMD Radeon 780M, driver 32.0.21028.2002; Vulkan reports driver 25.10.28.02 (LLPC), Vulkan 1.4.315. The Vulkan focused log contains validation-enabled real GPU fixtures; it is not a substitute for the final candidate. Full resolution readback PPMs, unmodified reference captures, executables, build logs and the detailed capture inputs remain in the local verification and evidence directories at the original paths in `files.json` and the copied reports. Contact or window images alone do not establish readback equality.
