@@ -344,6 +344,24 @@ fn exercise(indirect: bool, task: bool) {
         (ImageLayout::Undefined, ImageLayout::ColorAttachment),
     )])
     .unwrap();
+    e.transition_resources(&[ResourceTransition::Texture(TextureBarrier {
+        target: Subresources {
+            texture: &depth,
+            aspects: TextureAspects::DEPTH,
+            mips: 0..1,
+            layers: 0..1,
+        },
+        usage: StateTransition {
+            from: empty,
+            to: TextureUses {
+                stages: StageMask::FRAGMENT,
+                accesses: AccessMask::DEPTH_WRITE,
+            },
+        },
+        layout: Some((ImageLayout::Undefined, ImageLayout::DepthStencilAttachment)),
+        ownership: None,
+    })])
+    .unwrap();
     for layer in 0..1 {
         let attachments = [Some(ColorAttachment {
             view: AttachmentView::Texture(&colors[layer]),
