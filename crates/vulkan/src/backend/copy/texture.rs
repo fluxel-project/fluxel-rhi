@@ -542,14 +542,15 @@ fn validate_rgba_readback(
     let desc = texture.desc();
     if desc.format != api::TextureFormat::Rgba8Unorm
         || desc.dimension != api::TextureDimension::D2
-        || desc.array_layers != 1
         || desc.samples != 1
         || !desc.usage.contains(api::TextureUsage::COPY_SRC)
         || !destination.0.usage.contains(api::BufferUsage::COPY_DST)
         || source.aspect != api::TextureAspects::COLOR
         || source.mip >= desc.mip_levels
-        || source.origin != [0, 0, 0]
-        || source.extent != mip_extent(desc, source.mip)
+        || source.origin[0..2] != [0, 0]
+        || source.origin[2] >= desc.array_layers
+        || source.extent[0..2] != mip_extent(desc, source.mip)[0..2]
+        || source.extent[2] != 1
         || layout.offset % 4 != 0
     {
         return Err(Error::Unsupported("Vulkan full RGBA8 texture readback"));

@@ -8,11 +8,23 @@
 
 use super::*;
 impl api::CommandBackend for Dx12 {
+    fn clear_texture(
+        encoder: &mut Dx12Encoder,
+        texture: &super::Dx12Texture,
+        mips: std::ops::Range<u32>,
+        layers: std::ops::Range<u32>,
+        value: api::TextureClearValue,
+    ) -> Result<(), Error> {
+        if encoder.is_compute {
+            return Err(Error::Unsupported("DX12 compute queue texture clear"));
+        }
+        super::clear::texture(encoder, texture, mips, layers, value)
+    }
     fn begin_encoder(device: &Dx12Device, lane: LaneId) -> Result<Dx12Encoder, Error> {
-        if lane.ordinal != 0 {
+        if lane.ordinal > 1 {
             return Err(Error::WrongLane);
         }
-        Dx12Encoder::new(device)
+        Dx12Encoder::new(device, lane)
     }
 
     fn transition(
@@ -38,6 +50,7 @@ impl api::CommandBackend for Dx12 {
                     }
                     let before = buffer_state(barrier_op.usage.from)?;
                     let after = buffer_state(barrier_op.usage.to)?;
+                    validate_compute_states(encoder, before, after)?;
                     barrier(&encoder.list, &buffer.resource, before, after);
                     encoder.buffers.push(buffer.clone());
                 }
@@ -49,7 +62,12 @@ impl api::CommandBackend for Dx12 {
                     // and its clone enters encoder lifetime retention below.
                     let texture = unsafe { barrier_op.target.texture.native_ref() };
                     let desc = &texture.0.desc;
-                    if barrier_op.target.aspects != api::TextureAspects::COLOR {
+                    let expected_aspect = if desc.format == api::TextureFormat::Depth32Float {
+                        api::TextureAspects::DEPTH
+                    } else {
+                        api::TextureAspects::COLOR
+                    };
+                    if barrier_op.target.aspects != expected_aspect {
                         return Err(Error::Unsupported("DX12 texture transition aspect"));
                     }
                     if barrier_op.target.mips.start >= barrier_op.target.mips.end
@@ -62,8 +80,25 @@ impl api::CommandBackend for Dx12 {
                     let (from_layout, to_layout) = barrier_op.layout.ok_or(Error::Unsupported(
                         "DX12 texture transition requires explicit layouts",
                     ))?;
-                    let before = texture_state(from_layout, barrier_op.usage.from)?;
+                    let depth = desc.format == api::TextureFormat::Depth32Float;
+                    if [from_layout, to_layout].into_iter().any(|layout| {
+                        (depth && layout == api::ImageLayout::ColorAttachment)
+                            || (!depth && layout == api::ImageLayout::DepthStencilAttachment)
+                    }) {
+                        return Err(Error::Unsupported("DX12 texture layout/format mismatch"));
+                    }
+                    let before = if depth && from_layout == api::ImageLayout::Undefined {
+                        // Depth resources are created in DEPTH_WRITE. Undefined
+                        // names the initial contents, not a native COMMON state.
+                        if barrier_op.usage.from.accesses != api::AccessMask::EMPTY {
+                            return Err(Error::Unsupported("DX12 Undefined layout access"));
+                        }
+                        D3D12_RESOURCE_STATE_DEPTH_WRITE
+                    } else {
+                        texture_state(from_layout, barrier_op.usage.from)?
+                    };
                     let after = texture_state(to_layout, barrier_op.usage.to)?;
+                    validate_compute_states(encoder, before, after)?;
                     for layer in barrier_op.target.layers.clone() {
                         for mip in barrier_op.target.mips.clone() {
                             // D3D12 subresource order is mip-major within each
@@ -80,6 +115,37 @@ impl api::CommandBackend for Dx12 {
                         }
                     }
                     encoder.textures.push(texture.clone());
+                }
+                api::ResourceTransition::Acceleration {
+                    target,
+                    before,
+                    after,
+                } => {
+                    if !before.accesses.contains(api::AccessMask::ACCEL_WRITE)
+                        || !(after.accesses.contains(api::AccessMask::ACCEL_READ)
+                            || after.accesses.contains(api::AccessMask::ACCEL_WRITE))
+                    {
+                        return Err(Error::Unsupported("DX12 acceleration barrier scope"));
+                    }
+                    // SAFETY: Core checked the acceleration structure's device;
+                    // the encoder retains its native resource through completion.
+                    let acceleration = unsafe { target.native_ref() };
+                    let mut native = D3D12_RESOURCE_BARRIER {
+                        Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
+                        Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+                        Anonymous: D3D12_RESOURCE_BARRIER_0 {
+                            UAV: ManuallyDrop::new(D3D12_RESOURCE_UAV_BARRIER {
+                                pResource: ManuallyDrop::new(Some(acceleration.0.resource.clone())),
+                            }),
+                        },
+                    };
+                    // SAFETY: the barrier owns a COM clone for the duration of
+                    // this synchronous recording call, then releases it once.
+                    unsafe {
+                        encoder.list.ResourceBarrier(std::slice::from_ref(&native));
+                        ManuallyDrop::drop(&mut (*native.Anonymous.UAV).pResource);
+                    }
+                    encoder.accelerations.push(acceleration.clone());
                 }
                 _ => return Err(Error::Unsupported("DX12 resource transition")),
             }
@@ -297,9 +363,10 @@ impl api::CommandBackend for Dx12 {
         unsafe {
             upload.Unmap(0, None);
         }
-        barrier(
+        barrier_sub(
             &encoder.list,
             &texture.0.resource,
+            subresource,
             D3D12_RESOURCE_STATE_COMMON,
             D3D12_RESOURCE_STATE_COPY_DEST,
         );
@@ -323,9 +390,10 @@ impl api::CommandBackend for Dx12 {
             ManuallyDrop::drop(&mut source.pResource);
             ManuallyDrop::drop(&mut target.pResource);
         }
-        barrier(
+        barrier_sub(
             &encoder.list,
             &texture.0.resource,
+            subresource,
             D3D12_RESOURCE_STATE_COPY_DEST,
             D3D12_RESOURCE_STATE_COMMON,
         );
@@ -339,6 +407,9 @@ impl api::CommandBackend for Dx12 {
         dst: api::TextureRegion<'_, Self>,
         filter: api::FilterMode,
     ) -> Result<(), Error> {
+        if encoder.is_compute {
+            return Err(Error::Unsupported("DX12 compute queue blit"));
+        }
         if filter != api::FilterMode::Linear {
             return Err(Error::Unsupported("DX12 mip blit filter"));
         }
@@ -368,4 +439,23 @@ impl api::CommandBackend for Dx12 {
         encoder.textures.push(Dx12Texture(target));
         Ok(())
     }
+}
+
+fn validate_compute_states(
+    encoder: &Dx12Encoder,
+    before: D3D12_RESOURCE_STATES,
+    after: D3D12_RESOURCE_STATES,
+) -> Result<(), Error> {
+    if encoder.is_compute {
+        let allowed = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER.0
+            | D3D12_RESOURCE_STATE_UNORDERED_ACCESS.0
+            | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE.0
+            | D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT.0
+            | D3D12_RESOURCE_STATE_COPY_SOURCE.0
+            | D3D12_RESOURCE_STATE_COPY_DEST.0;
+        if (before.0 | after.0) & !allowed != 0 {
+            return Err(Error::Unsupported("DX12 compute queue resource state"));
+        }
+    }
+    Ok(())
 }

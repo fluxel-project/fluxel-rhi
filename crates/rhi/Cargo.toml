@@ -130,3 +130,43 @@ required-features = ["examples"]
 name = "15_multiview"
 path = "examples/15_multiview/main.rs"
 required-features = ["examples"]
+
+[[example]]
+name = "16_raytracing_hello"
+path = "examples/16_raytracing_hello/main.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "17_gpu_queries"
+path = "examples/17_gpu_queries/main.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "18_meshlet_instancing"
+path = "examples/18_meshlet_instancing/main.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "19_ray_query_particles"
+path = "examples/19_ray_query_particles/main.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "20_gpu_draw_count"
+path = "examples/20_gpu_draw_count/main.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "21_sparse_texture"
+path = "examples/21_sparse_texture/main.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "22_clear_texture"
+path = "examples/22_clear_texture/main.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "23_multi_queue"
+path = "examples/23_multi_queue/main.rs"
+required-features = ["examples"]

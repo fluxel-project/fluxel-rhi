@@ -34,6 +34,7 @@ impl RasterBackend for Metal {
             if encoder.raster_signature != Some(pipeline.signature) {
                 return Err(api::Error::InvalidState);
             }
+            encoder.mesh_threads = None;
             render.setRenderPipelineState(&pipeline.state);
             render.setDepthStencilState(pipeline.depth_state.as_deref());
             render.setDepthBias_slopeScale_clamp(
@@ -70,6 +71,31 @@ impl RasterBackend for Metal {
             use objc2_metal::MTLRenderCommandEncoder as _;
             if group_slot >= 4 {
                 return Err(api::Error::InvalidRange);
+            }
+            // Mesh-stage selectors only exist on devices with a successfully
+            // created mesh pipeline. Require it to be bound before these groups.
+            for resource in &group.resources {
+                let visibility = match resource {
+                    BoundResource::Acceleration { .. } => {
+                        return Err(api::Error::Unsupported("Metal raster acceleration binding"));
+                    }
+                    BoundResource::Buffer { visibility, .. }
+                    | BoundResource::Texture { visibility, .. }
+                    | BoundResource::Sampler { visibility, .. } => visibility,
+                };
+                if visibility
+                    .iter()
+                    .any(|stage| matches!(stage, api::ShaderStage::Task))
+                {
+                    return Err(api::Error::Unsupported("Metal object stage binding"));
+                }
+                if encoder.mesh_threads.is_none()
+                    && visibility
+                        .iter()
+                        .any(|s| matches!(s, api::ShaderStage::Task | api::ShaderStage::Mesh))
+                {
+                    return Err(api::Error::InvalidState);
+                }
             }
             let dynamic_count = group
                 .resources
@@ -112,6 +138,9 @@ impl RasterBackend for Metal {
             let mut dynamic_index = 0;
             for resource in &group.resources {
                 match resource {
+                    BoundResource::Acceleration { .. } => {
+                        return Err(api::Error::Unsupported("Metal raster acceleration binding"));
+                    }
                     BoundResource::Buffer {
                         binding,
                         visibility,
@@ -147,6 +176,26 @@ impl RasterBackend for Metal {
                                 )
                             };
                         }
+                        if visibility.contains(&api::ShaderStage::Task) {
+                            // SAFETY: slot and retained buffer range have been validated above.
+                            unsafe {
+                                render.setObjectBuffer_offset_atIndex(
+                                    Some(raw),
+                                    effective_offset as usize,
+                                    index as usize,
+                                )
+                            };
+                        }
+                        if visibility.contains(&api::ShaderStage::Mesh) {
+                            // SAFETY: slot and retained buffer range have been validated above.
+                            unsafe {
+                                render.setMeshBuffer_offset_atIndex(
+                                    Some(raw),
+                                    effective_offset as usize,
+                                    index as usize,
+                                )
+                            };
+                        }
                         if visibility.contains(&api::ShaderStage::Fragment) {
                             // SAFETY: index is within the fixed 28-slot ABI;
                             // the effective aligned range was validated and the
@@ -171,6 +220,14 @@ impl RasterBackend for Metal {
                             // the texture is retained until command completion.
                             unsafe { render.setVertexTexture_atIndex(Some(raw), index) };
                         }
+                        if visibility.contains(&api::ShaderStage::Task) {
+                            // SAFETY: the fixed slot is valid and the resource is retained through completion.
+                            unsafe { render.setObjectTexture_atIndex(Some(raw), index) };
+                        }
+                        if visibility.contains(&api::ShaderStage::Mesh) {
+                            // SAFETY: the fixed slot is valid and the resource is retained through completion.
+                            unsafe { render.setMeshTexture_atIndex(Some(raw), index) };
+                        }
                         if visibility.contains(&api::ShaderStage::Fragment) {
                             // SAFETY: index is within the fixed 28-slot ABI and
                             // the texture is retained until command completion.
@@ -187,6 +244,14 @@ impl RasterBackend for Metal {
                             // SAFETY: index is within the fixed 28-slot ABI and
                             // the sampler is retained until command completion.
                             unsafe { render.setVertexSamplerState_atIndex(Some(raw), index) };
+                        }
+                        if visibility.contains(&api::ShaderStage::Task) {
+                            // SAFETY: the fixed slot is valid and the resource is retained through completion.
+                            unsafe { render.setObjectSamplerState_atIndex(Some(raw), index) };
+                        }
+                        if visibility.contains(&api::ShaderStage::Mesh) {
+                            // SAFETY: the fixed slot is valid and the resource is retained through completion.
+                            unsafe { render.setMeshSamplerState_atIndex(Some(raw), index) };
                         }
                         if visibility.contains(&api::ShaderStage::Fragment) {
                             // SAFETY: index is within the fixed 28-slot ABI and
@@ -453,6 +518,7 @@ impl RasterBackend for Metal {
             let render = encoder.render.take().ok_or(api::Error::InvalidState)?;
             render.endEncoding();
             encoder.raster_signature = None;
+            encoder.mesh_threads = None;
             Ok(())
         }
         #[cfg(not(target_vendor = "apple"))]
@@ -469,6 +535,7 @@ impl RasterBackend for Metal {
                 render.endEncoding();
             }
             encoder.raster_signature = None;
+            encoder.mesh_threads = None;
         }
         #[cfg(not(target_vendor = "apple"))]
         let _ = encoder;

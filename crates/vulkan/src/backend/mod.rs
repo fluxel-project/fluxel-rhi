@@ -34,16 +34,20 @@ struct InstanceState {
 mod instance;
 
 mod capture;
+mod clear;
 mod compute;
 mod copy;
 mod encoder;
+mod mesh;
 mod pipeline;
 mod query;
 mod raster;
+mod ray;
 mod readback;
 mod resource;
 mod secondary;
 mod shader;
+mod sparse;
 mod submit;
 mod surface;
 mod transition;
@@ -53,6 +57,7 @@ mod transition;
 pub struct VulkanDevice(Arc<DeviceState>);
 
 struct DeviceState {
+    lane_frontier: Mutex<[Option<(std::sync::Weak<submit::multi_queue::Timeline>, u64)>; 2]>,
     device: ash::Device,
     // The device may outlive the typed VulkanInstance returned by its creator.
     // Retaining this owner keeps the dispatch table and VkInstance alive until
@@ -61,8 +66,18 @@ struct DeviceState {
     physical: vk::PhysicalDevice,
     graphics_queue: vk::Queue,
     graphics_family: u32,
+    compute_queue: Option<vk::Queue>,
+    mesh: Option<mesh::MeshDevice>,
+    ray_support: ray::probe::RaySupport,
+    ray_loaders: Option<ray::probe::RayLoaders>,
+    sparse_image: bool,
+    timeline_semaphore: bool,
     shader_clip_distance: bool,
     multi_draw_indirect: bool,
+    draw_indirect_count: bool,
+    pipeline_statistics: bool,
+    timestamp_period: f64,
+    timestamp_bits: u32,
     /// Enabled only when the physical device supports sampler anisotropy.
     sampler_anisotropy: bool,
     max_sampler_anisotropy: f32,
@@ -92,19 +107,17 @@ macro_rules! native_arc {
     )*};
 }
 
-native_arc!(
-    VulkanMeshPipeline,
-    VulkanRayPipeline,
-    VulkanPipelineCache,
-    VulkanAcceleration,
-    VulkanSparse,
-);
+native_arc!(VulkanPipelineCache,);
 
+pub use sparse::VulkanSparse;
+
+pub use mesh::VulkanMeshPipeline;
 pub use pipeline::{
     VulkanBindGroup, VulkanBindGroupLayout, VulkanComputePipeline, VulkanPipelineLayout,
     VulkanRasterPipeline,
 };
 pub use query::VulkanQuerySet;
+pub use ray::{VulkanAcceleration, VulkanRayPipeline};
 pub use resource::{VulkanBuffer, VulkanSampler, VulkanTexture, VulkanTextureView};
 pub use shader::VulkanShader;
 pub use surface::{VulkanSurface, VulkanSurfaceImage};
@@ -232,8 +245,8 @@ impl Backend for Vulkan {
     type NativeSurfaceImage = VulkanSurfaceImage;
     type NativeUncertainty = ();
     type Compute = compute::VulkanCompute;
-    type Mesh = api::Unavailable;
-    type Ray = api::Unavailable;
+    type Mesh = mesh::Mesh;
+    type Ray = ray::VulkanRay;
     type Extras = raster::RasterExtras;
 }
 
@@ -297,16 +310,39 @@ impl api::PipelineBackend for Vulkan {
 }
 
 impl api::QueryBackend for Vulkan {
-    fn query_supported(_: &VulkanDevice, kind: api::QueryKind) -> bool {
-        matches!(kind, api::QueryKind::Occlusion)
+    fn query_supported(device: &VulkanDevice, kind: api::QueryKind) -> bool {
+        match kind {
+            api::QueryKind::Occlusion => true,
+            api::QueryKind::Timestamp => device.0.timestamp_bits != 0,
+            api::QueryKind::PipelineStatistics => device.0.pipeline_statistics,
+        }
+    }
+    fn timestamp_frequency(device: &VulkanDevice, lane: LaneId) -> Option<u64> {
+        if (lane.ordinal != 0 && !(lane.ordinal == 1 && device.0.compute_queue.is_some()))
+            || device.0.timestamp_bits == 0
+        {
+            return None;
+        }
+        query::integer_frequency(device.0.timestamp_period as f32)
+    }
+    fn timestamp_clock(device: &VulkanDevice, lane: LaneId) -> Option<api::TimestampClock> {
+        if (lane.ordinal != 0 && !(lane.ordinal == 1 && device.0.compute_queue.is_some()))
+            || device.0.timestamp_bits == 0
+        {
+            return None;
+        }
+        Some(api::TimestampClock {
+            period_ns: device.0.timestamp_period,
+            valid_bits: device.0.timestamp_bits,
+        })
     }
 
     fn create_query_set(device: &VulkanDevice, desc: &api::QueryDesc) -> Result<VulkanQuerySet> {
         query::create(device, desc)
     }
 
-    fn write_timestamp(_: &mut VulkanEncoder, _: &VulkanQuerySet, _: u32) -> Result<()> {
-        Err(Error::Unsupported("Vulkan timestamps"))
+    fn write_timestamp(e: &mut VulkanEncoder, set: &VulkanQuerySet, slot: u32) -> Result<()> {
+        query::timestamp(e, set, slot)
     }
 
     fn begin_occlusion(encoder: &mut VulkanEncoder, set: &VulkanQuerySet, slot: u32) -> Result<()> {
@@ -325,12 +361,11 @@ impl api::QueryBackend for Vulkan {
         query::end_occlusion(encoder)
     }
 
-    fn begin_statistics(_: &mut VulkanEncoder, _: &VulkanQuerySet, _: u32) -> Result<()> {
-        Err(Error::Unsupported("Vulkan pipeline statistics"))
+    fn begin_statistics(e: &mut VulkanEncoder, set: &VulkanQuerySet, slot: u32) -> Result<()> {
+        query::begin_statistics(e, set, slot)
     }
-
-    fn end_statistics(_: &mut VulkanEncoder) -> Result<()> {
-        Err(Error::Unsupported("Vulkan pipeline statistics"))
+    fn end_statistics(e: &mut VulkanEncoder) -> Result<()> {
+        query::end_statistics(e)
     }
 
     fn resolve_queries(
@@ -345,8 +380,17 @@ impl api::QueryBackend for Vulkan {
 }
 
 impl api::CommandBackend for Vulkan {
-    fn begin_encoder(device: &VulkanDevice, _: LaneId) -> Result<VulkanEncoder> {
-        VulkanEncoder::new(device)
+    fn clear_texture(
+        e: &mut VulkanEncoder,
+        texture: &VulkanTexture,
+        mips: std::ops::Range<u32>,
+        layers: std::ops::Range<u32>,
+        value: api::TextureClearValue,
+    ) -> Result<()> {
+        clear::texture(e, texture, mips, layers, value)
+    }
+    fn begin_encoder(device: &VulkanDevice, lane: LaneId) -> Result<VulkanEncoder> {
+        VulkanEncoder::new(device, lane)
     }
     fn transition(e: &mut VulkanEncoder, ops: &[api::ResourceTransition<'_, Self>]) -> Result<()> {
         transition::record(e, ops)

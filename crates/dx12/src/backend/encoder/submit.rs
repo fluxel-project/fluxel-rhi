@@ -1,11 +1,12 @@
 //! D3D12 queue submission, fence facts, and fence-retired work ownership.
 //!
-//! A Core `SubmissionPlan` has already fixed command order and dependencies.
-//! This module executes that order on the one direct queue; it neither builds a
-//! DAG nor caches a second command representation.  `queue_lock` serializes
-//! native execute/present/signal ordering and fence allocation.  Recorded work
-//! remains in `in_flight` until `GetCompletedValue` proves its fence complete;
-//! `u64::MAX` is device removal, never completion.
+//! A Core `SubmissionPlan` fixes command order and dependencies. This module
+//! issues steps on the direct and compute queues, with native fence signals and
+//! waits for cross-queue dependencies. The submission gate serializes packet
+//! validation and handoff; each queue lock serializes its native operations.
+//! An aggregate direct-queue fence waits for the compute frontier before it
+//! provides completion evidence for retained work from both queues. A fence
+//! value of `u64::MAX` denotes device removal or quarantined uncertainty.
 
 use super::*;
 impl api::CompletionBackend for Dx12 {
@@ -37,7 +38,19 @@ impl api::CompletionBackend for Dx12 {
         super::fence_wait::Dx12FenceFuture::new(device.clone(), point.fence.clone(), point.value)
     }
     fn wait_idle(device: &Dx12Device) -> Self::WaitFuture<'_> {
-        let value = match signal_queue(device) {
+        // A direct-queue fence after a GPU wait on the compute frontier
+        // proves both queues idle without blocking the calling CPU thread.
+        let _submission = device
+            .0
+            .query_submission_gate
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let result = super::super::queue::signal(device, 1)
+            .and_then(|value| {
+                super::super::queue::wait(device, 0, &device.0.multi_queue.fence, value)
+            })
+            .and_then(|()| signal_queue(device));
+        let value = match result {
             Ok(value) => value,
             Err(error) => {
                 return super::fence_wait::Dx12FenceFuture::immediate(
@@ -61,13 +74,34 @@ pub(super) fn retire(device: &Dx12Device) {
         .abandoned_fence_events
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .retain(|event| completed != u64::MAX && event.value > completed);
+        .retain(|event| {
+            // SAFETY: each abandoned event retains its own native fence.
+            let event_completed = unsafe { event.fence.GetCompletedValue() };
+            event_completed != u64::MAX && event.value > event_completed
+        });
+    // SAFETY: this independent fence belongs to the device's compute queue.
+    let compute_completed = unsafe { device.0.multi_queue.fence.GetCompletedValue() };
+    if compute_completed != u64::MAX {
+        device
+            .0
+            .multi_queue
+            .in_flight
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|(value, _)| retain_after(compute_completed, *value));
+    }
     if completed == u64::MAX {
         return;
     }
     device
         .0
         .in_flight
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .retain(|(value, _)| retain_after(completed, *value));
+    device
+        .0
+        .sparse_in_flight
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .retain(|(value, _)| retain_after(completed, *value));
@@ -127,6 +161,9 @@ fn checkpoint(
 
 fn retain_indeterminate(device: &Dx12Device, issued: Vec<Dx12RecordedWork>) {
     if !issued.is_empty() {
+        for record in &issued {
+            super::query::invalidate_ops(&record.encoder.query_ops);
+        }
         device
             .0
             .in_flight
@@ -136,9 +173,27 @@ fn retain_indeterminate(device: &Dx12Device, issued: Vec<Dx12RecordedWork>) {
     }
 }
 
+fn retain_sparse(
+    device: &Dx12Device,
+    value: u64,
+    retained: Vec<super::super::sparse::SparseRetained>,
+) {
+    if !retained.is_empty() {
+        device
+            .0
+            .sparse_in_flight
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((value, retained));
+    }
+}
+
 impl DeferredBackend for Dx12 {
     type NativeRecordedWork = Dx12RecordedWork;
     fn finish_encoder(mut encoder: Dx12Encoder, lane: LaneId) -> Result<Dx12RecordedWork, Error> {
+        if encoder.active_occlusion.is_some() || encoder.active_statistics.is_some() {
+            return Err(Error::InvalidState);
+        }
         // SAFETY: `encoder` exclusively owns its still-open list; Core calls
         // this once before any list can cross the queue boundary.
         unsafe { encoder.list.Close() }.map_err(native_error)?;
@@ -146,213 +201,29 @@ impl DeferredBackend for Dx12 {
         Ok(Dx12RecordedWork { lane, encoder })
     }
     unsafe fn submit(device: &Dx12Device, packet: SubmitPacket<Self>) -> SubmitOutcome<Self> {
-        // Completion records from a prior submission can be released without
-        // entering the native queue gate.
-        retire(device);
-        let SubmitPacket {
-            plan,
-            steps,
-            completion,
-        } = packet;
-        let mut accepted = Vec::new();
-        let mut issued = Vec::new();
-        let mut presents = Vec::new();
-        let mut lane_frontiers = Vec::new();
-        let requested = match &completion {
-            api::CompletionRequest::Steps(steps) => steps.as_ref(),
-            _ => &[],
-        };
-        let mut checkpoints = Vec::new();
-        let mut last_signal = None;
-        for step in steps {
-            let id = step.step;
-            match step.payload {
-                StepPayload::Commands(work) => {
-                    let mut lists = Vec::with_capacity(work.len());
-                    let mut lane = None;
-                    for record in work {
-                        // SAFETY: Core constructed `record` for this device and
-                        // submission consumes it exactly once into native work.
-                        let native = unsafe { record.into_native() };
-                        if !native.encoder.closed {
-                            device
-                                .0
-                                .in_flight
-                                .lock()
-                                .unwrap_or_else(|p| p.into_inner())
-                                .push((u64::MAX, issued));
-                            return SubmitOutcome::Indeterminate {
-                                error: Error::InvalidState,
-                                // SAFETY: no handoff was attempted; the empty
-                                // marker only records that native state cannot
-                                // be proven after a malformed recorded list.
-                                uncertain: unsafe {
-                                    api::NativeUncertainty::from_native(plan.id().device, ())
-                                },
-                            };
-                        }
-                        lane = Some(native.lane);
-                        lists.push(
-                            native
-                                .encoder
-                                .list
-                                .cast::<ID3D12CommandList>()
-                                .expect("graphics command list is command list"),
-                        );
-                        issued.push(native);
-                    }
-                    if !lists.is_empty() {
-                        // Serialize only the native queue operation. Do not
-                        // carry this lock into Present: DXGI Present may wait
-                        // for vblank, while Execute/Signal still need a
-                        // single total order across submitters.
-                        let _queue = device
-                            .0
-                            .queue_lock
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner());
-                        // SAFETY: queue access is serialized by `queue_lock`;
-                        // every list is closed and retained in `issued` until
-                        // the fence established below retires it.
-                        unsafe {
-                            device.0.queue.ExecuteCommandLists(
-                                &lists.into_iter().map(Some).collect::<Vec<_>>(),
-                            );
-                        }
-                    }
-                    accepted.push(id);
-                    let lane = lane.unwrap_or(plan.steps()[id.index as usize].lane);
-                    lane_frontiers.retain(|(existing, _)| *existing != lane);
-                    lane_frontiers.push((lane, id));
-                }
-                StepPayload::Present(mut binding) => {
-                    if accepted.is_empty() {
-                        return SubmitOutcome::Indeterminate {
-                            error: Error::InvalidState,
-                            // SAFETY: no native present was issued, so this is
-                            // an explicit indeterminate marker for Core recovery.
-                            uncertain: unsafe {
-                                api::NativeUncertainty::from_native(plan.id().device, ())
-                            },
-                        };
-                    }
-                    // SAFETY: `binding` is the exclusive current image lease;
-                    // this is its single native DXGI handoff attempt.
-                    if let Err(error) = unsafe { binding.try_handoff() } {
-                        device
-                            .0
-                            .in_flight
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .push((u64::MAX, issued));
-                        return SubmitOutcome::Indeterminate {
-                            error,
-                            // SAFETY: Present may have reached DXGI before its
-                            // error was observed; preserve that uncertainty.
-                            uncertain: unsafe {
-                                api::NativeUncertainty::from_native(plan.id().device, ())
-                            },
-                        };
-                    }
-                    accepted.push(id);
-                    presents.push(PresentReceipt {
-                        step: Some(id),
-                        accepted: true,
-                    });
-                    let lane = plan.steps()[id.index as usize].lane;
-                    lane_frontiers.retain(|(existing, _)| *existing != lane);
-                    lane_frontiers.push((lane, id));
-                }
-                StepPayload::SparseBind(_) => {
-                    if !issued.is_empty() {
-                        device
-                            .0
-                            .in_flight
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .push((u64::MAX, issued));
-                    }
-                    return SubmitOutcome::Indeterminate {
-                        error: Error::Unsupported("DX12 sparse bind"),
-                        // SAFETY: earlier lists may already be queued, so report
-                        // uncertainty instead of claiming a clean rejection.
-                        uncertain: unsafe {
-                            api::NativeUncertainty::from_native(plan.id().device, ())
-                        },
-                    };
-                }
+        // SAFETY: ordinary submission has the same queue ordering requirements.
+        match unsafe {
+            submit_packet(
+                device,
+                api::MultiQueuePacket {
+                    work: packet,
+                    signals: vec![],
+                    waits: vec![],
+                },
+            )
+        } {
+            api::MultiQueueSubmitOutcome::Accepted(r) => SubmitOutcome::Accepted(r.work),
+            api::MultiQueueSubmitOutcome::Rejected { error, packet } => SubmitOutcome::Rejected {
+                error,
+                work: api::RetryableSubmit::Fresh(packet.work),
+            },
+            api::MultiQueueSubmitOutcome::Indeterminate { error, uncertain } => {
+                SubmitOutcome::Indeterminate { error, uncertain }
             }
-            if requested.contains(&id) {
-                let value = match signal_queue(device) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        retain_indeterminate(device, issued);
-                        return SubmitOutcome::Indeterminate {
-                            error,
-                            // SAFETY: Signal failure follows issued queue work;
-                            // callers must treat the retained prefix as uncertain.
-                            uncertain: unsafe {
-                                api::NativeUncertainty::from_native(plan.id().device, ())
-                            },
-                        };
-                    }
-                };
-                checkpoints.push(checkpoint(device, plan.id().device, value, &lane_frontiers));
-                last_signal = Some((id, value));
+            api::MultiQueueSubmitOutcome::PartiallyAccepted { .. } => {
+                unreachable!("DX12 reports uncertain native handoffs as indeterminate")
             }
         }
-        // Each submission has a final fence value for allocator/upload
-        // retention, even when the caller requested no completion evidence.
-        // Reuse a signal made at the final accepted step when possible.
-        let final_step = accepted.last().copied();
-        let retention_value =
-            if final_step.is_some() && last_signal.map(|(step, _)| step) == final_step {
-                last_signal.map(|(_, value)| value)
-            } else if final_step.is_some() {
-                let value = match signal_queue(device) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        retain_indeterminate(device, issued);
-                        return SubmitOutcome::Indeterminate {
-                            error,
-                            // SAFETY: final retention Signal can fail after
-                            // execution; preserve the exact uncertainty fact.
-                            uncertain: unsafe {
-                                api::NativeUncertainty::from_native(plan.id().device, ())
-                            },
-                        };
-                    }
-                };
-                Some(value)
-            } else {
-                None
-            };
-        if let Some(value) = retention_value {
-            device
-                .0
-                .in_flight
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push((value, issued));
-            retire(device);
-        }
-        match completion {
-            api::CompletionRequest::None => checkpoints.clear(),
-            api::CompletionRequest::End => {
-                checkpoints.clear();
-                if let Some(value) = retention_value {
-                    checkpoints.push(checkpoint(device, plan.id().device, value, &lane_frontiers));
-                }
-            }
-            api::CompletionRequest::Steps(_) => {}
-        }
-        SubmitOutcome::Accepted(SubmissionReceipt {
-            device: plan.id().device,
-            index: None,
-            accepted,
-            checkpoints,
-            presents,
-        })
     }
     // SAFETY: this route issues no native work and returns the owning tail
     // unchanged, so it cannot advance or discard the accepted frontier.
@@ -362,6 +233,299 @@ impl DeferredBackend for Dx12 {
             work: api::RetryableSubmit::Tail(tail),
         }
     }
+}
+
+/// A GPU signal retains the exact producer fence and value for one token.
+pub struct Dx12GpuSignal {
+    fence: ID3D12Fence,
+    value: u64,
+}
+impl api::MultiQueueBackend for Dx12 {
+    type NativeGpuSignal = Dx12GpuSignal;
+    unsafe fn submit_multi(
+        device: &Dx12Device,
+        packet: api::MultiQueuePacket<Self>,
+    ) -> api::MultiQueueSubmitOutcome<Self> {
+        // SAFETY: Core has validated packet identity and the caller's execution relation.
+        unsafe { submit_packet(device, packet) }
+    }
+}
+
+unsafe fn submit_packet(
+    device: &Dx12Device,
+    packet: api::MultiQueuePacket<Dx12>,
+) -> api::MultiQueueSubmitOutcome<Dx12> {
+    use api::MultiQueueSubmitOutcome as Outcome;
+    let _submission = device
+        .0
+        .query_submission_gate
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let validate = || -> Result<(), Error> {
+        // SAFETY: querying both device-owned fences has no queue side effect.
+        if unsafe { device.0.fence.GetCompletedValue() } == u64::MAX
+            || unsafe { device.0.multi_queue.fence.GetCompletedValue() } == u64::MAX
+        {
+            return Err(Error::DeviceLost);
+        }
+        for (index, step) in packet.work.steps.iter().enumerate() {
+            let desc = &packet.work.plan.steps()[index];
+            if desc.lane.device != packet.work.plan.id().device || desc.lane.ordinal > 1 {
+                return Err(Error::WrongLane);
+            }
+            for wait in &desc.waits {
+                if wait.previous.plan != packet.work.plan.id()
+                    || wait.previous.index as usize >= index
+                {
+                    return Err(Error::InvalidState);
+                }
+            }
+            match &step.payload {
+                StepPayload::Commands(work) => {
+                    for record in work {
+                        // SAFETY: Core checked owning backend and device before calling this method.
+                        let native = unsafe { record.native_ref() };
+                        if !native.encoder.closed || native.lane != desc.lane {
+                            return Err(Error::InvalidState);
+                        }
+                    }
+                }
+                StepPayload::SparseBind(binds) => {
+                    if desc.lane.ordinal != 0 {
+                        return Err(Error::Unsupported(
+                            "DX12 sparse mappings require direct lane",
+                        ));
+                    }
+                    if !device.0.sparse_supported || binds.is_empty() {
+                        return Err(Error::InvalidRange);
+                    }
+                    binds
+                        .iter()
+                        .try_for_each(super::super::sparse::validate_bind)?;
+                }
+                StepPayload::Present(_) if desc.lane.ordinal != 0 || index == 0 => {
+                    return Err(Error::InvalidState);
+                }
+                _ => {}
+            }
+        }
+        super::query::validate_ops(packet.work.steps.iter().flat_map(|step| {
+            let lane = packet.work.plan.steps()[step.step.index as usize]
+                .lane
+                .ordinal;
+            match &step.payload {
+                StepPayload::Commands(work) => work.as_slice(),
+                _ => &[],
+            }
+            .iter()
+            .flat_map(move |record| {
+                // SAFETY: packet identity checked by Core, this borrow is read-only.
+                unsafe { record.native_ref() }
+                    .encoder
+                    .query_ops
+                    .iter()
+                    .map(move |op| (lane, op))
+            })
+        }))?;
+        Ok(())
+    };
+    if let Err(error) = validate() {
+        return Outcome::Rejected { error, packet };
+    }
+    retire(device);
+    let api::MultiQueuePacket {
+        work: SubmitPacket {
+            plan,
+            steps,
+            completion,
+        },
+        signals,
+        waits,
+    } = packet;
+    let requested = match &completion {
+        api::CompletionRequest::Steps(s) => s.as_ref(),
+        _ => &[],
+    };
+    let mut waits: Vec<_> = waits.into_iter().map(Some).collect();
+    let mut accepted = Vec::new();
+    let mut presents = Vec::new();
+    let mut frontiers = Vec::new();
+    let mut checkpoints = Vec::new();
+    let mut issued = Vec::new();
+    let mut sparse_issued = Vec::new();
+    let mut values = Vec::<(u32, u64)>::new();
+    let mut tokens = Vec::new();
+    macro_rules! handoff {
+        ($operation:expr) => {
+            match $operation {
+                Ok(value) => value,
+                Err(error) => {
+                    retain_indeterminate(device, issued);
+                    retain_sparse(device, u64::MAX, sparse_issued);
+                    return Outcome::Indeterminate {
+                        error,
+                        uncertain: unsafe {
+                            api::NativeUncertainty::from_native(plan.id().device, ())
+                        },
+                    };
+                }
+            }
+        };
+    }
+    for step in steps {
+        let id = step.step;
+        let desc = &plan.steps()[id.index as usize];
+        let lane = desc.lane;
+        for dependency in &desc.waits {
+            let (producer_lane, value) = values[dependency.previous.index as usize];
+            if producer_lane != lane.ordinal {
+                handoff!(super::super::queue::wait(
+                    device,
+                    lane.ordinal,
+                    super::super::queue::fence(device, producer_lane).expect("validated lane"),
+                    value
+                ));
+            }
+        }
+        for entry in &mut waits {
+            if entry
+                .as_ref()
+                .is_some_and(|wait| wait.signal.consumer() == id)
+            {
+                let wait = entry.take().expect("present wait");
+                // SAFETY: each token is consumed exactly once at its designated step.
+                let signal = unsafe { wait.signal.into_native() };
+                handoff!(super::super::queue::wait(
+                    device,
+                    lane.ordinal,
+                    &signal.fence,
+                    signal.value
+                ));
+            }
+        }
+        match step.payload {
+            StepPayload::Commands(work) => {
+                let first = issued.len();
+                for record in work {
+                    // SAFETY: preflight checked closed work and its lane, and each work is consumed once.
+                    issued.push(unsafe { record.into_native() });
+                }
+                let (queue, lock) = if lane.ordinal == 0 {
+                    (&device.0.queue, &device.0.queue_lock)
+                } else {
+                    (&device.0.multi_queue.queue, &device.0.multi_queue.lock)
+                };
+                let _queue = lock.lock().unwrap_or_else(|p| p.into_inner());
+                for native in &issued[first..] {
+                    let list = native
+                        .encoder
+                        .list
+                        .cast::<ID3D12CommandList>()
+                        .expect("graphics command list interface");
+                    // SAFETY: preflight proved the closed list type matches the lane, retained through completion.
+                    unsafe {
+                        queue.ExecuteCommandLists(&[Some(list)]);
+                    }
+                    super::query::commit_ops(&native.encoder.query_ops, lane.ordinal);
+                }
+            }
+            StepPayload::SparseBind(binds) => {
+                let _queue = device
+                    .0
+                    .queue_lock
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                for bind in &binds {
+                    sparse_issued.push(super::super::sparse::issue_bind(device, bind));
+                }
+            }
+            StepPayload::Present(mut binding) => {
+                // SAFETY: exclusive current image lease is handed to DXGI once.
+                handoff!(unsafe { binding.try_handoff() });
+                presents.push(PresentReceipt {
+                    step: Some(id),
+                    accepted: true,
+                });
+            }
+        }
+        let value = handoff!(super::super::queue::signal(device, lane.ordinal));
+        values.push((lane.ordinal, value));
+        accepted.push(id);
+        frontiers.retain(|(l, _)| *l != lane);
+        frontiers.push((lane, id));
+        for request in signals.iter().filter(|s| s.producer == id) {
+            let native = Dx12GpuSignal {
+                fence: super::super::queue::fence(device, lane.ordinal)
+                    .expect("validated lane")
+                    .clone(),
+                value,
+            };
+            // SAFETY: this signal was just enqueued after the requested producer step.
+            tokens.push(unsafe {
+                api::GpuSignalPoint::from_native(
+                    plan.id().device,
+                    id,
+                    lane,
+                    request.consumer,
+                    request.consumer_lane,
+                    native,
+                )
+            });
+        }
+        if requested.contains(&id) {
+            if let Some((_, compute)) = values.iter().rev().find(|(ordinal, _)| *ordinal == 1) {
+                handoff!(super::super::queue::wait(
+                    device,
+                    0,
+                    &device.0.multi_queue.fence,
+                    *compute
+                ));
+            }
+            let fence_value = handoff!(signal_queue(device));
+            checkpoints.push(checkpoint(
+                device,
+                plan.id().device,
+                fence_value,
+                &frontiers,
+            ));
+        }
+    }
+    let retention = if accepted.is_empty() {
+        None
+    } else {
+        if let Some((_, compute)) = values.iter().rev().find(|(ordinal, _)| *ordinal == 1) {
+            handoff!(super::super::queue::wait(
+                device,
+                0,
+                &device.0.multi_queue.fence,
+                *compute
+            ));
+        }
+        Some(handoff!(signal_queue(device)))
+    };
+    if let Some(value) = retention {
+        device
+            .0
+            .in_flight
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((value, issued));
+        retain_sparse(device, value, sparse_issued);
+        if matches!(completion, api::CompletionRequest::End) {
+            checkpoints.push(checkpoint(device, plan.id().device, value, &frontiers));
+        }
+        retire(device);
+    }
+    Outcome::Accepted(api::MultiQueueReceipt {
+        work: SubmissionReceipt {
+            device: plan.id().device,
+            index: None,
+            accepted,
+            checkpoints,
+            presents,
+        },
+        signals: tokens,
+    })
 }
 
 #[cfg(test)]

@@ -24,6 +24,79 @@ use std::{
 #[cfg(target_vendor = "apple")]
 type NativeCommandBuffer =
     objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>>;
+
+#[cfg(target_vendor = "apple")]
+#[derive(Default)]
+pub(super) struct SubmissionTracker {
+    next: u64,
+    pending: std::collections::HashMap<u64, Completion>,
+    failure: Option<Error>,
+}
+
+/// Register before commit while holding queue_gate. The tracker retains the
+/// buffer until its completion callback has recorded its terminal result.
+#[cfg(target_vendor = "apple")]
+pub(super) fn track_command(
+    device: &MetalDevice,
+    command: &NativeCommandBuffer,
+    query: Option<(super::query::QueryCommit, u32)>,
+) -> Completion {
+    use objc2_metal::{MTLCommandBuffer as _, MTLCommandBufferStatus};
+    let mut tracker = device
+        ._state
+        .submission_tracker
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let id = tracker.next;
+    tracker.next = tracker
+        .next
+        .checked_add(1)
+        .expect("Metal submission tracker exhausted");
+    let completion = Completion::new();
+    tracker.pending.insert(id, completion.clone());
+    let state = Arc::downgrade(&device._state);
+    let tracked = completion.clone();
+    let callback = block2::RcBlock::new(
+        move |pointer: std::ptr::NonNull<
+            objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>,
+        >| {
+            let Some(state) = state.upgrade() else { return };
+            // SAFETY: Metal supplies a live command buffer to its terminal callback.
+            let command = unsafe { pointer.as_ref() };
+            if command.status() != MTLCommandBufferStatus::Completed {
+                if let Some((commit, lane)) = &query {
+                    let _gate = state.queue_gate.lock().unwrap_or_else(|p| p.into_inner());
+                    super::query::invalidate_ops(commit, *lane);
+                }
+            }
+            let mut tracker = state
+                .submission_tracker
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let outcome = if command.status() != MTLCommandBufferStatus::Completed {
+                let error = if command.error().is_some_and(|e| {
+                    e.code() == objc2_metal::MTLCommandBufferError::DeviceRemoved.0 as isize
+                }) {
+                    Error::DeviceLost
+                } else {
+                    Error::Backend("Metal command buffer execution failed".into())
+                };
+                if tracker.failure.is_none() || matches!(error, Error::DeviceLost) {
+                    tracker.failure = Some(error.clone());
+                }
+                Err(error)
+            } else {
+                Ok(())
+            };
+            tracker.pending.remove(&id);
+            drop(tracker);
+            completion.publish(outcome);
+        },
+    );
+    // SAFETY: Metal copies the block; the weak device breaks retention cycles.
+    unsafe { command.addCompletedHandler(block2::RcBlock::as_ptr(&callback).cast()) };
+    tracked
+}
 #[cfg(target_vendor = "apple")]
 type CheckpointMarker = (
     StepId,
@@ -41,14 +114,14 @@ struct CompletionInner {
 }
 
 impl Completion {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self(Arc::new(CompletionInner {
             result: Mutex::new(None),
             wakers: Mutex::new(Vec::new()),
         }))
     }
 
-    fn result(&self) -> Option<Result<()>> {
+    pub(super) fn result(&self) -> Option<Result<()>> {
         self.0
             .result
             .lock()
@@ -56,7 +129,16 @@ impl Completion {
             .clone()
     }
 
-    fn publish(&self, result: Result<()>) {
+    pub(super) fn watch(&self, waker: &Waker) -> Option<Result<()>> {
+        let mut wakers = self.0.wakers.lock().unwrap_or_else(|p| p.into_inner());
+        let result = self.result();
+        if result.is_none() && !wakers.iter().any(|w| w.will_wake(waker)) {
+            wakers.push(waker.clone());
+        }
+        result
+    }
+
+    pub(super) fn publish(&self, result: Result<()>) {
         let mut slot = self
             .0
             .result
@@ -83,48 +165,117 @@ impl Completion {
     }
 
     #[cfg(target_vendor = "apple")]
-    fn install(
-        command: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>,
+    pub(super) fn install_group(
+        commands: &[NativeCommandBuffer],
+        initial_failure: Option<Error>,
     ) -> Self {
         use objc2_metal::{MTLCommandBuffer as _, MTLCommandBufferStatus};
-
-        let completion = Self::new();
-        let callback_completion = completion.clone();
-        let callback = block2::RcBlock::new(
-            move |pointer: std::ptr::NonNull<
-                objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>,
-            >| {
-                // SAFETY: Metal invokes a completion handler with its live
-                // command buffer, and the NonNull argument is valid for this
-                // synchronous callback invocation.
-                let native = unsafe { pointer.as_ref() };
-                let result = if native.status() == MTLCommandBufferStatus::Completed {
-                    Ok(())
-                } else if native.error().is_some_and(|error| {
-                    error.code() == objc2_metal::MTLCommandBufferError::DeviceRemoved.0 as isize
-                }) {
-                    Err(Error::DeviceLost)
-                } else {
-                    Err(Error::Backend(
-                        "Metal command buffer execution failed".into(),
-                    ))
-                };
-                callback_completion.publish(result);
-            },
-        );
-        // SAFETY: `callback` is an owning block and remains alive through this
-        // call; Metal's addCompletedHandler contract copies the block and calls
-        // it once after the command buffer reaches a terminal execution state.
-        unsafe { command.addCompletedHandler(block2::RcBlock::as_ptr(&callback).cast()) };
-        completion
+        let result = Self::new();
+        let remaining = Arc::new(std::sync::atomic::AtomicUsize::new(commands.len()));
+        let failure = Arc::new(Mutex::new(initial_failure));
+        for command in commands {
+            let result = result.clone();
+            let remaining = remaining.clone();
+            let failure = failure.clone();
+            let callback = block2::RcBlock::new(
+                move |pointer: std::ptr::NonNull<
+                    objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>,
+                >| {
+                    // SAFETY: Metal invokes the callback while its command buffer is live.
+                    let native = unsafe { pointer.as_ref() };
+                    if native.status() != MTLCommandBufferStatus::Completed {
+                        let error = if native.error().is_some_and(|e| {
+                            e.code() == objc2_metal::MTLCommandBufferError::DeviceRemoved.0 as isize
+                        }) {
+                            Error::DeviceLost
+                        } else {
+                            Error::Backend("Metal command buffer execution failed".into())
+                        };
+                        let mut recorded = failure.lock().unwrap_or_else(|p| p.into_inner());
+                        if recorded.is_none() || matches!(error, Error::DeviceLost) {
+                            *recorded = Some(error);
+                        }
+                    }
+                    if remaining.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1 {
+                        result.publish(
+                            failure
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .clone()
+                                .map_or(Ok(()), Err),
+                        );
+                    }
+                },
+            );
+            // SAFETY: Metal copies this owning block before returning.
+            unsafe { command.addCompletedHandler(block2::RcBlock::as_ptr(&callback).cast()) };
+        }
+        result
     }
 }
 
-pub struct CompletionFuture(Completion);
+struct CompletionJoin {
+    children: Vec<Completion>,
+    output: Completion,
+}
+impl CompletionJoin {
+    fn update(self: &Arc<Self>) {
+        let waker = Waker::from(self.clone());
+        let mut failure = None;
+        let mut pending = false;
+        for child in &self.children {
+            let mut wakers = child.0.wakers.lock().unwrap_or_else(|p| p.into_inner());
+            match child.result() {
+                Some(Err(error)) => {
+                    if failure.is_none() || matches!(error, Error::DeviceLost) {
+                        failure = Some(error);
+                    }
+                }
+                Some(Ok(())) => {}
+                None => {
+                    pending = true;
+                    if !wakers.iter().any(|w| w.will_wake(&waker)) {
+                        wakers.push(waker.clone());
+                    }
+                }
+            }
+        }
+        if !pending {
+            self.output.publish(failure.map_or(Ok(()), Err));
+        }
+    }
+}
+impl std::task::Wake for CompletionJoin {
+    fn wake(self: Arc<Self>) {
+        self.update();
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.update();
+    }
+}
+pub(super) fn join_into(output: &Completion, children: Vec<Completion>) {
+    Arc::new(CompletionJoin {
+        children,
+        output: output.clone(),
+    })
+    .update();
+}
+
+pub struct CompletionFuture(Vec<Completion>);
 
 pub struct MetalRecordedWork {
     #[cfg(target_vendor = "apple")]
-    command: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>>,
+    pub(super) wait_slots:
+        Vec<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLSharedEvent>>>,
+    #[cfg(target_vendor = "apple")]
+    pub(super) command:
+        objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>>,
+    #[cfg(target_vendor = "apple")]
+    pub(super) lane: u32,
+    #[cfg(target_vendor = "apple")]
+    pub(super) query_ops: Vec<super::query::QueryOp>,
+    #[cfg(target_vendor = "apple")]
+    accelerations: Vec<super::ray::MetalAcceleration>,
     #[cfg(target_vendor = "apple")]
     indirect_arguments:
         Vec<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer>>>,
@@ -132,17 +283,19 @@ pub struct MetalRecordedWork {
 
 impl MetalRecordedWork {
     #[cfg(target_vendor = "apple")]
-    fn retain_indirect_arguments_until_completed(&self) {
+    pub(super) fn retain_indirect_arguments_until_completed(&self) {
         use objc2_metal::MTLCommandBuffer as _;
-        if self.indirect_arguments.is_empty() {
+        if self.indirect_arguments.is_empty() && self.accelerations.is_empty() {
             return;
         }
         let retained = self.indirect_arguments.clone();
+        let accelerations = self.accelerations.clone();
         let callback = block2::RcBlock::new(
             move |_: std::ptr::NonNull<
                 objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>,
             >| {
                 let _ = retained.len();
+                let _ = accelerations.len();
             },
         );
         // SAFETY: the owning block captures strong references to every indirect
@@ -159,19 +312,32 @@ impl Future for CompletionFuture {
     type Output = Result<()>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let completion = &self.get_mut().0;
-        let mut wakers = completion
-            .0
-            .wakers
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(result) = completion.result() {
-            return Poll::Ready(result);
+        let mut pending = false;
+        let mut failure = None;
+        for completion in &self.get_mut().0 {
+            let mut wakers = completion
+                .0
+                .wakers
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(result) = completion.result() {
+                if let Err(error) = result {
+                    if failure.is_none() || matches!(error, Error::DeviceLost) {
+                        failure = Some(error);
+                    }
+                }
+            } else {
+                pending = true;
+                if !wakers.iter().any(|waker| waker.will_wake(cx.waker())) {
+                    wakers.push(cx.waker().clone());
+                }
+            }
         }
-        if !wakers.iter().any(|waker| waker.will_wake(cx.waker())) {
-            wakers.push(cx.waker().clone());
+        if pending {
+            Poll::Pending
+        } else {
+            Poll::Ready(failure.map_or(Ok(()), Err))
         }
-        Poll::Pending
     }
 }
 
@@ -187,7 +353,7 @@ impl CompletionBackend for Metal {
     }
 
     fn wait_completion<'a>(_: &'a MetalDevice, point: &'a Completion) -> Self::WaitFuture<'a> {
-        CompletionFuture(point.clone())
+        CompletionFuture(vec![point.clone()])
     }
 
     fn wait_idle(device: &MetalDevice) -> Self::WaitFuture<'_> {
@@ -200,24 +366,51 @@ impl CompletionBackend for Metal {
                     ._queue
                     .commandBuffer()
                     .ok_or(Error::OutOfMemory)?;
-                let completion = Completion::install(&command);
-                {
+                let compute = device
+                    ._state
+                    .compute_queue
+                    .commandBuffer()
+                    .ok_or(Error::OutOfMemory)?;
+                let markers = [command, compute];
+                let completion = {
                     let _gate = device
                         ._state
                         .queue_gate
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    // The marker is enqueued under the same issue-order gate as
-                    // normal submission, so it covers the preceding queue prefix.
+                    // Snapshot pending command buffers and sticky failures under
+                    // the issue gate. Their callbacks may run in any order.
+                    let tracker = device
+                        ._state
+                        .submission_tracker
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    let mut pending: Vec<_> = tracker.pending.values().cloned().collect();
+                    let failure = tracker.failure.clone();
+                    drop(tracker);
+                    if let Some(sparse) = device
+                        ._state
+                        .sparse_pending
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .as_ref()
+                    {
+                        pending.push(sparse.clone());
+                    }
+                    let completion = Completion::install_group(&markers, failure);
+                    pending.push(completion);
                     use objc2_metal::MTLCommandBuffer as _;
-                    command.commit();
-                }
+                    for command in &markers {
+                        command.commit();
+                    }
+                    pending
+                };
                 Ok(completion)
             })();
             CompletionFuture(completion.unwrap_or_else(|error| {
                 let failed = Completion::new();
                 failed.publish(Err(error));
-                failed
+                vec![failed]
             }))
         }
         #[cfg(not(target_vendor = "apple"))]
@@ -225,7 +418,7 @@ impl CompletionBackend for Metal {
             let _ = device;
             let failed = Completion::new();
             failed.publish(Err(Error::Unsupported("Metal requires an Apple target")));
-            CompletionFuture(failed)
+            CompletionFuture(vec![failed])
         }
     }
 }
@@ -237,7 +430,7 @@ impl DeferredBackend for Metal {
         encoder: super::MetalCommandEncoder,
         lane: LaneId,
     ) -> Result<Self::NativeRecordedWork> {
-        if lane.ordinal != 0 {
+        if lane.ordinal > 1 {
             return Err(Error::InvalidState);
         }
         #[cfg(target_vendor = "apple")]
@@ -245,12 +438,19 @@ impl DeferredBackend for Metal {
             if encoder.render.is_some() || encoder.compute.is_some() {
                 return Err(Error::InvalidState);
             }
+            if encoder.lane != lane.ordinal {
+                return Err(Error::WrongLane);
+            }
             // The queue's commandBuffer() factory retains native objects used
             // in encoded commands. The backend does not duplicate every bind
             // in a Rust keep-alive vector; Core still owns public resource
             // lifetime decisions through actual GPU completion.
             Ok(MetalRecordedWork {
                 command: encoder.command,
+                wait_slots: encoder.wait_slots,
+                lane: encoder.lane,
+                query_ops: encoder.query_ops,
+                accelerations: encoder.accelerations,
                 indirect_arguments: encoder.indirect_arguments,
             })
         }
@@ -267,6 +467,44 @@ impl DeferredBackend for Metal {
     // preserves the packet's Step order and reports only command buffers that
     // were committed to Metal; partial acceptance carries a completion marker.
     unsafe fn submit(device: &MetalDevice, packet: api::SubmitPacket<Self>) -> SubmitOutcome<Self> {
+        if packet
+            .plan
+            .steps()
+            .iter()
+            .any(|step| step.kind == StepKind::SparseBind)
+        {
+            // SAFETY: the caller's packet and lifetime obligations are unchanged;
+            // the multi-queue lowering preflights every mapping before handoff.
+            let outcome = unsafe {
+                <Metal as api::MultiQueueBackend>::submit_multi(
+                    device,
+                    api::MultiQueuePacket {
+                        work: packet,
+                        signals: Vec::new(),
+                        waits: Vec::new(),
+                    },
+                )
+            };
+            return match outcome {
+                api::MultiQueueSubmitOutcome::Accepted(receipt) => {
+                    SubmitOutcome::Accepted(receipt.work)
+                }
+                api::MultiQueueSubmitOutcome::Rejected { error, packet } => {
+                    SubmitOutcome::Rejected {
+                        error,
+                        work: api::RetryableSubmit::Fresh(packet.work),
+                    }
+                }
+                api::MultiQueueSubmitOutcome::Indeterminate { error, uncertain } => {
+                    SubmitOutcome::Indeterminate { error, uncertain }
+                }
+                // This backend's multi-queue path preallocates before handoff and
+                // has no fallible native issue after accepting its first step.
+                api::MultiQueueSubmitOutcome::PartiallyAccepted { .. } => {
+                    unreachable!("Metal multi-queue never returns a partial prefix")
+                }
+            };
+        }
         // Validate every unsupported shape before consuming RecordedWork. This
         // preserves Core's clean-rejection ownership contract.
         if !supports_command_plan(&packet.plan) {
@@ -286,6 +524,42 @@ impl DeferredBackend for Metal {
         #[cfg(target_vendor = "apple")]
         {
             use objc2_metal::{MTLCommandBuffer as _, MTLCommandQueue as _};
+            let _gate = device
+                ._state
+                .queue_gate
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if device
+                ._state
+                .sparse_pending
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .is_some_and(|pending| pending.result().is_none())
+            {
+                return SubmitOutcome::Rejected {
+                    error: Error::InvalidState,
+                    work: api::RetryableSubmit::Fresh(packet),
+                };
+            }
+            let ops = packet
+                .steps
+                .iter()
+                .flat_map(|step| match &step.payload {
+                    StepPayload::Commands(records) => records.as_slice(),
+                    _ => &[],
+                })
+                .flat_map(|record| {
+                    // SAFETY: Core validates the backend provenance of each recording.
+                    let work = unsafe { record.native_ref() };
+                    work.query_ops.iter().map(move |op| (work.lane, op))
+                });
+            if let Err(error) = super::query::validate_ops(ops) {
+                return SubmitOutcome::Rejected {
+                    error,
+                    work: api::RetryableSubmit::Fresh(packet),
+                };
+            }
             let present_steps = packet
                 .steps
                 .iter()
@@ -357,7 +631,7 @@ impl DeferredBackend for Metal {
                         }),
                     };
                 };
-                let completion = Completion::install(&command);
+                let completion = Completion::new();
                 markers.push((target, command, completion, Vec::new()));
             }
 
@@ -400,37 +674,65 @@ impl DeferredBackend for Metal {
 
             let mut accepted = Vec::with_capacity(native_steps.len());
             let mut frontiers: Vec<(LaneId, StepId)> = Vec::new();
-            let _gate = device
+            let mut prefix = Vec::new();
+            if let Some(previous) = device
                 ._state
-                .queue_gate
+                .lane_frontier
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-
+                .unwrap_or_else(|p| p.into_inner())[0]
+                .clone()
+            {
+                prefix.push(previous);
+            }
             for (step, commands) in &native_steps {
                 let lane = plan.steps()[step.index as usize].lane;
                 for work in commands {
+                    use objc2_metal::MTLSharedEvent as _;
+                    for slot in &work.wait_slots {
+                        slot.setSignaledValue(1);
+                    }
+                    let query_commit = super::query::commit_ops(&work.query_ops, work.lane);
                     work.retain_indirect_arguments_until_completed();
+                    prefix.push(track_command(
+                        device,
+                        &work.command,
+                        Some((query_commit, work.lane)),
+                    ));
                     work.command.commit();
                 }
                 for (present_step, command) in &present_commands {
                     if present_step == step {
+                        prefix.push(track_command(device, command, None));
                         command.commit();
                     }
                 }
                 accepted.push(*step);
                 record_frontier(&mut frontiers, lane, *step);
+                let lane_completion = Completion::new();
+                join_into(&lane_completion, prefix.clone());
+                device
+                    ._state
+                    .lane_frontier
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())[0] = Some(lane_completion);
 
-                for (target, marker, _, coverage) in markers
+                for (target, marker, completion, coverage) in markers
                     .iter_mut()
                     .filter(|(target, _, _, _)| target == step)
                 {
                     *coverage = frontiers.clone();
+                    let marker_completion = track_command(device, marker, None);
+                    let mut covered = prefix.clone();
+                    covered.push(marker_completion);
+                    join_into(completion, covered);
                     marker.commit();
                     let _ = target;
                 }
             }
             if native_steps.is_empty() {
-                for (_, marker, _, _) in &markers {
+                for (_, marker, completion, _) in &markers {
+                    let tracked = track_command(device, marker, None);
+                    join_into(completion, vec![tracked]);
                     marker.commit();
                 }
             }

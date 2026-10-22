@@ -43,12 +43,16 @@ mod bindings;
 mod compute;
 mod copy;
 mod encoder;
+mod mesh;
+mod multi_queue;
 mod pipeline;
 mod query;
+mod ray;
 mod readback;
 mod resource;
 mod sampler;
 mod shader;
+mod sparse;
 mod submit;
 mod surface;
 mod texture;
@@ -67,7 +71,18 @@ struct DeviceState {
     #[cfg(target_vendor = "apple")]
     _queue: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandQueue>>,
     #[cfg(target_vendor = "apple")]
+    compute_queue:
+        objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandQueue>>,
+    #[cfg(target_vendor = "apple")]
+    ray_supported: bool,
+    #[cfg(target_vendor = "apple")]
     queue_gate: std::sync::Mutex<()>,
+    #[cfg(target_vendor = "apple")]
+    lane_frontier: std::sync::Mutex<[Option<submit::Completion>; 2]>,
+    #[cfg(target_vendor = "apple")]
+    sparse_pending: std::sync::Mutex<Option<submit::Completion>>,
+    #[cfg(target_vendor = "apple")]
+    submission_tracker: std::sync::Mutex<submit::SubmissionTracker>,
     #[cfg(target_vendor = "apple")]
     indirect_dispatch_supported: bool,
 }
@@ -80,6 +95,8 @@ pub struct MetalShader {
         objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLLibrary>>,
     #[cfg(target_vendor = "apple")]
     pub(crate) entries: Vec<api::ShaderEntryPoint>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) mesh_source: Option<Arc<str>>,
 }
 
 /// A unique, generation-bound lease for an acquired `CAMetalDrawable`.
@@ -143,20 +160,20 @@ impl Backend for Metal {
     type NativeShader = MetalShader;
     type NativeRasterPipeline = MetalRasterPipeline;
     type NativeComputePipeline = MetalComputePipeline;
-    type NativeMeshPipeline = ();
+    type NativeMeshPipeline = mesh::MetalMeshPipeline;
     type NativeRayPipeline = ();
     type NativePipelineCache = ();
-    type NativeAcceleration = ();
-    type NativeSparseAllocation = ();
-    type NativeQuerySet = ();
+    type NativeAcceleration = ray::MetalAcceleration;
+    type NativeSparseAllocation = sparse::MetalSparseAllocation;
+    type NativeQuerySet = query::MetalQuerySet;
     type NativeEncoder = MetalCommandEncoder;
     type NativeCompletion = submit::Completion;
     type NativeSurface = MetalSurface;
     type NativeSurfaceImage = MetalSurfaceImage;
     type NativeUncertainty = ();
     type Compute = compute::Compute;
-    type Mesh = api::Unavailable;
-    type Ray = api::Unavailable;
+    type Mesh = mesh::MetalMesh;
+    type Ray = ray::MetalRay;
     type Extras = api::Unavailable;
 }
 
@@ -206,6 +223,12 @@ impl InstanceBackend for Metal {
                     return Err(Error::Unsupported("requested Metal feature"));
                 }
                 let queue = native.newCommandQueue().ok_or(Error::OutOfMemory)?;
+                let compute_queue = native.newCommandQueue().ok_or(Error::OutOfMemory)?;
+                use objc2::runtime::NSObjectProtocol as _;
+                let ray_supported = native.respondsToSelector(objc2::sel!(supportsRaytracing))
+                    && native.supportsRaytracing();
+                let multi_queue_supported = native.respondsToSelector(objc2::sel!(newSharedEvent))
+                    && native.newSharedEvent().is_some();
                 let indirect_dispatch_supported = compute::supports_indirect_dispatch(&native);
                 let mut caps = DeviceCapabilities::default();
                 caps.limits.max_buffer_bytes = native.maxBufferLength() as u64;
@@ -231,34 +254,61 @@ impl InstanceBackend for Metal {
                 caps.limits.max_compute_workgroups = [65_535; 3];
                 caps.compute = true;
                 caps.storage_textures = true;
-                let caps = DeviceCapabilities {
-                    lanes: Arc::from([LaneInfo {
-                        id: LaneId {
-                            device: id,
-                            ordinal: 0,
+                let device = MetalDevice {
+                    _state: Arc::new(DeviceState {
+                        _device: native,
+                        _queue: queue,
+                        compute_queue,
+                        ray_supported,
+                        queue_gate: std::sync::Mutex::new(()),
+                        lane_frontier: std::sync::Mutex::new([None, None]),
+                        sparse_pending: std::sync::Mutex::new(None),
+                        submission_tracker: std::sync::Mutex::new(
+                            submit::SubmissionTracker::default(),
+                        ),
+                        indirect_dispatch_supported,
+                    }),
+                };
+                caps.mesh = mesh::mesh_supported(&device);
+                caps.ray_query = shader::ray_query_supported(&device);
+                caps.timestamp = <Metal as api::QueryBackend>::query_supported(
+                    &device,
+                    api::QueryKind::Timestamp,
+                );
+                caps.multi_queue = multi_queue_supported;
+                let graphics = LaneId {
+                    device: id,
+                    ordinal: 0,
+                };
+                let compute = LaneId {
+                    device: id,
+                    ordinal: 1,
+                };
+                let lanes: Vec<LaneInfo> = if multi_queue_supported {
+                    vec![
+                        LaneInfo {
+                            id: graphics,
+                            class: LaneClass::Graphics,
+                            routes: vec![(compute, WaitRoute::NativeGpuWait)],
                         },
+                        LaneInfo {
+                            id: compute,
+                            class: LaneClass::Compute,
+                            routes: vec![(graphics, WaitRoute::NativeGpuWait)],
+                        },
+                    ]
+                } else {
+                    vec![LaneInfo {
+                        id: graphics,
                         class: LaneClass::Graphics,
-                        routes: vec![(
-                            LaneId {
-                                device: id,
-                                ordinal: 0,
-                            },
-                            WaitRoute::SameQueue,
-                        )],
-                    }]),
+                        routes: Vec::new(),
+                    }]
+                };
+                let caps = DeviceCapabilities {
+                    lanes: Arc::from(lanes),
                     ..caps
                 };
-                Ok((
-                    MetalDevice {
-                        _state: Arc::new(DeviceState {
-                            _device: native,
-                            _queue: queue,
-                            queue_gate: std::sync::Mutex::new(()),
-                            indirect_dispatch_supported,
-                        }),
-                    },
-                    caps,
-                ))
+                Ok((device, caps))
             })();
             ready(result)
         }

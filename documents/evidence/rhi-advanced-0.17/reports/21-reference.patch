@@ -1,0 +1,61 @@
+diff --git "a/\344\270\264\346\227\266/\345\267\245\345\205\267/official-directx-graphics-samples/Samples/Desktop/D3D12ReservedResources/src/D3D12ReservedResources.cpp" "b/\344\270\264\346\227\266/\345\267\245\345\205\267/official-directx-graphics-samples/Samples/Desktop/D3D12ReservedResources/src-readback/D3D12ReservedResources.cpp"
+index cc13863..9f81220 100644
+--- "a/\344\270\264\346\227\266/\345\267\245\345\205\267/official-directx-graphics-samples/Samples/Desktop/D3D12ReservedResources/src/D3D12ReservedResources.cpp"
++++ "b/\344\270\264\346\227\266/\345\267\245\345\205\267/official-directx-graphics-samples/Samples/Desktop/D3D12ReservedResources/src-readback/D3D12ReservedResources.cpp"
+@@ -11,6 +11,10 @@
+ 
+ #include "stdafx.h"
+ #include "D3D12ReservedResources.h"
++#include <cstdio>
++static ComPtr<ID3D12Resource> captureBuffer;
++static D3D12_PLACED_SUBRESOURCE_FOOTPRINT captureFootprint = {};
++static bool captureDone = false;
+ 
+ extern "C" { __declspec(dllexport) extern const UINT D3D12SDKVersion = 618; }
+ extern "C" { __declspec(dllexport) extern const char* D3D12SDKPath = u8".\\D3D12\\"; }
+@@ -33,6 +37,7 @@ D3D12ReservedResources::D3D12ReservedResources(UINT width, UINT height, std::wst
+         mipLevels++;
+     }
+     m_activeMip = mipLevels - 1;    // Show the least detailed mip first.
++    char level[8] = {}; if (GetEnvironmentVariableA("REFERENCE_MIP", level, sizeof(level))) m_activeMip = atoi(level);
+     m_mips.resize(mipLevels);
+ }
+ 
+@@ -609,6 +614,15 @@ void D3D12ReservedResources::OnRender()
+         // Present the frame.
+         ThrowIfFailed(m_swapChain->Present(1, 0));
+ 
++        if (!captureDone && captureBuffer) {
++            WaitForGpu(); unsigned char* bytes = nullptr;
++            ThrowIfFailed(captureBuffer->Map(0, nullptr, reinterpret_cast<void**>(&bytes)));
++            FILE* file = nullptr; fopen_s(&file, "official-reserved-output.ppm", "wb"); if (!file) abort();
++            fprintf(file, "P6\n%u %u\n255\n", m_width, m_height);
++            for (UINT y = 0; y < m_height; ++y) { auto row = bytes + captureFootprint.Offset + y * captureFootprint.Footprint.RowPitch;
++                for (UINT x = 0; x < m_width; ++x) fwrite(row + x * 4, 1, 3, file); }
++            fclose(file); captureBuffer->Unmap(0, nullptr); captureDone = true;
++        }
+         MoveToNextFrame();
+     }
+ }
+@@ -694,7 +708,21 @@ void D3D12ReservedResources::PopulateCommandList()
+     m_commandList->DrawInstanced(4, 1, 0, 0);
+ 
+     // Indicate that the back buffer will now be used to present.
++    if (!captureDone && !captureBuffer) {
++        auto target = m_renderTargets[m_frameIndex].Get(); auto desc = target->GetDesc();
++        UINT rows = 0; UINT64 rowBytes = 0, total = 0;
++        m_device->GetCopyableFootprints(&desc, 0, 1, 0, &captureFootprint, &rows, &rowBytes, &total);
++        auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK); auto buffer = CD3DX12_RESOURCE_DESC::Buffer(total);
++        ThrowIfFailed(m_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&captureBuffer)));
++        auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(target, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
++        m_commandList->ResourceBarrier(1, &barrier);
++        auto dst = CD3DX12_TEXTURE_COPY_LOCATION(captureBuffer.Get(), captureFootprint); auto src = CD3DX12_TEXTURE_COPY_LOCATION(target, 0);
++        m_commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
++        barrier = CD3DX12_RESOURCE_BARRIER::Transition(target, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PRESENT);
++        m_commandList->ResourceBarrier(1, &barrier);
++    } else {
+     m_commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(m_renderTargets[m_frameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
++    }
+ 
+     ThrowIfFailed(m_commandList->Close());
+ }

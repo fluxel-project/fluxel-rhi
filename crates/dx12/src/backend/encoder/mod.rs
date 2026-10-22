@@ -26,6 +26,7 @@ use super::{
     Dx12RasterPipeline, Dx12Texture, native_error,
 };
 
+mod clear;
 mod coordinates;
 mod copy;
 mod core;

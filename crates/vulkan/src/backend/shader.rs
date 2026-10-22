@@ -18,6 +18,7 @@ struct ShaderState {
     device: Arc<DeviceState>,
     pub(super) module: vk::ShaderModule,
     pub(super) entries: Vec<api::ShaderEntryPoint>,
+    words: Vec<u32>,
 }
 impl Drop for ShaderState {
     fn drop(&mut self) {
@@ -30,6 +31,77 @@ impl VulkanShader {
     pub(super) fn module(&self) -> vk::ShaderModule {
         self.0.module
     }
+    pub(super) fn entries(&self) -> &[api::ShaderEntryPoint] {
+        &self.0.entries
+    }
+    pub(super) fn mesh_output_mode(&self, entry: &str) -> Option<u32> {
+        mesh_output_mode(&self.0.words, entry)
+    }
+}
+
+// OpEntryPoint names an execution ID; OpExecutionMode declares that ID's
+// output topology. Vulkan has no input-assembly topology state for mesh
+// pipelines, so the public descriptor must be checked against this mode.
+fn mesh_output_mode(words: &[u32], entry: &str) -> Option<u32> {
+    if words.len() < 5 || words[0] != 0x0723_0203 {
+        return None;
+    }
+    let mut selected = None;
+    let mut offset = 5;
+    while offset < words.len() {
+        let header = words[offset];
+        let count = (header >> 16) as usize;
+        if count == 0 || offset.checked_add(count)? > words.len() {
+            return None;
+        }
+        let instruction = &words[offset..offset + count];
+        if header & 0xffff == 15 && count >= 4 && instruction[1] == 5365 {
+            let name = instruction[3..]
+                .iter()
+                .flat_map(|word| word.to_le_bytes())
+                .take_while(|byte| *byte != 0)
+                .collect::<Vec<_>>();
+            if name == entry.as_bytes() {
+                selected = Some(instruction[2]);
+            }
+        }
+        offset += count;
+    }
+    let id = selected?;
+    offset = 5;
+    let mut mode = None;
+    while offset < words.len() {
+        let header = words[offset];
+        let count = (header >> 16) as usize;
+        if count == 0 || offset.checked_add(count)? > words.len() {
+            return None;
+        }
+        let instruction = &words[offset..offset + count];
+        if header & 0xffff == 16
+            && count >= 3
+            && instruction[1] == id
+            && matches!(instruction[2], 27 | 5269 | 5298)
+        {
+            if mode.replace(instruction[2]).is_some() {
+                return None;
+            }
+        }
+        offset += count;
+    }
+    mode
+}
+
+#[cfg(test)]
+mod topology_tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_selected_mesh_entry_topology() {
+        let bytes = include_bytes!("../../tests/assets/mesh/mesh.spv");
+        let words = read_spv(&mut Cursor::new(bytes.as_slice())).unwrap();
+        assert_eq!(mesh_output_mode(&words, "main"), Some(5298));
+        assert_eq!(mesh_output_mode(&words, "missing"), None);
+    }
 }
 
 pub(super) fn create(device: &VulkanDevice, desc: &api::ShaderDesc) -> Result<VulkanShader> {
@@ -37,6 +109,8 @@ pub(super) fn create(device: &VulkanDevice, desc: &api::ShaderDesc) -> Result<Vu
         match feature.as_str() {
             "shaderClipDistance" if device.0.shader_clip_distance => {}
             "shaderClipDistance" => return Err(Error::Unsupported("Vulkan shaderClipDistance")),
+            api::SHADER_FEATURE_RAY_QUERY if device.0.ray_support.query => {}
+            api::SHADER_FEATURE_RAY_QUERY => return Err(Error::Unsupported("Vulkan ray query")),
             _ => return Err(Error::Unsupported("Vulkan shader required feature")),
         }
     }
@@ -57,5 +131,6 @@ pub(super) fn create(device: &VulkanDevice, desc: &api::ShaderDesc) -> Result<Vu
         device: device.0.clone(),
         module,
         entries: desc.entries.clone(),
+        words,
     })))
 }

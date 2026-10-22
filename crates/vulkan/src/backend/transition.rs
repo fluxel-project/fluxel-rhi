@@ -14,12 +14,52 @@ pub(super) fn record(
     ops: &[api::ResourceTransition<'_, Vulkan>],
 ) -> Result<()> {
     for op in ops {
+        let (from, to) = match op {
+            api::ResourceTransition::Global { before, after }
+            | api::ResourceTransition::Acceleration { before, after, .. } => {
+                (before.stages, after.stages)
+            }
+            api::ResourceTransition::Buffer(b) => (b.usage.from.stages, b.usage.to.stages),
+            api::ResourceTransition::Texture(b) => (b.usage.from.stages, b.usage.to.stages),
+            api::ResourceTransition::Aliasing { .. } => {
+                (api::StageMask::EMPTY, api::StageMask::EMPTY)
+            }
+        };
+        let used = from | to;
+        if used != api::StageMask::ALL_COMMANDS {
+            if used.contains(api::StageMask::MESH) && encoder.device.mesh.is_none() {
+                return Err(Error::Unsupported("Vulkan mesh transition stage"));
+            }
+            if used.contains(api::StageMask::TASK)
+                && !encoder.device.mesh.as_ref().is_some_and(|m| m.task)
+            {
+                return Err(Error::Unsupported("Vulkan task transition stage"));
+            }
+            if used.contains(api::StageMask::ACCELERATION)
+                && !encoder.device.ray_support.acceleration
+            {
+                return Err(Error::Unsupported("Vulkan acceleration transition stage"));
+            }
+            if used.contains(api::StageMask::RAY) && !encoder.device.ray_support.pipeline {
+                return Err(Error::Unsupported("Vulkan ray transition stage"));
+            }
+        }
         match op {
             api::ResourceTransition::Global { before, after } => global(encoder, *before, *after)?,
             api::ResourceTransition::Buffer(barrier) => buffer(encoder, barrier)?,
             api::ResourceTransition::Texture(barrier) => texture(encoder, barrier)?,
-            api::ResourceTransition::Acceleration { .. }
-            | api::ResourceTransition::Aliasing { .. } => {
+            api::ResourceTransition::Acceleration {
+                target,
+                before,
+                after,
+            } => {
+                global(encoder, *before, *after)?;
+                // SAFETY: Core checked identity and the encoder retains the AS.
+                encoder
+                    .accelerations
+                    .push(unsafe { target.native_ref() }.clone());
+            }
+            api::ResourceTransition::Aliasing { .. } => {
                 return Err(Error::Unsupported("Vulkan resource transition"));
             }
         }
@@ -59,9 +99,20 @@ fn buffer(encoder: &mut VulkanEncoder, barrier: &api::BufferBarrier<'_, Vulkan>)
     }
     validate_buffer_use(buffer, barrier.usage.from)?;
     validate_buffer_use(buffer, barrier.usage.to)?;
+    let buffer_accesses = |mask: api::AccessMask| -> Result<vk::AccessFlags> {
+        let mut result = accesses(mask)?;
+        // Vulkan acceleration build inputs are shader reads; scratch memory
+        // uses acceleration-structure accesses. A buffer may have both usages.
+        if mask.contains(api::AccessMask::ACCEL_READ)
+            && buffer.0.usage.contains(api::BufferUsage::ACCEL_BUILD_INPUT)
+        {
+            result |= vk::AccessFlags::SHADER_READ;
+        }
+        Ok(result)
+    };
     let native = vk::BufferMemoryBarrier::default()
-        .src_access_mask(accesses(barrier.usage.from.accesses)?)
-        .dst_access_mask(accesses(barrier.usage.to.accesses)?)
+        .src_access_mask(buffer_accesses(barrier.usage.from.accesses)?)
+        .dst_access_mask(buffer_accesses(barrier.usage.to.accesses)?)
         .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .buffer(buffer.0.buffer)
@@ -69,7 +120,13 @@ fn buffer(encoder: &mut VulkanEncoder, barrier: &api::BufferBarrier<'_, Vulkan>)
         .size(range.end - range.start);
     pipeline_barrier(
         encoder,
-        stages(barrier.usage.from.stages)?,
+        if barrier.usage.from.stages == api::StageMask::EMPTY
+            && barrier.usage.from.accesses == api::AccessMask::EMPTY
+        {
+            vk::PipelineStageFlags::TOP_OF_PIPE
+        } else {
+            stages(barrier.usage.from.stages)?
+        },
         stages(barrier.usage.to.stages)?,
         &[],
         &[native],
@@ -127,8 +184,7 @@ fn texture(encoder: &mut VulkanEncoder, barrier: &api::TextureBarrier<'_, Vulkan
         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .image(texture.native())
         .subresource_range(range);
-    let source_stages = if old_layout == api::ImageLayout::Undefined
-        && barrier.usage.from.stages == api::StageMask::EMPTY
+    let source_stages = if barrier.usage.from.stages == api::StageMask::EMPTY
         && barrier.usage.from.accesses == api::AccessMask::EMPTY
     {
         vk::PipelineStageFlags::TOP_OF_PIPE
@@ -191,6 +247,22 @@ fn validate_buffer_use(buffer: &VulkanBuffer, uses: api::BufferUses) -> Result<(
         if accesses.contains(access) && !usage.contains(expected_usage) {
             return Err(Error::Unsupported("Vulkan buffer transition usage"));
         }
+    }
+    if accesses.contains(api::AccessMask::ACCEL_READ)
+        && !usage.contains(api::BufferUsage::ACCEL_BUILD_INPUT)
+        && !usage.contains(api::BufferUsage::ACCEL_SCRATCH)
+    {
+        return Err(Error::Unsupported("Vulkan acceleration buffer read usage"));
+    }
+    if accesses.contains(api::AccessMask::ACCEL_WRITE)
+        && !usage.contains(api::BufferUsage::ACCEL_SCRATCH)
+    {
+        return Err(Error::Unsupported("Vulkan acceleration buffer write usage"));
+    }
+    if accesses.contains(api::AccessMask::RAY_TRACING_SHADER_DATA_READ)
+        && !usage.contains(api::BufferUsage::SHADER_TABLE)
+    {
+        return Err(Error::Unsupported("Vulkan shader table buffer usage"));
     }
     require_stage(
         accesses,
@@ -359,7 +431,11 @@ fn stages(mask: api::StageMask) -> Result<vk::PipelineStageFlags> {
         | api::StageMask::VERTEX.0
         | api::StageMask::FRAGMENT.0
         | api::StageMask::COLOR_OUTPUT.0
-        | api::StageMask::COMPUTE.0;
+        | api::StageMask::COMPUTE.0
+        | api::StageMask::TASK.0
+        | api::StageMask::MESH.0
+        | api::StageMask::ACCELERATION.0
+        | api::StageMask::RAY.0;
     if mask.0 & !known != 0 {
         return Err(Error::Unsupported("Vulkan transition stage"));
     }
@@ -380,13 +456,27 @@ fn stages(mask: api::StageMask) -> Result<vk::PipelineStageFlags> {
         result |= vk::PipelineStageFlags::VERTEX_SHADER;
     }
     if mask.0 & api::StageMask::FRAGMENT.0 != 0 {
-        result |= vk::PipelineStageFlags::FRAGMENT_SHADER;
+        result |= vk::PipelineStageFlags::FRAGMENT_SHADER
+            | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+            | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS;
     }
     if mask.0 & api::StageMask::COLOR_OUTPUT.0 != 0 {
         result |= vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT;
     }
     if mask.0 & api::StageMask::COMPUTE.0 != 0 {
         result |= vk::PipelineStageFlags::COMPUTE_SHADER;
+    }
+    if mask.0 & api::StageMask::TASK.0 != 0 {
+        result |= vk::PipelineStageFlags::TASK_SHADER_EXT;
+    }
+    if mask.0 & api::StageMask::MESH.0 != 0 {
+        result |= vk::PipelineStageFlags::MESH_SHADER_EXT;
+    }
+    if mask.0 & api::StageMask::ACCELERATION.0 != 0 {
+        result |= vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR;
+    }
+    if mask.0 & api::StageMask::RAY.0 != 0 {
+        result |= vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR;
     }
     if result.is_empty() {
         return Err(Error::InvalidRange);
@@ -411,6 +501,9 @@ fn accesses(mask: api::AccessMask) -> Result<vk::AccessFlags> {
         | api::AccessMask::DEPTH_WRITE.0
         | api::AccessMask::STENCIL_READ.0
         | api::AccessMask::STENCIL_WRITE.0
+        | api::AccessMask::ACCEL_READ.0
+        | api::AccessMask::ACCEL_WRITE.0
+        | api::AccessMask::RAY_TRACING_SHADER_DATA_READ.0
         | api::AccessMask::QUERY_RESOLVE_WRITE.0;
     if mask.0 & !known != 0 && mask != api::AccessMask::ALL {
         return Err(Error::Unsupported("Vulkan transition access"));
@@ -469,6 +562,15 @@ fn accesses(mask: api::AccessMask) -> Result<vk::AccessFlags> {
     }
     if mask.0 & api::AccessMask::QUERY_RESOLVE_WRITE.0 != 0 {
         result |= vk::AccessFlags::TRANSFER_WRITE;
+    }
+    if mask.0 & api::AccessMask::ACCEL_READ.0 != 0 {
+        result |= vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR;
+    }
+    if mask.0 & api::AccessMask::ACCEL_WRITE.0 != 0 {
+        result |= vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR;
+    }
+    if mask.0 & api::AccessMask::RAY_TRACING_SHADER_DATA_READ.0 != 0 {
+        result |= vk::AccessFlags::SHADER_READ;
     }
     Ok(result)
 }

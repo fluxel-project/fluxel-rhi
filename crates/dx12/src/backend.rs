@@ -40,11 +40,15 @@ use windows::core::Interface;
 mod compute;
 mod descriptor;
 mod encoder;
+mod mesh;
 mod pipeline;
 mod query;
+mod queue;
+mod ray;
 mod readback;
 mod sampler;
 mod secondary;
+mod sparse;
 mod surface;
 mod texture;
 
@@ -70,10 +74,19 @@ impl Dx12 {
 pub struct Dx12Device(Arc<Dx12DeviceState>);
 struct Dx12DeviceState {
     pub(super) native: ID3D12Device,
+    /// Native interface is retained only on devices that report DXR tier 1.0.
+    /// Public capability remains disabled until the complete ray path exists.
+    pub(super) ray_device: Option<windows::Win32::Graphics::Direct3D12::ID3D12Device5>,
+    pub(super) ray_query_supported: bool,
+    pub(super) mesh_supported: bool,
+    pub(super) sparse_supported: bool,
+    pub(super) sparse_in_flight: Mutex<Vec<(u64, Vec<sparse::SparseRetained>)>>,
     pub(super) queue: ID3D12CommandQueue,
+    pub(super) multi_queue: queue::MultiQueueState,
     pub(super) fence: ID3D12Fence,
     pub(super) next_fence: AtomicU64,
     pub(super) queue_lock: Mutex<()>,
+    pub(super) query_submission_gate: Mutex<()>,
     /// Work remains here until the corresponding native fence proves GPU
     /// completion. A `u64::MAX` value is quarantined indeterminate work.
     pub(super) in_flight: Mutex<Vec<(u64, Vec<encoder::Dx12RecordedWork>)>>,
@@ -165,13 +178,15 @@ pub struct Dx12Buffer {
     pub(super) indirect_signatures: Arc<Mutex<HashMap<(bool, u32), ID3D12CommandSignature>>>,
 }
 macro_rules! native_arc { ($($name:ident),* $(,)?) => { $(#[derive(Clone)] pub struct $name(Arc<()>);)* }; }
-native_arc!(
-    Dx12MeshPipeline,
-    Dx12RayPipeline,
-    Dx12PipelineCache,
-    Dx12Acceleration,
-    Dx12Sparse
-);
+native_arc!(Dx12PipelineCache);
+#[derive(Clone)]
+pub struct Dx12Sparse(Arc<sparse::SparseAllocationState>);
+#[derive(Clone)]
+pub struct Dx12MeshPipeline(pub(crate) Arc<mesh::MeshPipelineState>);
+#[derive(Clone)]
+pub struct Dx12Acceleration(pub(crate) Arc<ray::AccelerationState>);
+#[derive(Clone)]
+pub struct Dx12RayPipeline(pub(crate) Arc<ray::pipeline::RayPipelineState>);
 #[derive(Clone)]
 pub struct Dx12QuerySet(pub(crate) Arc<query::QuerySetState>);
 #[derive(Clone)]
@@ -220,8 +235,8 @@ impl Backend for Dx12 {
     type NativeSurfaceImage = Dx12SurfaceImage;
     type NativeUncertainty = ();
     type Compute = compute::Compute;
-    type Mesh = api::Unavailable;
-    type Ray = api::Unavailable;
+    type Mesh = mesh::Mesh;
+    type Ray = ray::Ray;
     type Extras = encoder::RasterExtras;
 }
 
@@ -283,6 +298,15 @@ impl InstanceBackend for Dx12 {
                 .map_err(native_error)?;
             let native = native
                 .ok_or_else(|| Error::Backend("D3D12CreateDevice returned no device".into()))?;
+            let ray_device = ray::probe(&native);
+            let ray_supported = ray_device.is_some();
+            let ray_query_supported = ray::probe_inline(&native);
+            let mesh_supported = mesh::probe(&native);
+            let mut options =
+                windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS::default();
+            // SAFETY: this structure matches the feature query selector.
+            let sparse_supported = unsafe { native.CheckFeatureSupport(windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_D3D12_OPTIONS, &mut options as *mut _ as *mut _, std::mem::size_of_val(&options) as u32) }.is_ok()
+                && options.TiledResourcesTier != windows::Win32::Graphics::Direct3D12::D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED;
             let mut shader_model =
                 windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_SHADER_MODEL {
                     HighestShaderModel: windows::Win32::Graphics::Direct3D12::D3D_SHADER_MODEL_6_0,
@@ -331,6 +355,7 @@ impl InstanceBackend for Dx12 {
             let fence = unsafe { native.CreateFence::<ID3D12Fence>(0, D3D12_FENCE_FLAG_NONE) }
                 .map_err(native_error)?;
             let lane = LaneId { device, ordinal: 0 };
+            let compute_lane = LaneId { device, ordinal: 1 };
             let descriptors = descriptor::create_heaps(&native)?;
             let debug_info = if diagnostics {
                 let info: ID3D12InfoQueue1 = native.cast().map_err(native_error)?;
@@ -352,11 +377,18 @@ impl InstanceBackend for Dx12 {
             };
             Ok((
                 Dx12Device(Arc::new(Dx12DeviceState {
-                    native,
+                    native: native.clone(),
+                    ray_device,
+                    ray_query_supported,
+                    mesh_supported,
+                    sparse_supported,
+                    sparse_in_flight: Mutex::new(Vec::new()),
+                    multi_queue: queue::MultiQueueState::new(&native)?,
                     queue,
                     fence,
                     next_fence: AtomicU64::new(1),
                     queue_lock: Mutex::new(()),
+                    query_submission_gate: Mutex::new(()),
                     in_flight: Mutex::new(Vec::new()),
                     direct_commands: Arc::default(),
                     mip_blit_cache: Arc::default(),
@@ -366,11 +398,24 @@ impl InstanceBackend for Dx12 {
                     _debug_info: debug_info,
                 })),
                 DeviceCapabilities {
-                    lanes: Arc::from([LaneInfo {
-                        id: lane,
-                        class: LaneClass::Graphics,
-                        routes: vec![(lane, api::WaitRoute::SameQueue)],
-                    }]),
+                    lanes: Arc::from([
+                        LaneInfo {
+                            id: lane,
+                            class: LaneClass::Graphics,
+                            routes: vec![
+                                (lane, api::WaitRoute::SameQueue),
+                                (compute_lane, api::WaitRoute::NativeGpuWait),
+                            ],
+                        },
+                        LaneInfo {
+                            id: compute_lane,
+                            class: LaneClass::Compute,
+                            routes: vec![
+                                (compute_lane, api::WaitRoute::SameQueue),
+                                (lane, api::WaitRoute::NativeGpuWait),
+                            ],
+                        },
+                    ]),
                     limits: DeviceLimits {
                         max_bind_groups: 8,
                         max_bindings_per_group: 64,
@@ -390,10 +435,20 @@ impl InstanceBackend for Dx12 {
                         ..Default::default()
                     },
                     compute: true,
+                    multi_queue: true,
+                    mesh: mesh_supported,
+                    sparse: sparse_supported,
+                    ray: ray_supported,
+                    ray_query: ray_query_supported,
                     storage_textures: true,
+                    storage_buffers: true,
+                    timestamp: true,
+                    occlusion: true,
+                    pipeline_statistics: true,
                     push_constants: true,
                     indirect_draw: true,
                     multi_draw: true,
+                    multi_draw_count: true,
                     binding_arrays: descriptor_indexing,
                     runtime_sized_binding_arrays: descriptor_indexing,
                     nonuniform_sampled_texture_and_storage_buffer_indexing: descriptor_indexing,
@@ -408,7 +463,10 @@ impl InstanceBackend for Dx12 {
 }
 
 impl api::ResourceBackend for Dx12 {
-    fn buffer_support(_: &Dx12Device, desc: &api::BufferDesc) -> api::Support<api::BufferSupport> {
+    fn buffer_support(
+        device: &Dx12Device,
+        desc: &api::BufferDesc,
+    ) -> api::Support<api::BufferSupport> {
         if desc.size == 0 {
             api::Support::Unsupported("zero-sized buffers")
         } else if desc.size > (1 << 30) {
@@ -429,13 +487,25 @@ impl api::ResourceBackend for Dx12 {
         } else if !matches!(desc.memory, api::MemoryClass::Device) {
             api::Support::Unsupported("DX12 upload buffers")
         } else if desc.usage.0
+            & (api::BufferUsage::ACCEL_BUILD_INPUT.0
+                | api::BufferUsage::ACCEL_SCRATCH.0
+                | api::BufferUsage::SHADER_TABLE.0)
+            != 0
+            && device.0.ray_device.is_none()
+        {
+            api::Support::Unsupported("DX12 ray tracing tier 1.0")
+        } else if desc.usage.0
             & !(api::BufferUsage::VERTEX.0
                 | api::BufferUsage::INDEX.0
                 | api::BufferUsage::UNIFORM.0
+                | api::BufferUsage::STORAGE.0
                 | api::BufferUsage::COPY_DST.0
                 | api::BufferUsage::COPY_SRC.0
                 | api::BufferUsage::INDIRECT.0
-                | api::BufferUsage::QUERY_RESOLVE.0)
+                | api::BufferUsage::QUERY_RESOLVE.0
+                | api::BufferUsage::ACCEL_BUILD_INPUT.0
+                | api::BufferUsage::ACCEL_SCRATCH.0
+                | api::BufferUsage::SHADER_TABLE.0)
             != 0
         {
             api::Support::Unsupported("DX12 buffer usage")
@@ -489,7 +559,13 @@ impl api::ResourceBackend for Dx12 {
                 Quality: 0,
             },
             Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-            Flags: D3D12_RESOURCE_FLAG_NONE,
+            Flags: if desc.usage.contains(api::BufferUsage::ACCEL_SCRATCH)
+                || desc.usage.contains(api::BufferUsage::STORAGE)
+            {
+                windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+            } else {
+                D3D12_RESOURCE_FLAG_NONE
+            },
         };
         let mut resource = None;
         // SAFETY: heap and buffer descriptors are initialized local values;
@@ -555,7 +631,10 @@ impl api::ResourceBackend for Dx12 {
 impl api::ShaderBackend for Dx12 {
     type DirectFuture<'a> = Ready<Result<Dx12Shader>>;
     type NagaFuture<'a> = Ready<Result<Dx12Shader>>;
-    fn shader_route(_: &Dx12Device, desc: &api::ShaderDesc) -> api::ShaderRoute {
+    fn shader_route(device: &Dx12Device, desc: &api::ShaderDesc) -> api::ShaderRoute {
+        if !shader_features_supported(&desc.required_features, device.0.ray_query_supported) {
+            return api::ShaderRoute::Unsupported;
+        }
         match desc.format {
             api::ShaderFormat::Dxil => api::ShaderRoute::Direct(api::ShaderTarget {
                 format: api::ShaderFormat::Dxil,
@@ -585,6 +664,33 @@ impl api::ShaderBackend for Dx12 {
         _: &'a api::ShaderTarget,
     ) -> Self::NagaFuture<'a> {
         ready(Err(Error::Unsupported("DX12 Naga shader route")))
+    }
+}
+
+fn shader_features_supported(features: &[String], ray_query_supported: bool) -> bool {
+    features.iter().all(|feature| match feature.as_str() {
+        api::SHADER_FEATURE_RAY_QUERY => ray_query_supported,
+        "shaderClipDistance" => true,
+        _ => false,
+    })
+}
+
+#[cfg(test)]
+mod shader_feature_tests {
+    use super::*;
+    #[test]
+    fn validates_ray_query_and_known_legacy_feature() {
+        let ray = vec![api::SHADER_FEATURE_RAY_QUERY.to_owned()];
+        assert!(!shader_features_supported(&ray, false));
+        assert!(shader_features_supported(&ray, true));
+        assert!(shader_features_supported(
+            &["shaderClipDistance".into()],
+            false
+        ));
+        assert!(!shader_features_supported(
+            &["unknown-feature".into()],
+            true
+        ));
     }
 }
 

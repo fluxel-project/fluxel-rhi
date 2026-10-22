@@ -12,8 +12,13 @@
 use std::sync::Arc;
 
 mod allocation;
+pub(super) use allocation::allocate_with_address;
 pub(super) use allocation::format;
 use allocation::*;
+
+pub(super) fn sparse_image_usage(usage: api::TextureUsage) -> Result<vk::ImageUsageFlags> {
+    image_usage(usage, false)
+}
 
 use ash::vk;
 use fluxel_rhi_core::api::{self, Error, Result};
@@ -29,6 +34,27 @@ pub(super) struct BufferState {
     pub(super) size: u64,
     pub(super) usage: api::BufferUsage,
 }
+impl VulkanBuffer {
+    pub(super) fn device_address(&self) -> Result<vk::DeviceAddress> {
+        let address_usage = api::BufferUsage::ACCEL_BUILD_INPUT.0
+            | api::BufferUsage::ACCEL_SCRATCH.0
+            | api::BufferUsage::SHADER_TABLE.0;
+        if self.0.usage.0 & address_usage == 0 {
+            return Err(Error::Unsupported("Vulkan buffer has no device address"));
+        }
+        // SAFETY: address-capable usage and allocation were established when
+        // this live device-owned buffer was created.
+        let address = unsafe {
+            self.0.device.device.get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::default().buffer(self.0.buffer),
+            )
+        };
+        if address == 0 {
+            return Err(Error::InvalidState);
+        }
+        Ok(address)
+    }
+}
 impl Drop for BufferState {
     fn drop(&mut self) {
         // SAFETY: this Arc is the final owner of the buffer and its allocation;
@@ -41,7 +67,7 @@ impl Drop for BufferState {
 }
 
 #[derive(Clone)]
-pub struct VulkanTexture(Arc<TextureState>);
+pub struct VulkanTexture(pub(super) Arc<TextureState>);
 impl VulkanTexture {
     pub(super) fn native(&self) -> vk::Image {
         self.0.image
@@ -50,10 +76,11 @@ impl VulkanTexture {
         &self.0.desc
     }
 }
-struct TextureState {
-    device: Arc<DeviceState>,
+pub(super) struct TextureState {
+    pub(super) device: Arc<DeviceState>,
     pub(super) image: vk::Image,
-    memory: vk::DeviceMemory,
+    pub(super) memory: Option<vk::DeviceMemory>,
+    pub(super) sparse: Option<super::sparse::SparseTextureState>,
     pub(super) desc: api::TextureDesc,
 }
 impl Drop for TextureState {
@@ -62,7 +89,9 @@ impl Drop for TextureState {
         // VulkanTexture, so every view is destroyed before this allocation.
         unsafe {
             self.device.device.destroy_image(self.image, None);
-            self.device.device.free_memory(self.memory, None);
+            if let Some(memory) = self.memory {
+                self.device.device.free_memory(memory, None);
+            }
         }
     }
 }
@@ -98,12 +127,13 @@ impl VulkanTextureView {
     ) -> Option<[u32; 2]> {
         let view = &self.0.desc;
         let texture = &self.0.texture.0.desc;
-        if !(layers == 1 && view.dimension == api::TextureViewDimension::D2
+        if !(layers == 1
+            && (view.dimension == api::TextureViewDimension::D2
+                || view.dimension == api::TextureViewDimension::D2Array)
             || layers > 1 && view.dimension == api::TextureViewDimension::D2Array)
             || view.aspects != aspects
             || view.mips.end != view.mips.start.checked_add(1)?
-            || view.layers.start != 0
-            || view.layers.end < layers
+            || view.layers.end.checked_sub(view.layers.start)? < layers
             || !texture.usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
         {
             return None;
@@ -160,6 +190,15 @@ pub(super) fn buffer_support(
     }
     if desc.usage.0 & !SUPPORTED_BUFFER_USAGE != 0 {
         return api::Support::Unsupported("Vulkan buffer usage");
+    }
+    let ray_usage = api::BufferUsage::ACCEL_BUILD_INPUT.0
+        | api::BufferUsage::ACCEL_SCRATCH.0
+        | api::BufferUsage::SHADER_TABLE.0;
+    if desc.usage.0 & ray_usage != 0 && !device.0.ray_support.acceleration {
+        return api::Support::Unsupported("Vulkan acceleration structure buffers");
+    }
+    if desc.usage.contains(api::BufferUsage::SHADER_TABLE) && !device.0.ray_support.pipeline {
+        return api::Support::Unsupported("Vulkan ray pipeline buffers");
     }
     // SAFETY: DeviceState retains both instance and the selected physical
     // device for this read-only capability query.
@@ -323,7 +362,8 @@ pub(super) fn create_buffer(device: &VulkanDevice, desc: &api::BufferDesc) -> Re
     let buffer = unsafe { device.0.device.create_buffer(&info, None) }.map_err(vk_error)?;
     // SAFETY: `buffer` was just created on this device and is unpublished.
     let requirements = unsafe { device.0.device.get_buffer_memory_requirements(buffer) };
-    let memory = allocate(device, requirements, memory_flags(desc.memory))
+    let address = usage.contains(vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
+    let memory = allocate_with_address(device, requirements, memory_flags(desc.memory), address)
         .inspect_err(|_| unsafe { device.0.device.destroy_buffer(buffer, None) })?;
     // SAFETY: allocation requirements selected this memory type and size; both
     // handles are unpublished, so the error path can destroy them immediately.
@@ -385,7 +425,8 @@ pub(super) fn create_texture(
     Ok(VulkanTexture(Arc::new(TextureState {
         device: device.0.clone(),
         image,
-        memory,
+        memory: Some(memory),
+        sparse: None,
         desc: desc.clone(),
     })))
 }
@@ -449,8 +490,8 @@ pub(super) fn create_sampler(
     device: &VulkanDevice,
     desc: &api::SamplerDesc,
 ) -> Result<VulkanSampler> {
-    if desc.compare.is_some() || desc.border.is_some() {
-        return Err(Error::Unsupported("Vulkan comparison or border sampler"));
+    if desc.compare.is_some() {
+        return Err(Error::Unsupported("Vulkan comparison sampler"));
     }
     if desc.anisotropy == 0 || desc.anisotropy > 16 {
         return Err(Error::Unsupported(
@@ -474,13 +515,21 @@ pub(super) fn create_sampler(
             ));
         }
     }
-    if desc
+    let clamp_to_border = desc
         .address
         .iter()
-        .any(|mode| matches!(mode, api::AddressMode::ClampToBorder))
-    {
-        return Err(Error::Unsupported("Vulkan clamp-to-border sampler"));
-    }
+        .any(|mode| matches!(mode, api::AddressMode::ClampToBorder));
+    let border = match (clamp_to_border, desc.border) {
+        (true, Some(api::BorderColor::TransparentBlack)) => {
+            vk::BorderColor::FLOAT_TRANSPARENT_BLACK
+        }
+        (true, Some(api::BorderColor::OpaqueBlack)) => vk::BorderColor::FLOAT_OPAQUE_BLACK,
+        (true, Some(api::BorderColor::OpaqueWhite)) => vk::BorderColor::FLOAT_OPAQUE_WHITE,
+        (true, Some(api::BorderColor::ZeroInteger)) => vk::BorderColor::INT_TRANSPARENT_BLACK,
+        (true, None) => return Err(Error::InvalidState),
+        (false, Some(_)) => return Err(Error::InvalidState),
+        (false, None) => vk::BorderColor::FLOAT_TRANSPARENT_BLACK,
+    };
     let info = vk::SamplerCreateInfo::default()
         .mag_filter(filter(desc.mag_filter))
         .min_filter(filter(desc.min_filter))
@@ -495,7 +544,8 @@ pub(super) fn create_sampler(
         .min_lod(desc.lod.start)
         .max_lod(desc.lod.end)
         .max_anisotropy(f32::from(desc.anisotropy))
-        .anisotropy_enable(desc.anisotropy > 1);
+        .anisotropy_enable(desc.anisotropy > 1)
+        .border_color(border);
     // SAFETY: all fields come from the supported sampler descriptor and the
     // resulting handle is owned by the returned SamplerState.
     let sampler = unsafe { device.0.device.create_sampler(&info, None) }.map_err(vk_error)?;

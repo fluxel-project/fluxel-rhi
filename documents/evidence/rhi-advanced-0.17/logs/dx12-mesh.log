@@ -1,0 +1,122 @@
+warning: field `0` is never read
+   --> crates\dx12\src\backend.rs:178:93
+    |
+178 | macro_rules! native_arc { ($($name:ident),* $(,)?) => { $(#[derive(Clone)] pub struct $name(Arc<()>);)* }; }
+    |                                                                                             ^^^^^^^
+179 | native_arc!(Dx12PipelineCache);
+    | ------------------------------
+    | |           |
+    | |           field in this struct
+    | in this macro invocation
+    |
+    = help: consider removing this field
+    = note: `Dx12PipelineCache` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+    = note: this warning originates in the macro `native_arc` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: field `min_size` is never read
+   --> crates\dx12\src\backend\descriptor.rs:188:16
+    |
+184 | pub(crate) struct UniformBinding {
+    |                   -------------- field in this struct
+...
+188 |     pub(crate) min_size: u64,
+    |                ^^^^^^^^
+    |
+    = note: `UniformBinding` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: field `buffers` is never read
+   --> crates\dx12\src\backend\descriptor.rs:198:5
+    |
+196 | pub(crate) struct BindGroupState {
+    |                   -------------- field in this struct
+197 |     pub(crate) layout: Arc<BindGroupLayoutState>,
+198 |     buffers: Vec<Dx12Buffer>,
+    |     ^^^^^^^
+
+warning: methods `view_start` and `buffers` are never used
+   --> crates\dx12\src\backend\descriptor.rs:220:19
+    |
+219 | impl BindGroupState {
+    | ------------------- methods in this implementation
+220 |     pub(crate) fn view_start(&self) -> u32 {
+    |                   ^^^^^^^^^^
+...
+235 |     pub(crate) fn buffers(&self) -> &[Dx12Buffer] {
+    |                   ^^^^^^^
+
+warning: fields `allocator`, `buffers`, and `pipeline` are never read
+  --> crates\dx12\src\backend\encoder\secondary.rs:15:16
+   |
+14 | pub struct Dx12SecondaryWork {
+   |            ----------------- fields in this struct
+15 |     pub(crate) allocator: ID3D12CommandAllocator,
+   |                ^^^^^^^^^
+16 |     pub(crate) list: ID3D12GraphicsCommandList,
+17 |     pub(crate) buffers: Vec<Dx12Buffer>,
+   |                ^^^^^^^
+18 |     pub(crate) groups: Vec<Dx12BindGroup>,
+19 |     pub(crate) pipeline: Option<Dx12RasterPipeline>,
+   |                ^^^^^^^^
+   |
+   = note: `Dx12SecondaryWork` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: field `topology` is never read
+  --> crates\dx12\src\backend\pipeline\raster.rs:29:28
+   |
+25 | pub(crate) struct RasterPipelineState {
+   |                   ------------------- field in this struct
+...
+29 |     pub(in crate::backend) topology: D3D12_PRIMITIVE_TOPOLOGY_TYPE,
+   |                            ^^^^^^^^
+
+warning: fields `heap` and `native` are never read
+  --> crates\dx12\src\backend\sampler.rs:16:16
+   |
+15 | pub(crate) struct SamplerState {
+   |                   ------------ fields in this struct
+16 |     pub(super) heap: ID3D12DescriptorHeap,
+   |                ^^^^
+17 |     pub(super) cpu: D3D12_CPU_DESCRIPTOR_HANDLE,
+18 |     pub(super) native: D3D12_SAMPLER_DESC,
+   |                ^^^^^^
+
+warning: fields `texture` and `heaps` are never read
+  --> crates\dx12\src\backend\sparse.rs:16:16
+   |
+15 | pub(crate) struct SparseRetained {
+   |                   -------------- fields in this struct
+16 |     pub(crate) texture: Dx12Texture,
+   |                ^^^^^^^
+17 |     pub(crate) heaps: Vec<Dx12Sparse>,
+   |                ^^^^^
+
+warning: fields `srv_heap` and `uav_heap` are never read
+  --> crates\dx12\src\backend\texture.rs:22:16
+   |
+20 | pub(crate) struct TextureViewState {
+   |                   ---------------- fields in this struct
+21 |     pub(super) texture: Arc<TextureState>,
+22 |     pub(super) srv_heap: Option<ID3D12DescriptorHeap>,
+   |                ^^^^^^^^
+23 |     pub(super) srv: Option<D3D12_CPU_DESCRIPTOR_HANDLE>,
+24 |     pub(super) uav_heap: Option<ID3D12DescriptorHeap>,
+   |                ^^^^^^^^
+
+warning: `fluxel-rhi-dx12` (lib) generated 9 warnings
+   Compiling fluxel-rhi-dx12 v0.16.0 (E:\moyy\program\rust\fluxel\fluxel-rhi\crates\dx12)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.17s
+     Running tests\mesh_gpu.rs (target\debug\deps\mesh_gpu-4b7ac22871897291.exe)
+
+running 2 tests
+D3D12 [D3D12_MESSAGE_SEVERITY(2)/D3D12_MESSAGE_ID(821)]: ID3D12CommandList::ClearDepthStencilView: The clear values do not match those passed to resource creation. The clear operation is typically slower as a result; but will still clear to the desired value.
+D3D12 [D3D12_MESSAGE_SEVERITY(2)/D3D12_MESSAGE_ID(821)]: ID3D12CommandList::ClearDepthStencilView: The clear values do not match those passed to resource creation. The clear operation is typically slower as a result; but will still clear to the desired value.
+D3D12 [D3D12_MESSAGE_SEVERITY(2)/D3D12_MESSAGE_ID(820)]: ID3D12CommandList::ClearRenderTargetView: The clear values do not match those passed to resource creation. The clear operation is typically slower as a result; but will still clear to the desired value.
+D3D12 [D3D12_MESSAGE_SEVERITY(2)/D3D12_MESSAGE_ID(820)]: ID3D12CommandList::ClearRenderTargetView: The clear values do not match those passed to resource creation. The clear operation is typically slower as a result; but will still clear to the desired value.
+D3D12 [D3D12_MESSAGE_SEVERITY(2)/D3D12_MESSAGE_ID(820)]: ID3D12CommandList::ClearRenderTargetView: The clear values do not match those passed to resource creation. The clear operation is typically slower as a result; but will still clear to the desired value.
+D3D12 [D3D12_MESSAGE_SEVERITY(2)/D3D12_MESSAGE_ID(820)]: ID3D12CommandList::ClearRenderTargetView: The clear values do not match those passed to resource creation. The clear operation is typically slower as a result; but will still clear to the desired value.
+test mesh_depth_controls_readback ... ok
+test failed_storage_views_release_descriptor_reservations ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s
+

@@ -125,6 +125,8 @@ pub(super) struct FenceWaiter {
 struct FenceJob {
     completion: Completion,
     work: Vec<RecordedWork>,
+    sync: Vec<Arc<super::multi_queue::Timeline>>,
+    sparse: Vec<super::super::sparse::PreparedSparseBind>,
 }
 static FENCE_WAITER: OnceLock<std::result::Result<FenceWaiter, String>> = OnceLock::new();
 
@@ -153,7 +155,17 @@ pub(super) fn fence_waiter() -> Result<&'static FenceWaiter> {
                     if completed {
                         let _ = super::super::capture::write_completed(&job.work);
                     }
-                    drop(job.work);
+                    if completed {
+                        drop(job.work);
+                        drop(job.sync);
+                        drop(job.sparse);
+                    } else {
+                        // A failed wait does not prove the queue has retired native objects.
+                        std::mem::forget(job.work);
+                        std::mem::forget(job.sync);
+                        std::mem::forget(job.sparse);
+                        std::mem::forget(job.completion);
+                    }
                 }
             })
             .map(|_| FenceWaiter { sender })
@@ -167,9 +179,20 @@ pub(super) fn fence_waiter() -> Result<&'static FenceWaiter> {
 // The waiter is only a native completion observer and owner of already issued
 // command pools/uploads. It never schedules GPU commands or replays CPU work.
 pub(super) fn retain_until_fence(completion: Completion, work: Vec<RecordedWork>) {
+    retain_with_sync(completion, work, Vec::new(), Vec::new());
+}
+
+pub(super) fn retain_with_sync(
+    completion: Completion,
+    work: Vec<RecordedWork>,
+    sync: Vec<Arc<super::multi_queue::Timeline>>,
+    sparse: Vec<super::super::sparse::PreparedSparseBind>,
+) {
     let job = FenceJob {
         completion: completion.clone(),
         work,
+        sync,
+        sparse,
     };
     match fence_waiter() {
         Ok(waiter) => match waiter.sender.send(job) {
@@ -247,6 +270,8 @@ impl api::CompletionBackend for Vulkan {
             }
         };
         if let Err(error) = result {
+            // Queue submission failure is not retirement evidence for this fence.
+            std::mem::forget(completion);
             return FenceFuture::immediate(Err(vk_error(error)));
         }
         retain_until_fence(completion.clone(), Vec::new());

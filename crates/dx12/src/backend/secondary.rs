@@ -114,6 +114,7 @@ impl api::SecondaryBackend for Dx12 {
             buffers: encoder.buffers,
             groups: encoder.groups,
             pipeline: encoder.pipeline,
+            pipelines: encoder.pipelines,
             signature: encoder.signature,
             viewport: encoder.viewport,
             scissor: encoder.scissor,

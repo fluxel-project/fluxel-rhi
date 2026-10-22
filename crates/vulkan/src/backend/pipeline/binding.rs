@@ -71,6 +71,7 @@ enum Retained {
     Buffer(VulkanBuffer),
     View(VulkanTextureView),
     Sampler(VulkanSampler),
+    Acceleration(super::super::VulkanAcceleration),
 }
 impl Drop for Group {
     fn drop(&mut self) {
@@ -172,6 +173,81 @@ pub(crate) fn create_group(
             .ok_or(Error::InvalidState)?
             .ty;
         match (&entry.resource, ty) {
+            (
+                api::BindingResource::Acceleration(acceleration),
+                api::BindingType::AccelerationStructure,
+            ) => {
+                // SAFETY: Core checked the acceleration structure's device identity.
+                let native = unsafe { acceleration.native_ref() };
+                if !native.0.top {
+                    return Err(Error::InvalidState);
+                }
+                let handles = [native.0.native];
+                let mut acceleration_info =
+                    vk::WriteDescriptorSetAccelerationStructureKHR::default()
+                        .acceleration_structures(&handles);
+                let write = vk::WriteDescriptorSet::default()
+                    .dst_set(set)
+                    .dst_binding(entry.binding)
+                    .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                    .descriptor_count(1)
+                    .push_next(&mut acceleration_info);
+                // SAFETY: the private set, pNext and structure stay live through this call.
+                unsafe {
+                    device
+                        .0
+                        .device
+                        .update_descriptor_sets(std::slice::from_ref(&write), &[])
+                };
+                group._retained.push(Retained::Acceleration(native.clone()));
+            }
+            (
+                api::BindingResource::StorageBufferView { buffer, range, .. },
+                api::BindingType::StorageBuffer {
+                    dynamic_offset: false,
+                    min_size,
+                    ..
+                },
+            ) => {
+                // SAFETY: Core checked this buffer's device identity.
+                let native = unsafe { buffer.native_ref() };
+                let limits = unsafe {
+                    device
+                        .0
+                        .instance
+                        .instance
+                        .get_physical_device_properties(device.0.physical)
+                }
+                .limits;
+                if !native.0.usage.contains(api::BufferUsage::STORAGE)
+                    || range.start >= range.end
+                    || range.end > native.0.size
+                    || range.end - range.start < *min_size
+                    || range.start % limits.min_storage_buffer_offset_alignment.max(1) != 0
+                    || range.end - range.start > u64::from(limits.max_storage_buffer_range)
+                {
+                    return Err(Error::InvalidRange);
+                }
+                let info = vk::DescriptorBufferInfo {
+                    buffer: native.0.buffer,
+                    offset: range.start,
+                    range: range.end - range.start,
+                };
+                let write = vk::WriteDescriptorSet::default()
+                    .dst_set(set)
+                    .dst_binding(entry.binding)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(std::slice::from_ref(&info));
+                // SAFETY: descriptor data and private set are valid through this call;
+                // the retained buffer owns the native allocation thereafter.
+                unsafe {
+                    device
+                        .0
+                        .device
+                        .update_descriptor_sets(std::slice::from_ref(&write), &[])
+                };
+                group._retained.push(Retained::Buffer(native.clone()));
+            }
             (
                 api::BindingResource::Buffer { buffer, range },
                 api::BindingType::UniformBuffer {
@@ -433,6 +509,11 @@ fn dtype(t: &api::BindingType) -> Result<vk::DescriptorType> {
             vk::DescriptorType::STORAGE_IMAGE
         }
         api::BindingType::Sampler { .. } => vk::DescriptorType::SAMPLER,
+        api::BindingType::StorageBuffer {
+            dynamic_offset: false,
+            ..
+        } => vk::DescriptorType::STORAGE_BUFFER,
+        api::BindingType::AccelerationStructure => vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
         _ => return Err(Error::Unsupported("Vulkan binding type")),
     })
 }

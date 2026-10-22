@@ -21,6 +21,7 @@ pub(super) struct FrameCapture {
 
 pub struct VulkanEncoder {
     pub(super) owner: VulkanDevice,
+    pub(super) lane: fluxel_rhi_core::api::LaneId,
     pub(super) device: Arc<DeviceState>,
     pub(super) pool: vk::CommandPool,
     pub(super) command: vk::CommandBuffer,
@@ -33,6 +34,7 @@ pub struct VulkanEncoder {
     /// The dynamic-rendering view mask of the active primary pass. Pipelines
     /// carry their own creation-time mask and must match it before binding.
     pub(super) raster_multiview_mask: Option<u32>,
+    pub(super) raster_signature: Option<(vk::Format, Option<vk::Format>, u32)>,
     pub(super) raster_layout_state: Option<super::pipeline::VulkanPipelineLayout>,
     pub(super) raster_push_constants: Option<super::pipeline::PushConstants>,
     /// Set only for a primary dynamic-rendering pass that accepts inherited
@@ -42,6 +44,11 @@ pub struct VulkanEncoder {
     pub(super) compute_layout: Option<vk::PipelineLayout>,
     pub(super) compute_layout_state: Option<super::pipeline::VulkanPipelineLayout>,
     pub(super) compute_push_constants: Option<super::pipeline::PushConstants>,
+    pub(super) mesh_active: Option<bool>,
+    pub(super) mesh_pipelines: Vec<super::VulkanMeshPipeline>,
+    pub(super) accelerations: Vec<super::VulkanAcceleration>,
+    pub(super) ray_pipelines: Vec<super::VulkanRayPipeline>,
+    pub(super) ray_layout_state: Option<super::pipeline::VulkanPipelineLayout>,
     pub(super) pipelines: Vec<VulkanRasterPipeline>,
     pub(super) compute_pipelines: Vec<VulkanComputePipeline>,
     pub(super) groups: Vec<VulkanBindGroup>,
@@ -51,10 +58,12 @@ pub struct VulkanEncoder {
     pub(super) textures: Vec<VulkanTexture>,
     pub(super) queries: Vec<super::VulkanQuerySet>,
     pub(super) active_occlusion: Option<(super::VulkanQuerySet, u32)>,
+    pub(super) active_statistics: Option<(super::VulkanQuerySet, u32)>,
+    pub(super) query_ops: Vec<super::query::QueryOp>,
     pub(super) secondary: Vec<super::VulkanSecondaryWork>,
 }
 impl VulkanEncoder {
-    pub(super) fn new(device: &VulkanDevice) -> Result<Self> {
+    pub(super) fn new(device: &VulkanDevice, lane: fluxel_rhi_core::api::LaneId) -> Result<Self> {
         let info = vk::CommandPoolCreateInfo::default()
             .queue_family_index(device.0.graphics_family)
             .flags(vk::CommandPoolCreateFlags::TRANSIENT);
@@ -88,6 +97,7 @@ impl VulkanEncoder {
         };
         Ok(Self {
             owner: device.clone(),
+            lane,
             device: device.0.clone(),
             pool,
             command,
@@ -98,12 +108,18 @@ impl VulkanEncoder {
             raster_layout: None,
             raster_index_bound: false,
             raster_multiview_mask: None,
+            raster_signature: None,
             raster_layout_state: None,
             raster_push_constants: None,
             secondary_signature: None,
             compute_layout: None,
             compute_layout_state: None,
             compute_push_constants: None,
+            mesh_active: None,
+            mesh_pipelines: Vec::new(),
+            accelerations: Vec::new(),
+            ray_pipelines: Vec::new(),
+            ray_layout_state: None,
             pipelines: Vec::new(),
             compute_pipelines: Vec::new(),
             groups: Vec::new(),
@@ -113,6 +129,8 @@ impl VulkanEncoder {
             textures: Vec::new(),
             queries: Vec::new(),
             active_occlusion: None,
+            active_statistics: None,
+            query_ops: Vec::new(),
             secondary: Vec::new(),
         })
     }

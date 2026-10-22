@@ -15,6 +15,7 @@ use windows::Win32::Graphics::{Direct3D12::*, Dxgi::Common::*};
 pub(crate) struct TextureState {
     pub(super) resource: ID3D12Resource,
     pub(super) desc: api::TextureDesc,
+    pub(super) sparse: Option<super::sparse::SparseTextureState>,
 }
 pub(crate) struct TextureViewState {
     pub(super) texture: Arc<TextureState>,
@@ -137,6 +138,7 @@ pub(crate) fn create(dv: &Dx12Device, d: &api::TextureDesc) -> Result<Dx12Textur
     Ok(Dx12Texture(Arc::new(TextureState {
         resource: resource.ok_or(Error::OutOfMemory)?,
         desc: d.clone(),
+        sparse: None,
     })))
 }
 

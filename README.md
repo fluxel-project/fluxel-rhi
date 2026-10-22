@@ -44,6 +44,34 @@ shader lowering, state adaptation, and execution lifetimes.
 | Browser WebGL2 | `webgl2` | Immediate browser-thread execution | WGSL lowered to GLSL ES |
 | Metal / Apple targets | `metal` | Deferred native command buffers | WGSL lowered to MSL, or Metal source |
 
+## GPU feature support
+
+The table describes the current **public RHI route**, not every feature of the
+underlying graphics API. `Device::capabilities()`, `Device::queries()`, and
+descriptor support checks decide whether an operation is available on a
+particular device. A listed route can still reject unsupported formats,
+topologies, shader stages, queue plans, or device tiers.
+
+| Backend | Main implemented GPU features | Advanced feature limits |
+| --- | --- | --- |
+| DX12 | Graphics and compute, indirect drawing, occlusion/timestamp/pipeline-statistics queries, secondary recording, and device-gated descriptor indexing and multiview | Device-gated ray pipelines and inline ray queries, mesh shaders, sparse textures, graphics/compute queues, GPU-count multi-draw, and standalone texture clear |
+| Vulkan | Graphics and compute, indirect drawing, occlusion/timestamp/pipeline-statistics queries, secondary recording, and device-gated descriptor indexing and multiview | Device-gated ray pipelines and inline ray queries, mesh shaders, sparse textures, graphics/compute queues, GPU-count multi-draw, and standalone texture clear |
+| Metal | Graphics and compute, restricted standalone texture clear; device-gated mesh dispatch, triangle acceleration structures with compute ray queries, Apple-family timestamp sampling, and two native command queues | Multi-queue waits are limited to one packet and four waits per recording; cross-packet tokens are rejected. Mesh task/object payload, DXR-style ray pipeline, exact pipeline-statistics layout, sparse mapping, and GPU-count multi-draw are not advertised. Apple-target compilation and static checks only; no Apple GPU runtime acceptance |
+| Browser WebGPU | Graphics and compute, device-gated indirect drawing, and occlusion queries | The new ray, mesh, sparse, multi-queue, timestamp/statistics, GPU-count, and standalone-clear routes are not implemented here |
+| Desktop GL / GLES | Immediate graphics; compute, indirect drawing, and occlusion depend on the actual context and profile | The new advanced routes are not implemented in the public GL backend |
+| Browser WebGL2 | Immediate graphics through the browser owner | No native compute or new advanced route is exposed |
+
+### Compressed texture formats
+
+**No compressed texture format is currently usable through the public RHI
+texture creation, upload, and sampling path.** `TextureFormat` names the BC1–BC7,
+ETC2/EAC, and ASTC families, and the private GL provider can discover native
+compressed-format extensions. The current Core-to-backend texture constructors
+do not lower those formats to a complete public route on DX12, Vulkan, Metal,
+WebGPU, desktop GL, GLES, or WebGL2. They return an unsupported result at
+creation or format support query. API or GPU support for a compression family
+therefore does not imply this RHI implements it.
+
 GL implements `ImmediateBackend`; it does not expose deferred queue submission.
 WebGL2 does not provide native multithreaded command recording. WebGPU records
 native commands even though browser objects belong to one thread. Separate
@@ -63,7 +91,8 @@ available for advanced execution. See the [execution contract](documents/design-
 Support queries describe implemented native routes. An example may select an
 explicit visual fallback for an unavailable feature; that does not enable the
 feature in the backend. Metal has no completed Apple GPU or visual acceptance.
-See the [conformance matrix](documents/conformance-matrix.md),
+See the [advanced candidate evidence](documents/evidence/rhi-advanced-0.17/README.md),
+[conformance matrix](documents/conformance-matrix.md),
 [testing guide](documents/testing.md), and
 [Android evidence](documents/evidence/android-2026-10-20/README.md) for the scope
 of recorded verification. A tested device does not establish support for every
@@ -79,8 +108,10 @@ cargo test -p fluxel-rhi-core --lib
 cargo run -p fluxel-rhi --no-default-features --features examples,vulkan --example 01_triangle -- --backend vulkan --frames 2
 ```
 
-The 15 [numbered examples](crates/rhi/examples/README.md) exercise shared scene
-workloads through the public API. Their instructions cover native backend
+The 23 [numbered examples](crates/rhi/examples/README.md) exercise scene
+workloads through the public API. Examples 01–15 share the WGSL baseline;
+16–23 exercise native advanced paths on DX12 and Vulkan. Their instructions
+cover native backend
 selection, browser entries, Android execution, and explicit feature fallbacks.
 `--frames 2` ends the native run after two frames. Browser capture entries may
 also intentionally stop after exporting a finite set of frames.

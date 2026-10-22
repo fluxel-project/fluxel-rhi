@@ -489,6 +489,64 @@ pub(crate) mod type_contract_tests {
         pass.finish().unwrap();
     }
     #[test]
+    fn clear_texture_rejects_invalid_shape_before_backend() {
+        let id = DeviceId::allocate().unwrap();
+        let other = DeviceId::allocate().unwrap();
+        // SAFETY: each mock object is paired with its allocated device identity.
+        let device = unsafe {
+            Device::<NativeShared>::from_native(id, Arc::new(()), DeviceCapabilities::default())
+        };
+        let texture = unsafe { Texture::<NativeShared>::from_native(id, Arc::new(())) };
+        let foreign = unsafe { Texture::<NativeShared>::from_native(other, Arc::new(())) };
+        let mut encoder = CommandEncoder::new(
+            &device,
+            LaneId {
+                device: id,
+                ordinal: 0,
+            },
+        )
+        .unwrap();
+        let color = TextureClearValue::Color(ClearColor::Float([0.0; 4]));
+        assert!(matches!(
+            encoder.clear_texture(&foreign, 0..1, 0..1, color),
+            Err(Error::WrongDevice)
+        ));
+        assert!(matches!(
+            encoder.clear_texture(&texture, 0..0, 0..1, color),
+            Err(Error::InvalidRange)
+        ));
+        assert!(matches!(
+            encoder.clear_texture(&texture, 0..1, 1..1, color),
+            Err(Error::InvalidRange)
+        ));
+        assert!(matches!(
+            encoder.clear_texture(&texture, 0..1, 0..1, TextureClearValue::Depth(f32::NAN)),
+            Err(Error::InvalidRange)
+        ));
+        assert!(matches!(
+            encoder.clear_texture(&texture, 0..1, 0..1, TextureClearValue::Depth(1.1)),
+            Err(Error::InvalidRange)
+        ));
+        assert!(matches!(
+            encoder.clear_texture(&texture, 0..1, 0..1, color),
+            Err(Error::Unsupported(_))
+        ));
+    }
+    #[test]
+    fn native_recording_can_be_borrowed_without_consumption() {
+        let device = DeviceId::allocate().unwrap();
+        let work = RecordedWork::<NativeShared> {
+            device,
+            lane: LaneId { device, ordinal: 0 },
+            native: (),
+        };
+        // SAFETY: this mock backend only inspects its own work and retains nothing.
+        assert_eq!(unsafe { work.native_ref() }, &());
+        assert_eq!(work.device(), device);
+        // SAFETY: the mock backend consumes its recording exactly once.
+        assert_eq!(unsafe { work.into_native() }, ());
+    }
+    #[test]
     fn deferred_binding_rejects_wrong_lane_and_foreign_tail() {
         let device_id = DeviceId::allocate().unwrap();
         let other_id = DeviceId::allocate().unwrap();

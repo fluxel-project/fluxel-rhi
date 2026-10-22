@@ -86,6 +86,22 @@ pub(crate) fn create_layout(
     device: &VulkanDevice,
     desc: &api::PipelineLayoutDesc<'_, super::super::Vulkan>,
 ) -> Result<VulkanPipelineLayout> {
+    if desc
+        .push_constants
+        .iter()
+        .any(|r| r.stages.iter().any(|s| matches!(s, api::ShaderStage::Mesh)))
+        && device.0.mesh.is_none()
+    {
+        return Err(Error::Unsupported("Vulkan mesh shader"));
+    }
+    if desc
+        .push_constants
+        .iter()
+        .any(|r| r.stages.iter().any(|s| matches!(s, api::ShaderStage::Task)))
+        && !device.0.mesh.as_ref().is_some_and(|m| m.task)
+    {
+        return Err(Error::Unsupported("Vulkan task shader"));
+    }
     // SAFETY: DeviceState retains the VkInstance owning `physical`; querying
     // immutable physical-device properties has no resource lifetime effect.
     let limits = unsafe {
@@ -161,7 +177,14 @@ fn shader_stages(stages: &[api::ShaderStage]) -> Result<api::StageMask> {
             api::ShaderStage::Vertex => api::StageMask::VERTEX.0,
             api::ShaderStage::Fragment => api::StageMask::FRAGMENT.0,
             api::ShaderStage::Compute => api::StageMask::COMPUTE.0,
-            _ => return Err(Error::Unsupported("Vulkan push-constant shader stage")),
+            api::ShaderStage::Task => api::StageMask::TASK.0,
+            api::ShaderStage::Mesh => api::StageMask::MESH.0,
+            api::ShaderStage::RayGeneration
+            | api::ShaderStage::AnyHit
+            | api::ShaderStage::ClosestHit
+            | api::ShaderStage::Miss
+            | api::ShaderStage::Intersection
+            | api::ShaderStage::Callable => api::StageMask::RAY.0,
         };
     }
     if mask == 0 {
@@ -170,8 +193,12 @@ fn shader_stages(stages: &[api::ShaderStage]) -> Result<api::StageMask> {
     Ok(api::StageMask(mask))
 }
 fn push_stages(stages: api::StageMask) -> Result<vk::ShaderStageFlags> {
-    let supported =
-        api::StageMask::VERTEX.0 | api::StageMask::FRAGMENT.0 | api::StageMask::COMPUTE.0;
+    let supported = api::StageMask::VERTEX.0
+        | api::StageMask::FRAGMENT.0
+        | api::StageMask::COMPUTE.0
+        | api::StageMask::TASK.0
+        | api::StageMask::MESH.0
+        | api::StageMask::RAY.0;
     if stages.0 == 0 || stages.0 & !supported != 0 {
         return Err(Error::Unsupported("Vulkan push-constant stage mask"));
     }
@@ -184,6 +211,20 @@ fn push_stages(stages: api::StageMask) -> Result<vk::ShaderStageFlags> {
     }
     if stages.0 & api::StageMask::COMPUTE.0 != 0 {
         native |= vk::ShaderStageFlags::COMPUTE;
+    }
+    if stages.0 & api::StageMask::TASK.0 != 0 {
+        native |= vk::ShaderStageFlags::TASK_EXT;
+    }
+    if stages.0 & api::StageMask::MESH.0 != 0 {
+        native |= vk::ShaderStageFlags::MESH_EXT;
+    }
+    if stages.0 & api::StageMask::RAY.0 != 0 {
+        native |= vk::ShaderStageFlags::RAYGEN_KHR
+            | vk::ShaderStageFlags::ANY_HIT_KHR
+            | vk::ShaderStageFlags::CLOSEST_HIT_KHR
+            | vk::ShaderStageFlags::MISS_KHR
+            | vk::ShaderStageFlags::INTERSECTION_KHR
+            | vk::ShaderStageFlags::CALLABLE_KHR;
     }
     Ok(native)
 }

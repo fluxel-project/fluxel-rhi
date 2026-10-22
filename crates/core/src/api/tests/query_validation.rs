@@ -63,6 +63,46 @@ fn encoder(device: &Device<NativeShared>) -> CommandEncoder<NativeShared> {
     .unwrap()
 }
 #[test]
+fn query_result_layout_and_frequency_are_explicit() {
+    assert_eq!(QueryKind::Timestamp.result_stride(), 8);
+    assert_eq!(QueryKind::Occlusion.result_stride(), 8);
+    assert_eq!(QueryKind::PipelineStatistics.result_stride(), 88);
+    assert_eq!(std::mem::size_of::<PipelineStatistics>(), 88);
+    let device = device();
+    let lane = LaneId {
+        device: device.id(),
+        ordinal: 0,
+    };
+    assert_eq!(
+        device
+            .queries(QueryKind::Timestamp)
+            .unwrap()
+            .timestamp_frequency(lane),
+        None
+    );
+}
+#[test]
+fn timestamp_result_format_preserves_zero_and_detects_reserved_slot() {
+    let device = device();
+    let timestamps = device.queries(QueryKind::Timestamp).unwrap();
+    let default = timestamps.timestamp_result_format().unwrap();
+    assert_eq!(default.invalid_value, None);
+    assert_eq!(default.decode(0), Ok(0));
+    assert_eq!(default.decode(u64::MAX), Ok(u64::MAX));
+    let reserved = TimestampResultFormat {
+        invalid_value: Some(u64::MAX),
+    };
+    assert_eq!(reserved.decode(0), Ok(0));
+    assert_eq!(reserved.decode(u64::MAX), Err(InvalidTimestampSample));
+    assert_eq!(
+        device
+            .queries(QueryKind::Occlusion)
+            .unwrap()
+            .timestamp_result_format(),
+        None
+    );
+}
+#[test]
 fn query_domain_and_bounds_are_checked_before_backend() {
     CALLS.with(|c| c.set(0));
     let device = device();

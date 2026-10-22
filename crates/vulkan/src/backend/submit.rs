@@ -21,6 +21,7 @@ impl RecordedWork {
 }
 
 mod completion;
+pub(super) mod multi_queue;
 pub(super) use completion::Completion;
 use completion::{fence_waiter, retain_until_fence};
 
@@ -40,8 +41,14 @@ impl Drop for PendingPresentSignal {
 impl DeferredBackend for Vulkan {
     type NativeRecordedWork = RecordedWork;
 
-    fn finish_encoder(encoder: VulkanEncoder, _: api::LaneId) -> Result<RecordedWork> {
-        if encoder.raster {
+    fn finish_encoder(encoder: VulkanEncoder, lane: api::LaneId) -> Result<RecordedWork> {
+        if encoder.lane != lane {
+            return Err(Error::WrongLane);
+        }
+        if encoder.raster
+            || encoder.active_occlusion.is_some()
+            || encoder.active_statistics.is_some()
+        {
             return Err(Error::InvalidState);
         }
         // SAFETY: VulkanEncoder exclusively owns its begun command buffer and
@@ -54,6 +61,42 @@ impl DeferredBackend for Vulkan {
         device: &VulkanDevice,
         packet: api::SubmitPacket<Self>,
     ) -> SubmitOutcome<Self> {
+        if (device.0.sparse_image && device.0.timeline_semaphore)
+            || packet
+                .plan
+                .steps()
+                .iter()
+                .any(|step| step.lane.ordinal != 0 || step.kind == api::StepKind::SparseBind)
+        {
+            use api::MultiQueueBackend;
+            // SAFETY: Core has validated the packet and its compiled dependencies.
+            return match unsafe {
+                Vulkan::submit_multi(
+                    device,
+                    api::MultiQueuePacket {
+                        work: packet,
+                        signals: Vec::new(),
+                        waits: Vec::new(),
+                    },
+                )
+            } {
+                api::MultiQueueSubmitOutcome::Accepted(receipt) => {
+                    SubmitOutcome::Accepted(receipt.work)
+                }
+                api::MultiQueueSubmitOutcome::Rejected { error, packet } => {
+                    SubmitOutcome::Rejected {
+                        error,
+                        work: RetryableSubmit::Fresh(packet.work),
+                    }
+                }
+                api::MultiQueueSubmitOutcome::Indeterminate { error, uncertain } => {
+                    SubmitOutcome::Indeterminate { error, uncertain }
+                }
+                api::MultiQueueSubmitOutcome::PartiallyAccepted { .. } => {
+                    unreachable!("Vulkan multi-queue has no partial result")
+                }
+            };
+        }
         // SAFETY: Core transfers each recorded work item exactly once after
         // validating the packet's backend, device and lane identities.
         // A Vulkan queue is already an ordered executor.  The Core plan has
@@ -87,6 +130,31 @@ impl DeferredBackend for Vulkan {
         if !plan_shape {
             return SubmitOutcome::Rejected {
                 error: Error::Unsupported("Vulkan single graphics-queue submission plan"),
+                work: RetryableSubmit::Fresh(packet),
+            };
+        }
+        let _submit = device
+            .0
+            .submit_gate
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Err(error) = super::query::validate_ops(packet.steps.iter().flat_map(|step| {
+            match &step.payload {
+                StepPayload::Commands(work) => work.as_slice(),
+                _ => &[],
+            }
+            .iter()
+            .flat_map(|record| {
+                // SAFETY: Core validated the packet's backend and device identity.
+                unsafe { record.native_ref() }
+                    .encoder
+                    .query_ops
+                    .iter()
+                    .map(|op| (0, op))
+            })
+        })) {
+            return SubmitOutcome::Rejected {
+                error,
                 work: RetryableSubmit::Fresh(packet),
             };
         }
@@ -186,13 +254,10 @@ impl DeferredBackend for Vulkan {
         // so Surface present and wait-idle retain their narrow external
         // synchronization boundary without allowing another plan to splice
         // commands between this plan's explicit transitions.
-        let _submit = device
-            .0
-            .submit_gate
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-
         let indeterminate = |error, issued: Vec<RecordedWork>| {
+            for record in &issued {
+                super::query::invalidate_ops(&record.encoder.query_ops, 0);
+            }
             // vkQueueSubmit may have crossed the driver boundary even on an
             // error.  Keep command pools and their uploads alive unless an
             // externally synchronized queue-idle probe proves retirement.
@@ -251,6 +316,9 @@ impl DeferredBackend for Vulkan {
                         };
                         if let Err(error) = result {
                             return indeterminate(vk_error(error), issued);
+                        }
+                        for record in &issued[start..] {
+                            super::query::commit_ops(&record.encoder.query_ops, 0);
                         }
                     }
                     accepted.push(id);
@@ -331,6 +399,7 @@ impl DeferredBackend for Vulkan {
                     }
                 };
                 if let Err(error) = result {
+                    std::mem::forget(completion);
                     return indeterminate(vk_error(error), issued);
                 }
                 checkpoints.push(api::Checkpoint {
@@ -366,6 +435,7 @@ impl DeferredBackend for Vulkan {
             }
         };
         if let Err(error) = terminal {
+            std::mem::forget(terminal_fence);
             return indeterminate(vk_error(error), issued);
         }
         retain_until_fence(terminal_fence.clone(), issued);

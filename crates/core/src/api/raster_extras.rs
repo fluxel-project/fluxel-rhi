@@ -141,6 +141,9 @@ impl<B: Backend> RasterExtras<'_, B> {
         }
         pass.call(|e| B::Extras::multi_draw(e, &args.native, offset, count, stride, indexed))
     }
+    /// Draws up to `max` commands using the GPU-written count. The caller must
+    /// transition both argument and count buffers to `INDIRECT_READ` before the
+    /// pass; this also applies when both ranges belong to the same buffer.
     pub fn multi_draw_count(
         &self,
         pass: &mut RasterPass<'_, B>,

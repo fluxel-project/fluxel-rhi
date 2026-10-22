@@ -91,16 +91,58 @@ impl api::RasterExtrasOps<Vulkan> for RasterExtras {
     }
 
     fn multi_draw_count(
-        _: &mut VulkanEncoder,
-        _: &VulkanBuffer,
-        _: u64,
-        _: &VulkanBuffer,
-        _: u64,
-        _: u32,
-        _: u32,
-        _: bool,
+        encoder: &mut VulkanEncoder,
+        arguments: &VulkanBuffer,
+        offset: u64,
+        counts: &VulkanBuffer,
+        count_offset: u64,
+        max: u32,
+        stride: u32,
+        indexed: bool,
     ) -> Result<()> {
-        Err(Error::Unsupported("Vulkan multi draw count"))
+        if !encoder.device.draw_indirect_count {
+            return Err(Error::Unsupported("Vulkan draw indirect count"));
+        }
+        if !counts.0.usage.contains(api::BufferUsage::INDIRECT)
+            || count_offset % 4 != 0
+            || count_offset
+                .checked_add(4)
+                .is_none_or(|end| end > counts.0.size)
+        {
+            return Err(Error::InvalidRange);
+        }
+        validate_indirect(encoder, arguments, offset, max, stride, indexed, true)?;
+        if max == 0 {
+            return Ok(());
+        }
+        // SAFETY: active pipeline, index state, usage, offsets, stride, max,
+        // argument extent and count extent were checked; both buffers are retained.
+        unsafe {
+            if indexed {
+                encoder.device.device.cmd_draw_indexed_indirect_count(
+                    encoder.command,
+                    arguments.0.buffer,
+                    offset,
+                    counts.0.buffer,
+                    count_offset,
+                    max,
+                    stride,
+                );
+            } else {
+                encoder.device.device.cmd_draw_indirect_count(
+                    encoder.command,
+                    arguments.0.buffer,
+                    offset,
+                    counts.0.buffer,
+                    count_offset,
+                    max,
+                    stride,
+                );
+            }
+        }
+        encoder.buffers.push(arguments.clone());
+        encoder.buffers.push(counts.clone());
+        Ok(())
     }
 
     fn set_push_constants(
@@ -143,11 +185,13 @@ fn validate_indirect(
     indexed: bool,
     multi: bool,
 ) -> Result<()> {
+    if offset % 4 != 0 {
+        return Err(Error::InvalidRange);
+    }
     if !encoder.raster
         || encoder.raster_layout.is_none()
-        || (indexed && !encoder.raster_index_bound)
+        || encoder.mesh_active.is_some()
         || !arguments.0.usage.contains(api::BufferUsage::INDIRECT)
-        || offset % 4 != 0
     {
         return Err(Error::InvalidState);
     }
@@ -171,6 +215,9 @@ fn validate_indirect(
     };
     if bytes > arguments.0.size {
         return Err(Error::InvalidRange);
+    }
+    if indexed && !encoder.raster_index_bound {
+        return Err(Error::InvalidState);
     }
     Ok(())
 }

@@ -1,0 +1,93 @@
+   Compiling fluxel-rhi-vulkan v0.16.0 (E:\moyy\program\rust\fluxel\fluxel-rhi\crates\vulkan)
+warning: field `0` is never read
+   --> crates\vulkan\src\backend\mod.rs:106:26
+    |
+106 |           pub struct $name(Arc<()>);
+    |                            ^^^^^^^
+...
+110 | / native_arc!(
+111 | |     VulkanPipelineCache,
+    | |     ------------------- field in this struct
+112 | | );
+    | |_- in this macro invocation
+    |
+    = help: consider removing this field
+    = note: `VulkanPipelineCache` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+    = note: this warning originates in the macro `native_arc` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: field `0` is never read
+  --> crates\vulkan\src\backend\pipeline\binding.rs:71:12
+   |
+71 |     Buffer(VulkanBuffer),
+   |     ------ ^^^^^^^^^^^^
+   |     |
+   |     field in this variant
+   |
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+71 -     Buffer(VulkanBuffer),
+71 +     Buffer(()),
+   |
+
+warning: field `0` is never read
+  --> crates\vulkan\src\backend\pipeline\binding.rs:72:10
+   |
+72 |     View(VulkanTextureView),
+   |     ---- ^^^^^^^^^^^^^^^^^
+   |     |
+   |     field in this variant
+   |
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+72 -     View(VulkanTextureView),
+72 +     View(()),
+   |
+
+warning: field `0` is never read
+  --> crates\vulkan\src\backend\pipeline\binding.rs:73:13
+   |
+73 |     Sampler(VulkanSampler),
+   |     ------- ^^^^^^^^^^^^^
+   |     |
+   |     field in this variant
+   |
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+73 -     Sampler(VulkanSampler),
+73 +     Sampler(()),
+   |
+
+warning: field `0` is never read
+  --> crates\vulkan\src\backend\pipeline\binding.rs:74:18
+   |
+74 |     Acceleration(super::super::VulkanAcceleration),
+   |     ------------ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |     |
+   |     field in this variant
+   |
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+74 -     Acceleration(super::super::VulkanAcceleration),
+74 +     Acceleration(()),
+   |
+
+warning: `fluxel-rhi-vulkan` (lib) generated 5 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.52s
+     Running tests\multi_queue_gpu.rs (target\debug\deps\multi_queue_gpu-4915b5f6a291b221.exe)
+
+running 2 tests
+test compute_timestamps_and_cross_lane_rejection ... ok
+test compute_producer_direct_consumer ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+
+     Running tests\query_gpu.rs (target\debug\deps\query_gpu-7f52c255cb23de94.exe)
+
+running 3 tests
+test resolve_timestamp_written_by_an_earlier_encoder ... ok
+test unsubmitted_write_cannot_authorize_resolve_and_rejected_work_is_retryable ... ok
+test timestamps_and_triangle_statistics ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+

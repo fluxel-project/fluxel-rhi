@@ -353,12 +353,27 @@ pub enum BindingResource<'a, B: Backend> {
         buffer: &'a Buffer<B>,
         range: Range<u64>,
     },
+    /// A storage buffer with an explicit shader view ABI.
+    /// The backend validates the range against the native buffer allocation.
+    StorageBufferView {
+        buffer: &'a Buffer<B>,
+        range: Range<u64>,
+        view: StorageBufferView,
+    },
     TextureView(&'a TextureView<B>),
     Sampler(&'a Sampler<B>),
     Acceleration(&'a AccelerationStructure<B>),
     /// A single descriptor-array dimension. Present elements must be concrete
     /// resources, never another `Array`; holes require a partially bound layout.
     Array(Vec<Option<BindingResource<'a, B>>>),
+}
+/// Element interpretation used by a storage-buffer shader declaration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageBufferView {
+    /// Byte-addressed storage, with four-byte aligned offsets and length.
+    Raw,
+    /// An array of elements of the given byte stride.
+    Structured { stride: u32 },
 }
 pub struct BindGroupEntry<'a, B: Backend> {
     pub binding: u32,
@@ -385,7 +400,8 @@ pub(crate) fn binding_resource_device<B: Backend>(
     device: DeviceId,
 ) -> bool {
     match v {
-        BindingResource::Buffer { buffer, .. } => buffer.device == device,
+        BindingResource::Buffer { buffer, .. }
+        | BindingResource::StorageBufferView { buffer, .. } => buffer.device == device,
         BindingResource::TextureView(v) => v.device == device,
         BindingResource::Sampler(v) => v.device == device,
         BindingResource::Acceleration(v) => v.device == device,
@@ -413,6 +429,22 @@ pub(crate) fn binding_matches<B: Backend>(
             ty,
             BindingType::UniformBuffer { .. } | BindingType::StorageBuffer { .. }
         ),
+        BindingResource::StorageBufferView { range, view, .. } => {
+            let BindingType::StorageBuffer { min_size, .. } = ty else {
+                return false;
+            };
+            let alignment = match view {
+                StorageBufferView::Raw => 4,
+                StorageBufferView::Structured { stride } if *stride != 0 && *stride % 4 == 0 => {
+                    u64::from(*stride)
+                }
+                StorageBufferView::Structured { .. } => return false,
+            };
+            range.start < range.end
+                && range.end - range.start >= *min_size
+                && range.start % alignment == 0
+                && (range.end - range.start) % alignment == 0
+        }
         BindingResource::TextureView(_) => matches!(
             ty,
             BindingType::SampledTexture { .. } | BindingType::StorageTexture { .. }

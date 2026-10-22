@@ -1,0 +1,1414 @@
+{
+  "created_utc": "2026-10-22T03:51:35.919134+00:00",
+  "head_at_manifest": "0b70fa880a44b588efe3758044e604aa3cf7c855",
+  "qualification": "Working tree is mutable; current source and executable hashes are inventories, not proof that every earlier capture was built from this exact tree. Final frozen-candidate reruns remain required. hardware-tests features are candidate-only. Ordinary feature 16,18,19,21,23 smoke after candidate gate removal passed; earlier screenshots remain from a moving tree.",
+  "hardware": "AMD Radeon 780M; Windows Vulkan driver 25.10.28.02 (LLPC); Vulkan 1.4.315; validation layer enabled",
+  "shader_verification": "python tools/examples/build-native-spirv.py --verify",
+  "result_summary": {
+    "16": "3 frames; 53 pixels differ by 1 red channel; candidate",
+    "17": "GPU query output matches official pixels, timestamps ordered",
+    "18": "3 frames; GPU pixels byte-identical DX12; candidate",
+    "19": "3 controlled states, surface switches every 2s; compared DX12, max channel difference 25; candidate",
+    "20": "GPU count 452; pixels byte-identical official",
+    "21": "9 fixed mips equal DX12; automatic 0..8..0; candidate",
+    "22": "pixels byte-identical official",
+    "23": "step 1: 377 pixels differ by at most 1; 3 dynamic screenshots; lane completion per frame does not prove concurrency; candidate"
+  },
+  "previous_results": "临时/当前验证/vulkan/0.17-final-results.json",
+  "examples": {
+    "16": {
+      "name": "16_raytracing_hello",
+      "exe_current": {
+        "path": "target\\debug\\examples\\16_raytracing_hello.exe",
+        "sha256": "323c0845e505f995d3fec7c91840fba5809056cb4027c8bf4e67ae88b78f9591"
+      },
+      "example_sources_current": [
+        {
+          "path": "crates\\rhi\\examples\\16_raytracing_hello\\main.rs",
+          "sha256": "dc8b95529595479721f882030613134c5cae6d190e6b9e140fe950f2fa4366ce",
+          "bytes": 5166
+        },
+        {
+          "path": "crates\\rhi\\examples\\16_raytracing_hello\\record.rs",
+          "sha256": "84d99f2ad56518dc3b94a861ef40f8efc35de4fbac642ff4f627812c28da65e8",
+          "bytes": 8294
+        },
+        {
+          "path": "crates\\rhi\\examples\\16_raytracing_hello\\scene.rs",
+          "sha256": "655b6ac513444a1c5a2f4d452e643db0ee76cc17ddf689fba5cfb346e686cfa3",
+          "bytes": 835
+        },
+        {
+          "path": "crates\\rhi\\examples\\16_raytracing_hello\\setup.rs",
+          "sha256": "2a573a9b89092a42b6e48795a1b779e74cdda2ae38fe57e1b4877e85c7210bd6",
+          "bytes": 10578
+        }
+      ],
+      "assets_current": [
+        {
+          "path": "crates\\rhi\\examples\\assets\\16_raytracing_hello\\display.hlsl",
+          "sha256": "a7b19842bc4d8a93f2d2aeba526778635db224c349949a1a06aaa70d8ade3f74",
+          "bytes": 382
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\16_raytracing_hello\\display_ps.dxil",
+          "sha256": "012b252e6c4211c607cbf2dcc3a0d9259c7a9381a7b1e51fc8469fe6db202240",
+          "bytes": 3580
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\16_raytracing_hello\\display_ps.spv",
+          "sha256": "69dfefa31a5f9d21b5760976575ae469708932d47d5ba14e373d037f7bcc5554",
+          "bytes": 820
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\16_raytracing_hello\\display_vs.dxil",
+          "sha256": "0ee7cd9e323fece3da9b29fa62f4579c773ca3692b4639b172a5d7ad46a07fae",
+          "bytes": 2888
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\16_raytracing_hello\\display_vs.spv",
+          "sha256": "b3d5ace9efd022477a6edc91c87dfb29a639217dc1b3af222cf3800c093b1867",
+          "bytes": 656
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\16_raytracing_hello\\LICENSE.microsoft",
+          "sha256": "d3757d7fb7dd73bb027391905f06d4cf3000f79e8652d861e466d02ac028fac2",
+          "bytes": 1099
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\16_raytracing_hello\\Raytracing.dxil",
+          "sha256": "eedc45e42615be77bab3249c4918753d945e2bc4e2e9e59405f1229282141a45",
+          "bytes": 6336
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\16_raytracing_hello\\Raytracing.hlsl",
+          "sha256": "88f43b9a61cf6bdb4512794b618d857b8805b15b39dfbdba85352cb5e7484f76",
+          "bytes": 2802
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\16_raytracing_hello\\Raytracing.spv",
+          "sha256": "c7a3e6eb2297a34e59c1d5f61f21666bd29a5678d383904aa683dbfa12107480",
+          "bytes": 3544
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\16_raytracing_hello\\Raytracing_rhi.dxil",
+          "sha256": "692084a960ff788338a10e941e89007556eec86b608ec7ff34af249f7d267ffe",
+          "bytes": 6336
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\16_raytracing_hello\\Raytracing_rhi.hlsl",
+          "sha256": "2a71e1d57e648d378070077ea4cb5d77f814e1abd0a0a17d9d41323c04bcce0c",
+          "bytes": 2802
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\16_raytracing_hello\\Raytracing_vulkan.hlsl",
+          "sha256": "ff81ba8e69f8a111605633c5fe80821357b61ef249e0c571af0061f5f1025518",
+          "bytes": 2843
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\16_raytracing_hello\\RaytracingHlslCompat.h",
+          "sha256": "fb8651851597a23acf991a44c841c2089da74a6083c9f68c75273f71f0166b30",
+          "bytes": 727
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\16_raytracing_hello\\README.md",
+          "sha256": "2dff7b6d45b9014bce5ddea2e5926fbb6014483685a4c79125f1a872f8371ea5",
+          "bytes": 2199
+        }
+      ],
+      "evidence_files": [
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray\\18-build.log",
+          "sha256": "d78339148a2dec297f333ed6e66a8f714a0865d707c20f40e46fe541bab2682f",
+          "bytes": 11482
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray\\18-run.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray\\19-build.log",
+          "sha256": "2a8a3bf2d18c346c7935d6a7310b66b9f1b440147eba3c9c468f738e798095d9",
+          "bytes": 16657
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray\\candidate-build.log",
+          "sha256": "2abf30ab521edbcca2aa32d875379b25daf4a47e0cfccafb4933b108c5fda8e3",
+          "bytes": 13463
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray\\candidate-debug.log",
+          "sha256": "04d36c02de3ed2969eb11105885c8d0c933ff405df34920ef44345282aae0310",
+          "bytes": 2370
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray\\candidate-fixed.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray\\candidate-fixed.ppm",
+          "sha256": "f1c20e4d8b887634249c96946c4d5ef52bb09427728db1fe9a29781a75eaaa4a",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray\\candidate.ppm",
+          "sha256": "f1c20e4d8b887634249c96946c4d5ef52bb09427728db1fe9a29781a75eaaa4a",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray\\comparison.json",
+          "sha256": "e672a81c82fcac598fecd40317c151601558ab0c0a16c7bffdd82e24e6322180",
+          "bytes": 10853
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray\\debug.log",
+          "sha256": "282fd70d980d86043bdcd0c0e54f5cdbfab76ec36459e813a07716b1301c0c36",
+          "bytes": 49
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray\\ordinary.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray\\ordinary.ppm",
+          "sha256": "f1c20e4d8b887634249c96946c4d5ef52bb09427728db1fe9a29781a75eaaa4a",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray\\screen-01.png",
+          "sha256": "3a9f27da8ab4919d01c68a96d58514dd51cf6394c9cb402a9bed1092c4cb76a2",
+          "bytes": 22847
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray\\screen-02.png",
+          "sha256": "3a9f27da8ab4919d01c68a96d58514dd51cf6394c9cb402a9bed1092c4cb76a2",
+          "bytes": 22847
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray\\screen-03.png",
+          "sha256": "d5cdeb8f3e5948018d5d8904730798fb7d58cddcbe1098a25487f1c779228cb2",
+          "bytes": 22843
+        }
+      ]
+    },
+    "17": {
+      "name": "17_gpu_queries",
+      "exe_current": {
+        "path": "target\\debug\\examples\\17_gpu_queries.exe",
+        "sha256": "24e89bf834e011063aa1b15c3236e5b14ce82a35f0f17694d9f06a37cec07574"
+      },
+      "example_sources_current": [
+        {
+          "path": "crates\\rhi\\examples\\17_gpu_queries\\main.rs",
+          "sha256": "9c8a0e1805a327334861fc04c0e113045081d806fba831637138a452906f67c6",
+          "bytes": 3939
+        },
+        {
+          "path": "crates\\rhi\\examples\\17_gpu_queries\\record.rs",
+          "sha256": "b5eafc53de0678f5881444c1ee7bb1668357656db1d12079c7c4ec0343a3c2fe",
+          "bytes": 8419
+        },
+        {
+          "path": "crates\\rhi\\examples\\17_gpu_queries\\setup.rs",
+          "sha256": "905dbd953dbae41fa6c3d04dfa27e1914d3b63e3f7e0427a16e0469abc9b9f1b",
+          "bytes": 7422
+        }
+      ],
+      "assets_current": [
+        {
+          "path": "crates\\rhi\\examples\\assets\\17_gpu_queries\\LICENSE.microsoft",
+          "sha256": "d3757d7fb7dd73bb027391905f06d4cf3000f79e8652d861e466d02ac028fac2",
+          "bytes": 1099
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\17_gpu_queries\\README.md",
+          "sha256": "d0c268f066326015a9abae1492c0d65c1395bfddf14fad906bf17b4811849257",
+          "bytes": 1431
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\17_gpu_queries\\shaders.hlsl",
+          "sha256": "c300fc6586b8e0410ea3df4c00d080efeeeeac7e0e2485a84864fae118f6597e",
+          "bytes": 788
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\17_gpu_queries\\shaders_rhi.hlsl",
+          "sha256": "4a7d420a0dda29ae9bc8ba446528fadd480895c0ad657d588a1cd971e33d913d",
+          "bytes": 793
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\17_gpu_queries\\triangle_ps.dxil",
+          "sha256": "ac87cd58252174ade813f2bfc541d6b474564f6827139a25fe0a3af39cc73524",
+          "bytes": 6232
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\17_gpu_queries\\triangle_ps.spv",
+          "sha256": "b50e2e4d18539197c16fdc52ca147702efb3851c835ad2936e14be2aa7150b20",
+          "bytes": 368
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\17_gpu_queries\\triangle_vs.dxil",
+          "sha256": "167c337560a70e5945ad573fce8903029404af039ab811a1d2ec8644fa796ef8",
+          "bytes": 7116
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\17_gpu_queries\\triangle_vs.spv",
+          "sha256": "d51b86289149046e80cb0bcae7b47ecf5c8fa46465e6d8f3fa24c6630a9fda48",
+          "bytes": 484
+        }
+      ],
+      "evidence_files": [
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-query\\capture.log",
+          "sha256": "46f9110c0d261beee0d484fe87b6bb3987185fe82914c5efc87d3f1a13b6055c",
+          "bytes": 867
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-query\\debug.log",
+          "sha256": "0ae9ace59b15fae49e33b1a1fe0715a4d151f0611ca4c9a5f4b6dfe469b083da",
+          "bytes": 120
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-query\\hello-01.png",
+          "sha256": "eadd6b25a7b72f0ddc45026004c3e5b54065e7acd78ded4e84767a5f8789eea1",
+          "bytes": 13102
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-query\\hello-02.png",
+          "sha256": "eadd6b25a7b72f0ddc45026004c3e5b54065e7acd78ded4e84767a5f8789eea1",
+          "bytes": 13102
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-query\\hello-03.png",
+          "sha256": "eadd6b25a7b72f0ddc45026004c3e5b54065e7acd78ded4e84767a5f8789eea1",
+          "bytes": 13102
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-query\\output.ppm",
+          "sha256": "8cf68bfc4ef582914e92c894b24870b0e477226c2b5826ee24af16283a81a928",
+          "bytes": 2764816
+        }
+      ]
+    },
+    "18": {
+      "name": "18_meshlet_instancing",
+      "exe_current": {
+        "path": "target\\debug\\examples\\18_meshlet_instancing.exe",
+        "sha256": "5fa6073437d8f2162c184ee4b49a767676b9650b36762e8c7309ec2cd0c8c48a"
+      },
+      "example_sources_current": [
+        {
+          "path": "crates\\rhi\\examples\\18_meshlet_instancing\\main.rs",
+          "sha256": "7273501975721c2f9e599a535c48ff7852bc27a2cf35170a60b6e283f5e150e0",
+          "bytes": 3623
+        },
+        {
+          "path": "crates\\rhi\\examples\\18_meshlet_instancing\\model.rs",
+          "sha256": "77d14d1c86e50e7c7f5894770043b309b45f5d697439317ce964c8bb513bea13",
+          "bytes": 2636
+        },
+        {
+          "path": "crates\\rhi\\examples\\18_meshlet_instancing\\record.rs",
+          "sha256": "c5809759e9332fd755030535511e7b0805c2bc6172fd6fdaf6c74ad3a39c5eb3",
+          "bytes": 9884
+        },
+        {
+          "path": "crates\\rhi\\examples\\18_meshlet_instancing\\scene.rs",
+          "sha256": "180c76eb5d307d7b6708ce38f7d2da609fbea262f49dc1cd845ab6eeeae8a4d0",
+          "bytes": 1251
+        },
+        {
+          "path": "crates\\rhi\\examples\\18_meshlet_instancing\\setup.rs",
+          "sha256": "e9894329f29fe0c68f1aa9a0e10d24d1e2d478d2b0a7dafebd703899fad42578",
+          "bytes": 10311
+        }
+      ],
+      "assets_current": [
+        {
+          "path": "crates\\rhi\\examples\\assets\\18_meshlet_instancing\\LICENSE-Microsoft.txt",
+          "sha256": "d3757d7fb7dd73bb027391905f06d4cf3000f79e8652d861e466d02ac028fac2",
+          "bytes": 1099
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\18_meshlet_instancing\\MeshletMS.hlsl",
+          "sha256": "a1ab0e20d2beff5ab410ec694dd4b9cbbad120ff803c48365818ae3eceea0126",
+          "bytes": 5930
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\18_meshlet_instancing\\MeshletMS.rhi.dxil",
+          "sha256": "1c5e8319ddcd27a17f45b2fa4f2325e54d4c875b591dd6d9e536408cf1d891ee",
+          "bytes": 8500
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\18_meshlet_instancing\\MeshletMS.rhi.hlsl",
+          "sha256": "7cb26df6a8a64eee4da6169bde4e1973f8172be27b257082982f28eb7f9f9c20",
+          "bytes": 5713
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\18_meshlet_instancing\\MeshletMS.spv",
+          "sha256": "4ad30c0433649421d23deaaa32c754c814c13909554fff68c936d010429615d3",
+          "bytes": 6444
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\18_meshlet_instancing\\MeshletMS.vulkan.hlsl",
+          "sha256": "6bb53fecf52a5e49f5a1bc3fc179e40f4e1f000d1d80f416db015c1a052df258",
+          "bytes": 5802
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\18_meshlet_instancing\\MeshletPS.dxil",
+          "sha256": "292ce1ae6d1f1dde7c9fa5c657aefc766d25dd32278ee4dd0a5c7fdf83bd686f",
+          "bytes": 4660
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\18_meshlet_instancing\\MeshletPS.hlsl",
+          "sha256": "605c99319b299c286e835418600ff6c6a19a589d9b78047ebf2b70ad58d8d49e",
+          "bytes": 1892
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\18_meshlet_instancing\\MeshletPS.spv",
+          "sha256": "a21d570e97a8dd837a76bf08bcf54b5cc8df1ce0357c7af2c67633d1a45b805b",
+          "bytes": 2116
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\18_meshlet_instancing\\README.md",
+          "sha256": "68a9170a55dee92c944203dfe393100f24f5fc7621b0cb30d7b829d4b2e1569c",
+          "bytes": 1769
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\18_meshlet_instancing\\Shared.h",
+          "sha256": "f7865fe8824233ce6e36ff41ce4ac361409bd5d154220e03ec310a465de7ddf8",
+          "bytes": 507
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\18_meshlet_instancing\\ToyRobot.bin",
+          "sha256": "baaee3fdaa7ad17f78416b4f9a4a4c7812cca1323ba37fe8e34a68d29fc2dd7e",
+          "bytes": 872764
+        }
+      ],
+      "evidence_files": [
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-mesh\\debug.log",
+          "sha256": "cccc6520e8fc6c0b53009e602ca6fa63b8f419677b8e77eb23abcb5fa3bb5530",
+          "bytes": 52
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-mesh\\ordinary.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-mesh\\ordinary.ppm",
+          "sha256": "228d9dead19dbf6cf1a772c4500b45da4d0841fc14f2056e34dec430432c336e",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-mesh\\output.ppm",
+          "sha256": "228d9dead19dbf6cf1a772c4500b45da4d0841fc14f2056e34dec430432c336e",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-mesh\\run.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-mesh\\screen-01.png",
+          "sha256": "26bdd44cbedf1e29d840ab56dc73301c1abdab233a3ee9cdb87925bd628f3dfe",
+          "bytes": 17045
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-mesh\\screen-02.png",
+          "sha256": "47e9987220a78020829bd884034cac211eb7fba65e6d8e61f8cc4fab5b3b087a",
+          "bytes": 17043
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-mesh\\screen-03.png",
+          "sha256": "137bf1e267530d49d9dc6585407e55f8df765a7b94e4664f6bca4198e2600a39",
+          "bytes": 17040
+        }
+      ]
+    },
+    "19": {
+      "name": "19_ray_query_particles",
+      "exe_current": {
+        "path": "target\\debug\\examples\\19_ray_query_particles.exe",
+        "sha256": "f6ad3bfa233a1261f5772c5ae3d4c2fdc5d1a9ac86bf6153089120a43d826388"
+      },
+      "example_sources_current": [
+        {
+          "path": "crates\\rhi\\examples\\19_ray_query_particles\\compare.py",
+          "sha256": "e6a8aaeed97093b2a946bc8395e7ce3d0119577d12f7d77025a8bf2e721f4ebf",
+          "bytes": 1608
+        },
+        {
+          "path": "crates\\rhi\\examples\\19_ray_query_particles\\controlled.dxil",
+          "sha256": "48a7bd055af7713682e75ccde2ffa3c5d9eb120bd9c73664ef1479d9acbd142e",
+          "bytes": 8756
+        },
+        {
+          "path": "crates\\rhi\\examples\\19_ray_query_particles\\controlled.hlsl",
+          "sha256": "f01eab5f5d1f6e36c7019417bade4057f2a7c1983e40d41ae56b3e84415edc06",
+          "bytes": 4718
+        },
+        {
+          "path": "crates\\rhi\\examples\\19_ray_query_particles\\decode_environment.py",
+          "sha256": "f71b5d5edb761590140f16a9d3418e19050bf876a1796de321103750fa1d23ae",
+          "bytes": 418
+        },
+        {
+          "path": "crates\\rhi\\examples\\19_ray_query_particles\\main.rs",
+          "sha256": "3b2f932731c4fb843e0375692ff5c51341fce8749e3d15703ee8e291299d6e78",
+          "bytes": 4551
+        },
+        {
+          "path": "crates\\rhi\\examples\\19_ray_query_particles\\particles.rs",
+          "sha256": "9dcb17c23e982586f42965c7cc4df40c90ed0fcb8ae6d1b14c44c025bd7a295e",
+          "bytes": 3210
+        },
+        {
+          "path": "crates\\rhi\\examples\\19_ray_query_particles\\README.md",
+          "sha256": "0c20861c50dd1c489f5cd061b47ee71ac6cebfba35a2c1d8e131fb6920c5aee2",
+          "bytes": 2019
+        },
+        {
+          "path": "crates\\rhi\\examples\\19_ray_query_particles\\run.rs",
+          "sha256": "6a005b197dadf1be0d23e567a3f0c1764b41a6b6a6a2dc88d092f531d151e6d4",
+          "bytes": 19972
+        },
+        {
+          "path": "crates\\rhi\\examples\\19_ray_query_particles\\scene.rs",
+          "sha256": "7c47b9dbe71fca63898e1bd496f8183fc3dd00762f696ec121d65e00b88096b3",
+          "bytes": 7768
+        }
+      ],
+      "assets_current": [
+        {
+          "path": "crates\\rhi\\examples\\assets\\19_ray_query_particles\\controlled.spv",
+          "sha256": "3bb5e095abc4ff3dc0f8f866c1a64ad05fcdc5492d0c4f1533013ba083ca8a1b",
+          "bytes": 9384
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\19_ray_query_particles\\controlled.vulkan.hlsl",
+          "sha256": "d1522afdb57c1d52316e59c44413138d1678e11f6c4e28bca19ff175d0c02065",
+          "bytes": 4748
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\19_ray_query_particles\\environment-map-rgba.png",
+          "sha256": "38fa7f7b1661c29737451cade45b67db40df1d8a27bf9f5fa2b5a898453a70a0",
+          "bytes": 1559541
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\19_ray_query_particles\\environment-map.dds",
+          "sha256": "e259045b8c90154b17372f9f2d0256eab8932797fadf94cc15a7757179e9f84d",
+          "bytes": 2796388
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\19_ray_query_particles\\LICENSE-NVIDIA.txt",
+          "sha256": "36303ca1772e3bce611840e6c7dd06f4e44eaee21dfb87fc83a046ba425aa34f",
+          "bytes": 1108
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\19_ray_query_particles\\ParticleScene.bin",
+          "sha256": "eb57c2b680eca483d82e2e16ec13a77e97e8592cc3d53a9e95ac3a2dc0597de5",
+          "bytes": 481748
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\19_ray_query_particles\\ParticleScene.gltf",
+          "sha256": "0e7f5aa581446a03878e0543983c6cd8a8b68a4900b31159072b1823960e0d20",
+          "bytes": 10430
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\19_ray_query_particles\\smoke-particle.png",
+          "sha256": "924338fb428805d2da139e18344bec42d188351ceea1c265e2fcb3482aaf090d",
+          "bytes": 287451
+        }
+      ],
+      "evidence_files": [
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray-query\\19-build.log",
+          "sha256": "90e87be6596edf212c7fe95bf4032cde556bb4bd54d66e7ab0acb629ddf95e1f",
+          "bytes": 11497
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray-query\\comparison.json",
+          "sha256": "9500949b9e1fa0505e22953aeaee34341aad7744fca1794619c2fd8ed7a4235e",
+          "bytes": 1739
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray-query\\ordinary-surface.log",
+          "sha256": "c0281c601f9a1022d3f3302bf874a5926db5877e7dc480f7d3c56f3bf75c87fd",
+          "bytes": 158
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray-query\\ordinary.log",
+          "sha256": "c0281c601f9a1022d3f3302bf874a5926db5877e7dc480f7d3c56f3bf75c87fd",
+          "bytes": 158
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray-query\\ray-query-particles-01.png",
+          "sha256": "d188d0509ac91ff3844397caacc0615860af449fd98c3c79a29544c7a9c74bda",
+          "bytes": 866950
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray-query\\ray-query-particles-02.png",
+          "sha256": "3f5bc502a1d950ca154fbabb27d9f2a1928c5d8e349b106d54b6725b77e8c935",
+          "bytes": 879660
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray-query\\ray-query-particles-03.png",
+          "sha256": "8c594aa1d03c18a483aa50ad5ef70b49657fd4901172a95aa1391ed5ef3ae032",
+          "bytes": 862786
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray-query\\run.log",
+          "sha256": "c0281c601f9a1022d3f3302bf874a5926db5877e7dc480f7d3c56f3bf75c87fd",
+          "bytes": 158
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray-query\\screen-01.png",
+          "sha256": "a7527a308d8a17ce54d7dc80b45da34415b643c580fade917c92e791d13115af",
+          "bytes": 628018
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray-query\\screen-02.png",
+          "sha256": "31cc095c73dca0fb2b3657572edee82d911d18a506eeb068d2f13102ea9cda6a",
+          "bytes": 620205
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray-query\\screen-03.png",
+          "sha256": "82c17116a24fee9ed30701aa2c5948e2ababc0f45c5d0dc74a492a8349aac31b",
+          "bytes": 624063
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray-query\\spirv-build.json",
+          "sha256": "0d3a7cd6b82e38ff5b3e05a825acbc3cb5336189b6855a837f5634671126a4ec",
+          "bytes": 4391
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray-query\\spirv-verify.json",
+          "sha256": "59c4b71366b5f0b4efcd6d83c034b48b490f8f2f5fec9c0a6c433407ff127ff6",
+          "bytes": 3217
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-ray-query\\surface-validation.log",
+          "sha256": "c0281c601f9a1022d3f3302bf874a5926db5877e7dc480f7d3c56f3bf75c87fd",
+          "bytes": 158
+        }
+      ]
+    },
+    "20": {
+      "name": "20_gpu_draw_count",
+      "exe_current": {
+        "path": "target\\debug\\examples\\20_gpu_draw_count.exe",
+        "sha256": "6e7d8397c13f35eb811b88c5b175be77f72f2bc85c6d8401d030fb5749de3892"
+      },
+      "example_sources_current": [
+        {
+          "path": "crates\\rhi\\examples\\20_gpu_draw_count\\main.rs",
+          "sha256": "84df7bd65f58790f5ea36cc3824ae2c437bfd05dad59c5ab4b04f097f2b7b46b",
+          "bytes": 4283
+        },
+        {
+          "path": "crates\\rhi\\examples\\20_gpu_draw_count\\record.rs",
+          "sha256": "782423c0bbecdb3328a88613783556938ad5f59552ce890543d7d70b19898cc5",
+          "bytes": 16028
+        },
+        {
+          "path": "crates\\rhi\\examples\\20_gpu_draw_count\\setup.rs",
+          "sha256": "42ebd2aa7222a8452a30d8abea70090aee7165ddff7a62398b435ea039551658",
+          "bytes": 12719
+        }
+      ],
+      "assets_current": [
+        {
+          "path": "crates\\rhi\\examples\\assets\\20_gpu_draw_count\\compute.hlsl",
+          "sha256": "02a3caa9226fcc545e5a077852c44639d7e5a2d9c51013b76944bc69647ec48b",
+          "bytes": 2388
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\20_gpu_draw_count\\cull.dxil",
+          "sha256": "42c816272d62b0c022328d77eb7e6770673cf2aa20a154e565defea46089c6ec",
+          "bytes": 4240
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\20_gpu_draw_count\\cull.rhi.hlsl",
+          "sha256": "54614e3c1f36cc6c464856f67d5a42819fdb0cde03501d09b1979faf55a35306",
+          "bytes": 785
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\20_gpu_draw_count\\cull.spv",
+          "sha256": "7c3c6f956bcc8846e59fbc18c513ee16845bf22a30ff6edca799c2360e38abc2",
+          "bytes": 2380
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\20_gpu_draw_count\\draw.rhi.hlsl",
+          "sha256": "82b5f94e4f488c4dcc18060f5867ed5948063a8d968739eced76728ca1401adc",
+          "bytes": 687
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\20_gpu_draw_count\\draw_ps.dxil",
+          "sha256": "7a5be65f0888d6a5a30b3acebd8c1d1314778433ecfbc698ec46b3c3d8e80090",
+          "bytes": 2968
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\20_gpu_draw_count\\draw_ps.spv",
+          "sha256": "b50e2e4d18539197c16fdc52ca147702efb3851c835ad2936e14be2aa7150b20",
+          "bytes": 368
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\20_gpu_draw_count\\draw_vs.dxil",
+          "sha256": "436076855edace278bc04ec870a683b9b12ef14e457c2eea86fae86cadaef8a9",
+          "bytes": 4488
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\20_gpu_draw_count\\draw_vs.spv",
+          "sha256": "4f45b122b9674f39ba75c1800a5a29913de8836b270bec7d0ccdb30044c4ca65",
+          "bytes": 1320
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\20_gpu_draw_count\\frame180.bin",
+          "sha256": "29fd8ff45ff2302d860b431757f5c611912698212e151301d046105435f7331d",
+          "bytes": 262144
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\20_gpu_draw_count\\LICENSE-Microsoft.txt",
+          "sha256": "d3757d7fb7dd73bb027391905f06d4cf3000f79e8652d861e466d02ac028fac2",
+          "bytes": 1099
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\20_gpu_draw_count\\README.md",
+          "sha256": "4ef87ff8b0cd3c27ef3910642393c1ffc8493214613b0ae1316fc3e8df188c78",
+          "bytes": 1748
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\20_gpu_draw_count\\shaders.hlsl",
+          "sha256": "152f3ee980e81ecdfbb457e1e9a5ae8a855b7e68c188417fc2c218cf4f0895ae",
+          "bytes": 1032
+        }
+      ],
+      "evidence_files": [
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-draw-count\\build.log",
+          "sha256": "24b3a6bd52326c2c819bd1631696171ff1de9f483579ebf6caa009c96564130d",
+          "bytes": 12392
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-draw-count\\capture.log",
+          "sha256": "50cdc99e6552b1a5fbcb6da1801435069af8e338aca27339b8499f035775a408",
+          "bytes": 689
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-draw-count\\debug-depth-fixed.log",
+          "sha256": "25b4ee2934abb4ed0517333957f1f14899e746ecb062594715f49ffba79a9958",
+          "bytes": 33
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-draw-count\\debug-fixed.log",
+          "sha256": "62fc89de944bd889b2b942a157e828a8e589b6345d9c33d6655a20d53aed01fd",
+          "bytes": 70
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-draw-count\\debug-range.log",
+          "sha256": "9a5eec52385dcc3c34800c289d1ab46445ac48833ccb6b773ac56aa18ea658b1",
+          "bytes": 55
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-draw-count\\debug-trace.log",
+          "sha256": "d610eb188a0c647e3f051c6c17bc28576334fc97bdc37b754609215ea700e569",
+          "bytes": 383
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-draw-count\\debug.log",
+          "sha256": "473218feafff9299706c16563afcf047a6926b310c64d2785e9728209fbf126b",
+          "bytes": 55
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-draw-count\\hello-01.png",
+          "sha256": "455ca209f038d14f29c47c627ecd0efcf0df668b4c6206dc5315e8c9d9ef2bdb",
+          "bytes": 37571
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-draw-count\\hello-02.png",
+          "sha256": "0c9e6c458e3f021d301ec12789f8c838397af8411efd3a459f501d98b1e132b0",
+          "bytes": 37568
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-draw-count\\hello-03.png",
+          "sha256": "ba0717093abd8f73e1e418bdbbbeac4b1e53cab0fff42b30b581038dab121d6a",
+          "bytes": 37569
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-draw-count\\output.ppm",
+          "sha256": "5dcaf8db13cf8127727db0fb990855970e04371e94b283a80129ab99ebcf1345",
+          "bytes": 2764816
+        }
+      ]
+    },
+    "21": {
+      "name": "21_sparse_texture",
+      "exe_current": {
+        "path": "target\\debug\\examples\\21_sparse_texture.exe",
+        "sha256": "4f155d58ff0c097a7378f491481297d1027e9dc04cd5c8c77e976a13673cf691"
+      },
+      "example_sources_current": [
+        {
+          "path": "crates\\rhi\\examples\\21_sparse_texture\\main.rs",
+          "sha256": "144354774823cd792d6d47c81e60563a4d821aebe7004a7bee0335b2b29953e1",
+          "bytes": 4475
+        },
+        {
+          "path": "crates\\rhi\\examples\\21_sparse_texture\\record.rs",
+          "sha256": "c1638af01f561529313b3f5891fc25b1fd54018b8e658719ebce1da7c15e9cb3",
+          "bytes": 9723
+        },
+        {
+          "path": "crates\\rhi\\examples\\21_sparse_texture\\setup.rs",
+          "sha256": "1886c5c3eb2b5980dfd75c82d331554b1808daef54cbba4cb9a4cb5ef27b8154",
+          "bytes": 13890
+        }
+      ],
+      "assets_current": [
+        {
+          "path": "crates\\rhi\\examples\\assets\\21_sparse_texture\\LICENSE-Microsoft.txt",
+          "sha256": "d3757d7fb7dd73bb027391905f06d4cf3000f79e8652d861e466d02ac028fac2",
+          "bytes": 1099
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\21_sparse_texture\\ps.dxil",
+          "sha256": "cd390a7d5d8b48be47c9316b93679394c20491fd84c1ddf8b5cef0db20229560",
+          "bytes": 3844
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\21_sparse_texture\\ps.spv",
+          "sha256": "e1479c9fd4e72035043939efdcbb4c6b27e155171116f55d9d2f489bc2d96444",
+          "bytes": 788
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\21_sparse_texture\\README.md",
+          "sha256": "ea09bfcee58a86ad8f3c239cf9a6cfe01a043ed65f351cd7d53d30121200e401",
+          "bytes": 1316
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\21_sparse_texture\\shaders.hlsl",
+          "sha256": "0957f7e5b7a5373e53d055b280ab44dbe796643efb994dd5b4a2dca7e33d8c9b",
+          "bytes": 970
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\21_sparse_texture\\shaders.rhi.hlsl",
+          "sha256": "a3f426a73fcdf926b94ae31faf0a591d94537fbb02ad4f6ce88181b9ed6b9ea3",
+          "bytes": 472
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\21_sparse_texture\\vs.dxil",
+          "sha256": "0405248cb4b6a2419b518987e91430c5b5adce4cbfe14d032e9087be2c15de70",
+          "bytes": 3116
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\21_sparse_texture\\vs.spv",
+          "sha256": "e0db2abbfd5c5f9f2781435f4f5b6ceeba7784cfb3c47dae790d2c72cfc65de9",
+          "bytes": 536
+        }
+      ],
+      "evidence_files": [
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\build.log",
+          "sha256": "3a5eec0002e5b2a52e12b20ecfda5a0323b90bdcdc89c5284bc79dc813d5eeef",
+          "bytes": 11422
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\cycle-01.png",
+          "sha256": "e4266cd8b01d7f435daa35350428344c78ef1429c8bbc657565321c3861e7266",
+          "bytes": 6190
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\cycle-02.png",
+          "sha256": "d96ee409c248d3bd8ec27990a3f4001ba07d63b9e5cf01133b7af8eed84ce175",
+          "bytes": 15073
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\cycle-03.png",
+          "sha256": "dbe81ccba07872f3df26c77fd0955c4fc54225988f55be9417d0252107748208",
+          "bytes": 10529
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\cycle.log",
+          "sha256": "c2ed61077f6f7172fc243af57909a11c5a414a7c185bb6aa5c7abf36e8239a9f",
+          "bytes": 1133
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\dx12-mip0.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\dx12-mip0.ppm",
+          "sha256": "2a5e26732d3a28c9af7686cd32fa65510b2c777734700540f6178cfcbc808247",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\dx12-mip1.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\dx12-mip1.ppm",
+          "sha256": "a132be30841d8e8da1c100a614e16f23b0da1207bb0d11bfd51b2570fe631c41",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\dx12-mip2.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\dx12-mip2.ppm",
+          "sha256": "5dca8d3451509b269870618e0a260648dea6777373a1bdf1c6811f2f4f9db56b",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\dx12-mip3.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\dx12-mip3.ppm",
+          "sha256": "679df3e83c34d50b2ed83a94869f73e6b33676b6e62684853afbcb4ec7c5674e",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\dx12-mip4.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\dx12-mip4.ppm",
+          "sha256": "08b84ee2188309a451465f4ece2ecc3ec6e1b1534473d480efee2a289c0e6612",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\dx12-mip5.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\dx12-mip5.ppm",
+          "sha256": "caf6b8ed79e98d72dd7d7e51b45df80f92c3ec5a2a26fca6b82b66f5674b2b09",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\dx12-mip6.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\dx12-mip6.ppm",
+          "sha256": "51dcdb6c5c7e1b28b74d6c31cb0f6d23da158b112aa34f1c077e002197088693",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\dx12-mip7.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\dx12-mip7.ppm",
+          "sha256": "60e4174a1f24c73efb2defd8e5a9050afd480ac19e4234505328c0903e87a69d",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\dx12-mip8.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\dx12-mip8.ppm",
+          "sha256": "07597f5a0f0d8e5f21f884d7e98a3f117c50294f03ec445fe720cf1285424a65",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\dx12-ordinary-final.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\dx12-run.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\mip0.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\mip0.ppm",
+          "sha256": "2a5e26732d3a28c9af7686cd32fa65510b2c777734700540f6178cfcbc808247",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\mip1.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\mip1.ppm",
+          "sha256": "a132be30841d8e8da1c100a614e16f23b0da1207bb0d11bfd51b2570fe631c41",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\mip2.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\mip2.ppm",
+          "sha256": "5dca8d3451509b269870618e0a260648dea6777373a1bdf1c6811f2f4f9db56b",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\mip3.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\mip3.ppm",
+          "sha256": "679df3e83c34d50b2ed83a94869f73e6b33676b6e62684853afbcb4ec7c5674e",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\mip4.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\mip4.ppm",
+          "sha256": "08b84ee2188309a451465f4ece2ecc3ec6e1b1534473d480efee2a289c0e6612",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\mip5.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\mip5.ppm",
+          "sha256": "caf6b8ed79e98d72dd7d7e51b45df80f92c3ec5a2a26fca6b82b66f5674b2b09",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\mip6.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\mip6.ppm",
+          "sha256": "51dcdb6c5c7e1b28b74d6c31cb0f6d23da158b112aa34f1c077e002197088693",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\mip7.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\mip7.ppm",
+          "sha256": "60e4174a1f24c73efb2defd8e5a9050afd480ac19e4234505328c0903e87a69d",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\mip8.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\mip8.ppm",
+          "sha256": "07597f5a0f0d8e5f21f884d7e98a3f117c50294f03ec445fe720cf1285424a65",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\ordinary-final.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\ordinary-final.ppm",
+          "sha256": "2a5e26732d3a28c9af7686cd32fa65510b2c777734700540f6178cfcbc808247",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\ordinary.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\ordinary.ppm",
+          "sha256": "2a5e26732d3a28c9af7686cd32fa65510b2c777734700540f6178cfcbc808247",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\output.ppm",
+          "sha256": "2a5e26732d3a28c9af7686cd32fa65510b2c777734700540f6178cfcbc808247",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\run.log",
+          "sha256": "d35245f538cf8260a75d9313d7be0f06f48430f32535e90b91a3e0770de60f4b",
+          "bytes": 31
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\screen-01.png",
+          "sha256": "9442a0be011f4c717ab6a8d421052f1e815145c13e7bbd849bbc14c6215f15f3",
+          "bytes": 6175
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\screen-02.png",
+          "sha256": "1063f43586f54a709ac6520f397b05bce2a23b07acda8a5d1f557954e139cc19",
+          "bytes": 16216
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\screen-03.png",
+          "sha256": "7b29260cda4d427474c5cbd388fab61d7684a0f1a3b9c1300635d9763af1061f",
+          "bytes": 32324
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-sparse\\switch.log",
+          "sha256": "a9b0944fb6888fe92c2c1a21a89b5767bcc0d71193e30180f6e5a749a310eeb0",
+          "bytes": 329
+        }
+      ]
+    },
+    "22": {
+      "name": "22_clear_texture",
+      "exe_current": {
+        "path": "target\\debug\\examples\\22_clear_texture.exe",
+        "sha256": "56377541f26c9d5ab703db7634743e90ea70a41cf1cc91bb860569ebe6634806"
+      },
+      "example_sources_current": [
+        {
+          "path": "crates\\rhi\\examples\\22_clear_texture\\main.rs",
+          "sha256": "d8dd33882f3da41c73c043ec001e64da6f7bc98cfa3b9c8f11a319d5d2d08118",
+          "bytes": 3545
+        },
+        {
+          "path": "crates\\rhi\\examples\\22_clear_texture\\record.rs",
+          "sha256": "6a5d5028812639c56adaa055983029d0291d958e59de47b59ab693ae3688935b",
+          "bytes": 7222
+        },
+        {
+          "path": "crates\\rhi\\examples\\22_clear_texture\\setup.rs",
+          "sha256": "a576a0f41c33a5b0b3f9383e4aa0574afc4b3b17619f1702495f2dcd054e67da",
+          "bytes": 6380
+        }
+      ],
+      "assets_current": [
+        {
+          "path": "crates\\rhi\\examples\\assets\\22_clear_texture\\LICENSE.microsoft",
+          "sha256": "d3757d7fb7dd73bb027391905f06d4cf3000f79e8652d861e466d02ac028fac2",
+          "bytes": 1099
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\22_clear_texture\\README.md",
+          "sha256": "8d4d5a79a666dd3c820c0fb10a02fe038f23a28cce4c837f3c315581b5d3a36f",
+          "bytes": 604
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\22_clear_texture\\shaders.hlsl",
+          "sha256": "c300fc6586b8e0410ea3df4c00d080efeeeeac7e0e2485a84864fae118f6597e",
+          "bytes": 788
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\22_clear_texture\\shaders_rhi.hlsl",
+          "sha256": "4a7d420a0dda29ae9bc8ba446528fadd480895c0ad657d588a1cd971e33d913d",
+          "bytes": 793
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\22_clear_texture\\triangle_ps.dxil",
+          "sha256": "ac87cd58252174ade813f2bfc541d6b474564f6827139a25fe0a3af39cc73524",
+          "bytes": 6232
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\22_clear_texture\\triangle_ps.spv",
+          "sha256": "b50e2e4d18539197c16fdc52ca147702efb3851c835ad2936e14be2aa7150b20",
+          "bytes": 368
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\22_clear_texture\\triangle_vs.dxil",
+          "sha256": "167c337560a70e5945ad573fce8903029404af039ab811a1d2ec8644fa796ef8",
+          "bytes": 7116
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\22_clear_texture\\triangle_vs.spv",
+          "sha256": "d51b86289149046e80cb0bcae7b47ecf5c8fa46465e6d8f3fa24c6630a9fda48",
+          "bytes": 484
+        }
+      ],
+      "evidence_files": [
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-clear\\capture.log",
+          "sha256": "15aa2c0ecaf1013de37e78f153a98cfbbee2a3f8fd4a4797a42ebe78a9664681",
+          "bytes": 825
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-clear\\debug.log",
+          "sha256": "a5321886c5e23a58467b15b025aa8bda2c894b13d2a2b0ae3e4ee757a915b943",
+          "bytes": 18
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-clear\\final-01.png",
+          "sha256": "f7c490067fe9ca730343642e4e3f71ca7258730bfcfac6c5a52bb2079d2c3e3e",
+          "bytes": 13121
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-clear\\final-02.png",
+          "sha256": "f7c490067fe9ca730343642e4e3f71ca7258730bfcfac6c5a52bb2079d2c3e3e",
+          "bytes": 13121
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-clear\\final-03.png",
+          "sha256": "f7c490067fe9ca730343642e4e3f71ca7258730bfcfac6c5a52bb2079d2c3e3e",
+          "bytes": 13121
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-clear\\final.log",
+          "sha256": "e3b765a72eb2591792d42024174e5ceb8e36c0b75a79deb4a47d85bc4076970a",
+          "bytes": 792
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-clear\\hello-01.png",
+          "sha256": "31abf1414321a0aa81ec77a5404d2961e104ca46ecb0ee8c85630740ed1eb438",
+          "bytes": 13121
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-clear\\hello-02.png",
+          "sha256": "31abf1414321a0aa81ec77a5404d2961e104ca46ecb0ee8c85630740ed1eb438",
+          "bytes": 13121
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-clear\\hello-03.png",
+          "sha256": "31abf1414321a0aa81ec77a5404d2961e104ca46ecb0ee8c85630740ed1eb438",
+          "bytes": 13121
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-clear\\output.ppm",
+          "sha256": "8cf68bfc4ef582914e92c894b24870b0e477226c2b5826ee24af16283a81a928",
+          "bytes": 2764816
+        }
+      ]
+    },
+    "23": {
+      "name": "23_multi_queue",
+      "exe_current": {
+        "path": "target\\debug\\examples\\23_multi_queue.exe",
+        "sha256": "43b4c7d8765bc5e76af303ee2074682d39ec5aa89a840b762f834c113f61a952"
+      },
+      "example_sources_current": [
+        {
+          "path": "crates\\rhi\\examples\\23_multi_queue\\main.rs",
+          "sha256": "ca1ebc44e6f468eedf6aa4ac31e2305f8c5875cf5f71335984b8d22ccaea96b4",
+          "bytes": 3656
+        },
+        {
+          "path": "crates\\rhi\\examples\\23_multi_queue\\record.rs",
+          "sha256": "79ed23976cdccc9a07c341864ab42285f94784ad5700ae53b720fe5663f7a596",
+          "bytes": 11790
+        },
+        {
+          "path": "crates\\rhi\\examples\\23_multi_queue\\setup.rs",
+          "sha256": "954bf101d696c92798bbec8e4cb20d0aa25286d95e4b1241817d4a9d8eaaaffd",
+          "bytes": 9953
+        }
+      ],
+      "assets_current": [
+        {
+          "path": "crates\\rhi\\examples\\assets\\23_multi_queue\\compute.dxil",
+          "sha256": "974676859a9580d47dcd15690c0567eaf489a5723f3da7893cd16701be2e3e2c",
+          "bytes": 20636
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\23_multi_queue\\compute.hlsl",
+          "sha256": "1d34ab23a32b7e8e6a89fc405eb0c7e4318960ac4e5631e75b50e4e32480a80a",
+          "bytes": 3971
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\23_multi_queue\\compute.spv",
+          "sha256": "2e4a86f2df1ffff46acf6fd17c93e8dadb3e6aa047b2bb83ed52c1d7b35c7b5f",
+          "bytes": 36708
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\23_multi_queue\\draw.hlsl",
+          "sha256": "be20738c34d0fd1c5fffcdfe1b22166118e49a1e01ae4f43714863fb818e4921",
+          "bytes": 1222
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\23_multi_queue\\draw_ps.dxil",
+          "sha256": "94e23fc0297187b1fe02a732ca8ab5186ed57b0e5509e1266622a296dc316617",
+          "bytes": 3396
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\23_multi_queue\\draw_ps.spv",
+          "sha256": "354419583811b6db22cd9d18f4a014cdaad2cb045957ed37180725cc2f0520c1",
+          "bytes": 776
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\23_multi_queue\\draw_vs.dxil",
+          "sha256": "9478b745d9614db77ea700d03408f2939c2da24e5b1c3975d7c61aeb4bbc00d7",
+          "bytes": 4952
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\23_multi_queue\\draw_vs.spv",
+          "sha256": "1362ec5f58739ea8b1e54f06231bc1f0eac1b59b6cd6a6c48bc42f86831ec4f2",
+          "bytes": 2400
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\23_multi_queue\\initial.bin",
+          "sha256": "1ec158493738ab3e3e4c53bf5bc60a2548389f3eaba96e1349f5d12f8f25c6d4",
+          "bytes": 320000
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\23_multi_queue\\LICENSE",
+          "sha256": "d3757d7fb7dd73bb027391905f06d4cf3000f79e8652d861e466d02ac028fac2",
+          "bytes": 1099
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\23_multi_queue\\official_compute.hlsl",
+          "sha256": "1a91d8bff8a51aeaf58f4f586f8505961a1fd6ee64922e0290c0fe61976333bf",
+          "bytes": 4097
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\23_multi_queue\\official_draw.hlsl",
+          "sha256": "cb91b41aca6197f14669880cd7a93f687f535186051befd26f175474332e225e",
+          "bytes": 2970
+        },
+        {
+          "path": "crates\\rhi\\examples\\assets\\23_multi_queue\\README.md",
+          "sha256": "c50ea3936a75587d6438a9895dbac8f56729538a811e34b6c93b980d6ca7b39c",
+          "bytes": 1366
+        }
+      ],
+      "evidence_files": [
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\build.log",
+          "sha256": "5edc64eaacff3b302fcf1d89e28b36aca4496029cc4d397103ed32f123066a1f",
+          "bytes": 13910
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\comparison.json",
+          "sha256": "09fa710dcc0e79b44bb732aae92ebc16ed11d46adecf9a8277cb9c715c7eda50",
+          "bytes": 71166
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\dx12-final.bin",
+          "sha256": "32fa809a0ebc3752e134be5a4c9f21a5539f34d973f8ce2fc818e025c34c5514",
+          "bytes": 320000
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\dx12-final.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\dx12-final.ppm",
+          "sha256": "0a29edebaf6e0e177fba59c0e18fe88512382429d679fad04668b52392d9b38d",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\dx12-ordinary-final.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\dx12-ordinary-final.ppm",
+          "sha256": "0a29edebaf6e0e177fba59c0e18fe88512382429d679fad04668b52392d9b38d",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\final-build.log",
+          "sha256": "a777555949064fdfbaf81ee3d717caf7bb05b30e9a72382eca652ef3e8a5743f",
+          "bytes": 13910
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\final-output.ppm",
+          "sha256": "544e856643b6a23f39ecca2338d3443d766745fd694e9fbecc1f33a92886ff23",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\final-particles.bin",
+          "sha256": "04350ac556cd3a38cf5b5b6e39173505208f6ecafc2d3eee837cdd4a4d287d46",
+          "bytes": 320000
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\final-run.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\final-screen-01.png",
+          "sha256": "9873dc2b1e3a996eae52d9c41be0a213077f097bf39e39f8ea0e79e0a9054ed8",
+          "bytes": 409660
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\final-screen-02.png",
+          "sha256": "32e6b60f26b682da680601c4d9bb91146e134f04b35589c36ce3611e1187bd09",
+          "bytes": 570136
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\final-screen-03.png",
+          "sha256": "6b5cba1ab87a9713d07910fee0b2ab6ecab8473e2cb085d49cec5a65f47cbe44",
+          "bytes": 561763
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\ordinary-final.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\ordinary-final.ppm",
+          "sha256": "544e856643b6a23f39ecca2338d3443d766745fd694e9fbecc1f33a92886ff23",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\ordinary.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\ordinary.ppm",
+          "sha256": "544e856643b6a23f39ecca2338d3443d766745fd694e9fbecc1f33a92886ff23",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\output.ppm",
+          "sha256": "544e856643b6a23f39ecca2338d3443d766745fd694e9fbecc1f33a92886ff23",
+          "bytes": 2764816
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\particles.bin",
+          "sha256": "04350ac556cd3a38cf5b5b6e39173505208f6ecafc2d3eee837cdd4a4d287d46",
+          "bytes": 320000
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\run.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\screen-01.png",
+          "sha256": "922d86e51d0b358583d5bed8b2e431f09faa354a4fcfc84138021ffc54ced608",
+          "bytes": 411700
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\screen-02.png",
+          "sha256": "0b374de4fa2216f5846fc8cf36e71099d95c6b6d60cbca6bb67f561053571985",
+          "bytes": 573809
+        },
+        {
+          "path": "临时\\当前验证\\vulkan\\0.17-multiqueue\\screen-03.png",
+          "sha256": "136ec56cbc84f496f84527ccb3272b5b87a6a5520f5c4f573668b175653c8684",
+          "bytes": 561843
+        }
+      ]
+    }
+  }
+}

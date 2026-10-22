@@ -229,6 +229,16 @@ pub struct RecordedWork<B: DeferredBackend> {
     pub(crate) native: B::NativeRecordedWork,
 }
 impl<B: DeferredBackend> RecordedWork<B> {
+    /// Borrows the backend's one-shot recording for submission validation.
+    ///
+    /// # Safety
+    /// Only the owning backend may call this while validating a packet for
+    /// its device and lane. The reference must not be used to submit, mutate,
+    /// retain beyond this borrow, or replay the recording.
+    #[doc(hidden)]
+    pub unsafe fn native_ref(&self) -> &B::NativeRecordedWork {
+        &self.native
+    }
     pub fn device(&self) -> DeviceId {
         self.device
     }
@@ -246,16 +256,39 @@ impl<B: DeferredBackend> RecordedWork<B> {
         self.native
     }
 }
+/// A standard mip tile rectangle, or the entire opaque packed mip tail.
+/// For a packed tail use its `first_mip`, layer zero, origin `[0, 0, 0]`,
+/// and count `[tile_count, 1, 1]`. Partial packed-tail mapping is invalid.
 pub struct SparseTile {
     pub mip: u32,
     pub layer: u32,
     pub origin: [u32; 3],
     pub count: [u32; 3],
 }
+impl SparseTile {
+    /// Selects all tiles in the packed mip tail of the single supported layer.
+    pub fn packed_tail(tail: SparsePackedMipTail) -> Self {
+        Self {
+            mip: tail.first_mip,
+            layer: 0,
+            origin: [0, 0, 0],
+            count: [tail.tile_count, 1, 1],
+        }
+    }
+}
+/// Mapping changes are ordered with commands on their submission lane. The caller
+/// must ensure mapped residency, resource states, and aliasing hazards for every
+/// GPU access; mapping does not initialize tile contents.
 pub struct SparseBind<B: Backend> {
     pub resource: Texture<B>,
+    /// Regions are traversed in order; standard rectangles are x-major. A
+    /// packed tail contributes its reported number of consecutive tiles.
     pub tiles: Vec<SparseTile>,
+    /// `None` unmaps the regions. New mappings do not initialize their contents.
     pub allocation: Option<SparseAllocation<B>>,
+    /// Byte offset in the allocation for the first mapped tile. Must be a
+    /// multiple of the texture's reported tile size; zero for an unmap.
+    pub allocation_offset: u64,
 }
 #[must_use = "present or explicitly abandon this exclusive surface lease"]
 pub struct SurfaceImage<B: Backend> {

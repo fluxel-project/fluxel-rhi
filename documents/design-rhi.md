@@ -189,8 +189,14 @@ when plans overlap, the caller must associate each token with its intended
 producer and consumer executions. Static step equality cannot prove that
 association. Core validates device, topology, lane, and route facts without
 maintaining an execution registry or inferring cross-submission dependencies.
-No current native backend implements the optional multi-queue signal SPI;
-mock contract tests must not be read as native multi-queue conformance.
+DX12 and Vulkan implement graphics/compute lanes with native cross-queue
+signals and waits. Their focused GPU fixtures exercise compute producers and
+graphics consumers; they do not prove every possible submission topology.
+Metal conditionally exposes two native queues with shared-event waits inside
+one packet, limited to four waits per recording. It rejects cross-packet GPU
+tokens. The Metal route has Apple-target compilation and static review only,
+without Apple GPU acceptance. Mock contract tests are not native conformance
+evidence.
 
 Completion selection belongs to each execution, independently of plan topology.
 A completion point is host-observable evidence; it is not interchangeable with
@@ -319,9 +325,10 @@ the maintained WGSL source without introducing a runtime compiler fallback.
 Submission uses distinct serialization for execution-plan ordering and Vulkan's
 native queue external-synchronization requirement. These locks satisfy native
 ordering obligations; they do not constitute a task scheduler. Fence-backed
-in-flight ownership preserves accepted work through completion. The current
-single-queue route rejects unsupported plan shapes and partial-tail resume
-instead of presenting an emulated multi-lane implementation.
+in-flight ownership preserves accepted work through completion. Devices with
+the required queue families also expose native graphics and compute lanes;
+timeline semaphore edges carry cross-queue dependencies, including sparse
+bind completion. Unsupported plan shapes and partial-tail resume are rejected.
 
 Descriptor layout creation uses the caller's explicit runtime-array capacity.
 This is an operational allocation bound, not the largest integer a driver can
@@ -448,11 +455,12 @@ using `7 * group + binding`: four groups occupy buffer slots 0–27, leaving slo
 overwriting resource bindings. Arrays and layouts outside the implemented ABI
 are rejected rather than hidden behind an unimplemented argument-buffer model.
 
-The current submission subset is graphics-lane command steps with optional
-presentation, without partial-tail resume. The source contains a `CAMetalLayer`
-surface path. This is an implementation boundary, not completed platform
-acceptance: macOS SDK linking, real Apple GPU execution, and example visual
-review remain unverified. Other backends' evidence cannot close that gap.
+The ordinary submission subset is graphics-lane command steps with optional
+presentation, without partial-tail resume. A separate restricted native
+graphics/compute multi-queue route is described below. The source contains a
+`CAMetalLayer` surface path. This is an implementation boundary, not completed
+platform acceptance: real Apple GPU execution and example visual review remain
+unverified. Other backends' evidence cannot close that gap.
 
 ## Shared observable semantics and their reasons
 
@@ -485,15 +493,109 @@ specific limits remain checked at creation or execution. Capability answers
 support workload selection rather than merely describing what the upstream
 native API could theoretically do.
 
-Some optional vocabulary still lacks a complete usable native route. Standalone
-texture clear is unsupported by current backends, and its legacy descriptor
-does not express depth/stencil values or array-layer ranges. Native encoder
-interop lacks a target-encoder path, and external textures lack a complete
-public view/binding chain. These require a real consumer and a complete RHI
-contract before implementation, rather than renderer-side emulation or partial
-capability claims. Generic device-loss state queries likewise remain a lifecycle
-design target; `DeviceLost` errors and backend-specific loss handling do not
-establish a universal status/notification protocol.
+Standalone texture clear selects nonempty mip and array-layer ranges and a
+color or depth value. It clears whole selected subresources; the caller supplies
+the transition to color-attachment or depth-write state. The DX12 route requires
+render-attachment usage and currently accepts float color clears for RGBA8 or
+BGRA8 unorm and depth clears for Depth32Float. Other formats and stencil clears
+are not covered. Standalone buffer clear remains unsupported by DX12. Render
+pass attachment load clears are a separate operation.
+
+Native encoder interop lacks a target-encoder path, and external textures lack
+a complete public view/binding chain. Generic device-loss state queries likewise
+remain a lifecycle design target; `DeviceLost` errors and backend-specific loss
+handling do not establish a universal status/notification protocol.
+
+### Current DX12 advanced routes
+
+The DX12 routes below are bounded by their descriptors and runtime capability
+checks. Focused real-GPU fixtures cover the cited paths; they do not establish
+support for every native API option or every device.
+
+- Acceleration structures and ray pipelines require DXR tier 1.0 and the native
+  device interface. Inline ray query additionally requires DXR 1.1 and shader
+  model 6.5. The backend supports the described triangle and AABB builds,
+  shader groups and shader-table sections subject to its validation. The
+  [ray query GPU fixture](../crates/dx12/tests/ray_query_gpu.rs) verifies hit
+  and miss output; the ray pipeline example exercises a separate DXR route.
+- Mesh pipelines require mesh shader tier 1 and shader model 6.5. The current
+  route is restricted to its supported triangle pipeline, attachment formats,
+  sample counts and depth state. See the
+  [mesh GPU fixture](../crates/dx12/tests/mesh_gpu.rs).
+- Sparse textures require tiled-resource support. The current route accepts
+  single-layer, single-sample RGBA8 2D textures with copy and sampled usage;
+  standard mips and the packed mip tail use the backend's reported tiling.
+  Mapping and residency changes are exercised by the
+  [sparse GPU fixtures](../crates/dx12/tests/sparse_gpu.rs).
+- The explicit multi-queue route exposes graphics and compute lanes with native
+  fence waits. Timestamp queries are supported on either lane; a query set is
+  bound to its first submitted lane. Occlusion and pipeline statistics are
+  graphics-lane operations. Resolve still requires the caller to establish the
+  relevant submission and completion evidence. See the
+  [query](../crates/dx12/tests/query_gpu.rs) and
+  [multi-queue](../crates/dx12/tests/multi_queue_gpu.rs) fixtures.
+- GPU-count multi-draw uses `ExecuteIndirect` with a count buffer, subject to
+  the argument, stride, range and state requirements in the Core contract and
+  DX12 backend. The [GPU fixture](../crates/dx12/tests/multi_count_gpu.rs)
+  checks the resulting output.
+- The restricted standalone texture clear route above is exercised by the
+  [clear GPU fixture](../crates/dx12/tests/clear_gpu.rs).
+
+### Current Vulkan advanced routes
+
+The Vulkan backend admits each route only after device feature, extension,
+queue-family, and descriptor checks. The focused GPU fixtures in
+[`crates/vulkan/tests`](../crates/vulkan/tests) and the numbered examples cover
+the admitted paths on an AMD Radeon 780M; they do not imply that every Vulkan
+device supports them.
+
+- Acceleration-structure builds, ray pipelines, and inline ray query use the
+  corresponding Vulkan extensions and enabled features. Ray pipeline shader
+  groups and shader-binding-table regions retain their native alignment and
+  lifetime requirements.
+- Mesh pipelines use `VK_EXT_mesh_shader`. The selected SPIR-V mesh entry's
+  output topology is checked against the public primitive topology before
+  native pipeline creation.
+- Sparse textures use native sparse image binds. Allocation ranges cannot be
+  simultaneously bound to different tiles without the aliasing feature; the
+  supported route rejects such overlap and includes sparse queue work in
+  completion coverage.
+- Native graphics and compute queues use timeline semaphore waits for explicit
+  cross-queue dependencies. Timestamp and pipeline-statistics queries use
+  native query pools and report only the fields admitted by the public layout.
+- GPU-count multi-draw uses `vkCmdDrawIndirectCount` or its indexed variant.
+  Standalone clears use native image clear commands for their admitted formats
+  and subresource ranges.
+
+### Metal advanced route status
+
+The Metal source conditionally admits a restricted mesh path on Metal 3 devices,
+and a compute-only inline ray-query path when native ray support and an actual
+MSL 2.4 compile probe succeed. Triangle acceleration structures support one
+build with fixed dependencies; DXR-style pipeline and shader-table operations
+remain unsupported. The mesh path accepts one color target, a fragment stage,
+triangle output verified from a restricted Metal source grammar, and no
+task/object payload. Apple-family timestamp queries require native counter
+sampling at blit boundaries; a failed sample has an explicit invalid-value
+decode. Restricted standalone texture clears use attachment load clears.
+
+The dual-queue path exposes graphics and compute queues on devices with native
+shared events. Explicit GPU waits are encoded inside the consumer command
+buffer. Its supported subset is a single packet with at most four waits per
+recording; cross-packet tokens are rejected before native handoff. A failed
+producer may still be followed by already accepted consumer work, and the
+consumer completion carries the failure. This is the execution contract's
+non-atomic failure model, not an implicit rollback.
+
+These Metal paths have only Apple-target compilation and static contract
+checks, as requested for this stage. They have no Apple GPU execution,
+presentation, or visual acceptance evidence. Metal 4 placement sparse mapping
+is not advertised: its mixed Metal 3/4 queue path still lacks a proven
+`ResourceState` barrier for the actual texture consumers. Core's exact eleven
+pipeline-statistics fields and the raw-buffer GPU-count multi-draw command have
+no equivalent implementation in this immediate Metal encoder. Unsupported
+operations return structured errors rather than inheriting support from
+Metal's general API feature set.
 
 ### Binding bounds are caller intent, validated against native limits
 

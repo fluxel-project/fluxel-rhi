@@ -10,5 +10,5 @@ mod raster;
 mod stream;
 
 pub(crate) use layout::{PipelineLayoutState, create_pipeline_layout};
-pub(crate) use raster::RasterPipelineState;
+pub(crate) use raster::{RasterPipelineState, comparison, stencil_is_disabled};
 pub(crate) use stream::create_view_instanced_pso;

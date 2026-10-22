@@ -84,19 +84,31 @@ pub struct Dx12Encoder {
     pub(crate) allocator: ID3D12CommandAllocator,
     pub(crate) list: ID3D12GraphicsCommandList,
     direct_commands: Arc<DirectCommandPool>,
+    pub(crate) is_compute: bool,
     pub(crate) mip_blit_cache: Arc<super::mipmap::MipBlitCache>,
     pub(crate) uploads: Vec<windows::Win32::Graphics::Direct3D12::ID3D12Resource>,
     pub(crate) mip_blit_heaps: Vec<ID3D12DescriptorHeap>,
+    pub(crate) clear_heaps: Vec<ID3D12DescriptorHeap>,
     pub(crate) secondary: Vec<super::secondary::Dx12SecondaryWork>,
     pub(crate) queries: Vec<Dx12QuerySet>,
     pub(crate) active_occlusion: Option<(Dx12QuerySet, u32)>,
+    pub(crate) active_statistics: Option<(Dx12QuerySet, u32)>,
+    pub(crate) query_ops: Vec<super::query::QueryOp>,
     // Retain typed handles as well as native COM objects.  In particular,
     // descriptor suballocations are released with the Dx12BindGroup handle.
     pub(crate) bound_groups: Vec<Dx12BindGroup>,
     pub(crate) buffers: Vec<Dx12Buffer>,
     pub(crate) textures: Vec<Dx12Texture>,
+    pub(crate) accelerations: Vec<super::super::Dx12Acceleration>,
     pub(crate) pipeline: Option<Dx12RasterPipeline>,
+    pub(crate) raster_pipelines: Vec<Dx12RasterPipeline>,
+    pub(crate) compute_pipelines: Vec<Dx12ComputePipeline>,
     pub(crate) compute_pipeline: Option<Dx12ComputePipeline>,
+    pub(crate) ray_pipeline: Option<super::super::Dx12RayPipeline>,
+    pub(crate) ray_pipelines: Vec<super::super::Dx12RayPipeline>,
+    pub(crate) mesh_pipeline: Option<super::super::Dx12MeshPipeline>,
+    pub(crate) mesh_pipelines: Vec<super::super::Dx12MeshPipeline>,
+    pub(crate) mesh_signatures: Vec<ID3D12CommandSignature>,
     pub(crate) surface_target: Option<ID3D12Resource>,
     pub(crate) texture_target: Option<ID3D12Resource>,
     pub(crate) depth_target: Option<ID3D12Resource>,
@@ -144,16 +156,25 @@ impl api::RasterExtrasOps<Dx12> for RasterExtras {
         super::indirect::multi(encoder, args, offset, count, stride, indexed)
     }
     fn multi_draw_count(
-        _: &mut Dx12Encoder,
-        _: &Dx12Buffer,
-        _: u64,
-        _: &Dx12Buffer,
-        _: u64,
-        _: u32,
-        _: u32,
-        _: bool,
+        encoder: &mut Dx12Encoder,
+        args: &Dx12Buffer,
+        offset: u64,
+        count: &Dx12Buffer,
+        count_offset: u64,
+        max: u32,
+        stride: u32,
+        indexed: bool,
     ) -> Result<(), Error> {
-        Err(Error::Unsupported("DX12 multi draw count"))
+        super::indirect::multi_count(
+            encoder,
+            args,
+            offset,
+            count,
+            count_offset,
+            max,
+            stride,
+            indexed,
+        )
     }
     fn set_push_constants(
         encoder: &mut Dx12Encoder,
@@ -161,10 +182,13 @@ impl api::RasterExtrasOps<Dx12> for RasterExtras {
         offset: u32,
         bytes: &[u8],
     ) -> Result<(), Error> {
-        let pipeline = encoder.pipeline.as_ref().ok_or(Error::InvalidState)?;
-        let range = pipeline
-            .0
-            .layout
+        let layout = encoder
+            .pipeline
+            .as_ref()
+            .map(|p| &p.0.layout)
+            .or_else(|| encoder.mesh_pipeline.as_ref().map(|p| &p.0.layout))
+            .ok_or(Error::InvalidState)?;
+        let range = layout
             .push_constants
             .as_ref()
             .ok_or(Error::Unsupported("DX12 pipeline has no push constants"))?;
@@ -199,24 +223,41 @@ impl api::RasterExtrasOps<Dx12> for RasterExtras {
 }
 
 impl Dx12Encoder {
-    pub(crate) fn new(device: &Dx12Device) -> Result<Self, Error> {
-        let (allocator, list) = device.0.direct_commands.acquire(&device.0.native)?;
+    pub(crate) fn new(device: &Dx12Device, lane: LaneId) -> Result<Self, Error> {
+        let is_compute = lane.ordinal == 1;
+        let (allocator, list) = if is_compute {
+            device.0.multi_queue.commands.acquire(&device.0.native)?
+        } else {
+            device.0.direct_commands.acquire(&device.0.native)?
+        };
         Ok(Self {
             device: device.clone(),
             allocator,
             list,
             direct_commands: device.0.direct_commands.clone(),
+            is_compute,
             mip_blit_cache: device.0.mip_blit_cache.clone(),
             uploads: Vec::new(),
             mip_blit_heaps: Vec::new(),
+            clear_heaps: Vec::new(),
             secondary: Vec::new(),
             queries: Vec::new(),
             active_occlusion: None,
+            active_statistics: None,
+            query_ops: Vec::new(),
             bound_groups: Vec::new(),
             buffers: Vec::new(),
             textures: Vec::new(),
+            accelerations: Vec::new(),
             pipeline: None,
+            raster_pipelines: Vec::new(),
+            compute_pipelines: Vec::new(),
             compute_pipeline: None,
+            ray_pipeline: None,
+            ray_pipelines: Vec::new(),
+            mesh_pipeline: None,
+            mesh_pipelines: Vec::new(),
+            mesh_signatures: Vec::new(),
             surface_target: None,
             texture_target: None,
             depth_target: None,
@@ -238,8 +279,16 @@ impl Drop for Dx12Encoder {
         // unfinished list is still open and cannot legally be reset, so a
         // failed recording simply releases its native objects instead.
         if self.closed {
-            self.direct_commands
-                .release(self.allocator.clone(), self.list.clone());
+            if self.is_compute {
+                self.device
+                    .0
+                    .multi_queue
+                    .commands
+                    .release(self.allocator.clone(), self.list.clone());
+            } else {
+                self.direct_commands
+                    .release(self.allocator.clone(), self.list.clone());
+            }
         }
     }
 }

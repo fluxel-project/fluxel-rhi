@@ -335,9 +335,7 @@ fn compare(v: api::CompareFunction) -> vk::CompareOp {
     }
 }
 fn stencil_disabled(state: &api::DepthStencilState) -> bool {
-    state.stencil_read_mask == 0
-        && state.stencil_write_mask == 0
-        && matches!(state.stencil_front.compare, api::CompareFunction::Always)
+    matches!(state.stencil_front.compare, api::CompareFunction::Always)
         && matches!(state.stencil_back.compare, api::CompareFunction::Always)
         && [state.stencil_front, state.stencil_back]
             .iter()

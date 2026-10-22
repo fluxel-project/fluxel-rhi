@@ -17,6 +17,7 @@ pub struct Dx12SecondaryWork {
     pub(crate) buffers: Vec<Dx12Buffer>,
     pub(crate) groups: Vec<Dx12BindGroup>,
     pub(crate) pipeline: Option<Dx12RasterPipeline>,
+    pub(crate) pipelines: Vec<Dx12RasterPipeline>,
     pub(crate) signature: api::SecondaryRasterDesc,
     pub(crate) viewport: Option<api::Viewport>,
     pub(crate) scissor: Option<api::Rect>,
@@ -30,6 +31,7 @@ pub struct Dx12SecondaryEncoder {
     pub(crate) buffers: Vec<Dx12Buffer>,
     pub(crate) groups: Vec<Dx12BindGroup>,
     pub(crate) pipeline: Option<Dx12RasterPipeline>,
+    pub(crate) pipelines: Vec<Dx12RasterPipeline>,
     pub(crate) signature: api::SecondaryRasterDesc,
     pub(crate) viewport: Option<api::Viewport>,
     pub(crate) scissor: Option<api::Rect>,
@@ -68,6 +70,7 @@ impl Dx12SecondaryEncoder {
             buffers: Vec::new(),
             groups: Vec::new(),
             pipeline: None,
+            pipelines: Vec::new(),
             signature: signature.clone(),
             viewport: None,
             scissor: None,
@@ -126,6 +129,7 @@ pub(crate) fn set_pipeline(
             .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     }
     encoder.pipeline = Some(pipeline.clone());
+    encoder.pipelines.push(pipeline.clone());
     Ok(())
 }
 
@@ -200,6 +204,15 @@ pub(crate) fn set_bind_group(
     offsets: &[u32],
 ) -> Result<(), Error> {
     let pipeline = encoder.pipeline()?;
+    let expected = pipeline
+        .0
+        .layout
+        .groups
+        .get(slot as usize)
+        .ok_or(Error::InvalidRange)?;
+    if !std::sync::Arc::ptr_eq(expected, &group.0.layout) {
+        return Err(Error::InvalidState);
+    }
     let table = pipeline
         .0
         .layout
@@ -213,12 +226,38 @@ pub(crate) fn set_bind_group(
     {
         return Err(Error::InvalidState);
     }
-    // Descriptor heaps are state owned by the direct command list.  A D3D12
-    // bundle may select root tables but cannot switch the active heap; the
-    // primary installs this bundle's device-wide heaps immediately before
-    // ExecuteBundle.
+    let mut addresses = Vec::with_capacity(offsets.len());
+    for (root, &offset) in table.dynamic_cbvs.iter().zip(offsets) {
+        let uniform = native
+            .uniform(root.binding)
+            .filter(|u| u.dynamic_offset)
+            .ok_or(Error::InvalidState)?;
+        let offset = u64::from(offset);
+        if offset % 256 != 0 {
+            return Err(Error::InvalidRange);
+        }
+        let start = uniform
+            .range
+            .start
+            .checked_add(offset)
+            .ok_or(Error::InvalidRange)?;
+        let end = start
+            .checked_add(root.min_size)
+            .ok_or(Error::InvalidRange)?;
+        if end > uniform.buffer.size {
+            return Err(Error::InvalidRange);
+        }
+        // SAFETY: the group retains this same-device buffer.
+        let address = unsafe { uniform.buffer.resource.GetGPUVirtualAddress() }
+            .checked_add(start)
+            .ok_or(Error::InvalidRange)?;
+        if address % 256 != 0 {
+            return Err(Error::InvalidRange);
+        }
+        addresses.push((root.root, address));
+    }
     // SAFETY: the primary installs the device-wide heaps before ExecuteBundle;
-    // group/pipeline objects are same-device validated and retained by this bundle.
+    // all fallible validation precedes recording and the bundle retains the group.
     unsafe {
         if let Some(root) = table.views {
             encoder
@@ -230,38 +269,10 @@ pub(crate) fn set_bind_group(
                 .list
                 .SetGraphicsRootDescriptorTable(root, native.sampler_gpu());
         }
-        for (root, &offset) in table.dynamic_cbvs.iter().zip(offsets) {
-            let uniform = native
-                .uniform(root.binding)
-                .filter(|uniform| uniform.dynamic_offset)
-                .ok_or(Error::InvalidState)?;
-            let offset = u64::from(offset);
-            if offset % 256 != 0 {
-                return Err(Error::InvalidRange);
-            }
-            let start = uniform
-                .range
-                .start
-                .checked_add(offset)
-                .ok_or(Error::InvalidRange)?;
-            let end = start
-                .checked_add(root.min_size)
-                .ok_or(Error::InvalidRange)?;
-            if end > uniform.buffer.size {
-                return Err(Error::InvalidRange);
-            }
-            let address = uniform
-                .buffer
-                .resource
-                .GetGPUVirtualAddress()
-                .checked_add(start)
-                .ok_or(Error::InvalidRange)?;
-            if address % 256 != 0 {
-                return Err(Error::InvalidRange);
-            }
+        for (root, address) in addresses {
             encoder
                 .list
-                .SetGraphicsRootConstantBufferView(root.root, address);
+                .SetGraphicsRootConstantBufferView(root, address);
         }
     }
     encoder.groups.push(group.clone());

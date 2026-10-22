@@ -14,13 +14,96 @@ use std::{
     },
 };
 
+#[cfg(test)]
+mod tests {
+    use super::super::tests::type_contract_tests::NativeShared;
+    use super::*;
+    impl SparseBackend for NativeShared {
+        fn create_sparse_allocation(_: &Arc<()>, _: u64) -> Result<Arc<()>> {
+            Ok(Arc::new(()))
+        }
+    }
+    #[test]
+    fn packed_tail_region_covers_the_whole_reported_tail() {
+        let tail = SparsePackedMipTail {
+            first_mip: 2,
+            mip_count: 7,
+            tile_count: 3,
+        };
+        let region = SparseTile::packed_tail(tail);
+        assert_eq!(region.mip, 2);
+        assert_eq!(region.layer, 0);
+        assert_eq!(region.origin, [0, 0, 0]);
+        assert_eq!(region.count, [3, 1, 1]);
+    }
+    #[test]
+    fn sparse_contract_checks_empty_allocation_and_texture_device() {
+        let id = DeviceId::allocate().unwrap();
+        let other = DeviceId::allocate().unwrap();
+        let caps = DeviceCapabilities {
+            sparse: true,
+            ..DeviceCapabilities::default()
+        };
+        // SAFETY: each mock handle is paired with its unique device identity.
+        let device = unsafe { Device::<NativeShared>::from_native(id, Arc::new(()), caps) };
+        let foreign = unsafe { Texture::<NativeShared>::from_native(other, Arc::new(())) };
+        let sparse = device.sparse().unwrap();
+        assert!(matches!(sparse.allocation(0), Err(Error::InvalidRange)));
+        assert!(matches!(sparse.tiling(&foreign), Err(Error::WrongDevice)));
+    }
+}
+
 /// Sparse is plan-level work, not a command-buffer operation. A backend may
 /// implement it only where its actual device has the capability.
 pub trait SparseBackend: Backend {
+    /// Creates a sparse texture with no initially mapped tiles.
+    fn create_sparse_texture(
+        _device: &Self::NativeDevice,
+        _desc: &TextureDesc,
+    ) -> Result<Self::NativeTexture> {
+        Err(Error::Unsupported("sparse textures"))
+    }
+    /// Returns the native tile shape for a sparse texture.
+    fn sparse_texture_tiling(
+        _device: &Self::NativeDevice,
+        _texture: &Self::NativeTexture,
+    ) -> Result<SparseTextureTiling> {
+        Err(Error::Unsupported("sparse texture tiling"))
+    }
     fn create_sparse_allocation(
         device: &Self::NativeDevice,
         size: u64,
     ) -> Result<Self::NativeSparseAllocation>;
+    /// Allocates backing memory compatible with a particular sparse texture.
+    /// APIs whose memory type depends on the image requirements override this.
+    fn create_sparse_allocation_for(
+        device: &Self::NativeDevice,
+        _texture: &Self::NativeTexture,
+        size: u64,
+    ) -> Result<Self::NativeSparseAllocation> {
+        Self::create_sparse_allocation(device, size)
+    }
+}
+/// Tile dimensions, texture grid, and allocation alignment for a sparse texture.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SparseTextureTiling {
+    pub tile_extent: [u32; 3],
+    /// Standard mip zero grid, or `[0, 0, 0]` when mip zero is packed.
+    pub tile_grid: [u32; 3],
+    pub tile_bytes: u64,
+    /// Grid for each standard mip, ordered from mip zero. Empty when all
+    /// mips belong to the opaque packed tail.
+    pub standard_mip_grids: Vec<[u32; 3]>,
+    /// Packed mips share an opaque allocation and must be mapped or unmapped
+    /// together, using the packed-tail SparseTile representation.
+    pub packed_tail: Option<SparsePackedMipTail>,
+}
+/// Opaque packed mip tail for a single texture layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SparsePackedMipTail {
+    pub first_mip: u32,
+    pub mip_count: u32,
+    pub tile_count: u32,
 }
 pub struct SparseDomain<'a, B: SparseBackend> {
     device: &'a Device<B>,
@@ -31,12 +114,50 @@ impl<B: SparseBackend> Device<B> {
     }
 }
 impl<B: SparseBackend> SparseDomain<'_, B> {
+    /// Creates a sparse texture; newly created tiles are unmapped.
+    pub fn texture(&self, desc: &TextureDesc) -> Result<Texture<B>> {
+        // SAFETY: the backend creates this native object for this device.
+        Ok(unsafe {
+            Texture::from_native(
+                self.device.id,
+                B::create_sparse_texture(&self.device.native, desc)?,
+            )
+        })
+    }
+    /// Reports the physical tile shape for this particular sparse texture.
+    pub fn tiling(&self, texture: &Texture<B>) -> Result<SparseTextureTiling> {
+        if texture.device != self.device.id {
+            return Err(Error::WrongDevice);
+        }
+        B::sparse_texture_tiling(&self.device.native, &texture.native)
+    }
     pub fn allocation(&self, size: u64) -> Result<SparseAllocation<B>> {
+        if size == 0 {
+            return Err(Error::InvalidRange);
+        }
         // SAFETY: SPI allocation and the checked backing allocation share this device.
         Ok(unsafe {
             SparseAllocation::from_native(
                 self.device.id,
                 B::create_sparse_allocation(&self.device.native, size)?,
+            )
+        })
+    }
+    /// Allocates memory using the texture's native memory requirements.
+    /// The resulting allocation can only be bound to textures compatible with
+    /// its native memory type and alignment; the backend checks each bind.
+    pub fn allocation_for(&self, texture: &Texture<B>, size: u64) -> Result<SparseAllocation<B>> {
+        if texture.device != self.device.id {
+            return Err(Error::WrongDevice);
+        }
+        if size == 0 {
+            return Err(Error::InvalidRange);
+        }
+        // SAFETY: the backend creates the allocation on the checked device.
+        Ok(unsafe {
+            SparseAllocation::from_native(
+                self.device.id,
+                B::create_sparse_allocation_for(&self.device.native, &texture.native, size)?,
             )
         })
     }

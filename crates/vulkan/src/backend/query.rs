@@ -7,6 +7,9 @@
 //! `active_occlusion` is the sole begin/end state: it prevents nesting and is
 //! forcibly balanced by raster abort. The caller supplies all cross-command
 //! synchronization; this module only records Vulkan query-pool operations.
+//! A submitted query set is restricted to one lane for its lifetime. The
+//! submit gate validates all operations before issuing any command buffer, so
+//! a later lane cannot race an earlier reset, write, or resolve on the GPU.
 
 use std::{ops::Range, sync::Arc};
 
@@ -28,6 +31,8 @@ struct QuerySetState {
     device: Arc<DeviceState>,
     pool: vk::QueryPool,
     count: u32,
+    kind: api::QueryKind,
+    submitted: std::sync::Mutex<Vec<Option<(u32, bool)>>>,
 }
 
 impl Drop for QuerySetState {
@@ -39,12 +44,36 @@ impl Drop for QuerySetState {
 }
 
 pub(super) fn create(device: &VulkanDevice, desc: &api::QueryDesc) -> Result<VulkanQuerySet> {
-    if !matches!(desc.kind, api::QueryKind::Occlusion) || desc.count == 0 {
-        return Err(Error::Unsupported("Vulkan query type/count"));
+    if desc.count == 0 {
+        return Err(Error::InvalidRange);
     }
+    let query_type = match desc.kind {
+        api::QueryKind::Occlusion => vk::QueryType::OCCLUSION,
+        api::QueryKind::Timestamp if device.0.timestamp_bits > 0 => vk::QueryType::TIMESTAMP,
+        api::QueryKind::PipelineStatistics if device.0.pipeline_statistics => {
+            vk::QueryType::PIPELINE_STATISTICS
+        }
+        _ => return Err(Error::Unsupported("Vulkan query type")),
+    };
+    let stats = vk::QueryPipelineStatisticFlags::INPUT_ASSEMBLY_VERTICES
+        | vk::QueryPipelineStatisticFlags::INPUT_ASSEMBLY_PRIMITIVES
+        | vk::QueryPipelineStatisticFlags::VERTEX_SHADER_INVOCATIONS
+        | vk::QueryPipelineStatisticFlags::GEOMETRY_SHADER_INVOCATIONS
+        | vk::QueryPipelineStatisticFlags::GEOMETRY_SHADER_PRIMITIVES
+        | vk::QueryPipelineStatisticFlags::CLIPPING_INVOCATIONS
+        | vk::QueryPipelineStatisticFlags::CLIPPING_PRIMITIVES
+        | vk::QueryPipelineStatisticFlags::FRAGMENT_SHADER_INVOCATIONS
+        | vk::QueryPipelineStatisticFlags::TESSELLATION_CONTROL_SHADER_PATCHES
+        | vk::QueryPipelineStatisticFlags::TESSELLATION_EVALUATION_SHADER_INVOCATIONS
+        | vk::QueryPipelineStatisticFlags::COMPUTE_SHADER_INVOCATIONS;
     let info = vk::QueryPoolCreateInfo::default()
-        .query_type(vk::QueryType::OCCLUSION)
-        .query_count(desc.count);
+        .query_type(query_type)
+        .query_count(desc.count)
+        .pipeline_statistics(if desc.kind == api::QueryKind::PipelineStatistics {
+            stats
+        } else {
+            vk::QueryPipelineStatisticFlags::empty()
+        });
     // SAFETY: DeviceState owns the live device; the returned pool is moved into
     // the new QuerySetState that retains it until destruction.
     let pool = unsafe { device.0.device.create_query_pool(&info, None) }.map_err(vk_error)?;
@@ -52,6 +81,8 @@ pub(super) fn create(device: &VulkanDevice, desc: &api::QueryDesc) -> Result<Vul
         device: device.0.clone(),
         pool,
         count: desc.count,
+        kind: desc.kind,
+        submitted: std::sync::Mutex::new(vec![None; desc.count as usize]),
     })))
 }
 
@@ -60,7 +91,8 @@ pub(super) fn begin_occlusion(
     set: &VulkanQuerySet,
     slot: u32,
 ) -> Result<()> {
-    if !encoder.raster
+    if set.0.kind != api::QueryKind::Occlusion
+        || !encoder.raster
         || encoder.secondary_signature.is_some()
         || slot >= set.0.count
         || encoder.active_occlusion.is_some()
@@ -105,6 +137,7 @@ pub(super) fn reset(
             slots.end - slots.start,
         );
     }
+    encoder.query_ops.push(QueryOp::Reset(set.clone(), slots));
     encoder.queries.push(set.clone());
     Ok(())
 }
@@ -125,6 +158,7 @@ pub(super) fn end_occlusion(encoder: &mut VulkanEncoder) -> Result<()> {
             .device
             .cmd_end_query(encoder.command, set.0.pool, slot);
     }
+    encoder.query_ops.push(QueryOp::Write(set, slot));
     Ok(())
 }
 
@@ -148,7 +182,10 @@ pub(super) fn resolve(
         return Err(Error::InvalidRange);
     }
     let count = slots.end - slots.start;
-    let bytes = u64::from(count).checked_mul(8).ok_or(Error::InvalidRange)?;
+    let stride = set.0.kind.result_stride();
+    let bytes = u64::from(count)
+        .checked_mul(stride)
+        .ok_or(Error::InvalidRange)?;
     if offset.checked_add(bytes).ok_or(Error::InvalidRange)? > destination.0.size {
         return Err(Error::InvalidRange);
     }
@@ -162,11 +199,214 @@ pub(super) fn resolve(
             count,
             destination.0.buffer,
             offset,
-            8,
+            stride,
             vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT,
         );
     }
+    encoder.query_ops.push(QueryOp::Resolve(set.clone(), slots));
     encoder.buffers.push(destination.clone());
     encoder.queries.push(set.clone());
     Ok(())
+}
+
+#[derive(Clone)]
+pub(super) enum QueryOp {
+    Reset(VulkanQuerySet, Range<u32>),
+    Write(VulkanQuerySet, u32),
+    Resolve(VulkanQuerySet, Range<u32>),
+}
+impl QueryOp {
+    fn set(&self) -> &VulkanQuerySet {
+        match self {
+            Self::Reset(s, _) | Self::Write(s, _) | Self::Resolve(s, _) => s,
+        }
+    }
+    fn apply(&self, slots: &mut [Option<(u32, bool)>], lane: u32) -> Result<()> {
+        if slots
+            .iter()
+            .any(|slot| slot.is_some_and(|(owner, _)| owner != lane))
+        {
+            return Err(Error::Unsupported(
+                "Vulkan query set used on multiple lanes",
+            ));
+        }
+        match self {
+            Self::Reset(_, range) => {
+                for slot in range.clone() {
+                    slots[slot as usize] = Some((lane, false));
+                }
+            }
+            Self::Write(_, slot) => slots[*slot as usize] = Some((lane, true)),
+            Self::Resolve(_, range) => {
+                if range
+                    .clone()
+                    .any(|slot| slots[slot as usize] != Some((lane, true)))
+                {
+                    return Err(Error::InvalidState);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+pub(super) fn validate_ops<'a>(ops: impl Iterator<Item = (u32, &'a QueryOp)>) -> Result<()> {
+    let mut sets = std::collections::HashMap::<usize, Vec<Option<(u32, bool)>>>::new();
+    for (lane, op) in ops {
+        let set = op.set();
+        let key = Arc::as_ptr(&set.0) as usize;
+        let slots = sets.entry(key).or_insert_with(|| {
+            set.0
+                .submitted
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+        });
+        op.apply(slots, lane)?;
+    }
+    Ok(())
+}
+pub(super) fn commit_ops(ops: &[QueryOp], lane: u32) {
+    for op in ops {
+        let mut slots = op
+            .set()
+            .0
+            .submitted
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        op.apply(&mut slots, lane).expect("preflighted query state");
+    }
+}
+pub(super) fn invalidate_ops(ops: &[QueryOp], lane: u32) {
+    for op in ops {
+        let mut slots = op
+            .set()
+            .0
+            .submitted
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let range = match op {
+            QueryOp::Reset(_, range) | QueryOp::Resolve(_, range) => range.clone(),
+            QueryOp::Write(_, slot) => *slot..*slot + 1,
+        };
+        for slot in range {
+            slots[slot as usize] = Some((lane, false));
+        }
+    }
+}
+pub(super) fn timestamp(
+    encoder: &mut VulkanEncoder,
+    set: &VulkanQuerySet,
+    slot: u32,
+) -> Result<()> {
+    if set.0.kind != api::QueryKind::Timestamp
+        || slot >= set.0.count
+        || encoder.raster
+        || encoder.compute
+    {
+        return Err(Error::InvalidState);
+    }
+    // SAFETY: pool and index are valid; the command buffer retains the pool.
+    unsafe {
+        encoder
+            .device
+            .device
+            .cmd_reset_query_pool(encoder.command, set.0.pool, slot, 1);
+        encoder.device.device.cmd_write_timestamp(
+            encoder.command,
+            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+            set.0.pool,
+            slot,
+        );
+    }
+    encoder.query_ops.push(QueryOp::Write(set.clone(), slot));
+    encoder.queries.push(set.clone());
+    Ok(())
+}
+pub(super) fn begin_statistics(
+    encoder: &mut VulkanEncoder,
+    set: &VulkanQuerySet,
+    slot: u32,
+) -> Result<()> {
+    if set.0.kind != api::QueryKind::PipelineStatistics
+        || slot >= set.0.count
+        || encoder.raster
+        || encoder.compute
+        || encoder.active_statistics.is_some()
+    {
+        return Err(Error::InvalidState);
+    }
+    // SAFETY: begin and reset are outside a pass, and pool/slot are retained.
+    unsafe {
+        encoder
+            .device
+            .device
+            .cmd_reset_query_pool(encoder.command, set.0.pool, slot, 1);
+        encoder.device.device.cmd_begin_query(
+            encoder.command,
+            set.0.pool,
+            slot,
+            vk::QueryControlFlags::empty(),
+        );
+    }
+    encoder.active_statistics = Some((set.clone(), slot));
+    encoder.queries.push(set.clone());
+    Ok(())
+}
+pub(super) fn end_statistics(encoder: &mut VulkanEncoder) -> Result<()> {
+    if encoder.raster || encoder.compute {
+        return Err(Error::InvalidState);
+    }
+    let (set, slot) = encoder
+        .active_statistics
+        .take()
+        .ok_or(Error::InvalidState)?;
+    // SAFETY: this exact retained query was begun and is ended exactly once.
+    unsafe {
+        encoder
+            .device
+            .device
+            .cmd_end_query(encoder.command, set.0.pool, slot);
+    }
+    encoder.query_ops.push(QueryOp::Write(set, slot));
+    Ok(())
+}
+
+/// Return an integer frequency only when the binary32 period represents it exactly.
+pub(super) fn integer_frequency(period: f32) -> Option<u64> {
+    if !period.is_finite() || period <= 0.0 {
+        return None;
+    }
+    let bits = period.to_bits();
+    let e = ((bits >> 23) & 255) as i32;
+    let mantissa = if e == 0 {
+        bits & 0x7f_ffff
+    } else {
+        (bits & 0x7f_ffff) | (1 << 23)
+    };
+    let exponent = if e == 0 { -149 } else { e - 150 };
+    let (n, d) = if exponent >= 0 {
+        (
+            1_000_000_000u128,
+            u128::from(mantissa).checked_mul(1u128.checked_shl(exponent as u32)?)?,
+        )
+    } else {
+        (
+            1_000_000_000u128.checked_mul(1u128.checked_shl((-exponent) as u32)?)?,
+            u128::from(mantissa),
+        )
+    };
+    if d == 0 || n % d != 0 {
+        return None;
+    }
+    u64::try_from(n / d).ok().filter(|v| *v != 0)
+}
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn exact_frequency_only() {
+        assert_eq!(super::integer_frequency(10.0), Some(100_000_000));
+        assert_eq!(super::integer_frequency(3.0), None);
+        assert_eq!(super::integer_frequency(0.0), None);
+        assert_eq!(super::integer_frequency(f32::MIN_POSITIVE), None);
+    }
 }

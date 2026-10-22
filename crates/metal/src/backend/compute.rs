@@ -99,6 +99,14 @@ impl ComputeOps<Metal> for Compute {
             // state, so a late bad offset cannot leave a partially rebound group.
             let mut dynamic_index = 0;
             for resource in &group.resources {
+                if let super::bindings::BoundResource::Acceleration {
+                    visibility, value, ..
+                } = resource
+                {
+                    if visibility.contains(&api::ShaderStage::Compute) {
+                        value.validate_binding()?;
+                    }
+                }
                 if let super::bindings::BoundResource::Buffer {
                     offset,
                     size,
@@ -120,6 +128,20 @@ impl ComputeOps<Metal> for Compute {
             let mut dynamic_index = 0;
             for resource in &group.resources {
                 match resource {
+                    super::bindings::BoundResource::Acceleration {
+                        binding,
+                        visibility,
+                        value,
+                    } if visibility.contains(&api::ShaderStage::Compute) => {
+                        let index = metal_slot(group_slot, *binding)? as usize;
+                        // SAFETY: the slot is bounded by the ABI and Metal's retained
+                        // command buffer keeps the directly bound structure alive.
+                        unsafe {
+                            compute.setAccelerationStructure_atBufferIndex(Some(&value.raw), index)
+                        };
+                        value.declare_dependencies(compute)?;
+                        encoder.accelerations.push(value.clone());
+                    }
                     super::bindings::BoundResource::Buffer {
                         binding,
                         visibility,

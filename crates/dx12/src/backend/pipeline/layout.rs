@@ -22,6 +22,7 @@ pub(crate) struct GroupTables {
 }
 pub(crate) struct PipelineLayoutState {
     pub(crate) root: ID3D12RootSignature,
+    pub(crate) groups: Vec<Arc<descriptor::BindGroupLayoutState>>,
     /// One root CBV table parameter per logical group.  Group ordinal is both
     /// this vector's index and the HLSL register space used for its ranges.
     pub(crate) tables: Vec<GroupTables>,
@@ -42,10 +43,12 @@ pub(crate) fn create_pipeline_layout(
     let mut ranges: Vec<Vec<D3D12_DESCRIPTOR_RANGE>> = Vec::with_capacity(desc.groups.len() * 2);
     let mut parameters: Vec<D3D12_ROOT_PARAMETER> = Vec::with_capacity(desc.groups.len());
     let mut tables = Vec::with_capacity(desc.groups.len());
+    let mut groups = Vec::with_capacity(desc.groups.len());
     for (group, layout) in desc.groups.iter().enumerate() {
         // SAFETY: the Core descriptor is tied to this device; this borrow is
         // used only while synchronously building an independent root signature.
         let native = unsafe { layout.native_ref() };
+        groups.push(native.0.clone());
         let state = &native.0;
         let view_ranges: Vec<D3D12_DESCRIPTOR_RANGE> = state
             .slots
@@ -148,8 +151,10 @@ pub(crate) fn create_pipeline_layout(
     let push_constants = match desc.push_constants {
         [] => None,
         [range] => {
-            if range.stages.as_slice() != [api::ShaderStage::Vertex]
-                || range.range.start >= range.range.end
+            if !matches!(
+                range.stages.as_slice(),
+                [api::ShaderStage::Vertex] | [api::ShaderStage::Mesh] | [api::ShaderStage::Task]
+            ) || range.range.start >= range.range.end
                 || range.range.end > 128
                 || range.range.start % 4 != 0
                 || range.range.end % 4 != 0
@@ -166,12 +171,20 @@ pub(crate) fn create_pipeline_layout(
                         Num32BitValues: (range.range.end - range.range.start) / 4,
                     },
                 },
-                ShaderVisibility: D3D12_SHADER_VISIBILITY_VERTEX,
+                ShaderVisibility: match range.stages[0] {
+                    api::ShaderStage::Mesh => D3D12_SHADER_VISIBILITY_MESH,
+                    api::ShaderStage::Task => D3D12_SHADER_VISIBILITY_AMPLIFICATION,
+                    _ => D3D12_SHADER_VISIBILITY_VERTEX,
+                },
             });
             Some(PushConstantsRoot {
                 root,
                 range: range.range.clone(),
-                stages: api::StageMask::VERTEX,
+                stages: match range.stages[0] {
+                    api::ShaderStage::Mesh => api::StageMask::MESH,
+                    api::ShaderStage::Task => api::StageMask::TASK,
+                    _ => api::StageMask::VERTEX,
+                },
             })
         }
         _ => {
@@ -211,6 +224,7 @@ pub(crate) fn create_pipeline_layout(
     .map_err(native_error)?;
     Ok(Dx12PipelineLayout(Arc::new(PipelineLayoutState {
         root,
+        groups,
         tables,
         push_constants,
     })))

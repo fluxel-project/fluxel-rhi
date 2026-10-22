@@ -87,6 +87,27 @@ fn create_layout_binding(
     device: &VulkanDevice,
     entry: &api::BindGroupLayoutEntry,
 ) -> Result<vk::DescriptorSetLayoutBinding<'static>> {
+    if entry
+        .visibility
+        .iter()
+        .any(|s| matches!(s, api::ShaderStage::Mesh))
+        && device.0.mesh.is_none()
+    {
+        return Err(Error::Unsupported("Vulkan mesh shader"));
+    }
+    if entry
+        .visibility
+        .iter()
+        .any(|s| matches!(s, api::ShaderStage::Task))
+        && !device.0.mesh.as_ref().is_some_and(|m| m.task)
+    {
+        return Err(Error::Unsupported("Vulkan task shader"));
+    }
+    if matches!(entry.ty, api::BindingType::AccelerationStructure)
+        && !device.0.ray_support.acceleration
+    {
+        return Err(Error::Unsupported("Vulkan acceleration structure"));
+    }
     if entry.partially_bound {
         return Err(Error::Unsupported("Vulkan partially-bound descriptors"));
     }
@@ -166,6 +187,11 @@ fn dtype(ty: &api::BindingType) -> Result<vk::DescriptorType> {
             vk::DescriptorType::STORAGE_IMAGE
         }
         api::BindingType::Sampler { .. } => vk::DescriptorType::SAMPLER,
+        api::BindingType::StorageBuffer {
+            dynamic_offset: false,
+            ..
+        } => vk::DescriptorType::STORAGE_BUFFER,
+        api::BindingType::AccelerationStructure => vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
         _ => return Err(Error::Unsupported("Vulkan binding type")),
     })
 }
@@ -177,7 +203,14 @@ fn stages(stages: &[api::ShaderStage]) -> Result<vk::ShaderStageFlags> {
             api::ShaderStage::Vertex => vk::ShaderStageFlags::VERTEX,
             api::ShaderStage::Fragment => vk::ShaderStageFlags::FRAGMENT,
             api::ShaderStage::Compute => vk::ShaderStageFlags::COMPUTE,
-            _ => return Err(Error::Unsupported("Vulkan descriptor shader stage")),
+            api::ShaderStage::Task => vk::ShaderStageFlags::TASK_EXT,
+            api::ShaderStage::Mesh => vk::ShaderStageFlags::MESH_EXT,
+            api::ShaderStage::RayGeneration => vk::ShaderStageFlags::RAYGEN_KHR,
+            api::ShaderStage::AnyHit => vk::ShaderStageFlags::ANY_HIT_KHR,
+            api::ShaderStage::ClosestHit => vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            api::ShaderStage::Miss => vk::ShaderStageFlags::MISS_KHR,
+            api::ShaderStage::Intersection => vk::ShaderStageFlags::INTERSECTION_KHR,
+            api::ShaderStage::Callable => vk::ShaderStageFlags::CALLABLE_KHR,
         };
     }
     if flags.is_empty() {

@@ -101,19 +101,25 @@ pub trait CommandBackend: Backend {
     ) -> Result<()> {
         Err(Error::Unsupported("clear_buffer"))
     }
-    /// Reserved optional standalone color-clear route; defaults to unsupported.
-    /// This legacy shape has no array-layer range or depth/stencil clear value
-    /// and must not be treated as a general subresource clear contract. Current
-    /// backends use render-pass attachment load clears instead.
+    /// Standalone whole-subresource clear; defaults to unsupported.
     fn clear_texture(
         _: &mut Self::NativeEncoder,
         _: &Self::NativeTexture,
-        _: TextureAspects,
         _: Range<u32>,
-        _: ClearColor,
+        _: Range<u32>,
+        _: TextureClearValue,
     ) -> Result<()> {
         Err(Error::Unsupported("clear_texture"))
     }
+}
+
+/// Value written to every texel of the selected texture subresources.
+#[derive(Clone, Copy, Debug)]
+pub enum TextureClearValue {
+    /// A color value matching the destination format's numeric type.
+    Color(ClearColor),
+    /// A depth value in the inclusive range 0..=1.
+    Depth(f32),
 }
 
 pub struct CommandEncoder<B: CommandBackend> {
@@ -216,24 +222,29 @@ impl<B: CommandBackend> CommandEncoder<B> {
         }
         self.call(|e| B::clear_buffer(e, &dst.native, range, value))
     }
-    /// Requests the backend's optional standalone color-clear route.
-    ///
-    /// No current backend implements this operation. This descriptor cannot
-    /// express array-layer selection or depth/stencil values; aspect flags do
-    /// not establish support. Use attachment load operations for implemented
-    /// pass clears. A general standalone clear needs a complete contract before
-    /// adding native lowering; Core does not derive one from adjacent commands.
+    /// Clears all texels in each selected mip and array layer.
+    /// The caller must arrange explicit transitions to the appropriate color
+    /// attachment or depth-write state. Backends need not track or validate
+    /// the actual current resource state.
     pub fn clear_texture(
         &mut self,
         dst: &Texture<B>,
-        aspects: TextureAspects,
         mips: Range<u32>,
-        color: ClearColor,
+        layers: Range<u32>,
+        value: TextureClearValue,
     ) -> Result<()> {
         if dst.device != self.device {
             return Err(Error::WrongDevice);
         }
-        self.call(|e| B::clear_texture(e, &dst.native, aspects, mips, color))
+        if mips.start >= mips.end || layers.start >= layers.end {
+            return Err(Error::InvalidRange);
+        }
+        if let TextureClearValue::Depth(depth) = value {
+            if !depth.is_finite() || !(0.0..=1.0).contains(&depth) {
+                return Err(Error::InvalidRange);
+            }
+        }
+        self.call(|e| B::clear_texture(e, &dst.native, mips, layers, value))
     }
     pub fn buffer_to_texture(
         &mut self,

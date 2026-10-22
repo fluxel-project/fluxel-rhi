@@ -17,6 +17,9 @@ impl api::RasterBackend for Dx12 {
         encoder: &mut Dx12Encoder,
         desc: &api::RasterPassDesc<'_, Self>,
     ) -> Result<(), Error> {
+        if encoder.is_compute {
+            return Err(Error::Unsupported("DX12 compute queue raster"));
+        }
         if desc.colors.len() != 1 || desc.timestamp_writes.is_some() {
             return Err(Error::Unsupported("DX12 raster attachment configuration"));
         }
@@ -255,6 +258,9 @@ impl api::RasterBackend for Dx12 {
                 .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         }
         encoder.pipeline = Some(pipeline.clone());
+        encoder.raster_pipelines.push(pipeline.clone());
+        encoder.ray_pipeline = None;
+        encoder.mesh_pipeline = None;
         Ok(())
     }
     fn set_bind_group(
@@ -263,10 +269,24 @@ impl api::RasterBackend for Dx12 {
         group: &super::Dx12BindGroup,
         offsets: &[u32],
     ) -> Result<(), Error> {
-        let pipeline = encoder.pipeline.as_ref().ok_or(Error::InvalidState)?;
-        let table = pipeline
-            .0
-            .layout
+        let layout = if let Some(mesh) = &encoder.mesh_pipeline {
+            &mesh.0.layout
+        } else {
+            &encoder
+                .pipeline
+                .as_ref()
+                .ok_or(Error::InvalidState)?
+                .0
+                .layout
+        };
+        let expected = layout
+            .groups
+            .get(slot as usize)
+            .ok_or(Error::InvalidRange)?;
+        if !std::sync::Arc::ptr_eq(expected, &group.0.layout) {
+            return Err(Error::InvalidState);
+        }
+        let table = layout
             .tables
             .get(slot as usize)
             .ok_or(Error::InvalidRange)?;
@@ -279,10 +299,38 @@ impl api::RasterBackend for Dx12 {
         if offsets.len() != table.dynamic_cbvs.len() {
             return Err(Error::InvalidRange);
         }
-        // Binding both descriptor heaps as one operation prevents a later root
-        // table from referring to a heap selected by a previous bind group.
-        // SAFETY: group and pipeline are same-device validated and retained;
-        // dynamic CBV addresses below are range/alignment checked before use.
+        let mut addresses = Vec::with_capacity(offsets.len());
+        for (root, &offset) in table.dynamic_cbvs.iter().zip(offsets) {
+            let uniform = native
+                .uniform(root.binding)
+                .filter(|u| u.dynamic_offset)
+                .ok_or(Error::InvalidState)?;
+            let offset = u64::from(offset);
+            if offset % 256 != 0 {
+                return Err(Error::InvalidRange);
+            }
+            let start = uniform
+                .range
+                .start
+                .checked_add(offset)
+                .ok_or(Error::InvalidRange)?;
+            let end = start
+                .checked_add(root.min_size)
+                .ok_or(Error::InvalidRange)?;
+            if end > uniform.buffer.size {
+                return Err(Error::InvalidRange);
+            }
+            // SAFETY: the group retains this same-device buffer.
+            let address = unsafe { uniform.buffer.resource.GetGPUVirtualAddress() }
+                .checked_add(start)
+                .ok_or(Error::InvalidRange)?;
+            if address % 256 != 0 {
+                return Err(Error::InvalidRange);
+            }
+            addresses.push((root.root, address));
+        }
+        // SAFETY: every table and dynamic address has been validated before
+        // modifying the list; the group is retained below until completion.
         unsafe {
             let heaps = [
                 Some(native.heaps().view_heap().clone()),
@@ -299,38 +347,10 @@ impl api::RasterBackend for Dx12 {
                     .list
                     .SetGraphicsRootDescriptorTable(root, native.sampler_gpu());
             }
-            for (root, &offset) in table.dynamic_cbvs.iter().zip(offsets) {
-                let uniform = native
-                    .uniform(root.binding)
-                    .filter(|uniform| uniform.dynamic_offset)
-                    .ok_or(Error::InvalidState)?;
-                let offset = u64::from(offset);
-                if offset % 256 != 0 {
-                    return Err(Error::InvalidRange);
-                }
-                let start = uniform
-                    .range
-                    .start
-                    .checked_add(offset)
-                    .ok_or(Error::InvalidRange)?;
-                let end = start
-                    .checked_add(root.min_size)
-                    .ok_or(Error::InvalidRange)?;
-                if end > uniform.buffer.size {
-                    return Err(Error::InvalidRange);
-                }
-                let address = uniform
-                    .buffer
-                    .resource
-                    .GetGPUVirtualAddress()
-                    .checked_add(start)
-                    .ok_or(Error::InvalidRange)?;
-                if address % 256 != 0 {
-                    return Err(Error::InvalidRange);
-                }
+            for (root, address) in addresses {
                 encoder
                     .list
-                    .SetGraphicsRootConstantBufferView(root.root, address);
+                    .SetGraphicsRootConstantBufferView(root, address);
             }
         }
         encoder.bound_groups.push(group.clone());
@@ -523,6 +543,8 @@ impl api::RasterBackend for Dx12 {
             return Err(Error::InvalidState);
         }
         encoder.depth_target.take();
+        encoder.mesh_pipeline = None;
+        encoder.pipeline = None;
         encoder.raster_format = None;
         encoder.raster_samples = None;
         encoder.raster_multiview = None;

@@ -128,8 +128,6 @@ fn unsupported_buffer_usage(usage: BufferUsage) -> bool {
     usage.0 == 0
         || usage.contains(BufferUsage::MAP_READ)
         || usage.contains(BufferUsage::MAP_WRITE)
-        || usage.contains(BufferUsage::ACCEL_BUILD_INPUT)
-        || usage.contains(BufferUsage::ACCEL_SCRATCH)
         || usage.contains(BufferUsage::SHADER_TABLE)
 }
 
@@ -152,12 +150,12 @@ mod tests {
     use fluxel_rhi_core::api::BufferUsage;
 
     #[test]
-    fn buffer_support_does_not_advertise_unimplemented_mapping_or_ray_usage() {
+    fn buffer_support_rejects_mapping_and_shader_tables() {
         assert!(unsupported_buffer_usage(BufferUsage(0)));
         assert!(unsupported_buffer_usage(BufferUsage::MAP_READ));
         assert!(unsupported_buffer_usage(BufferUsage::MAP_WRITE));
-        assert!(unsupported_buffer_usage(BufferUsage::ACCEL_BUILD_INPUT));
-        assert!(unsupported_buffer_usage(BufferUsage::ACCEL_SCRATCH));
+        assert!(!unsupported_buffer_usage(BufferUsage::ACCEL_BUILD_INPUT));
+        assert!(!unsupported_buffer_usage(BufferUsage::ACCEL_SCRATCH));
         assert!(unsupported_buffer_usage(BufferUsage::SHADER_TABLE));
         assert!(!unsupported_buffer_usage(BufferUsage::COPY_SRC));
         assert!(!unsupported_buffer_usage(BufferUsage::VERTEX));

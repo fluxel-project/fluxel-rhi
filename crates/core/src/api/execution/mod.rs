@@ -133,6 +133,35 @@ pub struct RecordedCommandsError<B: DeferredBackend> {
 }
 
 impl<B: DeferredBackend + ExecutionBackend<Mode = DeferredExecution>> Execution<B> {
+    /// Binds a sparse mapping step into the deferred submission packet.
+    pub fn sparse(&mut self, step: StepId, binds: Vec<SparseBind<B>>) -> Result<()> {
+        let state = &mut self.state;
+        let index = state.steps.len();
+        if state.error.is_some()
+            || state
+                .plan
+                .steps
+                .get(index)
+                .is_none_or(|desc| desc.kind != StepKind::SparseBind)
+            || step != state.plan.step(index)
+        {
+            return Err(Error::InvalidState);
+        }
+        if binds.iter().any(|bind| {
+            bind.resource.device != state.device.id
+                || bind
+                    .allocation
+                    .as_ref()
+                    .is_some_and(|a| a.device != state.device.id)
+        }) {
+            return Err(Error::WrongDevice);
+        }
+        state.steps.push(BoundStep {
+            step,
+            payload: StepPayload::SparseBind(binds),
+        });
+        Ok(())
+    }
     /// Binds already-recorded native work to the next commands step.
     ///
     /// This accepts recordings produced ahead of time or in parallel without
@@ -238,10 +267,11 @@ impl<B: ExecutionBackend + DeferredBackend> ExecutionMode<B> for DeferredExecuti
         completion: CompletionRequest,
     ) -> Result<Self::State> {
         plan.validate_for_execution(device)?;
-        if plan
-            .steps
-            .iter()
-            .any(|step| step.kind == StepKind::SparseBind)
+        if !device.caps.sparse
+            && plan
+                .steps
+                .iter()
+                .any(|step| step.kind == StepKind::SparseBind)
         {
             return Err(Error::Unsupported(
                 "sparse steps are not supported by this execution facade",

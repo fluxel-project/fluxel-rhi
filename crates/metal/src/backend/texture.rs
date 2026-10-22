@@ -31,6 +31,7 @@ pub struct MetalTexture {
         objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLTexture>>,
     #[allow(dead_code)]
     desc: TextureDesc,
+    pub(super) sparse: Option<std::sync::Arc<super::sparse::SparseState>>,
 }
 
 impl MetalTexture {
@@ -104,6 +105,21 @@ pub(super) fn create_texture(
     device: &MetalDevice,
     desc: &TextureDesc,
 ) -> api::Result<MetalTexture> {
+    create_texture_inner(device, desc, false)
+}
+
+pub(super) fn create_sparse_texture(
+    device: &MetalDevice,
+    desc: &TextureDesc,
+) -> api::Result<MetalTexture> {
+    create_texture_inner(device, desc, true)
+}
+
+fn create_texture_inner(
+    device: &MetalDevice,
+    desc: &TextureDesc,
+    sparse: bool,
+) -> api::Result<MetalTexture> {
     #[cfg(target_vendor = "apple")]
     {
         use objc2_metal::{
@@ -117,6 +133,9 @@ pub(super) fn create_texture(
         let format =
             metal_format(desc.format).ok_or(api::Error::Unsupported("Metal texture format"))?;
         let descriptor = MTLTextureDescriptor::new();
+        if sparse {
+            descriptor.setPlacementSparsePageSize(objc2_metal::MTLSparsePageSize::Size64);
+        }
         descriptor.setPixelFormat(format);
         let multisampled = desc.samples > 1;
         let arrayed = desc.array_layers > 1;
@@ -165,11 +184,12 @@ pub(super) fn create_texture(
         Ok(MetalTexture {
             raw,
             desc: desc.clone(),
+            sparse: None,
         })
     }
     #[cfg(not(target_vendor = "apple"))]
     {
-        let _ = (device, desc);
+        let _ = (device, desc, sparse);
         Err(api::Error::Unsupported("Metal requires an Apple target"))
     }
 }

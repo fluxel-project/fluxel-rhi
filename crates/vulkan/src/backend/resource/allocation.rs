@@ -12,6 +12,15 @@ pub(super) fn allocate(
     requirements: vk::MemoryRequirements,
     flags: vk::MemoryPropertyFlags,
 ) -> Result<vk::DeviceMemory> {
+    allocate_with_address(device, requirements, flags, false)
+}
+
+pub(crate) fn allocate_with_address(
+    device: &VulkanDevice,
+    requirements: vk::MemoryRequirements,
+    flags: vk::MemoryPropertyFlags,
+    address: bool,
+) -> Result<vk::DeviceMemory> {
     // SAFETY: DeviceState keeps this physical device and its instance alive for
     // the read-only memory-property query.
     let properties = unsafe {
@@ -29,9 +38,14 @@ pub(super) fn allocate(
                     .contains(flags)
         })
         .ok_or(Error::OutOfMemory)?;
-    let info = vk::MemoryAllocateInfo::default()
+    let mut address_flags =
+        vk::MemoryAllocateFlagsInfo::default().flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS);
+    let mut info = vk::MemoryAllocateInfo::default()
         .allocation_size(requirements.size)
         .memory_type_index(index);
+    if address {
+        info = info.push_next(&mut address_flags);
+    }
     // SAFETY: requirements came directly from a live resource on this device;
     // the selected memory type satisfies its type mask and requested flags.
     unsafe { device.0.device.allocate_memory(&info, None) }.map_err(vk_error)
@@ -80,6 +94,17 @@ pub(super) fn buffer_usage(usage: api::BufferUsage) -> Result<vk::BufferUsageFla
     }
     if usage.contains(api::BufferUsage::QUERY_RESOLVE) {
         out |= vk::BufferUsageFlags::TRANSFER_DST;
+    }
+    if usage.contains(api::BufferUsage::ACCEL_BUILD_INPUT) {
+        out |= vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
+    }
+    if usage.contains(api::BufferUsage::ACCEL_SCRATCH) {
+        out |= vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
+    }
+    if usage.contains(api::BufferUsage::SHADER_TABLE) {
+        out |= vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
+            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
     }
     if out.is_empty() {
         return Err(Error::Unsupported("Vulkan buffer usage"));
@@ -186,7 +211,10 @@ pub(super) const SUPPORTED_BUFFER_USAGE: u64 = api::BufferUsage::COPY_SRC.0
     | api::BufferUsage::INDIRECT.0
     | api::BufferUsage::MAP_READ.0
     | api::BufferUsage::MAP_WRITE.0
-    | api::BufferUsage::QUERY_RESOLVE.0;
+    | api::BufferUsage::QUERY_RESOLVE.0
+    | api::BufferUsage::ACCEL_BUILD_INPUT.0
+    | api::BufferUsage::ACCEL_SCRATCH.0
+    | api::BufferUsage::SHADER_TABLE.0;
 pub(super) const SUPPORTED_TEXTURE_USAGE: u64 = api::TextureUsage::COPY_SRC.0
     | api::TextureUsage::COPY_DST.0
     | api::TextureUsage::TEXTURE_BINDING.0

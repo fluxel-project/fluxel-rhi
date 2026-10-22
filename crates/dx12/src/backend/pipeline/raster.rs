@@ -352,7 +352,7 @@ fn blend_op(value: api::BlendOperation) -> D3D12_BLEND_OP {
         api::BlendOperation::Max => D3D12_BLEND_OP_MAX,
     }
 }
-fn stencil_is_disabled(d: &api::DepthStencilState) -> bool {
+pub(crate) fn stencil_is_disabled(d: &api::DepthStencilState) -> bool {
     let inactive = |s: api::StencilFaceState| {
         matches!(s.compare, api::CompareFunction::Always)
             && matches!(s.fail, api::StencilOperation::Keep)
@@ -361,7 +361,7 @@ fn stencil_is_disabled(d: &api::DepthStencilState) -> bool {
     };
     inactive(d.stencil_front) && inactive(d.stencil_back)
 }
-fn comparison(v: api::CompareFunction) -> D3D12_COMPARISON_FUNC {
+pub(crate) fn comparison(v: api::CompareFunction) -> D3D12_COMPARISON_FUNC {
     match v {
         api::CompareFunction::Never => D3D12_COMPARISON_FUNC_NEVER,
         api::CompareFunction::Less => D3D12_COMPARISON_FUNC_LESS,

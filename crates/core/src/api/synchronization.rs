@@ -118,6 +118,9 @@ pub enum TextureUseIntent {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageLayout {
+    /// Initial state of a newly created subresource with undefined contents.
+    /// Use only before its first GPU use; this is not a request to discard an
+    /// arbitrary previously used layout.
     Undefined,
     Common,
     General,

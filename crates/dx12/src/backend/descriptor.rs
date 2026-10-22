@@ -2,9 +2,9 @@
 //!
 //! A pipeline-layout group ordinal is its HLSL/DXIL register space; a logical
 //! `binding` is the register number in that space.  This is the same mapping
-//! used by the former DX12 backend.  The first implementation deliberately
-//! exposes only static uniform-buffer bindings: it creates real shader-visible
-//! CBV tables and refuses every resource kind it cannot lower truthfully.
+//! used by the former DX12 backend. It allocates shader-visible descriptors
+//! for the supported buffer, texture, sampler and acceleration bindings, and
+//! rejects resource forms that cannot be lowered faithfully.
 
 use std::{
     ops::Range,
@@ -13,9 +13,16 @@ use std::{
 
 use fluxel_rhi_core::api::{self, Error, Result};
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_CONSTANT_BUFFER_VIEW_DESC, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_DESC,
-    D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-    D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, ID3D12DescriptorHeap, ID3D12Device,
+    D3D12_BUFFER_SRV, D3D12_BUFFER_SRV_FLAG_NONE, D3D12_BUFFER_SRV_FLAG_RAW, D3D12_BUFFER_UAV,
+    D3D12_BUFFER_UAV_FLAG_NONE, D3D12_BUFFER_UAV_FLAG_RAW, D3D12_CONSTANT_BUFFER_VIEW_DESC,
+    D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+    D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV, D3D12_SHADER_RESOURCE_VIEW_DESC,
+    D3D12_SHADER_RESOURCE_VIEW_DESC_0, D3D12_SRV_DIMENSION_BUFFER,
+    D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE, D3D12_UAV_DIMENSION_BUFFER,
+    D3D12_UNORDERED_ACCESS_VIEW_DESC, D3D12_UNORDERED_ACCESS_VIEW_DESC_0, ID3D12DescriptorHeap,
+    ID3D12Device, ID3D12Resource,
 };
 
 use super::{Dx12, Dx12BindGroup, Dx12BindGroupLayout, Dx12Buffer, Dx12Device};
@@ -191,6 +198,7 @@ pub(crate) struct BindGroupState {
     buffers: Vec<Dx12Buffer>,
     uniforms: Vec<UniformBinding>,
     _textures: Vec<super::Dx12TextureView>,
+    _accelerations: Vec<super::Dx12Acceleration>,
     _samplers: Vec<super::Dx12Sampler>,
     view_start: u32,
     view_count: u32,
@@ -288,6 +296,25 @@ pub(crate) fn create_bind_group_layout(
                     view_dimension: None,
                 });
             }
+            api::BindingType::StorageBuffer {
+                dynamic_offset: false,
+                min_size,
+                access,
+            } if min_size > 0 && !entry.nonuniform_indexing => {
+                slots.push(BindingSlot {
+                    binding: entry.binding,
+                    min_size,
+                    class: if matches!(access, api::StorageAccess::Read) {
+                        DescriptorClass::Srv
+                    } else {
+                        DescriptorClass::Uav
+                    },
+                    dynamic_offset: false,
+                    descriptor_count: one_descriptor(entry.count)?,
+                    runtime_sized: false,
+                    view_dimension: None,
+                });
+            }
             api::BindingType::SampledTexture {
                 sample: api::TextureSampleType::Float,
                 dimension:
@@ -339,6 +366,20 @@ pub(crate) fn create_bind_group_layout(
                     view_dimension: None,
                 });
             }
+            api::BindingType::AccelerationStructure => {
+                if !matches!(entry.count, api::BindingCount::One) || entry.nonuniform_indexing {
+                    return Err(Error::Unsupported("DX12 acceleration descriptor arrays"));
+                }
+                slots.push(BindingSlot {
+                    binding: entry.binding,
+                    min_size: 0,
+                    class: DescriptorClass::Srv,
+                    dynamic_offset: false,
+                    descriptor_count: 1,
+                    runtime_sized: false,
+                    view_dimension: None,
+                });
+            }
             _ => return Err(Error::Unsupported("DX12 bind-group binding type")),
         }
     }
@@ -352,6 +393,24 @@ fn one_descriptor(count: api::BindingCount) -> Result<u32> {
         Ok(1)
     } else {
         Err(Error::Unsupported("DX12 buffer descriptor arrays"))
+    }
+}
+
+/// Returns both reservations on every failed group creation path.
+struct ReservationGuard {
+    heaps: DescriptorHeaps,
+    views: (u32, u32),
+    samplers: (u32, u32),
+    committed: bool,
+}
+impl Drop for ReservationGuard {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.heaps.views.release(self.views.0, self.views.1);
+            self.heaps
+                .samplers
+                .release(self.samplers.0, self.samplers.1);
+        }
     }
 }
 
@@ -396,28 +455,160 @@ pub(crate) fn create_bind_group(
             return Err(error);
         }
     };
+    let mut reservation = ReservationGuard {
+        heaps: device.0.descriptors.clone(),
+        views: (start, view_count),
+        samplers: (sampler_start, sampler_count),
+        committed: false,
+    };
     let mut buffers = Vec::with_capacity(layout.slots.len());
     let mut uniforms = Vec::new();
     let mut textures = Vec::new();
+    let mut accelerations = Vec::new();
     let mut samplers = Vec::new();
     let mut view_index = 0u32;
     let mut sampler_index = 0u32;
     for (index, slot) in layout.slots.iter().enumerate() {
         let entry = &desc.entries[index];
         if entry.binding != slot.binding {
-            device.0.descriptors.views.release(start, view_count);
-            device
-                .0
-                .descriptors
-                .samplers
-                .release(sampler_start, sampler_count);
             return Err(Error::InvalidState);
         }
         let descriptor_count = write::resource_descriptor_count(slot, &entry.resource)?;
-        if slot.class == DescriptorClass::Srv {
+        if slot.class == DescriptorClass::Srv && slot.view_dimension.is_some() {
             write::validate_sampled_view_dimension(slot, &entry.resource)?;
         }
         match (slot.class, &entry.resource) {
+            (DescriptorClass::Srv, api::BindingResource::Acceleration(acceleration))
+                if slot.view_dimension.is_none() =>
+            {
+                // SAFETY: Core checked the device identity; the bind group
+                // retains the resource until all recorded uses have retired.
+                let native = unsafe { acceleration.native_ref() };
+                if !native.0.is_top_level {
+                    return Err(Error::InvalidState);
+                }
+                let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
+                    Format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN,
+                    ViewDimension: D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE,
+                    Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+                    Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                        // SAFETY: the native acceleration resource is retained below.
+                        RaytracingAccelerationStructure:
+                            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV {
+                                Location: unsafe { native.0.resource.GetGPUVirtualAddress() },
+                            },
+                    },
+                };
+                // SAFETY: DXR acceleration SRVs require a null resource and
+                // an address in the descriptor; the heap slot is allocated here.
+                unsafe {
+                    device.0.native.CreateShaderResourceView(
+                        None::<&ID3D12Resource>,
+                        Some(&desc),
+                        device.0.descriptors.views.cpu(start + view_index),
+                    );
+                }
+                view_index += 1;
+                accelerations.push(native.clone());
+            }
+            (
+                class @ (DescriptorClass::Srv | DescriptorClass::Uav),
+                api::BindingResource::StorageBufferView {
+                    buffer,
+                    range,
+                    view,
+                },
+            ) => {
+                // SAFETY: Core validates device ownership; the clone below retains the buffer.
+                let native = unsafe { buffer.native_ref() };
+                if !native.usage.contains(api::BufferUsage::STORAGE)
+                    || range.end > native.size
+                    || range.start >= range.end
+                    || range.end - range.start < slot.min_size
+                {
+                    return Err(Error::InvalidRange);
+                }
+                let (stride, format, raw) = match view {
+                    api::StorageBufferView::Raw => (
+                        4u32,
+                        windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_TYPELESS,
+                        true,
+                    ),
+                    api::StorageBufferView::Structured { stride }
+                        if *stride > 0 && *stride <= 2048 && *stride % 4 == 0 =>
+                    {
+                        (
+                            *stride,
+                            windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN,
+                            false,
+                        )
+                    }
+                    _ => return Err(Error::InvalidRange),
+                };
+                if range.start % u64::from(stride) != 0
+                    || (range.end - range.start) % u64::from(stride) != 0
+                {
+                    return Err(Error::InvalidRange);
+                }
+                let first = range.start / u64::from(stride);
+                let count = u32::try_from((range.end - range.start) / u64::from(stride))
+                    .map_err(|_| Error::InvalidRange)?;
+                let structure = if raw { 0 } else { stride };
+                // SAFETY: the descriptor range and resource usage were validated;
+                // the allocated heap slot and resource are retained by the group.
+                unsafe {
+                    if class == DescriptorClass::Srv {
+                        let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
+                            Format: format,
+                            ViewDimension: D3D12_SRV_DIMENSION_BUFFER,
+                            Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+                            Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                                Buffer: D3D12_BUFFER_SRV {
+                                    FirstElement: first,
+                                    NumElements: count,
+                                    StructureByteStride: structure,
+                                    Flags: if raw {
+                                        D3D12_BUFFER_SRV_FLAG_RAW
+                                    } else {
+                                        D3D12_BUFFER_SRV_FLAG_NONE
+                                    },
+                                },
+                            },
+                        };
+                        device.0.native.CreateShaderResourceView(
+                            &native.resource,
+                            Some(&desc),
+                            device.0.descriptors.views.cpu(start + view_index),
+                        );
+                    } else {
+                        let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
+                            Format: format,
+                            ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
+                            Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+                                Buffer: D3D12_BUFFER_UAV {
+                                    FirstElement: first,
+                                    NumElements: count,
+                                    StructureByteStride: structure,
+                                    CounterOffsetInBytes: 0,
+                                    Flags: if raw {
+                                        D3D12_BUFFER_UAV_FLAG_RAW
+                                    } else {
+                                        D3D12_BUFFER_UAV_FLAG_NONE
+                                    },
+                                },
+                            },
+                        };
+                        device.0.native.CreateUnorderedAccessView(
+                            &native.resource,
+                            None::<&ID3D12Resource>,
+                            Some(&desc),
+                            device.0.descriptors.views.cpu(start + view_index),
+                        );
+                    }
+                }
+                view_index += 1;
+                buffers.push(native.clone());
+            }
             (DescriptorClass::Cbv, api::BindingResource::Buffer { buffer, range }) => {
                 // SAFETY: Core guarantees the binding buffer belongs to this
                 // device; clones below retain it until bind-group destruction.
@@ -566,11 +757,13 @@ pub(crate) fn create_bind_group(
             }
         }
     }
+    reservation.committed = true;
     Ok(Dx12BindGroup(Arc::new(BindGroupState {
         layout,
         buffers,
         uniforms,
         _textures: textures,
+        _accelerations: accelerations,
         _samplers: samplers,
         view_start: start,
         view_count,

@@ -300,15 +300,15 @@ fn validate_desc(desc: &RasterPipelineDesc<Metal>) -> api::Result<()> {
     Ok(())
 }
 
-fn supported_sample_count(count: u32) -> bool {
+pub(super) fn supported_sample_count(count: u32) -> bool {
     matches!(count, 1 | 2 | 4 | 8)
 }
 
-fn full_sample_mask(mask: u64) -> bool {
+pub(super) fn full_sample_mask(mask: u64) -> bool {
     matches!(mask, u64::MAX | 0x0000_0000_ffff_ffff)
 }
 
-fn supported_depth_state(depth: api::DepthStencilState) -> bool {
+pub(super) fn supported_depth_state(depth: api::DepthStencilState) -> bool {
     matches!(
         depth.format,
         api::TextureFormat::Depth32Float | api::TextureFormat::Depth32FloatStencil8
@@ -329,7 +329,7 @@ fn inert_stencil_face(face: api::StencilFaceState) -> bool {
 }
 
 #[cfg(target_vendor = "apple")]
-fn compare_function(value: api::CompareFunction) -> objc2_metal::MTLCompareFunction {
+pub(super) fn compare_function(value: api::CompareFunction) -> objc2_metal::MTLCompareFunction {
     use api::CompareFunction as F;
     use objc2_metal::MTLCompareFunction as M;
     match value {
@@ -345,7 +345,7 @@ fn compare_function(value: api::CompareFunction) -> objc2_metal::MTLCompareFunct
 }
 
 #[cfg(target_vendor = "apple")]
-fn configure_stencil_descriptor(
+pub(super) fn configure_stencil_descriptor(
     descriptor: &objc2_metal::MTLStencilDescriptor,
     face: api::StencilFaceState,
     read_mask: u32,
@@ -376,7 +376,7 @@ fn stencil_operation(value: api::StencilOperation) -> objc2_metal::MTLStencilOpe
 }
 
 #[cfg(target_vendor = "apple")]
-fn write_mask(mask: u8) -> api::Result<objc2_metal::MTLColorWriteMask> {
+pub(super) fn write_mask(mask: u8) -> api::Result<objc2_metal::MTLColorWriteMask> {
     use objc2_metal::MTLColorWriteMask as M;
     if mask & !0x0f != 0 {
         return Err(api::Error::InvalidRange);
@@ -398,7 +398,7 @@ fn write_mask(mask: u8) -> api::Result<objc2_metal::MTLColorWriteMask> {
 }
 
 #[cfg(target_vendor = "apple")]
-fn blend_factor(value: api::BlendFactor) -> api::Result<objc2_metal::MTLBlendFactor> {
+pub(super) fn blend_factor(value: api::BlendFactor) -> api::Result<objc2_metal::MTLBlendFactor> {
     use api::BlendFactor as F;
     use objc2_metal::MTLBlendFactor as M;
     Ok(match value {
@@ -422,7 +422,7 @@ fn blend_factor(value: api::BlendFactor) -> api::Result<objc2_metal::MTLBlendFac
 }
 
 #[cfg(target_vendor = "apple")]
-fn blend_operation(value: api::BlendOperation) -> objc2_metal::MTLBlendOperation {
+pub(super) fn blend_operation(value: api::BlendOperation) -> objc2_metal::MTLBlendOperation {
     use api::BlendOperation as F;
     use objc2_metal::MTLBlendOperation as M;
     match value {
@@ -434,7 +434,7 @@ fn blend_operation(value: api::BlendOperation) -> objc2_metal::MTLBlendOperation
     }
 }
 
-fn supported_color_format(format: api::TextureFormat) -> bool {
+pub(super) fn supported_color_format(format: api::TextureFormat) -> bool {
     matches!(
         format,
         api::TextureFormat::Rgba8Unorm

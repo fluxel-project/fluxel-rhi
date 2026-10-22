@@ -123,3 +123,52 @@ pub(crate) fn multi(
 ) -> Result<(), Error> {
     execute(encoder, args, offset, count, stride, indexed)
 }
+
+/// Execute indirect draws limited by a GPU-written 32-bit count.
+pub(crate) fn multi_count(
+    encoder: &mut Dx12Encoder,
+    args: &Dx12Buffer,
+    offset: u64,
+    count: &Dx12Buffer,
+    count_offset: u64,
+    max: u32,
+    stride: u32,
+    indexed: bool,
+) -> Result<(), Error> {
+    if encoder.pipeline.is_none() {
+        return Err(Error::InvalidState);
+    }
+    if !args.usage.contains(api::BufferUsage::INDIRECT)
+        || !count.usage.contains(api::BufferUsage::INDIRECT)
+        || offset % 4 != 0
+        || count_offset % 4 != 0
+        || count_offset
+            .checked_add(4)
+            .is_none_or(|end| end > count.size)
+        || offset
+            .checked_add(u64::from(max) * u64::from(stride))
+            .is_none_or(|end| end > args.size)
+        || (max != 0 && (stride < if indexed { 20 } else { 16 } || stride % 4 != 0))
+    {
+        return Err(Error::InvalidRange);
+    }
+    if max == 0 {
+        return Ok(());
+    }
+    let signature = signature(args, indexed, stride)?;
+    // SAFETY: caller transitions both argument and count ranges to INDIRECT_READ;
+    // checked resources and command signature remain retained until completion.
+    unsafe {
+        encoder.list.ExecuteIndirect(
+            &signature,
+            max,
+            &args.resource,
+            offset,
+            Some(&count.resource),
+            count_offset,
+        );
+    }
+    encoder.buffers.push(args.clone());
+    encoder.buffers.push(count.clone());
+    Ok(())
+}

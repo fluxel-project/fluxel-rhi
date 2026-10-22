@@ -91,6 +91,7 @@ impl Drop for Registration {
 // future transfers its event to the device until the fence reaches the target.
 pub(crate) struct AbandonedFenceEvent {
     pub(super) value: u64,
+    pub(super) fence: ID3D12Fence,
     event: HANDLE,
 }
 
@@ -222,6 +223,7 @@ impl Drop for Dx12FenceFuture {
                     .unwrap_or_else(|p| p.into_inner())
                     .push(AbandonedFenceEvent {
                         value: self.value,
+                        fence: self.fence.clone(),
                         event,
                     });
             } else {

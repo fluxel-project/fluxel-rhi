@@ -9,6 +9,7 @@ use fluxel_rhi_core::api::{self, CommandBackend, LaneId, ResourceTransition, Tex
 
 use super::{Metal, MetalBuffer, MetalDevice, MetalRasterPipeline};
 
+mod clear;
 mod raster;
 
 #[cfg(target_vendor = "apple")]
@@ -20,6 +21,14 @@ type NativeIndexBuffer = (
 );
 
 pub struct MetalCommandEncoder {
+    pub(crate) lane: u32,
+    #[cfg(target_vendor = "apple")]
+    pub(super) wait_slots:
+        Vec<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLSharedEvent>>>,
+    pub(super) query_ops: Vec<super::query::QueryOp>,
+    pub(crate) accelerations: Vec<super::ray::MetalAcceleration>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) mesh_threads: Option<([u32; 3], [u32; 3])>,
     #[cfg(target_vendor = "apple")]
     pub(crate) command:
         objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>>,
@@ -54,22 +63,49 @@ pub struct MetalCommandEncoder {
 
 impl CommandBackend for Metal {
     fn begin_encoder(device: &MetalDevice, lane: LaneId) -> api::Result<MetalCommandEncoder> {
-        if lane.ordinal != 0 {
+        if lane.ordinal > 1 {
             return Err(api::Error::WrongLane);
         }
         #[cfg(target_vendor = "apple")]
         {
-            use objc2_metal::MTLCommandQueue as _;
+            use objc2::runtime::NSObjectProtocol as _;
+            use objc2_metal::{MTLCommandBuffer as _, MTLCommandQueue as _, MTLDevice as _};
             // Metal's `commandBuffer` API returns a buffer that retains every
             // native object encoded into it. Do not replace this with the
             // unretained-reference queue constructor without adding explicit
             // GPU-completion ownership for encoder resources and uploads.
-            let command = device
+            let queue = if lane.ordinal == 0 {
+                &device._state._queue
+            } else {
+                &device._state.compute_queue
+            };
+            let command = queue.commandBuffer().ok_or(api::Error::OutOfMemory)?;
+            let mut wait_slots = Vec::new();
+            if device
                 ._state
-                ._queue
-                .commandBuffer()
-                .ok_or(api::Error::OutOfMemory)?;
+                ._device
+                .respondsToSelector(objc2::sel!(newSharedEvent))
+            {
+                for _ in 0..4 {
+                    let event = device
+                        ._state
+                        ._device
+                        .newSharedEvent()
+                        .ok_or(api::Error::OutOfMemory)?;
+                    let native =
+                        objc2::runtime::ProtocolObject::<dyn objc2_metal::MTLEvent>::from_ref(
+                            &*event,
+                        );
+                    command.encodeWaitForEvent_value(native, 1);
+                    wait_slots.push(event);
+                }
+            }
             Ok(MetalCommandEncoder {
+                lane: lane.ordinal,
+                wait_slots,
+                query_ops: Vec::new(),
+                accelerations: Vec::new(),
+                mesh_threads: None,
                 command,
                 render: None,
                 compute: None,
@@ -93,12 +129,17 @@ impl CommandBackend for Metal {
     ) -> api::Result<()> {
         // Metal's default tracked resources perform same-queue hazard ordering
         // natively. Explicit Core transitions therefore need no state mutation
-        // here; ownership transfers and acceleration/aliasing remain unsupported.
+        // here; ownership transfers and aliasing remain unsupported. Acceleration
+        // structures are allocated as tracked resources, and Metal orders their
+        // builds and subsequent uses across encoders on the same queue.
         for op in ops {
             match op {
                 ResourceTransition::Global { .. } => {}
                 ResourceTransition::Buffer(barrier) if barrier.ownership.is_none() => {}
                 ResourceTransition::Texture(barrier) if barrier.ownership.is_none() => {}
+                ResourceTransition::Acceleration { before, after, .. }
+                    if acceleration_scope_supported(*before)
+                        && acceleration_scope_supported(*after) => {}
                 _ => return Err(api::Error::Unsupported("Metal ownership/alias transition")),
             }
         }
@@ -243,5 +284,51 @@ impl CommandBackend for Metal {
         bytes: &[u8],
     ) -> api::Result<()> {
         super::copy::write_texture(encoder, dst, layout, bytes)
+    }
+
+    fn clear_texture(
+        encoder: &mut MetalCommandEncoder,
+        texture: &super::MetalTexture,
+        mips: std::ops::Range<u32>,
+        layers: std::ops::Range<u32>,
+        value: api::TextureClearValue,
+    ) -> api::Result<()> {
+        clear::clear_texture(encoder, texture, mips, layers, value)
+    }
+}
+
+fn acceleration_scope_supported(scope: api::AccessScope) -> bool {
+    let stages = api::StageMask::ACCELERATION.0 | api::StageMask::COMPUTE.0;
+    let accesses = api::AccessMask::ACCEL_READ.0
+        | api::AccessMask::ACCEL_WRITE.0
+        | api::AccessMask::SHADER_READ.0;
+    scope.stages.0 & !stages == 0
+        && scope.accesses.0 & !accesses == 0
+        && (scope.accesses.0 == 0 || scope.stages.0 != 0)
+}
+
+#[cfg(test)]
+mod acceleration_transition_tests {
+    use super::{acceleration_scope_supported, api};
+
+    #[test]
+    fn accepts_build_and_compute_read_scopes_only() {
+        let scope = |stages, accesses| api::AccessScope { stages, accesses };
+        assert!(acceleration_scope_supported(scope(
+            api::StageMask::ACCELERATION,
+            api::AccessMask::ACCEL_WRITE
+        )));
+        assert!(acceleration_scope_supported(scope(
+            api::StageMask::COMPUTE,
+            api::AccessMask::ACCEL_READ
+        )));
+        assert!(!acceleration_scope_supported(scope(
+            api::StageMask::FRAGMENT,
+            api::AccessMask::ACCEL_READ
+        )));
+        assert!(!acceleration_scope_supported(scope(
+            api::StageMask::EMPTY,
+            api::AccessMask::ACCEL_WRITE
+        )));
     }
 }

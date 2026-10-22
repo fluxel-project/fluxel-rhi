@@ -267,6 +267,11 @@ impl api::RasterBackend for Vulkan {
         // SAFETY: all attachment views above are validated and retained by the
         // encoder. `info` only borrows stack data for this recording call.
         unsafe { e.device.device.cmd_begin_rendering(e.command, &info) };
+        e.raster_signature = Some((
+            color_format.unwrap_or_else(|| surface.as_ref().expect("surface").format),
+            depth_attachment.as_ref().map(|_| vk::Format::D32_SFLOAT),
+            color_samples,
+        ));
         e.color_surface_image = surface.map(|surface| surface.image);
         e.raster = true;
         e.raster_index_bound = false;
@@ -287,6 +292,7 @@ impl api::RasterBackend for Vulkan {
                 p.native(),
             )
         };
+        e.mesh_active = None;
         e.raster_layout = Some(p.layout());
         e.raster_layout_state = Some(p.layout_state());
         e.raster_push_constants = Some(p.push_constants());
@@ -446,7 +452,12 @@ impl api::RasterBackend for Vulkan {
         if e.secondary_signature.is_some() {
             return Err(Error::InvalidState);
         }
-        if !e.raster || e.raster_layout.is_none() || v.start > v.end || i.start > i.end {
+        if !e.raster
+            || e.raster_layout.is_none()
+            || e.mesh_active.is_some()
+            || v.start > v.end
+            || i.start > i.end
+        {
             return Err(Error::InvalidState);
         }
         // SAFETY: raster and pipeline state are active, and checked ranges avoid
@@ -473,6 +484,7 @@ impl api::RasterBackend for Vulkan {
         }
         if !e.raster
             || e.raster_layout.is_none()
+            || e.mesh_active.is_some()
             || !e.raster_index_bound
             || x.start > x.end
             || i.start > i.end
@@ -509,6 +521,8 @@ impl api::RasterBackend for Vulkan {
         e.raster_multiview_mask = None;
         e.raster_layout = None;
         e.raster_layout_state = None;
+        e.mesh_active = None;
+        e.raster_signature = None;
         e.raster_push_constants = None;
         e.secondary_signature = None;
         Ok(())
@@ -528,6 +542,8 @@ impl api::RasterBackend for Vulkan {
             e.color_surface_image = None;
             e.raster_layout = None;
             e.raster_layout_state = None;
+            e.mesh_active = None;
+            e.raster_signature = None;
             e.raster_push_constants = None;
             e.secondary_signature = None;
         }

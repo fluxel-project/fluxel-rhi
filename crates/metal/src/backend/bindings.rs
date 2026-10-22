@@ -39,6 +39,11 @@ pub struct MetalBindGroup {
 #[derive(Clone)]
 #[allow(dead_code)] // Resource handles are consumed by the next encoder implementation slice.
 pub(crate) enum BoundResource {
+    Acceleration {
+        binding: u32,
+        visibility: Vec<api::ShaderStage>,
+        value: super::ray::MetalAcceleration,
+    },
     Buffer {
         binding: u32,
         visibility: Vec<api::ShaderStage>,
@@ -163,7 +168,19 @@ pub(super) fn create_bind_group(
                         raw: native.raw.clone(),
                     }
                 }
-                api::BindingResource::Acceleration(_) | api::BindingResource::Array(_) => {
+                api::BindingResource::Acceleration(accel) => {
+                    if !matches!(layout_entry.ty, BindingType::AccelerationStructure) {
+                        return Err(api::Error::InvalidState);
+                    }
+                    // SAFETY: Core validated device identity before this SPI call.
+                    let value = unsafe { accel.native_ref().clone() };
+                    BoundResource::Acceleration {
+                        binding: entry.binding,
+                        visibility: layout_entry.visibility.clone(),
+                        value,
+                    }
+                }
+                api::BindingResource::StorageBufferView { .. } | api::BindingResource::Array(_) => {
                     return Err(api::Error::Unsupported("Metal binding resource form"));
                 }
             };
@@ -185,6 +202,14 @@ pub(super) fn create_layout(desc: &BindGroupLayoutDesc) -> api::Result<MetalBind
         ));
     }
     for entry in &desc.entries {
+        if matches!(entry.ty, BindingType::AccelerationStructure)
+            && entry
+                .visibility
+                .iter()
+                .any(|stage| *stage != ShaderStage::Compute)
+        {
+            return Err(api::Error::Unsupported("Metal acceleration binding stage"));
+        }
         if entry.binding >= MAX_BINDINGS
             || entry.count != BindingCount::One
             || entry.partially_bound
@@ -193,7 +218,11 @@ pub(super) fn create_layout(desc: &BindGroupLayoutDesc) -> api::Result<MetalBind
             || entry.visibility.iter().any(|stage| {
                 !matches!(
                     stage,
-                    ShaderStage::Vertex | ShaderStage::Fragment | ShaderStage::Compute
+                    ShaderStage::Vertex
+                        | ShaderStage::Fragment
+                        | ShaderStage::Compute
+                        | ShaderStage::Task
+                        | ShaderStage::Mesh
                 )
             })
             || !supported_type(&entry.ty)
@@ -232,7 +261,7 @@ pub(super) fn create_pipeline_layout(
 
 fn supported_type(ty: &BindingType) -> bool {
     match ty {
-        BindingType::UniformBuffer { .. } => true,
+        BindingType::UniformBuffer { .. } | BindingType::AccelerationStructure => true,
         BindingType::SampledTexture {
             dimension,
             multisampled,
@@ -259,7 +288,6 @@ fn supported_type(ty: &BindingType) -> bool {
         BindingType::Sampler { .. }
         | BindingType::StorageBuffer { .. }
         | BindingType::StorageTexture { .. }
-        | BindingType::AccelerationStructure
         | BindingType::ExternalTexture => false,
     }
 }

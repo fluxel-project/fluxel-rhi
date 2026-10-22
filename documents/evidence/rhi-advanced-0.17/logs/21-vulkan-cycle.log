@@ -1,0 +1,22 @@
+sparse frame=0 mip=0 region=0
+sparse frame=120 mip=1 region=1
+sparse frame=240 mip=2 region=2
+window candidates: [(921600, 4654880, 1280, 720, 'D3D12 Sparse Texture')]
+PID window=4654880 title='D3D12 Sparse Texture' foreground=4654880 bbox=(277, 311, 1557, 1031)
+临时\当前验证\vulkan\0.17-sparse\cycle-01.png: 1280x720
+sparse frame=360 mip=3 region=2
+sparse frame=480 mip=4 region=2
+sparse frame=600 mip=5 region=2
+sparse frame=720 mip=6 region=2
+sparse frame=840 mip=7 region=2
+sparse frame=960 mip=8 region=2
+window candidates: [(921600, 4654880, 1280, 720, 'D3D12 Sparse Texture')]
+PID window=4654880 title='D3D12 Sparse Texture' foreground=4654880 bbox=(277, 311, 1557, 1031)
+临时\当前验证\vulkan\0.17-sparse\cycle-02.png: 1280x720
+sparse frame=1080 mip=0 region=0
+sparse frame=1200 mip=1 region=1
+sparse frame=1320 mip=2 region=2
+sparse frame=1440 mip=3 region=2
+window candidates: [(921600, 4654880, 1280, 720, 'D3D12 Sparse Texture')]
+PID window=4654880 title='D3D12 Sparse Texture' foreground=4654880 bbox=(277, 311, 1557, 1031)
+临时\当前验证\vulkan\0.17-sparse\cycle-03.png: 1280x720

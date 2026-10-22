@@ -71,7 +71,8 @@ pub(crate) fn texture_state(
             }
         }
         api::ImageLayout::General => {
-            if uses.stages.contains(api::StageMask::COMPUTE)
+            if (uses.stages.contains(api::StageMask::COMPUTE)
+                || uses.stages.contains(api::StageMask::RAY))
                 && uses.accesses.contains(api::AccessMask::SHADER_WRITE)
             {
                 Ok(D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
@@ -100,7 +101,9 @@ pub(crate) fn texture_state(
                 return Err(Error::Unsupported("DX12 ShaderReadOnly layout access"));
             }
             let mut state = windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATES(0);
-            if uses.stages.contains(api::StageMask::COMPUTE) {
+            if uses.stages.contains(api::StageMask::COMPUTE)
+                || uses.stages.contains(api::StageMask::RAY)
+            {
                 state |= windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
             }
             if uses.stages.contains(api::StageMask::FRAGMENT) {
@@ -127,6 +130,17 @@ pub(crate) fn buffer_state(
     let read = uses.accesses;
     if read == api::AccessMask::EMPTY {
         return Ok(D3D12_RESOURCE_STATE_COMMON);
+    }
+    if read == api::AccessMask::ACCEL_WRITE && uses.stages.contains(api::StageMask::ACCELERATION) {
+        return Ok(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }
+    if read == api::AccessMask::ACCEL_READ && uses.stages.contains(api::StageMask::ACCELERATION) {
+        return Ok(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    }
+    if read == api::AccessMask::RAY_TRACING_SHADER_DATA_READ
+        && uses.stages.contains(api::StageMask::RAY)
+    {
+        return Ok(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     }
     let copy_read = read.contains(api::AccessMask::COPY_READ);
     let copy_write = read.contains(api::AccessMask::COPY_WRITE);

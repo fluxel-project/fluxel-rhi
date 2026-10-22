@@ -27,13 +27,85 @@ pub enum QueryKind {
     Timestamp,
     PipelineStatistics,
 }
+impl QueryKind {
+    /// Size in bytes of each resolved slot. Results use native-endian u64 values.
+    pub const fn result_stride(self) -> u64 {
+        match self {
+            Self::Occlusion | Self::Timestamp => 8,
+            Self::PipelineStatistics => 88,
+        }
+    }
+}
+/// Pipeline counters in the order written to a resolved slot.
+/// Counters for stages absent from a pipeline are zero.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PipelineStatistics {
+    pub input_assembler_vertices: u64,
+    pub input_assembler_primitives: u64,
+    pub vertex_shader_invocations: u64,
+    pub geometry_shader_invocations: u64,
+    pub geometry_shader_primitives: u64,
+    pub clipping_invocations: u64,
+    pub clipping_primitives: u64,
+    pub fragment_shader_invocations: u64,
+    pub hull_shader_invocations: u64,
+    pub domain_shader_invocations: u64,
+    pub compute_shader_invocations: u64,
+}
 /// A nonempty set of slots that all record the same measurement.
 pub struct QueryDesc {
     pub kind: QueryKind,
     pub count: u32,
 }
+/// Queue timestamp scale and width. `period_ns` is an f64 approximation of
+/// nanoseconds per tick; use differences from the same lane. Ticks wrap modulo
+/// 2^valid_bits, so elapsed intervals must be shorter than one wrap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TimestampClock {
+    pub period_ns: f64,
+    pub valid_bits: u32,
+}
+/// Backend-defined interpretation of a resolved timestamp slot.
+///
+/// Consumers must check the reserved value before performing timestamp
+/// arithmetic, including when the resolved buffer is consumed on the GPU.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TimestampResultFormat {
+    /// A reserved value reporting a failed sample, if the backend uses one.
+    pub invalid_value: Option<u64>,
+}
+/// A resolved timestamp sample could not be collected by the GPU.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InvalidTimestampSample;
+impl TimestampResultFormat {
+    /// Checks a native-endian resolved slot and returns its tick value.
+    pub fn decode(self, value: u64) -> std::result::Result<u64, InvalidTimestampSample> {
+        if self.invalid_value == Some(value) {
+            Err(InvalidTimestampSample)
+        } else {
+            Ok(value)
+        }
+    }
+}
 pub trait QueryBackend: CommandBackend {
     fn query_supported(device: &Self::NativeDevice, kind: QueryKind) -> bool;
+    /// Reserved timestamp result value, if the native API reports slot errors.
+    fn timestamp_result_format(_device: &Self::NativeDevice) -> TimestampResultFormat {
+        TimestampResultFormat::default()
+    }
+    /// Ticks per second for the specified queue, if known.
+    fn timestamp_frequency(_device: &Self::NativeDevice, _lane: LaneId) -> Option<u64> {
+        None
+    }
+    /// Timestamp period and valid counter bits for a queue.
+    fn timestamp_clock(device: &Self::NativeDevice, lane: LaneId) -> Option<TimestampClock> {
+        let frequency = Self::timestamp_frequency(device, lane).filter(|f| *f != 0)?;
+        Some(TimestampClock {
+            period_ns: 1_000_000_000.0 / frequency as f64,
+            valid_bits: 64,
+        })
+    }
     fn create_query_set(
         device: &Self::NativeDevice,
         desc: &QueryDesc,
@@ -123,6 +195,33 @@ impl<B: QueryBackend> Device<B> {
     }
 }
 impl<B: QueryBackend> Queries<'_, B> {
+    /// Result format for this timestamp domain; other query kinds return `None`.
+    pub fn timestamp_result_format(&self) -> Option<TimestampResultFormat> {
+        (self.kind == QueryKind::Timestamp).then(|| B::timestamp_result_format(&self.device.native))
+    }
+    /// Timestamp ticks per second on the specified queue. Only tick
+    /// differences on the same queue are meaningful; the epoch is unspecified.
+    pub fn timestamp_frequency(&self, lane: LaneId) -> Option<u64> {
+        (self.kind == QueryKind::Timestamp
+            && lane.device == self.device.id
+            && self.device.lanes().iter().any(|info| info.id == lane))
+        .then(|| B::timestamp_frequency(&self.device.native, lane))
+        .flatten()
+        .filter(|frequency| *frequency != 0)
+    }
+    /// Timestamp scale and counter width for the specified lane.
+    pub fn timestamp_clock(&self, lane: LaneId) -> Option<TimestampClock> {
+        (self.kind == QueryKind::Timestamp
+            && lane.device == self.device.id
+            && self.device.lanes().iter().any(|info| info.id == lane))
+        .then(|| B::timestamp_clock(&self.device.native, lane))
+        .flatten()
+        .filter(|clock| {
+            clock.period_ns.is_finite()
+                && clock.period_ns > 0.0
+                && (1..=64).contains(&clock.valid_bits)
+        })
+    }
     fn require_kind(&self, kind: QueryKind) -> Result<()> {
         if self.kind != kind {
             return Err(Error::InvalidState);
@@ -226,7 +325,9 @@ impl<B: QueryBackend> Queries<'_, B> {
         encoder.call(B::end_statistics)
     }
     /// Resolves a nonempty slot range of this domain kind into a device-local buffer.
-    /// Buffer usage, alignment, pass state, and native result layout are checked by the backend.
+    /// Each resolved slot must have been written in submission order after its
+    /// most recent reset. Backends may validate this when the work is submitted.
+    /// Buffer usage, alignment and pass state are checked by the backend.
     pub fn resolve(
         &self,
         encoder: &mut CommandEncoder<B>,

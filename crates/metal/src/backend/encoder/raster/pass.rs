@@ -15,7 +15,8 @@ pub(super) fn begin_raster(
         use objc2_metal::{
             MTLCommandBuffer as _, MTLRenderPassDescriptor, MTLStoreAction, MTLTexture as _,
         };
-        if encoder.render.is_some()
+        if encoder.lane != 0
+            || encoder.render.is_some()
             || encoder.compute.is_some()
             || desc.colors.len() != 1
             || desc.timestamp_writes.is_some()
@@ -145,6 +146,7 @@ pub(super) fn begin_raster(
             .renderCommandEncoderWithDescriptor(&descriptor)
             .ok_or(api::Error::OutOfMemory)?;
         encoder.raster_signature = Some((sample_count, color_format, depth_format));
+        encoder.mesh_threads = None;
         encoder.render = Some(render);
         Ok(())
     }

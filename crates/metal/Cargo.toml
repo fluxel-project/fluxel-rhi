@@ -16,8 +16,8 @@ naga = { version = "=27.0.3", features = ["msl-out", "wgsl-in"] }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 objc2 = "=0.6.3"
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSError", "NSRange", "NSString"] }
-objc2-metal = { version = "=0.3.2", default-features = false, features = ["std", "block2", "MTLAllocation", "MTLArgument", "MTLBlitCommandEncoder", "MTLBuffer", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLComputeCommandEncoder", "MTLComputePipeline", "MTLDepthStencil", "MTLDevice", "MTLDrawable", "MTLLibrary", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLSampler", "MTLTexture", "MTLTypes", "MTLVertexDescriptor"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSError", "NSRange", "NSString"] }
+objc2-metal = { version = "=0.3.2", default-features = false, features = ["std", "block2", "MTL4CommandQueue", "MTLAccelerationStructure", "MTLAccelerationStructureCommandEncoder", "MTLAccelerationStructureTypes", "MTLAllocation", "MTLArgument", "MTLBlitCommandEncoder", "MTLBuffer", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLComputeCommandEncoder", "MTLComputePipeline", "MTLCounters", "MTLDepthStencil", "MTLDevice", "MTLDrawable", "MTLHeap", "MTLEvent", "MTLLibrary", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLResourceStateCommandEncoder", "MTLSampler", "MTLTexture", "MTLTypes", "MTLVertexDescriptor"] }
 objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["CFCGTypes"] }
 objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "CAMetalLayer", "CAMediaTiming", "objc2-core-foundation", "objc2-metal"] }
 block2 = { version = "=0.6.2", default-features = false }

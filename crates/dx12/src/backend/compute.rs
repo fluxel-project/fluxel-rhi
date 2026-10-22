@@ -51,6 +51,9 @@ impl api::ComputeOps<Dx12> for Compute {
             encoder.list.SetPipelineState(&pipeline.0.state);
         }
         encoder.compute_pipeline = Some(pipeline.clone());
+        encoder.compute_pipelines.push(pipeline.clone());
+        encoder.ray_pipeline = None;
+        encoder.mesh_pipeline = None;
         Ok(())
     }
     fn set_bind_group(
@@ -66,6 +69,15 @@ impl api::ComputeOps<Dx12> for Compute {
             .compute_pipeline
             .as_ref()
             .ok_or(Error::InvalidState)?;
+        let expected = pipeline
+            .0
+            .layout
+            .groups
+            .get(slot as usize)
+            .ok_or(Error::InvalidRange)?;
+        if !Arc::ptr_eq(expected, &group.0.layout) {
+            return Err(Error::InvalidState);
+        }
         let table = pipeline
             .0
             .layout

@@ -1,6 +1,6 @@
 # RHI examples
 
-The 15 numbered examples use the statically typed `fluxel_rhi::api`. Native
+Examples 01–23 use the statically typed `fluxel_rhi::api`. Native
 examples use the shared `fluxel-host` window lifecycle. Browser examples use
 an HTML canvas owned by the caller. DX12, Vulkan, and desktop GL4+ use native
 Windows routes; GLES3+ uses EGL; Metal's macOS host path is in progress; WebGPU
@@ -68,9 +68,13 @@ Earlier visual baselines and platform-specific capability evidence remain in
 [the previous execution packet](../../../documents/evidence/rhi-execution-2026-10-20/README.md),
 and [the Android packet](../../../documents/evidence/android-2026-10-20/README.md).
 Historical evidence is not relabeled as migration-candidate visual evidence.
-The Vulkan backend does not install a debug messenger in these runs, so no
-validation-cleanliness claim is made. Existing DX12 optimized-clear performance
-hints do not establish incorrect output or new native capabilities.
+These historical results cover examples 01–15. Examples 16–23 have separate
+DX12 and Vulkan real-GPU evidence for the current development worktree;
+their final candidate evidence is tracked separately. The Vulkan backend did
+not install a debug messenger in the historical migration runs, so no
+validation-cleanliness claim is made for those runs. Existing DX12
+optimized-clear performance hints do not establish incorrect output or new
+native capabilities.
 
 From the workspace root on Windows:
 
@@ -126,7 +130,7 @@ generated from WGSL capability variants; they do not add HLSL or GLSL source
 files.
 
 DX12 consumes checked-in DXIL and Vulkan consumes checked-in SPIR-V. WGSL is
-the maintained shader source for all numbered examples. The
+the maintained shader source for examples 01–15. The
 `tools/examples/wgsl-artifacts/manifest.psd1` manifest covers 01–15, including
 separate multiview scene and display jobs. `tools/examples/compile-wgsl.ps1` uses Naga,
 SPIRV-Tools, SPIRV-Cross, and DXC with binding and vertex ABI checks, plus
@@ -137,7 +141,10 @@ maintained shader sources. Example 15 has a native multiview display WGSL
 source and a sequential per-eye fallback WGSL source; WebGPU and GL use the
 fallback. `tools/examples/fetch-assets.ps1` obtains the pinned external
 models and textures required by some examples. Those assets remain local; see
-[assets/README.md](assets/README.md).
+[assets/README.md](assets/README.md). Examples 16–23 exercise native advanced
+features absent from standard WGSL, including ray tracing and mesh shaders.
+Their maintained native shader sources and generated artifacts are scoped to
+those advanced examples; this does not change the WGSL baseline for 01–15.
 
 | Example | What it demonstrates |
 | --- | --- |
@@ -156,6 +163,14 @@ models and textures required by some examples. Those assets remain local; see
 | 13 multithreaded recording | Compares secondary or parallel command recording where available and uses sequential primary recording as the documented fallback. |
 | 14 descriptor indexing | Selects textures through runtime descriptor indexing where available and uses a fixed texture array as the visual fallback. |
 | 15 multiview | Renders a stereo scene with native multiview where available and renders each eye in a separate pass as the fallback. |
+| 16 raytracing hello | Builds acceleration structures and traces Microsoft's screen-space triangle on DX12 and Vulkan. `FLUXEL_RAY_READBACK` saves an RGB PPM. |
+| 17 GPU queries | Times and counts the vertices and primitives of Microsoft's HelloTriangle scene on DX12 and Vulkan; `FLUXEL_QUERY_READBACK` saves an RGB PPM. |
+| 18 meshlet instancing | Renders Microsoft's ToyRobot meshlet scene with mesh shaders on DX12 and Vulkan; `FLUXEL_MESH_READBACK` saves an RGB PPM. |
+| 19 ray query particles | Adapts NVIDIA Donut Samples' `rt_particles` scene for inline ray queries on DX12 and Vulkan. Three precomputed GPU states show visible changes; this is a controlled approximation, not continuous simulation or a direct pixel comparison with the original sample. |
+| 20 GPU draw count | Uses compute culling and a GPU-generated count to draw the fixed 180th frame of Microsoft's ExecuteIndirect scene on DX12 and Vulkan; `FLUXEL_DRAW_COUNT_READBACK` saves an RGB PPM. |
+| 21 sparse texture | Cycles all nine checkerboard mips from Microsoft's ReservedResources sample using separate standard-mip heaps and a shared packed tail on DX12 and Vulkan; `FLUXEL_SPARSE_MIP` fixes the selected mip and `FLUXEL_SPARSE_READBACK` saves an RGB PPM. |
+| 22 clear texture | Clears a texture before rendering and verifies its GPU readback on DX12 and Vulkan. |
+| 23 multi queue | Simulates and draws 10,000 particles on separate DX12 and Vulkan compute and graphics queues with a GPU wait; `FLUXEL_NBODY_READBACK` saves the first frame as an RGB PPM. |
 
 Follow the public coordinate contract in `documents/design-rhi.md` when
 interpreting a vertical flip or front-face difference. A backend must adapt
