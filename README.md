@@ -26,7 +26,7 @@ replace explicit steps, waits, lanes, or completion facts with application APIs.
 | [`fluxel-rhi-vulkan`](crates/vulkan/src/backend/mod.rs) | Vulkan resources, dynamic rendering, command buffers, synchronization, and WSI |
 | [`fluxel-rhi-webgpu`](crates/webgpu/src/backend/mod.rs) | Browser WebGPU encoding, queue promises, and canvas surfaces |
 | [`fluxel-rhi-gl`](crates/gl/src/backend/gl/mod.rs) | Shared GL semantics with desktop GL/WGL, GLES/EGL, and WebGL2 profiles |
-| [`fluxel-rhi-metal`](crates/metal/src/backend.rs) | In-progress Metal encoding, completion, and layer surface implementation |
+| [`fluxel-rhi-metal`](crates/metal/src/backend.rs) | Metal resources, encoding, completion, and layer surfaces |
 
 Core defines operation meanings shared by callers and implementations. The
 facade adds no runtime backend dispatcher. Each backend owns native objects,
@@ -57,7 +57,7 @@ topologies, shader stages, queue plans, or device tiers.
 | DX12 | Graphics and compute, multiple render targets, indirect drawing and dispatch, queries, secondary recording, texture clears, and pipeline caches | Device-gated descriptor indexing, up to four multiview views, ray pipelines and inline ray queries, mesh shaders, sparse textures, graphics/compute queues, and GPU-count multi-draw |
 | Vulkan | Graphics and compute, multiple render targets, indirect drawing and dispatch, queries, secondary recording, clears, pipeline caches, mapping, placed memory, and native interop | Descriptor indexing, multiview, ray pipelines and inline ray queries, mesh shaders, sparse textures, graphics/compute queues, GPU-count multi-draw, and external resources depend on device features, extensions, formats and queue support. See the [fixture index](documents/evidence/vulkan-completeness-2026-10-22/README.md) for validation scope. |
 | Metal | Graphics and compute, up to eight render targets, depth/stencil, dynamic uniform/storage offsets, indirect draw and dispatch, standalone clears, copies/resolves, mapping, placement heaps, binary archives, and native interop | Device-gated argument arrays/indexing, mesh/object shaders, acceleration structures and ray queries, multiview, timestamp/occlusion and separate pass counters, cross-packet graphics/compute synchronization, GPU-count multi-draw, placement sparse textures, and external resources. See the [implementation review](documents/evidence/metal-completeness-2026-10-22/README.md) for native boundaries and compile-only evidence. No Metal tests or GPU acceptance were run in this phase, as requested. |
-| Browser WebGPU | Graphics and compute, device-gated indirect drawing, and occlusion queries | The new ray, mesh, sparse, multi-queue, timestamp/statistics, GPU-count, and standalone-clear routes are not implemented here |
+| Browser WebGPU | Graphics and compute, MRT, depth/stencil, dynamic offsets, indirect draw/dispatch, multi-draw including GPU-count lowering, standalone clears, copies/blits/resolves, buffer mapping and readback, occlusion and optional timestamp queries | Optional native features and limits gate compressed formats, immediates, subgroups, dual-source blending and unclipped depth. Ray/mesh, sparse resources, native multiple queues, multiview, complete pipeline statistics, native heap placement and serialized pipeline caches have no matching standard browser route. |
 | Desktop GL / GLES | Immediate graphics; compute, indirect drawing, and occlusion depend on the actual context and profile | The new advanced routes are not implemented in the public GL backend |
 | Browser WebGL2 | Immediate graphics through the browser owner | No native compute or new advanced route is exposed |
 
@@ -87,6 +87,17 @@ recorded in one encoder. Another encoder can bind that TLAS only after the
 build's completion succeeds; recording that consumer early returns
 `InvalidState`. Dropping an unsubmitted build releases its dependencies and
 allows a new recording. A failed submitted build cannot be reused.
+
+WebGPU lowers GPU-count drawing into GPU-generated indirect arguments and
+native pass segments, without reading the count on the CPU. Push constants use
+native immediate data only when the browser exposes the required feature and
+limit. Compressed formats remain optional adapter features; the current AMD
+browser evidence covers BC1, not ETC2/EAC or ASTC. The
+[WebGPU acceptance report](documents/evidence/webgpu-completeness-2026-10-22/README.md)
+records the exact GPU tests, browser scenes and remaining standard or contract
+boundaries. Browser examples may select their existing explicit fallbacks for
+descriptor indexing and multiview; those scenes do not establish backend support
+for either feature.
 
 ### DX12 pipeline cache
 
@@ -147,9 +158,9 @@ ASTC require a supporting device for GPU validation.
 
 | Compressed family | DX12 | Vulkan | Metal | WebGPU | GL / GLES | WebGL2 |
 | --- | --- | --- | --- | --- | --- | --- |
-| BC1–BC7 | Device-checked public route | Device-checked public route | Device-checked public route; not GPU tested | No public route | No public route | No public route |
-| ETC2 / EAC | No DXGI mapping | Device-checked public route; GPU validation pending | Apple-family public route; not GPU tested | No public route | No public route | No public route |
-| ASTC | No DXGI mapping | Device-checked public route; GPU validation pending | Apple-family LDR/HDR routes; not GPU tested | No public route | No public route | No public route |
+| BC1–BC7 | Device-checked public route | Device-checked public route | Device-checked public route; not GPU tested | Optional standard feature; BC1 copy GPU checked | No public route | No public route |
+| ETC2 / EAC | No DXGI mapping | Device-checked public route; GPU validation pending | Apple-family public route; not GPU tested | Optional standard feature; GPU validation pending | No public route | No public route |
+| ASTC | No DXGI mapping | Device-checked public route; GPU validation pending | Apple-family LDR/HDR routes; not GPU tested | Optional LDR feature; GPU validation pending; no HDR mapping | No public route | No public route |
 
 GL implements `ImmediateBackend`; it does not expose deferred queue submission.
 WebGL2 does not provide native multithreaded command recording. WebGPU records

@@ -56,11 +56,22 @@ impl api::ShaderBackend for WebGpu {
             let source = std::str::from_utf8(&desc.bytes)
                 .map_err(|error| Error::Shader(format!("WGSL UTF-8: {error}")))?;
             let native = object();
-            field(&native, "code", JsValue::from_str(source))?;
+            field(
+                &native,
+                "code",
+                JsValue::from_str(if super::immediate_shader::has_immediate(source)? {
+                    ""
+                } else {
+                    source
+                }),
+            )?;
             if let Some(label) = &desc.label {
                 field(&native, "label", JsValue::from_str(label))?;
             }
-            js::call1(&device.0.device, "createShaderModule", &native).map_err(error)
+            let module =
+                js::call1(&device.0.device, "createShaderModule", &native).map_err(error)?;
+            super::subgroup::remember(&module, &source);
+            Ok(module)
         })();
         ready(result)
     }
@@ -94,11 +105,22 @@ impl api::ShaderBackend for WebGpu {
             )
             .map_err(|error| Error::Shader(format!("WGSL emission: {error}")))?;
             let native = object();
-            field(&native, "code", JsValue::from_str(&source))?;
+            field(
+                &native,
+                "code",
+                JsValue::from_str(if super::immediate_shader::has_immediate(&source)? {
+                    ""
+                } else {
+                    &source
+                }),
+            )?;
             if let Some(label) = &desc.label {
                 field(&native, "label", JsValue::from_str(label))?;
             }
-            js::call1(&device.0.device, "createShaderModule", &native).map_err(error)
+            let module =
+                js::call1(&device.0.device, "createShaderModule", &native).map_err(error)?;
+            super::subgroup::remember(&module, &source);
+            Ok(module)
         })();
         ready(result)
     }
@@ -112,35 +134,49 @@ impl api::PipelineBackend for WebGpu {
         desc: &'a api::RasterPipelineDesc<Self>,
     ) -> Self::RasterPipelineFuture<'a> {
         Box::pin(async move {
-            let native = raster_descriptor(desc)?;
+            let native = raster_descriptor(device, desc)?;
             let promise =
                 js::call1(&device.0.device, "createRenderPipelineAsync", &native).map_err(error)?;
-            JsFuture::from(Promise::from(promise))
+            let pipeline = JsFuture::from(Promise::from(promise))
                 .await
-                .map_err(|error| Error::Shader(js::message(&error)))
+                .map_err(|error| Error::Shader(js::message(&error)))?;
+            // SAFETY: Core checked layout ownership before entering this method.
+            super::immediate::associate_descriptor(&pipeline, &native);
+            super::immediate::remember_samples(&pipeline, desc.multisample.count);
+            Ok(pipeline)
         })
     }
 }
 
-fn raster_descriptor(desc: &api::RasterPipelineDesc<WebGpu>) -> Result<JsValue> {
-    if desc.multiview.is_some() || desc.primitive.unclipped_depth || desc.primitive.conservative {
+fn raster_descriptor(
+    device: &WebGpuDevice,
+    desc: &api::RasterPipelineDesc<WebGpu>,
+) -> Result<JsValue> {
+    if desc.multiview.is_some() || desc.primitive.conservative {
         return Err(Error::Unsupported("WebGPU raster pipeline option"));
     }
     if !matches!(desc.primitive.polygon_mode, api::PolygonMode::Fill) {
         return Err(Error::Unsupported("WebGPU polygon mode"));
     }
-    if !desc.vertex.constants.is_empty()
-        || desc
-            .fragment
-            .as_ref()
-            .is_some_and(|f| !f.constants.is_empty())
-    {
-        return Err(Error::Unsupported("WebGPU pipeline constants"));
+    if desc.primitive.unclipped_depth && !js::has_feature(&device.0.device, "depth-clip-control") {
+        return Err(Error::Unsupported("WebGPU depth-clip-control feature"));
     }
     let native = object();
     // SAFETY: `Device::raster_pipeline` validates the layout, shader, and cache
     // DeviceIds against its device before it calls this backend future.
     let layout = unsafe { desc.layout.native_ref() }.clone();
+    let fragment_module = desc.fragment.as_ref().map(|fragment| {
+        // SAFETY: Core checked this shader's ownership.
+        unsafe { fragment.module.native_ref() }.clone()
+    });
+    let immediate_info = super::immediate::raster_info(
+        device,
+        &layout,
+        fragment_module
+            .as_ref()
+            .zip(desc.fragment.as_ref().map(|f| f.entry.as_str())),
+    )?;
+    super::immediate::remember_descriptor(&native, immediate_info);
     field(&native, "layout", layout)?;
     if let Some(label) = &desc.label {
         field(&native, "label", JsValue::from_str(label))?;
@@ -150,8 +186,16 @@ fn raster_descriptor(desc: &api::RasterPipelineDesc<WebGpu>) -> Result<JsValue> 
     // SAFETY: `Device::raster_pipeline` validated the vertex shader DeviceId;
     // the cloned JS module is held by the browser descriptor for this call.
     let vertex_module = unsafe { desc.vertex.module.native_ref() }.clone();
+    let vertex_module = super::immediate::variant_module(
+        device,
+        &vertex_module,
+        immediate_info[0],
+        &desc.vertex.entry,
+        None,
+    )?;
     field(&vertex, "module", vertex_module)?;
     field(&vertex, "entryPoint", JsValue::from_str(&desc.vertex.entry))?;
+    field(&vertex, "constants", constants(&desc.vertex.constants)?)?;
     let buffers = Array::new();
     for buffer in &desc.vertex_buffers {
         let layout = object();
@@ -195,8 +239,16 @@ fn raster_descriptor(desc: &api::RasterPipelineDesc<WebGpu>) -> Result<JsValue> 
         // SAFETY: the same public pipeline validation checked this optional
         // fragment shader against the device that owns this backend call.
         let fragment_module = unsafe { fragment.module.native_ref() }.clone();
+        let fragment_module = super::immediate::variant_module(
+            device,
+            &fragment_module,
+            immediate_info[1],
+            &fragment.entry,
+            None,
+        )?;
         field(&part, "module", fragment_module)?;
         field(&part, "entryPoint", JsValue::from_str(&fragment.entry))?;
+        field(&part, "constants", constants(&fragment.constants)?)?;
         let targets = Array::new();
         for target in &desc.color_targets {
             let Some(target) = target else {
@@ -252,16 +304,21 @@ fn raster_descriptor(desc: &api::RasterPipelineDesc<WebGpu>) -> Result<JsValue> 
             api::CullMode::Back => "back",
         }),
     )?;
+    if let Some(format) = desc.primitive.strip_index_format {
+        field(
+            &primitive,
+            "stripIndexFormat",
+            JsValue::from_str(match format {
+                api::IndexFormat::Uint16 => "uint16",
+                api::IndexFormat::Uint32 => "uint32",
+            }),
+        )?;
+    }
+    if desc.primitive.unclipped_depth {
+        field(&primitive, "unclippedDepth", JsValue::TRUE)?;
+    }
     field(&native, "primitive", primitive)?;
     if let Some(depth) = &desc.depth_stencil {
-        if !matches!(
-            depth.format,
-            api::TextureFormat::Depth16Unorm
-                | api::TextureFormat::Depth24Plus
-                | api::TextureFormat::Depth32Float
-        ) {
-            return Err(Error::Unsupported("WebGPU stencil pipeline lowering"));
-        }
         let state = object();
         field(
             &state,
@@ -293,6 +350,27 @@ fn raster_descriptor(desc: &api::RasterPipelineDesc<WebGpu>) -> Result<JsValue> 
             "depthBiasClamp",
             JsValue::from_f64(depth.depth_bias_clamp as f64),
         )?;
+        field(&state, "stencilFront", stencil_face(depth.stencil_front)?)?;
+        field(&state, "stencilBack", stencil_face(depth.stencil_back)?)?;
+        field(
+            &state,
+            "stencilReadMask",
+            JsValue::from_f64(depth.stencil_read_mask as f64),
+        )?;
+        field(
+            &state,
+            "stencilWriteMask",
+            JsValue::from_f64(depth.stencil_write_mask as f64),
+        )?;
+        field(&native, "depthStencil", state)?;
+    }
+    if desc.depth_stencil.is_none()
+        && (desc.fragment.is_none() || desc.color_targets.iter().all(Option::is_none))
+    {
+        let state = object();
+        field(&state, "format", JsValue::from_str("depth32float"))?;
+        field(&state, "depthWriteEnabled", JsValue::FALSE)?;
+        field(&state, "depthCompare", JsValue::from_str("always"))?;
         field(&native, "depthStencil", state)?;
     }
     let multisample = object();
@@ -399,6 +477,100 @@ fn vertex_format(value: api::VertexFormat) -> Result<&'static str> {
         api::VertexFormat::Sint32(2) => "sint32x2",
         api::VertexFormat::Sint32(3) => "sint32x3",
         api::VertexFormat::Sint32(4) => "sint32x4",
+        api::VertexFormat::Float16(1) => "float16",
+        api::VertexFormat::Float16(2) => "float16x2",
+        api::VertexFormat::Float16(4) => "float16x4",
+        api::VertexFormat::Uint16(1) => "uint16",
+        api::VertexFormat::Uint16(2) => "uint16x2",
+        api::VertexFormat::Uint16(4) => "uint16x4",
+        api::VertexFormat::Sint16(1) => "sint16",
+        api::VertexFormat::Sint16(2) => "sint16x2",
+        api::VertexFormat::Sint16(4) => "sint16x4",
+        api::VertexFormat::Uint8(1) => "uint8",
+        api::VertexFormat::Uint8(2) => "uint8x2",
+        api::VertexFormat::Uint8(4) => "uint8x4",
+        api::VertexFormat::Sint8(1) => "sint8",
+        api::VertexFormat::Sint8(2) => "sint8x2",
+        api::VertexFormat::Sint8(4) => "sint8x4",
+        api::VertexFormat::Unorm8(1) => "unorm8",
+        api::VertexFormat::Unorm8(2) => "unorm8x2",
+        api::VertexFormat::Unorm8(4) => "unorm8x4",
+        api::VertexFormat::Snorm8(1) => "snorm8",
+        api::VertexFormat::Snorm8(2) => "snorm8x2",
+        api::VertexFormat::Snorm8(4) => "snorm8x4",
+        api::VertexFormat::Unorm16(1) => "unorm16",
+        api::VertexFormat::Unorm16(2) => "unorm16x2",
+        api::VertexFormat::Unorm16(4) => "unorm16x4",
+        api::VertexFormat::Snorm16(1) => "snorm16",
+        api::VertexFormat::Snorm16(2) => "snorm16x2",
+        api::VertexFormat::Snorm16(4) => "snorm16x4",
         _ => return Err(Error::Unsupported("WebGPU vertex format")),
     })
+}
+
+fn stencil_face(face: api::StencilFaceState) -> Result<JsValue> {
+    let state = object();
+    field(&state, "compare", JsValue::from_str(compare(face.compare)))?;
+    field(&state, "failOp", JsValue::from_str(stencil_op(face.fail)))?;
+    field(
+        &state,
+        "depthFailOp",
+        JsValue::from_str(stencil_op(face.depth_fail)),
+    )?;
+    field(&state, "passOp", JsValue::from_str(stencil_op(face.pass)))?;
+    Ok(state)
+}
+
+fn stencil_op(op: api::StencilOperation) -> &'static str {
+    match op {
+        api::StencilOperation::Keep => "keep",
+        api::StencilOperation::Zero => "zero",
+        api::StencilOperation::Replace => "replace",
+        api::StencilOperation::Invert => "invert",
+        api::StencilOperation::IncrementClamp => "increment-clamp",
+        api::StencilOperation::DecrementClamp => "decrement-clamp",
+        api::StencilOperation::IncrementWrap => "increment-wrap",
+        api::StencilOperation::DecrementWrap => "decrement-wrap",
+    }
+}
+
+/// WebGPU uses JavaScript numbers for override constants, including booleans.
+pub(super) fn constants(values: &[(String, api::SpecializationValue)]) -> Result<JsValue> {
+    let result = object();
+    for (name, value) in values {
+        use api::SpecializationValue as V;
+        let number = match *value {
+            V::Bool(v) => u8::from(v) as f64,
+            V::U8(v) => v as f64,
+            V::I8(v) => v as f64,
+            V::U16(v) => v as f64,
+            V::I16(v) => v as f64,
+            V::U32(v) => v as f64,
+            V::I32(v) => v as f64,
+            V::U64(v) if v <= (1_u64 << 53) => v as f64,
+            V::I64(v) if v.unsigned_abs() <= (1_u64 << 53) => v as f64,
+            V::U64(_) | V::I64(_) => {
+                return Err(Error::Unsupported(
+                    "WebGPU integer override exceeds JavaScript precision",
+                ));
+            }
+            V::F16Bits(v) => half_to_f64(v),
+            V::F32(v) => v as f64,
+            V::F64(v) => v,
+        };
+        field(&result, name, JsValue::from_f64(number))?;
+    }
+    Ok(result)
+}
+
+fn half_to_f64(bits: u16) -> f64 {
+    let sign = if bits & 0x8000 == 0 { 1.0 } else { -1.0 };
+    let exponent = (bits >> 10) & 0x1f;
+    let mantissa = bits & 0x3ff;
+    match exponent {
+        0 => sign * (mantissa as f64) * 2_f64.powi(-24),
+        31 if mantissa == 0 => sign * f64::INFINITY,
+        31 => f64::NAN,
+        _ => sign * (1.0 + (mantissa as f64) / 1024.0) * 2_f64.powi(exponent as i32 - 15),
+    }
 }

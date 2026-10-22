@@ -165,7 +165,7 @@ async fn invalid_texture_and_view_descriptors_fail_before_browser_validation() {
 }
 
 #[wasm_bindgen_test(async)]
-async fn standard_webgpu_rejects_readable_storage_texture_layouts() {
+async fn readable_storage_texture_layout_follows_browser_language_features() {
     let device = WebGpuInstance::new().unwrap().open_default().await.unwrap();
     let result = device.create_bind_group_layout(&BindGroupLayoutDesc {
         label: Some("unsupported read storage texture".into()),
@@ -182,7 +182,12 @@ async fn standard_webgpu_rejects_readable_storage_texture_layouts() {
             nonuniform_indexing: false,
         }],
     });
-    assert!(result.is_err());
+    // SAFETY: this backend-owned fixture only reads its own device facts.
+    let supported = unsafe { device.native_ref() }
+        .0
+        .wgsl_language_features
+        .contains("readonly_and_readwrite_storage_textures");
+    assert_eq!(result.is_ok(), supported);
 }
 
 #[wasm_bindgen_test(async)]

@@ -211,17 +211,12 @@ impl api::DeferredBackend for WebGpu {
                 work: api::RetryableSubmit::Fresh(packet),
             };
         }
-        // A single WebGPU queue can issue ordered command steps followed by one
-        // automatic canvas present. Validate the shape before any native issue.
+        // WebGPU exposes one ordered queue; canvas handoffs are automatic at
+        // the browser's rendering update. Sparse binding has no WebGPU API.
         let shape_ok = packet
             .steps
             .iter()
-            .enumerate()
-            .all(|(index, bound)| match &bound.payload {
-                api::StepPayload::Commands(_) => bound.step.index == index as u32,
-                api::StepPayload::Present(_) => index + 1 == packet.steps.len(),
-                api::StepPayload::SparseBind(_) => false,
-            });
+            .all(|bound| !matches!(bound.payload, api::StepPayload::SparseBind(_)));
         if !shape_ok {
             return api::SubmitOutcome::Rejected {
                 error: Error::Unsupported("WebGPU submission plan shape"),
@@ -320,15 +315,66 @@ impl api::DeferredBackend for WebGpu {
         })
     }
 
-    // SAFETY: Core only calls resume after the accepted frontier completed.
-    // WebGPU has no partial-tail route, so this preserves the tail for retry.
+    // SAFETY: Core validates the original plan and caller waits for the prior
+    // accepted frontier. Native work in the suffix is consumed exactly once.
     unsafe fn resume(
-        _device: &WebGpuDevice,
+        device: &WebGpuDevice,
         tail: api::DeferredTail<Self>,
     ) -> api::SubmitOutcome<Self> {
-        api::SubmitOutcome::Rejected {
-            error: Error::Unsupported("WebGPU partial-tail resume"),
-            work: api::RetryableSubmit::Tail(tail),
+        let api::DeferredTail {
+            plan,
+            next_step,
+            pending,
+            accepted_frontier,
+            completion,
+        } = tail;
+        let suffix_completion = match &completion {
+            api::CompletionRequest::None => api::CompletionRequest::None,
+            api::CompletionRequest::End => api::CompletionRequest::End,
+            api::CompletionRequest::Steps(steps) => api::CompletionRequest::Steps(
+                steps
+                    .iter()
+                    .copied()
+                    .filter(|step| step.index >= next_step)
+                    .collect::<Vec<_>>()
+                    .into(),
+            ),
+        };
+        // SAFETY: the suffix was validated against the original plan and its
+        // completed prefix satisfies every dependency on earlier steps.
+        match unsafe {
+            Self::submit(
+                device,
+                api::SubmitPacket {
+                    plan,
+                    steps: pending,
+                    completion: suffix_completion,
+                },
+            )
+        } {
+            api::SubmitOutcome::Rejected {
+                error,
+                work: api::RetryableSubmit::Fresh(packet),
+            } => api::SubmitOutcome::Rejected {
+                error,
+                work: api::RetryableSubmit::Tail(api::DeferredTail {
+                    plan: packet.plan,
+                    next_step,
+                    pending: packet.steps,
+                    accepted_frontier,
+                    completion,
+                }),
+            },
+            api::SubmitOutcome::Accepted(mut receipt) => {
+                if matches!(completion, api::CompletionRequest::Steps(_))
+                    || (matches!(completion, api::CompletionRequest::End)
+                        && receipt.checkpoints.is_empty())
+                {
+                    receipt.checkpoints.splice(0..0, accepted_frontier);
+                }
+                api::SubmitOutcome::Accepted(receipt)
+            }
+            other => other,
         }
     }
 }

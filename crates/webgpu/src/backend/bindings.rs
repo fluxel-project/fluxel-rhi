@@ -9,7 +9,10 @@ use wasm_bindgen::JsValue;
 
 use super::resource::{descriptor, field, texture_format};
 
-pub(super) fn binding_layout_entry(entry: &api::BindGroupLayoutEntry) -> Result<JsValue> {
+pub(super) fn binding_layout_entry(
+    entry: &api::BindGroupLayoutEntry,
+    features: &std::collections::BTreeSet<String>,
+) -> Result<JsValue> {
     if !matches!(entry.count, api::BindingCount::One)
         || entry.partially_bound
         || entry.nonuniform_indexing
@@ -108,13 +111,23 @@ pub(super) fn binding_layout_entry(entry: &api::BindGroupLayoutEntry) -> Result<
             format,
             dimension,
         } => {
-            // `readonly_and_readwrite_storage_textures` is optional. The
-            // standard WebGPU device opened here exposes only write-only.
-            if !matches!(access, api::StorageAccess::Write) {
-                return Err(Error::Unsupported("WebGPU read storage texture"));
+            if !matches!(access, api::StorageAccess::Write)
+                && !features.contains("readonly_and_readwrite_storage_textures")
+            {
+                return Err(Error::Unsupported(
+                    "WebGPU read storage texture language extension",
+                ));
             }
             let storage = descriptor();
-            field(&storage, "access", JsValue::from_str("write-only"))?;
+            field(
+                &storage,
+                "access",
+                JsValue::from_str(match access {
+                    api::StorageAccess::Read => "read-only",
+                    api::StorageAccess::Write => "write-only",
+                    api::StorageAccess::ReadWrite => "read-write",
+                }),
+            )?;
             field(
                 &storage,
                 "format",

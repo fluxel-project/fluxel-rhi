@@ -10,19 +10,29 @@ mod bindings;
 mod blit;
 mod command;
 mod compute;
+mod immediate;
+mod immediate_shader;
 mod indirect;
+mod indirect_count;
 mod instance;
 mod js;
+mod mapping;
+mod partial;
+mod pass_split;
 mod pipeline;
 mod query;
+mod query_segments;
 mod raster;
 mod readback;
 mod resource;
 mod resource_validation;
+mod subgroup;
 mod submit;
 mod surface;
 
 pub use instance::{WebGpu, WebGpuInstance};
 
+#[cfg(test)]
+mod conformance;
 #[cfg(test)]
 mod tests;

@@ -38,14 +38,12 @@ impl api::ComputeOps<WebGpu> for WebGpuCompute {
         desc: &'a api::ComputePipelineDesc<WebGpu>,
     ) -> Self::PipelineFuture<'a> {
         Box::pin(async move {
-            if !desc.compute.constants.is_empty() {
-                return Err(Error::Unsupported("WebGPU compute constants"));
-            }
             let pipeline = object();
             // SAFETY: Core's `ComputeOps` entry validates the layout and shader
             // DeviceIds against `device` before this backend call.
             let layout = unsafe { desc.layout.native_ref() }.clone();
-            field(&pipeline, "layout", layout)?;
+            let immediate_info = super::immediate::layout_info(&layout);
+            field(&pipeline, "layout", layout.clone())?;
             if let Some(label) = &desc.label {
                 field(&pipeline, "label", JsValue::from_str(label))?;
             }
@@ -53,14 +51,36 @@ impl api::ComputeOps<WebGpu> for WebGpuCompute {
             // SAFETY: Core validated this shader's DeviceId against `device`;
             // the clone is retained by the browser pipeline descriptor.
             let module = unsafe { desc.compute.module.native_ref() }.clone();
+            if desc.required_subgroup_size.is_some()
+                && !js::has_feature(&device.0.device, "subgroup-size-control")
+            {
+                return Err(Error::Unsupported("WebGPU subgroup-size-control feature"));
+            }
+            let module = super::immediate::variant_module(
+                device,
+                &module,
+                immediate_info[2],
+                &desc.compute.entry,
+                desc.required_subgroup_size
+                    .map(|size| (desc.compute.entry.as_str(), size)),
+            )?;
             field(&stage, "module", module)?;
             field(&stage, "entryPoint", JsValue::from_str(&desc.compute.entry))?;
+            if !desc.compute.constants.is_empty() {
+                field(
+                    &stage,
+                    "constants",
+                    super::pipeline::constants(&desc.compute.constants)?,
+                )?;
+            }
             field(&pipeline, "compute", stage)?;
             let promise = js::call1(&device.0.device, "createComputePipelineAsync", &pipeline)
                 .map_err(error)?;
-            JsFuture::from(Promise::from(promise))
+            let result = JsFuture::from(Promise::from(promise))
                 .await
-                .map_err(|error| Error::Shader(js::message(&error)))
+                .map_err(|error| Error::Shader(js::message(&error)))?;
+            super::immediate::associate_pipeline(&result, &layout);
+            Ok(result)
         })
     }
 
@@ -75,6 +95,7 @@ impl api::ComputeOps<WebGpu> for WebGpuCompute {
     fn set_pipeline(encoder: &mut WebGpuEncoder, pipeline: &JsValue) -> Result<()> {
         let pass = encoder.pass.as_ref().ok_or(Error::InvalidState)?;
         js::call1(pass, "setPipeline", pipeline).map_err(error)?;
+        super::immediate::bind_pipeline(pass, pipeline, true)?;
         encoder.keep_alive.push(pipeline.clone());
         Ok(())
     }
@@ -102,6 +123,11 @@ impl api::ComputeOps<WebGpu> for WebGpuCompute {
         .map_err(error)?;
         encoder.keep_alive.push(group.clone());
         Ok(())
+    }
+
+    fn set_push_constants(encoder: &mut WebGpuEncoder, offset: u32, bytes: &[u8]) -> Result<()> {
+        let pass = encoder.pass.as_ref().ok_or(Error::InvalidState)?;
+        super::immediate::write(pass, api::StageMask::COMPUTE, offset, bytes)
     }
 
     fn dispatch(encoder: &mut WebGpuEncoder, groups: [u32; 3]) -> Result<()> {

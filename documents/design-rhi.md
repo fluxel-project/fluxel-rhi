@@ -360,6 +360,49 @@ with the host. Adapter acquisition can fail in a particular browser environment;
 the application must then choose another backend explicitly, rather than
 turning `Device<WebGpu>` into a hidden GL implementation.
 
+The device requests supported standard optional features and adapter limits,
+including timestamp queries, compressed formats, subgroup controls, and native
+immediate data where the browser exposes the matching WGSL language feature.
+Shader specialization constants and stage-specific push data are lowered at
+pipeline creation. The immediate lowering retains the original WGSL source and
+compiles a selected-entry variant; it does not record application commands.
+
+Uploads and copies use native copies where their alignment permits. GPU
+repacking handles byte offsets and row pitches that cannot be submitted directly.
+Depth uploads and single-aspect combined depth/stencil copies use native render
+passes when WebGPU forbids the corresponding texel copy. Partial clears and
+resolves preserve pixels outside the public render area. These private operations
+retain their temporary resources through the same queue completion boundary.
+
+GPU-count multi-draw snapshots the argument and count buffers on the GPU,
+produces masked indirect arguments in a compute pass, and records the bounded
+native indirect calls. A native raster pass can be split around this work,
+preserving attachment contents, bindings, dynamic state and logical queries.
+The state retained for reopening a pass contains no draw calls and is not a CPU
+command stream. There is no CPU count readback or queue idle wait.
+
+Logical occlusion slots can collect multiple native pass segments. Resolved
+segments are added on the GPU, so recording order does not determine the value
+seen by a later submitted resolve. Timestamp measurements use standard pass
+`timestampWrites`, including auxiliary clear and resolve work. Mapping awaits
+`mapAsync` and exposes owned Rust bytes rather than browser-managed pointers.
+
+The standard browser API has no matching ray/mesh, sparse binding, independent
+queues, multiview, full pipeline-statistics, native placement-heap or serialized
+pipeline-cache interface. A render bundle also cannot express the independent
+viewport/scissor operations required by the current secondary-recording contract.
+Browser video external textures require a source/lifetime contract absent from
+Core's ordinary texture import API. Depth24Plus has no defined portable texel
+byte representation; compressed texture color clears have no standard native
+clear or attachment path. Neither boundary is a claim that a separate software
+codec or renderer could never provide an alternative.
+
+Canvas configuration exposes standard format, usage, alpha and sRGB/DisplayP3
+choices. HDR10 PQ and ExtendedLinearSrgb do not have matching native canvas
+color-space declarations. Display conversion is not inferred from tone mapping
+alone. Device feature checks remain necessary even when a format or operation
+appears in the standard.
+
 ### `crates/gl`: shared semantics across three context profiles
 
 The [GL-family implementation](../crates/gl/src/backend/gl/mod.rs) shares one

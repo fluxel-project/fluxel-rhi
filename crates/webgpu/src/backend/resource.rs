@@ -6,6 +6,7 @@
 
 use fluxel_rhi_core::api::{self, Error, Result, Support};
 use js_sys::{Array, Object};
+use std::{cell::Cell, rc::Rc};
 use wasm_bindgen::JsValue;
 
 use super::{
@@ -19,6 +20,7 @@ pub struct WebGpuBuffer {
     pub(super) raw: JsValue,
     pub(super) size: u64,
     pub(super) usage: api::BufferUsage,
+    pub(super) mapped: Rc<Cell<bool>>,
 }
 
 #[derive(Clone)]
@@ -31,6 +33,7 @@ pub struct WebGpuTexture {
 pub struct WebGpuTextureView {
     pub(super) raw: JsValue,
     pub(super) _texture: WebGpuTexture,
+    pub(super) desc: api::TextureViewDesc,
 }
 
 fn backend_error(error: JsValue) -> Error {
@@ -77,12 +80,33 @@ fn buffer_usage(usage: api::BufferUsage) -> Result<u32> {
 /// its ReadbackBackend lowering copies it into a private MAP_READ staging
 /// buffer.  Give that source the required native COPY_SRC usage here.
 fn native_buffer_usage(usage: api::BufferUsage) -> Result<u32> {
+    let usage = if usage.contains(api::BufferUsage::INDIRECT) {
+        usage.union(api::BufferUsage::COPY_SRC)
+    } else {
+        usage
+    };
+    let usage = if usage.contains(api::BufferUsage::QUERY_RESOLVE) {
+        usage.union(api::BufferUsage::COPY_DST)
+    } else {
+        usage
+    };
     if usage.contains(api::BufferUsage::MAP_READ) && usage.contains(api::BufferUsage::QUERY_RESOLVE)
     {
         let without_map_read = api::BufferUsage(usage.0 & !api::BufferUsage::MAP_READ.0)
             .union(api::BufferUsage::COPY_SRC);
         return buffer_usage(without_map_read);
     }
+    // Ordinary GPU buffers retain native COPY_SRC so byte-granular writes can
+    // preserve the untouched parts of boundary words in a temporary buffer.
+    // WebGPU forbids that extra usage on MAP_READ buffers.
+    let usage = if !usage.contains(api::BufferUsage::MAP_READ)
+        && !usage.contains(api::BufferUsage::MAP_WRITE)
+        && usage.contains(api::BufferUsage::COPY_DST)
+    {
+        usage.union(api::BufferUsage::COPY_SRC)
+    } else {
+        usage
+    };
     buffer_usage(usage)
 }
 
@@ -108,23 +132,9 @@ pub(super) fn texture_usage(usage: api::TextureUsage) -> Result<u32> {
     Ok(native)
 }
 
-pub(super) fn texture_format(format: api::TextureFormat) -> Result<&'static str> {
-    Ok(match format {
-        api::TextureFormat::R8Unorm => "r8unorm",
-        api::TextureFormat::Rg8Unorm => "rg8unorm",
-        api::TextureFormat::Rgba8Unorm => "rgba8unorm",
-        api::TextureFormat::Rgba8UnormSrgb => "rgba8unorm-srgb",
-        api::TextureFormat::Bgra8Unorm => "bgra8unorm",
-        api::TextureFormat::Bgra8UnormSrgb => "bgra8unorm-srgb",
-        api::TextureFormat::Rgba16Float => "rgba16float",
-        api::TextureFormat::R32Float => "r32float",
-        api::TextureFormat::Depth16Unorm => "depth16unorm",
-        api::TextureFormat::Depth24Plus => "depth24plus",
-        api::TextureFormat::Depth24PlusStencil8 => "depth24plus-stencil8",
-        api::TextureFormat::Depth32Float => "depth32float",
-        _ => return Err(Error::Unsupported("WebGPU texture format")),
-    })
-}
+#[path = "resource_format.rs"]
+mod format;
+pub(super) use format::texture_format;
 
 impl api::ResourceBackend for WebGpu {
     fn buffer_support(
@@ -174,36 +184,28 @@ impl api::ResourceBackend for WebGpu {
                 ([limit, limit, limit], 1)
             }
         };
-        let filterable = matches!(
-            desc.format,
-            api::TextureFormat::R8Unorm
-                | api::TextureFormat::Rg8Unorm
-                | api::TextureFormat::Rgba8Unorm
-                | api::TextureFormat::Rgba8UnormSrgb
-                | api::TextureFormat::Bgra8Unorm
-                | api::TextureFormat::Bgra8UnormSrgb
-        );
-        let depth = matches!(
-            desc.format,
-            api::TextureFormat::Depth16Unorm
-                | api::TextureFormat::Depth24Plus
-                | api::TextureFormat::Depth24PlusStencil8
-                | api::TextureFormat::Depth32Float
-        );
+        let (filterable, blendable, storage, _, multisample) =
+            resource_validation::capabilities(device, desc.format);
         Support::Supported(api::TextureSupport {
             max_extent,
             max_array_layers: max_layers,
             max_mips: resource_validation::max_mips_for(desc),
-            sample_counts: resource_validation::supported_sample_counts(desc),
-            compatible_view_formats: vec![desc.format],
+            sample_counts: if multisample {
+                resource_validation::supported_sample_counts(desc)
+            } else {
+                vec![1]
+            },
+            compatible_view_formats: std::iter::once(desc.format)
+                .chain(
+                    desc.view_formats
+                        .iter()
+                        .copied()
+                        .filter(|format| *format != desc.format),
+                )
+                .collect(),
             filterable,
-            blendable: !depth,
-            storage: matches!(
-                desc.format,
-                api::TextureFormat::Rgba8Unorm
-                    | api::TextureFormat::Rgba16Float
-                    | api::TextureFormat::R32Float
-            ),
+            blendable,
+            storage,
         })
     }
 
@@ -224,6 +226,7 @@ impl api::ResourceBackend for WebGpu {
             raw,
             size: desc.size,
             usage: desc.usage,
+            mapped: Rc::new(Cell::new(false)),
         })
     }
 
@@ -260,11 +263,26 @@ impl api::ResourceBackend for WebGpu {
             "format",
             JsValue::from_str(texture_format(desc.format)?),
         )?;
-        field(
-            &object,
-            "usage",
-            JsValue::from_f64(texture_usage(desc.usage)? as f64),
-        )?;
+        let mut native_usage = texture_usage(desc.usage)?;
+        let format_name = texture_format(desc.format)?;
+        if format_name.starts_with("depth") {
+            if desc.usage.contains(api::TextureUsage::COPY_SRC) {
+                native_usage |= 4;
+            }
+            if desc.usage.contains(api::TextureUsage::COPY_DST) {
+                native_usage |= 16;
+            }
+        }
+        if format_name != "stencil8" && desc.usage.contains(api::TextureUsage::COPY_SRC) {
+            native_usage |= 4;
+        }
+        if desc.dimension != api::TextureDimension::D1
+            && desc.usage.contains(api::TextureUsage::COPY_DST)
+            && resource_validation::capabilities(device, desc.format).3
+        {
+            native_usage |= 16;
+        }
+        field(&object, "usage", JsValue::from_f64(native_usage as f64))?;
         field(
             &object,
             "mipLevelCount",
@@ -298,11 +316,18 @@ impl api::ResourceBackend for WebGpu {
             return Err(Error::InvalidRange);
         }
         let object = descriptor();
-        field(
-            &object,
-            "format",
-            JsValue::from_str(texture_format(desc.format)?),
-        )?;
+        let combined = matches!(
+            desc.format,
+            api::TextureFormat::Depth24PlusStencil8 | api::TextureFormat::Depth32FloatStencil8
+        );
+        if !combined || desc.aspects == (api::TextureAspects::DEPTH | api::TextureAspects::STENCIL)
+        {
+            field(
+                &object,
+                "format",
+                JsValue::from_str(texture_format(desc.format)?),
+            )?;
+        }
         field(
             &object,
             "dimension",
@@ -345,10 +370,19 @@ impl api::ResourceBackend for WebGpu {
                     .ok_or(Error::InvalidRange)? as f64,
             ),
         )?;
+        let aspect = if desc.aspects == api::TextureAspects::DEPTH {
+            "depth-only"
+        } else if desc.aspects == api::TextureAspects::STENCIL {
+            "stencil-only"
+        } else {
+            "all"
+        };
+        field(&object, "aspect", JsValue::from_str(aspect))?;
         let raw = js::call1(&texture.raw, "createView", &object).map_err(backend_error)?;
         Ok(WebGpuTextureView {
             raw,
             _texture: texture.clone(),
+            desc: desc.clone(),
         })
     }
 
@@ -440,7 +474,10 @@ impl api::ResourceBackend for WebGpu {
         let object = descriptor();
         let entries = Array::new();
         for entry in &desc.entries {
-            entries.push(&bindings::binding_layout_entry(entry)?);
+            entries.push(&bindings::binding_layout_entry(
+                entry,
+                &device.0.wgsl_language_features,
+            )?);
         }
         field(&object, "entries", entries.into())?;
         if let Some(label) = &desc.label {
@@ -506,21 +543,7 @@ impl api::ResourceBackend for WebGpu {
         device: &WebGpuDevice,
         desc: &api::PipelineLayoutDesc<'_, WebGpu>,
     ) -> Result<JsValue> {
-        if !desc.push_constants.is_empty() {
-            return Err(Error::Unsupported("WebGPU push constants"));
-        }
-        let object = descriptor();
-        let layouts = Array::new();
-        for layout in desc.groups {
-            // SAFETY: `Device::create_pipeline_layout` checked each group's
-            // DeviceId against this device before the backend SPI call.
-            layouts.push(unsafe { layout.native_ref() });
-        }
-        field(&object, "bindGroupLayouts", layouts.into())?;
-        if let Some(label) = desc.label {
-            field(&object, "label", JsValue::from_str(label))?;
-        }
-        js::call1(&device.0.device, "createPipelineLayout", &object).map_err(backend_error)
+        super::immediate::create_layout(device, desc)
     }
 }
 

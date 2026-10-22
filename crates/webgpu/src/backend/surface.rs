@@ -39,6 +39,9 @@ pub struct WebGpuImageLease {
     surface: WebGpuSurface,
     generation: u64,
     pub(super) view: JsValue,
+    pub(super) extent: [u32; 2],
+    pub(super) format: api::TextureFormat,
+    pub(super) usage: api::SurfaceUsage,
     handed_off: bool,
 }
 
@@ -126,14 +129,30 @@ impl api::SurfaceBackend for WebGpu {
             _ => return Err(Error::Unsupported("browser canvas format")),
         };
         Ok(api::SurfaceCapabilities {
-            formats: vec![format],
+            formats: {
+                let mut formats = vec![format];
+                for candidate in [
+                    api::TextureFormat::Bgra8Unorm,
+                    api::TextureFormat::Rgba8Unorm,
+                    api::TextureFormat::Rgba16Float,
+                ] {
+                    if !formats.contains(&candidate) {
+                        formats.push(candidate);
+                    }
+                }
+                formats
+            },
             present_modes: vec![api::PresentMode::Fifo],
             alpha_modes: vec![
                 api::CompositeAlphaMode::Opaque,
                 api::CompositeAlphaMode::Premultiplied,
             ],
-            color_spaces: vec![api::ColorSpace::Srgb],
-            usages: api::SurfaceUsage::RENDER_ATTACHMENT,
+            color_spaces: vec![api::ColorSpace::Srgb, api::ColorSpace::DisplayP3],
+            usages: api::SurfaceUsage::RENDER_ATTACHMENT
+                | api::SurfaceUsage::COPY_SRC
+                | api::SurfaceUsage::COPY_DST
+                | api::SurfaceUsage::TEXTURE_BINDING
+                | api::SurfaceUsage::STORAGE_BINDING,
             min_extent: [1, 1],
             max_extent: [
                 resource::device_limit(&state.device.0.device, "maxTextureDimension2D") as u32,
@@ -149,8 +168,12 @@ impl api::SurfaceBackend for WebGpu {
         if !caps.formats.contains(&desc.format)
             || desc.present_mode != api::PresentMode::Fifo
             || !caps.alpha_modes.contains(&desc.alpha_mode)
-            || desc.color_space != api::ColorSpace::Srgb
-            || desc.usage != api::SurfaceUsage::RENDER_ATTACHMENT
+            || !caps.color_spaces.contains(&desc.color_space)
+            || desc.usage.0 == 0
+            || desc.usage.0 & !caps.usages.0 != 0
+            || (desc.usage.0 & api::SurfaceUsage::STORAGE_BINDING.0 != 0
+                && desc.format == api::TextureFormat::Bgra8Unorm
+                && !js::has_feature(&surface.0.borrow().device.0.device, "bgra8unorm-storage"))
             || desc.extent.contains(&0)
             || desc.extent[0] > caps.max_extent[0]
             || desc.extent[1] > caps.max_extent[1]
@@ -173,13 +196,22 @@ impl api::SurfaceBackend for WebGpu {
 }
 
 fn configure(surface: &WebGpuSurface, desc: &api::SurfaceConfig) -> Result<()> {
+    if let Support::Unsupported(reason) =
+        <WebGpu as api::SurfaceBackend>::supports_config(surface, desc)
+    {
+        return Err(Error::Unsupported(reason));
+    }
     let mut state = surface.0.borrow_mut();
+    if state.device.0.lost.get() {
+        return Err(Error::DeviceLost);
+    }
     if state.acquired {
         return Err(Error::InvalidState);
     }
     if state.canvas.width() != desc.extent[0] || state.canvas.height() != desc.extent[1] {
         return Err(Error::SurfaceOutdated);
     }
+    let generation = state.generation.checked_add(1).ok_or(Error::OutOfMemory)?;
     if state.abandoned {
         js::call0(&state.context, "unconfigure")
             .map_err(|error| Error::Backend(js::message(&error)))?;
@@ -194,8 +226,27 @@ fn configure(surface: &WebGpuSurface, desc: &api::SurfaceConfig) -> Result<()> {
         &JsValue::from_str(resource::texture_format(desc.format)?),
     )
     .map_err(|error| Error::Backend(js::message(&error)))?;
-    js::set(&object, "usage", &JsValue::from_f64(16.0))
-        .map_err(|error| Error::Backend(js::message(&error)))?;
+    let native_usage = [
+        (api::SurfaceUsage::RENDER_ATTACHMENT, 16u32),
+        (api::SurfaceUsage::COPY_SRC, 1),
+        (api::SurfaceUsage::COPY_DST, 2),
+        (api::SurfaceUsage::TEXTURE_BINDING, 4),
+        (api::SurfaceUsage::STORAGE_BINDING, 8),
+    ]
+    .into_iter()
+    .fold(0u32, |mask, (flag, native)| {
+        mask | if desc.usage.0 & flag.0 != 0 {
+            native
+        } else {
+            0
+        }
+    });
+    js::set(
+        &object,
+        "usage",
+        &JsValue::from_f64(f64::from(native_usage)),
+    )
+    .map_err(|error| Error::Backend(js::message(&error)))?;
     js::set(
         &object,
         "alphaMode",
@@ -206,9 +257,18 @@ fn configure(surface: &WebGpuSurface, desc: &api::SurfaceConfig) -> Result<()> {
         }),
     )
     .map_err(|error| Error::Backend(js::message(&error)))?;
+    js::set(
+        &object,
+        "colorSpace",
+        &JsValue::from_str(match desc.color_space {
+            api::ColorSpace::Srgb => "srgb",
+            api::ColorSpace::DisplayP3 => "display-p3",
+            _ => return Err(Error::Unsupported("WebGPU canvas color space")),
+        }),
+    )
+    .map_err(|error| Error::Backend(js::message(&error)))?;
     js::call1(&state.context, "configure", &object)
         .map_err(|error| Error::Backend(js::message(&error)))?;
-    let generation = state.generation.checked_add(1).ok_or(Error::OutOfMemory)?;
     state.configured = Some(desc.clone());
     state.generation = generation;
     state.abandoned = false;
@@ -217,6 +277,9 @@ fn configure(surface: &WebGpuSurface, desc: &api::SurfaceConfig) -> Result<()> {
 
 fn acquire(surface: &WebGpuSurface) -> Result<WebGpuImageLease> {
     let mut state = surface.0.borrow_mut();
+    if state.device.0.lost.get() {
+        return Err(Error::DeviceLost);
+    }
     let config = state.configured.as_ref().ok_or(Error::InvalidState)?;
     if state.acquired || state.abandoned {
         return Err(Error::InvalidState);
@@ -233,11 +296,17 @@ fn acquire(surface: &WebGpuSurface) -> Result<WebGpuImageLease> {
             return Err(Error::Backend(js::message(&error)));
         }
     };
+    let extent = config.extent;
+    let format = config.format;
+    let usage = config.usage;
     state.acquired = true;
     Ok(WebGpuImageLease {
         surface: surface.clone(),
         generation: state.generation,
         view,
+        extent,
+        format,
+        usage,
         handed_off: false,
     })
 }

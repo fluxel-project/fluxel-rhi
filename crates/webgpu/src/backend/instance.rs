@@ -21,7 +21,6 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 
 use super::{
-    blit::BlitCache,
     command::WebGpuEncoder,
     compute::WebGpuCompute,
     indirect::WebGpuExtras,
@@ -85,8 +84,26 @@ pub(super) struct DeviceState {
     pub(super) uncertain_resources: RefCell<Vec<JsValue>>,
     pub(super) lost: Cell<bool>,
     pub(super) validation_error: RefCell<Option<String>>,
-    pub(super) blit_cache: RefCell<Option<BlitCache>>,
+    pub(super) wgsl_language_features: std::collections::BTreeSet<String>,
     validation_listener: RefCell<Option<Closure<dyn FnMut(JsValue)>>>,
+}
+
+impl Drop for DeviceState {
+    fn drop(&mut self) {
+        // The browser may retain a native device through a resource after the
+        // last Rust device owner disappears. Unregister before dropping the
+        // wasm closure so a later validation event cannot call a dead closure.
+        if let Some(listener) = self.validation_listener.get_mut().take() {
+            let _ = js::call(
+                &self.device,
+                "removeEventListener",
+                &[
+                    JsValue::from_str("uncapturederror"),
+                    listener.as_ref().clone(),
+                ],
+            );
+        }
+    }
 }
 
 impl Backend for WebGpu {
@@ -152,20 +169,97 @@ impl InstanceBackend for WebGpu {
             if adapter.is_null() || adapter.is_undefined() {
                 return Err(Error::Unsupported("browser WebGPU adapter"));
             }
-            let indirect_first_instance = js::has_feature(&adapter, "indirect-first-instance");
             let mut requested = request
                 .required_features
                 .iter()
                 .map(|name| (*name).to_owned())
                 .collect::<Vec<_>>();
-            if indirect_first_instance
-                && !requested
-                    .iter()
-                    .any(|name| name == "indirect-first-instance")
-            {
-                requested.push("indirect-first-instance".into());
+            for feature in [
+                "depth-clip-control",
+                "depth32float-stencil8",
+                "texture-compression-bc",
+                "texture-compression-bc-sliced-3d",
+                "texture-compression-etc2",
+                "texture-compression-astc",
+                "texture-compression-astc-sliced-3d",
+                "timestamp-query",
+                "indirect-first-instance",
+                "shader-f16",
+                "rg11b10ufloat-renderable",
+                "bgra8unorm-storage",
+                "float32-filterable",
+                "float32-blendable",
+                "clip-distances",
+                "dual-source-blending",
+                "subgroups",
+                "texture-formats-tier1",
+                "texture-formats-tier2",
+                "primitive-index",
+                "texture-component-swizzle",
+                "subgroup-size-control",
+                "texture-compression-unaligned",
+                "atomic-vec2u-min-max",
+            ] {
+                if js::has_feature(&adapter, feature)
+                    && !requested.iter().any(|name| name == feature)
+                {
+                    requested.push(feature.into());
+                }
             }
-            let device_promise = js::request_device(&adapter, &requested, &[])
+            for feature in &requested {
+                if !js::has_feature(&adapter, feature) {
+                    return Err(Error::Unsupported("requested browser device feature"));
+                }
+            }
+            let adapter_limits = js::property(&adapter, "limits")
+                .map_err(|error| Error::Backend(js::message(&error)))?;
+            let limit_names = [
+                "maxTextureDimension1D",
+                "maxTextureDimension2D",
+                "maxTextureDimension3D",
+                "maxTextureArrayLayers",
+                "maxBindGroups",
+                "maxBindGroupsPlusVertexBuffers",
+                "maxBindingsPerBindGroup",
+                "maxDynamicUniformBuffersPerPipelineLayout",
+                "maxDynamicStorageBuffersPerPipelineLayout",
+                "maxSampledTexturesPerShaderStage",
+                "maxSamplersPerShaderStage",
+                "maxStorageBuffersPerShaderStage",
+                "maxStorageTexturesPerShaderStage",
+                "maxUniformBuffersPerShaderStage",
+                "maxUniformBufferBindingSize",
+                "maxStorageBufferBindingSize",
+                "minUniformBufferOffsetAlignment",
+                "minStorageBufferOffsetAlignment",
+                "maxVertexBuffers",
+                "maxBufferSize",
+                "maxVertexAttributes",
+                "maxVertexBufferArrayStride",
+                "maxInterStageShaderVariables",
+                "maxColorAttachments",
+                "maxColorAttachmentBytesPerSample",
+                "maxComputeWorkgroupStorageSize",
+                "maxComputeInvocationsPerWorkgroup",
+                "maxComputeWorkgroupSizeX",
+                "maxComputeWorkgroupSizeY",
+                "maxComputeWorkgroupSizeZ",
+                "maxComputeWorkgroupsPerDimension",
+                "maxImmediateSize",
+            ];
+            let requested_limits: Vec<_> = limit_names
+                .into_iter()
+                .filter_map(|name| {
+                    js::property(&adapter_limits, name)
+                        .ok()?
+                        .as_f64()
+                        .filter(|value| {
+                            value.is_finite() && *value > 0.0 && *value <= 9_007_199_254_740_991.0
+                        })
+                        .map(|value| (name, value as u64))
+                })
+                .collect();
+            let device_promise = js::request_device(&adapter, &requested, &requested_limits)
                 .map_err(|error| Error::Backend(js::message(&error)))?;
             let device = JsFuture::from(device_promise)
                 .await
@@ -178,11 +272,24 @@ impl InstanceBackend for WebGpu {
             };
             let limits = js::property(&device, "limits")
                 .map_err(|error| Error::Backend(js::message(&error)))?;
+            let wgsl_language_features: std::collections::BTreeSet<String> =
+                js::property(&instance.gpu, "wgslLanguageFeatures")
+                    .ok()
+                    .and_then(|features| js_sys::try_iter(&features).ok().flatten())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|value| value.ok()?.as_string())
+                    .collect();
             let caps = DeviceCapabilities {
                 compute: true,
                 storage_buffers: true,
                 storage_textures: true,
-                indirect_draw: indirect_first_instance,
+                indirect_draw: js::has_feature(&device, "indirect-first-instance"),
+                multi_draw: js::has_feature(&device, "indirect-first-instance"),
+                multi_draw_count: js::has_feature(&device, "indirect-first-instance"),
+                timestamp: js::has_feature(&device, "timestamp-query"),
+                push_constants: limit_u32(&limits, "maxImmediateSize") > 0
+                    && wgsl_language_features.contains("immediate_address_space"),
                 occlusion: true,
                 lanes: Arc::from([LaneInfo {
                     id: lane,
@@ -200,6 +307,14 @@ impl InstanceBackend for WebGpu {
                     max_vertex_attributes: limit_u32(&limits, "maxVertexAttributes"),
                     uniform_offset_alignment: limit_u64(&limits, "minUniformBufferOffsetAlignment"),
                     storage_offset_alignment: limit_u64(&limits, "minStorageBufferOffsetAlignment"),
+                    max_compute_workgroups: [limit_u32(&limits, "maxComputeWorkgroupsPerDimension");
+                        3],
+                    max_compute_workgroup_size: [
+                        limit_u32(&limits, "maxComputeWorkgroupSizeX"),
+                        limit_u32(&limits, "maxComputeWorkgroupSizeY"),
+                        limit_u32(&limits, "maxComputeWorkgroupSizeZ"),
+                    ],
+                    max_push_constant_bytes: limit_u32(&limits, "maxImmediateSize"),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -213,7 +328,7 @@ impl InstanceBackend for WebGpu {
                 uncertain_resources: RefCell::new(Vec::new()),
                 lost: Cell::new(false),
                 validation_error: RefCell::new(None),
-                blit_cache: RefCell::new(None),
+                wgsl_language_features,
                 validation_listener: RefCell::new(None),
             }));
             let weak_for_errors = Rc::downgrade(&native.0);
