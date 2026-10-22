@@ -1,6 +1,6 @@
 import os,time,subprocess,pathlib,ctypes
 from PIL import ImageGrab,ImageChops,ImageStat
-root=pathlib.Path.cwd();ref=root/'临时/实验/nvidia-donut-samples';exe=ref/'bin/rt_particles.exe';u=ctypes.windll.user32;u.SetProcessDPIAware()
+root=pathlib.Path.cwd();ref=pathlib.Path(os.environ['FLUXEL_DONUT_REFERENCE_ROOT']);exe=ref/'bin/rt_particles.exe';u=ctypes.windll.user32;u.SetProcessDPIAware()
 class RECT(ctypes.Structure):_fields_=[('left',ctypes.c_long),('top',ctypes.c_long),('right',ctypes.c_long),('bottom',ctypes.c_long)]
 class POINT(ctypes.Structure):_fields_=[('x',ctypes.c_long),('y',ctypes.c_long)]
 for backend in ['reference']:

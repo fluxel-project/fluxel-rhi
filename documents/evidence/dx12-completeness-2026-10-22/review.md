@@ -1,10 +1,13 @@
 # DX12 review follow-up
 
-This maps the user-provided review to the current working tree and targeted
-tests. These are implementation and screening results, not a final acceptance
-for a frozen commit. Final candidate SHA, full affected GPU gates, independent
-review, and presentation/visual evidence remain to be recorded. A fixture's
-presence or a capability-gated skip does not by itself prove execution.
+All seven review topics now have implementation and targeted GPU coverage.
+The [candidate acceptance report](acceptance/README.md) records the complete
+suite, independent review, visual inspection and final affected reruns on
+production candidate `5b9c4d1`. The remaining-acceptance column below preserves
+the development-stage checklist; the linked report supersedes its pending
+candidate-gate entries. Actual RenderGraph integration and untested device
+combinations remain outside this repository's evidence. A fixture's presence
+or a capability-gated skip does not by itself prove execution.
 
 | Review item | Current response and evidence | Remaining acceptance |
 | --- | --- | --- |

@@ -123,7 +123,8 @@ The [DX12 review follow-up](documents/evidence/dx12-completeness-2026-10-22/revi
 tracks the original review items and remaining acceptance work. The
 [performance screening](documents/evidence/dx12-completeness-2026-10-22/performance.md)
 contains the native-call measurements and their reproducibility limits. Targeted
-GPU results remain subject to the frozen candidate acceptance gates.
+The [candidate acceptance report](documents/evidence/dx12-completeness-2026-10-22/acceptance/README.md)
+records the complete test run, corrected validation diagnostics and visual scope.
 
 ### Compressed texture formats
 

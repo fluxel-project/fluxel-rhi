@@ -1,0 +1,3 @@
+D3D12 [D3D12_MESSAGE_SEVERITY(2)/D3D12_MESSAGE_ID(820)]: ID3D12CommandList::ClearRenderTargetView: The clear values do not match those passed to resource creation. The clear operation is typically slower as a result; but will still clear to the desired value.
+D3D12 [D3D12_MESSAGE_SEVERITY(2)/D3D12_MESSAGE_ID(820)]: ID3D12CommandList::ClearRenderTargetView: The clear values do not match those passed to resource creation. The clear operation is typically slower as a result; but will still clear to the desired value.
+D3D12 [D3D12_MESSAGE_SEVERITY(2)/D3D12_MESSAGE_ID(820)]: ID3D12CommandList::ClearRenderTargetView: The clear values do not match those passed to resource creation. The clear operation is typically slower as a result; but will still clear to the desired value.

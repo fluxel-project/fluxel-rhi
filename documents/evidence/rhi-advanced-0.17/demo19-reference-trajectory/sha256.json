@@ -1,6 +1,6 @@
 {
   "documents\\evidence\\rhi-advanced-0.17\\demo19-reference-trajectory\\alt-pan.png": "283d45269d70fe2bb15345b54bd2a1f5a7ca529f72035e88027d7f58735edb2e",
-  "documents\\evidence\\rhi-advanced-0.17\\demo19-reference-trajectory\\capture.py": "e4f08dbb6730b251fe351c26df3eb9c09749c9d3d01674762e8e3b2a3cd9d195",
+  "documents\\evidence\\rhi-advanced-0.17\\demo19-reference-trajectory\\capture.py": "62a79dc72812fa385ca4779c689b715d1ef092202473b07da0822e5d1c5e1dbd",
   "documents\\evidence\\rhi-advanced-0.17\\demo19-reference-trajectory\\initial.png": "94fa360ca5b812feb3d7aa35ce7d58ab683e9d375ee4416a29a39e88f65e6606",
   "documents\\evidence\\rhi-advanced-0.17\\demo19-reference-trajectory\\live.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "documents\\evidence\\rhi-advanced-0.17\\demo19-reference-trajectory\\orbit.png": "283d45269d70fe2bb15345b54bd2a1f5a7ca529f72035e88027d7f58735edb2e",
@@ -8,7 +8,7 @@
   "documents\\evidence\\rhi-advanced-0.17\\demo19-reference-trajectory\\rebuilt-360.png": "f7ef0fea79a2715c919f259d14bb7a98314c0185e6f196b215f02f7bc49d20bd",
   "documents\\evidence\\rhi-advanced-0.17\\demo19-reference-trajectory\\state.txt": "11ba9bfe39e0d126f9106cd83c7888fae64d0af15a9537c00a27c9c09d979084",
   "documents\\evidence\\rhi-advanced-0.17\\demo19-reference-trajectory\\zoom.png": "283d45269d70fe2bb15345b54bd2a1f5a7ca529f72035e88027d7f58735edb2e",
-  "临时\\实验\\nvidia-donut-samples\\bin\\rt_particles.exe": "9f9cce59089f5c067282a221baf2d78a63bf5c0c092a61a0987c51df3bb54b60",
-  "临时\\实验\\nvidia-donut-samples\\bin\\shaders\\rt_particles\\dxil\\rt_particles.bin": "06acdb514b080965b1ba8040bf0f88bb6af405114dddff0d0ca9d6135b8c5751",
-  "临时\\实验\\nvidia-donut-samples\\examples\\rt_particles\\rt_particles.cpp": "0d50288d801f3927ff8d152d5c327dae62b445bcdce390ac7583ef35dc6fb572"
+  "${FLUXEL_DONUT_REFERENCE_ROOT}\\bin\\rt_particles.exe": "9f9cce59089f5c067282a221baf2d78a63bf5c0c092a61a0987c51df3bb54b60",
+  "${FLUXEL_DONUT_REFERENCE_ROOT}\\bin\\shaders\\rt_particles\\dxil\\rt_particles.bin": "06acdb514b080965b1ba8040bf0f88bb6af405114dddff0d0ca9d6135b8c5751",
+  "${FLUXEL_DONUT_REFERENCE_ROOT}\\examples\\rt_particles\\rt_particles.cpp": "0d50288d801f3927ff8d152d5c327dae62b445bcdce390ac7583ef35dc6fb572"
 }

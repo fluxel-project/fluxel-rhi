@@ -1,0 +1,1227 @@
+   Compiling fluxel-rhi-core v0.16.0 (E:\moyy\program\rust\fluxel\fluxel-rhi\crates\core)
+   Compiling fluxel-rhi-dx12 v0.16.0 (E:\moyy\program\rust\fluxel\fluxel-rhi\crates\dx12)
+warning: unused import: `DXGI_FORMAT_R8G8B8A8_UNORM`
+  --> crates\dx12\src\backend\encoder\mod.rs:19:47
+   |
+19 |         Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC},
+   |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: unnecessary parentheses around `if` condition
+   --> crates\dx12\src\backend\sparse.rs:245:12
+    |
+245 |         if (block_bytes.is_some()
+    |            ^
+...
+248 |                 || desc.usage.contains(api::TextureUsage::STORAGE_BINDING)))
+    |                                                                            ^
+    |
+    = note: `#[warn(unused_parens)]` on by default
+help: remove these parentheses
+    |
+245 ~         if block_bytes.is_some()
+246 |             && (desc.extent[0] % 4 != 0
+247 |                 || desc.extent[1] % 4 != 0
+248 ~                 || desc.usage.contains(api::TextureUsage::STORAGE_BINDING))
+    |
+
+warning: field `min_size` is never read
+   --> crates\dx12\src\backend\descriptor.rs:252:16
+    |
+248 | pub(crate) struct UniformBinding {
+    |                   -------------- field in this struct
+...
+252 |     pub(crate) min_size: u64,
+    |                ^^^^^^^^
+    |
+    = note: `UniformBinding` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` on by default
+
+warning: field `buffers` is never read
+   --> crates\dx12\src\backend\descriptor.rs:292:5
+    |
+290 | pub(crate) struct BindGroupState {
+    |                   -------------- field in this struct
+291 |     pub(crate) layout: Arc<BindGroupLayoutState>,
+292 |     buffers: Vec<Dx12Buffer>,
+    |     ^^^^^^^
+
+warning: methods `view_start`, `heaps`, and `buffers` are never used
+   --> crates\dx12\src\backend\descriptor.rs:443:19
+    |
+317 | impl BindGroupState {
+    | ------------------- methods in this implementation
+...
+443 |     pub(crate) fn view_start(&self) -> u32 {
+    |                   ^^^^^^^^^^
+...
+455 |     pub(crate) fn heaps(&self) -> &DescriptorHeaps {
+    |                   ^^^^^
+...
+458 |     pub(crate) fn buffers(&self) -> &[Dx12Buffer] {
+    |                   ^^^^^^^
+
+warning: fields `allocator`, `buffers`, `groups`, `pipeline`, and `dynamic_view_tables` are never read
+  --> crates\dx12\src\backend\encoder\secondary.rs:16:16
+   |
+14 | pub struct Dx12SecondaryWork {
+   |            ----------------- fields in this struct
+15 |     pub(crate) segments: Vec<SecondarySegment>,
+16 |     pub(crate) allocator: ID3D12CommandAllocator,
+   |                ^^^^^^^^^
+17 |     pub(crate) list: ID3D12GraphicsCommandList,
+18 |     pub(crate) buffers: Vec<Dx12Buffer>,
+   |                ^^^^^^^
+19 |     pub(crate) groups: Vec<Dx12BindGroup>,
+   |                ^^^^^^
+20 |     pub(crate) pipeline: Option<Dx12RasterPipeline>,
+   |                ^^^^^^^^
+21 |     pub(crate) pipelines: Vec<Dx12RasterPipeline>,
+22 |     pub(crate) dynamic_view_tables: Vec<std::sync::Arc<super::super::descriptor::DynamicViewTable>>,
+   |                ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `Dx12SecondaryWork` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: fields `heap` and `native` are never read
+  --> crates\dx12\src\backend\sampler.rs:16:16
+   |
+15 | pub(crate) struct SamplerState {
+   |                   ------------ fields in this struct
+16 |     pub(super) heap: ID3D12DescriptorHeap,
+   |                ^^^^
+17 |     pub(super) cpu: D3D12_CPU_DESCRIPTOR_HANDLE,
+18 |     pub(super) native: D3D12_SAMPLER_DESC,
+   |                ^^^^^^
+
+warning: fields `hlsl` and `translated_name` are never read
+  --> crates\dx12\src\backend\shader_naga.rs:89:9
+   |
+87 | pub struct CompiledEntry {
+   |            ------------- fields in this struct
+88 |     pub bytes: Vec<u8>,
+89 |     pub hlsl: String,
+   |         ^^^^
+...
+92 |     pub translated_name: String,
+   |         ^^^^^^^^^^^^^^^
+
+warning: function `compile` is never used
+   --> crates\dx12\src\backend\shader_naga.rs:102:8
+    |
+102 | pub fn compile(desc: &api::ShaderDesc) -> Result<CompiledShader> {
+    |        ^^^^^^^
+
+warning: function `compile_variant` is never used
+   --> crates\dx12\src\backend\shader_naga.rs:108:8
+    |
+108 | pub fn compile_variant(
+    |        ^^^^^^^^^^^^^^^
+
+warning: fields `texture` and `heaps` are never read
+  --> crates\dx12\src\backend\sparse.rs:23:16
+   |
+22 | pub(crate) struct SparseRetained {
+   |                   -------------- fields in this struct
+23 |     pub(crate) texture: Dx12Texture,
+   |                ^^^^^^^
+24 |     pub(crate) heaps: Vec<Dx12Sparse>,
+   |                ^^^^^
+
+warning: fields `srv_heap` and `uav_heap` are never read
+  --> crates\dx12\src\backend\texture.rs:32:16
+   |
+30 | pub(crate) struct TextureViewState {
+   |                   ---------------- fields in this struct
+31 |     pub(super) texture: Arc<TextureState>,
+32 |     pub(super) srv_heap: Option<ID3D12DescriptorHeap>,
+   |                ^^^^^^^^
+33 |     pub(super) srv: Option<D3D12_CPU_DESCRIPTOR_HANDLE>,
+34 |     pub(super) uav_heap: Option<ID3D12DescriptorHeap>,
+   |                ^^^^^^^^
+
+warning: function `compile_variant_with_map` is never used
+   --> crates\dx12\src\backend\shader_naga.rs:134:8
+    |
+134 | pub fn compile_variant_with_map(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `fluxel-rhi-dx12` (lib test) generated 13 warnings (12 duplicates)
+warning: `fluxel-rhi-dx12` (lib) generated 12 warnings (run `cargo fix --lib -p fluxel-rhi-dx12` to apply 2 suggestions)
+warning: function `shader_model_supported` is never used
+  --> crates\dx12\tests\..\src\backend\shader_naga.rs:17:15
+   |
+17 | pub(crate) fn shader_model_supported(
+   |               ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: field `vertex_index_constants` is never read
+  --> crates\dx12\tests\..\src\backend\shader_naga.rs:93:9
+   |
+87 | pub struct CompiledEntry {
+   |            ------------- field in this struct
+...
+93 |     pub vertex_index_constants: bool,
+   |         ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `fluxel-rhi-dx12` (test "shader_naga") generated 2 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 15s
+     Running unittests src\lib.rs (target\debug\deps\fluxel_rhi_dx12-1e51656df7e44a3e.exe)
+
+running 34 tests
+test backend::compute::tests::dynamic_address_validates_alignment_range_and_overflow ... ok
+test backend::compute::tests::indirect_record_requires_usage_alignment_and_twelve_bytes ... ok
+test backend::encoder::coordinates::tests::validates_scissor_representability_before_native_lowering ... ok
+test backend::encoder::coordinates::tests::validates_viewport_bounds_before_native_lowering ... ok
+test backend::encoder::copy::hardware_tests::generic_copies_round_trip_real_gpu_bytes ... ok
+test backend::encoder::copy::hardware_tests::generic_copy_rejects_missing_usage_and_invalid_range ... ok
+test backend::encoder::fence_wait::tests::device_removed_is_never_completion ... ok
+test backend::encoder::fence_wait::tests::fence_future_is_send ... ok
+test backend::encoder::fence_wait::tests::native_wait_yields_wakes_and_can_be_cancelled ... ok
+test backend::encoder::query::pending_test::pending_query_slot_moves_after_native_wait ... ok
+test backend::encoder::raster::topology_tests::strip_restart_requires_matching_index_width ... ok
+test backend::encoder::secondary::tests::inheritance_compares_every_color_slot ... ok
+test backend::encoder::secondary::tests::secondary_inheritance_must_match_the_real_depth_attachment ... ok
+test backend::encoder::secondary::tests::secondary_signature_accepts_depth32_inheritance ... ok
+test backend::encoder::secondary::tests::secondary_signature_preserves_multiple_slots_and_holes ... ok
+test backend::encoder::submit::tests::device_removed_keeps_all_submitted_native_owners ... ok
+test backend::encoder::transition::tests::buffer_state_accepts_individual_vertex_and_uniform_reads ... ok
+test backend::encoder::transition::tests::buffer_state_rejects_shader_read_without_a_shader_stage ... ok
+test backend::encoder::transition::tests::depth_read_layout_can_combine_depth_and_shader_reads ... ok
+test backend::encoder::transition::tests::storage_accesses_cover_graphics_shader_stages_and_read_write ... ok
+test backend::encoder::transition::tests::texture_resolve_layouts_require_read_and_write_access ... ok
+test backend::encoder::transition::tests::texture_shader_reads_cover_all_requested_shader_stages ... ok
+test backend::encoder::upload::tests::page_sizes_reject_unaddressable_allocations ... ok
+test backend::pipeline::cache::tests::rejects_duplicate_keys_even_with_valid_checksum ... ok
+test backend::pipeline::cache::tests::serialized_entries_round_trip_and_reject_corruption ... ok
+test backend::ray::geometry::tests::rejects_misaligned_gpu_addresses_strides_and_ranges ... ok
+test backend::ray::tests::tlas_retains_each_distinct_blas_until_tlas_release ... ok
+test backend::shader_feature_tests::committed_buffer_limit_uses_gpu_address_bits ... ok
+test backend::shader_feature_tests::validates_ray_query_and_known_legacy_feature ... ok
+test backend::texture::tests::array_depth_view_lowers_its_selected_layers ... ok
+test backend::texture::tests::bc_subsets_reject_non_dxgi_and_invalid_layouts ... ok
+test backend::texture::tests::depth_view_selects_nonzero_mip ... ok
+test backend::texture::tests::dsv_array_range_preserves_the_selected_layers ... ok
+test backend::texture::tests::dsv_array_range_rejects_an_empty_range ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.67s
+
+     Running tests\array_uav_gpu.rs (target\debug\deps\array_uav_gpu-b052242504a5b1c3.exe)
+
+running 1 test
+test storage_view_writes_selected_array_slice ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+     Running tests\bc6_bc7_sample_gpu.rs (target\debug\deps\bc6_bc7_sample_gpu-63430811c9ad9e6b.exe)
+
+running 1 test
+test bc6_bc7_sample_and_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.83s
+
+     Running tests\bc7_linear_sample_gpu.rs (target\debug\deps\bc7_linear_sample_gpu-dd5a529d0d6d9195.exe)
+
+running 1 test
+test bc7_linear_sample_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.10s
+
+     Running tests\bc_array_copy_gpu.rs (target\debug\deps\bc_array_copy_gpu-d3e489d87206d020.exe)
+
+running 1 test
+test bc_array_buffer_roundtrip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.61s
+
+     Running tests\bc_array_cpu_gpu.rs (target\debug\deps\bc_array_cpu_gpu-1497bfc5dbf10ec7.exe)
+
+running 1 test
+test bc_array_cpu_and_texture_roundtrip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.37s
+
+     Running tests\bc_mip_gpu.rs (target\debug\deps\bc_mip_gpu-fd92df9fba70b7d1.exe)
+
+running 2 tests
+test bc_one_texel_mip_upload_copy_readback ... ok
+test bc_small_mip_upload_copy_readback ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.03s
+
+     Running tests\bc_texture_gpu.rs (target\debug\deps\bc_texture_gpu-737f6b92030ffe24.exe)
+
+running 2 tests
+test bc_color_formats_sample_and_readback ... ok
+test bc_formats_upload_and_readback ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.53s
+
+     Running tests\bc_unaligned_gpu.rs (target\debug\deps\bc_unaligned_gpu-a1dcf1dc95e4c92d.exe)
+
+running 1 test
+test bc_non_aligned_top_level ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.10s
+
+     Running tests\blit_bc_source_gpu.rs (target\debug\deps\blit_bc_source_gpu-5f5045f22805ee46.exe)
+
+running 1 test
+test bc1_source_blits_to_rgba8 ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.86s
+
+     Running tests\blit_buffer_formats_gpu.rs (target\debug\deps\blit_buffer_formats_gpu-8071b1702ca6d7b7.exe)
+
+running 1 test
+test color_formats_array_mip_copy_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.30s
+
+     Running tests\blit_compute_restore_gpu.rs (target\debug\deps\blit_compute_restore_gpu-3383a0ba27ec5e58.exe)
+
+running 1 test
+test blit_preserves_compute_dynamic_bindings_and_push_constants ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s
+
+     Running tests\blit_d1_gpu.rs (target\debug\deps\blit_d1_gpu-1cc33678c91b5934.exe)
+
+running 1 test
+test d1_blit_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.06s
+
+     Running tests\blit_d3_gpu.rs (target\debug\deps\blit_d3_gpu-3e957b2d0a804717.exe)
+
+running 1 test
+test d3_blit_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.67s
+
+     Running tests\blit_failure_gpu.rs (target\debug\deps\blit_failure_gpu-82c4d3b3fce518fe.exe)
+
+running 1 test
+test descriptor_failure_does_not_record_partial_blit ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
+
+     Running tests\blit_formats_layers_gpu.rs (target\debug\deps\blit_formats_layers_gpu-fc455c8a2c7b1b86.exe)
+
+running 1 test
+test array_layers_and_srgb_blits_preserve_outside_pixels ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.71s
+
+     Running tests\blit_gpu.rs (target\debug\deps\blit_gpu-f1df6d67837d2ec5.exe)
+
+running 1 test
+test rectangle_blits_preserve_outside_pixels ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.17s
+
+     Running tests\blit_ray_restore_gpu.rs (target\debug\deps\blit_ray_restore_gpu-96df4f3f8eca5059.exe)
+
+running 1 test
+test ray_bindings_survive_compute_blit ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.79s
+
+     Running tests\buffer_limits_gpu.rs (target\debug\deps\buffer_limits_gpu-fa6c8beec9b1cd5b.exe)
+
+running 1 test
+test device_reports_native_buffer_limit_above_old_one_gib_cap ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.70s
+
+     Running tests\buffer_memory_gpu.rs (target\debug\deps\buffer_memory_gpu-79c1cb22446afe09.exe)
+
+running 1 test
+test mapped_upload_to_odd_uniform_and_direct_device_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.51s
+
+     Running tests\clear_gpu.rs (target\debug\deps\clear_gpu-ab6cbadc362a2450.exe)
+
+running 3 tests
+test clears_only_selected_color_mip_and_layer ... ok
+test depth_clear_controls_depth_test ... ok
+test rejects_invalid_clear_descriptions ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.39s
+
+     Running tests\color_array_copy_gpu.rs (target\debug\deps\color_array_copy_gpu-7febbeb86b53ee9b.exe)
+
+running 1 test
+test color_array_buffer_roundtrip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.64s
+
+     Running tests\color_array_cpu_gpu.rs (target\debug\deps\color_array_cpu_gpu-ea57b59c1372c9bc.exe)
+
+running 1 test
+test color_array_cpu_and_texture_roundtrip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.29s
+
+     Running tests\color_d1_rt_gpu.rs (target\debug\deps\color_d1_rt_gpu-c39af04317ccc4ab.exe)
+
+running 1 test
+test d1_render_target_clear_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.19s
+
+     Running tests\color_d3_rt_gpu.rs (target\debug\deps\color_d3_rt_gpu-6958285adb493a98.exe)
+
+running 1 test
+test d3_render_target_clear_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.17s
+
+     Running tests\color_format_copy_gpu.rs (target\debug\deps\color_format_copy_gpu-2e7426a9751c7faf.exe)
+
+running 1 test
+test color_formats_array_mip_copy_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.39s
+
+     Running tests\color_rt_clear_gpu.rs (target\debug\deps\color_rt_clear_gpu-1d80f0a0cd84436d.exe)
+
+running 1 test
+test float_render_target_clear_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.78s
+
+     Running tests\compute_cache_gpu.rs (target\debug\deps\compute_cache_gpu-c4103e0df4cb3006.exe)
+
+running 1 test
+test gpu_generated_dispatch_and_dynamic_uniform_on_both_lanes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.98s
+
+     Running tests\compute_indirect_gpu.rs (target\debug\deps\compute_indirect_gpu-3342314ae6c7ffc3.exe)
+
+running 1 test
+test gpu_generated_dispatch_and_dynamic_uniform_on_both_lanes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.93s
+
+     Running tests\cube_array_sample_gpu.rs (target\debug\deps\cube_array_sample_gpu-d901a03d5a2b66a2.exe)
+
+running 1 test
+test cube_array_sample_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.09s
+
+     Running tests\cube_sample_gpu.rs (target\debug\deps\cube_sample_gpu-c3ac8ce5d7d262b0.exe)
+
+running 1 test
+test cube_sample_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.30s
+
+     Running tests\d1_array_copy_gpu.rs (target\debug\deps\d1_array_copy_gpu-ff29dc1802b86e47.exe)
+
+running 1 test
+test d1_array_buffer_roundtrip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s
+
+     Running tests\d1_array_cpu_gpu.rs (target\debug\deps\d1_array_cpu_gpu-0c0794619d77cbaf.exe)
+
+running 1 test
+test d1_array_cpu_and_texture_roundtrip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+
+     Running tests\depth16_sample_gpu.rs (target\debug\deps\depth16_sample_gpu-1a0b602bf887b4b3.exe)
+
+running 1 test
+test depth16_sample_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+     Running tests\depth24plus_sample_gpu.rs (target\debug\deps\depth24plus_sample_gpu-5483812608b48218.exe)
+
+running 1 test
+test depth24plus_sample_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+
+     Running tests\depth24s8_sample_gpu.rs (target\debug\deps\depth24s8_sample_gpu-773265589912673c.exe)
+
+running 1 test
+test depth24s8_sample_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+
+     Running tests\depth32s8_sample_gpu.rs (target\debug\deps\depth32s8_sample_gpu-cc36dd6bc82ee7db.exe)
+
+running 1 test
+test depth32s8_sample_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.80s
+
+     Running tests\depth_array_copy_gpu.rs (target\debug\deps\depth_array_copy_gpu-b540d81d81a3e254.exe)
+
+running 1 test
+test depth_stencil_array_plane_buffer_upload ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.11s
+
+     Running tests\depth_array_cpu_gpu.rs (target\debug\deps\depth_array_cpu_gpu-8d7b810c8bab2c6b.exe)
+
+running 1 test
+test depth_array_cpu_and_texture_roundtrip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+     Running tests\depth_array_stride_gpu.rs (target\debug\deps\depth_array_stride_gpu-c723478832a0aa76.exe)
+
+running 1 test
+test depth_array_unaligned_stride_buffer_roundtrip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.78s
+
+     Running tests\depth_d1_clear_gpu.rs (target\debug\deps\depth_d1_clear_gpu-bebd53d990be57b7.exe)
+
+running 1 test
+test d1_depth_clear_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+     Running tests\depth_d1_sample_gpu.rs (target\debug\deps\depth_d1_sample_gpu-5430d4ee3a7e4744.exe)
+
+running 1 test
+test depth_d1_sample_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.79s
+
+     Running tests\depth_mip_gpu.rs (target\debug\deps\depth_mip_gpu-42381a0711a96b32.exe)
+
+running 1 test
+test depth16_nonzero_mip_clear_and_sample_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+
+     Running tests\depth_plane_footprint_gpu.rs (target\debug\deps\depth_plane_footprint_gpu-b9fd76cd8b6662e8.exe)
+
+running 1 test
+test native_plane_footprints ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.77s
+
+     Running tests\depth_sample_gpu.rs (target\debug\deps\depth_sample_gpu-a4709958ccfa3f4c.exe)
+
+running 1 test
+test depth_sample_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
+
+     Running tests\depth_stencil_buffer_readback_gpu.rs (target\debug\deps\depth_stencil_buffer_readback_gpu-b7ec1cd7d62e93fd.exe)
+
+running 1 test
+test depth_stencil_plane_buffer_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.21s
+
+     Running tests\depth_stencil_buffer_upload_gpu.rs (target\debug\deps\depth_stencil_buffer_upload_gpu-42201423d7751c3b.exe)
+
+running 1 test
+test depth_stencil_plane_buffer_upload ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.11s
+
+     Running tests\depth_stencil_plane_copy_gpu.rs (target\debug\deps\depth_stencil_plane_copy_gpu-5ba7bab970e33435.exe)
+
+running 1 test
+test depth_stencil_plane_copy_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.74s
+
+     Running tests\depth_stencil_write_texture_gpu.rs (target\debug\deps\depth_stencil_write_texture_gpu-a69728498c820df0.exe)
+
+running 1 test
+test depth_stencil_plane_buffer_upload ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.34s
+
+     Running tests\descriptor_arrays_gpu.rs (target\debug\deps\descriptor_arrays_gpu-39730c4133f2c035.exe)
+
+running 1 test
+test storage_arrays_write_both_descriptors_and_allow_holes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.41s
+
+     Running tests\descriptor_texture_arrays_gpu.rs (target\debug\deps\descriptor_texture_arrays_gpu-981aacfb748c45fe.exe)
+
+running 1 test
+test sampled_storage_texture_and_sampler_arrays_are_consumed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.07s
+
+     Running tests\descriptor_uniform_arrays_gpu.rs (target\debug\deps\descriptor_uniform_arrays_gpu-0316c4fc55e561d3.exe)
+
+running 1 test
+test uniform_array_is_consumed_by_compute_shader ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.77s
+
+     Running tests\dynamic_storage_gpu.rs (target\debug\deps\dynamic_storage_gpu-6346dffe96e1dddb.exe)
+
+running 1 test
+test dynamic_storage_views_execute_and_retain_descriptors ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.76s
+
+     Running tests\dynamic_storage_raster_gpu.rs (target\debug\deps\dynamic_storage_raster_gpu-211a8b4aec867736.exe)
+
+running 1 test
+test primary_and_secondary_dynamic_storage_snapshots ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.44s
+
+     Running tests\dynamic_structured_gpu.rs (target\debug\deps\dynamic_structured_gpu-e2f5810242aa2eab.exe)
+
+running 1 test
+test dynamic_structured_storage_views_execute_and_retain_descriptors ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+
+     Running tests\integer_clear_compute_gpu.rs (target\debug\deps\integer_clear_compute_gpu-b7a7f894ed306cf2.exe)
+
+running 2 tests
+test integer_clear_on_compute_lane_is_rejected ... ok
+test integer_clear_preserves_compute_pso ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.45s
+
+     Running tests\integer_clear_gpu.rs (target\debug\deps\integer_clear_gpu-3b8d1874dd6f7a7e.exe)
+
+running 1 test
+test integer_render_target_clear_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+
+     Running tests\integer_clear_layers_gpu.rs (target\debug\deps\integer_clear_layers_gpu-206026227bfac3ee.exe)
+
+running 1 test
+test integer_array_layer_and_partial_clear_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+     Running tests\integer_d1_clear_gpu.rs (target\debug\deps\integer_d1_clear_gpu-d2470c743ddeb5df.exe)
+
+running 1 test
+test integer_d1_render_target_clear_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.87s
+
+     Running tests\integer_d3_clear_gpu.rs (target\debug\deps\integer_d3_clear_gpu-b21df93a1b59a745.exe)
+
+running 1 test
+test integer_d3_render_target_clear_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s
+
+     Running tests\line_sample_gpu.rs (target\debug\deps\line_sample_gpu-2cd7526c21a96662.exe)
+
+running 1 test
+test line_sample_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+
+     Running tests\line_uav_gpu.rs (target\debug\deps\line_uav_gpu-3df79dba88d8f871.exe)
+
+running 1 test
+test storage_line_view_writes_selected_mip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+
+     Running tests\linear_srgb_sample_gpu.rs (target\debug\deps\linear_srgb_sample_gpu-0436c63cd68e2609.exe)
+
+running 1 test
+test linear_srgb_sample_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.50s
+
+     Running tests\mesh_gpu.rs (target\debug\deps\mesh_gpu-a1ae53c4af706f27.exe)
+
+running 3 tests
+test failed_storage_views_release_descriptor_reservations ... ok
+test mesh_depth_controls_readback ... ok
+test mesh_mrt_blend_and_stencil_control_readback ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.31s
+
+     Running tests\mrt_gpu.rs (target\debug\deps\mrt_gpu-87df9f29fbf1f036.exe)
+
+running 14 tests
+test color::dual_source_blend_uses_second_shader_output ... ok
+test color::dynamic_blend_constant_controls_gpu_output ... ok
+test color::empty_slot_preserves_target_indices ... ok
+test color::independent_blend_equations_and_write_masks ... ok
+test color::independent_write_masks_preserve_unwritten_channels ... ok
+test color::two_color_targets_receive_distinct_outputs ... ok
+test depth::depth16_pass_writes_depth ... ok
+test depth::depth24_plus_pass_writes_depth ... ok
+test depth::depth_only_pass_writes_depth ... ok
+test resolve::multisample_array_resolves_selected_layer ... ok
+test resolve::multiview_resolves_both_array_layers ... ok
+test resolve::two_multisample_targets_resolve_to_distinct_textures ... ok
+test secondary::secondary_multiview_draws_both_layers ... ok
+test validation::rejects_invalid_attachment_configurations_and_secondary_signature ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.87s
+
+     Running tests\msaa_array_sample_gpu.rs (target\debug\deps\msaa_array_sample_gpu-e17258ffbc2f7cdf.exe)
+
+running 1 test
+test multisample_array_view_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.96s
+
+     Running tests\msaa_array_single_gpu.rs (target\debug\deps\msaa_array_single_gpu-c6ce7d6da2a7af4c.exe)
+
+running 1 test
+test single_layer_multisample_array_view_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.96s
+
+     Running tests\msaa_copy_gpu.rs (target\debug\deps\msaa_copy_gpu-f78b3f62e2595fc3.exe)
+
+running 1 test
+test multisample_texture_copy_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.95s
+
+     Running tests\msaa_counts_gpu.rs (target\debug\deps\msaa_counts_gpu-5e9c319a6a392297.exe)
+
+running 1 test
+test queried_samples_create_on_device ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.96s
+
+     Running tests\msaa_depth_gpu.rs (target\debug\deps\msaa_depth_gpu-f45926211a28f3a9.exe)
+
+running 1 test
+test multisample_depth_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.08s
+
+     Running tests\msaa_sample_gpu.rs (target\debug\deps\msaa_sample_gpu-9d7b207271dbfce5.exe)
+
+running 1 test
+test multisample_view_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.92s
+
+     Running tests\multi_count_gpu.rs (target\debug\deps\multi_count_gpu-51948d50dd11d8f1.exe)
+
+running 5 tests
+test gpu_counts_aliased ... ok
+test gpu_counts_separate ... ok
+test gpu_indexed_counts_aliased ... ok
+test gpu_indexed_counts_separate ... ok
+test gpu_written_arguments_work_with_ordinary_and_multi_indirect ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.44s
+
+     Running tests\multi_queue_gpu.rs (target\debug\deps\multi_queue_gpu-8df89fb75031e7e9.exe)
+
+running 2 tests
+test compute_producer_direct_consumer ... ok
+test compute_timestamps_and_completed_cross_lane_reuse ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.53s
+
+     Running tests\multiview_depth_gpu.rs (target\debug\deps\multiview_depth_gpu-ffdf388537310677.exe)
+
+running 1 test
+test sparse_depth_clear_only_affects_active_views ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+     Running tests\multiview_mask_gpu.rs (target\debug\deps\multiview_mask_gpu-478eae0a02dd4c65.exe)
+
+running 3 tests
+test one_and_three_views ... ok
+test primary_four_view_sparse_mask ... ok
+test secondary_four_view_sparse_mask ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.96s
+
+     Running tests\multiview_resolve_gpu.rs (target\debug\deps\multiview_resolve_gpu-f42e2e1819abce07.exe)
+
+running 1 test
+test sparse_multiview_resolve_preserves_masked_layer ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
+
+     Running tests\native_costs_gpu.rs (target\debug\deps\native_costs_gpu-c6325f11ef65299c.exe)
+
+running 1 test
+test native_costs ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.38s
+
+     Running tests\ownership_buffer_gpu.rs (target\debug\deps\ownership_buffer_gpu-4b053e18c91ea960.exe)
+
+running 1 test
+test ownership_compute_direct_compute_buffer ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s
+
+     Running tests\ownership_texture_gpu.rs (target\debug\deps\ownership_texture_gpu-4262b70405182010.exe)
+
+running 1 test
+test ownership_direct_compute_direct_texture ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+     Running tests\pipeline_cache_gpu.rs (target\debug\deps\pipeline_cache_gpu-78e4aa8025f00231.exe)
+
+running 1 test
+test pipeline_cache_raster_compute_mesh_roundtrip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.93s
+
+     Running tests\primitive_gpu.rs (target\debug\deps\primitive_gpu-e0916bb9e371c0d1.exe)
+
+running 7 tests
+test line_list ... ok
+test line_strip ... ok
+test multiview_triangle_strip_indexed_restart ... ok
+test point_list ... ok
+test polygon_line ... ok
+test triangle_strip ... ok
+test triangle_strip_indexed_restart ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.73s
+
+     Running tests\push_ranges_gpu.rs (target\debug\deps\push_ranges_gpu-4c26604aabae56ec.exe)
+
+running 1 test
+test disjoint_compute_push_ranges ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.11s
+
+     Running tests\push_stages_gpu.rs (target\debug\deps\push_stages_gpu-772ab0ddbca4a749.exe)
+
+running 1 test
+test disjoint_vertex_fragment_push_ranges_on_bundle ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.21s
+
+     Running tests\query_cross_queue_reuse_gpu.rs (target\debug\deps\query_cross_queue_reuse_gpu-6683339bc9f2999b.exe)
+
+running 2 tests
+test timestamp_slot_moves_only_after_completion ... ok
+test timestamp_slot_moves_within_packet_after_gpu_wait ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.79s
+
+     Running tests\query_gpu.rs (target\debug\deps\query_gpu-dd00b5d38ea546c1.exe)
+
+running 3 tests
+test resolve_timestamp_written_by_an_earlier_encoder ... ok
+test timestamps_and_triangle_statistics ... ok
+test unsubmitted_write_cannot_authorize_resolve_and_rejected_work_is_retryable ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.35s
+
+     Running tests\r32_float_raster_gpu.rs (target\debug\deps\r32_float_raster_gpu-23443ea998077fa0.exe)
+
+running 1 test
+test r32_float_raster_draw_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.97s
+
+     Running tests\ray_dynamic_gpu.rs (target\debug\deps\ray_dynamic_gpu-3ff6094201bc1b3e.exe)
+
+running 1 test
+test ray_dynamic_offsets_execute_and_reject_invalid_ranges ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.10s
+
+     Running tests\ray_query_gpu.rs (target\debug\deps\ray_query_gpu-c6771024b7dfe362.exe)
+
+running 2 tests
+test inline_ray_query_consumes_acceleration_array ... ok
+test inline_ray_query_hits_and_misses ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.23s
+
+     Running tests\readonly_depth_stencil_gpu.rs (target\debug\deps\readonly_depth_stencil_gpu-4d96505255e877f7.exe)
+
+running 2 tests
+test readonly_depth_allows_stencil_writes ... ok
+test readonly_stencil_allows_depth_writes ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.66s
+
+     Running tests\secondary_formats_gpu.rs (target\debug\deps\secondary_formats_gpu-66cdca49e1694624.exe)
+
+running 1 test
+test secondary_formats ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.85s
+
+     Running tests\secondary_group_restore_gpu.rs (target\debug\deps\secondary_group_restore_gpu-05f33a90531feef3.exe)
+
+running 1 test
+test primary_bind_group_survives_secondary ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.88s
+
+     Running tests\secondary_lifetime_gpu.rs (target\debug\deps\secondary_lifetime_gpu-0e749f8b5752dafd.exe)
+
+running 1 test
+test secondary_retains_all_bound_pipelines ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.91s
+
+     Running tests\secondary_restore_gpu.rs (target\debug\deps\secondary_restore_gpu-0958cf2884e90021.exe)
+
+running 4 tests
+test primary_pipeline_survives_secondary ... ok
+test primary_push_constants_survive_secondary ... ok
+test primary_scissor_survives_secondary ... ok
+test primary_viewport_survives_secondary ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.65s
+
+     Running tests\secondary_scissor_gpu.rs (target\debug\deps\secondary_scissor_gpu-851ea914fe3619b5.exe)
+
+running 1 test
+test secondary_scissor_segments_preserve_pipeline_and_bindings ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.02s
+
+     Running tests\secondary_vertex_restore_gpu.rs (target\debug\deps\secondary_vertex_restore_gpu-c4e4458eb25b120b.exe)
+
+running 2 tests
+test primary_index_buffer_survives_secondary ... ok
+test primary_vertex_buffer_survives_secondary ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.02s
+
+     Running tests\shader_naga.rs (target\debug\deps\shader_naga-06fce8df7daf2008.exe)
+
+running 13 tests
+test comparison_sampler_uses_regular_root_table ... ok
+test compute_wgsl_compiles_with_mapped_raw_buffers ... ok
+test float_texture_load_uses_sampled_texture_register ... ok
+test generated_dxil_executes_with_raw_views_on_dx12 ... ok
+test ray_query_requires_declared_capability ... ok
+test sampler_array_uses_descriptor_table ... ok
+test scalar_samplers_keep_group_and_binding ... ok
+test specialization_variants_validate_values_and_produce_distinct_dxil ... ok
+test storage_texture_write_uses_uav_register ... ok
+test texture_binding_array_compiles_with_layout_class_and_count ... ok
+test typed_texture_and_sampler_mismatches_are_rejected ... ok
+test unsupported_abi_is_rejected ... ok
+test vertex_fragment_compute_compile_to_independent_dxil ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.43s
+
+     Running tests\sparse_3d_gpu.rs (target\debug\deps\sparse_3d_gpu-2c1d8c148d89928c.exe)
+
+running 1 test
+test sparse_3d_map_remap_and_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.11s
+
+     Running tests\sparse_bc_mips_gpu.rs (target\debug\deps\sparse_bc_mips_gpu-d197efa45ac48996.exe)
+
+running 1 test
+test bc_mips_multiple_heaps_and_packed_tail ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.97s
+
+     Running tests\sparse_color_formats_gpu.rs (target\debug\deps\sparse_color_formats_gpu-72e22feb700f6625.exe)
+
+running 1 test
+test expanded_color_sparse_formats ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.88s
+
+     Running tests\sparse_depth_formats_gpu.rs (target\debug\deps\sparse_depth_formats_gpu-9864f73f1151d4a3.exe)
+
+running 1 test
+test sparse_extra_depth_formats ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.87s
+
+     Running tests\sparse_depth_sample_gpu.rs (target\debug\deps\sparse_depth_sample_gpu-7807348d67deaa76.exe)
+
+running 1 test
+test sparse_depth_sample_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.12s
+
+     Running tests\sparse_gpu.rs (target\debug\deps\sparse_gpu-49d9935c542d8e2a.exe)
+
+running 3 tests
+test all_mips_multiple_heaps_and_packed_tail ... ok
+test map_remap_and_readback ... ok
+test non_dxgi_sparse_formats_return_structured_errors ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.24s
+
+     Running tests\sparse_rt_ds_gpu.rs (target\debug\deps\sparse_rt_ds_gpu-6d8d768d9be8cc18.exe)
+
+running 1 test
+test sparse_render_and_depth_control_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.15s
+
+     Running tests\sparse_storage_mip_gpu.rs (target\debug\deps\sparse_storage_mip_gpu-67b8200e382ee19c.exe)
+
+running 1 test
+test sparse_storage_volume_mip_writes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.05s
+
+     Running tests\sparse_switch_gpu.rs (target\debug\deps\sparse_switch_gpu-738b6f62d3388981.exe)
+
+running 1 test
+test switch_standard_mips_and_packed_tail ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.25s
+
+     Running tests\srgb_resource_uav_gpu.rs (target\debug\deps\srgb_resource_uav_gpu-60df0bc7d0cd8afb.exe)
+
+running 1 test
+test storage_line_view_writes_selected_mip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.21s
+
+     Running tests\srgb_storage_view_gpu.rs (target\debug\deps\srgb_storage_view_gpu-9585a6a349016b24.exe)
+
+running 1 test
+test srgb_view_of_storage_texture_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.28s
+
+     Running tests\srgb_view_gpu.rs (target\debug\deps\srgb_view_gpu-46bdc03c773399a4.exe)
+
+running 1 test
+test srgb_reinterpret_sample_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.21s
+
+     Running tests\stencil_gpu.rs (target\debug\deps\stencil_gpu-2f371a0d4aaec903.exe)
+
+running 1 test
+test stencil_clear_write_and_reference_control_color ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.14s
+
+     Running tests\stencil_plane_sample_gpu.rs (target\debug\deps\stencil_plane_sample_gpu-2e246b97664e4660.exe)
+
+running 1 test
+test stencil_plane_sample_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.91s
+
+     Running tests\submit_checkpoints_gpu.rs (target\debug\deps\submit_checkpoints_gpu-21588ced326d23fb.exe)
+
+running 1 test
+test checkpoints_cover_each_ordered_cross_lane_frontier ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.10s
+
+     Running tests\surface_formats_gpu.rs (target\debug\deps\surface_formats_gpu-0e5b3965abe26a32.exe)
+
+running 1 test
+test flip_formats_configure_acquire_and_present ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.16s
+
+     Running tests\surface_gpu.rs (target\debug\deps\surface_gpu-4d898be890a289e0.exe)
+
+running 1 test
+test fifo_and_device_gated_immediate_present ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.10s
+
+     Running tests\texture_d1_gpu.rs (target\debug\deps\texture_d1_gpu-b7602d63a703746f.exe)
+
+running 2 tests
+test d1_buffer_copy_readback ... ok
+test d1_upload_readback ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.00s
+
+     Running tests\texture_d3_gpu.rs (target\debug\deps\texture_d3_gpu-ec1b1cbc76bfcdd4.exe)
+
+running 2 tests
+test d3_buffer_copy_readback ... ok
+test d3_upload_readback ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.76s
+
+     Running tests\texture_d3_mip_gpu.rs (target\debug\deps\texture_d3_mip_gpu-f0442191982ed386.exe)
+
+running 2 tests
+test d3_mip_buffer_copy_readback ... ok
+test d3_mip_upload_readback ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.81s
+
+     Running tests\texture_d3_stride_gpu.rs (target\debug\deps\texture_d3_stride_gpu-bd0f226892125269.exe)
+
+running 2 tests
+test d3_padded_buffer_copy_readback ... ok
+test d3_padded_upload_readback ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.82s
+
+     Running tests\texture_upload_gpu.rs (target\debug\deps\texture_upload_gpu-7a0a772969c0ef3d.exe)
+
+running 1 test
+test bgra_upload_array_mip_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.15s
+
+     Running tests\uint_sample_gpu.rs (target\debug\deps\uint_sample_gpu-dc2f1e6eb5cfd1b3.exe)
+
+running 1 test
+test uint_sample_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.10s
+
+     Running tests\uint_uav_gpu.rs (target\debug\deps\uint_uav_gpu-a77a2d45e234dc96.exe)
+
+running 1 test
+test uint_storage_view_writes_selected_array_slice ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.14s
+
+     Running tests\upload_arena_gpu.rs (target\debug\deps\upload_arena_gpu-864ad455e3b1a6e1.exe)
+
+running 1 test
+test pages_are_exclusive_until_retired_and_abandoned_pages_are_reused ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.87s
+
+     Running tests\upload_storage_gpu.rs (target\debug\deps\upload_storage_gpu-196e7b38ee8a0ceb.exe)
+
+running 1 test
+test upload_storage_views ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.82s
+
+     Running tests\vertex_formats_gpu.rs (target\debug\deps\vertex_formats_gpu-950d06cfc9bd8286.exe)
+
+running 1 test
+test compressed_vertex_formats_are_decoded ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.36s
+
+     Running tests\volume_sample_gpu.rs (target\debug\deps\volume_sample_gpu-a0f8f9d42b132d02.exe)
+
+running 1 test
+test volume_sample_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.08s
+
+     Running tests\volume_uav_gpu.rs (target\debug\deps\volume_uav_gpu-55d7ada8321c240e.exe)
+
+running 1 test
+test storage_volume_view_writes_selected_depth_slice ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.98s
+
+     Running tests\wgsl_msaa_sample_gpu.rs (target\debug\deps\wgsl_msaa_sample_gpu-cf2e9f75ca285188.exe)
+
+running 1 test
+test multisample_view_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s
+
+     Running tests\wgsl_num_workgroups_gpu.rs (target\debug\deps\wgsl_num_workgroups_gpu-717cc691b70f641b.exe)
+
+running 1 test
+test wgsl_num_workgroups_direct_and_gpu_generated_indirect_on_both_lanes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.08s
+
+     Running tests\wgsl_raster_gpu.rs (target\debug\deps\wgsl_raster_gpu-6e02e5a168d8be2e.exe)
+
+running 2 tests
+test wgsl_raster_override_is_applied ... ok
+test wgsl_raster_rejects_structured_storage_view ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.87s
+
+     Running tests\wgsl_ray_query_gpu.rs (target\debug\deps\wgsl_ray_query_gpu-241d3129f9884de4.exe)
+
+running 1 test
+test inline_ray_query_hits_and_misses ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.55s
+
+     Running tests\wgsl_sampler_array_gpu.rs (target\debug\deps\wgsl_sampler_array_gpu-f4b728705ce4a137.exe)
+
+running 1 test
+test sampler_array_dynamic_index_gpu ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s
+
+     Running tests\wgsl_uint_uav_gpu.rs (target\debug\deps\wgsl_uint_uav_gpu-955efc224f3c2e14.exe)
+
+running 1 test
+test uint_storage_view_writes_selected_array_slice ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.08s
+
+     Running tests\wgsl_vertex_index_gpu.rs (target\debug\deps\wgsl_vertex_index_gpu-2b71a15493164a1e.exe)
+
+running 1 test
+test native_and_wgsl_draw_index_semantics ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.05s
+
+     Running tests\wgsl_volume_sample_gpu.rs (target\debug\deps\wgsl_volume_sample_gpu-076893aa7bfc77ca.exe)
+
+running 1 test
+test volume_sample_readback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
+
+     Running tests\wgsl_volume_uav_gpu.rs (target\debug\deps\wgsl_volume_uav_gpu-6248720525ec676a.exe)
+
+running 1 test
+test storage_volume_view_writes_selected_depth_slice ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+   Doc-tests fluxel_rhi_dx12
+warning: unnecessary parentheses around `if` condition
+   --> crates\dx12\src\backend\sparse.rs:245:12
+    |
+245 |         if (block_bytes.is_some()
+    |            ^
+...
+248 |                 || desc.usage.contains(api::TextureUsage::STORAGE_BINDING)))
+    |                                                                            ^
+    |
+    = note: `#[warn(unused_parens)]` on by default
+help: remove these parentheses
+    |
+245 ~         if block_bytes.is_some()
+246 |             && (desc.extent[0] % 4 != 0
+247 |                 || desc.extent[1] % 4 != 0
+248 ~                 || desc.usage.contains(api::TextureUsage::STORAGE_BINDING))
+    |
+
+warning: 1 warning emitted
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,186 @@
+{
+  "logs/01_triangle.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "logs/02_texture.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "logs/03_instancing.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "logs/04_dynamic_uniform_buffer.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "logs/05_push_constants.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "logs/06_compute.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "logs/07_offscreen.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "logs/08_msaa.log": {
+    "bytes": 780,
+    "sha256": "4076b372bdc7805c08eb04ed85fe1c951d5fc9e2d30a016dfd6794ac0e788b71"
+  },
+  "logs/09_texture_mipmap.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "logs/10_indirect_draw.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "logs/11_occlusion_query.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "logs/12_screenshot.log": {
+    "bytes": 780,
+    "sha256": "4076b372bdc7805c08eb04ed85fe1c951d5fc9e2d30a016dfd6794ac0e788b71"
+  },
+  "logs/13_multithreaded_recording.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "logs/14_descriptor_indexing.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "logs/15_multiview.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "logs/16_raytracing_hello.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "logs/17_gpu_queries.log": {
+    "bytes": 901,
+    "sha256": "50ad5c17b0f6cf325684d963a692705f4ca58d6afd67149d13c6d6cedefff9cd"
+  },
+  "logs/18_meshlet_instancing.log": {
+    "bytes": 780,
+    "sha256": "4076b372bdc7805c08eb04ed85fe1c951d5fc9e2d30a016dfd6794ac0e788b71"
+  },
+  "logs/19_ray_query_particles.log": {
+    "bytes": 155,
+    "sha256": "ee4e6bebabeb34cf7675deafe01a693f00b6698cdd9fc2acbd278a17c4015220"
+  },
+  "logs/20_gpu_draw_count.log": {
+    "bytes": 799,
+    "sha256": "0218585a2f24c498f0671af4ec9b620675ef80dc4fdf1839b5a97ab8a63ed25b"
+  },
+  "logs/21_sparse_texture.log": {
+    "bytes": 780,
+    "sha256": "4076b372bdc7805c08eb04ed85fe1c951d5fc9e2d30a016dfd6794ac0e788b71"
+  },
+  "logs/22_clear_texture.log": {
+    "bytes": 797,
+    "sha256": "6f174dc0bfb34225478439775a1256bbe793cf3c93fc92c42ce68b74bedc4e15"
+  },
+  "logs/23_multi_queue.log": {
+    "bytes": 780,
+    "sha256": "4076b372bdc7805c08eb04ed85fe1c951d5fc9e2d30a016dfd6794ac0e788b71"
+  },
+  "logs/affected-final.log": {
+    "bytes": 7321,
+    "sha256": "840982db1e9c2a13f8f227748fcfe5ec6816688072a42f6376269aae852cf8bc"
+  },
+  "logs/demos.json": {
+    "bytes": 7181,
+    "sha256": "39d7efaf93b2f263ce773b616f4bd1599d45ba32c3d0f746091b4f1772ecb742"
+  },
+  "logs/gpu-diagnostics.log": {
+    "bytes": 144908,
+    "sha256": "b742260e3fd34d309e697266b6c3ef40f82009cd8536b3d30c29b4fd3fb124cc"
+  },
+  "logs/gpu-results.json": {
+    "bytes": 23568,
+    "sha256": "3ca33479def96a51666ff1946ef8474ccba46b4bd90ce2bbac99ec84b757b63d"
+  },
+  "logs/gpu.log": {
+    "bytes": 50003,
+    "sha256": "a0be776938495909f48ddfc3399b32d8a74236a645b6c473823c5099cda67093"
+  },
+  "logs/linux-msrv-libraries.log": {
+    "bytes": 126056,
+    "sha256": "ce7c29b5c4e155d1b6dd12800c22f9d376e535e34ea7f43fed58bd3bf5855348"
+  },
+  "logs/msrv-libraries-fixed.log": {
+    "bytes": 130321,
+    "sha256": "25f7e03f0fadbe56a3dee613dcade8bd215d02bf2b376da4a194dadb84fdf00c"
+  },
+  "logs/sparse-final.log": {
+    "bytes": 12629,
+    "sha256": "3e77228998cf4c1c2c106bd148047bc41f585fde7881eb55ab75505f812a5054"
+  },
+  "logs/stable-affected-final.log": {
+    "bytes": 6095,
+    "sha256": "17d2e019632fd40e94efd11c0f9e47f1e8da90d918570d7b11a611eef8ca2fcb"
+  },
+  "logs/stable-check.log": {
+    "bytes": 243850,
+    "sha256": "0092c0f9b6eca0025c91f5cd61daded58dd23068805ce9e6c611132aa0820394"
+  },
+  "logs/vulkan-10_indirect_draw.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "logs/vulkan-11_occlusion_query.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "logs/vulkan-17_gpu_queries.log": {
+    "bytes": 122,
+    "sha256": "3279a54bda6b81019b375e3cee83ef8d777715dbb2d6074f46516bb97599a649"
+  },
+  "logs/vulkan-19_ray_query_particles.log": {
+    "bytes": 158,
+    "sha256": "c0281c601f9a1022d3f3302bf874a5926db5877e7dc480f7d3c56f3bf75c87fd"
+  },
+  "README.md": {
+    "bytes": 5537,
+    "sha256": "cbecfbc8b3210ff05b1ddb5df5c2a907a04045ba38ca4b7db35f97fd93a77915"
+  },
+  "visual/01_triangle-01.png": {
+    "bytes": 21324,
+    "sha256": "495462cd590940f4b32ea098f1e544e262b3c08b767f6d3a7ef9156574d968dd"
+  },
+  "visual/04_dynamic_uniform_buffer-01.png": {
+    "bytes": 174464,
+    "sha256": "0441bbe5fbf8afb1961c7e83c1bd609c442990392b4fbdb654481c3f28e1aabd"
+  },
+  "visual/10_indirect_draw-01.png": {
+    "bytes": 1801372,
+    "sha256": "ce4f5d2867d8186c668f6413565b1b1ff253861ee3ef1866a4bd30065a598fbc"
+  },
+  "visual/11_occlusion_query-01.png": {
+    "bytes": 35819,
+    "sha256": "06e1e94eba2b22509c63bf9e7297ded167648e51ce47d17413831e275f8930e7"
+  },
+  "visual/17_gpu_queries-01.png": {
+    "bytes": 13117,
+    "sha256": "d3ef9af65ef7bd0e5482981fbdd0f552c6bd88467eb569d29df13fc6f0504f44"
+  },
+  "visual/ray-query-particles-01.png": {
+    "bytes": 798714,
+    "sha256": "58ab368513f994151e9d03ad42f0b5391de291072ec3767cb315ac773fcad3f1"
+  },
+  "visual/ray-query-particles-02.png": {
+    "bytes": 812499,
+    "sha256": "a0853807a75eae04eb909ecf35b4dd43f3481c8fa07cdfa08824625bac5ed16e"
+  },
+  "visual/ray-query-particles-03.png": {
+    "bytes": 796906,
+    "sha256": "0bd3174c3a59074778f672dcdf62ebd666ede54f4b632466ad1781fe18986be9"
+  }
+}

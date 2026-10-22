@@ -1,5 +1,8 @@
 # DX12 feature fixture index
 
+See the [final candidate acceptance](acceptance/README.md) for exact revisions,
+complete-suite results, corrected diagnostics and retained visual evidence.
+
 This index maps public DX12 paths to targeted fixtures. It is not a frozen
 candidate acceptance report: the final commit, adapter, driver, run results,
 and representative presentation evidence must be recorded after the final
