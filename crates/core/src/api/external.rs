@@ -16,6 +16,9 @@ use std::{
 
 pub struct ExternalResourceDesc {
     pub size: u64,
+    /// Resource binding offset in its external allocation. When the imported
+    /// handle is already a resource object, the bridge supplies an object
+    /// covering this region; this is not an implicit buffer-view offset.
     pub offset: u64,
     pub usage: BufferUsage,
 }
@@ -40,16 +43,42 @@ pub trait ExternalBackend: CommandBackend {
     /// Returns the imported texture usable by ordinary view and command operations.
     fn external_texture(texture: &Self::NativeExternalTexture) -> Result<Self::NativeTexture>;
     /// Imports a producer synchronization payload supplied by the platform bridge.
-    fn import_external_sync(
+    ///
+    /// # Safety
+    /// The bridge must supply a valid native handle and obey its native signal
+    /// and wait protocol, including the ownership rules for aliased payloads.
+    unsafe fn import_external_sync(
         device: &Self::NativeDevice,
         sync: Self::NativeExternalHandle,
     ) -> Result<Self::NativeExternalSync>;
-    fn import_memory(
+    /// Imports an externally owned buffer allocation.
+    ///
+    /// # Safety
+    /// The bridge must supply a valid handle and exact allocation metadata,
+    /// maintain native ownership and synchronization, and prevent concurrent
+    /// host mappings through separately imported aliases.
+    ///
+    /// ```compile_fail
+    /// use fluxel_rhi_core::api::{ExternalBackend, ExternalResourceDesc};
+    /// fn import_without_contract<B: ExternalBackend>(
+    ///     device: &B::NativeDevice,
+    ///     handle: B::NativeExternalHandle,
+    ///     desc: &ExternalResourceDesc,
+    /// ) {
+    ///     let _ = B::import_memory(device, handle, desc);
+    /// }
+    /// ```
+    unsafe fn import_memory(
         device: &Self::NativeDevice,
         handle: Self::NativeExternalHandle,
         desc: &ExternalResourceDesc,
     ) -> Result<Self::NativeExternalMemory>;
-    fn import_texture(
+    /// Imports an externally owned texture.
+    ///
+    /// # Safety
+    /// The bridge must supply a valid handle and exact texture metadata and
+    /// coordinate native ownership transfers, layouts and synchronization.
+    unsafe fn import_texture(
         device: &Self::NativeDevice,
         handle: Self::NativeExternalHandle,
         desc: &TextureDesc,
@@ -108,7 +137,8 @@ impl<B: ExternalBackend> ExternalDomain<'_, B> {
     pub unsafe fn import_sync(&self, handle: B::NativeExternalHandle) -> Result<ExternalSync<B>> {
         Ok(ExternalSync {
             device: self.device.id,
-            native: B::import_external_sync(&self.device.native, handle)?,
+            // SAFETY: the caller guarantees handle validity and the native signal/wait protocol.
+            native: unsafe { B::import_external_sync(&self.device.native, handle) }?,
         })
     }
     pub fn buffer(&self, memory: &ExternalMemory<B>) -> Result<Buffer<B>> {
@@ -169,6 +199,9 @@ impl<B: ExternalBackend> ExternalDomain<'_, B> {
     /// The bridge supplies a valid handle and exact producer allocation and
     /// resource metadata. The producer must release ownership and signal a
     /// synchronization payload before this resource is accessed.
+    /// The bridge must also prevent concurrent host mappings of independently
+    /// imported aliases of the same backing allocation; separate native handles
+    /// do not establish independent host-access ownership.
     pub unsafe fn import_memory(
         &self,
         handle: B::NativeExternalHandle,
@@ -176,7 +209,8 @@ impl<B: ExternalBackend> ExternalDomain<'_, B> {
     ) -> Result<ExternalMemory<B>> {
         Ok(ExternalMemory {
             device: self.device.id,
-            native: B::import_memory(&self.device.native, handle, desc)?,
+            // SAFETY: the caller guarantees allocation metadata, alias and synchronization invariants.
+            native: unsafe { B::import_memory(&self.device.native, handle, desc) }?,
         })
     }
     /// # Safety
@@ -190,7 +224,8 @@ impl<B: ExternalBackend> ExternalDomain<'_, B> {
     ) -> Result<ExternalTexture<B>> {
         Ok(ExternalTexture {
             device: self.device.id,
-            native: B::import_texture(&self.device.native, handle, desc)?,
+            // SAFETY: the caller guarantees texture metadata and external ownership invariants.
+            native: unsafe { B::import_texture(&self.device.native, handle, desc) }?,
         })
     }
     pub fn acquire(

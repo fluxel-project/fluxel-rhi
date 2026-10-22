@@ -368,7 +368,7 @@ impl api::ExternalBackend for Vulkan {
     fn external_texture(texture: &VulkanTexture) -> Result<VulkanTexture> {
         Ok(texture.clone())
     }
-    fn import_external_sync(
+    unsafe fn import_external_sync(
         device: &VulkanDevice,
         handle: VulkanExternalHandle,
     ) -> Result<VulkanExternalSync> {
@@ -377,7 +377,7 @@ impl api::ExternalBackend for Vulkan {
             _ => Err(Error::InvalidState),
         }
     }
-    fn import_memory(
+    unsafe fn import_memory(
         device: &VulkanDevice,
         handle: VulkanExternalHandle,
         desc: &api::ExternalResourceDesc,
@@ -387,7 +387,7 @@ impl api::ExternalBackend for Vulkan {
             _ => Err(Error::InvalidState),
         }
     }
-    fn import_texture(
+    unsafe fn import_texture(
         device: &VulkanDevice,
         handle: VulkanExternalHandle,
         desc: &api::TextureDesc,
