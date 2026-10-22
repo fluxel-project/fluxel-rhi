@@ -1,0 +1,7 @@
+
+running 2 tests
+test crates\core\src\api\external.rs - api::external::ExternalBackend::import_memory (line 61) - compile fail ... ok
+test crates\core\src\api\interop.rs - api::interop::CommandEncoder<B>::native_interop (line 94) - compile fail ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
