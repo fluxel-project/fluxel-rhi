@@ -11,8 +11,11 @@ pub struct Live<B: ResourceBackend + PipelineBackend> {
     constants: Buffer<B>,
     pipeline: ComputePipeline<B>,
     group: BindGroup<B>,
-    _blas: AccelerationStructure<B>,
-    _tlas: AccelerationStructure<B>,
+    blas: AccelerationStructure<B>,
+    particle_blas: AccelerationStructure<B>,
+    tlas: AccelerationStructure<B>,
+    tscratch: Buffer<B>,
+    tscratch_size: u64,
     first: bool,
     frame: u64,
 }
@@ -118,15 +121,28 @@ where
             allow_update: false,
         };
         let blas = ray.create_acceleration(&blas_desc)?;
-        let tlas_desc = AccelerationDesc {
-            input: AccelerationInput::Tlas(vec![AccelerationInstance {
-                blas: blas.clone(),
-                transform: [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.]],
-                mask: 255,
-                custom_index: 0,
-                shader_table_offset: 0,
-                flags: AccelerationInstanceFlags::NONE,
+        let bounds_data = bytes(&[-1.0, -1.0, -1.0, 1.0, 1.0, 1.0]);
+        let bounds = buffer(24, BufferUsage::ACCEL_BUILD_INPUT | BufferUsage::COPY_DST)?;
+        let particle_desc = AccelerationDesc {
+            input: AccelerationInput::Blas(vec![AccelerationGeometry::Aabbs {
+                data: bounds.clone(),
+                offset: 0,
+                stride: 24,
+                count: 1,
+                opaque: false,
             }]),
+            fast_trace: true,
+            allow_update: false,
+        };
+        let particle_blas = ray.create_acceleration(&particle_desc)?;
+        let ps = ray.sizes(&particle_desc)?;
+        let pscratch = buffer(ps.scratch_bytes, BufferUsage::ACCEL_SCRATCH)?;
+        let tlas_desc = AccelerationDesc {
+            input: AccelerationInput::Tlas(super::particle_acceleration::instances(
+                &blas,
+                &particle_blas,
+                &particles::Simulation::new(),
+            )),
             fast_trace: true,
             allow_update: false,
         };
@@ -285,6 +301,7 @@ where
         }))?;
         let mut enc = device.encoder(lane)?;
         enc.write_buffer(&vertex, 0, &vertex_data)?;
+        enc.write_buffer(&bounds, 0, &bounds_data)?;
         enc.write_buffer(&normal, 0, &normal_data)?;
         enc.write_buffer(&environment, 0, &environment_data)?;
         enc.write_buffer(&smoke, 0, &smoke_data)?;
@@ -303,6 +320,22 @@ where
             })
         };
         enc.transition_resources(&[
+            barrier(
+                &bounds,
+                24,
+                BufferUses {
+                    stages: StageMask::ACCELERATION,
+                    accesses: AccessMask::ACCEL_READ,
+                },
+            ),
+            barrier(
+                &pscratch,
+                ps.scratch_bytes,
+                BufferUses {
+                    stages: StageMask::ACCELERATION,
+                    accesses: AccessMask::ACCEL_WRITE,
+                },
+            ),
             barrier(
                 &vertex,
                 vertex_data.len() as u64,
@@ -353,6 +386,18 @@ where
             ),
         ])?;
         ray.build(&mut enc, &blas, &bscratch, &blas_desc)?;
+        ray.build(&mut enc, &particle_blas, &pscratch, &particle_desc)?;
+        enc.transition_resources(&[ResourceTransition::Acceleration {
+            target: &particle_blas,
+            before: AccessScope {
+                stages: StageMask::ACCELERATION,
+                accesses: AccessMask::ACCEL_WRITE,
+            },
+            after: AccessScope {
+                stages: StageMask::ACCELERATION,
+                accesses: AccessMask::ACCEL_READ,
+            },
+        }])?;
         enc.transition_resources(&[ResourceTransition::Acceleration {
             target: &blas,
             before: AccessScope {
@@ -385,8 +430,11 @@ where
             constants,
             pipeline,
             group,
-            _blas: blas,
-            _tlas: tlas,
+            blas,
+            particle_blas,
+            tlas,
+            tscratch,
+            tscratch_size: ts.scratch_bytes,
             first: true,
             frame: 0,
         })
@@ -505,6 +553,45 @@ where
                 ownership: None,
             }),
         ])?;
+        let ray = self
+            .device
+            .ray()
+            .ok_or(Error::Unsupported("acceleration structures"))?;
+        let tlas_desc = AccelerationDesc {
+            input: AccelerationInput::Tlas(super::particle_acceleration::instances(
+                &self.blas,
+                &self.particle_blas,
+                sim,
+            )),
+            fast_trace: true,
+            allow_update: false,
+        };
+        // Each render waits for the preceding submission to finish, so no earlier
+        // traversal can still read the TLAS when this build begins.
+        enc.transition_resources(&[barrier(
+            &self.tscratch,
+            self.tscratch_size,
+            BufferUses {
+                stages: StageMask::ACCELERATION,
+                accesses: AccessMask::ACCEL_WRITE,
+            },
+            BufferUses {
+                stages: StageMask::ACCELERATION,
+                accesses: AccessMask::ACCEL_WRITE,
+            },
+        )])?;
+        ray.build(&mut enc, &self.tlas, &self.tscratch, &tlas_desc)?;
+        enc.transition_resources(&[ResourceTransition::Acceleration {
+            target: &self.tlas,
+            before: AccessScope {
+                stages: StageMask::ACCELERATION,
+                accesses: AccessMask::ACCEL_WRITE,
+            },
+            after: AccessScope {
+                stages: StageMask::COMPUTE,
+                accesses: AccessMask::ACCEL_READ,
+            },
+        }])?;
         let compute = self.device.compute().ok_or(Error::InvalidState)?;
         let mut pass = compute.begin(&mut enc)?;
         pass.set_pipeline(&self.pipeline)?;

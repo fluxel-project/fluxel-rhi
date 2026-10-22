@@ -62,9 +62,12 @@ float3 environmentColor(float3 direction) {
                        0.5 - asin(clamp(direction.y, -1, 1)) / 3.141592654);
     return sampleEnvironment(uv).rgb;
 }
-float4 particleLayer(float3 origin, float3 direction, float maxT, float pathLength) {
-    // Camera-facing plane approximation. The source uses triangle candidates
-    // for primary rays and procedural AABBs for secondary rays.
+float3 rotateByQuaternion(float4 q, float3 v) {
+    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
+float4 particleLayer(float3 origin, float3 direction, float maxT, float pathLength, bool secondary) {
+    // Primary geometry is evaluated in software; secondary particles use the
+    // procedural candidates from the particle instance mask, as in the source.
     // The reference defaults to four MLAB fragments. Each entry stores
     // premultiplied color, transmittance, and ray distance.
     float4 layers[4];
@@ -73,13 +76,41 @@ float4 particleLayer(float3 origin, float3 direction, float maxT, float pathLeng
         layers[j] = float4(0, 0, 0, 1);
         depths[j] = 1e30;
     }
-    for (uint i = 0; i < dimensions.z; ++i) {
-        Particle p = particles[i];
+    RayDesc particleRay;
+    particleRay.Origin = origin;
+    particleRay.Direction = direction;
+    particleRay.TMin = 0;
+    particleRay.TMax = maxT;
+    RayQuery<RAY_FLAG_NONE> particleQuery;
+    if (secondary) particleQuery.TraceRayInline(scene, RAY_FLAG_NONE, 4, particleRay);
+    uint i = 0;
+    while (secondary ? particleQuery.Proceed() : i < dimensions.z) {
+        uint particleIndex;
+        if (secondary) {
+            if (particleQuery.CandidateType() != CANDIDATE_PROCEDURAL_PRIMITIVE) continue;
+            particleIndex = particleQuery.CandidateInstanceID();
+            if (particleIndex >= dimensions.z) continue;
+        } else {
+            particleIndex = i++;
+        }
+        Particle p = particles[particleIndex];
         float3 right = cos(p.rotation.x) * cameraRight.xyz + sin(p.rotation.x) * cameraUp.xyz;
         float3 up = -sin(p.rotation.x) * cameraRight.xyz + cos(p.rotation.x) * cameraUp.xyz;
-        float denominator = dot(direction, cameraForward.xyz);
+        float3 normal = normalize(cross(right, up));
+        if (secondary) {
+            float3 virtualCamera = origin - direction * pathLength;
+            float3 facingNormal = normalize(virtualCamera - p.centerRadius.xyz);
+            if (dot(normal, facingNormal) < 0.0) normal = -normal;
+            float4 q = float4(cross(normal, facingNormal), 1.0 + dot(normal, facingNormal));
+            float qLength = length(q);
+            q = qLength > 0 ? q / qLength : float4(1, 0, 0, 0);
+            right = rotateByQuaternion(q, right);
+            up = rotateByQuaternion(q, up);
+            normal = facingNormal;
+        }
+        float denominator = dot(direction, normal);
         if (abs(denominator) < 1e-6) continue;
-        float t = dot(p.centerRadius.xyz - origin, cameraForward.xyz) / denominator;
+        float t = dot(p.centerRadius.xyz - origin, normal) / denominator;
         if (t <= 0 || t >= maxT) continue;
         float3 delta = origin + direction * t - p.centerRadius.xyz;
         float2 uv = float2(dot(delta, right), -dot(delta, up)) / p.centerRadius.w * 0.5 + 0.5;
@@ -89,6 +120,7 @@ float4 particleLayer(float3 origin, float3 direction, float maxT, float pathLeng
         float4 smoke = sampleSmoke(uv, mip);
         float3 texel = smoke.rgb;
         float alpha = smoke.a * p.colorOpacity.a;
+        if (alpha == 0) continue;
         float4 fragment = float4(alpha * p.colorOpacity.rgb * texel, 1.0 - alpha);
         float depth = t;
         for (uint j = 0; j < 4; ++j) {
@@ -124,12 +156,12 @@ void main(uint2 pixel : SV_DispatchThreadID) {
     float pathLength = 0;
     for (uint bounce = 0; bounce < 8; ++bounce) {
         RayDesc ray; ray.Origin = origin; ray.Direction = direction; ray.TMin = 0; ray.TMax = 1000;
-        RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES> q;
-        q.TraceRayInline(scene, RAY_FLAG_NONE, 0xff, ray);
+        RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES> q;
+        q.TraceRayInline(scene, RAY_FLAG_NONE, 1, ray);
         while (q.Proceed()) { }
         bool hit = q.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
         float t = hit ? q.CommittedRayT() : ray.TMax;
-        float4 layer = particleLayer(origin, direction, t, pathLength);
+        float4 layer = particleLayer(origin, direction, t, pathLength, bounce > 0);
         color += attenuation * layer.rgb;
         attenuation *= layer.a;
         if (!hit) break;

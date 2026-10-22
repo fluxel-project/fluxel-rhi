@@ -576,8 +576,13 @@ The Metal source conditionally admits a restricted mesh path on Metal 3 devices,
 and a compute-only inline ray-query path when native ray support and an actual
 MSL 2.4 compile probe succeed. Triangle and AABB acceleration structures support
 one build with fixed dependencies; AABB intersection behavior is not exposed by
-the current compute ray-query shader path. DXR-style pipeline and shader-table operations
-remain unsupported. The mesh path accepts one color target, a fragment stage,
+the current compute ray-query shader path. DXR-style pipeline and shader-table
+operations remain unsupported. The current Core ray descriptor does not define
+the Metal raygen/miss/hit function signatures, payload layout, traversal
+wrapper, or converter-specific descriptor-table and SBT mapping. A loaded
+Metal library alone cannot supply those semantics, and no current Metal
+example consumes a proposed native ray-pipeline ABI. The mesh path accepts
+one color target, a fragment stage,
 triangle output verified from a restricted Metal source grammar, and no
 task/object payload. Apple-family timestamp queries require native counter
 sampling at blit boundaries; a failed sample has an explicit invalid-value
@@ -595,7 +600,8 @@ These Metal paths have only Apple-target compilation and static contract
 checks, as requested for this stage. They have no Apple GPU execution,
 presentation, or visual acceptance evidence. Metal 4 placement sparse mapping
 is not advertised: its mixed Metal 3/4 queue path still lacks a proven
-`ResourceState` barrier for the actual texture consumers. Apple defines that
+`ResourceState` barrier for the actual texture consumers, and the consumer
+command buffer does not encode a GPU wait on the mapping event. Apple defines that
 stage to include placement sparse mapping, while its documented consumer
 barrier covers work in earlier command encoders; the queue-level mapping
 operation falls outside that stated scope. A cross-queue event alone does not

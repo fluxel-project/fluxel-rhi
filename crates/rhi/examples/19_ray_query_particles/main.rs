@@ -1,5 +1,7 @@
 //! Controlled ray-query rendering of the NVIDIA particle scene.
 #[cfg(windows)]
+mod particle_acceleration;
+#[cfg(windows)]
 use fluxel_rhi::api::*;
 #[cfg(windows)]
 #[path = "../utils/texel_display.rs"]
