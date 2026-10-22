@@ -7,9 +7,9 @@
 //! `active_occlusion` is the sole begin/end state: it prevents nesting and is
 //! forcibly balanced by raster abort. The caller supplies all cross-command
 //! synchronization; this module only records Vulkan query-pool operations.
-//! A submitted query set is restricted to one lane for its lifetime. The
-//! submit gate validates all operations before issuing any command buffer, so
-//! a later lane cannot race an earlier reset, write, or resolve on the GPU.
+//! The submit gate validates slot initialization in submission order. The
+//! caller supplies execution dependencies between uses of the same slot on
+//! different queues, just as for other GPU resources.
 
 use std::{ops::Range, sync::Arc};
 
@@ -49,7 +49,12 @@ pub(super) fn create(device: &VulkanDevice, desc: &api::QueryDesc) -> Result<Vul
     }
     let query_type = match desc.kind {
         api::QueryKind::Occlusion => vk::QueryType::OCCLUSION,
-        api::QueryKind::Timestamp if device.0.timestamp_bits > 0 => vk::QueryType::TIMESTAMP,
+        api::QueryKind::Timestamp
+            if device.0.timestamp_bits > 0
+                || (device.0.compute_queue.is_some() && device.0.compute_timestamp_bits > 0) =>
+        {
+            vk::QueryType::TIMESTAMP
+        }
         api::QueryKind::PipelineStatistics if device.0.pipeline_statistics => {
             vk::QueryType::PIPELINE_STATISTICS
         }
@@ -222,14 +227,6 @@ impl QueryOp {
         }
     }
     fn apply(&self, slots: &mut [Option<(u32, bool)>], lane: u32) -> Result<()> {
-        if slots
-            .iter()
-            .any(|slot| slot.is_some_and(|(owner, _)| owner != lane))
-        {
-            return Err(Error::Unsupported(
-                "Vulkan query set used on multiple lanes",
-            ));
-        }
         match self {
             Self::Reset(_, range) => {
                 for slot in range.clone() {
@@ -240,7 +237,7 @@ impl QueryOp {
             Self::Resolve(_, range) => {
                 if range
                     .clone()
-                    .any(|slot| slots[slot as usize] != Some((lane, true)))
+                    .any(|slot| !slots[slot as usize].is_some_and(|(_, written)| written))
                 {
                     return Err(Error::InvalidState);
                 }
@@ -299,6 +296,11 @@ pub(super) fn timestamp(
     slot: u32,
 ) -> Result<()> {
     if set.0.kind != api::QueryKind::Timestamp
+        || (if encoder.lane.ordinal == 1 {
+            encoder.device.compute_timestamp_bits
+        } else {
+            encoder.device.timestamp_bits
+        }) == 0
         || slot >= set.0.count
         || encoder.raster
         || encoder.compute
@@ -321,6 +323,92 @@ pub(super) fn timestamp(
     encoder.query_ops.push(QueryOp::Write(set.clone(), slot));
     encoder.queries.push(set.clone());
     Ok(())
+}
+
+/// Reset pass timestamp slots before entering dynamic rendering, then record
+/// the beginning timestamp. The caller has validated all other pass state.
+pub(super) fn begin_pass_timestamps(
+    encoder: &mut VulkanEncoder,
+    writes: Option<&api::PassTimestampWrites<'_, super::Vulkan>>,
+) -> Result<()> {
+    let Some(writes) = writes else { return Ok(()) };
+    // SAFETY: Core validates the set identity and retains the descriptor for
+    // this call; the encoder retains its own clone for the native commands.
+    let set = unsafe { writes.set.native_ref() };
+    if set.0.kind != api::QueryKind::Timestamp
+        || encoder.device.timestamp_bits == 0
+        || encoder.pass_timestamp_end.is_some()
+    {
+        return Err(Error::InvalidState);
+    }
+    for slot in [writes.begin, writes.end].into_iter().flatten() {
+        if slot >= set.0.count {
+            return Err(Error::InvalidRange);
+        }
+    }
+    // SAFETY: both slots are in the retained pool and reset outside rendering.
+    unsafe {
+        for slot in [
+            writes.begin,
+            writes.end.filter(|slot| Some(*slot) != writes.begin),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            encoder
+                .device
+                .device
+                .cmd_reset_query_pool(encoder.command, set.0.pool, slot, 1);
+        }
+        if let Some(slot) = writes.begin {
+            encoder.device.device.cmd_write_timestamp(
+                encoder.command,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                set.0.pool,
+                slot,
+            );
+        }
+    }
+    if let Some(slot) = writes.begin {
+        encoder.query_ops.push(QueryOp::Write(set.clone(), slot));
+    }
+    encoder.pass_timestamp_end = writes
+        .end
+        .map(|slot| (set.clone(), slot, writes.begin == Some(slot)));
+    encoder.queries.push(set.clone());
+    Ok(())
+}
+
+/// Record the matching end timestamp after leaving dynamic rendering.
+pub(super) fn end_pass_timestamps(encoder: &mut VulkanEncoder) {
+    if let Some((set, slot, reset_again)) = encoder.pass_timestamp_end.take() {
+        // SAFETY: the slot was reset before this pass and its pool is retained.
+        unsafe {
+            if reset_again {
+                // The beginning sample must finish before its slot is reset.
+                encoder.device.device.cmd_pipeline_barrier(
+                    encoder.command,
+                    vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[],
+                );
+                encoder
+                    .device
+                    .device
+                    .cmd_reset_query_pool(encoder.command, set.0.pool, slot, 1);
+            }
+            encoder.device.device.cmd_write_timestamp(
+                encoder.command,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                set.0.pool,
+                slot,
+            );
+        }
+        encoder.query_ops.push(QueryOp::Write(set, slot));
+    }
 }
 pub(super) fn begin_statistics(
     encoder: &mut VulkanEncoder,

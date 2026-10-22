@@ -1,0 +1,65 @@
+; SPIR-V
+; Version: 1.5
+; Generator: Khronos Glslang Reference Front End; 11
+; Bound: 30
+; Schema: 0
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %color %in_value %pc %dst
+               OpExecutionMode %main OriginUpperLeft
+               OpSource GLSL 450
+               OpName %main "main"
+               OpName %color "color"
+               OpName %in_value "in_value"
+               OpName %Push "Push"
+               OpMemberName %Push 0 "value"
+               OpName %pc "pc"
+               OpDecorate %color Location 0
+               OpDecorate %in_value Flat
+               OpDecorate %in_value Location 0
+               OpDecorate %dst DescriptorSet 0
+               OpDecorate %dst Binding 0
+               OpDecorate %unused DescriptorSet 1
+               OpDecorate %unused Binding 0
+               OpDecorate %Push Block
+               OpMemberDecorate %Push 0 Offset 0
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+%_ptr_Output_v4float = OpTypePointer Output %v4float
+      %color = OpVariable %_ptr_Output_v4float Output
+       %uint = OpTypeInt 32 0
+%_ptr_Input_uint = OpTypePointer Input %uint
+   %in_value = OpVariable %_ptr_Input_uint Input
+  %float_255 = OpConstant %float 255
+       %Push = OpTypeStruct %uint
+%_ptr_Uniform_Push = OpTypePointer Uniform %Push
+     %unused = OpVariable %_ptr_Uniform_Push Uniform
+%_ptr_StorageBuffer_Push = OpTypePointer StorageBuffer %Push
+       %dst = OpVariable %_ptr_StorageBuffer_Push StorageBuffer
+%_ptr_StorageBuffer_uint = OpTypePointer StorageBuffer %uint
+%_ptr_PushConstant_Push = OpTypePointer PushConstant %Push
+         %pc = OpVariable %_ptr_PushConstant_Push PushConstant
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+%_ptr_PushConstant_uint = OpTypePointer PushConstant %uint
+    %float_0 = OpConstant %float 0
+    %float_1 = OpConstant %float 1
+       %main = OpFunction %void None %3
+          %5 = OpLabel
+
+         %13 = OpLoad %uint %in_value
+         %14 = OpConvertUToF %float %13
+         %16 = OpFDiv %float %14 %float_255
+         %whole = OpLoad %Push %pc
+               OpCopyMemory %dst %pc Aligned 4 Aligned 4
+         %23 = OpAccessChain %_ptr_StorageBuffer_uint %dst %int_0
+         %24 = OpLoad %uint %23
+         %25 = OpConvertUToF %float %24
+         %26 = OpFDiv %float %25 %float_255
+         %29 = OpCompositeConstruct %v4float %16 %26 %float_0 %float_1
+               OpStore %color %29
+               OpReturn
+               OpFunctionEnd

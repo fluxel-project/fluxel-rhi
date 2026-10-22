@@ -1,0 +1,14 @@
+#version 450
+layout(local_size_x = 1) in;
+layout(set=0,binding=0) uniform sampler sam;
+layout(set=0,binding=1) uniform utexture2D integer_texture;
+layout(set=0,binding=2) uniform texture2D float_texture;
+layout(set=0,binding=3,std430) buffer Results { uint result[]; } out_data;
+uint read_integer(utexture2D t, sampler s, vec2 uv) { return textureLod(usampler2D(t,s),uv,0).r; }
+float read_float(texture2D t, sampler s, vec2 uv) { return textureLod(sampler2D(t,s),uv,0).r; }
+void main() {
+  out_data.result[0] = read_integer(integer_texture,sam,vec2(1.5,0.5));
+  out_data.result[1] = read_integer(integer_texture,sam,vec2(0.5,0.5));
+  out_data.result[2] = floatBitsToUint(read_float(float_texture,sam,vec2(1.5,0.5)));
+  out_data.result[3] = floatBitsToUint(read_float(float_texture,sam,vec2(0.5,0.5)));
+}

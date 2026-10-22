@@ -11,9 +11,9 @@ use std::{
 };
 
 use ash::vk;
-use fluxel_rhi_core::api::{self, Error, ReadbackData, Result};
+use fluxel_rhi_core::api::{self, Error, MappingBackend, ReadbackData, Result};
 
-use super::{Vulkan, VulkanBuffer, VulkanDevice, VulkanEncoder, resource, vk_error};
+use super::{Vulkan, VulkanBuffer, VulkanDevice, VulkanEncoder, mapping, resource};
 
 pub struct VulkanReadback {
     buffer: VulkanBuffer,
@@ -132,36 +132,10 @@ fn map(ticket: VulkanReadback) -> Result<ReadbackData> {
             slice_pitch: 0,
         });
     }
-    let size_usize = usize::try_from(size).map_err(|_| Error::InvalidRange)?;
-    let start = usize::try_from(ticket.range.start).map_err(|_| Error::InvalidRange)?;
-    // SAFETY: the readback ticket is consumed only after its Core completion
-    // point, and this buffer owns host-visible, coherent allocation memory.
-    let mapped = unsafe {
-        ticket.buffer.0.device.device.map_memory(
-            ticket.buffer.0.memory,
-            0,
-            ticket.buffer.0.size,
-            vk::MemoryMapFlags::empty(),
-        )
-    }
-    .map_err(vk_error)?;
-    if mapped.is_null() {
-        return Err(Error::Backend("Vulkan readback Map returned null".into()));
-    }
-    // SAFETY: map_memory returned a non-null range covering `buffer.size`;
-    // range validation above proves start..start+size stays inside it.
-    let bytes =
-        unsafe { std::slice::from_raw_parts(mapped.cast::<u8>().add(start), size_usize).to_vec() };
-    // SAFETY: this is the matching unmap for the successful mapping above;
-    // `bytes` owns its copy and retains no mapped pointer.
-    unsafe {
-        ticket
-            .buffer
-            .0
-            .device
-            .device
-            .unmap_memory(ticket.buffer.0.memory)
-    };
+    let device = VulkanDevice(ticket.buffer.0.device.clone());
+    let mut map = mapping::map(&device, &ticket.buffer, ticket.range, api::MapMode::Read)?;
+    Vulkan::invalidate(&mut map, 0..size)?;
+    let bytes = Vulkan::bytes(&map).to_vec();
     Ok(ReadbackData {
         bytes,
         row_pitch: size,

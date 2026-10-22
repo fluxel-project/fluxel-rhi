@@ -54,6 +54,7 @@ fn switch_standard_mips_and_packed_tail() {
     let region_for = |group: u32| {
         if group < standard {
             SparseTile {
+                aspect: None,
                 mip: group,
                 layer: 0,
                 origin: [0, 0, 0],
@@ -62,6 +63,7 @@ fn switch_standard_mips_and_packed_tail() {
         } else {
             let tail = tiling.packed_tail.expect("packed tail");
             SparseTile {
+                aspect: None,
                 mip: tail.first_mip,
                 layer: 0,
                 origin: [0, 0, 0],
@@ -307,6 +309,7 @@ fn sparse_allocation_alias_is_rejected_before_submission() {
     let tiling = sparse.tiling(&a).unwrap();
     let allocation = sparse.allocation_for(&a, tiling.tile_bytes).unwrap();
     let region = || SparseTile {
+        aspect: None,
         mip: 0,
         layer: 0,
         origin: [0, 0, 0],

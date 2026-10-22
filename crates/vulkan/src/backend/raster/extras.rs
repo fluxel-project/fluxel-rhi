@@ -159,14 +159,16 @@ impl api::RasterExtrasOps<Vulkan> for RasterExtras {
         let native_stages = push_constants.validate(stages, offset, bytes)?;
         // SAFETY: the active pipeline supplied this layout and validation
         // checked the byte range and stage visibility against that layout.
-        unsafe {
-            encoder.device.device.cmd_push_constants(
-                encoder.command,
-                layout,
-                native_stages,
-                offset,
-                bytes,
-            );
+        for (stage, native_offset) in native_stages {
+            unsafe {
+                encoder.device.device.cmd_push_constants(
+                    encoder.command,
+                    layout,
+                    stage,
+                    native_offset,
+                    bytes,
+                );
+            }
         }
         Ok(())
     }

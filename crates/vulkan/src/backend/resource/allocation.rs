@@ -7,20 +7,31 @@
 
 use super::*;
 
-pub(super) fn allocate(
-    device: &VulkanDevice,
-    requirements: vk::MemoryRequirements,
-    flags: vk::MemoryPropertyFlags,
-) -> Result<vk::DeviceMemory> {
-    allocate_with_address(device, requirements, flags, false)
-}
-
 pub(crate) fn allocate_with_address(
     device: &VulkanDevice,
     requirements: vk::MemoryRequirements,
     flags: vk::MemoryPropertyFlags,
     address: bool,
 ) -> Result<vk::DeviceMemory> {
+    allocate_details(device, requirements, flags, address).map(|(memory, _)| memory)
+}
+
+pub(super) fn allocate_details(
+    device: &VulkanDevice,
+    requirements: vk::MemoryRequirements,
+    flags: vk::MemoryPropertyFlags,
+    address: bool,
+) -> Result<(vk::DeviceMemory, vk::MemoryPropertyFlags)> {
+    allocate_resource(device, requirements, flags, address, None)
+}
+
+pub(super) fn allocate_resource(
+    device: &VulkanDevice,
+    requirements: vk::MemoryRequirements,
+    flags: vk::MemoryPropertyFlags,
+    address: bool,
+    dedicated: Option<(vk::Buffer, vk::Image)>,
+) -> Result<(vk::DeviceMemory, vk::MemoryPropertyFlags)> {
     // SAFETY: DeviceState keeps this physical device and its instance alive for
     // the read-only memory-property query.
     let properties = unsafe {
@@ -46,9 +57,21 @@ pub(crate) fn allocate_with_address(
     if address {
         info = info.push_next(&mut address_flags);
     }
+    let mut dedicated_info = vk::MemoryDedicatedAllocateInfo::default();
+    if let Some((buffer, image)) = dedicated {
+        dedicated_info = dedicated_info.buffer(buffer).image(image);
+        info = info.push_next(&mut dedicated_info);
+    }
     // SAFETY: requirements came directly from a live resource on this device;
     // the selected memory type satisfies its type mask and requested flags.
-    unsafe { device.0.device.allocate_memory(&info, None) }.map_err(vk_error)
+    unsafe { device.0.device.allocate_memory(&info, None) }
+        .map(|memory| {
+            (
+                memory,
+                properties.memory_types[index as usize].property_flags,
+            )
+        })
+        .map_err(vk_error)
 }
 
 pub(super) fn memory_flags(memory: api::MemoryClass) -> vk::MemoryPropertyFlags {
@@ -66,7 +89,7 @@ pub(super) fn memory_flags(memory: api::MemoryClass) -> vk::MemoryPropertyFlags 
     }
 }
 
-pub(super) fn buffer_usage(usage: api::BufferUsage) -> Result<vk::BufferUsageFlags> {
+pub(in crate::backend) fn buffer_usage(usage: api::BufferUsage) -> Result<vk::BufferUsageFlags> {
     if usage.0 & !SUPPORTED_BUFFER_USAGE != 0 {
         return Err(Error::Unsupported("Vulkan buffer usage"));
     }
@@ -112,7 +135,10 @@ pub(super) fn buffer_usage(usage: api::BufferUsage) -> Result<vk::BufferUsageFla
     Ok(out)
 }
 
-pub(super) fn image_usage(usage: api::TextureUsage, depth: bool) -> Result<vk::ImageUsageFlags> {
+pub(in crate::backend) fn image_usage(
+    usage: api::TextureUsage,
+    depth: bool,
+) -> Result<vk::ImageUsageFlags> {
     if usage.0 & !SUPPORTED_TEXTURE_USAGE != 0 {
         return Err(Error::Unsupported("Vulkan texture usage"));
     }
@@ -127,6 +153,8 @@ pub(super) fn image_usage(usage: api::TextureUsage, depth: bool) -> Result<vk::I
         out |= vk::ImageUsageFlags::SAMPLED;
     }
     if usage.contains(api::TextureUsage::RENDER_ATTACHMENT) {
+        // Explicit resolve operations require transfer usage on both images.
+        out |= vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST;
         out |= if depth {
             vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
         } else {
@@ -142,12 +170,15 @@ pub(super) fn image_usage(usage: api::TextureUsage, depth: bool) -> Result<vk::I
     Ok(out)
 }
 
-pub(super) fn sample_count(count: u32) -> Result<vk::SampleCountFlags> {
+pub(in crate::backend) fn sample_count(count: u32) -> Result<vk::SampleCountFlags> {
     match count {
         1 => Ok(vk::SampleCountFlags::TYPE_1),
         2 => Ok(vk::SampleCountFlags::TYPE_2),
         4 => Ok(vk::SampleCountFlags::TYPE_4),
         8 => Ok(vk::SampleCountFlags::TYPE_8),
+        16 => Ok(vk::SampleCountFlags::TYPE_16),
+        32 => Ok(vk::SampleCountFlags::TYPE_32),
+        64 => Ok(vk::SampleCountFlags::TYPE_64),
         _ => Err(Error::Unsupported("Vulkan sample count")),
     }
 }
@@ -183,23 +214,143 @@ pub(super) fn address(mode: api::AddressMode) -> Result<vk::SamplerAddressMode> 
         api::AddressMode::Repeat => vk::SamplerAddressMode::REPEAT,
         api::AddressMode::MirrorRepeat => vk::SamplerAddressMode::MIRRORED_REPEAT,
         api::AddressMode::ClampToBorder => vk::SamplerAddressMode::CLAMP_TO_BORDER,
-        api::AddressMode::ClampToZero => {
-            return Err(Error::Unsupported("Vulkan clamp-to-zero sampler"));
-        }
+        api::AddressMode::ClampToZero => vk::SamplerAddressMode::CLAMP_TO_BORDER,
     })
 }
 pub(crate) fn format(format: api::TextureFormat) -> Option<vk::Format> {
     Some(match format {
+        api::TextureFormat::R8Unorm => vk::Format::R8_UNORM,
+        api::TextureFormat::R8Snorm => vk::Format::R8_SNORM,
+        api::TextureFormat::R8Uint => vk::Format::R8_UINT,
+        api::TextureFormat::R8Sint => vk::Format::R8_SINT,
+        api::TextureFormat::Rg8Unorm => vk::Format::R8G8_UNORM,
+        api::TextureFormat::Rg8Snorm => vk::Format::R8G8_SNORM,
+        api::TextureFormat::Rg8Uint => vk::Format::R8G8_UINT,
+        api::TextureFormat::Rg8Sint => vk::Format::R8G8_SINT,
         api::TextureFormat::Rgba8Unorm => vk::Format::R8G8B8A8_UNORM,
         api::TextureFormat::Rgba8UnormSrgb => vk::Format::R8G8B8A8_SRGB,
+        api::TextureFormat::Rgba8Snorm => vk::Format::R8G8B8A8_SNORM,
+        api::TextureFormat::Rgba8Uint => vk::Format::R8G8B8A8_UINT,
+        api::TextureFormat::Rgba8Sint => vk::Format::R8G8B8A8_SINT,
         api::TextureFormat::Bgra8Unorm => vk::Format::B8G8R8A8_UNORM,
         api::TextureFormat::Bgra8UnormSrgb => vk::Format::B8G8R8A8_SRGB,
+        api::TextureFormat::R16Unorm => vk::Format::R16_UNORM,
+        api::TextureFormat::R16Snorm => vk::Format::R16_SNORM,
+        api::TextureFormat::R16Uint => vk::Format::R16_UINT,
+        api::TextureFormat::R16Sint => vk::Format::R16_SINT,
+        api::TextureFormat::R16Float => vk::Format::R16_SFLOAT,
+        api::TextureFormat::Rg16Unorm => vk::Format::R16G16_UNORM,
+        api::TextureFormat::Rg16Snorm => vk::Format::R16G16_SNORM,
+        api::TextureFormat::Rg16Uint => vk::Format::R16G16_UINT,
+        api::TextureFormat::Rg16Sint => vk::Format::R16G16_SINT,
+        api::TextureFormat::Rg16Float => vk::Format::R16G16_SFLOAT,
+        api::TextureFormat::Rgba16Unorm => vk::Format::R16G16B16A16_UNORM,
+        api::TextureFormat::Rgba16Snorm => vk::Format::R16G16B16A16_SNORM,
+        api::TextureFormat::Rgba16Uint => vk::Format::R16G16B16A16_UINT,
+        api::TextureFormat::Rgba16Sint => vk::Format::R16G16B16A16_SINT,
+        api::TextureFormat::Rgba16Float => vk::Format::R16G16B16A16_SFLOAT,
+        api::TextureFormat::R32Uint => vk::Format::R32_UINT,
+        api::TextureFormat::R32Sint => vk::Format::R32_SINT,
+        api::TextureFormat::R32Float => vk::Format::R32_SFLOAT,
+        api::TextureFormat::Rg32Uint => vk::Format::R32G32_UINT,
+        api::TextureFormat::Rg32Sint => vk::Format::R32G32_SINT,
+        api::TextureFormat::Rg32Float => vk::Format::R32G32_SFLOAT,
+        api::TextureFormat::Rgba32Uint => vk::Format::R32G32B32A32_UINT,
+        api::TextureFormat::Rgba32Sint => vk::Format::R32G32B32A32_SINT,
+        api::TextureFormat::Rgba32Float => vk::Format::R32G32B32A32_SFLOAT,
+        api::TextureFormat::Rgb10a2Unorm => vk::Format::A2B10G10R10_UNORM_PACK32,
+        api::TextureFormat::Rgb10a2Uint => vk::Format::A2B10G10R10_UINT_PACK32,
+        api::TextureFormat::Rg11b10Ufloat => vk::Format::B10G11R11_UFLOAT_PACK32,
+        api::TextureFormat::Rgb9e5Ufloat => vk::Format::E5B9G9R9_UFLOAT_PACK32,
+        api::TextureFormat::Depth16Unorm => vk::Format::D16_UNORM,
+        api::TextureFormat::Depth24Plus => vk::Format::X8_D24_UNORM_PACK32,
+        api::TextureFormat::Depth24PlusStencil8 => vk::Format::D24_UNORM_S8_UINT,
         api::TextureFormat::Depth32Float => vk::Format::D32_SFLOAT,
-        _ => return None,
+        api::TextureFormat::Depth32FloatStencil8 => vk::Format::D32_SFLOAT_S8_UINT,
+        api::TextureFormat::Stencil8 => vk::Format::S8_UINT,
+        api::TextureFormat::Bc1RgbaUnorm => vk::Format::BC1_RGBA_UNORM_BLOCK,
+        api::TextureFormat::Bc1RgbaUnormSrgb => vk::Format::BC1_RGBA_SRGB_BLOCK,
+        api::TextureFormat::Bc2RgbaUnorm => vk::Format::BC2_UNORM_BLOCK,
+        api::TextureFormat::Bc2RgbaUnormSrgb => vk::Format::BC2_SRGB_BLOCK,
+        api::TextureFormat::Bc3RgbaUnorm => vk::Format::BC3_UNORM_BLOCK,
+        api::TextureFormat::Bc3RgbaUnormSrgb => vk::Format::BC3_SRGB_BLOCK,
+        api::TextureFormat::Bc4RUnorm => vk::Format::BC4_UNORM_BLOCK,
+        api::TextureFormat::Bc4RSnorm => vk::Format::BC4_SNORM_BLOCK,
+        api::TextureFormat::Bc5RgUnorm => vk::Format::BC5_UNORM_BLOCK,
+        api::TextureFormat::Bc5RgSnorm => vk::Format::BC5_SNORM_BLOCK,
+        api::TextureFormat::Bc6hRgbUfloat => vk::Format::BC6H_UFLOAT_BLOCK,
+        api::TextureFormat::Bc6hRgbFloat => vk::Format::BC6H_SFLOAT_BLOCK,
+        api::TextureFormat::Bc7RgbaUnorm => vk::Format::BC7_UNORM_BLOCK,
+        api::TextureFormat::Bc7RgbaUnormSrgb => vk::Format::BC7_SRGB_BLOCK,
+        api::TextureFormat::Etc2Rgb8Unorm => vk::Format::ETC2_R8G8B8_UNORM_BLOCK,
+        api::TextureFormat::Etc2Rgb8UnormSrgb => vk::Format::ETC2_R8G8B8_SRGB_BLOCK,
+        api::TextureFormat::Etc2Rgba8Unorm => vk::Format::ETC2_R8G8B8A8_UNORM_BLOCK,
+        api::TextureFormat::Etc2Rgba8UnormSrgb => vk::Format::ETC2_R8G8B8A8_SRGB_BLOCK,
+        api::TextureFormat::Etc2Rgb8A1Unorm => vk::Format::ETC2_R8G8B8A1_UNORM_BLOCK,
+        api::TextureFormat::Etc2Rgb8A1UnormSrgb => vk::Format::ETC2_R8G8B8A1_SRGB_BLOCK,
+        api::TextureFormat::EacR11Unorm => vk::Format::EAC_R11_UNORM_BLOCK,
+        api::TextureFormat::EacR11Snorm => vk::Format::EAC_R11_SNORM_BLOCK,
+        api::TextureFormat::EacRg11Unorm => vk::Format::EAC_R11G11_UNORM_BLOCK,
+        api::TextureFormat::EacRg11Snorm => vk::Format::EAC_R11G11_SNORM_BLOCK,
+        api::TextureFormat::R64Uint => vk::Format::R64_UINT,
+        api::TextureFormat::Rg64Uint => vk::Format::R64G64_UINT,
+        api::TextureFormat::Astc { block, srgb, hdr } => match (block, srgb, hdr) {
+            ([4, 4], false, false) => vk::Format::ASTC_4X4_UNORM_BLOCK,
+            ([4, 4], true, false) => vk::Format::ASTC_4X4_SRGB_BLOCK,
+            ([4, 4], false, true) => vk::Format::ASTC_4X4_SFLOAT_BLOCK,
+            ([5, 4], false, false) => vk::Format::ASTC_5X4_UNORM_BLOCK,
+            ([5, 4], true, false) => vk::Format::ASTC_5X4_SRGB_BLOCK,
+            ([5, 4], false, true) => vk::Format::ASTC_5X4_SFLOAT_BLOCK,
+            ([5, 5], false, false) => vk::Format::ASTC_5X5_UNORM_BLOCK,
+            ([5, 5], true, false) => vk::Format::ASTC_5X5_SRGB_BLOCK,
+            ([5, 5], false, true) => vk::Format::ASTC_5X5_SFLOAT_BLOCK,
+            ([6, 5], false, false) => vk::Format::ASTC_6X5_UNORM_BLOCK,
+            ([6, 5], true, false) => vk::Format::ASTC_6X5_SRGB_BLOCK,
+            ([6, 5], false, true) => vk::Format::ASTC_6X5_SFLOAT_BLOCK,
+            ([6, 6], false, false) => vk::Format::ASTC_6X6_UNORM_BLOCK,
+            ([6, 6], true, false) => vk::Format::ASTC_6X6_SRGB_BLOCK,
+            ([6, 6], false, true) => vk::Format::ASTC_6X6_SFLOAT_BLOCK,
+            ([8, 5], false, false) => vk::Format::ASTC_8X5_UNORM_BLOCK,
+            ([8, 5], true, false) => vk::Format::ASTC_8X5_SRGB_BLOCK,
+            ([8, 5], false, true) => vk::Format::ASTC_8X5_SFLOAT_BLOCK,
+            ([8, 6], false, false) => vk::Format::ASTC_8X6_UNORM_BLOCK,
+            ([8, 6], true, false) => vk::Format::ASTC_8X6_SRGB_BLOCK,
+            ([8, 6], false, true) => vk::Format::ASTC_8X6_SFLOAT_BLOCK,
+            ([8, 8], false, false) => vk::Format::ASTC_8X8_UNORM_BLOCK,
+            ([8, 8], true, false) => vk::Format::ASTC_8X8_SRGB_BLOCK,
+            ([8, 8], false, true) => vk::Format::ASTC_8X8_SFLOAT_BLOCK,
+            ([10, 5], false, false) => vk::Format::ASTC_10X5_UNORM_BLOCK,
+            ([10, 5], true, false) => vk::Format::ASTC_10X5_SRGB_BLOCK,
+            ([10, 5], false, true) => vk::Format::ASTC_10X5_SFLOAT_BLOCK,
+            ([10, 6], false, false) => vk::Format::ASTC_10X6_UNORM_BLOCK,
+            ([10, 6], true, false) => vk::Format::ASTC_10X6_SRGB_BLOCK,
+            ([10, 6], false, true) => vk::Format::ASTC_10X6_SFLOAT_BLOCK,
+            ([10, 8], false, false) => vk::Format::ASTC_10X8_UNORM_BLOCK,
+            ([10, 8], true, false) => vk::Format::ASTC_10X8_SRGB_BLOCK,
+            ([10, 8], false, true) => vk::Format::ASTC_10X8_SFLOAT_BLOCK,
+            ([10, 10], false, false) => vk::Format::ASTC_10X10_UNORM_BLOCK,
+            ([10, 10], true, false) => vk::Format::ASTC_10X10_SRGB_BLOCK,
+            ([10, 10], false, true) => vk::Format::ASTC_10X10_SFLOAT_BLOCK,
+            ([12, 10], false, false) => vk::Format::ASTC_12X10_UNORM_BLOCK,
+            ([12, 10], true, false) => vk::Format::ASTC_12X10_SRGB_BLOCK,
+            ([12, 10], false, true) => vk::Format::ASTC_12X10_SFLOAT_BLOCK,
+            ([12, 12], false, false) => vk::Format::ASTC_12X12_UNORM_BLOCK,
+            ([12, 12], true, false) => vk::Format::ASTC_12X12_SRGB_BLOCK,
+            ([12, 12], false, true) => vk::Format::ASTC_12X12_SFLOAT_BLOCK,
+            _ => return None,
+        },
     })
 }
-pub(super) fn is_depth(format: api::TextureFormat) -> bool {
-    matches!(format, api::TextureFormat::Depth32Float)
+pub(in crate::backend) fn is_depth(format: api::TextureFormat) -> bool {
+    matches!(
+        format,
+        api::TextureFormat::Depth16Unorm
+            | api::TextureFormat::Depth24Plus
+            | api::TextureFormat::Depth24PlusStencil8
+            | api::TextureFormat::Depth32Float
+            | api::TextureFormat::Depth32FloatStencil8
+            | api::TextureFormat::Stencil8
+    )
 }
 
 pub(super) const SUPPORTED_BUFFER_USAGE: u64 = api::BufferUsage::COPY_SRC.0

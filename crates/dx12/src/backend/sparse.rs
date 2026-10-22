@@ -40,6 +40,12 @@ pub(crate) fn validate_bind(bind: &api::SparseBind<Dx12>) -> api::Result<()> {
     }
     let mut total = 0u64;
     for tile in &bind.tiles {
+        if tile
+            .aspect
+            .is_some_and(|a| a != state.tiling.aspects[0].aspect)
+        {
+            return Err(api::Error::InvalidRange);
+        }
         if tile.layer >= texture.0.desc.array_layers {
             return Err(api::Error::InvalidRange);
         }
@@ -473,7 +479,13 @@ impl api::SparseBackend for Dx12 {
                 tile_count: packed.NumTilesForPackedMips,
             })
         };
-        let tiling = api::SparseTextureTiling {
+        let tiling = api::SparseTextureTiling::from_aspects(vec![api::SparseAspectTiling {
+            aspect: if depth {
+                api::TextureAspects::DEPTH
+            } else {
+                api::TextureAspects::COLOR
+            },
+            packed_tail_shared_by_layers: false,
             tile_extent: [
                 shape.WidthInTexels,
                 shape.HeightInTexels,
@@ -483,7 +495,8 @@ impl api::SparseBackend for Dx12 {
             tile_bytes: 65536,
             standard_mip_grids: grids,
             packed_tail,
-        };
+        }])
+        .expect("one sparse aspect");
         Ok(Dx12Texture(Arc::new(super::texture::TextureState {
             resource,
             desc: desc.clone(),

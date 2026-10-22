@@ -24,6 +24,9 @@ impl api::ComputeOps<Vulkan> for VulkanCompute {
         if e.raster || e.compute {
             return Err(Error::InvalidState);
         }
+        if e.lane.ordinal == 0 && !e.device.graphics_compute {
+            return Err(Error::Unsupported("Vulkan queue lacks compute capability"));
+        }
         e.compute = true;
         Ok(())
     }
@@ -32,6 +35,8 @@ impl api::ComputeOps<Vulkan> for VulkanCompute {
         if !e.compute {
             return Err(Error::InvalidState);
         }
+        let layout = pipeline.layout_state();
+        let bindings = super::raster::prepare_groups(&layout, &e.compute_bound_groups)?;
         // SAFETY: `e` owns a recording primary command buffer; the pipeline
         // retains this device and was created for its COMPUTE bind point.
         unsafe {
@@ -41,8 +46,20 @@ impl api::ComputeOps<Vulkan> for VulkanCompute {
                 pipeline.native(),
             )
         };
+        for (slot, set, offsets) in &bindings {
+            // SAFETY: preparation retained and validated each descriptor set.
+            unsafe {
+                e.device.device.cmd_bind_descriptor_sets(
+                    e.command,
+                    vk::PipelineBindPoint::COMPUTE,
+                    layout.native(),
+                    *slot,
+                    &[*set],
+                    offsets,
+                );
+            }
+        }
         e.compute_layout = Some(pipeline.layout());
-        let layout = pipeline.layout_state();
         e.compute_push_constants = Some(layout.push_constants());
         e.compute_layout_state = Some(layout);
         e.compute_pipelines.push(pipeline.clone());
@@ -58,12 +75,13 @@ impl api::ComputeOps<Vulkan> for VulkanCompute {
         if !e.compute {
             return Err(Error::InvalidState);
         }
-        group.validate_dynamic_offsets(offsets)?;
+        let offsets = group.validate_dynamic_offsets(offsets)?;
         let layout = e.compute_layout.ok_or(Error::InvalidState)?;
-        e.compute_layout_state
+        let descriptor = e
+            .compute_layout_state
             .as_ref()
             .ok_or(Error::InvalidState)?
-            .validate_group(slot, group)?;
+            .native_group(slot, group)?;
         // SAFETY: the validated group/layout pair belongs to this pipeline and
         // encoder; offsets were checked against retained buffer ranges above.
         unsafe {
@@ -72,10 +90,12 @@ impl api::ComputeOps<Vulkan> for VulkanCompute {
                 vk::PipelineBindPoint::COMPUTE,
                 layout,
                 slot,
-                &[group.native()],
-                offsets,
+                &[descriptor],
+                &offsets,
             );
         }
+        e.compute_bound_groups
+            .insert(slot, (group.clone(), offsets));
         e.groups.push(group.clone());
         Ok(())
     }
@@ -84,7 +104,12 @@ impl api::ComputeOps<Vulkan> for VulkanCompute {
         if !e.compute || e.compute_layout.is_none() {
             return Err(Error::InvalidState);
         }
-        if groups.contains(&0) {
+        if groups.contains(&0)
+            || groups
+                .iter()
+                .zip(e.device.max_compute_workgroups)
+                .any(|(&count, max)| count > max)
+        {
             return Err(Error::InvalidRange);
         }
         // SAFETY: an active compute pass owns this recording command buffer and
@@ -97,8 +122,31 @@ impl api::ComputeOps<Vulkan> for VulkanCompute {
         Ok(())
     }
 
-    fn dispatch_indirect(_: &mut VulkanEncoder, _: &VulkanBuffer, _: u64) -> Result<()> {
-        Err(Error::Unsupported("Vulkan compute indirect dispatch"))
+    fn dispatch_indirect(
+        e: &mut VulkanEncoder,
+        arguments: &VulkanBuffer,
+        offset: u64,
+    ) -> Result<()> {
+        if !e.compute || e.compute_layout.is_none() {
+            return Err(Error::InvalidState);
+        }
+        if !arguments.0.usage.contains(api::BufferUsage::INDIRECT)
+            || offset % 4 != 0
+            || offset
+                .checked_add(12)
+                .is_none_or(|end| end > arguments.0.size)
+        {
+            return Err(Error::InvalidRange);
+        }
+        // SAFETY: the command buffer is recording a compute pass, the argument
+        // range is aligned and in bounds, and the buffer is retained below.
+        unsafe {
+            e.device
+                .device
+                .cmd_dispatch_indirect(e.command, arguments.0.buffer, offset)
+        };
+        e.buffers.push(arguments.clone());
+        Ok(())
     }
 
     fn set_push_constants(e: &mut VulkanEncoder, offset: u32, bytes: &[u8]) -> Result<()> {
@@ -110,11 +158,13 @@ impl api::ComputeOps<Vulkan> for VulkanCompute {
         let stages = ranges.validate(api::StageMask::COMPUTE, offset, bytes)?;
         // SAFETY: PushConstants validates the supplied bytes against the live
         // pipeline layout's declared COMPUTE ranges before this native record.
-        unsafe {
-            e.device
-                .device
-                .cmd_push_constants(e.command, layout, stages, offset, bytes)
-        };
+        for (stage, native_offset) in stages {
+            unsafe {
+                e.device
+                    .device
+                    .cmd_push_constants(e.command, layout, stage, native_offset, bytes);
+            }
+        }
         Ok(())
     }
 
@@ -123,6 +173,7 @@ impl api::ComputeOps<Vulkan> for VulkanCompute {
             return Err(Error::InvalidState);
         }
         e.compute = false;
+        e.compute_bound_groups.clear();
         e.compute_layout = None;
         e.compute_layout_state = None;
         e.compute_push_constants = None;
@@ -131,6 +182,7 @@ impl api::ComputeOps<Vulkan> for VulkanCompute {
 
     fn abort(e: &mut VulkanEncoder) {
         e.compute = false;
+        e.compute_bound_groups.clear();
         e.compute_layout = None;
         e.compute_layout_state = None;
         e.compute_push_constants = None;

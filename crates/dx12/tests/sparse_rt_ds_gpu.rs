@@ -335,6 +335,7 @@ fn sparse_render_and_depth_control_readback() {
     let invalid = SparseBind {
         resource: color.clone(),
         tiles: vec![SparseTile {
+            aspect: None,
             mip: 0,
             layer: 0,
             origin: [0, 0, 0],
@@ -372,6 +373,7 @@ fn sparse_render_and_depth_control_readback() {
                 tile
             } else {
                 SparseTile {
+                    aspect: None,
                     mip: 0,
                     layer,
                     origin: [0, 0, 0],

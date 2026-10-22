@@ -27,7 +27,7 @@ pub(super) fn configure(state: &SurfaceState, config: &api::SurfaceConfig) -> Re
         .ok_or(Error::Unsupported("Vulkan surface format"))?;
     let surface_format = formats
         .into_iter()
-        .find(|f| f.format == format && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
+        .find(|f| f.format == format && f.color_space == color_space(config.color_space))
         .ok_or(Error::Unsupported("Vulkan surface format"))?;
     let extent = vk::Extent2D {
         width: config.extent[0],
@@ -40,6 +40,12 @@ pub(super) fn configure(state: &SurfaceState, config: &api::SurfaceConfig) -> Re
     let next_generation = inner.generation.checked_add(1).ok_or(Error::OutOfMemory)?;
     let old = inner.swapchain;
     let mut usage = vk::ImageUsageFlags::COLOR_ATTACHMENT;
+    let transfer_dst = caps
+        .supported_usage_flags
+        .contains(vk::ImageUsageFlags::TRANSFER_DST);
+    if transfer_dst {
+        usage |= vk::ImageUsageFlags::TRANSFER_DST;
+    }
     if std::env::var_os("FLUXEL_VULKAN_CAPTURE").is_some() {
         if !caps
             .supported_usage_flags
@@ -51,9 +57,17 @@ pub(super) fn configure(state: &SurfaceState, config: &api::SurfaceConfig) -> Re
         }
         usage |= vk::ImageUsageFlags::TRANSFER_SRC;
     }
+    let requested_images = caps
+        .min_image_count
+        .max(config.maximum_frame_latency.saturating_add(1));
+    let image_count = if caps.max_image_count == 0 {
+        requested_images
+    } else {
+        requested_images.min(caps.max_image_count)
+    };
     let info = vk::SwapchainCreateInfoKHR::default()
         .surface(state.surface)
-        .min_image_count(caps.min_image_count.max(2))
+        .min_image_count(image_count)
         .image_format(surface_format.format)
         .image_color_space(surface_format.color_space)
         .image_extent(extent)
@@ -78,7 +92,7 @@ pub(super) fn configure(state: &SurfaceState, config: &api::SurfaceConfig) -> Re
             super::composite_alpha(config.alpha_mode)
                 .ok_or(Error::Unsupported("Vulkan composite alpha mode"))?,
         )
-        .present_mode(vk::PresentModeKHR::FIFO)
+        .present_mode(present_mode(config.present_mode))
         .clipped(true)
         .old_swapchain(old);
     // SAFETY: `inner` excludes concurrent configure/acquire; old_swapchain is
@@ -185,10 +199,12 @@ pub(super) fn configure(state: &SurfaceState, config: &api::SurfaceConfig) -> Re
     }
     inner.swapchain = chain;
     inner.images = images;
+    inner.initialized = vec![false; inner.images.len()];
     inner.views = views;
     inner.present_waits = vec![None; inner.images.len()];
     inner.extent = extent;
     inner.format = format;
+    inner.transfer_dst = transfer_dst;
     inner.generation = next_generation;
     inner.abandoned = false;
     inner.presented = false;

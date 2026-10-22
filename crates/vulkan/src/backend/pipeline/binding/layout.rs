@@ -10,6 +10,7 @@
 use super::super::super::{DeviceState, VulkanDevice, vk_error};
 use ash::vk;
 use fluxel_rhi_core::api::{self, Error, Result};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -23,10 +24,13 @@ impl VulkanBindGroupLayout {
 pub(crate) struct GroupLayout {
     pub(super) device: Arc<DeviceState>,
     pub(crate) layout: vk::DescriptorSetLayout,
-    pub(super) entries: Arc<[api::BindGroupLayoutEntry]>,
+    pub(crate) entries: Arc<[api::BindGroupLayoutEntry]>,
+    pub(crate) native_bindings: HashMap<u32, u32>,
+    pub(crate) sampler_mirrors: HashMap<u32, u32>,
     /// The public contract's layout-time upper bound for the sole runtime
     /// binding. Bind-group allocation validates its actual count against this.
     pub(super) runtime_descriptor_count: Option<u32>,
+    pub(super) runtime_dynamic_binding: Option<u32>,
 }
 impl Drop for GroupLayout {
     fn drop(&mut self) {
@@ -44,33 +48,117 @@ pub(crate) fn create_group_layout(
     device: &VulkanDevice,
     desc: &api::BindGroupLayoutDesc,
 ) -> Result<VulkanBindGroupLayout> {
+    create_group_layout_variant(device, desc, &HashMap::new())
+}
+
+pub(crate) fn create_group_layout_variant(
+    device: &VulkanDevice,
+    desc: &api::BindGroupLayoutDesc,
+    modes: &HashMap<u32, u8>,
+) -> Result<VulkanBindGroupLayout> {
     let runtime_descriptor_count = desc.entries.iter().find_map(|entry| match entry.count {
         api::BindingCount::RuntimeSized { max_count } => Some(max_count),
         _ => None,
     });
-    let bindings: Vec<_> = desc
+    let runtime_dynamic_binding = desc.entries.iter().find_map(|entry| {
+        (matches!(entry.count, api::BindingCount::RuntimeSized { .. })
+            && matches!(
+                entry.ty,
+                api::BindingType::UniformBuffer {
+                    dynamic_offset: true,
+                    ..
+                } | api::BindingType::StorageBuffer {
+                    dynamic_offset: true,
+                    ..
+                }
+            ))
+        .then_some(entry.binding)
+    });
+    if runtime_dynamic_binding.is_some() && !device.0.descriptor_partially_bound {
+        return Err(Error::Unsupported("Vulkan partially-bound descriptors"));
+    }
+    let mut native_bindings: HashMap<u32, u32> = desc
         .entries
         .iter()
-        .map(|entry| create_layout_binding(device, entry))
+        .map(|e| (e.binding, e.binding))
+        .collect();
+    let mut sampler_mirrors = HashMap::new();
+    let mut next = desc.entries.iter().map(|e| e.binding).max().unwrap_or(0);
+    for entry in &desc.entries {
+        if matches!(entry.ty, api::BindingType::Sampler { .. })
+            && modes.get(&entry.binding) == Some(&2)
+        {
+            next = next.checked_add(1).ok_or(Error::InvalidRange)?;
+            sampler_mirrors.insert(entry.binding, next);
+        }
+    }
+    if let Some(entry) = desc.entries.iter().find(|e| {
+        matches!(e.count, api::BindingCount::RuntimeSized { .. })
+            && runtime_dynamic_binding != Some(e.binding)
+    }) {
+        if !sampler_mirrors.is_empty() {
+            next = next.checked_add(1).ok_or(Error::InvalidRange)?;
+            native_bindings.insert(entry.binding, next);
+        }
+    }
+    let mut bindings: Vec<_> = desc
+        .entries
+        .iter()
+        .map(|entry| {
+            create_layout_binding(device, entry).map(|v| v.binding(native_bindings[&entry.binding]))
+        })
         .collect::<Result<_>>()?;
-    let binding_flags: Vec<_> = desc
+    let mut binding_flags: Vec<_> = desc
         .entries
         .iter()
-        .map(|entry| match entry.count {
-            api::BindingCount::RuntimeSized { .. } => {
-                vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT
+        .map(|entry| {
+            let mut flags = vk::DescriptorBindingFlags::empty();
+            if matches!(entry.count, api::BindingCount::RuntimeSized { .. })
+                && runtime_dynamic_binding != Some(entry.binding)
+            {
+                flags |= vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT;
             }
-            _ => vk::DescriptorBindingFlags::empty(),
+            if entry.partially_bound || runtime_dynamic_binding == Some(entry.binding) {
+                flags |= vk::DescriptorBindingFlags::PARTIALLY_BOUND;
+            }
+            flags
         })
         .collect();
+    for entry in &desc.entries {
+        if let Some(&binding) = sampler_mirrors.get(&entry.binding) {
+            bindings.push(create_layout_binding(device, entry)?.binding(binding));
+            let mut flag = vk::DescriptorBindingFlags::empty();
+            if entry.partially_bound {
+                if !device.0.descriptor_partially_bound {
+                    return Err(Error::Unsupported("Vulkan partially-bound sampler mirror"));
+                }
+                flag |= vk::DescriptorBindingFlags::PARTIALLY_BOUND;
+            }
+            binding_flags.push(flag);
+        }
+    }
+    let mut ordered: Vec<_> = bindings.into_iter().zip(binding_flags).collect();
+    ordered.sort_by_key(|(binding, _)| binding.binding);
+    let (bindings, binding_flags): (Vec<_>, Vec<_>) = ordered.into_iter().unzip();
     let mut flags =
         vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
-    if runtime_descriptor_count.is_some() {
+    if runtime_descriptor_count.is_some() && runtime_dynamic_binding.is_none() {
         ensure_runtime_array_layout_supported(device, &bindings, &mut flags)?;
     }
     let info = vk::DescriptorSetLayoutCreateInfo::default()
         .bindings(&bindings)
         .push_next(&mut flags);
+    let mut support = vk::DescriptorSetLayoutSupport::default();
+    // SAFETY: the complete create-info and output are live for the query.
+    unsafe {
+        device
+            .0
+            .device
+            .get_descriptor_set_layout_support(&info, &mut support)
+    };
+    if support.supported != vk::TRUE {
+        return Err(Error::Unsupported("Vulkan descriptor set layout limits"));
+    }
     // SAFETY: `bindings` and the matching binding-flag chain remain alive for
     // this synchronous call. DeviceState retains the native logical device.
     let layout =
@@ -79,7 +167,10 @@ pub(crate) fn create_group_layout(
         device: device.0.clone(),
         layout,
         entries: Arc::from(desc.entries.clone()),
+        native_bindings,
+        sampler_mirrors,
         runtime_descriptor_count,
+        runtime_dynamic_binding,
     })))
 }
 
@@ -108,28 +199,46 @@ fn create_layout_binding(
     {
         return Err(Error::Unsupported("Vulkan acceleration structure"));
     }
-    if entry.partially_bound {
+    if entry.partially_bound && !device.0.descriptor_partially_bound {
         return Err(Error::Unsupported("Vulkan partially-bound descriptors"));
     }
-    if !matches!(entry.count, api::BindingCount::One)
-        && !matches!(&entry.ty, api::BindingType::SampledTexture { .. })
-    {
-        return Err(Error::Unsupported("Vulkan descriptor array binding type"));
-    }
-    if entry.nonuniform_indexing && !matches!(&entry.ty, api::BindingType::SampledTexture { .. }) {
-        return Err(Error::Unsupported("Vulkan nonuniform binding type"));
+    if entry.nonuniform_indexing {
+        let enabled = match &entry.ty {
+            api::BindingType::UniformBuffer { .. } => device.0.nonuniform_uniform_buffer,
+            api::BindingType::StorageBuffer { .. } => device.0.nonuniform_storage_buffer,
+            api::BindingType::StorageTexture { .. } => device.0.nonuniform_storage_image,
+            api::BindingType::SampledTexture { .. }
+            | api::BindingType::Sampler { .. }
+            | api::BindingType::AccelerationStructure => device.0.nonuniform_sampled_image,
+            api::BindingType::ExternalTexture => false,
+        };
+        if !enabled {
+            return Err(Error::Unsupported("Vulkan nonuniform descriptor indexing"));
+        }
     }
     let descriptor_count = match entry.count {
         api::BindingCount::One => 1,
         api::BindingCount::Fixed(count) => count,
         api::BindingCount::RuntimeSized { max_count } => {
-            if !device.0.descriptor_indexing {
+            let dynamic = matches!(
+                entry.ty,
+                api::BindingType::UniformBuffer {
+                    dynamic_offset: true,
+                    ..
+                } | api::BindingType::StorageBuffer {
+                    dynamic_offset: true,
+                    ..
+                }
+            );
+            if !device.0.runtime_descriptor_array
+                || (!dynamic && !device.0.variable_descriptor_count)
+            {
                 return Err(Error::Unsupported("Vulkan descriptor indexing"));
             }
             max_count
         }
     };
-    if descriptor_count == 0 || descriptor_count > device.0.max_sampled_images {
+    if descriptor_count == 0 {
         return Err(Error::InvalidRange);
     }
     Ok(vk::DescriptorSetLayoutBinding::default()
@@ -181,16 +290,15 @@ fn dtype(ty: &api::BindingType) -> Result<vk::DescriptorType> {
             }
         }
         api::BindingType::SampledTexture { .. } => vk::DescriptorType::SAMPLED_IMAGE,
-        api::BindingType::StorageTexture { access, .. }
-            if matches!(access, api::StorageAccess::Write) =>
-        {
-            vk::DescriptorType::STORAGE_IMAGE
-        }
+        api::BindingType::StorageTexture { .. } => vk::DescriptorType::STORAGE_IMAGE,
         api::BindingType::Sampler { .. } => vk::DescriptorType::SAMPLER,
-        api::BindingType::StorageBuffer {
-            dynamic_offset: false,
-            ..
-        } => vk::DescriptorType::STORAGE_BUFFER,
+        api::BindingType::StorageBuffer { dynamic_offset, .. } => {
+            if *dynamic_offset {
+                vk::DescriptorType::STORAGE_BUFFER_DYNAMIC
+            } else {
+                vk::DescriptorType::STORAGE_BUFFER
+            }
+        }
         api::BindingType::AccelerationStructure => vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
         _ => return Err(Error::Unsupported("Vulkan binding type")),
     })

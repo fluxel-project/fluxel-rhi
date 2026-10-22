@@ -6,9 +6,10 @@ use super::{
 use ash::vk;
 use fluxel_rhi_core::api::{self, Error, Result};
 use std::{
+    collections::HashMap,
     ffi::CString,
     future::{Ready, ready},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 pub(crate) struct MeshDevice {
@@ -41,9 +42,13 @@ pub struct VulkanMeshPipeline(Arc<MeshPipeline>);
 struct MeshPipeline {
     device: Arc<DeviceState>,
     pipeline: vk::Pipeline,
+    desc: api::MeshPipelineDesc<Vulkan>,
+    variants: Mutex<HashMap<u32, VulkanMeshPipeline>>,
     layout: VulkanPipelineLayout,
     task: bool,
-    signature: (vk::Format, Option<vk::Format>, u32),
+    depth_writes: bool,
+    stencil_writes: bool,
+    signature: (Vec<vk::Format>, Option<vk::Format>, u32),
 }
 impl Drop for MeshPipeline {
     fn drop(&mut self) {
@@ -59,29 +64,58 @@ impl api::MeshOps<Vulkan> for Mesh {
         d: &'a VulkanDevice,
         desc: &'a api::MeshPipelineDesc<Vulkan>,
     ) -> Self::PipelineFuture<'a> {
-        ready(create(d, desc))
+        ready(create(d, desc, 0))
     }
     fn bind_pipeline(e: &mut VulkanEncoder, p: &VulkanMeshPipeline) -> Result<()> {
         if !e.raster
             || e.secondary_signature.is_some()
-            || e.raster_multiview_mask.is_some()
-            || e.raster_signature != Some(p.0.signature)
+            || (e.raster_depth_read_only && p.0.depth_writes)
+            || (e.raster_stencil_read_only && p.0.stencil_writes)
+            || !e.raster_signature.as_ref().is_some_and(|s| {
+                s.0 == p.0.signature.0
+                    && s.1 == p.0.signature.1
+                    && (s.2 == 0 || s.2 == p.0.signature.2)
+            })
         {
             return Err(Error::InvalidState);
         }
+        let mask = e.raster_multiview_mask.unwrap_or(0);
+        let selected = if mask == 0 {
+            p.clone()
+        } else {
+            if !e.device.multiview_mesh_shader {
+                return Err(Error::Unsupported("Vulkan multiview mesh shader"));
+            }
+            let mut variants = p.0.variants.lock().map_err(|_| Error::InvalidState)?;
+            if let Some(variant) = variants.get(&mask) {
+                variant.clone()
+            } else {
+                let variant = create(&VulkanDevice(e.device.clone()), &p.0.desc, mask)?;
+                variants.insert(mask, variant.clone());
+                variant
+            }
+        };
+        let layout_state = selected.0.layout.clone();
+        let bindings = super::raster::prepare_groups(&layout_state, &e.raster_bound_groups)?;
         // SAFETY: the compatible pipeline is retained by the encoder until completion.
         unsafe {
             e.device.device.cmd_bind_pipeline(
                 e.command,
                 vk::PipelineBindPoint::GRAPHICS,
-                p.0.pipeline,
+                selected.0.pipeline,
             );
         }
-        e.raster_layout = Some(p.0.layout.native());
-        e.raster_layout_state = Some(p.0.layout.clone());
+        super::raster::bind_prepared(
+            &e.device.device,
+            e.command,
+            layout_state.native(),
+            &bindings,
+        );
+        e.raster_layout = Some(layout_state.native());
+        e.raster_layout_state = Some(layout_state);
         e.raster_push_constants = Some(p.0.layout.push_constants());
         e.mesh_active = Some(p.0.task);
-        e.mesh_pipelines.push(p.clone());
+        e.mesh_pipelines.push(selected);
         Ok(())
     }
     fn dispatch(e: &mut VulkanEncoder, groups: [u32; 3]) -> Result<()> {
@@ -161,10 +195,8 @@ mod topology_tests {
 fn create(
     device: &VulkanDevice,
     desc: &api::MeshPipelineDesc<Vulkan>,
+    multiview_mask: u32,
 ) -> Result<VulkanMeshPipeline> {
-    if desc.targets.len() != 1 || desc.targets[0].is_none() {
-        return Err(Error::Unsupported("Vulkan mesh color target"));
-    }
     let mesh = device
         .0
         .mesh
@@ -173,23 +205,15 @@ fn create(
     if desc.task.is_some() && !mesh.task {
         return Err(Error::Unsupported("Vulkan task shader"));
     }
-    if desc.cache.is_some()
-        || !desc.mesh.constants.is_empty()
-        || desc.task.as_ref().is_some_and(|s| !s.constants.is_empty())
-        || desc
-            .fragment
-            .as_ref()
-            .is_some_and(|s| !s.constants.is_empty())
-    {
-        return Err(Error::Unsupported("Vulkan mesh specialization or cache"));
+    if desc.primitive.strip_index_format.is_some() {
+        return Err(Error::InvalidRange);
     }
-    if desc.primitive.strip_index_format.is_some()
-        || !matches!(desc.primitive.polygon_mode, api::PolygonMode::Fill)
-        || desc.primitive.conservative
-        || desc.primitive.unclipped_depth
-    {
-        return Err(Error::Unsupported("Vulkan mesh primitive state"));
-    }
+    super::pipeline::fixed::validate_primitive(
+        device,
+        &desc.primitive,
+        desc.depth_stencil.as_ref(),
+    )?;
+    super::pipeline::fixed::validate_blends(device, &desc.targets)?;
     // A mesh shader supplies its own primitive topology through SPIR-V
     // OpExecutionMode. There is no Vulkan input-assembly state to override it.
     let output_mode = unsafe { desc.mesh.module.native_ref() }
@@ -210,33 +234,78 @@ fn create(
                 .map_err(|_| Error::Shader("shader entry contains NUL".into()))?,
         );
     }
-    let mut stages = Vec::new();
-    let mut i = 0;
-    if let Some(s) = &desc.task {
-        stages.push(stage(
-            unsafe { s.module.native_ref() },
-            &names[i],
-            vk::ShaderStageFlags::TASK_EXT,
-        )?);
-        i += 1;
-    }
-    stages.push(stage(
-        unsafe { desc.mesh.module.native_ref() },
-        &names[i],
-        vk::ShaderStageFlags::MESH_EXT,
-    )?);
-    i += 1;
-    if let Some(s) = &desc.fragment {
-        stages.push(stage(
-            unsafe { s.module.native_ref() },
-            &names[i],
-            vk::ShaderStageFlags::FRAGMENT,
-        )?);
-    }
+    let stage_descs: Vec<_> = desc
+        .task
+        .iter()
+        .map(|s| (s, api::ShaderStage::Task, vk::ShaderStageFlags::TASK_EXT))
+        .chain(std::iter::once((
+            &desc.mesh,
+            api::ShaderStage::Mesh,
+            vk::ShaderStageFlags::MESH_EXT,
+        )))
+        .chain(desc.fragment.iter().map(|s| {
+            (
+                s,
+                api::ShaderStage::Fragment,
+                vk::ShaderStageFlags::FRAGMENT,
+            )
+        }))
+        .collect();
+    // SAFETY: Core validated the layout and shader identities for this device.
+    let base_layout = unsafe { desc.layout.native_ref() }.clone();
+    let compile = |layout: &VulkanPipelineLayout| -> Result<Vec<_>> {
+        stage_descs
+            .iter()
+            .map(|(s, kind, _)| {
+                // SAFETY: Core validated each shader's device identity.
+                super::shader::compile_variant(
+                    device,
+                    unsafe { s.module.native_ref() },
+                    layout,
+                    &s.entry,
+                    *kind,
+                    &s.constants,
+                    layout.push_constants().base(*kind),
+                )
+            })
+            .collect()
+    };
+    let analysis_shaders = compile(&base_layout)?;
+    let shader_refs: Vec<_> = analysis_shaders
+        .iter()
+        .zip(&stage_descs)
+        .map(|((shader, _), (stage, kind, _))| (shader, stage.entry.as_str(), *kind))
+        .collect();
+    let layout = base_layout.for_shaders(&shader_refs)?;
+    let shaders = compile(&layout)?;
+    let specs: Vec<_> = stage_descs
+        .iter()
+        .zip(&shaders)
+        .map(|((s, _, _), (shader, consumed))| {
+            super::pipeline::specialization::Specialization::new(
+                shader,
+                if *consumed { &[] } else { &s.constants },
+            )
+        })
+        .collect::<Result<_>>()?;
+    let spec_infos: Vec<_> = specs.iter().map(|s| s.info()).collect();
+    let stages: Vec<_> = stage_descs
+        .iter()
+        .zip(&shaders)
+        .zip(names.iter().zip(&spec_infos))
+        .map(|(((_, _, flags), (shader, _)), (name, spec))| {
+            stage(shader, name, *flags).map(|s| s.specialization_info(spec))
+        })
+        .collect::<Result<_>>()?;
     let viewport = vk::PipelineViewportStateCreateInfo::default()
         .viewport_count(1)
         .scissor_count(1);
-    let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+    let dynamic_states = [
+        vk::DynamicState::VIEWPORT,
+        vk::DynamicState::SCISSOR,
+        vk::DynamicState::BLEND_CONSTANTS,
+        vk::DynamicState::STENCIL_REFERENCE,
+    ];
     let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
     let cull = match desc.primitive.cull_mode {
         api::CullMode::None => vk::CullModeFlags::NONE,
@@ -250,44 +319,85 @@ fn create(
         api::FrontFace::Ccw => vk::FrontFace::COUNTER_CLOCKWISE,
         api::FrontFace::Cw => vk::FrontFace::CLOCKWISE,
     };
-    let raster = vk::PipelineRasterizationStateCreateInfo::default()
-        .polygon_mode(vk::PolygonMode::FILL)
+    let mut raster = vk::PipelineRasterizationStateCreateInfo::default()
+        .depth_clamp_enable(desc.primitive.unclipped_depth)
+        .polygon_mode(super::pipeline::fixed::polygon_mode(
+            desc.primitive.polygon_mode,
+        ))
         .cull_mode(cull)
         .front_face(front)
-        .line_width(1.0);
+        .line_width(1.0)
+        .depth_bias_enable(desc.depth_stencil.as_ref().is_some_and(|d| {
+            d.depth_bias_constant != 0
+                || d.depth_bias_slope_scale != 0.0
+                || d.depth_bias_clamp != 0.0
+        }))
+        .depth_bias_constant_factor(
+            desc.depth_stencil
+                .as_ref()
+                .map_or(0.0, |d| d.depth_bias_constant as f32),
+        )
+        .depth_bias_slope_factor(
+            desc.depth_stencil
+                .as_ref()
+                .map_or(0.0, |d| d.depth_bias_slope_scale),
+        )
+        .depth_bias_clamp(
+            desc.depth_stencil
+                .as_ref()
+                .map_or(0.0, |d| d.depth_bias_clamp),
+        );
+    let mut conservative = vk::PipelineRasterizationConservativeStateCreateInfoEXT::default()
+        .conservative_rasterization_mode(vk::ConservativeRasterizationModeEXT::OVERESTIMATE);
+    if desc.primitive.conservative {
+        raster = raster.push_next(&mut conservative);
+    }
     let samples = match desc.multisample.count {
         1 => vk::SampleCountFlags::TYPE_1,
         2 => vk::SampleCountFlags::TYPE_2,
         4 => vk::SampleCountFlags::TYPE_4,
         8 => vk::SampleCountFlags::TYPE_8,
+        16 => vk::SampleCountFlags::TYPE_16,
+        32 => vk::SampleCountFlags::TYPE_32,
+        64 => vk::SampleCountFlags::TYPE_64,
         _ => return Err(Error::Unsupported("Vulkan multisample count")),
     };
-    if desc.multisample.alpha_to_coverage_enabled {
-        return Err(Error::Unsupported("Vulkan alpha-to-coverage"));
-    }
-    if desc.multisample.mask != u64::from(u32::MAX) {
-        return Err(Error::Unsupported("Vulkan multisample mask"));
-    }
-    let sample_mask = u32::MAX;
+    let sample_mask = [
+        desc.multisample.mask as u32,
+        (desc.multisample.mask >> 32) as u32,
+    ];
     let ms = vk::PipelineMultisampleStateCreateInfo::default()
         .rasterization_samples(samples)
-        .sample_mask(std::slice::from_ref(&sample_mask));
+        .alpha_to_coverage_enable(desc.multisample.alpha_to_coverage_enabled)
+        .sample_mask(&sample_mask[..if desc.multisample.count > 32 { 2 } else { 1 }]);
     let blends: Result<Vec<_>> = desc
         .targets
         .iter()
         .map(|target| match target {
-            Some(target) if target.write_mask == 0xf => {
+            Some(target) if target.write_mask & !0xf == 0 => {
                 let mut native = vk::PipelineColorBlendAttachmentState::default()
-                    .color_write_mask(vk::ColorComponentFlags::RGBA);
+                    .color_write_mask(vk::ColorComponentFlags::from_raw(target.write_mask as u32));
                 if let Some(blend) = target.blend {
                     native = native
                         .blend_enable(true)
-                        .src_color_blend_factor(blend_factor(blend.color.src_factor)?)
-                        .dst_color_blend_factor(blend_factor(blend.color.dst_factor)?)
-                        .color_blend_op(blend_op(blend.color.operation)?)
-                        .src_alpha_blend_factor(blend_factor(blend.alpha.src_factor)?)
-                        .dst_alpha_blend_factor(blend_factor(blend.alpha.dst_factor)?)
-                        .alpha_blend_op(blend_op(blend.alpha.operation)?);
+                        .src_color_blend_factor(super::pipeline::fixed::blend_factor(
+                            blend.color.src_factor,
+                            false,
+                        )?)
+                        .dst_color_blend_factor(super::pipeline::fixed::blend_factor(
+                            blend.color.dst_factor,
+                            false,
+                        )?)
+                        .color_blend_op(super::pipeline::fixed::blend_op(blend.color.operation)?)
+                        .src_alpha_blend_factor(super::pipeline::fixed::blend_factor(
+                            blend.alpha.src_factor,
+                            true,
+                        )?)
+                        .dst_alpha_blend_factor(super::pipeline::fixed::blend_factor(
+                            blend.alpha.dst_factor,
+                            true,
+                        )?)
+                        .alpha_blend_op(super::pipeline::fixed::blend_op(blend.alpha.operation)?);
                 }
                 Ok(native)
             }
@@ -297,50 +407,70 @@ fn create(
         .collect();
     let blends = blends?;
     let cb = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blends);
-    let depth = desc
-        .depth_stencil
-        .as_ref()
-        .map(|d| {
-            if d.format != api::TextureFormat::Depth32Float {
-                return Err(Error::Unsupported("Vulkan depth format"));
-            }
-            if d.depth_bias_constant != 0
-                || d.depth_bias_slope_scale != 0.0
-                || d.depth_bias_clamp != 0.0
-                || !stencil_disabled(d)
-            {
-                return Err(Error::Unsupported("Vulkan depth bias or stencil state"));
-            }
-            Ok(vk::PipelineDepthStencilStateCreateInfo::default()
-                .depth_test_enable(true)
-                .depth_write_enable(d.depth_write_enabled)
-                .depth_compare_op(compare(d.depth_compare)))
+    let depth = desc.depth_stencil.as_ref().map(|d| {
+        vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(true)
+            .depth_write_enable(d.depth_write_enabled)
+            .depth_compare_op(super::pipeline::fixed::compare(d.depth_compare))
+            .stencil_test_enable(!super::pipeline::fixed::stencil_disabled(d))
+            .front(super::pipeline::fixed::stencil_face(
+                d.stencil_front,
+                d.stencil_read_mask,
+                d.stencil_write_mask,
+            ))
+            .back(super::pipeline::fixed::stencil_face(
+                d.stencil_back,
+                d.stencil_read_mask,
+                d.stencil_write_mask,
+            ))
+    });
+    let formats: Result<Vec<_>> = desc
+        .targets
+        .iter()
+        .map(|target| match target {
+            Some(t) => super::resource::native_format(&device.0, t.format)
+                .ok_or(Error::Unsupported("Vulkan color format")),
+            None => Ok(vk::Format::UNDEFINED),
         })
-        .transpose()?;
-    let formats: Result<Vec<_>> =
-        desc.targets
-            .iter()
-            .map(|target| match target {
-                Some(t) if t.write_mask == 0xf => super::resource::format(t.format)
-                    .ok_or(Error::Unsupported("Vulkan color format")),
-                Some(_) => Err(Error::Unsupported("Vulkan color blend/write mask")),
-                None => Ok(vk::Format::UNDEFINED),
-            })
-            .collect();
+        .collect();
     let formats = formats?;
-    let multiview_mask = None::<u32>;
-    if multiview_mask == Some(0) {
-        return Err(Error::InvalidRange);
+    for (format, target) in formats.iter().zip(&desc.targets) {
+        if let Some(target) = target {
+            super::pipeline::fixed::validate_attachment_format(
+                device,
+                *format,
+                false,
+                target.blend.is_some(),
+            )?;
+        }
+    }
+    if let Some(depth) = &desc.depth_stencil {
+        super::pipeline::fixed::validate_attachment_format(
+            device,
+            super::resource::native_format(&device.0, depth.format)
+                .ok_or(Error::Unsupported("Vulkan depth format"))?,
+            true,
+            false,
+        )?;
     }
     let mut rendering = vk::PipelineRenderingCreateInfo::default()
         .color_attachment_formats(&formats)
-        .view_mask(multiview_mask.unwrap_or(0));
-    if depth.is_some() {
-        rendering = rendering.depth_attachment_format(vk::Format::D32_SFLOAT);
+        .view_mask(multiview_mask);
+    if let Some(depth) = &desc.depth_stencil {
+        let format = super::resource::native_format(&device.0, depth.format)
+            .ok_or(Error::Unsupported("Vulkan depth format"))?;
+        if depth.format != api::TextureFormat::Stencil8 {
+            rendering = rendering.depth_attachment_format(format);
+        }
+        if matches!(
+            depth.format,
+            api::TextureFormat::Depth24PlusStencil8
+                | api::TextureFormat::Depth32FloatStencil8
+                | api::TextureFormat::Stencil8
+        ) {
+            rendering = rendering.stencil_attachment_format(format);
+        }
     }
-    // SAFETY: Core validated this layout's DeviceId; keeping a clone below
-    // retains all dependent descriptor layouts for the native pipeline lifetime.
-    let layout = unsafe { desc.layout.native_ref() }.clone();
     let mut info = vk::GraphicsPipelineCreateInfo::default()
         .stages(&stages)
         .viewport_state(&viewport)
@@ -355,82 +485,49 @@ fn create(
     }
     // SAFETY: every create-info slice and pNext structure above remains alive
     // for the call, and all Vulkan handles belong to this live DeviceState.
-    let pipeline = unsafe {
-        device
-            .0
-            .device
-            .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)
-    }
-    .map_err(|(partial, e)| {
-        for pipeline in partial {
-            if pipeline != vk::Pipeline::null() {
-                // SAFETY: these partially created pipelines have not been published.
-                unsafe {
-                    device.0.device.destroy_pipeline(pipeline, None);
+    let pipeline = super::pipeline::cache::with_cache(desc.cache.as_ref(), |cache| {
+        unsafe {
+            device
+                .0
+                .device
+                .create_graphics_pipelines(cache, &[info], None)
+        }
+        .map_err(|(partial, e)| {
+            for pipeline in partial {
+                if pipeline != vk::Pipeline::null() {
+                    // SAFETY: these partially created pipelines have not been published.
+                    unsafe {
+                        device.0.device.destroy_pipeline(pipeline, None);
+                    }
                 }
             }
-        }
-        vk_error(e)
-    })?[0];
+            vk_error(e)
+        })
+        .map(|pipelines| pipelines[0])
+    })?;
     Ok(VulkanMeshPipeline(Arc::new(MeshPipeline {
         device: device.0.clone(),
         pipeline,
+        desc: copy_desc(desc),
+        variants: Mutex::new(HashMap::new()),
         layout,
         task: desc.task.is_some(),
+        depth_writes: desc
+            .depth_stencil
+            .as_ref()
+            .is_some_and(|d| d.depth_write_enabled),
+        stencil_writes: desc
+            .depth_stencil
+            .as_ref()
+            .is_some_and(super::pipeline::fixed::stencil_writes),
         signature: (
-            formats[0],
-            depth.as_ref().map(|_| vk::Format::D32_SFLOAT),
+            formats,
+            desc.depth_stencil
+                .as_ref()
+                .and_then(|d| super::resource::native_format(&device.0, d.format)),
             desc.multisample.count,
         ),
     })))
-}
-fn blend_factor(value: api::BlendFactor) -> Result<vk::BlendFactor> {
-    Ok(match value {
-        api::BlendFactor::Zero => vk::BlendFactor::ZERO,
-        api::BlendFactor::One => vk::BlendFactor::ONE,
-        api::BlendFactor::SrcColor => vk::BlendFactor::SRC_COLOR,
-        api::BlendFactor::OneMinusSrcColor => vk::BlendFactor::ONE_MINUS_SRC_COLOR,
-        api::BlendFactor::SrcAlpha => vk::BlendFactor::SRC_ALPHA,
-        api::BlendFactor::OneMinusSrcAlpha => vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
-        api::BlendFactor::DstColor => vk::BlendFactor::DST_COLOR,
-        api::BlendFactor::OneMinusDstColor => vk::BlendFactor::ONE_MINUS_DST_COLOR,
-        api::BlendFactor::DstAlpha => vk::BlendFactor::DST_ALPHA,
-        api::BlendFactor::OneMinusDstAlpha => vk::BlendFactor::ONE_MINUS_DST_ALPHA,
-        _ => return Err(Error::Unsupported("Vulkan blend factor")),
-    })
-}
-
-fn blend_op(value: api::BlendOperation) -> Result<vk::BlendOp> {
-    Ok(match value {
-        api::BlendOperation::Add => vk::BlendOp::ADD,
-        api::BlendOperation::Subtract => vk::BlendOp::SUBTRACT,
-        api::BlendOperation::ReverseSubtract => vk::BlendOp::REVERSE_SUBTRACT,
-        api::BlendOperation::Min => vk::BlendOp::MIN,
-        api::BlendOperation::Max => vk::BlendOp::MAX,
-    })
-}
-fn compare(v: api::CompareFunction) -> vk::CompareOp {
-    match v {
-        api::CompareFunction::Never => vk::CompareOp::NEVER,
-        api::CompareFunction::Less => vk::CompareOp::LESS,
-        api::CompareFunction::Equal => vk::CompareOp::EQUAL,
-        api::CompareFunction::LessEqual => vk::CompareOp::LESS_OR_EQUAL,
-        api::CompareFunction::Greater => vk::CompareOp::GREATER,
-        api::CompareFunction::NotEqual => vk::CompareOp::NOT_EQUAL,
-        api::CompareFunction::GreaterEqual => vk::CompareOp::GREATER_OR_EQUAL,
-        api::CompareFunction::Always => vk::CompareOp::ALWAYS,
-    }
-}
-fn stencil_disabled(state: &api::DepthStencilState) -> bool {
-    matches!(state.stencil_front.compare, api::CompareFunction::Always)
-        && matches!(state.stencil_back.compare, api::CompareFunction::Always)
-        && [state.stencil_front, state.stencil_back]
-            .iter()
-            .all(|face| {
-                matches!(face.fail, api::StencilOperation::Keep)
-                    && matches!(face.depth_fail, api::StencilOperation::Keep)
-                    && matches!(face.pass, api::StencilOperation::Keep)
-            })
 }
 fn stage<'a>(
     shader: &VulkanShader,
@@ -457,4 +554,26 @@ fn stage<'a>(
         .stage(flags)
         .module(shader.module())
         .name(entry))
+}
+
+// Keep only immutable pipeline inputs so view-mask variants can be created on demand.
+fn copy_desc(desc: &api::MeshPipelineDesc<Vulkan>) -> api::MeshPipelineDesc<Vulkan> {
+    fn stage(s: &api::PipelineStage<Vulkan>) -> api::PipelineStage<Vulkan> {
+        api::PipelineStage {
+            module: s.module.clone(),
+            entry: s.entry.clone(),
+            constants: s.constants.clone(),
+        }
+    }
+    api::MeshPipelineDesc {
+        layout: desc.layout.clone(),
+        task: desc.task.as_ref().map(stage),
+        mesh: stage(&desc.mesh),
+        fragment: desc.fragment.as_ref().map(stage),
+        primitive: desc.primitive,
+        targets: desc.targets.clone(),
+        depth_stencil: desc.depth_stencil,
+        multisample: desc.multisample,
+        cache: desc.cache.clone(),
+    }
 }

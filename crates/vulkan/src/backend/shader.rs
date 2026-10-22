@@ -1,9 +1,9 @@
-//! Direct SPIR-V shader-module creation.
+//! Shader module ownership and per-pipeline variants.
 //!
-//! The Vulkan baseline accepts only whole-word SPIR-V binaries. Vulkan remains
-//! the semantic validation boundary; this module does not pretend that DXIL,
-//! WGSL, or GLSL is executable without a selected translator. Shader modules
-//! retain their logical device and may be released once pipeline creation ends.
+//! Raw SPIR-V modules are retained directly. WGSL is validated on creation and
+//! compiled for the selected entry point and specialization during pipeline
+//! creation. Native variants also adapt push offsets and sampler descriptors;
+//! their modules live through the synchronous Vulkan pipeline creation call.
 
 use std::{io::Cursor, sync::Arc};
 
@@ -19,12 +19,15 @@ struct ShaderState {
     pub(super) module: vk::ShaderModule,
     pub(super) entries: Vec<api::ShaderEntryPoint>,
     words: Vec<u32>,
+    wgsl: Option<api::ShaderDesc>,
 }
 impl Drop for ShaderState {
     fn drop(&mut self) {
         // SAFETY: ShaderState is the final module owner and retains the live
         // logical device; pipelines retain their modules through creation only.
-        unsafe { self.device.device.destroy_shader_module(self.module, None) }
+        if self.module != vk::ShaderModule::null() {
+            unsafe { self.device.device.destroy_shader_module(self.module, None) }
+        }
     }
 }
 impl VulkanShader {
@@ -33,6 +36,9 @@ impl VulkanShader {
     }
     pub(super) fn entries(&self) -> &[api::ShaderEntryPoint] {
         &self.0.entries
+    }
+    pub(crate) fn words(&self) -> &[u32] {
+        &self.0.words
     }
     pub(super) fn mesh_output_mode(&self, entry: &str) -> Option<u32> {
         mesh_output_mode(&self.0.words, entry)
@@ -132,5 +138,15 @@ pub(super) fn create(device: &VulkanDevice, desc: &api::ShaderDesc) -> Result<Vu
         module,
         entries: desc.entries.clone(),
         words,
+        wgsl: None,
     })))
 }
+
+#[path = "shader_push.rs"]
+mod push;
+#[path = "shader_sampler.rs"]
+mod sampler;
+pub(crate) use sampler::usage as sampler_usage;
+#[path = "shader_wgsl.rs"]
+mod wgsl;
+pub(crate) use wgsl::{compile_variant, create_wgsl};

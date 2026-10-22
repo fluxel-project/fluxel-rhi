@@ -185,6 +185,13 @@ fn acquire_once(state: &Arc<SurfaceState>) -> Result<Option<VulkanSurfaceImage>>
             }
         }
     }
+    if !inner.initialized[index as usize] {
+        if let Err(error) = initialize_image(state, inner.images[index as usize]) {
+            inner.abandoned = true;
+            return Err(error);
+        }
+        inner.initialized[index as usize] = true;
+    }
     inner.acquired = true;
     Ok(Some(VulkanSurfaceImage {
         state: state.clone(),
@@ -193,8 +200,104 @@ fn acquire_once(state: &Arc<SurfaceState>) -> Result<Option<VulkanSurfaceImage>>
         view: inner.views[index as usize],
         extent: inner.extent,
         format: inner.format,
+        transfer_dst: inner.transfer_dst,
         generation: inner.generation,
         handed: false,
         present_wait: Mutex::new(None),
     }))
+}
+
+// Establish a known initial PRESENT layout once, after WSI hands this image
+// to us. Later passes can preserve contents across command buffers and leases.
+fn initialize_image(state: &Arc<SurfaceState>, image: vk::Image) -> Result<()> {
+    let device = &state.device.0.device;
+    // SAFETY: the pool belongs to the live graphics family and remains local.
+    let pool = unsafe {
+        device.create_command_pool(
+            &vk::CommandPoolCreateInfo::default()
+                .queue_family_index(state.device.0.graphics_family),
+            None,
+        )
+    }
+    .map_err(vk_error)?;
+    let mut issued = false;
+    let result = (|| -> Result<()> {
+        // SAFETY: pool is live and exclusively used by this worker.
+        let command = unsafe {
+            device.allocate_command_buffers(
+                &vk::CommandBufferAllocateInfo::default()
+                    .command_pool(pool)
+                    .level(vk::CommandBufferLevel::PRIMARY)
+                    .command_buffer_count(1),
+            )
+        }
+        .map_err(vk_error)?[0];
+        let fence = unsafe { device.create_fence(&vk::FenceCreateInfo::default(), None) }
+            .map_err(vk_error)?;
+        let result = (|| -> Result<()> {
+            unsafe {
+                device.begin_command_buffer(
+                    command,
+                    &vk::CommandBufferBeginInfo::default()
+                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                )
+            }
+            .map_err(vk_error)?;
+            let range = vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .level_count(1)
+                .layer_count(1);
+            let barrier = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(image)
+                .subresource_range(range);
+            // SAFETY: WSI acquisition has completed, and this command owns no
+            // references beyond the surface, pool, and fence retained here.
+            unsafe {
+                device.cmd_pipeline_barrier(
+                    command,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[barrier],
+                );
+                device.end_command_buffer(command).map_err(vk_error)?;
+            }
+            let commands = [command];
+            let info = vk::SubmitInfo::default().command_buffers(&commands);
+            let submitted = {
+                let _queue = state
+                    .device
+                    .0
+                    .queue_gate
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                // SAFETY: queue_gate serializes use of the graphics queue.
+                unsafe { device.queue_submit(state.device.0.graphics_queue, &[info], fence) }
+            };
+            issued = true;
+            submitted.map_err(vk_error)?;
+            // SAFETY: this worker owns the fence and waits before releasing the pool.
+            unsafe { device.wait_for_fences(&[fence], true, u64::MAX) }.map_err(vk_error)?;
+            issued = false;
+            Ok(())
+        })();
+        if !issued {
+            unsafe { device.destroy_fence(fence, None) };
+        }
+        result
+    })();
+    if issued {
+        // An uncertain queue call may still reference both the image and pool.
+        // Retain their owner on this exceptional path instead of early destroy.
+        std::mem::forget(state.clone());
+    } else {
+        unsafe { device.destroy_command_pool(pool, None) };
+    }
+    result
 }

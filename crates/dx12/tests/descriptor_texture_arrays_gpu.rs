@@ -442,6 +442,7 @@ fn run(array: bool, sparse_outputs: bool) {
                 SparseTile::packed_tail(tail)
             } else {
                 SparseTile {
+                    aspect: None,
                     mip: 0,
                     layer: 0,
                     origin: [0, 0, 0],

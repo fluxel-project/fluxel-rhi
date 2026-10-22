@@ -37,6 +37,26 @@ mod tests {
         assert_eq!(region.count, [3, 1, 1]);
     }
     #[test]
+    fn primary_tiling_fields_match_first_aspect_group() {
+        let group = SparseAspectTiling {
+            aspect: TextureAspects::DEPTH | TextureAspects::STENCIL,
+            tile_extent: [64, 32, 1],
+            tile_grid: [3, 4, 1],
+            tile_bytes: 65536,
+            standard_mip_grids: vec![[3, 4, 1]],
+            packed_tail: None,
+            packed_tail_shared_by_layers: false,
+        };
+        let tiling = SparseTextureTiling::from_aspects(vec![group.clone()]).unwrap();
+        assert_eq!(tiling.tile_extent, group.tile_extent);
+        assert_eq!(tiling.standard_mip_grids, group.standard_mip_grids);
+        assert_eq!(
+            tiling.aspects[0].aspect,
+            TextureAspects::DEPTH | TextureAspects::STENCIL
+        );
+        assert!(SparseTextureTiling::from_aspects(vec![]).is_none());
+    }
+    #[test]
     fn sparse_contract_checks_empty_allocation_and_texture_device() {
         let id = DeviceId::allocate().unwrap();
         let other = DeviceId::allocate().unwrap();
@@ -87,6 +107,9 @@ pub trait SparseBackend: Backend {
 /// Tile dimensions, texture grid, and allocation alignment for a sparse texture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SparseTextureTiling {
+    /// Native binding groups. The remaining fields mirror the first group;
+    /// select a group explicitly with `SparseTile::aspect` when needed.
+    pub aspects: Vec<SparseAspectTiling>,
     pub tile_extent: [u32; 3],
     /// Standard mip zero grid, or `[0, 0, 0]` when mip zero is packed.
     pub tile_grid: [u32; 3],
@@ -95,10 +118,40 @@ pub struct SparseTextureTiling {
     /// mips belong to the opaque packed tail.
     pub standard_mip_grids: Vec<[u32; 3]>,
     /// Packed mips share an opaque allocation and must be mapped or unmapped
-    /// together, using the packed-tail SparseTile representation.
+    /// together, using the packed-tail SparseTile representation. See
+    /// `packed_tail_shared_by_layers` for its array-layer scope.
     pub packed_tail: Option<SparsePackedMipTail>,
+    /// A single opaque tail covers all array layers. Bind it once with layer zero.
+    pub packed_tail_shared_by_layers: bool,
 }
-/// Opaque packed mip tail for a single texture layer.
+/// Tiling for one native binding group; a combined mask means the aspects
+/// share one indivisible mapping rather than independently bindable planes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SparseAspectTiling {
+    pub aspect: TextureAspects,
+    pub tile_extent: [u32; 3],
+    pub tile_grid: [u32; 3],
+    pub tile_bytes: u64,
+    pub standard_mip_grids: Vec<[u32; 3]>,
+    pub packed_tail: Option<SparsePackedMipTail>,
+    pub packed_tail_shared_by_layers: bool,
+}
+impl SparseTextureTiling {
+    /// Construct the compatibility fields from the primary native group.
+    pub fn from_aspects(aspects: Vec<SparseAspectTiling>) -> Option<Self> {
+        let first = aspects.first()?;
+        Some(Self {
+            tile_extent: first.tile_extent,
+            tile_grid: first.tile_grid,
+            tile_bytes: first.tile_bytes,
+            standard_mip_grids: first.standard_mip_grids.clone(),
+            packed_tail: first.packed_tail,
+            packed_tail_shared_by_layers: first.packed_tail_shared_by_layers,
+            aspects,
+        })
+    }
+}
+/// Opaque packed mip tail. Its array-layer scope is reported by the tiling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SparsePackedMipTail {
     pub first_mip: u32,

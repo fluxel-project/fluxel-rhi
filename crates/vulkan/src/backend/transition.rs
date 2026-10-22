@@ -59,8 +59,35 @@ pub(super) fn record(
                     .accelerations
                     .push(unsafe { target.native_ref() }.clone());
             }
-            api::ResourceTransition::Aliasing { .. } => {
-                return Err(Error::Unsupported("Vulkan resource transition"));
+            api::ResourceTransition::Aliasing { before, after } => {
+                let memory = vk::MemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)
+                    .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE);
+                pipeline_barrier(
+                    encoder,
+                    vk::PipelineStageFlags::ALL_COMMANDS,
+                    vk::PipelineStageFlags::ALL_COMMANDS,
+                    &[memory],
+                    &[],
+                    &[],
+                );
+                for resource in [before.as_ref(), after.as_ref()].into_iter().flatten() {
+                    // SAFETY: Core validated ownership and each clone is retained
+                    // through completion of this memory dependency.
+                    unsafe {
+                        match resource {
+                            api::AliasedResource::Buffer(b) => {
+                                encoder.buffers.push(b.native_ref().clone())
+                            }
+                            api::AliasedResource::Texture(t) => {
+                                encoder.textures.push(t.native_ref().clone())
+                            }
+                            api::AliasedResource::Acceleration(a) => {
+                                encoder.accelerations.push(a.native_ref().clone())
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -87,9 +114,7 @@ fn global(
 }
 
 fn buffer(encoder: &mut VulkanEncoder, barrier: &api::BufferBarrier<'_, Vulkan>) -> Result<()> {
-    if barrier.ownership.is_some() {
-        return Err(Error::Unsupported("Vulkan queue ownership transition"));
-    }
+    let transfer = ownership(encoder, barrier.ownership)?;
     // SAFETY: Core checked device identity before CommandBackend::transition;
     // this backend bridge borrows the buffer only while recording its barrier.
     let buffer = unsafe { barrier.target.buffer.native_ref() };
@@ -111,23 +136,36 @@ fn buffer(encoder: &mut VulkanEncoder, barrier: &api::BufferBarrier<'_, Vulkan>)
         Ok(result)
     };
     let native = vk::BufferMemoryBarrier::default()
-        .src_access_mask(buffer_accesses(barrier.usage.from.accesses)?)
-        .dst_access_mask(buffer_accesses(barrier.usage.to.accesses)?)
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .src_access_mask(if transfer.is_some_and(|t| !t.release) {
+            vk::AccessFlags::empty()
+        } else {
+            buffer_accesses(barrier.usage.from.accesses)?
+        })
+        .dst_access_mask(if transfer.is_some_and(|t| t.release) {
+            vk::AccessFlags::empty()
+        } else {
+            buffer_accesses(barrier.usage.to.accesses)?
+        })
+        .src_queue_family_index(transfer.map_or(vk::QUEUE_FAMILY_IGNORED, |t| t.src))
+        .dst_queue_family_index(transfer.map_or(vk::QUEUE_FAMILY_IGNORED, |t| t.dst))
         .buffer(buffer.0.buffer)
         .offset(range.start)
         .size(range.end - range.start);
     pipeline_barrier(
         encoder,
-        if barrier.usage.from.stages == api::StageMask::EMPTY
-            && barrier.usage.from.accesses == api::AccessMask::EMPTY
+        if transfer.is_some_and(|t| !t.release)
+            || (barrier.usage.from.stages == api::StageMask::EMPTY
+                && barrier.usage.from.accesses == api::AccessMask::EMPTY)
         {
             vk::PipelineStageFlags::TOP_OF_PIPE
         } else {
             stages(barrier.usage.from.stages)?
         },
-        stages(barrier.usage.to.stages)?,
+        if transfer.is_some_and(|t| t.release) {
+            vk::PipelineStageFlags::BOTTOM_OF_PIPE
+        } else {
+            stages(barrier.usage.to.stages)?
+        },
         &[],
         &[native],
         &[],
@@ -137,15 +175,75 @@ fn buffer(encoder: &mut VulkanEncoder, barrier: &api::BufferBarrier<'_, Vulkan>)
 }
 
 fn texture(encoder: &mut VulkanEncoder, barrier: &api::TextureBarrier<'_, Vulkan>) -> Result<()> {
-    if barrier.ownership.is_some() {
-        return Err(Error::Unsupported("Vulkan queue ownership transition"));
-    }
-    let (old_layout, new_layout) = barrier.layout.ok_or(Error::Unsupported(
-        "Vulkan texture transition requires explicit layouts",
-    ))?;
+    let transfer = ownership(encoder, barrier.ownership)?;
     // SAFETY: Core has checked device identity. The encoder retains a clone
     // after recording, so this temporary native borrow cannot outlive it.
     let texture = unsafe { barrier.target.texture.native_ref() };
+    if barrier.layout.is_none() {
+        if transfer.is_some() {
+            return Err(Error::InvalidRange);
+        }
+        let allowed = match texture.desc().format {
+            api::TextureFormat::Depth16Unorm
+            | api::TextureFormat::Depth24Plus
+            | api::TextureFormat::Depth32Float => api::TextureAspects::DEPTH,
+            api::TextureFormat::Stencil8 => api::TextureAspects::STENCIL,
+            api::TextureFormat::Depth24PlusStencil8 | api::TextureFormat::Depth32FloatStencil8 => {
+                api::TextureAspects::DEPTH | api::TextureAspects::STENCIL
+            }
+            _ => api::TextureAspects::COLOR,
+        };
+        if barrier.target.aspects.0 == 0 || barrier.target.aspects.0 & !allowed.0 != 0 {
+            return Err(Error::InvalidRange);
+        }
+        if barrier.target.mips.start >= barrier.target.mips.end
+            || barrier.target.mips.end > texture.desc().mip_levels
+            || barrier.target.layers.start >= barrier.target.layers.end
+            || barrier.target.layers.end > texture.desc().array_layers
+        {
+            return Err(Error::InvalidRange);
+        }
+        validate_texture_use(texture, api::ImageLayout::General, barrier.usage.from)?;
+        validate_texture_use(texture, api::ImageLayout::General, barrier.usage.to)?;
+        let native = vk::MemoryBarrier::default()
+            .src_access_mask(accesses(barrier.usage.from.accesses)?)
+            .dst_access_mask(accesses(barrier.usage.to.accesses)?);
+        pipeline_barrier(
+            encoder,
+            stages(barrier.usage.from.stages)?,
+            stages(barrier.usage.to.stages)?,
+            &[native],
+            &[],
+            &[],
+        );
+        encoder.textures.push(texture.clone());
+        return Ok(());
+    }
+    let (old_layout, new_layout) = barrier.layout.expect("checked above");
+    let combined_depth_stencil = matches!(
+        texture.desc().format,
+        api::TextureFormat::Depth24PlusStencil8 | api::TextureFormat::Depth32FloatStencil8
+    );
+    let valid_aspects = match texture.desc().format {
+        api::TextureFormat::Depth16Unorm
+        | api::TextureFormat::Depth24Plus
+        | api::TextureFormat::Depth32Float => api::TextureAspects::DEPTH,
+        api::TextureFormat::Stencil8 => api::TextureAspects::STENCIL,
+        api::TextureFormat::Depth24PlusStencil8 | api::TextureFormat::Depth32FloatStencil8 => {
+            api::TextureAspects::DEPTH | api::TextureAspects::STENCIL
+        }
+        _ => api::TextureAspects::COLOR,
+    };
+    if barrier.target.aspects.0 & !valid_aspects.0 != 0 {
+        return Err(Error::InvalidRange);
+    }
+    if combined_depth_stencil
+        && barrier.target.aspects != valid_aspects
+        && !encoder.device.separate_depth_stencil_layouts
+        && old_layout != new_layout
+    {
+        return Err(Error::Unsupported("Vulkan separate depth/stencil layouts"));
+    }
     let range = vk::ImageSubresourceRange::default()
         .aspect_mask(aspects(barrier.target.aspects)?)
         .base_mip_level(barrier.target.mips.start)
@@ -175,17 +273,40 @@ fn texture(encoder: &mut VulkanEncoder, barrier: &api::TextureBarrier<'_, Vulkan
     }
     validate_texture_use(texture, old_layout, barrier.usage.from)?;
     validate_texture_use(texture, new_layout, barrier.usage.to)?;
+    let native_range = if texture.desc().dimension == api::TextureDimension::D3 {
+        vk::ImageSubresourceRange {
+            layer_count: vk::REMAINING_ARRAY_LAYERS,
+            ..range
+        }
+    } else {
+        range
+    };
     let native = vk::ImageMemoryBarrier::default()
-        .src_access_mask(accesses(barrier.usage.from.accesses)?)
-        .dst_access_mask(accesses(barrier.usage.to.accesses)?)
-        .old_layout(layout(old_layout))
+        .src_access_mask(if transfer.is_some_and(|t| !t.release) {
+            vk::AccessFlags::empty()
+        } else {
+            accesses(barrier.usage.from.accesses)?
+        })
+        .dst_access_mask(if transfer.is_some_and(|t| t.release) {
+            vk::AccessFlags::empty()
+        } else {
+            accesses(barrier.usage.to.accesses)?
+        })
+        .old_layout(layout(
+            if transfer.is_some_and(|t| !t.release && t.src == vk::QUEUE_FAMILY_IGNORED) {
+                new_layout
+            } else {
+                old_layout
+            },
+        ))
         .new_layout(layout(new_layout))
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .src_queue_family_index(transfer.map_or(vk::QUEUE_FAMILY_IGNORED, |t| t.src))
+        .dst_queue_family_index(transfer.map_or(vk::QUEUE_FAMILY_IGNORED, |t| t.dst))
         .image(texture.native())
-        .subresource_range(range);
-    let source_stages = if barrier.usage.from.stages == api::StageMask::EMPTY
-        && barrier.usage.from.accesses == api::AccessMask::EMPTY
+        .subresource_range(native_range);
+    let source_stages = if transfer.is_some_and(|t| !t.release)
+        || (barrier.usage.from.stages == api::StageMask::EMPTY
+            && barrier.usage.from.accesses == api::AccessMask::EMPTY)
     {
         vk::PipelineStageFlags::TOP_OF_PIPE
     } else {
@@ -194,13 +315,64 @@ fn texture(encoder: &mut VulkanEncoder, barrier: &api::TextureBarrier<'_, Vulkan
     pipeline_barrier(
         encoder,
         source_stages,
-        stages(barrier.usage.to.stages)?,
+        if transfer.is_some_and(|t| t.release) {
+            vk::PipelineStageFlags::BOTTOM_OF_PIPE
+        } else {
+            stages(barrier.usage.to.stages)?
+        },
         &[],
         &[],
         &[native],
     );
     encoder.textures.push(texture.clone());
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct Transfer {
+    release: bool,
+    src: u32,
+    dst: u32,
+}
+
+// A matched pair uses the caller's semaphore dependency. Distinct queue
+// families require identical old/new layouts on both halves; the same-family
+// acquire instead sees the layout already changed by the release.
+fn ownership(
+    encoder: &VulkanEncoder,
+    transfer: Option<api::OwnershipTransfer>,
+) -> Result<Option<Transfer>> {
+    let Some(transfer) = transfer else {
+        return Ok(None);
+    };
+    let (from, to, release) = match transfer {
+        api::OwnershipTransfer::Release { from, to } => (from, to, true),
+        api::OwnershipTransfer::Acquire { from, to } => (from, to, false),
+    };
+    if from.device != encoder.lane.device
+        || to.device != encoder.lane.device
+        || from.ordinal > 1
+        || to.ordinal > 1
+        || from == to
+        || encoder.device.compute_queue.is_none()
+        || (release && encoder.lane != from)
+        || (!release && encoder.lane != to)
+    {
+        return Err(Error::WrongLane);
+    }
+    let family = |lane: api::LaneId| {
+        if lane.ordinal == 0 {
+            encoder.device.graphics_family
+        } else {
+            encoder.device.compute_family
+        }
+    };
+    let (mut src, mut dst) = (family(from), family(to));
+    if src == dst {
+        src = vk::QUEUE_FAMILY_IGNORED;
+        dst = vk::QUEUE_FAMILY_IGNORED;
+    }
+    Ok(Some(Transfer { release, src, dst }))
 }
 
 fn pipeline_barrier(
@@ -315,7 +487,7 @@ fn validate_buffer_use(buffer: &VulkanBuffer, uses: api::BufferUses) -> Result<(
     Ok(())
 }
 
-fn validate_texture_use(
+pub(super) fn validate_texture_use(
     texture: &VulkanTexture,
     layout: api::ImageLayout,
     uses: api::TextureUses,
@@ -346,6 +518,14 @@ fn validate_texture_use(
         ),
         (
             api::AccessMask::DEPTH_WRITE,
+            api::TextureUsage::RENDER_ATTACHMENT,
+        ),
+        (
+            api::AccessMask::STENCIL_READ,
+            api::TextureUsage::RENDER_ATTACHMENT,
+        ),
+        (
+            api::AccessMask::STENCIL_WRITE,
             api::TextureUsage::RENDER_ATTACHMENT,
         ),
     ];
@@ -384,7 +564,9 @@ fn validate_texture_use(
         }
         api::ImageLayout::DepthStencilAttachment
             if !(accesses.contains(api::AccessMask::DEPTH_READ)
-                || accesses.contains(api::AccessMask::DEPTH_WRITE)) =>
+                || accesses.contains(api::AccessMask::DEPTH_WRITE)
+                || accesses.contains(api::AccessMask::STENCIL_READ)
+                || accesses.contains(api::AccessMask::STENCIL_WRITE)) =>
         {
             return Err(Error::Unsupported(
                 "Vulkan DepthStencilAttachment layout access",
@@ -410,7 +592,7 @@ fn require_stage(
     Ok(())
 }
 
-fn layout(layout: api::ImageLayout) -> vk::ImageLayout {
+pub(super) fn layout(layout: api::ImageLayout) -> vk::ImageLayout {
     match layout {
         api::ImageLayout::Undefined => vk::ImageLayout::UNDEFINED,
         api::ImageLayout::Common | api::ImageLayout::General => vk::ImageLayout::GENERAL,
@@ -429,7 +611,7 @@ fn layout(layout: api::ImageLayout) -> vk::ImageLayout {
     }
 }
 
-fn stages(mask: api::StageMask) -> Result<vk::PipelineStageFlags> {
+pub(super) fn stages(mask: api::StageMask) -> Result<vk::PipelineStageFlags> {
     if mask == api::StageMask::ALL_COMMANDS {
         return Ok(vk::PipelineStageFlags::ALL_COMMANDS);
     }
@@ -493,7 +675,7 @@ fn stages(mask: api::StageMask) -> Result<vk::PipelineStageFlags> {
     Ok(result)
 }
 
-fn accesses(mask: api::AccessMask) -> Result<vk::AccessFlags> {
+pub(super) fn accesses(mask: api::AccessMask) -> Result<vk::AccessFlags> {
     let known = api::AccessMask::HOST_READ.0
         | api::AccessMask::HOST_WRITE.0
         | api::AccessMask::COPY_READ.0
@@ -584,11 +766,15 @@ fn accesses(mask: api::AccessMask) -> Result<vk::AccessFlags> {
     Ok(result)
 }
 
-fn aspects(aspects: api::TextureAspects) -> Result<vk::ImageAspectFlags> {
+pub(super) fn aspects(aspects: api::TextureAspects) -> Result<vk::ImageAspectFlags> {
     if aspects == api::TextureAspects::COLOR {
         Ok(vk::ImageAspectFlags::COLOR)
     } else if aspects == api::TextureAspects::DEPTH {
         Ok(vk::ImageAspectFlags::DEPTH)
+    } else if aspects == api::TextureAspects::STENCIL {
+        Ok(vk::ImageAspectFlags::STENCIL)
+    } else if aspects == (api::TextureAspects::DEPTH | api::TextureAspects::STENCIL) {
+        Ok(vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL)
     } else {
         Err(Error::Unsupported("Vulkan transition texture aspect"))
     }

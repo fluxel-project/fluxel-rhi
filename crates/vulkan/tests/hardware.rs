@@ -12,6 +12,11 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
+#[path = "hardware/texture_extended.rs"]
+mod texture_extended;
+#[path = "hardware/texture_planes.rs"]
+mod texture_planes;
+
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_vulkan::{Vulkan, VulkanInstance};
 
@@ -59,6 +64,15 @@ fn region(texture: &Texture<Vulkan>) -> TextureRegion<'_, Vulkan> {
         mip: 0,
         origin: [0, 0, 0],
         extent: [2, 2, 1],
+        aspect: TextureAspects::COLOR,
+    }
+}
+fn region4(texture: &Texture<Vulkan>) -> TextureRegion<'_, Vulkan> {
+    TextureRegion {
+        texture,
+        mip: 0,
+        origin: [0, 0, 0],
+        extent: [4, 4, 1],
         aspect: TextureAspects::COLOR,
     }
 }
@@ -357,6 +371,78 @@ fn explicit_buffer_and_texture_copies_round_trip() {
     // SAFETY: the receipt's checkpoint was awaited and belongs to the same
     // device that created this readback ticket.
     let data = block_on(unsafe { device.read_after(ticket, point) }).unwrap();
+    assert_eq!(data.bytes, expected);
+}
+
+#[test]
+fn partial_buffer_clear_preserves_other_bytes() {
+    let device = device();
+    let buffer = device
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: 32,
+            usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            memory: MemoryClass::Device,
+        })
+        .unwrap();
+    let output = device
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: 32,
+            usage: BufferUsage::COPY_DST | BufferUsage::MAP_READ,
+            memory: MemoryClass::Readback,
+        })
+        .unwrap();
+    let mut expected: Vec<u8> = (0..32).collect();
+    let mut encoder = device.encoder(device.lanes()[0].id).unwrap();
+    encoder.write_buffer(&buffer, 0, &expected).unwrap();
+    encoder
+        .transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
+            target: BufferSlice {
+                buffer: &buffer,
+                range: 0..32,
+            },
+            usage: StateTransition {
+                from: BufferUses {
+                    stages: StageMask::COPY,
+                    accesses: AccessMask::COPY_WRITE,
+                },
+                to: BufferUses {
+                    stages: StageMask::COPY,
+                    accesses: AccessMask::COPY_WRITE,
+                },
+            },
+            ownership: None,
+        })])
+        .unwrap();
+    encoder.clear_buffer(&buffer, 8..24, 0).unwrap();
+    encoder
+        .transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
+            target: BufferSlice {
+                buffer: &buffer,
+                range: 0..32,
+            },
+            usage: StateTransition {
+                from: BufferUses {
+                    stages: StageMask::COPY,
+                    accesses: AccessMask::COPY_WRITE,
+                },
+                to: BufferUses {
+                    stages: StageMask::COPY,
+                    accesses: AccessMask::COPY_READ,
+                },
+            },
+            ownership: None,
+        })])
+        .unwrap();
+    encoder.copy_buffer(&buffer, 0, &output, 0, 32).unwrap();
+    let ticket = encoder.readback_buffer(&output, 0..32).unwrap();
+    let receipt = submit(&device, vec![encoder.finish().unwrap()], false);
+    let point = &receipt.checkpoints[0].point;
+    block_on(device.wait_completion(point)).unwrap();
+    // SAFETY: the same device completed the submission owning the readback.
+    let data = block_on(unsafe { device.read_after(ticket, point) }).unwrap();
+    expected[8..24].fill(0);
     assert_eq!(data.bytes, expected);
 }
 

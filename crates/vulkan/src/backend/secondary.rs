@@ -47,6 +47,7 @@ pub struct VulkanSecondaryEncoder {
     command: vk::CommandBuffer,
     signature: api::SecondaryRasterDesc,
     layout: Option<vk::PipelineLayout>,
+    bound_groups: std::collections::BTreeMap<u32, (VulkanBindGroup, Vec<u32>)>,
     layout_state: Option<super::pipeline::VulkanPipelineLayout>,
     push_constants: Option<super::pipeline::PushConstants>,
     index_bound: bool,
@@ -73,11 +74,19 @@ impl api::SecondaryBackend for Vulkan {
         device: &VulkanDevice,
         desc: &api::SecondaryRasterDesc,
     ) -> Result<VulkanSecondaryEncoder> {
-        let color_formats = native_signature(desc)?;
+        if let Some(mask) = desc.multiview_mask {
+            if !device.0.multiview {
+                return Err(Error::Unsupported("Vulkan multiview"));
+            }
+            if mask == 0 || 32 - mask.leading_zeros() > device.0.max_multiview_views {
+                return Err(Error::InvalidRange);
+            }
+        }
+        let color_formats = native_signature(&device.0, desc)?;
         let samples = sample_count(desc.samples)?;
         let depth_format = match desc.depth_stencil_format {
             Some(format) => Some(
-                super::resource::format(format)
+                super::resource::native_format(&device.0, format)
                     .ok_or(Error::Unsupported("Vulkan secondary depth format"))?,
             ),
             None => None,
@@ -110,9 +119,22 @@ impl api::SecondaryBackend for Vulkan {
         };
         let mut inheritance = vk::CommandBufferInheritanceRenderingInfo::default()
             .color_attachment_formats(&color_formats)
-            .rasterization_samples(samples);
+            .rasterization_samples(samples)
+            .view_mask(desc.multiview_mask.unwrap_or(0));
         if let Some(depth) = depth_format {
-            inheritance = inheritance.depth_attachment_format(depth);
+            if desc.depth_stencil_format != Some(api::TextureFormat::Stencil8) {
+                inheritance = inheritance.depth_attachment_format(depth);
+            }
+            if matches!(
+                desc.depth_stencil_format,
+                Some(
+                    api::TextureFormat::Depth24PlusStencil8
+                        | api::TextureFormat::Depth32FloatStencil8
+                        | api::TextureFormat::Stencil8
+                )
+            ) {
+                inheritance = inheritance.stencil_attachment_format(depth);
+            }
         }
         let legacy_inheritance =
             vk::CommandBufferInheritanceInfo::default().push_next(&mut inheritance);
@@ -130,12 +152,22 @@ impl api::SecondaryBackend for Vulkan {
             unsafe { device.0.device.destroy_command_pool(pool, None) };
             return Err(vk_error(error));
         }
+        // SAFETY: the secondary is recording and owns these dynamic defaults.
+        unsafe {
+            device.0.device.cmd_set_blend_constants(command, &[0.0; 4]);
+            device.0.device.cmd_set_stencil_reference(
+                command,
+                vk::StencilFaceFlags::FRONT_AND_BACK,
+                0,
+            );
+        }
         Ok(VulkanSecondaryEncoder {
             device: device.0.clone(),
             pool,
             command,
             signature: desc.clone(),
             layout: None,
+            bound_groups: Default::default(),
             layout_state: None,
             push_constants: None,
             index_bound: false,
@@ -152,6 +184,8 @@ impl api::SecondaryBackend for Vulkan {
         if !pipeline.matches_secondary(&encoder.signature) {
             return Err(Error::InvalidState);
         }
+        let layout_state = pipeline.layout_state();
+        let bindings = super::raster::prepare_groups(&layout_state, &encoder.bound_groups)?;
         // SAFETY: the pipeline was checked against this encoder's inheritance
         // signature and is retained until the parent submission completes.
         unsafe {
@@ -161,8 +195,14 @@ impl api::SecondaryBackend for Vulkan {
                 pipeline.native(),
             )
         };
+        super::raster::bind_prepared(
+            &encoder.device.device,
+            encoder.command,
+            layout_state.native(),
+            &bindings,
+        );
         encoder.layout = Some(pipeline.layout());
-        encoder.layout_state = Some(pipeline.layout_state());
+        encoder.layout_state = Some(layout_state);
         encoder.push_constants = Some(pipeline.push_constants());
         encoder.pipelines.push(pipeline.clone());
         Ok(())
@@ -174,13 +214,11 @@ impl api::SecondaryBackend for Vulkan {
         group: &VulkanBindGroup,
         offsets: &[u32],
     ) -> Result<()> {
-        group.validate_dynamic_offsets(offsets)?;
+        let offsets = group.validate_dynamic_offsets(offsets)?;
         let layout = encoder.layout.ok_or(Error::InvalidState)?;
-        encoder
-            .layout_state
-            .as_ref()
-            .ok_or(Error::InvalidState)?
-            .validate_group(slot, group)?;
+        let layout_state = encoder.layout_state.as_ref().ok_or(Error::InvalidState)?;
+        layout_state.validate_group(slot, group)?;
+        let descriptor = layout_state.native_group(slot, group)?;
         // SAFETY: layout/group compatibility and offsets are checked above;
         // retaining the group keeps the native descriptor set alive.
         unsafe {
@@ -189,10 +227,11 @@ impl api::SecondaryBackend for Vulkan {
                 vk::PipelineBindPoint::GRAPHICS,
                 layout,
                 slot,
-                &[group.native()],
-                offsets,
+                &[descriptor],
+                &offsets,
             )
         };
+        encoder.bound_groups.insert(slot, (group.clone(), offsets));
         encoder.groups.push(group.clone());
         Ok(())
     }
@@ -335,15 +374,17 @@ impl api::SecondaryBackend for Vulkan {
             .validate(stages, offset, bytes)?;
         // SAFETY: the active pipeline supplied this layout and validation
         // checked the pushed byte range and stage visibility.
-        unsafe {
-            encoder.device.device.cmd_push_constants(
-                encoder.command,
-                layout,
-                native_stages,
-                offset,
-                bytes,
-            )
-        };
+        for (stage, native_offset) in native_stages {
+            unsafe {
+                encoder.device.device.cmd_push_constants(
+                    encoder.command,
+                    layout,
+                    stage,
+                    native_offset,
+                    bytes,
+                );
+            }
+        }
         Ok(())
     }
 
@@ -428,6 +469,14 @@ impl api::SecondaryBackend for Vulkan {
         }
         // SAFETY: the primary pass opted into secondary contents and checked
         // the exact inheritance signature; retaining `work` protects its pool.
+        if work.0.pipelines.iter().any(|p| {
+            !p.compatible_read_only(
+                encoder.raster_depth_read_only,
+                encoder.raster_stencil_read_only,
+            )
+        }) {
+            return Err(Error::InvalidState);
+        }
         unsafe {
             encoder
                 .device
@@ -439,14 +488,29 @@ impl api::SecondaryBackend for Vulkan {
     }
 }
 
-pub(crate) fn native_signature(desc: &api::SecondaryRasterDesc) -> Result<Vec<vk::Format>> {
-    if desc.color_formats.len() != 1 || desc.multiview_mask.is_some() {
-        return Err(Error::Unsupported("Vulkan secondary raster inheritance"));
+pub(crate) fn native_signature(
+    device: &DeviceState,
+    desc: &api::SecondaryRasterDesc,
+) -> Result<Vec<vk::Format>> {
+    if desc.multiview_mask == Some(0) {
+        return Err(Error::InvalidRange);
+    }
+    // SAFETY: the device retains the instance and selected physical device.
+    let max_colors = unsafe {
+        device
+            .instance
+            .instance
+            .get_physical_device_properties(device.physical)
+    }
+    .limits
+    .max_color_attachments;
+    if desc.color_formats.len() > max_colors as usize {
+        return Err(Error::Unsupported("Vulkan maxColorAttachments"));
     }
     desc.color_formats
         .iter()
         .map(|format| match format {
-            Some(format) => super::resource::format(*format)
+            Some(format) => super::resource::native_format(device, *format)
                 .ok_or(Error::Unsupported("Vulkan secondary color format")),
             None => Ok(vk::Format::UNDEFINED),
         })
@@ -459,6 +523,9 @@ fn sample_count(samples: u32) -> Result<vk::SampleCountFlags> {
         2 => Ok(vk::SampleCountFlags::TYPE_2),
         4 => Ok(vk::SampleCountFlags::TYPE_4),
         8 => Ok(vk::SampleCountFlags::TYPE_8),
+        16 => Ok(vk::SampleCountFlags::TYPE_16),
+        32 => Ok(vk::SampleCountFlags::TYPE_32),
+        64 => Ok(vk::SampleCountFlags::TYPE_64),
         _ => Err(Error::Unsupported("Vulkan secondary sample count")),
     }
 }

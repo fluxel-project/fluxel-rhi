@@ -504,10 +504,27 @@ BGRA8 unorm and depth clears for Depth32Float. Other formats and stencil clears
 are not covered. Standalone buffer clear remains unsupported by DX12. Render
 pass attachment load clears are a separate operation.
 
-Native encoder interop lacks a target-encoder path, and external textures lack
-a complete public view/binding chain. Generic device-loss state queries likewise
-remain a lifecycle design target; `DeviceLost` errors and backend-specific loss
-handling do not establish a universal status/notification protocol.
+External resource import is an explicit bridge contract. The bridge provides
+an owned native handle and the producer's exact allocation and resource
+metadata, and guarantees matching ownership transfers and synchronization.
+An imported buffer or texture can be obtained for ordinary commands and
+bindings. Texture transfers specify the subresources, usages and old/new
+layouts. The producer's synchronization payload is imported before acquire;
+release returns a payload signaled only when the recorded work is submitted
+and reaches the release. The bridge must not use the resource outside the
+matching ownership interval or wait twice on a binary semaphore payload.
+
+Vulkan currently imports opaque Win32 handles or opaque file descriptors when
+the relevant extensions and per-resource import features are available. Win32
+handles are closed after import; successful FD imports transfer ownership to
+Vulkan, while failed imports close the FD. Binary semaphore waits and signals
+are submitted around their recorded work and retained until completion. The
+Win32 route has independent-device GPU readback fixtures for buffers and images;
+the FD route has a Linux cross-compilation check but no real-GPU evidence yet.
+
+Generic device-loss state queries remain a lifecycle design target;
+`DeviceLost` errors and backend-specific loss handling do not establish a
+universal status/notification protocol.
 
 ### Current DX12 advanced routes
 

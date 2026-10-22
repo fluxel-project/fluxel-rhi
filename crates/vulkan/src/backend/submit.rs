@@ -20,6 +20,72 @@ impl RecordedWork {
     }
 }
 
+// Each imported binary semaphore brackets exactly the recorded work that
+// owns it. Timeline dependencies wrap the first and last such submissions.
+fn submit_external_records(
+    device: &VulkanDevice,
+    queue: vk::Queue,
+    records: &[RecordedWork],
+    waits: &[(vk::Semaphore, u64)],
+    signals: &[(vk::Semaphore, u64)],
+    timeline: bool,
+) -> Result<()> {
+    for (index, record) in records.iter().enumerate() {
+        let mut wait_semaphores = Vec::new();
+        let mut wait_values = Vec::new();
+        if index == 0 {
+            for &(semaphore, value) in waits {
+                wait_semaphores.push(semaphore);
+                wait_values.push(value);
+            }
+        }
+        for semaphore in &record.encoder.external_waits {
+            wait_semaphores.push(semaphore.semaphore);
+            wait_values.push(0);
+        }
+        let mut signal_semaphores = Vec::new();
+        let mut signal_values = Vec::new();
+        for semaphore in &record.encoder.external_signals {
+            signal_semaphores.push(semaphore.semaphore);
+            signal_values.push(0);
+        }
+        if index + 1 == records.len() {
+            for &(semaphore, value) in signals {
+                signal_semaphores.push(semaphore);
+                signal_values.push(value);
+            }
+        }
+        let stages = vec![vk::PipelineStageFlags::ALL_COMMANDS; wait_semaphores.len()];
+        let commands = [record.command()];
+        let mut timeline_info = vk::TimelineSemaphoreSubmitInfo::default()
+            .wait_semaphore_values(&wait_values)
+            .signal_semaphore_values(&signal_values);
+        let mut info = vk::SubmitInfo::default()
+            .wait_semaphores(&wait_semaphores)
+            .wait_dst_stage_mask(&stages)
+            .command_buffers(&commands)
+            .signal_semaphores(&signal_semaphores);
+        if timeline {
+            info = info.push_next(&mut timeline_info);
+        }
+        let _queue = device
+            .0
+            .queue_gate
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        // SAFETY: queue is externally synchronized and RecordedWork retains the
+        // command buffer and imported semaphore owners through fence completion.
+        unsafe {
+            device
+                .0
+                .device
+                .queue_submit(queue, &[info], vk::Fence::null())
+        }
+        .map_err(vk_error)?;
+    }
+    Ok(())
+}
+
 mod completion;
 pub(super) mod multi_queue;
 pub(super) use completion::Completion;
@@ -102,31 +168,15 @@ impl DeferredBackend for Vulkan {
         // A Vulkan queue is already an ordered executor.  The Core plan has
         // chosen the order and synchronization; this backend only lowers its
         // one graphics-lane prefix and never reconstructs a dependency graph.
-        let has_commands = packet
-            .steps
-            .iter()
-            .any(|step| matches!(&step.payload, StepPayload::Commands(work) if !work.is_empty()));
-        let plan_shape = has_commands
-            && packet
-                .steps
-                .iter()
-                .enumerate()
-                .all(|(index, bound)| match &bound.payload {
-                    StepPayload::Commands(_) => {
-                        packet.plan.steps()[index].lane == packet.plan.steps()[0].lane
-                    }
-                    StepPayload::Present(_) => {
-                        index + 1 == packet.steps.len()
-                            && packet.plan.steps()[index].lane == packet.plan.steps()[0].lane
-                    }
-                    StepPayload::SparseBind(_) => false,
-                })
-            && packet
-                .steps
-                .iter()
-                .filter(|step| matches!(&step.payload, StepPayload::Present(_)))
-                .count()
-                <= 1;
+        let plan_shape = packet.steps.iter().all(|bound| match &bound.payload {
+            StepPayload::Commands(_) => {
+                packet.plan.steps()[bound.step.index as usize].lane.ordinal == 0
+            }
+            StepPayload::Present(_) => {
+                packet.plan.steps()[bound.step.index as usize].lane.ordinal == 0
+            }
+            StepPayload::SparseBind(_) => false,
+        });
         if !plan_shape {
             return SubmitOutcome::Rejected {
                 error: Error::Unsupported("Vulkan single graphics-queue submission plan"),
@@ -165,7 +215,7 @@ impl DeferredBackend for Vulkan {
         // Allocate every native synchronization object before issuing any
         // queue operation.  Allocation failure remains a clean retryable
         // rejection, rather than creating a half-lowered packet.
-        let mut step_fences = (0..packet.steps.len())
+        let mut step_fences = (0..packet.plan.steps().len())
             .map(|_| None)
             .collect::<Vec<Option<Completion>>>();
         for step in requested {
@@ -205,34 +255,36 @@ impl DeferredBackend for Vulkan {
                 };
             }
         };
-        let present_signal = if packet
+        let first = packet
             .steps
-            .iter()
-            .any(|step| matches!(&step.payload, StepPayload::Present(_)))
-        {
-            // SAFETY: PendingPresentSignal owns this semaphore until the image
-            // lease accepts the explicit handoff below.
-            match unsafe {
-                device
-                    .0
-                    .device
-                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-            } {
-                Ok(semaphore) => Some(semaphore),
-                Err(error) => {
-                    return SubmitOutcome::Rejected {
-                        error: vk_error(error),
-                        work: RetryableSubmit::Fresh(packet),
-                    };
-                }
+            .first()
+            .map_or(packet.plan.steps().len(), |step| step.step.index as usize);
+        let mut present_signals = (0..first).map(|_| None).collect::<Vec<_>>();
+        for step in &packet.steps {
+            if matches!(step.payload, StepPayload::Present(_)) {
+                // SAFETY: each fresh semaphore remains owned until image handoff.
+                let semaphore = match unsafe {
+                    device
+                        .0
+                        .device
+                        .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
+                } {
+                    Ok(semaphore) => semaphore,
+                    Err(error) => {
+                        return SubmitOutcome::Rejected {
+                            error: vk_error(error),
+                            work: RetryableSubmit::Fresh(packet),
+                        };
+                    }
+                };
+                present_signals.push(Some(PendingPresentSignal {
+                    device: device.0.clone(),
+                    semaphore: Some(semaphore),
+                }));
+            } else {
+                present_signals.push(None);
             }
-        } else {
-            None
-        };
-        let mut present_signal = present_signal.map(|semaphore| PendingPresentSignal {
-            device: device.0.clone(),
-            semaphore: Some(semaphore),
-        });
+        }
         if let Err(error) = fence_waiter() {
             return SubmitOutcome::Rejected {
                 error,
@@ -298,7 +350,20 @@ impl DeferredBackend for Vulkan {
                         .collect::<Vec<_>>();
                     if !commands.is_empty() {
                         let info = vk::SubmitInfo::default().command_buffers(&commands);
-                        let result = {
+                        let has_external = issued[start..].iter().any(|record| {
+                            !record.encoder.external_waits.is_empty()
+                                || !record.encoder.external_signals.is_empty()
+                        });
+                        let result = if has_external {
+                            submit_external_records(
+                                device,
+                                device.0.graphics_queue,
+                                &issued[start..],
+                                &[],
+                                &[],
+                                false,
+                            )
+                        } else {
                             let _queue = device
                                 .0
                                 .queue_gate
@@ -313,9 +378,10 @@ impl DeferredBackend for Vulkan {
                                     vk::Fence::null(),
                                 )
                             }
+                            .map_err(vk_error)
                         };
                         if let Err(error) = result {
-                            return indeterminate(vk_error(error), issued);
+                            return indeterminate(error, issued);
                         }
                         for record in &issued[start..] {
                             super::query::commit_ops(&record.encoder.query_ops, 0);
@@ -324,9 +390,9 @@ impl DeferredBackend for Vulkan {
                     accepted.push(id);
                 }
                 StepPayload::Present(mut binding) => {
-                    let pending = present_signal
+                    let pending = present_signals[id.index as usize]
                         .as_mut()
-                        .expect("validated one Vulkan present");
+                        .expect("preallocated Vulkan present");
                     let signal = pending.semaphore.expect("present signal is still owned");
                     if let Err(error) =
                         // SAFETY: Core validated the binding's device; borrow the
@@ -357,11 +423,16 @@ impl DeferredBackend for Vulkan {
                         }
                     };
                     if let Err(error) = result {
+                        // The queue may have observed this image's semaphore.
+                        // Keep the lease and its native owners alive when the
+                        // submission outcome cannot be established.
+                        std::mem::forget(binding);
                         return indeterminate(vk_error(error), issued);
                     }
                     // SAFETY: the handoff is irrevocable only after queue signal
                     // submission succeeded, which is true on this path.
                     if let Err(error) = unsafe { binding.try_handoff() } {
+                        std::mem::forget(binding);
                         return indeterminate(error, issued);
                     }
                     accepted.push(id);
@@ -373,14 +444,11 @@ impl DeferredBackend for Vulkan {
                 StepPayload::SparseBind(_) => unreachable!("submission shape was validated"),
             }
 
-            if matches!(
-                plan.steps()[id.index as usize].kind,
-                api::StepKind::Commands
-            ) {
-                let lane = plan.steps()[id.index as usize].lane;
-                lane_frontiers.retain(|(existing, _)| *existing != lane);
-                lane_frontiers.push((lane, id));
-            }
+            // A present step advances the queue frontier once its handoff is
+            // accepted. Completion covers that handoff, not display scanout.
+            let lane = plan.steps()[id.index as usize].lane;
+            lane_frontiers.retain(|(existing, _)| *existing != lane);
+            lane_frontiers.push((lane, id));
             if let Some(completion) = step_fences[id.index as usize].take() {
                 let result = {
                     let _queue = device
@@ -458,12 +526,89 @@ impl DeferredBackend for Vulkan {
         })
     }
 
-    // SAFETY: Core supplies a tail associated with this backend/device; it is
-    // returned unchanged because partial Vulkan resume is unsupported.
-    unsafe fn resume(_: &VulkanDevice, tail: api::DeferredTail<Self>) -> SubmitOutcome<Self> {
-        SubmitOutcome::Rejected {
-            error: Error::Unsupported("Vulkan partial submission resume"),
-            work: RetryableSubmit::Tail(tail),
+    unsafe fn resume(device: &VulkanDevice, tail: api::DeferredTail<Self>) -> SubmitOutcome<Self> {
+        let api::DeferredTail {
+            plan,
+            next_step,
+            pending,
+            accepted_frontier,
+            completion,
+        } = tail;
+        let suffix_completion = match &completion {
+            api::CompletionRequest::None => api::CompletionRequest::None,
+            api::CompletionRequest::End => api::CompletionRequest::End,
+            api::CompletionRequest::Steps(steps) => api::CompletionRequest::Steps(
+                steps
+                    .iter()
+                    .copied()
+                    .filter(|step| step.index >= next_step)
+                    .collect::<Vec<_>>()
+                    .into(),
+            ),
+        };
+        // SAFETY: Core validated the original plan and suffix; the caller has
+        // observed the accepted frontier complete, so earlier dependencies are satisfied.
+        let result = unsafe {
+            Self::submit(
+                device,
+                api::SubmitPacket {
+                    plan,
+                    steps: pending,
+                    completion: suffix_completion,
+                },
+            )
+        };
+        match result {
+            SubmitOutcome::Rejected {
+                error,
+                work: RetryableSubmit::Fresh(packet),
+            } => SubmitOutcome::Rejected {
+                error,
+                work: RetryableSubmit::Tail(api::DeferredTail {
+                    plan: packet.plan,
+                    next_step,
+                    pending: packet.steps,
+                    accepted_frontier,
+                    completion,
+                }),
+            },
+            SubmitOutcome::Accepted(mut receipt) => {
+                let mut previous_frontiers = Vec::new();
+                for checkpoint in &accepted_frontier {
+                    for &(lane, step) in &checkpoint.covers.lane_frontiers {
+                        if !previous_frontiers
+                            .iter()
+                            .any(|(existing, _)| *existing == lane)
+                        {
+                            previous_frontiers.push((lane, step));
+                        } else if let Some((_, previous)) = previous_frontiers
+                            .iter_mut()
+                            .find(|(existing, _)| *existing == lane)
+                        {
+                            if step.index > previous.index {
+                                *previous = step;
+                            }
+                        }
+                    }
+                }
+                for checkpoint in &mut receipt.checkpoints {
+                    for &(lane, step) in &previous_frontiers {
+                        if !checkpoint
+                            .covers
+                            .lane_frontiers
+                            .iter()
+                            .any(|(existing, _)| *existing == lane)
+                        {
+                            checkpoint.covers.lane_frontiers.push((lane, step));
+                        }
+                    }
+                }
+                if matches!(completion, api::CompletionRequest::Steps(_)) {
+                    receipt.checkpoints.splice(0..0, accepted_frontier);
+                }
+                SubmitOutcome::Accepted(receipt)
+            }
+            other => other,
         }
     }
 }

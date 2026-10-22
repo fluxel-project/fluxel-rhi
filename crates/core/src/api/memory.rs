@@ -16,13 +16,18 @@ use std::{
 
 pub struct HeapDesc {
     pub size: u64,
+    /// Backend-specific memory class. For Vulkan this is a physical-device
+    /// memory type index selected from the requirement's `native_type_bits`.
     pub native_memory_class: u32,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct MemoryRequirements {
+    /// Required heap range size, including any backend placement padding.
     pub size: u64,
     pub alignment: u64,
+    /// Supported backend memory classes, encoded as bit positions.
     pub native_type_bits: u64,
+    /// The resource requires a dedicated native allocation and cannot be placed.
     pub dedicated_only: bool,
 }
 pub trait MemoryBackend: ResourceBackend {

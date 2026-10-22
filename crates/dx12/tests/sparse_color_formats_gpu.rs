@@ -181,6 +181,7 @@ fn map_remap_case(format: TextureFormat, layers: u32, layer: u32) {
                 payload: StepPayload::SparseBind(vec![SparseBind {
                     resource: texture.clone(),
                     tiles: vec![SparseTile {
+                        aspect: None,
                         mip: 0,
                         layer,
                         origin: [0, 0, 0],
@@ -229,6 +230,7 @@ fn map_remap_case(format: TextureFormat, layers: u32, layer: u32) {
     let invalid = SparseBind {
         resource: texture.clone(),
         tiles: vec![SparseTile {
+            aspect: None,
             mip: 0,
             layer,
             origin: [0, 0, 0],
@@ -261,6 +263,7 @@ fn map_remap_case(format: TextureFormat, layers: u32, layer: u32) {
     let unmap = SparseBind {
         resource: texture.clone(),
         tiles: vec![SparseTile {
+            aspect: None,
             mip: 0,
             layer,
             origin: [0, 0, 0],

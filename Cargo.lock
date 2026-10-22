@@ -454,6 +454,7 @@ version = "0.16.0"
 dependencies = [
  "ash",
  "fluxel-rhi-core",
+ "naga",
  "raw-window-handle",
 ]
 

@@ -56,6 +56,7 @@ fn all_mips_case(layers: u32, layer: u32) {
         binds.push(SparseBind {
             resource: texture.clone(),
             tiles: vec![SparseTile {
+                aspect: None,
                 mip: mip as u32,
                 layer,
                 origin: [0, 0, 0],
@@ -72,6 +73,7 @@ fn all_mips_case(layers: u32, layer: u32) {
         binds.push(SparseBind {
             resource: texture.clone(),
             tiles: vec![SparseTile {
+                aspect: None,
                 mip: tail.first_mip,
                 layer,
                 origin: [0, 0, 0],
@@ -259,6 +261,7 @@ fn all_mips_case(layers: u32, layer: u32) {
         let partial = SparseBind {
             resource: texture.clone(),
             tiles: vec![SparseTile {
+                aspect: None,
                 mip: tail.first_mip,
                 layer,
                 origin: [0, 0, 0],
@@ -286,6 +289,7 @@ fn all_mips_case(layers: u32, layer: u32) {
             }
         ));
         let region = || SparseTile {
+            aspect: None,
             mip: tail.first_mip,
             layer,
             origin: [0, 0, 0],

@@ -40,7 +40,7 @@ fn timestamps_and_triangle_statistics() {
     let tq = ts
         .create(&QueryDesc {
             kind: QueryKind::Timestamp,
-            count: 2,
+            count: 3,
         })
         .unwrap();
     let sq = stats
@@ -169,7 +169,7 @@ fn timestamps_and_triangle_statistics() {
     let dst = d
         .create_buffer(&BufferDesc {
             label: None,
-            size: 104,
+            size: 112,
             usage: BufferUsage::QUERY_RESOLVE.union(BufferUsage::COPY_SRC),
             memory: MemoryClass::Device,
         })
@@ -201,7 +201,6 @@ fn timestamps_and_triangle_statistics() {
         ownership: None,
     })])
     .unwrap();
-    ts.timestamp(&mut e, &tq, 0).unwrap();
     stats.begin_statistics(&mut e, &sq, 0).unwrap();
     let colors = [Some(ColorAttachment {
         view: AttachmentView::Texture(&view),
@@ -221,7 +220,11 @@ fn timestamps_and_triangle_statistics() {
                 height: 16,
             },
             multiview_mask: None,
-            timestamp_writes: None,
+            timestamp_writes: Some(PassTimestampWrites {
+                set: &tq,
+                begin: Some(0),
+                end: Some(1),
+            }),
             occlusion_query_set: None,
             secondary_inheritance: None,
         })
@@ -247,10 +250,53 @@ fn timestamps_and_triangle_statistics() {
     pass.draw(0..3, 0..1).unwrap();
     pass.finish().unwrap();
     stats.end_statistics(&mut e).unwrap();
-    ts.timestamp(&mut e, &tq, 1).unwrap();
+    e.transition_resources(&[ResourceTransition::Texture(TextureBarrier {
+        target: Subresources {
+            texture: &texture,
+            aspects: TextureAspects::COLOR,
+            mips: 0..1,
+            layers: 0..1,
+        },
+        usage: StateTransition {
+            from: TextureUses {
+                stages: StageMask::COLOR_OUTPUT,
+                accesses: AccessMask::COLOR_WRITE,
+            },
+            to: TextureUses {
+                stages: StageMask::COLOR_OUTPUT,
+                accesses: AccessMask::COLOR_WRITE,
+            },
+        },
+        layout: Some((ImageLayout::ColorAttachment, ImageLayout::ColorAttachment)),
+        ownership: None,
+    })])
+    .unwrap();
+    e.begin_raster(&RasterPassDesc {
+        label: None,
+        colors: &colors,
+        depth_stencil: None,
+        render_area: Rect {
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 16,
+        },
+        multiview_mask: None,
+        timestamp_writes: Some(PassTimestampWrites {
+            set: &tq,
+            begin: Some(2),
+            end: Some(2),
+        }),
+        occlusion_query_set: None,
+        secondary_inheritance: None,
+    })
+    .unwrap()
+    .finish()
+    .unwrap();
     ts.resolve(&mut e, &tq, 0..2, &dst, 0).unwrap();
+    ts.resolve(&mut e, &tq, 2..3, &dst, 104).unwrap();
     stats.resolve(&mut e, &sq, 0..1, &dst, 16).unwrap();
-    let ticket = e.readback_buffer(&dst, 0..104).unwrap();
+    let ticket = e.readback_buffer(&dst, 0..112).unwrap();
     let work = e.finish().unwrap();
     let id = PlanId {
         device: d.id(),
@@ -295,6 +341,7 @@ fn timestamps_and_triangle_statistics() {
     assert_eq!(u64::from_ne_bytes(bytes[56..64].try_into().unwrap()), 1);
     assert_eq!(u64::from_ne_bytes(bytes[64..72].try_into().unwrap()), 1);
     assert!(u64::from_ne_bytes(bytes[72..80].try_into().unwrap()) > 0);
+    assert!(u64::from_ne_bytes(bytes[104..112].try_into().unwrap()) >= second);
 }
 
 #[test]

@@ -46,17 +46,14 @@ pub(super) fn create(
         || desc.max_recursion == 0
         || desc.max_recursion > device.0.ray_support.max_recursion_depth
         || desc.hit_attribute_bytes > device.0.ray_support.max_hit_attribute_size
-        || desc.cache.is_some()
     {
         return Err(Error::InvalidRange);
     }
     let mut names = Vec::new();
     let mut shaders = Vec::new();
     let mut kinds = Vec::new();
+    let mut specializations = Vec::new();
     for shader in &desc.shaders {
-        if !shader.constants.is_empty() {
-            return Err(Error::Unsupported("Vulkan ray specialization"));
-        }
         // SAFETY: Core validated the module's device identity.
         let module = unsafe { shader.module.native_ref() };
         let kind = module
@@ -65,19 +62,62 @@ pub(super) fn create(
             .find(|entry| entry.name == shader.entry)
             .ok_or(Error::InvalidState)?
             .stage;
+        let (module, consumed) = super::super::shader::compile_variant(
+            device,
+            module,
+            unsafe { desc.layout.native_ref() },
+            &shader.entry,
+            kind,
+            &shader.constants,
+            unsafe { desc.layout.native_ref() }
+                .push_constants()
+                .base(kind),
+        )?;
         kinds.push(kind);
         shaders.push(module.clone());
+        specializations.push(super::super::pipeline::specialization::Specialization::new(
+            &module,
+            if consumed { &[] } else { &shader.constants },
+        )?);
         names.push(CString::new(shader.entry.as_str()).map_err(|_| Error::InvalidRange)?);
     }
+    let shader_refs: Vec<_> = shaders
+        .iter()
+        .zip(&desc.shaders)
+        .zip(&kinds)
+        .map(|((shader, desc), &kind)| (shader, desc.entry.as_str(), kind))
+        .collect();
+    let layout = unsafe { desc.layout.native_ref() }.for_shaders(&shader_refs)?;
+    shaders.clear();
+    specializations.clear();
+    for (shader, &kind) in desc.shaders.iter().zip(&kinds) {
+        let (module, consumed) = super::super::shader::compile_variant(
+            device,
+            unsafe { shader.module.native_ref() },
+            &layout,
+            &shader.entry,
+            kind,
+            &shader.constants,
+            layout.push_constants().base(kind),
+        )?;
+        specializations.push(super::super::pipeline::specialization::Specialization::new(
+            &module,
+            if consumed { &[] } else { &shader.constants },
+        )?);
+        shaders.push(module);
+    }
+    let specialization_infos: Vec<_> = specializations.iter().map(|s| s.info()).collect();
     let stages: Vec<_> = shaders
         .iter()
         .zip(&names)
         .zip(&kinds)
-        .map(|((shader, name), &kind)| {
+        .zip(&specialization_infos)
+        .map(|(((shader, name), &kind), specialization)| {
             Ok(vk::PipelineShaderStageCreateInfo::default()
                 .stage(stage(kind)?)
                 .module(shader.module())
-                .name(name))
+                .name(name)
+                .specialization_info(specialization))
         })
         .collect::<Result<_>>()?;
     let mut groups = Vec::new();
@@ -138,31 +178,31 @@ pub(super) fn create(
         );
     }
     // SAFETY: Core validated layout device identity.
-    let layout = unsafe { desc.layout.native_ref() }.clone();
     let info = vk::RayTracingPipelineCreateInfoKHR::default()
         .stages(&stages)
         .groups(&groups)
         .max_pipeline_ray_recursion_depth(desc.max_recursion)
         .layout(layout.native());
     // SAFETY: all descriptor slices and shader modules remain live during synchronous creation.
-    let native = match unsafe {
-        loader.create_ray_tracing_pipelines(
-            vk::DeferredOperationKHR::null(),
-            vk::PipelineCache::null(),
-            &[info],
-            None,
-        )
-    } {
-        Ok(p) => p[0],
-        Err((pipelines, error)) => {
-            for p in pipelines {
-                if p != vk::Pipeline::null() {
-                    unsafe { device.0.device.destroy_pipeline(p, None) };
+    let native =
+        match super::super::pipeline::cache::with_cache(desc.cache.as_ref(), |cache| unsafe {
+            loader.create_ray_tracing_pipelines(
+                vk::DeferredOperationKHR::null(),
+                cache,
+                &[info],
+                None,
+            )
+        }) {
+            Ok(p) => p[0],
+            Err((pipelines, error)) => {
+                for p in pipelines {
+                    if p != vk::Pipeline::null() {
+                        unsafe { device.0.device.destroy_pipeline(p, None) };
+                    }
                 }
+                return Err(vk_error(error));
             }
-            return Err(vk_error(error));
-        }
-    };
+        };
     let handle_size = device.0.ray_support.shader_group_handle_size as usize;
     let identifiers = match unsafe {
         loader.get_ray_tracing_shader_group_handles(
@@ -198,6 +238,7 @@ pub(super) fn bind(e: &mut VulkanEncoder, p: &VulkanRayPipeline) -> Result<()> {
     if e.raster || e.compute {
         return Err(Error::InvalidState);
     }
+    let bindings = super::super::raster::prepare_groups(&p.0.layout, &e.ray_bound_groups)?;
     // SAFETY: recording command buffer and same-device live pipeline.
     unsafe {
         e.device.device.cmd_bind_pipeline(
@@ -206,6 +247,19 @@ pub(super) fn bind(e: &mut VulkanEncoder, p: &VulkanRayPipeline) -> Result<()> {
             p.0.native,
         )
     };
+    for (slot, set, offsets) in &bindings {
+        // SAFETY: preparation validated and retained the set and offsets.
+        unsafe {
+            e.device.device.cmd_bind_descriptor_sets(
+                e.command,
+                vk::PipelineBindPoint::RAY_TRACING_KHR,
+                p.0.layout.native(),
+                *slot,
+                &[*set],
+                offsets,
+            );
+        }
+    }
     e.ray_layout_state = Some(p.0.layout.clone());
     e.ray_pipelines.push(p.clone());
     Ok(())
@@ -219,9 +273,9 @@ pub(super) fn bind_group(
     if e.raster || e.compute {
         return Err(Error::InvalidState);
     }
-    group.validate_dynamic_offsets(offsets)?;
+    let offsets = group.validate_dynamic_offsets(offsets)?;
     let layout = e.ray_layout_state.as_ref().ok_or(Error::InvalidState)?;
-    layout.validate_group(slot, group)?;
+    let descriptor = layout.native_group(slot, group)?;
     // SAFETY: group and layout compatibility and offsets are validated above.
     unsafe {
         e.device.device.cmd_bind_descriptor_sets(
@@ -229,10 +283,11 @@ pub(super) fn bind_group(
             vk::PipelineBindPoint::RAY_TRACING_KHR,
             layout.native(),
             slot,
-            &[group.native()],
-            offsets,
+            &[descriptor],
+            &offsets,
         )
     };
+    e.ray_bound_groups.insert(slot, (group.clone(), offsets));
     e.groups.push(group.clone());
     Ok(())
 }

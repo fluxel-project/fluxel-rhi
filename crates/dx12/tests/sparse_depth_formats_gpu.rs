@@ -358,6 +358,7 @@ fn check(depth_format: TextureFormat) {
     let invalid = SparseBind {
         resource: color.clone(),
         tiles: vec![SparseTile {
+            aspect: None,
             mip: 0,
             layer: 0,
             origin: [0, 0, 0],
@@ -395,6 +396,7 @@ fn check(depth_format: TextureFormat) {
                 tile
             } else {
                 SparseTile {
+                    aspect: None,
                     mip: 0,
                     layer,
                     origin: [0, 0, 0],

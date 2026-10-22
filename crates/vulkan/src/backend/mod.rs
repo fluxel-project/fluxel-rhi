@@ -31,13 +31,18 @@ struct InstanceState {
     instance: Instance,
 }
 
+mod external;
 mod instance;
+mod interop;
+pub use external::{VulkanExternalHandle, VulkanExternalMemoryHandle, VulkanExternalSync};
 
 mod capture;
 mod clear;
 mod compute;
 mod copy;
 mod encoder;
+mod mapping;
+mod memory;
 mod mesh;
 mod pipeline;
 mod query;
@@ -57,6 +62,32 @@ mod transition;
 pub struct VulkanDevice(Arc<DeviceState>);
 
 struct DeviceState {
+    /// Base features actually enabled on the logical device.
+    features: vk::PhysicalDeviceFeatures,
+    texture_compression_astc_hdr: bool,
+    descriptor_partially_bound: bool,
+    nonuniform_uniform_buffer: bool,
+    nonuniform_sampled_image: bool,
+    nonuniform_storage_buffer: bool,
+    nonuniform_storage_image: bool,
+    runtime_descriptor_array: bool,
+    variable_descriptor_count: bool,
+    separate_depth_stencil_layouts: bool,
+    subgroup_size_control: bool,
+    min_subgroup_size: u32,
+    max_subgroup_size: u32,
+    required_subgroup_size_stages: vk::ShaderStageFlags,
+    conservative_rasterization: bool,
+    maintenance5: bool,
+    external_memory_handles: bool,
+    external_semaphore_handles: bool,
+    compute_family: u32,
+    compute_timestamp_bits: u32,
+    compute_sparse_binding: bool,
+    graphics_compute: bool,
+    max_compute_workgroups: [u32; 3],
+    max_compute_workgroup_size: [u32; 3],
+    max_compute_workgroup_invocations: u32,
     lane_frontier: Mutex<[Option<(std::sync::Weak<submit::multi_queue::Timeline>, u64)>; 2]>,
     device: ash::Device,
     // The device may outlive the typed VulkanInstance returned by its creator.
@@ -84,11 +115,8 @@ struct DeviceState {
     /// Enabled at device creation, so dynamic rendering may broadcast one
     /// graphics invocation to the layers selected by `RenderingInfo::view_mask`.
     multiview: bool,
-    /// The descriptor-indexing feature subset required by the public binding
-    /// array contract.  Layout creation is deliberately gated by Core
-    /// capabilities; retaining this fact here keeps native lowering honest.
-    descriptor_indexing: bool,
-    max_sampled_images: u32,
+    max_multiview_views: u32,
+    multiview_mesh_shader: bool,
     max_draw_indirect_count: u32,
     /// Serializes Vulkan queue submission and fence allocation only. It is
     /// not a graph scheduler and must never span host completion waits.
@@ -100,14 +128,7 @@ struct DeviceState {
     submit_gate: Mutex<()>,
 }
 
-macro_rules! native_arc {
-    ($($name:ident),* $(,)?) => {$(
-        #[derive(Clone)]
-        pub struct $name(Arc<()>);
-    )*};
-}
-
-native_arc!(VulkanPipelineCache,);
+pub use pipeline::VulkanPipelineCache;
 
 pub use sparse::VulkanSparse;
 
@@ -141,17 +162,42 @@ impl VulkanInstance {
             .engine_version(0)
             .api_version(vk::API_VERSION_1_3);
         #[cfg(windows)]
-        let extensions = [
+        let mut extensions = vec![
             ash::khr::surface::NAME.as_ptr(),
             ash::khr::win32_surface::NAME.as_ptr(),
         ];
         #[cfg(target_os = "android")]
-        let extensions = [
+        let mut extensions = vec![
             ash::khr::surface::NAME.as_ptr(),
             ash::khr::android_surface::NAME.as_ptr(),
         ];
         #[cfg(not(any(windows, target_os = "android")))]
-        let extensions = [ash::khr::surface::NAME.as_ptr()];
+        let mut extensions = vec![ash::khr::surface::NAME.as_ptr()];
+        // Enumeration can change between the loader's count and data queries.
+        // ash retries an incomplete data query, but not an incomplete count
+        // query. Concurrent instance creation reproduced the latter on Windows.
+        // Retry this read-only operation with a bound; never retry device or
+        // resource creation here.
+        let mut attempts = 0;
+        let available = loop {
+            // SAFETY: loader output owns each extension name for this query.
+            match unsafe { entry.enumerate_instance_extension_properties(None) } {
+                Ok(available) => break available,
+                Err(vk::Result::INCOMPLETE) if attempts < 7 => attempts += 1,
+                Err(error) => {
+                    return Err(Error::Backend(format!(
+                        "Vulkan instance extension enumeration: {error:?}"
+                    )));
+                }
+            }
+        };
+        if available.iter().any(|extension| {
+            // SAFETY: Vulkan guarantees NUL termination of extension_name.
+            (unsafe { std::ffi::CStr::from_ptr(extension.extension_name.as_ptr()) })
+                == ash::ext::swapchain_colorspace::NAME
+        }) {
+            extensions.push(ash::ext::swapchain_colorspace::NAME.as_ptr());
+        }
         let info = vk::InstanceCreateInfo::default()
             .application_info(&app)
             .enabled_extension_names(&extensions);
@@ -313,27 +359,31 @@ impl api::QueryBackend for Vulkan {
     fn query_supported(device: &VulkanDevice, kind: api::QueryKind) -> bool {
         match kind {
             api::QueryKind::Occlusion => true,
-            api::QueryKind::Timestamp => device.0.timestamp_bits != 0,
+            api::QueryKind::Timestamp => {
+                device.0.timestamp_bits != 0
+                    || (device.0.compute_queue.is_some() && device.0.compute_timestamp_bits != 0)
+            }
             api::QueryKind::PipelineStatistics => device.0.pipeline_statistics,
         }
     }
     fn timestamp_frequency(device: &VulkanDevice, lane: LaneId) -> Option<u64> {
-        if (lane.ordinal != 0 && !(lane.ordinal == 1 && device.0.compute_queue.is_some()))
-            || device.0.timestamp_bits == 0
-        {
+        if Self::timestamp_clock(device, lane).is_none() {
             return None;
         }
         query::integer_frequency(device.0.timestamp_period as f32)
     }
     fn timestamp_clock(device: &VulkanDevice, lane: LaneId) -> Option<api::TimestampClock> {
-        if (lane.ordinal != 0 && !(lane.ordinal == 1 && device.0.compute_queue.is_some()))
-            || device.0.timestamp_bits == 0
-        {
+        let valid_bits = match lane.ordinal {
+            0 => device.0.timestamp_bits,
+            1 if device.0.compute_queue.is_some() => device.0.compute_timestamp_bits,
+            _ => return None,
+        };
+        if valid_bits == 0 {
             return None;
         }
         Some(api::TimestampClock {
             period_ns: device.0.timestamp_period,
-            valid_bits: device.0.timestamp_bits,
+            valid_bits,
         })
     }
 
@@ -380,6 +430,14 @@ impl api::QueryBackend for Vulkan {
 }
 
 impl api::CommandBackend for Vulkan {
+    fn clear_buffer(
+        encoder: &mut VulkanEncoder,
+        buffer: &VulkanBuffer,
+        range: std::ops::Range<u64>,
+        value: u32,
+    ) -> Result<()> {
+        clear::buffer(encoder, buffer, range, value)
+    }
     fn clear_texture(
         e: &mut VulkanEncoder,
         texture: &VulkanTexture,
@@ -452,6 +510,13 @@ impl api::CommandBackend for Vulkan {
     ) -> Result<()> {
         copy::blit(e, src, dst, filter)
     }
+    fn resolve(
+        e: &mut VulkanEncoder,
+        src: api::TextureRegion<'_, Self>,
+        dst: api::TextureRegion<'_, Self>,
+    ) -> Result<()> {
+        copy::resolve(e, src, dst)
+    }
 }
 
 impl api::ShaderBackend for Vulkan {
@@ -460,6 +525,11 @@ impl api::ShaderBackend for Vulkan {
     fn shader_route(_: &VulkanDevice, desc: &api::ShaderDesc) -> api::ShaderRoute {
         match desc.format {
             api::ShaderFormat::SpirV => api::ShaderRoute::Direct(api::ShaderTarget {
+                format: api::ShaderFormat::SpirV,
+                environment: "vulkan-1.3".into(),
+                abi_key: "spirv-vulkan-set-binding".into(),
+            }),
+            api::ShaderFormat::Wgsl => api::ShaderRoute::Naga(api::ShaderTarget {
                 format: api::ShaderFormat::SpirV,
                 environment: "vulkan-1.3".into(),
                 abi_key: "spirv-vulkan-set-binding".into(),
@@ -475,11 +545,11 @@ impl api::ShaderBackend for Vulkan {
         ready(shader::create(device, desc))
     }
     fn compile_naga<'a>(
-        _: &'a VulkanDevice,
-        _: &'a api::ShaderDesc,
+        device: &'a VulkanDevice,
+        desc: &'a api::ShaderDesc,
         _: &'a api::ShaderTarget,
     ) -> Self::NagaFuture<'a> {
-        ready(Err(Error::Unsupported("Vulkan Naga shader route")))
+        ready(shader::create_wgsl(device, desc))
     }
 }
 

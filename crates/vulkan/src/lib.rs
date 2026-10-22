@@ -6,4 +6,6 @@
 
 mod backend;
 
-pub use backend::{Vulkan, VulkanInstance};
+pub use backend::{
+    Vulkan, VulkanExternalHandle, VulkanExternalMemoryHandle, VulkanExternalSync, VulkanInstance,
+};

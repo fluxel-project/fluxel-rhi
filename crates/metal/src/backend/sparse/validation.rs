@@ -64,6 +64,9 @@ pub(super) fn validate_regions(
     let mut used = HashSet::new();
     let mut out = Vec::with_capacity(tiles.len());
     for tile in tiles {
+        if tile.aspect.is_some_and(|a| a != tiling.aspects[0].aspect) {
+            return Err(Error::InvalidRange);
+        }
         if tile.layer != 0 || tile.origin[2] != 0 || tile.count[2] != 1 {
             return Err(Error::InvalidRange);
         }
@@ -117,9 +120,11 @@ pub(super) fn validate_regions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluxel_rhi_core::api::SparsePackedMipTail;
+    use fluxel_rhi_core::api::{SparseAspectTiling, SparsePackedMipTail, TextureAspects};
     fn tiling() -> SparseTextureTiling {
-        SparseTextureTiling {
+        SparseTextureTiling::from_aspects(vec![SparseAspectTiling {
+            aspect: TextureAspects::COLOR,
+            packed_tail_shared_by_layers: false,
             tile_extent: [128, 128, 1],
             tile_grid: [4, 2, 1],
             tile_bytes: 65536,
@@ -129,10 +134,12 @@ mod tests {
                 mip_count: 3,
                 tile_count: 2,
             }),
-        }
+        }])
+        .unwrap()
     }
     fn tile(mip: u32, origin: [u32; 3], count: [u32; 3]) -> SparseTile {
         SparseTile {
+            aspect: None,
             mip,
             layer: 0,
             origin,

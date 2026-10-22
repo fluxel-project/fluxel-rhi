@@ -37,7 +37,7 @@ shader lowering, state adaptation, and execution lifetimes.
 | Route | Facade feature | Execution model | Runtime shader route |
 | --- | --- | --- | --- |
 | Direct3D 12 / Windows | `dx12` (default) | Deferred native command lists | DXIL, or WGSL lowered through Naga and DXC |
-| Vulkan | `vulkan` | Deferred native command buffers | SPIR-V |
+| Vulkan | `vulkan` | Deferred native command buffers | SPIR-V, or WGSL lowered through Naga |
 | Browser WebGPU | `webgpu` | Deferred native command buffers | WGSL |
 | Desktop GL / WGL | `native-gl-wgl` | Immediate context-thread execution | WGSL lowered to profile-specific GLSL |
 | GLES / EGL | `native-gles-egl` | Immediate context-thread execution | WGSL lowered to profile-specific GLSL |
@@ -55,7 +55,7 @@ topologies, shader stages, queue plans, or device tiers.
 | Backend | Main implemented GPU features | Advanced feature limits |
 | --- | --- | --- |
 | DX12 | Graphics and compute, multiple render targets, indirect drawing and dispatch, queries, secondary recording, texture clears, and pipeline caches | Device-gated descriptor indexing, up to four multiview views, ray pipelines and inline ray queries, mesh shaders, sparse textures, graphics/compute queues, and GPU-count multi-draw |
-| Vulkan | Graphics and compute, indirect drawing, occlusion/timestamp/pipeline-statistics queries, secondary recording, and device-gated descriptor indexing and multiview | Device-gated ray pipelines and inline ray queries, mesh shaders, sparse textures, graphics/compute queues, GPU-count multi-draw, and standalone texture clear |
+| Vulkan | Graphics and compute, multiple render targets, indirect drawing and dispatch, queries, secondary recording, clears, pipeline caches, mapping, placed memory, and native interop | Descriptor indexing, multiview, ray pipelines and inline ray queries, mesh shaders, sparse textures, graphics/compute queues, GPU-count multi-draw, and external resources depend on device features, extensions, formats and queue support. See the [fixture index](documents/evidence/vulkan-completeness-2026-10-22/README.md) for validation scope. |
 | Metal | Graphics and compute, restricted standalone texture clear and compute storage buffers; device-gated mesh dispatch, triangle/AABB acceleration-structure builds, Apple-family timestamp sampling, pass-boundary counter samples, two native command queues, and triangle GPU-count multi-draw through ICBs | Compute storage buffers require a whole-buffer binding without dynamic offset. Multi-queue waits are limited to one packet and four waits per recording; cross-packet tokens are rejected. Ray queries, mesh task/object payload, DXR-style ray pipeline, exact eleven-field pipeline-statistics layout, and sparse mapping are not advertised. Apple-target compilation and static checks only; no Apple GPU runtime acceptance |
 | Browser WebGPU | Graphics and compute, device-gated indirect drawing, and occlusion queries | The new ray, mesh, sparse, multi-queue, timestamp/statistics, GPU-count, and standalone-clear routes are not implemented here |
 | Desktop GL / GLES | Immediate graphics; compute, indirect drawing, and occlusion depend on the actual context and profile | The new advanced routes are not implemented in the public GL backend |
@@ -66,6 +66,16 @@ fields with a device availability mask and an error sentinel. It returns raw
 stage samples, which cannot be assumed subtractable or equivalent to complete
 pipeline statistics. The existing eleven-field `PipelineStatistics` query
 remains unsupported on Metal. This path has not run on an Apple GPU.
+
+Vulkan exposes the separate eleven-field pipeline-statistics query when the
+device supports it. It does not expose the separate pass-boundary statistics
+sampling domain.
+
+Vulkan external interop imports opaque Win32 handles on Windows and opaque file
+descriptors on Unix, with binary semaphore synchronization and explicit queue
+ownership transfers. The producer must supply matching resource and allocation
+metadata, and device extensions and per-resource import support are required.
+The Windows fixtures do not establish Unix GPU coverage.
 
 Metal's GPU-count draw route probes the native conversion shader and both ICB
 command types on the actual device before advertising support. It accepts the
@@ -131,14 +141,16 @@ records the complete test run, corrected validation diagnostics and visual scope
 DX12 exposes the Core BC1–BC7 formats through device-checked texture creation,
 block-aligned upload/copy, and sampling paths. Individual formats, dimensions,
 and usages remain subject to `texture_support`. ETC2/EAC and ASTC have no DXGI
-format mapping and are unsupported by the DX12 route. Other backends currently
-do not expose a complete public compressed-texture route.
+format mapping and are unsupported by the DX12 route. Vulkan maps these Core
+families subject to the device compression features and per-format image usage
+checks. The current Vulkan GPU fixture covers BC1 block copies; ETC2/EAC and
+ASTC require a supporting device for GPU validation.
 
 | Compressed family | DX12 | Vulkan | Metal | WebGPU | GL / GLES | WebGL2 |
 | --- | --- | --- | --- | --- | --- | --- |
-| BC1–BC7 | Device-checked public route | No public route | No public route | No public route | No public route | No public route |
-| ETC2 / EAC | No DXGI mapping | No public route | No public route | No public route | No public route | No public route |
-| ASTC | No DXGI mapping | No public route | No public route | No public route | No public route | No public route |
+| BC1–BC7 | Device-checked public route | Device-checked public route | No public route | No public route | No public route | No public route |
+| ETC2 / EAC | No DXGI mapping | Device-checked public route; GPU validation pending | No public route | No public route | No public route | No public route |
+| ASTC | No DXGI mapping | Device-checked public route; GPU validation pending | No public route | No public route | No public route | No public route |
 
 GL implements `ImmediateBackend`; it does not expose deferred queue submission.
 WebGL2 does not provide native multithreaded command recording. WebGPU records

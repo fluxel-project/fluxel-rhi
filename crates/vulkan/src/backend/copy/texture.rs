@@ -1,350 +1,166 @@
-//! Image transfer, upload, readback, and blit commands.
+//! Native image copies and staging uploads. The caller owns explicit layouts.
 
-use super::super::{VulkanBuffer, VulkanEncoder, VulkanTexture, resource, vk_error};
+mod region;
+
+use super::super::{VulkanBuffer, VulkanEncoder, resource, vk_error};
 use ash::vk;
 use fluxel_rhi_core::api::{self, Error, Result};
+use region::{buffer_region, extent, image_region, layers, offset};
 
 pub(crate) fn copy_texture(
-    encoder: &mut VulkanEncoder,
+    e: &mut VulkanEncoder,
     src: api::TextureRegion<'_, super::super::Vulkan>,
     dst: api::TextureRegion<'_, super::super::Vulkan>,
 ) -> Result<()> {
-    // SAFETY: the Core command contract has checked device identity. These
-    // borrowed native handles remain retained by the encoder through submit.
-    let source = unsafe { src.texture.native_ref() };
-    let target = unsafe { dst.texture.native_ref() };
-    validate_image_region(source, &src)?;
-    validate_image_region(target, &dst)?;
-    if !source.desc().usage.contains(api::TextureUsage::COPY_SRC)
-        || !target.desc().usage.contains(api::TextureUsage::COPY_DST)
-        || source.desc().format != target.desc().format
-        || source.desc().samples != target.desc().samples
-        || source.native() == target.native()
-        || src.extent != dst.extent
-        || (source.desc().samples > 1
-            && (src.origin[0] != 0
-                || src.origin[1] != 0
-                || dst.origin[0] != 0
-                || dst.origin[1] != 0
-                || src.extent != mip_extent(source.desc(), src.mip)
-                || dst.extent != mip_extent(target.desc(), dst.mip)))
-    {
-        return Err(Error::Unsupported(
-            "Vulkan texture copy format, usage or overlap",
-        ));
+    // SAFETY: Core validates ownership and the encoder retains both images.
+    let (s, d) = unsafe { (src.texture.native_ref(), dst.texture.native_ref()) };
+    image_region(s, &src)?;
+    image_region(d, &dst)?;
+    let sb = region::block(s.desc().format, src.aspect)?;
+    let db = region::block(d.desc().format, dst.aspect)?;
+    let formats_compatible = s.desc().format == d.desc().format
+        || (src.aspect == api::TextureAspects::COLOR
+            && dst.aspect == src.aspect
+            && sb.2 == db.2
+            && ((sb.0 == 1 && sb.1 == 1)
+                || (db.0 == 1 && db.1 == 1)
+                || (sb.0 == db.0 && sb.1 == db.1)));
+    let extents_compatible = src.extent[0].div_ceil(sb.0) == dst.extent[0].div_ceil(db.0)
+        && src.extent[1].div_ceil(sb.1) == dst.extent[1].div_ceil(db.1)
+        && src.extent[2] == dst.extent[2]
+        && ((sb.0, sb.1) != (db.0, db.1) || src.extent == dst.extent);
+    let dimensions_compatible = s.desc().dimension == d.desc().dimension
+        || e.device.maintenance5
+        || matches!(
+            (s.desc().dimension, d.desc().dimension),
+            (api::TextureDimension::D2, api::TextureDimension::D3)
+                | (api::TextureDimension::D3, api::TextureDimension::D2)
+        );
+    if !dimensions_compatible {
+        return Err(Error::Unsupported("Vulkan maintenance5 image type copy"));
     }
-    let aspect = image_aspect(src.aspect)?;
-    let subresource = |region: &api::TextureRegion<'_, super::super::Vulkan>| {
-        vk::ImageSubresourceLayers::default()
-            .aspect_mask(aspect)
-            .mip_level(region.mip)
-            .base_array_layer(region.origin[2])
-            .layer_count(1)
-    };
-    let offset = |region: &api::TextureRegion<'_, super::super::Vulkan>| vk::Offset3D {
-        x: region.origin[0] as i32,
-        y: region.origin[1] as i32,
-        z: 0,
-    };
+    if !s.desc().usage.contains(api::TextureUsage::COPY_SRC)
+        || !d.desc().usage.contains(api::TextureUsage::COPY_DST)
+        || !formats_compatible
+        || s.desc().samples != d.desc().samples
+        || !extents_compatible
+        || src.aspect != dst.aspect
+        || same_subresource(s, &src, d, &dst)
+    {
+        return Err(Error::InvalidRange);
+    }
     let region = vk::ImageCopy::default()
-        .src_subresource(subresource(&src))
-        .src_offset(offset(&src))
-        .dst_subresource(subresource(&dst))
-        .dst_offset(offset(&dst))
-        .extent(vk::Extent3D {
-            width: src.extent[0],
-            height: src.extent[1],
-            depth: 1,
-        });
-    // SAFETY: region validation bounds every subresource and extent; Core has
-    // selected the transfer layouts before this direct command is recorded.
+        .src_subresource(layers(s, &src))
+        .src_offset(offset(s, &src))
+        .dst_subresource(layers(d, &dst))
+        .dst_offset(offset(d, &dst))
+        .extent(
+            if s.desc().dimension != d.desc().dimension
+                && (s.desc().dimension == api::TextureDimension::D3
+                    || d.desc().dimension == api::TextureDimension::D3)
+            {
+                vk::Extent3D {
+                    width: src.extent[0],
+                    height: src.extent[1],
+                    depth: src.extent[2],
+                }
+            } else {
+                extent(s, &src)
+            },
+        );
+    // Vulkan requires depth one whenever either image is 1D. Map each array
+    // layer to a separate 3D slice when maintenance5 permits this pairing.
+    let split_1d_3d = (s.desc().dimension == api::TextureDimension::D1
+        && d.desc().dimension == api::TextureDimension::D3)
+        || (s.desc().dimension == api::TextureDimension::D3
+            && d.desc().dimension == api::TextureDimension::D1);
+    let mut regions = Vec::new();
+    if split_1d_3d {
+        for slice in 0..src.extent[2] {
+            let mut part = region;
+            part.extent.depth = 1;
+            if s.desc().dimension == api::TextureDimension::D3 {
+                part.src_offset.z += slice as i32;
+                part.dst_subresource.base_array_layer += slice;
+                part.dst_subresource.layer_count = 1;
+            } else {
+                part.dst_offset.z += slice as i32;
+                part.src_subresource.base_array_layer += slice;
+                part.src_subresource.layer_count = 1;
+            }
+            regions.push(part);
+        }
+    } else {
+        regions.push(region);
+    }
+    // SAFETY: checked regions and explicit transfer layouts satisfy the native copy contract.
     unsafe {
-        encoder.device.device.cmd_copy_image(
-            encoder.command,
-            source.native(),
+        e.device.device.cmd_copy_image(
+            e.command,
+            s.native(),
             vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-            target.native(),
+            d.native(),
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            &[region],
+            &regions,
         );
     }
-    encoder.textures.extend([source.clone(), target.clone()]);
+    e.textures.extend([s.clone(), d.clone()]);
     Ok(())
 }
 
 pub(crate) fn buffer_to_texture(
-    encoder: &mut VulkanEncoder,
+    e: &mut VulkanEncoder,
     src: &VulkanBuffer,
     layout: api::TexelCopyBufferLayout,
     dst: api::TextureRegion<'_, super::super::Vulkan>,
 ) -> Result<()> {
-    // SAFETY: Core has checked the texture belongs to this command device; the
-    // encoder retains it after recording.
-    let target = unsafe { dst.texture.native_ref() };
-    validate_image_region(target, &dst)?;
+    // SAFETY: Core validates device identity; the encoder retains both objects.
+    let d = unsafe { dst.texture.native_ref() };
     if !src.0.usage.contains(api::BufferUsage::COPY_SRC)
-        || !target.desc().usage.contains(api::TextureUsage::COPY_DST)
-        || !matches!(
-            target.desc().format,
-            api::TextureFormat::Rgba8Unorm | api::TextureFormat::Bgra8Unorm
-        )
-        || target.desc().samples != 1
-    {
-        return Err(Error::Unsupported(
-            "Vulkan RGBA8/BGRA8 buffer-to-texture copy",
-        ));
-    }
-    let tight = dst.extent[0].checked_mul(4).ok_or(Error::InvalidRange)?;
-    if layout.offset % 4 != 0
-        || layout.bytes_per_row < tight
-        || layout.bytes_per_row % 4 != 0
-        || layout.rows_per_image < dst.extent[1]
+        || !d.desc().usage.contains(api::TextureUsage::COPY_DST)
+        || d.desc().samples != 1
     {
         return Err(Error::InvalidRange);
     }
-    let end = layout
-        .offset
-        .checked_add(u64::from(layout.bytes_per_row) * u64::from(dst.extent[1] - 1))
-        .and_then(|value| value.checked_add(u64::from(tight)))
-        .ok_or(Error::InvalidRange)?;
-    if end > src.0.size {
-        return Err(Error::InvalidRange);
-    }
-    let region = vk::BufferImageCopy::default()
-        .buffer_offset(layout.offset)
-        .buffer_row_length(layout.bytes_per_row / 4)
-        .buffer_image_height(layout.rows_per_image)
-        .image_subresource(
-            vk::ImageSubresourceLayers::default()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                .mip_level(dst.mip)
-                .base_array_layer(dst.origin[2])
-                .layer_count(1),
-        )
-        .image_offset(vk::Offset3D {
-            x: dst.origin[0] as i32,
-            y: dst.origin[1] as i32,
-            z: 0,
-        })
-        .image_extent(vk::Extent3D {
-            width: dst.extent[0],
-            height: dst.extent[1],
-            depth: 1,
-        });
-    // SAFETY: validation covers buffer range, texel layout, and image region.
-    // The caller supplies the required CopyDst layout through Core transitions.
+    let copy = buffer_region(d, &dst, layout, src.0.size)?;
+    // SAFETY: buffer footprint and region were checked; caller selected CopyDst.
     unsafe {
-        encoder.device.device.cmd_copy_buffer_to_image(
-            encoder.command,
+        e.device.device.cmd_copy_buffer_to_image(
+            e.command,
             src.0.buffer,
-            target.native(),
+            d.native(),
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            &[region],
+            &[copy],
         );
     }
-    encoder.buffers.push(src.clone());
-    encoder.textures.push(target.clone());
+    e.buffers.push(src.clone());
+    e.textures.push(d.clone());
     Ok(())
 }
 
-fn image_aspect(aspect: api::TextureAspects) -> Result<vk::ImageAspectFlags> {
-    if aspect == api::TextureAspects::COLOR {
-        Ok(vk::ImageAspectFlags::COLOR)
-    } else if aspect == api::TextureAspects::DEPTH {
-        Ok(vk::ImageAspectFlags::DEPTH)
-    } else {
-        Err(Error::Unsupported("Vulkan copy texture aspect"))
-    }
-}
-
-fn validate_image_region(
-    texture: &VulkanTexture,
-    region: &api::TextureRegion<'_, super::super::Vulkan>,
+pub(crate) fn texture_to_buffer(
+    e: &mut VulkanEncoder,
+    src: api::TextureRegion<'_, super::super::Vulkan>,
+    dst: &VulkanBuffer,
+    layout: api::TexelCopyBufferLayout,
 ) -> Result<()> {
-    let desc = texture.desc();
-    let expected = if desc.format == api::TextureFormat::Depth32Float {
-        api::TextureAspects::DEPTH
-    } else {
-        api::TextureAspects::COLOR
-    };
-    if desc.dimension != api::TextureDimension::D2
-        || region.aspect != expected
-        || region.mip >= desc.mip_levels
-        || region.origin[2] >= desc.array_layers
-        || region.extent[0] == 0
-        || region.extent[1] == 0
-        || region.extent[2] != 1
-        || region.origin[0]
-            .checked_add(region.extent[0])
-            .is_none_or(|end| end > (desc.extent[0] >> region.mip).max(1))
-        || region.origin[1]
-            .checked_add(region.extent[1])
-            .is_none_or(|end| end > (desc.extent[1] >> region.mip).max(1))
+    // SAFETY: Core validates device identity; the encoder retains both objects.
+    let s = unsafe { src.texture.native_ref() };
+    if !s.desc().usage.contains(api::TextureUsage::COPY_SRC)
+        || !dst.0.usage.contains(api::BufferUsage::COPY_DST)
+        || s.desc().samples != 1
     {
         return Err(Error::InvalidRange);
     }
-    Ok(())
-}
-
-pub(crate) fn write_texture(
-    encoder: &mut VulkanEncoder,
-    region: api::TextureRegion<'_, super::super::Vulkan>,
-    layout: api::TexelCopyBufferLayout,
-    bytes: &[u8],
-) -> Result<()> {
-    // SAFETY: Core checked identity and this encoder retains the image until
-    // submission completion.
-    let texture = unsafe { region.texture.native_ref() };
-    validate_rgba_upload(texture, &region, layout, bytes.len())?;
-    let upload = resource::create_buffer(
-        &encoder.owner,
-        &api::BufferDesc {
-            label: Some("Vulkan texture staging".into()),
-            size: bytes.len() as u64,
-            usage: api::BufferUsage::COPY_SRC,
-            memory: api::MemoryClass::Upload,
-        },
-    )?;
-    // SAFETY: `create_buffer` selected host-visible coherent upload memory and
-    // this exact, fresh allocation has no concurrent GPU use.
-    let mapped = unsafe {
-        encoder.device.device.map_memory(
-            upload.0.memory,
-            0,
-            bytes.len() as u64,
-            vk::MemoryMapFlags::empty(),
-        )
-    }
-    .map_err(vk_error)?;
-    // SAFETY: the mapping covers `bytes.len()` bytes at offset zero. The copy
-    // completes and memory is unmapped before any submitted GPU command uses it.
+    let copy = buffer_region(s, &src, layout, dst.0.size)?;
+    // SAFETY: validated footprint and caller-selected CopySrc layout.
     unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.cast(), bytes.len());
-        encoder.device.device.unmap_memory(upload.0.memory);
-    }
-    let image = texture.native();
-    // Full-subresource uploads replace every texel. UNDEFINED is valid even
-    // when the image was used before; it discards old contents without keeping
-    // recording-time layout history on the shared texture object.
-    let old_layout = vk::ImageLayout::UNDEFINED;
-    let range = vk::ImageSubresourceRange::default()
-        .aspect_mask(vk::ImageAspectFlags::COLOR)
-        .base_mip_level(region.mip)
-        .level_count(1)
-        .base_array_layer(region.origin[2])
-        .layer_count(1);
-    let to_copy = vk::ImageMemoryBarrier::default()
-        .src_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)
-        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-        .old_layout(old_layout)
-        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .image(image)
-        .subresource_range(range);
-    // SAFETY: validation proves a full color subresource upload. This owned
-    // command buffer retains upload and image handles through fence retirement.
-    unsafe {
-        encoder.device.device.cmd_pipeline_barrier(
-            encoder.command,
-            vk::PipelineStageFlags::ALL_COMMANDS,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[to_copy],
-        );
-        encoder.device.device.cmd_copy_buffer_to_image(
-            encoder.command,
-            upload.0.buffer,
-            image,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            &[vk::BufferImageCopy::default()
-                .buffer_offset(layout.offset)
-                .buffer_row_length(layout.bytes_per_row / 4)
-                .buffer_image_height(layout.rows_per_image)
-                .image_subresource(
-                    vk::ImageSubresourceLayers::default()
-                        .aspect_mask(vk::ImageAspectFlags::COLOR)
-                        .mip_level(region.mip)
-                        .base_array_layer(region.origin[2])
-                        .layer_count(1),
-                )
-                .image_extent(vk::Extent3D {
-                    width: region.extent[0],
-                    height: region.extent[1],
-                    depth: 1,
-                })],
-        );
-        let common = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)
-            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(image)
-            .subresource_range(range);
-        encoder.device.device.cmd_pipeline_barrier(
-            encoder.command,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::ALL_COMMANDS,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[common],
-        );
-    }
-    encoder.uploads.push(upload);
-    encoder.textures.push(texture.clone());
-    Ok(())
-}
-
-/// Records a full RGBA8 texture readback into a host-readable transfer buffer.
-///
-/// The caller owns image state selection: this operation requires the source
-/// to have been explicitly transitioned to `CopySrc`.  It only lowers the
-/// requested native copy and retains the two native resources until submission
-/// completes; it does not add a backend image-state tracker.
-pub(crate) fn texture_to_buffer(
-    encoder: &mut VulkanEncoder,
-    source: api::TextureRegion<'_, super::super::Vulkan>,
-    destination: &VulkanBuffer,
-    layout: api::TexelCopyBufferLayout,
-) -> Result<()> {
-    // SAFETY: Core checked identity; command submission retains both the image
-    // and destination buffer through the completion point.
-    let texture = unsafe { source.texture.native_ref() };
-    validate_rgba_readback(texture, &source, destination, layout)?;
-    // SAFETY: validated regions and layouts match the transfer command; the
-    // source's CopySrc state is an explicit Core prerequisite.
-    unsafe {
-        encoder.device.device.cmd_copy_image_to_buffer(
-            encoder.command,
-            texture.native(),
+        e.device.device.cmd_copy_image_to_buffer(
+            e.command,
+            s.native(),
             vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-            destination.0.buffer,
-            &[vk::BufferImageCopy::default()
-                .buffer_offset(layout.offset)
-                .buffer_row_length(layout.bytes_per_row / 4)
-                .buffer_image_height(layout.rows_per_image)
-                .image_subresource(
-                    vk::ImageSubresourceLayers::default()
-                        .aspect_mask(vk::ImageAspectFlags::COLOR)
-                        .mip_level(source.mip)
-                        .base_array_layer(source.origin[2])
-                        .layer_count(1),
-                )
-                .image_offset(vk::Offset3D {
-                    x: source.origin[0] as i32,
-                    y: source.origin[1] as i32,
-                    z: 0,
-                })
-                .image_extent(vk::Extent3D {
-                    width: source.extent[0],
-                    height: source.extent[1],
-                    depth: 1,
-                })],
+            dst.0.buffer,
+            &[copy],
         );
     }
     let barrier = vk::BufferMemoryBarrier::default()
@@ -352,14 +168,13 @@ pub(crate) fn texture_to_buffer(
         .dst_access_mask(vk::AccessFlags::HOST_READ)
         .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .buffer(destination.0.buffer)
+        .buffer(dst.0.buffer)
         .offset(layout.offset)
         .size(vk::WHOLE_SIZE);
-    // SAFETY: this barrier belongs to the same recording command buffer and
-    // makes its preceding transfer visible to host reads after completion.
+    // SAFETY: same command buffer, after the copy; this makes host reads visible.
     unsafe {
-        encoder.device.device.cmd_pipeline_barrier(
-            encoder.command,
+        e.device.device.cmd_pipeline_barrier(
+            e.command,
             vk::PipelineStageFlags::TRANSFER,
             vk::PipelineStageFlags::HOST,
             vk::DependencyFlags::empty(),
@@ -368,206 +183,369 @@ pub(crate) fn texture_to_buffer(
             &[],
         );
     }
-    encoder.textures.push(texture.clone());
-    encoder.buffers.push(destination.clone());
+    e.textures.push(s.clone());
+    e.buffers.push(dst.clone());
     Ok(())
 }
 
-/// Records one native filtered image blit.
-///
-/// The caller must have explicitly transitioned `src` to `CopySrc` and `dst`
-/// to `CopyDst`.  Keeping that state selection at the Core call site avoids a
-/// backend-local image-state tracker and makes successive mip dependencies
-/// visible in the recorded workload.
+pub(crate) fn write_texture(
+    e: &mut VulkanEncoder,
+    dst: api::TextureRegion<'_, super::super::Vulkan>,
+    layout: api::TexelCopyBufferLayout,
+    bytes: &[u8],
+) -> Result<()> {
+    // SAFETY: Core validates ownership and the image is retained until completion.
+    let d = unsafe { dst.texture.native_ref() };
+    if !d.desc().usage.contains(api::TextureUsage::COPY_DST) || d.desc().samples != 1 {
+        return Err(Error::InvalidRange);
+    }
+    let copy = buffer_region(d, &dst, layout, bytes.len() as u64)?;
+    let upload = resource::create_buffer(
+        &e.owner,
+        &api::BufferDesc {
+            label: Some("Vulkan texture staging".into()),
+            size: bytes.len() as u64,
+            usage: api::BufferUsage::COPY_SRC,
+            memory: api::MemoryClass::Upload,
+        },
+    )?;
+    // SAFETY: fresh coherent host-visible allocation has no concurrent users.
+    let mapped = unsafe {
+        e.device.device.map_memory(
+            upload.0.memory,
+            0,
+            bytes.len() as u64,
+            vk::MemoryMapFlags::empty(),
+        )
+    }
+    .map_err(vk_error)?;
+    // SAFETY: the mapping covers the input bytes and is unmapped before submission.
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.cast(), bytes.len());
+        e.device.device.unmap_memory(upload.0.memory);
+    }
+    let l = layers(d, &dst);
+    let coupled = matches!(
+        d.desc().format,
+        api::TextureFormat::Depth24PlusStencil8 | api::TextureFormat::Depth32FloatStencil8
+    ) && !e.device.separate_depth_stencil_layouts;
+    let range = vk::ImageSubresourceRange::default()
+        .aspect_mask(if coupled {
+            vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL
+        } else {
+            l.aspect_mask
+        })
+        .base_mip_level(l.mip_level)
+        .level_count(1)
+        .base_array_layer(l.base_array_layer)
+        .layer_count(if d.desc().dimension == api::TextureDimension::D3 {
+            vk::REMAINING_ARRAY_LAYERS
+        } else {
+            l.layer_count
+        });
+    let barrier = |old, new, from, to| {
+        vk::ImageMemoryBarrier::default()
+            .src_access_mask(from)
+            .dst_access_mask(to)
+            .old_layout(old)
+            .new_layout(new)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(d.native())
+            .subresource_range(range)
+    };
+    let full = dst.origin[0] == 0
+        && dst.origin[1] == 0
+        && dst.extent[0] == (d.desc().extent[0] >> dst.mip).max(1)
+        && dst.extent[1] == (d.desc().extent[1] >> dst.mip).max(1)
+        && (d.desc().dimension != api::TextureDimension::D3
+            || (dst.origin[2] == 0 && dst.extent[2] == (d.desc().extent[2] >> dst.mip).max(1)));
+    let to_copy = barrier(
+        if full && !coupled {
+            vk::ImageLayout::UNDEFINED
+        } else {
+            vk::ImageLayout::GENERAL
+        },
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+        vk::AccessFlags::TRANSFER_WRITE,
+    );
+    let to_idle = barrier(
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        vk::ImageLayout::GENERAL,
+        vk::AccessFlags::TRANSFER_WRITE,
+        vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+    );
+    // SAFETY: full uploads discard the selected subresource; partial uploads
+    // require its GENERAL idle layout to preserve untouched texels.
+    unsafe {
+        e.device.device.cmd_pipeline_barrier(
+            e.command,
+            vk::PipelineStageFlags::ALL_COMMANDS,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_copy],
+        );
+        e.device.device.cmd_copy_buffer_to_image(
+            e.command,
+            upload.0.buffer,
+            d.native(),
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &[copy],
+        );
+        e.device.device.cmd_pipeline_barrier(
+            e.command,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::ALL_COMMANDS,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_idle],
+        );
+    }
+    e.uploads.push(upload);
+    e.textures.push(d.clone());
+    Ok(())
+}
+
 pub(crate) fn blit(
-    encoder: &mut VulkanEncoder,
+    e: &mut VulkanEncoder,
     src: api::TextureRegion<'_, super::super::Vulkan>,
     dst: api::TextureRegion<'_, super::super::Vulkan>,
     filter: api::FilterMode,
 ) -> Result<()> {
-    // SAFETY: Core checked both borrowed textures against this device, and the
-    // encoder retains their native handles until the submission retires.
-    let source = unsafe { src.texture.native_ref() };
-    let target = unsafe { dst.texture.native_ref() };
-    validate_rgba_blit(source, &src, target, &dst, filter)?;
-
-    // SAFETY: DeviceState retains the Vulkan instance and selected physical
-    // device for this query; it passes no application-owned pointers.
-    let properties = unsafe {
-        encoder
-            .device
-            .instance
-            .instance
-            .get_physical_device_format_properties(
-                encoder.device.physical,
-                vk::Format::R8G8B8A8_UNORM,
-            )
-    }
-    .optimal_tiling_features;
-    let required = vk::FormatFeatureFlags::BLIT_SRC | vk::FormatFeatureFlags::BLIT_DST;
-    if !properties.contains(required)
-        || (filter == api::FilterMode::Linear
-            && !properties.contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR))
+    // SAFETY: Core validates ownership and the encoder retains the images.
+    let (s, d) = unsafe { (src.texture.native_ref(), dst.texture.native_ref()) };
+    image_region(s, &src)?;
+    image_region(d, &dst)?;
+    if !s.desc().usage.contains(api::TextureUsage::COPY_SRC)
+        || !d.desc().usage.contains(api::TextureUsage::COPY_DST)
+        || s.desc().samples != 1
+        || d.desc().samples != 1
+        || s.desc().dimension != d.desc().dimension
+        || src.aspect != dst.aspect
+        || same_subresource(s, &src, d, &dst)
+        || (s.desc().dimension != api::TextureDimension::D3 && src.extent[2] != dst.extent[2])
+        || blit_class(s.desc().format) != blit_class(d.desc().format)
+        || (src.aspect != api::TextureAspects::COLOR
+            && (s.desc().format != d.desc().format || filter != api::FilterMode::Nearest))
+        || (blit_class(s.desc().format) != 0 && filter != api::FilterMode::Nearest)
     {
-        return Err(Error::Unsupported("Vulkan RGBA8 texture blit format"));
+        return Err(Error::InvalidRange);
     }
-
-    let layers = |region: &api::TextureRegion<'_, super::super::Vulkan>| {
-        vk::ImageSubresourceLayers::default()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
-            .mip_level(region.mip)
-            .base_array_layer(region.origin[2])
-            .layer_count(1)
+    let features = |format| {
+        // SAFETY: the instance and physical device remain live with the encoder.
+        unsafe {
+            e.device
+                .instance
+                .instance
+                .get_physical_device_format_properties(e.device.physical, format)
+        }
+        .optimal_tiling_features
     };
-    let end = |region: &api::TextureRegion<'_, super::super::Vulkan>| vk::Offset3D {
-        x: region.extent[0] as i32,
-        y: region.extent[1] as i32,
-        z: 1,
+    let sf = features(
+        resource::native_format(&e.device, s.desc().format)
+            .ok_or(Error::Unsupported("Vulkan blit source format"))?,
+    );
+    let df = features(
+        resource::native_format(&e.device, d.desc().format)
+            .ok_or(Error::Unsupported("Vulkan blit destination format"))?,
+    );
+    if !sf.contains(vk::FormatFeatureFlags::BLIT_SRC)
+        || !df.contains(vk::FormatFeatureFlags::BLIT_DST)
+        || (filter == api::FilterMode::Linear
+            && !sf.contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR))
+    {
+        return Err(Error::Unsupported("Vulkan format blit capability"));
+    }
+    let end = |t: &super::super::VulkanTexture,
+               r: &api::TextureRegion<'_, super::super::Vulkan>| {
+        let o = offset(t, r);
+        let x = extent(t, r);
+        vk::Offset3D {
+            x: o.x + x.width as i32,
+            y: o.y + x.height as i32,
+            z: o.z + x.depth as i32,
+        }
     };
     let region = vk::ImageBlit::default()
-        .src_subresource(layers(&src))
-        .src_offsets([vk::Offset3D::default(), end(&src)])
-        .dst_subresource(layers(&dst))
-        .dst_offsets([vk::Offset3D::default(), end(&dst)]);
-    // SAFETY: validation proves non-overlapping compatible full subresources;
-    // explicit Core transitions established the two transfer layouts.
+        .src_subresource(layers(s, &src))
+        .src_offsets([offset(s, &src), end(s, &src)])
+        .dst_subresource(layers(d, &dst))
+        .dst_offsets([offset(d, &dst), end(d, &dst)]);
+    // SAFETY: checked regions and native feature flags; caller selected transfer layouts.
     unsafe {
-        encoder.device.device.cmd_blit_image(
-            encoder.command,
-            source.native(),
+        e.device.device.cmd_blit_image(
+            e.command,
+            s.native(),
             vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-            target.native(),
+            d.native(),
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            std::slice::from_ref(&region),
+            &[region],
             match filter {
                 api::FilterMode::Nearest => vk::Filter::NEAREST,
                 api::FilterMode::Linear => vk::Filter::LINEAR,
             },
         );
     }
-    encoder.textures.extend([source.clone(), target.clone()]);
+    e.textures.extend([s.clone(), d.clone()]);
     Ok(())
 }
 
-fn validate_rgba_blit(
-    source: &VulkanTexture,
+fn blit_class(f: api::TextureFormat) -> u8 {
+    use api::TextureFormat::*;
+    match f {
+        R8Uint | Rg8Uint | Rgba8Uint | R16Uint | Rg16Uint | Rgba16Uint | R32Uint | Rg32Uint
+        | Rgba32Uint | Rgb10a2Uint | R64Uint | Rg64Uint => 1,
+        R8Sint | Rg8Sint | Rgba8Sint | R16Sint | Rg16Sint | Rgba16Sint | R32Sint | Rg32Sint
+        | Rgba32Sint => 2,
+        _ => 0,
+    }
+}
+
+fn same_subresource(
+    s: &super::super::VulkanTexture,
     src: &api::TextureRegion<'_, super::super::Vulkan>,
-    target: &VulkanTexture,
+    d: &super::super::VulkanTexture,
     dst: &api::TextureRegion<'_, super::super::Vulkan>,
-    filter: api::FilterMode,
+) -> bool {
+    s.native() == d.native()
+        && src.mip == dst.mip
+        && (s.desc().dimension == api::TextureDimension::D3
+            || (src.origin[2] < dst.origin[2] + dst.extent[2]
+                && dst.origin[2] < src.origin[2] + src.extent[2]))
+}
+
+pub(crate) fn resolve(
+    e: &mut VulkanEncoder,
+    src: api::TextureRegion<'_, super::super::Vulkan>,
+    dst: api::TextureRegion<'_, super::super::Vulkan>,
 ) -> Result<()> {
-    if !matches!(filter, api::FilterMode::Nearest | api::FilterMode::Linear)
-        || source.desc().format != api::TextureFormat::Rgba8Unorm
-        || target.desc().format != api::TextureFormat::Rgba8Unorm
-        || source.desc().dimension != api::TextureDimension::D2
-        || target.desc().dimension != api::TextureDimension::D2
-        || source.desc().array_layers != 1
-        || target.desc().array_layers != 1
-        || source.desc().samples != 1
-        || target.desc().samples != 1
-        || !source.desc().usage.contains(api::TextureUsage::COPY_SRC)
-        || !target.desc().usage.contains(api::TextureUsage::COPY_DST)
+    if e.lane.ordinal != 0 {
+        return Err(Error::Unsupported("Vulkan resolve requires graphics queue"));
+    }
+    // SAFETY: Core validates ownership and both images are retained below.
+    let (s, d) = unsafe { (src.texture.native_ref(), dst.texture.native_ref()) };
+    image_region(s, &src)?;
+    image_region(d, &dst)?;
+    if s.desc().samples <= 1
+        || d.desc().samples != 1
+        || s.desc().format != d.desc().format
+        || src.extent != dst.extent
         || src.aspect != api::TextureAspects::COLOR
-        || dst.aspect != api::TextureAspects::COLOR
-        || src.origin != [0, 0, 0]
-        || dst.origin != [0, 0, 0]
-        || src.mip >= source.desc().mip_levels
-        || dst.mip >= target.desc().mip_levels
-        || (source.native() == target.native() && src.mip == dst.mip)
-        || src.extent != mip_extent(source.desc(), src.mip)
-        || dst.extent != mip_extent(target.desc(), dst.mip)
+        || dst.aspect != src.aspect
+        || s.desc().dimension != api::TextureDimension::D2
+        || d.desc().dimension != api::TextureDimension::D2
+        || !s
+            .desc()
+            .usage
+            .contains(api::TextureUsage::RENDER_ATTACHMENT)
+        || !d
+            .desc()
+            .usage
+            .contains(api::TextureUsage::RENDER_ATTACHMENT)
+        || s.native() == d.native()
     {
-        return Err(Error::Unsupported("Vulkan full RGBA8 texture blit"));
-    }
-    Ok(())
-}
-
-fn mip_extent(desc: &api::TextureDesc, mip: u32) -> [u32; 3] {
-    [
-        (desc.extent[0] >> mip).max(1),
-        (desc.extent[1] >> mip).max(1),
-        1,
-    ]
-}
-
-fn validate_rgba_upload(
-    texture: &VulkanTexture,
-    region: &api::TextureRegion<'_, super::super::Vulkan>,
-    layout: api::TexelCopyBufferLayout,
-    len: usize,
-) -> Result<()> {
-    let d = texture.desc();
-    if region.mip >= d.mip_levels || region.mip >= 32 {
         return Err(Error::InvalidRange);
     }
-    let expected = [
-        (d.extent[0] >> region.mip).max(1),
-        (d.extent[1] >> region.mip).max(1),
-        1,
+    let image_barrier = |t: &super::super::VulkanTexture,
+                         r: &api::TextureRegion<'_, super::super::Vulkan>,
+                         old,
+                         new,
+                         from,
+                         to| {
+        let l = layers(t, r);
+        vk::ImageMemoryBarrier::default()
+            .src_access_mask(from)
+            .dst_access_mask(to)
+            .old_layout(old)
+            .new_layout(new)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(t.native())
+            .subresource_range(
+                vk::ImageSubresourceRange::default()
+                    .aspect_mask(l.aspect_mask)
+                    .base_mip_level(l.mip_level)
+                    .level_count(1)
+                    .base_array_layer(l.base_array_layer)
+                    .layer_count(l.layer_count),
+            )
+    };
+    let before = [
+        image_barrier(
+            s,
+            &src,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            vk::AccessFlags::TRANSFER_READ,
+        ),
+        image_barrier(
+            d,
+            &dst,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            vk::AccessFlags::TRANSFER_WRITE,
+        ),
     ];
-    if d.format != api::TextureFormat::Rgba8Unorm
-        || !d.usage.contains(api::TextureUsage::COPY_DST)
-        || region.origin[0] != 0
-        || region.origin[1] != 0
-        || region.origin[2] >= d.array_layers
-        || region.extent != expected
-        || region.aspect != api::TextureAspects::COLOR
-    {
-        return Err(Error::Unsupported("Vulkan full RGBA8 texture upload"));
+    let after = [
+        image_barrier(
+            s,
+            &src,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::AccessFlags::TRANSFER_READ,
+            vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+        ),
+        image_barrier(
+            d,
+            &dst,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::AccessFlags::TRANSFER_WRITE,
+            vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+        ),
+    ];
+    let region = vk::ImageResolve::default()
+        .src_subresource(layers(s, &src))
+        .src_offset(offset(s, &src))
+        .dst_subresource(layers(d, &dst))
+        .dst_offset(offset(d, &dst))
+        .extent(extent(s, &src));
+    // SAFETY: validated attachment usages supply transfer flags; explicit Resolve
+    // states are restored after the native resolve, and both images are retained.
+    unsafe {
+        e.device.device.cmd_pipeline_barrier(
+            e.command,
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &before,
+        );
+        e.device.device.cmd_resolve_image(
+            e.command,
+            s.native(),
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            d.native(),
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &[region],
+        );
+        e.device.device.cmd_pipeline_barrier(
+            e.command,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &after,
+        );
     }
-    let row_bytes = expected[0].checked_mul(4).ok_or(Error::InvalidRange)?;
-    if layout.bytes_per_row < row_bytes
-        || layout.bytes_per_row % 4 != 0
-        || layout.rows_per_image < expected[1]
-        || layout.offset % 4 != 0
-    {
-        return Err(Error::InvalidRange);
-    }
-    let required = u64::from(layout.offset)
-        .checked_add(u64::from(layout.bytes_per_row) * u64::from(expected[1] - 1))
-        .and_then(|n| n.checked_add(u64::from(row_bytes)))
-        .ok_or(Error::InvalidRange)?;
-    if required > len as u64 {
-        return Err(Error::InvalidRange);
-    }
-    Ok(())
-}
-
-fn validate_rgba_readback(
-    texture: &VulkanTexture,
-    source: &api::TextureRegion<'_, super::super::Vulkan>,
-    destination: &VulkanBuffer,
-    layout: api::TexelCopyBufferLayout,
-) -> Result<()> {
-    let desc = texture.desc();
-    if desc.format != api::TextureFormat::Rgba8Unorm
-        || desc.dimension != api::TextureDimension::D2
-        || desc.samples != 1
-        || !desc.usage.contains(api::TextureUsage::COPY_SRC)
-        || !destination.0.usage.contains(api::BufferUsage::COPY_DST)
-        || source.aspect != api::TextureAspects::COLOR
-        || source.mip >= desc.mip_levels
-        || source.origin[0..2] != [0, 0]
-        || source.origin[2] >= desc.array_layers
-        || source.extent[0..2] != mip_extent(desc, source.mip)[0..2]
-        || source.extent[2] != 1
-        || layout.offset % 4 != 0
-    {
-        return Err(Error::Unsupported("Vulkan full RGBA8 texture readback"));
-    }
-    let row_bytes = source.extent[0].checked_mul(4).ok_or(Error::InvalidRange)?;
-    if layout.bytes_per_row < row_bytes
-        || layout.bytes_per_row % 4 != 0
-        || layout.rows_per_image < source.extent[1]
-    {
-        return Err(Error::InvalidRange);
-    }
-    let required = u64::from(layout.offset)
-        .checked_add(u64::from(layout.bytes_per_row) * u64::from(source.extent[1] - 1))
-        .and_then(|n| n.checked_add(u64::from(row_bytes)))
-        .ok_or(Error::InvalidRange)?;
-    if required > destination.0.size {
-        return Err(Error::InvalidRange);
-    }
+    e.textures.extend([s.clone(), d.clone()]);
     Ok(())
 }

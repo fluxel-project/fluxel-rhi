@@ -45,6 +45,7 @@ fn sparse_storage_volume_mip_writes() {
         binds.push(SparseBind {
             resource: tex.clone(),
             tiles: vec![SparseTile {
+                aspect: None,
                 mip: mip as u32,
                 layer: 0,
                 origin: [0, 0, 0],
@@ -58,6 +59,7 @@ fn sparse_storage_volume_mip_writes() {
         binds.push(SparseBind {
             resource: tex.clone(),
             tiles: vec![SparseTile {
+                aspect: None,
                 mip: tail.first_mip,
                 layer: 0,
                 origin: [0, 0, 0],

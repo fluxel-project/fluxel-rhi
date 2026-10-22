@@ -3,14 +3,23 @@
 use super::{VulkanEncoder, encoder::FrameCapture, resource, vk_error};
 use ash::vk;
 use fluxel_rhi_core::api::{self, Error, Result};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 static CAPTURED: AtomicBool = AtomicBool::new(false);
+static CAPTURE_PASS: AtomicUsize = AtomicUsize::new(0);
 
 pub(super) fn prepare(encoder: &mut VulkanEncoder, width: u32, height: u32) -> Result<()> {
     let Some(path) = std::env::var_os("FLUXEL_VULKAN_CAPTURE") else {
         return Ok(());
     };
+    let target = std::env::var("FLUXEL_VULKAN_CAPTURE_PASS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(1);
+    if CAPTURE_PASS.fetch_add(1, Ordering::AcqRel) + 1 < target {
+        return Ok(());
+    }
     if CAPTURED.swap(true, Ordering::AcqRel) {
         return Ok(());
     }

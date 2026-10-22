@@ -123,17 +123,27 @@ impl Inputs {
                             indices,
                             opaque,
                         } => {
-                            let (format, size, alignment) = match vertex_format {
-                                api::VertexFormat::Float32(3) => {
-                                    (vk::Format::R32G32B32_SFLOAT, 12, 4)
+                            let format =
+                                super::super::pipeline::native_vertex_format(*vertex_format)
+                                    .ok_or(Error::Unsupported("Vulkan ray vertex format"))?;
+                            let (components, alignment) = match *vertex_format {
+                                api::VertexFormat::Float64(n) | api::VertexFormat::Uint64(n) => {
+                                    (n, 8)
                                 }
-                                api::VertexFormat::Float32(2) => (vk::Format::R32G32_SFLOAT, 8, 4),
-                                api::VertexFormat::Float16(4) => {
-                                    (vk::Format::R16G16B16A16_SFLOAT, 8, 2)
-                                }
-                                api::VertexFormat::Float16(2) => (vk::Format::R16G16_SFLOAT, 4, 2),
-                                _ => return Err(Error::Unsupported("Vulkan ray vertex format")),
+                                api::VertexFormat::Float32(n)
+                                | api::VertexFormat::Uint32(n)
+                                | api::VertexFormat::Sint32(n) => (n, 4),
+                                api::VertexFormat::Float16(n)
+                                | api::VertexFormat::Uint16(n)
+                                | api::VertexFormat::Sint16(n)
+                                | api::VertexFormat::Unorm16(n)
+                                | api::VertexFormat::Snorm16(n) => (n, 2),
+                                api::VertexFormat::Uint8(n)
+                                | api::VertexFormat::Sint8(n)
+                                | api::VertexFormat::Unorm8(n)
+                                | api::VertexFormat::Snorm8(n) => (n, 1),
                             };
+                            let size = u64::from(components) * alignment;
                             // SAFETY: Core checked all geometry resource device identities.
                             let vb = unsafe { vertices.native_ref() };
                             // SAFETY: the instance and physical device are retained by the buffer.

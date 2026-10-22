@@ -43,6 +43,7 @@ impl<
             let tiles = u64::from(grid[0]) * u64::from(grid[1]) * u64::from(grid[2]);
             allocations.push(sparse.allocation_for(&sparse_texture, tiles * tiling.tile_bytes)?);
             regions.push(SparseTile {
+                aspect: None,
                 mip: mip as u32,
                 layer: 0,
                 origin: [0, 0, 0],
@@ -324,6 +325,7 @@ impl<
         let tile = |i: usize| {
             let t = &self.regions[i];
             SparseTile {
+                aspect: None,
                 mip: t.mip,
                 layer: t.layer,
                 origin: t.origin,

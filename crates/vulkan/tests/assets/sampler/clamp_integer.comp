@@ -1,0 +1,9 @@
+#version 450
+layout(local_size_x=1) in;
+layout(set=0,binding=0) uniform sampler sam;
+layout(set=0,binding=1) uniform utexture2D integer_texture;
+layout(set=0,binding=3,std430) buffer Results { uint result[]; } o;
+void main(){
+ o.result[0]=textureLod(usampler2D(integer_texture,sam),vec2(1.5,0.5),0).r;
+ o.result[1]=textureLod(usampler2D(integer_texture,sam),vec2(0.5,0.5),0).r;
+}

@@ -1,0 +1,6 @@
+#version 450
+layout(local_size_x = 1) in;
+layout(constant_id = 7) const uint value = 10;
+layout(push_constant) uniform Push { uint addend; } pc;
+layout(set = 0, binding = 0, std430) buffer Output { uint words[]; } output_data;
+void main() { output_data.words[gl_GlobalInvocationID.x] = value + pc.addend + gl_GlobalInvocationID.x; }

@@ -45,6 +45,7 @@ pub(crate) struct SurfaceState {
 struct Inner {
     swapchain: vk::SwapchainKHR,
     images: Vec<vk::Image>,
+    initialized: Vec<bool>,
     views: Vec<vk::ImageView>,
     // A present wait semaphore cannot be reused until this image is acquired
     // again and that acquire fence has completed.
@@ -53,6 +54,7 @@ struct Inner {
     retired: Vec<RetiredSwapchain>,
     extent: vk::Extent2D,
     format: vk::Format,
+    transfer_dst: bool,
     generation: u64,
     acquired: bool,
     abandoned: bool,
@@ -71,6 +73,7 @@ pub struct VulkanSurfaceImage {
     pub(crate) view: vk::ImageView,
     extent: vk::Extent2D,
     format: vk::Format,
+    transfer_dst: bool,
     generation: u64,
     handed: bool,
     present_wait: Mutex<Option<vk::Semaphore>>,
@@ -133,14 +136,20 @@ pub(crate) unsafe fn create_surface(
         ash::khr::surface::Instance::new(&native.0.instance.entry, &native.0.instance.instance);
     // SAFETY: physical device, queue family, and surface all belong to the
     // retained instance and have not been destroyed.
-    let supported = unsafe {
+    let supported = match unsafe {
         surface_loader.get_physical_device_surface_support(
             native.0.physical,
             native.0.graphics_family,
             surface,
         )
-    }
-    .map_err(vk_error)?;
+    } {
+        Ok(supported) => supported,
+        Err(error) => {
+            // SAFETY: the unpublished surface is owned exclusively here.
+            unsafe { surface_loader.destroy_surface(surface, None) };
+            return Err(vk_error(error));
+        }
+    };
     if !supported {
         // SAFETY: this locally owned surface was never published to SurfaceState.
         unsafe { surface_loader.destroy_surface(surface, None) };
@@ -160,12 +169,14 @@ pub(crate) unsafe fn create_surface(
         inner: Mutex::new(Inner {
             swapchain: vk::SwapchainKHR::null(),
             images: Vec::new(),
+            initialized: Vec::new(),
             views: Vec::new(),
             present_waits: Vec::new(),
             orphaned_waits: Vec::new(),
             retired: Vec::new(),
             extent: vk::Extent2D::default(),
             format: vk::Format::UNDEFINED,
+            transfer_dst: false,
             generation: 0,
             acquired: false,
             abandoned: false,
@@ -227,6 +238,10 @@ impl Drop for SurfaceState {
 impl VulkanSurfaceImage {
     pub(super) fn attachment(&self) -> (vk::ImageView, vk::Image, vk::Extent2D, vk::Format) {
         (self.view, self.image, self.extent, self.format)
+    }
+
+    pub(super) fn supports_transfer_dst(&self) -> bool {
+        self.transfer_dst
     }
 
     pub(super) fn set_present_wait(&self, semaphore: vk::Semaphore) -> Result<()> {
@@ -389,8 +404,8 @@ fn capabilities(state: &SurfaceState) -> Result<api::SurfaceCapabilities> {
     }
     .map_err(vk_error)?;
     let mut public_formats: Vec<_> = formats
-        .into_iter()
-        .filter(|v| v.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
+        .iter()
+        .filter(|v| from_color_space(v.color_space).is_some())
         .filter_map(|v| from_format(v.format))
         .collect();
     let mut seen = Vec::new();
@@ -402,14 +417,26 @@ fn capabilities(state: &SurfaceState) -> Result<api::SurfaceCapabilities> {
             true
         }
     });
-    let srgb = !public_formats.is_empty();
+    let mut color_spaces = Vec::new();
+    for format in &formats {
+        if from_format(format.format).is_some() {
+            if let Some(space) = from_color_space(format.color_space) {
+                if !color_spaces.contains(&space) {
+                    color_spaces.push(space);
+                }
+            }
+        }
+    }
     Ok(api::SurfaceCapabilities {
         formats: public_formats,
-        present_modes: if modes.contains(&vk::PresentModeKHR::FIFO) {
-            vec![api::PresentMode::Fifo]
-        } else {
-            vec![]
-        },
+        present_modes: [
+            api::PresentMode::Fifo,
+            api::PresentMode::Mailbox,
+            api::PresentMode::Immediate,
+        ]
+        .into_iter()
+        .filter(|mode| modes.contains(&present_mode(*mode)))
+        .collect(),
         alpha_modes: [
             (
                 vk::CompositeAlphaFlagsKHR::OPAQUE,
@@ -435,11 +462,7 @@ fn capabilities(state: &SurfaceState) -> Result<api::SurfaceCapabilities> {
                 .then_some(mode)
         })
         .collect(),
-        color_spaces: if srgb {
-            vec![api::ColorSpace::Srgb]
-        } else {
-            vec![]
-        },
+        color_spaces,
         usages: api::SurfaceUsage(
             if caps
                 .supported_usage_flags
@@ -469,11 +492,7 @@ fn validate_config(
     if config.extent.contains(&0) {
         return Err("zero-sized Vulkan surface");
     }
-    if config.present_mode != api::PresentMode::Fifo
-        || config.color_space != api::ColorSpace::Srgb
-        || config.usage != api::SurfaceUsage::RENDER_ATTACHMENT
-        || config.maximum_frame_latency == 0
-    {
+    if config.usage != api::SurfaceUsage::RENDER_ATTACHMENT || config.maximum_frame_latency == 0 {
         return Err("Vulkan surface configuration mode/usage");
     }
     let Some(format) = super::resource::format(config.format) else {
@@ -491,7 +510,6 @@ fn validate_config(
         || !caps
             .supported_usage_flags
             .contains(vk::ImageUsageFlags::COLOR_ATTACHMENT)
-        || (caps.max_image_count != 0 && caps.min_image_count.max(2) > caps.max_image_count)
     {
         return Err("Vulkan surface attachment/alpha support");
     }
@@ -519,7 +537,7 @@ fn validate_config(
     .map_err(|_| "Vulkan surface formats")?;
     if !formats
         .iter()
-        .any(|f| f.format == format && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
+        .any(|f| f.format == format && f.color_space == color_space(config.color_space))
     {
         return Err("Vulkan surface format/color space");
     }
@@ -530,10 +548,38 @@ fn validate_config(
             .get_physical_device_surface_present_modes(state.device.0.physical, state.surface)
     }
     .map_err(|_| "Vulkan surface present modes")?;
-    if !modes.contains(&vk::PresentModeKHR::FIFO) {
-        return Err("Vulkan FIFO presentation");
+    if !modes.contains(&present_mode(config.present_mode)) {
+        return Err("Vulkan presentation mode");
     }
     Ok(())
+}
+
+pub(super) fn present_mode(mode: api::PresentMode) -> vk::PresentModeKHR {
+    match mode {
+        api::PresentMode::Fifo => vk::PresentModeKHR::FIFO,
+        api::PresentMode::Mailbox => vk::PresentModeKHR::MAILBOX,
+        api::PresentMode::Immediate => vk::PresentModeKHR::IMMEDIATE,
+    }
+}
+
+pub(super) fn color_space(space: api::ColorSpace) -> vk::ColorSpaceKHR {
+    match space {
+        api::ColorSpace::Srgb => vk::ColorSpaceKHR::SRGB_NONLINEAR,
+        api::ColorSpace::DisplayP3 => vk::ColorSpaceKHR::DISPLAY_P3_NONLINEAR_EXT,
+        api::ColorSpace::ExtendedLinearSrgb => vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT,
+        api::ColorSpace::Hdr10 => vk::ColorSpaceKHR::HDR10_ST2084_EXT,
+    }
+}
+
+fn from_color_space(space: vk::ColorSpaceKHR) -> Option<api::ColorSpace> {
+    [
+        api::ColorSpace::Srgb,
+        api::ColorSpace::DisplayP3,
+        api::ColorSpace::ExtendedLinearSrgb,
+        api::ColorSpace::Hdr10,
+    ]
+    .into_iter()
+    .find(|candidate| color_space(*candidate) == space)
 }
 
 pub(super) fn composite_alpha(mode: api::CompositeAlphaMode) -> Option<vk::CompositeAlphaFlagsKHR> {
@@ -550,6 +596,8 @@ fn from_format(format: vk::Format) -> Option<api::TextureFormat> {
         vk::Format::B8G8R8A8_SRGB => Some(api::TextureFormat::Bgra8UnormSrgb),
         vk::Format::R8G8B8A8_UNORM => Some(api::TextureFormat::Rgba8Unorm),
         vk::Format::R8G8B8A8_SRGB => Some(api::TextureFormat::Rgba8UnormSrgb),
+        vk::Format::A2B10G10R10_UNORM_PACK32 => Some(api::TextureFormat::Rgb10a2Unorm),
+        vk::Format::R16G16B16A16_SFLOAT => Some(api::TextureFormat::Rgba16Float),
         _ => None,
     }
 }

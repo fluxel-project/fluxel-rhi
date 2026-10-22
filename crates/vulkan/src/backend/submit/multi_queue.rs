@@ -7,7 +7,7 @@ use super::{
 
 pub(in crate::backend) struct Timeline {
     device: Arc<DeviceState>,
-    semaphore: vk::Semaphore,
+    pub(in crate::backend) semaphore: vk::Semaphore,
 }
 impl Drop for Timeline {
     fn drop(&mut self) {
@@ -52,8 +52,8 @@ impl api::MultiQueueBackend for Vulkan {
             if !device.0.timeline_semaphore {
                 return Err(Error::Unsupported("Vulkan independent queues"));
             }
-            for (i, step) in packet.work.steps.iter().enumerate() {
-                let desc = &packet.work.plan.steps()[i];
+            for step in &packet.work.steps {
+                let desc = &packet.work.plan.steps()[step.step.index as usize];
                 if desc.lane.ordinal > 1
                     || (desc.lane.ordinal == 1 && device.0.compute_queue.is_none())
                 {
@@ -69,11 +69,13 @@ impl api::MultiQueueBackend for Vulkan {
                             }
                         }
                     }
-                    StepPayload::Present(_)
-                        if desc.lane.ordinal == 0 && i + 1 == packet.work.steps.len() => {}
+                    // Presentation itself uses the graphics WSI queue; the
+                    // binary signal can originate on either exposed lane.
+                    StepPayload::Present(_) => {}
                     StepPayload::SparseBind(binds)
-                        if desc.lane.ordinal == 0 && device.0.sparse_image && !binds.is_empty() => {
-                    }
+                        if device.0.sparse_image
+                            && (desc.lane.ordinal == 0 || device.0.compute_sparse_binding)
+                            && !binds.is_empty() => {}
                     _ => {
                         return Err(Error::Unsupported(
                             "Vulkan multi-queue sparse binding or present position",
@@ -100,7 +102,15 @@ impl api::MultiQueueBackend for Vulkan {
         if let Err(error) = validate() {
             return Outcome::Rejected { error, packet };
         }
-        let mut prepared = Vec::with_capacity(packet.work.steps.len());
+        let first = packet
+            .work
+            .steps
+            .first()
+            .map_or(packet.work.plan.steps().len(), |step| {
+                step.step.index as usize
+            });
+        let mut prepared: Vec<Vec<super::super::sparse::PreparedSparseBind>> =
+            (0..first).map(|_| Vec::new()).collect();
         for step in &packet.work.steps {
             let mut items = Vec::new();
             if let StepPayload::SparseBind(binds) = &step.payload {
@@ -135,34 +145,32 @@ impl api::MultiQueueBackend for Vulkan {
                 };
             }
         };
-        let mut present_signal = if packet
-            .work
-            .steps
-            .iter()
-            .any(|s| matches!(s.payload, StepPayload::Present(_)))
-        {
-            // SAFETY: this fresh binary semaphore is guarded until handed to the image lease.
-            let semaphore = match unsafe {
-                device
-                    .0
-                    .device
-                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-            } {
-                Ok(semaphore) => semaphore,
-                Err(error) => {
-                    return Outcome::Rejected {
-                        error: vk_error(error),
-                        packet,
-                    };
-                }
-            };
-            Some(PendingPresentSignal {
-                device: device.0.clone(),
-                semaphore: Some(semaphore),
-            })
-        } else {
-            None
-        };
+        let mut present_signals = (0..first).map(|_| None).collect::<Vec<_>>();
+        for step in &packet.work.steps {
+            if matches!(step.payload, StepPayload::Present(_)) {
+                // SAFETY: each fresh semaphore is owned until its image accepts it.
+                let semaphore = match unsafe {
+                    device
+                        .0
+                        .device
+                        .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
+                } {
+                    Ok(semaphore) => semaphore,
+                    Err(error) => {
+                        return Outcome::Rejected {
+                            error: vk_error(error),
+                            packet,
+                        };
+                    }
+                };
+                present_signals.push(Some(PendingPresentSignal {
+                    device: device.0.clone(),
+                    semaphore: Some(semaphore),
+                }));
+            } else {
+                present_signals.push(None);
+            }
+        }
         let requested = match &packet.work.completion {
             api::CompletionRequest::Steps(ids) => ids.to_vec(),
             _ => Vec::new(),
@@ -216,7 +224,7 @@ impl api::MultiQueueBackend for Vulkan {
                     .and_then(|(timeline, value)| timeline.upgrade().map(|t| (t, *value)))
             })
         };
-        let mut step_values: Vec<(usize, u64)> = Vec::new();
+        let mut step_values: Vec<(usize, u64)> = vec![(usize::MAX, 0); first];
         let mut issued = Vec::new();
         let mut retained = timelines.to_vec();
         let mut sparse_issued = Vec::new();
@@ -252,6 +260,10 @@ impl api::MultiQueueBackend for Vulkan {
             let mut wait_semaphores = Vec::new();
             let mut wait_values = Vec::new();
             for dependency in &desc.waits {
+                if (dependency.previous.index as usize) < first {
+                    // The unsafe resume caller already observed the accepted frontier complete.
+                    continue;
+                }
                 let (producer, value) = step_values[dependency.previous.index as usize];
                 if producer != lane {
                     wait_semaphores.push(timelines[producer].semaphore);
@@ -302,7 +314,7 @@ impl api::MultiQueueBackend for Vulkan {
                     issued.extend(work.into_iter().map(|w| unsafe { w.into_native() }))
                 }
                 StepPayload::Present(binding) => {
-                    let pending = present_signal
+                    let pending = present_signals[id.index as usize]
                         .as_mut()
                         .expect("preallocated present semaphore");
                     let semaphore = pending.semaphore.expect("present semaphore owned");
@@ -354,14 +366,13 @@ impl api::MultiQueueBackend for Vulkan {
                         || initial_waits.clone(),
                         |value| vec![(timelines[lane].semaphore, value)],
                     );
-                    let signal = [(timelines[lane].semaphore, values[lane])];
                     let result = {
                         let _queue = device
                             .0
                             .queue_gate
                             .lock()
                             .unwrap_or_else(|p| p.into_inner());
-                        bind.submit(device, queue, &dependencies, &signal)
+                        bind.submit(device, queue, &dependencies, &timelines[lane], values[lane])
                     };
                     sparse_issued.push(bind);
                     if let Err(e) = result {
@@ -379,6 +390,28 @@ impl api::MultiQueueBackend for Vulkan {
                 } else {
                     Ok(())
                 }
+            } else if issued[start..].iter().any(|record| {
+                !record.encoder.external_waits.is_empty()
+                    || !record.encoder.external_signals.is_empty()
+            }) {
+                let waits: Vec<_> = wait_semaphores
+                    .iter()
+                    .copied()
+                    .zip(wait_values.iter().copied())
+                    .collect();
+                let signals: Vec<_> = signal_semaphores
+                    .iter()
+                    .copied()
+                    .zip(signal_values.iter().copied())
+                    .collect();
+                super::submit_external_records(
+                    device,
+                    queue,
+                    &issued[start..],
+                    &waits,
+                    &signals,
+                    true,
+                )
             } else {
                 let _queue = device
                     .0

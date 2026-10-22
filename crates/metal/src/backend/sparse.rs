@@ -105,13 +105,16 @@ impl SparseBackend for Metal {
                 None
             };
             texture.sparse = Some(Arc::new(SparseState {
-                tiling: api::SparseTextureTiling {
+                tiling: api::SparseTextureTiling::from_aspects(vec![api::SparseAspectTiling {
+                    aspect: api::TextureAspects::COLOR,
+                    packed_tail_shared_by_layers: false,
                     tile_extent: [width, height, 1],
                     tile_grid: grids.first().copied().unwrap_or([0, 0, 0]),
                     tile_bytes: bytes as u64,
                     standard_mip_grids: grids,
                     packed_tail: tail,
-                },
+                }])
+                .expect("one sparse aspect"),
                 mappings: Mutex::new(validation::MappingState::new()),
             }));
             Ok(texture)

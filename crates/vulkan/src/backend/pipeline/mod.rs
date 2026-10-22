@@ -6,11 +6,17 @@
 //! longer reference it; they do not schedule work or infer resource hazards.
 
 mod binding;
+pub(crate) mod cache;
 mod compute;
+pub(crate) mod fixed;
+mod vertex_format;
+pub(crate) use vertex_format::vformat as native_vertex_format;
 mod layout;
 mod raster;
+pub(crate) mod specialization;
 
 pub use binding::{VulkanBindGroup, VulkanBindGroupLayout};
+pub use cache::VulkanPipelineCache;
 pub use compute::VulkanComputePipeline;
 pub(crate) use layout::PushConstants;
 pub use layout::VulkanPipelineLayout;

@@ -260,19 +260,30 @@ impl<B: DeferredBackend> RecordedWork<B> {
 /// For a packed tail use its `first_mip`, layer zero, origin `[0, 0, 0]`,
 /// and count `[tile_count, 1, 1]`. Partial packed-tail mapping is invalid.
 pub struct SparseTile {
+    /// Exact native aspect group, or None for the tiling's primary group.
+    pub aspect: Option<TextureAspects>,
     pub mip: u32,
     pub layer: u32,
     pub origin: [u32; 3],
     pub count: [u32; 3],
 }
 impl SparseTile {
-    /// Selects all tiles in the packed mip tail of the single supported layer.
+    /// Selects all tiles in the packed mip tail of layer zero. When the tiling
+    /// reports a shared tail this maps the tail for every array layer.
     pub fn packed_tail(tail: SparsePackedMipTail) -> Self {
         Self {
+            aspect: None,
             mip: tail.first_mip,
             layer: 0,
             origin: [0, 0, 0],
             count: [tail.tile_count, 1, 1],
+        }
+    }
+    /// Selects the packed tail of an explicitly reported native aspect group.
+    pub fn packed_tail_for(aspect: TextureAspects, tail: SparsePackedMipTail) -> Self {
+        Self {
+            aspect: Some(aspect),
+            ..Self::packed_tail(tail)
         }
     }
 }

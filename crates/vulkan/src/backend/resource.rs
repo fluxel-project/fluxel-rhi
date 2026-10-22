@@ -11,13 +11,18 @@
 
 use std::sync::Arc;
 
-mod allocation;
+pub(super) mod allocation;
+mod support;
 pub(super) use allocation::allocate_with_address;
 pub(super) use allocation::format;
 use allocation::*;
+pub(super) use support::{buffer_support, texture_support};
 
-pub(super) fn sparse_image_usage(usage: api::TextureUsage) -> Result<vk::ImageUsageFlags> {
-    image_usage(usage, false)
+pub(super) fn sparse_image_usage(
+    usage: api::TextureUsage,
+    format: api::TextureFormat,
+) -> Result<vk::ImageUsageFlags> {
+    image_usage(usage, is_depth(format))
 }
 
 use ash::vk;
@@ -33,6 +38,9 @@ pub(super) struct BufferState {
     pub(super) memory: vk::DeviceMemory,
     pub(super) size: u64,
     pub(super) usage: api::BufferUsage,
+    pub(super) heap: Option<super::memory::VulkanHeap>,
+    pub(super) memory_offset: u64,
+    pub(super) map_state: Arc<super::mapping::MappingState>,
 }
 impl VulkanBuffer {
     pub(super) fn device_address(&self) -> Result<vk::DeviceAddress> {
@@ -61,7 +69,9 @@ impl Drop for BufferState {
         // all submitted encoders retain VulkanBuffer until their fence retires.
         unsafe {
             self.device.device.destroy_buffer(self.buffer, None);
-            self.device.device.free_memory(self.memory, None);
+            if self.heap.is_none() {
+                self.device.device.free_memory(self.memory, None);
+            }
         }
     }
 }
@@ -80,6 +90,7 @@ pub(super) struct TextureState {
     pub(super) device: Arc<DeviceState>,
     pub(super) image: vk::Image,
     pub(super) memory: Option<vk::DeviceMemory>,
+    pub(super) heap: Option<super::memory::VulkanHeap>,
     pub(super) sparse: Option<super::sparse::SparseTextureState>,
     pub(super) desc: api::TextureDesc,
 }
@@ -89,7 +100,7 @@ impl Drop for TextureState {
         // VulkanTexture, so every view is destroyed before this allocation.
         unsafe {
             self.device.device.destroy_image(self.image, None);
-            if let Some(memory) = self.memory {
+            if let Some(memory) = self.memory.filter(|_| self.heap.is_none()) {
                 self.device.device.free_memory(memory, None);
             }
         }
@@ -111,6 +122,15 @@ impl VulkanTextureView {
     pub(super) fn dimension(&self) -> api::TextureViewDimension {
         self.0.desc.dimension
     }
+    pub(super) fn aspects(&self) -> api::TextureAspects {
+        self.0.desc.aspects
+    }
+    pub(super) fn mip_range(&self) -> std::ops::Range<u32> {
+        self.0.desc.mips.clone()
+    }
+    pub(super) fn layer_range(&self) -> std::ops::Range<u32> {
+        self.0.desc.layers.clone()
+    }
     pub(super) fn samples(&self) -> u32 {
         self.0.texture.0.desc.samples
     }
@@ -131,7 +151,7 @@ impl VulkanTextureView {
             && (view.dimension == api::TextureViewDimension::D2
                 || view.dimension == api::TextureViewDimension::D2Array)
             || layers > 1 && view.dimension == api::TextureViewDimension::D2Array)
-            || view.aspects != aspects
+            || view.aspects.0 & aspects.0 != aspects.0
             || view.mips.end != view.mips.start.checked_add(1)?
             || view.layers.end.checked_sub(view.layers.start)? < layers
             || !texture.usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
@@ -169,186 +189,28 @@ impl VulkanSampler {
     pub(super) fn native(&self) -> vk::Sampler {
         self.0.sampler
     }
+    pub(super) fn integer_native(&self) -> vk::Sampler {
+        self.0.integer_sampler
+    }
 }
 struct SamplerState {
     device: Arc<DeviceState>,
     pub(super) sampler: vk::Sampler,
+    integer_sampler: vk::Sampler,
 }
 impl Drop for SamplerState {
     fn drop(&mut self) {
         // SAFETY: SamplerState is the final owner and retains the live device.
-        unsafe { self.device.device.destroy_sampler(self.sampler, None) }
+        unsafe {
+            self.device.device.destroy_sampler(self.sampler, None);
+            self.device
+                .device
+                .destroy_sampler(self.integer_sampler, None);
+        }
     }
 }
 
-pub(super) fn buffer_support(
-    device: &VulkanDevice,
-    desc: &api::BufferDesc,
-) -> api::Support<api::BufferSupport> {
-    if desc.size == 0 || desc.usage.0 == 0 {
-        return api::Support::Unsupported("zero-sized Vulkan buffers");
-    }
-    if desc.usage.0 & !SUPPORTED_BUFFER_USAGE != 0 {
-        return api::Support::Unsupported("Vulkan buffer usage");
-    }
-    let ray_usage = api::BufferUsage::ACCEL_BUILD_INPUT.0
-        | api::BufferUsage::ACCEL_SCRATCH.0
-        | api::BufferUsage::SHADER_TABLE.0;
-    if desc.usage.0 & ray_usage != 0 && !device.0.ray_support.acceleration {
-        return api::Support::Unsupported("Vulkan acceleration structure buffers");
-    }
-    if desc.usage.contains(api::BufferUsage::SHADER_TABLE) && !device.0.ray_support.pipeline {
-        return api::Support::Unsupported("Vulkan ray pipeline buffers");
-    }
-    // SAFETY: DeviceState retains both instance and the selected physical
-    // device for this read-only capability query.
-    let limits = unsafe {
-        device
-            .0
-            .instance
-            .instance
-            .get_physical_device_properties(device.0.physical)
-    }
-    .limits;
-    let max_size = if desc.usage.contains(api::BufferUsage::UNIFORM) {
-        u64::from(limits.max_uniform_buffer_range)
-    } else {
-        // Vulkan has no single max-buffer-size limit.  Storage range is the
-        // tightest range this backend can currently expose, so report it as a
-        // conservative limit rather than inventing a larger value.
-        u64::from(limits.max_storage_buffer_range)
-    };
-    if desc.size > max_size {
-        return api::Support::Unsupported("Vulkan buffer range limit");
-    }
-    api::Support::Supported(api::BufferSupport {
-        alignment: if desc.usage.contains(api::BufferUsage::UNIFORM) {
-            u64::from(limits.min_uniform_buffer_offset_alignment.max(1))
-        } else {
-            1
-        },
-        max_size,
-    })
-}
-
-pub(super) fn texture_support(
-    device: &VulkanDevice,
-    desc: &api::TextureDesc,
-) -> api::Support<api::TextureSupport> {
-    if desc.dimension != api::TextureDimension::D2
-        || desc.extent[0] == 0
-        || desc.extent[1] == 0
-        || desc.extent[2] != 1
-        || desc.array_layers == 0
-        || desc.mip_levels == 0
-        || desc.samples == 0
-        || desc.usage.0 == 0
-    {
-        return api::Support::Unsupported("Vulkan 2D texture descriptor");
-    }
-    if desc.usage.0 & !SUPPORTED_TEXTURE_USAGE != 0 {
-        return api::Support::Unsupported("Vulkan texture usage");
-    }
-    if desc
-        .view_formats
-        .iter()
-        .any(|&format| format != desc.format)
-    {
-        return api::Support::Unsupported("Vulkan mutable texture view format");
-    }
-    let Some(format) = format(desc.format) else {
-        return api::Support::Unsupported("Vulkan texture format");
-    };
-    // SAFETY: the retained instance and physical device outlive this read-only
-    // query.
-    let properties = unsafe {
-        device
-            .0
-            .instance
-            .instance
-            .get_physical_device_properties(device.0.physical)
-    };
-    let limits = properties.limits;
-    if desc.extent[0] > limits.max_image_dimension2_d
-        || desc.extent[1] > limits.max_image_dimension2_d
-        || desc.array_layers > limits.max_image_array_layers
-        || desc.mip_levels > max_mips(desc.extent[0].max(desc.extent[1]))
-    {
-        return api::Support::Unsupported("Vulkan texture dimension limit");
-    }
-    // SAFETY: as above, this only queries format properties of the retained
-    // selected physical device.
-    let features = unsafe {
-        device
-            .0
-            .instance
-            .instance
-            .get_physical_device_format_properties(device.0.physical, format)
-    }
-    .optimal_tiling_features;
-    let depth = is_depth(desc.format);
-    if (desc.usage.contains(api::TextureUsage::TEXTURE_BINDING)
-        && !features.contains(vk::FormatFeatureFlags::SAMPLED_IMAGE))
-        || (desc.usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
-            && !(if depth {
-                features.contains(vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT)
-            } else {
-                features.contains(vk::FormatFeatureFlags::COLOR_ATTACHMENT)
-            }))
-        || (desc.usage.contains(api::TextureUsage::STORAGE_BINDING)
-            && !features.contains(vk::FormatFeatureFlags::STORAGE_IMAGE))
-    {
-        return api::Support::Unsupported("Vulkan texture format usage");
-    }
-    let Ok(usage) = image_usage(desc.usage, depth) else {
-        return api::Support::Unsupported("Vulkan texture usage");
-    };
-    // SAFETY: `format` and `usage` were derived from the validated descriptor;
-    // the device retains the queried instance and physical device.
-    let Ok(image_properties) = (unsafe {
-        device
-            .0
-            .instance
-            .instance
-            .get_physical_device_image_format_properties(
-                device.0.physical,
-                format,
-                vk::ImageType::TYPE_2D,
-                vk::ImageTiling::OPTIMAL,
-                usage,
-                vk::ImageCreateFlags::empty(),
-            )
-    }) else {
-        return api::Support::Unsupported("Vulkan texture format usage");
-    };
-    if desc.extent[0] > image_properties.max_extent.width
-        || desc.extent[1] > image_properties.max_extent.height
-        || desc.array_layers > image_properties.max_array_layers
-        || desc.mip_levels > image_properties.max_mip_levels
-    {
-        return api::Support::Unsupported("Vulkan texture format limit");
-    }
-    let sample_counts = sample_counts(image_properties.sample_counts);
-    if !sample_counts.contains(&desc.samples) {
-        return api::Support::Unsupported("Vulkan texture sample count");
-    }
-    api::Support::Supported(api::TextureSupport {
-        max_extent: [
-            image_properties.max_extent.width,
-            image_properties.max_extent.height,
-            image_properties.max_extent.depth,
-        ],
-        max_array_layers: image_properties.max_array_layers,
-        max_mips: image_properties.max_mip_levels,
-        sample_counts,
-        compatible_view_formats: vec![desc.format],
-        filterable: features.contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR),
-        blendable: features.contains(vk::FormatFeatureFlags::COLOR_ATTACHMENT_BLEND),
-        storage: features.contains(vk::FormatFeatureFlags::STORAGE_IMAGE),
-    })
-}
-
-pub(super) fn create_buffer(device: &VulkanDevice, desc: &api::BufferDesc) -> Result<VulkanBuffer> {
+pub(super) fn unbound_buffer(device: &VulkanDevice, desc: &api::BufferDesc) -> Result<vk::Buffer> {
     if !matches!(buffer_support(device, desc), api::Support::Supported(_)) {
         return Err(Error::Unsupported("Vulkan buffer descriptor"));
     }
@@ -359,12 +221,37 @@ pub(super) fn create_buffer(device: &VulkanDevice, desc: &api::BufferDesc) -> Re
         .sharing_mode(vk::SharingMode::EXCLUSIVE);
     // SAFETY: `info` is fully initialized from a supported descriptor and the
     // logical device remains alive through DeviceState.
-    let buffer = unsafe { device.0.device.create_buffer(&info, None) }.map_err(vk_error)?;
+    unsafe { device.0.device.create_buffer(&info, None) }.map_err(vk_error)
+}
+
+pub(super) fn create_buffer(device: &VulkanDevice, desc: &api::BufferDesc) -> Result<VulkanBuffer> {
+    let buffer = unbound_buffer(device, desc)?;
     // SAFETY: `buffer` was just created on this device and is unpublished.
-    let requirements = unsafe { device.0.device.get_buffer_memory_requirements(buffer) };
-    let address = usage.contains(vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
-    let memory = allocate_with_address(device, requirements, memory_flags(desc.memory), address)
-        .inspect_err(|_| unsafe { device.0.device.destroy_buffer(buffer, None) })?;
+    let mut dedicated = vk::MemoryDedicatedRequirements::default();
+    let mut requirements2 = vk::MemoryRequirements2::default().push_next(&mut dedicated);
+    // SAFETY: the unpublished buffer and output chain belong to this device.
+    unsafe {
+        device.0.device.get_buffer_memory_requirements2(
+            &vk::BufferMemoryRequirementsInfo2::default().buffer(buffer),
+            &mut requirements2,
+        )
+    };
+    let requirements = requirements2.memory_requirements;
+    let address = buffer_usage(desc.usage)?.contains(vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
+    let dedicated_buffer = (dedicated.requires_dedicated_allocation == vk::TRUE)
+        .then_some((buffer, vk::Image::null()));
+    let mut memory_properties = memory_flags(desc.memory);
+    if desc.usage.0 & (api::BufferUsage::MAP_READ.0 | api::BufferUsage::MAP_WRITE.0) != 0 {
+        memory_properties |= vk::MemoryPropertyFlags::HOST_VISIBLE;
+    }
+    let (memory, flags) = allocate_resource(
+        device,
+        requirements,
+        memory_properties,
+        address,
+        dedicated_buffer,
+    )
+    .inspect_err(|_| unsafe { device.0.device.destroy_buffer(buffer, None) })?;
     // SAFETY: allocation requirements selected this memory type and size; both
     // handles are unpublished, so the error path can destroy them immediately.
     unsafe { device.0.device.bind_buffer_memory(buffer, memory, 0) }.map_err(|error| {
@@ -380,25 +267,38 @@ pub(super) fn create_buffer(device: &VulkanDevice, desc: &api::BufferDesc) -> Re
         memory,
         size: desc.size,
         usage: desc.usage,
+        heap: None,
+        memory_offset: 0,
+        map_state: super::mapping::MappingState::new(requirements.size, flags),
     })))
 }
 
-pub(super) fn create_texture(
+pub(super) fn unbound_texture(
     device: &VulkanDevice,
     desc: &api::TextureDesc,
-) -> Result<VulkanTexture> {
+    alias: bool,
+) -> Result<vk::Image> {
     if !matches!(texture_support(device, desc), api::Support::Supported(_)) {
         return Err(Error::Unsupported("Vulkan texture descriptor"));
     }
-    let format = format(desc.format).ok_or(Error::Unsupported("Vulkan texture format"))?;
+    let format =
+        native_format(&device.0, desc.format).ok_or(Error::Unsupported("Vulkan texture format"))?;
     let usage = image_usage(desc.usage, is_depth(desc.format))?;
     let info = vk::ImageCreateInfo::default()
-        .image_type(vk::ImageType::TYPE_2D)
+        .flags(
+            image_flags(desc)
+                | if alias {
+                    vk::ImageCreateFlags::ALIAS
+                } else {
+                    vk::ImageCreateFlags::empty()
+                },
+        )
+        .image_type(image_type(desc.dimension))
         .format(format)
         .extent(vk::Extent3D {
             width: desc.extent[0],
             height: desc.extent[1],
-            depth: 1,
+            depth: desc.extent[2],
         })
         .mip_levels(desc.mip_levels)
         .array_layers(desc.array_layers)
@@ -408,11 +308,35 @@ pub(super) fn create_texture(
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .initial_layout(vk::ImageLayout::UNDEFINED);
     // SAFETY: `info` was built from a supported descriptor on the live device.
-    let image = unsafe { device.0.device.create_image(&info, None) }.map_err(vk_error)?;
+    unsafe { device.0.device.create_image(&info, None) }.map_err(vk_error)
+}
+
+pub(super) fn create_texture(
+    device: &VulkanDevice,
+    desc: &api::TextureDesc,
+) -> Result<VulkanTexture> {
+    let image = unbound_texture(device, desc, false)?;
     // SAFETY: `image` is newly created and has not escaped this function.
-    let requirements = unsafe { device.0.device.get_image_memory_requirements(image) };
-    let memory = allocate(device, requirements, vk::MemoryPropertyFlags::DEVICE_LOCAL)
-        .inspect_err(|_| unsafe { device.0.device.destroy_image(image, None) })?;
+    let mut dedicated = vk::MemoryDedicatedRequirements::default();
+    let mut requirements2 = vk::MemoryRequirements2::default().push_next(&mut dedicated);
+    // SAFETY: the unpublished image and output chain belong to this device.
+    unsafe {
+        device.0.device.get_image_memory_requirements2(
+            &vk::ImageMemoryRequirementsInfo2::default().image(image),
+            &mut requirements2,
+        )
+    };
+    let requirements = requirements2.memory_requirements;
+    let dedicated_image = (dedicated.requires_dedicated_allocation == vk::TRUE)
+        .then_some((vk::Buffer::null(), image));
+    let (memory, _) = allocate_resource(
+        device,
+        requirements,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        false,
+        dedicated_image,
+    )
+    .inspect_err(|_| unsafe { device.0.device.destroy_image(image, None) })?;
     // SAFETY: requirements guided allocation and neither handle is published
     // until this bind succeeds; failure cleanup therefore cannot race GPU use.
     unsafe { device.0.device.bind_image_memory(image, memory, 0) }.map_err(|error| {
@@ -426,6 +350,7 @@ pub(super) fn create_texture(
         device: device.0.clone(),
         image,
         memory: Some(memory),
+        heap: None,
         sparse: None,
         desc: desc.clone(),
     })))
@@ -443,27 +368,63 @@ pub(super) fn create_view(
     {
         return Err(Error::InvalidRange);
     }
-    if desc.format != texture.0.desc.format {
+    if desc.format != texture.0.desc.format && !texture.0.desc.view_formats.contains(&desc.format) {
         return Err(Error::Unsupported("Vulkan mutable texture view format"));
     }
-    let format = format(desc.format).ok_or(Error::Unsupported("Vulkan texture view format"))?;
-    let view_type = match desc.dimension {
-        api::TextureViewDimension::D2 if desc.layers.end - desc.layers.start == 1 => {
+    let format = native_format(&device.0, desc.format)
+        .ok_or(Error::Unsupported("Vulkan texture view format"))?;
+    let count = desc.layers.end - desc.layers.start;
+    let view_type = match (texture.0.desc.dimension, desc.dimension) {
+        (api::TextureDimension::D1, api::TextureViewDimension::D1) if count == 1 => {
+            vk::ImageViewType::TYPE_1D
+        }
+        (api::TextureDimension::D2, api::TextureViewDimension::D2) if count == 1 => {
             vk::ImageViewType::TYPE_2D
         }
-        api::TextureViewDimension::D2Array => vk::ImageViewType::TYPE_2D_ARRAY,
+        (api::TextureDimension::D2, api::TextureViewDimension::D2Array) => {
+            vk::ImageViewType::TYPE_2D_ARRAY
+        }
+        (api::TextureDimension::D2, api::TextureViewDimension::Cube)
+            if count == 6
+                && image_flags(&texture.0.desc).contains(vk::ImageCreateFlags::CUBE_COMPATIBLE) =>
+        {
+            vk::ImageViewType::CUBE
+        }
+        (api::TextureDimension::D2, api::TextureViewDimension::CubeArray)
+            if count % 6 == 0
+                && device.0.features.image_cube_array == vk::TRUE
+                && image_flags(&texture.0.desc).contains(vk::ImageCreateFlags::CUBE_COMPATIBLE) =>
+        {
+            vk::ImageViewType::CUBE_ARRAY
+        }
+        (api::TextureDimension::D3, api::TextureViewDimension::D3) if count == 1 => {
+            vk::ImageViewType::TYPE_3D
+        }
         _ => return Err(Error::Unsupported("Vulkan texture view dimension")),
     };
-    if is_depth(desc.format) != (desc.aspects == api::TextureAspects::DEPTH) {
-        return Err(Error::Unsupported("Vulkan texture view aspect"));
-    }
-    let aspect = if desc.aspects == api::TextureAspects::COLOR {
-        vk::ImageAspectFlags::COLOR
-    } else if desc.aspects == api::TextureAspects::DEPTH {
-        vk::ImageAspectFlags::DEPTH
-    } else {
-        return Err(Error::Unsupported("Vulkan texture aspect"));
+    let allowed = match desc.format {
+        api::TextureFormat::Depth16Unorm
+        | api::TextureFormat::Depth24Plus
+        | api::TextureFormat::Depth32Float => api::TextureAspects::DEPTH.0,
+        api::TextureFormat::Depth24PlusStencil8 | api::TextureFormat::Depth32FloatStencil8 => {
+            api::TextureAspects::DEPTH.0 | api::TextureAspects::STENCIL.0
+        }
+        api::TextureFormat::Stencil8 => api::TextureAspects::STENCIL.0,
+        _ => api::TextureAspects::COLOR.0,
     };
+    if desc.aspects.0 == 0 || desc.aspects.0 & !allowed != 0 {
+        return Err(Error::InvalidRange);
+    }
+    let mut aspect = vk::ImageAspectFlags::empty();
+    if desc.aspects.0 & api::TextureAspects::COLOR.0 != 0 {
+        aspect |= vk::ImageAspectFlags::COLOR;
+    }
+    if desc.aspects.0 & api::TextureAspects::DEPTH.0 != 0 {
+        aspect |= vk::ImageAspectFlags::DEPTH;
+    }
+    if desc.aspects.0 & api::TextureAspects::STENCIL.0 != 0 {
+        aspect |= vk::ImageAspectFlags::STENCIL;
+    }
     let range = vk::ImageSubresourceRange {
         aspect_mask: aspect,
         base_mip_level: desc.mips.start,
@@ -486,17 +447,72 @@ pub(super) fn create_view(
     })))
 }
 
+/// Create an internal 2D attachment view of one 3D image slice.
+pub(super) fn create_slice_view(
+    device: &VulkanDevice,
+    texture: &VulkanTexture,
+    mip: u32,
+    slice: u32,
+    aspects: api::TextureAspects,
+) -> Result<VulkanTextureView> {
+    let desc = &texture.0.desc;
+    if desc.dimension != api::TextureDimension::D3
+        || mip >= desc.mip_levels
+        || slice >= (desc.extent[2] >> mip).max(1)
+        || !desc.usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
+    {
+        return Err(Error::InvalidRange);
+    }
+    let mut aspect = vk::ImageAspectFlags::empty();
+    if aspects.0 & api::TextureAspects::COLOR.0 != 0 {
+        aspect |= vk::ImageAspectFlags::COLOR;
+    }
+    if aspects.0 & api::TextureAspects::DEPTH.0 != 0 {
+        aspect |= vk::ImageAspectFlags::DEPTH;
+    }
+    if aspects.0 & api::TextureAspects::STENCIL.0 != 0 {
+        aspect |= vk::ImageAspectFlags::STENCIL;
+    }
+    if aspect.is_empty() {
+        return Err(Error::InvalidRange);
+    }
+    let range = vk::ImageSubresourceRange {
+        aspect_mask: aspect,
+        base_mip_level: mip,
+        level_count: 1,
+        base_array_layer: slice,
+        layer_count: 1,
+    };
+    let info = vk::ImageViewCreateInfo::default()
+        .image(texture.0.image)
+        .view_type(vk::ImageViewType::TYPE_2D)
+        .format(
+            native_format(&device.0, desc.format)
+                .ok_or(Error::Unsupported("Vulkan texture format"))?,
+        )
+        .subresource_range(range);
+    // SAFETY: the image has 2D-array compatibility and the selected mip and
+    // depth slice are in bounds; the returned view retains the image.
+    let view = unsafe { device.0.device.create_image_view(&info, None) }.map_err(vk_error)?;
+    Ok(VulkanTextureView(Arc::new(TextureViewState {
+        texture: texture.clone(),
+        view,
+        desc: api::TextureViewDesc {
+            format: desc.format,
+            dimension: api::TextureViewDimension::D2,
+            aspects,
+            mips: mip..mip + 1,
+            layers: slice..slice + 1,
+        },
+    })))
+}
+
 pub(super) fn create_sampler(
     device: &VulkanDevice,
     desc: &api::SamplerDesc,
 ) -> Result<VulkanSampler> {
-    if desc.compare.is_some() {
-        return Err(Error::Unsupported("Vulkan comparison sampler"));
-    }
-    if desc.anisotropy == 0 || desc.anisotropy > 16 {
-        return Err(Error::Unsupported(
-            "Vulkan sampler anisotropy outside 1..=16",
-        ));
+    if desc.anisotropy == 0 {
+        return Err(Error::InvalidRange);
     }
     if desc.anisotropy > 1 {
         if !device.0.sampler_anisotropy
@@ -506,26 +522,30 @@ pub(super) fn create_sampler(
                 "Vulkan sampler anisotropy exceeds device support",
             ));
         }
-        if desc.min_filter != api::FilterMode::Linear
-            || desc.mag_filter != api::FilterMode::Linear
-            || desc.mip_filter != api::FilterMode::Linear
-        {
-            return Err(Error::Unsupported(
-                "Vulkan anisotropic sampler requires linear min/mag/mip filtering",
-            ));
-        }
     }
     let clamp_to_border = desc
         .address
         .iter()
         .any(|mode| matches!(mode, api::AddressMode::ClampToBorder));
+    let clamp_to_zero = desc.address.contains(&api::AddressMode::ClampToZero);
+    if clamp_to_zero
+        && clamp_to_border
+        && !matches!(
+            desc.border,
+            Some(api::BorderColor::TransparentBlack | api::BorderColor::ZeroInteger)
+        )
+    {
+        return Err(Error::Unsupported(
+            "Vulkan sampler has incompatible border colors",
+        ));
+    }
     let border = match (clamp_to_border, desc.border) {
         (true, Some(api::BorderColor::TransparentBlack)) => {
             vk::BorderColor::FLOAT_TRANSPARENT_BLACK
         }
         (true, Some(api::BorderColor::OpaqueBlack)) => vk::BorderColor::FLOAT_OPAQUE_BLACK,
         (true, Some(api::BorderColor::OpaqueWhite)) => vk::BorderColor::FLOAT_OPAQUE_WHITE,
-        (true, Some(api::BorderColor::ZeroInteger)) => vk::BorderColor::INT_TRANSPARENT_BLACK,
+        (true, Some(api::BorderColor::ZeroInteger)) => vk::BorderColor::FLOAT_TRANSPARENT_BLACK,
         (true, None) => return Err(Error::InvalidState),
         (false, Some(_)) => return Err(Error::InvalidState),
         (false, None) => vk::BorderColor::FLOAT_TRANSPARENT_BLACK,
@@ -545,12 +565,98 @@ pub(super) fn create_sampler(
         .max_lod(desc.lod.end)
         .max_anisotropy(f32::from(desc.anisotropy))
         .anisotropy_enable(desc.anisotropy > 1)
+        .compare_enable(desc.compare.is_some())
+        .compare_op(match desc.compare.unwrap_or(api::CompareFunction::Always) {
+            api::CompareFunction::Never => vk::CompareOp::NEVER,
+            api::CompareFunction::Less => vk::CompareOp::LESS,
+            api::CompareFunction::Equal => vk::CompareOp::EQUAL,
+            api::CompareFunction::LessEqual => vk::CompareOp::LESS_OR_EQUAL,
+            api::CompareFunction::Greater => vk::CompareOp::GREATER,
+            api::CompareFunction::NotEqual => vk::CompareOp::NOT_EQUAL,
+            api::CompareFunction::GreaterEqual => vk::CompareOp::GREATER_OR_EQUAL,
+            api::CompareFunction::Always => vk::CompareOp::ALWAYS,
+        })
         .border_color(border);
     // SAFETY: all fields come from the supported sampler descriptor and the
     // resulting handle is owned by the returned SamplerState.
     let sampler = unsafe { device.0.device.create_sampler(&info, None) }.map_err(vk_error)?;
+    let int_border = match border {
+        vk::BorderColor::FLOAT_OPAQUE_BLACK => vk::BorderColor::INT_OPAQUE_BLACK,
+        vk::BorderColor::FLOAT_OPAQUE_WHITE => vk::BorderColor::INT_OPAQUE_WHITE,
+        _ => vk::BorderColor::INT_TRANSPARENT_BLACK,
+    };
+    // SAFETY: this is the same valid descriptor with the matching integer border color.
+    let integer_sampler = unsafe {
+        device
+            .0
+            .device
+            .create_sampler(&info.border_color(int_border), None)
+    }
+    .map_err(|error| {
+        // SAFETY: sampler has not escaped and has no references.
+        unsafe { device.0.device.destroy_sampler(sampler, None) };
+        vk_error(error)
+    })?;
     Ok(VulkanSampler(Arc::new(SamplerState {
         device: device.0.clone(),
         sampler,
+        integer_sampler,
     })))
+}
+
+pub(super) fn image_type(dimension: api::TextureDimension) -> vk::ImageType {
+    match dimension {
+        api::TextureDimension::D1 => vk::ImageType::TYPE_1D,
+        api::TextureDimension::D2 => vk::ImageType::TYPE_2D,
+        api::TextureDimension::D3 => vk::ImageType::TYPE_3D,
+    }
+}
+
+pub(super) fn image_flags(desc: &api::TextureDesc) -> vk::ImageCreateFlags {
+    let mut flags = vk::ImageCreateFlags::empty();
+    if desc.dimension == api::TextureDimension::D2
+        && desc.extent[0] == desc.extent[1]
+        && desc.array_layers >= 6
+    {
+        flags |= vk::ImageCreateFlags::CUBE_COMPATIBLE;
+    }
+    if desc.dimension == api::TextureDimension::D3
+        && desc.usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
+    {
+        flags |= vk::ImageCreateFlags::TYPE_2D_ARRAY_COMPATIBLE;
+    }
+    if desc.view_formats.iter().any(|&f| f != desc.format) {
+        flags |= vk::ImageCreateFlags::MUTABLE_FORMAT | vk::ImageCreateFlags::EXTENDED_USAGE;
+    }
+    flags
+}
+
+/// Select one device-wide Vulkan representation for abstract Plus formats so
+/// texture views and pipeline attachment formats always agree.
+pub(super) fn native_format(device: &DeviceState, value: api::TextureFormat) -> Option<vk::Format> {
+    let (preferred, fallback) = match value {
+        api::TextureFormat::Depth24Plus => {
+            (vk::Format::X8_D24_UNORM_PACK32, vk::Format::D32_SFLOAT)
+        }
+        api::TextureFormat::Depth24PlusStencil8 => (
+            vk::Format::D24_UNORM_S8_UINT,
+            vk::Format::D32_SFLOAT_S8_UINT,
+        ),
+        _ => return format(value),
+    };
+    // SAFETY: the physical device is retained by DeviceState.
+    let properties = unsafe {
+        device
+            .instance
+            .instance
+            .get_physical_device_format_properties(device.physical, preferred)
+    };
+    if properties
+        .optimal_tiling_features
+        .contains(vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT)
+    {
+        Some(preferred)
+    } else {
+        Some(fallback)
+    }
 }

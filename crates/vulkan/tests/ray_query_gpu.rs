@@ -17,6 +17,15 @@ fn block_on<F: Future>(f: F) -> F::Output {
 
 #[test]
 fn inline_ray_query_hits_and_misses() {
+    run_ray_query(false);
+}
+
+#[test]
+fn extended_vertex_format_ray_query_hits_and_misses() {
+    run_ray_query(true);
+}
+
+fn run_ray_query(extended: bool) {
     let device = block_on(VulkanInstance::new().unwrap().open_default()).unwrap();
     if !device.capabilities().ray_query {
         eprintln!("SKIP: Vulkan ray query unavailable");
@@ -41,20 +50,47 @@ fn inline_ray_query_hits_and_misses() {
             })
             .unwrap()
     };
-    let vertices = buffer(36, BufferUsage::ACCEL_BUILD_INPUT | BufferUsage::COPY_DST);
-    let blas_desc = AccelerationDesc {
+    let vertices = buffer(48, BufferUsage::ACCEL_BUILD_INPUT | BufferUsage::COPY_DST);
+    let descriptor = |format| AccelerationDesc {
         input: AccelerationInput::Blas(vec![AccelerationGeometry::Triangles {
             vertices: vertices.clone(),
             vertex_offset: 0,
             vertex_count: 3,
-            vertex_format: VertexFormat::Float32(3),
-            stride: 12,
+            vertex_format: format,
+            stride: 16,
             indices: None,
             opaque: true,
         }]),
         fast_trace: true,
         allow_update: false,
     };
+    let format = if extended {
+        let candidates = [
+            VertexFormat::Float32(4),
+            VertexFormat::Snorm16(4),
+            VertexFormat::Snorm8(4),
+        ];
+        let mut selected = None;
+        for format in candidates {
+            let supported = match ray.sizes(&descriptor(format)) {
+                Ok(_) => true,
+                Err(Error::Unsupported(_)) => false,
+                Err(error) => panic!("unexpected ray geometry probe failure: {error:?}"),
+            };
+            eprintln!("Vulkan ray geometry {format:?}: {supported}");
+            if supported && selected.is_none() {
+                selected = Some(format);
+            }
+        }
+        let Some(format) = selected else {
+            eprintln!("SKIP extended ray geometry formats: device capability");
+            return;
+        };
+        format
+    } else {
+        VertexFormat::Float32(3)
+    };
+    let blas_desc = descriptor(format);
     let blas = ray.create_acceleration(&blas_desc).unwrap();
     let tlas_desc = AccelerationDesc {
         input: AccelerationInput::Tlas(vec![AccelerationInstance {
@@ -182,10 +218,20 @@ fn inline_ray_query_hits_and_misses() {
         })
         .unwrap();
     let mut encoder = device.encoder(lane).unwrap();
-    let bytes: Vec<_> = [-1f32, -1., 0., 1., -1., 0., 0., 1., 0.]
-        .into_iter()
-        .flat_map(f32::to_ne_bytes)
-        .collect();
+    let mut bytes = vec![0; 48];
+    let xyz = [[-1.0f32, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]];
+    for (i, position) in xyz.into_iter().enumerate() {
+        for (j, component) in position.into_iter().enumerate() {
+            match format {
+                VertexFormat::Float32(_) => bytes[i * 16 + j * 4..i * 16 + j * 4 + 4]
+                    .copy_from_slice(&component.to_ne_bytes()),
+                VertexFormat::Snorm16(_) => bytes[i * 16 + j * 2..i * 16 + j * 2 + 2]
+                    .copy_from_slice(&((component * 32767.0) as i16).to_ne_bytes()),
+                VertexFormat::Snorm8(_) => bytes[i * 16 + j] = ((component * 127.0) as i8) as u8,
+                _ => unreachable!(),
+            }
+        }
+    }
     encoder.write_buffer(&vertices, 0, &bytes).unwrap();
     let empty = BufferUses {
         stages: StageMask::EMPTY,
@@ -205,7 +251,7 @@ fn inline_ray_query_hits_and_misses() {
         .transition_resources(&[
             barrier(
                 &vertices,
-                36,
+                48,
                 BufferUses {
                     stages: StageMask::ACCELERATION,
                     accesses: AccessMask::ACCEL_READ,

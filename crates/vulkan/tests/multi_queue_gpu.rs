@@ -130,7 +130,20 @@ fn compute_producer_direct_consumer() {
         pass.finish().unwrap();
     }
     producer
-        .transition_resources(&[barrier(write, read)])
+        .transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
+            target: BufferSlice {
+                buffer: &buffer,
+                range: 0..80,
+            },
+            usage: StateTransition {
+                from: write,
+                to: read,
+            },
+            ownership: Some(OwnershipTransfer::Release {
+                from: compute,
+                to: direct,
+            }),
+        })])
         .unwrap();
     let dest = d
         .create_buffer(&BufferDesc {
@@ -141,6 +154,22 @@ fn compute_producer_direct_consumer() {
         })
         .unwrap();
     let mut consumer = d.encoder(direct).unwrap();
+    consumer
+        .transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
+            target: BufferSlice {
+                buffer: &buffer,
+                range: 0..80,
+            },
+            usage: StateTransition {
+                from: write,
+                to: read,
+            },
+            ownership: Some(OwnershipTransfer::Acquire {
+                from: compute,
+                to: direct,
+            }),
+        })])
+        .unwrap();
     consumer.copy_buffer(&buffer, 0, &dest, 0, 80).unwrap();
     let ticket = consumer.readback_buffer(&dest, 0..80).unwrap();
     let mkplan = |ordinal, lane| unsafe {
@@ -298,7 +327,7 @@ fn compute_producer_direct_consumer() {
 }
 
 #[test]
-fn compute_timestamps_and_cross_lane_rejection() {
+fn compute_timestamps_and_cross_lane_reuse() {
     let d = block(VulkanInstance::new().unwrap().open_default()).unwrap();
     if d.multi_queue().is_none() {
         return;
@@ -386,7 +415,7 @@ fn compute_timestamps_and_cross_lane_rejection() {
         )
     };
     let step = plan.step(0);
-    // SAFETY: the backend must reject the wrong-lane set before handing off this work.
+    // SAFETY: the previous use completed before this slot is reused on another lane.
     let outcome = unsafe {
         d.queue().submit(SubmitPacket {
             plan,
@@ -397,14 +426,12 @@ fn compute_timestamps_and_cross_lane_rejection() {
             completion: CompletionRequest::End,
         })
     };
-    assert!(matches!(
-        outcome,
-        SubmitOutcome::Rejected {
-            error: Error::Unsupported(_),
-            work: RetryableSubmit::Fresh(_)
-        }
-    ));
-    // The whole packet is checked before its first list is issued.
+    let point = match outcome {
+        SubmitOutcome::Accepted(r) => r.checkpoints.into_iter().next().unwrap().point,
+        _ => panic!("completed query slot reuse rejected"),
+    };
+    block(d.wait_completion(&point)).unwrap();
+    // Independent query slots can be used on distinct lanes concurrently.
     let fresh = q
         .create(&QueryDesc {
             kind: QueryKind::Timestamp,
@@ -437,7 +464,7 @@ fn compute_timestamps_and_cross_lane_rejection() {
     };
     let a = plan.step(0);
     let b = plan.step(1);
-    // SAFETY: no work is issued because the query set is used on two lanes.
+    // SAFETY: each lane writes a distinct slot and the completion joins both lanes.
     let outcome = unsafe {
         d.queue().submit(SubmitPacket {
             plan,
@@ -454,11 +481,45 @@ fn compute_timestamps_and_cross_lane_rejection() {
             completion: CompletionRequest::End,
         })
     };
-    assert!(matches!(
-        outcome,
-        SubmitOutcome::Rejected {
-            error: Error::Unsupported(_),
-            work: RetryableSubmit::Fresh(_)
-        }
-    ));
+    let point = match outcome {
+        SubmitOutcome::Accepted(r) => r.checkpoints.into_iter().next().unwrap().point,
+        _ => panic!("independent slots rejected"),
+    };
+    block(d.wait_completion(&point)).unwrap();
+    let mut e = d.encoder(direct).unwrap();
+    q.resolve(&mut e, &fresh, 0..2, &dst, 0).unwrap();
+    let ticket = e.readback_buffer(&dst, 0..16).unwrap();
+    let plan = unsafe {
+        SubmissionPlan::from_compiled(
+            PlanId {
+                device: d.id(),
+                ordinal: 98907,
+            },
+            Arc::from([StepDesc {
+                lane: direct,
+                kind: StepKind::Commands,
+                waits: vec![],
+            }]),
+        )
+    };
+    let step = plan.step(0);
+    // SAFETY: the completion above proves both writes have finished.
+    let outcome = unsafe {
+        d.queue().submit(SubmitPacket {
+            plan,
+            steps: vec![BoundStep {
+                step,
+                payload: StepPayload::Commands(vec![e.finish().unwrap()]),
+            }],
+            completion: CompletionRequest::End,
+        })
+    };
+    let point = match outcome {
+        SubmitOutcome::Accepted(r) => r.checkpoints.into_iter().next().unwrap().point,
+        _ => panic!("cross-lane query resolve rejected"),
+    };
+    block(d.wait_completion(&point)).unwrap();
+    let bytes = unsafe { block(d.read_after(ticket, &point)).unwrap().bytes };
+    assert_ne!(u64::from_ne_bytes(bytes[0..8].try_into().unwrap()), 0);
+    assert_ne!(u64::from_ne_bytes(bytes[8..16].try_into().unwrap()), 0);
 }
