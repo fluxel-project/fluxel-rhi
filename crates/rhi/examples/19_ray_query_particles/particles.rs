@@ -23,6 +23,7 @@ pub struct Simulation {
     elapsed: f32,
     last_emit: f32,
     random: u32,
+    pub emitter: [f32; 3],
 }
 impl Simulation {
     pub fn new() -> Self {
@@ -31,6 +32,7 @@ impl Simulation {
             elapsed: 0.,
             last_emit: 0.,
             random: 1,
+            emitter: [-2., 0., -2.],
         }
     }
     fn random_float(&mut self) -> f32 {
@@ -74,7 +76,7 @@ impl Simulation {
                 let rotation = self.random_float() * 6.28;
                 self.particles[index] = Particle {
                     active: true,
-                    position: [-2., 0., -2.],
+                    position: self.emitter,
                     velocity,
                     color,
                     radius,

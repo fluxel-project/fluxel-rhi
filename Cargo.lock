@@ -368,7 +368,7 @@ dependencies = [
 [[package]]
 name = "fluxel-host"
 version = "0.2.0"
-source = "git+https://github.com/fluxel-project/fluxel-host?rev=9518020ed84d2d065ad6244e4b8a56356a4e67ee#9518020ed84d2d065ad6244e4b8a56356a4e67ee"
+source = "git+https://github.com/fluxel-project/fluxel-host?rev=b310f3fac4b8319343ef13341cd284344343c2ac#b310f3fac4b8319343ef13341cd284344343c2ac"
 dependencies = [
  "raw-window-handle",
  "windows",

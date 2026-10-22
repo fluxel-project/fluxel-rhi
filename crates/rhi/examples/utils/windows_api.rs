@@ -10,9 +10,9 @@ use fluxel_rhi::api::{
 use fluxel_rhi::dx12::{Dx12, Dx12Instance};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 
-#[cfg(any(feature = "dx12", feature = "vulkan"))]
-use super::ExampleHost;
 use super::block_on;
+#[cfg(any(feature = "dx12", feature = "vulkan"))]
+use super::{ExampleHost, ExampleInputHost};
 
 #[cfg(feature = "dx12")]
 pub struct Dx12Host;
@@ -119,6 +119,7 @@ struct Application<B: WindowsBackend> {
     device: Option<Device<B>>,
     surface: Option<Surface<B>>,
     draw: Box<Draw<B>>,
+    input: Box<dyn FnMut(&WindowEvent)>,
     failure: Arc<Mutex<Option<Error>>>,
     suspended: bool,
     frames: u64,
@@ -212,6 +213,18 @@ impl<B: WindowsBackend> HostApplication for Application<B> {
     }
 
     fn window_event(&mut self, host: &mut HostContext<'_>, event: WindowEvent) {
+        if matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::CursorLeft
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::KeyboardInput { .. }
+                | WindowEvent::TextInput(_)
+                | WindowEvent::Focused(_)
+        ) {
+            (self.input)(&event);
+        }
         let result = match event {
             WindowEvent::SurfaceCreated => self.open(host),
             WindowEvent::SurfaceDestroyed => {
@@ -260,6 +273,7 @@ fn run_windows<B: WindowsBackend>(
     title: &str,
     config: SurfaceConfig,
     draw: impl FnMut(&Device<B>, &mut Surface<B>, SurfaceImage<B>, [u32; 2]) -> Result<()> + 'static,
+    input: impl FnMut(&WindowEvent) + 'static,
 ) -> Result<()> {
     let mut frame_limit = None;
     let mut args = std::env::args().skip(1);
@@ -287,6 +301,7 @@ fn run_windows<B: WindowsBackend>(
         device: None,
         surface: None,
         draw: Box::new(draw),
+        input: Box::new(input),
         failure: Arc::clone(&failure),
         suspended: false,
         frames: 0,
@@ -309,7 +324,7 @@ impl ExampleHost<Dx12> for Dx12Host {
         draw: impl FnMut(&Device<Dx12>, &mut Surface<Dx12>, SurfaceImage<Dx12>, [u32; 2]) -> Result<()>
         + 'static,
     ) -> Result<()> {
-        run_windows::<Dx12>(title, config, draw)
+        run_windows::<Dx12>(title, config, draw, |_| {})
     }
 }
 
@@ -327,6 +342,39 @@ impl ExampleHost<fluxel_rhi::vulkan::Vulkan> for VulkanHost {
         ) -> Result<()>
         + 'static,
     ) -> Result<()> {
-        run_windows::<fluxel_rhi::vulkan::Vulkan>(title, config, draw)
+        run_windows::<fluxel_rhi::vulkan::Vulkan>(title, config, draw, |_| {})
+    }
+}
+
+#[cfg(feature = "dx12")]
+impl ExampleInputHost<Dx12> for Dx12Host {
+    fn run_with_input(
+        self,
+        title: &str,
+        config: SurfaceConfig,
+        draw: impl FnMut(&Device<Dx12>, &mut Surface<Dx12>, SurfaceImage<Dx12>, [u32; 2]) -> Result<()>
+        + 'static,
+        input: impl FnMut(&WindowEvent) + 'static,
+    ) -> Result<()> {
+        run_windows::<Dx12>(title, config, draw, input)
+    }
+}
+
+#[cfg(feature = "vulkan")]
+impl ExampleInputHost<fluxel_rhi::vulkan::Vulkan> for VulkanHost {
+    fn run_with_input(
+        self,
+        title: &str,
+        config: SurfaceConfig,
+        draw: impl FnMut(
+            &Device<fluxel_rhi::vulkan::Vulkan>,
+            &mut Surface<fluxel_rhi::vulkan::Vulkan>,
+            SurfaceImage<fluxel_rhi::vulkan::Vulkan>,
+            [u32; 2],
+        ) -> Result<()>
+        + 'static,
+        input: impl FnMut(&WindowEvent) + 'static,
+    ) -> Result<()> {
+        run_windows::<fluxel_rhi::vulkan::Vulkan>(title, config, draw, input)
     }
 }

@@ -39,18 +39,18 @@ wasm-bindgen-test = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 fluxel-rhi-dx12 = { path = "../dx12", optional = true }
-fluxel-host = { git = "https://github.com/fluxel-project/fluxel-host", rev = "9518020ed84d2d065ad6244e4b8a56356a4e67ee", features = ["winit-runtime"] }
+fluxel-host = { git = "https://github.com/fluxel-project/fluxel-host", rev = "b310f3fac4b8319343ef13341cd284344343c2ac", features = ["winit-runtime"] }
 raw-window-handle = "=0.6.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-fluxel-host = { git = "https://github.com/fluxel-project/fluxel-host", rev = "9518020ed84d2d065ad6244e4b8a56356a4e67ee", features = ["winit-runtime"] }
+fluxel-host = { git = "https://github.com/fluxel-project/fluxel-host", rev = "b310f3fac4b8319343ef13341cd284344343c2ac", features = ["winit-runtime"] }
 raw-window-handle = "=0.6.2"
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 fluxel-rhi-metal = { path = "../metal", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-fluxel-host = { git = "https://github.com/fluxel-project/fluxel-host", rev = "9518020ed84d2d065ad6244e4b8a56356a4e67ee", features = ["winit-runtime"] }
+fluxel-host = { git = "https://github.com/fluxel-project/fluxel-host", rev = "b310f3fac4b8319343ef13341cd284344343c2ac", features = ["winit-runtime"] }
 raw-window-handle = "=0.6.2"
 objc2 = "=0.6.3"
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSResponder", "NSView", "objc2-quartz-core"] }

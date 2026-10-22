@@ -33,6 +33,13 @@ fixed frames to the native triangle/AABB RHI output yields mean RGB errors
 of 0.885, 0.949 and 0.855 outside the UI. DXR permits stride 0, so this
 observation does not assign responsibility to the driver or sample.
 
+The later [camera precision](demo19-camera-precision/report.md) and
+[interactive panel](demo19-interactive/report.md) packets retain DX12 and
+Vulkan fixed-frame and live-input evidence. Camera constants lower the
+UI-free mean RGB errors to 0.877, 0.940 and 0.846. The live panel handles
+real host input and several source controls, but its appearance and camera
+interaction are still incomplete; the example is not a pixel-exact recreation.
+
 The remaining files in this directory are **pre-freeze working-tree evidence**. The source tree was based on `0b70fa880a44b588efe3758044e604aa3cf7c855` and continued to change during collection. Those screenshots, builds and tests cannot be attributed to a single final commit. `files.json` records SHA-256, byte size and the original local path of each copied artifact; paths inside copied reports refer to the local archive and are retained as historical provenance.
 
 Windows runs used an AMD Radeon 780M, driver 32.0.21028.2002; Vulkan reports driver 25.10.28.02 (LLPC), Vulkan 1.4.315. The Vulkan focused log contains validation-enabled real GPU fixtures; it is not a substitute for the final candidate. Full resolution readback PPMs, unmodified reference captures, executables, build logs and the detailed capture inputs remain in the local verification and evidence directories at the original paths in `files.json` and the copied reports. Contact or window images alone do not establish readback equality.

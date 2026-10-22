@@ -18,7 +18,7 @@ fluxel-rhi-core = { path = "../core" }
 raw-window-handle = "=0.6.2"
 
 [dev-dependencies]
-fluxel-host = { git = "https://github.com/fluxel-project/fluxel-host", rev = "9518020ed84d2d065ad6244e4b8a56356a4e67ee", features = ["winit-runtime"] }
+fluxel-host = { git = "https://github.com/fluxel-project/fluxel-host", rev = "b310f3fac4b8319343ef13341cd284344343c2ac", features = ["winit-runtime"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "=0.62.2", features = [

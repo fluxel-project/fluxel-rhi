@@ -121,7 +121,7 @@ where
         return Err(Error::InvalidState);
     }
     smoke_data.truncate(info.buffer_size());
-    let smoke_data = super::texture::smoke_mips(smoke_data);
+    let smoke_data = super::texture::particle_mips(smoke_data).map_err(Error::Backend)?;
     let smoke = buffer(
         smoke_data.len() as u64,
         BufferUsage::STORAGE | BufferUsage::COPY_DST,
@@ -193,9 +193,25 @@ where
         BufferUsage::STORAGE | BufferUsage::COPY_DST,
     )?;
     let constants = buffer(256, BufferUsage::UNIFORM | BufferUsage::COPY_DST)?;
+    let ui_size: u64 = 4;
+    let ui_buffer = buffer(ui_size, BufferUsage::STORAGE | BufferUsage::COPY_DST)?;
     let mut cb = bytes(&[
-        1.987, 4.052, 1.987, 0., -0.66446, -0.34202, -0.66446, 0., 0.7071, 0., -0.7071, 0.,
-        -0.24184, 0.93969, -0.24184, 0.,
+        1.9867786,
+        4.052121,
+        1.9867786,
+        0.,
+        -0.66446304,
+        -0.34202015,
+        -0.66446304,
+        0.,
+        0.70710677,
+        0.,
+        -0.70710677,
+        0.,
+        -0.24184476,
+        0.9396926,
+        -0.24184476,
+        0.,
     ]);
     for n in [WIDTH, HEIGHT, count, 0, 0, 0, 0, 0, 0, 0, 0, 0] {
         cb.extend_from_slice(&n.to_ne_bytes());
@@ -231,7 +247,7 @@ where
     let particle_blas = ray.create_acceleration(&particle_desc)?;
     let ps = ray.sizes(&particle_desc)?;
     let pscratch = buffer(ps.scratch_bytes, BufferUsage::ACCEL_SCRATCH)?;
-    let quad_data = bytes(&super::particle_acceleration::quad_vertices(sim));
+    let quad_data = bytes(&super::particle_acceleration::quad_vertices(sim, false));
     let quad_buffer = buffer(
         quad_data.len() as u64,
         BufferUsage::ACCEL_BUILD_INPUT | BufferUsage::COPY_DST,
@@ -326,6 +342,7 @@ where
             ),
             entry(5, storage(environment_data.len() as u64)),
             entry(6, storage(smoke_data.len() as u64)),
+            entry(7, storage(ui_size)),
         ],
     })?;
     let group = device.create_bind_group(&BindGroupDesc {
@@ -376,6 +393,14 @@ where
                 resource: BindingResource::StorageBufferView {
                     buffer: &smoke,
                     range: 0..smoke_data.len() as u64,
+                    view: StorageBufferView::Structured { stride: 4 },
+                },
+            },
+            BindGroupEntry {
+                binding: 7,
+                resource: BindingResource::StorageBufferView {
+                    buffer: &ui_buffer,
+                    range: 0..ui_size,
                     view: StorageBufferView::Structured { stride: 4 },
                 },
             },
@@ -431,6 +456,7 @@ where
     enc.write_buffer(&constants, 0, &cb)?;
     enc.write_buffer(&environment, 0, &environment_data)?;
     enc.write_buffer(&smoke, 0, &smoke_data)?;
+    enc.write_buffer(&ui_buffer, 0, &[0; 4])?;
     let empty = BufferUses {
         stages: StageMask::EMPTY,
         accesses: AccessMask::EMPTY,
@@ -446,6 +472,14 @@ where
         })
     };
     enc.transition_resources(&[
+        barrier(
+            &ui_buffer,
+            ui_size,
+            BufferUses {
+                stages: StageMask::COMPUTE,
+                accesses: AccessMask::SHADER_READ,
+            },
+        ),
         barrier(
             &quad_buffer,
             quad_data.len() as u64,

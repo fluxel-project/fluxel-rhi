@@ -1,6 +1,5 @@
 //! Builds the smoke mip chain with linear-light RGB and linear alpha.
-pub fn smoke_mips(mut pixels: Vec<u8>) -> Vec<u8> {
-    let mut width = 512usize;
+fn mips(mut pixels: Vec<u8>, mut width: usize) -> Vec<u8> {
     let mut all = pixels.clone();
     while width > 1 {
         let next_width = width / 2;
@@ -41,4 +40,26 @@ pub fn smoke_mips(mut pixels: Vec<u8>) -> Vec<u8> {
         width = next_width;
     }
     all
+}
+
+/// The shader addresses the smoke and NVIDIA logo mip chains in one buffer.
+pub fn particle_mips(smoke: Vec<u8>) -> Result<Vec<u8>, String> {
+    let mut all = mips(smoke, 512);
+    let decoder = png::Decoder::new(std::io::Cursor::new(include_bytes!(
+        "../assets/19_ray_query_particles/nvidia-logo.png"
+    )));
+    let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
+    let mut raw = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut raw).map_err(|e| e.to_string())?;
+    if (info.width, info.height, info.color_type, info.bit_depth)
+        != (768, 768, png::ColorType::Rgb, png::BitDepth::Eight)
+    {
+        return Err("invalid logo texture".into());
+    }
+    let mut rgba = Vec::with_capacity(768 * 768 * 4);
+    for rgb in raw[..info.buffer_size()].chunks_exact(3) {
+        rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+    }
+    all.extend(mips(rgba, 768));
+    Ok(all)
 }

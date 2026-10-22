@@ -9,6 +9,7 @@ pub struct Live<B: ResourceBackend + PipelineBackend> {
     output: Texture<B>,
     particle: Buffer<B>,
     constants: Buffer<B>,
+    ui_buffer: Buffer<B>,
     pipeline: ComputePipeline<B>,
     group: BindGroup<B>,
     blas: AccelerationStructure<B>,
@@ -22,6 +23,7 @@ pub struct Live<B: ResourceBackend + PipelineBackend> {
     tscratch: Buffer<B>,
     tscratch_size: u64,
     first: bool,
+    last_beam: bool,
     frame: u64,
 }
 impl<B> Live<B>
@@ -102,7 +104,7 @@ where
             return Err(Error::InvalidState);
         }
         smoke_data.truncate(info.buffer_size());
-        let smoke_data = super::texture::smoke_mips(smoke_data);
+        let smoke_data = super::texture::particle_mips(smoke_data).map_err(Error::Backend)?;
         let smoke = buffer(
             smoke_data.len() as u64,
             BufferUsage::STORAGE | BufferUsage::COPY_DST,
@@ -112,6 +114,8 @@ where
             BufferUsage::STORAGE | BufferUsage::COPY_DST,
         )?;
         let constants = buffer(256, BufferUsage::UNIFORM | BufferUsage::COPY_DST)?;
+        let ui_size: u64 = (super::ui::WIDTH * super::ui::HEIGHT * 4) as u64;
+        let ui_buffer = buffer(ui_size, BufferUsage::STORAGE | BufferUsage::COPY_DST)?;
         let blas_desc = AccelerationDesc {
             input: AccelerationInput::Blas(vec![AccelerationGeometry::Triangles {
                 vertices: vertex.clone(),
@@ -144,6 +148,7 @@ where
         let pscratch = buffer(ps.scratch_bytes, BufferUsage::ACCEL_SCRATCH)?;
         let quad_data = bytes(&super::particle_acceleration::quad_vertices(
             &particles::Simulation::new(),
+            false,
         ));
         let quad_buffer = buffer(
             quad_data.len() as u64,
@@ -239,6 +244,7 @@ where
                 ),
                 entry(5, storage(environment_data.len() as u64)),
                 entry(6, storage(smoke_data.len() as u64)),
+                entry(7, storage(ui_size)),
             ],
         })?;
         let group = device.create_bind_group(&BindGroupDesc {
@@ -289,6 +295,14 @@ where
                     resource: BindingResource::StorageBufferView {
                         buffer: &smoke,
                         range: 0..smoke_data.len() as u64,
+                        view: StorageBufferView::Structured { stride: 4 },
+                    },
+                },
+                BindGroupEntry {
+                    binding: 7,
+                    resource: BindingResource::StorageBufferView {
+                        buffer: &ui_buffer,
+                        range: 0..ui_size,
                         view: StorageBufferView::Structured { stride: 4 },
                     },
                 },
@@ -486,6 +500,7 @@ where
             output,
             particle,
             constants,
+            ui_buffer,
             pipeline,
             group,
             blas,
@@ -499,13 +514,14 @@ where
             tscratch,
             tscratch_size: ts.scratch_bytes,
             first: true,
+            last_beam: false,
             frame: 0,
         })
     }
     pub fn output(&self) -> &Texture<B> {
         &self.output
     }
-    pub fn render(&mut self, sim: &particles::Simulation) -> Result<()> {
+    pub fn render(&mut self, sim: &particles::Simulation, panel: &super::ui::Panel) -> Result<()> {
         let mut values = Vec::new();
         for p in sim.particles.iter().filter(|p| p.active) {
             values.extend_from_slice(&[
@@ -523,16 +539,47 @@ where
                 0.,
             ]);
         }
+        if panel.settings.animate || panel.settings.update_orientation_when_paused {
+            self.last_beam = panel.settings.orientation == super::ui::Orientation::Beam;
+        }
+        let geometry_beam = self.last_beam;
         let count = values.len() as u32 / 12;
         if values.is_empty() {
             values.resize(12, 0.);
         }
         let data = bytes(&values);
         let mut cb = bytes(&[
-            1.987, 4.052, 1.987, 0., -0.66446, -0.34202, -0.66446, 0., 0.7071, 0., -0.7071, 0.,
-            -0.24184, 0.93969, -0.24184, 0.,
+            1.9867786,
+            4.052121,
+            1.9867786,
+            0.,
+            -0.66446304,
+            -0.34202015,
+            -0.66446304,
+            0.,
+            0.70710677,
+            0.,
+            -0.70710677,
+            0.,
+            -0.24184476,
+            0.9396926,
+            -0.24184476,
+            0.,
         ]);
-        for n in [WIDTH, HEIGHT, count, 0, 0, 0, 0, 0, 0, 0, 0, 0] {
+        for n in [
+            WIDTH,
+            HEIGHT,
+            count,
+            panel.flags() | (u32::from(geometry_beam) << 8),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ] {
             cb.extend_from_slice(&n.to_ne_bytes());
         }
         cb.resize(256, 0);
@@ -560,7 +607,10 @@ where
             })
         };
         let mut enc = self.device.encoder(self.lane)?;
-        let quad_data = bytes(&super::particle_acceleration::quad_vertices(sim));
+        let quad_data = bytes(&super::particle_acceleration::quad_vertices(
+            sim,
+            geometry_beam,
+        ));
         enc.transition_resources(&[barrier(
             &self.quad_buffer,
             quad_data.len() as u64,
@@ -589,10 +639,17 @@ where
                     idle,
                 ),
                 barrier(&self.constants, 256, uniform, idle),
+                barrier(
+                    &self.ui_buffer,
+                    u64::from(super::ui::WIDTH * super::ui::HEIGHT * 4),
+                    read,
+                    idle,
+                ),
             ])?;
         }
         enc.write_buffer(&self.particle, 0, &data)?;
         enc.write_buffer(&self.constants, 0, &cb)?;
+        enc.write_buffer(&self.ui_buffer, 0, &panel.pixels())?;
         enc.transition_resources(&[
             barrier(
                 &self.particle,
@@ -601,6 +658,12 @@ where
                 read,
             ),
             barrier(&self.constants, 256, idle, uniform),
+            barrier(
+                &self.ui_buffer,
+                u64::from(super::ui::WIDTH * super::ui::HEIGHT * 4),
+                idle,
+                read,
+            ),
             ResourceTransition::Texture(TextureBarrier {
                 target: Subresources {
                     texture: &self.output,

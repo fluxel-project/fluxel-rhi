@@ -21,7 +21,7 @@ the reference UI and motion in the smoke
 region. The reference captures must have the same dimensions and fixed camera.
 
 The sample uses the original scene and environment map, smooth mesh normals,
-particle simulation and smoke texture, the default four-fragment MLAB blending,
+particle simulation, smoke and logo textures, selectable MLAB fragment counts,
 and linear-to-sRGB output conversion. This is a visual subset, not an exact
 port: primary smoke uses a dynamically rebuilt triangle BLAS and inline
 non-opaque triangle candidates. Secondary smoke uses a procedural AABB BLAS,
@@ -29,12 +29,18 @@ per-particle TLAS instances, and inline ray-query candidates. Smoke uses a
 generated linear-space mip chain and ray-footprint selection.
 On the tested AMD GPU, the unmodified NVIDIA sample's AABB stride 0 produced
 no visible secondary particle candidates. With only that reference stride set
-to 24 bytes, the three RHI frames have mean RGB errors of 0.885, 0.949 and
-0.855 outside the UI; they are still not pixel-identical. See the
+to 24 bytes, the three RHI frames have mean RGB errors of 0.877, 0.940 and
+0.846 outside the UI; they are still not pixel-identical. See the
 [source-bound comparison](../../../../documents/evidence/rhi-advanced-0.17/demo19-reference-stride/README.md).
-The sample does not implement the UI or all original material and particle
-orientation modes. DX12
-and Vulkan use adapted HLSL shaders. Set
+The live window has an interactive settings panel driven by host mouse and
+keyboard events. It supports pause, emitter dragging, particle texture,
+orientation, ray reorientation and MLAB choices, but uses a simplified bitmap
+panel instead of matching the original ImGui appearance and interactions.
+Camera controls and some source behaviors remain missing. The fixed-step
+readback mode leaves the panel disabled for scene comparison; the live input
+captures and exact source hashes are in the
+[interactive evidence](../../../../documents/evidence/rhi-advanced-0.17/demo19-interactive/report.md).
+DX12 and Vulkan use adapted HLSL shaders. Set
 `FLUXEL_RAY_QUERY_PRESENT=1` to run an animation in a window using actual
 frame durations and reuse scene resources across frames. As in the source,
 emission depends on actual frame timing. For fixed-step comparisons set

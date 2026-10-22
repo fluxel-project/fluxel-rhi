@@ -54,12 +54,16 @@ pub fn instances<B: Backend>(
 
 /// Expanded non-indexed triangles; unused slots are degenerate. Their order
 /// matches the compact particle information buffer and primitiveIndex / 2.
-pub fn quad_vertices(sim: &particles::Simulation) -> Vec<f32> {
+pub fn quad_vertices(sim: &particles::Simulation, beam: bool) -> Vec<f32> {
     let mut out = Vec::with_capacity(particles::MAX_PARTICLES * 18);
-    let camera_right = [0.7071, 0.0, -0.7071];
-    let camera_up = [-0.24184, 0.93969, -0.24184];
+    let camera_right = [0.70710677, 0.0, -0.70710677];
+    let camera_up = if beam {
+        [0., 1., 0.]
+    } else {
+        [-0.24184476, 0.9396926, -0.24184476]
+    };
     for p in sim.particles.iter().filter(|p| p.active) {
-        let (sin, cos) = p.rotation.sin_cos();
+        let (sin, cos) = if beam { (0., 1.) } else { p.rotation.sin_cos() };
         let right: [f32; 3] =
             std::array::from_fn(|i| (cos * camera_right[i] + sin * camera_up[i]) * p.radius);
         let up: [f32; 3] =

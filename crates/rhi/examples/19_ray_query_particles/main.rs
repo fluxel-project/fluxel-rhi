@@ -15,6 +15,8 @@ mod scene;
 #[cfg(windows)]
 mod texture;
 #[cfg(windows)]
+mod ui;
+#[cfg(windows)]
 #[path = "../utils/mod.rs"]
 mod utils;
 
@@ -70,7 +72,7 @@ where
         + DeferredBackend
         + ExecutionBackend<Mode = DeferredExecution>
         + 'static,
-    H: utils::ExampleHost<B>,
+    H: utils::ExampleInputHost<B>,
 {
     let config = SurfaceConfig {
         extent: [run::WIDTH, run::HEIGHT],
@@ -82,12 +84,15 @@ where
         maximum_frame_latency: 2,
     };
     let mut simulation = particles::Simulation::new();
+    let panel = std::rc::Rc::new(std::cell::RefCell::new(ui::Panel::default()));
+    let draw_panel = panel.clone();
+    let input_panel = panel;
+    let mut pointer = (0.0f32, 0.0f32);
     let mut last_frame = std::time::Instant::now();
     let mut renderer: Option<(live::Live<B>, display::Display<B>)> = None;
     let mut frame = 0u64;
     let mut elapsed = 0.0f32;
-    utils::run_example(
-        host,
+    host.run_with_input(
         "Ray Query Particles",
         config.clone(),
         move |device, _, image, extent| {
@@ -118,7 +123,11 @@ where
             let now = std::time::Instant::now();
             let delta = now.duration_since(last_frame).as_secs_f32();
             last_frame = now;
-            simulation.advance(delta);
+            let panel = draw_panel.borrow();
+            simulation.emitter = panel.settings.emitter;
+            if panel.settings.animate {
+                simulation.advance(delta);
+            }
             frame += 1;
             elapsed += delta;
             if std::env::var_os("FLUXEL_RAY_QUERY_TRACE").is_some() && frame % 30 == 0 {
@@ -128,7 +137,7 @@ where
                 );
             }
             let (live, display) = renderer.as_mut().unwrap();
-            live.render(&simulation)?;
+            live.render(&simulation, &panel)?;
             let lane = device
                 .lanes()
                 .iter()
@@ -140,6 +149,34 @@ where
             let point = utils::submit_and_present_point(device, lane, encoder.finish()?, image)?;
             utils::block_on(device.wait_completion(&point))?;
             Ok(())
+        },
+        move |event| {
+            use fluxel_host::{Key, MouseButton, WindowEvent};
+            let mut panel = input_panel.borrow_mut();
+            match event {
+                WindowEvent::CursorMoved { x, y } => {
+                    pointer = (*x as f32, *y as f32);
+                    panel.pointer_move(pointer.0, pointer.1);
+                }
+                WindowEvent::MouseInput {
+                    button: MouseButton::Left,
+                    pressed: true,
+                } => {
+                    panel.pointer_down(pointer.0, pointer.1);
+                }
+                WindowEvent::MouseInput {
+                    button: MouseButton::Left,
+                    pressed: false,
+                }
+                | WindowEvent::Focused(false)
+                | WindowEvent::CursorLeft => panel.pointer_up(),
+                WindowEvent::KeyboardInput {
+                    key: Key::Space,
+                    pressed: true,
+                    repeat: false,
+                } => panel.toggle_animation(),
+                _ => {}
+            }
         },
     )
 }

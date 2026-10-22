@@ -92,6 +92,19 @@ pub fn run_example<B: Backend, H: ExampleHost<B>>(
     host.run(title, configure, draw)
 }
 
+/// Native example host with ordered input callbacks. The callback receives
+/// input events before the next redraw and may share state with `draw`.
+#[cfg(windows)]
+pub trait ExampleInputHost<B: Backend> {
+    fn run_with_input(
+        self,
+        title: &str,
+        configure: SurfaceConfig,
+        draw: impl FnMut(&Device<B>, &mut Surface<B>, SurfaceImage<B>, [u32; 2]) -> Result<()> + 'static,
+        input: impl FnMut(&fluxel_host::WindowEvent) + 'static,
+    ) -> Result<()>;
+}
+
 /// Converts an unsupported native route to the operation the example asked
 /// for, without introducing a second dynamic error hierarchy.
 pub fn require<T>(value: Result<T>, what: &'static str) -> Result<T> {
