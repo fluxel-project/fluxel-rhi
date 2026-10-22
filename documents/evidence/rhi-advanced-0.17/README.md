@@ -1,6 +1,8 @@
 # Advanced RHI evidence: 0.17 candidate
 
-This is a **pre-freeze working-tree evidence packet**. The source tree was based on `0b70fa880a44b588efe3758044e604aa3cf7c855` and continued to change during collection. The screenshots, builds and tests here cannot be attributed to a single final commit. Before release, rerun the affected checks on the frozen candidate, record its exact commit and refresh this packet. `files.json` records SHA-256, byte size and the original local path of each copied artifact; paths inside copied reports refer to the local archive and are retained as historical provenance.
+The [source-bound verification packet](frozen-cbb7070/README.md) records GPU tests, 16–23 window runs, and readback comparisons on commit `cbb7070c9c69fe90ea5e762cf8d1bb29e8643a8a`.
+
+The remaining files in this directory are **pre-freeze working-tree evidence**. The source tree was based on `0b70fa880a44b588efe3758044e604aa3cf7c855` and continued to change during collection. Those screenshots, builds and tests cannot be attributed to a single final commit. `files.json` records SHA-256, byte size and the original local path of each copied artifact; paths inside copied reports refer to the local archive and are retained as historical provenance.
 
 Windows runs used an AMD Radeon 780M, driver 32.0.21028.2002; Vulkan reports driver 25.10.28.02 (LLPC), Vulkan 1.4.315. The Vulkan focused log contains validation-enabled real GPU fixtures; it is not a substitute for the final candidate. Full resolution readback PPMs, unmodified reference captures, executables, build logs and the detailed capture inputs remain in the local verification and evidence directories at the original paths in `files.json` and the copied reports. Contact or window images alone do not establish readback equality.
 
@@ -25,4 +27,4 @@ The copied Vulkan manifest lists additional per-example source, executable and a
 
 GPU fixture commands, shader generation checks, original capture commands, environment, diagnostics and expected results are retained in the local candidate logs and manifests. The Microsoft reference is an external checkout; the per-example asset README describes copied or adapted shaders and source. The NVIDIA source, capture script and reference images remain in the local archive at the source paths recorded in `files.json` and in the example README. Preserve those local inputs until a frozen-candidate archive supersedes them.
 
-The freeze gate still needs exact-source rebuilds and affected real GPU readbacks, surface runs, reviewed screenshots, diagnostic capture, reproducible reference commands, source and executable hashes, stable/MSRV workspace checks, independent review and final results bound to the frozen SHA. Metal has no Apple GPU acceptance in this packet.
+The source-bound packet adds exact-source rebuilds, affected GPU readbacks, surface runs, image review and diagnostics. The series still lacks Apple GPU acceptance and complete Metal mappings, so this packet is not a full 0.17 release claim.

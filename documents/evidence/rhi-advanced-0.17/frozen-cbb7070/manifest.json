@@ -1,0 +1,360 @@
+{
+  "source_commit": "cbb7070c9c69fe90ea5e762cf8d1bb29e8643a8a",
+  "gpu": "AMD Radeon 780M",
+  "driver": "32.0.21028.2002 (Vulkan 25.10.28.02)",
+  "readbacks": [
+    {
+      "example": "16_raytracing_hello",
+      "route": "dx12",
+      "source_ppm_sha256": "a2a32deb677779dc244d01d7b8ad69170af2d33f2ba449adc9afba8e571a46b3",
+      "png": "readback/dx12-16_raytracing_hello.png",
+      "png_sha256": "c400f084ae99e6cc15a225f6b0bbb005f31a1d937b5571cb8b107ae633361ff4",
+      "size": [
+        1280,
+        720
+      ]
+    },
+    {
+      "example": "16_raytracing_hello",
+      "route": "vulkan",
+      "source_ppm_sha256": "f1c20e4d8b887634249c96946c4d5ef52bb09427728db1fe9a29781a75eaaa4a",
+      "png": "readback/vulkan-16_raytracing_hello.png",
+      "png_sha256": "950ebc27dc69cd49cec69b094eeb8e4b915703606764692791aa90c149c90c76",
+      "size": [
+        1280,
+        720
+      ]
+    },
+    {
+      "example": "17_gpu_queries",
+      "route": "dx12",
+      "source_ppm_sha256": "8cf68bfc4ef582914e92c894b24870b0e477226c2b5826ee24af16283a81a928",
+      "png": "readback/dx12-17_gpu_queries.png",
+      "png_sha256": "debe8d5dbcaf51f1e4086712375c8692a8456e806fee73f65da91b6a4fbaf994",
+      "size": [
+        1280,
+        720
+      ]
+    },
+    {
+      "example": "17_gpu_queries",
+      "route": "vulkan",
+      "source_ppm_sha256": "8cf68bfc4ef582914e92c894b24870b0e477226c2b5826ee24af16283a81a928",
+      "png": "readback/vulkan-17_gpu_queries.png",
+      "png_sha256": "debe8d5dbcaf51f1e4086712375c8692a8456e806fee73f65da91b6a4fbaf994",
+      "size": [
+        1280,
+        720
+      ]
+    },
+    {
+      "example": "18_meshlet_instancing",
+      "route": "dx12",
+      "source_ppm_sha256": "228d9dead19dbf6cf1a772c4500b45da4d0841fc14f2056e34dec430432c336e",
+      "png": "readback/dx12-18_meshlet_instancing.png",
+      "png_sha256": "26595ce00012aa3cd07bec7bd592bc86f7dc4e73538423b2012f78a6888d6732",
+      "size": [
+        1280,
+        720
+      ]
+    },
+    {
+      "example": "18_meshlet_instancing",
+      "route": "vulkan",
+      "source_ppm_sha256": "228d9dead19dbf6cf1a772c4500b45da4d0841fc14f2056e34dec430432c336e",
+      "png": "readback/vulkan-18_meshlet_instancing.png",
+      "png_sha256": "26595ce00012aa3cd07bec7bd592bc86f7dc4e73538423b2012f78a6888d6732",
+      "size": [
+        1280,
+        720
+      ]
+    },
+    {
+      "example": "20_gpu_draw_count",
+      "route": "dx12",
+      "source_ppm_sha256": "5dcaf8db13cf8127727db0fb990855970e04371e94b283a80129ab99ebcf1345",
+      "png": "readback/dx12-20_gpu_draw_count.png",
+      "png_sha256": "f27d81bb237364d205472b537f68c0461649a9aa1cf5d46bbecc14b4987241a7",
+      "size": [
+        1280,
+        720
+      ]
+    },
+    {
+      "example": "20_gpu_draw_count",
+      "route": "vulkan",
+      "source_ppm_sha256": "5dcaf8db13cf8127727db0fb990855970e04371e94b283a80129ab99ebcf1345",
+      "png": "readback/vulkan-20_gpu_draw_count.png",
+      "png_sha256": "f27d81bb237364d205472b537f68c0461649a9aa1cf5d46bbecc14b4987241a7",
+      "size": [
+        1280,
+        720
+      ]
+    },
+    {
+      "example": "21_sparse_texture",
+      "route": "dx12",
+      "source_ppm_sha256": "2a5e26732d3a28c9af7686cd32fa65510b2c777734700540f6178cfcbc808247",
+      "png": "readback/dx12-21_sparse_texture.png",
+      "png_sha256": "725ac8230cf9b8169719c1f2a0ad1f2758b94349f933d40306a875f97baafd3f",
+      "size": [
+        1280,
+        720
+      ]
+    },
+    {
+      "example": "21_sparse_texture",
+      "route": "vulkan",
+      "source_ppm_sha256": "2a5e26732d3a28c9af7686cd32fa65510b2c777734700540f6178cfcbc808247",
+      "png": "readback/vulkan-21_sparse_texture.png",
+      "png_sha256": "725ac8230cf9b8169719c1f2a0ad1f2758b94349f933d40306a875f97baafd3f",
+      "size": [
+        1280,
+        720
+      ]
+    },
+    {
+      "example": "22_clear_texture",
+      "route": "dx12",
+      "source_ppm_sha256": "8cf68bfc4ef582914e92c894b24870b0e477226c2b5826ee24af16283a81a928",
+      "png": "readback/dx12-22_clear_texture.png",
+      "png_sha256": "debe8d5dbcaf51f1e4086712375c8692a8456e806fee73f65da91b6a4fbaf994",
+      "size": [
+        1280,
+        720
+      ]
+    },
+    {
+      "example": "22_clear_texture",
+      "route": "vulkan",
+      "source_ppm_sha256": "8cf68bfc4ef582914e92c894b24870b0e477226c2b5826ee24af16283a81a928",
+      "png": "readback/vulkan-22_clear_texture.png",
+      "png_sha256": "debe8d5dbcaf51f1e4086712375c8692a8456e806fee73f65da91b6a4fbaf994",
+      "size": [
+        1280,
+        720
+      ]
+    },
+    {
+      "example": "23_multi_queue",
+      "route": "dx12",
+      "source_ppm_sha256": "0a29edebaf6e0e177fba59c0e18fe88512382429d679fad04668b52392d9b38d",
+      "png": "readback/dx12-23_multi_queue.png",
+      "png_sha256": "086fbb5e7efb1e86ad2d595e10de731098887d9e7398aa9ee1b65001bf2fc4eb",
+      "size": [
+        1280,
+        720
+      ]
+    },
+    {
+      "example": "23_multi_queue",
+      "route": "vulkan",
+      "source_ppm_sha256": "544e856643b6a23f39ecca2338d3443d766745fd694e9fbecc1f33a92886ff23",
+      "png": "readback/vulkan-23_multi_queue.png",
+      "png_sha256": "cc14736754afd2a564de6d3885c965a84244b6b4ad95f68e698509ac71e8e998",
+      "size": [
+        1280,
+        720
+      ]
+    },
+    {
+      "example": "19_ray_query_particles",
+      "state": 1,
+      "route": "dx12",
+      "png": "readback/dx12-19-ray-query-01.png",
+      "png_sha256": "5a550f49fe99a62f1ab96f676fe25bdad4801776eb063610e3beb768b3eee5cf",
+      "size": [
+        1000,
+        709
+      ]
+    },
+    {
+      "example": "19_ray_query_particles",
+      "state": 1,
+      "route": "vulkan",
+      "png": "readback/vulkan-19-ray-query-01.png",
+      "png_sha256": "d188d0509ac91ff3844397caacc0615860af449fd98c3c79a29544c7a9c74bda",
+      "size": [
+        1000,
+        709
+      ]
+    },
+    {
+      "example": "19_ray_query_particles",
+      "state": 2,
+      "route": "dx12",
+      "png": "readback/dx12-19-ray-query-02.png",
+      "png_sha256": "edfc05910e5ca0670dab4fee8e437171f70bf8429dd255b35aef130e6d45a857",
+      "size": [
+        1000,
+        709
+      ]
+    },
+    {
+      "example": "19_ray_query_particles",
+      "state": 2,
+      "route": "vulkan",
+      "png": "readback/vulkan-19-ray-query-02.png",
+      "png_sha256": "3f5bc502a1d950ca154fbabb27d9f2a1928c5d8e349b106d54b6725b77e8c935",
+      "size": [
+        1000,
+        709
+      ]
+    },
+    {
+      "example": "19_ray_query_particles",
+      "state": 3,
+      "route": "dx12",
+      "png": "readback/dx12-19-ray-query-03.png",
+      "png_sha256": "809d8da0091a91b30750c354e0d11458dfe1b1142deb196132fd07276ae6c95e",
+      "size": [
+        1000,
+        709
+      ]
+    },
+    {
+      "example": "19_ray_query_particles",
+      "state": 3,
+      "route": "vulkan",
+      "png": "readback/vulkan-19-ray-query-03.png",
+      "png_sha256": "8c594aa1d03c18a483aa50ad5ef70b49657fd4901172a95aa1391ed5ef3ae032",
+      "size": [
+        1000,
+        709
+      ]
+    }
+  ],
+  "logs": [
+    {
+      "path": "logs/dx12-final-gpu.log",
+      "sha256": "5dda5a0ca7ed493976a30624b93036668b29556fb9d442349d5c56b515e293c4"
+    },
+    {
+      "path": "logs/vulkan-final-gpu.log",
+      "sha256": "3c5bdee6d609e08c0ee003054258136001e7822fc10f3b36d08c498cca942ed6"
+    },
+    {
+      "path": "logs/core-metal-final.log",
+      "sha256": "f5a6021fcf8ff5d4e9033306ece287adbcfed8052921c038253e9aebd43cd21a"
+    },
+    {
+      "path": "logs/final-dx12-16_raytracing_hello.log",
+      "sha256": "b3e7bbdd824f31f4f25a2b24d5dd4a8f33491ecdef81cb5f486ba2d6c3bf91f3"
+    },
+    {
+      "path": "logs/final-dx12-17_gpu_queries.log",
+      "sha256": "274e79c9f0c3ba6639673afbc09edb7edad7bb34677371dab83649bfea2d548e"
+    },
+    {
+      "path": "logs/final-dx12-18_meshlet_instancing.log",
+      "sha256": "bb46e98436ea37e45c75663fad4798e8d1c53a4831c66149efa3cf33888718bb"
+    },
+    {
+      "path": "logs/final-dx12-19_ray_query_particles.log",
+      "sha256": "41b8d9af80299e9424934b743339fb2c66620658249b7ebef3bc2e9c5b729262"
+    },
+    {
+      "path": "logs/final-dx12-20_gpu_draw_count.log",
+      "sha256": "8d588358e27fc686fc4af9909e8d60ea2f72cb57e19d5d87827ce91599e755c5"
+    },
+    {
+      "path": "logs/final-dx12-21_sparse_texture.log",
+      "sha256": "4584679991b837c1f344684b844936a47dc4354ac5a3da2593e8c175574dc3a1"
+    },
+    {
+      "path": "logs/final-dx12-22_clear_texture.log",
+      "sha256": "3811d6ce4fa047c0e77950a67e5bc2053c1aad8fd2a2797de73423ca89bced7e"
+    },
+    {
+      "path": "logs/final-dx12-23_multi_queue.log",
+      "sha256": "a08f9fa4f7964133426c0a61e12d40ac105fa8d68e3da22daff4cd22185275f2"
+    },
+    {
+      "path": "logs/final-vulkan-16_raytracing_hello.log",
+      "sha256": "00447ab4befc82d46eb5d14f7523e9f271518e6b388fc81c25ca1af8d42cd55d"
+    },
+    {
+      "path": "logs/final-vulkan-17_gpu_queries.log",
+      "sha256": "f66278bb33db4c11345e75ed7ba3caa226a2c3dd22af011721158bec626dec26"
+    },
+    {
+      "path": "logs/final-vulkan-18_meshlet_instancing.log",
+      "sha256": "b65b8231acfa9a4775c91e1b5627e11fdc14cb81662ea4c639fd4c403964945f"
+    },
+    {
+      "path": "logs/final-vulkan-19_ray_query_particles.log",
+      "sha256": "1d0a68486e3e311544641cc60164a6da8f26c23588f31218b2ff98787400c345"
+    },
+    {
+      "path": "logs/final-vulkan-20_gpu_draw_count.log",
+      "sha256": "a337312e45f76b1db1307eb7664d672b8803c593b41d3a7987055e9286596dd4"
+    },
+    {
+      "path": "logs/final-vulkan-21_sparse_texture.log",
+      "sha256": "8141c7adbe4cb1d92a3177310a6c03e9de19af99216e0291f490274b05b611cd"
+    },
+    {
+      "path": "logs/final-vulkan-22_clear_texture.log",
+      "sha256": "557fbd3648d499d339a48ef1ba973824aca7aea19e601adaa9d5d00571af225f"
+    },
+    {
+      "path": "logs/final-vulkan-23_multi_queue.log",
+      "sha256": "062b2f6b43c6ae17bf6b23e801bddc3db1cc9afac41b364c6fa1ae0abedfdd5d"
+    }
+  ],
+  "comparisons": [
+    {
+      "example": "16_raytracing_hello",
+      "different_channels": 53,
+      "max_channel_delta": 1
+    },
+    {
+      "example": "17_gpu_queries",
+      "different_channels": 0,
+      "max_channel_delta": 0
+    },
+    {
+      "example": "18_meshlet_instancing",
+      "different_channels": 0,
+      "max_channel_delta": 0
+    },
+    {
+      "example": "20_gpu_draw_count",
+      "different_channels": 0,
+      "max_channel_delta": 0
+    },
+    {
+      "example": "21_sparse_texture",
+      "different_channels": 0,
+      "max_channel_delta": 0
+    },
+    {
+      "example": "22_clear_texture",
+      "different_channels": 0,
+      "max_channel_delta": 0
+    },
+    {
+      "example": "23_multi_queue",
+      "different_channels": 390,
+      "max_channel_delta": 1
+    },
+    {
+      "example": "19_ray_query_particles",
+      "state": 1,
+      "different_channels": 1388,
+      "max_channel_delta": 25
+    },
+    {
+      "example": "19_ray_query_particles",
+      "state": 2,
+      "different_channels": 1464,
+      "max_channel_delta": 25
+    },
+    {
+      "example": "19_ray_query_particles",
+      "state": 3,
+      "different_channels": 1447,
+      "max_channel_delta": 25
+    }
+  ]
+}
