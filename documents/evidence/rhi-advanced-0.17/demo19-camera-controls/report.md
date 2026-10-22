@@ -1,0 +1,11 @@
+# Example 19 camera input
+
+Windows MSVC, AMD Radeon 780M, driver 32.0.21028.2002, 1000 x 709. Source and executable hashes are in sha256.json; the worktree includes the changes relative to cf013d1. DX12 debug and Vulkan validation were enabled. The retained live logs contain no diagnostics. The probe paused the simulation, dragged the left button to orbit and the middle button to pan, then held Alt while dragging the middle button vertically, and sent one positive wheel step. The two processes stayed alive until terminated by the probe.
+
+RGB mean absolute differences in the UI-free region (400, 0, 1000, 709) for consecutive input states initial/orbit/pan/Alt-pan/zoom: DX12 14.408, 9.581, 8.559, 6.237; Vulkan 14.478, 9.458, 8.267, 6.235. The DX12 orbit image was opened for visual inspection. These changes establish that inputs reach rendering; they do not compare identical input trajectories against NVIDIA. Both logs record Alt press and release, and the DX12 Alt-pan image was opened. A camera unit test checks that vertical Alt-pan leaves camera height unchanged.
+
+Fixed headless 120/240/360 frames were recaptured with both backends. Compared with the retained corrected-stride NVIDIA images, the UI-free RGB MAE is DX12 0.877/0.940/0.846 and Vulkan 0.877/0.940/0.846. Fixed captures do not exercise the interactive camera.
+
+The bitmap UI remains different from the original ImGui controls. Comparing the 375 x 450 panel rectangle in the live initial capture to corrected-360 gives RGB MAE approximately 68.5 on both backends; this is a rough appearance indicator because the reference and live particle times are not synchronized and the panel is translucent. Exact fonts, colors, dropdowns, numerical text entry, camera trajectory comparison and other original behavior remain incomplete.
+
+NVIDIA Donut donut/src/app/Camera.cpp at lines 433–459 computes the target rotation before applying orbit mouse motion; the changed orientation is therefore used on the following frame. The RHI camera preserves that order. The unit test exercises this frame boundary. The local NVIDIA executable no longer matches the retained stride-24 reference executable hash, so an equivalent input trajectory was not captured from that reference build; screenshot comparisons here do not establish trajectory equivalence.

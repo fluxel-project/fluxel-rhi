@@ -42,6 +42,10 @@ interaction are still incomplete; the example is not a pixel-exact recreation.
 The [unified host replay](demo19-host-unified/README.md) binds the final
 single-host workspace dependency to that RHI code commit and repeats all six
 fixed-frame GPU outputs on DX12 and Vulkan.
+The [camera controls packet](demo19-camera-controls/report.md) records live
+orbit, pan, Alt-pan and zoom input on both backends. It verifies image changes
+and fixed-frame regression, while leaving identical-trajectory comparison
+against NVIDIA open.
 
 The remaining files in this directory are **pre-freeze working-tree evidence**. The source tree was based on `0b70fa880a44b588efe3758044e604aa3cf7c855` and continued to change during collection. Those screenshots, builds and tests cannot be attributed to a single final commit. `files.json` records SHA-256, byte size and the original local path of each copied artifact; paths inside copied reports refer to the local archive and are retained as historical provenance.
 

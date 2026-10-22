@@ -4,6 +4,8 @@ mod particle_acceleration;
 #[cfg(windows)]
 use fluxel_rhi::api::*;
 #[cfg(windows)]
+mod camera;
+#[cfg(windows)]
 #[path = "../utils/texel_display.rs"]
 mod display;
 #[cfg(windows)]
@@ -87,7 +89,11 @@ where
     let panel = std::rc::Rc::new(std::cell::RefCell::new(ui::Panel::default()));
     let draw_panel = panel.clone();
     let input_panel = panel;
+    let camera = std::rc::Rc::new(std::cell::RefCell::new(camera::Camera::default()));
+    let draw_camera = camera.clone();
+    let input_camera = camera;
     let mut pointer = (0.0f32, 0.0f32);
+    let mut panel_drag = false;
     let mut last_frame = std::time::Instant::now();
     let mut renderer: Option<(live::Live<B>, display::Display<B>)> = None;
     let mut frame = 0u64;
@@ -137,7 +143,7 @@ where
                 );
             }
             let (live, display) = renderer.as_mut().unwrap();
-            live.render(&simulation, &panel)?;
+            live.render(&simulation, &panel, draw_camera.borrow_mut().advance())?;
             let lane = device
                 .lanes()
                 .iter()
@@ -157,19 +163,63 @@ where
                 WindowEvent::CursorMoved { x, y } => {
                     pointer = (*x as f32, *y as f32);
                     panel.pointer_move(pointer.0, pointer.1);
+                    input_camera.borrow_mut().pointer(pointer.0, pointer.1);
                 }
                 WindowEvent::MouseInput {
                     button: MouseButton::Left,
                     pressed: true,
                 } => {
-                    panel.pointer_down(pointer.0, pointer.1);
+                    panel_drag = panel.pointer_down(pointer.0, pointer.1);
+                    if !panel_drag {
+                        input_camera.borrow_mut().press(camera::Drag::Orbit);
+                    }
                 }
                 WindowEvent::MouseInput {
                     button: MouseButton::Left,
                     pressed: false,
+                } => {
+                    panel.pointer_up();
+                    panel_drag = false;
+                    input_camera.borrow_mut().release(camera::Drag::Orbit);
                 }
-                | WindowEvent::Focused(false)
-                | WindowEvent::CursorLeft => panel.pointer_up(),
+                WindowEvent::MouseInput {
+                    button: MouseButton::Middle,
+                    pressed,
+                } => {
+                    let over_panel = pointer.0 >= ui::X as f32
+                        && pointer.0 < (ui::X + ui::SCREEN_WIDTH) as f32
+                        && pointer.1 >= ui::Y as f32
+                        && pointer.1 < (ui::Y + ui::SCREEN_HEIGHT) as f32;
+                    if *pressed && !panel_drag && !over_panel {
+                        input_camera.borrow_mut().press(camera::Drag::Pan);
+                    } else {
+                        input_camera.borrow_mut().release(camera::Drag::Pan);
+                    }
+                }
+                WindowEvent::MouseWheel { y, .. }
+                    if !panel_drag
+                        && (pointer.0 < ui::X as f32
+                            || pointer.0 >= (ui::X + ui::SCREEN_WIDTH) as f32
+                            || pointer.1 < ui::Y as f32
+                            || pointer.1 >= (ui::Y + ui::SCREEN_HEIGHT) as f32) =>
+                {
+                    input_camera.borrow_mut().scroll(*y)
+                }
+                WindowEvent::KeyboardInput {
+                    key: Key::Alt,
+                    pressed,
+                    ..
+                } => {
+                    input_camera.borrow_mut().alt(*pressed);
+                    if std::env::var_os("FLUXEL_RAY_QUERY_TRACE").is_some() {
+                        println!("camera alt={pressed}");
+                    }
+                }
+                WindowEvent::Focused(false) | WindowEvent::CursorLeft => {
+                    panel.pointer_up();
+                    panel_drag = false;
+                    input_camera.borrow_mut().reset_input();
+                }
                 WindowEvent::KeyboardInput {
                     key: Key::Space,
                     pressed: true,

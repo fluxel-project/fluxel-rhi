@@ -36,9 +36,13 @@ The live window has an interactive settings panel driven by host mouse and
 keyboard events. It supports pause, emitter dragging, particle texture,
 orientation, ray reorientation and MLAB choices, but uses a simplified bitmap
 panel instead of matching the original ImGui appearance and interactions.
-Camera controls and some source behaviors remain missing. The fixed-step
-readback mode leaves the panel disabled for scene comparison; the live input
-captures and exact source hashes are in the
+The live camera accepts left-button orbit, middle-button pan, Alt plus middle
+button horizontal pan, and wheel zoom. Its controlled input captures are in
+[camera evidence](../../../../documents/evidence/rhi-advanced-0.17/demo19-camera-controls/report.md).
+The original camera trajectory has not yet been compared under identical
+input, and some source behaviors remain missing. Fixed-step readbacks leave
+the panel disabled and use the original static camera for scene comparison;
+earlier live input captures are in the
 [interactive evidence](../../../../documents/evidence/rhi-advanced-0.17/demo19-interactive/report.md).
 DX12 and Vulkan use adapted HLSL shaders. Set
 `FLUXEL_RAY_QUERY_PRESENT=1` to run an animation in a window using actual
