@@ -16,6 +16,7 @@ fn query_only_device_exposes_acceleration_but_rejects_ray_pipeline() {
             (),
             DeviceCapabilities {
                 ray_query: true,
+                acceleration_structure: true,
                 ..Default::default()
             },
         )
@@ -50,6 +51,53 @@ fn query_only_device_exposes_acceleration_but_rejects_ray_pipeline() {
         Poll::Ready(Err(Error::Unsupported(_)))
     ));
     CALLS.with(|c| assert_eq!(c.get(), 2));
+}
+
+#[test]
+fn acceleration_capability_is_independent_of_ray_and_query() {
+    let id = DeviceId::allocate().unwrap();
+    let desc = AccelerationDesc {
+        input: AccelerationInput::Blas(vec![]),
+        fast_trace: false,
+        allow_update: false,
+    };
+    // SAFETY: the mock handles have the device identity under test.
+    let as_only = unsafe {
+        Device::<Mock>::from_native(
+            id,
+            (),
+            DeviceCapabilities {
+                acceleration_structure: true,
+                ..Default::default()
+            },
+        )
+    };
+    let ray = as_only.ray().unwrap();
+    assert!(ray.sizes(&desc).is_ok());
+    assert!(ray.create_acceleration(&desc).is_ok());
+    assert!(matches!(
+        ray.shader_table_properties(),
+        Err(Error::Unsupported(_))
+    ));
+    // SAFETY: the mock handles have the device identity under test.
+    let no_as = unsafe {
+        Device::<Mock>::from_native(
+            id,
+            (),
+            DeviceCapabilities {
+                ray_query: true,
+                ..Default::default()
+            },
+        )
+    };
+    assert!(matches!(
+        no_as.ray().unwrap().sizes(&desc),
+        Err(Error::Unsupported(_))
+    ));
+    assert!(matches!(
+        no_as.ray().unwrap().create_acceleration(&desc),
+        Err(Error::Unsupported(_))
+    ));
 }
 
 struct Mock;
@@ -180,6 +228,7 @@ fn nested_inputs_are_checked_by_every_ray_entry_before_backend() {
     let foreign = DeviceId::allocate().unwrap();
     let caps = DeviceCapabilities {
         ray: true,
+        acceleration_structure: true,
         ..Default::default()
     };
     // SAFETY: all unit native handles below belong to the indicated mock device.
@@ -291,6 +340,7 @@ fn shader_tables_validate_ranges_and_device_before_trace() {
             (),
             DeviceCapabilities {
                 ray: true,
+                acceleration_structure: true,
                 ..Default::default()
             },
         )
@@ -361,6 +411,7 @@ fn invalid_geometry_ranges_never_reach_backend() {
             (),
             DeviceCapabilities {
                 ray: true,
+                acceleration_structure: true,
                 ..Default::default()
             },
         )
@@ -412,6 +463,7 @@ fn local_constants_require_whole_words_before_pipeline_creation() {
             (),
             DeviceCapabilities {
                 ray: true,
+                acceleration_structure: true,
                 ..Default::default()
             },
         )
@@ -457,6 +509,7 @@ fn instance_flags_are_validated_before_native_calls() {
             (),
             DeviceCapabilities {
                 ray: true,
+                acceleration_structure: true,
                 ..Default::default()
             },
         )

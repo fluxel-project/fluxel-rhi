@@ -53,17 +53,22 @@ pub const SCREEN_HEIGHT: u32 = 450;
 pub struct Panel {
     pub settings: Settings,
     drag: Option<(usize, f32, f32)>,
+    visible: bool,
 }
 impl Default for Panel {
     fn default() -> Self {
         Self {
             settings: Settings::default(),
             drag: None,
+            visible: false,
         }
     }
 }
 impl Panel {
     pub fn pointer_down(&mut self, x: f32, y: f32) -> bool {
+        if !self.visible {
+            return false;
+        }
         let x = (x - X as f32) * WIDTH as f32 / SCREEN_WIDTH as f32;
         let y = (y - Y as f32) * HEIGHT as f32 / SCREEN_HEIGHT as f32;
         if x < 0.0 || y < 0.0 || x >= WIDTH as f32 || y >= HEIGHT as f32 {
@@ -122,9 +127,16 @@ impl Panel {
     pub fn toggle_animation(&mut self) {
         self.settings.animate = !self.settings.animate;
     }
+    pub fn toggle_visible(&mut self) {
+        self.visible = !self.visible;
+        self.drag = None;
+    }
+    pub fn visible(&self) -> bool {
+        self.visible
+    }
 
     pub fn flags(&self) -> u32 {
-        let mut f = 64;
+        let mut f = if self.visible { 64 } else { 0 };
         if self.settings.reorient_primary {
             f |= 1;
         }
@@ -300,6 +312,8 @@ mod tests {
     #[test]
     fn interactions_and_pixels() {
         let mut p = Panel::default();
+        assert_eq!(p.flags() & 64, 0);
+        p.toggle_visible();
         assert!(!p.pointer_down(0.0, 0.0));
         assert!(p.pointer_down(30.0, 70.0));
         assert!(!p.settings.animate);

@@ -87,8 +87,13 @@ pub struct Dx12Encoder {
     pub(crate) is_compute: bool,
     pub(crate) mip_blit_cache: Arc<super::mipmap::MipBlitCache>,
     pub(crate) uploads: Vec<windows::Win32::Graphics::Direct3D12::ID3D12Resource>,
+    pub(crate) upload_arena: super::upload::UploadArena,
+    pub(crate) blit_compute_objects: Vec<(ID3D12RootSignature, ID3D12PipelineState)>,
+    pub(crate) compute_snapshot: super::super::compute::ComputeSnapshot,
     pub(crate) mip_blit_heaps: Vec<ID3D12DescriptorHeap>,
+    pub(crate) mip_blit_descriptors: Vec<super::super::descriptor::TemporaryDescriptorPair>,
     pub(crate) clear_heaps: Vec<ID3D12DescriptorHeap>,
+    pub(crate) integer_clear_pipelines: Vec<Arc<super::integer_clear::IntegerClearPipeline>>,
     pub(crate) secondary: Vec<super::secondary::Dx12SecondaryWork>,
     pub(crate) queries: Vec<Dx12QuerySet>,
     pub(crate) active_occlusion: Option<(Dx12QuerySet, u32)>,
@@ -97,6 +102,9 @@ pub struct Dx12Encoder {
     // Retain typed handles as well as native COM objects.  In particular,
     // descriptor suballocations are released with the Dx12BindGroup handle.
     pub(crate) bound_groups: Vec<Dx12BindGroup>,
+    pub(crate) raster_bound_groups: Vec<Option<Dx12BindGroup>>,
+    pub(crate) compute_bound_groups: Vec<Option<Dx12BindGroup>>,
+    pub(crate) dynamic_view_tables: Vec<Arc<super::super::descriptor::DynamicViewTable>>,
     pub(crate) buffers: Vec<Dx12Buffer>,
     pub(crate) textures: Vec<Dx12Texture>,
     pub(crate) accelerations: Vec<super::super::Dx12Acceleration>,
@@ -108,13 +116,12 @@ pub struct Dx12Encoder {
     pub(crate) ray_pipelines: Vec<super::super::Dx12RayPipeline>,
     pub(crate) mesh_pipeline: Option<super::super::Dx12MeshPipeline>,
     pub(crate) mesh_pipelines: Vec<super::super::Dx12MeshPipeline>,
-    pub(crate) mesh_signatures: Vec<ID3D12CommandSignature>,
-    pub(crate) surface_target: Option<ID3D12Resource>,
-    pub(crate) texture_target: Option<ID3D12Resource>,
-    pub(crate) depth_target: Option<ID3D12Resource>,
-    pub(crate) resolve_target: Option<ID3D12Resource>,
-    pub(crate) resolve_format: Option<DXGI_FORMAT>,
-    pub(crate) raster_format: Option<api::TextureFormat>,
+    pub(crate) indirect_signatures: Vec<ID3D12CommandSignature>,
+    pub(crate) raster_snapshot: super::raster_snapshot::RasterSnapshot,
+    pub(crate) raster_state: Option<super::raster::RasterState>,
+    pub(crate) raster_formats: Vec<Option<api::TextureFormat>>,
+    pub(crate) raster_index_format: Option<api::IndexFormat>,
+    pub(crate) raster_depth_format: Option<api::TextureFormat>,
     pub(crate) raster_samples: Option<u32>,
     pub(crate) raster_multiview: Option<u32>,
     pub(crate) closed: bool,
@@ -195,28 +202,30 @@ impl api::RasterExtrasOps<Dx12> for RasterExtras {
         let end = offset
             .checked_add(u32::try_from(bytes.len()).map_err(|_| Error::InvalidRange)?)
             .ok_or(Error::InvalidRange)?;
-        if stages != range.stages
-            || bytes.is_empty()
-            || offset < range.range.start
-            || end > range.range.end
-            || offset % 4 != 0
-            || bytes.len() % 4 != 0
-        {
+        if bytes.is_empty() || offset % 4 != 0 || bytes.len() % 4 != 0 {
             return Err(Error::InvalidRange);
         }
+        let roots = range.graphics_writes(stages, offset, end)?;
         let values: Vec<u32> = bytes
             .chunks_exact(4)
             .map(|word| u32::from_le_bytes(word.try_into().expect("exact DWORD")))
             .collect();
-        // SAFETY: values remains live throughout the synchronous call; prior
-        // range checks prove the root-constant offset and DWORD count fit layout.
-        unsafe {
-            encoder.list.SetGraphicsRoot32BitConstants(
-                range.root,
-                values.len() as u32,
-                values.as_ptr().cast(),
-                (offset - range.range.start) / 4,
-            );
+        for root in roots {
+            for (i, value) in values.iter().copied().enumerate() {
+                encoder
+                    .raster_snapshot
+                    .constants
+                    .insert((root, offset / 4 + i as u32), value);
+            }
+            // SAFETY: the validated root and range belong to the bound signature; values are live during this call.
+            unsafe {
+                encoder.list.SetGraphicsRoot32BitConstants(
+                    root,
+                    values.len() as u32,
+                    values.as_ptr().cast(),
+                    offset / 4,
+                );
+            }
         }
         Ok(())
     }
@@ -230,6 +239,7 @@ impl Dx12Encoder {
         } else {
             device.0.direct_commands.acquire(&device.0.native)?
         };
+        super::heaps::install(device, &list);
         Ok(Self {
             device: device.clone(),
             allocator,
@@ -238,14 +248,22 @@ impl Dx12Encoder {
             is_compute,
             mip_blit_cache: device.0.mip_blit_cache.clone(),
             uploads: Vec::new(),
+            upload_arena: super::upload::UploadArena::new(device.0.upload_pool.clone()),
+            blit_compute_objects: Vec::new(),
+            compute_snapshot: Default::default(),
             mip_blit_heaps: Vec::new(),
+            mip_blit_descriptors: Vec::new(),
             clear_heaps: Vec::new(),
+            integer_clear_pipelines: Vec::new(),
             secondary: Vec::new(),
             queries: Vec::new(),
             active_occlusion: None,
             active_statistics: None,
             query_ops: Vec::new(),
             bound_groups: Vec::new(),
+            raster_bound_groups: Vec::new(),
+            compute_bound_groups: Vec::new(),
+            dynamic_view_tables: Vec::new(),
             buffers: Vec::new(),
             textures: Vec::new(),
             accelerations: Vec::new(),
@@ -257,13 +275,12 @@ impl Dx12Encoder {
             ray_pipelines: Vec::new(),
             mesh_pipeline: None,
             mesh_pipelines: Vec::new(),
-            mesh_signatures: Vec::new(),
-            surface_target: None,
-            texture_target: None,
-            depth_target: None,
-            resolve_target: None,
-            resolve_format: None,
-            raster_format: None,
+            indirect_signatures: Vec::new(),
+            raster_snapshot: Default::default(),
+            raster_state: None,
+            raster_formats: Vec::new(),
+            raster_index_format: None,
+            raster_depth_format: None,
             raster_samples: None,
             raster_multiview: None,
             closed: false,

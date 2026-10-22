@@ -24,15 +24,23 @@ fn execute(
     {
         return Err(Error::InvalidRange);
     }
+    raster::validate_raw_bindings(
+        encoder.pipeline.as_ref().ok_or(Error::InvalidState)?,
+        &encoder.raster_bound_groups,
+    )?;
+    if count == 0 {
+        return Ok(());
+    }
+    if encoder
+        .pipeline
+        .as_ref()
+        .is_some_and(|p| p.0.vertex_index_root.is_some())
+    {
+        return execute_vertex_indices(encoder, arguments, offset, count, stride, indexed, None);
+    }
     let signature = signature(arguments, indexed, stride)?;
-    barrier(
-        &encoder.list,
-        &arguments.resource,
-        D3D12_RESOURCE_STATE_COMMON,
-        D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
-    );
-    // SAFETY: arguments is retained below, its checked range is in
-    // INDIRECT_ARGUMENT state between the explicit barriers, and this list is exclusive.
+    // SAFETY: the caller transitions arguments to INDIRECT_READ; the resource
+    // and signature are retained by the encoder until completion.
     unsafe {
         encoder.list.ExecuteIndirect(
             &signature,
@@ -43,12 +51,6 @@ fn execute(
             0,
         );
     }
-    barrier(
-        &encoder.list,
-        &arguments.resource,
-        D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
-        D3D12_RESOURCE_STATE_COMMON,
-    );
     encoder.buffers.push(arguments.clone());
     Ok(())
 }
@@ -155,6 +157,25 @@ pub(crate) fn multi_count(
     if max == 0 {
         return Ok(());
     }
+    raster::validate_raw_bindings(
+        encoder.pipeline.as_ref().ok_or(Error::InvalidState)?,
+        &encoder.raster_bound_groups,
+    )?;
+    if encoder
+        .pipeline
+        .as_ref()
+        .is_some_and(|p| p.0.vertex_index_root.is_some())
+    {
+        return execute_vertex_indices(
+            encoder,
+            args,
+            offset,
+            max,
+            stride,
+            indexed,
+            Some((count, count_offset)),
+        );
+    }
     let signature = signature(args, indexed, stride)?;
     // SAFETY: caller transitions both argument and count ranges to INDIRECT_READ;
     // checked resources and command signature remain retained until completion.
@@ -170,5 +191,139 @@ pub(crate) fn multi_count(
     }
     encoder.buffers.push(args.clone());
     encoder.buffers.push(count.clone());
+    Ok(())
+}
+
+fn execute_vertex_indices(
+    encoder: &mut Dx12Encoder,
+    args: &Dx12Buffer,
+    offset: u64,
+    count: u32,
+    stride: u32,
+    indexed: bool,
+    count_buffer: Option<(&Dx12Buffer, u64)>,
+) -> Result<(), Error> {
+    let pipeline = encoder.pipeline.as_ref().ok_or(Error::InvalidState)?;
+    let root_index = pipeline.0.vertex_index_root.ok_or(Error::InvalidState)?;
+    let root = pipeline.0.root.clone();
+    let record_size = if indexed { 20u32 } else { 16u32 };
+    let expanded_stride = record_size + 8;
+    let size = u64::from(expanded_stride)
+        .checked_mul(u64::from(count))
+        .ok_or(Error::InvalidRange)?;
+    let scratch = <Dx12 as api::ResourceBackend>::create_buffer(
+        &encoder.device,
+        &api::BufferDesc {
+            label: None,
+            size,
+            usage: api::BufferUsage::COPY_DST | api::BufferUsage::INDIRECT,
+            memory: api::MemoryClass::Device,
+        },
+    )?;
+    let parameters = [
+        D3D12_INDIRECT_ARGUMENT_DESC {
+            Type: D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT,
+            Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0 {
+                Constant: D3D12_INDIRECT_ARGUMENT_DESC_0_1 {
+                    RootParameterIndex: root_index,
+                    DestOffsetIn32BitValues: 0,
+                    Num32BitValuesToSet: 2,
+                },
+            },
+        },
+        D3D12_INDIRECT_ARGUMENT_DESC {
+            Type: if indexed {
+                D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED
+            } else {
+                D3D12_INDIRECT_ARGUMENT_TYPE_DRAW
+            },
+            Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0::default(),
+        },
+    ];
+    let desc = D3D12_COMMAND_SIGNATURE_DESC {
+        ByteStride: expanded_stride,
+        NumArgumentDescs: 2,
+        pArgumentDescs: parameters.as_ptr(),
+        NodeMask: 0,
+    };
+    let mut signature = None;
+    // SAFETY: the argument descriptors and matching root signature remain live through creation.
+    unsafe {
+        encoder
+            .device
+            .0
+            .native
+            .CreateCommandSignature(&desc, Some(&root), &mut signature)
+    }
+    .map_err(native_error)?;
+    let signature: ID3D12CommandSignature = signature.ok_or(Error::InvalidState)?;
+    barrier(
+        &encoder.list,
+        &args.resource,
+        D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
+        D3D12_RESOURCE_STATE_COPY_SOURCE,
+    );
+    barrier(
+        &encoder.list,
+        &scratch.resource,
+        D3D12_RESOURCE_STATE_COMMON,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+    );
+    for i in 0..count {
+        let src = offset + u64::from(i) * u64::from(stride);
+        let dst = u64::from(i) * u64::from(expanded_stride);
+        // SAFETY: all source and scratch ranges were checked above; both buffers are retained.
+        unsafe {
+            encoder.list.CopyBufferRegion(
+                &scratch.resource,
+                dst,
+                &args.resource,
+                src + if indexed { 12 } else { 8 },
+                4,
+            );
+            encoder.list.CopyBufferRegion(
+                &scratch.resource,
+                dst + 4,
+                &args.resource,
+                src + if indexed { 16 } else { 12 },
+                4,
+            );
+            encoder.list.CopyBufferRegion(
+                &scratch.resource,
+                dst + 8,
+                &args.resource,
+                src,
+                u64::from(record_size),
+            );
+        }
+    }
+    barrier(
+        &encoder.list,
+        &args.resource,
+        D3D12_RESOURCE_STATE_COPY_SOURCE,
+        D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
+    );
+    barrier(
+        &encoder.list,
+        &scratch.resource,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
+    );
+    // SAFETY: scratch records and optional count are in INDIRECT_ARGUMENT and retained until completion.
+    unsafe {
+        encoder.list.ExecuteIndirect(
+            &signature,
+            count,
+            &scratch.resource,
+            0,
+            count_buffer.map(|(buffer, _)| &buffer.resource),
+            count_buffer.map_or(0, |(_, offset)| offset),
+        );
+    }
+    encoder.buffers.extend([args.clone(), scratch]);
+    if let Some((buffer, _)) = count_buffer {
+        encoder.buffers.push(buffer.clone());
+    }
+    encoder.indirect_signatures.push(signature);
     Ok(())
 }

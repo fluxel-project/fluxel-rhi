@@ -127,6 +127,12 @@ pub enum ImageLayout {
     ShaderReadOnly,
     CopySrc,
     CopyDst,
+    /// Color attachment used as the source of a multisample resolve.
+    /// Use COLOR_OUTPUT and COLOR_READ in the corresponding TextureUses.
+    ResolveSrc,
+    /// Color attachment used as the destination of a multisample resolve.
+    /// Use COLOR_OUTPUT and COLOR_WRITE in the corresponding TextureUses.
+    ResolveDst,
     ColorAttachment,
     DepthStencilAttachment,
     DepthReadOnly,

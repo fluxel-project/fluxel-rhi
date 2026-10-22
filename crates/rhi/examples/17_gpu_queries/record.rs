@@ -116,6 +116,23 @@ impl<
             ts.timestamp(&mut e, &self.timestamps, 1)?;
             ts.resolve(&mut e, &self.timestamps, 0..2, &self.query_buffer, 0)?;
             stats.resolve(&mut e, &self.statistics, 0..1, &self.query_buffer, 16)?;
+            e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
+                target: BufferSlice {
+                    buffer: &self.query_buffer,
+                    range: 0..104,
+                },
+                usage: StateTransition {
+                    from: BufferUses {
+                        stages: StageMask::ALL_COMMANDS,
+                        accesses: AccessMask::EMPTY,
+                    },
+                    to: BufferUses {
+                        stages: StageMask::COPY,
+                        accesses: AccessMask::COPY_READ,
+                    },
+                },
+                ownership: None,
+            })])?;
             let queries = e.readback_buffer(&self.query_buffer, 0..104)?;
             e.transition_resources(&[ResourceTransition::Texture(TextureBarrier {
                 target: range(),

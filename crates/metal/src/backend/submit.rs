@@ -217,6 +217,8 @@ impl Completion {
 struct CompletionJoin {
     children: Vec<Completion>,
     output: Completion,
+    #[cfg(any(target_vendor = "apple", test))]
+    ray_builds: Vec<super::ray::BuildCompletion>,
 }
 impl CompletionJoin {
     fn update(self: &Arc<Self>) {
@@ -241,6 +243,10 @@ impl CompletionJoin {
             }
         }
         if !pending {
+            #[cfg(any(target_vendor = "apple", test))]
+            for build in &self.ray_builds {
+                build.complete(failure.is_none());
+            }
             self.output.publish(failure.map_or(Ok(()), Err));
         }
     }
@@ -257,6 +263,8 @@ pub(super) fn join_into(output: &Completion, children: Vec<Completion>) {
     Arc::new(CompletionJoin {
         children,
         output: output.clone(),
+        #[cfg(any(target_vendor = "apple", test))]
+        ray_builds: Vec::new(),
     })
     .update();
 }
@@ -281,11 +289,41 @@ pub struct MetalRecordedWork {
     #[cfg(target_vendor = "apple")]
     accelerations: Vec<super::ray::MetalAcceleration>,
     #[cfg(target_vendor = "apple")]
+    pub(super) ray_builds: Vec<Arc<super::ray::BuildReservation>>,
+    #[cfg(target_vendor = "apple")]
     indirect_arguments:
         Vec<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer>>>,
 }
 
 impl MetalRecordedWork {
+    #[cfg(target_vendor = "apple")]
+    pub(super) fn submit_ray_builds(&self) {
+        if self.ray_builds.is_empty() {
+            return;
+        }
+        for build in &self.ray_builds {
+            build.submit();
+        }
+    }
+
+    #[cfg(target_vendor = "apple")]
+    pub(super) fn guard_ray_completion(&self, covered: &mut Vec<Completion>) {
+        if self.ray_builds.is_empty() {
+            return;
+        }
+        let output = Completion::new();
+        Arc::new(CompletionJoin {
+            children: std::mem::take(covered),
+            output: output.clone(),
+            ray_builds: self
+                .ray_builds
+                .iter()
+                .map(|build| build.completion())
+                .collect(),
+        })
+        .update();
+        covered.push(output);
+    }
     #[cfg(target_vendor = "apple")]
     pub(super) fn retain_indirect_arguments_until_completed(&self) {
         use objc2_metal::MTLCommandBuffer as _;
@@ -462,6 +500,7 @@ impl DeferredBackend for Metal {
                 lane: encoder.lane,
                 query_ops: encoder.query_ops,
                 accelerations: encoder.accelerations,
+                ray_builds: encoder.ray_builds,
                 indirect_arguments: encoder.indirect_arguments,
             })
         }
@@ -705,6 +744,7 @@ impl DeferredBackend for Metal {
                     let query_commit =
                         Arc::new(super::query::commit_ops(&work.query_ops, work.lane));
                     work.retain_indirect_arguments_until_completed();
+                    work.submit_ray_builds();
                     for command in &work.prior_commands {
                         prefix.push(track_command(
                             device,
@@ -719,6 +759,7 @@ impl DeferredBackend for Metal {
                         Some((query_commit, work.lane)),
                     ));
                     work.command.commit();
+                    work.guard_ray_completion(&mut prefix);
                 }
                 for (present_step, command) in &present_commands {
                     if present_step == step {

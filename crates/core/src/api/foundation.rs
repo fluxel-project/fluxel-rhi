@@ -311,7 +311,7 @@ impl<B: Backend> Device<B> {
             "mesh capability without implementation"
         );
         assert!(
-            !caps.ray || B::Ray::AVAILABLE,
+            !(caps.acceleration_structure || caps.ray || caps.ray_query) || B::Ray::AVAILABLE,
             "ray capability without implementation"
         );
         assert!(
@@ -363,6 +363,8 @@ pub struct DeviceCapabilities {
     pub compute: bool,
     pub sparse: bool,
     pub mesh: bool,
+    /// Acceleration structure sizing, creation, and build operations.
+    pub acceleration_structure: bool,
     pub ray: bool,
     pub ray_query: bool,
     pub multi_queue: bool,

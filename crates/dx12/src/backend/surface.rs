@@ -24,13 +24,15 @@ use windows::{
             },
             Dxgi::Common::{
                 DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM,
-                DXGI_SAMPLE_DESC,
+                DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_SAMPLE_DESC,
             },
             Dxgi::{
-                CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_PRESENT, DXGI_SCALING_STRETCH,
-                DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
-                DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIFactory4,
-                IDXGISwapChain2, IDXGISwapChain3,
+                CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                DXGI_MWA_NO_ALT_ENTER, DXGI_PRESENT, DXGI_PRESENT_ALLOW_TEARING,
+                DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
+                DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, DXGI_SWAP_EFFECT_FLIP_DISCARD,
+                DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIFactory4, IDXGIFactory5, IDXGISwapChain2,
+                IDXGISwapChain3,
             },
         },
     },
@@ -43,6 +45,7 @@ pub(crate) struct SurfaceState {
     device: Dx12Device,
     hwnd: HWND,
     factory: IDXGIFactory4,
+    tearing_supported: bool,
     inner: Mutex<Inner>,
 }
 struct Inner {
@@ -51,6 +54,7 @@ struct Inner {
     rtvs: Vec<D3D12_CPU_DESCRIPTOR_HANDLE>,
     generation: u64,
     acquired: bool,
+    present_mode: api::PresentMode,
 }
 pub(crate) struct ImageLease {
     pub(crate) resource: ID3D12Resource,
@@ -76,16 +80,36 @@ pub(crate) unsafe fn create_surface(
     // owned by this newly created SurfaceState.
     let factory = unsafe { CreateDXGIFactory2::<IDXGIFactory4>(DXGI_CREATE_FACTORY_FLAGS(0)) }
         .map_err(error)?;
+    // SAFETY: the host keeps this HWND alive for the surface lifetime. RHI
+    // presents windowed flip chains; host window policy owns fullscreen changes.
+    unsafe { factory.MakeWindowAssociation(HWND(hwnd.get() as *mut _), DXGI_MWA_NO_ALT_ENTER) }
+        .map_err(error)?;
+    let tearing_supported = factory.cast::<IDXGIFactory5>().ok().is_some_and(|factory| {
+        let mut supported = 0i32;
+        // SAFETY: the initialized BOOL-sized integer has the type and size required by
+        // DXGI_FEATURE_PRESENT_ALLOW_TEARING; the factory retains no pointer.
+        unsafe {
+            factory.CheckFeatureSupport(
+                DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                (&mut supported as *mut i32).cast(),
+                std::mem::size_of::<i32>() as u32,
+            )
+        }
+        .is_ok()
+            && supported != 0
+    });
     let state = Arc::new(SurfaceState {
         device: native,
         hwnd: HWND(hwnd.get() as *mut _),
         factory,
+        tearing_supported,
         inner: Mutex::new(Inner {
             chain: None,
             rtv_heap: None,
             rtvs: Vec::new(),
             generation: 0,
             acquired: false,
+            present_mode: api::PresentMode::Fifo,
         }),
     });
     // SAFETY: `state` is newly allocated for this same device id and becomes
@@ -116,6 +140,11 @@ unsafe impl api::NativeImageLease for Dx12SurfaceImage {
         if inner.generation != generation || !inner.acquired {
             return Err(Error::SurfaceOutdated);
         }
+        let (sync, flags) = if inner.present_mode == api::PresentMode::Immediate {
+            (0, DXGI_PRESENT_ALLOW_TEARING)
+        } else {
+            (1, DXGI_PRESENT(0))
+        };
         // SAFETY: the mutex proves this is the current generation's exclusive
         // acquired image, and the swapchain COM object remains in `inner`.
         unsafe {
@@ -123,7 +152,7 @@ unsafe impl api::NativeImageLease for Dx12SurfaceImage {
                 .chain
                 .as_ref()
                 .ok_or(Error::SurfaceLost)?
-                .Present(1, DXGI_PRESENT(0))
+                .Present(sync, flags)
         }
         .ok()
         .map_err(error)?;
@@ -148,17 +177,22 @@ impl api::SurfaceBackend for Dx12 {
             .unwrap_or_else(|p| p.into_inner())
             .generation
     }
-    fn capabilities(_: &Dx12Surface) -> Result<api::SurfaceCapabilities> {
-        Ok(caps())
+    fn capabilities(surface: &Dx12Surface) -> Result<api::SurfaceCapabilities> {
+        Ok(caps(surface.0.tearing_supported))
     }
-    fn supports_config(_: &Dx12Surface, d: &api::SurfaceConfig) -> api::Support<()> {
+    fn supports_config(surface: &Dx12Surface, d: &api::SurfaceConfig) -> api::Support<()> {
         if d.extent.contains(&0)
             || d.extent.iter().any(|v| *v > 16384)
             || !matches!(
                 d.format,
-                api::TextureFormat::Bgra8Unorm | api::TextureFormat::Rgba8Unorm
+                api::TextureFormat::Bgra8Unorm
+                    | api::TextureFormat::Rgba8Unorm
+                    | api::TextureFormat::Rgb10a2Unorm
+                    | api::TextureFormat::Rgba16Float
             )
-            || !matches!(d.present_mode, api::PresentMode::Fifo)
+            || !(matches!(d.present_mode, api::PresentMode::Fifo)
+                || (surface.0.tearing_supported
+                    && matches!(d.present_mode, api::PresentMode::Immediate)))
             || d.usage.0 != api::SurfaceUsage::RENDER_ATTACHMENT.0
             || !matches!(d.alpha_mode, api::CompositeAlphaMode::Opaque)
             || !matches!(d.color_space, api::ColorSpace::Srgb)
@@ -215,12 +249,21 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
     ) {
         return Err(Error::Unsupported("DXGI flip-model surface configuration"));
     }
-    let format = if matches!(d.format, api::TextureFormat::Bgra8Unorm) {
-        DXGI_FORMAT_B8G8R8A8_UNORM
-    } else {
-        DXGI_FORMAT_R8G8B8A8_UNORM
+    let format = match d.format {
+        api::TextureFormat::Bgra8Unorm => DXGI_FORMAT_B8G8R8A8_UNORM,
+        api::TextureFormat::Rgba8Unorm => DXGI_FORMAT_R8G8B8A8_UNORM,
+        api::TextureFormat::Rgb10a2Unorm => DXGI_FORMAT_R10G10B10A2_UNORM,
+        api::TextureFormat::Rgba16Float => DXGI_FORMAT_R16G16B16A16_FLOAT,
+        _ => return Err(Error::InvalidState),
     };
-    let flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    // Keep the tearing creation flag stable through ResizeBuffers. DXGI
+    // requires this flag before a zero-interval Present can request tearing.
+    let flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT
+        | if s.0.tearing_supported {
+            DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING
+        } else {
+            windows::Win32::Graphics::Dxgi::DXGI_SWAP_CHAIN_FLAG(0)
+        };
     let mut i = s.0.inner.lock().unwrap_or_else(|p| p.into_inner());
     if i.acquired {
         return Err(Error::InvalidState);
@@ -299,6 +342,7 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
         return Err(error);
     }
     i.generation += 1;
+    i.present_mode = d.present_mode;
     Ok(())
 }
 
@@ -359,13 +403,19 @@ fn rebuild_rtvs(device: &Dx12Device, inner: &mut Inner) -> Result<()> {
     inner.rtvs = rtvs;
     Ok(())
 }
-fn caps() -> api::SurfaceCapabilities {
+fn caps(tearing_supported: bool) -> api::SurfaceCapabilities {
     api::SurfaceCapabilities {
         formats: vec![
             api::TextureFormat::Bgra8Unorm,
             api::TextureFormat::Rgba8Unorm,
+            api::TextureFormat::Rgb10a2Unorm,
+            api::TextureFormat::Rgba16Float,
         ],
-        present_modes: vec![api::PresentMode::Fifo],
+        present_modes: if tearing_supported {
+            vec![api::PresentMode::Fifo, api::PresentMode::Immediate]
+        } else {
+            vec![api::PresentMode::Fifo]
+        },
         alpha_modes: vec![api::CompositeAlphaMode::Opaque],
         color_spaces: vec![api::ColorSpace::Srgb],
         usages: api::SurfaceUsage::RENDER_ATTACHMENT,

@@ -40,6 +40,7 @@ use windows::core::Interface;
 mod compute;
 mod descriptor;
 mod encoder;
+mod mapping;
 mod mesh;
 mod pipeline;
 mod query;
@@ -48,6 +49,7 @@ mod ray;
 mod readback;
 mod sampler;
 mod secondary;
+mod shader_naga;
 mod sparse;
 mod surface;
 mod texture;
@@ -74,6 +76,8 @@ impl Dx12 {
 pub struct Dx12Device(Arc<Dx12DeviceState>);
 struct Dx12DeviceState {
     pub(super) native: ID3D12Device,
+    /// Committed buffers consume the process GPU virtual-address range.
+    pub(super) max_buffer_bytes: u64,
     /// Native interface is retained only on devices that report DXR tier 1.0.
     /// Public capability remains disabled until the complete ray path exists.
     pub(super) ray_device: Option<windows::Win32::Graphics::Direct3D12::ID3D12Device5>,
@@ -91,7 +95,9 @@ struct Dx12DeviceState {
     /// completion. A `u64::MAX` value is quarantined indeterminate work.
     pub(super) in_flight: Mutex<Vec<(u64, Vec<encoder::Dx12RecordedWork>)>>,
     pub(super) direct_commands: Arc<encoder::DirectCommandPool>,
+    pub(super) upload_pool: Arc<encoder::upload::UploadPool>,
     pub(super) mip_blit_cache: Arc<encoder::MipBlitCache>,
+    pub(super) integer_clear_cache: Arc<encoder::integer_clear::IntegerClearCache>,
     /// Dropped futures cannot unregister SetEventOnCompletion, so their HANDLE
     /// ownership stays here until the associated fence has passed it.
     pub(super) abandoned_fence_events: Mutex<Vec<encoder::fence_wait::AbandonedFenceEvent>>,
@@ -173,12 +179,14 @@ pub struct Dx12Surface(pub(crate) Arc<surface::SurfaceState>);
 pub struct Dx12Buffer {
     pub(super) resource: ID3D12Resource,
     pub(super) size: u64,
+    pub(super) allocation_size: u64,
+    pub(super) mapped: Arc<std::sync::atomic::AtomicBool>,
     pub(super) usage: api::BufferUsage,
     pub(super) memory: api::MemoryClass,
     pub(super) indirect_signatures: Arc<Mutex<HashMap<(bool, u32), ID3D12CommandSignature>>>,
 }
-macro_rules! native_arc { ($($name:ident),* $(,)?) => { $(#[derive(Clone)] pub struct $name(Arc<()>);)* }; }
-native_arc!(Dx12PipelineCache);
+#[derive(Clone)]
+pub struct Dx12PipelineCache(pub(crate) Arc<pipeline::cache::PipelineCacheState>);
 #[derive(Clone)]
 pub struct Dx12Sparse(Arc<sparse::SparseAllocationState>);
 #[derive(Clone)]
@@ -207,6 +215,7 @@ pub struct Dx12BindGroup(pub(crate) Arc<descriptor::BindGroupState>);
 pub struct Dx12Shader {
     pub(crate) bytes: Arc<[u8]>,
     pub(crate) entries: Vec<api::ShaderEntryPoint>,
+    pub(crate) wgsl: Option<api::ShaderDesc>,
 }
 #[derive(Clone)]
 pub struct Dx12ComputePipeline(pub(crate) Arc<compute::ComputePipelineState>);
@@ -298,6 +307,20 @@ impl InstanceBackend for Dx12 {
                 .map_err(native_error)?;
             let native = native
                 .ok_or_else(|| Error::Backend("D3D12CreateDevice returned no device".into()))?;
+            let mut gpu_va = windows::Win32::Graphics::Direct3D12::
+                D3D12_FEATURE_DATA_GPU_VIRTUAL_ADDRESS_SUPPORT::default();
+            // SAFETY: the initialized structure has the exact type and size
+            // requested by this synchronous D3D12 feature query.
+            unsafe {
+                native.CheckFeatureSupport(
+                    windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_GPU_VIRTUAL_ADDRESS_SUPPORT,
+                    (&mut gpu_va as *mut _) as *mut _,
+                    std::mem::size_of_val(&gpu_va) as u32,
+                )
+            }
+            .map_err(native_error)?;
+            let max_buffer_bytes =
+                max_committed_buffer_bytes(gpu_va.MaxGPUVirtualAddressBitsPerProcess)?;
             let ray_device = ray::probe(&native);
             let ray_supported = ray_device.is_some();
             let ray_query_supported = ray::probe_inline(&native);
@@ -378,6 +401,7 @@ impl InstanceBackend for Dx12 {
             Ok((
                 Dx12Device(Arc::new(Dx12DeviceState {
                     native: native.clone(),
+                    max_buffer_bytes,
                     ray_device,
                     ray_query_supported,
                     mesh_supported,
@@ -391,7 +415,9 @@ impl InstanceBackend for Dx12 {
                     query_submission_gate: Mutex::new(()),
                     in_flight: Mutex::new(Vec::new()),
                     direct_commands: Arc::default(),
+                    upload_pool: Arc::default(),
                     mip_blit_cache: Arc::default(),
+                    integer_clear_cache: Arc::default(),
                     indirect_signatures: Arc::default(),
                     abandoned_fence_events: Mutex::new(Vec::new()),
                     descriptors,
@@ -419,11 +445,11 @@ impl InstanceBackend for Dx12 {
                     limits: DeviceLimits {
                         max_bind_groups: 8,
                         max_bindings_per_group: 64,
-                        max_color_attachments: 1,
+                        max_color_attachments: 8,
                         max_texture_dimension_2d: 16_384,
                         max_texture_array_layers: 2_048,
-                        max_multiview_views: if multiview { 2 } else { 0 },
-                        max_buffer_bytes: 1 << 30,
+                        max_multiview_views: if multiview { 4 } else { 0 },
+                        max_buffer_bytes,
                         max_vertex_buffers: 32,
                         max_vertex_attributes: 32,
                         // D3D12 guarantees these dispatch dimensions at feature
@@ -439,6 +465,7 @@ impl InstanceBackend for Dx12 {
                     mesh: mesh_supported,
                     sparse: sparse_supported,
                     ray: ray_supported,
+                    acceleration_structure: ray_supported,
                     ray_query: ray_query_supported,
                     storage_textures: true,
                     storage_buffers: true,
@@ -469,8 +496,16 @@ impl api::ResourceBackend for Dx12 {
     ) -> api::Support<api::BufferSupport> {
         if desc.size == 0 {
             api::Support::Unsupported("zero-sized buffers")
-        } else if desc.size > (1 << 30) {
+        } else if desc.size > device.0.max_buffer_bytes {
             api::Support::Unsupported("DX12 buffer size limit")
+        } else if desc.usage.contains(api::BufferUsage::UNIFORM)
+            && desc
+                .size
+                .checked_add(255)
+                .map(|size| size & !255)
+                .is_none_or(|size| size > device.0.max_buffer_bytes)
+        {
+            api::Support::Unsupported("DX12 padded uniform buffer size limit")
         } else if matches!(desc.memory, api::MemoryClass::Readback) {
             let readback_writes = api::BufferUsage::COPY_DST.0 | api::BufferUsage::QUERY_RESOLVE.0;
             if desc.usage.contains(api::BufferUsage::MAP_READ)
@@ -479,13 +514,37 @@ impl api::ResourceBackend for Dx12 {
             {
                 api::Support::Supported(api::BufferSupport {
                     alignment: 1,
-                    max_size: 1 << 30,
+                    max_size: device.0.max_buffer_bytes,
                 })
             } else {
                 api::Support::Unsupported("DX12 readback buffer usage")
             }
-        } else if !matches!(desc.memory, api::MemoryClass::Device) {
-            api::Support::Unsupported("DX12 upload buffers")
+        } else if matches!(desc.memory, api::MemoryClass::Upload) {
+            let allowed = api::BufferUsage::MAP_WRITE.0
+                | api::BufferUsage::COPY_SRC.0
+                | api::BufferUsage::VERTEX.0
+                | api::BufferUsage::INDEX.0
+                | api::BufferUsage::UNIFORM.0
+                | api::BufferUsage::INDIRECT.0
+                | api::BufferUsage::STORAGE.0
+                | api::BufferUsage::ACCEL_BUILD_INPUT.0
+                | api::BufferUsage::SHADER_TABLE.0;
+            if desc.usage.0
+                & (api::BufferUsage::ACCEL_BUILD_INPUT.0 | api::BufferUsage::SHADER_TABLE.0)
+                != 0
+                && device.0.ray_device.is_none()
+            {
+                api::Support::Unsupported("DX12 ray tracing tier 1.0")
+            } else if desc.usage.contains(api::BufferUsage::MAP_WRITE)
+                && desc.usage.0 & !allowed == 0
+            {
+                api::Support::Supported(api::BufferSupport {
+                    alignment: 1,
+                    max_size: device.0.max_buffer_bytes,
+                })
+            } else {
+                api::Support::Unsupported("DX12 upload buffer usage")
+            }
         } else if desc.usage.0
             & (api::BufferUsage::ACCEL_BUILD_INPUT.0
                 | api::BufferUsage::ACCEL_SCRATCH.0
@@ -509,16 +568,10 @@ impl api::ResourceBackend for Dx12 {
             != 0
         {
             api::Support::Unsupported("DX12 buffer usage")
-        } else if desc.usage.contains(api::BufferUsage::UNIFORM) && desc.size % 256 != 0 {
-            api::Support::Unsupported("DX12 uniform buffer size alignment")
         } else {
             api::Support::Supported(api::BufferSupport {
-                alignment: if desc.usage.contains(api::BufferUsage::UNIFORM) {
-                    256
-                } else {
-                    1
-                },
-                max_size: 1 << 30,
+                alignment: 1,
+                max_size: device.0.max_buffer_bytes,
             })
         }
     }
@@ -535,9 +588,20 @@ impl api::ResourceBackend for Dx12 {
             return Err(Error::Unsupported(reason));
         }
         let readback = desc.memory == api::MemoryClass::Readback;
+        let upload = desc.memory == api::MemoryClass::Upload;
+        let allocation_size = if desc.usage.contains(api::BufferUsage::UNIFORM) {
+            desc.size.checked_add(255).ok_or(Error::InvalidRange)? & !255
+        } else {
+            desc.size
+        };
+        if allocation_size > device.0.max_buffer_bytes {
+            return Err(Error::InvalidRange);
+        }
         let heap = D3D12_HEAP_PROPERTIES {
             Type: if readback {
                 windows::Win32::Graphics::Direct3D12::D3D12_HEAP_TYPE_READBACK
+            } else if upload {
+                windows::Win32::Graphics::Direct3D12::D3D12_HEAP_TYPE_UPLOAD
             } else {
                 D3D12_HEAP_TYPE_DEFAULT
             },
@@ -549,7 +613,7 @@ impl api::ResourceBackend for Dx12 {
         let native = D3D12_RESOURCE_DESC {
             Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
             Alignment: 0,
-            Width: desc.size,
+            Width: allocation_size,
             Height: 1,
             DepthOrArraySize: 1,
             MipLevels: 1,
@@ -559,8 +623,9 @@ impl api::ResourceBackend for Dx12 {
                 Quality: 0,
             },
             Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-            Flags: if desc.usage.contains(api::BufferUsage::ACCEL_SCRATCH)
-                || desc.usage.contains(api::BufferUsage::STORAGE)
+            Flags: if !upload
+                && (desc.usage.contains(api::BufferUsage::ACCEL_SCRATCH)
+                    || desc.usage.contains(api::BufferUsage::STORAGE))
             {
                 windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
             } else {
@@ -577,6 +642,8 @@ impl api::ResourceBackend for Dx12 {
                 &native,
                 if readback {
                     windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_COPY_DEST
+                } else if upload {
+                    windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_GENERIC_READ
                 } else {
                     D3D12_RESOURCE_STATE_COMMON
                 },
@@ -590,6 +657,8 @@ impl api::ResourceBackend for Dx12 {
                 Error::Backend("CreateCommittedResource returned no buffer".into())
             })?,
             size: desc.size,
+            allocation_size,
+            mapped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             usage: desc.usage,
             memory: desc.memory,
             indirect_signatures: device.0.indirect_signatures.clone(),
@@ -641,6 +710,24 @@ impl api::ShaderBackend for Dx12 {
                 environment: "d3d12".into(),
                 abi_key: "dxil".into(),
             }),
+            api::ShaderFormat::Wgsl
+                if !desc.entries.is_empty()
+                    && desc.entries.iter().all(|e| {
+                        matches!(
+                            e.stage,
+                            api::ShaderStage::Compute
+                                | api::ShaderStage::Vertex
+                                | api::ShaderStage::Fragment
+                        )
+                    })
+                    && shader_naga::shader_model_supported(&device.0.native) =>
+            {
+                api::ShaderRoute::Naga(api::ShaderTarget {
+                    format: api::ShaderFormat::Dxil,
+                    environment: "d3d12".into(),
+                    abi_key: "naga27-sm6-compute".into(),
+                })
+            }
             _ => api::ShaderRoute::Unsupported,
         }
     }
@@ -655,15 +742,20 @@ impl api::ShaderBackend for Dx12 {
             Ok(Dx12Shader {
                 bytes: desc.bytes.clone(),
                 entries: desc.entries.clone(),
+                wgsl: None,
             })
         })
     }
     fn compile_naga<'a>(
         _: &'a Dx12Device,
-        _: &'a api::ShaderDesc,
+        desc: &'a api::ShaderDesc,
         _: &'a api::ShaderTarget,
     ) -> Self::NagaFuture<'a> {
-        ready(Err(Error::Unsupported("DX12 Naga shader route")))
+        ready(shader_naga::validate_source(desc).map(|()| Dx12Shader {
+            bytes: Arc::from([]),
+            entries: desc.entries.clone(),
+            wgsl: Some(desc.clone()),
+        }))
     }
 }
 
@@ -673,6 +765,19 @@ fn shader_features_supported(features: &[String], ray_query_supported: bool) -> 
         "shaderClipDistance" => true,
         _ => false,
     })
+}
+
+fn max_committed_buffer_bytes(process_address_bits: u32) -> Result<u64> {
+    // Committed resources use the per-process GPU VA range. Leave one native
+    // 64 KiB placement unit unused so allocation-size rounding cannot cross
+    // the queried limit; actual residency is still decided by the driver.
+    let address_bytes = 1u64
+        .checked_shl(process_address_bits)
+        .ok_or_else(|| Error::Backend("invalid DX12 GPU virtual-address limit".into()))?;
+    address_bytes
+        .checked_sub(64 * 1024)
+        .filter(|limit| *limit > 0)
+        .ok_or_else(|| Error::Backend("DX12 GPU virtual-address range too small".into()))
 }
 
 #[cfg(test)]
@@ -691,6 +796,19 @@ mod shader_feature_tests {
             &["unknown-feature".into()],
             true
         ));
+    }
+
+    #[test]
+    fn committed_buffer_limit_uses_gpu_address_bits() {
+        assert_eq!(
+            max_committed_buffer_bytes(32).unwrap(),
+            (1u64 << 32) - 65536
+        );
+        assert_eq!(
+            max_committed_buffer_bytes(40).unwrap(),
+            (1u64 << 40) - 65536
+        );
+        assert!(max_committed_buffer_bytes(64).is_err());
     }
 }
 

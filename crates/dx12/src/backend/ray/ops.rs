@@ -11,16 +11,6 @@ use std::{
 use windows::{Win32::Graphics::Direct3D12::*, core::Interface};
 
 pub struct Ray;
-fn same_layout(
-    expected: &Arc<super::super::descriptor::BindGroupLayoutState>,
-    actual: &Arc<super::super::descriptor::BindGroupLayoutState>,
-) -> Result<()> {
-    if Arc::ptr_eq(expected, actual) {
-        Ok(())
-    } else {
-        Err(Error::InvalidState)
-    }
-}
 impl api::RayOps<Dx12> for Ray {
     const AVAILABLE: bool = true;
     type PipelineFuture<'a> = Ready<Result<Dx12RayPipeline>>;
@@ -38,8 +28,15 @@ impl api::RayOps<Dx12> for Ray {
         // SAFETY: the pipeline owns the state object and root signature and
         // the encoder retains it until its submission has completed.
         unsafe {
-            list.SetComputeRootSignature(&pipeline.0.layout.root);
+            list.SetComputeRootSignature(&pipeline.0.layout.compute_root);
             list.SetPipelineState1(&pipeline.0.state);
+        }
+        if !encoder
+            .ray_pipeline
+            .as_ref()
+            .is_some_and(|old| old.0.layout.compute_root == pipeline.0.layout.compute_root)
+        {
+            encoder.compute_snapshot = Default::default();
         }
         encoder.ray_pipeline = Some(pipeline.clone());
         encoder.ray_pipelines.push(pipeline.clone());
@@ -54,50 +51,16 @@ impl api::RayOps<Dx12> for Ray {
         group: &Dx12BindGroup,
         offsets: &[u32],
     ) -> Result<()> {
-        if !offsets.is_empty() {
-            return Err(Error::Unsupported("DX12 ray dynamic offsets"));
-        }
-        let pipeline = encoder.ray_pipeline.as_ref().ok_or(Error::InvalidState)?;
-        let expected = pipeline
+        let layout = encoder
+            .ray_pipeline
+            .as_ref()
+            .ok_or(Error::InvalidState)?
             .0
             .layout
-            .groups
-            .get(slot as usize)
-            .ok_or(Error::InvalidRange)?;
-        same_layout(expected, &group.0.layout)?;
-        let table = pipeline
-            .0
-            .layout
-            .tables
-            .get(slot as usize)
-            .ok_or(Error::InvalidRange)?;
-        if !table.dynamic_cbvs.is_empty()
-            || group.0.has_views() != table.views.is_some()
-            || group.0.has_samplers() != table.samplers.is_some()
-        {
-            return Err(Error::InvalidState);
-        }
-        // SAFETY: heaps and descriptors belong to the retained bind group.
-        unsafe {
-            let heaps = [
-                Some(group.0.heaps().view_heap().clone()),
-                Some(group.0.heaps().sampler_heap().clone()),
-            ];
-            encoder.list.SetDescriptorHeaps(&heaps);
-            if let Some(root) = table.views {
-                encoder
-                    .list
-                    .SetComputeRootDescriptorTable(root, group.0.view_gpu());
-            }
-            if let Some(root) = table.samplers {
-                encoder
-                    .list
-                    .SetComputeRootDescriptorTable(root, group.0.sampler_gpu());
-            }
-        }
-        encoder.bound_groups.push(group.clone());
-        Ok(())
+            .clone();
+        super::super::compute::bind_compute_group(encoder, &layout, slot, group, offsets)
     }
+
     fn shader_table_properties(device: &Dx12Device) -> Result<api::ShaderTableProperties> {
         super::ray_device(device)?;
         Ok(api::ShaderTableProperties {
@@ -149,19 +112,5 @@ impl api::RayOps<Dx12> for Ray {
             return Err(Error::InvalidState);
         }
         super::trace::dispatch(encoder, table, dims)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn ray_binding_requires_pipeline_group_layout_identity() {
-        let first =
-            Arc::new(super::super::super::descriptor::BindGroupLayoutState { slots: vec![] });
-        let different =
-            Arc::new(super::super::super::descriptor::BindGroupLayoutState { slots: vec![] });
-        assert!(same_layout(&first, &first.clone()).is_ok());
-        assert!(same_layout(&first, &different).is_err());
     }
 }

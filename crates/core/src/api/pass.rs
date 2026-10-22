@@ -106,7 +106,11 @@ pub struct RasterPassDesc<'a, B: Backend> {
 #[derive(Clone, Copy, Debug)]
 pub struct TexelCopyBufferLayout {
     pub offset: u64,
+    /// Byte distance between adjacent texel rows, or adjacent block rows for
+    /// compressed formats.
     pub bytes_per_row: u32,
+    /// Number of texel rows per image, or block rows per image for compressed
+    /// formats. The unit is the same row unit used by `bytes_per_row`.
     pub rows_per_image: u32,
 }
 pub struct TextureRegion<'a, B: Backend> {

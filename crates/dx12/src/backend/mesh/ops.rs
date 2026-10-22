@@ -15,12 +15,26 @@ impl api::MeshOps<Dx12> for Mesh {
         ready(super::create_pipeline(device, desc))
     }
     fn bind_pipeline(encoder: &mut Dx12Encoder, pipeline: &Dx12MeshPipeline) -> Result<()> {
-        if encoder.raster_format != Some(pipeline.0.color_format)
-            || encoder.raster_samples != Some(pipeline.0.samples)
+        if encoder.raster_state.as_ref().is_some_and(|state| {
+            (state.depth_read_only && pipeline.0.depth_writes)
+                || (state.stencil_read_only && pipeline.0.stencil_writes)
+        }) {
+            return Err(Error::InvalidState);
+        }
+        if encoder.raster_formats != pipeline.0.color_formats
+            || encoder
+                .raster_samples
+                .is_some_and(|samples| samples != pipeline.0.samples)
             || encoder.raster_multiview.is_some()
-            || encoder.depth_target.is_some() != pipeline.0.depth_format.is_some()
+            || encoder.raster_depth_format != pipeline.0.depth_format
         {
             return Err(Error::InvalidState);
+        }
+        if encoder.mesh_pipeline.as_ref().map_or(true, |old| {
+            !std::sync::Arc::ptr_eq(&old.0.layout, &pipeline.0.layout)
+        }) {
+            encoder.raster_snapshot.clear_roots();
+            encoder.raster_bound_groups.clear();
         }
         // SAFETY: the encoder retains the PSO and root signature until its
         // submitted command list has retired.
@@ -103,7 +117,7 @@ impl api::MeshOps<Dx12> for Mesh {
                 0,
             )
         };
-        encoder.mesh_signatures.push(signature);
+        encoder.indirect_signatures.push(signature);
         encoder.buffers.push(args.clone());
         Ok(())
     }

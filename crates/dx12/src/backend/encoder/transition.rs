@@ -70,10 +70,29 @@ pub(crate) fn texture_state(
                 Err(Error::Unsupported("DX12 CopyDst layout access"))
             }
         }
+        api::ImageLayout::ResolveSrc => {
+            if uses.stages.contains(api::StageMask::COLOR_OUTPUT)
+                && uses.accesses.contains(api::AccessMask::COLOR_READ)
+            {
+                Ok(D3D12_RESOURCE_STATE_RESOLVE_SOURCE)
+            } else {
+                Err(Error::Unsupported("DX12 ResolveSrc layout access"))
+            }
+        }
+        api::ImageLayout::ResolveDst => {
+            if uses.stages.contains(api::StageMask::COLOR_OUTPUT)
+                && uses.accesses.contains(api::AccessMask::COLOR_WRITE)
+            {
+                Ok(D3D12_RESOURCE_STATE_RESOLVE_DEST)
+            } else {
+                Err(Error::Unsupported("DX12 ResolveDst layout access"))
+            }
+        }
         api::ImageLayout::General => {
-            if (uses.stages.contains(api::StageMask::COMPUTE)
-                || uses.stages.contains(api::StageMask::RAY))
-                && uses.accesses.contains(api::AccessMask::SHADER_WRITE)
+            let storage_access = api::AccessMask::SHADER_READ.union(api::AccessMask::SHADER_WRITE);
+            if has_shader_stage(uses.stages)
+                && uses.accesses.0 != 0
+                && uses.accesses.0 & !storage_access.0 == 0
             {
                 Ok(D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
             } else {
@@ -81,27 +100,69 @@ pub(crate) fn texture_state(
             }
         }
         api::ImageLayout::ColorAttachment => {
-            if uses.accesses.contains(api::AccessMask::COLOR_WRITE) {
+            if uses.accesses.contains(api::AccessMask::COLOR_WRITE)
+                || uses.accesses.contains(api::AccessMask::COLOR_READ)
+            {
                 Ok(D3D12_RESOURCE_STATE_RENDER_TARGET)
             } else {
                 Err(Error::Unsupported("DX12 ColorAttachment layout access"))
             }
         }
         api::ImageLayout::DepthStencilAttachment => {
-            if uses.accesses.contains(api::AccessMask::DEPTH_WRITE) {
+            if uses.accesses.contains(api::AccessMask::DEPTH_WRITE)
+                || uses.accesses.contains(api::AccessMask::STENCIL_WRITE)
+            {
                 Ok(D3D12_RESOURCE_STATE_DEPTH_WRITE)
+            } else if uses.accesses.contains(api::AccessMask::DEPTH_READ)
+                || uses.accesses.contains(api::AccessMask::STENCIL_READ)
+            {
+                Ok(D3D12_RESOURCE_STATE_DEPTH_READ)
             } else {
                 Err(Error::Unsupported(
                     "DX12 DepthStencilAttachment layout access",
                 ))
             }
         }
+        api::ImageLayout::DepthReadOnly => {
+            if !(uses.accesses.contains(api::AccessMask::DEPTH_READ)
+                || uses.accesses.contains(api::AccessMask::STENCIL_READ)
+                || uses.accesses.contains(api::AccessMask::SHADER_READ))
+                || uses.accesses.contains(api::AccessMask::DEPTH_WRITE)
+                || uses.accesses.contains(api::AccessMask::STENCIL_WRITE)
+            {
+                return Err(Error::Unsupported("DX12 DepthReadOnly layout access"));
+            }
+            let mut state = D3D12_RESOURCE_STATE_DEPTH_READ;
+            if uses.accesses.contains(api::AccessMask::SHADER_READ) {
+                if uses.stages.contains(api::StageMask::FRAGMENT) {
+                    state |= D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+                }
+                if uses.stages.contains(api::StageMask::VERTEX)
+                    || uses.stages.contains(api::StageMask::TASK)
+                    || uses.stages.contains(api::StageMask::MESH)
+                    || uses.stages.contains(api::StageMask::COMPUTE)
+                    || uses.stages.contains(api::StageMask::RAY)
+                {
+                    state |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                }
+                if state == D3D12_RESOURCE_STATE_DEPTH_READ {
+                    return Err(Error::Unsupported("DX12 DepthReadOnly shader stage"));
+                }
+            }
+            Ok(state)
+        }
+        api::ImageLayout::Present if uses.accesses == api::AccessMask::EMPTY => {
+            Ok(D3D12_RESOURCE_STATE_PRESENT)
+        }
         api::ImageLayout::ShaderReadOnly => {
             if !uses.accesses.contains(api::AccessMask::SHADER_READ) {
                 return Err(Error::Unsupported("DX12 ShaderReadOnly layout access"));
             }
             let mut state = windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATES(0);
-            if uses.stages.contains(api::StageMask::COMPUTE)
+            if uses.stages.contains(api::StageMask::VERTEX)
+                || uses.stages.contains(api::StageMask::TASK)
+                || uses.stages.contains(api::StageMask::MESH)
+                || uses.stages.contains(api::StageMask::COMPUTE)
                 || uses.stages.contains(api::StageMask::RAY)
             {
                 state |= windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
@@ -119,11 +180,21 @@ pub(crate) fn texture_state(
     }
 }
 
+fn has_shader_stage(stages: api::StageMask) -> bool {
+    let shader_stages = api::StageMask::VERTEX
+        .union(api::StageMask::FRAGMENT)
+        .union(api::StageMask::COMPUTE)
+        .union(api::StageMask::TASK)
+        .union(api::StageMask::MESH)
+        .union(api::StageMask::RAY);
+    stages.0 & shader_stages.0 != 0
+}
+
 /// Lowers the graph-selected whole-buffer use into the corresponding D3D12
 /// state.  Buffers do not have layouts, so callers must state both sides of
 /// every cross-operation transition with [`api::BufferBarrier`].  Convenience
-/// writes and indirect execution deliberately remain self-contained COMMON
-/// operations and never call this mapping.
+/// writes manage their own COMMON state; indirect execution requires an
+/// explicit transition to INDIRECT_READ.
 pub(crate) fn buffer_state(
     uses: api::BufferUses,
 ) -> Result<windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATES, Error> {
@@ -144,34 +215,25 @@ pub(crate) fn buffer_state(
     }
     let copy_read = read.contains(api::AccessMask::COPY_READ);
     let copy_write = read.contains(api::AccessMask::COPY_WRITE);
-    if copy_read || copy_write {
-        if (copy_read && copy_write)
-            || read.0
-                != (if copy_read {
-                    api::AccessMask::COPY_READ
-                } else {
-                    api::AccessMask::COPY_WRITE
-                })
-                .0
-        {
+    if copy_write {
+        if read != api::AccessMask::COPY_WRITE {
             return Err(Error::Unsupported("DX12 combined buffer copy access"));
         }
-        return Ok(if copy_read {
-            D3D12_RESOURCE_STATE_COPY_SOURCE
-        } else {
-            D3D12_RESOURCE_STATE_COPY_DEST
-        });
+        return Ok(D3D12_RESOURCE_STATE_COPY_DEST);
     }
     if read.contains(api::AccessMask::SHADER_WRITE) {
-        if read.0 != api::AccessMask::SHADER_WRITE.0
-            || !uses.stages.contains(api::StageMask::COMPUTE)
-        {
+        let storage_access = api::AccessMask::SHADER_READ.union(api::AccessMask::SHADER_WRITE);
+        if read.0 & !storage_access.0 != 0 || !has_shader_stage(uses.stages) {
             return Err(Error::Unsupported("DX12 buffer shader write access"));
         }
         return Ok(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }
     let mut state = D3D12_RESOURCE_STATES(0);
     let mut known = 0u64;
+    if copy_read {
+        state |= D3D12_RESOURCE_STATE_COPY_SOURCE;
+        known |= api::AccessMask::COPY_READ.0;
+    }
     if read.contains(api::AccessMask::INDIRECT_READ) {
         state |= D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
         known |= api::AccessMask::INDIRECT_READ.0;
@@ -283,6 +345,84 @@ mod tests {
     use super::*;
 
     #[test]
+    fn texture_shader_reads_cover_all_requested_shader_stages() {
+        for stage in [
+            api::StageMask::VERTEX,
+            api::StageMask::TASK,
+            api::StageMask::MESH,
+        ] {
+            let uses = |stages| api::TextureUses {
+                stages,
+                accesses: api::AccessMask::SHADER_READ,
+            };
+            assert_eq!(
+                texture_state(api::ImageLayout::ShaderReadOnly, uses(stage)).unwrap(),
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
+            );
+            assert_eq!(
+                texture_state(
+                    api::ImageLayout::ShaderReadOnly,
+                    uses(stage | api::StageMask::FRAGMENT)
+                )
+                .unwrap(),
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
+                    | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+            );
+        }
+    }
+
+    #[test]
+    fn texture_resolve_layouts_require_read_and_write_access() {
+        let uses = |accesses| api::TextureUses {
+            stages: api::StageMask::COLOR_OUTPUT,
+            accesses,
+        };
+        assert_eq!(
+            texture_state(
+                api::ImageLayout::ResolveSrc,
+                uses(api::AccessMask::COLOR_READ)
+            )
+            .unwrap(),
+            D3D12_RESOURCE_STATE_RESOLVE_SOURCE
+        );
+        assert_eq!(
+            texture_state(
+                api::ImageLayout::ResolveDst,
+                uses(api::AccessMask::COLOR_WRITE)
+            )
+            .unwrap(),
+            D3D12_RESOURCE_STATE_RESOLVE_DEST
+        );
+        assert!(texture_state(api::ImageLayout::ResolveSrc, uses(api::AccessMask::EMPTY)).is_err());
+        assert!(texture_state(api::ImageLayout::ResolveDst, uses(api::AccessMask::EMPTY)).is_err());
+    }
+
+    #[test]
+    fn depth_read_layout_can_combine_depth_and_shader_reads() {
+        let uses = api::TextureUses {
+            stages: api::StageMask::FRAGMENT | api::StageMask::VERTEX,
+            accesses: api::AccessMask::DEPTH_READ | api::AccessMask::SHADER_READ,
+        };
+        assert_eq!(
+            texture_state(api::ImageLayout::DepthReadOnly, uses).unwrap(),
+            D3D12_RESOURCE_STATE_DEPTH_READ
+                | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+                | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
+        );
+        assert_eq!(
+            texture_state(
+                api::ImageLayout::ColorAttachment,
+                api::TextureUses {
+                    stages: api::StageMask::COLOR_OUTPUT,
+                    accesses: api::AccessMask::COLOR_READ,
+                }
+            )
+            .unwrap(),
+            D3D12_RESOURCE_STATE_RENDER_TARGET
+        );
+    }
+
+    #[test]
     fn buffer_state_accepts_individual_vertex_and_uniform_reads() {
         for access in [api::AccessMask::VERTEX_READ, api::AccessMask::UNIFORM_READ] {
             assert_eq!(
@@ -304,6 +444,49 @@ mod tests {
                 accesses: api::AccessMask::SHADER_READ,
             })
             .is_err()
+        );
+    }
+
+    #[test]
+    fn storage_accesses_cover_graphics_shader_stages_and_read_write() {
+        for stage in [
+            api::StageMask::VERTEX,
+            api::StageMask::FRAGMENT,
+            api::StageMask::TASK,
+            api::StageMask::MESH,
+            api::StageMask::COMPUTE,
+            api::StageMask::RAY,
+        ] {
+            let accesses = api::AccessMask::SHADER_READ | api::AccessMask::SHADER_WRITE;
+            assert_eq!(
+                buffer_state(api::BufferUses {
+                    stages: stage,
+                    accesses
+                })
+                .unwrap(),
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+            );
+            for accesses in [api::AccessMask::SHADER_READ, accesses] {
+                assert_eq!(
+                    texture_state(
+                        api::ImageLayout::General,
+                        api::TextureUses {
+                            stages: stage,
+                            accesses
+                        }
+                    )
+                    .unwrap(),
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+                );
+            }
+        }
+        assert_eq!(
+            buffer_state(api::BufferUses {
+                stages: api::StageMask::COPY | api::StageMask::FRAGMENT,
+                accesses: api::AccessMask::COPY_READ | api::AccessMask::SHADER_READ,
+            })
+            .unwrap(),
+            D3D12_RESOURCE_STATE_COPY_SOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
         );
     }
 }

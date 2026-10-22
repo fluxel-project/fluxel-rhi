@@ -16,6 +16,7 @@ hardware-tests = []
 [dependencies]
 fluxel-rhi-core = { path = "../core" }
 raw-window-handle = "=0.6.2"
+naga = { version = "=27.0.3", features = ["wgsl-in", "hlsl-out"] }
 
 [dev-dependencies]
 fluxel-host = { git = "https://github.com/fluxel-project/fluxel-host", rev = "b310f3fac4b8319343ef13341cd284344343c2ac", features = ["winit-runtime"] }
@@ -27,6 +28,7 @@ windows = { version = "=0.62.2", features = [
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D_Dxc",
     "Win32_Graphics_Direct3D_Fxc",
     "Win32_Graphics_Direct3D12",
     "Win32_System_Threading",

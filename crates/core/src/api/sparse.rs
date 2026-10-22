@@ -246,6 +246,16 @@ impl<B: MultiQueueBackend> GpuSignalPoint<B> {
     pub fn consumer_lane(&self) -> LaneId {
         self.consumer_lane
     }
+    /// Borrows the native signal for side-effect-free submission validation.
+    ///
+    /// # Safety
+    /// Only the owning backend may inspect this value while lowering a
+    /// validated packet. Inspection must not consume the one-shot wait, signal
+    /// a fence, or treat a reusable plan position as an execution identity.
+    #[doc(hidden)]
+    pub unsafe fn native_ref(&self) -> &B::NativeGpuSignal {
+        &self.native
+    }
     /// Transfers the one-shot native signal to the backend wait installation.
     ///
     /// # Safety

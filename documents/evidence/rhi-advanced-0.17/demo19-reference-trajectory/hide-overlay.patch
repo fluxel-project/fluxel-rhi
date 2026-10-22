@@ -1,0 +1,11 @@
+--- stride24.cpp
++++ stride24-no-overlay.cpp
+@@ -937,7 +937,7 @@
+         if (example.Init() && gui.Init(example.GetShaderFactory()))
+         {
+             deviceManager->AddRenderPassToBack(&example);
+-            deviceManager->AddRenderPassToBack(&gui);
++            // Capture the scene without the overlay.
+             deviceManager->RunMessageLoop();
+             deviceManager->RemoveRenderPass(&gui);
+             deviceManager->RemoveRenderPass(&example);

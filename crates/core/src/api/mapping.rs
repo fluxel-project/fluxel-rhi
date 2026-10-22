@@ -126,6 +126,11 @@ pub struct ReadbackTicket<B: ReadbackBackend> {
     native: B::NativeReadback,
 }
 impl<B: ReadbackBackend> CommandEncoder<B> {
+    /// Stages a copy from a device-local source, or retains a host-readable
+    /// source for mapping after completion. A copied source requires COPY_SRC
+    /// usage; the caller establishes COPY/COPY_READ before this operation on
+    /// backends with explicit resource states. The copy leaves that state in
+    /// place. The caller still supplies completion covering this ticket.
     pub fn readback_buffer(
         &mut self,
         src: &Buffer<B>,

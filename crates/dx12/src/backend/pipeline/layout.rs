@@ -19,9 +19,19 @@ pub(crate) struct GroupTables {
     pub(crate) views: Option<u32>,
     pub(crate) samplers: Option<u32>,
     pub(crate) dynamic_cbvs: Vec<DynamicCbvRoot>,
+    /// All dynamic bindings in ascending binding order, including storage.
+    pub(crate) dynamic_bindings: Vec<(u32, descriptor::DescriptorClass)>,
 }
 pub(crate) struct PipelineLayoutState {
     pub(crate) root: ID3D12RootSignature,
+    pub(crate) compute_root: ID3D12RootSignature,
+    pub(crate) root_bytes: Vec<u8>,
+    pub(crate) compute_root_bytes: Vec<u8>,
+    pub(crate) vertex_index_root: Option<(ID3D12RootSignature, Vec<u8>, u32)>,
+    pub(crate) num_workgroups_root: Option<(ID3D12RootSignature, Vec<u8>, u32)>,
+    pub(crate) register_map: Vec<(u32, u32, u32, u8, u32)>,
+    pub(crate) binding_types: Vec<(u32, u32, api::BindingType)>,
+    pub(crate) native_abi_compatible: bool,
     pub(crate) groups: Vec<Arc<descriptor::BindGroupLayoutState>>,
     /// One root CBV table parameter per logical group.  Group ordinal is both
     /// this vector's index and the HLSL register space used for its ranges.
@@ -29,32 +39,108 @@ pub(crate) struct PipelineLayoutState {
     pub(crate) push_constants: Option<PushConstantsRoot>,
 }
 pub(crate) struct PushConstantsRoot {
-    pub(crate) root: u32,
-    pub(crate) range: std::ops::Range<u32>,
-    pub(crate) stages: api::StageMask,
+    graphics: Vec<(api::StageMask, u32)>,
+    compute: Option<u32>,
+    ranges: Vec<(std::ops::Range<u32>, api::StageMask)>,
+}
+impl PushConstantsRoot {
+    fn covers(&self, stage: api::StageMask, start: u32, end: u32) -> bool {
+        (start..end).step_by(4).all(|offset| {
+            self.ranges.iter().any(|(range, mask)| {
+                mask.0 & stage.0 != 0 && range.start <= offset && offset + 4 <= range.end
+            })
+        })
+    }
+    pub(crate) fn graphics_writes(
+        &self,
+        stages: api::StageMask,
+        start: u32,
+        end: u32,
+    ) -> Result<Vec<u32>> {
+        if stages.0 == 0 || start >= end || start % 4 != 0 || end % 4 != 0 {
+            return Err(Error::InvalidRange);
+        }
+        let mut remaining = stages.0;
+        let mut roots = Vec::new();
+        for (stage, root) in &self.graphics {
+            if stages.0 & stage.0 != 0 {
+                if !self.covers(*stage, start, end) {
+                    return Err(Error::InvalidRange);
+                }
+                roots.push(*root);
+                remaining &= !stage.0;
+            }
+        }
+        if remaining != 0 {
+            return Err(Error::InvalidRange);
+        }
+        Ok(roots)
+    }
+    pub(crate) fn compute_write(&self, start: u32, end: u32) -> Result<u32> {
+        if start >= end
+            || start % 4 != 0
+            || end % 4 != 0
+            || !self.covers(api::StageMask::COMPUTE, start, end)
+        {
+            return Err(Error::InvalidRange);
+        }
+        self.compute.ok_or(Error::InvalidRange)
+    }
 }
 pub(crate) fn create_pipeline_layout(
     device: &Dx12Device,
     desc: &api::PipelineLayoutDesc<'_, Dx12>,
 ) -> Result<Dx12PipelineLayout> {
-    // Layout group position is the DXIL register space.  Binding layout
-    // validation accepts only static uniform buffers at this stage, hence every
-    // range is a CBV table range and one group maps to one root parameter.
+    // Layout group position is the DXIL register space. View and sampler
+    // tables are separate; dynamic uniform bindings use root descriptors.
     let mut ranges: Vec<Vec<D3D12_DESCRIPTOR_RANGE>> = Vec::with_capacity(desc.groups.len() * 2);
     let mut parameters: Vec<D3D12_ROOT_PARAMETER> = Vec::with_capacity(desc.groups.len());
     let mut tables = Vec::with_capacity(desc.groups.len());
     let mut groups = Vec::with_capacity(desc.groups.len());
+    let mut register_map = Vec::new();
+    let mut binding_types = Vec::new();
+    let mut native_abi_compatible = true;
     for (group, layout) in desc.groups.iter().enumerate() {
         // SAFETY: the Core descriptor is tied to this device; this borrow is
         // used only while synchronously building an independent root signature.
         let native = unsafe { layout.native_ref() };
         groups.push(native.0.clone());
         let state = &native.0;
+        let mut next_register = [0u32; 4];
+        for slot in &state.slots {
+            binding_types.push((group as u32, slot.binding, slot.binding_type.clone()));
+            let class = match slot.class {
+                descriptor::DescriptorClass::Cbv => 0,
+                descriptor::DescriptorClass::Srv => 1,
+                descriptor::DescriptorClass::Uav => 2,
+                descriptor::DescriptorClass::Sampler => 3,
+            };
+            let register = slot.binding.max(next_register[class]);
+            next_register[class] = register
+                .checked_add(slot.descriptor_count)
+                .ok_or(Error::InvalidRange)?;
+            native_abi_compatible &= register == slot.binding;
+            register_map.push((
+                group as u32,
+                slot.binding,
+                register,
+                class as u8,
+                slot.descriptor_count,
+            ));
+        }
+        let mapped = |binding| {
+            register_map
+                .iter()
+                .find(|&&(g, b, _, _, _)| g == group as u32 && b == binding)
+                .map(|&(_, _, register, _, _)| register)
+                .expect("layout slot mapped")
+        };
         let view_ranges: Vec<D3D12_DESCRIPTOR_RANGE> = state
             .slots
             .iter()
             .filter(|slot| {
-                slot.class != descriptor::DescriptorClass::Sampler && !slot.dynamic_offset
+                slot.class != descriptor::DescriptorClass::Sampler
+                    && !(slot.dynamic_offset && slot.class == descriptor::DescriptorClass::Cbv)
             })
             .map(|slot| D3D12_DESCRIPTOR_RANGE {
                 RangeType: match slot.class {
@@ -63,12 +149,8 @@ pub(crate) fn create_pipeline_layout(
                     descriptor::DescriptorClass::Uav => D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
                     descriptor::DescriptorClass::Sampler => unreachable!(),
                 },
-                NumDescriptors: if slot.runtime_sized {
-                    u32::MAX
-                } else {
-                    slot.descriptor_count
-                },
-                BaseShaderRegister: slot.binding,
+                NumDescriptors: slot.descriptor_count,
+                BaseShaderRegister: mapped(slot.binding),
                 RegisterSpace: group as u32,
                 OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
             })
@@ -80,7 +162,7 @@ pub(crate) fn create_pipeline_layout(
             .map(|slot| D3D12_DESCRIPTOR_RANGE {
                 RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
                 NumDescriptors: slot.descriptor_count,
-                BaseShaderRegister: slot.binding,
+                BaseShaderRegister: mapped(slot.binding),
                 RegisterSpace: group as u32,
                 OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
             })
@@ -130,7 +212,7 @@ pub(crate) fn create_pipeline_layout(
                 ParameterType: D3D12_ROOT_PARAMETER_TYPE_CBV,
                 Anonymous: D3D12_ROOT_PARAMETER_0 {
                     Descriptor: D3D12_ROOT_DESCRIPTOR {
-                        ShaderRegister: slot.binding,
+                        ShaderRegister: mapped(slot.binding),
                         RegisterSpace: group as u32,
                     },
                 },
@@ -146,51 +228,170 @@ pub(crate) fn create_pipeline_layout(
             views: view,
             samplers,
             dynamic_cbvs,
+            dynamic_bindings: state
+                .slots
+                .iter()
+                .filter(|slot| slot.dynamic_offset)
+                .map(|slot| (slot.binding, slot.class))
+                .collect(),
         });
     }
-    let push_constants = match desc.push_constants {
-        [] => None,
-        [range] => {
-            if !matches!(
-                range.stages.as_slice(),
-                [api::ShaderStage::Vertex] | [api::ShaderStage::Mesh] | [api::ShaderStage::Task]
-            ) || range.range.start >= range.range.end
-                || range.range.end > 128
-                || range.range.start % 4 != 0
-                || range.range.end % 4 != 0
+    let mut compute_parameters = parameters.clone();
+    let push_constants = if desc.push_constants.is_empty() {
+        None
+    } else {
+        let mut push_ranges = Vec::new();
+        for entry in desc.push_constants {
+            if entry.range.start >= entry.range.end
+                || entry.range.end > 128
+                || entry.range.start % 4 != 0
+                || entry.range.end % 4 != 0
             {
-                return Err(Error::Unsupported("DX12 vertex push-constant range"));
+                return Err(Error::InvalidRange);
             }
-            let root = parameters.len() as u32;
-            parameters.push(D3D12_ROOT_PARAMETER {
-                ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
-                Anonymous: D3D12_ROOT_PARAMETER_0 {
-                    Constants: D3D12_ROOT_CONSTANTS {
-                        ShaderRegister: 1,
-                        RegisterSpace: 0,
-                        Num32BitValues: (range.range.end - range.range.start) / 4,
-                    },
-                },
-                ShaderVisibility: match range.stages[0] {
-                    api::ShaderStage::Mesh => D3D12_SHADER_VISIBILITY_MESH,
-                    api::ShaderStage::Task => D3D12_SHADER_VISIBILITY_AMPLIFICATION,
-                    _ => D3D12_SHADER_VISIBILITY_VERTEX,
-                },
-            });
-            Some(PushConstantsRoot {
-                root,
-                range: range.range.clone(),
-                stages: match range.stages[0] {
-                    api::ShaderStage::Mesh => api::StageMask::MESH,
+            let mut stages = api::StageMask::EMPTY;
+            for stage in &entry.stages {
+                let bit = match stage {
+                    api::ShaderStage::Vertex => api::StageMask::VERTEX,
+                    api::ShaderStage::Fragment => api::StageMask::FRAGMENT,
+                    api::ShaderStage::Compute => api::StageMask::COMPUTE,
                     api::ShaderStage::Task => api::StageMask::TASK,
-                    _ => api::StageMask::VERTEX,
+                    api::ShaderStage::Mesh => api::StageMask::MESH,
+                    _ => return Err(Error::Unsupported("DX12 ray push constants")),
+                };
+                if stages.0 & bit.0 != 0 {
+                    return Err(Error::InvalidRange);
+                }
+                stages = stages.union(bit);
+            }
+            if stages.0 == 0 {
+                return Err(Error::InvalidRange);
+            }
+            push_ranges.push((entry.range.clone(), stages));
+        }
+        let max_end = |stage: api::StageMask| {
+            push_ranges
+                .iter()
+                .filter(|(_, mask)| mask.0 & stage.0 != 0)
+                .map(|(range, _)| range.end)
+                .max()
+        };
+        let constant = |count, visibility| D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                Constants: D3D12_ROOT_CONSTANTS {
+                    ShaderRegister: 1,
+                    RegisterSpace: 0,
+                    Num32BitValues: count,
                 },
-            })
+            },
+            ShaderVisibility: visibility,
+        };
+        let mut graphics = Vec::new();
+        for (stage, visibility) in [
+            (api::StageMask::VERTEX, D3D12_SHADER_VISIBILITY_VERTEX),
+            (api::StageMask::FRAGMENT, D3D12_SHADER_VISIBILITY_PIXEL),
+            (api::StageMask::TASK, D3D12_SHADER_VISIBILITY_AMPLIFICATION),
+            (api::StageMask::MESH, D3D12_SHADER_VISIBILITY_MESH),
+        ] {
+            if let Some(end) = max_end(stage) {
+                let root = parameters.len() as u32;
+                parameters.push(constant(end / 4, visibility));
+                graphics.push((stage, root));
+            }
         }
-        _ => {
-            return Err(Error::Unsupported("DX12 multiple push-constant ranges"));
-        }
+        let compute = max_end(api::StageMask::COMPUTE).map(|end| {
+            let root = compute_parameters.len() as u32;
+            compute_parameters.push(constant(end / 4, D3D12_SHADER_VISIBILITY_ALL));
+            root
+        });
+        Some(PushConstantsRoot {
+            graphics,
+            compute,
+            ranges: push_ranges,
+        })
     };
+    let (root, root_bytes) = create_root(device, &parameters)?;
+    let (compute_root, compute_root_bytes) = if push_constants.is_some() {
+        create_root(device, &compute_parameters)?
+    } else {
+        (root.clone(), root_bytes.clone())
+    };
+    let num_workgroups_root = if groups.len() <= 255 {
+        let index = compute_parameters.len() as u32;
+        compute_parameters.push(D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                Constants: D3D12_ROOT_CONSTANTS {
+                    ShaderRegister: 0,
+                    RegisterSpace: 255,
+                    Num32BitValues: 3,
+                },
+            },
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+        });
+        match create_root(device, &compute_parameters) {
+            Ok((root, bytes)) => Some((root, bytes, index)),
+            Err(Error::Unsupported(_)) => None,
+            Err(error) => return Err(error),
+        }
+    } else {
+        None
+    };
+    let vertex_index_root = if groups.len() <= 255 {
+        let index = parameters.len() as u32;
+        parameters.push(D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                Constants: D3D12_ROOT_CONSTANTS {
+                    ShaderRegister: 0,
+                    RegisterSpace: 255,
+                    Num32BitValues: 3,
+                },
+            },
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_VERTEX,
+        });
+        match create_root(device, &parameters) {
+            Ok((root, bytes)) => Some((root, bytes, index)),
+            Err(Error::Unsupported(_)) => None,
+            Err(error) => return Err(error),
+        }
+    } else {
+        None
+    };
+    Ok(Dx12PipelineLayout(Arc::new(PipelineLayoutState {
+        root,
+        compute_root,
+        root_bytes,
+        compute_root_bytes,
+        vertex_index_root,
+        num_workgroups_root,
+        register_map,
+        binding_types,
+        native_abi_compatible,
+        groups,
+        tables,
+        push_constants,
+    })))
+}
+fn create_root(
+    device: &Dx12Device,
+    parameters: &[D3D12_ROOT_PARAMETER],
+) -> Result<(ID3D12RootSignature, Vec<u8>)> {
+    let mut root_dwords = 0u32;
+    for parameter in parameters {
+        root_dwords += match parameter.ParameterType {
+            D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE => 1,
+            // SAFETY: the discriminator identifies the initialized union member.
+            D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS => unsafe {
+                parameter.Anonymous.Constants.Num32BitValues
+            },
+            _ => 2,
+        };
+    }
+    if root_dwords > 64 {
+        return Err(Error::Unsupported("DX12 root signature DWORD budget"));
+    }
     let root_desc = D3D12_ROOT_SIGNATURE_DESC {
         NumParameters: parameters.len() as u32,
         pParameters: parameters.as_ptr(),
@@ -199,9 +400,7 @@ pub(crate) fn create_pipeline_layout(
         Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
     };
     let mut blob = None;
-    // SAFETY: all pointers in `root_desc` point at vectors retained until this
-    // synchronous serializer returns; D3D12 receives a fully initialized ABI
-    // descriptor and writes only to the supplied COM out parameter.
+    // SAFETY: parameters and descriptor ranges remain live throughout serialization.
     unsafe {
         D3D12SerializeRootSignature(&root_desc, D3D_ROOT_SIGNATURE_VERSION_1, &mut blob, None)
     }
@@ -209,25 +408,18 @@ pub(crate) fn create_pipeline_layout(
     let blob = blob.ok_or_else(|| {
         Error::Backend("D3D12 root-signature serialization returned no blob".into())
     })?;
-    // SAFETY: the serializer owns `blob`; its documented buffer pointer and
-    // size remain valid while `blob` stays in scope for CreateRootSignature.
+    // SAFETY: the blob owns its byte range throughout the synchronous call.
     let bytes =
         unsafe { std::slice::from_raw_parts(blob.GetBufferPointer().cast(), blob.GetBufferSize()) };
-    // SAFETY: the blob byte range remains live for this synchronous creation
-    // call, and the returned COM object takes ownership of native state.
-    let root = unsafe {
+    // SAFETY: serialized bytes remain live while creating the signature.
+    let signature = unsafe {
         device
             .0
             .native
             .CreateRootSignature::<ID3D12RootSignature>(0, bytes)
     }
     .map_err(native_error)?;
-    Ok(Dx12PipelineLayout(Arc::new(PipelineLayoutState {
-        root,
-        groups,
-        tables,
-        push_constants,
-    })))
+    Ok((signature, bytes.to_vec()))
 }
 fn native_error(e: windows::core::Error) -> Error {
     Error::Backend(format!("Direct3D 12: {e}"))

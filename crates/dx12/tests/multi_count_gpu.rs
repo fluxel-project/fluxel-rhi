@@ -29,7 +29,15 @@ fn gpu_indexed_counts_aliased() {
 fn gpu_indexed_counts_separate() {
     gpu_counts_are_clamped(false, true);
 }
+#[test]
+fn gpu_written_arguments_work_with_ordinary_and_multi_indirect() {
+    gpu_counts(true, false, true);
+    gpu_counts(true, true, true);
+}
 fn gpu_counts_are_clamped(aliased: bool, indexed: bool) {
+    gpu_counts(aliased, indexed, false);
+}
+fn gpu_counts(aliased: bool, indexed: bool, ordinary: bool) {
     let d = block(Dx12Instance::new().unwrap().open_default()).unwrap();
     let lane = d
         .lanes()
@@ -265,6 +273,11 @@ fn gpu_counts_are_clamped(aliased: bool, indexed: bool) {
     for (i, v) in words.into_iter().enumerate() {
         records[i * 4..i * 4 + 4].copy_from_slice(&v.to_ne_bytes());
     }
+    if ordinary {
+        // The compute shader supplies the first vertex/index count. Without
+        // its UAV write and the following indirect transition, no first draw occurs.
+        records[..4].fill(0);
+    }
     let index = if indexed {
         Some(
             d.create_buffer(&BufferDesc {
@@ -425,21 +438,60 @@ fn gpu_counts_are_clamped(aliased: bool, indexed: bool) {
             p.set_index_buffer(index, 0..36, IndexFormat::Uint32)
                 .unwrap();
         }
-        d.raster_extras()
-            .unwrap()
-            .multi_draw_count(
-                &mut p,
-                &args,
-                0,
-                &counts,
-                64 + i as u64 * 4,
-                2,
-                if indexed { 20 } else { 16 },
-                indexed,
-            )
-            .unwrap();
+        let extras = d.raster_extras().unwrap();
+        if ordinary {
+            if i == 1 {
+                extras.draw_indirect(&mut p, &args, 0, indexed).unwrap();
+            } else if i >= 2 {
+                extras
+                    .multi_draw(&mut p, &args, 0, 2, if indexed { 20 } else { 16 }, indexed)
+                    .unwrap();
+            }
+        } else {
+            extras
+                .multi_draw_count(
+                    &mut p,
+                    &args,
+                    0,
+                    &counts,
+                    64 + i as u64 * 4,
+                    2,
+                    if indexed { 20 } else { 16 },
+                    indexed,
+                )
+                .unwrap();
+        }
         p.finish().unwrap();
     }
+    let argument_readback = if ordinary {
+        let destination = d
+            .create_buffer(&BufferDesc {
+                label: None,
+                size: 4,
+                usage: BufferUsage::COPY_DST | BufferUsage::MAP_READ,
+                memory: MemoryClass::Readback,
+            })
+            .unwrap();
+        e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
+            target: BufferSlice {
+                buffer: &args,
+                range: 0..80,
+            },
+            usage: StateTransition {
+                from: indirect,
+                to: BufferUses {
+                    stages: StageMask::COPY,
+                    accesses: AccessMask::COPY_READ,
+                },
+            },
+            ownership: None,
+        })])
+        .unwrap();
+        e.copy_buffer(&args, 0, &destination, 0, 4).unwrap();
+        Some(e.readback_buffer(&destination, 0..4).unwrap())
+    } else {
+        None
+    };
     e.transition_resources(&[tb(
         tr,
         tc,
@@ -508,6 +560,11 @@ fn gpu_counts_are_clamped(aliased: bool, indexed: bool) {
     block(d.wait_completion(&point)).unwrap();
     // SAFETY: completion covers the readback ticket.
     let data = unsafe { block(d.read_after(ticket, &point)).unwrap().bytes };
+    if let Some(ticket) = argument_readback {
+        // SAFETY: the same completion covers the argument readback.
+        let data = unsafe { block(d.read_after(ticket, &point)).unwrap().bytes };
+        assert_eq!(&*data, &3u32.to_ne_bytes());
+    }
     for i in 0..4 {
         let left = i * 4096 + 8 * 256 + 4 * 4;
         let right = i * 4096 + 8 * 256 + 12 * 4;

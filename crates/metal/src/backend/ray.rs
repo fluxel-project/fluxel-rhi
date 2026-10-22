@@ -8,34 +8,139 @@ use fluxel_rhi_core::api::{self, RayOps};
 use std::future::{Ready, ready};
 
 #[cfg(any(target_vendor = "apple", test))]
-struct FrozenDependencies<T>(std::sync::Mutex<Option<Vec<T>>>);
+struct FrozenDependencies<T> {
+    phase: std::sync::Arc<std::sync::Mutex<BuildState>>,
+    values: std::sync::Mutex<Vec<T>>,
+}
+
+#[cfg(any(target_vendor = "apple", test))]
+enum BuildState {
+    Empty,
+    Recording(u64),
+    Submitted,
+    Ready,
+    Failed,
+}
 
 #[cfg(any(target_vendor = "apple", test))]
 impl<T> Default for FrozenDependencies<T> {
     fn default() -> Self {
-        Self(std::sync::Mutex::new(None))
+        Self {
+            phase: std::sync::Arc::new(std::sync::Mutex::new(BuildState::Empty)),
+            values: std::sync::Mutex::new(Vec::new()),
+        }
     }
 }
 
 #[cfg(any(target_vendor = "apple", test))]
 impl<T> FrozenDependencies<T> {
-    fn with_snapshot<R>(&self, f: impl FnOnce(&[T]) -> R) -> api::Result<R> {
-        let guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        let values = guard.as_deref().ok_or(api::Error::InvalidState)?;
-        Ok(f(values))
+    fn with_snapshot<R>(&self, owner: u64, f: impl FnOnce(&[T]) -> R) -> api::Result<R> {
+        let guard = self.phase.lock().unwrap_or_else(|p| p.into_inner());
+        match &*guard {
+            BuildState::Recording(current) if *current == owner => (),
+            BuildState::Ready => (),
+            _ => return Err(api::Error::InvalidState),
+        }
+        let values = self.values.lock().unwrap_or_else(|p| p.into_inner());
+        Ok(f(&values))
     }
 
-    fn freeze(&self, values: Vec<T>) -> api::Result<()> {
-        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        if guard.is_some() || values.is_empty() {
+    fn freeze(&self, owner: u64, values: Vec<T>) -> api::Result<()> {
+        let mut guard = self.phase.lock().unwrap_or_else(|p| p.into_inner());
+        if !matches!(*guard, BuildState::Empty) || values.is_empty() {
             return Err(api::Error::InvalidState);
         }
-        *guard = Some(values);
+        *self.values.lock().unwrap_or_else(|p| p.into_inner()) = values;
+        *guard = BuildState::Recording(owner);
         Ok(())
+    }
+
+    fn abandon(&self, owner: u64) {
+        let mut state = self.phase.lock().unwrap_or_else(|p| p.into_inner());
+        if matches!(&*state, BuildState::Recording(current) if *current == owner) {
+            self.values
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
+            *state = BuildState::Empty;
+        }
+    }
+
+    #[cfg(test)]
+    fn submit(&self, owner: u64) {
+        let mut state = self.phase.lock().unwrap_or_else(|p| p.into_inner());
+        if matches!(&*state, BuildState::Recording(current) if *current == owner) {
+            *state = BuildState::Submitted;
+        }
+    }
+
+    #[cfg(test)]
+    fn complete(&self, success: bool) {
+        let mut state = self.phase.lock().unwrap_or_else(|p| p.into_inner());
+        if matches!(*state, BuildState::Submitted) {
+            *state = if success {
+                BuildState::Ready
+            } else {
+                BuildState::Failed
+            };
+        }
     }
 }
 
 pub struct MetalRay;
+
+#[cfg(any(target_vendor = "apple", test))]
+pub(super) struct BuildReservation {
+    owner: u64,
+    phase: std::sync::Arc<std::sync::Mutex<BuildState>>,
+    #[cfg(target_vendor = "apple")]
+    dependencies: std::sync::Arc<FrozenDependencies<MetalAcceleration>>,
+}
+
+#[cfg(any(target_vendor = "apple", test))]
+impl Drop for BuildReservation {
+    fn drop(&mut self) {
+        #[cfg(target_vendor = "apple")]
+        self.dependencies.abandon(self.owner);
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            let mut state = self.phase.lock().unwrap_or_else(|p| p.into_inner());
+            if matches!(&*state, BuildState::Recording(owner) if *owner == self.owner) {
+                *state = BuildState::Empty;
+            }
+        }
+    }
+}
+
+#[cfg(any(target_vendor = "apple", test))]
+impl BuildReservation {
+    pub(super) fn submit(&self) {
+        let mut state = self.phase.lock().unwrap_or_else(|p| p.into_inner());
+        if matches!(&*state, BuildState::Recording(owner) if *owner == self.owner) {
+            *state = BuildState::Submitted;
+        }
+    }
+    pub(super) fn completion(&self) -> BuildCompletion {
+        BuildCompletion(self.phase.clone())
+    }
+}
+
+#[cfg(any(target_vendor = "apple", test))]
+pub(super) struct BuildCompletion(std::sync::Arc<std::sync::Mutex<BuildState>>);
+
+#[cfg(any(target_vendor = "apple", test))]
+impl BuildCompletion {
+    pub(super) fn complete(&self, success: bool) {
+        let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        if matches!(*state, BuildState::Submitted) {
+            *state = if success {
+                BuildState::Ready
+            } else {
+                BuildState::Failed
+            };
+        }
+    }
+}
 #[derive(Clone)]
 pub struct MetalAcceleration {
     #[cfg(target_vendor = "apple")]
@@ -57,12 +162,13 @@ impl MetalAcceleration {
     pub(crate) fn declare_dependencies(
         &self,
         compute: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLComputeCommandEncoder>,
+        owner: u64,
     ) -> api::Result<()> {
         use objc2_metal::{MTLComputeCommandEncoder as _, MTLResource, MTLResourceUsage};
         if !self.is_tlas {
             return Err(api::Error::InvalidState);
         }
-        self.dependencies.with_snapshot(|dependencies| {
+        self.dependencies.with_snapshot(owner, |dependencies| {
             for dependency in dependencies {
                 let resource =
                     objc2::runtime::ProtocolObject::<dyn MTLResource>::from_ref(&*dependency.raw);
@@ -70,11 +176,11 @@ impl MetalAcceleration {
             }
         })
     }
-    pub(crate) fn validate_binding(&self) -> api::Result<()> {
+    pub(crate) fn validate_binding(&self, owner: u64) -> api::Result<()> {
         if !self.is_tlas {
             return Err(api::Error::InvalidState);
         }
-        self.dependencies.with_snapshot(|_| ())
+        self.dependencies.with_snapshot(owner, |_| ())
     }
 }
 
@@ -168,10 +274,17 @@ impl RayOps<Metal> for MetalRay {
                 .accelerationStructureCommandEncoder()
                 .ok_or(api::Error::OutOfMemory)?;
             if dst.is_tlas {
-                if let Err(error) = dst.dependencies.freeze(dependencies) {
+                if let Err(error) = dst.dependencies.freeze(encoder.ray_owner, dependencies) {
                     native.endEncoding();
                     return Err(error);
                 }
+                encoder
+                    .ray_builds
+                    .push(std::sync::Arc::new(BuildReservation {
+                        owner: encoder.ray_owner,
+                        phase: dst.dependencies.phase.clone(),
+                        dependencies: dst.dependencies.clone(),
+                    }));
             }
             native.buildAccelerationStructure_descriptor_scratchBuffer_scratchBufferOffset(
                 &dst.raw,
@@ -478,21 +591,45 @@ mod tests {
     #[test]
     fn tlas_dependencies_are_fixed_before_binding_and_cannot_be_rebuilt() {
         let dependencies = FrozenDependencies::default();
-        assert!(dependencies.with_snapshot(|_| ()).is_err());
-        assert!(dependencies.freeze(vec![1, 2]).is_ok());
+        assert!(dependencies.with_snapshot(1, |_| ()).is_err());
+        assert!(dependencies.freeze(1, vec![1, 2]).is_ok());
+        assert!(dependencies.with_snapshot(2, |_| ()).is_err());
         assert_eq!(
             dependencies
-                .with_snapshot(|values| values.to_vec())
+                .with_snapshot(1, |values| values.to_vec())
                 .unwrap(),
             [1, 2]
         );
-        assert!(dependencies.freeze(vec![3]).is_err());
+        assert!(dependencies.freeze(2, vec![3]).is_err());
+        dependencies.abandon(1);
+        assert!(dependencies.freeze(2, vec![3]).is_ok());
+        dependencies.submit(2);
+        assert!(dependencies.with_snapshot(2, |_| ()).is_err());
+        dependencies.complete(true);
         assert_eq!(
             dependencies
-                .with_snapshot(|values| values.to_vec())
+                .with_snapshot(1, |values| values.to_vec())
                 .unwrap(),
-            [1, 2]
+            [3]
         );
+        let failed = FrozenDependencies::default();
+        failed.freeze(1, vec![1]).unwrap();
+        failed.submit(1);
+        failed.complete(false);
+        assert!(failed.with_snapshot(1, |_| ()).is_err());
+        assert!(failed.freeze(2, vec![2]).is_err());
+    }
+
+    #[test]
+    fn abandoned_recording_releases_dependencies() {
+        let dependencies = FrozenDependencies::default();
+        let blas = Arc::new(());
+        let weak = Arc::downgrade(&blas);
+        dependencies.freeze(7, vec![blas]).unwrap();
+        assert!(weak.upgrade().is_some());
+        dependencies.abandon(7);
+        assert!(weak.upgrade().is_none());
+        assert!(dependencies.freeze(8, vec![Arc::new(())]).is_ok());
     }
 
     #[test]
@@ -504,7 +641,7 @@ mod tests {
                 let (dependencies, barrier) = (dependencies.clone(), barrier.clone());
                 std::thread::spawn(move || {
                     barrier.wait();
-                    dependencies.freeze(vec![id, id])
+                    dependencies.freeze(id + 1, vec![id, id])
                 })
             })
             .collect();
@@ -515,7 +652,10 @@ mod tests {
             .filter(|r| r.is_ok())
             .count();
         assert_eq!(successes, 1);
-        let snapshot = dependencies.with_snapshot(|v| v.to_vec()).unwrap();
+        let snapshot = dependencies
+            .with_snapshot(1, |v| v.to_vec())
+            .or_else(|_| dependencies.with_snapshot(2, |v| v.to_vec()))
+            .unwrap();
         assert_eq!(snapshot.len(), 2);
         assert_eq!(snapshot[0], snapshot[1]);
     }

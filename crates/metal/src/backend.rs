@@ -274,6 +274,7 @@ impl InstanceBackend for Metal {
                     }),
                 };
                 caps.mesh = mesh::mesh_supported(&device);
+                caps.acceleration_structure = device._state.ray_supported;
                 caps.ray_query = shader::ray_query_supported(&device);
                 caps.timestamp = <Metal as api::QueryBackend>::query_supported(
                     &device,

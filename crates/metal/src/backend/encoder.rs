@@ -30,6 +30,10 @@ pub struct MetalCommandEncoder {
     pub(super) pending_statistics: Option<(super::query::MetalQuerySet, u32, api::StatisticsPass)>,
     pub(crate) accelerations: Vec<super::ray::MetalAcceleration>,
     #[cfg(target_vendor = "apple")]
+    pub(super) ray_owner: u64,
+    #[cfg(target_vendor = "apple")]
+    pub(super) ray_builds: Vec<std::sync::Arc<super::ray::BuildReservation>>,
+    #[cfg(target_vendor = "apple")]
     pub(crate) mesh_threads: Option<([u32; 3], [u32; 3])>,
     #[cfg(target_vendor = "apple")]
     pub(crate) command:
@@ -121,6 +125,17 @@ impl CommandBackend for Metal {
                 query_ops: Vec::new(),
                 pending_statistics: None,
                 accelerations: Vec::new(),
+                ray_owner: {
+                    static NEXT: std::sync::atomic::AtomicU64 =
+                        std::sync::atomic::AtomicU64::new(1);
+                    NEXT.fetch_update(
+                        std::sync::atomic::Ordering::Relaxed,
+                        std::sync::atomic::Ordering::Relaxed,
+                        |n| n.checked_add(1),
+                    )
+                    .map_err(|_| api::Error::InvalidState)?
+                },
+                ray_builds: Vec::new(),
                 mesh_threads: None,
                 command,
                 prior_commands: Vec::new(),

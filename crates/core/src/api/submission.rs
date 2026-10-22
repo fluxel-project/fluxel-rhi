@@ -279,6 +279,13 @@ impl SparseTile {
 /// Mapping changes are ordered with commands on their submission lane. The caller
 /// must ensure mapped residency, resource states, and aliasing hazards for every
 /// GPU access; mapping does not initialize tile contents.
+/// Mapping alone does not initialize texture contents or native attachment
+/// metadata. Before using newly mapped render-target or depth/stencil memory,
+/// the caller must initialize affected subresources using a complete copy or
+/// clear, or a supported transition from `ImageLayout::Undefined` on their
+/// first use. Preserve existing contents when remapping by choosing an
+/// initialization operation that is valid for the intended data; backends do
+/// not infer a discard from a mapping or from `ImageLayout::Common`.
 pub struct SparseBind<B: Backend> {
     pub resource: Texture<B>,
     /// Regions are traversed in order; standard rectangles are x-major. A

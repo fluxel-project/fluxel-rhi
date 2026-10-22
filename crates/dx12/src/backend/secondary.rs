@@ -109,12 +109,14 @@ impl api::SecondaryBackend for Dx12 {
         unsafe { encoder.list.Close() }.map_err(super::native_error)?;
         encoder.closed = true;
         Ok(Dx12SecondaryWork {
+            segments: encoder.segments,
             allocator: encoder.allocator,
             list: encoder.list,
             buffers: encoder.buffers,
             groups: encoder.groups,
             pipeline: encoder.pipeline,
             pipelines: encoder.pipelines,
+            dynamic_view_tables: encoder.dynamic_view_tables,
             signature: encoder.signature,
             viewport: encoder.viewport,
             scissor: encoder.scissor,
@@ -125,56 +127,75 @@ impl api::SecondaryBackend for Dx12 {
         encoder: &mut Self::NativeEncoder,
         work: &Self::NativeSecondaryWork,
     ) -> Result<()> {
-        if encoder.raster_format != work.signature.color_formats.first().copied().flatten()
-            || encoder.raster_samples != Some(work.signature.samples)
+        let state = encoder.raster_state.as_ref().ok_or(Error::InvalidState)?;
+        for pipeline in &work.pipelines {
+            if (state.depth_read_only && pipeline.0.depth_writes)
+                || (state.stencil_read_only && pipeline.0.stencil_writes)
+            {
+                return Err(Error::InvalidState);
+            }
+        }
+        if encoder.raster_formats != work.signature.color_formats
+            || encoder.raster_depth_format != work.signature.depth_stencil_format
+            || encoder.raster_state.as_ref().and_then(|s| s.multiview_mask)
+                != work.signature.multiview_mask
+            || encoder
+                .raster_samples
+                .is_some_and(|samples| samples != work.signature.samples)
         {
             return Err(Error::InvalidState);
         }
-        if let Some(group) = work.groups.first() {
-            let heaps = [
-                Some(group.0.heaps().view_heap().clone()),
-                Some(group.0.heaps().sampler_heap().clone()),
-            ];
-            // SAFETY: the retained bind group owns both heaps and the primary
-            // command list belongs to the same D3D12 device.
-            unsafe { encoder.list.SetDescriptorHeaps(&heaps) };
-        }
-        if let Some(viewport) = work.viewport {
-            // SAFETY: viewport values are copied immediately into the open
-            // primary list; the stack array has no lifetime after this call.
-            unsafe {
-                encoder.list.RSSetViewports(&[
-                    windows::Win32::Graphics::Direct3D12::D3D12_VIEWPORT {
+        for segment in work.segments.iter().chain(std::iter::once(
+            &super::encoder::secondary::SecondarySegment {
+                list: work.list.clone(),
+                viewport: work.viewport,
+                scissor: work.scissor,
+            },
+        )) {
+            if let Some(viewport) = segment.viewport {
+                // SAFETY: viewport values are copied immediately into the open
+                // primary list; the stack array has no lifetime after this call.
+                unsafe {
+                    let v = windows::Win32::Graphics::Direct3D12::D3D12_VIEWPORT {
                         TopLeftX: viewport.x,
                         TopLeftY: viewport.y,
                         Width: viewport.width,
                         Height: viewport.height,
                         MinDepth: viewport.min_depth,
                         MaxDepth: viewport.max_depth,
-                    },
-                ]);
+                    };
+                    if encoder.raster_multiview.is_some() {
+                        encoder.list.RSSetViewports(&[v, v]);
+                    } else {
+                        encoder.list.RSSetViewports(&[v]);
+                    }
+                }
             }
-        }
-        if let Some(rect) = work.scissor {
-            let right = rect.x.checked_add(rect.width).ok_or(Error::InvalidRange)?;
-            let bottom = rect.y.checked_add(rect.height).ok_or(Error::InvalidRange)?;
-            // SAFETY: overflow checks above formed a valid RECT, copied
-            // immediately by the open primary command list.
-            unsafe {
-                encoder
-                    .list
-                    .RSSetScissorRects(&[windows::Win32::Foundation::RECT {
+            if let Some(rect) = segment.scissor {
+                let right = rect.x.checked_add(rect.width).ok_or(Error::InvalidRange)?;
+                let bottom = rect.y.checked_add(rect.height).ok_or(Error::InvalidRange)?;
+                // SAFETY: overflow checks above formed a valid RECT, copied
+                // immediately by the open primary command list.
+                unsafe {
+                    let r = windows::Win32::Foundation::RECT {
                         left: rect.x as i32,
                         top: rect.y as i32,
                         right: right as i32,
                         bottom: bottom as i32,
-                    }]);
+                    };
+                    if encoder.raster_multiview.is_some() {
+                        encoder.list.RSSetScissorRects(&[r, r]);
+                    } else {
+                        encoder.list.RSSetScissorRects(&[r]);
+                    }
+                }
             }
+            // SAFETY: finish_secondary closed this bundle once, compatibility was
+            // checked above, and `work` is retained by the primary encoder before
+            // submission can retire either native command object.
+            unsafe { encoder.list.ExecuteBundle(&segment.list) };
         }
-        // SAFETY: finish_secondary closed this bundle once, compatibility was
-        // checked above, and `work` is retained by the primary encoder before
-        // submission can retire either native command object.
-        unsafe { encoder.list.ExecuteBundle(&work.list) };
+        super::encoder::raster_snapshot::restore(encoder)?;
         encoder.secondary.push(work.clone());
         Ok(())
     }

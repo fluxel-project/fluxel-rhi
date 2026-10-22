@@ -16,9 +16,11 @@ use windows::{Win32::Graphics::Direct3D12::*, core::Interface};
 pub(crate) struct MeshPipelineState {
     pub(crate) layout: Arc<PipelineLayoutState>,
     pub(crate) state: ID3D12PipelineState,
-    pub(crate) color_format: api::TextureFormat,
+    pub(crate) color_formats: Vec<Option<api::TextureFormat>>,
     pub(crate) samples: u32,
     pub(crate) depth_format: Option<api::TextureFormat>,
+    pub(crate) depth_writes: bool,
+    pub(crate) stencil_writes: bool,
 }
 
 #[repr(C, align(8))]
@@ -40,6 +42,7 @@ struct Stream {
     topology: Subobject<D3D12_PRIMITIVE_TOPOLOGY_TYPE>,
     formats: Subobject<D3D12_RT_FORMAT_ARRAY>,
     samples: Subobject<DXGI_SAMPLE_DESC>,
+    cached: Subobject<D3D12_CACHED_PIPELINE_STATE>,
 }
 fn sub<T>(tag: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE, value: T) -> Subobject<T> {
     Subobject { tag, value }
@@ -74,40 +77,23 @@ pub(super) fn create_pipeline(
     if !device.0.mesh_supported {
         return Err(Error::Unsupported("DX12 mesh shader tier 1"));
     }
-    if desc.cache.is_some()
-        || desc.targets.len() != 1
-        || desc.primitive.strip_index_format.is_some()
-        || desc.primitive.conservative
-        || desc.primitive.unclipped_depth
+    if desc.primitive.strip_index_format.is_some()
         || !matches!(
             desc.primitive.topology,
             api::PrimitiveTopology::TriangleList
         )
-        || !matches!(desc.primitive.polygon_mode, api::PolygonMode::Fill)
-        || !matches!(desc.multisample.count, 1 | 2 | 4 | 8)
+        || !matches!(desc.multisample.count, 1 | 2 | 4 | 8 | 16 | 32)
         || desc.multisample.mask > u64::from(u32::MAX)
     {
         return Err(Error::Unsupported("DX12 mesh pipeline state"));
     }
-    let depth = match desc.depth_stencil {
-        None => None,
-        Some(state)
-            if state.format == api::TextureFormat::Depth32Float
-                && super::pipeline::stencil_is_disabled(&state) =>
-        {
-            Some(state)
-        }
-        Some(_) => return Err(Error::Unsupported("DX12 mesh depth state")),
-    };
-    let target = desc.targets[0].as_ref().ok_or(Error::InvalidState)?;
-    if target.blend.is_some() || target.write_mask != 15 {
-        return Err(Error::Unsupported("DX12 mesh blend state"));
+    if desc.multisample.alpha_to_coverage_enabled && desc.multisample.count == 1 {
+        return Err(Error::InvalidState);
     }
-    let format = match target.format {
-        api::TextureFormat::Rgba8Unorm => DXGI_FORMAT_R8G8B8A8_UNORM,
-        api::TextureFormat::Bgra8Unorm => DXGI_FORMAT_B8G8R8A8_UNORM,
-        _ => return Err(Error::Unsupported("DX12 mesh color format")),
-    };
+    let depth = super::pipeline::fixed::validate_depth(desc.depth_stencil)?;
+    let (formats, blends) = super::pipeline::fixed::lower_targets(&desc.targets)?;
+    let raster = super::pipeline::fixed::lower_raster(desc.primitive, desc.multisample, depth)?;
+    let depth_state = super::pipeline::fixed::lower_depth(depth);
     let mesh = shader(&desc.mesh, api::ShaderStage::Mesh)?;
     let task = desc
         .task
@@ -121,50 +107,35 @@ pub(super) fn create_pipeline(
         .transpose()?;
     // SAFETY: the layout was validated by Core and the cloned Arc retains it.
     let layout = unsafe { desc.layout.native_ref() }.0.clone();
-    let target_blend = D3D12_RENDER_TARGET_BLEND_DESC {
-        BlendEnable: FALSE,
-        LogicOpEnable: FALSE,
-        SrcBlend: D3D12_BLEND_ONE,
-        DestBlend: D3D12_BLEND_ZERO,
-        BlendOp: D3D12_BLEND_OP_ADD,
-        SrcBlendAlpha: D3D12_BLEND_ONE,
-        DestBlendAlpha: D3D12_BLEND_ZERO,
-        BlendOpAlpha: D3D12_BLEND_OP_ADD,
-        LogicOp: D3D12_LOGIC_OP_NOOP,
-        RenderTargetWriteMask: D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8,
+    if !layout.native_abi_compatible {
+        return Err(Error::Unsupported("DX12 DXIL descriptor register overlap"));
+    }
+    // SAFETY: Core validates that the cache belongs to the same device.
+    let cache = desc
+        .cache
+        .as_ref()
+        .map(|cache| unsafe { cache.native_ref() });
+    let fixed = format!(
+        "{:?}|{:?}|{:?}|{:?}",
+        desc.primitive, desc.depth_stencil, desc.multisample, desc.targets
+    );
+    let key = cache
+        .map(|_| {
+            super::pipeline::cache::key(&[
+                b"mesh-v1",
+                &layout.root_bytes,
+                task.unwrap_or(&[]),
+                mesh,
+                fragment.unwrap_or(&[]),
+                fixed.as_bytes(),
+            ])
+        })
+        .transpose()?;
+    let cached = match (cache, key.as_ref()) {
+        (Some(cache), Some(key)) => cache.0.lookup(key)?,
+        _ => None,
     };
-    let raster = D3D12_RASTERIZER_DESC {
-        FillMode: D3D12_FILL_MODE_SOLID,
-        CullMode: match desc.primitive.cull_mode {
-            api::CullMode::None => D3D12_CULL_MODE_NONE,
-            api::CullMode::Front => D3D12_CULL_MODE_FRONT,
-            api::CullMode::Back => D3D12_CULL_MODE_BACK,
-        },
-        FrontCounterClockwise: if matches!(desc.primitive.front_face, api::FrontFace::Ccw) {
-            TRUE
-        } else {
-            FALSE
-        },
-        DepthBias: depth.map_or(0, |d| d.depth_bias_constant),
-        DepthBiasClamp: depth.map_or(0.0, |d| d.depth_bias_clamp),
-        SlopeScaledDepthBias: depth.map_or(0.0, |d| d.depth_bias_slope_scale),
-        DepthClipEnable: TRUE,
-        MultisampleEnable: if desc.multisample.count > 1 {
-            TRUE
-        } else {
-            FALSE
-        },
-        AntialiasedLineEnable: FALSE,
-        ForcedSampleCount: 0,
-        ConservativeRaster: D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
-    };
-    let stencil = D3D12_DEPTH_STENCILOP_DESC {
-        StencilFailOp: D3D12_STENCIL_OP_KEEP,
-        StencilDepthFailOp: D3D12_STENCIL_OP_KEEP,
-        StencilPassOp: D3D12_STENCIL_OP_KEEP,
-        StencilFunc: D3D12_COMPARISON_FUNC_ALWAYS,
-    };
-    let stream = Stream {
+    let mut stream = Stream {
         root: sub(
             D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE,
             layout.root.as_raw(),
@@ -186,8 +157,8 @@ pub(super) fn create_pipeline(
                 } else {
                     FALSE
                 },
-                IndependentBlendEnable: FALSE,
-                RenderTarget: [target_blend; 8],
+                IndependentBlendEnable: TRUE,
+                RenderTarget: blends,
             },
         ),
         sample_mask: sub(
@@ -197,30 +168,11 @@ pub(super) fn create_pipeline(
         raster: sub(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER, raster),
         depth: sub(
             D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL,
-            D3D12_DEPTH_STENCIL_DESC {
-                DepthEnable: if depth.is_some() { TRUE } else { FALSE },
-                DepthWriteMask: if depth.is_some_and(|d| d.depth_write_enabled) {
-                    D3D12_DEPTH_WRITE_MASK_ALL
-                } else {
-                    D3D12_DEPTH_WRITE_MASK_ZERO
-                },
-                DepthFunc: depth.map_or(D3D12_COMPARISON_FUNC_ALWAYS, |d| {
-                    super::pipeline::comparison(d.depth_compare)
-                }),
-                StencilEnable: FALSE,
-                StencilReadMask: 0,
-                StencilWriteMask: 0,
-                FrontFace: stencil,
-                BackFace: stencil,
-            },
+            depth_state,
         ),
         depth_format: sub(
             D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT,
-            if depth.is_some() {
-                DXGI_FORMAT_D32_FLOAT
-            } else {
-                DXGI_FORMAT_UNKNOWN
-            },
+            super::pipeline::fixed::depth_format(depth),
         ),
         topology: sub(
             D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY,
@@ -229,18 +181,20 @@ pub(super) fn create_pipeline(
         formats: sub(
             D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS,
             D3D12_RT_FORMAT_ARRAY {
-                RTFormats: [
-                    format,
-                    DXGI_FORMAT_UNKNOWN,
-                    DXGI_FORMAT_UNKNOWN,
-                    DXGI_FORMAT_UNKNOWN,
-                    DXGI_FORMAT_UNKNOWN,
-                    DXGI_FORMAT_UNKNOWN,
-                    DXGI_FORMAT_UNKNOWN,
-                    DXGI_FORMAT_UNKNOWN,
-                ],
-                NumRenderTargets: 1,
+                RTFormats: formats,
+                NumRenderTargets: desc.targets.len() as u32,
             },
+        ),
+        cached: sub(
+            D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CACHED_PSO,
+            cached
+                .as_ref()
+                .map_or(D3D12_CACHED_PIPELINE_STATE::default(), |blob| {
+                    D3D12_CACHED_PIPELINE_STATE {
+                        pCachedBlob: blob.as_ptr().cast(),
+                        CachedBlobSizeInBytes: blob.len(),
+                    }
+                }),
         ),
         samples: sub(
             D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC,
@@ -259,16 +213,38 @@ pub(super) fn create_pipeline(
         .native
         .cast::<ID3D12Device2>()
         .map_err(super::native_error)?;
-    // SAFETY: the aligned stream, root signature, and shader bytecode remain
-    // live for the duration of this synchronous PSO creation call.
-    let state = unsafe { native_device.CreatePipelineState::<ID3D12PipelineState>(&native) }
-        .map_err(super::native_error)?;
+    // SAFETY: stream, root signature, shader bytes and cached blob outlive the synchronous call.
+    let mut result = unsafe { native_device.CreatePipelineState::<ID3D12PipelineState>(&native) };
+    if cached.is_some()
+        && result
+            .as_ref()
+            .is_err_and(super::pipeline::cache::is_compatibility_error)
+    {
+        stream.cached.value = D3D12_CACHED_PIPELINE_STATE::default();
+        let retry = D3D12_PIPELINE_STATE_STREAM_DESC {
+            SizeInBytes: std::mem::size_of_val(&stream),
+            pPipelineStateSubobjectStream: (&mut stream as *mut Stream).cast(),
+        };
+        // SAFETY: the rebuilt descriptor points to the updated live stream.
+        result = unsafe { native_device.CreatePipelineState::<ID3D12PipelineState>(&retry) };
+    }
+    let state = result.map_err(super::native_error)?;
+    if let (Some(cache), Some(key)) = (cache, key.as_ref()) {
+        // The usable pipeline is independent of whether cache extraction succeeds.
+        let _ = cache.0.store(key, &state);
+    }
     Ok(Dx12MeshPipeline(Arc::new(MeshPipelineState {
         layout,
         state,
-        color_format: target.format,
+        color_formats: desc
+            .targets
+            .iter()
+            .map(|t| t.as_ref().map(|t| t.format))
+            .collect(),
         samples: desc.multisample.count,
         depth_format: depth.map(|d| d.format),
+        depth_writes: depth.is_some_and(|d| d.depth_write_enabled),
+        stencil_writes: super::pipeline::fixed::stencil_writes(depth),
     })))
 }
 

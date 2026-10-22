@@ -92,6 +92,7 @@ impl<B: Backend> Device<B> {
     }
 }
 impl<B: Backend> RasterExtras<'_, B> {
+    /// The caller must transition the argument buffer to `INDIRECT_READ` before the pass.
     pub fn draw_indirect(
         &self,
         pass: &mut RasterPass<'_, B>,
@@ -113,6 +114,7 @@ impl<B: Backend> RasterExtras<'_, B> {
         }
         pass.call(|e| B::Extras::draw_indirect(e, &args.native, offset, indexed))
     }
+    /// The caller must transition the argument buffer to `INDIRECT_READ` before the pass.
     pub fn multi_draw(
         &self,
         pass: &mut RasterPass<'_, B>,

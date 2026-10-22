@@ -291,7 +291,38 @@ impl<B: OcclusionWorkloadBackend> Workload<B> {
             d.queries(QueryKind::Occlusion)
                 .ok_or(Error::Unsupported("occlusion queries"))?
                 .resolve(e, query_set, 0..2, results, 0)?;
-            e.readback_buffer(results, 0..16).map(Some)
+            let idle = BufferUses {
+                stages: StageMask::ALL_COMMANDS,
+                accesses: AccessMask::EMPTY,
+            };
+            let copy = BufferUses {
+                stages: StageMask::COPY,
+                accesses: AccessMask::COPY_READ,
+            };
+            e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
+                target: BufferSlice {
+                    buffer: results,
+                    range: 0..16,
+                },
+                usage: StateTransition {
+                    from: idle,
+                    to: copy,
+                },
+                ownership: None,
+            })])?;
+            let ticket = e.readback_buffer(results, 0..16)?;
+            e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
+                target: BufferSlice {
+                    buffer: results,
+                    range: 0..16,
+                },
+                usage: StateTransition {
+                    from: copy,
+                    to: idle,
+                },
+                ownership: None,
+            })])?;
+            Ok(Some(ticket))
         } else {
             Ok(None)
         }

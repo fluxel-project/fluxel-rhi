@@ -25,6 +25,8 @@ mod execution_contract;
 mod multiqueue_validation;
 #[path = "tests/query_validation.rs"]
 mod query_validation;
+#[path = "tests/ray_validation.rs"]
+mod ray_validation;
 
 #[cfg(test)]
 pub(crate) mod type_contract_tests {

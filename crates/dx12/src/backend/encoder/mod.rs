@@ -26,27 +26,51 @@ use super::{
     Dx12RasterPipeline, Dx12Texture, native_error,
 };
 
+mod blit_compute;
 mod clear;
 mod coordinates;
 mod copy;
 mod core;
+mod depth_readback;
 pub(super) mod fence_wait;
+mod heaps;
 mod indirect;
+pub(crate) mod integer_clear;
 mod mipmap;
+mod ownership;
 pub(crate) mod query;
 mod raster;
+pub(crate) mod raster_snapshot;
 mod readback;
 mod record;
 pub(crate) mod secondary;
 mod submit;
 mod transition;
+pub(crate) mod upload;
 pub(super) use coordinates::{scissor as validate_scissor, viewport as validate_viewport};
 pub(crate) use core::DirectCommandPool;
 pub use core::{Dx12Completion, Dx12Encoder, Dx12RecordedWork, RasterExtras};
 pub(crate) use mipmap::MipBlitCache;
 pub(super) use mipmap::{linear_mip_blit, validate_mip_blit};
-pub(super) use raster::{barrier, upload_buffer};
+pub(super) use raster::barrier;
 pub(crate) use secondary::{Dx12SecondaryEncoder, Dx12SecondaryWork};
 pub(super) use transition::{
     barrier_sub, buffer_state, copy_location, texture_state, texture_upload_buffer,
 };
+
+fn restore_after_internal_draw(encoder: &mut Dx12Encoder) -> Result<(), Error> {
+    if encoder.pipeline.is_some() || encoder.mesh_pipeline.is_some() {
+        raster_snapshot::restore(encoder)?;
+    } else if let Some(ray) = &encoder.ray_pipeline {
+        let list = encoder
+            .list
+            .cast::<ID3D12GraphicsCommandList4>()
+            .map_err(native_error)?;
+        // SAFETY: the state object is retained by the encoder until completion.
+        unsafe { list.SetPipelineState1(&ray.0.state) };
+    } else if let Some(compute) = &encoder.compute_pipeline {
+        // SAFETY: the pipeline is retained by the encoder until completion.
+        unsafe { encoder.list.SetPipelineState(&compute.0.state) };
+    }
+    Ok(())
+}

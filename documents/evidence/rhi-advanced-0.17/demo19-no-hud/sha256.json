@@ -1,0 +1,22 @@
+{
+  "crates\\rhi\\examples\\19_ray_query_particles\\camera.rs": "ed66c67847e3633b9ea090f95a9d7290a1c7b891a7ebad134ff945af4c84d8be",
+  "crates\\rhi\\examples\\19_ray_query_particles\\live.rs": "243fe5360ecb8528e300e94ae94d56d52cadd8147e8342b6673a0880b6a10bbb",
+  "crates\\rhi\\examples\\19_ray_query_particles\\live_init.rs": "0cab11ec70926abfbae42a283f8ec4b867c8c0a8f032c2eb76965e51e2779b04",
+  "crates\\rhi\\examples\\19_ray_query_particles\\main.rs": "b2991aa0aea47173e308a61aa6e9eb34e671c8804904249c34cb3c065780aeee",
+  "crates\\rhi\\examples\\19_ray_query_particles\\particles.rs": "92f1821d105cfb43be7e4f7fbc2aa0b1d6982ae35532ceb0685eab74ffadda7f",
+  "crates\\rhi\\examples\\19_ray_query_particles\\particle_acceleration.rs": "493924b2a41939648e685ef27aa5925acdf94b95c9586025e115e2c7583edfaa",
+  "crates\\rhi\\examples\\19_ray_query_particles\\run.rs": "c44da947966626581bc037b7e1b240ae86a6600b70e15ceca359b3499b8a319f",
+  "crates\\rhi\\examples\\19_ray_query_particles\\scene.rs": "7c47b9dbe71fca63898e1bd496f8183fc3dd00762f696ec121d65e00b88096b3",
+  "crates\\rhi\\examples\\19_ray_query_particles\\texture.rs": "05e32fbfec70648b9eee156a5460cb69febaf5ebb043899a181138ba7f219bc9",
+  "crates\\rhi\\examples\\19_ray_query_particles\\ui.rs": "b285806f5966889134ea25526a3190ad828bb9b7009311766d5e1aef82fc4624",
+  "crates\\rhi\\examples\\19_ray_query_particles\\README.md": "c31cb3622dbea70f5cfb6a2905c00faa94255b3f2dcb665de7a47f24bf6b3623",
+  "crates\\rhi\\examples\\19_ray_query_particles\\controlled.hlsl": "bc51f43c6cf48639db66adbb341d9dc7d73a2879935e1d70c7058b70a835ea35",
+  "crates\\rhi\\examples\\19_ray_query_particles\\controlled.dxil": "5cf2f9e55a3ecad8166cd43e9a0eb67f0e55a92fa003949c8a9f33da1b1c2e7c",
+  "crates\\rhi\\examples\\assets\\19_ray_query_particles\\controlled.spv": "ade9df63bd37a2affc86b3d556ee967090dd786fc8997a41bf5a0699c92109f2",
+  "Cargo.lock": "675cc860c332a18078041791eb7e9497276a8c7b675d8cc83e29e040f4ab9e44",
+  "target\\debug\\examples\\19_ray_query_particles.exe": "526d2e92d10c0d09b7b85b8f687d07020cc98e8deccfc8f2dbebbaa1cf2079e1",
+  "documents\\evidence\\rhi-advanced-0.17\\demo19-no-hud\\dx12\\default.png": "2faa3025f040e2bc56a33e2122fae122ca3cc50a31f81c8cefa5a08ab86408c2",
+  "documents\\evidence\\rhi-advanced-0.17\\demo19-no-hud\\vulkan\\default.png": "31258297b86476889465be9992f95a2dd724ff39cb25e89ee2411cdb76f1e8bf",
+  "documents\\evidence\\rhi-advanced-0.17\\demo19-no-hud\\dx12\\live.log": "8dfefba4107728319fca0a12378290a6215ff3c1987ef75344d074505aa519b7",
+  "documents\\evidence\\rhi-advanced-0.17\\demo19-no-hud\\vulkan\\live.log": "62ba43b025528ab95e7544e5c3b618fcfb3113a726deb8db889432e02c174ef0"
+}

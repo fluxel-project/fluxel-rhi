@@ -4,20 +4,26 @@
 //! commands are encoded by the command module. This layer only creates and
 //! validates the native heap; it deliberately does not infer pass boundaries
 //! or completion, which remain Core and submission concerns.
-//! Timestamp sets support direct or compute queues. The first submitted query
-//! operation binds a set to its lane; another lane is rejected before native
-//! handoff. Pipeline statistics and occlusion remain direct-only.
+//! Timestamp slots can move between queues after their preceding submitted
+//! operation has a completed native fence. Pipeline statistics and occlusion remain direct-only.
 use super::{Dx12, Dx12Buffer, Dx12Device, Dx12QuerySet};
 use fluxel_rhi_core::api::{self, Error, Result};
 use std::{ops::Range, sync::Arc};
 use windows::Win32::Graphics::Direct3D12::*;
+
+#[derive(Clone)]
+pub(crate) struct SlotSubmission {
+    pub(crate) lane: u32,
+    /// None means work was issued but its completion is not yet proven.
+    pub(crate) point: Option<(ID3D12Fence, u64)>,
+}
 
 pub(crate) struct QuerySetState {
     pub(crate) heap: ID3D12QueryHeap,
     pub(crate) count: u32,
     pub(crate) kind: api::QueryKind,
     pub(crate) submitted_slots: std::sync::Mutex<Vec<bool>>,
-    pub(crate) submitted_lane: std::sync::Mutex<Option<u32>>,
+    pub(crate) submitted_lanes: std::sync::Mutex<Vec<Option<SlotSubmission>>>,
 }
 
 impl api::QueryBackend for Dx12 {
@@ -63,7 +69,7 @@ impl api::QueryBackend for Dx12 {
             count: desc.count,
             kind: desc.kind,
             submitted_slots: std::sync::Mutex::new(vec![false; desc.count as usize]),
-            submitted_lane: std::sync::Mutex::new(None),
+            submitted_lanes: std::sync::Mutex::new(vec![None; desc.count as usize]),
         })))
     }
     fn write_timestamp(

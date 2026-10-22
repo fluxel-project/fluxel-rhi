@@ -4,3 +4,9 @@
 mod backend;
 #[cfg(windows)]
 pub use backend::{Dx12, Dx12Instance};
+
+#[cfg(all(windows, feature = "hardware-tests"))]
+#[doc(hidden)]
+pub mod diagnostics;
+#[cfg(all(windows, not(feature = "hardware-tests")))]
+mod diagnostics;

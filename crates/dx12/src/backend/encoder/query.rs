@@ -4,6 +4,10 @@ use crate::backend::{Dx12Buffer, Dx12QuerySet};
 use fluxel_rhi_core::api::{BufferUsage, Error, MemoryClass, QueryKind, Result};
 use std::ops::Range;
 
+#[cfg(all(test, feature = "hardware-tests"))]
+#[path = "query_pending_test.rs"]
+mod pending_test;
+
 /// Ordered logical effects; recording never changes submitted slot state.
 #[derive(Clone)]
 pub(crate) enum QueryOp {
@@ -12,10 +16,22 @@ pub(crate) enum QueryOp {
     Resolve(Dx12QuerySet, Range<u32>),
 }
 
+fn fence_wait_covers(fence: &ID3D12Fence, value: u64, waits: &[(ID3D12Fence, u64)]) -> bool {
+    waits.iter().any(|(wait_fence, wait_value)| {
+        fence.as_raw() == wait_fence.as_raw() && *wait_value >= value
+    })
+}
+
 impl QueryOp {
     fn set(&self) -> &Dx12QuerySet {
         match self {
             Self::Reset(s, _) | Self::Write(s, _) | Self::Resolve(s, _) => s,
+        }
+    }
+    fn range(&self) -> Range<u32> {
+        match self {
+            Self::Reset(_, range) | Self::Resolve(_, range) => range.clone(),
+            Self::Write(_, slot) => *slot..*slot + 1,
         }
     }
     fn apply(&self, slots: &mut [bool]) -> Result<()> {
@@ -37,21 +53,58 @@ impl QueryOp {
 }
 
 /// Simulate the entire packet without changing submitted state.
-pub(crate) fn validate_ops<'a>(ops: impl Iterator<Item = (u32, &'a QueryOp)>) -> Result<()> {
+pub(crate) fn validate_ops<'a>(
+    ops: impl Iterator<Item = (u32, usize, &'a QueryOp)>,
+    coverage: &[[Option<usize>; 2]],
+    external_waits: &[Vec<(ID3D12Fence, u64)>],
+) -> Result<()> {
     let mut states = std::collections::HashMap::<usize, Vec<bool>>::new();
-    let mut lanes = std::collections::HashMap::<usize, u32>::new();
-    for (lane, op) in ops {
+    let mut lanes = std::collections::HashMap::<
+        usize,
+        Vec<Option<crate::backend::query::SlotSubmission>>,
+    >::new();
+    let mut packet_owners = std::collections::HashMap::<(usize, u32), (u32, usize)>::new();
+    for (lane, step, op) in ops {
         let set = op.set();
         let key = key(set, 0).0;
-        if set
-            .0
-            .submitted_lane
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .is_some_and(|owner| owner != lane)
-            || lanes.insert(key, lane).is_some_and(|owner| owner != lane)
-        {
-            return Err(Error::Unsupported("DX12 query set across queues"));
+        let owners = lanes.entry(key).or_insert_with(|| {
+            set.0
+                .submitted_lanes
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+        });
+        for slot in op.range() {
+            let owner = &mut owners[slot as usize];
+            if let Some(&(previous_lane, previous_step)) = packet_owners.get(&(key, slot)) {
+                if previous_lane != lane
+                    && coverage[step][previous_lane as usize]
+                        .is_none_or(|covered| covered < previous_step)
+                {
+                    return Err(Error::Unsupported(
+                        "DX12 query slot across unordered queues",
+                    ));
+                }
+            } else if let Some(previous) = owner {
+                if previous.lane != lane {
+                    let completed = previous.point.as_ref().is_some_and(|(fence, value)| {
+                        // SAFETY: the point owns the native fence for this query slot.
+                        let completed = unsafe { fence.GetCompletedValue() };
+                        completed != u64::MAX && completed >= *value
+                    });
+                    let waited = previous.point.as_ref().is_some_and(|(fence, value)| {
+                        fence_wait_covers(fence, *value, &external_waits[step])
+                    });
+                    if !completed && !waited {
+                        return Err(Error::Unsupported(
+                            "DX12 query slot across queues without completion",
+                        ));
+                    }
+                }
+            }
+            // A simulated packet operation invalidates any older completed point.
+            *owner = Some(crate::backend::query::SlotSubmission { lane, point: None });
+            packet_owners.insert((key, slot), (lane, step));
         }
         let state = states.entry(key).or_insert_with(|| {
             set.0
@@ -68,11 +121,17 @@ pub(crate) fn validate_ops<'a>(ops: impl Iterator<Item = (u32, &'a QueryOp)>) ->
 /// Commit only a command list already issued to the native queue.
 pub(crate) fn commit_ops(ops: &[QueryOp], lane: u32) {
     for op in ops {
-        *op.set()
+        let mut owners = op
+            .set()
             .0
-            .submitted_lane
+            .submitted_lanes
             .lock()
-            .unwrap_or_else(|p| p.into_inner()) = Some(lane);
+            .unwrap_or_else(|p| p.into_inner());
+        for slot in op.range() {
+            owners[slot as usize] =
+                Some(crate::backend::query::SlotSubmission { lane, point: None });
+        }
+        drop(owners);
         let mut slots = op
             .set()
             .0
@@ -81,6 +140,24 @@ pub(crate) fn commit_ops(ops: &[QueryOp], lane: u32) {
             .unwrap_or_else(|p| p.into_inner());
         // Entire packet was validated under the submission gate.
         op.apply(&mut slots).expect("validated query operations");
+    }
+}
+
+/// Associate issued slot operations with the signal queued after their step.
+pub(crate) fn seal_ops(ops: &[QueryOp], lane: u32, fence: &ID3D12Fence, value: u64) {
+    for op in ops {
+        let mut owners = op
+            .set()
+            .0
+            .submitted_lanes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        for slot in op.range() {
+            owners[slot as usize] = Some(crate::backend::query::SlotSubmission {
+                lane,
+                point: Some((fence.clone(), value)),
+            });
+        }
     }
 }
 

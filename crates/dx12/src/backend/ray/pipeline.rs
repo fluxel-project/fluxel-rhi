@@ -68,9 +68,11 @@ pub(crate) fn create_pipeline(
     desc: &api::RayPipelineDesc<Dx12>,
 ) -> Result<Dx12RayPipeline> {
     let ray_device = super::ray_device(device)?;
+    if desc.cache.is_some() {
+        return Err(Error::Unsupported("DX12 ray state object cache"));
+    }
     if desc.shaders.is_empty()
         || desc.groups.is_empty()
-        || desc.cache.is_some()
         || desc.max_recursion == 0
         || desc.max_recursion > 31
         || desc.hit_attribute_bytes > 32
@@ -205,8 +207,11 @@ pub(crate) fn create_pipeline(
         .collect();
     // SAFETY: Core validated the pipeline layout's device identity.
     let layout = unsafe { desc.layout.native_ref() }.0.clone();
+    if !layout.native_abi_compatible {
+        return Err(Error::Unsupported("DX12 DXIL descriptor register overlap"));
+    }
     let global = D3D12_GLOBAL_ROOT_SIGNATURE {
-        pGlobalRootSignature: ManuallyDrop::new(Some(layout.root.clone())),
+        pGlobalRootSignature: ManuallyDrop::new(Some(layout.compute_root.clone())),
     };
     let shader_config = D3D12_RAYTRACING_SHADER_CONFIG {
         MaxPayloadSizeInBytes: desc.payload_bytes,

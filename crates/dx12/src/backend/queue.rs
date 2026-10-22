@@ -116,6 +116,7 @@ pub(crate) fn signal(device: &Dx12Device, ordinal: u32) -> Result<u64> {
         )
         .map_err(|_| Error::InvalidRange)?;
     // SAFETY: queue access is serialized and device retains queue/fence.
+    crate::diagnostics::record(crate::diagnostics::Operation::QueueSignal, 1);
     unsafe { queue.Signal(fence, value) }.map_err(native_error)?;
     Ok(value)
 }

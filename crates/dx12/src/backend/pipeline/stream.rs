@@ -12,7 +12,8 @@ pub(crate) fn create_view_instanced_pso(
     device: &ID3D12Device,
     pso: &D3D12_GRAPHICS_PIPELINE_STATE_DESC,
     root: &ID3D12RootSignature,
-    locations: &[D3D12_VIEW_INSTANCE_LOCATION; 2],
+    locations: &[D3D12_VIEW_INSTANCE_LOCATION],
+    cached: Option<&[u8]>,
 ) -> Result<ID3D12PipelineState> {
     fn push<T: Copy>(bytes: &mut Vec<u8>, tag: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE, value: T) {
         bytes.resize(bytes.len().next_multiple_of(8), 0);
@@ -63,6 +64,11 @@ pub(crate) fn create_view_instanced_pso(
     );
     push(
         &mut bytes,
+        D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_IB_STRIP_CUT_VALUE,
+        pso.IBStripCutValue,
+    );
+    push(
+        &mut bytes,
         D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS,
         D3D12_RT_FORMAT_ARRAY {
             RTFormats: pso.RTVFormats,
@@ -93,11 +99,21 @@ pub(crate) fn create_view_instanced_pso(
         &mut bytes,
         D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VIEW_INSTANCING,
         D3D12_VIEW_INSTANCING_DESC {
-            ViewInstanceCount: 2,
+            ViewInstanceCount: locations.len() as u32,
             pViewInstanceLocations: locations.as_ptr(),
             Flags: D3D12_VIEW_INSTANCING_FLAG_ENABLE_VIEW_INSTANCE_MASKING,
         },
     );
+    if let Some(blob) = cached {
+        push(
+            &mut bytes,
+            D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CACHED_PSO,
+            D3D12_CACHED_PIPELINE_STATE {
+                pCachedBlob: blob.as_ptr().cast(),
+                CachedBlobSizeInBytes: blob.len(),
+            },
+        );
+    }
     let stream = D3D12_PIPELINE_STATE_STREAM_DESC {
         SizeInBytes: bytes.len(),
         pPipelineStateSubobjectStream: bytes.as_mut_ptr().cast(),
@@ -106,7 +122,18 @@ pub(crate) fn create_view_instanced_pso(
     // SAFETY: `bytes` owns the complete aligned stream, including all pointer
     // targets borrowed from `pso`/`locations`, until this synchronous call
     // returns. Device2 copies/consumes the stream before returning.
-    unsafe { device.CreatePipelineState::<ID3D12PipelineState>(&stream) }.map_err(native_error)
+    match unsafe { device.CreatePipelineState::<ID3D12PipelineState>(&stream) } {
+        Err(error) if cached.is_some() && super::cache::is_compatibility_error(&error) => {
+            create_view_instanced_pso(
+                &device.cast().map_err(native_error)?,
+                pso,
+                root,
+                locations,
+                None,
+            )
+        }
+        result => result.map_err(native_error),
+    }
 }
 
 fn native_error(e: windows::core::Error) -> Error {

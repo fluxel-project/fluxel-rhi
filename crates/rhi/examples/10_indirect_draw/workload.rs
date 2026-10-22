@@ -247,6 +247,25 @@ impl<B: IndirectWorkloadBackend> Workload<B> {
     ) -> Result<FrameCommit> {
         if !self.uploaded {
             self.scene.upload(e)?;
+            // The upload helper leaves the command buffer at its idle state.
+            // Indirect draws consume the explicitly selected INDIRECT_READ state.
+            e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
+                target: BufferSlice {
+                    buffer: &self.scene.arguments,
+                    range: 0..self.scene.argument_data.len() as u64,
+                },
+                usage: StateTransition {
+                    from: BufferUses {
+                        stages: StageMask::EMPTY,
+                        accesses: AccessMask::EMPTY,
+                    },
+                    to: BufferUses {
+                        stages: StageMask::INDIRECT,
+                        accesses: AccessMask::INDIRECT_READ,
+                    },
+                },
+                ownership: None,
+            })])?;
             upload_ktx(e, &self.plant_texture, &self.plant_ktx)?;
             upload_ktx(e, &self.ground_texture, &self.ground_ktx)?;
             let reads = [

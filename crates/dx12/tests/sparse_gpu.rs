@@ -16,6 +16,44 @@ fn block_on<F: Future>(f: F) -> F::Output {
 }
 #[test]
 fn map_remap_and_readback() {
+    map_remap_case(TextureFormat::Rgba8Unorm, 1, 0);
+    map_remap_case(TextureFormat::Bgra8Unorm, 2, 1);
+    map_remap_case(TextureFormat::Bc1RgbaUnorm, 1, 0);
+    map_remap_case(TextureFormat::Bc7RgbaUnorm, 1, 0);
+}
+
+#[test]
+fn non_dxgi_sparse_formats_return_structured_errors() {
+    let device = block_on(Dx12Instance::new().unwrap().open_default()).unwrap();
+    let Some(sparse) = device.sparse() else {
+        return;
+    };
+    for format in [
+        TextureFormat::Etc2Rgb8Unorm,
+        TextureFormat::Astc {
+            block: [4, 4],
+            srgb: false,
+            hdr: false,
+        },
+    ] {
+        assert!(matches!(
+            sparse.texture(&TextureDesc {
+                label: None,
+                dimension: TextureDimension::D2,
+                extent: [256, 256, 1],
+                array_layers: 1,
+                format,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::COPY_DST,
+                view_formats: vec![],
+            }),
+            Err(Error::Unsupported(_))
+        ));
+    }
+}
+
+fn map_remap_case(format: TextureFormat, layers: u32, layer: u32) {
     let d = block_on(Dx12Instance::new().unwrap().open_default()).unwrap();
     let lane = d
         .lanes()
@@ -31,8 +69,8 @@ fn map_remap_and_readback() {
             label: None,
             dimension: TextureDimension::D2,
             extent: [256, 256, 1],
-            array_layers: 1,
-            format: TextureFormat::Rgba8Unorm,
+            array_layers: layers,
+            format,
             mip_levels: 1,
             samples: 1,
             usage: TextureUsage::COPY_SRC.union(TextureUsage::COPY_DST),
@@ -43,7 +81,12 @@ fn map_remap_and_readback() {
     let size = u64::from(tiling.tile_grid[0]) * u64::from(tiling.tile_grid[1]) * tiling.tile_bytes;
     let allocation_a = sparse.allocation(size).unwrap();
     let allocation_b = sparse.allocation(size).unwrap();
-    let buffer_size = 256 * 256 * 4;
+    let (pitch, rows) = match format {
+        TextureFormat::Bc1RgbaUnorm => (512, 64),
+        TextureFormat::Bc7RgbaUnorm => (1024, 64),
+        _ => (1024, 256),
+    };
+    let buffer_size = pitch * rows;
     for (iteration, allocation) in [allocation_a, allocation_b].into_iter().enumerate() {
         let source = d
             .create_buffer(&BufferDesc {
@@ -82,7 +125,7 @@ fn map_remap_and_readback() {
                     texture: &texture,
                     aspects: TextureAspects::COLOR,
                     mips: 0..1,
-                    layers: 0..1,
+                    layers: layer..layer + 1,
                 },
                 usage: StateTransition { from, to },
                 layout: Some(layouts),
@@ -123,13 +166,13 @@ fn map_remap_and_readback() {
         .unwrap();
         let layout = TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: 1024,
-            rows_per_image: 256,
+            bytes_per_row: pitch as u32,
+            rows_per_image: rows as u32,
         };
         let region = || TextureRegion {
             texture: &texture,
             mip: 0,
-            origin: [0, 0, 0],
+            origin: [0, 0, layer],
             extent: [256, 256, 1],
             aspect: TextureAspects::COLOR,
         };
@@ -169,7 +212,7 @@ fn map_remap_and_readback() {
                     resource: texture.clone(),
                     tiles: vec![SparseTile {
                         mip: 0,
-                        layer: 0,
+                        layer,
                         origin: [0, 0, 0],
                         count: tiling.tile_grid,
                     }],
@@ -217,7 +260,7 @@ fn map_remap_and_readback() {
         resource: texture.clone(),
         tiles: vec![SparseTile {
             mip: 0,
-            layer: 0,
+            layer,
             origin: [0, 0, 0],
             count: tiling.tile_grid,
         }],
@@ -249,7 +292,7 @@ fn map_remap_and_readback() {
         resource: texture.clone(),
         tiles: vec![SparseTile {
             mip: 0,
-            layer: 0,
+            layer,
             origin: [0, 0, 0],
             count: tiling.tile_grid,
         }],
@@ -276,6 +319,11 @@ fn map_remap_and_readback() {
 
 #[test]
 fn all_mips_multiple_heaps_and_packed_tail() {
+    all_mips_case(1, 0);
+    all_mips_case(2, 1);
+}
+
+fn all_mips_case(layers: u32, layer: u32) {
     let d = block_on(Dx12Instance::new().unwrap().open_default()).unwrap();
     let lane = d
         .lanes()
@@ -284,19 +332,21 @@ fn all_mips_multiple_heaps_and_packed_tail() {
         .unwrap()
         .id;
     let sparse = d.sparse().expect("sparse capability");
-    let texture = sparse
-        .texture(&TextureDesc {
-            label: None,
-            dimension: TextureDimension::D2,
-            extent: [256, 256, 1],
-            array_layers: 1,
-            format: TextureFormat::Rgba8Unorm,
-            mip_levels: 9,
-            samples: 1,
-            usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
-            view_formats: vec![],
-        })
-        .unwrap();
+    let texture = match sparse.texture(&TextureDesc {
+        label: None,
+        dimension: TextureDimension::D2,
+        extent: [256, 256, 1],
+        array_layers: layers,
+        format: TextureFormat::Rgba8Unorm,
+        mip_levels: 9,
+        samples: 1,
+        usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+        view_formats: vec![],
+    }) {
+        Ok(texture) => texture,
+        Err(Error::Unsupported(_)) if layers > 1 => return,
+        Err(error) => panic!("sparse texture creation failed: {error:?}"),
+    };
     let tiling = sparse.tiling(&texture).unwrap();
     assert_eq!(
         tiling.standard_mip_grids.len() + tiling.packed_tail.map_or(0, |t| t.mip_count as usize),
@@ -311,7 +361,7 @@ fn all_mips_multiple_heaps_and_packed_tail() {
             resource: texture.clone(),
             tiles: vec![SparseTile {
                 mip: mip as u32,
-                layer: 0,
+                layer,
                 origin: [0, 0, 0],
                 count: *grid,
             }],
@@ -327,7 +377,7 @@ fn all_mips_multiple_heaps_and_packed_tail() {
             resource: texture.clone(),
             tiles: vec![SparseTile {
                 mip: tail.first_mip,
-                layer: 0,
+                layer,
                 origin: [0, 0, 0],
                 count: [tail.tile_count, 1, 1],
             }],
@@ -384,7 +434,7 @@ fn all_mips_multiple_heaps_and_packed_tail() {
                     texture: &texture,
                     aspects: TextureAspects::COLOR,
                     mips: mip..mip + 1,
-                    layers: 0..1,
+                    layers: layer..layer + 1,
                 },
                 usage: StateTransition { from, to },
                 layout: Some(layout),
@@ -420,7 +470,7 @@ fn all_mips_multiple_heaps_and_packed_tail() {
         let region = || TextureRegion {
             texture: &texture,
             mip,
-            origin: [0, 0, 0],
+            origin: [0, 0, layer],
             extent: [width, width, 1],
             aspect: TextureAspects::COLOR,
         };
@@ -513,7 +563,7 @@ fn all_mips_multiple_heaps_and_packed_tail() {
             resource: texture.clone(),
             tiles: vec![SparseTile {
                 mip: tail.first_mip,
-                layer: 0,
+                layer,
                 origin: [0, 0, 0],
                 count: [tail.tile_count.saturating_sub(1), 1, 1],
             }],
@@ -540,7 +590,7 @@ fn all_mips_multiple_heaps_and_packed_tail() {
         ));
         let region = || SparseTile {
             mip: tail.first_mip,
-            layer: 0,
+            layer,
             origin: [0, 0, 0],
             count: [tail.tile_count, 1, 1],
         };

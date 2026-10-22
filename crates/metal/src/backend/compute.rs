@@ -111,7 +111,7 @@ impl ComputeOps<Metal> for Compute {
                 } = resource
                 {
                     if visibility.contains(&api::ShaderStage::Compute) {
-                        value.validate_binding()?;
+                        value.validate_binding(encoder.ray_owner)?;
                     }
                 }
                 if let super::bindings::BoundResource::Buffer {
@@ -146,7 +146,7 @@ impl ComputeOps<Metal> for Compute {
                         unsafe {
                             compute.setAccelerationStructure_atBufferIndex(Some(&value.raw), index)
                         };
-                        value.declare_dependencies(compute)?;
+                        value.declare_dependencies(compute, encoder.ray_owner)?;
                         encoder.accelerations.push(value.clone());
                     }
                     super::bindings::BoundResource::Buffer {

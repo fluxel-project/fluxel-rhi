@@ -12,11 +12,8 @@ use std::ops::Range;
 use fluxel_rhi_core::api::{self, Error, ReadbackData, Result};
 use windows::Win32::Graphics::Direct3D12::D3D12_RANGE;
 
-use crate::backend::encoder::{Dx12Encoder, barrier};
+use crate::backend::encoder::Dx12Encoder;
 use crate::backend::{Dx12, Dx12Buffer, Dx12Device};
-use windows::Win32::Graphics::Direct3D12::{
-    D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE,
-};
 
 /// Native ticket for a raw buffer readback. Texture row layout remains the
 /// caller's `TexelCopyBufferLayout`; a buffer has no intrinsic row geometry.
@@ -47,21 +44,14 @@ impl api::ReadbackBackend for Dx12 {
                 range,
             });
         }
-        if !src.usage.contains(api::BufferUsage::QUERY_RESOLVE)
-            || !src.usage.contains(api::BufferUsage::COPY_SRC)
-        {
-            return Err(Error::Unsupported(
-                "DX12 device readback requires QUERY_RESOLVE|COPY_SRC",
-            ));
+        if !src.usage.contains(api::BufferUsage::COPY_SRC) {
+            return Err(Error::Unsupported("DX12 device readback requires COPY_SRC"));
         }
         let size = range.end - range.start;
         if size == 0 {
             return Err(Error::InvalidRange);
         }
-        // Query resolve lowers its destination back to COMMON.  That fixed
-        // internal contract makes this paired transition safe without adding
-        // a backend-wide resource-state history. Other device-local sources
-        // remain explicit until Core can describe their source state here.
+        // The caller explicitly transitions device-local sources to COPY_SRC.
         let staging = <Dx12 as api::ResourceBackend>::create_buffer(
             &encoder.device,
             &api::BufferDesc {
@@ -71,13 +61,7 @@ impl api::ReadbackBackend for Dx12 {
                 memory: api::MemoryClass::Readback,
             },
         )?;
-        barrier(
-            &encoder.list,
-            &src.resource,
-            D3D12_RESOURCE_STATE_COMMON,
-            D3D12_RESOURCE_STATE_COPY_SOURCE,
-        );
-        // SAFETY: `src` is a query-resolve result in COMMON, `staging` is a
+        // SAFETY: `src` is in COPY_SOURCE, `staging` is a
         // newly allocated READBACK resource in its required COPY_DEST state,
         // and the validated ranges fit both resources. The encoder retains
         // both typed handles through command-list submission.
@@ -86,12 +70,6 @@ impl api::ReadbackBackend for Dx12 {
                 .list
                 .CopyBufferRegion(&staging.resource, 0, &src.resource, range.start, size);
         }
-        barrier(
-            &encoder.list,
-            &src.resource,
-            D3D12_RESOURCE_STATE_COPY_SOURCE,
-            D3D12_RESOURCE_STATE_COMMON,
-        );
         encoder.buffers.extend([src.clone(), staging.clone()]);
         Ok(Dx12Readback {
             buffer: staging,

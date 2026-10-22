@@ -385,6 +385,10 @@ pub struct BindGroupDesc<'a, B: Backend> {
     pub entries: &'a [BindGroupEntry<'a, B>],
 }
 #[derive(Clone, Debug)]
+/// Byte ranges visible to the listed shader stages. Offsets are absolute in
+/// each stage's push-constant block; a nonzero start does not rebase shader
+/// addressing. Overlapping ranges in different stages retain independent
+/// values when a write selects only one of those stages.
 pub struct PushConstantRange {
     pub stages: Vec<ShaderStage>,
     pub range: Range<u32>,

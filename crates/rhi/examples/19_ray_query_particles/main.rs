@@ -186,7 +186,8 @@ where
                     button: MouseButton::Middle,
                     pressed,
                 } => {
-                    let over_panel = pointer.0 >= ui::X as f32
+                    let over_panel = panel.visible()
+                        && pointer.0 >= ui::X as f32
                         && pointer.0 < (ui::X + ui::SCREEN_WIDTH) as f32
                         && pointer.1 >= ui::Y as f32
                         && pointer.1 < (ui::Y + ui::SCREEN_HEIGHT) as f32;
@@ -198,7 +199,8 @@ where
                 }
                 WindowEvent::MouseWheel { y, .. }
                     if !panel_drag
-                        && (pointer.0 < ui::X as f32
+                        && (!panel.visible()
+                            || pointer.0 < ui::X as f32
                             || pointer.0 >= (ui::X + ui::SCREEN_WIDTH) as f32
                             || pointer.1 < ui::Y as f32
                             || pointer.1 >= (ui::Y + ui::SCREEN_HEIGHT) as f32) =>
@@ -220,6 +222,11 @@ where
                     panel_drag = false;
                     input_camera.borrow_mut().reset_input();
                 }
+                WindowEvent::KeyboardInput {
+                    key: Key::Character('h'),
+                    pressed: true,
+                    repeat: false,
+                } => panel.toggle_visible(),
                 WindowEvent::KeyboardInput {
                     key: Key::Space,
                     pressed: true,

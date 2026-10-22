@@ -530,6 +530,13 @@ support for every native API option or every device.
   standard mips and the packed mip tail use the backend's reported tiling.
   Mapping and residency changes are exercised by the
   [sparse GPU fixtures](../crates/dx12/tests/sparse_gpu.rs).
+  A sparse bind does not initialize contents or attachment compression metadata.
+  Before using newly mapped RT/DS memory, callers must initialize the affected
+  subresources with a complete copy or clear, or use a supported transition
+  from `Undefined` on first use. DX12 lowers that first-use transition to an
+  attachment-state barrier followed by a full-subresource discard. `Common`
+  does not request a discard; partial remaps require an initialization strategy
+  that preserves any contents the caller needs.
 - The explicit multi-queue route exposes graphics and compute lanes with native
   fence waits. Timestamp queries are supported on either lane; a query set is
   bound to its first submitted lane. Occlusion and pipeline statistics are
@@ -580,6 +587,11 @@ omits candidate confirmation/generation. A compiled shader does not establish
 correct traversal. WGSL containing ray-query or acceleration-structure types
 returns `Unsupported`, and `ray_query` remains false until a correct native path
 exists. DXR-style pipeline and shader-table operations remain unsupported. The
+TLAS build reserves its dependencies while recording. The same encoder can
+bind it, but a different encoder must wait for successful build completion;
+early recording returns `InvalidState`. Dropping unsubmitted work rolls back
+the reservation and releases its dependencies. Submission failure makes the
+TLAS unusable, and the build status is published before RHI completion. The
 current Core ray descriptor does not define
 the Metal raygen/miss/hit function signatures, payload layout, traversal
 wrapper, or converter-specific descriptor-table and SBT mapping. A loaded

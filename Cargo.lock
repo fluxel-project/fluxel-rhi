@@ -409,6 +409,7 @@ version = "0.16.0"
 dependencies = [
  "fluxel-host",
  "fluxel-rhi-core",
+ "naga",
  "raw-window-handle",
  "windows",
 ]

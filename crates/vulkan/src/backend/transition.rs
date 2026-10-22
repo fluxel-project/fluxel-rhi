@@ -376,6 +376,12 @@ fn validate_texture_use(
         {
             return Err(Error::Unsupported("Vulkan ColorAttachment layout access"));
         }
+        api::ImageLayout::ResolveSrc if !accesses.contains(api::AccessMask::COLOR_READ) => {
+            return Err(Error::Unsupported("Vulkan ResolveSrc layout access"));
+        }
+        api::ImageLayout::ResolveDst if !accesses.contains(api::AccessMask::COLOR_WRITE) => {
+            return Err(Error::Unsupported("Vulkan ResolveDst layout access"));
+        }
         api::ImageLayout::DepthStencilAttachment
             if !(accesses.contains(api::AccessMask::DEPTH_READ)
                 || accesses.contains(api::AccessMask::DEPTH_WRITE)) =>
@@ -412,6 +418,9 @@ fn layout(layout: api::ImageLayout) -> vk::ImageLayout {
         api::ImageLayout::CopySrc => vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
         api::ImageLayout::CopyDst => vk::ImageLayout::TRANSFER_DST_OPTIMAL,
         api::ImageLayout::ColorAttachment => vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        api::ImageLayout::ResolveSrc | api::ImageLayout::ResolveDst => {
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+        }
         api::ImageLayout::DepthStencilAttachment => {
             vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
         }

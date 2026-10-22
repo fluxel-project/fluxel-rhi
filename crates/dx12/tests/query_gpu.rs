@@ -4,6 +4,31 @@ use fluxel_rhi_core::api::*;
 use fluxel_rhi_dx12::Dx12Instance;
 use std::{future::Future, sync::Arc};
 
+fn query_to_copy(
+    e: &mut CommandEncoder<fluxel_rhi_dx12::Dx12>,
+    buffer: &Buffer<fluxel_rhi_dx12::Dx12>,
+    size: u64,
+) {
+    e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
+        target: BufferSlice {
+            buffer,
+            range: 0..size,
+        },
+        usage: StateTransition {
+            from: BufferUses {
+                stages: StageMask::EMPTY,
+                accesses: AccessMask::EMPTY,
+            },
+            to: BufferUses {
+                stages: StageMask::COPY,
+                accesses: AccessMask::COPY_READ,
+            },
+        },
+        ownership: None,
+    })])
+    .unwrap();
+}
+
 fn block_on<F: Future>(f: F) -> F::Output {
     let w = std::task::Waker::noop();
     let mut c = std::task::Context::from_waker(w);
@@ -201,7 +226,6 @@ fn timestamps_and_triangle_statistics() {
         ownership: None,
     })])
     .unwrap();
-    ts.timestamp(&mut e, &tq, 0).unwrap();
     stats.begin_statistics(&mut e, &sq, 0).unwrap();
     let colors = [Some(ColorAttachment {
         view: AttachmentView::Texture(&view),
@@ -221,7 +245,11 @@ fn timestamps_and_triangle_statistics() {
                 height: 16,
             },
             multiview_mask: None,
-            timestamp_writes: None,
+            timestamp_writes: Some(PassTimestampWrites {
+                set: &tq,
+                begin: Some(0),
+                end: Some(1),
+            }),
             occlusion_query_set: None,
             secondary_inheritance: None,
         })
@@ -247,9 +275,9 @@ fn timestamps_and_triangle_statistics() {
     pass.draw(0..3, 0..1).unwrap();
     pass.finish().unwrap();
     stats.end_statistics(&mut e).unwrap();
-    ts.timestamp(&mut e, &tq, 1).unwrap();
     ts.resolve(&mut e, &tq, 0..2, &dst, 0).unwrap();
     stats.resolve(&mut e, &sq, 0..1, &dst, 16).unwrap();
+    query_to_copy(&mut e, &dst, 104);
     let ticket = e.readback_buffer(&dst, 0..104).unwrap();
     let work = e.finish().unwrap();
     let id = PlanId {
@@ -326,6 +354,7 @@ fn resolve_timestamp_written_by_an_earlier_encoder() {
     let writer = writer.finish().unwrap();
     let mut resolver = d.encoder(lane).unwrap();
     q.resolve(&mut resolver, &set, 0..1, &dst, 0).unwrap();
+    query_to_copy(&mut resolver, &dst, 8);
     let ticket = resolver.readback_buffer(&dst, 0..8).unwrap();
     let resolver = resolver.finish().unwrap();
     let id = PlanId {
@@ -439,6 +468,7 @@ fn unsubmitted_write_cannot_authorize_resolve_and_rejected_work_is_retryable() {
     assert!(matches!(outcome, SubmitOutcome::Accepted(_)));
     let mut resolver = d.encoder(lane).unwrap();
     q.resolve(&mut resolver, &set, 0..1, &dst, 0).unwrap();
+    query_to_copy(&mut resolver, &dst, 8);
     let ticket = resolver.readback_buffer(&dst, 0..8).unwrap();
     let resolver = resolver.finish().unwrap();
     let id = PlanId {

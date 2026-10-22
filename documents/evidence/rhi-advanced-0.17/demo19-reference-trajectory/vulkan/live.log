@@ -1,0 +1,23 @@
+frame=30 elapsed=0.722 active=13
+frame=60 elapsed=1.749 active=27
+frame=90 elapsed=2.926 active=26
+frame=120 elapsed=4.170 active=25
+frame=150 elapsed=5.389 active=24
+frame=180 elapsed=6.625 active=25
+frame=210 elapsed=7.877 active=24
+frame=240 elapsed=9.129 active=25
+frame=270 elapsed=10.382 active=25
+frame=300 elapsed=11.375 active=25
+frame=330 elapsed=12.127 active=25
+frame=360 elapsed=12.886 active=25
+frame=390 elapsed=13.638 active=25
+frame=420 elapsed=14.364 active=25
+frame=450 elapsed=14.865 active=25
+camera alt=true
+frame=480 elapsed=15.383 active=25
+frame=510 elapsed=15.900 active=25
+frame=540 elapsed=16.401 active=25
+frame=570 elapsed=16.902 active=25
+frame=600 elapsed=17.403 active=25
+camera alt=false
+frame=630 elapsed=17.904 active=25

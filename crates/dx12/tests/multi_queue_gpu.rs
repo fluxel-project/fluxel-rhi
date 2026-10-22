@@ -307,7 +307,7 @@ fn compute_producer_direct_consumer() {
 }
 
 #[test]
-fn compute_timestamps_and_cross_lane_rejection() {
+fn compute_timestamps_and_completed_cross_lane_reuse() {
     let d = block(Dx12Instance::new().unwrap().open_default()).unwrap();
     let compute = d
         .lanes()
@@ -378,6 +378,8 @@ fn compute_timestamps_and_cross_lane_rejection() {
     assert!(a > 0 && b >= a);
     let mut e = d.encoder(direct).unwrap();
     q.timestamp(&mut e, &set, 0).unwrap();
+    q.resolve(&mut e, &set, 0..1, &dst, 0).unwrap();
+    let direct_ticket = e.readback_buffer(&dst, 0..8).unwrap();
     let plan = unsafe {
         SubmissionPlan::from_compiled(
             PlanId {
@@ -392,7 +394,7 @@ fn compute_timestamps_and_cross_lane_rejection() {
         )
     };
     let step = plan.step(0);
-    // SAFETY: the backend must reject the wrong-lane set before handing off this work.
+    // SAFETY: the prior compute completion was awaited and this work is submitted once.
     let outcome = unsafe {
         d.queue().submit(SubmitPacket {
             plan,
@@ -403,13 +405,18 @@ fn compute_timestamps_and_cross_lane_rejection() {
             completion: CompletionRequest::End,
         })
     };
-    assert!(matches!(
-        outcome,
-        SubmitOutcome::Rejected {
-            error: Error::Unsupported(_),
-            work: RetryableSubmit::Fresh(_)
-        }
-    ));
+    let direct_point = match outcome {
+        SubmitOutcome::Accepted(r) => r.checkpoints.into_iter().next().unwrap().point,
+        _ => panic!("completed cross-lane slot reuse rejected"),
+    };
+    block(d.wait_completion(&direct_point)).unwrap();
+    // SAFETY: this completion covers the direct queue's query resolve.
+    let direct_bytes = unsafe {
+        block(d.read_after(direct_ticket, &direct_point))
+            .unwrap()
+            .bytes
+    };
+    assert_ne!(u64::from_ne_bytes(direct_bytes[..8].try_into().unwrap()), 0);
     // The whole packet is checked before its first list is issued.
     let fresh = q
         .create(&QueryDesc {
@@ -417,10 +424,32 @@ fn compute_timestamps_and_cross_lane_rejection() {
             count: 2,
         })
         .unwrap();
+    let compute_dst = d
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: 8,
+            usage: BufferUsage::QUERY_RESOLVE | BufferUsage::MAP_READ,
+            memory: MemoryClass::Readback,
+        })
+        .unwrap();
+    let direct_dst = d
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: 8,
+            usage: BufferUsage::QUERY_RESOLVE | BufferUsage::MAP_READ,
+            memory: MemoryClass::Readback,
+        })
+        .unwrap();
     let mut first = d.encoder(compute).unwrap();
     q.timestamp(&mut first, &fresh, 0).unwrap();
+    q.resolve(&mut first, &fresh, 0..1, &compute_dst, 0)
+        .unwrap();
+    let compute_ticket = first.readback_buffer(&compute_dst, 0..8).unwrap();
     let mut second = d.encoder(direct).unwrap();
     q.timestamp(&mut second, &fresh, 1).unwrap();
+    q.resolve(&mut second, &fresh, 1..2, &direct_dst, 0)
+        .unwrap();
+    let direct_ticket = second.readback_buffer(&direct_dst, 0..8).unwrap();
     let plan = unsafe {
         SubmissionPlan::from_compiled(
             PlanId {
@@ -443,7 +472,7 @@ fn compute_timestamps_and_cross_lane_rejection() {
     };
     let a = plan.step(0);
     let b = plan.step(1);
-    // SAFETY: no work is issued because the query set is used on two lanes.
+    // SAFETY: each lane writes and resolves a distinct query slot and destination.
     let outcome = unsafe {
         d.queue().submit(SubmitPacket {
             plan,
@@ -460,11 +489,13 @@ fn compute_timestamps_and_cross_lane_rejection() {
             completion: CompletionRequest::End,
         })
     };
-    assert!(matches!(
-        outcome,
-        SubmitOutcome::Rejected {
-            error: Error::Unsupported(_),
-            work: RetryableSubmit::Fresh(_)
-        }
-    ));
+    let point = match outcome {
+        SubmitOutcome::Accepted(r) => r.checkpoints.into_iter().next().unwrap().point,
+        _ => panic!("independent query slots rejected"),
+    };
+    block(d.wait_completion(&point)).unwrap();
+    for ticket in [compute_ticket, direct_ticket] {
+        let bytes = unsafe { block(d.read_after(ticket, &point)).unwrap().bytes };
+        assert!(u64::from_ne_bytes(bytes[..8].try_into().unwrap()) > 0);
+    }
 }

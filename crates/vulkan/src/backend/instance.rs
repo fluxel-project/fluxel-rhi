@@ -337,6 +337,7 @@ impl InstanceBackend for Vulkan {
                     multi_queue: has_compute_queue,
                     sparse: sparse_image && timeline_semaphore,
                     ray: ray_support.pipeline && ray_support.acceleration,
+                    acceleration_structure: ray_support.acceleration,
                     ray_query: ray_support.query && ray_support.acceleration,
                     binding_arrays: descriptor_indexing,
                     runtime_sized_binding_arrays: descriptor_indexing,

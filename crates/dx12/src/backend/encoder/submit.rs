@@ -131,6 +131,7 @@ fn signal_queue(device: &Dx12Device) -> Result<u64, Error> {
         .map_err(|_| Error::InvalidRange)?;
     // SAFETY: `queue_lock` holds the queue's external synchronization boundary,
     // and the device owns both queue and fence for their whole shared lifetime.
+    crate::diagnostics::record(crate::diagnostics::Operation::QueueSignal, 1);
     unsafe { device.0.queue.Signal(&device.0.fence, value) }.map_err(native_error)?;
     Ok(value)
 }
@@ -156,6 +157,18 @@ fn checkpoint(
         covers: CompletionCoverage {
             lane_frontiers: lane_frontiers.to_vec(),
         },
+    }
+}
+
+fn seal_pending(
+    issued: &[Dx12RecordedWork],
+    pending: &mut Vec<usize>,
+    lane: u32,
+    fence: &ID3D12Fence,
+    value: u64,
+) {
+    for index in pending.drain(..) {
+        super::query::seal_ops(&issued[index].encoder.query_ops, lane, fence, value);
     }
 }
 
@@ -309,24 +322,81 @@ unsafe fn submit_packet(
                 _ => {}
             }
         }
-        super::query::validate_ops(packet.work.steps.iter().flat_map(|step| {
-            let lane = packet.work.plan.steps()[step.step.index as usize]
-                .lane
-                .ordinal;
-            match &step.payload {
-                StepPayload::Commands(work) => work.as_slice(),
-                _ => &[],
+        // Track only ordering already present in the submitted plan. Same-lane
+        // order is implicit; explicit waits import the producer's frontier.
+        let mut coverage = Vec::<[Option<usize>; 2]>::new();
+        let mut external_waits = Vec::<Vec<(ID3D12Fence, u64)>>::new();
+        let mut lanes: [Option<usize>; 2] = [None; 2];
+        for (index, desc) in packet.work.plan.steps().iter().enumerate() {
+            let lane = desc.lane.ordinal as usize;
+            let mut frontier = lanes[lane]
+                .map(|previous| coverage[previous])
+                .unwrap_or([None; 2]);
+            let mut native_frontier = lanes[lane]
+                .map(|previous| external_waits[previous].clone())
+                .unwrap_or_default();
+            for wait in &desc.waits {
+                for (slot, imported) in frontier
+                    .iter_mut()
+                    .zip(coverage[wait.previous.index as usize])
+                {
+                    *slot = (*slot).max(imported);
+                }
+                for (fence, value) in &external_waits[wait.previous.index as usize] {
+                    if let Some((_, current)) = native_frontier
+                        .iter_mut()
+                        .find(|(known, _)| known.as_raw() == fence.as_raw())
+                    {
+                        *current = (*current).max(*value);
+                    } else {
+                        native_frontier.push((fence.clone(), *value));
+                    }
+                }
             }
-            .iter()
-            .flat_map(move |record| {
-                // SAFETY: packet identity checked by Core, this borrow is read-only.
-                unsafe { record.native_ref() }
-                    .encoder
-                    .query_ops
-                    .iter()
-                    .map(move |op| (lane, op))
-            })
-        }))?;
+            for wait in packet
+                .waits
+                .iter()
+                .filter(|wait| wait.signal.consumer().index as usize == index)
+            {
+                // SAFETY: Core validated token ownership; preflight only borrows its immutable native point.
+                let signal = unsafe { wait.signal.native_ref() };
+                if let Some((_, value)) = native_frontier
+                    .iter_mut()
+                    .find(|(known, _)| known.as_raw() == signal.fence.as_raw())
+                {
+                    *value = (*value).max(signal.value);
+                } else {
+                    native_frontier.push((signal.fence.clone(), signal.value));
+                }
+            }
+            frontier[lane] = Some(index);
+            coverage.push(frontier);
+            external_waits.push(native_frontier);
+            lanes[lane] = Some(index);
+        }
+        super::query::validate_ops(
+            packet.work.steps.iter().flat_map(|step| {
+                let index = step.step.index as usize;
+                let lane = packet.work.plan.steps()[step.step.index as usize]
+                    .lane
+                    .ordinal;
+                match &step.payload {
+                    StepPayload::Commands(work) => work.as_slice(),
+                    _ => &[],
+                }
+                .iter()
+                .flat_map(move |record| {
+                    // SAFETY: packet identity checked by Core, this borrow is read-only.
+                    unsafe { record.native_ref() }
+                        .encoder
+                        .query_ops
+                        .iter()
+                        .map(move |op| (lane, index, op))
+                })
+            }),
+            &coverage,
+            &external_waits,
+        )?;
         Ok(())
     };
     if let Err(error) = validate() {
@@ -346,6 +416,20 @@ unsafe fn submit_packet(
         api::CompletionRequest::Steps(s) => s.as_ref(),
         _ => &[],
     };
+    // Only cross-lane dependencies and externally requested tokens require
+    // a signal at the exact producer step. Same-lane ordering is implicit.
+    let mut needs_signal = vec![false; plan.steps().len()];
+    for desc in plan.steps() {
+        for wait in &desc.waits {
+            let producer = wait.previous.index as usize;
+            if plan.steps()[producer].lane != desc.lane {
+                needs_signal[producer] = true;
+            }
+        }
+    }
+    for request in &signals {
+        needs_signal[request.producer.index as usize] = true;
+    }
     let mut waits: Vec<_> = waits.into_iter().map(Some).collect();
     let mut accepted = Vec::new();
     let mut presents = Vec::new();
@@ -353,7 +437,11 @@ unsafe fn submit_packet(
     let mut checkpoints = Vec::new();
     let mut issued = Vec::new();
     let mut sparse_issued = Vec::new();
-    let mut values = Vec::<(u32, u64)>::new();
+    let mut values = Vec::<Option<(u32, u64)>>::new();
+    let mut pending_queries = [Vec::<usize>::new(), Vec::<usize>::new()];
+    let mut compute_seen = false;
+    let mut compute_dirty = false;
+    let mut compute_value = None;
     let mut tokens = Vec::new();
     macro_rules! handoff {
         ($operation:expr) => {
@@ -377,8 +465,12 @@ unsafe fn submit_packet(
         let desc = &plan.steps()[id.index as usize];
         let lane = desc.lane;
         for dependency in &desc.waits {
-            let (producer_lane, value) = values[dependency.previous.index as usize];
+            let producer_lane = plan.steps()[dependency.previous.index as usize]
+                .lane
+                .ordinal;
             if producer_lane != lane.ordinal {
+                let (_, value) = values[dependency.previous.index as usize]
+                    .expect("cross-lane producer signaled");
                 handoff!(super::super::queue::wait(
                     device,
                     lane.ordinal,
@@ -403,9 +495,9 @@ unsafe fn submit_packet(
                 ));
             }
         }
+        let first = issued.len();
         match step.payload {
             StepPayload::Commands(work) => {
-                let first = issued.len();
                 for record in work {
                     // SAFETY: preflight checked closed work and its lane, and each work is consumed once.
                     issued.push(unsafe { record.into_native() });
@@ -416,17 +508,35 @@ unsafe fn submit_packet(
                     (&device.0.multi_queue.queue, &device.0.multi_queue.lock)
                 };
                 let _queue = lock.lock().unwrap_or_else(|p| p.into_inner());
-                for native in &issued[first..] {
-                    let list = native
-                        .encoder
-                        .list
-                        .cast::<ID3D12CommandList>()
-                        .expect("graphics command list interface");
-                    // SAFETY: preflight proved the closed list type matches the lane, retained through completion.
+                let lists: Vec<_> = issued[first..]
+                    .iter()
+                    .map(|native| {
+                        Some(
+                            native
+                                .encoder
+                                .list
+                                .cast::<ID3D12CommandList>()
+                                .expect("graphics command list interface"),
+                        )
+                    })
+                    .collect();
+                if !lists.is_empty() {
+                    // SAFETY: preflight checked every closed list and its lane;
+                    // execution order and hazards are supplied by the caller.
+                    crate::diagnostics::record(crate::diagnostics::Operation::ExecuteCalls, 1);
+                    crate::diagnostics::record(
+                        crate::diagnostics::Operation::SubmittedLists,
+                        lists.len() as u64,
+                    );
                     unsafe {
-                        queue.ExecuteCommandLists(&[Some(list)]);
+                        queue.ExecuteCommandLists(&lists);
                     }
-                    super::query::commit_ops(&native.encoder.query_ops, lane.ordinal);
+                    for index in first..issued.len() {
+                        super::query::commit_ops(&issued[index].encoder.query_ops, lane.ordinal);
+                        if !issued[index].encoder.query_ops.is_empty() {
+                            pending_queries[lane.ordinal as usize].push(index);
+                        }
+                    }
                 }
             }
             StepPayload::SparseBind(binds) => {
@@ -448,8 +558,29 @@ unsafe fn submit_packet(
                 });
             }
         }
-        let value = handoff!(super::super::queue::signal(device, lane.ordinal));
-        values.push((lane.ordinal, value));
+        if lane.ordinal == 1 {
+            compute_seen = true;
+            compute_dirty = true;
+        }
+        let value = if needs_signal[id.index as usize] {
+            let value = handoff!(super::super::queue::signal(device, lane.ordinal));
+            let fence = super::super::queue::fence(device, lane.ordinal).expect("validated lane");
+            seal_pending(
+                &issued,
+                &mut pending_queries[lane.ordinal as usize],
+                lane.ordinal,
+                fence,
+                value,
+            );
+            if lane.ordinal == 1 {
+                compute_value = Some(value);
+                compute_dirty = false;
+            }
+            Some(value)
+        } else {
+            None
+        };
+        values.push(value.map(|v| (lane.ordinal, v)));
         accepted.push(id);
         frontiers.retain(|(l, _)| *l != lane);
         frontiers.push((lane, id));
@@ -458,7 +589,7 @@ unsafe fn submit_packet(
                 fence: super::super::queue::fence(device, lane.ordinal)
                     .expect("validated lane")
                     .clone(),
-                value,
+                value: value.expect("explicit signal producer is marked"),
             };
             // SAFETY: this signal was just enqueued after the requested producer step.
             tokens.push(unsafe {
@@ -473,15 +604,34 @@ unsafe fn submit_packet(
             });
         }
         if requested.contains(&id) {
-            if let Some((_, compute)) = values.iter().rev().find(|(ordinal, _)| *ordinal == 1) {
+            if compute_seen {
+                if compute_dirty {
+                    let value = handoff!(super::super::queue::signal(device, 1));
+                    seal_pending(
+                        &issued,
+                        &mut pending_queries[1],
+                        1,
+                        &device.0.multi_queue.fence,
+                        value,
+                    );
+                    compute_value = Some(value);
+                    compute_dirty = false;
+                }
                 handoff!(super::super::queue::wait(
                     device,
                     0,
                     &device.0.multi_queue.fence,
-                    *compute
+                    compute_value.expect("compute frontier signaled")
                 ));
             }
             let fence_value = handoff!(signal_queue(device));
+            seal_pending(
+                &issued,
+                &mut pending_queries[0],
+                0,
+                &device.0.fence,
+                fence_value,
+            );
             checkpoints.push(checkpoint(
                 device,
                 plan.id().device,
@@ -493,17 +643,29 @@ unsafe fn submit_packet(
     let retention = if accepted.is_empty() {
         None
     } else {
-        if let Some((_, compute)) = values.iter().rev().find(|(ordinal, _)| *ordinal == 1) {
+        if compute_seen {
+            if compute_dirty {
+                let value = handoff!(super::super::queue::signal(device, 1));
+                seal_pending(
+                    &issued,
+                    &mut pending_queries[1],
+                    1,
+                    &device.0.multi_queue.fence,
+                    value,
+                );
+                compute_value = Some(value);
+            }
             handoff!(super::super::queue::wait(
                 device,
                 0,
                 &device.0.multi_queue.fence,
-                *compute
+                compute_value.expect("compute frontier signaled")
             ));
         }
         Some(handoff!(signal_queue(device)))
     };
     if let Some(value) = retention {
+        seal_pending(&issued, &mut pending_queries[0], 0, &device.0.fence, value);
         device
             .0
             .in_flight

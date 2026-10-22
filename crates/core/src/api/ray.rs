@@ -359,7 +359,8 @@ pub struct RayDomain<'a, B: Backend> {
 }
 impl<B: Backend> Device<B> {
     pub fn ray(&self) -> Option<RayDomain<'_, B>> {
-        ((self.caps.ray || self.caps.ray_query) && B::Ray::AVAILABLE)
+        ((self.caps.acceleration_structure || self.caps.ray || self.caps.ray_query)
+            && B::Ray::AVAILABLE)
             .then_some(RayDomain { device: self })
     }
 }
@@ -441,6 +442,7 @@ impl<B: Backend> RayDomain<'_, B> {
         B::Ray::shader_group_identifier(&self.device.native, &pipeline.native, group_index)
     }
     pub fn sizes(&self, desc: &AccelerationDesc<B>) -> Result<AccelerationSizes> {
+        self.require_acceleration()?;
         desc.input.validate_device(self.device.id)?;
         B::Ray::acceleration_sizes(&self.device.native, desc)
     }
@@ -448,6 +450,7 @@ impl<B: Backend> RayDomain<'_, B> {
         &self,
         desc: &AccelerationDesc<B>,
     ) -> Result<AccelerationStructure<B>> {
+        self.require_acceleration()?;
         desc.input.validate_device(self.device.id)?;
         let native = B::Ray::create_acceleration(&self.device.native, desc)?;
         // SAFETY: the SPI created this acceleration structure for this device.
@@ -463,6 +466,7 @@ impl<B: Backend> RayDomain<'_, B> {
     where
         B: CommandBackend,
     {
+        self.require_acceleration()?;
         if encoder.device != self.device.id
             || dst.device != self.device.id
             || scratch.device != self.device.id
@@ -471,6 +475,13 @@ impl<B: Backend> RayDomain<'_, B> {
         }
         desc.input.validate_device(self.device.id)?;
         encoder.call(|e| B::Ray::build_acceleration(e, &dst.native, &scratch.native, desc))
+    }
+    fn require_acceleration(&self) -> Result<()> {
+        if self.device.caps.acceleration_structure {
+            Ok(())
+        } else {
+            Err(Error::Unsupported("acceleration structures"))
+        }
     }
     pub fn trace(
         &self,

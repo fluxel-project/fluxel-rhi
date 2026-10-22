@@ -32,7 +32,8 @@ no visible secondary particle candidates. With only that reference stride set
 to 24 bytes, the three RHI frames have mean RGB errors of 0.877, 0.940 and
 0.846 outside the UI; they are still not pixel-identical. See the
 [source-bound comparison](../../../../documents/evidence/rhi-advanced-0.17/demo19-reference-stride/README.md).
-The live window has an interactive settings panel driven by host mouse and
+Press H to show or hide the settings panel; it is hidden by default. The live
+window has an interactive settings panel driven by host mouse and
 keyboard events. It supports pause, emitter dragging, particle texture,
 orientation, ray reorientation and MLAB choices, but uses a simplified bitmap
 panel instead of matching the original ImGui appearance and interactions.
