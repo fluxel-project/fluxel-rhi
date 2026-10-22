@@ -96,38 +96,11 @@ fn route(desc: &ShaderDesc) -> ShaderRoute {
     }
 }
 
-/// Probe the actual device compiler with the same query ABI and language
-/// version used by the WGSL path, after checking the hardware selector.
+/// The current WGSL lowering cannot execute ray queries correctly. Keep the
+/// capability closed until a complete native path is available.
 #[cfg(target_vendor = "apple")]
-pub(super) fn ray_query_supported(device: &MetalDevice) -> bool {
-    if !device._state.ray_supported {
-        return false;
-    }
-    let source = r#"
-@group(0) @binding(0) var scene: acceleration_structure;
-@group(0) @binding(1) var output_tex: texture_storage_2d<rgba8unorm, write>;
-@compute @workgroup_size(1) fn cs() {
-    var query: ray_query;
-    rayQueryInitialize(&query, scene, RayDesc(0u, 255u, 0.01, 10.0, vec3<f32>(0.0), vec3<f32>(0.0, 0.0, 1.0)));
-    while (rayQueryProceed(&query)) {}
-    let hit = rayQueryGetCommittedIntersection(&query);
-    textureStore(output_tex, vec2<i32>(0), vec4<f32>(f32(hit.kind)));
-}"#;
-    let entries = vec![api::ShaderEntryPoint {
-        name: "cs".into(),
-        stage: api::ShaderStage::Compute,
-        workgroup_size: Some([1, 1, 1]),
-    }];
-    let desc = ShaderDesc {
-        label: None,
-        format: ShaderFormat::Wgsl,
-        bytes: std::sync::Arc::from(source.as_bytes()),
-        entries: entries.clone(),
-        required_features: vec![api::SHADER_FEATURE_RAY_QUERY.into()],
-    };
-    translate_wgsl(source.as_bytes(), &desc)
-        .and_then(|msl| compile_library(device, msl.as_bytes(), entries, false, true))
-        .is_ok()
+pub(super) fn ray_query_supported(_: &MetalDevice) -> bool {
+    false
 }
 
 fn translate_wgsl(bytes: &[u8], desc: &ShaderDesc) -> api::Result<String> {
@@ -135,30 +108,16 @@ fn translate_wgsl(bytes: &[u8], desc: &ShaderDesc) -> api::Result<String> {
         std::str::from_utf8(bytes).map_err(|error| api::Error::Shader(error.to_string()))?;
     let module = naga::front::wgsl::parse_str(source)
         .map_err(|error| api::Error::Shader(error.emit_to_string(source)))?;
-    // Naga's MSL writer panics for vertex-return ray types. A ray shader must
-    // declare its capability so Core checks the actual device before compiling.
-    let mut uses_ray = false;
-    for (_, ty) in module.types.iter() {
-        match ty.inner {
-            naga::TypeInner::AccelerationStructure { vertex_return }
-            | naga::TypeInner::RayQuery { vertex_return } => {
-                if vertex_return {
-                    return Err(api::Error::Unsupported("Metal ray query vertex return"));
-                }
-                uses_ray = true;
-            }
-            _ => {}
-        }
-    }
-    if uses_ray
-        && !desc
-            .required_features
-            .iter()
-            .any(|f| f == api::SHADER_FEATURE_RAY_QUERY)
-    {
-        return Err(api::Error::Unsupported(
-            "Metal ray query feature declaration",
-        ));
+    // Naga 27 lowers query traversal to a triangle-only intersector. Its
+    // `proceed` never advances, and candidate confirmation/generation is
+    // dropped. Compilation alone cannot establish correct execution.
+    if module.types.iter().any(|(_, ty)| {
+        matches!(
+            ty.inner,
+            naga::TypeInner::AccelerationStructure { .. } | naga::TypeInner::RayQuery { .. }
+        )
+    }) {
+        return Err(api::Error::Unsupported("Metal WGSL ray query lowering"));
     }
     let info = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
@@ -204,7 +163,7 @@ fn translate_wgsl(bytes: &[u8], desc: &ShaderDesc) -> api::Result<String> {
 
     let mut options = naga::back::msl::Options {
         fake_missing_bindings: false,
-        lang_version: if uses_ray { (2, 4) } else { (1, 0) },
+        lang_version: (1, 0),
         ..Default::default()
     };
     for entry in &desc.entries {
@@ -430,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn wgsl_ray_query_translates_to_metal_instance_acceleration_structure() {
+    fn wgsl_ray_query_is_rejected_even_without_declared_feature() {
         let source = r#"
 @group(0) @binding(0) var scene: acceleration_structure;
 @group(0) @binding(1) var output_tex: texture_storage_2d<rgba8unorm, write>;
@@ -442,7 +401,7 @@ mod tests {
     textureStore(output_tex, vec2<i32>(0), vec4<f32>(f32(hit.kind)));
 }
 "#;
-        let desc = ShaderDesc {
+        let mut desc = ShaderDesc {
             label: None,
             format: ShaderFormat::Wgsl,
             bytes: Arc::from(source.as_bytes()),
@@ -453,10 +412,15 @@ mod tests {
             }],
             required_features: vec![api::SHADER_FEATURE_RAY_QUERY.into()],
         };
-        let msl = translate_wgsl(source.as_bytes(), &desc).unwrap();
-        assert!(msl.contains("instance_acceleration_structure"), "{msl}");
-        assert!(msl.contains("[[buffer(0)]]"), "{msl}");
-        assert!(msl.contains("[[texture(1)]]"), "{msl}");
+        assert!(matches!(
+            translate_wgsl(source.as_bytes(), &desc),
+            Err(api::Error::Unsupported("Metal WGSL ray query lowering"))
+        ));
+        desc.required_features.clear();
+        assert!(matches!(
+            translate_wgsl(source.as_bytes(), &desc),
+            Err(api::Error::Unsupported("Metal WGSL ray query lowering"))
+        ));
     }
 
     #[test]

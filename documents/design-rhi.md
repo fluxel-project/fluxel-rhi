@@ -572,12 +572,15 @@ device supports them.
 
 ### Metal advanced route status
 
-The Metal source conditionally admits a restricted mesh path on Metal 3 devices,
-and a compute-only inline ray-query path when native ray support and an actual
-MSL 2.4 compile probe succeed. Triangle and AABB acceleration structures support
-one build with fixed dependencies; AABB intersection behavior is not exposed by
-the current compute ray-query shader path. DXR-style pipeline and shader-table
-operations remain unsupported. The current Core ray descriptor does not define
+The Metal source conditionally admits a restricted mesh path on Metal 3 devices.
+Triangle and AABB acceleration structures support one build with fixed
+dependencies, but the WGSL ray-query path is disabled. Naga 27's Metal writer
+lowers queries to a triangle-only intersector, does not advance `proceed`, and
+omits candidate confirmation/generation. A compiled shader does not establish
+correct traversal. WGSL containing ray-query or acceleration-structure types
+returns `Unsupported`, and `ray_query` remains false until a correct native path
+exists. DXR-style pipeline and shader-table operations remain unsupported. The
+current Core ray descriptor does not define
 the Metal raygen/miss/hit function signatures, payload layout, traversal
 wrapper, or converter-specific descriptor-table and SBT mapping. A loaded
 Metal library alone cannot supply those semantics, and no current Metal
@@ -599,13 +602,11 @@ non-atomic failure model, not an implicit rollback.
 These Metal paths have only Apple-target compilation and static contract
 checks, as requested for this stage. They have no Apple GPU execution,
 presentation, or visual acceptance evidence. Metal 4 placement sparse mapping
-is not advertised: its mixed Metal 3/4 queue path still lacks a proven
-`ResourceState` barrier for the actual texture consumers, and the consumer
-command buffer does not encode a GPU wait on the mapping event. Apple defines that
-stage to include placement sparse mapping, while its documented consumer
-barrier covers work in earlier command encoders; the queue-level mapping
-operation falls outside that stated scope. A cross-queue event alone does not
-prove the required resource-state visibility.
+is not advertised. The isolated mapping packet waits for earlier queue work to
+complete on the CPU and prevents later submissions until its mapping event
+completes. Resource-state visibility, mapped-texture destruction, and physical
+heap reuse semantics still need a closed native contract before Core can
+advertise sparse mapping.
 
 Core's exact eleven pipeline-statistics fields do not match Metal's
 [eight native statistic counters](https://developer.apple.com/documentation/metal/mtlcommoncounterset/statistic).
