@@ -1,0 +1,165 @@
+warning: field `accelerations` is never read
+  --> crates\metal\src\backend\encoder.rs:31:16
+   |
+24 | pub struct MetalCommandEncoder {
+   |            ------------------- field in this struct
+...
+31 |     pub(crate) accelerations: Vec<super::ray::MetalAcceleration>,
+   |                ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `mesh_supported` is never used
+   --> crates\metal\src\backend\mesh.rs:324:15
+    |
+324 | pub(super) fn mesh_supported(device: &MetalDevice) -> bool {
+    |               ^^^^^^^^^^^^^^
+
+warning: field `size` is never read
+  --> crates\metal\src\backend\sparse.rs:21:16
+   |
+18 | pub struct MetalSparseAllocation {
+   |            --------------------- field in this struct
+...
+21 |     pub(super) size: u64,
+   |                ^^^^
+   |
+   = note: `MetalSparseAllocation` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: method `watch` is never used
+   --> crates\metal\src\backend\submit.rs:132:19
+    |
+116 | impl Completion {
+    | --------------- method in this implementation
+...
+132 |     pub(super) fn watch(&self, waker: &Waker) -> Option<Result<()>> {
+    |                   ^^^^^
+
+warning: function `create_sparse_texture` is never used
+   --> crates\metal\src\backend\texture.rs:111:15
+    |
+111 | pub(super) fn create_sparse_texture(
+    |               ^^^^^^^^^^^^^^^^^^^^^
+
+warning: `fluxel-rhi-metal` (lib test) generated 5 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.38s
+     Running unittests src\lib.rs (target\debug\deps\fluxel_rhi_core-5cd57b83823e0ddf.exe)
+
+running 52 tests
+test api::execution::tests::deferred_failure_never_submits_and_preserves_recorded_steps ... ok
+test api::execution::tests::clean_present_rejection_is_reported_and_successful_retry_clears_it ... ok
+test api::execution::tests::dropped_immediate_execution_is_abandoned_without_idle_or_checkpoint ... ok
+test api::execution::tests::immediate_callback_runs_now_and_original_failure_survives_close ... ok
+test api::execution::tests::recorded_commands_wrong_lane_preserves_work ... ok
+test api::execution::tests::completion_checkpoint_failure_does_not_invent_a_failed_step ... ok
+test api::execution::tests::unknown_emergency_checkpoint_does_not_obscure_a_clean_step_rejection ... ok
+test api::execution::tests::unsupported_sparse_plan_fails_before_commands_can_issue ... ok
+test api::execution::tests::invalid_order_is_rejected_before_invoking_the_callback ... ok
+test api::execution::tests::recorded_commands_rejection_preserves_recordings_and_allows_retry ... ok
+test api::execution::tests::failed_callback_cannot_become_success_even_if_abort_issued ... ok
+test api::execution::tests::rejected_present_keeps_lease_for_retry ... ok
+test api::execution::tests::immediate_failed_and_indeterminate_close_preserve_known_prefix ... ok
+test api::execution::tests::immediate_native_call_occurs_before_finish_without_step_checkpoint ... ok
+test api::execution_facts::tests::issue_failure_reports_effects_without_claiming_complete_steps ... ok
+test api::execution_facts::tests::receipt_alone_does_not_claim_full_submission_acceptance ... ok
+test api::ray::tests::instance_flags_are_validated_before_native_calls ... ok
+test api::ray::tests::invalid_geometry_ranges_never_reach_backend ... ok
+test api::ray::tests::local_constants_require_whole_words_before_pipeline_creation ... ok
+test api::ray::tests::nested_inputs_are_checked_by_every_ray_entry_before_backend ... ok
+test api::ray::tests::query_only_device_exposes_acceleration_but_rejects_ray_pipeline ... ok
+test api::ray::tests::shader_tables_validate_ranges_and_device_before_trace ... ok
+test api::shader::tests::ray_query_requirement_is_checked_before_shader_backend ... ok
+test api::sparse::tests::packed_tail_region_covers_the_whole_reported_tail ... ok
+test api::sparse::tests::sparse_contract_checks_empty_allocation_and_texture_device ... ok
+test api::tests::binding_arrays::arrays_reject_nested_descriptors_without_losing_leaf_validation ... ok
+test api::tests::binding_arrays::runtime_array_group_validates_actual_length_and_holes_before_backend ... ok
+test api::tests::binding_arrays::runtime_array_layout_validates_capacity_capability_and_position ... ok
+test api::tests::binding_arrays::storage_views_validate_abi_range_kind_and_device_before_backend ... ok
+test api::tests::ergonomics::error_implements_standard_error_and_reports_details ... ok
+test api::tests::ergonomics::flags_support_or_and_or_assign ... ok
+test api::tests::execution_contract::compiled_order_and_waits_reach_spi_unchanged_for_each_execution ... ok
+test api::tests::execution_contract::facade_retains_partial_and_indeterminate_native_outcomes ... ok
+test api::tests::execution_contract::indeterminate_token_stays_owned_until_caller_drains ... ok
+test api::tests::execution_contract::invalid_inputs_never_reach_spi_and_tail_can_resume_after_frontier ... ok
+test api::tests::execution_contract::supplied_multi_lane_frontiers_are_validated_without_scheduling ... ok
+test api::tests::multiqueue_validation::invalid_work_is_rejected_before_multi_queue_backend ... ok
+test api::tests::multiqueue_validation::reused_plan_routes_distinct_owned_tokens_to_backend ... ok
+test api::tests::multiqueue_validation::signal_and_wait_metadata_are_checked_before_backend ... ok
+test api::tests::query_validation::pass_statistics_validate_before_preparing_a_native_pass ... ok
+test api::tests::query_validation::query_domain_and_bounds_are_checked_before_backend ... ok
+test api::tests::query_validation::query_result_layout_and_frequency_are_explicit ... ok
+test api::tests::query_validation::raster_pass_rejects_invalid_query_metadata_before_backend ... ok
+test api::tests::query_validation::timestamp_result_format_preserves_zero_and_detects_reserved_slot ... ok
+test api::tests::type_contract_tests::clear_texture_rejects_invalid_shape_before_backend ... ok
+test api::tests::type_contract_tests::concrete_shared_and_local_profiles_typecheck ... ok
+test api::tests::type_contract_tests::deferred_binding_rejects_wrong_lane_and_foreign_tail ... ok
+test api::tests::type_contract_tests::dropped_immediate_session_reports_issued_prefix_to_backend ... ok
+test api::tests::type_contract_tests::immediate_validates_waits_and_lanes_before_execution ... ok
+test api::tests::type_contract_tests::native_recording_can_be_borrowed_without_consumption ... ok
+test api::tests::type_contract_tests::raster_draw_rejects_inverted_ranges_before_backend ... ok
+test api::tests::type_contract_tests::stale_surface_lease_cannot_enter_plan_present ... ok
+
+test result: ok. 52 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\fluxel_rhi_metal-326826e715b1f096.exe)
+
+running 57 tests
+test backend::binding_abi::tests::vertex_slots_do_not_overlap_resource_binding_buffers ... ok
+test backend::bindings::tests::depth_and_color_sample_types_require_matching_native_formats ... ok
+test backend::bindings::tests::layout_accepts_compute_write_only_rgba8_storage_texture ... ok
+test backend::bindings::tests::dynamic_uniform_offset_preserves_range_and_checks_alignment_and_bounds ... ok
+test backend::copy::tests::texture_copy_region_accepts_valid_mip_and_array_slice ... ok
+test backend::copy::upload_tests::row_alignment_rounds_without_overflow ... ok
+test backend::bindings::tests::uniform_binding_requires_usage_valid_range_and_minimum_size ... ok
+test backend::compute::tests::indirect_dispatch_requires_aligned_complete_arguments_and_usage ... ok
+test backend::copy::tests::buffer_texture_layout_checks_row_pitch_offset_and_final_row_bounds ... ok
+test backend::bindings::tests::compute_storage_buffers_require_whole_allocation_and_explicit_usage ... ok
+test backend::copy::tests::texture_copy_region_rejects_out_of_bounds_and_wrong_aspect ... ok
+test backend::bindings::tests::layout_accepts_dynamic_uniform_and_sampled_texture_slots ... ok
+test backend::encoder::indirect_count::tests::indexed_base_vertex_words_preserve_signed_bits ... ok
+test backend::copy::upload_tests::upload_repacking_rejects_truncated_source_and_overflowing_stride ... ok
+test backend::compute::tests::indirect_dispatch_support_is_required_only_for_the_indirect_verb ... ok
+test backend::encoder::acceleration_transition_tests::accepts_build_and_compute_read_scopes_only ... ok
+test backend::bindings::tests::layout_rejects_forms_without_a_native_binding_lowering ... ok
+test backend::encoder::indirect_count::tests::recording_requires_active_raster_pipeline_prepass_and_index_when_indexed ... ok
+test backend::encoder::indirect_count::tests::validates_complete_strided_records_and_count_word ... ok
+test backend::copy::upload_tests::upload_repacking_applies_offset_and_strips_source_padding ... ok
+test backend::mesh::tests::indirect_arguments_require_usage_alignment_and_complete_record ... ok
+test backend::mesh::tests::indirect_mesh_requires_apple9_and_selector ... ok
+test backend::pipeline::tests::multisample_subset_accepts_only_native_counts_and_full_masks ... ok
+test backend::pipeline::tests::depth_pipeline_accepts_depth32_and_combined_stencil_semantics ... ok
+test backend::encoder::raster::tests::binding_slots_use_disjoint_fixed_group_ranges ... ok
+test backend::pipeline::tests::raster_target_rejects_depth_and_nonimplemented_formats ... ok
+test backend::mesh::tests::triangle_proof_rejects_unprovable_source_forms ... ok
+test backend::ray::tests::bounding_boxes_require_valid_native_alignment_and_complete_buffer_range ... ok
+test backend::query::tests::slot_state_follows_submission_order_and_lane ... ok
+test backend::ray::tests::tlas_dependencies_are_fixed_before_binding_and_cannot_be_rebuilt ... ok
+test backend::readback::tests::empty_readback_has_no_row_or_slice_pitch ... ok
+test backend::resource::tests::buffer_support_rejects_mapping_and_shader_tables ... ok
+test backend::ray::tests::concurrent_builds_choose_one_complete_dependency_set ... ok
+test backend::sampler::tests::rejects_sampler_states_outside_the_native_subset ... ok
+test backend::shader::tests::group_slot_mapping_stays_inside_metal_abi ... ok
+test backend::shader::tests::metallib_has_a_direct_route_without_changing_source_routes ... ok
+test backend::sparse::validation::tests::mapped_heaps_release_only_after_unmap_completion_and_last_tile ... ok
+test backend::sparse::validation::tests::offsets_follow_standard_rectangles_and_packed_tail ... ok
+test backend::sparse::validation::tests::rejects_overlap_and_partial_tail_and_checks_unmap_offset ... ok
+test backend::submit::tests::aggregate_completion_waits_for_all_callbacks_and_preserves_failure ... ok
+test backend::submit::tests::chained_executions_propagate_producer_failure_without_unrelated_work ... ok
+test backend::submit::tests::checkpoint_frontier_is_a_snapshot_of_the_accepted_lane_prefix ... ok
+test backend::shader::tests::wgsl_entry_point_stage_must_match_core_descriptor ... ok
+test backend::submit::tests::checkpoint_join_waits_for_dependency_failure_processing ... ok
+test backend::submit::tests::command_plan_accepts_commands_followed_by_one_present ... ok
+test backend::submit::tests::command_plan_accepts_ordered_same_lane_dependencies ... ok
+test backend::submit::tests::command_plan_rejects_other_step_kinds_and_lanes ... ok
+test backend::submit::tests::completion_future_preserves_device_loss_result ... ok
+test backend::submit::tests::completion_future_transitions_from_pending_to_terminal_once ... ok
+test backend::shader::tests::wgsl_compute_storage_count_translates_to_writable_metal_buffer ... ok
+test backend::submit::tests::completion_handles_are_thread_safe_for_executor_wakers ... ok
+test backend::shader::tests::wgsl_translation_uses_the_declared_metal_buffer_slot ... ok
+test backend::shader::tests::wgsl_translation_lowers_compute_storage_texture_to_metal_texture_slot ... ok
+test backend::tests::surface_reconfiguration_invalidates_old_image_leases ... ok
+test backend::texture::tests::texture_descriptor_bounds_match_the_advertised_subset ... ok
+test backend::shader::tests::wgsl_ray_query_translates_to_metal_instance_acceleration_structure ... ok
+test backend::encoder::indirect_count::tests::partitions_at_metal3_limit_without_losing_or_wrapping_commands ... ok
+
+test result: ok. 57 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s

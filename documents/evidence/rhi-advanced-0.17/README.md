@@ -4,6 +4,10 @@ The [source-bound verification packet](frozen-cbb7070/README.md) records GPU tes
 
 The later [example 19 fixed-sequence packet](demo19-final-query/README.md) records three DX12 and Vulkan frames after smoke blending, mip sampling, opaque-query flags, and live resource reuse changes. It retains executable and source hashes. The particle states agree with the instrumented NVIDIA reference, while secondary reflected smoke still differs visibly; this is not an exact visual recreation. The [live-window packet](demo19-live-reuse/README.md) separately records changing frames with retained GPU resources.
 
+The [Metal static packet](metal-static-7e98d9e/README.md) binds Core/Metal tests
+and both Apple MSRV target checks to commit `7e98d9ebbf03685d76cb412aa625af1ed5a2257b`.
+It contains no Apple GPU execution evidence.
+
 The remaining files in this directory are **pre-freeze working-tree evidence**. The source tree was based on `0b70fa880a44b588efe3758044e604aa3cf7c855` and continued to change during collection. Those screenshots, builds and tests cannot be attributed to a single final commit. `files.json` records SHA-256, byte size and the original local path of each copied artifact; paths inside copied reports refer to the local archive and are retained as historical provenance.
 
 Windows runs used an AMD Radeon 780M, driver 32.0.21028.2002; Vulkan reports driver 25.10.28.02 (LLPC), Vulkan 1.4.315. The Vulkan focused log contains validation-enabled real GPU fixtures; it is not a substitute for the final candidate. Full resolution readback PPMs, unmodified reference captures, executables, build logs and the detailed capture inputs remain in the local verification and evidence directories at the original paths in `files.json` and the copied reports. Contact or window images alone do not establish readback equality.
