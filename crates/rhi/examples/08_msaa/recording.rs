@@ -171,6 +171,7 @@ impl<B: MsaaBackend> Msaa<B> {
             load: LoadOp::Clear(ClearColor::Float([0.98, 0.98, 1.0, 1.0])),
             store,
         })];
+        encoder.transition_resources(&[super::super::utils::discarded_depth(&self.depth, 0..1)])?;
         let depth = DepthStencilAttachment {
             view: AttachmentView::Texture(&self.depth_view),
             depth: Some((LoadOp::Clear(1.0), StoreOp::Discard)),

@@ -23,8 +23,14 @@ async fn shader<B: PushBackend>(
     spirv: &[u8],
     entry: &str,
     stage: ShaderStage,
+    dynamic_uniforms: bool,
 ) -> Result<Shader<B>> {
-    utils::native_shader_with_wgsl(d, "05 shader", entry, stage, dxil, spirv, WGSL).await
+    // The WGSL source uses a dynamic uniform; the native artifacts use push constants.
+    if dynamic_uniforms {
+        utils::native_shader_with_wgsl(d, "05 shader", entry, stage, dxil, spirv, WGSL).await
+    } else {
+        utils::native_shader(d, "05 shader", entry, stage, dxil, spirv).await
+    }
 }
 pub(super) async fn create_pipeline<B: PushBackend>(
     d: &Device<B>,
@@ -32,13 +38,22 @@ pub(super) async fn create_pipeline<B: PushBackend>(
     format: TextureFormat,
     dynamic_uniforms: bool,
 ) -> Result<RasterPipeline<B>> {
-    let vs = shader(d, VERTEX_DXIL, VERTEX_SPIRV, "vs_main", ShaderStage::Vertex).await?;
+    let vs = shader(
+        d,
+        VERTEX_DXIL,
+        VERTEX_SPIRV,
+        "vs_main",
+        ShaderStage::Vertex,
+        dynamic_uniforms,
+    )
+    .await?;
     let ps = shader(
         d,
         FRAGMENT_DXIL,
         FRAGMENT_SPIRV,
         "fs_main",
         ShaderStage::Fragment,
+        dynamic_uniforms,
     )
     .await?;
     d.raster_pipeline(RasterPipelineDesc {

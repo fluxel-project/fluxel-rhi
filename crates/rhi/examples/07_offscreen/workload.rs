@@ -358,6 +358,7 @@ impl<B: OffscreenWorkloadBackend> Offscreen<B> {
             load: LoadOp::Clear(ClearColor::Float([0., 0., 0., 0.])),
             store: StoreOp::Store,
         })];
+        e.transition_resources(&[super::utils::discarded_depth(&self.off_depth, 0..1)])?;
         let depth = DepthStencilAttachment {
             view: AttachmentView::Texture(&self.off_depth_view),
             depth: Some((LoadOp::Clear(1.0), StoreOp::Discard)),
@@ -427,6 +428,7 @@ impl<B: OffscreenWorkloadBackend> Offscreen<B> {
             load: LoadOp::Clear(ClearColor::Float([0.025, 0.025, 0.025, 1.])),
             store: StoreOp::Store,
         })];
+        e.transition_resources(&[super::utils::discarded_depth(&self.scene_depth, 0..1)])?;
         let depth = DepthStencilAttachment {
             view: AttachmentView::Texture(&self.scene_depth_view),
             depth: Some((LoadOp::Clear(1.0), StoreOp::Discard)),

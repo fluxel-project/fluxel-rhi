@@ -156,6 +156,7 @@ impl<B: DynamicUniformBackend> DynamicUniforms<B> {
             load: LoadOp::Clear(ClearColor::Float([0.02, 0.02, 0.03, 1.0])),
             store: StoreOp::Store,
         })];
+        encoder.transition_resources(&[utils::discarded_depth(&self._depth, 0..1)])?;
         let mut pass = encoder.begin_raster(&RasterPassDesc {
             label: Some("04 dynamic uniforms"),
             colors: &colors,

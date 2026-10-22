@@ -340,6 +340,7 @@ impl<B: MultiviewBackend> Multiview<B> {
             load: LoadOp::Clear(ClearColor::Float([0.0, 0.0, 0.0, 0.0])),
             store: StoreOp::Store,
         })];
+        encoder.transition_resources(&[utils::discarded_depth(&self._depth, 0..2)])?;
         let mut scene = encoder.begin_raster(&RasterPassDesc {
             label: Some("15 layered multiview scene"),
             colors: &scene_color,

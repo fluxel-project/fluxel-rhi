@@ -308,6 +308,7 @@ impl<B: IndirectWorkloadBackend> Workload<B> {
             load: LoadOp::Clear(ClearColor::Float([0.18, 0.27, 0.5, 0.0])),
             store: StoreOp::Store,
         })];
+        e.transition_resources(&[super::utils::discarded_depth(&self._depth, 0..1)])?;
         let depth = DepthStencilAttachment {
             view: AttachmentView::Texture(&self.depth),
             // This is one native rendering scope.  Vulkan may therefore use

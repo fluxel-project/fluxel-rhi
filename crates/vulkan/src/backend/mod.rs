@@ -29,6 +29,8 @@ pub struct VulkanInstance(Arc<InstanceState>);
 struct InstanceState {
     entry: Entry,
     instance: Instance,
+    #[cfg(all(unix, not(target_os = "android")))]
+    surface_extensions: [bool; 3],
 }
 
 mod external;
@@ -198,13 +200,34 @@ impl VulkanInstance {
         }) {
             extensions.push(ash::ext::swapchain_colorspace::NAME.as_ptr());
         }
+        #[cfg(all(unix, not(target_os = "android")))]
+        let surface_extensions = [
+            ash::khr::xlib_surface::NAME,
+            ash::khr::xcb_surface::NAME,
+            ash::khr::wayland_surface::NAME,
+        ]
+        .map(|name| {
+            let supported = available.iter().any(|extension| {
+                // SAFETY: Vulkan extension names are NUL terminated.
+                unsafe { std::ffi::CStr::from_ptr(extension.extension_name.as_ptr()) == name }
+            });
+            if supported {
+                extensions.push(name.as_ptr());
+            }
+            supported
+        });
         let info = vk::InstanceCreateInfo::default()
             .application_info(&app)
             .enabled_extension_names(&extensions);
         // SAFETY: all extension name pointers are static Vulkan names and the
         // create info borrows them only for this call.
         let instance = unsafe { entry.create_instance(&info, None) }.map_err(vk_error)?;
-        Ok(Self(Arc::new(InstanceState { entry, instance })))
+        Ok(Self(Arc::new(InstanceState {
+            entry,
+            instance,
+            #[cfg(all(unix, not(target_os = "android")))]
+            surface_extensions,
+        })))
     }
 
     /// Creates a typed Core instance with a fresh identity.
@@ -232,7 +255,7 @@ impl VulkanInstance {
 }
 
 impl Vulkan {
-    /// Creates a Vulkan WSI surface for a Win32 or Android native window owned by the caller.
+    /// Creates a Vulkan WSI surface for a native window owned by the caller.
     ///
     /// # Safety
     /// Both raw handles remain valid until the surface and every image lease

@@ -183,6 +183,8 @@ impl<B: InstancingBackend> Instancing<B> {
             load: LoadOp::Clear(ClearColor::Float([0., 0., 0.2, 1.])),
             store: StoreOp::Store,
         })];
+        encoder
+            .transition_resources(&[super::super::utils::discarded_depth(&self._depth, 0..1)])?;
         let depth = DepthStencilAttachment {
             view: AttachmentView::Texture(&self.depth_view),
             depth: Some((LoadOp::Clear(1.), StoreOp::Discard)),

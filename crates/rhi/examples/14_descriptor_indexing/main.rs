@@ -341,6 +341,7 @@ impl<B: DescriptorSceneBackend> DescriptorIndexing<B> {
             load: LoadOp::Clear(ClearColor::Float([0.025, 0.025, 0.025, 1.])),
             store: StoreOp::Store,
         })];
+        e.transition_resources(&[utils::discarded_depth(&self.depth, 0..1)])?;
         let mut p = e.begin_raster(&RasterPassDesc {
             label: Some("14 descriptor indexed cubes"),
             colors: &colors,

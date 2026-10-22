@@ -126,6 +126,7 @@ impl<B: ScreenshotWorkloadBackend> DragonScene<B> {
         self.record(
             encoder,
             AttachmentView::Texture(color),
+            &self.target_depth,
             &self.target_depth_view,
             &self.target_pipeline,
             extent,
@@ -142,6 +143,7 @@ impl<B: ScreenshotWorkloadBackend> DragonScene<B> {
         self.record(
             encoder,
             AttachmentView::Surface(image),
+            &self.surface_depth,
             &self.surface_depth_view,
             &self.surface_pipeline,
             extent,
@@ -169,6 +171,7 @@ impl<B: ScreenshotWorkloadBackend> DragonScene<B> {
         &'a self,
         encoder: &mut CommandEncoder<B>,
         color: AttachmentView<'a, B>,
+        depth_texture: &'a Texture<B>,
         depth: &'a TextureView<B>,
         pipeline: &'a RasterPipeline<B>,
         extent: [u32; 2],
@@ -180,6 +183,8 @@ impl<B: ScreenshotWorkloadBackend> DragonScene<B> {
             load: LoadOp::Clear(ClearColor::Float([0.025, 0.025, 0.025, 1.0])),
             store: StoreOp::Store,
         })];
+        encoder
+            .transition_resources(&[super::super::utils::discarded_depth(depth_texture, 0..1)])?;
         let mut pass = encoder.begin_raster(&RasterPassDesc {
             label: Some(label),
             colors: &colors,

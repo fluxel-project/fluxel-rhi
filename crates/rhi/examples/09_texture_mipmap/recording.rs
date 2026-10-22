@@ -59,6 +59,7 @@ impl<B: MipmapWorkloadBackend> Tunnel<B> {
             load: LoadOp::Clear(ClearColor::Float([0.015, 0.015, 0.025, 1.0])),
             store: StoreOp::Store,
         })];
+        encoder.transition_resources(&[super::super::utils::discarded_depth(&self.depth, 0..1)])?;
         let depth = DepthStencilAttachment {
             view: AttachmentView::Texture(&self.depth_view),
             depth: Some((LoadOp::Clear(1.0), StoreOp::Discard)),

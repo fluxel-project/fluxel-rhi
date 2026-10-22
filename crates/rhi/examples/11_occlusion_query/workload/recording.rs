@@ -142,6 +142,7 @@ impl<B: OcclusionWorkloadBackend> Workload<B> {
                 load: LoadOp::Clear(ClearColor::Float([0., 0., 0., 0.])),
                 store: StoreOp::Store,
             })];
+            e.transition_resources(&[super::super::utils::discarded_depth(&query._depth, 0..1)])?;
             let da = DepthStencilAttachment {
                 view: AttachmentView::Texture(&query.depth_view),
                 depth: Some((LoadOp::Clear(1.), StoreOp::Discard)),
@@ -224,6 +225,10 @@ impl<B: OcclusionWorkloadBackend> Workload<B> {
             load: LoadOp::Clear(ClearColor::Float([0., 0., 0., 0.])),
             store: StoreOp::Store,
         })];
+        e.transition_resources(&[super::super::utils::discarded_depth(
+            &attachments._display_depth,
+            0..1,
+        )])?;
         let depth = DepthStencilAttachment {
             view: AttachmentView::Texture(&attachments.display_depth_view),
             depth: Some((LoadOp::Clear(1.), StoreOp::Discard)),

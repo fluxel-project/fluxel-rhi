@@ -1,4 +1,4 @@
-//! Vulkan Win32 and Android surface and swapchain ownership.
+//! Vulkan native surface and swapchain ownership.
 //!
 //! A swapchain image stays an exclusive `SurfaceImage` lease.  It is never
 //! manufactured as a portable TextureView, so presentation lifetime remains
@@ -126,6 +126,56 @@ pub(crate) unsafe fn create_surface(
             // SAFETY: the caller retains the ANativeWindow until SurfaceState is dropped.
             unsafe { android.create_android_surface(&info, None) }.map_err(vk_error)?
         }
+        #[cfg(all(unix, not(target_os = "android")))]
+        (RawWindowHandle::Xlib(window), RawDisplayHandle::Xlib(display)) => {
+            if !native.0.instance.surface_extensions[0] {
+                return Err(Error::Unsupported("Vulkan Xlib surface extension"));
+            }
+            let display = display.display.ok_or(Error::InvalidState)?;
+            if window.window == 0 {
+                return Err(Error::InvalidRange);
+            }
+            let loader = ash::khr::xlib_surface::Instance::new(
+                &native.0.instance.entry,
+                &native.0.instance.instance,
+            );
+            let info = vk::XlibSurfaceCreateInfoKHR::default()
+                .dpy(display.as_ptr())
+                .window(window.window);
+            // SAFETY: the caller retains the Xlib display and window for the surface lifetime.
+            unsafe { loader.create_xlib_surface(&info, None) }.map_err(vk_error)?
+        }
+        #[cfg(all(unix, not(target_os = "android")))]
+        (RawWindowHandle::Xcb(window), RawDisplayHandle::Xcb(display)) => {
+            if !native.0.instance.surface_extensions[1] {
+                return Err(Error::Unsupported("Vulkan Xcb surface extension"));
+            }
+            let connection = display.connection.ok_or(Error::InvalidState)?;
+            let loader = ash::khr::xcb_surface::Instance::new(
+                &native.0.instance.entry,
+                &native.0.instance.instance,
+            );
+            let info = vk::XcbSurfaceCreateInfoKHR::default()
+                .connection(connection.as_ptr())
+                .window(window.window.get());
+            // SAFETY: the caller retains the XCB connection and window for the surface lifetime.
+            unsafe { loader.create_xcb_surface(&info, None) }.map_err(vk_error)?
+        }
+        #[cfg(all(unix, not(target_os = "android")))]
+        (RawWindowHandle::Wayland(window), RawDisplayHandle::Wayland(display)) => {
+            if !native.0.instance.surface_extensions[2] {
+                return Err(Error::Unsupported("Vulkan Wayland surface extension"));
+            }
+            let loader = ash::khr::wayland_surface::Instance::new(
+                &native.0.instance.entry,
+                &native.0.instance.instance,
+            );
+            let info = vk::WaylandSurfaceCreateInfoKHR::default()
+                .display(display.display.as_ptr())
+                .surface(window.surface.as_ptr());
+            // SAFETY: the caller retains the Wayland display and surface for the surface lifetime.
+            unsafe { loader.create_wayland_surface(&info, None) }.map_err(vk_error)?
+        }
         _ => {
             return Err(Error::Unsupported(
                 "a Vulkan window handle for this platform",
@@ -154,7 +204,7 @@ pub(crate) unsafe fn create_surface(
         // SAFETY: this locally owned surface was never published to SurfaceState.
         unsafe { surface_loader.destroy_surface(surface, None) };
         return Err(Error::Unsupported(
-            "Vulkan graphics queue presentation to this HWND",
+            "Vulkan graphics queue presentation to this surface",
         ));
     }
     let swapchain_loader =

@@ -203,6 +203,7 @@ impl<B: SecondaryExampleBackend> Multithreaded<B> {
                 PS,
                 PS_SPIRV,
                 UFO_WGSL,
+                false,
                 // This imported mesh omits the C++ loader's FlipY because the
                 // RHI uses Y-up NDC.  With Fluxel's projection and Vulkan's
                 // negative viewport that reverses its source-facing winding;
@@ -247,6 +248,7 @@ impl<B: SecondaryExampleBackend> Multithreaded<B> {
                 STAR_PS,
                 STAR_PS_SPIRV,
                 STARS_WGSL,
+                true,
                 CullMode::Back,
                 vec![VertexBufferLayout {
                     stride: STRIDE,
@@ -494,19 +496,33 @@ async fn pipeline<B: SecondaryExampleBackend>(
     ps_dxil: &[u8],
     ps_spirv: &[u8],
     ps_wgsl: &[u8],
+    native_push: bool,
     cull_mode: CullMode,
     vertex_buffers: Vec<VertexBufferLayout>,
 ) -> Result<RasterPipeline<B>> {
-    let vs = utils::native_shader_with_wgsl(
-        d,
-        &format!("{name} vs"),
-        "vs_main",
-        ShaderStage::Vertex,
-        vs_dxil,
-        vs_spirv,
-        vs_wgsl,
-    )
-    .await
+    // The stars WGSL is the uniform fallback; this workload binds push constants.
+    let vs = if native_push {
+        utils::native_shader(
+            d,
+            &format!("{name} vs"),
+            "vs_main",
+            ShaderStage::Vertex,
+            vs_dxil,
+            vs_spirv,
+        )
+        .await
+    } else {
+        utils::native_shader_with_wgsl(
+            d,
+            &format!("{name} vs"),
+            "vs_main",
+            ShaderStage::Vertex,
+            vs_dxil,
+            vs_spirv,
+            vs_wgsl,
+        )
+        .await
+    }
     .map_err(|error| {
         eprintln!("{name} vertex shader creation: {error:?}");
         error

@@ -188,3 +188,33 @@ pub use lifecycle::GpuScope;
 #[path = "execution.rs"]
 mod execution;
 pub use execution::{execute_frame, execution_end_checkpoint, validate_execution_outcome};
+
+/// Discard and prepare a depth attachment that is cleared on every use.
+/// The source stage orders any previous depth tests before reuse, while no
+/// previous contents need to be made visible to the new pass.
+pub fn discarded_depth<'a, B: Backend>(
+    texture: &'a fluxel_rhi::api::Texture<B>,
+    layers: std::ops::Range<u32>,
+) -> fluxel_rhi::api::ResourceTransition<'a, B> {
+    use fluxel_rhi::api::*;
+    ResourceTransition::Texture(TextureBarrier {
+        target: Subresources {
+            texture,
+            aspects: TextureAspects::DEPTH,
+            mips: 0..1,
+            layers,
+        },
+        usage: StateTransition {
+            from: TextureUses {
+                stages: StageMask::FRAGMENT,
+                accesses: AccessMask::EMPTY,
+            },
+            to: TextureUses {
+                stages: StageMask::FRAGMENT,
+                accesses: AccessMask::DEPTH_WRITE,
+            },
+        },
+        layout: Some((ImageLayout::Undefined, ImageLayout::DepthStencilAttachment)),
+        ownership: None,
+    })
+}
