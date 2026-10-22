@@ -1,9 +1,9 @@
 # Vulkan completeness fixture index
 
-Status: **working tree, not frozen**. This index identifies source fixtures and
-contract boundaries; their presence does not establish that they passed on a
-particular device. The final gate must record the exact candidate SHA, commands,
-GPU and driver, output, validation diagnostics, and capability skips. Existing
+This index identifies source fixtures and contract boundaries; their presence
+does not establish that they passed on a particular device. The
+[acceptance record](acceptance/README.md) identifies each tested source SHA,
+commands, GPU and driver, output, diagnostics and known skips. Existing
 [0.17 Vulkan evidence](../rhi-advanced-0.17/README.md) belongs to its own
 recorded candidate and does not establish results for this working tree.
 
@@ -17,7 +17,9 @@ recorded candidate and does not establish results for this working tree.
 | Graphics and bindings | [mrt_gpu.rs](../../../crates/vulkan/tests/mrt_gpu.rs), [stencil_gpu.rs](../../../crates/vulkan/tests/stencil_gpu.rs), [readonly_depth_stencil_gpu.rs](../../../crates/vulkan/tests/readonly_depth_stencil_gpu.rs), [wgsl_sampler_array_gpu.rs](../../../crates/vulkan/tests/wgsl_sampler_array_gpu.rs), [sampler_clamp_zero_gpu.rs](../../../crates/vulkan/tests/sampler_clamp_zero_gpu.rs), [push_stages_gpu.rs](../../../crates/vulkan/tests/push_stages_gpu.rs) | Selected attachments, depth/stencil, binding arrays, integer and float clamp-to-zero sampling, and stage-specific push constants. |
 | Compute, queries and queues | [compute_features_gpu.rs](../../../crates/vulkan/tests/compute_features_gpu.rs), [query_gpu.rs](../../../crates/vulkan/tests/query_gpu.rs), [multi_queue_gpu.rs](../../../crates/vulkan/tests/multi_queue_gpu.rs), [multi_count_gpu.rs](../../../crates/vulkan/tests/multi_count_gpu.rs) | Selected compute, query reuse, cross-lane waits and GPU-count drawing. |
 | Mesh, ray and sparse | [mesh_gpu.rs](../../../crates/vulkan/tests/mesh_gpu.rs), [mesh_multiview_gpu.rs](../../../crates/vulkan/tests/mesh_multiview_gpu.rs), [ray_query_gpu.rs](../../../crates/vulkan/tests/ray_query_gpu.rs), [sparse_switch_gpu.rs](../../../crates/vulkan/tests/sparse_switch_gpu.rs), [sparse_volume_gpu.rs](../../../crates/vulkan/tests/sparse_volume_gpu.rs) | Device-gated mesh, mesh multiview and ray-query work; sparse mapping, mip switches, array and volume probes. |
-| Presentation | [surface_gpu.rs](../../../crates/vulkan/tests/surface_gpu.rs) | Surface presentation path; presentation alone does not establish visual correctness. |
+| Sampler layout variants | [sampler_layout_switch_gpu.rs](../../../crates/vulkan/tests/sampler_layout_switch_gpu.rs), [sampler_runtime_mixed_gpu.rs](../../../crates/vulkan/tests/sampler_runtime_mixed_gpu.rs) | Ordinary, mixed and integer sampler pipeline switches without rebinding the public group; dynamically indexed mixed runtime samplers. |
+| Resume | [resume_gpu.rs](../../../crates/vulkan/tests/resume_gpu.rs) | Completed prefix and original-plan suffix, with End and Steps completion requests. |
+| Presentation | [surface_gpu.rs](../../../crates/vulkan/tests/surface_gpu.rs), [unix_surface_gpu.rs](../../../crates/vulkan/tests/unix_surface_gpu.rs) | Windows GPU presentation and Linux Xlib/XCB software presentation. Wayland is implemented but has no runtime evidence here. |
 
 ## Boundaries requiring device or contract checks
 
@@ -47,4 +49,5 @@ The separate pass-boundary statistics interface is not implemented by Vulkan;
 its pipeline-statistics query is a different contract. Source coverage does not
 replace candidate GPU results.
 
-No final candidate results or new GPU logs are asserted by this index.
+The acceptance record distinguishes earlier full gates from affected-path
+reruns and the final example corrections; see it for the precise evidence.

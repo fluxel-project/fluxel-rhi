@@ -1,0 +1,42 @@
+{
+  "cwd": "E:\\moyy\\program\\rust\\fluxel\\fluxel-rhi",
+  "command": [
+    "wsl",
+    "-d",
+    "Ubuntu",
+    "--",
+    "bash",
+    "-lc",
+    "CARGO_TARGET_DIR=/tmp/fluxel-rhi-vulkan-frozen-msrv cargo +1.87.0 test --workspace --lib --all-features --locked"
+  ],
+  "resolved_executable": "C:\\WINDOWS\\system32\\wsl.EXE",
+  "start_utc": "2026-10-22T09:23:39.068545+00:00",
+  "end_utc": "2026-10-22T09:24:44.940866+00:00",
+  "returncode": 0,
+  "timeout_seconds": 1200,
+  "environment": {},
+  "stdout": {
+    "path": "wsl-msrv-workspace.stdout",
+    "bytes": 26372,
+    "sha256": "795ede0689514541d09343a7071efe4e55a9e9192f70b68d5c9a14b00e308843"
+  },
+  "stderr": {
+    "path": "wsl-msrv-workspace.stderr",
+    "bytes": 101547,
+    "sha256": "47b5506b2f6d171bd73208580ac24974f0c0367f009c3d741ae08e2456af611e"
+  },
+  "source_before": {
+    "head": "4b87e3f3269d847996609dff8094beb7e2e711bb",
+    "status_porcelain_z_hex": "",
+    "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "untracked_file_sha256": {}
+  },
+  "source_after": {
+    "head": "4b87e3f3269d847996609dff8094beb7e2e711bb",
+    "status_porcelain_z_hex": "",
+    "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "untracked_file_sha256": {}
+  }
+}

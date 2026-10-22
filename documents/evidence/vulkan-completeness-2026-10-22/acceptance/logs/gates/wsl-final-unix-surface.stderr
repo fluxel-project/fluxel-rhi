@@ -1,0 +1,96 @@
+   Compiling unicode-ident v1.0.26
+   Compiling cfg-if v1.0.5
+   Compiling unicode-width v0.2.2
+   Compiling foldhash v0.2.0
+   Compiling hashbrown v0.17.1
+   Compiling bit-vec v0.8.0
+   Compiling bitflags v2.13.2
+   Compiling equivalent v1.0.2
+   Compiling log v0.4.34
+   Compiling once_cell v1.21.4
+   Compiling libm v0.2.16
+   Compiling arrayvec v0.7.8
+   Compiling hexf-parse v0.2.1
+   Compiling rustc-hash v1.1.0
+   Compiling raw-window-handle v0.6.2
+   Compiling fluxel-rhi-core v0.16.0 (/mnt/e/moyy/program/rust/fluxel/fluxel-rhi/crates/core)
+   Compiling libloading v0.8.9
+   Compiling proc-macro2 v1.0.107
+   Compiling hashbrown v0.16.1
+   Compiling spirv v0.3.0+sdk-1.3.268.0
+   Compiling ash v0.38.0+1.3.281
+   Compiling bit-set v0.8.0
+   Compiling codespan-reporting v0.12.0
+   Compiling quote v1.0.47
+   Compiling indexmap v2.14.2
+   Compiling syn v2.0.119
+   Compiling syn v3.0.6
+   Compiling num-traits v0.2.19
+   Compiling thiserror-impl v2.0.21
+   Compiling zerocopy-derive v0.8.62
+   Compiling thiserror v2.0.21
+   Compiling zerocopy v0.8.62
+   Compiling half v2.7.1
+   Compiling naga v27.0.3
+   Compiling fluxel-rhi-vulkan v0.16.0 (/mnt/e/moyy/program/rust/fluxel/fluxel-rhi/crates/vulkan)
+warning: field `0` is never read
+  --> crates/vulkan/src/backend/pipeline/binding.rs:96:12
+   |
+96 |     Buffer(VulkanBuffer),
+   |     ------ ^^^^^^^^^^^^
+   |     |
+   |     field in this variant
+   |
+   = note: `#[warn(dead_code)]` on by default
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+96 -     Buffer(VulkanBuffer),
+96 +     Buffer(()),
+   |
+
+warning: field `0` is never read
+  --> crates/vulkan/src/backend/pipeline/binding.rs:97:10
+   |
+97 |     View(VulkanTextureView),
+   |     ---- ^^^^^^^^^^^^^^^^^
+   |     |
+   |     field in this variant
+   |
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+97 -     View(VulkanTextureView),
+97 +     View(()),
+   |
+
+warning: field `0` is never read
+  --> crates/vulkan/src/backend/pipeline/binding.rs:98:13
+   |
+98 |     Sampler(VulkanSampler),
+   |     ------- ^^^^^^^^^^^^^
+   |     |
+   |     field in this variant
+   |
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+98 -     Sampler(VulkanSampler),
+98 +     Sampler(()),
+   |
+
+warning: field `0` is never read
+  --> crates/vulkan/src/backend/pipeline/binding.rs:99:18
+   |
+99 |     Acceleration(super::super::VulkanAcceleration),
+   |     ------------ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |     |
+   |     field in this variant
+   |
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+99 -     Acceleration(super::super::VulkanAcceleration),
+99 +     Acceleration(()),
+   |
+
+warning: `fluxel-rhi-vulkan` (lib) generated 4 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 19.26s
+     Running tests/unix_surface_gpu.rs (/tmp/fluxel-rhi-vulkan-frozen-msrv/debug/deps/unix_surface_gpu-406d229bb6217ca4)
+WSI test adapter: llvmpipe (LLVM 20.1.2, 256 bits)

@@ -1,0 +1,41 @@
+
+running 1 test
+test sparse_extra_depth_formats ... ok
+
+successes:
+
+---- sparse_extra_depth_formats stdout ----
+D3D12 [D3D12_MESSAGE_SEVERITY(2)/D3D12_MESSAGE_ID(820)]: ID3D12CommandList::ClearRenderTargetView: The application did not pass any clear value to resource creation. The clear operation is typically slower as a result; but will still clear to the desired value.
+D3D12 [D3D12_MESSAGE_SEVERITY(2)/D3D12_MESSAGE_ID(821)]: ID3D12CommandList::ClearDepthStencilView: The application did not pass any clear value to resource creation. The clear operation is typically slower as a result; but will still clear to the desired value.
+D3D12 [D3D12_MESSAGE_SEVERITY(2)/D3D12_MESSAGE_ID(820)]: ID3D12CommandList::ClearRenderTargetView: The application did not pass any clear value to resource creation. The clear operation is typically slower as a result; but will still clear to the desired value.
+D3D12 [D3D12_MESSAGE_SEVERITY(2)/D3D12_MESSAGE_ID(821)]: ID3D12CommandList::ClearDepthStencilView: The application did not pass any clear value to resource creation. The clear operation is typically slower as a result; but will still clear to the desired value.
+D3D12 [D3D12_MESSAGE_SEVERITY(2)/D3D12_MESSAGE_ID(820)]: ID3D12CommandList::ClearRenderTargetView: The application did not pass any clear value to resource creation. The clear operation is typically slower as a result; but will still clear to the desired value.
+D3D12 [D3D12_MESSAGE_SEVERITY(2)/D3D12_MESSAGE_ID(821)]: ID3D12CommandList::ClearDepthStencilView: The application did not pass any clear value to resource creation. The clear operation is typically slower as a result; but will still clear to the desired value.
+D3D12 [D3D12_MESSAGE_SEVERITY(2)/D3D12_MESSAGE_ID(820)]: ID3D12CommandList::ClearRenderTargetView: The application did not pass any clear value to resource creation. The clear operation is typically slower as a result; but will still clear to the desired value.
+D3D12 [D3D12_MESSAGE_SEVERITY(2)/D3D12_MESSAGE_ID(821)]: ID3D12CommandList::ClearDepthStencilView: The application did not pass any clear value to resource creation. The clear operation is typically slower as a result; but will still clear to the desired value.
+
+
+successes:
+    sparse_extra_depth_formats
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.46s
+
+
+running 3 tests
+test all_mips_multiple_heaps_and_packed_tail ... ok
+test map_remap_and_readback ... ok
+test non_dxgi_sparse_formats_return_structured_errors ... ok
+
+successes:
+
+---- all_mips_multiple_heaps_and_packed_tail stdout ----
+tiling: SparseTextureTiling { aspects: [SparseAspectTiling { aspect: TextureAspects(1), tile_extent: [128, 128, 1], tile_grid: [2, 2, 1], tile_bytes: 65536, standard_mip_grids: [[2, 2, 1], [1, 1, 1]], packed_tail: Some(SparsePackedMipTail { first_mip: 2, mip_count: 7, tile_count: 1 }), packed_tail_shared_by_layers: false }], tile_extent: [128, 128, 1], tile_grid: [2, 2, 1], tile_bytes: 65536, standard_mip_grids: [[2, 2, 1], [1, 1, 1]], packed_tail: Some(SparsePackedMipTail { first_mip: 2, mip_count: 7, tile_count: 1 }), packed_tail_shared_by_layers: false }
+
+
+successes:
+    all_mips_multiple_heaps_and_packed_tail
+    map_remap_and_readback
+    non_dxgi_sparse_formats_return_structured_errors
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.14s
+

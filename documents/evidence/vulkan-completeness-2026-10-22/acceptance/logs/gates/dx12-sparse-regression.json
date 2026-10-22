@@ -1,0 +1,50 @@
+{
+  "cwd": "E:\\moyy\\program\\rust\\fluxel\\fluxel-rhi",
+  "command": [
+    "cargo",
+    "+stable",
+    "test",
+    "-p",
+    "fluxel-rhi-dx12",
+    "--features",
+    "hardware-tests",
+    "--test",
+    "sparse_gpu",
+    "--test",
+    "sparse_depth_formats_gpu",
+    "--locked",
+    "--",
+    "--test-threads=1",
+    "--show-output"
+  ],
+  "resolved_executable": "C:\\Users\\41200\\.cargo\\bin\\cargo.EXE",
+  "start_utc": "2026-10-22T09:38:00.170696+00:00",
+  "end_utc": "2026-10-22T09:38:20.985632+00:00",
+  "returncode": 0,
+  "timeout_seconds": 1200,
+  "environment": {},
+  "stdout": {
+    "path": "dx12-sparse-regression.stdout",
+    "bytes": 3380,
+    "sha256": "11d1c22ff19148588eaa53a1e3f346bceb501b73158346f4cbe127dc503a8a7b"
+  },
+  "stderr": {
+    "path": "dx12-sparse-regression.stderr",
+    "bytes": 5140,
+    "sha256": "2ec8129eb3d0c4efd79eb22b8458b1a5aa2aadf7f4549583da10c104fb5fef33"
+  },
+  "source_before": {
+    "head": "0e437e0fd95d848e56434b194016bd12aae50f8a",
+    "status_porcelain_z_hex": "",
+    "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "untracked_file_sha256": {}
+  },
+  "source_after": {
+    "head": "0e437e0fd95d848e56434b194016bd12aae50f8a",
+    "status_porcelain_z_hex": "",
+    "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "untracked_file_sha256": {}
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "cwd": "E:\\moyy\\program\\rust\\fluxel\\fluxel-rhi",
+  "command": [
+    "E:\\moyy\\program\\rust\\fluxel\\fluxel-rhi\\target\\debug\\examples\\22_clear_texture.exe",
+    "--backend",
+    "vulkan",
+    "--frames",
+    "62"
+  ],
+  "resolved_executable": "E:\\moyy\\program\\rust\\fluxel\\fluxel-rhi\\target\\debug\\examples\\22_clear_texture.exe",
+  "start_utc": "2026-10-22T09:28:37.123516+00:00",
+  "end_utc": "2026-10-22T09:28:39.254617+00:00",
+  "returncode": 0,
+  "timeout_seconds": 120,
+  "environment": {
+    "VK_INSTANCE_LAYERS": "VK_LAYER_KHRONOS_validation;VK_LAYER_LUNARG_screenshot",
+    "VK_SCREENSHOT_FRAMES": "2,30,60",
+    "VK_SCREENSHOT_DIR": "E:\\moyy\\program\\rust\\fluxel\\fluxel-rhi\\\u4e34\u65f6\\\u5f53\u524d\u9a8c\u8bc1\\vulkan\\frozen\\demos\\22_clear_texture"
+  },
+  "stdout": {
+    "path": "run.stdout",
+    "bytes": 611,
+    "sha256": "df46a2db5f85dd472d4db0b1b97fe1ea090f406f4c5785d7f740c2c45c3457e8"
+  },
+  "stderr": {
+    "path": "run.stderr",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "source_before": {
+    "head": "ffc5487e85b3b8220b977289639d640530d1bc4d",
+    "status_porcelain_z_hex": "204d206372617465732f76756c6b616e2f7372632f6261636b656e642f6d6f642e727300204d206372617465732f76756c6b616e2f7372632f6261636b656e642f737572666163652e7273003f3f207261792d71756572792d7061727469636c65732d30312e706e67003f3f207261792d71756572792d7061727469636c65732d30322e706e67003f3f207261792d71756572792d7061727469636c65732d30332e706e6700",
+    "status_sha256": "f84837a5a47850173e694952926dfe3278a8704486fb050bae604eb88a1e50e1",
+    "tracked_diff_sha256": "2efebcffaa7bf2e1c732da5233fc0aafbc73c3684033de92a5c63d56c1c9ace7",
+    "untracked_file_sha256": {
+      "ray-query-particles-01.png": "dc6b3d70f30e4d7e11a9b0849900f519db09f57c852528406cb34c89838ba571",
+      "ray-query-particles-02.png": "aba83068c6cabb408a03af50e13a712c199972cb46f3511c9d6b500f9489f02e",
+      "ray-query-particles-03.png": "7ed1de9ba9de9def8da72046c825471c5551f687e8c6ea82154e024639397c8c"
+    }
+  },
+  "source_after": {
+    "head": "ffc5487e85b3b8220b977289639d640530d1bc4d",
+    "status_porcelain_z_hex": "204d206372617465732f76756c6b616e2f7372632f6261636b656e642f6d6f642e727300204d206372617465732f76756c6b616e2f7372632f6261636b656e642f737572666163652e7273003f3f207261792d71756572792d7061727469636c65732d30312e706e67003f3f207261792d71756572792d7061727469636c65732d30322e706e67003f3f207261792d71756572792d7061727469636c65732d30332e706e6700",
+    "status_sha256": "f84837a5a47850173e694952926dfe3278a8704486fb050bae604eb88a1e50e1",
+    "tracked_diff_sha256": "2efebcffaa7bf2e1c732da5233fc0aafbc73c3684033de92a5c63d56c1c9ace7",
+    "untracked_file_sha256": {
+      "ray-query-particles-01.png": "dc6b3d70f30e4d7e11a9b0849900f519db09f57c852528406cb34c89838ba571",
+      "ray-query-particles-02.png": "aba83068c6cabb408a03af50e13a712c199972cb46f3511c9d6b500f9489f02e",
+      "ray-query-particles-03.png": "7ed1de9ba9de9def8da72046c825471c5551f687e8c6ea82154e024639397c8c"
+    }
+  }
+}

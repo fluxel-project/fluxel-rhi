@@ -1,0 +1,4 @@
+*.stdout -text
+*.stderr -text
+*.json -text
+SHA256SUMS -text

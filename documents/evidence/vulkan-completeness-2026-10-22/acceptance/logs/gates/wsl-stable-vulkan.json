@@ -1,0 +1,42 @@
+{
+  "cwd": "E:\\moyy\\program\\rust\\fluxel\\fluxel-rhi",
+  "command": [
+    "wsl",
+    "-d",
+    "Ubuntu",
+    "--",
+    "bash",
+    "-lc",
+    "CARGO_TARGET_DIR=/tmp/fluxel-rhi-vulkan-frozen-stable cargo +stable check -p fluxel-rhi-vulkan --all-targets --all-features --locked"
+  ],
+  "resolved_executable": "C:\\WINDOWS\\system32\\wsl.EXE",
+  "start_utc": "2026-10-22T09:23:53.751011+00:00",
+  "end_utc": "2026-10-22T09:24:16.086934+00:00",
+  "returncode": 0,
+  "timeout_seconds": 1200,
+  "environment": {},
+  "stdout": {
+    "path": "wsl-stable-vulkan.stdout",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "stderr": {
+    "path": "wsl-stable-vulkan.stderr",
+    "bytes": 4518,
+    "sha256": "31ed48ec9513748eac65af61d6ffed455391563fb769b0fc33a818168e94b260"
+  },
+  "source_before": {
+    "head": "4b87e3f3269d847996609dff8094beb7e2e711bb",
+    "status_porcelain_z_hex": "",
+    "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "untracked_file_sha256": {}
+  },
+  "source_after": {
+    "head": "4b87e3f3269d847996609dff8094beb7e2e711bb",
+    "status_porcelain_z_hex": "",
+    "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "untracked_file_sha256": {}
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "cwd": "E:\\moyy\\program\\rust\\fluxel\\fluxel-rhi",
+  "command": [
+    "python",
+    "\u4e34\u65f6/\u5de5\u5177/capture_demo.py",
+    "--output",
+    "\u4e34\u65f6/\u5f53\u524d\u9a8c\u8bc1/vulkan/frozen/dx12-visual/13_secondary.png",
+    "--times",
+    "1",
+    "--cwd",
+    ".",
+    "--",
+    "target/debug/examples/13_multithreaded_recording.exe",
+    "--backend",
+    "dx12"
+  ],
+  "resolved_executable": "D:\\ProgramData\\miniconda3\\python.EXE",
+  "start_utc": "2026-10-22T09:37:57.736970+00:00",
+  "end_utc": "2026-10-22T09:37:59.605824+00:00",
+  "returncode": 0,
+  "timeout_seconds": 1200,
+  "environment": {},
+  "stdout": {
+    "path": "dx12-secondary-visual.stdout",
+    "bytes": 273,
+    "sha256": "6ef6615baab67f854f0107a6e50008f8bb1351033fb4bf736a0e15bac5029671"
+  },
+  "stderr": {
+    "path": "dx12-secondary-visual.stderr",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "source_before": {
+    "head": "0e437e0fd95d848e56434b194016bd12aae50f8a",
+    "status_porcelain_z_hex": "",
+    "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "untracked_file_sha256": {}
+  },
+  "source_after": {
+    "head": "0e437e0fd95d848e56434b194016bd12aae50f8a",
+    "status_porcelain_z_hex": "",
+    "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "untracked_file_sha256": {}
+  }
+}

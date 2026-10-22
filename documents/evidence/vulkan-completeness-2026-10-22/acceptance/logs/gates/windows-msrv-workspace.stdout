@@ -1,0 +1,338 @@
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 61 tests
+test api::execution_facts::tests::issue_failure_reports_effects_without_claiming_complete_steps ... ok
+test api::execution::tests::completion_checkpoint_failure_does_not_invent_a_failed_step ... ok
+test api::execution::tests::immediate_native_call_occurs_before_finish_without_step_checkpoint ... ok
+test api::execution::tests::dropped_immediate_execution_is_abandoned_without_idle_or_checkpoint ... ok
+test api::execution_facts::tests::receipt_alone_does_not_claim_full_submission_acceptance ... ok
+test api::execution::tests::failed_callback_cannot_become_success_even_if_abort_issued ... ok
+test api::execution::tests::clean_present_rejection_is_reported_and_successful_retry_clears_it ... ok
+test api::execution::tests::immediate_callback_runs_now_and_original_failure_survives_close ... ok
+test api::execution::tests::invalid_order_is_rejected_before_invoking_the_callback ... ok
+test api::execution::tests::recorded_commands_rejection_preserves_recordings_and_allows_retry ... ok
+test api::execution::tests::unknown_emergency_checkpoint_does_not_obscure_a_clean_step_rejection ... ok
+test api::execution::tests::unsupported_sparse_plan_fails_before_commands_can_issue ... ok
+test api::execution::tests::immediate_failed_and_indeterminate_close_preserve_known_prefix ... ok
+test api::execution::tests::recorded_commands_wrong_lane_preserves_work ... ok
+test api::execution::tests::deferred_failure_never_submits_and_preserves_recorded_steps ... ok
+test api::execution::tests::rejected_present_keeps_lease_for_retry ... ok
+test api::ray::tests::acceleration_capability_is_independent_of_ray_and_query ... ok
+test api::ray::tests::instance_flags_are_validated_before_native_calls ... ok
+test api::ray::tests::invalid_geometry_ranges_never_reach_backend ... ok
+test api::ray::tests::local_constants_require_whole_words_before_pipeline_creation ... ok
+test api::ray::tests::nested_inputs_are_checked_by_every_ray_entry_before_backend ... ok
+test api::ray::tests::query_only_device_exposes_acceleration_but_rejects_ray_pipeline ... ok
+test api::ray::tests::shader_tables_validate_ranges_and_device_before_trace ... ok
+test api::shader::tests::ray_query_requirement_is_checked_before_shader_backend ... ok
+test api::sparse::tests::packed_tail_region_covers_the_whole_reported_tail ... ok
+test api::sparse::tests::primary_tiling_fields_match_first_aspect_group ... ok
+test api::sparse::tests::sparse_contract_checks_empty_allocation_and_texture_device ... ok
+test api::tests::binding_arrays::arrays_reject_nested_descriptors_without_losing_leaf_validation ... ok
+test api::tests::binding_arrays::runtime_array_group_validates_actual_length_and_holes_before_backend ... ok
+test api::tests::binding_arrays::runtime_array_layout_validates_capacity_capability_and_position ... ok
+test api::tests::binding_arrays::storage_views_validate_abi_range_kind_and_device_before_backend ... ok
+test api::tests::ergonomics::error_implements_standard_error_and_reports_details ... ok
+test api::tests::ergonomics::flags_support_or_and_or_assign ... ok
+test api::tests::execution_contract::compiled_order_and_waits_reach_spi_unchanged_for_each_execution ... ok
+test api::tests::execution_contract::facade_retains_partial_and_indeterminate_native_outcomes ... ok
+test api::tests::execution_contract::indeterminate_token_stays_owned_until_caller_drains ... ok
+test api::tests::execution_contract::invalid_inputs_never_reach_spi_and_tail_can_resume_after_frontier ... ok
+test api::tests::execution_contract::supplied_multi_lane_frontiers_are_validated_without_scheduling ... ok
+test api::tests::multiqueue_validation::invalid_work_is_rejected_before_multi_queue_backend ... ok
+test api::tests::multiqueue_validation::reused_plan_routes_distinct_owned_tokens_to_backend ... ok
+test api::tests::query_validation::pass_statistics_validate_before_preparing_a_native_pass ... ok
+test api::tests::multiqueue_validation::signal_and_wait_metadata_are_checked_before_backend ... ok
+test api::tests::query_validation::query_domain_and_bounds_are_checked_before_backend ... ok
+test api::tests::query_validation::query_result_layout_and_frequency_are_explicit ... ok
+test api::tests::query_validation::raster_pass_rejects_invalid_query_metadata_before_backend ... ok
+test api::tests::query_validation::timestamp_result_format_preserves_zero_and_detects_reserved_slot ... ok
+test api::tests::ray_validation::acceleration_capability_is_independent_of_ray_and_query ... ok
+test api::tests::ray_validation::instance_flags_are_validated_before_native_calls ... ok
+test api::tests::ray_validation::invalid_geometry_ranges_never_reach_backend ... ok
+test api::tests::ray_validation::local_constants_require_whole_words_before_pipeline_creation ... ok
+test api::tests::ray_validation::nested_inputs_are_checked_by_every_ray_entry_before_backend ... ok
+test api::tests::ray_validation::query_only_device_exposes_acceleration_but_rejects_ray_pipeline ... ok
+test api::tests::ray_validation::shader_tables_validate_ranges_and_device_before_trace ... ok
+test api::tests::type_contract_tests::clear_texture_rejects_invalid_shape_before_backend ... ok
+test api::tests::type_contract_tests::concrete_shared_and_local_profiles_typecheck ... ok
+test api::tests::type_contract_tests::deferred_binding_rejects_wrong_lane_and_foreign_tail ... ok
+test api::tests::type_contract_tests::dropped_immediate_session_reports_issued_prefix_to_backend ... ok
+test api::tests::type_contract_tests::immediate_validates_waits_and_lanes_before_execution ... ok
+test api::tests::type_contract_tests::native_recording_can_be_borrowed_without_consumption ... ok
+test api::tests::type_contract_tests::raster_draw_rejects_inverted_ranges_before_backend ... ok
+test api::tests::type_contract_tests::stale_surface_lease_cannot_enter_plan_present ... ok
+
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 34 tests
+test backend::compute::tests::dynamic_address_validates_alignment_range_and_overflow ... ok
+test backend::encoder::coordinates::tests::validates_scissor_representability_before_native_lowering ... ok
+test backend::encoder::coordinates::tests::validates_viewport_bounds_before_native_lowering ... ok
+test backend::compute::tests::indirect_record_requires_usage_alignment_and_twelve_bytes ... ok
+test backend::encoder::fence_wait::tests::device_removed_is_never_completion ... ok
+test backend::encoder::fence_wait::tests::fence_future_is_send ... ok
+test backend::encoder::secondary::tests::secondary_signature_accepts_depth32_inheritance ... ok
+test backend::encoder::secondary::tests::inheritance_compares_every_color_slot ... ok
+test backend::encoder::secondary::tests::secondary_inheritance_must_match_the_real_depth_attachment ... ok
+test backend::encoder::raster::topology_tests::strip_restart_requires_matching_index_width ... ok
+test backend::encoder::secondary::tests::secondary_signature_preserves_multiple_slots_and_holes ... ok
+test backend::encoder::submit::tests::device_removed_keeps_all_submitted_native_owners ... ok
+test backend::encoder::transition::tests::buffer_state_accepts_individual_vertex_and_uniform_reads ... ok
+test backend::encoder::transition::tests::buffer_state_rejects_shader_read_without_a_shader_stage ... ok
+test backend::encoder::transition::tests::depth_read_layout_can_combine_depth_and_shader_reads ... ok
+test backend::encoder::transition::tests::texture_resolve_layouts_require_read_and_write_access ... ok
+test backend::shader_feature_tests::committed_buffer_limit_uses_gpu_address_bits ... ok
+test backend::ray::tests::tlas_retains_each_distinct_blas_until_tlas_release ... ok
+test backend::encoder::transition::tests::storage_accesses_cover_graphics_shader_stages_and_read_write ... ok
+test backend::pipeline::cache::tests::rejects_duplicate_keys_even_with_valid_checksum ... ok
+test backend::ray::geometry::tests::rejects_misaligned_gpu_addresses_strides_and_ranges ... ok
+test backend::encoder::transition::tests::texture_shader_reads_cover_all_requested_shader_stages ... ok
+test backend::pipeline::cache::tests::serialized_entries_round_trip_and_reject_corruption ... ok
+test backend::encoder::upload::tests::page_sizes_reject_unaddressable_allocations ... ok
+test backend::shader_feature_tests::validates_ray_query_and_known_legacy_feature ... ok
+test backend::texture::tests::array_depth_view_lowers_its_selected_layers ... ok
+test backend::texture::tests::bc_subsets_reject_non_dxgi_and_invalid_layouts ... ok
+test backend::texture::tests::depth_view_selects_nonzero_mip ... ok
+test backend::texture::tests::dsv_array_range_preserves_the_selected_layers ... ok
+test backend::texture::tests::dsv_array_range_rejects_an_empty_range ... ok
+test backend::encoder::fence_wait::tests::native_wait_yields_wakes_and_can_be_cancelled ... ok
+test backend::encoder::copy::hardware_tests::generic_copy_rejects_missing_usage_and_invalid_range ... ok
+test backend::encoder::query::pending_test::pending_query_slot_moves_after_native_wait ... ok
+test backend::encoder::copy::hardware_tests::generic_copies_round_trip_real_gpu_bytes ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.13s
+
+
+running 140 tests
+test backend::gl::api::binding::tests::texture_units_are_bounded_by_the_discovered_count ... ok
+test backend::gl::api::copy::tests::a_zero_extent_is_refused_as_a_shape_rather_than_underflowing ... ok
+test backend::gl::api::copy::tests::pixel_store_alignments_are_checked ... ok
+test backend::gl::api::copy::tests::unmappable_rows_need_an_explicit_bounded_repack ... ok
+test backend::gl::api::copy::tests::an_expressible_stride_is_described_as_the_callers_own_pitch ... ok
+test backend::gl::api::copy::tests::an_unexpressible_stride_is_described_as_tight_not_as_the_callers ... ok
+test backend::gl::api::copy::tests::readback_size_includes_last_image_only_once ... ok
+test backend::gl::api::copy::tests::readback_requires_the_exact_returned_length ... ok
+test backend::gl::api::copy::tests::the_row_length_is_present_exactly_when_the_stride_is_mappable ... ok
+test backend::gl::api::binding::tests::uniform_ranges_resolve_size_zero_to_the_allocation_end ... ok
+test backend::gl::api::compute::tests::rejects_bad_preflight_values ... ok
+test backend::gl::api::extensions::tests::every_typed_name_maps_back_from_its_own_registry_spelling ... ok
+test backend::gl::api::binding::tests::uniform_slots_and_offsets_are_checked_before_ranges ... ok
+test backend::gl::api::extensions::tests::a_typed_route_is_legal_only_inside_its_own_family ... ok
+test backend::gl::api::formats::tests::compressed_family_metadata_cannot_enable_a_different_exact_format ... ok
+test backend::gl::api::formats::tests::compressed_encoded_sizes_use_exact_blocks_and_reject_zero_extents ... ok
+test backend::gl::api::extensions::tests::only_the_second_multiview_revision_reaches_the_typed_name ... ok
+test backend::gl::api::extensions::tests::resolve_requires_the_exact_evidence_its_route_asks_for ... ok
+test backend::gl::api::extensions::tests::compressed_extension_names_preserve_native_and_web_registry_identity ... ok
+test backend::gl::api::formats::tests::compressed_formats_preserve_exact_block_layout_and_color_space ... ok
+test backend::gl::api::extensions::tests::draft_names_are_recorded_in_the_ledger_without_a_typed_route ... ok
+test backend::gl::api::formats::tests::gles3_core_guarantee_is_exactly_etc2_and_eac ... ok
+test backend::gl::api::formats::tests::static_guarantees_cannot_claim_storage_images ... ok
+test backend::gl::api::formats::tests::renderbuffer_multisampling_does_not_prove_texture_multisampling ... ok
+test backend::gl::api::framebuffer::tests::a_view_serving_no_layer_is_not_a_view ... ok
+test backend::gl::api::framebuffer::tests::blit_regions_and_masks_fail_closed_before_gl ... ok
+test backend::gl::api::framebuffer::tests::attachment_views_must_agree_on_their_layer_count ... ok
+test backend::gl::api::framebuffer::tests::clear_value_retains_float_bits ... ok
+test backend::gl::api::framebuffer::tests::draw_buffers_selection_is_bounded_unique_and_in_range ... ok
+test backend::gl::api::framebuffer::tests::multiview_view_count_is_gated_by_the_proved_limit ... ok
+test backend::gl::api::framebuffer::tests::rejects_empty_framebuffer ... ok
+test backend::gl::api::framebuffer::tests::resolve_targets_are_single_layer ... ok
+test backend::gl::api::framebuffer::tests::single_view_passes_never_need_the_multiview_limit ... ok
+test backend::gl::api::indirect::tests::accepts_a_whole_dispatch_record_inside_its_range ... ok
+test backend::gl::api::indirect::tests::dispatch_record_is_three_work_group_counts ... ok
+test backend::gl::api::indirect::tests::overflowing_dispatch_offsets_are_rejected_not_wrapped ... ok
+test backend::gl::api::indirect::tests::rejects_dispatch_commands_outside_the_buffer_role ... ok
+test backend::gl::api::indirect::tests::rejects_dispatch_records_that_do_not_fit_their_range ... ok
+test backend::gl::api::indirect::tests::rejects_misaligned_indirect_offset ... ok
+test backend::gl::api::multi_draw::tests::a_batch_keeps_its_draws_in_submission_order ... ok
+test backend::gl::api::multi_draw::tests::a_batch_mixing_shapes_is_rejected ... ok
+test backend::gl::api::multi_draw::tests::a_batch_with_no_draw_is_not_a_batch ... ok
+test backend::gl::api::multi_draw::tests::an_index_offset_beyond_the_parameter_slot_stays_the_providers_rule ... ok
+test backend::gl::api::multi_draw::tests::every_draw_of_the_batch_must_be_a_real_draw ... ok
+test backend::gl::api::multi_draw::tests::instance_counts_are_needed_exactly_when_a_draw_runs_several_instances ... ok
+test backend::gl::api::multi_draw::tests::per_draw_values_must_survive_one_parameter_slot ... ok
+test backend::gl::api::object::tests::object_kinds_have_distinct_static_identity_types ... ok
+test backend::gl::api::object::tests::typed_identities_keep_only_fluxel_owned_metadata ... ok
+test backend::gl::api::presentation::tests::a_presentation_source_must_be_a_single_sample_2d_texture_of_the_acquired_extent ... ok
+test backend::gl::api::presentation::tests::resize_invalidates_an_old_acquire_lease ... ok
+test backend::gl::api::presentation::tests::a_refused_lease_names_the_operation_that_was_attempted ... ok
+test backend::gl::api::query::tests::disjoint_is_not_a_zero_elapsed_time ... ok
+test backend::gl::api::raster::tests::advanced_offset_is_capability_gated ... ok
+test backend::gl::api::raster::tests::excess_color_targets_are_not_write_mask_failures ... ok
+test backend::gl::api::raster::tests::indexed_draw_keeps_base_and_instance_offsets ... ok
+test backend::gl::api::resource::tests::consumption_roles_combine_because_the_gl_family_stores_untyped_bytes ... ok
+test backend::gl::api::resource::tests::every_role_reports_a_distinct_usage_bit ... ok
+test backend::gl::api::resource::tests::mapping_roles_are_rejected_beside_each_other_and_beside_gpu_use ... ok
+test backend::gl::api::resource::tests::mip_count_and_multisample_dimension_are_bounded ... ok
+test backend::gl::api::resource::tests::multisample_textures_cannot_have_mips ... ok
+test backend::gl::api::resource::tests::rejects_overflowing_buffer_ranges_before_use ... ok
+test backend::gl::api::resource::tests::renderbuffer_descriptors_reject_zero_extent_and_samples ... ok
+test backend::gl::api::resource::tests::staging_roles_stay_legal_next_to_a_mapping ... ok
+test backend::gl::api::resource::tests::the_reported_conflict_pair_is_deterministic_and_named ... ok
+test backend::gl::api::sampler::tests::anisotropy_uses_the_acquirable_typed_extension ... ok
+test backend::gl::api::sampler::tests::preserves_anisotropy_float_validation ... ok
+test backend::gl::api::sampler::tests::rejects_nan_lod ... ok
+test backend::gl::api::shader::tests::accepts_compatible_lowered_dialect_for_profile ... ok
+test backend::gl::api::shader::tests::program_kind_routes_stage_validation ... ok
+test backend::gl::api::shader::tests::rejects_duplicate_executable_assignments ... ok
+test backend::gl::api::shader::tests::rejects_duplicate_logical_bindings ... ok
+test backend::gl::api::shader::tests::rejects_empty_lowered_entry_point ... ok
+test backend::gl::api::shader::tests::storage_image_assignment_matches_its_explicit_glsl_unit ... ok
+test backend::gl::api::storage::tests::rejects_unaligned_storage_buffer_range ... ok
+test backend::gl::api::sync::tests::by_region_refuses_non_local_visibility_classes ... ok
+test backend::gl::api::sync::tests::revoked_lease_is_rejected ... ok
+test backend::gl::api::vertex::tests::attribute_is_hashable_structural_state ... ok
+test backend::gl::api::vertex::tests::a_buffer_must_declare_the_role_it_is_bound_for ... ok
+test backend::gl::api::vertex::tests::missing_binding_metadata_is_distinct_from_an_exceeded_offset ... ok
+test backend::gl::api::vertex::tests::rejects_duplicate_buffer_slots ... ok
+test backend::gl::backend::resource::binding::tests::group_index_keeps_same_numbered_uniforms_distinct ... ok
+test backend::gl::backend::resource::binding::tests::texture_load_layout_does_not_require_a_sampler_resource ... ok
+test backend::gl::backend::resource::binding::tests::texture_load_layout_needs_no_sampler_binding ... ok
+test backend::gl::backend::shader::tests::embedded_precision_defaults_follow_version_and_extensions ... ok
+test backend::gl::features::compute::tests::compute_extension_still_requires_its_entrypoint ... ok
+test backend::gl::features::compute::tests::compute_is_core_in_43_and_gles31_but_not_webgl2 ... ok
+test backend::gl::features::debug::tests::debug_route_needs_push_pop_and_label ... ok
+test backend::gl::features::debug::tests::webgl2_does_not_infer_khr_debug_from_browser_profile ... ok
+test backend::gl::features::draw::tests::indirect_count_is_never_in_gles_core ... ok
+test backend::gl::backend::shader_texture_origin::tests::rewrites_only_reflected_2d_texture_operations ... ok
+test backend::gl::backend::shader_texture_origin::tests::keeps_array_layer_while_flipping_texture_rows ... ok
+test backend::gl::features::draw::tests::indirect_draw_obeys_profile_floor_and_both_tokens ... ok
+test backend::gl::features::query::tests::webgl2_does_not_inherit_gles_query_core_route ... ok
+test backend::gl::features::query::tests::occlusion_query_needs_every_entrypoint_even_at_core_floor ... ok
+test backend::gl::features::sync::tests::sync_accepts_core_and_arb_but_needs_every_token ... ok
+test backend::gl::features::sync::tests::barriers_are_profile_and_token_precise ... ok
+test backend::gl::features::sync::tests::texture_barrier_retains_core_arb_and_nv_tokens ... ok
+test backend::gl::native::context::tests::currentness_guard_preserves_platform_provenance ... ok
+test backend::gl::features::texture::tests::etc2_is_gles30_and_gl43_core_but_not_webgl2_by_inference ... ok
+test backend::gl::features::texture::tests::bc_aggregate_requires_every_bc_family_and_both_upload_tokens ... ok
+test backend::gl::native::discovery::limits::optional_limit_route_tests::gles30_has_no_es31_limit_route ... ok
+test backend::gl::native::discovery::limits::optional_limit_route_tests::gles31_enables_its_core_limit_routes ... ok
+test backend::gl::native::entry_points::tests::one_missing_symbol_closes_only_its_group ... ok
+test backend::gl::native::entry_points::tests::typed_extension_cannot_cross_profile_family ... ok
+test backend::gl::native::probe::tests::keeps_newer_versions_instead_of_downgrading_to_floor ... ok
+test backend::gl::native::probe::tests::rejects_older_native_profiles_before_any_command_path ... ok
+test backend::gl::native::probes::glow_probes::tests::a_failed_acquisition_is_not_revived_by_a_probe ... ok
+test backend::gl::native::probe::tests::malformed_es_prefix_does_not_become_desktop_gl ... ok
+test backend::gl::native::probes::glow_probes::tests::a_merely_reported_name_is_never_promoted_by_a_probe ... ok
+test backend::gl::native::probes::glow_probes::tests::a_passed_probe_is_what_lets_the_extension_route_resolve ... ok
+test backend::gl::native::probes::glow_probes::tests::a_probe_only_promotes_the_extension_it_belongs_to ... ok
+test backend::gl::native::probes::glow_probes::tests::a_probe_that_did_not_pass_leaves_the_ledger_acquired ... ok
+test backend::gl::native::wgl_core_conformance::wgl_clear_ignores_and_restores_pipeline_write_masks ... ignored, requires an explicit WGL hardware-test run
+test backend::gl::native::probes::glow_probes::tests::a_route_illegal_for_the_profile_is_never_promoted ... ok
+test backend::gl::native::wgl_core_conformance::wgl_typed_device_surface_and_empty_immediate_step ... ignored, requires an explicit WGL hardware-test run
+test backend::gl::native::probes::glow_probes::tests::a_passed_probe_promotes_an_acquired_extension_to_probed ... ok
+test backend::gl::state::cache::tests::lru_and_dependency_invalidation_are_deterministic ... ok
+test backend::gl::state::context::tests::compute_domain_invalidation_forces_raster_program_restore ... ok
+test backend::gl::state::context::tests::compute_program_change_forces_raster_program_restore ... ok
+test backend::gl::state::context::tests::bind_groups_flush_only_after_acknowledgement ... ok
+test backend::gl::state::context::tests::current_program_invalidation_preserves_fixed_raster_skip_decisions ... ok
+test backend::gl::state::context::tests::dynamic_draw_invalidation_cannot_take_a_stale_pipeline_identity_hit ... ok
+test backend::gl::state::context::tests::pass_begin_is_never_elided ... ok
+test backend::gl::state::context::tests::one_changed_leaf_produces_one_lowering_call_and_identity_hit_none ... ok
+test backend::gl::state::context::tests::pipeline_identity_is_a_collision_free_first_gate ... ok
+test backend::gl::state::context::tests::pipeline_miss_diffs_canonical_blocks_not_the_whole_pipeline ... ok
+test backend::gl::state::context::tests::raw_binding_access_forces_sampler_rebind ... ok
+test backend::gl::state::context::tests::retirement_erases_cached_object_binding_and_dependent_group ... ok
+test backend::gl::state::context::tests::sampler_cache_is_unit_scoped_and_generation_safe ... ok
+test backend::gl::state::context::tests::structurally_equal_pipeline_leaves_share_canonical_ids ... ok
+test backend::gl::state::context::tests::uniform_cache_key_includes_buffer_generation_and_range ... ok
+test backend::gl::backend::shader::tests::naga_compute_lowering_flips_texture_load_and_storage_store_rows ... ok
+test backend::gl::state::event::tests::undeclared_raw_access_is_never_trusted ... ok
+test backend::gl::state::knowledge::tests::domains_have_unique_bits ... ok
+test backend::gl::state::knowledge::tests::unknown_never_agrees ... ok
+test backend::gl::translate::tests::array_upload_z_becomes_the_subresource_base_once ... ok
+test backend::gl::translate::tests::volume_upload_keeps_z_as_a_region_coordinate ... ok
+test backend::gl::translate_raster::tests::public_front_face_is_preserved_for_positive_height_gl_viewports ... ok
+test backend::gl::backend::shader::tests::naga_lowers_wgsl_for_each_supported_glsl_profile ... ok
+test backend::gl::backend::shader::tests::webgl2_raster_filter_fallback_lowers_texture_loads_to_es_300 ... ok
+
+test result: ok. 138 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 58 tests
+test backend::bindings::tests::dynamic_uniform_offset_preserves_range_and_checks_alignment_and_bounds ... ok
+test backend::bindings::tests::compute_storage_buffers_require_whole_allocation_and_explicit_usage ... ok
+test backend::bindings::tests::depth_and_color_sample_types_require_matching_native_formats ... ok
+test backend::binding_abi::tests::vertex_slots_do_not_overlap_resource_binding_buffers ... ok
+test backend::bindings::tests::layout_accepts_compute_write_only_rgba8_storage_texture ... ok
+test backend::bindings::tests::layout_accepts_dynamic_uniform_and_sampled_texture_slots ... ok
+test backend::bindings::tests::layout_rejects_forms_without_a_native_binding_lowering ... ok
+test backend::compute::tests::indirect_dispatch_support_is_required_only_for_the_indirect_verb ... ok
+test backend::copy::upload_tests::row_alignment_rounds_without_overflow ... ok
+test backend::compute::tests::indirect_dispatch_requires_aligned_complete_arguments_and_usage ... ok
+test backend::copy::tests::buffer_texture_layout_checks_row_pitch_offset_and_final_row_bounds ... ok
+test backend::bindings::tests::uniform_binding_requires_usage_valid_range_and_minimum_size ... ok
+test backend::copy::tests::texture_copy_region_rejects_out_of_bounds_and_wrong_aspect ... ok
+test backend::copy::upload_tests::upload_repacking_rejects_truncated_source_and_overflowing_stride ... ok
+test backend::copy::upload_tests::upload_repacking_applies_offset_and_strips_source_padding ... ok
+test backend::encoder::indirect_count::tests::indexed_base_vertex_words_preserve_signed_bits ... ok
+test backend::copy::tests::texture_copy_region_accepts_valid_mip_and_array_slice ... ok
+test backend::encoder::acceleration_transition_tests::accepts_build_and_compute_read_scopes_only ... ok
+test backend::encoder::indirect_count::tests::recording_requires_active_raster_pipeline_prepass_and_index_when_indexed ... ok
+test backend::encoder::indirect_count::tests::validates_complete_strided_records_and_count_word ... ok
+test backend::encoder::raster::tests::binding_slots_use_disjoint_fixed_group_ranges ... ok
+test backend::mesh::tests::indirect_arguments_require_usage_alignment_and_complete_record ... ok
+test backend::mesh::tests::indirect_mesh_requires_apple9_and_selector ... ok
+test backend::pipeline::tests::depth_pipeline_accepts_depth32_and_combined_stencil_semantics ... ok
+test backend::pipeline::tests::multisample_subset_accepts_only_native_counts_and_full_masks ... ok
+test backend::pipeline::tests::raster_target_rejects_depth_and_nonimplemented_formats ... ok
+test backend::mesh::tests::triangle_proof_rejects_unprovable_source_forms ... ok
+test backend::ray::tests::abandoned_recording_releases_dependencies ... ok
+test backend::query::tests::slot_state_follows_submission_order_and_lane ... ok
+test backend::ray::tests::bounding_boxes_require_valid_native_alignment_and_complete_buffer_range ... ok
+test backend::ray::tests::tlas_dependencies_are_fixed_before_binding_and_cannot_be_rebuilt ... ok
+test backend::readback::tests::empty_readback_has_no_row_or_slice_pitch ... ok
+test backend::resource::tests::buffer_support_rejects_mapping_and_shader_tables ... ok
+test backend::sampler::tests::rejects_sampler_states_outside_the_native_subset ... ok
+test backend::ray::tests::concurrent_builds_choose_one_complete_dependency_set ... ok
+test backend::shader::tests::group_slot_mapping_stays_inside_metal_abi ... ok
+test backend::shader::tests::metallib_has_a_direct_route_without_changing_source_routes ... ok
+test backend::sparse::validation::tests::mapped_heaps_release_only_after_unmap_completion_and_last_tile ... ok
+test backend::sparse::validation::tests::offsets_follow_standard_rectangles_and_packed_tail ... ok
+test backend::sparse::validation::tests::rejects_overlap_and_partial_tail_and_checks_unmap_offset ... ok
+test backend::submit::tests::aggregate_completion_waits_for_all_callbacks_and_preserves_failure ... ok
+test backend::submit::tests::chained_executions_propagate_producer_failure_without_unrelated_work ... ok
+test backend::submit::tests::checkpoint_frontier_is_a_snapshot_of_the_accepted_lane_prefix ... ok
+test backend::submit::tests::checkpoint_join_waits_for_dependency_failure_processing ... ok
+test backend::submit::tests::command_plan_accepts_commands_followed_by_one_present ... ok
+test backend::submit::tests::command_plan_accepts_ordered_same_lane_dependencies ... ok
+test backend::submit::tests::command_plan_rejects_other_step_kinds_and_lanes ... ok
+test backend::submit::tests::completion_future_preserves_device_loss_result ... ok
+test backend::submit::tests::completion_future_transitions_from_pending_to_terminal_once ... ok
+test backend::submit::tests::completion_handles_are_thread_safe_for_executor_wakers ... ok
+test backend::tests::surface_reconfiguration_invalidates_old_image_leases ... ok
+test backend::texture::tests::texture_descriptor_bounds_match_the_advertised_subset ... ok
+test backend::shader::tests::wgsl_entry_point_stage_must_match_core_descriptor ... ok
+test backend::shader::tests::wgsl_ray_query_is_rejected_even_without_declared_feature ... ok
+test backend::shader::tests::wgsl_translation_uses_the_declared_metal_buffer_slot ... ok
+test backend::shader::tests::wgsl_compute_storage_count_translates_to_writable_metal_buffer ... ok
+test backend::shader::tests::wgsl_translation_lowers_compute_storage_texture_to_metal_texture_slot ... ok
+test backend::encoder::indirect_count::tests::partitions_at_metal3_limit_without_losing_or_wrapping_commands ... ok
+
+test result: ok. 58 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 10 tests
+test backend::mapping::tests::noncoherent_ranges_include_whole_atoms_and_allocation_end ... ok
+test backend::mesh::topology_tests::mesh_topology_rejects_descriptor_shader_mismatch_and_strips ... ok
+test backend::pipeline::layout::sampler_budget_tests::ordinary_and_integer_bindings_reach_native_limit ... ok
+test backend::query::tests::exact_frequency_only ... ok
+test backend::sparse::tests::select_independent_or_combined_sparse_aspects ... ok
+test backend::pipeline::specialization::tests::resolves_grouped_spec_id_without_exposing_group_as_constant ... ok
+test backend::shader::topology_tests::reads_the_selected_mesh_entry_topology ... ok
+test backend::sparse::tests::shared_tail_requires_layer_zero ... ok
+test backend::sparse::metadata::tests::cross_queue_metadata_wait_coalesces_timeline_values ... ok
+test backend::interop::tests::native_fill_and_device_guard_lifetime ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
