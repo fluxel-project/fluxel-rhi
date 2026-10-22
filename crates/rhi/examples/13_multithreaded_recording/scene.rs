@@ -369,7 +369,9 @@ impl<B: SecondaryExampleBackend> Multithreaded<B> {
             let (texture, view) = depth(d, extent)?;
             self.depth = Some((extent, texture, view));
         }
-        let depth_view = &self.depth.as_ref().ok_or(Error::InvalidState)?.2;
+        let depth = self.depth.as_ref().ok_or(Error::InvalidState)?;
+        e.transition_resources(&[utils::discarded_depth(&depth.1, 0..1)])?;
+        let depth_view = &depth.2;
         let mut pass = e.begin_raster(&RasterPassDesc {
             label: Some("13 primary UFO bundle executor"),
             colors: &colors,

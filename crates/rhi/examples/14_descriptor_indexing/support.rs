@@ -41,7 +41,10 @@ pub(super) async fn pipeline<B: DescriptorSceneBackend>(
     d: &Device<B>,
     layout: PipelineLayout<B>,
     format: TextureFormat,
+    layered_textures: bool,
 ) -> Result<RasterPipeline<B>> {
+    // The fallback samples one layered texture; the native path binds an array of 2D views.
+    let wgsl = if layered_textures { WGSL } else { NATIVE_WGSL };
     let vs = utils::native_shader_with_wgsl(
         d,
         "14 descriptor vertex",
@@ -49,7 +52,7 @@ pub(super) async fn pipeline<B: DescriptorSceneBackend>(
         ShaderStage::Vertex,
         VS,
         VS_SPIRV,
-        WGSL,
+        wgsl,
     )
     .await?;
     let ps = utils::native_shader_with_wgsl(
@@ -59,7 +62,7 @@ pub(super) async fn pipeline<B: DescriptorSceneBackend>(
         ShaderStage::Fragment,
         PS,
         PS_SPIRV,
-        WGSL,
+        wgsl,
     )
     .await?;
     d.raster_pipeline(RasterPipelineDesc {

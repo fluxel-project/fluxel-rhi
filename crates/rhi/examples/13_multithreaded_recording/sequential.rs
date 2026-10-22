@@ -209,7 +209,9 @@ impl<B: SequentialExampleBackend> Sequential<B> {
             let (texture, view) = depth(d, extent)?;
             self.depth = Some((extent, texture, view));
         }
-        let view = &self.depth.as_ref().ok_or(Error::InvalidState)?.2;
+        let depth = self.depth.as_ref().ok_or(Error::InvalidState)?;
+        e.transition_resources(&[super::utils::discarded_depth(&depth.1, 0..1)])?;
+        let view = &depth.2;
         let colors = [Some(ColorAttachment {
             view: AttachmentView::Surface(image),
             resolve_target: None,

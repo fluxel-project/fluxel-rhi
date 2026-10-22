@@ -23,6 +23,8 @@ const VS_SPIRV: &[u8] =
 const PS_SPIRV: &[u8] =
     include_bytes!("../assets/14_descriptor_indexing/descriptor_indexing.ps.spv");
 const WGSL: &[u8] = include_bytes!("../assets/14_descriptor_indexing/descriptor_indexing.wgsl");
+const NATIVE_WGSL: &[u8] =
+    include_bytes!("../assets/14_descriptor_indexing/descriptor_indexing_native.wgsl");
 pub trait DescriptorIndexingBackend: DescriptorSceneBackend + DeferredBackend {}
 impl<T> DescriptorIndexingBackend for T where T: DescriptorSceneBackend + DeferredBackend {}
 pub trait DescriptorSceneBackend:
@@ -254,7 +256,7 @@ impl<B: DescriptorSceneBackend> DescriptorIndexing<B> {
             groups: &[&layout],
             push_constants: &[],
         })?;
-        let pipeline = pipeline(d, pl, format).await?;
+        let pipeline = pipeline(d, pl, format, layered_textures).await?;
         let (depth, depth_view) = depth_target(d, extent)?;
         Ok(Self {
             lane,

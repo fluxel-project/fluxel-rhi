@@ -209,6 +209,7 @@ impl<B: PushBackend> PushWorkload<B> {
             load: LoadOp::Clear(ClearColor::Float([0.025, 0.025, 0.025, 1.0])),
             store: StoreOp::Store,
         })];
+        encoder.transition_resources(&[super::utils::discarded_depth(&self._depth, 0..1)])?;
         let pass = RasterPassDesc {
             label: Some("05 push constant spheres"),
             colors: &colors,
@@ -306,6 +307,7 @@ impl PushWorkload<fluxel_rhi::gl::Gl> {
             load: LoadOp::Clear(ClearColor::Float([0.025, 0.025, 0.025, 1.0])),
             store: StoreOp::Store,
         })];
+        encoder.transition_resources(&[super::utils::discarded_depth(&self._depth, 0..1)])?;
         let pass = RasterPassDesc {
             label: Some("05 GL dynamic-uniform spheres"),
             colors: &colors,
