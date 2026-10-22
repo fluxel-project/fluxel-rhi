@@ -1,0 +1,16 @@
+{
+  "documents/evidence/rhi-advanced-0.17/demo19-mlab/dx12-01.png": "5c52642e7f06d0b4d953ee62b2a132092098662a40d46c336ff00366799c0edc",
+  "documents/evidence/rhi-advanced-0.17/demo19-mlab/dx12-02.png": "a0bdb1a4e955b559551bdd1cee9eba9bf767707304898570ce344a7cc31ea710",
+  "documents/evidence/rhi-advanced-0.17/demo19-mlab/dx12-03.png": "fd5f68bec7f3bef542f99342abb854d1d85b8865cb172b6dbf5099e900dcb9b3",
+  "documents/evidence/rhi-advanced-0.17/demo19-mlab/vulkan-01.png": "3c56d2deb8be122863dbd3eb0ac133232ccb9b96b3d892a2eced5e6677d81f2b",
+  "documents/evidence/rhi-advanced-0.17/demo19-mlab/vulkan-02.png": "e9e6616e597bce1b82dae91d5414b5484ee53517f509a8325ffe71a9d648463e",
+  "documents/evidence/rhi-advanced-0.17/demo19-mlab/vulkan-03.png": "fa8ef740b1b76e60057e093aeaf56c7290b64541ddc577c981a396a7e9481b55",
+  "documents/evidence/rhi-advanced-0.17/demo19-mlab/dx12.log": "c0281c601f9a1022d3f3302bf874a5926db5877e7dc480f7d3c56f3bf75c87fd",
+  "documents/evidence/rhi-advanced-0.17/demo19-mlab/vulkan.log": "c0281c601f9a1022d3f3302bf874a5926db5877e7dc480f7d3c56f3bf75c87fd",
+  "documents/evidence/rhi-advanced-0.17/demo19-mlab/comparison.json": "08ce450a1b6f04906d025f57118d72d1c1a83442b3f278c860b53a8de9bc10b1",
+  "crates/rhi/examples/19_ray_query_particles/controlled.hlsl": "bccff5841e0e9c65ff82f234dfff05b9015e333ff5ef1088d244c5fc60e6b1d0",
+  "crates/rhi/examples/19_ray_query_particles/controlled.dxil": "ad52199040d333fc9d49f03c6aeb9c14a2fe0dcbe3f8d6371dcc875194ee357d",
+  "crates/rhi/examples/assets/19_ray_query_particles/controlled.vulkan.hlsl": "7dd63da0fa467b655832a2b183e92fcde191e93776e4c80186b10dc9f873c262",
+  "crates/rhi/examples/assets/19_ray_query_particles/controlled.spv": "c6facdf057d6c63e0dc489a0c5e3bf39b04f6095240f9fbede100ad4f713d58d",
+  "target/debug/examples/19_ray_query_particles.exe": "284e79455fcee0718216c0a6c264bd86244e9794452192f20f14ef6faac21f36"
+}

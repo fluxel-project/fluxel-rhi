@@ -326,6 +326,7 @@ fn primitive_descriptor(
 ) -> api::Result<objc2::rc::Retained<objc2_metal::MTLPrimitiveAccelerationStructureDescriptor>> {
     use objc2_foundation::NSArray;
     use objc2_metal::{
+        MTLAccelerationStructureBoundingBoxGeometryDescriptor,
         MTLAccelerationStructureGeometryDescriptor,
         MTLAccelerationStructureTriangleGeometryDescriptor, MTLIndexType,
         MTLPrimitiveAccelerationStructureDescriptor,
@@ -343,6 +344,33 @@ fn primitive_descriptor(
     }
     let mut native = Vec::with_capacity(geometries.len());
     for geometry in geometries {
+        if let api::AccelerationGeometry::Aabbs {
+            data,
+            offset,
+            stride,
+            count,
+            opaque,
+        } = geometry
+        {
+            // SAFETY: Core validates that this buffer belongs to the device.
+            let buffer = unsafe { data.native_ref() };
+            if !buffer.usage.contains(api::BufferUsage::ACCEL_BUILD_INPUT)
+                || !valid_aabb_range(buffer.size(), *offset, *stride, *count)
+            {
+                return Err(api::Error::InvalidRange);
+            }
+            let geom = MTLAccelerationStructureBoundingBoxGeometryDescriptor::descriptor();
+            geom.setBoundingBoxBuffer(Some(&buffer.raw));
+            // SAFETY: the buffer range, offset and stride were validated above.
+            unsafe {
+                geom.setBoundingBoxBufferOffset(*offset as usize);
+                geom.setBoundingBoxStride(*stride as usize);
+            }
+            geom.setBoundingBoxCount(*count as usize);
+            geom.setOpaque(*opaque);
+            native.push(geom.into_super());
+            continue;
+        }
         let api::AccelerationGeometry::Triangles {
             vertices,
             vertex_offset,
@@ -353,7 +381,7 @@ fn primitive_descriptor(
             opaque,
         } = geometry
         else {
-            return Err(api::Error::Unsupported("Metal AABB acceleration geometry"));
+            unreachable!("all acceleration geometry variants are handled");
         };
         if !matches!(vertex_format, api::VertexFormat::Float32(3)) {
             return Err(api::Error::Unsupported("Metal acceleration vertex format"));
@@ -419,10 +447,33 @@ fn primitive_descriptor(
     Ok(descriptor)
 }
 
+#[cfg(any(target_vendor = "apple", test))]
+fn valid_aabb_range(size: u64, offset: u64, stride: u64, count: u32) -> bool {
+    count != 0
+        && stride >= 24
+        && stride % 4 == 0
+        && offset % stride == 0
+        && u64::from(count - 1)
+            .checked_mul(stride)
+            .and_then(|v| offset.checked_add(v))
+            .and_then(|v| v.checked_add(24))
+            .is_some_and(|end| end <= size)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::FrozenDependencies;
+    use super::{FrozenDependencies, valid_aabb_range};
     use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn bounding_boxes_require_valid_native_alignment_and_complete_buffer_range() {
+        assert!(valid_aabb_range(88, 32, 32, 2));
+        assert!(valid_aabb_range(56, 0, 28, 2));
+        assert!(!valid_aabb_range(71, 24, 24, 2));
+        assert!(!valid_aabb_range(80, 8, 24, 2));
+        assert!(!valid_aabb_range(u64::MAX, u64::MAX - 7, 24, u32::MAX));
+        assert!(!valid_aabb_range(80, 0, 24, 0));
+    }
 
     #[test]
     fn tlas_dependencies_are_fixed_before_binding_and_cannot_be_rebuilt() {

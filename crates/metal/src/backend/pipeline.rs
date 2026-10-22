@@ -164,6 +164,9 @@ fn create_raster_pipeline(
         }
 
         let descriptor = MTLRenderPipelineDescriptor::new();
+        if device._state.indirect_count_supported {
+            descriptor.setSupportIndirectCommandBuffers(true);
+        }
         descriptor.setVertexFunction(Some(&vertex_function));
         descriptor.setFragmentFunction(fragment_function.as_deref());
         descriptor.setVertexDescriptor(Some(&vertex_descriptor));

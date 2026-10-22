@@ -35,6 +35,7 @@ impl RasterBackend for Metal {
                 return Err(api::Error::InvalidState);
             }
             encoder.mesh_threads = None;
+            encoder.raster_pipeline_bound = true;
             render.setRenderPipelineState(&pipeline.state);
             render.setDepthStencilState(pipeline.depth_state.as_deref());
             render.setDepthBias_slopeScale_clamp(
@@ -517,7 +518,9 @@ impl RasterBackend for Metal {
             use objc2_metal::MTLCommandEncoder as _;
             let render = encoder.render.take().ok_or(api::Error::InvalidState)?;
             render.endEncoding();
+            encoder.indirect_prepass = None;
             encoder.raster_signature = None;
+            encoder.raster_pipeline_bound = false;
             encoder.mesh_threads = None;
             Ok(())
         }
@@ -534,7 +537,9 @@ impl RasterBackend for Metal {
                 use objc2_metal::MTLCommandEncoder as _;
                 render.endEncoding();
             }
+            encoder.indirect_prepass = None;
             encoder.raster_signature = None;
+            encoder.raster_pipeline_bound = false;
             encoder.mesh_threads = None;
         }
         #[cfg(not(target_vendor = "apple"))]

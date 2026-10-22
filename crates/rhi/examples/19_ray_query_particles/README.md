@@ -20,11 +20,19 @@ Pillow and checks color error outside the reference UI and motion in the smoke
 region. The reference captures must have the same dimensions and fixed camera.
 
 The sample uses the original scene and environment map, smooth mesh normals,
-particle simulation and smoke texture, and linear-to-sRGB output conversion.
-This is a visual subset, not an exact port: it renders offline, samples textures
-at the nearest texel, blends particles in storage order instead of the source's
-bounded depth-sorted array, and approximates both primary and reflected smoke
-with camera-facing planes instead of the source's triangle and procedural-AABB
-intersection paths. It does not implement the UI or all original material and
-particle orientation modes. DX12 uses the original HLSL and Vulkan uses an ABI-adapted SPIR-V shader. Set `FLUXEL_RAY_QUERY_PRESENT=1` to present the three precomputed GPU frames in a window, switching every two seconds. This presentation is a controlled sequence, not a continuously simulated animation. Vulkan ray query requires a device supporting the corresponding Vulkan extensions and features. The
-NVIDIA reference executable and captures are external validation inputs.
+particle simulation and smoke texture, the default four-fragment MLAB blending,
+and linear-to-sRGB output conversion. This is a visual subset, not an exact
+port: it approximates primary and reflected smoke with
+camera-facing planes instead of triangle and procedural-AABB intersection
+paths. Smoke uses a generated linear-space mip chain and ray-footprint selection.
+Secondary reflections remain visually different from the source. It does not
+implement the UI or all original material and particle orientation modes. DX12
+and Vulkan use adapted HLSL shaders. Set
+`FLUXEL_RAY_QUERY_PRESENT=1` to run an animation in a window using actual
+frame durations and reuse scene resources across frames. As in the source,
+emission depends on actual frame timing. For fixed-step comparisons set
+`FLUXEL_RAY_QUERY_FIXED_REFERENCE=1` to render frames 120, 240 and 360. Set
+`FLUXEL_RAY_QUERY_STATE_DIR` to an existing directory to save the active particle
+state alongside those readbacks. Vulkan ray query requires a device
+supporting the corresponding Vulkan extensions and features. The NVIDIA
+reference executable and captures are external validation inputs.

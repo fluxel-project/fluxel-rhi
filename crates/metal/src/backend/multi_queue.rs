@@ -548,8 +548,17 @@ impl MultiQueueBackend for Metal {
                             slot.setSignaledValue(1);
                         }
                     }
-                    let query_commit = super::query::commit_ops(&work.query_ops, work.lane);
+                    let query_commit =
+                        std::sync::Arc::new(super::query::commit_ops(&work.query_ops, work.lane));
                     work.retain_indirect_arguments_until_completed();
+                    for command in &work.prior_commands {
+                        covered.push(super::submit::track_command(
+                            device,
+                            command,
+                            Some((query_commit.clone(), work.lane)),
+                        ));
+                        command.commit();
+                    }
                     covered.push(super::submit::track_command(
                         device,
                         &work.command,

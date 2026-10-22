@@ -23,35 +23,7 @@ impl ShaderBackend for Metal {
     type NagaFuture<'a> = Ready<api::Result<MetalShader>>;
 
     fn shader_route(_: &MetalDevice, desc: &ShaderDesc) -> ShaderRoute {
-        if desc
-            .required_features
-            .iter()
-            .any(|f| f == api::SHADER_FEATURE_RAY_QUERY)
-            && desc
-                .entries
-                .iter()
-                .any(|entry| entry.stage != api::ShaderStage::Compute)
-        {
-            return ShaderRoute::Unsupported;
-        }
-        let target = match desc.format {
-            ShaderFormat::Wgsl => ShaderTarget {
-                format: ShaderFormat::MetalSource,
-                environment: "Metal Shading Language 2.0".into(),
-                abi_key: "fluxel-metal-bind-group-slots-v1".into(),
-            },
-            ShaderFormat::MetalSource => ShaderTarget {
-                format: ShaderFormat::MetalLibrary,
-                environment: "Metal native library compiler".into(),
-                abi_key: "fluxel-metal-source-v1".into(),
-            },
-            _ => return ShaderRoute::Unsupported,
-        };
-        match desc.format {
-            ShaderFormat::Wgsl => ShaderRoute::Naga(target),
-            ShaderFormat::MetalSource => ShaderRoute::Direct(target),
-            _ => unreachable!(),
-        }
+        route(desc)
     }
 
     fn compile_direct<'a>(
@@ -59,13 +31,13 @@ impl ShaderBackend for Metal {
         desc: &'a ShaderDesc,
         _: &'a ShaderTarget,
     ) -> Self::DirectFuture<'a> {
-        ready(compile_library(
-            device,
-            &desc.bytes,
-            desc.entries.clone(),
-            true,
-            false,
-        ))
+        ready(match desc.format {
+            ShaderFormat::MetalLibrary => load_library(device, &desc.bytes, desc.entries.clone()),
+            ShaderFormat::MetalSource => {
+                compile_library(device, &desc.bytes, desc.entries.clone(), true, false)
+            }
+            _ => Err(api::Error::Unsupported("Metal direct shader format")),
+        })
     }
 
     fn compile_naga<'a>(
@@ -84,6 +56,43 @@ impl ShaderBackend for Metal {
                     .any(|f| f == api::SHADER_FEATURE_RAY_QUERY),
             )
         }))
+    }
+}
+
+fn route(desc: &ShaderDesc) -> ShaderRoute {
+    if desc
+        .required_features
+        .iter()
+        .any(|f| f == api::SHADER_FEATURE_RAY_QUERY)
+        && desc
+            .entries
+            .iter()
+            .any(|entry| entry.stage != api::ShaderStage::Compute)
+    {
+        return ShaderRoute::Unsupported;
+    }
+    let target = match desc.format {
+        ShaderFormat::Wgsl => ShaderTarget {
+            format: ShaderFormat::MetalSource,
+            environment: "Metal Shading Language 2.0".into(),
+            abi_key: "fluxel-metal-bind-group-slots-v1".into(),
+        },
+        ShaderFormat::MetalSource => ShaderTarget {
+            format: ShaderFormat::MetalLibrary,
+            environment: "Metal native library compiler".into(),
+            abi_key: "fluxel-metal-source-v1".into(),
+        },
+        ShaderFormat::MetalLibrary => ShaderTarget {
+            format: ShaderFormat::MetalLibrary,
+            environment: "Metal precompiled library".into(),
+            abi_key: "fluxel-metal-bind-group-slots-v1".into(),
+        },
+        _ => return ShaderRoute::Unsupported,
+    };
+    match desc.format {
+        ShaderFormat::Wgsl => ShaderRoute::Naga(target),
+        ShaderFormat::MetalSource | ShaderFormat::MetalLibrary => ShaderRoute::Direct(target),
+        _ => unreachable!(),
     }
 }
 
@@ -272,6 +281,67 @@ fn validate_entry_points(module: &naga::Module, desc: &ShaderDesc) -> api::Resul
     Ok(())
 }
 
+/// A metallib is opaque; the caller supplies the native entry names and must
+/// compile resource arguments for the advertised fixed-slot binding ABI.
+/// Converter-produced argument-buffer layouts require a separate pipeline ABI.
+#[cfg(target_vendor = "apple")]
+fn load_library(
+    device: &MetalDevice,
+    bytes: &[u8],
+    entries: Vec<api::ShaderEntryPoint>,
+) -> api::Result<MetalShader> {
+    use objc2_foundation::NSString;
+    use objc2_metal::{MTLDevice as _, MTLFunction as _, MTLFunctionType, MTLLibrary as _};
+
+    if bytes.is_empty() || entries.is_empty() {
+        return Err(api::Error::InvalidState);
+    }
+    let data = dispatch2::DispatchData::from_bytes(bytes);
+    let library = device
+        ._state
+        ._device
+        .newLibraryWithData_error(&data)
+        .map_err(|error| api::Error::Shader(format!("Metal shader library: {error:?}")))?;
+    for entry in &entries {
+        let function = library
+            .newFunctionWithName(&NSString::from_str(&entry.name))
+            .ok_or_else(|| {
+                api::Error::Shader(format!("Metal library entry {:?} not found", entry.name))
+            })?;
+        let expected = match entry.stage {
+            api::ShaderStage::Vertex => Some(MTLFunctionType::Vertex),
+            api::ShaderStage::Fragment => Some(MTLFunctionType::Fragment),
+            api::ShaderStage::Compute => Some(MTLFunctionType::Kernel),
+            api::ShaderStage::Task => Some(MTLFunctionType::Object),
+            api::ShaderStage::Mesh => Some(MTLFunctionType::Mesh),
+            // Converter-generated ray functions may have different native
+            // types depending on compilation mode. Pipeline linking must
+            // validate their types against the selected converter ABI.
+            _ => None,
+        };
+        if expected.is_some_and(|ty| function.functionType() != ty) {
+            return Err(api::Error::Shader(format!(
+                "Metal library entry {:?} has a mismatched stage",
+                entry.name
+            )));
+        }
+    }
+    Ok(MetalShader {
+        _library: library,
+        entries,
+        mesh_source: None,
+    })
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn load_library(
+    _: &MetalDevice,
+    _: &[u8],
+    _: Vec<api::ShaderEntryPoint>,
+) -> api::Result<MetalShader> {
+    Err(api::Error::Unsupported("Metal requires an Apple target"))
+}
+
 #[cfg(target_vendor = "apple")]
 fn compile_library(
     device: &MetalDevice,
@@ -317,9 +387,47 @@ fn compile_library(
 
 #[cfg(test)]
 mod tests {
-    use super::{metal_slot, translate_wgsl, validate_entry_points};
+    use super::{metal_slot, route, translate_wgsl, validate_entry_points};
     use fluxel_rhi_core::api::{self, ShaderDesc, ShaderEntryPoint, ShaderFormat};
     use std::sync::Arc;
+
+    #[test]
+    fn metallib_has_a_direct_route_without_changing_source_routes() {
+        let mut desc = ShaderDesc {
+            label: None,
+            format: ShaderFormat::MetalLibrary,
+            bytes: Arc::from([1]),
+            entries: vec![],
+            required_features: vec![],
+        };
+        assert!(matches!(route(&desc), api::ShaderRoute::Direct(target)
+            if target.format == ShaderFormat::MetalLibrary && target.abi_key == "fluxel-metal-bind-group-slots-v1"));
+        desc.format = ShaderFormat::MetalSource;
+        assert!(matches!(route(&desc), api::ShaderRoute::Direct(_)));
+        desc.format = ShaderFormat::Wgsl;
+        assert!(matches!(route(&desc), api::ShaderRoute::Naga(_)));
+        desc.format = ShaderFormat::Dxil;
+        assert!(matches!(route(&desc), api::ShaderRoute::Unsupported));
+    }
+
+    #[test]
+    fn wgsl_compute_storage_count_translates_to_writable_metal_buffer() {
+        let source = "@group(0) @binding(0) var<storage, read_write> count: u32; @compute @workgroup_size(1) fn cs() { count = 3u; }";
+        let desc = ShaderDesc {
+            label: None,
+            format: ShaderFormat::Wgsl,
+            bytes: Arc::from(source.as_bytes()),
+            entries: vec![ShaderEntryPoint {
+                name: "cs".into(),
+                stage: api::ShaderStage::Compute,
+                workgroup_size: Some([1, 1, 1]),
+            }],
+            required_features: vec![],
+        };
+        let msl = translate_wgsl(source.as_bytes(), &desc).unwrap();
+        assert!(msl.contains("[[buffer(0)]]"), "{msl}");
+        assert!(msl.contains("device"), "{msl}");
+    }
 
     #[test]
     fn wgsl_ray_query_translates_to_metal_instance_acceleration_structure() {

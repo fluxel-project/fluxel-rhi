@@ -1,0 +1,248 @@
+//! GPU conversion of raw indirect draw records into Metal ICBs.
+//!
+//! The converter must run after prior buffer producers and before the render
+//! pass. Its result owns all resources referenced through argument buffers;
+//! the caller must retain it until both command buffers complete. This module
+//! Device creation probes the actual kernel and native interfaces before exposing
+//! the capability. The scheduler retains each preparation through completion.
+
+use crate::backend::{Metal, MetalBuffer, MetalCommandEncoder};
+use fluxel_rhi_core::api;
+#[cfg(any(target_vendor = "apple", test))]
+use fluxel_rhi_core::api::BufferUsage;
+
+pub struct RasterExtras;
+
+impl api::RasterExtrasOps<Metal> for RasterExtras {
+    const AVAILABLE: bool = true;
+    fn draw_indirect(
+        _: &mut MetalCommandEncoder,
+        _: &MetalBuffer,
+        _: u64,
+        _: bool,
+    ) -> api::Result<()> {
+        Err(api::Error::Unsupported("Metal indirect draw"))
+    }
+    fn multi_draw(
+        _: &mut MetalCommandEncoder,
+        _: &MetalBuffer,
+        _: u64,
+        _: u32,
+        _: u32,
+        _: bool,
+    ) -> api::Result<()> {
+        Err(api::Error::Unsupported("Metal multi draw"))
+    }
+    fn multi_draw_count(
+        encoder: &mut MetalCommandEncoder,
+        args: &MetalBuffer,
+        args_offset: u64,
+        count: &MetalBuffer,
+        count_offset: u64,
+        max: u32,
+        stride: u32,
+        indexed: bool,
+    ) -> api::Result<()> {
+        #[cfg(target_vendor = "apple")]
+        {
+            if !valid_recording_state(
+                encoder.indirect_count_enabled,
+                encoder.raster_pipeline_bound,
+                encoder.mesh_threads.is_some(),
+                encoder.indirect_prepass.is_some(),
+                encoder.render.is_some(),
+                indexed,
+                encoder.index_buffer.is_some(),
+            ) {
+                return Err(api::Error::InvalidState);
+            }
+            let index = if indexed {
+                let (raw, offset, format, size) = encoder
+                    .index_buffer
+                    .as_ref()
+                    .ok_or(api::Error::InvalidState)?;
+                Some((raw, *offset, *size, *format))
+            } else {
+                None
+            };
+            validate(
+                args.usage,
+                args.size(),
+                args_offset,
+                count.usage,
+                count.size(),
+                count_offset,
+                max,
+                stride,
+                indexed,
+            )?;
+            if max == 0 {
+                return Ok(());
+            }
+            let prepass = encoder
+                .indirect_prepass
+                .as_ref()
+                .ok_or(api::Error::InvalidState)?;
+            let draws = prepare(
+                prepass,
+                args,
+                args_offset,
+                count,
+                count_offset,
+                max,
+                stride,
+                index,
+            )?;
+            draws.encode_render(encoder.render.as_ref().ok_or(api::Error::InvalidState)?);
+            encoder.prepared_draws.push(draws);
+            Ok(())
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            let _ = (
+                encoder,
+                args,
+                args_offset,
+                count,
+                count_offset,
+                max,
+                stride,
+                indexed,
+            );
+            Err(api::Error::Unsupported("Metal requires an Apple target"))
+        }
+    }
+    fn set_push_constants(
+        _: &mut MetalCommandEncoder,
+        _: api::StageMask,
+        _: u32,
+        _: &[u8],
+    ) -> api::Result<()> {
+        Err(api::Error::Unsupported("Metal push constants"))
+    }
+}
+
+#[cfg(any(target_vendor = "apple", test))]
+const ICB_CHUNK: u32 = 16_384;
+
+#[cfg(any(target_vendor = "apple", test))]
+fn valid_recording_state(
+    enabled: bool,
+    pipeline: bool,
+    mesh: bool,
+    prepass: bool,
+    render: bool,
+    indexed: bool,
+    index_bound: bool,
+) -> bool {
+    enabled && pipeline && !mesh && prepass && render && (!indexed || index_bound)
+}
+
+#[cfg(any(target_vendor = "apple", test))]
+fn validate(
+    args_usage: BufferUsage,
+    args_size: u64,
+    args_offset: u64,
+    count_usage: BufferUsage,
+    count_size: u64,
+    count_offset: u64,
+    max: u32,
+    stride: u32,
+    indexed: bool,
+) -> api::Result<()> {
+    let record = if indexed { 20u64 } else { 16u64 };
+    if !args_usage.contains(BufferUsage::INDIRECT)
+        || !count_usage.contains(BufferUsage::INDIRECT)
+        || args_offset % 4 != 0
+        || count_offset % 4 != 0
+        || count_offset
+            .checked_add(4)
+            .is_none_or(|end| end > count_size)
+        || (max != 0 && (u64::from(stride) < record || stride % 4 != 0))
+    {
+        return Err(api::Error::InvalidRange);
+    }
+    let end = if max == 0 {
+        Some(args_offset)
+    } else {
+        u64::from(max - 1)
+            .checked_mul(u64::from(stride))
+            .and_then(|bytes| args_offset.checked_add(bytes))
+            .and_then(|last| last.checked_add(record))
+    };
+    if end.is_none_or(|end| end > args_size) {
+        return Err(api::Error::InvalidRange);
+    }
+    Ok(())
+}
+
+#[cfg(any(target_vendor = "apple", test))]
+fn chunks(max: u32) -> impl Iterator<Item = (u32, u32)> {
+    (0..max)
+        .step_by(ICB_CHUNK as usize)
+        .map(move |first| (first, (max - first).min(ICB_CHUNK)))
+}
+
+#[cfg(target_vendor = "apple")]
+mod native;
+#[cfg(target_vendor = "apple")]
+pub(in crate::backend) use native::{PreparedDraws, prepare, probe};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_complete_strided_records_and_count_word() {
+        let usage = BufferUsage::INDIRECT;
+        assert!(validate(usage, 68, 0, usage, 8, 4, 3, 24, true).is_ok());
+        assert!(validate(usage, 67, 0, usage, 8, 4, 3, 24, true).is_err());
+        assert!(validate(usage, 68, 0, usage, 7, 4, 3, 24, true).is_err());
+        assert!(validate(usage, 68, 0, usage, 8, 4, 3, 18, true).is_err());
+        assert!(validate(BufferUsage::COPY_SRC, 68, 0, usage, 8, 4, 3, 24, true).is_err());
+    }
+
+    #[test]
+    fn partitions_at_metal3_limit_without_losing_or_wrapping_commands() {
+        assert_eq!(chunks(0).collect::<Vec<_>>(), vec![]);
+        assert_eq!(
+            chunks(16_385).collect::<Vec<_>>(),
+            vec![(0, 16_384), (16_384, 1)]
+        );
+        let last = chunks(u32::MAX).last().unwrap();
+        assert_eq!(u64::from(last.0) + u64::from(last.1), u64::from(u32::MAX));
+    }
+
+    #[test]
+    fn indexed_base_vertex_words_preserve_signed_bits() {
+        for (value, word) in [(i32::MIN, 0x8000_0000), (-1, 0xffff_ffff), (0, 0), (1, 1)] {
+            assert_eq!(u32::from_ne_bytes(value.to_ne_bytes()), word);
+            assert_eq!(i32::from_ne_bytes(word.to_ne_bytes()), value);
+        }
+    }
+
+    #[test]
+    fn recording_requires_active_raster_pipeline_prepass_and_index_when_indexed() {
+        assert!(valid_recording_state(
+            true, true, false, true, true, false, false
+        ));
+        assert!(valid_recording_state(
+            true, true, false, true, true, true, true
+        ));
+        assert!(!valid_recording_state(
+            false, true, false, true, true, false, false
+        ));
+        assert!(!valid_recording_state(
+            true, true, true, true, true, false, false
+        ));
+        assert!(!valid_recording_state(
+            true, true, false, false, true, false, false
+        ));
+        assert!(!valid_recording_state(
+            true, true, false, true, false, false, false
+        ));
+        assert!(!valid_recording_state(
+            true, true, false, true, true, true, false
+        ));
+    }
+}

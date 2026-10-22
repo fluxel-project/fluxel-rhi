@@ -39,7 +39,7 @@ pub(super) struct SubmissionTracker {
 pub(super) fn track_command(
     device: &MetalDevice,
     command: &NativeCommandBuffer,
-    query: Option<(super::query::QueryCommit, u32)>,
+    query: Option<(Arc<super::query::QueryCommit>, u32)>,
 ) -> Completion {
     use objc2_metal::{MTLCommandBuffer as _, MTLCommandBufferStatus};
     let mut tracker = device
@@ -271,6 +271,10 @@ pub struct MetalRecordedWork {
     pub(super) command:
         objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>>,
     #[cfg(target_vendor = "apple")]
+    pub(super) prior_commands: Vec<NativeCommandBuffer>,
+    #[cfg(target_vendor = "apple")]
+    prepared_draws: Vec<super::encoder::indirect_count::PreparedDraws>,
+    #[cfg(target_vendor = "apple")]
     pub(super) lane: u32,
     #[cfg(target_vendor = "apple")]
     pub(super) query_ops: Vec<super::query::QueryOp>,
@@ -285,17 +289,22 @@ impl MetalRecordedWork {
     #[cfg(target_vendor = "apple")]
     pub(super) fn retain_indirect_arguments_until_completed(&self) {
         use objc2_metal::MTLCommandBuffer as _;
-        if self.indirect_arguments.is_empty() && self.accelerations.is_empty() {
+        if self.indirect_arguments.is_empty()
+            && self.accelerations.is_empty()
+            && self.prepared_draws.is_empty()
+        {
             return;
         }
         let retained = self.indirect_arguments.clone();
         let accelerations = self.accelerations.clone();
+        let prepared = self.prepared_draws.clone();
         let callback = block2::RcBlock::new(
             move |_: std::ptr::NonNull<
                 objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>,
             >| {
                 let _ = retained.len();
                 let _ = accelerations.len();
+                let _ = prepared.len();
             },
         );
         // SAFETY: the owning block captures strong references to every indirect
@@ -447,6 +456,8 @@ impl DeferredBackend for Metal {
             // lifetime decisions through actual GPU completion.
             Ok(MetalRecordedWork {
                 command: encoder.command,
+                prior_commands: encoder.prior_commands,
+                prepared_draws: encoder.prepared_draws,
                 wait_slots: encoder.wait_slots,
                 lane: encoder.lane,
                 query_ops: encoder.query_ops,
@@ -691,8 +702,17 @@ impl DeferredBackend for Metal {
                     for slot in &work.wait_slots {
                         slot.setSignaledValue(1);
                     }
-                    let query_commit = super::query::commit_ops(&work.query_ops, work.lane);
+                    let query_commit =
+                        Arc::new(super::query::commit_ops(&work.query_ops, work.lane));
                     work.retain_indirect_arguments_until_completed();
+                    for command in &work.prior_commands {
+                        prefix.push(track_command(
+                            device,
+                            command,
+                            Some((query_commit.clone(), work.lane)),
+                        ));
+                        command.commit();
+                    }
                     prefix.push(track_command(
                         device,
                         &work.command,

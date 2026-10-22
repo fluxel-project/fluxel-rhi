@@ -2,14 +2,61 @@
 //!
 //! Only Apple-family GPUs with blit-boundary timestamp counters can satisfy
 //! the fixed clock contract; Intel/AMD GPU clocks require dynamic calibration.
-//! Pipeline statistics remain unsupported because Metal's counters do not
-//! define Core's eleven fields. The supported subset is determined by runtime
-//! feature and counter-set checks; it has not been validated on an Apple GPU.
+//! Fixed-layout pipeline statistics remain unsupported because Metal's counters
+//! do not define Core's eleven fields. The separate pass-boundary statistics
+//! path exposes the available native counters and their sampling failures.
+//! Neither path has been validated on an Apple GPU.
 use super::{Metal, MetalBuffer, MetalCommandEncoder, MetalDevice};
 use fluxel_rhi_core::api::{self, Error, QueryBackend, QueryDesc, QueryKind, Result};
 use std::{
     ops::Range,
     sync::{Arc, Mutex},
+};
+
+#[cfg(target_vendor = "apple")]
+const _: () = {
+    assert!(
+        std::mem::size_of::<objc2_metal::MTLCounterResultStatistic>()
+            == std::mem::size_of::<api::StatisticsSample>()
+    );
+    assert!(
+        std::mem::offset_of!(
+            objc2_metal::MTLCounterResultStatistic,
+            tessellationInputPatches
+        ) == std::mem::offset_of!(api::StatisticsSample, tessellation_input_patches)
+    );
+    assert!(
+        std::mem::offset_of!(objc2_metal::MTLCounterResultStatistic, vertexInvocations)
+            == std::mem::offset_of!(api::StatisticsSample, vertex_invocations)
+    );
+    assert!(
+        std::mem::offset_of!(
+            objc2_metal::MTLCounterResultStatistic,
+            postTessellationVertexInvocations
+        ) == std::mem::offset_of!(api::StatisticsSample, post_tessellation_vertices)
+    );
+    assert!(
+        std::mem::offset_of!(objc2_metal::MTLCounterResultStatistic, clipperInvocations)
+            == std::mem::offset_of!(api::StatisticsSample, clipper_invocations)
+    );
+    assert!(
+        std::mem::offset_of!(objc2_metal::MTLCounterResultStatistic, clipperPrimitivesOut)
+            == std::mem::offset_of!(api::StatisticsSample, clipper_primitives_out)
+    );
+    assert!(
+        std::mem::offset_of!(objc2_metal::MTLCounterResultStatistic, fragmentInvocations)
+            == std::mem::offset_of!(api::StatisticsSample, fragment_invocations)
+    );
+    assert!(
+        std::mem::offset_of!(objc2_metal::MTLCounterResultStatistic, fragmentsPassed)
+            == std::mem::offset_of!(api::StatisticsSample, fragments_passed)
+    );
+    assert!(
+        std::mem::offset_of!(
+            objc2_metal::MTLCounterResultStatistic,
+            computeKernelInvocations
+        ) == std::mem::offset_of!(api::StatisticsSample, compute_invocations)
+    );
 };
 
 #[derive(Clone)]
@@ -20,6 +67,7 @@ struct QueryState {
         objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCounterSampleBuffer>,
     >,
     submitted: Mutex<Submitted>,
+    statistics_pass: Option<api::StatisticsPass>,
 }
 #[derive(Clone)]
 struct Submitted {
@@ -249,6 +297,7 @@ impl QueryBackend for Metal {
                 .map_err(|_| Error::Unsupported("Metal counter sample buffer"))?;
             Ok(MetalQuerySet(Arc::new(QueryState {
                 raw,
+                statistics_pass: None,
                 submitted: Mutex::new(Submitted {
                     slots: vec![None; desc.count as usize],
                     generations: vec![None; desc.count as usize],
@@ -356,12 +405,256 @@ impl QueryBackend for Metal {
     }
 }
 
+#[cfg(target_vendor = "apple")]
+fn statistics_fields(device: &MetalDevice) -> api::StatisticsFields {
+    use objc2_foundation::NSObjectProtocol as _;
+    use objc2_metal::{MTLCounter as _, MTLCounterSet as _, MTLDevice as _};
+    let native = &device._state._device;
+    if !native.respondsToSelector(objc2::sel!(supportsCounterSampling:))
+        || !native.respondsToSelector(objc2::sel!(counterSets))
+        || !native.respondsToSelector(objc2::sel!(newCounterSampleBufferWithDescriptor:error:))
+        || !native.supportsCounterSampling(objc2_metal::MTLCounterSamplingPoint::AtStageBoundary)
+    {
+        return api::StatisticsFields(0);
+    }
+    let Some(sets) = native.counterSets() else {
+        return api::StatisticsFields(0);
+    };
+    // SAFETY: these constants are exported by the loaded Metal framework.
+    let Some(set) = sets
+        .iter()
+        .find(|s| &*s.name() == unsafe { objc2_metal::MTLCommonCounterSetStatistic })
+    else {
+        return api::StatisticsFields(0);
+    };
+    let mut mask = 0;
+    for counter in set.counters().iter() {
+        let name = counter.name();
+        // SAFETY: the named constants are process-lifetime Metal framework objects.
+        let names = unsafe {
+            [
+                objc2_metal::MTLCommonCounterTessellationInputPatches,
+                objc2_metal::MTLCommonCounterVertexInvocations,
+                objc2_metal::MTLCommonCounterPostTessellationVertexInvocations,
+                objc2_metal::MTLCommonCounterClipperInvocations,
+                objc2_metal::MTLCommonCounterClipperPrimitivesOut,
+                objc2_metal::MTLCommonCounterFragmentInvocations,
+                objc2_metal::MTLCommonCounterFragmentsPassed,
+                objc2_metal::MTLCommonCounterComputeKernelInvocations,
+            ]
+        };
+        for (index, candidate) in names.iter().enumerate() {
+            if &*name == *candidate {
+                mask |= 1 << index;
+            }
+        }
+    }
+    api::StatisticsFields(mask)
+}
+
+impl api::PassStatisticsBackend for Metal {
+    fn pass_statistics_fields(device: &MetalDevice) -> api::StatisticsFields {
+        #[cfg(target_vendor = "apple")]
+        {
+            statistics_fields(device)
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            let _ = device;
+            api::StatisticsFields(0)
+        }
+    }
+    fn pass_statistics_invalid_value(_: &MetalDevice) -> Option<u64> {
+        #[cfg(target_vendor = "apple")]
+        {
+            Some(objc2_metal::MTLCounterErrorValue)
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            None
+        }
+    }
+    fn create_pass_statistics(
+        device: &MetalDevice,
+        pass: api::StatisticsPass,
+        count: u32,
+    ) -> Result<MetalQuerySet> {
+        #[cfg(target_vendor = "apple")]
+        {
+            use objc2_metal::{
+                MTLCounterSampleBufferDescriptor, MTLCounterSet as _, MTLDevice as _,
+                MTLStorageMode,
+            };
+            if statistics_fields(device).0 == 0 {
+                return Err(Error::Unsupported("Metal pass statistics"));
+            }
+            let samples_per_slot = match pass {
+                api::StatisticsPass::Raster => 4,
+                api::StatisticsPass::Compute => 2,
+            };
+            let samples = count
+                .checked_mul(samples_per_slot)
+                .filter(|n| *n != 0)
+                .ok_or(Error::InvalidRange)?;
+            let sets = device
+                ._state
+                ._device
+                .counterSets()
+                .ok_or(Error::Unsupported("Metal statistic counters"))?;
+            // SAFETY: Metal exports this name for the process lifetime.
+            let set = sets
+                .iter()
+                .find(|s| &*s.name() == unsafe { objc2_metal::MTLCommonCounterSetStatistic })
+                .ok_or(Error::Unsupported("Metal statistic counters"))?;
+            let desc = MTLCounterSampleBufferDescriptor::new();
+            desc.setCounterSet(Some(&set));
+            desc.setStorageMode(MTLStorageMode::Private);
+            // SAFETY: checked arithmetic gives the requested nonzero native sample count.
+            unsafe { desc.setSampleCount(samples as usize) };
+            let raw = device
+                ._state
+                ._device
+                .newCounterSampleBufferWithDescriptor_error(&desc)
+                .map_err(|_| Error::Unsupported("Metal statistic sample buffer"))?;
+            Ok(MetalQuerySet(Arc::new(QueryState {
+                raw,
+                statistics_pass: Some(pass),
+                submitted: Mutex::new(Submitted {
+                    slots: vec![None; count as usize],
+                    generations: vec![None; count as usize],
+                }),
+            })))
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            let _ = (device, pass, count);
+            Err(Error::Unsupported("Metal requires an Apple target"))
+        }
+    }
+    fn prepare_pass_statistics(
+        encoder: &mut MetalCommandEncoder,
+        set: &MetalQuerySet,
+        slot: u32,
+        pass: api::StatisticsPass,
+    ) -> Result<()> {
+        if set.0.statistics_pass != Some(pass) || encoder.pending_statistics.is_some() {
+            return Err(Error::InvalidState);
+        }
+        encoder.pending_statistics = Some((set.clone(), slot, pass));
+        Ok(())
+    }
+    fn resolve_pass_statistics(
+        e: &mut MetalCommandEncoder,
+        set: &MetalQuerySet,
+        slots: Range<u32>,
+        dst: &MetalBuffer,
+        offset: u64,
+    ) -> Result<()> {
+        #[cfg(target_vendor = "apple")]
+        {
+            use objc2_metal::{
+                MTLBlitCommandEncoder as _, MTLCommandBuffer as _, MTLCommandEncoder as _,
+            };
+            let pass = set.0.statistics_pass.ok_or(Error::InvalidState)?;
+            let factor = match pass {
+                api::StatisticsPass::Raster => 4u32,
+                api::StatisticsPass::Compute => 2u32,
+            };
+            let bytes = u64::from(slots.end - slots.start)
+                .checked_mul(pass.result_stride())
+                .ok_or(Error::InvalidRange)?;
+            if e.render.is_some()
+                || e.compute.is_some()
+                || !dst.usage.contains(api::BufferUsage::QUERY_RESOLVE)
+                || offset % 256 != 0
+                || offset.checked_add(bytes).is_none_or(|end| end > dst.size())
+            {
+                return Err(Error::InvalidRange);
+            }
+            let first = slots.start.checked_mul(factor).ok_or(Error::InvalidRange)?;
+            let count = (slots.end - slots.start)
+                .checked_mul(factor)
+                .ok_or(Error::InvalidRange)?;
+            let blit = e.command.blitCommandEncoder().ok_or(Error::OutOfMemory)?;
+            // SAFETY: Core validated the logical range; allocation uses factor native
+            // samples per slot, and destination bounds and alignment were checked.
+            unsafe {
+                blit.resolveCounters_inRange_destinationBuffer_destinationOffset(
+                    &set.0.raw,
+                    objc2_foundation::NSRange::new(first as usize, count as usize),
+                    &dst.raw,
+                    offset as usize,
+                );
+            }
+            blit.endEncoding();
+            e.query_ops.push(QueryOp::Resolve(set.clone(), slots));
+            Ok(())
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            let _ = (e, set, slots, dst, offset);
+            Err(Error::Unsupported("Metal requires an Apple target"))
+        }
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+pub(super) fn configure_raster_statistics(
+    e: &mut MetalCommandEncoder,
+    desc: &objc2_metal::MTLRenderPassDescriptor,
+) -> Result<()> {
+    let Some((set, slot, pass)) = e.pending_statistics.take() else {
+        return Ok(());
+    };
+    if pass != api::StatisticsPass::Raster {
+        return Err(Error::InvalidState);
+    }
+    let first = slot.checked_mul(4).ok_or(Error::InvalidRange)? as usize;
+    // SAFETY: attachment 0 exists; checked creation allocated four samples per slot.
+    let attachment = unsafe { desc.sampleBufferAttachments().objectAtIndexedSubscript(0) };
+    attachment.setSampleBuffer(Some(&set.0.raw));
+    // SAFETY: slot is validated by Core and four samples are allocated for it.
+    unsafe {
+        attachment.setStartOfVertexSampleIndex(first);
+        attachment.setEndOfVertexSampleIndex(first + 1);
+        attachment.setStartOfFragmentSampleIndex(first + 2);
+        attachment.setEndOfFragmentSampleIndex(first + 3);
+    }
+    e.query_ops.push(QueryOp::Write(set, slot));
+    Ok(())
+}
+
+#[cfg(target_vendor = "apple")]
+pub(super) fn configure_compute_statistics(
+    e: &mut MetalCommandEncoder,
+    desc: &objc2_metal::MTLComputePassDescriptor,
+) -> Result<()> {
+    let Some((set, slot, pass)) = e.pending_statistics.take() else {
+        return Ok(());
+    };
+    if pass != api::StatisticsPass::Compute {
+        return Err(Error::InvalidState);
+    }
+    let first = slot.checked_mul(2).ok_or(Error::InvalidRange)? as usize;
+    // SAFETY: attachment 0 exists; checked creation allocated two samples per slot.
+    let attachment = unsafe { desc.sampleBufferAttachments().objectAtIndexedSubscript(0) };
+    attachment.setSampleBuffer(Some(&set.0.raw));
+    // SAFETY: slot is validated by Core and two samples are allocated for it.
+    unsafe {
+        attachment.setStartOfEncoderSampleIndex(first);
+        attachment.setEndOfEncoderSampleIndex(first + 1);
+    }
+    e.query_ops.push(QueryOp::Write(set, slot));
+    Ok(())
+}
+
 #[cfg(all(test, not(target_vendor = "apple")))]
 mod tests {
     use super::*;
     #[test]
     fn slot_state_follows_submission_order_and_lane() {
         let set = MetalQuerySet(Arc::new(QueryState {
+            statistics_pass: None,
             submitted: Mutex::new(Submitted {
                 slots: vec![None; 2],
                 generations: vec![None; 2],

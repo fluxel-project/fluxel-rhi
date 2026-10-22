@@ -30,12 +30,19 @@ impl ComputeOps<Metal> for Compute {
             if encoder.render.is_some() || encoder.compute.is_some() {
                 return Err(api::Error::InvalidState);
             }
-            encoder.compute = Some(
+            encoder.compute = Some(if encoder.pending_statistics.is_some() {
+                let descriptor = objc2_metal::MTLComputePassDescriptor::computePassDescriptor();
+                super::query::configure_compute_statistics(encoder, &descriptor)?;
+                encoder
+                    .command
+                    .computeCommandEncoderWithDescriptor(&descriptor)
+                    .ok_or(api::Error::OutOfMemory)?
+            } else {
                 encoder
                     .command
                     .computeCommandEncoder()
-                    .ok_or(api::Error::OutOfMemory)?,
-            );
+                    .ok_or(api::Error::OutOfMemory)?
+            });
             Ok(())
         }
         #[cfg(not(target_vendor = "apple"))]

@@ -120,10 +120,21 @@ impl<B: Backend> ComputeDomain<'_, B> {
     where
         B: CommandBackend,
     {
+        self.begin_prepared(encoder, |_| Ok(()))
+    }
+    pub(crate) fn begin_prepared<'a>(
+        &self,
+        encoder: &'a mut CommandEncoder<B>,
+        prepare: impl FnOnce(&mut B::NativeEncoder) -> Result<()>,
+    ) -> Result<ComputePass<'a, B>>
+    where
+        B: CommandBackend,
+    {
         if encoder.device != self.device.id {
             return Err(Error::WrongDevice);
         }
-        let result = B::Compute::begin(encoder.ready()?);
+        let result = prepare(encoder.ready()?)
+            .and_then(|()| B::Compute::begin(encoder.native.as_mut().expect("ready encoder")));
         if let Err(e) = result {
             encoder.poisoned = true;
             return Err(e);

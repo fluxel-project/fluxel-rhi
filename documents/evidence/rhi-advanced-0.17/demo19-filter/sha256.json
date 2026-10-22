@@ -1,0 +1,18 @@
+{
+  "documents/evidence/rhi-advanced-0.17/demo19-filter/dx12-01.png": "09a710353245fb85ae4afce11697ade9d169df0a68473e5c9ad367c6b777011f",
+  "documents/evidence/rhi-advanced-0.17/demo19-filter/dx12-02.png": "8080226e63e2b367c61ef6a75cfac90a2497001950b4b18671654e96657a2fc1",
+  "documents/evidence/rhi-advanced-0.17/demo19-filter/dx12-03.png": "34399c54ed7e73f6501e139d302aca77ae0462c0ab4a98ad511a332b673f2658",
+  "documents/evidence/rhi-advanced-0.17/demo19-filter/vulkan-01.png": "b8d3884a5580b13143a2ce06c47e3cbe10e05eb72f604a70a0c874dde7092f0e",
+  "documents/evidence/rhi-advanced-0.17/demo19-filter/vulkan-02.png": "942e83264ad9fb30c9a24392360bffe7dbb2720089a4030f9af61946684837b5",
+  "documents/evidence/rhi-advanced-0.17/demo19-filter/vulkan-03.png": "59aa18fe7b6e1a87642e0266fb9f5f05cea2c0cb3ae4b417226a6cf27926344c",
+  "documents/evidence/rhi-advanced-0.17/demo19-filter/dx12-comparison.log": "c597afee94dc614e8627e7050fef71e90d819842ac56feb59dac5bf7ddb7d256",
+  "documents/evidence/rhi-advanced-0.17/demo19-filter/dx12.log": "c0281c601f9a1022d3f3302bf874a5926db5877e7dc480f7d3c56f3bf75c87fd",
+  "documents/evidence/rhi-advanced-0.17/demo19-filter/vulkan-comparison.log": "540692dfd6981aaefafad3dc9a50ee275efb72f513dc6b835c5638dc8b7a0f59",
+  "documents/evidence/rhi-advanced-0.17/demo19-filter/vulkan.log": "c0281c601f9a1022d3f3302bf874a5926db5877e7dc480f7d3c56f3bf75c87fd",
+  "documents/evidence/rhi-advanced-0.17/demo19-filter/comparison.json": "06ace855a4e7bbad0db0c46389057c17f0c87c096f7d7f44361eb0e3f121af38",
+  "crates/rhi/examples/19_ray_query_particles/controlled.hlsl": "89f96606fef11e199228aa8a33d3713df3a4ba97632f8a1d5fb20c701c4c9f92",
+  "crates/rhi/examples/19_ray_query_particles/controlled.dxil": "875a50c6ae245ad220cb7f1090fa8afb14390c50aaa96f670179c69e3015006b",
+  "crates/rhi/examples/assets/19_ray_query_particles/controlled.vulkan.hlsl": "f54e43367df643836af337d2764d075427fe44ee5422f5befa12b27428e92eec",
+  "crates/rhi/examples/assets/19_ray_query_particles/controlled.spv": "0c17d4e44821b819814419634b2b57b6e675cc2ad30142b9a18a966c44e368c4",
+  "target/debug/examples/19_ray_query_particles.exe": "2a6d2f916218f1f38e1abf8627e29ef04b47a8801ee72a4ca699752949505467"
+}

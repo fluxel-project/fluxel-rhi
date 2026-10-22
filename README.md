@@ -56,10 +56,22 @@ topologies, shader stages, queue plans, or device tiers.
 | --- | --- | --- |
 | DX12 | Graphics and compute, indirect drawing, occlusion/timestamp/pipeline-statistics queries, secondary recording, and device-gated descriptor indexing and multiview | Device-gated ray pipelines and inline ray queries, mesh shaders, sparse textures, graphics/compute queues, GPU-count multi-draw, and standalone texture clear |
 | Vulkan | Graphics and compute, indirect drawing, occlusion/timestamp/pipeline-statistics queries, secondary recording, and device-gated descriptor indexing and multiview | Device-gated ray pipelines and inline ray queries, mesh shaders, sparse textures, graphics/compute queues, GPU-count multi-draw, and standalone texture clear |
-| Metal | Graphics and compute, restricted standalone texture clear; device-gated mesh dispatch, triangle acceleration structures with compute ray queries, Apple-family timestamp sampling, and two native command queues | Multi-queue waits are limited to one packet and four waits per recording; cross-packet tokens are rejected. Mesh task/object payload, DXR-style ray pipeline, exact pipeline-statistics layout, sparse mapping, and GPU-count multi-draw are not advertised. Apple-target compilation and static checks only; no Apple GPU runtime acceptance |
+| Metal | Graphics and compute, restricted standalone texture clear and compute storage buffers; device-gated mesh dispatch, triangle/AABB acceleration-structure builds with compute ray queries, Apple-family timestamp sampling, pass-boundary counter samples, two native command queues, and triangle GPU-count multi-draw through ICBs | Compute storage buffers require a whole-buffer binding without dynamic offset. Multi-queue waits are limited to one packet and four waits per recording; cross-packet tokens are rejected. Mesh task/object payload, DXR-style ray pipeline, exact eleven-field pipeline-statistics layout, and sparse mapping are not advertised. Apple-target compilation and static checks only; no Apple GPU runtime acceptance |
 | Browser WebGPU | Graphics and compute, device-gated indirect drawing, and occlusion queries | The new ray, mesh, sparse, multi-queue, timestamp/statistics, GPU-count, and standalone-clear routes are not implemented here |
 | Desktop GL / GLES | Immediate graphics; compute, indirect drawing, and occlusion depend on the actual context and profile | The new advanced routes are not implemented in the public GL backend |
 | Browser WebGL2 | Immediate graphics through the browser owner | No native compute or new advanced route is exposed |
+
+Metal's separate pass-boundary sample API exposes up to eight native counter
+fields with a device availability mask and an error sentinel. It returns raw
+stage samples, which cannot be assumed subtractable or equivalent to complete
+pipeline statistics. The existing eleven-field `PipelineStatistics` query
+remains unsupported on Metal. This path has not run on an Apple GPU.
+
+Metal's GPU-count draw route probes the native conversion shader and both ICB
+command types on the actual device before advertising support. It accepts the
+current triangle-list raster subset and keeps the count and argument buffers
+on the GPU. The runtime probe does not establish visual or synchronization
+correctness; no Apple GPU result is recorded yet.
 
 ### Compressed texture formats
 
@@ -71,6 +83,12 @@ do not lower those formats to a complete public route on DX12, Vulkan, Metal,
 WebGPU, desktop GL, GLES, or WebGL2. They return an unsupported result at
 creation or format support query. API or GPU support for a compression family
 therefore does not imply this RHI implements it.
+
+| Compressed family | DX12 | Vulkan | Metal | WebGPU | GL / GLES | WebGL2 |
+| --- | --- | --- | --- | --- | --- | --- |
+| BC1–BC7 | No public route | No public route | No public route | No public route | No public route | No public route |
+| ETC2 / EAC | No public route | No public route | No public route | No public route | No public route | No public route |
+| ASTC | No public route | No public route | No public route | No public route | No public route | No public route |
 
 GL implements `ImmediateBackend`; it does not expose deferred queue submission.
 WebGL2 does not provide native multithreaded command recording. WebGPU records

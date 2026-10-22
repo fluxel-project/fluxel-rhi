@@ -78,6 +78,217 @@ pub struct TimestampResultFormat {
 /// A resolved timestamp sample could not be collected by the GPU.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InvalidTimestampSample;
+
+/// A pass type whose stage boundaries can be sampled for workload statistics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatisticsPass {
+    Raster,
+    Compute,
+}
+
+/// Availability bits for the fields of [`StatisticsSample`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StatisticsFields(pub u32);
+impl StatisticsFields {
+    pub const TESSELLATION_INPUT_PATCHES: Self = Self(1 << 0);
+    pub const VERTEX_INVOCATIONS: Self = Self(1 << 1);
+    pub const POST_TESSELLATION_VERTICES: Self = Self(1 << 2);
+    pub const CLIPPER_INVOCATIONS: Self = Self(1 << 3);
+    pub const CLIPPER_PRIMITIVES_OUT: Self = Self(1 << 4);
+    pub const FRAGMENT_INVOCATIONS: Self = Self(1 << 5);
+    pub const FRAGMENTS_PASSED: Self = Self(1 << 6);
+    pub const COMPUTE_INVOCATIONS: Self = Self(1 << 7);
+    pub const fn contains(self, field: Self) -> bool {
+        self.0 & field.0 == field.0
+    }
+}
+
+/// One native-endian workload counter sample. A field is meaningful only if
+/// its bit is set in the device's availability mask and its value is not the
+/// reported invalid sentinel. Values have the meaning of the backend's
+/// workload counters at the sampled boundary; there is no guarantee that
+/// samples may be subtracted, including samples of the same pass. Consult the
+/// backend's documented counter semantics before interpreting them as totals.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StatisticsSample {
+    pub tessellation_input_patches: u64,
+    pub vertex_invocations: u64,
+    pub post_tessellation_vertices: u64,
+    pub clipper_invocations: u64,
+    pub clipper_primitives_out: u64,
+    pub fragment_invocations: u64,
+    pub fragments_passed: u64,
+    pub compute_invocations: u64,
+}
+
+impl StatisticsPass {
+    /// Raster slots contain vertex start/end then fragment start/end; compute
+    /// slots contain compute start/end. Each sample is 64 bytes.
+    pub const fn result_stride(self) -> u64 {
+        match self {
+            Self::Raster => 256,
+            Self::Compute => 128,
+        }
+    }
+}
+
+/// Optional pass-boundary statistics SPI. A backend exposes this separately
+/// from the fixed eleven-field pipeline-statistics query contract.
+pub trait PassStatisticsBackend: QueryBackend {
+    fn pass_statistics_fields(device: &Self::NativeDevice) -> StatisticsFields;
+    fn pass_statistics_invalid_value(device: &Self::NativeDevice) -> Option<u64>;
+    fn create_pass_statistics(
+        device: &Self::NativeDevice,
+        pass: StatisticsPass,
+        count: u32,
+    ) -> Result<Self::NativeQuerySet>;
+    /// Attaches the set to the immediately following matching pass begin.
+    fn prepare_pass_statistics(
+        encoder: &mut Self::NativeEncoder,
+        set: &Self::NativeQuerySet,
+        slot: u32,
+        pass: StatisticsPass,
+    ) -> Result<()>;
+    fn resolve_pass_statistics(
+        encoder: &mut Self::NativeEncoder,
+        set: &Self::NativeQuerySet,
+        slots: Range<u32>,
+        destination: &Self::NativeBuffer,
+        offset: u64,
+    ) -> Result<()>;
+}
+
+/// A set of whole-pass counter samples belonging to one device.
+pub struct PassStatisticsSet<B: PassStatisticsBackend> {
+    device: DeviceId,
+    native: B::NativeQuerySet,
+    pass: StatisticsPass,
+    count: u32,
+}
+impl<B: PassStatisticsBackend> PassStatisticsSet<B> {
+    /// The pass type selected at creation.
+    pub fn pass(&self) -> StatisticsPass {
+        self.pass
+    }
+    /// Number of logical pass slots in this set.
+    pub fn count(&self) -> u32 {
+        self.count
+    }
+}
+
+/// Records and resolves whole-pass stage counter samples. A slot must be reset
+/// before use, written by a finished pass, and resolved after that pass in
+/// submission order. Completion evidence is required before reading results.
+pub struct PassStatistics<'a, B: PassStatisticsBackend> {
+    device: &'a Device<B>,
+}
+impl<B: PassStatisticsBackend> Device<B> {
+    pub fn pass_statistics(&self) -> Option<PassStatistics<'_, B>> {
+        (B::pass_statistics_fields(&self.native).0 != 0).then_some(PassStatistics { device: self })
+    }
+}
+impl<B: PassStatisticsBackend> PassStatistics<'_, B> {
+    /// Fields that this device can sample. Other fields have no defined value.
+    pub fn fields(&self) -> StatisticsFields {
+        B::pass_statistics_fields(&self.device.native)
+    }
+    /// Reserved value that indicates a failed field sample, if any.
+    pub fn invalid_value(&self) -> Option<u64> {
+        B::pass_statistics_invalid_value(&self.device.native)
+    }
+    /// Allocates a nonempty set for one pass type.
+    pub fn create(&self, pass: StatisticsPass, count: u32) -> Result<PassStatisticsSet<B>> {
+        if count == 0 {
+            return Err(Error::InvalidRange);
+        }
+        let native = B::create_pass_statistics(&self.device.native, pass, count)?;
+        Ok(PassStatisticsSet {
+            device: self.device.id,
+            native,
+            pass,
+            count,
+        })
+    }
+    /// Resets a nonempty slot range. Submission ordering applies to resets.
+    pub fn reset(
+        &self,
+        encoder: &mut CommandEncoder<B>,
+        set: &PassStatisticsSet<B>,
+        slots: Range<u32>,
+    ) -> Result<()> {
+        self.validate(encoder, set, &slots)?;
+        encoder.call(|e| B::reset_queries(e, &set.native, slots))
+    }
+    fn validate(
+        &self,
+        encoder: &CommandEncoder<B>,
+        set: &PassStatisticsSet<B>,
+        slots: &Range<u32>,
+    ) -> Result<()> {
+        if encoder.device != self.device.id || set.device != self.device.id {
+            return Err(Error::WrongDevice);
+        }
+        if slots.start >= slots.end || slots.end > set.count {
+            return Err(Error::InvalidRange);
+        }
+        Ok(())
+    }
+    /// Begins a raster pass that samples its vertex and fragment boundaries.
+    pub fn begin_raster<'a>(
+        &self,
+        encoder: &'a mut CommandEncoder<B>,
+        set: &PassStatisticsSet<B>,
+        slot: u32,
+        desc: &RasterPassDesc<'_, B>,
+    ) -> Result<RasterPass<'a, B>>
+    where
+        B: RasterBackend,
+    {
+        self.validate(encoder, set, &(slot..slot.saturating_add(1)))?;
+        if set.pass != StatisticsPass::Raster {
+            return Err(Error::InvalidState);
+        }
+        encoder.begin_raster_prepared(desc, |e| {
+            B::prepare_pass_statistics(e, &set.native, slot, set.pass)
+        })
+    }
+    /// Begins a compute pass that samples its start and end boundaries.
+    pub fn begin_compute<'a>(
+        &self,
+        encoder: &'a mut CommandEncoder<B>,
+        set: &PassStatisticsSet<B>,
+        slot: u32,
+    ) -> Result<ComputePass<'a, B>> {
+        self.validate(encoder, set, &(slot..slot.saturating_add(1)))?;
+        if set.pass != StatisticsPass::Compute {
+            return Err(Error::InvalidState);
+        }
+        let domain = self.device.compute().ok_or(Error::Unsupported("compute"))?;
+        domain.begin_prepared(encoder, |e| {
+            B::prepare_pass_statistics(e, &set.native, slot, set.pass)
+        })
+    }
+    /// Resolves slots into a QUERY_RESOLVE buffer using the corresponding
+    /// [`StatisticsPass::result_stride`]. Backends validate offset alignment,
+    /// buffer capacity, and pass state.
+    pub fn resolve(
+        &self,
+        encoder: &mut CommandEncoder<B>,
+        set: &PassStatisticsSet<B>,
+        slots: Range<u32>,
+        destination: &Buffer<B>,
+        offset: u64,
+    ) -> Result<()> {
+        self.validate(encoder, set, &slots)?;
+        if destination.device != self.device.id {
+            return Err(Error::WrongDevice);
+        }
+        encoder.call(|e| {
+            B::resolve_pass_statistics(e, &set.native, slots, &destination.native, offset)
+        })
+    }
+}
 impl TimestampResultFormat {
     /// Checks a native-endian resolved slot and returns its tick value.
     pub fn decode(self, value: u64) -> std::result::Result<u64, InvalidTimestampSample> {

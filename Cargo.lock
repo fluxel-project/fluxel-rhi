@@ -298,6 +298,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
 dependencies = [
  "bitflags 2.13.2",
+ "block2 0.6.2",
  "objc2 0.6.3",
 ]
 
@@ -436,6 +437,7 @@ name = "fluxel-rhi-metal"
 version = "0.16.0"
 dependencies = [
  "block2 0.6.2",
+ "dispatch2",
  "fluxel-rhi-core",
  "naga",
  "objc2 0.6.3",
@@ -1120,6 +1122,7 @@ checksum = "a0125f776a10d00af4152d74616409f0d4a2053a6f57fa5b7d6aa2854ac04794"
 dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
+ "dispatch2",
  "objc2 0.6.3",
  "objc2-foundation 0.3.2",
 ]

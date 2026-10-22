@@ -13,7 +13,8 @@ pub(super) fn begin_raster(
     #[cfg(target_vendor = "apple")]
     {
         use objc2_metal::{
-            MTLCommandBuffer as _, MTLRenderPassDescriptor, MTLStoreAction, MTLTexture as _,
+            MTLCommandBuffer as _, MTLCommandQueue as _, MTLRenderPassDescriptor, MTLStoreAction,
+            MTLTexture as _,
         };
         if encoder.lane != 0
             || encoder.render.is_some()
@@ -63,6 +64,7 @@ pub(super) fn begin_raster(
             }
         }
         let descriptor = MTLRenderPassDescriptor::renderPassDescriptor();
+        super::super::super::query::configure_raster_statistics(encoder, &descriptor)?;
         let colors = descriptor.colorAttachments();
         // SAFETY: this descriptor has a fixed native color attachment array;
         // index zero is valid and Core restricts this pass to one target.
@@ -141,11 +143,30 @@ pub(super) fn begin_raster(
         } else {
             None
         };
-        let render = encoder
-            .command
+        // Reserve the preparation command buffer before the render buffer.
+        // They are recorded independently but committed in this order at submit.
+        let split = if encoder.indirect_count_enabled {
+            let queue = encoder.command.commandQueue();
+            let prepass = queue.commandBuffer().ok_or(api::Error::OutOfMemory)?;
+            let render_command = queue.commandBuffer().ok_or(api::Error::OutOfMemory)?;
+            Some((prepass, render_command))
+        } else {
+            None
+        };
+        let render_command = split
+            .as_ref()
+            .map_or(&encoder.command, |(_, command)| command);
+        let render = render_command
             .renderCommandEncoderWithDescriptor(&descriptor)
             .ok_or(api::Error::OutOfMemory)?;
+        if let Some((prepass, render_command)) = split {
+            encoder.prior_commands.push(encoder.command.clone());
+            encoder.prior_commands.push(prepass.clone());
+            encoder.indirect_prepass = Some(prepass);
+            encoder.command = render_command;
+        }
         encoder.raster_signature = Some((sample_count, color_format, depth_format));
+        encoder.raster_pipeline_bound = false;
         encoder.mesh_threads = None;
         encoder.render = Some(render);
         Ok(())

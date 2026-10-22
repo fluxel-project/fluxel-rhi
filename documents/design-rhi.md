@@ -449,7 +449,10 @@ does not cancel issued work. Explicit retention covers dependencies such as
 indirect argument resources where encoding alone is insufficient.
 
 The shader route lowers WGSL through Naga to MSL and invokes the native compiler;
-direct Metal source is also supported. A fixed binding ABI maps scalar bindings
+direct Metal source and precompiled Metal library bytes are also supported.
+Library loading resolves and checks the requested entry point and stage; it
+does not by itself provide a ray-pipeline or shader-table ABI. A fixed binding
+ABI maps scalar bindings
 using `7 * group + binding`: four groups occupy buffer slots 0–27, leaving slots
 28–30 for vertex buffers. The disjoint partition prevents vertex input from
 overwriting resource bindings. Arrays and layouts outside the implemented ABI
@@ -571,8 +574,9 @@ device supports them.
 
 The Metal source conditionally admits a restricted mesh path on Metal 3 devices,
 and a compute-only inline ray-query path when native ray support and an actual
-MSL 2.4 compile probe succeed. Triangle acceleration structures support one
-build with fixed dependencies; DXR-style pipeline and shader-table operations
+MSL 2.4 compile probe succeed. Triangle and AABB acceleration structures support
+one build with fixed dependencies; AABB intersection behavior is not exposed by
+the current compute ray-query shader path. DXR-style pipeline and shader-table operations
 remain unsupported. The mesh path accepts one color target, a fragment stage,
 triangle output verified from a restricted Metal source grammar, and no
 task/object payload. Apple-family timestamp queries require native counter
@@ -591,9 +595,33 @@ These Metal paths have only Apple-target compilation and static contract
 checks, as requested for this stage. They have no Apple GPU execution,
 presentation, or visual acceptance evidence. Metal 4 placement sparse mapping
 is not advertised: its mixed Metal 3/4 queue path still lacks a proven
-`ResourceState` barrier for the actual texture consumers. Core's exact eleven
-pipeline-statistics fields and the raw-buffer GPU-count multi-draw command have
-no equivalent implementation in this immediate Metal encoder. Unsupported
+`ResourceState` barrier for the actual texture consumers. Apple defines that
+stage to include placement sparse mapping, while its documented consumer
+barrier covers work in earlier command encoders; the queue-level mapping
+operation falls outside that stated scope. A cross-queue event alone does not
+prove the required resource-state visibility.
+
+Core's exact eleven pipeline-statistics fields do not match Metal's
+[eight native statistic counters](https://developer.apple.com/documentation/metal/mtlcommoncounterset/statistic).
+Metal also requires sampling at supported pass boundaries, with attachments
+declared before creating the native render or compute encoder. The separate
+`PassStatistics` domain attaches a query to a whole pass and reports the device's
+available fields and a per-value error sentinel. Each raster slot resolves four
+64-byte samples at vertex and fragment stage start and end; each compute slot
+resolves two samples at compute start and end. These are raw native counter
+samples: availability does not guarantee that samples can be subtracted or that
+they provide the fixed eleven-field `PipelineStatistics` result. This route has
+only Apple-target compilation and static checks, with no Apple GPU execution.
+The raw-buffer GPU-count multi-draw command is converted to Metal indirect
+command buffers by a GPU compute pass before the render pass. The backend
+submits the preceding work, conversion pass and render pass in order, retaining
+their resources and combining completion failures. This path is limited to the
+implemented triangle-list raster subset and is advertised only after a device
+probe compiles the conversion shader and creates both indexed and non-indexed
+indirect command buffers. The compute producer uses whole-buffer storage
+bindings without dynamic offsets; other storage-buffer binding shapes are
+rejected. Apple-target compilation and static review do not establish actual
+ICB execution or visual correctness on an Apple GPU. Unsupported
 operations return structured errors rather than inheriting support from
 Metal's general API feature set.
 

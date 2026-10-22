@@ -10,6 +10,7 @@ use fluxel_rhi_core::api::{self, CommandBackend, LaneId, ResourceTransition, Tex
 use super::{Metal, MetalBuffer, MetalDevice, MetalRasterPipeline};
 
 mod clear;
+pub(super) mod indirect_count;
 mod raster;
 
 #[cfg(target_vendor = "apple")]
@@ -26,12 +27,26 @@ pub struct MetalCommandEncoder {
     pub(super) wait_slots:
         Vec<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLSharedEvent>>>,
     pub(super) query_ops: Vec<super::query::QueryOp>,
+    pub(super) pending_statistics: Option<(super::query::MetalQuerySet, u32, api::StatisticsPass)>,
     pub(crate) accelerations: Vec<super::ray::MetalAcceleration>,
     #[cfg(target_vendor = "apple")]
     pub(crate) mesh_threads: Option<([u32; 3], [u32; 3])>,
     #[cfg(target_vendor = "apple")]
     pub(crate) command:
         objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) prior_commands:
+        Vec<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>>>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) indirect_prepass: Option<
+        objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>>,
+    >,
+    #[cfg(target_vendor = "apple")]
+    pub(super) prepared_draws: Vec<indirect_count::PreparedDraws>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) raster_pipeline_bound: bool,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) indirect_count_enabled: bool,
     #[cfg(target_vendor = "apple")]
     pub(crate) render: Option<
         objc2::rc::Retained<
@@ -104,9 +119,15 @@ impl CommandBackend for Metal {
                 lane: lane.ordinal,
                 wait_slots,
                 query_ops: Vec::new(),
+                pending_statistics: None,
                 accelerations: Vec::new(),
                 mesh_threads: None,
                 command,
+                prior_commands: Vec::new(),
+                indirect_prepass: None,
+                prepared_draws: Vec::new(),
+                raster_pipeline_bound: false,
+                indirect_count_enabled: device._state.indirect_count_supported,
                 render: None,
                 compute: None,
                 workgroup_size: None,

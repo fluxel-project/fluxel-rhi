@@ -5,7 +5,7 @@ use fluxel_rhi::api::*;
 use std::{future::Future, sync::Arc};
 pub const WIDTH: u32 = 1000;
 pub const HEIGHT: u32 = 709;
-fn block_on<F: Future>(f: F) -> F::Output {
+pub(super) fn block_on<F: Future>(f: F) -> F::Output {
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     let mut f = std::pin::pin!(f);
     loop {
@@ -15,7 +15,7 @@ fn block_on<F: Future>(f: F) -> F::Output {
         }
     }
 }
-fn bytes(values: &[f32]) -> Vec<u8> {
+pub(super) fn bytes(values: &[f32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_ne_bytes()).collect()
 }
 pub fn run<B>(device: &Device<B>, format: ShaderFormat) -> Result<()>
@@ -27,8 +27,13 @@ where
         + DeferredBackend
         + ExecutionBackend<Mode = DeferredExecution>,
 {
-    for (index, time) in [8.363f32, 10.212, 12.228].into_iter().enumerate() {
-        render(device, format, index, time)?;
+    let times = if std::env::var_os("FLUXEL_RAY_QUERY_FIXED_REFERENCE").is_some() {
+        [2., 4., 6.]
+    } else {
+        [8.363f32, 10.212, 12.228]
+    };
+    for (index, time) in times.into_iter().enumerate() {
+        render(device, format, index, time, None, true)?;
     }
     Ok(())
 }
@@ -37,6 +42,8 @@ pub fn render<B>(
     format: ShaderFormat,
     index: usize,
     time: f32,
+    live_simulation: Option<&particles::Simulation>,
+    save_readback: bool,
 ) -> Result<Texture<B>>
 where
     B: ResourceBackend
@@ -114,15 +121,50 @@ where
         return Err(Error::InvalidState);
     }
     smoke_data.truncate(info.buffer_size());
+    let smoke_data = super::texture::smoke_mips(smoke_data);
     let smoke = buffer(
         smoke_data.len() as u64,
         BufferUsage::STORAGE | BufferUsage::COPY_DST,
     )?;
-    let mut sim = particles::Simulation::new();
-    // Match 60 updates per second deterministically; the reference uses wall-clock deltas.
+    let mut offline_simulation = particles::Simulation::new();
+    // The comparison mode uses a fixed reference sequence; presentation supplies
+    // the simulation advanced with actual elapsed frame times.
     let steps = (time * 60.) as u32;
-    for _ in 0..steps {
-        sim.advance(1. / 60.);
+    if live_simulation.is_none() {
+        for _ in 0..steps {
+            offline_simulation.advance(1. / 60.);
+        }
+    }
+    let sim = live_simulation.unwrap_or(&offline_simulation);
+    if let Some(directory) = std::env::var_os("FLUXEL_RAY_QUERY_STATE_DIR") {
+        use std::fmt::Write as _;
+        let mut text = String::new();
+        for (i, p) in sim.particles.iter().enumerate().filter(|(_, p)| p.active) {
+            writeln!(
+                text,
+                "{} {:.9} {:.9} {:.9} {:.9} {:.9} {:.9} {:.9} {:.9} {:.9} {:.9} {:.9} {:.9} {:.9}",
+                i,
+                p.position[0],
+                p.position[1],
+                p.position[2],
+                p.velocity[0],
+                p.velocity[1],
+                p.velocity[2],
+                p.color[0],
+                p.color[1],
+                p.color[2],
+                p.radius,
+                p.age,
+                p.opacity,
+                p.rotation
+            )
+            .map_err(|e| Error::Backend(e.to_string()))?;
+        }
+        std::fs::write(
+            std::path::Path::new(&directory).join(format!("state-{steps}.txt")),
+            text,
+        )
+        .map_err(|e| Error::Backend(e.to_string()))?;
     }
     let mut particle_data = Vec::new();
     for p in sim.particles.iter().filter(|p| p.active) {
@@ -180,7 +222,7 @@ where
             mask: 255,
             custom_index: 0,
             shader_table_offset: 0,
-            flags: AccelerationInstanceFlags::TRIANGLE_CULL_DISABLE,
+            flags: AccelerationInstanceFlags::NONE,
         }]),
         fast_trace: true,
         allow_update: false,
@@ -482,52 +524,72 @@ where
     pass.set_bind_group(0, &group, &[])?;
     pass.dispatch([WIDTH.div_ceil(8), HEIGHT.div_ceil(8), 1])?;
     pass.finish()?;
-    enc.transition_resources(&[ResourceTransition::Texture(TextureBarrier {
-        target: range(),
-        usage: StateTransition {
-            from: TextureUses {
-                stages: StageMask::COMPUTE,
-                accesses: AccessMask::SHADER_WRITE,
+    let ticket = if save_readback {
+        enc.transition_resources(&[ResourceTransition::Texture(TextureBarrier {
+            target: range(),
+            usage: StateTransition {
+                from: TextureUses {
+                    stages: StageMask::COMPUTE,
+                    accesses: AccessMask::SHADER_WRITE,
+                },
+                to: TextureUses {
+                    stages: StageMask::COPY,
+                    accesses: AccessMask::COPY_READ,
+                },
             },
-            to: TextureUses {
-                stages: StageMask::COPY,
-                accesses: AccessMask::COPY_READ,
+            layout: Some((ImageLayout::General, ImageLayout::CopySrc)),
+            ownership: None,
+        })])?;
+        enc.texture_to_buffer(
+            TextureRegion {
+                texture: &output,
+                mip: 0,
+                origin: [0, 0, 0],
+                extent: [WIDTH, HEIGHT, 1],
+                aspect: TextureAspects::COLOR,
             },
-        },
-        layout: Some((ImageLayout::General, ImageLayout::CopySrc)),
-        ownership: None,
-    })])?;
-    enc.texture_to_buffer(
-        TextureRegion {
-            texture: &output,
-            mip: 0,
-            origin: [0, 0, 0],
-            extent: [WIDTH, HEIGHT, 1],
-            aspect: TextureAspects::COLOR,
-        },
-        &readback,
-        TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: pitch,
-            rows_per_image: HEIGHT,
-        },
-    )?;
-    let ticket = enc.readback_buffer(&readback, 0..u64::from(pitch) * u64::from(HEIGHT))?;
-    enc.transition_resources(&[ResourceTransition::Texture(TextureBarrier {
-        target: range(),
-        usage: StateTransition {
-            from: TextureUses {
-                stages: StageMask::COPY,
-                accesses: AccessMask::COPY_READ,
+            &readback,
+            TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: pitch,
+                rows_per_image: HEIGHT,
             },
-            to: TextureUses {
-                stages: StageMask::FRAGMENT,
-                accesses: AccessMask::SHADER_READ,
+        )?;
+        let ticket = enc.readback_buffer(&readback, 0..u64::from(pitch) * u64::from(HEIGHT))?;
+        enc.transition_resources(&[ResourceTransition::Texture(TextureBarrier {
+            target: range(),
+            usage: StateTransition {
+                from: TextureUses {
+                    stages: StageMask::COPY,
+                    accesses: AccessMask::COPY_READ,
+                },
+                to: TextureUses {
+                    stages: StageMask::FRAGMENT,
+                    accesses: AccessMask::SHADER_READ,
+                },
             },
-        },
-        layout: Some((ImageLayout::CopySrc, ImageLayout::ShaderReadOnly)),
-        ownership: None,
-    })])?;
+            layout: Some((ImageLayout::CopySrc, ImageLayout::ShaderReadOnly)),
+            ownership: None,
+        })])?;
+        Some(ticket)
+    } else {
+        enc.transition_resources(&[ResourceTransition::Texture(TextureBarrier {
+            target: range(),
+            usage: StateTransition {
+                from: TextureUses {
+                    stages: StageMask::COMPUTE,
+                    accesses: AccessMask::SHADER_WRITE,
+                },
+                to: TextureUses {
+                    stages: StageMask::FRAGMENT,
+                    accesses: AccessMask::SHADER_READ,
+                },
+            },
+            layout: Some((ImageLayout::General, ImageLayout::ShaderReadOnly)),
+            ownership: None,
+        })])?;
+        None
+    };
     let work = enc.finish()?;
     // SAFETY: the plan has one command step for this device and lane.
     let plan = unsafe {
@@ -567,23 +629,25 @@ where
         _ => return Err(Error::InvalidState),
     };
     block_on(device.wait_completion(&point))?;
-    // SAFETY: the completion covers the readback ticket.
-    let data = unsafe { block_on(device.read_after(ticket, &point))? }.bytes;
-    let mut rgba = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
-    for row in data.chunks_exact(pitch as usize).take(HEIGHT as usize) {
-        rgba.extend_from_slice(&row[..(WIDTH * 4) as usize]);
+    if let Some(ticket) = ticket {
+        // SAFETY: the completion covers the readback ticket.
+        let data = unsafe { block_on(device.read_after(ticket, &point))? }.bytes;
+        let mut rgba = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
+        for row in data.chunks_exact(pitch as usize).take(HEIGHT as usize) {
+            rgba.extend_from_slice(&row[..(WIDTH * 4) as usize]);
+        }
+        let path = format!("ray-query-particles-{:02}.png", index + 1);
+        let file = std::fs::File::create(&path).map_err(|e| Error::Backend(e.to_string()))?;
+        let mut png = png::Encoder::new(file, WIDTH, HEIGHT);
+        png.set_color(png::ColorType::Rgba);
+        png.set_depth(png::BitDepth::Eight);
+        let mut writer = png
+            .write_header()
+            .map_err(|e| Error::Backend(e.to_string()))?;
+        writer
+            .write_image_data(&rgba)
+            .map_err(|e| Error::Backend(e.to_string()))?;
+        println!("{path}: t={time:.3}s, {count} particles");
     }
-    let path = format!("ray-query-particles-{:02}.png", index + 1);
-    let file = std::fs::File::create(&path).map_err(|e| Error::Backend(e.to_string()))?;
-    let mut png = png::Encoder::new(file, WIDTH, HEIGHT);
-    png.set_color(png::ColorType::Rgba);
-    png.set_depth(png::BitDepth::Eight);
-    let mut writer = png
-        .write_header()
-        .map_err(|e| Error::Backend(e.to_string()))?;
-    writer
-        .write_image_data(&rgba)
-        .map_err(|e| Error::Backend(e.to_string()))?;
-    println!("{path}: t={time:.3}s, {count} particles");
     Ok(output)
 }

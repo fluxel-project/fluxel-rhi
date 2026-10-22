@@ -47,6 +47,116 @@ impl QueryBackend for NativeShared {
         Ok(())
     }
 }
+impl PassStatisticsBackend for NativeShared {
+    fn pass_statistics_fields(_: &Arc<()>) -> StatisticsFields {
+        StatisticsFields::VERTEX_INVOCATIONS
+    }
+    fn pass_statistics_invalid_value(_: &Arc<()>) -> Option<u64> {
+        Some(u64::MAX)
+    }
+    fn create_pass_statistics(_: &Arc<()>, _: StatisticsPass, _: u32) -> Result<Arc<()>> {
+        called();
+        Ok(Arc::new(()))
+    }
+    fn prepare_pass_statistics(_: &mut (), _: &Arc<()>, _: u32, _: StatisticsPass) -> Result<()> {
+        called();
+        Ok(())
+    }
+    fn resolve_pass_statistics(
+        _: &mut (),
+        _: &Arc<()>,
+        _: Range<u32>,
+        _: &Arc<()>,
+        _: u64,
+    ) -> Result<()> {
+        called();
+        Ok(())
+    }
+}
+
+#[test]
+fn pass_statistics_validate_before_preparing_a_native_pass() {
+    CALLS.with(|c| c.set(0));
+    let device = device();
+    let domain = device.pass_statistics().unwrap();
+    assert_eq!(std::mem::size_of::<StatisticsSample>(), 64);
+    assert_eq!(StatisticsPass::Raster.result_stride(), 256);
+    assert_eq!(StatisticsPass::Compute.result_stride(), 128);
+    assert!(
+        domain
+            .fields()
+            .contains(StatisticsFields::VERTEX_INVOCATIONS)
+    );
+    assert!(
+        !domain
+            .fields()
+            .contains(StatisticsFields::FRAGMENT_INVOCATIONS)
+    );
+    assert_eq!(domain.invalid_value(), Some(u64::MAX));
+    assert!(matches!(
+        domain.create(StatisticsPass::Raster, 0),
+        Err(Error::InvalidRange)
+    ));
+    let set = domain.create(StatisticsPass::Raster, 1).unwrap();
+    let mut enc = encoder(&device);
+    let other = self::device();
+    let foreign = other
+        .queries(QueryKind::Timestamp)
+        .unwrap()
+        .create(&QueryDesc {
+            kind: QueryKind::Timestamp,
+            count: 1,
+        })
+        .unwrap();
+    let desc = RasterPassDesc {
+        label: None,
+        colors: &[],
+        depth_stencil: None,
+        render_area: Rect {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        },
+        multiview_mask: None,
+        timestamp_writes: Some(PassTimestampWrites {
+            set: &foreign,
+            begin: Some(0),
+            end: None,
+        }),
+        occlusion_query_set: None,
+        secondary_inheritance: None,
+    };
+    let before = calls();
+    assert!(matches!(
+        domain.begin_raster(&mut enc, &set, 0, &desc),
+        Err(Error::WrongDevice)
+    ));
+    assert_eq!(calls(), before);
+    assert!(matches!(
+        domain.begin_raster(&mut enc, &set, 1, &desc),
+        Err(Error::InvalidRange)
+    ));
+    assert_eq!(calls(), before);
+    assert!(matches!(
+        domain.begin_compute(&mut enc, &set, 0),
+        Err(Error::InvalidState)
+    ));
+    assert_eq!(calls(), before);
+    let compute_set = domain.create(StatisticsPass::Compute, 1).unwrap();
+    let mut foreign_encoder = encoder(&other);
+    let before = calls();
+    assert!(matches!(
+        domain.begin_compute(&mut foreign_encoder, &compute_set, 0),
+        Err(Error::WrongDevice)
+    ));
+    assert_eq!(calls(), before);
+    assert!(matches!(
+        domain.begin_compute(&mut enc, &compute_set, 0),
+        Err(Error::Unsupported("compute"))
+    ));
+    assert_eq!(calls(), before);
+}
 fn device() -> Device<NativeShared> {
     let id = DeviceId::allocate().unwrap();
     // SAFETY: the mock native device belongs to this newly allocated ID.

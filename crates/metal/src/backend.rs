@@ -85,6 +85,8 @@ struct DeviceState {
     submission_tracker: std::sync::Mutex<submit::SubmissionTracker>,
     #[cfg(target_vendor = "apple")]
     indirect_dispatch_supported: bool,
+    #[cfg(target_vendor = "apple")]
+    indirect_count_supported: bool,
 }
 
 #[derive(Clone)]
@@ -174,7 +176,7 @@ impl Backend for Metal {
     type Compute = compute::Compute;
     type Mesh = mesh::MetalMesh;
     type Ray = ray::MetalRay;
-    type Extras = api::Unavailable;
+    type Extras = encoder::indirect_count::RasterExtras;
 }
 
 impl InstanceBackend for Metal {
@@ -230,6 +232,7 @@ impl InstanceBackend for Metal {
                 let multi_queue_supported = native.respondsToSelector(objc2::sel!(newSharedEvent))
                     && native.newSharedEvent().is_some();
                 let indirect_dispatch_supported = compute::supports_indirect_dispatch(&native);
+                let indirect_count_supported = encoder::indirect_count::probe(&native);
                 let mut caps = DeviceCapabilities::default();
                 caps.limits.max_buffer_bytes = native.maxBufferLength() as u64;
                 caps.limits.max_texture_dimension_2d = 8192;
@@ -267,6 +270,7 @@ impl InstanceBackend for Metal {
                             submit::SubmissionTracker::default(),
                         ),
                         indirect_dispatch_supported,
+                        indirect_count_supported,
                     }),
                 };
                 caps.mesh = mesh::mesh_supported(&device);
@@ -276,6 +280,10 @@ impl InstanceBackend for Metal {
                     api::QueryKind::Timestamp,
                 );
                 caps.multi_queue = multi_queue_supported;
+                caps.multi_draw_count = indirect_count_supported;
+                // Storage bindings currently support whole buffers in compute
+                // shaders; layout creation rejects unsupported stages and offsets.
+                caps.storage_buffers = true;
                 let graphics = LaneId {
                     device: id,
                     ordinal: 0,

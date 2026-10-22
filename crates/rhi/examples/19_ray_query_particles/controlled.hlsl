@@ -19,17 +19,60 @@ cbuffer Frame : register(b4) {
 uint triangleOffset(uint instance) {
     return instance < 4 ? triangleOffsets0[instance] : triangleOffsets1[instance - 4];
 }
+// The source uses a wrapping linear sampler. These buffers contain mip zero;
+// decode each smoke texel before interpolation as for an sRGB texture view.
+float4 unpackColor(uint packed) {
+    return float4(packed & 255, (packed >> 8) & 255, (packed >> 16) & 255,
+                  packed >> 24) / 255.0;
+}
+float4 loadEnvironment(int2 xy) {
+    xy = (xy % int2(2048, 1024) + int2(2048, 1024)) % int2(2048, 1024);
+    return unpackColor(environmentPixels[xy.y * 2048 + xy.x]);
+}
+float4 loadSmoke(int2 xy, uint mip) {
+    int size = 512u >> mip;
+    xy = (xy % size + size) % size;
+    uint offset = (262144 - size * size) / 3 * 4;
+    float4 c = unpackColor(smokePixels[offset + xy.y * size + xy.x]);
+    c.rgb = lerp(c.rgb / 12.92, pow((c.rgb + 0.055) / 1.055, 2.4), step(0.04045, c.rgb));
+    return c;
+}
+float4 sampleEnvironment(float2 uv) {
+    float2 position = uv * float2(2048, 1024) - 0.5;
+    int2 p = int2(floor(position));
+    float2 f = frac(position);
+    return lerp(lerp(loadEnvironment(p), loadEnvironment(p + int2(1, 0)), f.x),
+                lerp(loadEnvironment(p + int2(0, 1)), loadEnvironment(p + 1), f.x), f.y);
+}
+float4 sampleSmokeLevel(float2 uv, uint mip) {
+    float size = float(512u >> mip);
+    float2 position = uv * size - 0.5;
+    int2 p = int2(floor(position));
+    float2 f = frac(position);
+    return lerp(lerp(loadSmoke(p, mip), loadSmoke(p + int2(1, 0), mip), f.x),
+                lerp(loadSmoke(p + int2(0, 1), mip), loadSmoke(p + 1, mip), f.x), f.y);
+}
+float4 sampleSmoke(float2 uv, float mip) {
+    mip = clamp(mip, 0.0, 9.0);
+    uint low = uint(floor(mip));
+    return lerp(sampleSmokeLevel(uv, low), sampleSmokeLevel(uv, min(low + 1, 9)), frac(mip));
+}
 float3 environmentColor(float3 direction) {
     float2 uv = float2(atan2(direction.z, direction.x) / 6.283185307 - 0.25,
                        0.5 - asin(clamp(direction.y, -1, 1)) / 3.141592654);
-    uint2 xy = uint2(frac(uv.x) * 2048, clamp(uv.y, 0, 0.999999) * 1024);
-    uint packed = environmentPixels[xy.y * 2048 + xy.x];
-    return float3(packed & 255, (packed >> 8) & 255, (packed >> 16) & 255) / 255.0;
+    return sampleEnvironment(uv).rgb;
 }
-float4 particleLayer(float3 origin, float3 direction, float maxT) {
+float4 particleLayer(float3 origin, float3 direction, float maxT, float pathLength) {
     // Camera-facing plane approximation. The source uses triangle candidates
     // for primary rays and procedural AABBs for secondary rays.
-    float4 result = float4(0, 0, 0, 1);
+    // The reference defaults to four MLAB fragments. Each entry stores
+    // premultiplied color, transmittance, and ray distance.
+    float4 layers[4];
+    float depths[4];
+    for (uint j = 0; j < 4; ++j) {
+        layers[j] = float4(0, 0, 0, 1);
+        depths[j] = 1e30;
+    }
     for (uint i = 0; i < dimensions.z; ++i) {
         Particle p = particles[i];
         float3 right = cos(p.rotation.x) * cameraRight.xyz + sin(p.rotation.x) * cameraUp.xyz;
@@ -41,13 +84,30 @@ float4 particleLayer(float3 origin, float3 direction, float maxT) {
         float3 delta = origin + direction * t - p.centerRadius.xyz;
         float2 uv = float2(dot(delta, right), -dot(delta, up)) / p.centerRadius.w * 0.5 + 0.5;
         if (any(uv < 0) || any(uv >= 1)) continue;
-        uint2 xy = uint2(uv * 512);
-        uint packed = smokePixels[xy.y * 512 + xy.x];
-        float3 texel = float3(packed & 255, (packed >> 8) & 255, (packed >> 16) & 255) / 255.0;
-        texel = lerp(texel / 12.92, pow((texel + 0.055) / 1.055, 2.4), step(0.04045, texel));
-        float alpha = (packed >> 24) / 255.0 * p.colorOpacity.a;
-        result.rgb += result.a * alpha * p.colorOpacity.rgb * texel;
-        result.a *= 1.0 - alpha;
+        float footprint = (pathLength + t) * (0.7853981634 / 709.0);
+        float mip = log2(256.0 * footprint / p.centerRadius.w);
+        float4 smoke = sampleSmoke(uv, mip);
+        float3 texel = smoke.rgb;
+        float alpha = smoke.a * p.colorOpacity.a;
+        float4 fragment = float4(alpha * p.colorOpacity.rgb * texel, 1.0 - alpha);
+        float depth = t;
+        for (uint j = 0; j < 4; ++j) {
+            if (depth < depths[j]) {
+                float4 previous = layers[j];
+                float previousDepth = depths[j];
+                layers[j] = fragment;
+                depths[j] = depth;
+                fragment = previous;
+                depth = previousDepth;
+            }
+        }
+        layers[3].rgb += fragment.rgb * layers[3].a;
+        layers[3].a *= fragment.a;
+    }
+    float4 result = layers[0];
+    for (uint j = 1; j < 4; ++j) {
+        result.rgb += layers[j].rgb * result.a;
+        result.a *= layers[j].a;
     }
     return result;
 }
@@ -61,14 +121,15 @@ void main(uint2 pixel : SV_DispatchThreadID) {
     float3 direction = normalize(cameraForward.xyz + 0.41421356 * (uv.x * cameraRight.xyz + uv.y * cameraUp.xyz));
     float3 color = 0;
     float attenuation = 1;
+    float pathLength = 0;
     for (uint bounce = 0; bounce < 8; ++bounce) {
-        RayDesc ray; ray.Origin = origin; ray.Direction = direction; ray.TMin = 0.001; ray.TMax = 1000;
-        RayQuery<RAY_FLAG_CULL_NON_OPAQUE> q;
+        RayDesc ray; ray.Origin = origin; ray.Direction = direction; ray.TMin = 0; ray.TMax = 1000;
+        RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES> q;
         q.TraceRayInline(scene, RAY_FLAG_NONE, 0xff, ray);
         while (q.Proceed()) { }
         bool hit = q.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
         float t = hit ? q.CommittedRayT() : ray.TMax;
-        float4 layer = particleLayer(origin, direction, t);
+        float4 layer = particleLayer(origin, direction, t, pathLength);
         color += attenuation * layer.rgb;
         attenuation *= layer.a;
         if (!hit) break;
@@ -78,6 +139,7 @@ void main(uint2 pixel : SV_DispatchThreadID) {
             + triangleNormals[firstNormal + 1].xyz * bary.x + triangleNormals[firstNormal + 2].xyz * bary.y);
         if (dot(normal, direction) > 0) normal = -normal;
         attenuation *= 0.8;
+        pathLength += t;
         origin += direction * t + normal * 0.001;
         direction = reflect(direction, normal);
     }

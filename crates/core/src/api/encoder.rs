@@ -345,6 +345,13 @@ impl<B: RasterBackend> CommandEncoder<B> {
         &'a mut self,
         desc: &RasterPassDesc<'_, B>,
     ) -> Result<RasterPass<'a, B>> {
+        self.begin_raster_prepared(desc, |_| Ok(()))
+    }
+    pub(crate) fn begin_raster_prepared<'a>(
+        &'a mut self,
+        desc: &RasterPassDesc<'_, B>,
+        prepare: impl FnOnce(&mut B::NativeEncoder) -> Result<()>,
+    ) -> Result<RasterPass<'a, B>> {
         if let Some(mask) = desc.multiview_mask {
             if !self.multiview {
                 return Err(Error::Unsupported("multiview"));
@@ -397,7 +404,8 @@ impl<B: RasterBackend> CommandEncoder<B> {
         {
             return Err(Error::SurfaceOutdated);
         }
-        let result = B::begin_raster(self.ready()?, desc);
+        let result = prepare(self.ready()?)
+            .and_then(|()| B::begin_raster(self.native.as_mut().expect("ready encoder"), desc));
         if let Err(e) = result {
             self.poisoned = true;
             return Err(e);

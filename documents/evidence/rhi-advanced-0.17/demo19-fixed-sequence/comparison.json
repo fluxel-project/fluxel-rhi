@@ -1,0 +1,35 @@
+{
+  "120": {
+    "counts": [
+      31,
+      31
+    ],
+    "slot_ids_match": true,
+    "max_field_difference": 5.000000413701855e-09,
+    "reference_dx12_visible_mae": 4.250025858015985,
+    "reference_dx12_smoke_mae": 3.1656190476190478,
+    "dx12_vulkan_visible_mae": 0.00029305751449616046
+  },
+  "240": {
+    "counts": [
+      30,
+      30
+    ],
+    "slot_ids_match": true,
+    "max_field_difference": 1.1900000007614153e-07,
+    "reference_dx12_visible_mae": 4.055057201065664,
+    "reference_dx12_smoke_mae": 2.0592761904761905,
+    "dx12_vulkan_visible_mae": 0.00033145275035260935
+  },
+  "360": {
+    "counts": [
+      40,
+      40
+    ],
+    "slot_ids_match": true,
+    "max_field_difference": 5.999999996841865e-08,
+    "reference_dx12_visible_mae": 4.867910985738912,
+    "reference_dx12_smoke_mae": 4.367211428571429,
+    "dx12_vulkan_visible_mae": 0.0002617144648174267
+  }
+}

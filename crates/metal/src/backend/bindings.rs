@@ -87,6 +87,31 @@ pub(super) fn create_bind_group(
                             min_size,
                             dynamic_offset,
                         } => (min_size, dynamic_offset),
+                        BindingType::StorageBuffer {
+                            min_size,
+                            dynamic_offset: false,
+                            ..
+                        } => {
+                            if !valid_storage_buffer_binding(
+                                native.usage,
+                                range.start,
+                                range.end,
+                                native.size(),
+                                min_size,
+                            ) {
+                                return Err(api::Error::InvalidRange);
+                            }
+                            resources.push(BoundResource::Buffer {
+                                binding: entry.binding,
+                                visibility: layout_entry.visibility.clone(),
+                                raw: native.raw.clone(),
+                                offset: 0,
+                                size: native.size(),
+                                allocation_size: native.size(),
+                                dynamic_offset: false,
+                            });
+                            continue;
+                        }
                         _ => return Err(api::Error::InvalidState),
                     };
                     if !valid_uniform_buffer_binding(
@@ -180,7 +205,37 @@ pub(super) fn create_bind_group(
                         value,
                     }
                 }
-                api::BindingResource::StorageBufferView { .. } | api::BindingResource::Array(_) => {
+                api::BindingResource::StorageBufferView { buffer, range, .. } => {
+                    let minimum = match layout_entry.ty {
+                        BindingType::StorageBuffer {
+                            min_size,
+                            dynamic_offset: false,
+                            ..
+                        } => min_size,
+                        _ => return Err(api::Error::InvalidState),
+                    };
+                    // SAFETY: Core validated this buffer's device identity.
+                    let native = unsafe { buffer.native_ref() };
+                    if !valid_storage_buffer_binding(
+                        native.usage,
+                        range.start,
+                        range.end,
+                        native.size(),
+                        minimum,
+                    ) {
+                        return Err(api::Error::InvalidRange);
+                    }
+                    BoundResource::Buffer {
+                        binding: entry.binding,
+                        visibility: layout_entry.visibility.clone(),
+                        raw: native.raw.clone(),
+                        offset: 0,
+                        size: native.size(),
+                        allocation_size: native.size(),
+                        dynamic_offset: false,
+                    }
+                }
+                api::BindingResource::Array(_) => {
                     return Err(api::Error::Unsupported("Metal binding resource form"));
                 }
             };
@@ -202,6 +257,14 @@ pub(super) fn create_layout(desc: &BindGroupLayoutDesc) -> api::Result<MetalBind
         ));
     }
     for entry in &desc.entries {
+        if matches!(entry.ty, BindingType::StorageBuffer { .. })
+            && entry
+                .visibility
+                .iter()
+                .any(|stage| *stage != ShaderStage::Compute)
+        {
+            return Err(api::Error::Unsupported("Metal storage buffer stage"));
+        }
         if matches!(entry.ty, BindingType::AccelerationStructure)
             && entry
                 .visibility
@@ -285,11 +348,33 @@ fn supported_type(ty: &BindingType) -> bool {
             dimension: TextureViewDimension::D2,
             access: api::StorageAccess::Write,
         } => true,
+        BindingType::StorageBuffer {
+            dynamic_offset: false,
+            ..
+        } => true,
         BindingType::Sampler { .. }
         | BindingType::StorageBuffer { .. }
         | BindingType::StorageTexture { .. }
         | BindingType::ExternalTexture => false,
     }
+}
+
+// Restrict to the whole allocation until the MSL ABI supplies binding sizes
+// for runtime arrays and robust accesses. The compute producer needs no
+// subrange; accepting one here would silently permit writes beyond its view.
+#[allow(dead_code)]
+fn valid_storage_buffer_binding(
+    usage: api::BufferUsage,
+    start: u64,
+    end: u64,
+    allocation_size: u64,
+    minimum_size: u64,
+) -> bool {
+    usage.contains(api::BufferUsage::STORAGE)
+        && start == 0
+        && end == allocation_size
+        && end > 0
+        && end >= minimum_size
 }
 
 #[allow(dead_code)] // Used by the Apple-only bind-group materialization path.
@@ -349,7 +434,7 @@ pub(crate) fn apply_dynamic_uniform_offset(
 mod tests {
     use super::{
         UNIFORM_OFFSET_ALIGNMENT, apply_dynamic_uniform_offset, create_layout, sample_type_matches,
-        supported_type, valid_uniform_buffer_binding,
+        supported_type, valid_storage_buffer_binding, valid_uniform_buffer_binding,
     };
     use fluxel_rhi_core::api::{
         self, BindGroupLayoutDesc, BindGroupLayoutEntry, BindingCount, BindingType, ShaderStage,
@@ -418,6 +503,55 @@ mod tests {
             },
         );
         assert!(!supported_type(&desc.entries[0].ty));
+    }
+
+    #[test]
+    fn compute_storage_buffers_require_whole_allocation_and_explicit_usage() {
+        let mut item = entry(
+            0,
+            BindingType::StorageBuffer {
+                dynamic_offset: false,
+                min_size: 4,
+                access: StorageAccess::ReadWrite,
+            },
+        );
+        item.visibility = vec![ShaderStage::Compute];
+        assert!(
+            create_layout(&BindGroupLayoutDesc {
+                label: None,
+                entries: vec![item.clone()]
+            })
+            .is_ok()
+        );
+        item.visibility.push(ShaderStage::Fragment);
+        assert!(
+            create_layout(&BindGroupLayoutDesc {
+                label: None,
+                entries: vec![item]
+            })
+            .is_err()
+        );
+        assert!(valid_storage_buffer_binding(
+            api::BufferUsage::STORAGE,
+            0,
+            16,
+            16,
+            4
+        ));
+        assert!(!valid_storage_buffer_binding(
+            api::BufferUsage::STORAGE,
+            4,
+            16,
+            16,
+            4
+        ));
+        assert!(!valid_storage_buffer_binding(
+            api::BufferUsage::COPY_DST,
+            0,
+            16,
+            16,
+            4
+        ));
     }
 
     #[test]

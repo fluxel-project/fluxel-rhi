@@ -23,6 +23,8 @@ pub enum ShaderFormat {
     Hlsl(u16),
     Dxil,
     MetalSource,
+    /// A complete precompiled Metal library supplied as bytes, not a source file.
+    /// Entry names and resource binding ABI must match the consuming backend.
     MetalLibrary,
 }
 #[derive(Clone, Debug)]

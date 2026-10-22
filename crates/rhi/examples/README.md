@@ -166,7 +166,7 @@ those advanced examples; this does not change the WGSL baseline for 01–15.
 | 16 raytracing hello | Builds acceleration structures and traces Microsoft's screen-space triangle on DX12 and Vulkan. `FLUXEL_RAY_READBACK` saves an RGB PPM. |
 | 17 GPU queries | Times and counts the vertices and primitives of Microsoft's HelloTriangle scene on DX12 and Vulkan; `FLUXEL_QUERY_READBACK` saves an RGB PPM. |
 | 18 meshlet instancing | Renders Microsoft's ToyRobot meshlet scene with mesh shaders on DX12 and Vulkan; `FLUXEL_MESH_READBACK` saves an RGB PPM. |
-| 19 ray query particles | Adapts NVIDIA Donut Samples' `rt_particles` scene for inline ray queries on DX12 and Vulkan. Three precomputed GPU states show visible changes; this is a controlled approximation, not continuous simulation or a direct pixel comparison with the original sample. |
+| 19 ray query particles | Adapts NVIDIA Donut Samples' `rt_particles` scene for inline ray queries on DX12 and Vulkan. A live animation uses elapsed frame time and reusable GPU resources; fixed-step readbacks can be compared with the instrumented original. The ray intersections and shading remain approximations. |
 | 20 GPU draw count | Uses compute culling and a GPU-generated count to draw the fixed 180th frame of Microsoft's ExecuteIndirect scene on DX12 and Vulkan; `FLUXEL_DRAW_COUNT_READBACK` saves an RGB PPM. |
 | 21 sparse texture | Cycles all nine checkerboard mips from Microsoft's ReservedResources sample using separate standard-mip heaps and a shared packed tail on DX12 and Vulkan; `FLUXEL_SPARSE_MIP` fixes the selected mip and `FLUXEL_SPARSE_READBACK` saves an RGB PPM. |
 | 22 clear texture | Clears a texture before rendering and verifies its GPU readback on DX12 and Vulkan. |
