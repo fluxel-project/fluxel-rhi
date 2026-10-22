@@ -1,4 +1,2 @@
-*.stdout -text
-*.stderr -text
-*.json -text
-SHA256SUMS -text
+# Every archived artifact is hashed as bytes, including reports and scripts.
+* -text
