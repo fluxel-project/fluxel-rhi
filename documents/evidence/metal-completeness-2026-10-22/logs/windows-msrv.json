@@ -1,0 +1,44 @@
+{
+  "cwd": "E:\\moyy\\program\\rust\\fluxel\\fluxel-rhi",
+  "command": [
+    "cargo",
+    "+1.87",
+    "check",
+    "-p",
+    "fluxel-rhi-metal",
+    "--target",
+    "x86_64-pc-windows-msvc",
+    "--all-targets",
+    "--all-features"
+  ],
+  "resolved_executable": "C:\\Users\\41200\\.cargo\\bin\\cargo.EXE",
+  "start_utc": "2026-10-22T11:14:14.754194+00:00",
+  "end_utc": "2026-10-22T11:14:15.791766+00:00",
+  "returncode": 0,
+  "timeout_seconds": 1200,
+  "environment": {},
+  "stdout": {
+    "path": "windows-msrv.stdout",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "stderr": {
+    "path": "windows-msrv.stderr",
+    "bytes": 13850,
+    "sha256": "2e404749cb2b7af95051db6e2e6f0aee7ca4ad08f869605083ddfeda9487e707"
+  },
+  "source_before": {
+    "head": "8bbff393851d199385b25ce8789107308d1f0637",
+    "status_porcelain_z_hex": "",
+    "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "untracked_file_sha256": {}
+  },
+  "source_after": {
+    "head": "8bbff393851d199385b25ce8789107308d1f0637",
+    "status_porcelain_z_hex": "",
+    "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "untracked_file_sha256": {}
+  }
+}

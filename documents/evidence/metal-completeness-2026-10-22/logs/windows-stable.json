@@ -1,0 +1,48 @@
+{
+  "cwd": "E:\\moyy\\program\\rust\\fluxel\\fluxel-rhi",
+  "command": [
+    "cargo",
+    "+stable",
+    "check",
+    "-p",
+    "fluxel-rhi-metal",
+    "--target",
+    "x86_64-pc-windows-msvc",
+    "--all-targets",
+    "--all-features"
+  ],
+  "resolved_executable": "C:\\Users\\41200\\.cargo\\bin\\cargo.EXE",
+  "start_utc": "2026-10-22T11:16:29.079551+00:00",
+  "end_utc": "2026-10-22T11:16:37.271545+00:00",
+  "returncode": 0,
+  "timeout_seconds": 1200,
+  "environment": {},
+  "stdout": {
+    "path": "windows-stable.stdout",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "stderr": {
+    "path": "windows-stable.stderr",
+    "bytes": 15083,
+    "sha256": "9c4b600a6a9619ea09ee66da3ffa230c215bdecf21bc4b247402b296ed02a6b3"
+  },
+  "source_before": {
+    "head": "8bbff393851d199385b25ce8789107308d1f0637",
+    "status_porcelain_z_hex": "204d20646f63756d656e74732f65766964656e63652f6d6574616c2d636f6d706c6574656e6573732d323032362d31302d32322f524541444d452e6d64003f3f20646f63756d656e74732f65766964656e63652f6d6574616c2d636f6d706c6574656e6573732d323032362d31302d32322f2e6769746174747269627574657300",
+    "status_sha256": "08461cc9ea923f185c9452369212576e17f9c24c869db52cbee31b1616ed266b",
+    "tracked_diff_sha256": "801b711c723257ff53fd332cb64cff6948490030f287d4bccd30174cbcec9400",
+    "untracked_file_sha256": {
+      "documents\\evidence\\metal-completeness-2026-10-22\\.gitattributes": "8b9c3028d6467ff3be7c793141927841d70f47f52d0590677438f488ca154992"
+    }
+  },
+  "source_after": {
+    "head": "8bbff393851d199385b25ce8789107308d1f0637",
+    "status_porcelain_z_hex": "204d20646f63756d656e74732f65766964656e63652f6d6574616c2d636f6d706c6574656e6573732d323032362d31302d32322f524541444d452e6d64003f3f20646f63756d656e74732f65766964656e63652f6d6574616c2d636f6d706c6574656e6573732d323032362d31302d32322f2e6769746174747269627574657300",
+    "status_sha256": "08461cc9ea923f185c9452369212576e17f9c24c869db52cbee31b1616ed266b",
+    "tracked_diff_sha256": "801b711c723257ff53fd332cb64cff6948490030f287d4bccd30174cbcec9400",
+    "untracked_file_sha256": {
+      "documents\\evidence\\metal-completeness-2026-10-22\\.gitattributes": "8b9c3028d6467ff3be7c793141927841d70f47f52d0590677438f488ca154992"
+    }
+  }
+}
