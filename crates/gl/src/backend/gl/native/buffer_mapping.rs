@@ -1,10 +1,30 @@
-//! Persistent mappings for desktop GL buffer storage.
+//! Persistent mappings for desktop GL and GLES buffer storage extensions.
 //!
 //! Storage is mapped once before publication, and retained until buffer
 //! retirement. Leases borrow the mapping without remapping or waiting.
 use super::provider::NativeGlProvider;
-use crate::backend::gl::api::{BufferId, GlBufferUsage, GlError};
+use crate::backend::gl::api::{BufferId, GlBufferUsage, GlError, GlFamilyProfile};
 use glow::HasContext as _;
+
+/// Select only the entry whose profile, version and extension evidence match.
+pub(super) fn storage_entry(
+    profile: GlFamilyProfile,
+    arb: bool,
+    ext: bool,
+    load: impl Fn(&str) -> *const core::ffi::c_void,
+) -> Option<*const core::ffi::c_void> {
+    let name = match profile {
+        GlFamilyProfile::Desktop { major, minor } if (major, minor) >= (4, 4) || arb => {
+            "glBufferStorage"
+        }
+        GlFamilyProfile::Embedded { major, minor } if (major, minor) >= (3, 1) && ext => {
+            "glBufferStorageEXT"
+        }
+        _ => return None,
+    };
+    let entry = load(name);
+    (!entry.is_null()).then_some(entry)
+}
 
 impl NativeGlProvider {
     pub(super) unsafe fn allocate_persistent_buffer(
@@ -18,7 +38,7 @@ impl NativeGlProvider {
             | glow::MAP_COHERENT_BIT
             | glow::DYNAMIC_STORAGE_BIT;
         // SAFETY: caller bound the newly created buffer in the current context;
-        // the entry was loaded only with matching desktop feature evidence.
+        // the entry was loaded only with matching profile and feature evidence.
         unsafe {
             (self.buffer_storage.expect("checked storage entry"))(
                 glow::COPY_WRITE_BUFFER,
@@ -77,5 +97,62 @@ impl NativeGlProvider {
             });
         }
         Ok(self.persistent_buffers.get(&id).copied())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storage_requires_profile_extension_and_loaded_entry() {
+        let present = |name: &str| match name {
+            "glBufferStorage" | "glBufferStorageEXT" => core::ptr::dangling::<core::ffi::c_void>(),
+            _ => core::ptr::null(),
+        };
+        let missing = |_: &str| core::ptr::null();
+        let es = GlFamilyProfile::Embedded { major: 3, minor: 1 };
+        assert!(storage_entry(es, false, true, present).is_some());
+        assert!(storage_entry(es, false, false, present).is_none());
+        assert!(storage_entry(es, false, true, missing).is_none());
+        assert!(
+            storage_entry(
+                GlFamilyProfile::Embedded { major: 3, minor: 0 },
+                false,
+                true,
+                present
+            )
+            .is_none()
+        );
+        assert!(storage_entry(GlFamilyProfile::WebGl2, true, true, present).is_none());
+        let gl = GlFamilyProfile::Desktop { major: 4, minor: 3 };
+        assert!(storage_entry(gl, true, false, present).is_some());
+        assert!(storage_entry(gl, false, true, present).is_none());
+        assert!(
+            storage_entry(
+                GlFamilyProfile::Desktop { major: 4, minor: 4 },
+                false,
+                false,
+                present
+            )
+            .is_some()
+        );
+        assert!(
+            storage_entry(
+                GlFamilyProfile::Desktop { major: 4, minor: 4 },
+                false,
+                false,
+                missing
+            )
+            .is_none()
+        );
+        assert!(
+            storage_entry(es, false, true, |name| if name == "glBufferStorage" {
+                present(name)
+            } else {
+                core::ptr::null()
+            })
+            .is_none()
+        );
     }
 }

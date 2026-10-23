@@ -579,6 +579,49 @@ denominator public API and accidental inheritance of desktop-only features.
 Android window and foreground/background events belong to platform integration;
 the backend handles the resulting drawable and device operations.
 
+GLES3+ uses bounded runtime-array specialization; nonuniform sampled-texture and
+storage-buffer indexing additionally requires storage buffers. Counts still
+consume native resource slots and generated sampler pairs. Query resolve uses
+`AfterCompletion` and rejects unavailable slots before modifying the destination.
+Buffer readback snapshots the requested command position in GPU staging.
+
+ES3.1 compute and sampled texture support provide depth/stencil buffer copies:
+depth is fetched into a temporary GPU buffer as D16 UNORM bits or D32 float bits,
+and stencil as unsigned bytes, then copied into the requested padded layout.
+The implementation restores native sampling, program and buffer bindings.
+D24 depth retains its opaque representation. Independent stencil textures
+require ES3.2 or the acquired `OES_texture_stencil8` extension. Depth uploads use
+same-format 2D scratch images and masked framebuffer blits, preserving the
+unselected plane of combined formats. CPU and PBO paths retain distinct source
+rows, mip/layer selection and byte padding.
+
+Ordinary color buffer copies require either an exact native read-format/type
+probe or compatible raw image copies through integer textures. ES3.2 or acquired
+copy-image extensions, format compatibility and integer readback evidence gate
+the latter route. Numeric conversion is not used to claim preservation of
+SNORM's two negative endpoints or floating-point payload bits.
+Compressed block readback additionally requires a successful per-format raw
+block-copy probe. A copy-image extension and integer readback support alone do
+not establish compressed-to-integer compatibility on the actual runtime.
+Failure of this raw route does not disable ordinary texture copies.
+
+`EXT_buffer_storage` on ES3.1 provides persistent coherent mapping when the
+extension-specific entry point is present. Readback staging copies from its
+existing mapping after completion, rather than mapping the same store twice.
+Contexts without that extension retain the snapshot mapping path. Local GPU
+checks cover an ANGLE D3D11 runtime and a separate installed ANGLE Vulkan runtime;
+an extension absent on one is not classified as absent throughout GLES.
+
+GLES3.1 compute, SSBO and indirect draw support also provide GPU-count drawing.
+At the call position, native buffer copies snapshot the count and compact all
+argument records before any draw. A bounded compute utility masks records above
+the GPU count and rebases indexed offsets; native indirect draws then consume
+the resulting records. SSBO processing is chunked by actual device limits, and
+the raster program and buffer bindings are restored. This uses O(maximum draw
+count) temporary bytes and native draw calls without CPU count readback or an
+application command cache. Desktop GL continues to prefer its native count
+entry point. Ordinary indirect ABI and device restrictions still apply.
+
 #### Browser WebGL2
 
 WebGL2 uses browser-thread JavaScript objects and the immediate contract. The
@@ -832,9 +875,9 @@ also validates the native resource slots consumed by specialization. Capacity be
 the caller's workload, rather than being inferred from a driver maximum or
 turned into a Core allocation policy.
 
-Desktop GL4+ specializes runtime binding arrays to this layout capacity before
+Desktop GL4+ and GLES3+ specialize runtime binding arrays to this layout capacity before
 GLSL generation, using the ordinary fixed-array binding path. Nonuniform
-sampled-texture and storage-buffer indexing is available on desktop contexts
+sampled-texture and storage-buffer indexing is available on native contexts
 with storage-buffer support. Short prefixes and explicitly permitted holes
 use typed dummy slots; accessing an absent element remains invalid caller
 behavior. UBOs, SSBOs, sampled textures, samplers, and storage images retain
@@ -842,7 +885,7 @@ their individual resource support checks. Specialization uses native slots,
 not bindless handles: per-stage limits and the generated texture/sampler pair
 count bound pipeline creation. Divergent implicit samples evaluate candidates
 before selection to preserve derivatives, which can increase sampling cost.
-GLES and WebGL do not inherit these capability declarations.
+WebGL capability declarations remain separate from native contexts.
 
 Binding arrays have exactly one dimension: present elements are concrete
 resources, including when the layout allows holes. Nested arrays, even empty
@@ -882,7 +925,7 @@ Callers explicitly flush modified lease-relative byte ranges before GPU readers
 and invalidate completed GPU-written ranges before host readers. Lease release
 does not guarantee publication of unflushed host changes. In particular, dropping
 a previously flushed staging lease must not overwrite later GPU updates.
-Desktop GL4.4 or `ARB_buffer_storage` uses immutable, persistently mapped coherent
+Desktop GL4.4/`ARB_buffer_storage` and GLES3.1/`EXT_buffer_storage` use immutable, persistently mapped coherent
 storage for mappable buffers. A lease retains the buffer and its context until
 CPU access ends; native unmapping and deletion occur only during retirement.
 Mapping an existing allocation introduces no GPU wait or copy. Completion and

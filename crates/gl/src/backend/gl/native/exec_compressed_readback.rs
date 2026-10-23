@@ -8,6 +8,19 @@ use crate::backend::gl::api::{
 use glow::HasContext as _;
 
 impl NativeGlProvider {
+    #[cfg(test)]
+    pub(crate) fn compressed_alias_for_test(
+        &self,
+        texture: crate::backend::gl::api::TextureId,
+    ) -> Result<bool, GlError> {
+        let (_, desc) = self.texture("compressed alias fixture", texture)?;
+        Ok(self
+            .discovery
+            .formats()
+            .compressed_alias_readback(desc.format)
+            .is_some())
+    }
+
     pub(super) fn copy_compressed_texture_to_buffer(
         &mut self,
         texture: glow::NativeTexture,
@@ -204,20 +217,18 @@ impl NativeGlProvider {
             .format
             .compressed_info()
             .ok_or_else(|| Self::validation(OP, "missing compressed format"))?;
-        let format = |f| {
-            self.discovery
-                .formats()
-                .get_for(GlFormatResourceKind::Texture, f, 1)
-                .is_some_and(|v| v.renderable && v.copy_source)
-        };
-        let (internal, external, kind) = match info.block_bytes {
-            8 if format(GlFormat::Rg32Uint) => (glow::RG32UI, glow::RG_INTEGER, glow::UNSIGNED_INT),
-            8 if format(GlFormat::Rgba16Uint) => {
-                (glow::RGBA16UI, glow::RGBA_INTEGER, glow::UNSIGNED_SHORT)
-            }
-            16 if format(GlFormat::Rgba32Uint) => {
-                (glow::RGBA32UI, glow::RGBA_INTEGER, glow::UNSIGNED_INT)
-            }
+        let alias = self
+            .discovery
+            .formats()
+            .compressed_alias_readback(desc.format)
+            .ok_or(GlError::Unsupported {
+                operation: OP,
+                reason: "compressed block image copy/readback probe failed",
+            })?;
+        let (internal, external, kind) = match alias {
+            GlFormat::Rg32Uint => (glow::RG32UI, glow::RG_INTEGER, glow::UNSIGNED_INT),
+            GlFormat::Rgba16Uint => (glow::RGBA16UI, glow::RGBA_INTEGER, glow::UNSIGNED_SHORT),
+            GlFormat::Rgba32Uint => (glow::RGBA32UI, glow::RGBA_INTEGER, glow::UNSIGNED_INT),
             _ => {
                 return Err(GlError::Unsupported {
                     operation: OP,

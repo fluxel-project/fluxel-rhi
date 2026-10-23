@@ -31,6 +31,27 @@ impl NativeGlProvider {
             usize::try_from(source.size)
                 .map_err(|_| GlError::OutOfMemory { operation: OP })?
         ];
+        // Readback tickets retain a private staging buffer until the caller's
+        // covering completion has been observed. When GLES buffer storage
+        // keeps that staging store persistently mapped, a second map is
+        // invalid. Copy from the existing coherent mapping instead. No public
+        // map lease aliases the private staging allocation.
+        if matches!(
+            self.discovery.context().profile(),
+            crate::backend::gl::api::GlFamilyProfile::Embedded { .. }
+        ) {
+            if let Some(&mapped) = self.persistent_buffers.get(&source.buffer) {
+                let start = usize::try_from(source.offset)
+                    .map_err(|_| Self::validation(OP, "offset exceeds address range"))?;
+                // SAFETY: buffer creation mapped its entire validated store;
+                // completion covers its GPU write, the ticket owns the buffer,
+                // and the output is a separate allocation of exactly this size.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(mapped.add(start), out.as_mut_ptr(), out.len())
+                };
+                return Ok(out);
+            }
+        }
         // SAFETY: current context; the validated live buffer is bound to the
         // copy-read target used by the read route below.
         unsafe { self.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(name)) };

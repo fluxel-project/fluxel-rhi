@@ -6,6 +6,9 @@
 
 use super::*;
 
+#[path = "glow_compressed.rs"]
+mod glow_compressed;
+
 #[path = "glow_formats.rs"]
 mod glow_formats;
 
@@ -14,6 +17,8 @@ pub(crate) struct GlowProbes<'a> {
     gl: &'a glow::Context,
     get_query_iv: Option<GetQueryivFn>,
     copy_image_symbols: [bool; 3],
+    copy_image_entries: [*const core::ffi::c_void; 3],
+    unmap_buffer: Option<super::super::context::UnmapBufferFn>,
     compressed_get_symbol: bool,
     texture_sub_image_read_symbol: bool,
     tex_image_read_symbol: bool,
@@ -30,6 +35,8 @@ impl<'a> GlowProbes<'a> {
         gl: &'a glow::Context,
         get_query_iv: Option<GetQueryivFn>,
         copy_image_symbols: [bool; 3],
+        copy_image_entries: [*const core::ffi::c_void; 3],
+        unmap_buffer: Option<super::super::context::UnmapBufferFn>,
         compressed_get_symbol: bool,
         texture_sub_image_read_symbol: bool,
         tex_image_read_symbol: bool,
@@ -40,6 +47,8 @@ impl<'a> GlowProbes<'a> {
             gl,
             get_query_iv,
             copy_image_symbols,
+            copy_image_entries,
+            unmap_buffer,
             compressed_get_symbol,
             texture_sub_image_read_symbol,
             tex_image_read_symbol,
@@ -80,10 +89,22 @@ struct ProbeScratch<'a> {
     framebuffer: Option<glow::NativeFramebuffer>,
     /// Indexed bindings that must be unbound before the objects are deleted.
     storage_bound: bool,
+    draw_indirect_supported: bool,
+    dispatch_indirect_supported: bool,
 }
 
 impl<'a> ProbeScratch<'a> {
     fn new(gl: &'a glow::Context) -> Self {
+        use glow::HasContext as _;
+        let version = gl.version();
+        let extensions = gl.supported_extensions();
+        let (draw_indirect_supported, dispatch_indirect_supported) = indirect_cleanup_support(
+            version.is_embedded,
+            version.major,
+            version.minor,
+            extensions.contains("GL_ARB_draw_indirect"),
+            extensions.contains("GL_ARB_compute_shader"),
+        );
         Self {
             gl,
             program: None,
@@ -93,7 +114,28 @@ impl<'a> ProbeScratch<'a> {
             renderbuffer: None,
             framebuffer: None,
             storage_bound: false,
+            draw_indirect_supported,
+            dispatch_indirect_supported,
         }
+    }
+}
+
+/// Returns the targets that may be named during scratch cleanup. This is
+/// derived once from glow's cached context metadata; Drop does not query GL.
+const fn indirect_cleanup_support(
+    embedded: bool,
+    major: u32,
+    minor: u32,
+    arb_draw_indirect: bool,
+    arb_compute_shader: bool,
+) -> (bool, bool) {
+    if embedded {
+        let at_least_es31 = major > 3 || (major == 3 && minor >= 1);
+        (at_least_es31, at_least_es31)
+    } else {
+        let draw = major >= 4 || arb_draw_indirect;
+        let dispatch = major > 4 || (major == 4 && minor >= 3) || arb_compute_shader;
+        (draw, dispatch)
     }
 }
 
@@ -111,9 +153,15 @@ impl Drop for ProbeScratch<'_> {
                 gl.bind_vertex_array(None);
             }
             gl.bind_buffer(glow::ARRAY_BUFFER, None);
-            gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, None);
-            gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, None);
-            gl.bind_buffer(glow::DISPATCH_INDIRECT_BUFFER, None);
+            // The element binding is VAO state; after unbinding our VAO there
+            // is no private binding to release, and core GL may reject an EBO
+            // mutation with VAO zero. Indirect targets are version-gated.
+            if self.draw_indirect_supported {
+                gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, None);
+            }
+            if self.dispatch_indirect_supported {
+                gl.bind_buffer(glow::DISPATCH_INDIRECT_BUFFER, None);
+            }
             if self.storage_bound {
                 gl.bind_buffer_base(glow::SHADER_STORAGE_BUFFER, 0, None);
             }
@@ -150,7 +198,53 @@ impl Drop for ProbeScratch<'_> {
     }
 }
 
+#[cfg(test)]
+mod cleanup_tests {
+    use super::indirect_cleanup_support;
+
+    #[test]
+    fn indirect_cleanup_never_names_unsupported_targets() {
+        assert_eq!(
+            indirect_cleanup_support(true, 3, 0, false, false),
+            (false, false)
+        );
+        assert_eq!(
+            indirect_cleanup_support(true, 3, 1, false, false),
+            (true, true)
+        );
+        assert_eq!(
+            indirect_cleanup_support(false, 4, 0, false, false),
+            (true, false)
+        );
+        assert_eq!(
+            indirect_cleanup_support(false, 4, 2, false, false),
+            (true, false)
+        );
+        assert_eq!(
+            indirect_cleanup_support(false, 4, 3, false, false),
+            (true, true)
+        );
+        assert_eq!(
+            indirect_cleanup_support(false, 3, 3, true, false),
+            (true, false)
+        );
+        assert_eq!(
+            indirect_cleanup_support(false, 3, 3, false, true),
+            (false, true)
+        );
+    }
+}
+
 impl NativeGlProbes for GlowProbes<'_> {
+    fn compressed_alias_read(
+        &self,
+        format: crate::backend::gl::api::GlFormat,
+        integer: crate::backend::gl::api::GlFormat,
+        entry: usize,
+    ) -> ProbeAnswer {
+        self.probe_compressed_alias_read(format, integer, entry)
+    }
+
     fn multisample_array_attachment(
         &self,
         format: u32,
@@ -189,6 +283,10 @@ impl NativeGlProbes for GlowProbes<'_> {
         bytes: u32,
     ) -> ProbeAnswer {
         self.probe_reads_integer_format(format, external, kind, bytes)
+    }
+
+    fn reads_unorm_format(&self, format: crate::backend::gl::api::GlFormat) -> ProbeAnswer {
+        self.probe_reads_unorm_format(format)
     }
 
     fn binds_image_format(

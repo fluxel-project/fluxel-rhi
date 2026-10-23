@@ -17,8 +17,55 @@ pub(super) fn exact_integer_alias(format: GlFormat) -> Option<GlFormat> {
     })
 }
 
+/// GLES copy-image compatible same-size integer image classes.
+pub(super) fn gles_exact_integer_alias(
+    format: GlFormat,
+    extensions: &crate::backend::gl::api::GlExtensionSet,
+) -> Option<GlFormat> {
+    let norm16 = extensions
+        .raw_reported_names()
+        .any(|n| n == "GL_EXT_texture_norm16")
+        && extensions
+            .raw_reported_names()
+            .any(|n| n == "GL_EXT_copy_image" || n == "GL_EXT_texture_view");
+    Some(match format {
+        GlFormat::R8Unorm | GlFormat::R8Snorm => GlFormat::R8Uint,
+        GlFormat::Rg8Unorm | GlFormat::Rg8Snorm | GlFormat::R16Float => GlFormat::R16Uint,
+        GlFormat::Rgba8Unorm
+        | GlFormat::Rgba8Srgb
+        | GlFormat::Rgba8Snorm
+        | GlFormat::Rg16Float
+        | GlFormat::R32Float
+        | GlFormat::Rgb9e5Ufloat
+        | GlFormat::Rg11b10Ufloat
+        | GlFormat::Rgb10a2Unorm => GlFormat::R32Uint,
+        GlFormat::Rgba16Float | GlFormat::Rg32Float => GlFormat::Rg32Uint,
+        GlFormat::Rgba32Float => GlFormat::Rgba32Uint,
+        GlFormat::R16Unorm | GlFormat::R16Snorm if norm16 => GlFormat::R16Uint,
+        GlFormat::Rg16Unorm | GlFormat::Rg16Snorm if norm16 => GlFormat::R32Uint,
+        GlFormat::Rgba16Unorm | GlFormat::Rgba16Snorm if norm16 => GlFormat::Rg32Uint,
+        _ => return None,
+    })
+}
+
 impl NativeGlProvider {
-    /// Seeds test-only SNORM storage by copying raw bits from a matching integer image.
+    pub(super) fn supports_gles_exact_alias_readback(&self, format: GlFormat) -> bool {
+        matches!(
+            self.discovery.context().profile(),
+            GlFamilyProfile::Embedded { .. }
+        ) && self.discovery.formats().exact_alias_readback(format)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gles_exact_alias_for_test(
+        &self,
+        texture: crate::backend::gl::api::TextureId,
+    ) -> Result<bool, GlError> {
+        let (_, desc) = self.texture("alias fixture", texture)?;
+        Ok(self.supports_gles_exact_alias_readback(desc.format))
+    }
+
+    /// Seeds test-only storage by copying raw bits from a matching integer image.
     #[cfg(test)]
     pub(crate) fn seed_exact_alias_for_test(
         &mut self,
@@ -27,7 +74,16 @@ impl NativeGlProvider {
     ) -> Result<(), GlError> {
         let (src, src_desc) = self.texture("seed alias", source)?;
         let (dst, dst_desc) = self.texture("seed alias", destination)?;
-        if exact_integer_alias(dst_desc.format) != Some(src_desc.format) {
+        let alias = match self.discovery.context().profile() {
+            GlFamilyProfile::Desktop { .. } => exact_integer_alias(dst_desc.format),
+            GlFamilyProfile::Embedded { .. }
+                if self.supports_gles_exact_alias_readback(dst_desc.format) =>
+            {
+                gles_exact_integer_alias(dst_desc.format, self.discovery.extensions())
+            }
+            _ => None,
+        };
+        if alias != Some(src_desc.format) {
             return Err(Self::validation("seed alias", "incompatible formats"));
         }
         let region = |texture| GlTextureRegion {
@@ -65,14 +121,19 @@ impl NativeGlProvider {
         layout: GlPixelLayout,
     ) -> Result<(), GlError> {
         const OP: &str = "exact-alias-texture-to-buffer";
-        let alias = exact_integer_alias(desc.format)
-            .ok_or_else(|| Self::validation(OP, "missing integer alias"))?;
+        let alias = match self.discovery.context().profile() {
+            GlFamilyProfile::Desktop { .. } => exact_integer_alias(desc.format),
+            GlFamilyProfile::Embedded { .. }
+                if self.supports_gles_exact_alias_readback(desc.format) =>
+            {
+                gles_exact_integer_alias(desc.format, self.discovery.extensions())
+            }
+            _ => None,
+        }
+        .ok_or_else(|| Self::validation(OP, "missing integer alias"))?;
         let alias_layout = super::exec_copy::upload_pixel_format(alias)
             .ok_or_else(|| Self::validation(OP, "missing alias layout"))?;
-        if !matches!(
-            self.discovery.context().profile(),
-            GlFamilyProfile::Desktop { .. }
-        ) || !self
+        if !self
             .discovery
             .formats()
             .get_for(GlFormatResourceKind::Texture, desc.format, 1)

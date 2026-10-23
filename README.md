@@ -59,7 +59,7 @@ topologies, shader stages, queue plans, or device tiers.
 | Metal | Graphics and compute, up to eight render targets, depth/stencil, dynamic uniform/storage offsets, indirect draw and dispatch, standalone clears, copies/resolves, mapping, placement heaps, binary archives, and native interop | Device-gated argument arrays/indexing, mesh/object shaders, acceleration structures and ray queries, multiview, timestamp/occlusion and separate pass counters, cross-packet graphics/compute synchronization, GPU-count multi-draw, placement sparse textures, and external resources. No Metal tests or GPU acceptance were run in this phase, as requested. |
 | Browser WebGPU | Graphics and compute, MRT, depth/stencil, dynamic offsets, indirect draw/dispatch, multi-draw including GPU-count lowering, standalone clears, copies/blits/resolves, buffer mapping and readback, occlusion and optional timestamp queries | Optional native features and limits gate compressed formats, immediates, subgroups, dual-source blending and unclipped depth. Ray/mesh, sparse resources, native multiple queues, multiview, complete pipeline statistics, native heap placement and serialized pipeline caches have no matching standard browser route. |
 | Desktop GL4+ | Immediate graphics, MRT, depth/stencil transfers, copies/resolves, bounded runtime binding arrays, GPU-staged readback, compute and indirect commands where supported | Native limits gate nonuniform indexing, persistent coherent mapping, GPU-count drawing, queries/statistics, program binary caches, conservative rasterization and contiguous OVR multiview. |
-| GLES3+ | Immediate graphics, MRT, depth/stencil, copies and resolves; compute and indirect commands where supported | Context, extension and device limits gate queries, program caches and contiguous OVR multiview; desktop-specific capability declarations are not inherited. |
+| GLES3+ | Immediate graphics, MRT, bounded runtime arrays, depth/stencil uploads and copies, GPU-staged readback; compute, nonuniform indexing and indirect commands where supported | ES3.1 and extensions gate GPU-count lowering, sampled depth/stencil readback, coherent persistent mapping, exact color readback, queries, program caches and contiguous OVR multiview. |
 | Browser WebGL2 | Immediate graphics, MRT, depth/stencil, copies/resolves and occlusion | Extensions gate compressed textures and other optional operations. Standard WebGL2 has no compute or compressed-block readback. |
 
 Metal's separate pass-boundary sample API exposes up to eight native counter
@@ -160,7 +160,10 @@ ASTC require a supporting device for GPU validation.
 For GL-family compressed textures, query `texture_support` for the exact
 format, dimension, and usage. Compressed `COPY_SRC` depends on native image-copy
 and readback entry points; GLES also requires a compatible copy-image route and
-a probed integer attachment/readback path. WebGL2 has no standard raw compressed
+a probed integer attachment/readback path. GLES additionally probes the actual
+compressed-to-integer block copy per format; a driver may expose image-copy
+extensions while rejecting that particular reinterpretation. Ordinary
+texture-to-texture copies retain their independent support. WebGL2 has no standard raw compressed
 block readback. The WGL AMD fixture checked raw blocks for 11 representative
 formats, and the GLES ES 3.2 run used Mesa llvmpipe. ASTC HDR was skipped on
 those devices. Windows ANGLE ES 3.1 skips compressed readback when the required
@@ -203,6 +206,17 @@ GL4.3 compute. Desktop OVR multiview supports contiguous view intervals, with
 texture-view aliases required for nonzero attachment bases. Arbitrary masks,
 multiview timer queries, and compressed color clears have no supported native
 route; see the [desktop GL contract](documents/design-rhi.md#desktop-gl4--wgl).
+
+GLES runtime binding arrays use the same bounded specialization, and nonuniform
+indexing requires storage-buffer support. ES3.1 depth/stencil buffer copies use
+GPU texture fetches and byte packing; standalone stencil textures require ES3.2
+or `OES_texture_stencil8`. Exact ordinary-color readback uses validated native
+format/type pairs or compatible integer image copies with the required
+extensions. Focused GPU checks include SNORM endpoint encodings and floating
+negative zero, NaN payloads and subnormals. `EXT_buffer_storage` provides coherent
+persistent mappings on contexts that expose its actual entry point. The local
+GLES matrix includes two existing ANGLE runtimes on the Radeon 780M; capabilities
+and coverage differ between their D3D11 and Vulkan renderers.
 
 GL implements `ImmediateBackend`; it does not expose deferred queue submission.
 The GL family explicitly does not support secondary command recording,

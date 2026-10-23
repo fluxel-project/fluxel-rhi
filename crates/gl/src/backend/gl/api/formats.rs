@@ -110,6 +110,8 @@ pub(crate) struct GlFormatCapabilities {
 pub(crate) struct GlFormatTable {
     entries: BTreeMap<(GlFormat, GlFormatResourceKind, u32), GlFormatCapabilities>,
     exact_buffer_readback: BTreeSet<GlFormat>,
+    exact_alias_readback: BTreeSet<GlFormat>,
+    compressed_alias_readback: BTreeMap<GlFormat, GlFormat>,
 }
 
 impl GlFormatTable {
@@ -120,6 +122,20 @@ impl GlFormatTable {
 
     pub(crate) fn exact_buffer_readback(&self, format: GlFormat) -> bool {
         self.exact_buffer_readback.contains(&format)
+    }
+    pub(crate) fn mark_exact_alias_readback(&mut self, format: GlFormat) {
+        self.exact_alias_readback.insert(format);
+    }
+
+    pub(crate) fn exact_alias_readback(&self, format: GlFormat) -> bool {
+        self.exact_alias_readback.contains(&format)
+    }
+    pub(crate) fn mark_compressed_alias_readback(&mut self, format: GlFormat, alias: GlFormat) {
+        self.compressed_alias_readback.insert(format, alias);
+    }
+
+    pub(crate) fn compressed_alias_readback(&self, format: GlFormat) -> Option<GlFormat> {
+        self.compressed_alias_readback.get(&format).copied()
     }
     /// Inserts one exact observation; conflicting repeated observations are rejected.
     pub(crate) fn record(

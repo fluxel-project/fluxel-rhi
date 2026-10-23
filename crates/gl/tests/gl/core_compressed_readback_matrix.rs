@@ -1,7 +1,7 @@
 //! Exact compressed-block copies across the Core texture-to-buffer contract.
 use super::*;
 
-async fn compressed_readback_matrix(d: &Device<Gl>, expect_no_copy: bool) {
+async fn compressed_readback_matrix(d: &Device<Gl>, expect_no_copy: bool, gles: bool) {
     let small = [0xf0, 0, 0, 1, 0x44, 0x11, 0x55, 0x11];
     let mut large = vec![0x80, 0, 0, 0, 0, 0, 0, 0];
     large.extend_from_slice(&small);
@@ -16,7 +16,11 @@ async fn compressed_readback_matrix(d: &Device<Gl>, expect_no_copy: bool) {
     ];
     let cases: Vec<(TextureFormat, Vec<u8>)> = vec![
         (TextureFormat::Bc1RgbaUnorm, small.to_vec()),
+        (TextureFormat::Bc1RgbaUnormSrgb, small.to_vec()),
+        (TextureFormat::Bc2RgbaUnorm, large.clone()),
+        (TextureFormat::Bc2RgbaUnormSrgb, large.clone()),
         (TextureFormat::Bc3RgbaUnorm, large.clone()),
+        (TextureFormat::Bc3RgbaUnormSrgb, large.clone()),
         (TextureFormat::Bc4RUnorm, small.to_vec()),
         (TextureFormat::Bc5RgUnorm, large.clone()),
         (TextureFormat::Bc6hRgbUfloat, bc6.to_vec()),
@@ -42,6 +46,7 @@ async fn compressed_readback_matrix(d: &Device<Gl>, expect_no_copy: bool) {
             astc_hdr.to_vec(),
         ),
     ];
+    let mut executed = 0;
     for (format, block) in cases {
         let desc = TextureDesc {
             label: None,
@@ -84,6 +89,23 @@ async fn compressed_readback_matrix(d: &Device<Gl>, expect_no_copy: bool) {
             continue;
         }
         let texture = d.create_texture(&desc).unwrap();
+        #[cfg(feature = "native-gles-egl")]
+        if gles {
+            // SAFETY: the texture and device belong to this current context.
+            let native = unsafe { d.native_ref() };
+            let texture_id = unsafe { texture.native_ref() }.id;
+            if !native
+                .0
+                .with_native("compressed alias fixture", |p| {
+                    p.compressed_alias_for_test(texture_id)
+                })
+                .unwrap()
+            {
+                eprintln!("SKIP {format:?}: compressed block raw readback probe failed");
+                continue;
+            }
+        }
+        let _ = gles;
         let buffer = d
             .create_buffer(&BufferDesc {
                 label: None,
@@ -169,10 +191,16 @@ async fn compressed_readback_matrix(d: &Device<Gl>, expect_no_copy: bool) {
             expected,
             "raw compressed blocks for {format:?}"
         );
+        executed += 1;
         eprintln!(
             "EXECUTED {format:?}: {}-byte blocks, mip/layer/subregion/padding",
             block.len()
         );
+    }
+    if executed == 0 {
+        eprintln!("SKIP compressed readback: no format passed the runtime capability checks");
+    } else {
+        eprintln!("EXECUTED compressed readback formats: {executed}");
     }
 }
 
@@ -206,7 +234,7 @@ fn wgl_core_compressed_readback_matrix() {
     // SAFETY: the window outlives the GL device and all its resources on this thread.
     let native = unsafe { GlInstance::from_wgl_window(&window, [120, 64]) }.unwrap();
     let d = block_on(open(native));
-    block_on(compressed_readback_matrix(&d, false));
+    block_on(compressed_readback_matrix(&d, false, false));
 }
 
 #[cfg(feature = "native-gles-egl")]
@@ -237,7 +265,7 @@ fn gles_core_compressed_readback_matrix() {
     let native =
         GlInstance::gles_pbuffer([8, 8]).expect("open EGL GLES pbuffer for hardware fixture");
     let d = block_on(open(native));
-    block_on(compressed_readback_matrix(&d, false));
+    block_on(compressed_readback_matrix(&d, false, true));
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
@@ -255,5 +283,5 @@ async fn webgl2_core_compressed_readback_matrix() {
     canvas.set_width(8);
     canvas.set_height(8);
     let d = open(GlInstance::from_webgl2_canvas(canvas).unwrap()).await;
-    compressed_readback_matrix(&d, true).await;
+    compressed_readback_matrix(&d, true, false).await;
 }

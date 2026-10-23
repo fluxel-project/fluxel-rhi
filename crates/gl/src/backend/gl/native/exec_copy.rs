@@ -136,13 +136,9 @@ impl GlCopyDomainApi for NativeGlProvider {
                 reason: "format lacks a proved copy fact on this context",
             });
         }
-        // glCopyImageSubData copies the whole packed texel, even when Core
-        // requested only one plane. A framebuffer blit preserves the other one.
-        if matches!(
-            source_desc.format,
-            crate::backend::gl::api::GlFormat::Depth24PlusStencil8
-                | crate::backend::gl::api::GlFormat::Depth32FloatStencil8
-        ) {
+        // A selected depth/stencil plane uses an attachment blit. This also
+        // supplies the GLES fallback where copy-image is not available.
+        if source.subresource.aspect != crate::backend::gl::api::GlTextureAspect::Color {
             return self.copy_packed_plane(
                 OP,
                 source,
@@ -223,9 +219,12 @@ impl GlCopyDomainApi for NativeGlProvider {
             .validate_for(desc)
             .map_err(|_| Self::validation(OP, "invalid texture region"))?;
         if matches!(
+            self.discovery.context().profile(),
+            crate::backend::gl::api::GlFamilyProfile::Embedded { .. }
+        ) && matches!(
             desc.format,
-            crate::backend::gl::api::GlFormat::Depth24PlusStencil8
-                | crate::backend::gl::api::GlFormat::Depth32FloatStencil8
+            crate::backend::gl::api::GlFormat::Depth16Unorm
+                | crate::backend::gl::api::GlFormat::Depth32Float
         ) {
             return self.upload_packed_plane(
                 OP,
@@ -238,17 +237,17 @@ impl GlCopyDomainApi for NativeGlProvider {
         }
         if matches!(
             desc.format,
-            crate::backend::gl::api::GlFormat::Depth16Unorm
-                | crate::backend::gl::api::GlFormat::Depth32Float
-                | crate::backend::gl::api::GlFormat::Stencil8
-        ) && !matches!(
-            self.discovery.context().profile(),
-            crate::backend::gl::api::GlFamilyProfile::Desktop { .. }
+            crate::backend::gl::api::GlFormat::Depth24PlusStencil8
+                | crate::backend::gl::api::GlFormat::Depth32FloatStencil8
         ) {
-            return Err(GlError::Unsupported {
-                operation: OP,
-                reason: "depth CPU texture upload currently requires desktop GL",
-            });
+            return self.upload_packed_plane(
+                OP,
+                name,
+                desc,
+                destination,
+                layout,
+                packed_upload::PackedSource::Cpu(bytes),
+            );
         }
         if desc.format == crate::backend::gl::api::GlFormat::Stencil8
             && !self
@@ -313,75 +312,88 @@ impl GlCopyDomainApi for NativeGlProvider {
         let saved = self.pixel_store;
         // SAFETY: current-context contract; the layout was validated and the
         // exact tracked pixel-store state is restored on every return path.
+        let prior_unpack_buffer =
+            unsafe { self.gl.get_parameter_i32(glow::PIXEL_UNPACK_BUFFER_BINDING) as u32 };
         let result = unsafe {
-            self.apply_tight_unpack();
-            match desc.dimension {
-                crate::backend::gl::api::GlTextureDimension::D1 => {
-                    let entry = self
-                        .texture_sub_image_1d
-                        .expect("1D upload entry point was checked before mutation");
-                    self.gl.bind_texture(glow::TEXTURE_1D, Some(name));
-                    entry(
-                        glow::TEXTURE_1D,
-                        level,
-                        x,
-                        width,
-                        gl_format,
-                        gl_type,
-                        payload.as_ptr().cast(),
-                    );
+            (|| {
+                self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
+                self.apply_tight_unpack();
+                match desc.dimension {
+                    crate::backend::gl::api::GlTextureDimension::D1 => {
+                        let entry = self
+                            .texture_sub_image_1d
+                            .expect("1D upload entry point was checked before mutation");
+                        self.gl.bind_texture(glow::TEXTURE_1D, Some(name));
+                        entry(
+                            glow::TEXTURE_1D,
+                            level,
+                            x,
+                            width,
+                            gl_format,
+                            gl_type,
+                            payload.as_ptr().cast(),
+                        );
+                    }
+                    crate::backend::gl::api::GlTextureDimension::D2 => {
+                        self.gl.bind_texture(glow::TEXTURE_2D, Some(name));
+                        self.gl.tex_sub_image_2d(
+                            glow::TEXTURE_2D,
+                            level,
+                            x,
+                            y,
+                            width,
+                            height,
+                            gl_format,
+                            gl_type,
+                            glow::PixelUnpackData::Slice(Some(payload.as_ref())),
+                        );
+                    }
+                    crate::backend::gl::api::GlTextureDimension::D2Array
+                    | crate::backend::gl::api::GlTextureDimension::D3 => {
+                        let z = destination
+                            .subresource
+                            .base_layer
+                            .checked_add(destination.origin[2])
+                            .and_then(|value| i32::try_from(value).ok())
+                            .ok_or_else(|| Self::validation(OP, "array layer exceeds GLint"))?;
+                        let depth =
+                            i32::try_from(destination.extent.depth_or_layers).map_err(|_| {
+                                Self::validation(OP, "array layer count exceeds GLsizei")
+                            })?;
+                        let target =
+                            if desc.dimension == crate::backend::gl::api::GlTextureDimension::D3 {
+                                glow::TEXTURE_3D
+                            } else {
+                                glow::TEXTURE_2D_ARRAY
+                            };
+                        self.gl.bind_texture(target, Some(name));
+                        self.gl.tex_sub_image_3d(
+                            target,
+                            level,
+                            x,
+                            y,
+                            z,
+                            width,
+                            height,
+                            depth,
+                            gl_format,
+                            gl_type,
+                            glow::PixelUnpackData::Slice(Some(payload.as_ref())),
+                        );
+                    }
+                    _ => unreachable!("upload preflight admitted an unsupported texture dimension"),
                 }
-                crate::backend::gl::api::GlTextureDimension::D2 => {
-                    self.gl.bind_texture(glow::TEXTURE_2D, Some(name));
-                    self.gl.tex_sub_image_2d(
-                        glow::TEXTURE_2D,
-                        level,
-                        x,
-                        y,
-                        width,
-                        height,
-                        gl_format,
-                        gl_type,
-                        glow::PixelUnpackData::Slice(Some(payload.as_ref())),
-                    );
-                }
-                crate::backend::gl::api::GlTextureDimension::D2Array
-                | crate::backend::gl::api::GlTextureDimension::D3 => {
-                    let z = destination
-                        .subresource
-                        .base_layer
-                        .checked_add(destination.origin[2])
-                        .and_then(|value| i32::try_from(value).ok())
-                        .ok_or_else(|| Self::validation(OP, "array layer exceeds GLint"))?;
-                    let depth = i32::try_from(destination.extent.depth_or_layers)
-                        .map_err(|_| Self::validation(OP, "array layer count exceeds GLsizei"))?;
-                    let target =
-                        if desc.dimension == crate::backend::gl::api::GlTextureDimension::D3 {
-                            glow::TEXTURE_3D
-                        } else {
-                            glow::TEXTURE_2D_ARRAY
-                        };
-                    self.gl.bind_texture(target, Some(name));
-                    self.gl.tex_sub_image_3d(
-                        target,
-                        level,
-                        x,
-                        y,
-                        z,
-                        width,
-                        height,
-                        depth,
-                        gl_format,
-                        gl_type,
-                        glow::PixelUnpackData::Slice(Some(payload.as_ref())),
-                    );
-                }
-                _ => unreachable!("upload preflight admitted an unsupported texture dimension"),
-            }
-            self.driver_error(OP)
+                self.driver_error(OP)
+            })()
         };
         // SAFETY: current-context contract; exact snapshot restoration.
-        unsafe { self.restore_pixel_store(UnpackDirection::Unpack, saved) };
+        unsafe {
+            self.gl.bind_buffer(
+                glow::PIXEL_UNPACK_BUFFER,
+                std::num::NonZeroU32::new(prior_unpack_buffer).map(glow::NativeBuffer),
+            );
+            self.restore_pixel_store(UnpackDirection::Unpack, saved);
+        }
         result
     }
 
@@ -647,3 +659,7 @@ pub(super) mod packed_upload;
 
 #[path = "exec_copy_stencil_pack.rs"]
 mod stencil_pack;
+
+#[cfg(test)]
+#[path = "exec_copy_depth_staging_tests.rs"]
+mod depth_staging_tests;

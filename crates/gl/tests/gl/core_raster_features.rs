@@ -614,7 +614,7 @@ mod native_color_readback;
 #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 #[path = "core_native_integer_copy.rs"]
 mod native_integer_copy;
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 #[path = "core_rgb9e5_readback.rs"]
 mod rgb9e5_readback;
 
@@ -708,27 +708,27 @@ mod binding_direct_image_units;
 #[path = "core_query_stencil_extract.rs"]
 mod query_stencil_extract;
 
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 #[path = "core_stencil_transfer.rs"]
 mod stencil_transfer;
 
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 #[path = "core_binding_runtime_prefix.rs"]
 mod binding_runtime_prefix;
 
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 #[path = "core_binding_runtime_divergent_storage.rs"]
 mod binding_runtime_divergent_storage;
 
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 #[path = "core_binding_runtime_image.rs"]
 mod binding_runtime_image;
 
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 #[path = "core_binding_runtime_hole.rs"]
 mod binding_runtime_hole;
 
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 #[path = "core_binding_runtime_uniform.rs"]
 mod binding_runtime_uniform;
 
@@ -744,6 +744,33 @@ mod desktop_multiview;
 #[path = "core_direct_color_readback.rs"]
 mod direct_color_readback;
 
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 #[path = "core_snorm_endpoint_readback.rs"]
 mod snorm_endpoint_readback;
+
+#[cfg(feature = "native-gles-egl")]
+#[path = "core_gles_packed_transfer.rs"]
+mod gles_packed_transfer;
+
+#[cfg(feature = "native-gles-egl")]
+#[path = "core_gles_occlusion.rs"]
+mod gles_occlusion;
+
+#[cfg(feature = "native-gles-egl")]
+#[path = "core_gles_exact_alias.rs"]
+mod gles_exact_alias;
+
+#[cfg(feature = "native-gles-egl")]
+#[path = "core_gles_standalone_depth.rs"]
+mod gles_standalone_depth;
+
+#[path = "core_gles_unorm_readback.rs"]
+mod gles_unorm_readback;
+
+#[cfg(feature = "native-gles-egl")]
+#[path = "core_gles_plane_readback.rs"]
+mod gles_plane_readback;
+
+#[cfg(feature = "native-gles-egl")]
+#[path = "core_gles_float_alias.rs"]
+mod gles_float_alias;

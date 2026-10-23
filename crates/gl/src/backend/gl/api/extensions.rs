@@ -157,6 +157,10 @@ pub enum GlKnownExtension {
     ExtFloatBlend,
     /// Float texture filtering.
     OesTextureFloatLinear,
+    /// GLES stencil-only textures.
+    OesTextureStencil8,
+    /// Desktop stencil-only textures.
+    ArbTextureStencil8,
     /// 16-bit normalized texture formats in GLES and WebGL2.
     ExtTextureNorm16,
     /// Polygon depth-bias clamp in GL and WebGL extension routes.
@@ -189,6 +193,15 @@ pub enum GlKnownExtension {
     ArbTextureCompressionBptc,
     /// Native S3TC / BC1-3 compressed-texture route.
     ExtTextureCompressionS3tc,
+    /// Native DXT1-only compressed-texture route.
+    ExtTextureCompressionDxt1,
+    /// ANGLE DXT3-only compressed-texture route.
+    AngleTextureCompressionDxt3,
+    /// ANGLE DXT5-only compressed-texture route.
+    AngleTextureCompressionDxt5,
+    /// Native sRGB S3TC formats; this supplements, rather than replaces, a
+    /// matching DXT base-format route.
+    ExtTextureCompressionS3tcSrgb,
     /// Native RGTC / BC4-5 compressed-texture route.
     ExtTextureCompressionRgtc,
     /// Desktop ETC2/EAC compatibility route.
@@ -240,6 +253,8 @@ impl GlKnownExtension {
             Self::ExtColorBufferFloat => "EXT_color_buffer_float",
             Self::ExtFloatBlend => "EXT_float_blend",
             Self::OesTextureFloatLinear => "OES_texture_float_linear",
+            Self::OesTextureStencil8 => "GL_OES_texture_stencil8",
+            Self::ArbTextureStencil8 => "GL_ARB_texture_stencil8",
             Self::ExtTextureNorm16 => "EXT_texture_norm16",
             Self::ExtPolygonOffsetClamp => "EXT_polygon_offset_clamp",
             Self::ExtDepthClamp => "EXT_depth_clamp",
@@ -256,6 +271,10 @@ impl GlKnownExtension {
             Self::KhrDebug => "KHR_debug",
             Self::ArbTextureCompressionBptc => "GL_ARB_texture_compression_bptc",
             Self::ExtTextureCompressionS3tc => "GL_EXT_texture_compression_s3tc",
+            Self::ExtTextureCompressionDxt1 => "GL_EXT_texture_compression_dxt1",
+            Self::AngleTextureCompressionDxt3 => "GL_ANGLE_texture_compression_dxt3",
+            Self::AngleTextureCompressionDxt5 => "GL_ANGLE_texture_compression_dxt5",
+            Self::ExtTextureCompressionS3tcSrgb => "GL_EXT_texture_compression_s3tc_srgb",
             Self::ExtTextureCompressionRgtc => "GL_EXT_texture_compression_rgtc",
             Self::ArbEs3Compatibility => "GL_ARB_ES3_compatibility",
             Self::OesCompressedEtc2Rgb8Texture => "GL_OES_compressed_ETC2_RGB8_texture",
@@ -292,6 +311,8 @@ impl GlKnownExtension {
             Self::ExtColorBufferFloat,
             Self::ExtFloatBlend,
             Self::OesTextureFloatLinear,
+            Self::OesTextureStencil8,
+            Self::ArbTextureStencil8,
             Self::ExtTextureNorm16,
             Self::ExtPolygonOffsetClamp,
             Self::ExtDepthClamp,
@@ -306,6 +327,10 @@ impl GlKnownExtension {
             Self::KhrDebug,
             Self::ArbTextureCompressionBptc,
             Self::ExtTextureCompressionS3tc,
+            Self::ExtTextureCompressionDxt1,
+            Self::AngleTextureCompressionDxt3,
+            Self::AngleTextureCompressionDxt5,
+            Self::ExtTextureCompressionS3tcSrgb,
             Self::ExtTextureCompressionRgtc,
             Self::ArbEs3Compatibility,
             Self::OesCompressedEtc2Rgb8Texture,
@@ -385,6 +410,10 @@ impl GlKnownExtension {
             Self::ExtMultiDrawArrays
             | Self::ExtDisjointTimerQuery
             | Self::ExtTextureCompressionS3tc
+            | Self::ExtTextureCompressionDxt1
+            | Self::AngleTextureCompressionDxt3
+            | Self::AngleTextureCompressionDxt5
+            | Self::ExtTextureCompressionS3tcSrgb
             | Self::ExtTextureCompressionRgtc
             | Self::KhrTextureCompressionAstcLdr
             | Self::KhrTextureCompressionAstcHdr
@@ -403,6 +432,10 @@ impl GlKnownExtension {
             // OVR_multiview2 requires OpenGL 3.0 or OpenGL ES 3.0; WebGL2
             // exposes the same attachment model through its own extension.
             Self::OvrMultiview2 => true,
+            Self::OesTextureStencil8 => {
+                matches!(profile, GlFamilyProfile::Embedded { major, minor } if major > 3 || (major == 3 && minor >= 1))
+            }
+            Self::ArbTextureStencil8 => matches!(profile, GlFamilyProfile::Desktop { .. }),
             Self::OesTextureFloatLinear | Self::ExtTextureNorm16 => matches!(
                 profile,
                 GlFamilyProfile::Embedded { .. } | GlFamilyProfile::WebGl2

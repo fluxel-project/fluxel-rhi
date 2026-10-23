@@ -191,6 +191,12 @@ pub(crate) unsafe fn discover_current_glow_identified(
     let get_query_iv = (!raw_get_query_iv.is_null()).then(|| unsafe {
         core::mem::transmute::<*const c_void, super::probes::GetQueryivFn>(raw_get_query_iv)
     });
+    let raw_unmap_buffer = proc_loader("glUnmapBuffer");
+    // SAFETY: `glUnmapBuffer` has the documented GLboolean ABI on both WGL
+    // and EGL; a missing symbol only disables probes that need the result.
+    let unmap_buffer = (!raw_unmap_buffer.is_null()).then(|| unsafe {
+        core::mem::transmute::<*const c_void, super::context::UnmapBufferFn>(raw_unmap_buffer)
+    });
 
     // SAFETY: forwarded from this function's documented caller contract.
     let probes = GlowProbes::new(
@@ -201,6 +207,12 @@ pub(crate) unsafe fn discover_current_glow_identified(
             !proc_loader("glCopyImageSubDataEXT").is_null(),
             !proc_loader("glCopyImageSubDataOES").is_null(),
         ],
+        [
+            proc_loader("glCopyImageSubData"),
+            proc_loader("glCopyImageSubDataEXT"),
+            proc_loader("glCopyImageSubDataOES"),
+        ],
+        unmap_buffer,
         !proc_loader("glGetCompressedTexImage").is_null(),
         !proc_loader("glGetTextureSubImage").is_null(),
         !proc_loader("glGetTexImage").is_null(),
@@ -291,7 +303,67 @@ fn discover_with_query_pair(
             );
         }
     }
-    let report = run_operation_probes(probes, profile, &extensions, probe_sample_max);
+    let mut report = run_operation_probes(probes, profile, &extensions, probe_sample_max);
+    if matches!(profile, GlFamilyProfile::Embedded { .. }) {
+        let has = |name| extensions.raw_reported_names().any(|n| n == name);
+        // Match the actual provider entry-point preference.
+        let entry = if has("GL_EXT_copy_image") && report.copy_image_symbols[1] {
+            Some(1)
+        } else if has("GL_OES_copy_image") && report.copy_image_symbols[2] {
+            Some(2)
+        } else if matches!(
+            profile,
+            GlFamilyProfile::Embedded {
+                major: 3,
+                minor: 2..
+            }
+        ) && report.copy_image_symbols[0]
+        {
+            Some(0)
+        } else {
+            None
+        };
+        if let Some(entry) = entry {
+            for format in formats::native_optional_compressed_formats() {
+                if !format.is_core_compressed_for(profile)
+                    && formats::native_compressed_extension(format, profile, &extensions).is_none()
+                {
+                    continue;
+                }
+                let info = format.compressed_info().unwrap();
+                let candidates: &[GlFormat] = match info.block_bytes {
+                    8 => &[GlFormat::Rg32Uint, GlFormat::Rgba16Uint],
+                    16 => &[GlFormat::Rgba32Uint],
+                    _ => &[],
+                };
+                for integer in candidates.iter().copied() {
+                    let supported = super::probes::EXACT_INTEGER_FORMATS
+                        .iter()
+                        .position(|v| *v == integer)
+                        .is_some_and(|i| report.exact_integer_read[i] == ProbeAnswer::Passed)
+                        && super::probes::IMAGE_FORMATS
+                            .iter()
+                            .position(|(v, ..)| *v == integer)
+                            .is_some_and(|i| report.ordinary_render[i] == ProbeAnswer::Passed);
+                    if !supported {
+                        continue;
+                    }
+                    let answer = probes.compressed_alias_read(format, integer, entry);
+                    if answer == ProbeAnswer::ContextLost {
+                        return Err(NativeDiscoveryError::QueryFailed(
+                            "context lost or out of memory during compressed readback probe",
+                        ));
+                    }
+                    report
+                        .compressed_alias_read
+                        .insert(format, (integer, answer));
+                    if answer == ProbeAnswer::Passed || answer == ProbeAnswer::ContextLost {
+                        break;
+                    }
+                }
+            }
+        }
+    }
     // Acquisition says the entry points were loaded, never that they work, so
     // the ledger advances only for the extensions whose probe really ran and
     // passed. This runs before `limits` and `native_formats`, which both read
@@ -550,10 +622,16 @@ fn extensions(
         GlKnownExtension::ArbQueryBufferObject,
         GlKnownExtension::ExtTextureFilterAnisotropic,
         GlKnownExtension::OesTextureFloatLinear,
+        GlKnownExtension::OesTextureStencil8,
+        GlKnownExtension::ArbTextureStencil8,
         GlKnownExtension::ExtTextureNorm16,
         GlKnownExtension::KhrRobustness,
         GlKnownExtension::KhrDebug,
         GlKnownExtension::ExtTextureCompressionS3tc,
+        GlKnownExtension::ExtTextureCompressionDxt1,
+        GlKnownExtension::AngleTextureCompressionDxt3,
+        GlKnownExtension::AngleTextureCompressionDxt5,
+        GlKnownExtension::ExtTextureCompressionS3tcSrgb,
         GlKnownExtension::ExtTextureCompressionRgtc,
         GlKnownExtension::ArbTextureCompressionBptc,
         GlKnownExtension::CompressedTextureBptc,

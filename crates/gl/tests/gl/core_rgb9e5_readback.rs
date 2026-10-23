@@ -1,7 +1,7 @@
 //! Desktop RGB9E5 native image copy and whole-mip readback.
 use super::*;
 
-async fn rgb9e5_readback(d: &Device<Gl>) {
+pub(super) async fn rgb9e5_readback(d: &Device<Gl>) {
     let desc = TextureDesc {
         label: None,
         dimension: TextureDimension::D2,

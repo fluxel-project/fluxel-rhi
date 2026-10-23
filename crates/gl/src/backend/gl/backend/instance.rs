@@ -135,7 +135,7 @@ fn gl_capabilities(
             occlusion,
             storage_buffers,
             storage_images,
-            desktop_binding_arrays,
+            native_binding_arrays,
         ) = state
             .with_native("read GL device limits", |provider| {
                 let discovery = provider.discovery();
@@ -150,7 +150,7 @@ fn gl_capabilities(
                     capabilities.supports(GlCapability::OcclusionQuery),
                     capabilities.supports(GlCapability::StorageBuffer),
                     capabilities.supports(GlCapability::StorageImage),
-                    matches!(provider.profile(), crate::backend::gl::api::GlFamilyProfile::Desktop { major, .. } if major >= 4),
+                    matches!(provider.profile(), crate::backend::gl::api::GlFamilyProfile::Desktop { major, .. } if major >= 4) || matches!(provider.profile(), crate::backend::gl::api::GlFamilyProfile::Embedded { major, .. } if major >= 3),
                 ))
             })
             .map_err(native_error)?;
@@ -167,12 +167,12 @@ fn gl_capabilities(
             }]),
             compute: compute_storage,
             native_interop: true,
-            // Desktop runtime arrays specialize to the layout capacity. Each
+            // Native runtime arrays specialize to the layout capacity. Each
             // candidate uses ordinary native slots; pipeline limits still
             // bound resource counts and texture/sampler pair expansion.
             binding_arrays: true,
-            runtime_sized_binding_arrays: desktop_binding_arrays,
-            nonuniform_sampled_texture_and_storage_buffer_indexing: desktop_binding_arrays
+            runtime_sized_binding_arrays: native_binding_arrays,
+            nonuniform_sampled_texture_and_storage_buffer_indexing: native_binding_arrays
                 && storage_buffers,
             storage_textures: storage_images,
             storage_buffers,

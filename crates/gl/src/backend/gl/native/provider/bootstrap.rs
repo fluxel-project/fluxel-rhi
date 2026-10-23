@@ -165,17 +165,18 @@ impl NativeGlProvider {
         let multiview =
             unsafe { super::super::multiview::NativeMultiview::load(&discovery, &proc_loader) };
         let mut provider = Self::assemble(gl, discovery, unmap_buffer);
-        let persistent = matches!(provider.discovery.context().profile(), crate::backend::gl::api::GlFamilyProfile::Desktop { major, minor } if (major, minor) >= (4, 4))
-            || (matches!(
-                provider.discovery.context().profile(),
-                crate::backend::gl::api::GlFamilyProfile::Desktop { .. }
-            ) && provider
-                .discovery
-                .extensions()
+        let extensions = provider.discovery.extensions();
+        let storage = super::super::buffer_mapping::storage_entry(
+            provider.discovery.context().profile(),
+            extensions
                 .raw_reported_names()
-                .any(|name| name == "GL_ARB_buffer_storage"));
-        let storage = proc_loader("glBufferStorage");
-        if persistent && !storage.is_null() {
+                .any(|name| name == "GL_ARB_buffer_storage"),
+            extensions
+                .raw_reported_names()
+                .any(|name| name == "GL_EXT_buffer_storage"),
+            &proc_loader,
+        );
+        if let Some(storage) = storage {
             // SAFETY: the loaded entry has the GL BufferStorage ABI and the
             // feature is supported by this current context.
             provider.buffer_storage = Some(unsafe { core::mem::transmute(storage) });
@@ -197,6 +198,8 @@ impl NativeGlProvider {
                 &provider.gl,
                 None,
                 [false; 3],
+                [core::ptr::null(); 3],
+                None,
                 false,
                 false,
                 false,

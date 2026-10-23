@@ -1,7 +1,7 @@
 //! Bit-preserving signed-normalized texture readback at duplicate endpoints.
 use super::*;
 
-async fn snorm_endpoint_readback(d: &Device<Gl>) {
+async fn snorm_endpoint_readback(d: &Device<Gl>, gles: bool) {
     use TextureFormat::*;
     for (format, alias, bpp, word) in [
         (R8Snorm, R8Uint, 1usize, 1usize),
@@ -22,12 +22,28 @@ async fn snorm_endpoint_readback(d: &Device<Gl>) {
             usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
             view_formats: vec![],
         };
-        assert!(
-            matches!(d.texture_support(&desc(format)), Support::Supported(_)),
-            "{format:?} requires exact alias route"
-        );
+        if let Support::Unsupported(reason) = d.texture_support(&desc(format)) {
+            assert!(gles, "{format:?} requires exact alias route: {reason}");
+            eprintln!("SKIP {format:?}: {reason}");
+            continue;
+        }
         let integer = d.create_texture(&desc(alias)).unwrap();
         let snorm = d.create_texture(&desc(format)).unwrap();
+        if gles {
+            // SAFETY: the texture belongs to this live device/context.
+            let native = unsafe { d.native_ref() };
+            let texture = unsafe { snorm.native_ref() }.id;
+            if !native
+                .0
+                .with_native("SNORM alias availability", |p| {
+                    p.gles_exact_alias_for_test(texture)
+                })
+                .unwrap()
+            {
+                eprintln!("SKIP {format:?}: GLES exact image alias route unavailable");
+                continue;
+            }
+        }
         let buffer = d
             .create_buffer(&BufferDesc {
                 label: None,
@@ -137,5 +153,36 @@ fn wgl_core_snorm_endpoint_readback() {
     let d = block_on(open(
         unsafe { GlInstance::from_wgl_window(&window, [1024, 768]) }.unwrap(),
     ));
-    block_on(snorm_endpoint_readback(&d));
+    block_on(snorm_endpoint_readback(&d, false));
+}
+
+#[cfg(feature = "native-gles-egl")]
+#[test]
+#[ignore = "requires an EGL GLES hardware context"]
+fn gles_core_snorm_endpoint_readback() {
+    use std::{
+        future::Future,
+        task::{Context, Poll, Wake, Waker},
+    };
+    struct WakeThread(std::thread::Thread);
+    impl Wake for WakeThread {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    fn block_on<F: Future>(f: F) -> F::Output {
+        let waker = Waker::from(Arc::new(WakeThread(std::thread::current())));
+        let mut cx = Context::from_waker(&waker);
+        let mut f = std::pin::pin!(f);
+        loop {
+            match f.as_mut().poll(&mut cx) {
+                Poll::Ready(v) => return v,
+                Poll::Pending => std::thread::park(),
+            }
+        }
+    }
+    let d = block_on(open(
+        GlInstance::gles_pbuffer([8, 8]).expect("EGL GLES pbuffer"),
+    ));
+    block_on(snorm_endpoint_readback(&d, true));
 }

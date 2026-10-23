@@ -6,7 +6,7 @@ use super::{
 
 /// Every typed name in the inventory, so a new variant cannot be added
 /// without a registry spelling that maps back to it.
-const INVENTORY: [GlKnownExtension; 24] = [
+const INVENTORY: [GlKnownExtension; 28] = [
     GlKnownExtension::ArbComputeShader,
     GlKnownExtension::ArbShaderStorageBufferObject,
     GlKnownExtension::ArbShaderImageLoadStore,
@@ -31,6 +31,10 @@ const INVENTORY: [GlKnownExtension; 24] = [
     GlKnownExtension::CompressedTextureRgtc,
     GlKnownExtension::CompressedTextureAstc,
     GlKnownExtension::CompressedTextureEtc,
+    GlKnownExtension::ExtTextureCompressionDxt1,
+    GlKnownExtension::AngleTextureCompressionDxt3,
+    GlKnownExtension::AngleTextureCompressionDxt5,
+    GlKnownExtension::ExtTextureCompressionS3tcSrgb,
 ];
 
 #[test]
@@ -171,6 +175,14 @@ fn compressed_extension_names_preserve_native_and_web_registry_identity() {
         (
             "GL_EXT_texture_compression_s3tc",
             GlKnownExtension::ExtTextureCompressionS3tc,
+        ),
+        (
+            "GL_EXT_texture_compression_dxt1",
+            GlKnownExtension::ExtTextureCompressionDxt1,
+        ),
+        (
+            "GL_ANGLE_texture_compression_dxt3",
+            GlKnownExtension::AngleTextureCompressionDxt3,
         ),
         (
             "GL_ARB_texture_compression_bptc",

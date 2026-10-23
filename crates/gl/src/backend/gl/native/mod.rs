@@ -37,6 +37,7 @@ mod exec_texture_sub_image_readback;
 mod exec_vertex;
 pub(crate) mod indexed_blend;
 mod indirect_count;
+pub(crate) mod indirect_count_emulated;
 mod indirect_rebase;
 #[cfg(test)]
 mod indirect_repro;

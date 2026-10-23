@@ -2,6 +2,99 @@
 use super::*;
 
 impl GlowProbes<'_> {
+    /// Upload distinct finite UNORM codes and compare the native readback bytes.
+    pub(super) fn probe_reads_unorm_format(
+        &self,
+        format: crate::backend::gl::api::GlFormat,
+    ) -> ProbeAnswer {
+        use crate::backend::gl::api::GlFormat as F;
+        use glow::HasContext as _;
+        let (Some(internal), Some((external, kind)), Some(pixel)) = (
+            super::super::super::resource::native_texture_format(format),
+            super::super::super::exec_copy::upload_encoding(format),
+            super::super::super::exec_copy::upload_pixel_format(format),
+        ) else {
+            return ProbeAnswer::Unavailable;
+        };
+        let data: Vec<u8> = match format {
+            F::R8Unorm => vec![0, 63, 128, 255],
+            F::Rg8Unorm => vec![0, 255, 63, 191, 128, 17, 255, 0],
+            F::R16Unorm | F::Rg16Unorm | F::Rgba16Unorm => {
+                let count = pixel.bytes_per_pixel() as usize * 4 / 2;
+                (0..count)
+                    .flat_map(|i| {
+                        [0u16, 16385, 32769, 65535, 1193, 50123, 2, 40000][i % 8].to_ne_bytes()
+                    })
+                    .collect()
+            }
+            F::Rgb10a2Unorm => [0u32, 0x4008_03ff, 0x9555_55aa, u32::MAX]
+                .into_iter()
+                .flat_map(u32::to_ne_bytes)
+                .collect(),
+            _ => return ProbeAnswer::Unavailable,
+        };
+        let mut scratch = ProbeScratch::new(self.gl);
+        // SAFETY: discovery owns the current context, scratch owns each object,
+        // and the transfer buffers cover four tightly packed pixels.
+        unsafe {
+            let Ok(texture) = self.gl.create_texture() else {
+                return ProbeAnswer::Unavailable;
+            };
+            scratch.textures.push(texture);
+            let Ok(fbo) = self.gl.create_framebuffer() else {
+                return ProbeAnswer::Unavailable;
+            };
+            scratch.framebuffer = Some(fbo);
+            let pack = self.gl.get_parameter_i32(glow::PACK_ALIGNMENT);
+            let unpack = self.gl.get_parameter_i32(glow::UNPACK_ALIGNMENT);
+            self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
+            self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+            self.gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
+            self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+            self.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+            self.gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                internal as i32,
+                4,
+                1,
+                0,
+                external,
+                kind,
+                glow::PixelUnpackData::Slice(Some(&data)),
+            );
+            self.gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            self.gl.framebuffer_texture_2d(
+                glow::FRAMEBUFFER,
+                glow::COLOR_ATTACHMENT0,
+                glow::TEXTURE_2D,
+                Some(texture),
+                0,
+            );
+            let mut result = vec![0; data.len()];
+            let complete =
+                self.gl.check_framebuffer_status(glow::FRAMEBUFFER) == glow::FRAMEBUFFER_COMPLETE;
+            if complete {
+                self.gl.read_pixels(
+                    0,
+                    0,
+                    4,
+                    1,
+                    external,
+                    kind,
+                    glow::PixelPackData::Slice(Some(&mut result)),
+                );
+            }
+            let failed = self.take_error();
+            self.gl.pixel_store_i32(glow::PACK_ALIGNMENT, pack);
+            self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, unpack);
+            if complete && !failed && result == data {
+                ProbeAnswer::Passed
+            } else {
+                ProbeAnswer::Failed
+            }
+        }
+    }
     pub(super) fn probe_multisample_array_attachment(
         &self,
         format: u32,

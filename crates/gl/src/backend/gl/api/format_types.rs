@@ -560,6 +560,9 @@ impl GlFormat {
 
     pub(super) const fn is_supplied_by_extension(self, extension: GlKnownExtension) -> bool {
         match extension {
+            GlKnownExtension::OesTextureStencil8 | GlKnownExtension::ArbTextureStencil8 => {
+                matches!(self, Self::Stencil8)
+            }
             GlKnownExtension::ExtTextureNorm16 => matches!(
                 self,
                 Self::R16Unorm
@@ -586,6 +589,15 @@ impl GlFormat {
                     | Self::Bc1RgbaSrgb
                     | Self::Bc2RgbaSrgb
                     | Self::Bc3RgbaSrgb
+            ),
+            GlKnownExtension::ExtTextureCompressionDxt1 => {
+                matches!(self, Self::Bc1RgbUnorm | Self::Bc1RgbaUnorm)
+            }
+            GlKnownExtension::AngleTextureCompressionDxt3 => matches!(self, Self::Bc2RgbaUnorm),
+            GlKnownExtension::AngleTextureCompressionDxt5 => matches!(self, Self::Bc3RgbaUnorm),
+            GlKnownExtension::ExtTextureCompressionS3tcSrgb => matches!(
+                self,
+                Self::Bc1RgbSrgb | Self::Bc1RgbaSrgb | Self::Bc2RgbaSrgb | Self::Bc3RgbaSrgb
             ),
             GlKnownExtension::CompressedTextureS3tcSrgb => matches!(
                 self,

@@ -67,6 +67,11 @@ pub(crate) struct ProbeReport {
     pub ordinary_image_storage: [ProbeAnswer; IMAGE_FORMATS.len()],
     pub ordinary_render: [ProbeAnswer; IMAGE_FORMATS.len()],
     pub exact_integer_read: [ProbeAnswer; EXACT_INTEGER_FORMATS.len()],
+    pub exact_unorm_read: [ProbeAnswer; EXACT_UNORM_FORMATS.len()],
+    pub compressed_alias_read: std::collections::BTreeMap<
+        crate::backend::gl::api::GlFormat,
+        (crate::backend::gl::api::GlFormat, ProbeAnswer),
+    >,
     pub multisample_texture: [Vec<(u32, ProbeAnswer)>; MSAA_FORMATS.len()],
     pub multisample_array: [Vec<(u32, ProbeAnswer)>; MSAA_FORMATS.len()],
     pub multisample_renderbuffer: [Vec<(u32, ProbeAnswer)>; MSAA_FORMATS.len()],
@@ -97,6 +102,8 @@ impl Default for ProbeReport {
             ordinary_image_storage: [ProbeAnswer::Unavailable; IMAGE_FORMATS.len()],
             ordinary_render: [ProbeAnswer::Unavailable; IMAGE_FORMATS.len()],
             exact_integer_read: [ProbeAnswer::Unavailable; EXACT_INTEGER_FORMATS.len()],
+            exact_unorm_read: [ProbeAnswer::Unavailable; EXACT_UNORM_FORMATS.len()],
+            compressed_alias_read: Default::default(),
             multisample_texture: std::array::from_fn(|_| Vec::new()),
             multisample_array: std::array::from_fn(|_| Vec::new()),
             multisample_renderbuffer: std::array::from_fn(|_| Vec::new()),
@@ -114,6 +121,18 @@ impl Default for ProbeReport {
         }
     }
 }
+
+pub(super) const EXACT_UNORM_FORMATS: [crate::backend::gl::api::GlFormat; 6] = {
+    use crate::backend::gl::api::GlFormat as F;
+    [
+        F::R8Unorm,
+        F::Rg8Unorm,
+        F::R16Unorm,
+        F::Rg16Unorm,
+        F::Rgba16Unorm,
+        F::Rgb10a2Unorm,
+    ]
+};
 
 pub(super) const EXACT_INTEGER_FORMATS: [crate::backend::gl::api::GlFormat; 19] = {
     use crate::backend::gl::api::GlFormat as F;
@@ -239,6 +258,15 @@ impl ProbeReport {
 /// Default implementations are deliberately fail-closed: an implementation
 /// that does not provide a probe keeps the related capability `NotRun`.
 pub(super) trait NativeGlProbes {
+    fn compressed_alias_read(
+        &self,
+        _format: crate::backend::gl::api::GlFormat,
+        _integer: crate::backend::gl::api::GlFormat,
+        _entry: usize,
+    ) -> ProbeAnswer {
+        ProbeAnswer::Unavailable
+    }
+
     fn copy_image_symbols(&self) -> [bool; 3] {
         [false; 3]
     }
@@ -314,6 +342,9 @@ pub(super) trait NativeGlProbes {
         _kind: u32,
         _bytes: u32,
     ) -> ProbeAnswer {
+        ProbeAnswer::Unavailable
+    }
+    fn reads_unorm_format(&self, _format: crate::backend::gl::api::GlFormat) -> ProbeAnswer {
         ProbeAnswer::Unavailable
     }
     fn multisample_texture_attachment(
@@ -474,6 +505,7 @@ pub(super) fn run_operation_probes(
         route_supplied(profile, extensions, Some((4, 3)), Some((3, 1)), None);
 
     ProbeReport {
+        compressed_alias_read: Default::default(),
         multiview: if extensions
             .raw_reported_names()
             .any(|name| name == "GL_OVR_multiview2")
@@ -534,6 +566,13 @@ pub(super) fn run_operation_probes(
                     probes.reads_integer_format(internal, external, kind, pixel.bytes_per_pixel())
                 }
                 _ => ProbeAnswer::Unavailable,
+            }
+        }),
+        exact_unorm_read: EXACT_UNORM_FORMATS.map(|format| {
+            if matches!(profile, GlFamilyProfile::Embedded { .. }) {
+                probes.reads_unorm_format(format)
+            } else {
+                ProbeAnswer::Unavailable
             }
         }),
         multisample_texture: if super::discovery::supports_multisample_texture_storage(profile) {

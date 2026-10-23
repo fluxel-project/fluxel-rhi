@@ -1,7 +1,6 @@
 //! Native GL format facts and profile parsing.
 
 use super::*;
-use crate::backend::gl::api::GlCompressedTextureFamily;
 
 #[path = "ordinary_formats.rs"]
 mod ordinary;
@@ -94,10 +93,16 @@ pub(super) fn native_formats(
             }
         }
         if facts.resource_kind == GlFormatResourceKind::Texture && facts.sample_count == 1 {
+            let unorm_read = matches!(profile, GlFamilyProfile::Embedded { .. })
+                && super::super::probes::EXACT_UNORM_FORMATS
+                    .iter()
+                    .position(|format| *format == facts.format)
+                    .is_some_and(|i| report.exact_unorm_read[i] == ProbeAnswer::Passed);
             let index = super::super::probes::EXACT_INTEGER_FORMATS
                 .iter()
                 .position(|format| *format == facts.format);
             if index.is_some_and(|i| report.exact_integer_read[i] == ProbeAnswer::Passed)
+                || unorm_read
                 || matches!(facts.format, GlFormat::Rgba8Unorm | GlFormat::Rgba8Srgb)
             {
                 table.mark_exact_buffer_readback(facts.format);
@@ -135,6 +140,10 @@ pub(super) fn native_formats(
                 facts.copy_source = true;
                 facts.copy_destination = true;
             }
+            if gles_exact_alias_route(profile, extensions, report, facts.format) {
+                table.mark_exact_alias_readback(facts.format);
+                facts.copy_source = true;
+            }
             // SNORM's two encodings of -1 require image-class bit copies;
             // ordinary typed pixel reads cannot preserve both endpoints.
             if facts.format != GlFormat::Rgb9e5Ufloat
@@ -159,8 +168,8 @@ pub(super) fn native_formats(
             } else if facts.format != GlFormat::Rgb9e5Ufloat
                 && super::super::exec_rgb9e5_readback::exact_integer_alias(facts.format).is_some()
             {
-                // GLES has no bit-preserving integer-alias resolve route yet.
-                facts.copy_source = false;
+                facts.copy_source =
+                    unorm_read || gles_exact_alias_route(profile, extensions, report, facts.format);
             }
         }
         if facts.resource_kind == GlFormatResourceKind::Texture
@@ -223,12 +232,31 @@ pub(super) fn native_formats(
         GlFormat::Rgba8Uint,
         GlFormat::Rgba8Sint,
     ];
-    let stencil_texture = match profile {
-        GlFamilyProfile::Desktop { major, minor } => major > 4 || (major == 4 && minor >= 4),
-        GlFamilyProfile::Embedded { major, minor } => major > 3 || (major == 3 && minor >= 2),
-        GlFamilyProfile::WebGl2 => false,
+    let stencil_evidence = match profile {
+        GlFamilyProfile::Desktop { major, minor } if major > 4 || (major == 4 && minor >= 4) => {
+            Some(GlFormatEvidence::CoreGuaranteed)
+        }
+        GlFamilyProfile::Embedded { major, minor } if major > 3 || (major == 3 && minor >= 2) => {
+            Some(GlFormatEvidence::CoreGuaranteed)
+        }
+        GlFamilyProfile::Desktop { .. }
+            if extensions.is_acquired(GlKnownExtension::ArbTextureStencil8) =>
+        {
+            Some(GlFormatEvidence::ExtensionAcquired(
+                GlKnownExtension::ArbTextureStencil8,
+            ))
+        }
+        GlFamilyProfile::Embedded { major, minor }
+            if (major > 3 || (major == 3 && minor >= 1))
+                && extensions.is_acquired(GlKnownExtension::OesTextureStencil8) =>
+        {
+            Some(GlFormatEvidence::ExtensionAcquired(
+                GlKnownExtension::OesTextureStencil8,
+            ))
+        }
+        _ => None,
     };
-    if stencil_texture {
+    if stencil_evidence.is_some() {
         attachment_formats.push(GlFormat::Stencil8);
     }
     for format in attachment_formats {
@@ -240,7 +268,11 @@ pub(super) fn native_formats(
                 format,
                 resource_kind,
                 sample_count: 1,
-                evidence: GlFormatEvidence::CoreGuaranteed,
+                evidence: if format == GlFormat::Stencil8 {
+                    stencil_evidence.expect("stencil fact gated")
+                } else {
+                    GlFormatEvidence::CoreGuaranteed
+                },
                 sampled: resource_kind == GlFormatResourceKind::Texture,
                 filterable: false,
                 renderable: true,
@@ -333,10 +365,9 @@ pub(super) fn native_formats(
         } else {
             continue;
         };
-        // `glCopyImageSubData` is a real compressed-to-compressed route only
-        // on desktop GL 4.3+. GLES 3.0 and WebGL2 deliberately keep these
-        // fields false: neither has this v13 route, and framebuffer copying
-        // cannot attach compressed images.
+        // Compressed texture copies require a core or extension image-copy
+        // entry for this profile. Framebuffer copying cannot attach these
+        // formats; raw block buffer reads have a separate per-format probe.
         let direct_copy = (compressed_direct_copy(profile) && report.copy_image_symbols[0])
             || match profile {
                 GlFamilyProfile::Desktop { .. } => {
@@ -357,43 +388,6 @@ pub(super) fn native_formats(
                 }
                 _ => false,
             };
-        let exact_read = |format| {
-            let read = super::super::probes::EXACT_INTEGER_FORMATS
-                .iter()
-                .position(|f| *f == format)
-                .is_some_and(|i| report.exact_integer_read[i] == ProbeAnswer::Passed);
-            let render = super::super::probes::IMAGE_FORMATS
-                .iter()
-                .position(|(f, ..)| *f == format)
-                .is_some_and(|i| report.ordinary_render[i] == ProbeAnswer::Passed);
-            read && render
-        };
-        let block = format.compressed_info().unwrap();
-        let integer_route = match block.block_bytes {
-            8 => exact_read(GlFormat::Rg32Uint) || exact_read(GlFormat::Rgba16Uint),
-            16 => exact_read(GlFormat::Rgba32Uint),
-            _ => false,
-        };
-        let extension_copy = (report.copy_image_symbols[1]
-            && extensions
-                .raw_reported_names()
-                .any(|n| n == "GL_EXT_copy_image"))
-            || (report.copy_image_symbols[2]
-                && extensions
-                    .raw_reported_names()
-                    .any(|n| n == "GL_OES_copy_image"));
-        let core_compatible = matches!(
-            block.family,
-            GlCompressedTextureFamily::Etc2
-                | GlCompressedTextureFamily::Eac
-                | GlCompressedTextureFamily::Astc
-        );
-        let embedded_read = matches!(profile, GlFamilyProfile::Embedded { .. })
-            && integer_route
-            && (extension_copy
-                || (compressed_direct_copy(profile)
-                    && report.copy_image_symbols[0]
-                    && core_compatible));
         record(GlFormatCapabilities {
             format,
             resource_kind: GlFormatResourceKind::Texture,
@@ -407,16 +401,20 @@ pub(super) fn native_formats(
             blendable: false,
             storage_read: false,
             storage_write: false,
-            // Core COPY_SRC covers both image copies and texture-to-buffer.
-            // The latter currently uses desktop glGetCompressedTexImage.
+            // The image-copy route remains useful even when this particular
+            // format's compressed-to-integer readback probe fails.
             copy_source: direct_copy
-                && ((matches!(profile, GlFamilyProfile::Desktop { .. })
-                    && report.compressed_get_symbol)
-                    || embedded_read),
+                && (matches!(profile, GlFamilyProfile::Embedded { .. })
+                    || report.compressed_get_symbol),
             copy_destination: true,
         })?;
     }
     drop(record);
+    for (&format, &(alias, answer)) in &report.compressed_alias_read {
+        if answer == ProbeAnswer::Passed {
+            table.mark_compressed_alias_readback(format, alias);
+        }
+    }
     for (index, format) in super::super::probes::MSAA_FORMATS
         .iter()
         .copied()
@@ -475,7 +473,7 @@ pub(super) fn native_formats(
 /// Exact optional compressed formats understood by the native storage map.
 /// Keeping this list next to native discovery makes additions require review
 /// of evidence, allocation and upload together.
-fn native_optional_compressed_formats() -> Vec<GlFormat> {
+pub(super) fn native_optional_compressed_formats() -> Vec<GlFormat> {
     use crate::backend::gl::api::{GlAstcBlock as B, GlCompressedColorSpace as C};
     let mut formats = vec![
         GlFormat::Bc1RgbUnorm,
@@ -539,17 +537,25 @@ fn native_optional_compressed_formats() -> Vec<GlFormat> {
     formats
 }
 
-fn native_compressed_extension(
+pub(super) fn native_compressed_extension(
     format: GlFormat,
     profile: GlFamilyProfile,
     extensions: &GlExtensionSet,
 ) -> Option<GlKnownExtension> {
     use crate::backend::gl::api::GlCompressedColorSpace as C;
     let candidates: &[GlKnownExtension] = match format {
-        GlFormat::Bc1RgbUnorm
-        | GlFormat::Bc1RgbaUnorm
-        | GlFormat::Bc2RgbaUnorm
-        | GlFormat::Bc3RgbaUnorm => &[GlKnownExtension::ExtTextureCompressionS3tc],
+        GlFormat::Bc1RgbUnorm | GlFormat::Bc1RgbaUnorm => &[
+            GlKnownExtension::ExtTextureCompressionS3tc,
+            GlKnownExtension::ExtTextureCompressionDxt1,
+        ],
+        GlFormat::Bc2RgbaUnorm => &[
+            GlKnownExtension::ExtTextureCompressionS3tc,
+            GlKnownExtension::AngleTextureCompressionDxt3,
+        ],
+        GlFormat::Bc3RgbaUnorm => &[
+            GlKnownExtension::ExtTextureCompressionS3tc,
+            GlKnownExtension::AngleTextureCompressionDxt5,
+        ],
         GlFormat::Bc1RgbSrgb
         | GlFormat::Bc1RgbaSrgb
         | GlFormat::Bc2RgbaSrgb
@@ -564,7 +570,26 @@ fn native_compressed_extension(
         GlFormat::Bc1RgbSrgb
         | GlFormat::Bc1RgbaSrgb
         | GlFormat::Bc2RgbaSrgb
-        | GlFormat::Bc3RgbaSrgb => &[GlKnownExtension::CompressedTextureS3tcSrgb],
+        | GlFormat::Bc3RgbaSrgb => {
+            let base = match format {
+                GlFormat::Bc1RgbSrgb | GlFormat::Bc1RgbaSrgb => {
+                    native_compressed_extension(GlFormat::Bc1RgbUnorm, profile, extensions)
+                }
+                GlFormat::Bc2RgbaSrgb => {
+                    native_compressed_extension(GlFormat::Bc2RgbaUnorm, profile, extensions)
+                }
+                GlFormat::Bc3RgbaSrgb => {
+                    native_compressed_extension(GlFormat::Bc3RgbaUnorm, profile, extensions)
+                }
+                _ => unreachable!(),
+            };
+            if base.is_some()
+                && extensions.is_acquired(GlKnownExtension::ExtTextureCompressionS3tcSrgb)
+            {
+                return Some(GlKnownExtension::ExtTextureCompressionS3tcSrgb);
+            }
+            return None;
+        }
         GlFormat::Bc4RUnorm | GlFormat::Bc4RSnorm | GlFormat::Bc5RgUnorm | GlFormat::Bc5RgSnorm => {
             &[GlKnownExtension::ExtTextureCompressionRgtc]
         }
@@ -730,3 +755,45 @@ pub(crate) fn parse_native_profile(version: &str) -> Option<GlFamilyProfile> {
 
 #[path = "glow_const.rs"]
 pub(crate) mod glow_const;
+
+/// A GLES raw-storage copy requires both a callable image-copy entry point and
+/// a successful exact integer readback probe for the compatible image class.
+fn gles_exact_alias_route(
+    profile: GlFamilyProfile,
+    extensions: &GlExtensionSet,
+    report: &ProbeReport,
+    format: GlFormat,
+) -> bool {
+    let GlFamilyProfile::Embedded { major, minor } = profile else {
+        return false;
+    };
+    let named = |name| extensions.raw_reported_names().any(|n| n == name);
+    let copy = ((major, minor) >= (3, 2) && report.copy_image_symbols[0])
+        || (named("GL_EXT_copy_image") && report.copy_image_symbols[1])
+        || (named("GL_OES_copy_image") && report.copy_image_symbols[2]);
+    // EXT_texture_norm16 amends the EXT compatibility tables, not the OES
+    // copy-image table. An advertised but missing EXT entry is not enough.
+    let norm16 = matches!(
+        format,
+        GlFormat::R16Unorm
+            | GlFormat::R16Snorm
+            | GlFormat::Rg16Unorm
+            | GlFormat::Rg16Snorm
+            | GlFormat::Rgba16Unorm
+            | GlFormat::Rgba16Snorm
+    );
+    if norm16
+        && !named("GL_EXT_texture_view")
+        && !(named("GL_EXT_copy_image") && report.copy_image_symbols[1])
+    {
+        return false;
+    }
+    let alias = super::super::exec_rgb9e5_readback::gles_exact_integer_alias(format, extensions);
+    copy && alias
+        .and_then(|a| {
+            super::super::probes::EXACT_INTEGER_FORMATS
+                .iter()
+                .position(|f| *f == a)
+        })
+        .is_some_and(|i| report.exact_integer_read[i] == ProbeAnswer::Passed)
+}

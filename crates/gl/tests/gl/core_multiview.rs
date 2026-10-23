@@ -402,10 +402,22 @@ struct VertexOutput { @builtin(position) position: vec4f, @location(0) @interpol
         }
     }
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
-    if let Some((queries, set)) = &occlusion {
-        queries.resolve(e, set, 0..1, &buffer, 768).unwrap();
+    let after_completion = occlusion
+        .as_ref()
+        .is_some_and(|(queries, _)| queries.resolve_mode() == QueryResolveMode::AfterCompletion);
+    #[cfg(not(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl")))]
+    let after_completion = false;
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    if !after_completion {
+        if let Some((queries, set)) = &occlusion {
+            queries.resolve(e, set, 0..1, &buffer, 768).unwrap();
+        }
     }
-    let ticket = e.readback_buffer(&buffer, 0..1024).unwrap();
+    let ticket = if after_completion {
+        None
+    } else {
+        Some(e.readback_buffer(&buffer, 0..1024).unwrap())
+    };
     assert!(matches!(run.close(), ImmediateRunOutcome::Issued(_)));
     let point = match session.finish() {
         ImmediateFinishOutcome::Issued(prefix) => {
@@ -414,8 +426,41 @@ struct VertexOutput { @builtin(position) position: vec4f, @location(0) @interpol
         _ => panic!("finish"),
     };
     d.wait_completion(&point).await.unwrap();
-    // SAFETY: point covers the readback commands.
-    let bytes = unsafe { d.read_after(ticket, &point).await }.unwrap().bytes;
+    let bytes = if after_completion {
+        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+        {
+            let plan = common::single_commands_plan(&fixture, 190).unwrap();
+            // SAFETY: producer completion is established and resources remain live.
+            let mut session =
+                unsafe { common::begin_commands(&fixture, plan, CompletionRequest::End) }.unwrap();
+            let mut run = session
+                .begin_commands()
+                .unwrap_or_else(|_| panic!("begin query resolve"));
+            let e = run.commands();
+            let (queries, set) = occlusion.as_ref().unwrap();
+            queries.resolve(e, set, 0..1, &buffer, 768).unwrap();
+            let ticket = e.readback_buffer(&buffer, 0..1024).unwrap();
+            assert!(matches!(run.close(), ImmediateRunOutcome::Issued(_)));
+            let point = match session.finish() {
+                ImmediateFinishOutcome::Issued(prefix) => {
+                    prefix.checkpoints.into_iter().next().unwrap().point
+                }
+                _ => panic!("finish query resolve"),
+            };
+            d.wait_completion(&point).await.unwrap();
+            // SAFETY: the point covers the result readback.
+            unsafe { d.read_after(ticket, &point).await }.unwrap().bytes
+        }
+        #[cfg(not(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl")))]
+        {
+            unreachable!()
+        }
+    } else {
+        // SAFETY: the producer point covers the ordered result readback.
+        unsafe { d.read_after(ticket.unwrap(), &point).await }
+            .unwrap()
+            .bytes
+    };
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
     if occlusion.is_some() {
         let samples = u64::from_ne_bytes(bytes[768..776].try_into().unwrap());

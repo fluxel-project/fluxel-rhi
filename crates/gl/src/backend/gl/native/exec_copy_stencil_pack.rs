@@ -10,11 +10,13 @@ impl NativeGlProvider {
         count: usize,
         output_bytes: usize,
     ) -> Result<(), GlError> {
-        if !matches!(self.discovery.context().profile(), GlFamilyProfile::Desktop { major, minor } if major > 4 || (major == 4 && minor >= 3))
+        if !matches!(self.discovery.context().profile(),
+            GlFamilyProfile::Desktop { major, minor } if major > 4 || (major == 4 && minor >= 3))
+            && !matches!(self.discovery.context().profile(), GlFamilyProfile::Embedded { major, minor } if major > 3 || (major == 3 && minor >= 1))
         {
             return Err(GlError::Unsupported {
                 operation: op,
-                reason: "stencil PBO packing requires desktop GLSL 4.30",
+                reason: "plane PBO packing requires GLSL 4.30 or ES 3.10",
             });
         }
         if !self
@@ -51,15 +53,26 @@ impl NativeGlProvider {
         output: glow::NativeBuffer,
         count: usize,
         float_depth: bool,
+        depth_input: bool,
     ) -> Result<(), GlError> {
         let count = u32::try_from(count).map_err(|_| Self::validation(op, "pixel count"))?;
-        let body = if float_depth {
-            "dst[i*2u]=0u; dst[i*2u+1u]=v;"
+        let body = if depth_input {
+            "uint v=src[i]; dst[i*2u]=v; dst[i*2u+1u]=0u;"
+        } else if float_depth {
+            "uint v=(src[i/4u] >> ((i%4u)*8u)) & 255u; dst[i*2u]=0u; dst[i*2u+1u]=v;"
         } else {
-            "dst[i]=v;"
+            "uint v=(src[i/4u] >> ((i%4u)*8u)) & 255u; dst[i]=v;"
+        };
+        let version = if matches!(
+            self.discovery.context().profile(),
+            GlFamilyProfile::Embedded { .. }
+        ) {
+            "#version 310 es\nprecision highp int;\n"
+        } else {
+            "#version 430 core\n"
         };
         let code = format!(
-            "#version 430 core\nlayout(local_size_x=64) in; layout(std430,binding=0) readonly buffer S {{ uint src[]; }}; layout(std430,binding=1) writeonly buffer D {{ uint dst[]; }}; void main() {{ uint i=gl_GlobalInvocationID.x; if(i>={count}u)return; uint v=(src[i/4u] >> ((i%4u)*8u)) & 255u; {body} }}"
+            "{version}layout(local_size_x=64) in; layout(std430,binding=0) readonly buffer S {{ uint src[]; }}; layout(std430,binding=1) writeonly buffer D {{ uint dst[]; }}; void main() {{ uint i=gl_GlobalInvocationID.x; if(i>={count}u)return; {body} }}"
         );
         // SAFETY: temporary shader/program and SSBOs belong to current context;
         // prior indexed and generic bindings and program are restored.

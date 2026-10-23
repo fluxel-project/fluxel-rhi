@@ -248,6 +248,23 @@ async fn query_stencil_extract(d: &Device<Gl>) {
         }
         queries.end_occlusion(&mut p).unwrap();
         p.finish().unwrap();
+        assert_eq!(queries.resolve_mode(), QueryResolveMode::AfterCompletion);
+        assert!(matches!(run.close(), ImmediateRunOutcome::Issued(_)));
+        let point = match session.finish() {
+            ImmediateFinishOutcome::Issued(prefix) => {
+                prefix.checkpoints.into_iter().next().unwrap().point
+            }
+            _ => panic!("finish"),
+        };
+        d.wait_completion(&point).await.unwrap();
+        let plan = common::single_commands_plan(&fixture, 9100 + round as u64).unwrap();
+        // SAFETY: the producer is complete and all resources remain live.
+        let mut session =
+            unsafe { common::begin_commands(&fixture, plan, CompletionRequest::End) }.unwrap();
+        let mut run = session
+            .begin_commands()
+            .unwrap_or_else(|_| panic!("begin resolve"));
+        let e = run.commands();
         queries.resolve(e, &set, 0..1, &buffer, 0).unwrap();
         let ticket = e.readback_buffer(&buffer, 0..8).unwrap();
         assert!(matches!(run.close(), ImmediateRunOutcome::Issued(_)));
@@ -255,7 +272,7 @@ async fn query_stencil_extract(d: &Device<Gl>) {
             ImmediateFinishOutcome::Issued(prefix) => {
                 prefix.checkpoints.into_iter().next().unwrap().point
             }
-            _ => panic!("finish"),
+            _ => panic!("finish resolve"),
         };
         d.wait_completion(&point).await.unwrap();
         // SAFETY: completion covers the result readback.

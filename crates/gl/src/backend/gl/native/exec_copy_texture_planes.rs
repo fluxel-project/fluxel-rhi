@@ -1,7 +1,7 @@
-//! Selected-plane copies of packed depth/stencil images.
+//! Framebuffer copies of selected depth or stencil texture planes.
 use super::super::provider::NativeGlProvider;
 use crate::backend::gl::api::{
-    GlError, GlFamilyProfile, GlTextureAspect, GlTextureDesc, GlTextureDimension, GlTextureRegion,
+    GlError, GlFormat, GlTextureAspect, GlTextureDesc, GlTextureDimension, GlTextureRegion,
 };
 use glow::HasContext as _;
 
@@ -26,15 +26,6 @@ impl NativeGlProvider {
                 ));
             }
         };
-        if !matches!(
-            self.discovery.context().profile(),
-            GlFamilyProfile::Desktop { .. }
-        ) {
-            return Err(GlError::Unsupported {
-                operation: op,
-                reason: "packed depth/stencil plane copy requires desktop GL",
-            });
-        }
         if matches!(src_desc.dimension, GlTextureDimension::D1)
             || matches!(dst_desc.dimension, GlTextureDimension::D1)
         {
@@ -131,11 +122,18 @@ impl NativeGlProvider {
                     (glow::READ_FRAMEBUFFER, src_desc, src_tex, sl, sz + layer),
                     (glow::DRAW_FRAMEBUFFER, dst_desc, dst_tex, dl, dz + layer),
                 ] {
+                    let attachment = match desc.format {
+                        GlFormat::Depth16Unorm
+                        | GlFormat::Depth24Unorm
+                        | GlFormat::Depth32Float => glow::DEPTH_ATTACHMENT,
+                        GlFormat::Stencil8 => glow::STENCIL_ATTACHMENT,
+                        _ => glow::DEPTH_STENCIL_ATTACHMENT,
+                    };
                     match desc.dimension {
                         GlTextureDimension::D1 => {
                             self.framebuffer_texture_1d.expect("entry checked")(
                                 target,
-                                glow::DEPTH_STENCIL_ATTACHMENT,
+                                attachment,
                                 glow::TEXTURE_1D,
                                 tex.0.get(),
                                 level,
@@ -143,14 +141,14 @@ impl NativeGlProvider {
                         }
                         GlTextureDimension::D2 => self.gl.framebuffer_texture_2d(
                             target,
-                            glow::DEPTH_STENCIL_ATTACHMENT,
+                            attachment,
                             glow::TEXTURE_2D,
                             Some(tex),
                             level,
                         ),
                         _ => self.gl.framebuffer_texture_layer(
                             target,
-                            glow::DEPTH_STENCIL_ATTACHMENT,
+                            attachment,
                             Some(tex),
                             level,
                             z,

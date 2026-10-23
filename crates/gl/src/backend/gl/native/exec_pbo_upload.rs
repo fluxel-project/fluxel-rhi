@@ -38,9 +38,10 @@ impl NativeGlProvider {
             );
         }
         if matches!(
-            desc.format,
-            GlFormat::Depth24PlusStencil8 | GlFormat::Depth32FloatStencil8
-        ) {
+            self.discovery.context().profile(),
+            crate::backend::gl::api::GlFamilyProfile::Embedded { .. }
+        ) && matches!(desc.format, GlFormat::Depth16Unorm | GlFormat::Depth32Float)
+        {
             return self.upload_packed_plane(
                 OP,
                 texture,
@@ -52,15 +53,16 @@ impl NativeGlProvider {
         }
         if matches!(
             desc.format,
-            GlFormat::Depth16Unorm | GlFormat::Depth32Float | GlFormat::Stencil8
-        ) && !matches!(
-            self.discovery.context().profile(),
-            crate::backend::gl::api::GlFamilyProfile::Desktop { .. }
+            GlFormat::Depth24PlusStencil8 | GlFormat::Depth32FloatStencil8
         ) {
-            return Err(GlError::Unsupported {
-                operation: OP,
-                reason: "depth PBO upload currently requires desktop GL",
-            });
+            return self.upload_packed_plane(
+                OP,
+                texture,
+                desc,
+                dest,
+                layout,
+                super::exec_copy::packed_upload::PackedSource::Buffer(buffer, source),
+            );
         }
         if !matches!(
             layout.format,

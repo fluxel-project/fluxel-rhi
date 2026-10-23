@@ -23,15 +23,10 @@ impl NativeGlProvider {
         layout: GlPixelLayout,
         source: PackedSource<'_>,
     ) -> Result<(), GlError> {
-        if !matches!(
+        let embedded = matches!(
             self.discovery.context().profile(),
-            GlFamilyProfile::Desktop { .. }
-        ) {
-            return Err(GlError::Unsupported {
-                operation: op,
-                reason: "packed plane upload requires desktop GL",
-            });
-        }
+            GlFamilyProfile::Embedded { .. }
+        );
         if !desc.usage.contains(GlTextureUsage::COPY_DESTINATION) || desc.sample_count != 1 {
             return Err(Self::validation(
                 op,
@@ -49,8 +44,16 @@ impl NativeGlProvider {
                 reason: "packed texture lacks copy and framebuffer facts",
             });
         }
+        let standalone = matches!(desc.format, GlFormat::Depth16Unorm | GlFormat::Depth32Float);
         let stencil = region.subresource.aspect == GlTextureAspect::StencilOnly;
-        if !(stencil && layout.format == GlPixelFormat::Stencil8
+        if !(standalone
+            && region.subresource.aspect == GlTextureAspect::DepthOnly
+            && matches!(
+                (desc.format, layout.format),
+                (GlFormat::Depth16Unorm, GlPixelFormat::Depth16)
+                    | (GlFormat::Depth32Float, GlPixelFormat::Depth32Float)
+            )
+            || stencil && layout.format == GlPixelFormat::Stencil8
             || desc.format == GlFormat::Depth32FloatStencil8
                 && region.subresource.aspect == GlTextureAspect::DepthOnly
                 && layout.format == GlPixelFormat::Depth32Float)
@@ -103,12 +106,19 @@ impl NativeGlProvider {
             PackedSource::Cpu(bytes) => Some(packed_unpack_rows(op, layout, region, bytes)?),
             _ => None,
         };
-        let plane_bytes = if stencil { 1 } else { 4 };
+        let plane_bytes = if stencil {
+            1
+        } else if desc.format == GlFormat::Depth16Unorm {
+            2
+        } else {
+            4
+        };
         let row_bytes = usize::try_from(region.extent.width)
             .ok()
             .and_then(|w| w.checked_mul(plane_bytes))
             .ok_or_else(|| Self::validation(op, "row size overflow"))?;
-        let packed_bytes = if stencil && desc.format == GlFormat::Depth32FloatStencil8 {
+        let pack_plane = stencil || (embedded && !standalone);
+        let packed_bytes = if pack_plane && desc.format == GlFormat::Depth32FloatStencil8 {
             8
         } else {
             4
@@ -117,11 +127,12 @@ impl NativeGlProvider {
             .checked_mul(packed_bytes)
             .and_then(|v| i32::try_from(v).ok())
             .ok_or_else(|| Self::validation(op, "scratch PBO size overflow"))?;
-        if stencil && matches!(source, PackedSource::Buffer(..)) {
+        if pack_plane && matches!(source, PackedSource::Buffer(..)) {
             self.stencil_pack_preflight(op, pixel_count, depth_size as usize)?;
         }
         let input_size = pixel_count
-            .checked_add(3)
+            .checked_mul(plane_bytes)
+            .and_then(|n| n.checked_add(3))
             .map(|n| n & !3)
             .and_then(|n| i32::try_from(n).ok())
             .ok_or_else(|| Self::validation(op, "input scratch size overflow"))?;
@@ -150,6 +161,8 @@ impl NativeGlProvider {
             self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
             self.apply_tight_unpack();
             let (internal, kind) = match desc.format {
+                GlFormat::Depth16Unorm => (glow::DEPTH_COMPONENT16, glow::UNSIGNED_SHORT),
+                GlFormat::Depth32Float => (glow::DEPTH_COMPONENT32F, glow::FLOAT),
                 GlFormat::Depth24PlusStencil8 => (glow::DEPTH24_STENCIL8, glow::UNSIGNED_INT_24_8),
                 _ => (
                     glow::DEPTH32F_STENCIL8,
@@ -163,7 +176,11 @@ impl NativeGlProvider {
                 w,
                 h,
                 0,
-                glow::DEPTH_STENCIL,
+                if standalone {
+                    glow::DEPTH_COMPONENT
+                } else {
+                    glow::DEPTH_STENCIL
+                },
                 kind,
                 glow::PixelUnpackData::Slice(None),
             );
@@ -183,7 +200,7 @@ impl NativeGlProvider {
             } else {
                 None
             };
-            let input = if stencil && matches!(source, PackedSource::Buffer(..)) {
+            let input = if pack_plane && matches!(source, PackedSource::Buffer(..)) {
                 match self.gl.create_buffer() {
                     Ok(b) => {
                         self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(b));
@@ -200,7 +217,7 @@ impl NativeGlProvider {
                 None
             };
             let mut result = self.driver_error(op);
-            if stencil && matches!(source, PackedSource::Buffer(..)) && input.is_none() {
+            if pack_plane && matches!(source, PackedSource::Buffer(..)) && input.is_none() {
                 result = Err(GlError::OutOfMemory { operation: op });
             }
             if matches!(source, PackedSource::Buffer(..)) && pbo.is_none() {
@@ -211,9 +228,9 @@ impl NativeGlProvider {
                     break;
                 }
                 let mut packed = Vec::new();
-                let (format, upload_type) = if stencil {
+                let (format, upload_type) = if pack_plane {
                     if let Some(bytes) = cpu.as_ref() {
-                        let start = layer as usize * pixel_count;
+                        let start = layer as usize * pixel_count * plane_bytes;
                         let element = if desc.format == GlFormat::Depth24PlusStencil8 {
                             4
                         } else {
@@ -224,25 +241,36 @@ impl NativeGlProvider {
                             break;
                         }
                         packed.resize(pixel_count * element, 0);
-                        for (i, &v) in bytes[start..start + pixel_count].iter().enumerate() {
-                            let offset = i * element + if element == 4 { 0 } else { 4 };
-                            packed[offset..offset + 4].copy_from_slice(&u32::from(v).to_ne_bytes());
+                        if stencil {
+                            for (i, &v) in bytes[start..start + pixel_count].iter().enumerate() {
+                                let offset = i * element + if element == 4 { 0 } else { 4 };
+                                packed[offset..offset + 4]
+                                    .copy_from_slice(&u32::from(v).to_ne_bytes());
+                            }
+                        } else {
+                            for i in 0..pixel_count {
+                                packed[i * 8..i * 8 + 4]
+                                    .copy_from_slice(&bytes[start + i * 4..start + i * 4 + 4]);
+                            }
                         }
                     }
                     (glow::DEPTH_STENCIL, kind)
                 } else {
-                    (glow::DEPTH_COMPONENT, glow::FLOAT)
+                    (
+                        glow::DEPTH_COMPONENT,
+                        if standalone { kind } else { glow::FLOAT },
+                    )
                 };
                 self.gl.bind_texture(glow::TEXTURE_2D, Some(tex));
                 match &source {
                     PackedSource::Cpu(_) => {
                         self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
-                        let payload = if stencil {
+                        let payload = if pack_plane {
                             packed.as_slice()
                         } else {
                             let bytes = cpu.as_ref().unwrap();
-                            let start = layer as usize * pixel_count * 4;
-                            &bytes[start..start + pixel_count * 4]
+                            let start = layer as usize * pixel_count * plane_bytes;
+                            &bytes[start..start + pixel_count * plane_bytes]
                         };
                         self.gl.tex_sub_image_2d(
                             glow::TEXTURE_2D,
@@ -279,13 +307,14 @@ impl NativeGlProvider {
                         if result.is_err() {
                             break;
                         }
-                        if stencil {
+                        if pack_plane {
                             if let Err(e) = self.pack_stencil_gpu(
                                 op,
                                 input.expect("stencil input checked"),
                                 scratch,
                                 pixel_count,
                                 desc.format == GlFormat::Depth32FloatStencil8,
+                                !stencil,
                             ) {
                                 result = Err(e);
                                 break;

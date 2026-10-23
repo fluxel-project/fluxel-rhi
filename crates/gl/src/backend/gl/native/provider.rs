@@ -28,8 +28,8 @@ pub(crate) struct NativeGlProvider {
     /// A provider owns its dispatch table.  The table contains loader-resolved
     /// entry points, not a platform context handle; the WGL/EGL owner still
     /// makes the actual context current before every call.  Owning this value
-    /// avoids a self-reference between a thread-affine surface and its object
-    /// tables when the pair is constructed on `NativeOwnerWorker`.
+    /// avoids a self-reference between the thread-affine native owner and its
+    /// object tables.
     pub(super) gl: std::rc::Rc<glow::Context>,
     pub(super) unmap_buffer: super::context::UnmapBufferFn,
     pub(super) buffer_storage:

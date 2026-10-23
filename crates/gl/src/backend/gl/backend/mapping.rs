@@ -1,7 +1,8 @@
 //! GL mapping leases.
 //!
-//! Desktop GL buffer storage uses coherent persistent native mappings. Older
-//! native profiles and WebGL use a snapshot that may require a blocking read.
+//! Desktop GL buffer storage and GLES EXT_buffer_storage use coherent persistent
+//! native mappings. Other native profiles and WebGL use a snapshot that may
+//! require a blocking read.
 //! Snapshot write leases upload flushed ranges immediately; releasing a snapshot
 //! does not publish unflushed writes. Read invalidation refreshes the requested
 //! snapshot range. Persistent leases instead retain their buffer and context;

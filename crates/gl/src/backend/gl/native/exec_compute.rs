@@ -249,7 +249,7 @@ impl GlStorageImageApi for NativeGlProvider {
 }
 
 impl NativeGlProvider {
-    fn validate_indirect_driver(
+    pub(super) fn validate_indirect_driver(
         &self,
         operation: &'static str,
         program: crate::backend::gl::api::ProgramId,
@@ -271,7 +271,10 @@ impl NativeGlProvider {
         Ok(())
     }
 
-    fn validate_indirect_vertex_state(&self, operation: &'static str) -> Result<(), GlError> {
+    pub(super) fn validate_indirect_vertex_state(
+        &self,
+        operation: &'static str,
+    ) -> Result<(), GlError> {
         use crate::backend::gl::api::GlVertexBufferMetadata;
         if self.pass.is_none() {
             return Err(Self::validation(operation, "no active render pass"));
@@ -321,7 +324,7 @@ impl NativeGlProvider {
     /// driver reports and no caller can observe. Both verbs resolve their buffer
     /// through this one function, so the rule and its error have exactly one
     /// spelling here rather than one per verb.
-    fn indirect_command_buffer(
+    pub(super) fn indirect_command_buffer(
         &self,
         operation: &'static str,
         range: GlBufferRange,
@@ -429,7 +432,17 @@ impl GlDrawIndirectApi for NativeGlProvider {
 
 impl NativeGlProvider {
     pub(crate) fn supports_indirect_count(&self) -> bool {
-        self.indirect_count.is_some()
+        (self.indirect_count.is_some()
+            || (matches!(self.discovery.context().profile(), crate::backend::gl::api::GlFamilyProfile::Embedded { major, minor } if major > 3 || major == 3 && minor >= 1)
+                && self
+                    .discovery
+                    .capabilities()
+                    .supports(GlCapability::Compute)
+                && self
+                    .discovery
+                    .capabilities()
+                    .supports(GlCapability::StorageBuffer)
+                && self.discovery.limits().max_storage_buffer_bindings >= 2))
             && self
                 .discovery
                 .capabilities()
@@ -444,6 +457,9 @@ impl NativeGlProvider {
         use glow::HasContext as _;
         const OP: &str = "multi-draw-indirect-count";
         self.assert_ready(OP)?;
+        if self.indirect_count.is_none() && self.supports_indirect_count() {
+            return self.emulate_indirect_count(command, count);
+        }
         let functions = self.indirect_count.ok_or(GlError::Unsupported {
             operation: OP,
             reason: "indirect count entry points are unavailable",

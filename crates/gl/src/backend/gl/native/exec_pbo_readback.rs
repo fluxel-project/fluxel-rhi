@@ -7,6 +7,9 @@ use crate::backend::gl::api::{
 };
 use glow::HasContext as _;
 
+#[path = "exec_gles_plane_readback.rs"]
+mod gles_plane_readback;
+
 #[cfg(test)]
 impl NativeGlProvider {
     pub(crate) fn color_read_clamp_for_test(&mut self, mode: Option<u32>) -> Result<u32, GlError> {
@@ -76,6 +79,18 @@ impl NativeGlProvider {
                 layout,
             );
         }
+        if self.supports_gles_exact_alias_readback(desc.format)
+            && !(super::probes::EXACT_UNORM_FORMATS.contains(&desc.format)
+                && self.discovery.formats().exact_buffer_readback(desc.format))
+        {
+            return self.copy_exact_alias_texture_to_buffer(
+                texture,
+                desc,
+                source,
+                destination,
+                layout,
+            );
+        }
         let depth_format = matches!(
             desc.format,
             GlFormat::Depth16Unorm
@@ -90,10 +105,15 @@ impl NativeGlProvider {
                 crate::backend::gl::api::GlFamilyProfile::Desktop { .. }
             )
         {
-            return Err(GlError::Unsupported {
-                operation: OP,
-                reason: "depth PBO readback requires desktop GL",
-            });
+            return self.gles_plane_readback(
+                OP,
+                texture,
+                desc,
+                source,
+                buffer,
+                destination,
+                layout,
+            );
         }
         if !depth_format
             && super::exec_texture_sub_image_readback::allow_direct_read()
@@ -207,7 +227,10 @@ impl NativeGlProvider {
                 (glow::RGBA, glow::UNSIGNED_BYTE, GlPixelFormat::Rgba8)
             }
             (format, _)
-                if desktop_color || super::probes::EXACT_INTEGER_FORMATS.contains(&format) =>
+                if desktop_color
+                    || super::probes::EXACT_INTEGER_FORMATS.contains(&format)
+                    || (super::probes::EXACT_UNORM_FORMATS.contains(&format)
+                        && self.discovery.formats().exact_buffer_readback(format)) =>
             {
                 let (external, kind) =
                     super::exec_copy::upload_encoding(format).ok_or(GlError::Unsupported {

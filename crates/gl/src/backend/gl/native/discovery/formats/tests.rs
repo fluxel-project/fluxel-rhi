@@ -29,7 +29,7 @@ fn rgb9e5_copy_source_needs_compatible_image_copy_and_integer_readback() {
     assert!(!available(old, &extensions, &report));
     extensions.report_raw("GL_ARB_texture_view");
     assert!(available(old, &extensions, &report));
-    assert!(!available(
+    assert!(available(
         GlFamilyProfile::Embedded { major: 3, minor: 2 },
         &extensions,
         &report
@@ -80,7 +80,52 @@ fn s3tc_srgb_needs_desktop_srgb_or_the_dedicated_extension() {
 }
 
 #[test]
-fn compressed_copy_source_requires_readback_entry_point() {
+fn gles_partial_s3tc_extensions_admit_only_their_own_formats() {
+    let profile = GlFamilyProfile::Embedded { major: 3, minor: 1 };
+    let mut dxt1 = GlExtensionSet::default();
+    dxt1.report_raw("GL_EXT_texture_compression_dxt1");
+    assert!(dxt1.acquire(GlKnownExtension::ExtTextureCompressionDxt1));
+    assert_eq!(
+        native_compressed_extension(GlFormat::Bc1RgbaUnorm, profile, &dxt1),
+        Some(GlKnownExtension::ExtTextureCompressionDxt1)
+    );
+    assert_eq!(
+        native_compressed_extension(GlFormat::Bc2RgbaUnorm, profile, &dxt1),
+        None
+    );
+    assert_eq!(
+        native_compressed_extension(GlFormat::Bc3RgbaUnorm, profile, &dxt1),
+        None
+    );
+
+    let mut dxt35 = GlExtensionSet::default();
+    dxt35.report_raw("GL_ANGLE_texture_compression_dxt3");
+    dxt35.report_raw("GL_ANGLE_texture_compression_dxt5");
+    assert!(dxt35.acquire(GlKnownExtension::AngleTextureCompressionDxt3));
+    assert!(dxt35.acquire(GlKnownExtension::AngleTextureCompressionDxt5));
+    assert_eq!(
+        native_compressed_extension(GlFormat::Bc2RgbaUnorm, profile, &dxt35),
+        Some(GlKnownExtension::AngleTextureCompressionDxt3)
+    );
+    assert_eq!(
+        native_compressed_extension(GlFormat::Bc3RgbaUnorm, profile, &dxt35),
+        Some(GlKnownExtension::AngleTextureCompressionDxt5)
+    );
+
+    dxt1.report_raw("GL_EXT_texture_compression_s3tc_srgb");
+    assert!(dxt1.acquire(GlKnownExtension::ExtTextureCompressionS3tcSrgb));
+    assert_eq!(
+        native_compressed_extension(GlFormat::Bc1RgbaSrgb, profile, &dxt1),
+        Some(GlKnownExtension::ExtTextureCompressionS3tcSrgb)
+    );
+    assert_eq!(
+        native_compressed_extension(GlFormat::Bc2RgbaSrgb, profile, &dxt1),
+        None
+    );
+}
+
+#[test]
+fn desktop_compressed_copy_source_requires_readback_entry_point() {
     let limits = GlLimits::unavailable();
     let extensions = GlExtensionSet::default();
     let desktop = GlFamilyProfile::Desktop { major: 4, minor: 6 };
@@ -97,50 +142,33 @@ fn compressed_copy_source_requires_readback_entry_point() {
     assert!(!copy_source(desktop, &report));
     report.compressed_get_symbol = true;
     assert!(copy_source(desktop, &report));
-    assert!(!copy_source(embedded, &report));
+    assert!(copy_source(embedded, &report));
 }
 
 #[test]
-fn gles_compressed_copy_requires_compatible_integer_readback() {
+fn gles_compressed_copy_and_readback_have_independent_facts() {
     let limits = GlLimits::unavailable();
     let extensions = GlExtensionSet::default();
     let profile = GlFamilyProfile::Embedded { major: 3, minor: 2 };
     let mut report = ProbeReport::default();
     report.copy_image_symbols[0] = true;
-    let source = |report: &ProbeReport| {
-        native_formats(profile, &extensions, &limits, report)
-            .unwrap()
-            .get(GlFormat::Etc2Rgb8Unorm, 1)
-            .unwrap()
-            .copy_source
-    };
-    assert!(!source(&report));
-    let format = GlFormat::Rg32Uint;
-    let read = super::super::super::probes::EXACT_INTEGER_FORMATS
-        .iter()
-        .position(|f| *f == format)
-        .unwrap();
-    let render = super::super::super::probes::IMAGE_FORMATS
-        .iter()
-        .position(|(f, ..)| *f == format)
-        .unwrap();
-    report.exact_integer_read[read] = ProbeAnswer::Passed;
-    assert!(!source(&report));
-    report.ordinary_render[render] = ProbeAnswer::Passed;
-    assert!(source(&report));
-    let es31 = GlFamilyProfile::Embedded { major: 3, minor: 1 };
-    report.copy_image_symbols[1] = true;
-    let mut ext = GlExtensionSet::default();
-    let has_source = |ext: &GlExtensionSet| {
-        native_formats(es31, ext, &limits, &report)
-            .unwrap()
-            .get(GlFormat::Etc2Rgb8Unorm, 1)
-            .unwrap()
-            .copy_source
-    };
-    assert!(!has_source(&ext));
-    ext.report_raw("GL_EXT_copy_image");
-    assert!(has_source(&ext));
+    let table =
+        |report: &ProbeReport| native_formats(profile, &extensions, &limits, report).unwrap();
+    let format = GlFormat::Etc2Rgb8Unorm;
+    assert!(table(&report).get(format, 1).unwrap().copy_source);
+    assert_eq!(table(&report).compressed_alias_readback(format), None);
+    report
+        .compressed_alias_read
+        .insert(format, (GlFormat::Rg32Uint, ProbeAnswer::Failed));
+    assert!(table(&report).get(format, 1).unwrap().copy_source);
+    assert_eq!(table(&report).compressed_alias_readback(format), None);
+    report
+        .compressed_alias_read
+        .insert(format, (GlFormat::Rgba16Uint, ProbeAnswer::Passed));
+    assert_eq!(
+        table(&report).compressed_alias_readback(format),
+        Some(GlFormat::Rgba16Uint)
+    );
 }
 
 #[test]
@@ -282,4 +310,97 @@ fn gles_renderable_snorm_does_not_advertise_unimplemented_exact_readback() {
         .unwrap();
     assert!(facts.renderable);
     assert!(!facts.copy_source);
+}
+
+#[test]
+fn gles_raw_alias_requires_matching_copy_entry_and_integer_probe() {
+    let es31 = GlFamilyProfile::Embedded { major: 3, minor: 1 };
+    let es32 = GlFamilyProfile::Embedded { major: 3, minor: 2 };
+    let mut ext = GlExtensionSet::default();
+    let mut report = ProbeReport::default();
+    let index = super::super::super::probes::EXACT_INTEGER_FORMATS
+        .iter()
+        .position(|f| *f == GlFormat::R32Uint)
+        .unwrap();
+    report.exact_integer_read[index] = ProbeAnswer::Passed;
+    assert!(!gles_exact_alias_route(
+        es31,
+        &ext,
+        &report,
+        GlFormat::Rgb9e5Ufloat
+    ));
+    ext.report_raw("GL_EXT_copy_image");
+    assert!(!gles_exact_alias_route(
+        es31,
+        &ext,
+        &report,
+        GlFormat::Rgb9e5Ufloat
+    ));
+    report.copy_image_symbols[1] = true;
+    assert!(gles_exact_alias_route(
+        es31,
+        &ext,
+        &report,
+        GlFormat::Rgb9e5Ufloat
+    ));
+    report.exact_integer_read[index] = ProbeAnswer::Failed;
+    assert!(!gles_exact_alias_route(
+        es31,
+        &ext,
+        &report,
+        GlFormat::Rgb9e5Ufloat
+    ));
+    report.exact_integer_read[index] = ProbeAnswer::Passed;
+    let no_ext = GlExtensionSet::default();
+    assert!(!gles_exact_alias_route(
+        es32,
+        &no_ext,
+        &report,
+        GlFormat::Rgb9e5Ufloat
+    ));
+    report.copy_image_symbols[0] = true;
+    assert!(gles_exact_alias_route(
+        es32,
+        &no_ext,
+        &report,
+        GlFormat::Rgb9e5Ufloat
+    ));
+    let mut oes = GlExtensionSet::default();
+    oes.report_raw("GL_OES_copy_image");
+    report.copy_image_symbols[2] = true;
+    assert!(gles_exact_alias_route(
+        es31,
+        &oes,
+        &report,
+        GlFormat::Rgb9e5Ufloat
+    ));
+}
+
+#[test]
+fn stencil_texture_requires_core_version_or_profile_legal_extension() {
+    let limits = GlLimits::unavailable();
+    let report = ProbeReport::default();
+    let es30 = GlFamilyProfile::Embedded { major: 3, minor: 0 };
+    let es31 = GlFamilyProfile::Embedded { major: 3, minor: 1 };
+    let es32 = GlFamilyProfile::Embedded { major: 3, minor: 2 };
+    let gl43 = GlFamilyProfile::Desktop { major: 4, minor: 3 };
+    let mut ext = GlExtensionSet::default();
+    let available = |profile, ext: &GlExtensionSet| {
+        let table = native_formats(profile, ext, &limits, &report).unwrap();
+        table.validate_evidence(profile, ext).unwrap();
+        table
+            .get_for(GlFormatResourceKind::Texture, GlFormat::Stencil8, 1)
+            .is_some()
+    };
+    assert!(!available(es31, &ext));
+    assert!(available(es32, &ext));
+    assert!(!available(gl43, &ext));
+    ext.report_raw("GL_OES_texture_stencil8");
+    assert!(ext.acquire(GlKnownExtension::OesTextureStencil8));
+    assert!(available(es31, &ext));
+    assert!(!available(es30, &ext));
+    assert!(!available(gl43, &ext));
+    ext.report_raw("GL_ARB_texture_stencil8");
+    assert!(ext.acquire(GlKnownExtension::ArbTextureStencil8));
+    assert!(available(gl43, &ext));
 }
