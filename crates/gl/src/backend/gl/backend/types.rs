@@ -62,6 +62,9 @@ impl GlInstance {
         Ok(Self(Rc::new(GlDeviceState {
             context: RefCell::new(context),
             provider: RefCell::new(provider),
+            native_lease: std::cell::Cell::new(false),
+            native_lease_failed: std::cell::Cell::new(false),
+            compute_pass_active: std::cell::Cell::new(false),
         })))
     }
 }
@@ -81,6 +84,12 @@ pub struct GlDevice(pub(crate) Rc<GlDeviceState>);
 
 /// Thread-local state shared by one current GL context generation.
 pub(crate) struct GlDeviceState {
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    pub(crate) native_lease: std::cell::Cell<bool>,
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    pub(crate) native_lease_failed: std::cell::Cell<bool>,
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    pub(crate) compute_pass_active: std::cell::Cell<bool>,
     /// Platform context ownership remains private and is never put in Core.
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
     pub(crate) context: RefCell<crate::backend::gl::native::NativePlatformContext>,
@@ -98,76 +107,7 @@ pub(crate) struct GlDeviceState {
 }
 
 #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
-impl GlDeviceState {
-    /// Executes a platform-context operation without borrowing the GL object
-    /// provider. Presentation uses this after an image lease is irrevocably
-    /// handed off, so a swap failure cannot be reclassified as rejection.
-    pub(crate) fn with_context<T>(
-        &self,
-        operation: &'static str,
-        f: impl FnOnce(
-            &mut crate::backend::gl::native::NativePlatformContext,
-        ) -> Result<T, crate::backend::gl::api::GlError>,
-    ) -> Result<T, crate::backend::gl::api::GlError> {
-        let mut context = self.context.try_borrow_mut().map_err(|_| {
-            crate::backend::gl::api::GlError::Driver {
-                operation,
-                message: "GL platform context is already in use".into(),
-            }
-        })?;
-        f(&mut context)
-    }
-
-    /// Executes one native operation while this device's context is current.
-    ///
-    /// The borrow ordering is deliberate: currentness is established before a
-    /// provider can resolve or issue any object name. `Rc` and `RefCell` keep
-    /// this state thread-affine, so no other Rust thread can concurrently make
-    /// the context current or mutate its object tables.
-    pub(crate) fn with_native<T>(
-        &self,
-        operation: &'static str,
-        f: impl FnOnce(
-            &mut crate::backend::gl::native::provider::NativeGlProvider,
-        ) -> Result<T, crate::backend::gl::api::GlError>,
-    ) -> Result<T, crate::backend::gl::api::GlError> {
-        use crate::backend::gl::native::NativeContextOwner as _;
-
-        let mut context = self.context.try_borrow_mut().map_err(|_| {
-            crate::backend::gl::api::GlError::Driver {
-                operation,
-                message: "GL context is already issuing a command".into(),
-            }
-        })?;
-        context.make_current(operation)?;
-        let mut provider = self.provider.try_borrow_mut().map_err(|_| {
-            crate::backend::gl::api::GlError::Driver {
-                operation,
-                message: "GL provider is already issuing a command".into(),
-            }
-        })?;
-        f(&mut provider)
-    }
-
-    /// Names the single adapter represented by this adopted GL context.
-    ///
-    /// GL has no portable physical-device enumeration after context creation.
-    /// Discovery's immutable driver strings are therefore the truthful facts
-    /// used by the public instance enumeration result.
-    pub(crate) fn adapter_name(&self) -> Result<String, crate::backend::gl::api::GlError> {
-        use crate::backend::gl::api::GlFamilyApi as _;
-
-        self.with_native("describe GL adapter", |provider| {
-            let context = provider.discovery().context();
-            Ok(format!(
-                "{} {} ({})",
-                context.vendor(),
-                context.renderer(),
-                context.version()
-            ))
-        })
-    }
-}
+mod native_state;
 
 #[cfg(not(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl")))]
 impl GlDeviceState {
@@ -248,15 +188,17 @@ impl Drop for GlQuerySetInner {
 
         // Query deletion is context-affine. A failed re-entrant borrow leaves
         // the provider table to context teardown, matching other GL owners.
-        let _ = self.state.with_native("drop GL query set", |provider| {
-            for query in self.queries.drain(..) {
-                provider.destroy_query(query)?;
-            }
-            for query in self.statistics_queries.drain(..) {
-                provider.destroy_query(query)?;
-            }
-            Ok(())
-        });
+        let _ = self
+            .state
+            .with_native_retirement("drop GL query set", |provider| {
+                for query in self.queries.drain(..) {
+                    provider.destroy_query(query)?;
+                }
+                for query in self.statistics_queries.drain(..) {
+                    provider.destroy_query(query)?;
+                }
+                Ok(())
+            });
     }
 }
 
@@ -311,7 +253,7 @@ impl Drop for GlComputePipelineInner {
         // teardown; Drop must not re-enter a native table mutation.
         let _ = self
             .state
-            .with_native("drop GL compute pipeline", |provider| {
+            .with_native_retirement("drop GL compute pipeline", |provider| {
                 provider.destroy_program(self.program)
             });
     }
@@ -499,9 +441,11 @@ impl Drop for GlSamplerInner {
         use crate::backend::gl::api::GlSamplerApi as _;
         // See buffer teardown: a re-entrant final release leaves the provider
         // table for context teardown rather than panicking during Drop.
-        let _ = self.state.with_native("drop GL sampler", |provider| {
-            provider.destroy_sampler(self.id)
-        });
+        let _ = self
+            .state
+            .with_native_retirement("drop GL sampler", |provider| {
+                provider.destroy_sampler(self.id)
+            });
     }
 }
 /// Immutable GL pipeline ABI.
@@ -599,7 +543,7 @@ impl Drop for GlRasterPipelineInner {
         // destructor panicking or deleting a name under an active GL call.
         let _ = self
             .state
-            .with_native("drop GL raster pipeline", |provider| {
+            .with_native_retirement("drop GL raster pipeline", |provider| {
                 let vao = provider.destroy_vertex_array(self.vertex_array);
                 let program = provider.destroy_program(self.program);
                 vao.and(program)
@@ -631,6 +575,9 @@ pub struct GlMap {
     pub(crate) bytes: Vec<u8>,
     pub(crate) offset: u64,
     pub(crate) mode: fluxel_rhi_core::api::MapMode,
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    pub(crate) persistent: Option<core::ptr::NonNull<u8>>,
+    pub(crate) len: usize,
 }
 
 impl core::ops::Deref for GlBuffer {
@@ -665,9 +612,11 @@ impl Drop for GlBufferInner {
         // this path never panics; a re-entrant release conservatively leaves
         // the name for provider/context teardown instead of deleting it under
         // an active table borrow.
-        let _ = self.state.with_native("drop GL buffer", |provider| {
-            provider.destroy_buffer_resource(self.id)
-        });
+        let _ = self
+            .state
+            .with_native_retirement("drop GL buffer", |provider| {
+                provider.destroy_buffer_resource(self.id)
+            });
     }
 }
 
@@ -708,9 +657,11 @@ impl Drop for GlTextureInner {
 
         // See GlBufferInner: context loss is deliberately conservative, while
         // a live context receives exactly one deletion at the final Rc release.
-        let _ = self.state.with_native("drop GL texture", |provider| {
-            provider.destroy_texture_resource(self.id)
-        });
+        let _ = self
+            .state
+            .with_native_retirement("drop GL texture", |provider| {
+                provider.destroy_texture_resource(self.id)
+            });
     }
 }
 
@@ -796,7 +747,7 @@ impl Drop for GlShaderInner {
         if let Some(id) = self.id {
             let _ = self
                 .state
-                .with_native("drop GL shader", |provider| provider.destroy_shader(id));
+                .with_native_retirement("drop GL shader", |provider| provider.destroy_shader(id));
         }
     }
 }

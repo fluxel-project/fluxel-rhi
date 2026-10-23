@@ -37,12 +37,26 @@ impl NativeGlProvider {
                 super::exec_compressed_upload::CompressedSource::Buffer(buffer, source),
             );
         }
-        if matches!(desc.format, GlFormat::Depth16Unorm | GlFormat::Depth32Float)
-            && !matches!(
-                self.discovery.context().profile(),
-                crate::backend::gl::api::GlFamilyProfile::Desktop { .. }
-            )
-        {
+        if matches!(
+            desc.format,
+            GlFormat::Depth24PlusStencil8 | GlFormat::Depth32FloatStencil8
+        ) {
+            return self.upload_packed_plane(
+                OP,
+                texture,
+                desc,
+                dest,
+                layout,
+                super::exec_copy::packed_upload::PackedSource::Buffer(buffer, source),
+            );
+        }
+        if matches!(
+            desc.format,
+            GlFormat::Depth16Unorm | GlFormat::Depth32Float | GlFormat::Stencil8
+        ) && !matches!(
+            self.discovery.context().profile(),
+            crate::backend::gl::api::GlFamilyProfile::Desktop { .. }
+        ) {
             return Err(GlError::Unsupported {
                 operation: OP,
                 reason: "depth PBO upload currently requires desktop GL",
@@ -53,6 +67,7 @@ impl NativeGlProvider {
             GlPixelFormat::Rgba8
                 | GlPixelFormat::Red8
                 | GlPixelFormat::Rg8
+                | GlPixelFormat::Stencil8
                 | GlPixelFormat::Depth16
                 | GlPixelFormat::Depth32Float
                 | GlPixelFormat::TexelBytes(2 | 4 | 8 | 16)

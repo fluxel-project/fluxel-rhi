@@ -41,7 +41,7 @@ pub(super) fn texture_copy_route(profile: GlFamilyProfile) -> CopyRoute {
 }
 
 impl NativeGlProvider {
-    pub(super) fn copy_texture_direct(
+    pub(in crate::backend::gl::native) fn copy_texture_direct(
         &mut self,
         op: &'static str,
         source: GlTextureRegion,
@@ -429,6 +429,7 @@ pub(in crate::backend::gl::native) fn upload_encoding(
 ) -> Option<(u32, u32)> {
     use crate::backend::gl::api::GlFormat as F;
     match format {
+        F::Stencil8 => Some((glow::STENCIL_INDEX, glow::UNSIGNED_BYTE)),
         F::Depth16Unorm => Some((glow::DEPTH_COMPONENT, glow::UNSIGNED_SHORT)),
         F::Depth32Float => Some((glow::DEPTH_COMPONENT, glow::FLOAT)),
         F::R16Uint => Some((glow::RED_INTEGER, glow::UNSIGNED_SHORT)),
@@ -483,6 +484,7 @@ pub(in crate::backend::gl::native) fn upload_pixel_format(
 ) -> Option<crate::backend::gl::api::GlPixelFormat> {
     use crate::backend::gl::api::{GlFormat as F, GlPixelFormat as P};
     Some(match format {
+        F::Stencil8 => P::Stencil8,
         F::Depth16Unorm => P::Depth16,
         F::Depth32Float => P::Depth32Float,
         F::R8Unorm | F::R8Snorm | F::R8Uint | F::R8Sint => P::Red8,

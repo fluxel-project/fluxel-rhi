@@ -5,6 +5,19 @@ use super::*;
 #[test]
 #[ignore = "requires a WGL hardware context"]
 fn wgl_core_timestamp_query() {
+    run_timestamp_query(false);
+}
+
+#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[test]
+#[ignore = "requires a WGL hardware context"]
+fn wgl_core_timestamp_query_without_query_buffer() {
+    run_timestamp_query(true);
+}
+
+#[cfg(all(windows, feature = "native-gl-wgl"))]
+fn run_timestamp_query(fallback: bool) {
+    crate::backend::gl::backend::spi::TEST_DISABLE_QUERY_BUFFER.with(|v| v.set(fallback));
     use fluxel_host::{Window, WindowConfig};
     use std::{
         future::Future,
@@ -27,14 +40,22 @@ fn wgl_core_timestamp_query() {
             }
         }
     }
-    let window = Window::new(WindowConfig::new("GL timestamp", 64, 64).unwrap()).unwrap();
+    let window = Window::new(WindowConfig::new("GL timestamp", 1024, 768).unwrap()).unwrap();
     // SAFETY: the window outlives the device and its current context.
     let d = block_on(open(
-        unsafe { GlInstance::from_wgl_window(&window, [64, 64]) }.unwrap(),
+        unsafe { GlInstance::from_wgl_window(&window, [1024, 768]) }.unwrap(),
     ));
     let queries = d
         .queries(QueryKind::Timestamp)
         .expect("desktop GL timestamp capability");
+    assert_eq!(
+        queries.resolve_mode(),
+        if fallback {
+            QueryResolveMode::AfterCompletion
+        } else {
+            QueryResolveMode::Ordered
+        }
+    );
     let clock = queries.timestamp_clock(d.lanes()[0].id).unwrap();
     assert_eq!(clock.period_ns, 1.0);
     let set = queries
@@ -118,6 +139,110 @@ fn wgl_core_timestamp_query() {
         })
         .unwrap();
     pass.finish().unwrap();
+    if fallback {
+        assert!(matches!(run.close(), ImmediateRunOutcome::Issued(_)));
+        let point = match session.finish() {
+            ImmediateFinishOutcome::Issued(prefix) => {
+                prefix.checkpoints.into_iter().next().unwrap().point
+            }
+            _ => panic!("finish producer"),
+        };
+        block_on(d.wait_completion(&point)).unwrap();
+        let plan = common::single_commands_plan(&fixture, 747).unwrap();
+        // SAFETY: the producer is complete and resources remain live.
+        let mut resolve_session =
+            unsafe { common::begin_commands(&fixture, plan, CompletionRequest::End) }.unwrap();
+        let mut resolve_run = resolve_session
+            .begin_commands()
+            .unwrap_or_else(|_| panic!("begin resolve"));
+        let e = resolve_run.commands();
+        queries.resolve(e, &set, 0..2, &buffer, 8).unwrap();
+        let ticket = e.readback_buffer(&buffer, 0..32).unwrap();
+        assert!(matches!(
+            resolve_run.close(),
+            ImmediateRunOutcome::Issued(_)
+        ));
+        let point = match resolve_session.finish() {
+            ImmediateFinishOutcome::Issued(prefix) => {
+                prefix.checkpoints.into_iter().next().unwrap().point
+            }
+            _ => panic!("finish resolve"),
+        };
+        block_on(d.wait_completion(&point)).unwrap();
+        // SAFETY: completion covers the readback.
+        let bytes = block_on(unsafe { d.read_after(ticket, &point) })
+            .unwrap()
+            .bytes;
+        assert_eq!(&bytes[..8], &[0xad; 8]);
+        assert_eq!(&bytes[24..], &[0xad; 8]);
+        assert_ne!(u64::from_ne_bytes(bytes[8..16].try_into().unwrap()), 0);
+        // A completed slot followed by an unwritten slot must reject the whole
+        // resolve without changing any bytes in the destination.
+        let partial = queries
+            .create(&QueryDesc {
+                kind: QueryKind::Timestamp,
+                count: 2,
+            })
+            .unwrap();
+        let plan = common::single_commands_plan(&fixture, 748).unwrap();
+        // SAFETY: resources stay live until producer completion.
+        let mut session =
+            unsafe { common::begin_commands(&fixture, plan, CompletionRequest::End) }.unwrap();
+        let mut run = session
+            .begin_commands()
+            .unwrap_or_else(|_| panic!("begin partial producer"));
+        let e = run.commands();
+        e.write_buffer(&buffer, 0, &[0xadu8; 32]).unwrap();
+        queries.reset(e, &partial, 0..2).unwrap();
+        queries.timestamp(e, &partial, 0).unwrap();
+        assert!(matches!(run.close(), ImmediateRunOutcome::Issued(_)));
+        let point = match session.finish() {
+            ImmediateFinishOutcome::Issued(prefix) => {
+                prefix.checkpoints.into_iter().next().unwrap().point
+            }
+            _ => panic!("finish partial producer"),
+        };
+        block_on(d.wait_completion(&point)).unwrap();
+        let plan = common::single_commands_plan(&fixture, 749).unwrap();
+        // SAFETY: resources remain live while this run is rejected.
+        let mut session =
+            unsafe { common::begin_commands(&fixture, plan, CompletionRequest::End) }.unwrap();
+        let mut run = session
+            .begin_commands()
+            .unwrap_or_else(|_| panic!("begin invalid resolve"));
+        assert!(matches!(
+            queries.resolve(run.commands(), &partial, 0..2, &buffer, 8),
+            Err(Error::InvalidState)
+        ));
+        assert!(matches!(run.close(), ImmediateRunOutcome::Failed { .. }));
+        assert!(matches!(
+            session.finish(),
+            ImmediateFinishOutcome::AlreadyReported
+        ));
+        let plan = common::single_commands_plan(&fixture, 750).unwrap();
+        // SAFETY: the destination remains live through readback completion.
+        let mut session =
+            unsafe { common::begin_commands(&fixture, plan, CompletionRequest::End) }.unwrap();
+        let mut run = session
+            .begin_commands()
+            .unwrap_or_else(|_| panic!("begin sentinel readback"));
+        let ticket = run.commands().readback_buffer(&buffer, 0..32).unwrap();
+        assert!(matches!(run.close(), ImmediateRunOutcome::Issued(_)));
+        let point = match session.finish() {
+            ImmediateFinishOutcome::Issued(prefix) => {
+                prefix.checkpoints.into_iter().next().unwrap().point
+            }
+            _ => panic!("finish sentinel readback"),
+        };
+        block_on(d.wait_completion(&point)).unwrap();
+        // SAFETY: the completion point covers the readback.
+        let bytes = block_on(unsafe { d.read_after(ticket, &point) })
+            .unwrap()
+            .bytes;
+        assert_eq!(bytes.as_slice(), &[0xadu8; 32]);
+        crate::backend::gl::backend::spi::TEST_DISABLE_QUERY_BUFFER.with(|v| v.set(false));
+        return;
+    }
     queries.resolve(encoder, &set, 0..2, &buffer, 8).unwrap();
     let ticket = encoder.readback_buffer(&buffer, 0..32).unwrap();
     assert!(matches!(run.close(), ImmediateRunOutcome::Issued(_)));

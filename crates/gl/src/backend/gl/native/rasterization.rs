@@ -4,16 +4,60 @@
 //! raster block includes these modes, including restoration to defaults.
 use super::provider::NativeGlProvider;
 use crate::backend::gl::api::{
-    GlDiscoverySnapshot, GlError, GlFamilyProfile, GlPolygonMode, GlRasterizationState,
+    GlDiscoverySnapshot, GlError, GlFamilyProfile, GlPolygonMode, GlPrimitiveTopology,
+    GlRasterizationState,
 };
 use glow::HasContext as _;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ConservativeFlavor {
+    #[default]
+    None,
+    Nv,
+    Intel,
+}
+
+impl ConservativeFlavor {
+    fn select(nv: bool, intel: bool) -> Self {
+        if nv {
+            Self::Nv
+        } else if intel {
+            Self::Intel
+        } else {
+            Self::None
+        }
+    }
+
+    fn supports(self, state: GlRasterizationState, topology: GlPrimitiveTopology) -> bool {
+        !state.conservative
+            || match self {
+                Self::None => false,
+                Self::Nv => true,
+                Self::Intel => {
+                    state.polygon_mode == GlPolygonMode::Fill
+                        && matches!(
+                            topology,
+                            GlPrimitiveTopology::Triangles | GlPrimitiveTopology::TriangleStrip
+                        )
+                }
+            }
+    }
+
+    fn token(self) -> Option<u32> {
+        match self {
+            Self::None => None,
+            Self::Nv => Some(0x9346),
+            Self::Intel => Some(0x83fe),
+        }
+    }
+}
 
 #[derive(Default)]
 pub(super) struct NativeRasterization {
     polygon_mode: Option<unsafe extern "system" fn(u32, u32)>,
     point_mode: bool,
     depth_clamp: bool,
-    conservative: bool,
+    conservative: ConservativeFlavor,
     output_interface: Option<unsafe extern "system" fn(u32, u32, u32, *mut i32)>,
     output_resource: Option<super::context::GetProgramResourceFn>,
     frag_data_index: Option<unsafe extern "system" fn(u32, *const i8) -> i32>,
@@ -79,7 +123,10 @@ impl NativeRasterization {
             polygon_mode,
             point_mode: desktop,
             depth_clamp: desktop || has("GL_EXT_depth_clamp"),
-            conservative: has("GL_NV_conservative_raster"),
+            conservative: ConservativeFlavor::select(
+                has("GL_NV_conservative_raster"),
+                has("GL_INTEL_conservative_rasterization"),
+            ),
             output_interface,
             output_resource,
             frag_data_index,
@@ -90,7 +137,10 @@ impl NativeRasterization {
         (state.polygon_mode == GlPolygonMode::Fill || self.polygon_mode.is_some())
             && (state.polygon_mode != GlPolygonMode::Point || self.point_mode)
             && (!state.depth_clamp || self.depth_clamp)
-            && (!state.conservative || self.conservative)
+            && (!state.conservative || self.conservative != ConservativeFlavor::None)
+            && (!state.conservative
+                || self.conservative != ConservativeFlavor::Intel
+                || state.polygon_mode == GlPolygonMode::Fill)
     }
 }
 
@@ -258,6 +308,15 @@ impl NativeGlProvider {
         self.rasterization.supports(state)
     }
 
+    pub(crate) fn supports_rasterization_topology(
+        &self,
+        state: GlRasterizationState,
+        topology: GlPrimitiveTopology,
+    ) -> bool {
+        self.rasterization.supports(state)
+            && self.rasterization.conservative.supports(state, topology)
+    }
+
     /// # Safety
     /// The provider context is current during installation of fixed state.
     pub(super) unsafe fn apply_rasterization(
@@ -283,10 +342,9 @@ impl NativeGlProvider {
                     },
                 );
             }
-            for (supported, enabled, token) in [
-                (self.rasterization.depth_clamp, state.depth_clamp, 0x864F),
-                (self.rasterization.conservative, state.conservative, 0x9346),
-            ] {
+            for (supported, enabled, token) in
+                [(self.rasterization.depth_clamp, state.depth_clamp, 0x864F)]
+            {
                 if supported {
                     if enabled {
                         self.gl.enable(token);
@@ -295,7 +353,45 @@ impl NativeGlProvider {
                     }
                 }
             }
+            if let Some(token) = self.rasterization.conservative.token() {
+                if state.conservative {
+                    self.gl.enable(token);
+                } else {
+                    self.gl.disable(token);
+                }
+            }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod conservative_tests {
+    use super::*;
+
+    #[test]
+    fn extension_selection_and_topology_constraints() {
+        let mut state = GlRasterizationState {
+            polygon_mode: GlPolygonMode::Fill,
+            depth_clamp: false,
+            conservative: true,
+        };
+        assert_eq!(
+            ConservativeFlavor::select(true, true),
+            ConservativeFlavor::Nv
+        );
+        assert_eq!(
+            ConservativeFlavor::select(false, true).token(),
+            Some(0x83fe)
+        );
+        assert!(!ConservativeFlavor::None.supports(state, GlPrimitiveTopology::Triangles));
+        assert!(ConservativeFlavor::Intel.supports(state, GlPrimitiveTopology::Triangles));
+        assert!(ConservativeFlavor::Intel.supports(state, GlPrimitiveTopology::TriangleStrip));
+        assert!(!ConservativeFlavor::Intel.supports(state, GlPrimitiveTopology::Lines));
+        assert!(ConservativeFlavor::Nv.supports(state, GlPrimitiveTopology::Lines));
+        state.polygon_mode = GlPolygonMode::Line;
+        assert!(!ConservativeFlavor::Intel.supports(state, GlPrimitiveTopology::Triangles));
+        state.conservative = false;
+        assert!(ConservativeFlavor::Intel.supports(state, GlPrimitiveTopology::Lines));
     }
 }

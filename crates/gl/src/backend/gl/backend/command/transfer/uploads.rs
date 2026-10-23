@@ -15,13 +15,21 @@ pub(crate) fn buffer_to_texture(
             texture.desc.format,
             GlFormat::Depth16Unorm | GlFormat::Depth32Float
         );
+    let stencil_upload = destination.aspect == api::TextureAspects::STENCIL
+        && texture.desc.format == GlFormat::Stencil8;
+    let packed_upload = matches!(
+        texture.desc.format,
+        GlFormat::Depth24PlusStencil8 | GlFormat::Depth32FloatStencil8
+    ) && (destination.aspect == api::TextureAspects::STENCIL
+        || (texture.desc.format == GlFormat::Depth32FloatStencil8
+            && destination.aspect == api::TextureAspects::DEPTH));
     let color_upload = destination.aspect == api::TextureAspects::COLOR
         && (texture.desc.format.compressed_info().is_some()
             || texture
                 .desc
                 .format
                 .supports_blit_aspect(GlTextureAspect::Color));
-    if !(color_upload || depth_upload) {
+    if !(color_upload || depth_upload || stencil_upload || packed_upload) {
         return Err(Error::Unsupported(
             "GL buffer-to-texture supports only Depth16/Depth32Float depth uploads",
         ));
@@ -46,8 +54,15 @@ pub(crate) fn buffer_to_texture(
     {
         use crate::backend::gl::api::{GlBufferRange, GlCopyDomainApi as _};
         let destination = lower_region(destination)?;
-        let layout =
-            crate::backend::gl::translate::lower_texel_copy_layout(layout, texture.desc.format)?;
+        let plane_format = match (texture.desc.format, destination.subresource.aspect) {
+            (
+                GlFormat::Depth24PlusStencil8 | GlFormat::Depth32FloatStencil8,
+                GlTextureAspect::StencilOnly,
+            ) => GlFormat::Stencil8,
+            (GlFormat::Depth32FloatStencil8, GlTextureAspect::DepthOnly) => GlFormat::Depth32Float,
+            _ => texture.desc.format,
+        };
+        let layout = crate::backend::gl::translate::lower_texel_copy_layout(layout, plane_format)?;
         let required = layout
             .required_bytes(destination)
             .map_err(|_| Error::InvalidRange)?;
@@ -126,13 +141,30 @@ pub(crate) fn texture_to_buffer(
     // Keep native depth readback format-specific: Depth16Unorm uses unsigned
     // short and Depth32Float uses float. Stencil packing differs by API.
     let source = unsafe { src.texture.native_ref() };
+    if src.aspect == api::TextureAspects::COLOR
+        && source.desc.format.compressed_info().is_none()
+        && !source
+            .desc
+            .format
+            .supports_blit_aspect(GlTextureAspect::Color)
+    {
+        return Err(Error::InvalidRange);
+    }
     let desktop_depth = src.aspect == api::TextureAspects::DEPTH
         && matches!(
             source.desc.format,
             crate::backend::gl::api::GlFormat::Depth16Unorm
                 | crate::backend::gl::api::GlFormat::Depth32Float
         );
-    if src.aspect != api::TextureAspects::COLOR && !desktop_depth {
+    let stencil_read = src.aspect == api::TextureAspects::STENCIL
+        && matches!(
+            source.desc.format,
+            GlFormat::Stencil8 | GlFormat::Depth24PlusStencil8 | GlFormat::Depth32FloatStencil8
+        );
+    let desktop_depth = desktop_depth
+        || (src.aspect == api::TextureAspects::DEPTH
+            && source.desc.format == GlFormat::Depth32FloatStencil8);
+    if src.aspect != api::TextureAspects::COLOR && !desktop_depth && !stencil_read {
         return Err(Error::Unsupported(
             "GL depth/stencil texture-to-buffer transfer",
         ));
@@ -164,8 +196,16 @@ pub(crate) fn texture_to_buffer(
         // metadata and is never retained beyond the current GL call.
         let source = unsafe { src.texture.native_ref() };
         let source_region = lower_region(src)?;
+        let plane_format = match (source.desc.format, source_region.subresource.aspect) {
+            (
+                GlFormat::Depth24PlusStencil8 | GlFormat::Depth32FloatStencil8,
+                GlTextureAspect::StencilOnly,
+            ) => GlFormat::Stencil8,
+            (GlFormat::Depth32FloatStencil8, GlTextureAspect::DepthOnly) => GlFormat::Depth32Float,
+            _ => source.desc.format,
+        };
         let pixel_layout =
-            crate::backend::gl::translate::lower_texel_copy_layout(layout, source.desc.format)?;
+            crate::backend::gl::translate::lower_texel_copy_layout(layout, plane_format)?;
         let required = pixel_layout
             .required_bytes(source_region)
             .map_err(|_| Error::InvalidRange)?;
@@ -318,15 +358,40 @@ pub(crate) fn write_texture(
     layout: TexelCopyBufferLayout,
     bytes: &[u8],
 ) -> Result<()> {
-    if dst.aspect != api::TextureAspects::COLOR {
-        return Err(Error::Unsupported("GL depth/stencil texture byte upload"));
-    }
     // SAFETY: Core holds the texture borrow for this synchronous command;
     // its descriptor is immutable allocation metadata used only to choose
     // the validated native pixel-layout lowering.
     let texture = unsafe { dst.texture.native_ref() };
     if !std::rc::Rc::ptr_eq(&encoder.state, &texture.state) {
         return Err(Error::WrongDevice);
+    }
+    let depth_upload = dst.aspect == api::TextureAspects::DEPTH
+        && matches!(
+            texture.desc.format,
+            GlFormat::Depth16Unorm | GlFormat::Depth32Float
+        );
+    let stencil_upload =
+        dst.aspect == api::TextureAspects::STENCIL && texture.desc.format == GlFormat::Stencil8;
+    let packed_upload = matches!(
+        texture.desc.format,
+        GlFormat::Depth24PlusStencil8 | GlFormat::Depth32FloatStencil8
+    ) && (dst.aspect == api::TextureAspects::STENCIL
+        || (texture.desc.format == GlFormat::Depth32FloatStencil8
+            && dst.aspect == api::TextureAspects::DEPTH));
+    let color_upload = dst.aspect == api::TextureAspects::COLOR
+        && (texture.desc.format.compressed_info().is_some()
+            || texture
+                .desc
+                .format
+                .supports_blit_aspect(GlTextureAspect::Color));
+    if !color_upload && !depth_upload && !stencil_upload && !packed_upload {
+        return Err(Error::Unsupported("GL depth/stencil texture byte upload"));
+    }
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    if depth_upload || stencil_upload || packed_upload {
+        return Err(Error::Unsupported(
+            "WebGL2 depth/stencil CPU texture upload",
+        ));
     }
     if !texture
         .desc
@@ -335,8 +400,15 @@ pub(crate) fn write_texture(
     {
         return Err(Error::InvalidState);
     }
-    let layout =
-        crate::backend::gl::translate::lower_texel_copy_layout(layout, texture.desc.format)?;
+    let plane_format = match (texture.desc.format, dst.aspect) {
+        (
+            GlFormat::Depth24PlusStencil8 | GlFormat::Depth32FloatStencil8,
+            api::TextureAspects::STENCIL,
+        ) => GlFormat::Stencil8,
+        (GlFormat::Depth32FloatStencil8, api::TextureAspects::DEPTH) => GlFormat::Depth32Float,
+        _ => texture.desc.format,
+    };
+    let layout = crate::backend::gl::translate::lower_texel_copy_layout(layout, plane_format)?;
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
     {
         let destination = lower_region(dst)?;

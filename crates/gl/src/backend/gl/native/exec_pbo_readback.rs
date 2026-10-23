@@ -7,6 +7,29 @@ use crate::backend::gl::api::{
 };
 use glow::HasContext as _;
 
+#[cfg(test)]
+impl NativeGlProvider {
+    pub(crate) fn color_read_clamp_for_test(&mut self, mode: Option<u32>) -> Result<u32, GlError> {
+        const OP: &str = "color read clamp fixture";
+        self.assert_ready(OP)?;
+        let entry = self.clamp_read_color.ok_or(GlError::Unsupported {
+            operation: OP,
+            reason: "glClampColor unavailable",
+        })?;
+        // SAFETY: the fixture owns this current desktop context; `mode` is
+        // a legal GL boolean or a previously returned clamp enum.
+        let prior = unsafe {
+            let prior = self.gl.get_parameter_i32(glow::CLAMP_READ_COLOR) as u32;
+            if let Some(mode) = mode {
+                entry(glow::CLAMP_READ_COLOR, mode);
+            }
+            prior
+        };
+        self.driver_error(OP)?;
+        Ok(prior)
+    }
+}
+
 impl NativeGlProvider {
     pub(crate) fn copy_texture_to_buffer(
         &mut self,
@@ -39,7 +62,28 @@ impl NativeGlProvider {
                 layout,
             );
         }
-        let depth_format = matches!(desc.format, GlFormat::Depth16Unorm | GlFormat::Depth32Float);
+        if super::exec_rgb9e5_readback::exact_integer_alias(desc.format).is_some()
+            && matches!(
+                self.discovery.context().profile(),
+                crate::backend::gl::api::GlFamilyProfile::Desktop { .. }
+            )
+        {
+            return self.copy_exact_alias_texture_to_buffer(
+                texture,
+                desc,
+                source,
+                destination,
+                layout,
+            );
+        }
+        let depth_format = matches!(
+            desc.format,
+            GlFormat::Depth16Unorm
+                | GlFormat::Depth32Float
+                | GlFormat::Stencil8
+                | GlFormat::Depth24PlusStencil8
+                | GlFormat::Depth32FloatStencil8
+        );
         if depth_format
             && !matches!(
                 self.discovery.context().profile(),
@@ -51,30 +95,129 @@ impl NativeGlProvider {
                 reason: "depth PBO readback requires desktop GL",
             });
         }
-        let (read_format, read_type, pixel_format) = match desc.format {
-            GlFormat::Depth16Unorm => (
-                glow::DEPTH_COMPONENT,
-                glow::UNSIGNED_SHORT,
-                GlPixelFormat::Depth16,
+        if !depth_format
+            && super::exec_texture_sub_image_readback::allow_direct_read()
+            && self.get_texture_sub_image.is_some()
+            && super::exec_texture_sub_image_readback::direct_read_supported(
+                self.discovery.context().profile(),
+                self.discovery.extensions(),
+            )
+            && super::exec_texture_sub_image_readback::direct_color_format(desc.format)
+        {
+            return self.copy_texture_sub_image_to_buffer(
+                texture,
+                desc,
+                source,
+                buffer,
+                destination,
+                layout,
+            );
+        }
+        if !depth_format
+            && self.get_tex_image.is_some()
+            && matches!(
+                self.discovery.context().profile(),
+                crate::backend::gl::api::GlFamilyProfile::Desktop { .. }
+            )
+            && super::exec_texture_sub_image_readback::direct_color_format(desc.format)
+        {
+            return self.copy_texture_image_to_buffer(
+                texture,
+                desc,
+                source,
+                buffer,
+                destination,
+                layout,
+            );
+        }
+        // Desktop GL can read the native representation of these renderable
+        // color formats through the framebuffer.
+        let desktop_color = matches!(
+            self.discovery.context().profile(),
+            crate::backend::gl::api::GlFamilyProfile::Desktop { .. }
+        ) && matches!(
+            desc.format,
+            GlFormat::R8Unorm
+                | GlFormat::Rg8Unorm
+                | GlFormat::R8Snorm
+                | GlFormat::Rg8Snorm
+                | GlFormat::Rgba8Snorm
+                | GlFormat::R16Snorm
+                | GlFormat::Rg16Snorm
+                | GlFormat::Rgba16Snorm
+                | GlFormat::R16Unorm
+                | GlFormat::Rg16Unorm
+                | GlFormat::Rgba16Unorm
+                | GlFormat::R16Float
+                | GlFormat::Rg16Float
+                | GlFormat::Rgba16Float
+                | GlFormat::R32Float
+                | GlFormat::Rg32Float
+                | GlFormat::Rgba32Float
+                | GlFormat::Rgb10a2Unorm
+                | GlFormat::Rg11b10Ufloat
+        );
+        let unclamped = desktop_color
+            && (desc.format.is_float_color()
+                || matches!(
+                    desc.format,
+                    GlFormat::R8Snorm
+                        | GlFormat::Rg8Snorm
+                        | GlFormat::Rgba8Snorm
+                        | GlFormat::R16Snorm
+                        | GlFormat::Rg16Snorm
+                        | GlFormat::Rgba16Snorm
+                ));
+        if unclamped && self.clamp_read_color.is_none() {
+            return Err(GlError::Unsupported {
+                operation: OP,
+                reason: "glClampColor unavailable",
+            });
+        }
+        let (read_format, read_type, pixel_format) = match (desc.format, source.subresource.aspect)
+        {
+            (
+                GlFormat::Depth24PlusStencil8 | GlFormat::Depth32FloatStencil8,
+                crate::backend::gl::api::GlTextureAspect::StencilOnly,
+            )
+            | (GlFormat::Stencil8, _) => (
+                glow::STENCIL_INDEX,
+                glow::UNSIGNED_BYTE,
+                GlPixelFormat::Stencil8,
             ),
-            GlFormat::Depth32Float => (
+            (
+                GlFormat::Depth32FloatStencil8,
+                crate::backend::gl::api::GlTextureAspect::DepthOnly,
+            ) => (
                 glow::DEPTH_COMPONENT,
                 glow::FLOAT,
                 GlPixelFormat::Depth32Float,
             ),
-            GlFormat::Rgba8Unorm | GlFormat::Rgba8Srgb => {
+            (GlFormat::Depth16Unorm, _) => (
+                glow::DEPTH_COMPONENT,
+                glow::UNSIGNED_SHORT,
+                GlPixelFormat::Depth16,
+            ),
+            (GlFormat::Depth32Float, _) => (
+                glow::DEPTH_COMPONENT,
+                glow::FLOAT,
+                GlPixelFormat::Depth32Float,
+            ),
+            (GlFormat::Rgba8Unorm | GlFormat::Rgba8Srgb, _) => {
                 (glow::RGBA, glow::UNSIGNED_BYTE, GlPixelFormat::Rgba8)
             }
-            format if super::probes::EXACT_INTEGER_FORMATS.contains(&format) => {
+            (format, _)
+                if desktop_color || super::probes::EXACT_INTEGER_FORMATS.contains(&format) =>
+            {
                 let (external, kind) =
                     super::exec_copy::upload_encoding(format).ok_or(GlError::Unsupported {
                         operation: OP,
-                        reason: "integer readback encoding",
+                        reason: "native color readback encoding",
                     })?;
                 let pixel =
                     super::exec_copy::upload_pixel_format(format).ok_or(GlError::Unsupported {
                         operation: OP,
-                        reason: "integer readback layout",
+                        reason: "native color readback layout",
                     })?;
                 (external, kind, pixel)
             }
@@ -91,7 +234,21 @@ impl NativeGlProvider {
                 reason: "texture readback format or sample count",
             });
         }
-        if (!depth_format && !self.discovery.formats().exact_buffer_readback(desc.format))
+        if desc.format == GlFormat::Stencil8
+            && !self
+                .discovery
+                .formats()
+                .get_for(GlFormatResourceKind::Texture, desc.format, 1)
+                .is_some_and(|facts| facts.copy_source)
+        {
+            return Err(GlError::Unsupported {
+                operation: OP,
+                reason: "stencil texture lacks copy source evidence",
+            });
+        }
+        if (!depth_format
+            && !desktop_color
+            && !self.discovery.formats().exact_buffer_readback(desc.format))
             || !self
                 .discovery
                 .formats()
@@ -203,6 +360,16 @@ impl NativeGlProvider {
             } else {
                 None
             };
+            let saved_clamp = if unclamped {
+                let prior = self.gl.get_parameter_i32(glow::CLAMP_READ_COLOR);
+                self.clamp_read_color.expect("clamp entry preflight")(
+                    glow::CLAMP_READ_COLOR,
+                    u32::from(glow::FALSE),
+                );
+                Some(prior as u32)
+            } else {
+                None
+            };
             let saved = self.pixel_store;
             self.gl
                 .bind_framebuffer(glow::READ_FRAMEBUFFER, Some(scratch));
@@ -305,6 +472,12 @@ impl NativeGlProvider {
                     result = Err(error);
                     break;
                 }
+            }
+            if let Some(prior) = saved_clamp {
+                self.clamp_read_color.expect("clamp entry preflight")(
+                    glow::CLAMP_READ_COLOR,
+                    prior,
+                );
             }
             self.gl.bind_buffer(
                 glow::PIXEL_PACK_BUFFER,

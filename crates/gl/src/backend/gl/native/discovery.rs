@@ -202,6 +202,8 @@ pub(crate) unsafe fn discover_current_glow_identified(
             !proc_loader("glCopyImageSubDataOES").is_null(),
         ],
         !proc_loader("glGetCompressedTexImage").is_null(),
+        !proc_loader("glGetTextureSubImage").is_null(),
+        !proc_loader("glGetTexImage").is_null(),
         unsafe { super::multiview::NativeMultiview::load_entry(&proc_loader) },
         unsafe { super::multisample_array::MultisampleArrayFns::load(&proc_loader) },
     );
@@ -538,11 +540,8 @@ fn extensions(
     // glow. Record acquisition only for typed, legal names; the operation
     // probes in `run_operation_probes` remain the real enablement evidence.
     //
-    // The multiview extension is deliberately absent from this list: the
-    // native boundary binds no multiview attachment entry point, so acquisition
-    // cannot be proved here and the name stays `Reported`. It is still typed
-    // and still recorded, which is what keeps a driver that reports it visible
-    // in evidence without letting the reported name enable anything.
+    // Multiview is acquired only after its separately loaded attachment entry
+    // point completes the operation probe, rather than from its name alone.
     for known in [
         GlKnownExtension::ArbComputeShader,
         GlKnownExtension::ArbShaderStorageBufferObject,
@@ -563,6 +562,7 @@ fn extensions(
         GlKnownExtension::OesCompressedEtc2Rgb8Texture,
         GlKnownExtension::KhrTextureCompressionAstcLdr,
         GlKnownExtension::KhrTextureCompressionAstcHdr,
+        GlKnownExtension::KhrTextureCompressionAstcSliced3d,
     ] {
         if known.is_legal_for(profile) && result.provenance(known).is_some() {
             let _ = result.acquire(known);

@@ -1,8 +1,8 @@
-//! Synchronous readback tickets for the owner-thread GL backend.
+//! Staged readback tickets for the owner-thread GL backend.
 //!
 //! GL command verbs execute at the call site. Native paths capture their bytes
-//! immediately; WebGL2 copies into ticket-owned GPU staging at this command
-//! position and reads those immutable bytes after the completion proof.
+//! into ticket-owned GPU staging at this command position and read those
+//! immutable bytes only after the caller supplies a covering completion proof.
 
 use std::{future::Ready, ops::Range, rc::Rc};
 
@@ -14,7 +14,7 @@ use super::{
     types::{GlBuffer, GlDevice, GlDeviceState, GlEncoder},
 };
 
-/// CPU bytes captured at the exact immediate command position.
+/// Ticket-owned storage captured at the exact immediate command position.
 pub struct GlReadbackTicket {
     _state: Rc<GlDeviceState>,
     source: GlReadbackSource,
@@ -22,6 +22,11 @@ pub struct GlReadbackTicket {
 
 enum GlReadbackSource {
     Bytes(Vec<u8>),
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    Native {
+        buffer: GlBuffer,
+        size: u64,
+    },
     #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
     Browser {
         buffer: crate::backend::gl::browser::BrowserBuffer,
@@ -65,25 +70,50 @@ impl ReadbackBackend for Gl {
         }
         #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
         {
-            use crate::backend::gl::api::{GlBufferRange, GlCopyDomainApi as _};
-            let result = encoder.state.with_native("read GL buffer", |provider| {
-                provider.read_buffer(GlBufferRange {
-                    buffer: source.id,
-                    offset: range.start,
-                    size,
-                })
-            });
-            let bytes = match result {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    encoder.indeterminate = true;
-                    return Err(native_error(error));
-                }
+            use super::types::GlBufferInner;
+            use crate::backend::gl::api::{
+                GlBufferDesc, GlBufferRange, GlBufferUsage, GlCopyDomainApi as _,
+                GlResourceApi as _,
             };
+            let desc = GlBufferDesc {
+                size,
+                usage: GlBufferUsage::COPY_DESTINATION | GlBufferUsage::MAP_READ,
+            };
+            let id = encoder
+                .state
+                .with_native("create readback staging", |provider| {
+                    provider.create_buffer_resource(desc)
+                })
+                .map_err(native_error)?;
+            let buffer = GlBuffer::from_inner(GlBufferInner {
+                state: encoder.state.clone(),
+                id,
+                desc,
+            });
+            let result = encoder
+                .state
+                .with_native("stage GL buffer readback", |provider| {
+                    provider.copy_buffer_range(
+                        GlBufferRange {
+                            buffer: source.id,
+                            offset: range.start,
+                            size,
+                        },
+                        GlBufferRange {
+                            buffer: buffer.id,
+                            offset: 0,
+                            size,
+                        },
+                    )
+                });
+            if let Err(error) = result {
+                encoder.indeterminate = true;
+                return Err(native_error(error));
+            }
             encoder.issued = true;
             return Ok(GlReadbackTicket {
                 _state: encoder.state.clone(),
-                source: GlReadbackSource::Bytes(bytes),
+                source: GlReadbackSource::Native { buffer, size },
             });
         }
         #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
@@ -129,6 +159,24 @@ impl ReadbackBackend for Gl {
     ) -> Self::ReadbackFuture<'a> {
         let result = match ticket.source {
             GlReadbackSource::Bytes(bytes) => Ok(bytes),
+            #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+            GlReadbackSource::Native { buffer, size } => {
+                use crate::backend::gl::api::{GlBufferRange, GlCopyDomainApi as _};
+                if !Rc::ptr_eq(&device.0, &buffer.state) {
+                    Err(Error::WrongDevice)
+                } else {
+                    device
+                        .0
+                        .with_native("map GL readback staging", |provider| {
+                            provider.read_buffer(GlBufferRange {
+                                buffer: buffer.id,
+                                offset: 0,
+                                size,
+                            })
+                        })
+                        .map_err(native_error)
+                }
+            }
             #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
             GlReadbackSource::Browser {
                 buffer,

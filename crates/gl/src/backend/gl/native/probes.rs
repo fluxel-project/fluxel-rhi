@@ -81,6 +81,8 @@ pub(crate) struct ProbeReport {
     pub query_counter_bits: Option<u32>,
     pub copy_image_symbols: [bool; 3],
     pub compressed_get_symbol: bool,
+    pub texture_sub_image_read_symbol: bool,
+    pub tex_image_read_symbol: bool,
 }
 
 impl Default for ProbeReport {
@@ -107,6 +109,8 @@ impl Default for ProbeReport {
             query_counter_bits: None,
             copy_image_symbols: [false; 3],
             compressed_get_symbol: false,
+            texture_sub_image_read_symbol: false,
+            tex_image_read_symbol: false,
         }
     }
 }
@@ -237,6 +241,12 @@ impl ProbeReport {
 pub(super) trait NativeGlProbes {
     fn copy_image_symbols(&self) -> [bool; 3] {
         [false; 3]
+    }
+    fn tex_image_read_symbol(&self) -> bool {
+        false
+    }
+    fn texture_sub_image_read_symbol(&self) -> bool {
+        false
     }
     fn compressed_get_symbol(&self) -> bool {
         false
@@ -464,10 +474,9 @@ pub(super) fn run_operation_probes(
         route_supplied(profile, extensions, Some((4, 3)), Some((3, 1)), None);
 
     ProbeReport {
-        multiview: if matches!(profile, GlFamilyProfile::Embedded { .. })
-            && extensions
-                .raw_reported_names()
-                .any(|name| name == "GL_OVR_multiview2")
+        multiview: if extensions
+            .raw_reported_names()
+            .any(|name| name == "GL_OVR_multiview2")
         {
             probes.multiview_attachment()
         } else {
@@ -656,6 +665,8 @@ pub(super) fn run_operation_probes(
         query_counter_bits: probes.query_counter_bits(),
         copy_image_symbols: probes.copy_image_symbols(),
         compressed_get_symbol: probes.compressed_get_symbol(),
+        texture_sub_image_read_symbol: probes.texture_sub_image_read_symbol(),
+        tex_image_read_symbol: probes.tex_image_read_symbol(),
     }
     .with_trivial_link_guard(probes, trivial)
 }

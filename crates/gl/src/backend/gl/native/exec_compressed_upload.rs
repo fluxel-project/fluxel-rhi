@@ -52,7 +52,12 @@ impl NativeGlProvider {
         if !matches!(
             desc.dimension,
             GlTextureDimension::D2 | GlTextureDimension::D2Array
-        ) {
+        ) && !(desc.dimension == GlTextureDimension::D3
+            && desc.format.supports_compressed_3d(
+                self.discovery.context().profile(),
+                self.discovery.extensions(),
+            ))
+        {
             return Err(GlError::Unsupported {
                 operation: OP,
                 reason: "compressed upload texture dimension",
@@ -155,10 +160,10 @@ impl NativeGlProvider {
                 .map_err(|_| Self::validation(OP, "compressed staging allocation failed"))?;
             packed.resize(tight_size as usize, 0);
         }
-        let target = if desc.dimension == GlTextureDimension::D2 {
-            glow::TEXTURE_2D
-        } else {
-            glow::TEXTURE_2D_ARRAY
+        let target = match desc.dimension {
+            GlTextureDimension::D2 => glow::TEXTURE_2D,
+            GlTextureDimension::D3 => glow::TEXTURE_3D,
+            _ => glow::TEXTURE_2D_ARRAY,
         };
         let saved = self.pixel_store;
         // SAFETY: the context is current and the source, region, and packed

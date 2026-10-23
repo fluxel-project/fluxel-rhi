@@ -58,7 +58,8 @@ topologies, shader stages, queue plans, or device tiers.
 | Vulkan | Graphics and compute, multiple render targets, indirect drawing and dispatch, queries, secondary recording, clears, pipeline caches, mapping, placed memory, and native interop | Descriptor indexing, multiview, ray pipelines and inline ray queries, mesh shaders, sparse textures, graphics/compute queues, GPU-count multi-draw, and external resources depend on device features, extensions, formats and queue support. |
 | Metal | Graphics and compute, up to eight render targets, depth/stencil, dynamic uniform/storage offsets, indirect draw and dispatch, standalone clears, copies/resolves, mapping, placement heaps, binary archives, and native interop | Device-gated argument arrays/indexing, mesh/object shaders, acceleration structures and ray queries, multiview, timestamp/occlusion and separate pass counters, cross-packet graphics/compute synchronization, GPU-count multi-draw, placement sparse textures, and external resources. No Metal tests or GPU acceptance were run in this phase, as requested. |
 | Browser WebGPU | Graphics and compute, MRT, depth/stencil, dynamic offsets, indirect draw/dispatch, multi-draw including GPU-count lowering, standalone clears, copies/blits/resolves, buffer mapping and readback, occlusion and optional timestamp queries | Optional native features and limits gate compressed formats, immediates, subgroups, dual-source blending and unclipped depth. Ray/mesh, sparse resources, native multiple queues, multiview, complete pipeline statistics, native heap placement and serialized pipeline caches have no matching standard browser route. |
-| Desktop GL / GLES | Immediate graphics, MRT, depth/stencil, copies and resolves; compute and indirect commands where supported | Context, extension and device limits gate queries, desktop pipeline statistics, program caches, and limited multiview. Check the feature and descriptor for each operation. |
+| Desktop GL4+ | Immediate graphics, MRT, depth/stencil transfers, copies/resolves, bounded runtime binding arrays, GPU-staged readback, compute and indirect commands where supported | Native limits gate nonuniform indexing, persistent coherent mapping, GPU-count drawing, queries/statistics, program binary caches, conservative rasterization and contiguous OVR multiview. |
+| GLES3+ | Immediate graphics, MRT, depth/stencil, copies and resolves; compute and indirect commands where supported | Context, extension and device limits gate queries, program caches and contiguous OVR multiview; desktop-specific capability declarations are not inherited. |
 | Browser WebGL2 | Immediate graphics, MRT, depth/stencil, copies/resolves and occlusion | Extensions gate compressed textures and other optional operations. Standard WebGL2 has no compute or compressed-block readback. |
 
 Metal's separate pass-boundary sample API exposes up to eight native counter
@@ -165,7 +166,53 @@ formats, and the GLES ES 3.2 run used Mesa llvmpipe. ASTC HDR was skipped on
 those devices. Windows ANGLE ES 3.1 skips compressed readback when the required
 copy-image extension is absent.
 
+Desktop GL also supports BC6H/BC7 3D textures as independently compressed
+2D slices, including CPU/PBO uploads, image copies, sampling, and raw block
+readback. The WGL AMD fixture covers all four BPTC formats with two mip
+levels and both immutable and mutable allocation. Desktop ASTC 3D additionally
+requires the acquired KHR HDR extension, or KHR LDR plus sliced-3D support for
+LDR/sRGB formats; these routes have no positive local GPU validation. S3TC,
+RGTC, and ETC2/EAC 3D targets are rejected according to the desktop GL contract.
+
+Desktop GL buffer readback also covers renderable normalized and floating-point
+color formats in their native transfer encoding. A WGL fixture checks 19 formats
+with finite representative values, subregions, mip/array selection, unaligned
+offsets, row padding, and restoration of incoming read-color clamping.
+Non-renderable RGB9E5 uses compatible GPU image copies through R32UI for
+buffer readback, gated by image-copy/view compatibility and exact integer
+readback support. Its WGL fixture includes equivalent shared-exponent encodings.
+Ordinary desktop color formats also have framebuffer-independent native PBO
+readback: GL4.5 subimage reads, or whole-mip `GetTexImage` followed by GPU region
+copies on older contexts. Forty formats and 1D/array/3D subregions have focused
+GPU coverage. The legacy entry was exercised on the current GL4.6 driver;
+this does not establish coverage of a separate older driver.
+
+Desktop GL4+ supports bounded runtime binding arrays through layout-capacity
+specialization. Nonuniform sampled-texture and storage-buffer indexing requires
+storage-buffer support. Native slot limits and texture/sampler pair expansion
+still bound each pipeline; divergent implicit samples can increase sampling
+cost. Public Core GPU fixtures cover UBOs, SSBO atomics, storage images, sampled
+textures/samplers, short prefixes, and permitted holes.
+
+GL4.4 or `ARB_buffer_storage` provides persistent coherent mapping for mappable
+buffers. Buffer readback uses GPU staging; legacy query resolve checks
+availability after explicit completion without waiting. Desktop depth/stencil
+transfers include D16/D32/S8 and selected combined-format planes, preserving the
+other plane; D24 depth has no portable byte encoding. PBO stencil packing needs
+GL4.3 compute. Desktop OVR multiview supports contiguous view intervals, with
+texture-view aliases required for nonzero attachment bases. Arbitrary masks,
+multiview timer queries, and compressed color clears have no supported native
+route; see the [desktop GL contract](documents/design-rhi.md#desktop-gl4--wgl).
+
 GL implements `ImmediateBackend`; it does not expose deferred queue submission.
+The GL family explicitly does not support secondary command recording,
+independent queues, sparse/placed memory, external resources,
+mesh shaders, ray pipelines, or ray queries. These domains are outside
+its implementation scope, including driver-specific extension variants; see the
+[GL support decisions](documents/design-rhi.md#unsupported-gl-family-domains).
+Native desktop GL and EGL/GLES support scoped Core native interop with a borrowed
+shared `NativeGlContext` dispatch table, exclusive owner-thread access, and state
+invalidation on guard exit. WebGL2 exposes no native dispatch-table pointer.
 WebGL2 does not provide native multithreaded command recording. WebGPU records
 native commands even though browser objects belong to one thread. Separate
 traits represent these different execution contracts.

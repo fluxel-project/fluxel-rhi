@@ -1,7 +1,7 @@
 //! Core multiview layer routing and shader view indices.
 use super::*;
 
-async fn multiview(d: &Device<Gl>) {
+pub(super) async fn multiview(d: &Device<Gl>) {
     if !d.capabilities().multiview {
         eprintln!("SKIP: multiview capability unavailable");
         return;

@@ -318,9 +318,10 @@ fn wgl_core_indirect() {
             }
         }
     }
-    let window = Window::new(WindowConfig::new("GL MRT Core fixture", 120, 64).unwrap()).unwrap();
+    let window =
+        Window::new(WindowConfig::new("GL Core feature fixture", 1024, 768).unwrap()).unwrap();
     // SAFETY: the window outlives the GL device and all its resources on this thread.
-    let native = unsafe { GlInstance::from_wgl_window(&window, [120, 64]) }.unwrap();
+    let native = unsafe { GlInstance::from_wgl_window(&window, [1024, 768]) }.unwrap();
     let name = native.0.adapter_name().unwrap();
     let broken = name.contains("ANGLE 2.1.22762")
         && name.contains("AMD Radeon 780M Graphics (0x00001900) Direct3D11")

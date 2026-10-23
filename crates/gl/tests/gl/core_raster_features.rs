@@ -107,6 +107,9 @@ mod binding_stencil_load;
 mod binding_validation;
 #[path = "../common/mod.rs"]
 mod common;
+#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[path = "core_compressed_3d.rs"]
+mod compressed_3d;
 #[path = "core_compressed_bc1_pbo.rs"]
 mod compressed_bc1_pbo;
 #[path = "core_compressed_etc2.rs"]
@@ -178,6 +181,9 @@ mod mrt_surface_resolve;
 mod msaa_array_sampling;
 #[path = "core_multiview.rs"]
 mod multiview;
+#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+#[path = "core_native_interop.rs"]
+mod native_interop;
 #[cfg(all(windows, feature = "native-gl-wgl"))]
 #[path = "core_native_mixed_srgb.rs"]
 mod native_mixed_srgb;
@@ -602,9 +608,15 @@ mod webgl_integer_copy;
 #[path = "core_polygon_offset_clamp.rs"]
 mod core_polygon_offset_clamp;
 
+#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[path = "core_native_color_readback.rs"]
+mod native_color_readback;
 #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 #[path = "core_native_integer_copy.rs"]
 mod native_integer_copy;
+#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[path = "core_rgb9e5_readback.rs"]
+mod rgb9e5_readback;
 
 #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 #[path = "core_raster_modes.rs"]
@@ -695,3 +707,43 @@ mod binding_direct_image_units;
 #[cfg(feature = "native-gles-egl")]
 #[path = "core_query_stencil_extract.rs"]
 mod query_stencil_extract;
+
+#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[path = "core_stencil_transfer.rs"]
+mod stencil_transfer;
+
+#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[path = "core_binding_runtime_prefix.rs"]
+mod binding_runtime_prefix;
+
+#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[path = "core_binding_runtime_divergent_storage.rs"]
+mod binding_runtime_divergent_storage;
+
+#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[path = "core_binding_runtime_image.rs"]
+mod binding_runtime_image;
+
+#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[path = "core_binding_runtime_hole.rs"]
+mod binding_runtime_hole;
+
+#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[path = "core_binding_runtime_uniform.rs"]
+mod binding_runtime_uniform;
+
+#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[path = "core_packed_plane_copy.rs"]
+mod packed_plane_copy;
+
+#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[path = "core_desktop_multiview.rs"]
+mod desktop_multiview;
+
+#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[path = "core_direct_color_readback.rs"]
+mod direct_color_readback;
+
+#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[path = "core_snorm_endpoint_readback.rs"]
+mod snorm_endpoint_readback;

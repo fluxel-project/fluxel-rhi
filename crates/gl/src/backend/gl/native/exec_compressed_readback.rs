@@ -59,6 +59,14 @@ impl NativeGlProvider {
         let target = match desc.dimension {
             GlTextureDimension::D2 => glow::TEXTURE_2D,
             GlTextureDimension::D2Array => glow::TEXTURE_2D_ARRAY,
+            GlTextureDimension::D3
+                if desc.format.supports_compressed_3d(
+                    self.discovery.context().profile(),
+                    self.discovery.extensions(),
+                ) =>
+            {
+                glow::TEXTURE_3D
+            }
             _ => {
                 return Err(GlError::Unsupported {
                     operation: OP,
@@ -118,10 +126,10 @@ impl NativeGlProvider {
             let pack = self.gl.get_parameter_i32(glow::PIXEL_PACK_BUFFER_BINDING) as u32;
             let read = self.gl.get_parameter_i32(glow::COPY_READ_BUFFER_BINDING) as u32;
             let write = self.gl.get_parameter_i32(glow::COPY_WRITE_BUFFER_BINDING) as u32;
-            let binding = self.gl.get_parameter_i32(if target == glow::TEXTURE_2D {
-                glow::TEXTURE_BINDING_2D
-            } else {
-                glow::TEXTURE_BINDING_2D_ARRAY
+            let binding = self.gl.get_parameter_i32(match target {
+                glow::TEXTURE_2D => glow::TEXTURE_BINDING_2D,
+                glow::TEXTURE_3D => glow::TEXTURE_BINDING_3D,
+                _ => glow::TEXTURE_BINDING_2D_ARRAY,
             }) as u32;
             let scratch = self
                 .gl

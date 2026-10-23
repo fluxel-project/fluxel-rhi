@@ -103,9 +103,64 @@ pub(super) fn native_formats(
                 table.mark_exact_buffer_readback(facts.format);
                 facts.copy_source = true;
             }
+            if facts.format == GlFormat::Rgb9e5Ufloat
+                && matches!(profile, GlFamilyProfile::Desktop { .. })
+                && (compressed_direct_copy(profile)
+                    || extensions
+                        .raw_reported_names()
+                        .any(|name| name == "GL_ARB_texture_view"))
+                && super::super::probes::EXACT_INTEGER_FORMATS
+                    .iter()
+                    .position(|f| *f == GlFormat::R32Uint)
+                    .is_some_and(|i| report.exact_integer_read[i] == ProbeAnswer::Passed)
+                && report.copy_image_symbols[0]
+                && (compressed_direct_copy(profile)
+                    || extensions
+                        .raw_reported_names()
+                        .any(|name| name == "GL_ARB_copy_image"))
+            {
+                facts.copy_source = true;
+            }
+            if ((report.texture_sub_image_read_symbol
+                && super::super::exec_texture_sub_image_readback::direct_read_supported(
+                    profile, extensions,
+                ))
+                || (report.tex_image_read_symbol
+                    && matches!(profile, GlFamilyProfile::Desktop { .. })))
+                && super::super::exec_texture_sub_image_readback::direct_color_format(facts.format)
+            {
+                facts.copy_source = true;
+            }
             if facts.renderable {
                 facts.copy_source = true;
                 facts.copy_destination = true;
+            }
+            // SNORM's two encodings of -1 require image-class bit copies;
+            // ordinary typed pixel reads cannot preserve both endpoints.
+            if facts.format != GlFormat::Rgb9e5Ufloat
+                && matches!(profile, GlFamilyProfile::Desktop { .. })
+            {
+                if let Some(alias) =
+                    super::super::exec_rgb9e5_readback::exact_integer_alias(facts.format)
+                {
+                    let alias_probe = super::super::probes::EXACT_INTEGER_FORMATS
+                        .iter()
+                        .position(|format| *format == alias)
+                        .is_some_and(|i| report.exact_integer_read[i] == ProbeAnswer::Passed);
+                    let copy_image = report.copy_image_symbols[0]
+                        && (compressed_direct_copy(profile)
+                            || extensions
+                                .raw_reported_names()
+                                .any(|name| name == "GL_ARB_copy_image"));
+                    let alias_read = alias_probe || report.tex_image_read_symbol
+                    || (report.texture_sub_image_read_symbol && super::super::exec_texture_sub_image_readback::direct_read_supported(profile, extensions));
+                    facts.copy_source = copy_image && alias_read;
+                }
+            } else if facts.format != GlFormat::Rgb9e5Ufloat
+                && super::super::exec_rgb9e5_readback::exact_integer_alias(facts.format).is_some()
+            {
+                // GLES has no bit-preserving integer-alias resolve route yet.
+                facts.copy_source = false;
             }
         }
         if facts.resource_kind == GlFormatResourceKind::Texture
@@ -553,175 +608,8 @@ fn native_compressed_extension(
 }
 
 #[cfg(test)]
-mod compressed_extension_tests {
-    use super::*;
-
-    #[test]
-    fn astc_hdr_extension_also_admits_ldr_formats() {
-        use crate::backend::gl::api::{GlAstcBlock, GlCompressedColorSpace};
-        let mut extensions = GlExtensionSet::default();
-        extensions.report_raw("GL_KHR_texture_compression_astc_hdr");
-        assert!(extensions.acquire(GlKnownExtension::KhrTextureCompressionAstcHdr));
-        for color_space in [
-            GlCompressedColorSpace::Linear,
-            GlCompressedColorSpace::Srgb,
-            GlCompressedColorSpace::Hdr,
-        ] {
-            let format = GlFormat::Astc {
-                block: GlAstcBlock::B4x4,
-                color_space,
-            };
-            assert_eq!(
-                native_compressed_extension(
-                    format,
-                    GlFamilyProfile::Desktop { major: 4, minor: 1 },
-                    &extensions
-                ),
-                Some(GlKnownExtension::KhrTextureCompressionAstcHdr)
-            );
-        }
-    }
-
-    #[test]
-    fn s3tc_srgb_needs_desktop_srgb_or_the_dedicated_extension() {
-        let mut extensions = GlExtensionSet::default();
-        extensions.report_raw("GL_EXT_texture_compression_s3tc");
-        assert!(extensions.acquire(GlKnownExtension::ExtTextureCompressionS3tc));
-        let desktop = GlFamilyProfile::Desktop { major: 4, minor: 0 };
-        let embedded = GlFamilyProfile::Embedded { major: 3, minor: 0 };
-        assert_eq!(
-            native_compressed_extension(GlFormat::Bc3RgbaSrgb, desktop, &extensions),
-            Some(GlKnownExtension::ExtTextureCompressionS3tc)
-        );
-        assert_eq!(
-            native_compressed_extension(GlFormat::Bc3RgbaSrgb, embedded, &extensions),
-            None
-        );
-    }
-
-    #[test]
-    fn compressed_copy_source_requires_readback_entry_point() {
-        let limits = GlLimits::unavailable();
-        let extensions = GlExtensionSet::default();
-        let desktop = GlFamilyProfile::Desktop { major: 4, minor: 6 };
-        let embedded = GlFamilyProfile::Embedded { major: 3, minor: 2 };
-        let mut report = ProbeReport::default();
-        report.copy_image_symbols[0] = true;
-        let copy_source = |profile, report: &ProbeReport| {
-            native_formats(profile, &extensions, &limits, report)
-                .unwrap()
-                .get(GlFormat::Etc2Rgb8Unorm, 1)
-                .unwrap()
-                .copy_source
-        };
-        assert!(!copy_source(desktop, &report));
-        report.compressed_get_symbol = true;
-        assert!(copy_source(desktop, &report));
-        assert!(!copy_source(embedded, &report));
-    }
-
-    #[test]
-    fn gles_compressed_copy_requires_compatible_integer_readback() {
-        let limits = GlLimits::unavailable();
-        let extensions = GlExtensionSet::default();
-        let profile = GlFamilyProfile::Embedded { major: 3, minor: 2 };
-        let mut report = ProbeReport::default();
-        report.copy_image_symbols[0] = true;
-        let source = |report: &ProbeReport| {
-            native_formats(profile, &extensions, &limits, report)
-                .unwrap()
-                .get(GlFormat::Etc2Rgb8Unorm, 1)
-                .unwrap()
-                .copy_source
-        };
-        assert!(!source(&report));
-        let format = GlFormat::Rg32Uint;
-        let read = super::super::super::probes::EXACT_INTEGER_FORMATS
-            .iter()
-            .position(|f| *f == format)
-            .unwrap();
-        let render = super::super::super::probes::IMAGE_FORMATS
-            .iter()
-            .position(|(f, ..)| *f == format)
-            .unwrap();
-        report.exact_integer_read[read] = ProbeAnswer::Passed;
-        assert!(!source(&report));
-        report.ordinary_render[render] = ProbeAnswer::Passed;
-        assert!(source(&report));
-        let es31 = GlFamilyProfile::Embedded { major: 3, minor: 1 };
-        report.copy_image_symbols[1] = true;
-        let mut ext = GlExtensionSet::default();
-        let has_source = |ext: &GlExtensionSet| {
-            native_formats(es31, ext, &limits, &report)
-                .unwrap()
-                .get(GlFormat::Etc2Rgb8Unorm, 1)
-                .unwrap()
-                .copy_source
-        };
-        assert!(!has_source(&ext));
-        ext.report_raw("GL_EXT_copy_image");
-        assert!(has_source(&ext));
-    }
-
-    #[test]
-    fn multisample_facts_require_exact_format_count_and_resource_probe() {
-        let mut report = ProbeReport::default();
-        let formats = &super::super::super::probes::MSAA_FORMATS;
-        let rgba = formats
-            .iter()
-            .position(|&f| f == GlFormat::Rgba8Unorm)
-            .unwrap();
-        let integer = formats
-            .iter()
-            .position(|&f| f == GlFormat::Rgba8Uint)
-            .unwrap();
-        report.multisample_texture[rgba].push((4, ProbeAnswer::Passed));
-        report.multisample_texture[rgba].push((3, ProbeAnswer::Passed));
-        report.multisample_renderbuffer[integer].push((4, ProbeAnswer::Passed));
-        report.multisample_array[integer].push((4, ProbeAnswer::Passed));
-        let mut limits = GlLimits::unavailable();
-        limits.max_samples = 16;
-        let table = native_formats(
-            GlFamilyProfile::Desktop { major: 4, minor: 6 },
-            &GlExtensionSet::default(),
-            &limits,
-            &report,
-        )
-        .unwrap();
-        assert!(table.get(GlFormat::Rgba8Unorm, 4).is_some());
-        assert!(table.get(GlFormat::Rgba8Unorm, 3).is_some());
-        assert!(table.get(GlFormat::Rgba8Unorm, 2).is_none());
-        assert!(table.get(GlFormat::Rgba8Uint, 4).is_none());
-        assert!(
-            table
-                .get_for(GlFormatResourceKind::Renderbuffer, GlFormat::Rgba8Uint, 4)
-                .is_some()
-        );
-        assert!(
-            table
-                .get_for(
-                    GlFormatResourceKind::MultisampleArray,
-                    GlFormat::Rgba8Uint,
-                    4
-                )
-                .is_some()
-        );
-        assert!(
-            table
-                .get_for(
-                    GlFormatResourceKind::MultisampleArray,
-                    GlFormat::Rgba8Unorm,
-                    4
-                )
-                .is_none()
-        );
-        assert!(
-            table
-                .get_for(GlFormatResourceKind::Renderbuffer, GlFormat::Rgba8Unorm, 4)
-                .is_none()
-        );
-    }
-}
+#[path = "formats/tests.rs"]
+mod compressed_extension_tests;
 
 /// The only GL-family image-copy command accepted for compressed storage.
 /// Framebuffer copying has no compressed attachment route, so GLES 3.0/3.1
@@ -840,88 +728,5 @@ pub(crate) fn parse_native_profile(version: &str) -> Option<GlFamilyProfile> {
     }
 }
 
-pub(crate) mod glow_const {
-    pub const VENDOR: u32 = 0x1F00;
-    pub const RENDERER: u32 = 0x1F01;
-    pub const VERSION: u32 = 0x1F02;
-    pub const EXTENSIONS: u32 = 0x1F03;
-    pub const SHADING_LANGUAGE_VERSION: u32 = 0x8B8C;
-    pub const NUM_EXTENSIONS: u32 = 0x821D;
-    pub const MAX_TEXTURE_SIZE: u32 = 0x0D33;
-    pub const MAX_3D_TEXTURE_SIZE: u32 = 0x8073;
-    pub const MAX_ARRAY_TEXTURE_LAYERS: u32 = 0x88FF;
-    pub const MAX_CUBE_MAP_TEXTURE_SIZE: u32 = 0x851C;
-    pub const MAX_RENDERBUFFER_SIZE: u32 = 0x84E8;
-    pub const MAX_COLOR_ATTACHMENTS: u32 = 0x8CDF;
-    pub const MAX_DRAW_BUFFERS: u32 = 0x8824;
-    pub const MAX_VERTEX_ATTRIBS: u32 = 0x8869;
-    pub const MAX_VIEWPORT_DIMS: u32 = 0x0D3A;
-    pub const MAX_VIEWPORTS: u32 = 0x825B;
-    pub const MAX_VERTEX_TEXTURE_IMAGE_UNITS: u32 = 0x8B4C;
-    pub const MAX_TEXTURE_IMAGE_UNITS: u32 = 0x8872;
-    pub const MAX_COMBINED_TEXTURE_IMAGE_UNITS: u32 = 0x8B4D;
-    pub const MAX_UNIFORM_BUFFER_BINDINGS: u32 = 0x8A2F;
-    pub const MAX_UNIFORM_BLOCK_SIZE: u32 = 0x8A30;
-    pub const UNIFORM_BUFFER_OFFSET_ALIGNMENT: u32 = 0x8A34;
-    pub const MAX_VERTEX_UNIFORM_BLOCKS: u32 = 0x8A2B;
-    pub const MAX_FRAGMENT_UNIFORM_BLOCKS: u32 = 0x8A2D;
-    pub const MAX_COMPUTE_UNIFORM_BLOCKS: u32 = 0x91BB;
-    pub const MAX_COMBINED_UNIFORM_BLOCKS: u32 = 0x8A2E;
-    pub const MAX_SHADER_STORAGE_BUFFER_BINDINGS: u32 = 0x90DD;
-    pub const MAX_SHADER_STORAGE_BLOCK_SIZE: u32 = 0x90DE;
-    pub const SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT: u32 = 0x90DF;
-    pub const MAX_VERTEX_SHADER_STORAGE_BLOCKS: u32 = 0x90D6;
-    pub const MAX_FRAGMENT_SHADER_STORAGE_BLOCKS: u32 = 0x90DA;
-    pub const MAX_COMPUTE_SHADER_STORAGE_BLOCKS: u32 = 0x90DB;
-    pub const MAX_COMBINED_SHADER_STORAGE_BLOCKS: u32 = 0x90DC;
-    pub const MAX_IMAGE_UNITS: u32 = 0x8F38;
-    pub const MAX_COMBINED_IMAGE_UNIFORMS: u32 = 0x90CF;
-    pub const MAX_SAMPLES: u32 = 0x8D57;
-    pub const MAX_COLOR_TEXTURE_SAMPLES: u32 = 0x910E;
-    pub const MAX_DEPTH_TEXTURE_SAMPLES: u32 = 0x910F;
-    pub const MAX_INTEGER_SAMPLES: u32 = 0x9110;
-    /// Views one attachment may serve in one pass, as defined by the multiview
-    /// extension family (the same registry value WebGL2 exposes).
-    pub const MAX_MULTIVIEW_VIEWS: u32 = 0x9631;
-    pub const MAX_COMPUTE_WORK_GROUP_COUNT: u32 = 0x91BE;
-    pub const MAX_COMPUTE_WORK_GROUP_SIZE: u32 = 0x91BF;
-    pub const MAX_COMPUTE_WORK_GROUP_INVOCATIONS: u32 = 0x90EB;
-    pub const MAX_TEXTURE_MAX_ANISOTROPY_EXT: u32 = 0x84FF;
-    /// The framebuffer bound for drawing, which tells the drawable queries
-    /// below whether they would answer about the surface at all.
-    pub const DRAW_FRAMEBUFFER_BINDING: u32 = 0x8CA6;
-    /// The draw framebuffer itself, as the target an attachment query is asked
-    /// about. The same object the binding query above reads the identity of.
-    pub const DRAW_FRAMEBUFFER: u32 = 0x8CA9;
-    pub const SAMPLE_BUFFERS: u32 = 0x80A8;
-    pub const SAMPLES: u32 = 0x80A9;
-    /// The drawable's colour buffers and its depth and stencil attachments.
-    ///
-    /// The component widths are read from an attachment rather than from the
-    /// default-framebuffer `GL_*_BITS` queries this table used to carry: those
-    /// were deprecated in 3.0 and removed from the core profile in 3.1, so on
-    /// the core profile this crate accepts they answer `GL_INVALID_ENUM`, and
-    /// `glGetFramebufferAttachmentParameteriv` is the question the profile
-    /// still answers. The samples pair above is unaffected -- the core profile
-    /// kept it, which is visible on the hardware this was found on, where the
-    /// six bit queries failed and these two answered.
-    ///
-    /// Values cross-checked against two independent bindings, because a wrong
-    /// token here is a question asked about nothing: `glow` 0.18 and `web-sys`
-    /// 0.3 agree on all six sizes and on the object type, and the two colour
-    /// buffers are consistent with the `FRONT`/`BACK` values the latter records
-    /// (`GL_FRONT` is `0x0404`, so `GL_FRONT_LEFT`/`GL_BACK_LEFT` are the two
-    /// entries below it).
-    pub const BACK: u32 = 0x0405;
-    pub const BACK_LEFT: u32 = 0x0402;
-    pub const FRONT_LEFT: u32 = 0x0400;
-    pub const DEPTH: u32 = 0x1801;
-    pub const STENCIL: u32 = 0x1802;
-    pub const FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE: u32 = 0x8CD0;
-    pub const FRAMEBUFFER_ATTACHMENT_RED_SIZE: u32 = 0x8212;
-    pub const FRAMEBUFFER_ATTACHMENT_GREEN_SIZE: u32 = 0x8213;
-    pub const FRAMEBUFFER_ATTACHMENT_BLUE_SIZE: u32 = 0x8214;
-    pub const FRAMEBUFFER_ATTACHMENT_ALPHA_SIZE: u32 = 0x8215;
-    pub const FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE: u32 = 0x8216;
-    pub const FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE: u32 = 0x8217;
-}
+#[path = "glow_const.rs"]
+pub(crate) mod glow_const;

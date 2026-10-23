@@ -1,9 +1,12 @@
-//! CPU-owned GL mapping leases.
+//! GL mapping leases.
 //!
-//! A short native mapping snapshots the requested buffer range. A write lease
-//! uploads flushed ranges immediately; releasing a lease does not publish
-//! unflushed writes. A read
-//! invalidate refreshes the requested range. No driver pointer escapes a call.
+//! Desktop GL buffer storage uses coherent persistent native mappings. Older
+//! native profiles and WebGL use a snapshot that may require a blocking read.
+//! Snapshot write leases upload flushed ranges immediately; releasing a snapshot
+//! does not publish unflushed writes. Read invalidation refreshes the requested
+//! snapshot range. Persistent leases instead retain their buffer and context;
+//! coherent memory needs no copy on flush/invalidate, but the caller must still
+//! establish completion and exclude conflicting GPU accesses while borrowing.
 use super::types::{Gl, GlBuffer, GlDevice, GlMap};
 use fluxel_rhi_core::api::{self, Error, Result};
 use std::{
@@ -33,6 +36,28 @@ impl api::MappingBackend for Gl {
             }
             #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
             {
+                let persistent = device
+                    .0
+                    .with_native("map GL persistent buffer", |provider| {
+                        provider.persistent_buffer_lease(buffer.id, mode == api::MapMode::Write)
+                    })
+                    .map_err(map_error)?;
+                if let Some(ptr) = persistent {
+                    let len = usize::try_from(range.end - range.start)
+                        .map_err(|_| Error::InvalidRange)?;
+                    let offset = usize::try_from(range.start).map_err(|_| Error::InvalidRange)?;
+                    // SAFETY: creation mapped the entire buffer and range was validated.
+                    let ptr = unsafe { core::ptr::NonNull::new_unchecked(ptr.add(offset)) };
+                    buffer.map_active().set(true);
+                    return Ok(GlMap {
+                        buffer: buffer.clone(),
+                        bytes: Vec::new(),
+                        offset: range.start,
+                        mode,
+                        persistent: Some(ptr),
+                        len,
+                    });
+                }
                 let bytes = device
                     .0
                     .with_native("snapshot GL mapping", |provider| {
@@ -50,6 +75,8 @@ impl api::MappingBackend for Gl {
                     bytes,
                     offset: range.start,
                     mode,
+                    persistent: None,
+                    len: (range.end - range.start) as usize,
                 })
             }
             #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
@@ -74,6 +101,7 @@ impl api::MappingBackend for Gl {
                     bytes,
                     offset: range.start,
                     mode,
+                    len: (range.end - range.start) as usize,
                 })
             }
             #[cfg(not(any(
@@ -88,10 +116,21 @@ impl api::MappingBackend for Gl {
         })())
     }
     fn bytes(map: &GlMap) -> &[u8] {
+        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+        if let Some(ptr) = map.persistent {
+            // SAFETY: the buffer retains the native mapping and the unsafe Core
+            // contract requires the caller to exclude conflicting GPU writes.
+            return unsafe { core::slice::from_raw_parts(ptr.as_ptr(), map.len) };
+        }
         &map.bytes
     }
     fn bytes_mut(map: &mut GlMap) -> &mut [u8] {
         assert_eq!(map.mode, api::MapMode::Write);
+        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+        if let Some(ptr) = map.persistent {
+            // SAFETY: the lease is unique and caller excludes GPU accesses.
+            return unsafe { core::slice::from_raw_parts_mut(ptr.as_ptr(), map.len) };
+        }
         &mut map.bytes
     }
     fn flush(map: &mut GlMap, range: Range<u64>) -> Result<()> {
@@ -99,12 +138,20 @@ impl api::MappingBackend for Gl {
         if map.mode != api::MapMode::Write {
             return Err(Error::InvalidState);
         }
+        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+        if map.persistent.is_some() {
+            return Ok(());
+        }
         write_range(map, range)
     }
     fn invalidate(map: &mut GlMap, range: Range<u64>) -> Result<()> {
         validate(map, &range)?;
         if map.mode != api::MapMode::Read {
             return Err(Error::InvalidState);
+        }
+        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+        if map.persistent.is_some() {
+            return Ok(());
         }
         if range.is_empty() {
             return Ok(());
@@ -155,7 +202,7 @@ impl Drop for GlMap {
     }
 }
 fn validate(map: &GlMap, range: &Range<u64>) -> Result<()> {
-    if range.start > range.end || range.end > map.bytes.len() as u64 {
+    if range.start > range.end || range.end > map.len as u64 {
         Err(Error::InvalidRange)
     } else {
         Ok(())

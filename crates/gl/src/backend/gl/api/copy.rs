@@ -12,6 +12,7 @@ pub(crate) enum GlPixelFormat {
     Rg8,
     /// Uncompressed texels whose layout uses this many bytes.
     TexelBytes(u8),
+    Stencil8,
     Depth16,
     Depth24Stencil8,
     Depth32Float,
@@ -28,7 +29,7 @@ impl GlPixelFormat {
         match self {
             Self::Rgba8 | Self::Bgra8 | Self::Depth24Stencil8 | Self::Depth32Float => 4,
             Self::Rgb8 => 3,
-            Self::Red8 => 1,
+            Self::Red8 | Self::Stencil8 => 1,
             Self::Depth16 | Self::Rg8 => 2,
             Self::TexelBytes(bytes) => bytes as u32,
             Self::Compressed { block_bytes, .. } => block_bytes as u32,

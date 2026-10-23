@@ -13,6 +13,40 @@ use super::{GlExtensionSet, GlFamilyProfile, GlKnownExtension, GlLimits};
 mod format_types;
 pub(crate) use format_types::*;
 
+impl GlFormat {
+    /// Whether the current implementation can use this compressed format on
+    /// TEXTURE_3D. Exact format discovery is still required independently.
+    /// BPTC specifies a stack of independently encoded 2D slices; S3TC,
+    /// RGTC and ETC2/EAC do not permit this target in desktop core GL.
+    pub(crate) fn supports_compressed_3d(
+        self,
+        profile: GlFamilyProfile,
+        extensions: &GlExtensionSet,
+    ) -> bool {
+        if !matches!(profile, GlFamilyProfile::Desktop { .. }) {
+            return false;
+        }
+        let hdr = extensions.is_acquired(GlKnownExtension::KhrTextureCompressionAstcHdr);
+        match self {
+            Self::Bc6hRgbUfloat | Self::Bc6hRgbSfloat | Self::Bc7RgbaUnorm | Self::Bc7RgbaSrgb => {
+                true
+            }
+            Self::Astc {
+                color_space: GlCompressedColorSpace::Hdr,
+                ..
+            } => hdr,
+            Self::Astc {
+                color_space: GlCompressedColorSpace::Linear | GlCompressedColorSpace::Srgb,
+                ..
+            } => {
+                hdr || (extensions.is_acquired(GlKnownExtension::KhrTextureCompressionAstcLdr)
+                    && extensions.is_acquired(GlKnownExtension::KhrTextureCompressionAstcSliced3d))
+            }
+            _ => false,
+        }
+    }
+}
+
 /// The resource class to which an exact format fact applies.
 ///
 /// Multisample renderbuffers and multisample textures have different GL

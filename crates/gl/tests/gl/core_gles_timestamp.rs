@@ -1,4 +1,4 @@
-//! Optional GLES timestamp query writes and ordered GPU-visible resolution.
+//! Optional GLES timestamp query writes and completion-gated resolution.
 use super::*;
 
 #[cfg(feature = "native-gles-egl")]
@@ -33,6 +33,7 @@ fn gles_core_timestamp_query() {
         eprintln!("SKIP: GLES timestamp extension unavailable or zero counter bits");
         return;
     };
+    assert_eq!(queries.resolve_mode(), QueryResolveMode::AfterCompletion);
     let clock = queries.timestamp_clock(d.lanes()[0].id).unwrap();
     assert_eq!(clock.period_ns, 1.0);
     eprintln!("GLES timestamp available: {clock:?}");
@@ -66,6 +67,22 @@ fn gles_core_timestamp_query() {
     queries.reset(encoder, &set, 0..2).unwrap();
     queries.timestamp(encoder, &set, 0).unwrap();
     queries.timestamp(encoder, &set, 1).unwrap();
+    assert!(matches!(run.close(), ImmediateRunOutcome::Issued(_)));
+    let producer = match session.finish() {
+        ImmediateFinishOutcome::Issued(prefix) => {
+            prefix.checkpoints.into_iter().next().unwrap().point
+        }
+        _ => panic!("finish producer"),
+    };
+    block_on(d.wait_completion(&producer)).unwrap();
+    let plan = common::single_commands_plan(&fixture, 746).unwrap();
+    // SAFETY: all resources remain live through the resolve completion.
+    let mut session =
+        unsafe { common::begin_commands(&fixture, plan, CompletionRequest::End) }.unwrap();
+    let mut run = session
+        .begin_commands()
+        .unwrap_or_else(|_| panic!("begin resolve commands"));
+    let encoder = run.commands();
     queries.resolve(encoder, &set, 0..2, &buffer, 8).unwrap();
     let ticket = encoder.readback_buffer(&buffer, 0..32).unwrap();
     assert!(matches!(run.close(), ImmediateRunOutcome::Issued(_)));

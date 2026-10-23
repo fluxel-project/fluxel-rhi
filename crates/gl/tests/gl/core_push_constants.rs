@@ -232,6 +232,141 @@ fn read_y() -> f32 { return pc.y; }
     let offset = 4 * 32 + 4 * 4;
     assert_eq!(&bytes[offset..offset + 4], &[64, 128, 191, 255]);
     assert_eq!(&bytes[offset + 256..offset + 260], &[64, 128, 191, 255]);
+    // Exercise the last advertised byte range through a real fragment shader.
+    let limit = d.capabilities().limits.max_push_constant_bytes;
+    assert!(limit >= 8 && limit % 4 == 0);
+    let boundary_source = format!(
+        r#"
+struct P {{ @size({}) padding: u32, value: f32 }}
+var<push_constant> pc: P;
+@vertex fn vs(@builtin(vertex_index) i:u32)->@builtin(position) vec4f {{
+ let p=array<vec2f,3>(vec2f(-1.,-1.),vec2f(3.,-1.),vec2f(-1.,3.)); return vec4f(p[i],0.5,1.);
+}}
+@fragment fn first()->@location(0) vec4f {{ return vec4f(pc.value,0.,0.,1.); }}
+"#,
+        limit - 4
+    );
+    let boundary_shader = d
+        .shader(ShaderDesc {
+            label: None,
+            format: ShaderFormat::Wgsl,
+            bytes: Arc::from(boundary_source.as_bytes()),
+            entries: vec![
+                ShaderEntryPoint {
+                    name: "vs".into(),
+                    stage: ShaderStage::Vertex,
+                    workgroup_size: None,
+                },
+                ShaderEntryPoint {
+                    name: "first".into(),
+                    stage: ShaderStage::Fragment,
+                    workgroup_size: None,
+                },
+            ],
+            required_features: vec![],
+        })
+        .await
+        .unwrap();
+    let boundary_layout = d
+        .create_pipeline_layout(&PipelineLayoutDesc {
+            label: None,
+            groups: &[],
+            push_constants: &[PushConstantRange {
+                stages: vec![ShaderStage::Fragment],
+                range: limit - 4..limit,
+            }],
+        })
+        .unwrap();
+    assert!(
+        d.create_pipeline_layout(&PipelineLayoutDesc {
+            label: None,
+            groups: &[],
+            push_constants: &[PushConstantRange {
+                stages: vec![ShaderStage::Fragment],
+                range: limit - 4..limit.checked_add(4).unwrap(),
+            }],
+        })
+        .is_err()
+    );
+    let mut boundary_desc = desc("first", vec![]);
+    boundary_desc.layout = boundary_layout;
+    boundary_desc.vertex.module = boundary_shader.clone();
+    boundary_desc.fragment.as_mut().unwrap().module = boundary_shader;
+    let boundary_pipeline = d.raster_pipeline(boundary_desc).await.unwrap();
+    let plan = common::single_commands_plan(&fixture, 169).unwrap();
+    // SAFETY: all referenced resources remain alive until completion.
+    let mut session =
+        unsafe { common::begin_commands(&fixture, plan, CompletionRequest::End) }.unwrap();
+    let mut run = session
+        .begin_commands()
+        .unwrap_or_else(|_| panic!("begin boundary fixture"));
+    let e = run.commands();
+    let colors = [Some(ColorAttachment {
+        view: AttachmentView::Texture(&ov),
+        resolve_target: None,
+        load: LoadOp::Clear(ClearColor::Float([0., 0., 0., 0.])),
+        store: StoreOp::Store,
+    })];
+    let mut p = e
+        .begin_raster(&RasterPassDesc {
+            label: None,
+            colors: &colors,
+            depth_stencil: None,
+            render_area: Rect {
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 8,
+            },
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            secondary_inheritance: None,
+        })
+        .unwrap();
+    p.set_pipeline(&boundary_pipeline).unwrap();
+    extras
+        .push_constants(
+            &mut p,
+            StageMask::FRAGMENT,
+            limit - 4,
+            &0.75f32.to_le_bytes(),
+        )
+        .unwrap();
+    p.draw(0..3, 0..1).unwrap();
+    p.finish().unwrap();
+    e.texture_to_buffer(
+        TextureRegion {
+            texture: &out,
+            mip: 0,
+            origin: [0, 0, 0],
+            extent: [8, 8, 1],
+            aspect: TextureAspects::COLOR,
+        },
+        &buffer,
+        TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: 32,
+            rows_per_image: 8,
+        },
+    )
+    .unwrap();
+    let ticket = e.readback_buffer(&buffer, 0..256).unwrap();
+    assert!(matches!(run.close(), ImmediateRunOutcome::Issued(_)));
+    let point = match session.finish() {
+        ImmediateFinishOutcome::Issued(prefix) => {
+            prefix.checkpoints.into_iter().next().unwrap().point
+        }
+        _ => panic!("finish boundary fixture"),
+    };
+    d.wait_completion(&point).await.unwrap();
+    // SAFETY: completion covers the draw and readback.
+    let bytes = unsafe { d.read_after(ticket, &point).await }.unwrap().bytes;
+    assert_eq!(
+        &bytes[offset..offset + 4],
+        &[191, 0, 0, 255],
+        "push limit {limit}"
+    );
     for (i, bad_offset) in [5, 12].into_iter().enumerate() {
         let plan = common::single_commands_plan(&fixture, 170 + i as u64).unwrap();
         // SAFETY: all referenced resources outlive this abandoned invalid session.
@@ -303,9 +438,10 @@ fn wgl_core_push_constants() {
             }
         }
     }
-    let window = Window::new(WindowConfig::new("GL MRT Core fixture", 120, 64).unwrap()).unwrap();
+    let window =
+        Window::new(WindowConfig::new("GL push constants fixture", 1024, 768).unwrap()).unwrap();
     // SAFETY: the window outlives the GL device and all its resources on this thread.
-    let native = unsafe { GlInstance::from_wgl_window(&window, [120, 64]) }.unwrap();
+    let native = unsafe { GlInstance::from_wgl_window(&window, [1024, 768]) }.unwrap();
     let d = block_on(open(native));
     block_on(push_constants(&d));
 }

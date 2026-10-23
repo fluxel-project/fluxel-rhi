@@ -368,20 +368,11 @@ impl NativeGlProvider {
         queries: &[QueryId],
         destination: crate::backend::gl::api::GlBufferRange,
     ) -> Result<bool, GlError> {
-        use crate::backend::gl::api::{GlBufferUsage, GlFamilyProfile};
+        use crate::backend::gl::api::GlBufferUsage;
         use glow::HasContext as _;
         const OP: &str = "resolve-query-buffer";
         self.assert_ready(OP)?;
-        let supported = match self.discovery.context().profile() {
-            GlFamilyProfile::Desktop { major, minor } => {
-                major > 4
-                    || (major == 4 && minor >= 4)
-                    || self.discovery.extensions().is_acquired(
-                        crate::backend::gl::api::GlKnownExtension::ArbQueryBufferObject,
-                    )
-            }
-            _ => false,
-        };
+        let supported = self.supports_query_buffer();
         if !supported {
             return Ok(false);
         }
@@ -428,61 +419,26 @@ impl NativeGlProvider {
         Ok(true)
     }
 
-    /// Reads one completed query result through GL's blocking `QUERY_RESULT`
-    /// route. This is used only by the portable query-resolve command: its
-    /// completion is therefore honest even on GL profiles without query-buffer
-    /// objects.
-    pub(crate) fn resolve_query_result_blocking(&mut self, query: QueryId) -> Result<u64, GlError> {
-        use glow::HasContext as _;
-        const OP: &str = "resolve-query-result";
-        self.assert_ready(OP)?;
-        let raw = self.query(OP, query)?.raw;
-        if self.query(OP, query)?.invalidated {
-            return Err(Self::validation(OP, "query measurement is invalid"));
+    /// Whether ordered GPU-side query resolution is available on this context.
+    pub(crate) fn supports_query_buffer(&self) -> bool {
+        #[cfg(test)]
+        if crate::backend::gl::backend::spi::TEST_DISABLE_QUERY_BUFFER
+            .with(|disabled| disabled.get())
+        {
+            return false;
         }
-        if self.active_query == Some(query) {
-            return Err(Self::validation(OP, "cannot resolve an active query"));
-        }
-        let target = self
-            .queries
-            .get(&query)
-            .and_then(|value| value.target)
-            .ok_or_else(|| Self::validation(OP, "query has no recorded measurement"))?;
-        // SAFETY: the query is live, inactive, and belongs to this current
-        // context. QUERY_RESULT blocks until the GPU has made it available.
-        // Occlusion is specified as an unsigned integer result in core GL and
-        // GLES; widening it here supplies Core's u64 resolve layout.
-        let mut value = unsafe {
-            if target == QueryTarget::SamplesPassed {
-                u64::from(self.gl.get_query_parameter_u32(raw, glow::QUERY_RESULT))
-            } else if target == QueryTarget::Timestamp && self.gles_timer.is_some() {
-                let mut result = 0;
-                (self.gles_timer.as_ref().unwrap().query_result)(
-                    raw.0.get(),
-                    glow::QUERY_RESULT,
-                    &mut result,
-                );
-                result
-            } else {
-                self.gl.get_query_parameter_u64(raw, glow::QUERY_RESULT)
+        use crate::backend::gl::api::{GlFamilyProfile, GlKnownExtension};
+        match self.discovery.context().profile() {
+            GlFamilyProfile::Desktop { major, minor } => {
+                major > 4
+                    || (major == 4 && minor >= 4)
+                    || self
+                        .discovery
+                        .extensions()
+                        .is_acquired(GlKnownExtension::ArbQueryBufferObject)
             }
-        };
-        if target == QueryTarget::SamplesPassed {
-            for segment in &self.query(OP, query)?.segments {
-                // SAFETY: each segment is a live, ended occlusion query.
-                value |= u64::from(unsafe {
-                    self.gl
-                        .get_query_parameter_u32(*segment, glow::QUERY_RESULT)
-                });
-            }
+            _ => false,
         }
-        if target == QueryTarget::Timestamp && self.gles_timer.is_some() {
-            self.observe_timer_disjoint(OP)?;
-            if self.queries.get(&query).is_some_and(|entry| entry.disjoint) {
-                return Ok(u64::MAX);
-            }
-        }
-        Ok(value)
     }
 }
 

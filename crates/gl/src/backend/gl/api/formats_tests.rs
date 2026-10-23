@@ -171,3 +171,45 @@ fn compressed_encoded_sizes_use_exact_blocks_and_reject_zero_extents() {
         Err(GlCompressedSizeError::ZeroExtent)
     );
 }
+
+#[test]
+fn compressed_3d_astc_requires_acquired_slice_capability() {
+    use crate::backend::gl::api::{GlExtensionSet, GlKnownExtension as E};
+    let desktop = GlFamilyProfile::Desktop { major: 4, minor: 5 };
+    let ldr = GlFormat::Astc {
+        block: GlAstcBlock::B4x4,
+        color_space: GlCompressedColorSpace::Linear,
+    };
+    let srgb = GlFormat::Astc {
+        block: GlAstcBlock::B4x4,
+        color_space: GlCompressedColorSpace::Srgb,
+    };
+    let hdr = GlFormat::Astc {
+        block: GlAstcBlock::B4x4,
+        color_space: GlCompressedColorSpace::Hdr,
+    };
+    let mut extensions = GlExtensionSet::default();
+    assert!(!ldr.supports_compressed_3d(desktop, &extensions));
+    extensions.report_raw(E::KhrTextureCompressionAstcLdr.raw_name());
+    assert!(extensions.acquire(E::KhrTextureCompressionAstcLdr));
+    assert!(!ldr.supports_compressed_3d(desktop, &extensions));
+    extensions.report_raw(E::KhrTextureCompressionAstcSliced3d.raw_name());
+    assert!(!ldr.supports_compressed_3d(desktop, &extensions));
+    assert!(extensions.acquire(E::KhrTextureCompressionAstcSliced3d));
+    assert!(ldr.supports_compressed_3d(desktop, &extensions));
+    assert!(srgb.supports_compressed_3d(desktop, &extensions));
+    assert!(!hdr.supports_compressed_3d(desktop, &extensions));
+    assert!(!ldr.supports_compressed_3d(
+        GlFamilyProfile::Embedded { major: 3, minor: 2 },
+        &extensions
+    ));
+    assert!(!ldr.supports_compressed_3d(GlFamilyProfile::WebGl2, &extensions));
+    let mut hdr_extensions = GlExtensionSet::default();
+    hdr_extensions.report_raw(E::KhrTextureCompressionAstcHdr.raw_name());
+    assert!(hdr_extensions.acquire(E::KhrTextureCompressionAstcHdr));
+    for format in [ldr, srgb, hdr] {
+        assert!(format.supports_compressed_3d(desktop, &hdr_extensions));
+    }
+    assert!(!GlFormat::Bc1RgbaUnorm.supports_compressed_3d(desktop, &hdr_extensions));
+    assert!(GlFormat::Bc7RgbaUnorm.supports_compressed_3d(desktop, &GlExtensionSet::default()));
+}

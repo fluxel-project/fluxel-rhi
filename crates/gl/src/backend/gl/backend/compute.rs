@@ -36,6 +36,16 @@ impl ComputeOps<Gl> for GlCompute {
         if encoder.raster_extent.is_some() {
             return Err(Error::InvalidState);
         }
+        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+        {
+            encoder
+                .state
+                .check_native_lease("begin GL compute pass")
+                .map_err(native_error)?;
+            if encoder.state.compute_pass_active.replace(true) {
+                return Err(Error::InvalidState);
+            }
+        }
         encoder.compute_pipeline = None;
         encoder.bound_groups.clear();
         Ok(())
@@ -208,11 +218,15 @@ impl ComputeOps<Gl> for GlCompute {
     }
 
     fn end(encoder: &mut GlEncoder) -> Result<()> {
+        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+        encoder.state.compute_pass_active.set(false);
         encoder.compute_pipeline = None;
         Ok(())
     }
 
     fn abort(encoder: &mut GlEncoder) {
+        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+        encoder.state.compute_pass_active.set(false);
         encoder.compute_pipeline = None;
     }
 }
@@ -223,6 +237,7 @@ fn create_pipeline(device: &GlDevice, desc: &ComputePipelineDesc<Gl>) -> Result<
     }
     // SAFETY: Core keeps both native handles borrowed throughout this
     // synchronous SPI call; only immutable source and ABI metadata is copied.
+    let layout = unsafe { desc.layout.native_ref() }.clone();
     let shader = super::shader::materialize_stage(
         device,
         unsafe { desc.compute.module.native_ref() },
@@ -230,9 +245,9 @@ fn create_pipeline(device: &GlDevice, desc: &ComputePipelineDesc<Gl>) -> Result<
         fluxel_rhi_core::api::ShaderStage::Compute,
         &desc.compute.constants,
         None,
+        &layout,
     )?;
     let shader = &shader;
-    let layout = unsafe { desc.layout.native_ref() }.clone();
     if !std::rc::Rc::ptr_eq(&device.0, &shader.state)
         || !std::rc::Rc::ptr_eq(&device.0, &layout.state)
         || shader.source.as_ref().map_or(true, |source| {

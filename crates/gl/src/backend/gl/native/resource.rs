@@ -12,45 +12,24 @@ use crate::backend::gl::api::{
     GlResourceApi as _, GlSamplerApi as _, GlSamplerDesc, GlTextureDesc, RenderbufferId, SamplerId,
     TextureId,
 };
+#[path = "resource/buffer.rs"]
+mod buffer;
 #[path = "resource/mapping.rs"]
 mod mapping;
 pub(crate) use mapping::native_texture_format_supported;
 pub(super) use mapping::{depth_attachment_point, has_stencil_plane, native_texture_format};
 use mapping::{native_compare, native_mag, native_min, native_wrap};
 
+#[cfg(test)]
+impl NativeGlProvider {
+    pub(crate) fn disable_texture_storage_for_test(&mut self) {
+        self.texture_storage_entries = false;
+    }
+}
+
 impl crate::backend::gl::api::GlResourceApi for NativeGlProvider {
     fn create_buffer_resource(&mut self, desc: GlBufferDesc) -> Result<BufferId, GlError> {
-        use glow::HasContext as _;
-        self.assert_ready("create-buffer")?;
-        desc.validate().map_err(|error| GlError::Validation {
-            operation: "create-buffer",
-            message: error.message(),
-        })?;
-        let size = i32::try_from(desc.size)
-            .map_err(|_| Self::validation("create-buffer", "buffer exceeds GLsizei"))?;
-        // SAFETY: current-context contract; all validation completed before GL mutation.
-        let name = unsafe { self.gl.create_buffer() }.map_err(|message| GlError::Driver {
-            operation: "create-buffer",
-            message,
-        })?;
-        // COPY_WRITE_BUFFER is Layer 1-private scratch: bound immediately before
-        // the allocation, not restored on return (`GlCopyDomainApi` documents
-        // why).
-        // SAFETY: see above.
-        unsafe {
-            self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(name));
-            self.gl
-                .buffer_data_size(glow::COPY_WRITE_BUFFER, size, BUFFER_ALLOCATION_USAGE);
-        }
-        if let Err(error) = self.driver_error("create-buffer") {
-            // SAFETY: rollback deletes only the name allocated by this current
-            // context above; it was never published to the resource table.
-            unsafe { self.gl.delete_buffer(name) };
-            return Err(error);
-        }
-        let id = BufferId::new(self.context_stamp(), self.slot("create-buffer")?, 0);
-        self.buffers.insert(id, (name, desc));
-        Ok(id)
+        self.create_native_buffer(desc)
     }
     fn create_texture_resource(&mut self, desc: GlTextureDesc) -> Result<TextureId, GlError> {
         use glow::HasContext as _;
@@ -92,6 +71,11 @@ impl crate::backend::gl::api::GlResourceApi for NativeGlProvider {
                 crate::backend::gl::api::GlTextureDimension::D2
                     | crate::backend::gl::api::GlTextureDimension::D2Array
             )
+            && !(desc.dimension == api::GlTextureDimension::D3
+                && desc.format.supports_compressed_3d(
+                    self.discovery.context().profile(),
+                    self.discovery.extensions(),
+                ))
         {
             return Err(GlError::Unsupported {
                 operation: OP,
@@ -126,8 +110,10 @@ impl crate::backend::gl::api::GlResourceApi for NativeGlProvider {
             if !storage_available {
                 if (desc.dimension == api::GlTextureDimension::D2
                     && self.compressed_image_2d.is_none())
-                    || (desc.dimension == api::GlTextureDimension::D2Array
-                        && self.compressed_image_3d.is_none())
+                    || (matches!(
+                        desc.dimension,
+                        api::GlTextureDimension::D2Array | api::GlTextureDimension::D3
+                    ) && self.compressed_image_3d.is_none())
                 {
                     return Err(GlError::Unsupported {
                         operation: OP,
@@ -148,6 +134,7 @@ impl crate::backend::gl::api::GlResourceApi for NativeGlProvider {
                         level as i32,
                         extent.width as i32,
                         extent.height as i32,
+                        extent.depth_or_layers as i32,
                         size,
                     ));
                 }
@@ -293,7 +280,7 @@ impl crate::backend::gl::api::GlResourceApi for NativeGlProvider {
                         let old_unpack =
                             self.gl.get_parameter_i32(glow::PIXEL_UNPACK_BUFFER_BINDING) as u32;
                         self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
-                        for &(level, width, height, size) in &compressed_mips {
+                        for &(level, width, height, depth, size) in &compressed_mips {
                             if desc.dimension == api::GlTextureDimension::D2 {
                                 (self.compressed_image_2d.unwrap())(
                                     target,
@@ -312,7 +299,7 @@ impl crate::backend::gl::api::GlResourceApi for NativeGlProvider {
                                     internal,
                                     width,
                                     height,
-                                    layers,
+                                    depth,
                                     0,
                                     size,
                                     core::ptr::null(),
@@ -464,14 +451,7 @@ impl crate::backend::gl::api::GlResourceApi for NativeGlProvider {
         Ok(id)
     }
     fn destroy_buffer_resource(&mut self, id: BufferId) -> Result<(), GlError> {
-        use glow::HasContext as _;
-        self.assert_ready("destroy-buffer")?;
-        let (name, _) = self.buffer("destroy-buffer", id)?;
-        // SAFETY: current-context contract; liveness was checked before GL mutation.
-        unsafe { self.gl.delete_buffer(name) };
-        self.driver_error("destroy-buffer")?;
-        self.buffers.remove(&id);
-        Ok(())
+        self.destroy_native_buffer(id)
     }
     fn destroy_texture_resource(&mut self, id: TextureId) -> Result<(), GlError> {
         use glow::HasContext as _;
@@ -636,6 +616,16 @@ pub(super) fn texture_storage_class(
     if desktop_1d && (desc.extent.height != 1 || desc.extent.depth_or_layers != 1) {
         return Err("native 1D texture extent must have height and depth one");
     }
+    if desc.dimension == api::GlTextureDimension::D3
+        && (desc
+            .format
+            .supports_blit_aspect(api::GlTextureAspect::DepthOnly)
+            || desc
+                .format
+                .supports_blit_aspect(api::GlTextureAspect::StencilOnly))
+    {
+        return Err("GL depth/stencil formats do not permit 3D texture storage");
+    }
     let kind = if desc.sample_count > 1
         && desc.dimension == crate::backend::gl::api::GlTextureDimension::D2Array
     {
@@ -777,7 +767,6 @@ const fn single_sample_texture_target(
 /// after profiling attributes a benefit (plan "Private: upload-ring/orphaning
 /// strategy").
 #[cfg(any(feature = "native-gl-wgl", feature = "native-gles-egl"))]
-pub(super) const BUFFER_ALLOCATION_USAGE: u32 = glow::STATIC_DRAW;
 
 /// Transfer tuple used only to define mutable storage on pre-4.2 desktop GL.
 fn mutable_texture_format(format: api::GlFormat) -> Option<(u32, u32)> {

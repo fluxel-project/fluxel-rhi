@@ -8,6 +8,12 @@ use super::surface::{GlSurface, GlSurfaceImage};
 use super::types::*;
 use fluxel_rhi_core::api::{self, Backend, Error};
 
+#[cfg(test)]
+std::thread_local! {
+    /// Exercises the portable path on a context which also has query buffers.
+    pub(crate) static TEST_DISABLE_QUERY_BUFFER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 impl Backend for Gl {
     type NativeDevice = GlDevice;
     type NativeBuffer = GlBuffer;
@@ -71,9 +77,27 @@ impl api::QueryBackend for Gl {
         {
             api::QueryResolveMode::AfterCompletion
         }
-        #[cfg(not(all(target_arch = "wasm32", feature = "webgl2")))]
+        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
         {
-            api::QueryResolveMode::Ordered
+            if _device
+                .0
+                .with_native("query resolve mode", |provider| {
+                    Ok(provider.supports_query_buffer())
+                })
+                .unwrap_or(false)
+            {
+                api::QueryResolveMode::Ordered
+            } else {
+                api::QueryResolveMode::AfterCompletion
+            }
+        }
+        #[cfg(not(any(
+            all(target_arch = "wasm32", feature = "webgl2"),
+            all(windows, feature = "native-gl-wgl"),
+            feature = "native-gles-egl"
+        )))]
+        {
+            api::QueryResolveMode::AfterCompletion
         }
     }
     fn query_supported(device: &GlDevice, kind: api::QueryKind) -> bool {

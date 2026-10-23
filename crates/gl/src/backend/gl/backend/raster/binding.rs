@@ -13,6 +13,17 @@ use crate::backend::gl::backend::spi::native_error;
 use crate::backend::gl::backend::types::GlRasterPipeline;
 use crate::backend::gl::backend::types::{GlBindingSlot, GlBoundResource, GlEncoder};
 
+// Runtime arrays may omit a suffix even when holes are forbidden by Core.
+// This only selects the private native dummy binding; it does not relax Core
+// validation or permit shader accesses to absent logical elements.
+fn allows_missing_element(entry: &super::super::types::GlBindingLayoutEntry) -> bool {
+    entry.partially_bound
+        || matches!(
+            entry.count,
+            fluxel_rhi_core::api::BindingCount::RuntimeSized { .. }
+        )
+}
+
 pub(crate) fn reflected_resource(
     group: &super::super::types::GlBindGroup,
     binding: u32,
@@ -44,7 +55,7 @@ fn mip_count_for_binding(
                 .layout
                 .entries
                 .iter()
-                .any(|entry| entry.binding == uniform.binding && entry.partially_bound) =>
+                .any(|entry| entry.binding == uniform.binding && allows_missing_element(entry)) =>
         {
             Ok(1)
         }
@@ -208,7 +219,7 @@ pub(crate) fn bind_native_group(
                         GlBindingSlot::UniformBuffer { .. },
                         GlExecutableBindingLocation::UniformBlock(point),
                     ) => {
-                        if reflected_resource(group, binding, assignment.element).is_none() && entry.partially_bound && assignment.element.is_some() {
+                        if reflected_resource(group, binding, assignment.element).is_none() && allows_missing_element(entry) && assignment.element.is_some() {
                             provider.bind_dummy_uniform_buffer(program, point)?;
                             continue;
                         }
@@ -243,7 +254,7 @@ pub(crate) fn bind_native_group(
                         GlExecutableBindingLocation::StorageBlock(point),
                     ) => {
                         if reflected_resource(group, binding, assignment.element).is_none()
-                            && entry.partially_bound && assignment.element.is_some()
+                            && allows_missing_element(entry) && assignment.element.is_some()
                         {
                             provider.bind_dummy_storage_buffer(program, point)?;
                             continue;
@@ -289,7 +300,7 @@ pub(crate) fn bind_native_group(
                         GlExecutableBindingLocation::TextureUnit(unit),
                     ) => {
                         let resource = reflected_resource(group, binding, assignment.element);
-                        if resource.is_none() && entry.partially_bound && assignment.element.is_some() {
+                        if resource.is_none() && allows_missing_element(entry) && assignment.element.is_some() {
                             let target = match (dimension, multisampled) {
                                 (fluxel_rhi_core::api::TextureViewDimension::D1, false) => GlTextureTarget::D1,
                                 (fluxel_rhi_core::api::TextureViewDimension::D2, false) => GlTextureTarget::D2,
@@ -379,7 +390,7 @@ pub(crate) fn bind_native_group(
                             }
                         };
                         let resource = reflected_resource(group, binding, assignment.element);
-                        if resource.is_none() && entry.partially_bound && assignment.element.is_some() {
+                        if resource.is_none() && allows_missing_element(entry) && assignment.element.is_some() {
                             let dimension = match dimension {
                                 fluxel_rhi_core::api::TextureViewDimension::D2 => crate::backend::gl::api::GlTextureDimension::D2,
                                 fluxel_rhi_core::api::TextureViewDimension::D2Array => crate::backend::gl::api::GlTextureDimension::D2Array,
@@ -423,7 +434,7 @@ pub(crate) fn bind_native_group(
                         GlExecutableBindingLocation::TextureUnit(unit),
                     ) => {
                         let resource = reflected_resource(group, binding, assignment.element);
-                        if resource.is_none() && entry.partially_bound && assignment.element.is_some() {
+                        if resource.is_none() && allows_missing_element(entry) && assignment.element.is_some() {
                             provider.bind_dummy_sampler(unit, comparison)?;
                             continue;
                         }
@@ -488,7 +499,7 @@ pub(super) fn bind_browser_group(
                     GlExecutableBindingLocation::UniformBlock(point),
                 ) => {
                     if reflected_resource(group, binding, assignment.element).is_none()
-                        && entry.partially_bound
+                        && allows_missing_element(entry)
                         && assignment.element.is_some()
                     {
                         browser.bind_dummy_uniform_buffer(&pipeline.browser_program, point)?;
@@ -552,8 +563,14 @@ pub(super) fn bind_browser_group(
                                 )?;
                             }
                         }
-                        None if entry.partially_bound && assignment.element.is_some() => browser
-                            .bind_dummy_sampled_texture(unit, dimension, sample, multisampled)?,
+                        None if allows_missing_element(entry) && assignment.element.is_some() => {
+                            browser.bind_dummy_sampled_texture(
+                                unit,
+                                dimension,
+                                sample,
+                                multisampled,
+                            )?
+                        }
                         _ => return Err(Error::InvalidState),
                     }
                     let has_sampler = pipeline.reflection.assignments.iter().any(|other| {
@@ -577,7 +594,7 @@ pub(super) fn bind_browser_group(
                     Some((_, GlBoundResource::Sampler(sampler))) => {
                         browser.bind_sampler_only(unit, Some(&sampler.browser))?
                     }
-                    None if entry.partially_bound && assignment.element.is_some() => {
+                    None if allows_missing_element(entry) && assignment.element.is_some() => {
                         browser.bind_dummy_sampler(unit, comparison)?
                     }
                     _ => return Err(Error::InvalidState),

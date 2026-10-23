@@ -14,12 +14,10 @@ pub(super) fn lower_bind_group_layout(
 ) -> Result<Vec<GlBindingLayoutEntry>> {
     let mut entries = Vec::with_capacity(desc.entries.len());
     for entry in &desc.entries {
-        if matches!(entry.count, BindingCount::RuntimeSized { .. }) || entry.nonuniform_indexing {
-            return Err(Error::Unsupported(
-                "GL runtime binding arrays or nonuniform indexing",
-            ));
-        }
-        if matches!(entry.count, BindingCount::Fixed(0)) {
+        if matches!(
+            entry.count,
+            BindingCount::Fixed(0) | BindingCount::RuntimeSized { max_count: 0 }
+        ) {
             return Err(Error::InvalidRange);
         }
         if entries
@@ -101,6 +99,41 @@ pub(super) fn lower_bind_group_layout(
     }
     entries.sort_by_key(|entry| entry.binding);
     Ok(entries)
+}
+
+/// Reject an impossible runtime capacity before shader expansion can allocate
+/// per-element IR. More precise per-stage and combined-pair checks occur when
+/// linking the selected pipeline; this is only the absolute native ceiling.
+#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+pub(super) fn validate_runtime_capacities(
+    entries: &[GlBindingLayoutEntry],
+    limits: crate::backend::gl::api::GlLimits,
+) -> Result<()> {
+    for entry in entries {
+        let BindingCount::RuntimeSized { max_count } = entry.count else {
+            continue;
+        };
+        let limit = match entry.slot {
+            GlBindingSlot::UniformBuffer { .. } => limits
+                .max_uniform_buffer_bindings
+                .min(limits.max_combined_uniform_blocks),
+            GlBindingSlot::StorageBuffer { .. } => limits
+                .max_storage_buffer_bindings
+                .min(limits.max_combined_storage_blocks),
+            GlBindingSlot::StorageTexture { .. } => {
+                limits.max_image_units.min(limits.max_combined_image_units)
+            }
+            GlBindingSlot::SampledTexture { .. } | GlBindingSlot::Sampler { .. } => {
+                limits.max_combined_texture_image_units
+            }
+        };
+        if max_count > limit {
+            return Err(Error::Unsupported(
+                "GL runtime binding array capacity exceeds native resource limit",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Each image/sampler pair uses a linked GLSL sampler unit. `textureLoad`
@@ -188,7 +221,7 @@ pub(crate) fn lower_program_bindings(
                     BindingCount::Fixed(count) => count,
                     BindingCount::RuntimeSized { max_count } => max_count,
                 },
-                fixed_array: matches!(entry.count, BindingCount::Fixed(_)),
+                fixed_array: !matches!(entry.count, BindingCount::One),
                 image_type: match entry.slot {
                     GlBindingSlot::StorageTexture {
                         dimension, format, ..

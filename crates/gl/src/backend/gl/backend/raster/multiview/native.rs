@@ -6,7 +6,7 @@
 
 use super::super::*;
 use crate::backend::gl::api as gl;
-use crate::backend::gl::api::GlFramebufferApi as _;
+use crate::backend::gl::api::{GlFamilyApi as _, GlFramebufferApi as _};
 
 fn selected(mut view: gl::GlTextureView, first: u32, count: u32) -> Result<gl::GlTextureView> {
     if count == 0
@@ -21,6 +21,63 @@ fn selected(mut view: gl::GlTextureView, first: u32, count: u32) -> Result<gl::G
         .checked_add(first)
         .ok_or(Error::InvalidRange)?;
     view.layer_count = count;
+    Ok(view)
+}
+
+fn selected_attachment(
+    encoder: &GlEncoder,
+    original: &super::super::super::types::GlTextureView,
+    first: u32,
+    count: u32,
+    aliases: &mut Vec<super::super::super::types::GlTextureView>,
+) -> Result<gl::GlTextureView> {
+    let mut view = selected(original.native, first, count)?;
+    let desktop = encoder
+        .state
+        .with_native("query multiview profile", |provider| {
+            Ok(matches!(
+                provider.discovery().context().profile(),
+                gl::GlFamilyProfile::Desktop { .. }
+            ))
+        })
+        .map_err(native_error)?;
+    if !desktop || view.array_layer == 0 {
+        return Ok(view);
+    }
+    // A view alias selects the same storage interval while keeping the OVR
+    // attachment's base index zero. This also avoids implementations that
+    // report incorrect view indices for nonzero attachment bases.
+    let source = original.view_texture.as_ref().unwrap_or(&original.texture);
+    let mut alias_desc = source.desc;
+    alias_desc.extent.width = view.width;
+    alias_desc.extent.height = view.height;
+    alias_desc.extent.depth_or_layers = count;
+    alias_desc.mip_level_count = 1;
+    let id = encoder
+        .state
+        .with_native("create multiview attachment alias", |provider| {
+            provider.create_texture_view_resource(
+                source.id,
+                alias_desc,
+                view.mip_level,
+                view.array_layer,
+            )
+        })
+        .map_err(native_error)?;
+    let alias = super::super::super::types::GlTexture::from_inner(
+        super::super::super::types::GlTextureInner {
+            state: encoder.state.clone(),
+            id,
+            desc: alias_desc,
+            view_formats: source.view_formats.clone(),
+        },
+    );
+    let mut retained = original.clone();
+    retained.view_texture = Some(alias);
+    aliases.push(retained);
+    view.target = gl::GlAttachmentTarget::Texture(id);
+    view.mip_level = 0;
+    view.array_layer = 0;
     Ok(view)
 }
 
@@ -39,6 +96,7 @@ pub(super) fn begin(
     let mut samples = None;
     let mut views = Vec::with_capacity(desc.colors.len());
     let mut colors = Vec::with_capacity(desc.colors.len());
+    let mut aliases = Vec::new();
     for color in desc.colors {
         let Some(color) = color else {
             views.push(None);
@@ -53,7 +111,13 @@ pub(super) fn begin(
         };
         // SAFETY: the descriptor borrows the view during this immediate call;
         // the encoder retains the attachment wrappers for the active pass.
-        let view = selected(unsafe { view.native_ref() }.native, first, count)?;
+        let view = selected_attachment(
+            encoder,
+            unsafe { view.native_ref() },
+            first,
+            count,
+            &mut aliases,
+        )?;
         let size = [view.width, view.height];
         if extent.is_some_and(|old| old != size)
             || samples.is_some_and(|old| old != view.sample_count)
@@ -74,7 +138,7 @@ pub(super) fn begin(
     let depth_view = surface_depth::lower_native_view(desc.depth_stencil.as_ref())?;
     let depth_native = match &depth_view {
         Some(view) => {
-            let view = selected(view.native, first, count)?;
+            let view = selected_attachment(encoder, view, first, count, &mut aliases)?;
             if extent.is_some_and(|old| old != [view.width, view.height])
                 || samples.is_some_and(|old| old != view.sample_count)
             {
@@ -137,6 +201,7 @@ pub(super) fn begin(
             encoder.offscreen_framebuffer = Some(framebuffer);
             encoder.begin_raster_state(extent);
             encoder.set_raster_read_only(desc);
+            encoder.raster_views.extend(aliases);
             encoder.raster_pipeline = None;
             encoder.vertex_bindings.clear();
             encoder.index_binding = None;

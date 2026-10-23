@@ -11,6 +11,7 @@
 //! version/extension ledger and the loaded entry-point table, never from a
 //! version string alone.
 
+mod buffer_mapping;
 mod clear_texture_direct;
 mod clear_texture_upload;
 mod context;
@@ -29,16 +30,20 @@ mod exec_mapping;
 mod exec_pbo_readback;
 mod exec_pbo_upload;
 mod exec_raster;
+mod exec_rgb9e5_readback;
 mod exec_shader;
 mod exec_sync;
+mod exec_texture_sub_image_readback;
 mod exec_vertex;
 pub(crate) mod indexed_blend;
 mod indirect_count;
 mod indirect_rebase;
 #[cfg(test)]
 mod indirect_repro;
+pub(crate) mod interop;
 mod multisample_array;
 mod multiview;
+#[cfg(any(feature = "native-gl-wgl", feature = "native-gles-egl"))]
 mod probe;
 mod probes;
 mod program_cache;

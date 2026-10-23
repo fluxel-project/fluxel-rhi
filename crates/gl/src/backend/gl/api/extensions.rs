@@ -199,6 +199,8 @@ pub enum GlKnownExtension {
     KhrTextureCompressionAstcLdr,
     /// ASTC HDR compressed-texture route.
     KhrTextureCompressionAstcHdr,
+    /// ASTC LDR textures as independently compressed 3D slices.
+    KhrTextureCompressionAstcSliced3d,
     /// Fence/sync route on pre-core desktop contexts.
     ArbSync,
     /// Standard texture-feedback barrier command route.
@@ -259,6 +261,7 @@ impl GlKnownExtension {
             Self::OesCompressedEtc2Rgb8Texture => "GL_OES_compressed_ETC2_RGB8_texture",
             Self::KhrTextureCompressionAstcLdr => "GL_KHR_texture_compression_astc_ldr",
             Self::KhrTextureCompressionAstcHdr => "GL_KHR_texture_compression_astc_hdr",
+            Self::KhrTextureCompressionAstcSliced3d => "GL_KHR_texture_compression_astc_sliced_3d",
             Self::ArbSync => "GL_ARB_sync",
             Self::ArbTextureBarrier => "GL_ARB_texture_barrier",
             Self::NvTextureBarrier => "GL_NV_texture_barrier",
@@ -308,6 +311,7 @@ impl GlKnownExtension {
             Self::OesCompressedEtc2Rgb8Texture,
             Self::KhrTextureCompressionAstcLdr,
             Self::KhrTextureCompressionAstcHdr,
+            Self::KhrTextureCompressionAstcSliced3d,
             Self::ArbSync,
             Self::ArbTextureBarrier,
             Self::NvTextureBarrier,
@@ -383,7 +387,8 @@ impl GlKnownExtension {
             | Self::ExtTextureCompressionS3tc
             | Self::ExtTextureCompressionRgtc
             | Self::KhrTextureCompressionAstcLdr
-            | Self::KhrTextureCompressionAstcHdr => matches!(
+            | Self::KhrTextureCompressionAstcHdr
+            | Self::KhrTextureCompressionAstcSliced3d => matches!(
                 profile,
                 GlFamilyProfile::Desktop { .. } | GlFamilyProfile::Embedded { .. }
             ),
@@ -395,13 +400,9 @@ impl GlKnownExtension {
             | Self::WebglMultiDrawInstancedBaseVertexBaseInstance
             | Self::WebglShaderPixelLocalStorage
             | Self::KhrParallelShaderCompile => matches!(profile, GlFamilyProfile::WebGl2),
-            // Multiview exists for the embedded family and for WebGL2. The
-            // desktop core profile offers no multiview route in this contract,
-            // so a desktop context resolves no evidence and stays fail-closed.
-            Self::OvrMultiview2 => matches!(
-                profile,
-                GlFamilyProfile::Embedded { .. } | GlFamilyProfile::WebGl2
-            ),
+            // OVR_multiview2 requires OpenGL 3.0 or OpenGL ES 3.0; WebGL2
+            // exposes the same attachment model through its own extension.
+            Self::OvrMultiview2 => true,
             Self::OesTextureFloatLinear | Self::ExtTextureNorm16 => matches!(
                 profile,
                 GlFamilyProfile::Embedded { .. } | GlFamilyProfile::WebGl2

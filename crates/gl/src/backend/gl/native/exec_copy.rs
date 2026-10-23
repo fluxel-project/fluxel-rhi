@@ -79,6 +79,17 @@ impl GlCopyDomainApi for NativeGlProvider {
             self.texture(OP, destination.subresource.texture)?;
         validate_texture_copy(source, source_desc, destination, destination_desc)
             .map_err(|_| Self::validation(OP, "invalid texture copy"))?;
+        if !source_desc
+            .format
+            .supports_blit_aspect(source.subresource.aspect)
+            && !(source.subresource.aspect == crate::backend::gl::api::GlTextureAspect::Color
+                && source_desc.format.compressed_info().is_some())
+        {
+            return Err(Self::validation(
+                OP,
+                "copy aspect does not match texture format",
+            ));
+        }
         // Validate each side against its own mip without reversing row order.
         let source = native_texture_region(OP, source_desc, source)?;
         let destination = native_texture_region(OP, destination_desc, destination)?;
@@ -124,6 +135,23 @@ impl GlCopyDomainApi for NativeGlProvider {
                 operation: OP,
                 reason: "format lacks a proved copy fact on this context",
             });
+        }
+        // glCopyImageSubData copies the whole packed texel, even when Core
+        // requested only one plane. A framebuffer blit preserves the other one.
+        if matches!(
+            source_desc.format,
+            crate::backend::gl::api::GlFormat::Depth24PlusStencil8
+                | crate::backend::gl::api::GlFormat::Depth32FloatStencil8
+        ) {
+            return self.copy_packed_plane(
+                OP,
+                source,
+                destination,
+                source_desc,
+                destination_desc,
+                source_name,
+                destination_name,
+            );
         }
         match if self.copy_image_extension.is_some() {
             CopyRoute::DirectImage
@@ -194,10 +222,44 @@ impl GlCopyDomainApi for NativeGlProvider {
         destination
             .validate_for(desc)
             .map_err(|_| Self::validation(OP, "invalid texture region"))?;
-        if desc.format == crate::backend::gl::api::GlFormat::Depth16Unorm {
+        if matches!(
+            desc.format,
+            crate::backend::gl::api::GlFormat::Depth24PlusStencil8
+                | crate::backend::gl::api::GlFormat::Depth32FloatStencil8
+        ) {
+            return self.upload_packed_plane(
+                OP,
+                name,
+                desc,
+                destination,
+                layout,
+                packed_upload::PackedSource::Cpu(bytes),
+            );
+        }
+        if matches!(
+            desc.format,
+            crate::backend::gl::api::GlFormat::Depth16Unorm
+                | crate::backend::gl::api::GlFormat::Depth32Float
+                | crate::backend::gl::api::GlFormat::Stencil8
+        ) && !matches!(
+            self.discovery.context().profile(),
+            crate::backend::gl::api::GlFamilyProfile::Desktop { .. }
+        ) {
             return Err(GlError::Unsupported {
                 operation: OP,
-                reason: "Depth16 CPU texture upload is not part of the pixel-copy contract",
+                reason: "depth CPU texture upload currently requires desktop GL",
+            });
+        }
+        if desc.format == crate::backend::gl::api::GlFormat::Stencil8
+            && !self
+                .discovery
+                .formats()
+                .get_for(GlFormatResourceKind::Texture, desc.format, 1)
+                .is_some_and(|facts| facts.copy_destination)
+        {
+            return Err(GlError::Unsupported {
+                operation: OP,
+                reason: "stencil texture lacks copy destination evidence",
             });
         }
         if desc.format.compressed_info().is_some() {
@@ -209,9 +271,6 @@ impl GlCopyDomainApi for NativeGlProvider {
                 super::exec_compressed_upload::CompressedSource::Cpu(bytes),
             );
         }
-        // Depth storage is filled through clears and FBO work in GL, never
-        // from client pixels in this shared semantic; every other unmapped
-        // format fails closed.
         let Some((gl_format, gl_type)) = upload_encoding(desc.format) else {
             return Err(GlError::Unsupported {
                 operation: OP,
@@ -371,7 +430,9 @@ fn transfer_format(format: GlPixelFormat) -> Option<()> {
         GlPixelFormat::Rgba8
         | GlPixelFormat::Red8
         | GlPixelFormat::Rg8
+        | GlPixelFormat::Stencil8
         | GlPixelFormat::Depth16
+        | GlPixelFormat::Depth32Float
         | GlPixelFormat::TexelBytes(2 | 4 | 8 | 16) => Some(()),
         // Native GLES has no BGRA upload and the discovered RGBA8 textures
         // accept no RGB/RED encoding; every one of those rejects before
@@ -577,3 +638,12 @@ fn place_rows_for_extent(
         }
     }
 }
+
+#[path = "exec_copy_texture_planes.rs"]
+mod planes;
+
+#[path = "exec_copy_packed_upload.rs"]
+pub(super) mod packed_upload;
+
+#[path = "exec_copy_stencil_pack.rs"]
+mod stencil_pack;

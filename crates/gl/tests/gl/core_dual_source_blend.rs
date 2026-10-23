@@ -217,9 +217,10 @@ fn wgl_core_dual_source_blend() {
             }
         }
     }
-    let window = Window::new(WindowConfig::new("GL MRT Core fixture", 120, 64).unwrap()).unwrap();
+    let window =
+        Window::new(WindowConfig::new("GL raster feature fixture", 1024, 768).unwrap()).unwrap();
     // SAFETY: the window outlives the GL device and all its resources on this thread.
-    let native = unsafe { GlInstance::from_wgl_window(&window, [120, 64]) }.unwrap();
+    let native = unsafe { GlInstance::from_wgl_window(&window, [1024, 768]) }.unwrap();
     let d = block_on(open(native));
     block_on(dual_source_blend(&d, false));
 }

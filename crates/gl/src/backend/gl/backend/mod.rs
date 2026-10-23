@@ -13,6 +13,7 @@ mod encoder;
 mod extras;
 mod immediate;
 mod instance;
+mod interop;
 mod mapping;
 mod pipeline;
 mod push;
@@ -21,7 +22,7 @@ pub(crate) mod raster;
 mod readback;
 mod resource;
 mod shader;
-mod spi;
+pub(crate) mod spi;
 mod surface;
 mod types;
 

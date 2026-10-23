@@ -98,8 +98,7 @@ fn only_the_second_multiview_revision_reaches_the_typed_name() {
     );
 }
 
-/// A route is legal only where its family can report the name, which is
-/// what keeps a desktop context from ever resolving multiview evidence.
+/// A route is legal only where the extension's specification permits it.
 #[test]
 fn a_typed_route_is_legal_only_inside_its_own_family() {
     let webgl = GlFamilyProfile::WebGl2;
@@ -110,7 +109,7 @@ fn a_typed_route_is_legal_only_inside_its_own_family() {
     assert!(!GlKnownExtension::WebglMultiDraw.is_legal_for(desktop));
     assert!(GlKnownExtension::OvrMultiview2.is_legal_for(webgl));
     assert!(GlKnownExtension::OvrMultiview2.is_legal_for(embedded));
-    assert!(!GlKnownExtension::OvrMultiview2.is_legal_for(desktop));
+    assert!(GlKnownExtension::OvrMultiview2.is_legal_for(desktop));
     assert!(GlKnownExtension::ArbPipelineStatisticsQuery.is_legal_for(desktop));
     assert!(GlKnownExtension::ArbQueryBufferObject.is_legal_for(desktop));
     assert!(!GlKnownExtension::ArbPipelineStatisticsQuery.is_legal_for(embedded));

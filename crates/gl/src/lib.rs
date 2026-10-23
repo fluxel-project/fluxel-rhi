@@ -19,6 +19,15 @@ pub use backend::gl::backend::Gl;
 /// A selected, current GL-family context and its adapter discovery entry.
 pub use backend::gl::backend::GlInstance;
 
+/// Native GL dispatch table borrowed through a scoped Core interop guard.
+/// The guard's pointer may be cast only to a shared reference of this type.
+#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+pub use glow::Context as NativeGlContext;
+/// Native GL operations available on [`NativeGlContext`]. Calls retain their
+/// native unsafe synchronization, object-lifetime, and current-context rules.
+#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+pub use glow::HasContext as NativeGlApi;
+
 #[cfg(all(
     test,
     any(

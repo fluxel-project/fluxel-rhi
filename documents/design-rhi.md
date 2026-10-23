@@ -5,6 +5,20 @@ public contract lives in [`core::api`](../crates/core/src/api/mod.rs); support
 queries and native implementation determine which operations a device can
 execute. API vocabulary alone is not an implementation or conformance claim.
 
+### Integration boundary for optional features
+
+Feature implementations use Rust libraries, existing native bindings, and
+native entry points that can be called directly from Rust. A feature that
+requires an additional C/C++ bridge or a separate SDK solely for its integration
+is treated as unsupported; such a dependency is not added to complete a backend
+feature checklist. This does not remove the normal platform toolchains already
+required to build a backend.
+
+Capability reports and documentation must distinguish this integration boundary
+from missing native API support or a device feature that is absent at runtime.
+Loading an optional OpenGL entry point through the existing Rust WGL/EGL bindings
+is within this boundary and does not introduce a C++ integration layer.
+
 ## Overall design
 
 ### RHI is the execution boundary
@@ -405,6 +419,55 @@ appears in the standard.
 
 ### `crates/gl`: shared semantics across three context profiles
 
+#### Unsupported GL-family domains
+
+The following domains are explicitly unsupported for the GL backend family,
+including desktop GL4+, GLES3+, and WebGL2. They are outside its implementation
+scope, even when a particular desktop driver advertises a related extension.
+Capability flags remain false, unavailable optional interfaces stay absent, and
+callable unsupported operations return structured errors.
+
+| Core domain | GL-family support decision |
+| --- | --- |
+| Secondary command recording | Unsupported; the backend has no equivalent native parallel command-recording model. |
+| Multiple independent GPU queues | Unsupported; GL contexts do not implement Core's independent queue contract. |
+| Sparse resources and placed memory | Unsupported; GL page commitment is not Core's explicit allocation, placement, mapping, and aliasing contract. |
+| External memory and resources | Unsupported; no Core external-resource integration is exposed. Driver-specific EXT import routes do not enable this domain. |
+| Mesh shaders | Unsupported, including vendor-specific mesh/task shader extensions. |
+| Ray pipelines and acceleration structures | Unsupported. |
+| Ray query | Unsupported. |
+
+These exclusions are deliberate support boundaries, not pending GL feature work.
+Completion of the GL backend is judged against its supported domains and their
+documented device, format, extension, and profile limits.
+
+#### Supported execution model
+
+Native desktop GL and EGL/GLES contexts expose Core's scoped native interop
+interface. A device guard or an exclusively borrowed encoder guard retains the
+owner context and borrows a shared `glow::Context` dispatch table. Its pointer
+must never be treated as a mutable Rust reference or as a WGL/EGL handle.
+The guard is thread-affine; nested acquisition, reentrant RHI operations, and
+acquisition during an active render, compute, or query scope are rejected.
+
+Leaving the guard, including unwinding, restores the backend's pixel-store
+baseline and captured rasterizer-discard, dither, sample-coverage, and desktop
+color-logic-op enables, then invalidates its native state knowledge. Resource destruction uses
+an explicit retirement entry point and a separately shared dispatch table, so
+dropping an unrelated resource during the scope does not alias the provider's
+mutable object tables. If native restoration fails, subsequent RHI operations
+are rejected. This mechanism neither records commands nor infers hazards.
+
+The unsafe caller coordinates native side effects, retains every referenced
+resource through GPU completion, and must not delete or mutate RHI-owned objects.
+Other foreign or extension-specific state needed by subsequent RHI work remains
+the caller's responsibility; foreign transform-feedback and query scopes must
+be closed before returning. This is context/command interop, not an API for
+exporting RHI buffer or texture object names.
+Browser WebGL2 does not expose a native GL dispatch-table pointer; its native
+interop capability remains disabled. External memory/resource import is a
+separate domain and remains unsupported for the GL family.
+
 The [GL-family implementation](../crates/gl/src/backend/gl/mod.rs) shares one
 typed `Gl` backend across desktop GL, GLES, and WebGL2. Actual version,
 extensions, and callable entry points jointly determine support. Shared
@@ -454,13 +517,58 @@ views instead share the original storage, with independent admitted mip/layer
 ranges and declared compatible formats. Copying a texture once does not provide
 view aliasing semantics.
 
-#### Desktop GL4 / WGL
+#### Desktop GL4+ / WGL
 
 The WGL provider owns the current-context relationship and borrows the native
 drawable for presentation. Desktop extensions can expose capabilities beyond
 GLES, but only when the required native route is available. Immediate execution
 and context affinity remain unchanged by the desktop profile's larger feature
 set. Native fences establish completion independently of buffer swapping.
+
+Buffer readback encodes a GPU copy into ticket-owned staging at the requested
+command position. Host access follows the caller's covering completion point;
+later source writes do not change the snapshot. Query-buffer-capable contexts
+resolve queries in GPU order. Older desktop contexts use `AfterCompletion`:
+availability is checked without waiting and unavailable results return
+`InvalidState` before any target upload, rather than blocking query retrieval.
+
+Ordinary desktop color textures can copy into buffers without framebuffer
+renderability. GL4.5 or `ARB_get_texture_sub_image` copies selected rows directly
+to a PBO; older desktop contexts use `GetTexImage` into a whole-mip temporary PBO
+and native buffer copies to select the requested region. Both require the actual
+loaded entry point and matching transfer encoding. GPU scratch also handles
+unaligned destination offsets without host readback. The older path can require
+temporary storage proportional to the full mip, rather than just the region.
+RGB9E5 retains its separate compatible-integer-copy route for exact packed bits.
+Signed-normalized formats use the same bit-preserving mechanism with a matching
+integer view-size class, preserving both encodings of negative one. Their copy
+support therefore requires native image-copy compatibility and integer readback;
+numeric pixel conversion alone does not establish this capability.
+
+Depth16, Depth32Float, and standalone Stencil8 support CPU and PBO uploads and
+buffer readback where the format and framebuffer facts permit. For combined
+depth/stencil textures, stencil transfers use one byte per texel and D32S8 depth
+uses a 32-bit float. D24 depth has no portable byte representation. Selected-plane
+texture copies use framebuffer blits and preserve the other plane. Uploads use
+a same-format scratch texture followed by a selected-plane blit; PBO stencil
+packing additionally requires GL4.3 compute/SSBO support. Temporary GPU work is
+issued immediately and does not retain an application command stream.
+
+Desktop `OVR_multiview2` uses the same contiguous-view contract as GLES. Nonzero
+attachment bases are represented with native texture-view aliases, keeping the
+OVR attachment base zero and retaining the aliases through pass teardown. Those
+ranges therefore require a creatable texture view. There is no native arbitrary
+view-mask parameter in this route, and timer-query results during multiview
+rendering are undefined by the [OVR specification](https://registry.khronos.org/OpenGL/extensions/OVR/OVR_multiview.txt).
+Neither combination is advertised. Compressed color clears also remain outside
+the native route: [ARB_clear_texture](https://registry.khronos.org/OpenGL/extensions/ARB/ARB_clear_texture.txt)
+explicitly rejects compressed internal formats, which cannot be framebuffer
+color attachments. This backend does not add a software block codec.
+
+Conservative rasterization selects the native extension flavor. NV's route
+retains its point/line support; Intel's independent token is admitted only for
+filled triangle lists or strips. Extension-selection and topology checks have
+unit coverage; Intel-extension GPU execution remains unverified on this host.
 
 #### GLES / EGL
 
@@ -719,9 +827,22 @@ checks available on this host.
 `BindingCount::RuntimeSized { max_count }` supplies a nonzero layout capacity.
 A bind group supplies a nonempty prefix within that bound; shaders may access
 only supplied elements, and partially bound holes require explicit support.
-Core and native layout creation validate the same bound. Capacity belongs to
+Core and backend bind-group creation validate the same bound; pipeline creation
+also validates the native resource slots consumed by specialization. Capacity belongs to
 the caller's workload, rather than being inferred from a driver maximum or
 turned into a Core allocation policy.
+
+Desktop GL4+ specializes runtime binding arrays to this layout capacity before
+GLSL generation, using the ordinary fixed-array binding path. Nonuniform
+sampled-texture and storage-buffer indexing is available on desktop contexts
+with storage-buffer support. Short prefixes and explicitly permitted holes
+use typed dummy slots; accessing an absent element remains invalid caller
+behavior. UBOs, SSBOs, sampled textures, samplers, and storage images retain
+their individual resource support checks. Specialization uses native slots,
+not bindless handles: per-stage limits and the generated texture/sampler pair
+count bound pipeline creation. Divergent implicit samples evaluate candidates
+before selection to preserve derivatives, which can increase sampling cost.
+GLES and WebGL do not inherit these capability declarations.
 
 Binding arrays have exactly one dimension: present elements are concrete
 resources, including when the layout allows holes. Nested arrays, even empty
@@ -760,9 +881,18 @@ GPU work completed unless the operation's contract supplies that evidence.
 Callers explicitly flush modified lease-relative byte ranges before GPU readers
 and invalidate completed GPU-written ranges before host readers. Lease release
 does not guarantee publication of unflushed host changes. In particular, dropping
-a previously flushed staging lease must not overwrite later GPU updates. GL uses
-owned host storage for long-lived leases and transient native read mappings for
-snapshots, so safe borrowed slices never retain a driver mapping across resets.
+a previously flushed staging lease must not overwrite later GPU updates.
+Desktop GL4.4 or `ARB_buffer_storage` uses immutable, persistently mapped coherent
+storage for mappable buffers. A lease retains the buffer and its context until
+CPU access ends; native unmapping and deletion occur only during retirement.
+Mapping an existing allocation introduces no GPU wait or copy. Completion and
+host/GPU exclusion remain caller obligations; coherent flush/invalidate need
+no additional driver operation. Coherent writes may become visible before
+flush, and invalidation may expose completed writes outside the requested
+range. Older native profiles and WebGL retain owned CPU snapshots and can
+require synchronous refresh. Graphics reset recovery requires recreating the
+context and objects; ordinary mapping tests do not establish recovery behavior
+for outstanding leases.
 
 Occlusion query results guarantee zero for no samples passed and nonzero for
 visibility. Exact positive values can represent native counts or boolean

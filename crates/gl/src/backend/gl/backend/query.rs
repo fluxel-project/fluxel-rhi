@@ -2,8 +2,8 @@
 //!
 //! A query set owns one GL query object per Core slot. Reset is a logical
 //! invalidation because GL replaces a slot's value on the next begin. Desktop
-//! query buffers resolve in GPU order; other native profiles use a synchronous
-//! read and WebGL requires completion and a readiness preflight. No query work
+//! query buffers resolve in GPU order; other profiles require completion and a
+//! readiness preflight. No query work
 //! is queued or replayed.
 
 use std::ops::Range;
@@ -535,9 +535,9 @@ pub(crate) fn resolve(
             offset,
             size: byte_len,
         };
-        let result = encoder
-            .state
-            .with_native("resolve GL occlusion queries", |provider| {
+        use crate::backend::gl::api::{GlQueryObjectsApi as _, GlQueryResult};
+        let result = encoder.state.with_native("resolve GL queries", |provider| {
+            if provider.supports_query_buffer() {
                 if set.kind == api::QueryKind::PipelineStatistics {
                     let zeros = vec![
                         0;
@@ -555,42 +555,73 @@ pub(crate) fn resolve(
                                 offset: offset + slot_index as u64 * 88 + field * 8,
                                 size: 8,
                             };
-                            let query = set.statistics_queries[index * 7 + j];
-                            if !provider.resolve_query_buffer(&[query], dest)? {
-                                let value = provider.resolve_query_result_blocking(query)?;
-                                provider.upload_buffer(dest, &value.to_ne_bytes())?;
-                            }
+                            provider.resolve_query_buffer(
+                                &[set.statistics_queries[index * 7 + j]],
+                                dest,
+                            )?;
                         }
                     }
-                    return Ok(());
+                } else {
+                    provider.resolve_query_buffer(&set.queries[range.clone()], buffer_range)?;
                 }
-                if provider.resolve_query_buffer(&set.queries[range.clone()], buffer_range)? {
-                    return Ok(());
-                }
-                let mut values = Vec::with_capacity(range.len());
-                for query in &set.queries[range.clone()] {
-                    values.push(provider.resolve_query_result_blocking(*query)?);
-                }
-                // A later result can consume the context-wide disjoint flag and
-                // invalidate earlier slots. Re-read those slot facts after the
-                // whole batch so newly written epochs remain independent.
-                if set.kind == api::QueryKind::Timestamp
-                    && provider.gles_timestamp_bits().is_some()
-                    && values.contains(&u64::MAX)
-                {
-                    for (value, query) in values.iter_mut().zip(&set.queries[range.clone()]) {
-                        *value = provider.resolve_query_result_blocking(*query)?;
+                return Ok(true);
+            }
+            let queries = if set.kind == api::QueryKind::PipelineStatistics {
+                &set.statistics_queries[range.start * 7..range.end * 7]
+            } else {
+                &set.queries[range.clone()]
+            };
+            let mut answers = queries
+                .iter()
+                .map(|query| provider.query_result(*query))
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            if answers
+                .iter()
+                .any(|answer| matches!(answer, GlQueryResult::Pending | GlQueryResult::Unknown))
+            {
+                return Ok(false);
+            }
+            // A later timestamp can observe a context-wide disjoint event.
+            if answers
+                .iter()
+                .any(|answer| matches!(answer, GlQueryResult::Disjoint))
+            {
+                answers = queries
+                    .iter()
+                    .map(|query| provider.query_result(*query))
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+            }
+            let mut bytes = vec![
+                0;
+                usize::try_from(byte_len).map_err(|_| {
+                    crate::backend::gl::api::GlError::OutOfMemory {
+                        operation: "resolve-query",
                     }
-                }
-                let mut bytes = Vec::with_capacity(usize::try_from(byte_len).unwrap_or(0));
-                for value in values {
-                    bytes.extend_from_slice(&value.to_ne_bytes());
-                }
-                provider.upload_buffer(buffer_range, &bytes)
-            });
-        if let Err(error) = result {
-            encoder.indeterminate = true;
-            return Err(native_error(error));
+                })?
+            ];
+            for (index, answer) in answers.into_iter().enumerate() {
+                let value = match answer {
+                    GlQueryResult::Available(value) => value,
+                    GlQueryResult::Disjoint => u64::MAX,
+                    _ => return Ok(false),
+                };
+                let pos = if set.kind == api::QueryKind::PipelineStatistics {
+                    index / 7 * 88 + [0_usize, 1, 2, 5, 6, 7, 10][index % 7] * 8
+                } else {
+                    index * 8
+                };
+                bytes[pos..pos + 8].copy_from_slice(&value.to_ne_bytes());
+            }
+            provider.upload_buffer(buffer_range, &bytes)?;
+            Ok(true)
+        });
+        match result {
+            Ok(true) => {}
+            Ok(false) => return Err(Error::InvalidState),
+            Err(error) => {
+                encoder.indeterminate = true;
+                return Err(native_error(error));
+            }
         }
         encoder.issued = true;
         return Ok(());

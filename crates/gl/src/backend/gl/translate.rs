@@ -209,6 +209,7 @@ pub(crate) fn lower_texel_copy_layout(
         GlFormat::Rgba32Uint | GlFormat::Rgba32Sint | GlFormat::Rgba32Float => {
             GlPixelFormat::TexelBytes(16)
         }
+        GlFormat::Stencil8 => GlPixelFormat::Stencil8,
         GlFormat::Depth16Unorm => GlPixelFormat::Depth16,
         GlFormat::Depth24PlusStencil8 => GlPixelFormat::Depth24Stencil8,
         GlFormat::Depth32Float => GlPixelFormat::Depth32Float,

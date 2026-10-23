@@ -18,6 +18,22 @@ async fn mapping(d: &Device<Gl>) {
         BufferUsage::MAP_READ | BufferUsage::COPY_DST | BufferUsage::COPY_SRC,
         MemoryClass::Readback,
     );
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    let persistent = {
+        // SAFETY: only private backend capability metadata is inspected.
+        let buffer = unsafe { download.native_ref() };
+        buffer
+            .state
+            .with_native("inspect mapping fixture", |provider| {
+                provider
+                    .persistent_buffer_lease(buffer.id, false)
+                    .map(|ptr| ptr.is_some())
+            })
+            .unwrap()
+    };
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    let persistent = false;
+    eprintln!("native persistent coherent mapping: {persistent}");
     // SAFETY: neither rejected request accesses the buffer.
     assert!(matches!(
         unsafe { d.map_buffer(&upload, 8..8, MapMode::Write).await },
@@ -100,8 +116,14 @@ async fn mapping(d: &Device<Gl>) {
     d.wait_completion(&point).await.unwrap();
     read.invalidate(4..12).unwrap();
     assert_eq!(&read.bytes()[4..12], &[0xab; 8]);
-    assert_eq!(&read.bytes()[..4], &expected[..4]);
-    assert_eq!(&read.bytes()[12..], &expected[12..]);
+    // Coherent persistent mappings can expose the entire completed GPU write;
+    // snapshot profiles only refresh the requested range.
+    if persistent {
+        assert_eq!(read.bytes(), &[0xab; 32]);
+    } else {
+        assert_eq!(&read.bytes()[..4], &expected[..4]);
+        assert_eq!(&read.bytes()[12..], &expected[12..]);
+    }
     drop(read);
     // SAFETY: the previous copy completed; the host leaves this lease idle
     // while the GPU overwrites the same allocation below.
@@ -171,9 +193,9 @@ fn wgl_core_mapping() {
             }
         }
     }
-    let window = Window::new(WindowConfig::new("GL MRT Core fixture", 120, 64).unwrap()).unwrap();
+    let window = Window::new(WindowConfig::new("GL mapping fixture", 1024, 768).unwrap()).unwrap();
     // SAFETY: the window outlives the GL device and all its resources on this thread.
-    let native = unsafe { GlInstance::from_wgl_window(&window, [120, 64]) }.unwrap();
+    let native = unsafe { GlInstance::from_wgl_window(&window, [1024, 768]) }.unwrap();
     let name = native.0.adapter_name().unwrap();
     let broken = name.contains("ANGLE 2.1.22762")
         && name.contains("AMD Radeon 780M Graphics (0x00001900) Direct3D11")
