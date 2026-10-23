@@ -216,14 +216,23 @@ impl ContextState {
                 ContextStateError::UnknownPipeline
             });
         }
+        Ok(self.prepare_dynamic_pipeline(wanted))
+    }
+
+    /// The immediate backend includes dynamic viewport, stencil and blend
+    /// values in its packet. Compare all canonical blocks instead of treating
+    /// the program identity as an immutable pipeline identity.
+    pub(crate) fn prepare_dynamic_pipeline(
+        &self,
+        wanted: RasterPipelinePacket,
+    ) -> RasterPipelineDiff {
         if self.mode.may_skip()
-            && self
-                .pipeline
-                .get()
-                .is_some_and(|have| have.identity == wanted.identity)
+            && self.pipeline.get().is_some_and(|have| {
+                have.identity == wanted.identity && have.blocks == wanted.blocks
+            })
             && self.current_program.agrees(&wanted.blocks.program)
         {
-            return Ok(RasterPipelineDiff::default());
+            return RasterPipelineDiff::default();
         }
         let prior = self.pipeline.get().copied();
         let diff = RasterPipelineDiff {
@@ -237,7 +246,7 @@ impl ContextState {
             multisample: prior
                 .is_none_or(|have| have.blocks.multisample != wanted.blocks.multisample),
         };
-        Ok(diff)
+        diff
     }
     pub(crate) fn commit_pipeline(&mut self, wanted: RasterPipelinePacket) {
         self.current_program.set(wanted.blocks.program);

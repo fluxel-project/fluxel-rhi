@@ -369,6 +369,11 @@ pub struct DeviceCapabilities {
     pub ray_query: bool,
     pub multi_queue: bool,
     pub indirect_draw: bool,
+    /// Indirect records may contain a nonzero first-instance value, including
+    /// its contribution to the shader instance index and instanced attributes.
+    /// If false, callers must write zero to that argument field. Backends do
+    /// not read GPU-produced records on the CPU to validate this precondition.
+    pub indirect_first_instance: bool,
     pub multi_draw: bool,
     pub multi_draw_count: bool,
     pub push_constants: bool,

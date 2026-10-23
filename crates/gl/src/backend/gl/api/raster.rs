@@ -21,6 +21,19 @@ pub(crate) enum GlFrontFace {
     Clockwise,
     CounterClockwise,
 }
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub(crate) enum GlPolygonMode {
+    #[default]
+    Fill,
+    Line,
+    Point,
+}
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub(crate) struct GlRasterizationState {
+    pub polygon_mode: GlPolygonMode,
+    pub depth_clamp: bool,
+    pub conservative: bool,
+}
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum GlDepthCompareFunction {
     Never,
@@ -58,6 +71,10 @@ pub(crate) enum GlBlendFactor {
     Constant,
     OneMinusConstant,
     SrcAlphaSaturated,
+    Src1,
+    OneMinusSrc1,
+    Src1Alpha,
+    OneMinusSrc1Alpha,
 }
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum GlBlendOperation {
@@ -122,13 +139,14 @@ pub(crate) struct GlScissorRect {
 pub(crate) struct GlMultisampleState {
     pub sample_count: u32,
     pub alpha_to_coverage_enabled: bool,
-    pub sample_mask: u32,
+    pub sample_mask: u64,
 }
 
 /// Entire fixed pipeline state, with all floating values represented as
 /// IEEE-754 bits. This is a valid Layer 2 structural cache key.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct GlRasterState {
+    pub rasterization: GlRasterizationState,
     pub topology: GlPrimitiveTopology,
     pub cull_mode: GlCullMode,
     pub front_face: GlFrontFace,
@@ -290,6 +308,8 @@ pub(crate) trait GlRasterCommandApi: GlFamilyApi {
     fn draw_raster(&mut self, draw: GlDrawCommand) -> Result<(), GlError>;
     fn set_viewport(&mut self, viewport: GlViewport) -> Result<(), GlError>;
     fn set_scissor(&mut self, scissor: Option<GlScissorRect>) -> Result<(), GlError>;
+    fn set_blend_constant(&mut self, value: [f32; 4]) -> Result<(), GlError>;
+    fn set_stencil_reference(&mut self, value: u32) -> Result<(), GlError>;
 }
 /// Providers expose this only after their discovery snapshot proves both
 /// optional commands; the core trait never implies these offsets.
@@ -338,6 +358,7 @@ mod tests {
     fn excess_color_targets_are_not_write_mask_failures() {
         fn state_with_targets(count: usize) -> GlRasterState {
             GlRasterState {
+                rasterization: Default::default(),
                 topology: GlPrimitiveTopology::Triangles,
                 cull_mode: GlCullMode::None,
                 front_face: GlFrontFace::CounterClockwise,
@@ -352,7 +373,7 @@ mod tests {
                 multisample: GlMultisampleState {
                     sample_count: 1,
                     alpha_to_coverage_enabled: false,
-                    sample_mask: u32::MAX,
+                    sample_mask: u64::MAX,
                 },
                 viewport: GlViewport {
                     x: 0,

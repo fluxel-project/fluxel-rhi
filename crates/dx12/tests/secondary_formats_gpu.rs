@@ -257,7 +257,10 @@ fn run(depth_format: TextureFormat) {
                 accesses: AccessMask::DEPTH_WRITE,
             },
         },
-        layout: Some((ImageLayout::DepthStencilAttachment, ImageLayout::DepthStencilAttachment)),
+        layout: Some((
+            ImageLayout::DepthStencilAttachment,
+            ImageLayout::DepthStencilAttachment,
+        )),
         ownership: None,
     })])
     .unwrap();

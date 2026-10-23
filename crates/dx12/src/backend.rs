@@ -474,6 +474,7 @@ impl InstanceBackend for Dx12 {
                     pipeline_statistics: true,
                     push_constants: true,
                     indirect_draw: true,
+                    indirect_first_instance: true,
                     multi_draw: true,
                     multi_draw_count: true,
                     binding_arrays: descriptor_indexing,

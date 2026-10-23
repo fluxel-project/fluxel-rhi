@@ -14,12 +14,6 @@ use super::api::*;
 pub(crate) fn lower_primitive(
     value: PrimitiveState,
 ) -> api::Result<(GlPrimitiveTopology, GlCullMode, GlFrontFace)> {
-    if !matches!(value.polygon_mode, api::PolygonMode::Fill)
-        || value.unclipped_depth
-        || value.conservative
-    {
-        return Err(api::Error::Unsupported("GL primitive mode"));
-    }
     let topology = match value.topology {
         PrimitiveTopology::PointList => GlPrimitiveTopology::Points,
         PrimitiveTopology::LineList => GlPrimitiveTopology::Lines,
@@ -32,12 +26,10 @@ pub(crate) fn lower_primitive(
         CullMode::Front => GlCullMode::Front,
         CullMode::Back => GlCullMode::Back,
     };
-    // Keep the public winding value when lowering to GL. The GL viewport uses
-    // a positive height and adjusts its origin for the upper-left public
-    // rectangle; flipping this enum as well reverses face culling a second time.
+    // Vertex position lowering reflects Y, which reverses triangle winding.
     let front = match value.front_face {
-        FrontFace::Ccw => GlFrontFace::CounterClockwise,
-        FrontFace::Cw => GlFrontFace::Clockwise,
+        FrontFace::Ccw => GlFrontFace::Clockwise,
+        FrontFace::Cw => GlFrontFace::CounterClockwise,
     };
     Ok((topology, cull, front))
 }
@@ -47,7 +39,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn public_front_face_is_preserved_for_positive_height_gl_viewports() {
+    fn vertex_y_reflection_reverses_native_front_face() {
         let lower = |front_face| {
             lower_primitive(PrimitiveState {
                 topology: PrimitiveTopology::TriangleList,
@@ -62,16 +54,19 @@ mod tests {
             .2
         };
 
-        assert_eq!(lower(FrontFace::Ccw), GlFrontFace::CounterClockwise);
-        assert_eq!(lower(FrontFace::Cw), GlFrontFace::Clockwise);
+        assert_eq!(lower(FrontFace::Ccw), GlFrontFace::Clockwise);
+        assert_eq!(lower(FrontFace::Cw), GlFrontFace::CounterClockwise);
     }
 }
 
 /// Converts Core blend factors without approximating dual-source factors.
-pub(crate) fn lower_blend_component(value: api::BlendComponent) -> api::Result<GlBlendComponent> {
+pub(crate) fn lower_blend_component(
+    value: api::BlendComponent,
+    alpha: bool,
+) -> api::Result<GlBlendComponent> {
     Ok(GlBlendComponent {
-        src_factor: lower_blend_factor(value.src_factor)?,
-        dst_factor: lower_blend_factor(value.dst_factor)?,
+        src_factor: lower_blend_factor(value.src_factor, alpha)?,
+        dst_factor: lower_blend_factor(value.dst_factor, alpha)?,
         operation: match value.operation {
             BlendOperation::Add => GlBlendOperation::Add,
             BlendOperation::Subtract => GlBlendOperation::Subtract,
@@ -95,19 +90,23 @@ pub(crate) fn lower_compare(value: CompareFunction) -> GlDepthCompareFunction {
     }
 }
 
-/// Lowers the portable sample mask after rejecting high bits GL cannot carry.
+/// Preserves all Core coverage bits and normalizes inactive samples.
 pub(crate) fn lower_multisample(value: MultisampleState) -> api::Result<GlMultisampleState> {
-    if value.mask >> 32 != 0 {
-        return Err(api::Error::Unsupported("GL sample mask wider than 32 bits"));
-    }
+    // Bits beyond the active sample count have no observable effect.
+    let active = if value.count >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << value.count) - 1
+    };
+    let mask = value.mask | !active;
     Ok(GlMultisampleState {
         sample_count: value.count,
         alpha_to_coverage_enabled: value.alpha_to_coverage_enabled,
-        sample_mask: value.mask as u32,
+        sample_mask: mask,
     })
 }
 
-fn lower_blend_factor(value: BlendFactor) -> api::Result<GlBlendFactor> {
+fn lower_blend_factor(value: BlendFactor, alpha: bool) -> api::Result<GlBlendFactor> {
     Ok(match value {
         BlendFactor::Zero => GlBlendFactor::Zero,
         BlendFactor::One => GlBlendFactor::One,
@@ -122,8 +121,19 @@ fn lower_blend_factor(value: BlendFactor) -> api::Result<GlBlendFactor> {
         BlendFactor::Constant => GlBlendFactor::Constant,
         BlendFactor::OneMinusConstant => GlBlendFactor::OneMinusConstant,
         BlendFactor::SrcAlphaSaturated => GlBlendFactor::SrcAlphaSaturated,
-        BlendFactor::Src1 | BlendFactor::OneMinusSrc1 => {
-            return Err(api::Error::Unsupported("GL dual-source blending"));
+        BlendFactor::Src1 => {
+            if alpha {
+                GlBlendFactor::Src1Alpha
+            } else {
+                GlBlendFactor::Src1
+            }
+        }
+        BlendFactor::OneMinusSrc1 => {
+            if alpha {
+                GlBlendFactor::OneMinusSrc1Alpha
+            } else {
+                GlBlendFactor::OneMinusSrc1
+            }
         }
     })
 }

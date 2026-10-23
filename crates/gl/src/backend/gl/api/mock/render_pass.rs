@@ -43,6 +43,7 @@ impl GlFramebufferApi for MockGlFamilyApi {
         for v in d
             .color_attachments
             .iter()
+            .flatten()
             .copied()
             .chain(d.depth_stencil_attachment)
         {
@@ -122,7 +123,7 @@ impl GlFramebufferApi for MockGlFamilyApi {
         {
             return self.invalid("begin-render-pass", "multiview view count is not proved");
         }
-        for a in &d.color_attachments {
+        for a in d.color_attachments.iter().flatten() {
             let GlPassAttachmentView::Allocated(view) = a.view else {
                 return self.invalid(
                     "begin-render-pass",
@@ -202,7 +203,9 @@ impl GlFramebufferApi for MockGlFamilyApi {
         let sample_count = |descriptor: &GlFramebufferDescriptor| {
             descriptor
                 .color_attachments
-                .first()
+                .iter()
+                .flatten()
+                .next()
                 .map(|view| view.sample_count)
                 .or_else(|| {
                     descriptor
@@ -215,7 +218,9 @@ impl GlFramebufferApi for MockGlFamilyApi {
         let shape = |descriptor: &GlFramebufferDescriptor| {
             descriptor
                 .color_attachments
-                .first()
+                .iter()
+                .flatten()
+                .next()
                 .copied()
                 .or(descriptor.depth_stencil_attachment)
                 .map(|view| (view.width, view.height))
@@ -328,6 +333,13 @@ impl GlRasterCommandApi for MockGlFamilyApi {
         self.calls.push(MockCall::DrawRaster(d));
         Ok(())
     }
+    fn set_blend_constant(&mut self, _value: [f32; 4]) -> Result<(), GlError> {
+        Ok(())
+    }
+    fn set_stencil_reference(&mut self, _value: u32) -> Result<(), GlError> {
+        Ok(())
+    }
+
     fn set_viewport(&mut self, viewport: GlViewport) -> Result<(), GlError> {
         const OP: &str = "set-viewport";
         self.ready(OP)?;

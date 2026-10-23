@@ -29,6 +29,22 @@ pub struct BrowserSurfaceImage {
     pub(super) serial: u64,
 }
 
+/// Retains identity facts without extending the acquired image lease.
+#[derive(Clone)]
+pub(crate) struct BrowserSurfaceToken {
+    surface: BrowserSurface,
+    generation: u64,
+    serial: u64,
+}
+impl BrowserSurfaceToken {
+    pub(crate) fn is_current(&self) -> bool {
+        self.surface.owner.is_active() && {
+            let state = self.surface.state.borrow();
+            state.generation == self.generation && state.live_serial == Some(self.serial)
+        }
+    }
+}
+
 pub(super) struct SurfaceState {
     generation: u64,
     configured: bool,
@@ -36,6 +52,7 @@ pub(super) struct SurfaceState {
     live_serial: Option<u64>,
     next_serial: u64,
     pub(super) extent: [u32; 2],
+    pub(super) format: TextureFormat,
 }
 
 impl BrowserSurface {
@@ -51,6 +68,7 @@ impl BrowserSurface {
                 live_serial: None,
                 next_serial: 1,
                 extent: [0, 0],
+                format: TextureFormat::Rgba8Unorm,
             })),
         }
     }
@@ -70,6 +88,7 @@ impl BrowserSurface {
         state.generation = state.generation.checked_add(1).ok_or(Error::OutOfMemory)?;
         state.configured = true;
         state.extent = extent;
+        state.format = config.format;
         Ok(())
     }
 
@@ -164,6 +183,14 @@ impl BrowserSurface {
 }
 
 impl BrowserSurfaceImage {
+    pub(crate) fn target_token(&self) -> BrowserSurfaceToken {
+        BrowserSurfaceToken {
+            surface: self.surface.clone(),
+            generation: self.generation,
+            serial: self.serial,
+        }
+    }
+
     /// Tests whether this lease still names the surface's current configuration.
     pub(crate) fn is_current_for(&self, generation: u64) -> bool {
         generation == self.generation && !self.handed_off && self.surface.owner.is_active() && {

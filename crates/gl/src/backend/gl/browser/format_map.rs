@@ -26,10 +26,20 @@ pub(super) const TEXTURE_MAX_ANISOTROPY_EXT: u32 = 0x84FE;
 
 /// The WebGL2 internal format a discovered `GlFormat` allocates as.
 pub(super) fn internal_format(format: GlFormat) -> Option<u32> {
+    if let Some(encoding) = super::ordinary_format::encoding(format) {
+        return Some(encoding.internal);
+    }
     match format {
         GlFormat::Rgba8Unorm => Some(Gl::RGBA8),
         GlFormat::Rgba8Srgb => Some(Gl::SRGB8_ALPHA8),
+        GlFormat::Stencil8 => Some(Gl::STENCIL_INDEX8),
+        GlFormat::Depth16Unorm => Some(Gl::DEPTH_COMPONENT16),
+        GlFormat::Depth24Unorm => Some(Gl::DEPTH_COMPONENT24),
+        GlFormat::Depth24PlusStencil8 => Some(Gl::DEPTH24_STENCIL8),
         GlFormat::Depth32Float => Some(Gl::DEPTH_COMPONENT32F),
+        GlFormat::Depth32FloatStencil8 => Some(Gl::DEPTH32F_STENCIL8),
+        GlFormat::Rgba8Uint => Some(Gl::RGBA8UI),
+        GlFormat::Rgba8Sint => Some(Gl::RGBA8I),
         GlFormat::Bc1RgbUnorm => Some(0x83F0),
         GlFormat::Bc1RgbaUnorm => Some(0x83F1),
         GlFormat::Bc2RgbaUnorm => Some(0x83F2),
@@ -93,8 +103,16 @@ pub(super) fn internal_format(format: GlFormat) -> Option<u32> {
 /// ES 3.0 accepts exactly one `(format, type)` pair per sized internal format,
 /// so unsupported pairs return `None` instead of a driver-dependent guess.
 pub(super) fn upload_encoding(format: GlFormat) -> Option<(u32, u32)> {
+    if format == GlFormat::Depth16Unorm {
+        return Some((Gl::DEPTH_COMPONENT, Gl::UNSIGNED_SHORT));
+    }
+    if let Some(encoding) = super::ordinary_format::encoding(format) {
+        return Some((encoding.pixel, encoding.ty));
+    }
     match format {
         GlFormat::Rgba8Unorm | GlFormat::Rgba8Srgb => Some((Gl::RGBA, Gl::UNSIGNED_BYTE)),
+        GlFormat::Rgba8Uint => Some((Gl::RGBA_INTEGER, Gl::UNSIGNED_BYTE)),
+        GlFormat::Rgba8Sint => Some((Gl::RGBA_INTEGER, Gl::BYTE)),
         _ => None,
     }
 }
@@ -128,15 +146,23 @@ pub(super) fn transfer_format(format: GlPixelFormat) -> Option<()> {
 /// attach call's attachment name.
 pub(super) const fn depth_attachment_point(format: GlFormat) -> Option<u32> {
     match format {
-        GlFormat::Depth16Unorm | GlFormat::Depth32Float => Some(Gl::DEPTH_ATTACHMENT),
-        GlFormat::Depth24PlusStencil8 => Some(Gl::DEPTH_STENCIL_ATTACHMENT),
+        GlFormat::Depth16Unorm | GlFormat::Depth24Unorm | GlFormat::Depth32Float => {
+            Some(Gl::DEPTH_ATTACHMENT)
+        }
+        GlFormat::Depth24PlusStencil8 | GlFormat::Depth32FloatStencil8 => {
+            Some(Gl::DEPTH_STENCIL_ATTACHMENT)
+        }
+        GlFormat::Stencil8 => Some(Gl::STENCIL_ATTACHMENT),
         _ => None,
     }
 }
 
 /// Returns whether a depth/stencil format carries a stencil plane.
 pub(super) const fn has_stencil_plane(format: GlFormat) -> bool {
-    matches!(format, GlFormat::Depth24PlusStencil8)
+    matches!(
+        format,
+        GlFormat::Depth24PlusStencil8 | GlFormat::Depth32FloatStencil8 | GlFormat::Stencil8
+    )
 }
 
 pub(super) const fn address_mode(mode: GlAddressMode) -> i32 {
@@ -244,6 +270,7 @@ pub(super) fn webgl2_baseline_formats(
     const HALF_FLOAT: u32 = 0x140B;
     let mut formats = GlFormatTable::default();
     for (format, copy) in [(GlFormat::Rgba8Unorm, true), (GlFormat::Rgba8Srgb, true)] {
+        formats.mark_exact_buffer_readback(format);
         formats
             .record(GlFormatCapabilities {
                 format,
@@ -260,6 +287,90 @@ pub(super) fn webgl2_baseline_formats(
                 copy_destination: copy,
             })
             .map_err(|error| record_error("record WebGL2 baseline format", error))?;
+    }
+    // Probe actual attachment completeness for each added format before
+    // publishing it. The format table also distinguishes queried facts from
+    // the smaller set of statically catalogued core guarantees.
+    for (format, internal, pixel, ty, point, sampled, filterable) in [
+        (
+            GlFormat::Rgba8Uint,
+            Gl::RGBA8UI,
+            Gl::RGBA_INTEGER,
+            Gl::UNSIGNED_BYTE,
+            Gl::COLOR_ATTACHMENT0,
+            true,
+            false,
+        ),
+        (
+            GlFormat::Rgba8Sint,
+            Gl::RGBA8I,
+            Gl::RGBA_INTEGER,
+            Gl::BYTE,
+            Gl::COLOR_ATTACHMENT0,
+            true,
+            false,
+        ),
+        (
+            GlFormat::Depth16Unorm,
+            Gl::DEPTH_COMPONENT16,
+            Gl::DEPTH_COMPONENT,
+            Gl::UNSIGNED_SHORT,
+            Gl::DEPTH_ATTACHMENT,
+            true,
+            true,
+        ),
+        (
+            GlFormat::Depth24Unorm,
+            Gl::DEPTH_COMPONENT24,
+            Gl::DEPTH_COMPONENT,
+            Gl::UNSIGNED_INT,
+            Gl::DEPTH_ATTACHMENT,
+            true,
+            true,
+        ),
+        (
+            GlFormat::Depth24PlusStencil8,
+            Gl::DEPTH24_STENCIL8,
+            Gl::DEPTH_STENCIL,
+            Gl::UNSIGNED_INT_24_8,
+            Gl::DEPTH_STENCIL_ATTACHMENT,
+            true,
+            true,
+        ),
+        (
+            GlFormat::Depth32FloatStencil8,
+            Gl::DEPTH32F_STENCIL8,
+            Gl::DEPTH_STENCIL,
+            Gl::FLOAT_32_UNSIGNED_INT_24_8_REV,
+            Gl::DEPTH_STENCIL_ATTACHMENT,
+            true,
+            false,
+        ),
+    ] {
+        if let Some(renderable) = attachment_completes(raw, internal, pixel, ty, point) {
+            if matches!(format, GlFormat::Rgba8Uint | GlFormat::Rgba8Sint)
+                && renderable
+                && super::ordinary_format::exact_readback_supported(raw, format)
+            {
+                formats.mark_exact_buffer_readback(format);
+            }
+            formats
+                .record(GlFormatCapabilities {
+                    format,
+                    resource_kind: GlFormatResourceKind::Texture,
+                    sample_count: 1,
+                    evidence: GlFormatEvidence::OperationProbed,
+                    sampled,
+                    filterable,
+                    renderable,
+                    blendable: false,
+                    storage_read: false,
+                    storage_write: false,
+                    copy_source: renderable,
+                    copy_destination: renderable,
+                })
+                .map_err(|error| record_error("record WebGL2 attachment format", error))?;
+        }
     }
     // Float depth: renderability is decided by the depth-attachment probe.
     let depth = attachment_completes(
@@ -284,9 +395,9 @@ pub(super) fn webgl2_baseline_formats(
             blendable: false,
             storage_read: false,
             storage_write: false,
-            // Do not claim a concrete copy operation from a static baseline.
-            copy_source: false,
-            copy_destination: false,
+            // The attachment probe proves the framebuffer blit route.
+            copy_source: depth.unwrap_or(false),
+            copy_destination: depth.unwrap_or(false),
         })
         .map_err(|error| record_error("record WebGL2 depth fact", error))?;
     // Float color: renderability is decided per format by the color-attachment
@@ -325,9 +436,107 @@ pub(super) fn webgl2_baseline_formats(
                 storage_read: false,
                 storage_write: false,
                 copy_source: renderable,
-                copy_destination: renderable,
+                copy_destination: true,
             })
             .map_err(|error| record_error("record WebGL2 float fact", error))?;
+    }
+    for format in [
+        GlFormat::R8Unorm,
+        GlFormat::R8Snorm,
+        GlFormat::R8Uint,
+        GlFormat::R8Sint,
+        GlFormat::Rg8Unorm,
+        GlFormat::Rg8Snorm,
+        GlFormat::Rg8Uint,
+        GlFormat::Rg8Sint,
+        GlFormat::Rgba8Snorm,
+        GlFormat::R16Uint,
+        GlFormat::R16Sint,
+        GlFormat::R16Float,
+        GlFormat::Rg16Uint,
+        GlFormat::Rg16Sint,
+        GlFormat::Rg16Float,
+        GlFormat::Rgba16Uint,
+        GlFormat::Rgba16Sint,
+        GlFormat::R32Uint,
+        GlFormat::R32Sint,
+        GlFormat::R32Float,
+        GlFormat::Rg32Uint,
+        GlFormat::Rg32Sint,
+        GlFormat::Rg32Float,
+        GlFormat::Rgba32Uint,
+        GlFormat::Rgba32Sint,
+        GlFormat::Rgb9e5Ufloat,
+        GlFormat::Rgb10a2Uint,
+        GlFormat::Rgb10a2Unorm,
+        GlFormat::Rg11b10Ufloat,
+    ] {
+        let encoding = super::ordinary_format::encoding(format).expect("known format");
+        let renderable = attachment_completes(
+            raw,
+            encoding.internal,
+            encoding.pixel,
+            encoding.ty,
+            Gl::COLOR_ATTACHMENT0,
+        )
+        .unwrap_or(false);
+        if renderable && super::ordinary_format::exact_readback_supported(raw, format) {
+            formats.mark_exact_buffer_readback(format);
+        }
+        formats
+            .record(GlFormatCapabilities {
+                format,
+                resource_kind: GlFormatResourceKind::Texture,
+                sample_count: 1,
+                evidence: GlFormatEvidence::OperationProbed,
+                sampled: true,
+                filterable: !encoding.integer && (!encoding.float32 || float_linear),
+                renderable,
+                blendable: renderable && !encoding.integer && (!encoding.float32 || float_blend),
+                storage_read: false,
+                storage_write: false,
+                copy_source: renderable,
+                copy_destination: true,
+            })
+            .map_err(|error| record_error("record WebGL2 ordinary format", error))?;
+    }
+    if extensions.is_acquired(GlKnownExtension::ExtTextureNorm16) {
+        for format in [
+            GlFormat::R16Unorm,
+            GlFormat::R16Snorm,
+            GlFormat::Rg16Unorm,
+            GlFormat::Rg16Snorm,
+            GlFormat::Rgba16Unorm,
+            GlFormat::Rgba16Snorm,
+        ] {
+            let encoding = super::ordinary_format::encoding(format).expect("known format");
+            let renderable = attachment_completes(
+                raw,
+                encoding.internal,
+                encoding.pixel,
+                encoding.ty,
+                Gl::COLOR_ATTACHMENT0,
+            )
+            .unwrap_or(false);
+            formats
+                .record(GlFormatCapabilities {
+                    format,
+                    resource_kind: GlFormatResourceKind::Texture,
+                    sample_count: 1,
+                    evidence: GlFormatEvidence::ExtensionAcquired(
+                        GlKnownExtension::ExtTextureNorm16,
+                    ),
+                    sampled: true,
+                    filterable: true,
+                    renderable,
+                    blendable: renderable,
+                    storage_read: false,
+                    storage_write: false,
+                    copy_source: renderable,
+                    copy_destination: true,
+                })
+                .map_err(|error| record_error("record WebGL2 norm16 format", error))?;
+        }
     }
     for (extension, exact_formats) in compressed_extension_formats() {
         if !extensions.is_acquired(extension) {
@@ -347,7 +556,7 @@ pub(super) fn webgl2_baseline_formats(
                     storage_read: false,
                     storage_write: false,
                     copy_source: false,
-                    copy_destination: false,
+                    copy_destination: true,
                 })
                 .map_err(|error| record_error("record acquired compressed WebGL2 format", error))?;
         }
@@ -395,7 +604,7 @@ pub(super) fn record_astc_hdr_formats(
                 storage_read: false,
                 storage_write: false,
                 copy_source: false,
-                copy_destination: false,
+                copy_destination: true,
             })
             .map_err(|error| record_error("record WebGL2 ASTC HDR format", error))?;
     }

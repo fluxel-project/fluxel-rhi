@@ -39,11 +39,11 @@
 //!   profile where core does not supply it is WebGL2, whose route is the
 //!   WebGL2 typed name, so the desktop extension form is not a typed name here
 //!   at all.
-//! - `GL_ARB_multi_draw_indirect` cannot satisfy anything: glow 0.18 binds no
-//!   `glMultiDrawArraysIndirect`, so the probe is permanently `Unavailable`, and
-//!   every confirmed limit set fixes the multi-draw-indirect count at `None`,
-//!   which leaves that row unable to enable on any profile even if the name were
-//!   acquired. A second alternative would describe a route nothing can reach.
+//! - `GL_ARB_multi_draw_indirect` is not used as an enabling route by the
+//!   current backend: glow 0.18 does not bind its entry points, and the separate
+//!   multi-draw limit row has no portable GL query. GPU-count draws use the
+//!   manually loaded `GL_ARB_indirect_parameters` entry points and their own
+//!   capability decision; they must not be inferred from this extension.
 //! - `GL_ARB_direct_state_access` is an issuance style (which entry points
 //!   create and update objects) rather than a capability, so it satisfies no
 //!   row and cannot be an alternative to one. A `CoreOrExtension` row records
@@ -141,6 +141,10 @@ pub enum GlKnownExtension {
     ArbMultiDrawIndirect,
     /// Desktop indirect-count commands.
     ArbIndirectParameters,
+    /// Desktop pipeline-statistics queries.
+    ArbPipelineStatisticsQuery,
+    /// Desktop GPU-buffer query-result writes.
+    ArbQueryBufferObject,
     /// Desktop timer-query commands.
     ArbTimerQuery,
     /// Native ES disjoint timer-query commands.
@@ -153,6 +157,14 @@ pub enum GlKnownExtension {
     ExtFloatBlend,
     /// Float texture filtering.
     OesTextureFloatLinear,
+    /// 16-bit normalized texture formats in GLES and WebGL2.
+    ExtTextureNorm16,
+    /// Polygon depth-bias clamp in GL and WebGL extension routes.
+    ExtPolygonOffsetClamp,
+    /// Depth clamping supplied by an extension.
+    ExtDepthClamp,
+    /// WebGL polygon rasterization mode extension.
+    WebglPolygonMode,
     /// Anisotropic texture filtering (including native `GL_EXT` spelling).
     ExtTextureFilterAnisotropic,
     /// WebGL multi-draw commands.
@@ -218,12 +230,18 @@ impl GlKnownExtension {
             Self::ExtMultiDrawArrays => "GL_EXT_multi_draw_arrays",
             Self::ArbMultiDrawIndirect => "GL_ARB_multi_draw_indirect",
             Self::ArbIndirectParameters => "GL_ARB_indirect_parameters",
+            Self::ArbPipelineStatisticsQuery => "GL_ARB_pipeline_statistics_query",
+            Self::ArbQueryBufferObject => "GL_ARB_query_buffer_object",
             Self::ArbTimerQuery => "GL_ARB_timer_query",
             Self::ExtDisjointTimerQuery => "GL_EXT_disjoint_timer_query",
             Self::ExtDisjointTimerQueryWebgl2 => "EXT_disjoint_timer_query_webgl2",
             Self::ExtColorBufferFloat => "EXT_color_buffer_float",
             Self::ExtFloatBlend => "EXT_float_blend",
             Self::OesTextureFloatLinear => "OES_texture_float_linear",
+            Self::ExtTextureNorm16 => "EXT_texture_norm16",
+            Self::ExtPolygonOffsetClamp => "EXT_polygon_offset_clamp",
+            Self::ExtDepthClamp => "EXT_depth_clamp",
+            Self::WebglPolygonMode => "WEBGL_polygon_mode",
             Self::ExtTextureFilterAnisotropic => "EXT_texture_filter_anisotropic",
             Self::WebglMultiDraw => "WEBGL_multi_draw",
             Self::WebglMultiDrawInstancedBaseVertexBaseInstance => {
@@ -263,12 +281,18 @@ impl GlKnownExtension {
             Self::ExtMultiDrawArrays,
             Self::ArbMultiDrawIndirect,
             Self::ArbIndirectParameters,
+            Self::ArbPipelineStatisticsQuery,
+            Self::ArbQueryBufferObject,
             Self::ArbTimerQuery,
             Self::ExtDisjointTimerQuery,
             Self::ExtDisjointTimerQueryWebgl2,
             Self::ExtColorBufferFloat,
             Self::ExtFloatBlend,
             Self::OesTextureFloatLinear,
+            Self::ExtTextureNorm16,
+            Self::ExtPolygonOffsetClamp,
+            Self::ExtDepthClamp,
+            Self::WebglPolygonMode,
             Self::ExtTextureFilterAnisotropic,
             Self::WebglMultiDraw,
             Self::WebglMultiDrawInstancedBaseVertexBaseInstance,
@@ -305,6 +329,9 @@ impl GlKnownExtension {
                             | "MOZ_EXT_texture_filter_anisotropic"
                     ))
                 || (*known == Self::OvrMultiview2 && name == "GL_OVR_multiview2")
+                || (*known == Self::ExtTextureNorm16 && name == "GL_EXT_texture_norm16")
+                || (*known == Self::ExtPolygonOffsetClamp && name == "GL_EXT_polygon_offset_clamp")
+                || (*known == Self::ExtDepthClamp && name == "GL_EXT_depth_clamp")
                 || matches!(
                     (*known, name),
                     (
@@ -343,15 +370,20 @@ impl GlKnownExtension {
             | Self::ArbDrawIndirect
             | Self::ArbMultiDrawIndirect
             | Self::ArbIndirectParameters
+            | Self::ArbPipelineStatisticsQuery
+            | Self::ArbQueryBufferObject
             | Self::ArbTimerQuery
             | Self::ArbTextureCompressionBptc
-            | Self::ExtTextureCompressionS3tc
-            | Self::ExtTextureCompressionRgtc
             | Self::ArbEs3Compatibility
             | Self::ArbSync
             | Self::ArbTextureBarrier
             | Self::NvTextureBarrier => matches!(profile, GlFamilyProfile::Desktop { .. }),
-            Self::ExtMultiDrawArrays | Self::ExtDisjointTimerQuery => matches!(
+            Self::ExtMultiDrawArrays
+            | Self::ExtDisjointTimerQuery
+            | Self::ExtTextureCompressionS3tc
+            | Self::ExtTextureCompressionRgtc
+            | Self::KhrTextureCompressionAstcLdr
+            | Self::KhrTextureCompressionAstcHdr => matches!(
                 profile,
                 GlFamilyProfile::Desktop { .. } | GlFamilyProfile::Embedded { .. }
             ),
@@ -359,6 +391,7 @@ impl GlKnownExtension {
             | Self::ExtColorBufferFloat
             | Self::ExtFloatBlend
             | Self::WebglMultiDraw
+            | Self::WebglPolygonMode
             | Self::WebglMultiDrawInstancedBaseVertexBaseInstance
             | Self::WebglShaderPixelLocalStorage
             | Self::KhrParallelShaderCompile => matches!(profile, GlFamilyProfile::WebGl2),
@@ -369,16 +402,16 @@ impl GlKnownExtension {
                 profile,
                 GlFamilyProfile::Embedded { .. } | GlFamilyProfile::WebGl2
             ),
-            Self::OesTextureFloatLinear => matches!(
+            Self::OesTextureFloatLinear | Self::ExtTextureNorm16 => matches!(
                 profile,
                 GlFamilyProfile::Embedded { .. } | GlFamilyProfile::WebGl2
             ),
-            Self::OesCompressedEtc2Rgb8Texture
-            | Self::KhrTextureCompressionAstcLdr
-            | Self::KhrTextureCompressionAstcHdr => {
+            Self::OesCompressedEtc2Rgb8Texture => {
                 matches!(profile, GlFamilyProfile::Embedded { .. })
             }
-            Self::ExtTextureFilterAnisotropic => true,
+            Self::ExtTextureFilterAnisotropic
+            | Self::ExtPolygonOffsetClamp
+            | Self::ExtDepthClamp => true,
             Self::KhrRobustness | Self::KhrDebug => !matches!(profile, GlFamilyProfile::WebGl2),
             Self::CompressedTextureS3tc
             | Self::CompressedTextureS3tcSrgb

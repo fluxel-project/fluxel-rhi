@@ -6,7 +6,7 @@ use super::{
 
 /// Every typed name in the inventory, so a new variant cannot be added
 /// without a registry spelling that maps back to it.
-const INVENTORY: [GlKnownExtension; 21] = [
+const INVENTORY: [GlKnownExtension; 24] = [
     GlKnownExtension::ArbComputeShader,
     GlKnownExtension::ArbShaderStorageBufferObject,
     GlKnownExtension::ArbShaderImageLoadStore,
@@ -22,6 +22,9 @@ const INVENTORY: [GlKnownExtension; 21] = [
     GlKnownExtension::KhrParallelShaderCompile,
     GlKnownExtension::KhrRobustness,
     GlKnownExtension::KhrDebug,
+    GlKnownExtension::ArbPipelineStatisticsQuery,
+    GlKnownExtension::ArbQueryBufferObject,
+    GlKnownExtension::ExtDisjointTimerQuery,
     GlKnownExtension::CompressedTextureS3tc,
     GlKnownExtension::CompressedTextureS3tcSrgb,
     GlKnownExtension::CompressedTextureBptc,
@@ -108,6 +111,12 @@ fn a_typed_route_is_legal_only_inside_its_own_family() {
     assert!(GlKnownExtension::OvrMultiview2.is_legal_for(webgl));
     assert!(GlKnownExtension::OvrMultiview2.is_legal_for(embedded));
     assert!(!GlKnownExtension::OvrMultiview2.is_legal_for(desktop));
+    assert!(GlKnownExtension::ArbPipelineStatisticsQuery.is_legal_for(desktop));
+    assert!(GlKnownExtension::ArbQueryBufferObject.is_legal_for(desktop));
+    assert!(!GlKnownExtension::ArbPipelineStatisticsQuery.is_legal_for(embedded));
+    assert!(!GlKnownExtension::ArbQueryBufferObject.is_legal_for(webgl));
+    assert!(GlKnownExtension::ExtDisjointTimerQuery.is_legal_for(embedded));
+    assert!(!GlKnownExtension::ExtDisjointTimerQuery.is_legal_for(webgl));
 }
 
 /// The three evidence states a route can pass through, in order: reporting

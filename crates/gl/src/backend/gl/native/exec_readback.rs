@@ -2,8 +2,8 @@
 //!
 //! Readback is intentionally separate from copy/upload issuance: GL may block
 //! while resolving a queryable texture or default framebuffer. Callers supply
-//! Core upper-left regions; this module converts their native rectangle and
-//! reverses GL rows exactly once before returning public row-zero bytes.
+//! Texture row zero maps to native texel y=0. Default framebuffer readback
+//! separately reverses window-system rows to Core row order.
 
 use super::super::provider::NativeGlProvider;
 use super::{
@@ -34,11 +34,12 @@ impl NativeGlProvider {
         // SAFETY: current context; the validated live buffer is bound to the
         // copy-read target used by the read route below.
         unsafe { self.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(name)) };
-        #[cfg(all(
-            feature = "native-gles-egl",
-            not(all(windows, feature = "native-gl-wgl"))
-        ))]
-        {
+        // One binary may adopt both WGL and EGL contexts. Select the native
+        // verb from this context's profile rather than Cargo feature unions.
+        if matches!(
+            self.discovery.context().profile(),
+            crate::backend::gl::api::GlFamilyProfile::Embedded { .. }
+        ) {
             let length = i32::try_from(source.size)
                 .map_err(|_| Self::validation(OP, "read size exceeds GLsizeiptr"))?;
             // SAFETY: the buffer and range were validated above and are bound
@@ -67,12 +68,7 @@ impl NativeGlProvider {
                     message: "GLES buffer read mapping reported corrupted data".into(),
                 });
             }
-        }
-        #[cfg(any(
-            not(feature = "native-gles-egl"),
-            all(windows, feature = "native-gl-wgl")
-        ))]
-        {
+        } else {
             // SAFETY: current-context contract; the exact byte slice was validated.
             unsafe {
                 self.gl
@@ -140,8 +136,7 @@ impl NativeGlProvider {
             };
             if outcome.is_none() {
                 let saved = self.pixel_store;
-                // `place_rows` below reverses these lower-left GL rows into
-                // the public upper-left row-zero layout.
+                // Texture storage and the public row order both begin at y=0.
                 self.apply_pack(layout);
                 let mut body_bytes = vec![0u8; body_len];
                 self.gl.read_pixels(
@@ -250,6 +245,7 @@ impl NativeGlProvider {
             },
             &native_rows,
             &mut bytes,
+            true,
         );
         Ok(GlReadback { layout, bytes })
     }

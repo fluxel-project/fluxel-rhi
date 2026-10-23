@@ -68,6 +68,10 @@ const fn blend_factor(factor: GlBlendFactor) -> u32 {
         GlBlendFactor::Constant => Gl::CONSTANT_COLOR,
         GlBlendFactor::OneMinusConstant => Gl::ONE_MINUS_CONSTANT_COLOR,
         GlBlendFactor::SrcAlphaSaturated => Gl::SRC_ALPHA_SATURATE,
+        GlBlendFactor::Src1 => 0x88F9,
+        GlBlendFactor::OneMinusSrc1 => 0x88FA,
+        GlBlendFactor::Src1Alpha => 0x8589,
+        GlBlendFactor::OneMinusSrc1Alpha => 0x88FB,
     }
 }
 
@@ -171,6 +175,27 @@ impl GlRasterCommandApi for WebGl2BrowserDiscovery {
         self.driver_error(OP)
     }
 
+    fn set_blend_constant(&mut self, value: [f32; 4]) -> Result<(), GlError> {
+        const OP: &str = "set-blend-constant";
+        if self.pass.is_none() {
+            return Err(Self::validation(OP, "no active render pass"));
+        }
+        self.raw.blend_color(value[0], value[1], value[2], value[3]);
+        self.driver_error(OP)
+    }
+
+    fn set_stencil_reference(&mut self, value: u32) -> Result<(), GlError> {
+        const OP: &str = "set-stencil-reference";
+        let state = self
+            .raster
+            .as_ref()
+            .and_then(|r| r.depth_stencil)
+            .ok_or_else(|| Self::validation(OP, "no depth stencil pipeline"))?;
+        self.apply_stencil_face(Gl::FRONT, &state.stencil_front, value);
+        self.apply_stencil_face(Gl::BACK, &state.stencil_back, value);
+        self.driver_error(OP)
+    }
+
     fn set_viewport(&mut self, viewport: GlViewport) -> Result<(), GlError> {
         const OP: &str = "set-viewport";
         let height = self
@@ -222,8 +247,7 @@ impl GlRasterCommandApi for WebGl2BrowserDiscovery {
 }
 
 impl WebGl2BrowserDiscovery {
-    /// Converts a public upper-left rectangle to WebGL's lower-left viewport
-    /// coordinates against the active pass's actual framebuffer height.
+    /// Validates a Core rectangle in the shared texture-row coordinate system.
     fn native_rect(
         &self,
         op: &'static str,
@@ -249,8 +273,7 @@ impl WebGl2BrowserDiscovery {
                 "rectangle lies outside the active pass",
             ));
         }
-        let native_y = framebuffer_height - bottom;
-        Ok((x as i32, native_y as i32, width as i32, height as i32))
+        Ok((x as i32, y as i32, width as i32, height as i32))
     }
 
     /// Applies exactly the canonical leaves selected by `RasterPipelineDiff`.
@@ -287,6 +310,8 @@ impl WebGl2BrowserDiscovery {
             self.raw.use_program(Some(&program_raw));
         }
         if diff.raster {
+            super::rasterization::apply(&self.raw, pipeline.state.rasterization)
+                .map_err(|reason| Self::validation(OP, reason))?;
             self.apply_raster_block(&pipeline.state);
         }
         if diff.depth_stencil {
@@ -305,6 +330,7 @@ impl WebGl2BrowserDiscovery {
         self.raster = Some(super::objects::ActiveRaster {
             program: pipeline.program,
             topology: pipeline.state.topology,
+            depth_stencil: pipeline.state.depth_stencil,
         });
         Ok(())
     }
@@ -403,9 +429,8 @@ impl WebGl2BrowserDiscovery {
             .as_ref()
             .expect("raster state is only installed inside an active pass");
         let viewport = &state.viewport;
-        // Validation above proved this rectangle lies in the public
-        // upper-left framebuffer. WebGL's viewport origin is lower-left.
-        let viewport_y = pass.height - (viewport.y + viewport.height);
+        // Core and offscreen GL texture rows share the same numeric Y.
+        let viewport_y = viewport.y;
         self.raw.viewport(
             viewport.x as i32,
             viewport_y as i32,
@@ -418,7 +443,7 @@ impl WebGl2BrowserDiscovery {
         );
         match state.scissor {
             Some(scissor) => {
-                let scissor_y = pass.height - (scissor.y + scissor.height);
+                let scissor_y = scissor.y;
                 self.raw.enable(Gl::SCISSOR_TEST);
                 self.raw.scissor(
                     scissor.x as i32,
@@ -457,6 +482,7 @@ impl WebGl2BrowserDiscovery {
                 self.raw.disable(Gl::DEPTH_TEST);
                 self.raw.disable(Gl::STENCIL_TEST);
                 self.raw.disable(Gl::POLYGON_OFFSET_FILL);
+                super::rasterization::line_offset(&self.raw, false);
                 Ok(())
             }
         }
@@ -467,27 +493,32 @@ impl WebGl2BrowserDiscovery {
         op: &'static str,
         state: &GlDepthStencilState,
     ) -> Result<(), GlError> {
+        let clamp = f32::from_bits(state.depth_bias[2]);
+        let command = if clamp != 0.0 {
+            Some(
+                super::polygon_offset::acquire(&self.raw)
+                    .ok_or_else(|| Self::validation(op, "EXT_polygon_offset_clamp unavailable"))?,
+            )
+        } else {
+            None
+        };
         self.raw.enable(Gl::DEPTH_TEST);
         self.raw.depth_mask(state.depth_write_enabled);
         self.raw.depth_func(compare_function(state.depth_compare));
         // Depth bias travels as exact bits: [slope factor, units, clamp].
-        // WebGL2 exposes no polygon-offset clamp, so a nonzero clamp rejects.
         let (factor, units, clamp) = (
             f32::from_bits(state.depth_bias[0]),
             f32::from_bits(state.depth_bias[1]),
             f32::from_bits(state.depth_bias[2]),
         );
-        if clamp != 0.0 {
-            return Err(Self::validation(
-                op,
-                "depth-bias clamp has no WebGL2 expression",
-            ));
-        }
         if factor == 0.0 && units == 0.0 {
             self.raw.disable(Gl::POLYGON_OFFSET_FILL);
+            super::rasterization::line_offset(&self.raw, false);
         } else {
             self.raw.enable(Gl::POLYGON_OFFSET_FILL);
-            self.raw.polygon_offset(factor, units);
+            super::rasterization::line_offset(&self.raw, true);
+            super::polygon_offset::apply(&self.raw, command.as_ref(), factor, units, clamp)
+                .map_err(|_| Self::validation(op, "polygonOffsetClampEXT failed"))?;
         }
         self.raw.enable(Gl::STENCIL_TEST);
         self.apply_stencil_face(Gl::FRONT, &state.stencil_front, state.stencil_reference);
@@ -517,10 +548,7 @@ impl WebGl2BrowserDiscovery {
         state: &GlRasterState,
     ) -> Result<(), GlError> {
         let Some(first) = state.color_targets.first() else {
-            return Err(Self::validation(
-                op,
-                "raster state declares no color target for the active pass",
-            ));
+            return Ok(());
         };
         // Independent per-attachment blend/write-mask is not expressible in
         // core WebGL2; refuse to collapse differing declarations silently.
@@ -529,10 +557,15 @@ impl WebGl2BrowserDiscovery {
             .iter()
             .any(|target| target.write_mask != first.write_mask || target.blend != first.blend)
         {
-            return Err(Self::validation(
-                op,
-                "independent per-attachment blend/write-mask is unavailable on WebGL2",
-            ));
+            super::indexed_blend::apply(&self.raw, &state.color_targets)
+                .map_err(|reason| Self::validation(op, reason))?;
+            self.raw.blend_color(
+                f32::from_bits(state.blend_constant[0]),
+                f32::from_bits(state.blend_constant[1]),
+                f32::from_bits(state.blend_constant[2]),
+                f32::from_bits(state.blend_constant[3]),
+            );
+            return Ok(());
         }
         self.raw.color_mask(
             first.write_mask & 0b0001 != 0,
@@ -572,7 +605,7 @@ impl WebGl2BrowserDiscovery {
     ) -> Result<(), GlError> {
         // WebGL2 multisampling is framebuffer state; only coverage knobs are
         // pipeline state. A partial mask has no typed WebGL2 command.
-        if state.multisample.sample_mask != u32::MAX {
+        if state.multisample.sample_mask != u64::MAX {
             return Err(Self::validation(
                 op,
                 "explicit sample masks have no typed WebGL2 command",

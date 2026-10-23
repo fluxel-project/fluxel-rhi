@@ -8,6 +8,18 @@ use super::super::provider::{NativeGlProvider, QueryTarget};
 
 const GLES_ANY_SAMPLES_PASSED: u32 = 0x8C2F;
 
+/// The seven counters whose stages can be produced by the current RHI.
+/// Geometry and tessellation are not exposed and their result fields are zero.
+pub(crate) const STATISTICS_TARGETS: [(u32, usize); 7] = [
+    (0x82EE, 0),
+    (0x82EF, 1),
+    (0x82F0, 2),
+    (0x82F6, 5),
+    (0x82F7, 6),
+    (0x82F4, 7),
+    (0x82F5, 10),
+];
+
 fn occlusion_query_target(provider: &NativeGlProvider) -> u32 {
     if matches!(
         provider.discovery().context().profile(),
@@ -40,7 +52,10 @@ impl GlQueryObjectsApi for NativeGlProvider {
             super::super::provider::NativeQuery {
                 generation: id.generation,
                 raw,
+                segments: Vec::new(),
+                invalidated: false,
                 target: None,
+                disjoint: false,
             },
         );
         Ok(id)
@@ -59,7 +74,12 @@ impl GlQueryObjectsApi for NativeGlProvider {
             self.active_query = None;
         }
         // SAFETY: current-context contract; liveness was checked first.
-        unsafe { self.gl.delete_query(entry.raw) };
+        unsafe {
+            self.gl.delete_query(entry.raw);
+            for segment in entry.segments {
+                self.gl.delete_query(segment);
+            }
+        };
         self.driver_error(OP)
     }
 
@@ -68,8 +88,16 @@ impl GlQueryObjectsApi for NativeGlProvider {
         const OP: &str = "query-result";
         self.assert_ready(OP)?;
         self.query(OP, query)?;
-        let (raw, target, active) = match self.queries.get(&query) {
-            Some(entry) => (entry.raw, entry.target, self.active_query == Some(query)),
+        if self.query(OP, query)?.invalidated {
+            return Ok(GlQueryResult::Unknown);
+        }
+        let (raw, segments, target, active) = match self.queries.get(&query) {
+            Some(entry) => (
+                entry.raw,
+                entry.segments.clone(),
+                entry.target,
+                self.active_query == Some(query),
+            ),
             None => return Err(Self::validation(OP, "query disappeared")),
         };
         if target.is_none() {
@@ -91,6 +119,29 @@ impl GlQueryObjectsApi for NativeGlProvider {
         if available != 1 {
             return Ok(GlQueryResult::Unknown);
         }
+        for segment in &segments {
+            // SAFETY: segments belong to the live inactive logical query.
+            let available = unsafe {
+                self.gl
+                    .get_query_parameter_u32(*segment, glow::QUERY_RESULT_AVAILABLE)
+            };
+            if available == 0 {
+                return Ok(GlQueryResult::Pending);
+            }
+            if available != 1 {
+                return Ok(GlQueryResult::Unknown);
+            }
+        }
+        if matches!(
+            target,
+            Some(QueryTarget::Timestamp | QueryTarget::TimeElapsed)
+        ) && self.gles_timer.is_some()
+        {
+            self.observe_timer_disjoint(OP)?;
+            if self.queries.get(&query).is_some_and(|entry| entry.disjoint) {
+                return Ok(GlQueryResult::Disjoint);
+            }
+        }
         // SAFETY: the same live, inactive query was checked for availability
         // immediately above on this provider's current context. Occlusion
         // samples use the portable 32-bit GL query result; only timer domains
@@ -98,15 +149,285 @@ impl GlQueryObjectsApi for NativeGlProvider {
         let value = unsafe {
             if target == Some(QueryTarget::SamplesPassed) {
                 u64::from(self.gl.get_query_parameter_u32(raw, glow::QUERY_RESULT))
+            } else if let Some(timer) = &self.gles_timer {
+                let mut result = 0;
+                (timer.query_result)(raw.0.get(), glow::QUERY_RESULT, &mut result);
+                result
             } else {
                 self.gl.get_query_parameter_u64(raw, glow::QUERY_RESULT)
             }
+        };
+        let value = if target == Some(QueryTarget::SamplesPassed) {
+            segments.into_iter().fold(value, |value, segment| {
+                // SAFETY: all segments were confirmed available above.
+                value
+                    | u64::from(unsafe {
+                        self.gl.get_query_parameter_u32(segment, glow::QUERY_RESULT)
+                    })
+            })
+        } else {
+            value
         };
         Ok(GlQueryResult::Available(value))
     }
 }
 
 impl NativeGlProvider {
+    pub(crate) fn invalidate_active_occlusion(&mut self) {
+        if let Some(id) = self.active_query {
+            if let Some(entry) = self.queries.get_mut(&id) {
+                if entry.target == Some(QueryTarget::SamplesPassed) {
+                    entry.invalidated = true;
+                }
+            }
+        }
+    }
+    /// End the current GLES occlusion segment before internal rendering.
+    pub(crate) fn suspend_occlusion_for_internal_draw(
+        &mut self,
+    ) -> Result<Option<glow::NativeQuery>, GlError> {
+        use glow::HasContext as _;
+        const OP: &str = "suspend occlusion for internal draw";
+        let Some(id) = self.active_query else {
+            return Ok(None);
+        };
+        if self.query(OP, id)?.target != Some(QueryTarget::SamplesPassed) {
+            return Ok(None);
+        }
+        // SAFETY: this provider owns the current context and active query.
+        let next = unsafe { self.gl.create_query() }.map_err(|message| GlError::Driver {
+            operation: OP,
+            message,
+        })?;
+        unsafe { self.gl.end_query(occlusion_query_target(self)) };
+        if let Err(error) = self.driver_error(OP) {
+            self.active_query = None;
+            if let Some(entry) = self.queries.get_mut(&id) {
+                entry.target = None;
+            }
+            unsafe { self.gl.delete_query(next) };
+            return Err(error);
+        }
+        Ok(Some(next))
+    }
+
+    /// Resume the same logical measurement using a fresh native query.
+    pub(crate) fn resume_occlusion_after_internal_draw(
+        &mut self,
+        next: Option<glow::NativeQuery>,
+    ) -> Result<(), GlError> {
+        use glow::HasContext as _;
+        const OP: &str = "resume occlusion after internal draw";
+        let Some(next) = next else {
+            return Ok(());
+        };
+        let Some(id) = self.active_query else {
+            unsafe { self.gl.delete_query(next) };
+            return Err(Self::validation(OP, "logical query disappeared"));
+        };
+        // SAFETY: the previous segment ended and this fresh query belongs to the current context.
+        unsafe { self.gl.begin_query(occlusion_query_target(self), next) };
+        if let Err(error) = self.driver_error(OP) {
+            self.active_query = None;
+            if let Some(entry) = self.queries.get_mut(&id) {
+                entry.target = None;
+            }
+            unsafe { self.gl.delete_query(next) };
+            return Err(error);
+        }
+        self.queries
+            .get_mut(&id)
+            .ok_or_else(|| Self::validation(OP, "logical query disappeared"))?
+            .segments
+            .push(next);
+        Ok(())
+    }
+
+    pub(crate) fn gles_timestamp_bits(&self) -> Option<u32> {
+        self.gles_timer.as_ref().map(|timer| timer.bits)
+    }
+
+    fn observe_timer_disjoint(&mut self, operation: &'static str) -> Result<(), GlError> {
+        use glow::HasContext as _;
+        // SAFETY: GPU_DISJOINT_EXT is legal only after the extension and its
+        // entry points were proved for this current context.
+        let disjoint = unsafe { self.gl.get_parameter_i32(0x8FBB) };
+        self.driver_error(operation)?;
+        if disjoint != 0 {
+            for entry in self.queries.values_mut() {
+                if matches!(
+                    entry.target,
+                    Some(QueryTarget::Timestamp | QueryTarget::TimeElapsed)
+                ) {
+                    entry.disjoint = true;
+                }
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn supports_pipeline_statistics(&self) -> bool {
+        use crate::backend::gl::api::GlFamilyProfile;
+        use glow::HasContext as _;
+        if !matches!(
+            self.discovery.context().profile(),
+            GlFamilyProfile::Desktop { .. }
+        ) || !self
+            .discovery
+            .extensions()
+            .is_acquired(crate::backend::gl::api::GlKnownExtension::ArbPipelineStatisticsQuery)
+        {
+            return false;
+        }
+        let Some(get_query_iv) = self.get_query_iv else {
+            return false;
+        };
+        for (target, _) in STATISTICS_TARGETS {
+            let mut bits = 0;
+            // SAFETY: loader and current context share the same owner; the
+            // extension proves each target and `bits` is writable.
+            unsafe { get_query_iv(target, glow::QUERY_COUNTER_BITS, &mut bits) };
+            // SAFETY: the provider owns the current context.
+            if unsafe { self.gl.get_error() } != glow::NO_ERROR || bits <= 0 {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub(crate) fn begin_pipeline_statistics(&mut self, queries: &[QueryId]) -> Result<(), GlError> {
+        use glow::HasContext as _;
+        const OP: &str = "begin-pipeline-statistics";
+        self.assert_ready(OP)?;
+        if queries.len() != STATISTICS_TARGETS.len()
+            || !self.active_statistics.is_empty()
+            || !self.supports_pipeline_statistics()
+        {
+            return Err(Self::validation(
+                OP,
+                "invalid or unsupported statistics query",
+            ));
+        }
+        let raw = queries
+            .iter()
+            .map(|query| self.query(OP, *query).map(|entry| entry.raw))
+            .collect::<Result<Vec<_>, _>>()?;
+        for ((target, _), (query, raw)) in STATISTICS_TARGETS
+            .into_iter()
+            .zip(queries.iter().copied().zip(raw))
+        {
+            // SAFETY: every query is live and each target is distinct and supported.
+            unsafe { self.gl.begin_query(target, raw) };
+            self.queries.get_mut(&query).unwrap().target = Some(QueryTarget::Statistics(target));
+            self.active_statistics.push((target, query));
+            self.driver_error(OP)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn end_pipeline_statistics(&mut self) -> Result<(), GlError> {
+        use glow::HasContext as _;
+        const OP: &str = "end-pipeline-statistics";
+        self.assert_ready(OP)?;
+        if self.active_statistics.len() != STATISTICS_TARGETS.len() {
+            return Err(Self::validation(OP, "no statistics query active"));
+        }
+        while let Some((target, _)) = self.active_statistics.pop() {
+            // SAFETY: each target was started on this current context.
+            unsafe { self.gl.end_query(target) };
+            self.driver_error(OP)?;
+        }
+        Ok(())
+    }
+
+    /// Close every target already begun when a command step aborts midway.
+    pub(crate) fn abort_pipeline_statistics(&mut self) -> Result<(), GlError> {
+        use glow::HasContext as _;
+        const OP: &str = "abort-pipeline-statistics";
+        self.assert_ready(OP)?;
+        let mut first_error = None;
+        for (target, _) in std::mem::take(&mut self.active_statistics) {
+            // SAFETY: these targets were begun by this provider on its current context.
+            unsafe { self.gl.end_query(target) };
+            if let Err(error) = self.driver_error(OP) {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+        if let Some(error) = first_error {
+            Err(error)
+        } else {
+            Ok(())
+        }
+    }
+    /// Writes ordered query results directly to a GPU buffer when the desktop
+    /// query-buffer contract is present. Returns false without mutation on
+    /// profiles that need the portable CPU fallback.
+    pub(crate) fn resolve_query_buffer(
+        &mut self,
+        queries: &[QueryId],
+        destination: crate::backend::gl::api::GlBufferRange,
+    ) -> Result<bool, GlError> {
+        use crate::backend::gl::api::{GlBufferUsage, GlFamilyProfile};
+        use glow::HasContext as _;
+        const OP: &str = "resolve-query-buffer";
+        self.assert_ready(OP)?;
+        let supported = match self.discovery.context().profile() {
+            GlFamilyProfile::Desktop { major, minor } => {
+                major > 4
+                    || (major == 4 && minor >= 4)
+                    || self.discovery.extensions().is_acquired(
+                        crate::backend::gl::api::GlKnownExtension::ArbQueryBufferObject,
+                    )
+            }
+            _ => false,
+        };
+        if !supported {
+            return Ok(false);
+        }
+        let (buffer, desc) = self.buffer(OP, destination.buffer)?;
+        destination
+            .validate_for(desc)
+            .map_err(|_| Self::validation(OP, "invalid destination range"))?;
+        if !desc.usage.contains(GlBufferUsage::COPY_DESTINATION)
+            || destination.size != queries.len() as u64 * 8
+        {
+            return Err(Self::validation(OP, "invalid destination usage or size"));
+        }
+        let mut raw = Vec::with_capacity(queries.len());
+        for query in queries {
+            let entry = self.query(OP, *query)?;
+            if self.active_query == Some(*query) || entry.target.is_none() {
+                return Err(Self::validation(OP, "query is active or unmeasured"));
+            }
+            raw.push(entry.raw);
+        }
+        let base = usize::try_from(destination.offset)
+            .map_err(|_| Self::validation(OP, "offset exceeds address size"))?;
+        // SAFETY: the desktop query-buffer capability and every live object,
+        // result offset, and destination range were validated above. While a
+        // query buffer is bound, GL interprets the pointer argument as an
+        // offset, and executes each write in command order on the GPU.
+        unsafe {
+            let prior = self.gl.get_parameter_i32(glow::QUERY_BUFFER_BINDING) as u32;
+            self.gl.bind_buffer(glow::QUERY_BUFFER, Some(buffer));
+            for (index, query) in raw.into_iter().enumerate() {
+                self.gl.get_query_parameter_u64_with_offset(
+                    query,
+                    glow::QUERY_RESULT,
+                    base + index * 8,
+                );
+            }
+            let result = self.driver_error(OP);
+            self.gl.bind_buffer(
+                glow::QUERY_BUFFER,
+                std::num::NonZeroU32::new(prior).map(glow::NativeBuffer),
+            );
+            result?;
+        }
+        Ok(true)
+    }
+
     /// Reads one completed query result through GL's blocking `QUERY_RESULT`
     /// route. This is used only by the portable query-resolve command: its
     /// completion is therefore honest even on GL profiles without query-buffer
@@ -115,7 +436,10 @@ impl NativeGlProvider {
         use glow::HasContext as _;
         const OP: &str = "resolve-query-result";
         self.assert_ready(OP)?;
-        let entry = self.query(OP, query)?;
+        let raw = self.query(OP, query)?.raw;
+        if self.query(OP, query)?.invalidated {
+            return Err(Self::validation(OP, "query measurement is invalid"));
+        }
         if self.active_query == Some(query) {
             return Err(Self::validation(OP, "cannot resolve an active query"));
         }
@@ -128,17 +452,37 @@ impl NativeGlProvider {
         // context. QUERY_RESULT blocks until the GPU has made it available.
         // Occlusion is specified as an unsigned integer result in core GL and
         // GLES; widening it here supplies Core's u64 resolve layout.
-        Ok(unsafe {
+        let mut value = unsafe {
             if target == QueryTarget::SamplesPassed {
-                u64::from(
-                    self.gl
-                        .get_query_parameter_u32(entry.raw, glow::QUERY_RESULT),
-                )
+                u64::from(self.gl.get_query_parameter_u32(raw, glow::QUERY_RESULT))
+            } else if target == QueryTarget::Timestamp && self.gles_timer.is_some() {
+                let mut result = 0;
+                (self.gles_timer.as_ref().unwrap().query_result)(
+                    raw.0.get(),
+                    glow::QUERY_RESULT,
+                    &mut result,
+                );
+                result
             } else {
-                self.gl
-                    .get_query_parameter_u64(entry.raw, glow::QUERY_RESULT)
+                self.gl.get_query_parameter_u64(raw, glow::QUERY_RESULT)
             }
-        })
+        };
+        if target == QueryTarget::SamplesPassed {
+            for segment in &self.query(OP, query)?.segments {
+                // SAFETY: each segment is a live, ended occlusion query.
+                value |= u64::from(unsafe {
+                    self.gl
+                        .get_query_parameter_u32(*segment, glow::QUERY_RESULT)
+                });
+            }
+        }
+        if target == QueryTarget::Timestamp && self.gles_timer.is_some() {
+            self.observe_timer_disjoint(OP)?;
+            if self.queries.get(&query).is_some_and(|entry| entry.disjoint) {
+                return Ok(u64::MAX);
+            }
+        }
+        Ok(value)
     }
 }
 
@@ -150,6 +494,14 @@ impl GlOcclusionQueryApi for NativeGlProvider {
         self.query(OP, query)?;
         if self.active_query.is_some() {
             return Err(Self::validation(OP, "another query is already active"));
+        }
+        let old_segments = std::mem::take(&mut self.queries.get_mut(&query).unwrap().segments);
+        let entry = self.queries.get_mut(&query).unwrap();
+        entry.invalidated = false;
+        entry.target = None;
+        // SAFETY: the logical query is idle; old completed measurements are no longer observable.
+        for segment in old_segments {
+            unsafe { self.gl.delete_query(segment) };
         }
         let raw = match self.queries.get(&query) {
             Some(entry) => entry.raw,
@@ -194,7 +546,20 @@ impl GlElapsedQueryApi for NativeGlProvider {
         const OP: &str = "begin-elapsed-query";
         self.assert_ready(OP)?;
         self.require_timer_capability(OP)?;
+        if self
+            .gles_timer
+            .as_ref()
+            .is_some_and(|timer| timer.elapsed_bits == 0)
+        {
+            return Err(GlError::Unsupported {
+                operation: OP,
+                reason: "elapsed timer counter has zero bits",
+            });
+        }
         self.query(OP, query)?;
+        if self.gles_timer.is_some() {
+            self.observe_timer_disjoint(OP)?;
+        }
         if self.active_query.is_some() {
             return Err(Self::validation(OP, "another query is already active"));
         }
@@ -208,6 +573,7 @@ impl GlElapsedQueryApi for NativeGlProvider {
         self.driver_error(OP)?;
         if let Some(entry) = self.queries.get_mut(&query) {
             entry.target = Some(QueryTarget::TimeElapsed);
+            entry.disjoint = false;
         }
         self.active_query = Some(query);
         Ok(())
@@ -244,6 +610,9 @@ impl GlTimestampQueryApi for NativeGlProvider {
         self.assert_ready(OP)?;
         self.require_timer_capability(OP)?;
         self.query(OP, query)?;
+        if self.gles_timer.is_some() {
+            self.observe_timer_disjoint(OP)?;
+        }
         if self.active_query.is_some() {
             return Err(Self::validation(OP, "another query is already active"));
         }
@@ -253,10 +622,17 @@ impl GlTimestampQueryApi for NativeGlProvider {
         };
         // SAFETY: current-context contract; a timestamp write never becomes an
         // active begin/end pair and the counter width was probed.
-        unsafe { self.gl.query_counter(raw, glow::TIMESTAMP) };
+        unsafe {
+            if let Some(timer) = &self.gles_timer {
+                (timer.query_counter)(raw.0.get(), glow::TIMESTAMP);
+            } else {
+                self.gl.query_counter(raw, glow::TIMESTAMP);
+            }
+        };
         self.driver_error(OP)?;
         if let Some(entry) = self.queries.get_mut(&query) {
             entry.target = Some(QueryTarget::Timestamp);
+            entry.disjoint = false;
         }
         Ok(())
     }
@@ -266,10 +642,11 @@ impl NativeGlProvider {
     /// Timer domains execute only on the proved `TimerQuery` capability:
     /// resolved core evidence plus a nonzero `GL_QUERY_COUNTER_BITS` answer.
     fn require_timer_capability(&self, operation: &'static str) -> Result<(), GlError> {
-        if self
-            .discovery
-            .capabilities()
-            .supports(crate::backend::gl::api::GlCapability::TimerQuery)
+        if self.gles_timer.is_some()
+            || self
+                .discovery
+                .capabilities()
+                .supports(crate::backend::gl::api::GlCapability::TimerQuery)
         {
             Ok(())
         } else {

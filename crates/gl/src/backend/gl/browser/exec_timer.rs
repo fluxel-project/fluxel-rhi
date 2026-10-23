@@ -1,9 +1,9 @@
 //! Browser timer-query execution and its disjoint-interval semantics.
 //!
-//! WebGL2 core has no timer target, so elapsed intervals and timestamps live on
-//! an optional extension object rather than on the rendering context: they are
-//! reached through raw JS, and they are only callable when the acquired object
-//! really exposes them as functions. This module owns which commands such an
+//! WebGL2 core has no timer target. Its extension supplies queryCounterEXT;
+//! begin, end, and result operations use the rendering context's core methods.
+//! The extension command is called only when the acquired object exposes it.
+//! This module owns which commands such an
 //! object must carry, how they are reflected, how a counter width is read, and
 //! how one measurement is classified. A result is never handed out from an
 //! interval the driver marked as disrupted: the flag is read immediately before
@@ -53,77 +53,37 @@ pub(super) const fn is_timer_target(target: u32) -> bool {
 #[derive(Clone)]
 pub(super) struct BrowserTimerQuery {
     object: JsValue,
-    begin_query: Function,
-    end_query: Function,
+    raw: Gl,
     query_counter: Function,
-    get_query: Function,
-    get_query_parameter: Function,
 }
 
 impl BrowserTimerQuery {
-    /// Reflects the timer commands off a reported extension object.
-    ///
-    /// Returns `None` unless every command is callable. An object that exists
-    /// but cannot issue one of the five would otherwise enable a capability
-    /// whose command path throws at the next call, so the caller records the
-    /// acquisition as failed and every timer operation stays rejected.
-    pub(super) fn acquire(object: &JsValue) -> Option<Self> {
+    /// WebGL2 places query operations on the context; only queryCounterEXT
+    /// belongs to the extension object.
+    pub(super) fn acquire(raw: &Gl, object: &JsValue) -> Option<Self> {
         Some(Self {
             object: object.clone(),
-            begin_query: command(object, "beginQueryEXT")?,
-            end_query: command(object, "endQueryEXT")?,
+            raw: raw.clone(),
             query_counter: command(object, "queryCounterEXT")?,
-            get_query: command(object, "getQueryEXT")?,
-            get_query_parameter: command(object, "getQueryParameterEXT")?,
         })
     }
-
-    /// The counter width of one timer target, if the driver answers a usable one.
     fn counter_bits(&self, target: u32) -> Option<u32> {
-        let value = self
-            .get_query
-            .call2(
-                &self.object,
-                &JsValue::from_f64(f64::from(target)),
-                &JsValue::from_f64(f64::from(QUERY_COUNTER_BITS_EXT)),
-            )
-            .ok()?;
-        counter_width(&value)
+        counter_width(&self.raw.get_query(target, QUERY_COUNTER_BITS_EXT))
     }
-
     pub(super) fn elapsed_counter_bits(&self) -> Option<u32> {
         self.counter_bits(TIME_ELAPSED_EXT)
     }
-
     pub(super) fn timestamp_counter_bits(&self) -> Option<u32> {
         self.counter_bits(TIMESTAMP_EXT)
     }
-
-    /// Starts one elapsed interval on this query.
     pub(super) fn begin_elapsed(&self, query: &WebGlQuery) -> Result<(), JsValue> {
-        self.begin_query
-            .call2(
-                &self.object,
-                &JsValue::from_f64(f64::from(TIME_ELAPSED_EXT)),
-                &JsValue::from(query.clone()),
-            )
-            .map(|_| ())
+        self.raw.begin_query(TIME_ELAPSED_EXT, query);
+        Ok(())
     }
-
-    /// Ends the elapsed interval currently recording on this context.
     pub(super) fn end_elapsed(&self) -> Result<(), JsValue> {
-        self.end_query
-            .call1(
-                &self.object,
-                &JsValue::from_f64(f64::from(TIME_ELAPSED_EXT)),
-            )
-            .map(|_| ())
+        self.raw.end_query(TIME_ELAPSED_EXT);
+        Ok(())
     }
-
-    /// Writes one timestamp into this query.
-    ///
-    /// A timestamp is a single write, so it never becomes an active begin/end
-    /// pair and never occupies the one active-query slot.
     pub(super) fn write_timestamp(&self, query: &WebGlQuery) -> Result<(), JsValue> {
         self.query_counter
             .call2(
@@ -133,51 +93,19 @@ impl BrowserTimerQuery {
             )
             .map(|_| ())
     }
-
-    /// Reads one query's availability through the extension's own accessor.
-    ///
-    /// Availability and value are both read through the extension accessors
-    /// rather than the core ones, because the core accessors describe core
-    /// targets; the elapsed value is a 64-bit nanosecond count that the core
-    /// accessor has no contract to return intact.
     fn result_available(&self, query: &WebGlQuery) -> Option<bool> {
-        self.get_query_parameter
-            .call2(
-                &self.object,
-                &JsValue::from(query.clone()),
-                &JsValue::from_f64(f64::from(QUERY_RESULT_AVAILABLE_EXT)),
-            )
-            .ok()?
+        self.raw
+            .get_query_parameter(query, QUERY_RESULT_AVAILABLE_EXT)
             .as_bool()
     }
-
     fn result_value(&self, query: &WebGlQuery) -> Option<u64> {
-        let value = self
-            .get_query_parameter
-            .call2(
-                &self.object,
-                &JsValue::from(query.clone()),
-                &JsValue::from_f64(f64::from(QUERY_RESULT_EXT)),
-            )
-            .ok()?
-            .as_f64()?;
-        super::exec_sync::measured_value(value)
+        self.raw
+            .get_query_parameter(query, QUERY_RESULT_EXT)
+            .as_f64()
+            .and_then(super::exec_sync::measured_value)
     }
-
-    /// Reads the disruption flag for the interval since it was last read.
-    ///
-    /// The flag is not stored on a query object: it is the target and the
-    /// parameter at once, and reading it clears it, which is why it is read
-    /// exactly once, immediately before the value it qualifies.
     fn disjoint(&self) -> Option<bool> {
-        self.get_query
-            .call2(
-                &self.object,
-                &JsValue::from_f64(f64::from(GPU_DISJOINT_EXT)),
-                &JsValue::from_f64(f64::from(GPU_DISJOINT_EXT)),
-            )
-            .ok()?
-            .as_bool()
+        self.raw.get_parameter(GPU_DISJOINT_EXT).ok()?.as_bool()
     }
 }
 
@@ -225,6 +153,20 @@ pub(super) fn recorded_counter_width(raw: &Gl, timer: Option<&BrowserTimerQuery>
 }
 
 impl WebGl2BrowserDiscovery {
+    fn retire_timer_disjoint(&mut self, operation: &'static str) -> Result<(), GlError> {
+        let commands = self.require_timer_commands(operation)?;
+        let disjoint = commands
+            .disjoint()
+            .ok_or_else(|| Self::validation(operation, "timer disjoint state unavailable"))?;
+        if disjoint {
+            for entry in self.queries.values_mut() {
+                if entry.target.is_some_and(is_timer_target) {
+                    entry.disjoint = true;
+                }
+            }
+        }
+        Ok(())
+    }
     /// The retained timer commands, if this context proved the whole path.
     ///
     /// The capability row and the retained commands come from the same
@@ -309,6 +251,7 @@ impl GlElapsedQueryApi for WebGl2BrowserDiscovery {
         // and the single active-query slot before the interval starts.
         self.assert_provider_ready(OP)?;
         let commands = self.require_timer_commands(OP)?;
+        self.retire_timer_disjoint(OP)?;
         let raw = self.query(OP, query)?.raw.clone();
         if self.active_query.is_some() {
             return Err(Self::validation(OP, "another query is already active"));
@@ -319,6 +262,7 @@ impl GlElapsedQueryApi for WebGl2BrowserDiscovery {
         self.driver_error(OP)?;
         if let Some(entry) = self.queries.get_mut(&query.slot) {
             entry.target = Some(TIME_ELAPSED_EXT);
+            entry.disjoint = false;
         }
         self.active_query = Some(query.slot);
         Ok(())
@@ -363,6 +307,7 @@ impl GlTimestampQueryApi for WebGl2BrowserDiscovery {
         const OP: &str = "query-timestamp";
         self.assert_provider_ready(OP)?;
         let commands = self.require_timer_commands(OP)?;
+        self.retire_timer_disjoint(OP)?;
         let raw = self.query(OP, query)?.raw.clone();
         if self.active_query.is_some() {
             return Err(Self::validation(OP, "another query is already active"));
@@ -373,6 +318,7 @@ impl GlTimestampQueryApi for WebGl2BrowserDiscovery {
         self.driver_error(OP)?;
         if let Some(entry) = self.queries.get_mut(&query.slot) {
             entry.target = Some(TIMESTAMP_EXT);
+            entry.disjoint = false;
         }
         Ok(())
     }

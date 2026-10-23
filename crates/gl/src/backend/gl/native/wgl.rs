@@ -435,6 +435,10 @@ impl super::context::NativeContextOwner for WglContextSurface {
         WglContextSurface::load_unmap_buffer(self)
     }
 
+    fn gl_proc(&self, name: &str) -> *const core::ffi::c_void {
+        support::load_wgl_symbol(name)
+    }
+
     fn swap_buffers(&mut self) -> Result<(), GlError> {
         WglContextSurface::present(self)
     }

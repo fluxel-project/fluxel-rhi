@@ -40,6 +40,7 @@ fn pipeline(provider: &mut WebGl2BrowserDiscovery, z: &str, green: bool) -> GlRa
         program,
         vertex_array,
         state: GlRasterState {
+            rasterization: Default::default(),
             topology: GlPrimitiveTopology::Triangles,
             cull_mode: GlCullMode::None,
             front_face: GlFrontFace::CounterClockwise,
@@ -58,7 +59,7 @@ fn pipeline(provider: &mut WebGl2BrowserDiscovery, z: &str, green: bool) -> GlRa
             multisample: GlMultisampleState {
                 sample_count: 1,
                 alpha_to_coverage_enabled: false,
-                sample_mask: u32::MAX,
+                sample_mask: u64::MAX,
             },
             viewport: GlViewport {
                 x: 0,
@@ -124,6 +125,7 @@ fn clear_depth_ignores_old_mask_and_restores_pipeline() {
         })
         .unwrap();
     let view = |target, format| GlTextureView {
+        aspect: crate::backend::gl::api::GlTextureAspect::All,
         target,
         format,
         mip_level: 0,
@@ -143,7 +145,7 @@ fn clear_depth_ignores_old_mask_and_restores_pipeline() {
     );
     let framebuffer = provider
         .create_framebuffer(&GlFramebufferDescriptor {
-            color_attachments: vec![color_view],
+            color_attachments: vec![Some(color_view)],
             depth_stencil_attachment: Some(depth_view),
             draw_buffers: vec![0],
         })
@@ -152,18 +154,14 @@ fn clear_depth_ignores_old_mask_and_restores_pipeline() {
     let green = pipeline(&mut provider, "0.3", true);
     let pass = |value: f32| GlRenderPassDescriptor {
         target: GlRenderTarget::Offscreen(framebuffer),
-        color_attachments: vec![GlColorAttachment {
+        render_area: None,
+        color_attachments: vec![Some(GlColorAttachment {
             view: GlPassAttachmentView::Allocated(color_view),
             resolve_target: None,
             load: GlLoadOp::Clear,
             store: GlStoreOp::Store,
-            clear: GlColorClearValue {
-                red: 0,
-                green: 0,
-                blue: 0,
-                alpha: 1f32.to_bits(),
-            },
-        }],
+            clear: GlColorClearValue::Float([0, 0, 0, 1f32.to_bits()]),
+        })],
         depth_stencil_attachment: Some(GlDepthStencilAttachment {
             view: depth_view,
             depth_load: GlLoadOp::Clear,

@@ -5,13 +5,11 @@ use super::{
 };
 #[test]
 fn clear_value_retains_float_bits() {
-    let clear = GlColorClearValue {
-        red: 1.0f32.to_bits(),
-        green: 0,
-        blue: 0,
-        alpha: 1.0f32.to_bits(),
-    };
-    assert_eq!(clear.red, 1.0f32.to_bits());
+    let clear = GlColorClearValue::Float([1.0f32.to_bits(), 0, 0, 1.0f32.to_bits()]);
+    assert_eq!(
+        clear,
+        GlColorClearValue::Float([1.0f32.to_bits(), 0, 0, 1.0f32.to_bits()])
+    );
     assert_eq!(GlLoadOp::Clear, GlLoadOp::Clear);
     assert_eq!(GlStoreOp::Discard, GlStoreOp::Discard);
 }
@@ -85,6 +83,7 @@ fn empty_view() -> super::GlTextureView {
             0,
         )),
         format: super::GlFormat::Depth32Float,
+        aspect: super::super::GlTextureAspect::All,
         mip_level: 0,
         array_layer: 0,
         layer_count: 1,
@@ -106,6 +105,7 @@ fn color_view(slot: u32, layer_count: u32) -> super::GlTextureView {
     super::GlTextureView {
         target: super::GlAttachmentTarget::Texture(super::TextureId::new(stamp(), slot, 0)),
         format: super::GlFormat::Rgba8Unorm,
+        aspect: super::super::GlTextureAspect::All,
         mip_level: 0,
         array_layer: 0,
         layer_count,
@@ -127,7 +127,7 @@ fn attachment_views_must_agree_on_their_layer_count() {
         ..empty_view()
     };
     let descriptor = GlFramebufferDescriptor {
-        color_attachments: vec![color],
+        color_attachments: vec![Some(color)],
         depth_stencil_attachment: Some(depth),
         draw_buffers: vec![],
     };
@@ -150,7 +150,7 @@ fn attachment_views_must_agree_on_their_layer_count() {
 #[test]
 fn a_view_serving_no_layer_is_not_a_view() {
     let descriptor = GlFramebufferDescriptor {
-        color_attachments: vec![color_view(0, 0)],
+        color_attachments: vec![Some(color_view(0, 0))],
         depth_stencil_attachment: None,
         draw_buffers: vec![],
     };
@@ -165,7 +165,7 @@ fn a_view_serving_no_layer_is_not_a_view() {
 #[test]
 fn multiview_view_count_is_gated_by_the_proved_limit() {
     let descriptor = GlFramebufferDescriptor {
-        color_attachments: vec![color_view(0, 2)],
+        color_attachments: vec![Some(color_view(0, 2))],
         depth_stencil_attachment: None,
         draw_buffers: vec![],
     };
@@ -176,7 +176,7 @@ fn multiview_view_count_is_gated_by_the_proved_limit() {
     assert_eq!(descriptor.validate_multiview(2), Ok(()));
 
     let three = GlFramebufferDescriptor {
-        color_attachments: vec![color_view(0, 3)],
+        color_attachments: vec![Some(color_view(0, 3))],
         ..descriptor
     };
     assert_eq!(
@@ -207,8 +207,9 @@ fn resolve_targets_are_single_layer() {
         ..view
     };
     let pass = super::GlRenderPassDescriptor {
+        render_area: None,
         target: super::GlRenderTarget::Offscreen(super::FramebufferId::new(stamp(), 0, 0)),
-        color_attachments: vec![super::GlColorAttachment {
+        color_attachments: vec![Some(super::GlColorAttachment {
             view: super::GlPassAttachmentView::Allocated(multisampled),
             resolve_target: Some(super::GlTextureView {
                 layer_count: 2,
@@ -216,17 +217,12 @@ fn resolve_targets_are_single_layer() {
             }),
             load: GlLoadOp::Load,
             store: GlStoreOp::Store,
-            clear: GlColorClearValue {
-                red: 0,
-                green: 0,
-                blue: 0,
-                alpha: 0,
-            },
-        }],
+            clear: GlColorClearValue::Float([0; 4]),
+        })],
         depth_stencil_attachment: None,
     };
     let framebuffer = GlFramebufferDescriptor {
-        color_attachments: vec![multisampled],
+        color_attachments: vec![Some(multisampled)],
         depth_stencil_attachment: None,
         draw_buffers: vec![],
     };

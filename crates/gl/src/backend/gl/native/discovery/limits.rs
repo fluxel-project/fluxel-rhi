@@ -89,10 +89,47 @@ pub(super) fn limits(
             glow_const::MAX_TEXTURE_IMAGE_UNITS,
             "GL_MAX_TEXTURE_IMAGE_UNITS",
         )?,
+        max_compute_texture_image_units: optional(
+            optional_routes.compute,
+            glow::MAX_COMPUTE_TEXTURE_IMAGE_UNITS,
+            "GL_MAX_COMPUTE_TEXTURE_IMAGE_UNITS",
+        )?,
         max_combined_texture_image_units: u(
             glow_const::MAX_COMBINED_TEXTURE_IMAGE_UNITS,
             "GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS",
         )?,
+        max_default_uniform_vectors: if matches!(profile, GlFamilyProfile::Desktop { .. }) {
+            [
+                u(0x8B4A, "GL_MAX_VERTEX_UNIFORM_COMPONENTS")? / 4,
+                u(0x8B49, "GL_MAX_FRAGMENT_UNIFORM_COMPONENTS")? / 4,
+                optional(
+                    optional_routes.compute,
+                    0x8263,
+                    "GL_MAX_COMPUTE_UNIFORM_COMPONENTS",
+                )? / 4,
+            ]
+        } else {
+            [
+                u(0x8DFB, "GL_MAX_VERTEX_UNIFORM_VECTORS")?,
+                u(0x8DFD, "GL_MAX_FRAGMENT_UNIFORM_VECTORS")?,
+                optional(
+                    optional_routes.compute,
+                    0x8263,
+                    "GL_MAX_COMPUTE_UNIFORM_COMPONENTS",
+                )? / 4,
+            ]
+        },
+        max_uniform_locations: if matches!(profile, GlFamilyProfile::Desktop { major, minor } if major > 4 || major == 4 && minor >= 3)
+        {
+            Some(
+                query
+                    .integer(0x826E)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .unwrap_or(0),
+            )
+        } else {
+            None
+        },
         max_uniform_buffer_bindings: u(
             glow_const::MAX_UNIFORM_BUFFER_BINDINGS,
             "GL_MAX_UNIFORM_BUFFER_BINDINGS",
@@ -167,6 +204,21 @@ pub(super) fn limits(
             glow_const::MAX_COMBINED_IMAGE_UNIFORMS,
             "GL_MAX_COMBINED_IMAGE_UNIFORMS",
         )?,
+        max_vertex_image_uniforms: optional(
+            optional_routes.image,
+            glow::MAX_VERTEX_IMAGE_UNIFORMS,
+            "GL_MAX_VERTEX_IMAGE_UNIFORMS",
+        )?,
+        max_fragment_image_uniforms: optional(
+            optional_routes.image,
+            glow::MAX_FRAGMENT_IMAGE_UNIFORMS,
+            "GL_MAX_FRAGMENT_IMAGE_UNIFORMS",
+        )?,
+        max_compute_image_uniforms: optional(
+            optional_routes.image && optional_routes.compute,
+            glow::MAX_COMPUTE_IMAGE_UNIFORMS,
+            "GL_MAX_COMPUTE_IMAGE_UNIFORMS",
+        )?,
         max_samples: u(glow_const::MAX_SAMPLES, "GL_MAX_SAMPLES")?,
         max_color_texture_samples: optional(
             texture_multisample,
@@ -231,17 +283,11 @@ pub(super) fn limits(
             glow_const::MAX_COMPUTE_WORK_GROUP_INVOCATIONS,
             "GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS",
         )?,
-        // No GL family exposes a portable multi-draw-indirect count limit query,
-        // so the fact is `None` here -- and this is the row that decides the
-        // domain, not a note beside it: `GlLimits::supports_multi_draw_indirect`
-        // is exactly "a queried count of at least one", so with no query to read
-        // one from, the limit half answers false on every real context and the
-        // capability cannot enable however the route is resolved. The route and
-        // the probe are false here too and independently: `GlowProbes` has no
-        // multi-draw-indirect probe because glow 0.18 does not bind the entry
-        // point, and no executor implements the verb (plan P2-15, narrowly
-        // resolved as a fixture-only domain rather than left to be discovered a
-        // fourth time).
+        // GL_ARB_indirect_parameters has no query token for a hardware draw
+        // count limit. Keep this optional device limit absent; the GPU-count
+        // command is separately enabled from its acquired desktop route and
+        // loaded entry points. At issue time, its `GLsizei` argument and the
+        // validated command-buffer range bound the submitted draw count.
         max_multi_draw_indirect_count: None,
         // The view count is only queryable on a context that acquired the
         // multiview extension; without it the fact is 0 and the multiview floor
@@ -291,8 +337,116 @@ fn optional_limit_routes(
 
 #[cfg(test)]
 mod optional_limit_route_tests {
-    use super::optional_limit_routes;
+    use super::{NativeGlQuery, ProbeReport, limits, optional_limit_routes};
     use crate::backend::gl::api::{GlExtensionSet, GlFamilyProfile};
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct Query(RefCell<Vec<u32>>);
+    impl NativeGlQuery for Query {
+        fn take_error(&self) -> bool {
+            false
+        }
+        fn string(&self, _: u32) -> Option<String> {
+            None
+        }
+        fn integer(&self, token: u32) -> Option<i64> {
+            self.0.borrow_mut().push(token);
+            Some(match token {
+                glow::MAX_VERTEX_IMAGE_UNIFORMS => 3,
+                glow::MAX_FRAGMENT_IMAGE_UNIFORMS => 5,
+                glow::MAX_COMPUTE_IMAGE_UNIFORMS => 7,
+                glow::MAX_COMPUTE_TEXTURE_IMAGE_UNITS => 13,
+                glow::MAX_COMBINED_IMAGE_UNIFORMS => 11,
+                _ => 1,
+            })
+        }
+        fn integer_pair(&self, _: u32) -> Option<[i64; 2]> {
+            Some([1, 1])
+        }
+        fn indexed_integer(&self, _: u32, _: u32) -> Option<i64> {
+            Some(1)
+        }
+        fn float(&self, _: u32) -> Option<f32> {
+            None
+        }
+        fn indexed_string(&self, _: u32, _: u32) -> Option<String> {
+            None
+        }
+        fn drawable_attachment(&self, _: u32, _: u32) -> Option<i64> {
+            None
+        }
+    }
+
+    #[test]
+    fn image_limits_query_per_stage_only_when_legal() {
+        for (profile, expected) in [
+            (
+                GlFamilyProfile::Embedded { major: 3, minor: 0 },
+                [0, 0, 0, 0],
+            ),
+            (
+                GlFamilyProfile::Embedded { major: 3, minor: 1 },
+                [3, 5, 7, 11],
+            ),
+            (
+                GlFamilyProfile::Desktop { major: 4, minor: 2 },
+                [3, 5, 0, 11],
+            ),
+            (
+                GlFamilyProfile::Desktop { major: 4, minor: 3 },
+                [3, 5, 7, 11],
+            ),
+        ] {
+            let query = Query::default();
+            let result = limits(
+                &query,
+                profile,
+                &GlExtensionSet::default(),
+                &ProbeReport::default(),
+            )
+            .unwrap();
+            assert_eq!(
+                [
+                    result.max_vertex_image_uniforms,
+                    result.max_fragment_image_uniforms,
+                    result.max_compute_image_uniforms,
+                    result.max_combined_image_units
+                ],
+                expected
+            );
+            let queries = query.0.borrow();
+            let has_compute = matches!(
+                profile,
+                GlFamilyProfile::Embedded {
+                    major: 3,
+                    minor: 1..
+                } | GlFamilyProfile::Desktop {
+                    major: 4,
+                    minor: 3..
+                }
+            );
+            assert_eq!(
+                result.max_compute_texture_image_units,
+                if has_compute { 13 } else { 0 }
+            );
+            assert_eq!(
+                queries.contains(&glow::MAX_COMPUTE_TEXTURE_IMAGE_UNITS),
+                has_compute
+            );
+            for (token, value) in [
+                glow::MAX_VERTEX_IMAGE_UNIFORMS,
+                glow::MAX_FRAGMENT_IMAGE_UNIFORMS,
+                glow::MAX_COMPUTE_IMAGE_UNIFORMS,
+                glow::MAX_COMBINED_IMAGE_UNIFORMS,
+            ]
+            .into_iter()
+            .zip(expected)
+            {
+                assert_eq!(queries.contains(&token), value != 0);
+            }
+        }
+    }
 
     #[test]
     fn gles30_has_no_es31_limit_route() {

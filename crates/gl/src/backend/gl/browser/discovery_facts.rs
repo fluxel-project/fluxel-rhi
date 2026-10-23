@@ -85,6 +85,10 @@ pub(super) fn discover_extensions(
     for known in [
         GlKnownExtension::ExtDisjointTimerQueryWebgl2,
         GlKnownExtension::ExtColorBufferFloat,
+        GlKnownExtension::ExtTextureNorm16,
+        GlKnownExtension::ExtPolygonOffsetClamp,
+        GlKnownExtension::ExtDepthClamp,
+        GlKnownExtension::WebglPolygonMode,
         GlKnownExtension::ExtFloatBlend,
         GlKnownExtension::OesTextureFloatLinear,
         GlKnownExtension::ExtTextureFilterAnisotropic,
@@ -110,6 +114,22 @@ pub(super) fn discover_extensions(
                 continue;
             }
         };
+        if known == GlKnownExtension::WebglPolygonMode {
+            if super::rasterization::polygon_mode_command(raw).is_some() {
+                extensions.acquire(known);
+            } else {
+                extensions.fail(known);
+            }
+            continue;
+        }
+        if known == GlKnownExtension::ExtPolygonOffsetClamp {
+            if super::polygon_offset::acquire(raw).is_some() {
+                extensions.acquire(known);
+            } else {
+                extensions.fail(known);
+            }
+            continue;
+        }
         if known == GlKnownExtension::WebglMultiDraw {
             // Its commands live on the object, so the object is the oracle: an
             // object that does not expose all of them fails the acquisition and
@@ -126,11 +146,10 @@ pub(super) fn discover_extensions(
             continue;
         }
         if known == GlKnownExtension::ExtDisjointTimerQueryWebgl2 {
-            // Same oracle shape as the batch domain: the timer commands are
-            // defined on the object, so a reported name without all five of them
-            // fails the acquisition and leaves every timer operation rejected
-            // (audit P1-5).
-            match BrowserTimerQuery::acquire(&object) {
+            // WebGL2 provides query operations on the context and adds
+            // queryCounterEXT on the extension object. Require that command
+            // before advertising the extension's timestamp path.
+            match BrowserTimerQuery::acquire(raw, &object) {
                 Some(timer) => {
                     extensions.acquire(known);
                     commands.timer = Some(timer);
@@ -142,7 +161,7 @@ pub(super) fn discover_extensions(
             continue;
         }
         if known == GlKnownExtension::CompressedTextureAstc {
-            // The ASTC extension object answers `supportedProfiles`; `hdr` is
+            // The ASTC extension object answers `getSupportedProfiles()`; `hdr` is
             // independent from an LDR object acquisition.  This reads the
             // exact object before publishing the private admission bit.
             commands.astc_hdr = astc_hdr_profile(&object);
@@ -153,13 +172,39 @@ pub(super) fn discover_extensions(
 }
 
 pub(super) fn astc_hdr_profile(object: &JsValue) -> bool {
-    let Ok(value) = Reflect::get(object, &JsValue::from_str("supportedProfiles")) else {
+    let Ok(method) = Reflect::get(object, &JsValue::from_str("getSupportedProfiles")) else {
+        return false;
+    };
+    let Some(method) = method.dyn_ref::<js_sys::Function>() else {
+        return false;
+    };
+    let Ok(value) = method.call0(object) else {
         return false;
     };
     Array::is_array(&value)
         && Array::from(&value)
             .iter()
             .any(|profile| profile.as_string().is_some_and(|profile| profile == "hdr"))
+}
+
+#[cfg(test)]
+mod astc_profile_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn hdr_requires_a_successful_profile_method() {
+        let object = Object::new();
+        let method = js_sys::Function::new_no_args("return ['ldr', 'hdr'];");
+        Reflect::set(&object, &JsValue::from_str("getSupportedProfiles"), &method).unwrap();
+        assert!(astc_hdr_profile(&object));
+        let method = js_sys::Function::new_no_args("return ['ldr'];");
+        Reflect::set(&object, &JsValue::from_str("getSupportedProfiles"), &method).unwrap();
+        assert!(!astc_hdr_profile(&object));
+        let method = js_sys::Function::new_no_args("throw new Error('lost context');");
+        Reflect::set(&object, &JsValue::from_str("getSupportedProfiles"), &method).unwrap();
+        assert!(!astc_hdr_profile(&object));
+    }
 }
 
 pub(super) fn acquisition_name(
@@ -242,11 +287,26 @@ pub(super) fn discover_limits(
             WebGl2RenderingContext::MAX_TEXTURE_IMAGE_UNITS,
             "MAX_TEXTURE_IMAGE_UNITS",
         )?,
+        max_compute_texture_image_units: 0,
         max_combined_texture_image_units: u32_parameter(
             raw,
             WebGl2RenderingContext::MAX_COMBINED_TEXTURE_IMAGE_UNITS,
             "MAX_COMBINED_TEXTURE_IMAGE_UNITS",
         )?,
+        max_default_uniform_vectors: [
+            u32_parameter(
+                raw,
+                WebGl2RenderingContext::MAX_VERTEX_UNIFORM_VECTORS,
+                "MAX_VERTEX_UNIFORM_VECTORS",
+            )?,
+            u32_parameter(
+                raw,
+                WebGl2RenderingContext::MAX_FRAGMENT_UNIFORM_VECTORS,
+                "MAX_FRAGMENT_UNIFORM_VECTORS",
+            )?,
+            0,
+        ],
+        max_uniform_locations: None,
         max_uniform_buffer_bindings: u32_parameter(
             raw,
             WebGl2RenderingContext::MAX_UNIFORM_BUFFER_BINDINGS,
@@ -287,6 +347,9 @@ pub(super) fn discover_limits(
         max_combined_storage_blocks: 0,
         max_image_units: 0,
         max_combined_image_units: 0,
+        max_vertex_image_uniforms: 0,
+        max_fragment_image_uniforms: 0,
+        max_compute_image_uniforms: 0,
         max_samples,
         // WebGL2 has renderbuffer multisampling but no multisample textures.
         // Do not turn MAX_SAMPLES into a texture capability.
@@ -323,7 +386,7 @@ pub(super) fn multiview_view_limit(
     raw: &WebGl2RenderingContext,
     extensions: &GlExtensionSet,
 ) -> u32 {
-    const MAX_VIEWS_OVR: u32 = 0x9632;
+    const MAX_VIEWS_OVR: u32 = 0x9631;
     if !extensions.is_acquired(GlKnownExtension::OvrMultiview2) {
         return 0;
     }

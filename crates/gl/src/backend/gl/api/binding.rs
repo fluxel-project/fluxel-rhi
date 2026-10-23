@@ -9,10 +9,14 @@ use super::{BufferId, GlError, GlFamilyApi, SamplerId, TextureId};
 /// A texture target that can hold one binding at one texture unit.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) enum GlTextureTarget {
+    D1,
     D2,
+    D2Multisample,
     Cube,
+    CubeArray,
     D3,
     D2Array,
+    D2MultisampleArray,
 }
 
 /// Binding failures which must be rejected before any driver or browser call.

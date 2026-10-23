@@ -10,6 +10,7 @@ use fluxel_rhi_core::api::{
 };
 
 mod binding;
+mod view;
 pub(crate) use binding::lower_program_bindings;
 
 use super::{Gl, GlDevice, spi::native_error, types::*};
@@ -28,7 +29,49 @@ impl ResourceBackend for Gl {
 
     fn texture_support(device: &GlDevice, desc: &TextureDesc) -> Support<TextureSupport> {
         match crate::backend::gl::translate::lower_texture_desc(desc) {
-            Ok(lowered) => texture_support(device, lowered),
+            Ok(lowered) => {
+                let mut support = texture_support(device, lowered);
+                if let Support::Supported(facts) = &mut support {
+                    facts.compatible_view_formats.push(desc.format);
+                    #[cfg(any(
+                        all(windows, feature = "native-gl-wgl"),
+                        feature = "native-gles-egl"
+                    ))]
+                    for &candidate in &desc.view_formats {
+                        if facts.compatible_view_formats.contains(&candidate) {
+                            continue;
+                        }
+                        let Ok(format) =
+                            crate::backend::gl::translate::lower_texture_format(candidate)
+                        else {
+                            continue;
+                        };
+                        let supported = device
+                            .0
+                            .with_native("query texture view support", |provider| {
+                                use crate::backend::gl::api::GlFamilyApi as _;
+                                let mut candidate_desc = lowered;
+                                candidate_desc.format = format;
+                                Ok(
+                                    provider.supports_texture_view_format(lowered.format, format)
+                                        && matches!(
+                                            texture_support_from_discovery(
+                                                provider.discovery(),
+                                                candidate_desc,
+                                                false
+                                            ),
+                                            Support::Supported(_)
+                                        ),
+                                )
+                            })
+                            .unwrap_or(false);
+                        if supported {
+                            facts.compatible_view_formats.push(candidate);
+                        }
+                    }
+                }
+                support
+            }
             Err(Error::Unsupported(reason)) => Support::Unsupported(reason),
             Err(_) => Support::Unsupported("invalid GL texture description"),
         }
@@ -72,6 +115,7 @@ impl ResourceBackend for Gl {
     }
 
     fn create_texture(device: &GlDevice, desc: &TextureDesc) -> Result<GlTexture> {
+        let view_formats = desc.view_formats.clone();
         let desc = crate::backend::gl::translate::lower_texture_desc(desc)?;
         #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
         {
@@ -87,6 +131,7 @@ impl ResourceBackend for Gl {
                 state: device.0.clone(),
                 id,
                 desc,
+                view_formats,
             }));
         }
         #[cfg(not(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl")))]
@@ -97,99 +142,53 @@ impl ResourceBackend for Gl {
                 return Ok(GlTexture::from_inner(GlTextureInner {
                     state: device.0.clone(),
                     desc,
+                    view_formats,
                     browser,
                 }));
             }
             #[cfg(not(all(target_arch = "wasm32", feature = "webgl2")))]
             {
-                let _ = (device, desc);
+                let _ = (device, desc, view_formats);
                 Err(Error::Unsupported("GL platform context"))
             }
         }
     }
 
     fn create_view(
-        _: &GlDevice,
+        device: &GlDevice,
         texture: &GlTexture,
         desc: &api::TextureViewDesc,
     ) -> Result<GlTextureView> {
-        let allocated = texture.desc;
-        let (layers, aspects) = match allocated.dimension {
-            crate::backend::gl::api::GlTextureDimension::D2 => (
-                1,
-                if allocated.format == crate::backend::gl::api::GlFormat::Depth32Float {
-                    api::TextureAspects::DEPTH
-                } else {
-                    api::TextureAspects::COLOR
-                },
-            ),
-            crate::backend::gl::api::GlTextureDimension::D2Array => {
-                (allocated.extent.depth_or_layers, api::TextureAspects::COLOR)
-            }
-            _ => return Err(Error::Unsupported("GL texture view dimension")),
-        };
-        let dimension_matches = matches!(
-            (allocated.dimension, desc.dimension),
-            (
-                crate::backend::gl::api::GlTextureDimension::D2,
-                api::TextureViewDimension::D2
-            ) | (
-                crate::backend::gl::api::GlTextureDimension::D2Array,
-                api::TextureViewDimension::D2Array
-            )
-        );
-        if !dimension_matches || desc.aspects != aspects {
-            return Err(Error::Unsupported("GL texture view dimension or aspect"));
-        }
-        if crate::backend::gl::translate::lower_texture_format(desc.format)? != allocated.format {
-            return Err(Error::Unsupported(
-                "GL texture view format reinterpretation",
-            ));
-        }
-        // A sampled GL texture exposes the allocation's mip range and array
-        // layers as one binding. Narrow subranges would require a separate GL
-        // texture-view object; do not silently sample outside the Core view.
-        let full_sampling_view =
-            desc.mips == (0..allocated.mip_level_count) && desc.layers == (0..layers);
-        let single_attachment_view = desc.mips == (0..1)
-            && desc.layers == (0..1)
-            && allocated.dimension == crate::backend::gl::api::GlTextureDimension::D2;
-        if !full_sampling_view && !single_attachment_view {
-            return Err(Error::Unsupported("GL texture view subrange"));
-        }
-        let extent = allocated
-            .mip_extent(desc.mips.start)
-            .ok_or(Error::InvalidRange)?;
-        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
-        {
-            return Ok(GlTextureView {
-                texture: texture.clone(),
-                native: crate::backend::gl::api::GlTextureView {
-                    target: crate::backend::gl::api::GlAttachmentTarget::Texture(texture.id),
-                    format: allocated.format,
-                    mip_level: desc.mips.start,
-                    array_layer: desc.layers.start,
-                    layer_count: desc.layers.end - desc.layers.start,
-                    width: extent.width,
-                    height: extent.height,
-                    sample_count: allocated.sample_count,
-                },
-            });
-        }
-        #[cfg(not(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl")))]
-        Ok(GlTextureView {
-            texture: texture.clone(),
-        })
+        view::create_view(device, texture, desc)
     }
 
     fn create_sampler(device: &GlDevice, desc: &api::SamplerDesc) -> Result<GlSampler> {
-        if desc.border.is_some() {
-            return Err(Error::Unsupported("GL sampler border color"));
+        let border = desc.address.contains(&api::AddressMode::ClampToBorder);
+        let zero = desc.address.contains(&api::AddressMode::ClampToZero);
+        if border != desc.border.is_some() {
+            return Err(Error::InvalidState);
         }
+        if border
+            && zero
+            && !matches!(
+                desc.border,
+                Some(api::BorderColor::TransparentBlack | api::BorderColor::ZeroInteger)
+            )
+        {
+            return Err(Error::Unsupported(
+                "GL sampler has incompatible border colors",
+            ));
+        }
+        let address = |mode| match mode {
+            api::AddressMode::ClampToBorder | api::AddressMode::ClampToZero => {
+                Ok(crate::backend::gl::api::GlAddressMode::ClampToEdge)
+            }
+            mode => lower_address(mode),
+        };
         let native = crate::backend::gl::api::GlSamplerDesc {
-            address_mode_u: lower_address(desc.address[0])?,
-            address_mode_v: lower_address(desc.address[1])?,
-            address_mode_w: lower_address(desc.address[2])?,
+            address_mode_u: address(desc.address[0])?,
+            address_mode_v: address(desc.address[1])?,
+            address_mode_w: address(desc.address[2])?,
             mag_filter: lower_filter(desc.mag_filter),
             min_filter: lower_filter(desc.min_filter),
             mipmap_filter: lower_mip_filter(desc.mip_filter),
@@ -209,18 +208,44 @@ impl ResourceBackend for Gl {
             let id = device
                 .0
                 .with_native("create Core GL sampler", |provider| {
-                    provider.create_sampler(native)
+                    if border || zero {
+                        let color = match desc.border {
+                            Some(api::BorderColor::OpaqueBlack) => [0., 0., 0., 1.],
+                            Some(api::BorderColor::OpaqueWhite) => [1., 1., 1., 1.],
+                            _ => [0.; 4],
+                        };
+                        provider.create_border_sampler(
+                            native,
+                            desc.address.map(|mode| {
+                                matches!(
+                                    mode,
+                                    api::AddressMode::ClampToBorder | api::AddressMode::ClampToZero
+                                )
+                            }),
+                            color,
+                        )
+                    } else {
+                        provider.create_sampler(native)
+                    }
                 })
                 .map_err(native_error)?;
             return Ok(GlSampler::from_inner(GlSamplerInner {
                 state: device.0.clone(),
                 id,
+                filtering: desc.mag_filter == api::FilterMode::Linear
+                    || desc.min_filter == api::FilterMode::Linear
+                    || desc.mip_filter == api::FilterMode::Linear
+                    || desc.anisotropy > 1,
+                comparison: desc.compare.is_some(),
             }));
         }
         #[cfg(not(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl")))]
         {
             #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
             {
+                if border || zero {
+                    return Err(Error::Unsupported("WebGL2 sampler border clamp"));
+                }
                 native
                     .validate_for(&device.0.owner.discovery_snapshot())
                     .map_err(|error| match error {
@@ -235,6 +260,11 @@ impl ResourceBackend for Gl {
                 return Ok(GlSampler::from_inner(GlSamplerInner {
                     state: device.0.clone(),
                     browser,
+                    filtering: desc.mag_filter == api::FilterMode::Linear
+                        || desc.min_filter == api::FilterMode::Linear
+                        || desc.mip_filter == api::FilterMode::Linear
+                        || desc.anisotropy > 1,
+                    comparison: desc.compare.is_some(),
                 }));
             }
             #[cfg(not(all(target_arch = "wasm32", feature = "webgl2")))]
@@ -277,93 +307,230 @@ impl ResourceBackend for Gl {
                 .iter()
                 .find(|entry| entry.binding == expected.binding)
                 .ok_or(Error::InvalidState)?;
-            let resource = match (expected.slot, &entry.resource) {
-                (
-                    GlBindingSlot::UniformBuffer { min_size, .. },
-                    BindingResource::Buffer { buffer, range },
-                ) => {
-                    // SAFETY: Core validates resource provenance before this
-                    // SPI call. The wrapper is borrowed for this synchronous
-                    // extraction, then cloned into the returned bind group.
-                    let buffer = unsafe { buffer.native_ref() };
-                    let offset = u32::try_from(range.start).map_err(|_| Error::InvalidRange)?;
-                    let size = range
-                        .end
-                        .checked_sub(range.start)
-                        .ok_or(Error::InvalidRange)?;
-                    let size = u32::try_from(size).map_err(|_| Error::InvalidRange)?;
-                    if range.end > buffer.desc.size || size == 0 || u64::from(size) < min_size {
-                        return Err(Error::InvalidRange);
-                    }
-                    if !std::rc::Rc::ptr_eq(&device.0, &buffer.state) {
-                        return Err(Error::InvalidState);
-                    }
-                    GlBoundResource::UniformBuffer {
-                        buffer: buffer.clone(),
-                        offset,
-                        size,
-                    }
-                }
-                (
-                    GlBindingSlot::SampledTexture { dimension },
-                    BindingResource::TextureView(view),
-                ) => {
-                    // SAFETY: see the buffer arm; views retain their textures.
-                    let view = unsafe { view.native_ref() };
-                    let view_dimension = match view.texture.desc.dimension {
-                        crate::backend::gl::api::GlTextureDimension::D2 => {
-                            api::TextureViewDimension::D2
+            let lower_element = |element: &BindingResource<'_, Gl>| -> Result<GlBoundResource> {
+                Ok(match (expected.slot, element) {
+                    (
+                        GlBindingSlot::UniformBuffer { min_size, .. },
+                        BindingResource::Buffer { buffer, range },
+                    ) => {
+                        // SAFETY: Core validates resource provenance before this
+                        // SPI call. The wrapper is borrowed for this synchronous
+                        // extraction, then cloned into the returned bind group.
+                        let buffer = unsafe { buffer.native_ref() };
+                        let offset = u32::try_from(range.start).map_err(|_| Error::InvalidRange)?;
+                        let size = range
+                            .end
+                            .checked_sub(range.start)
+                            .ok_or(Error::InvalidRange)?;
+                        let size = u32::try_from(size).map_err(|_| Error::InvalidRange)?;
+                        if range.end > buffer.desc.size || size == 0 || u64::from(size) < min_size {
+                            return Err(Error::InvalidRange);
                         }
-                        crate::backend::gl::api::GlTextureDimension::D2Array => {
-                            api::TextureViewDimension::D2Array
+                        if !std::rc::Rc::ptr_eq(&device.0, &buffer.state) {
+                            return Err(Error::InvalidState);
                         }
-                        _ => return Err(Error::Unsupported("GL sampled texture dimension")),
-                    };
-                    if !std::rc::Rc::ptr_eq(&device.0, &view.texture.state)
-                        || dimension != view_dimension
-                    {
-                        return Err(Error::InvalidState);
-                    }
-                    GlBoundResource::Texture(view.clone())
-                }
-                (
-                    GlBindingSlot::StorageTexture {
-                        dimension, format, ..
-                    },
-                    BindingResource::TextureView(view),
-                ) => {
-                    // Storage images are one native image view.  The current
-                    // Core route deliberately admits only a complete 2D view:
-                    // layered views require a separate lowerer and must not be
-                    // silently rebound as layer zero.
-                    let view = unsafe { view.native_ref() };
-                    let view_dimension = match view.texture.desc.dimension {
-                        crate::backend::gl::api::GlTextureDimension::D2 => {
-                            api::TextureViewDimension::D2
+                        GlBoundResource::UniformBuffer {
+                            buffer: buffer.clone(),
+                            offset,
+                            size,
                         }
-                        crate::backend::gl::api::GlTextureDimension::D2Array => {
-                            api::TextureViewDimension::D2Array
+                    }
+                    (
+                        GlBindingSlot::StorageBuffer { min_size, .. },
+                        BindingResource::Buffer { buffer, range }
+                        | BindingResource::StorageBufferView { buffer, range, .. },
+                    ) => {
+                        // SAFETY: Core retains the borrowed buffer through creation; the clone retains it thereafter.
+                        let buffer = unsafe { buffer.native_ref() };
+                        let offset = u32::try_from(range.start).map_err(|_| Error::InvalidRange)?;
+                        let size = range
+                            .end
+                            .checked_sub(range.start)
+                            .ok_or(Error::InvalidRange)?;
+                        let size = u32::try_from(size).map_err(|_| Error::InvalidRange)?;
+                        if range.end > buffer.desc.size || size == 0 || u64::from(size) < min_size {
+                            return Err(Error::InvalidRange);
                         }
-                        _ => return Err(Error::Unsupported("GL storage texture dimension")),
-                    };
-                    if !std::rc::Rc::ptr_eq(&device.0, &view.texture.state)
-                        || dimension != view_dimension
-                        || crate::backend::gl::translate::lower_texture_format(format)?
-                            != view.texture.desc.format
-                    {
-                        return Err(Error::InvalidState);
+                        if !std::rc::Rc::ptr_eq(&device.0, &buffer.state) {
+                            return Err(Error::WrongDevice);
+                        }
+                        GlBoundResource::StorageBuffer {
+                            buffer: buffer.clone(),
+                            offset,
+                            size,
+                        }
                     }
-                    GlBoundResource::StorageTexture(view.clone())
-                }
-                (GlBindingSlot::Sampler, BindingResource::Sampler(sampler)) => {
-                    // SAFETY: see the buffer arm; sampler clones share one
-                    // provider allocation through their Rc inner object.
-                    let sampler = unsafe { sampler.native_ref() };
-                    if !std::rc::Rc::ptr_eq(&device.0, &sampler.state) {
-                        return Err(Error::InvalidState);
+                    (
+                        GlBindingSlot::SampledTexture {
+                            dimension,
+                            sample,
+                            multisampled,
+                        },
+                        BindingResource::TextureView(view),
+                    ) => {
+                        // SAFETY: see the buffer arm; views retain their textures.
+                        let view = unsafe { view.native_ref() };
+                        let view_dimension = match view.binding_texture().desc.dimension {
+                            crate::backend::gl::api::GlTextureDimension::D1 => {
+                                api::TextureViewDimension::D1
+                            }
+                            crate::backend::gl::api::GlTextureDimension::D2 => {
+                                api::TextureViewDimension::D2
+                            }
+                            crate::backend::gl::api::GlTextureDimension::D2Array => {
+                                api::TextureViewDimension::D2Array
+                            }
+                            crate::backend::gl::api::GlTextureDimension::D3 => {
+                                api::TextureViewDimension::D3
+                            }
+                            crate::backend::gl::api::GlTextureDimension::Cube => {
+                                api::TextureViewDimension::Cube
+                            }
+                            crate::backend::gl::api::GlTextureDimension::CubeArray => {
+                                api::TextureViewDimension::CubeArray
+                            }
+                            _ => return Err(Error::Unsupported("GL sampled texture dimension")),
+                        };
+                        #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+                        let view_dimension = if view.cube_mirror.is_some() {
+                            api::TextureViewDimension::Cube
+                        } else if view.stencil_mirror.is_some() {
+                            view.dimension
+                        } else {
+                            view_dimension
+                        };
+                        if !std::rc::Rc::ptr_eq(&device.0, &view.texture.state)
+                            || dimension != view_dimension
+                            || multisampled != (view.binding_texture().desc.sample_count > 1)
+                            || !view.full_sampling_view
+                            || !view
+                                .texture
+                                .desc
+                                .usage
+                                .contains(crate::backend::gl::api::GlTextureUsage::SAMPLED)
+                            || !(if view.aspects == api::TextureAspects::STENCIL
+                                && matches!(
+                                    view.binding_texture().desc.format,
+                                    crate::backend::gl::api::GlFormat::Depth24PlusStencil8
+                                        | crate::backend::gl::api::GlFormat::Depth32FloatStencil8
+                                ) {
+                                sample == api::TextureSampleType::Uint
+                            } else {
+                                sample_type_compatible(sample, view.binding_texture().desc.format)
+                            })
+                        {
+                            return Err(Error::InvalidState);
+                        }
+                        // Multisample textures are accessed only by explicit
+                        // sample-index loads; no filtering sampler participates,
+                        // so format filterability is not a bind-group precondition.
+                        if sample == api::TextureSampleType::Float && !multisampled {
+                            let mut format_shape = view.texture.desc;
+                            format_shape.format = view.binding_texture().desc.format;
+                            match texture_support(device, format_shape) {
+                                Support::Supported(facts) if facts.filterable => {}
+                                _ => return Err(Error::InvalidState),
+                            }
+                        }
+                        GlBoundResource::Texture(view.clone())
                     }
-                    GlBoundResource::Sampler(sampler.clone())
+                    (
+                        GlBindingSlot::StorageTexture {
+                            dimension, format, ..
+                        },
+                        BindingResource::TextureView(view),
+                    ) => {
+                        // A layered image binds all slices of a true GL texture
+                        // view. A single-layer D2 attachment fallback can use the
+                        // parent array allocation with its explicit layer instead.
+                        let view = unsafe { view.native_ref() };
+                        #[cfg(any(
+                            all(windows, feature = "native-gl-wgl"),
+                            feature = "native-gles-egl"
+                        ))]
+                        if dimension == api::TextureViewDimension::D2Array
+                            && view.view_texture.is_none()
+                            && (view.native.array_layer != 0
+                                || view.native.layer_count
+                                    != view.texture.desc.extent.depth_or_layers)
+                        {
+                            // A layered image binding addresses every layer of the
+                            // underlying name. An attachment-only interval must
+                            // not silently expose layers outside its Core view.
+                            return Err(Error::Unsupported(
+                                "GL layered storage image view requires texture-view support",
+                            ));
+                        }
+                        #[cfg(any(
+                            all(windows, feature = "native-gl-wgl"),
+                            feature = "native-gles-egl"
+                        ))]
+                        if dimension == api::TextureViewDimension::D3
+                            && view.source_mip != 0
+                            && format == api::TextureFormat::Rgba8Unorm
+                            && !device
+                                .0
+                                .with_native("query 3D storage mip support", |provider| {
+                                    Ok(provider.supports_storage_3d_nonzero_mip())
+                                })
+                                .map_err(native_error)?
+                        {
+                            return Err(Error::Unsupported(
+                                "GL runtime 3D RGBA8 storage image nonzero mip",
+                            ));
+                        }
+                        if !std::rc::Rc::ptr_eq(&device.0, &view.texture.state)
+                            || dimension != view.dimension
+                            || view.mip_count != 1
+                            || !view
+                                .texture
+                                .desc
+                                .usage
+                                .contains(crate::backend::gl::api::GlTextureUsage::STORAGE_BINDING)
+                            || crate::backend::gl::translate::lower_texture_format(format)?
+                                != view.binding_texture().desc.format
+                        {
+                            return Err(Error::InvalidState);
+                        }
+                        GlBoundResource::StorageTexture(view.clone())
+                    }
+                    (
+                        GlBindingSlot::Sampler {
+                            filtering,
+                            comparison,
+                        },
+                        BindingResource::Sampler(sampler),
+                    ) => {
+                        // SAFETY: see the buffer arm; sampler clones share one
+                        // provider allocation through their Rc inner object.
+                        let sampler = unsafe { sampler.native_ref() };
+                        if !std::rc::Rc::ptr_eq(&device.0, &sampler.state)
+                            || comparison != sampler.comparison
+                            || (!filtering && sampler.filtering)
+                        {
+                            return Err(Error::InvalidState);
+                        }
+                        GlBoundResource::Sampler(sampler.clone())
+                    }
+                    _ => return Err(Error::InvalidState),
+                })
+            };
+            let resource = match (&entry.resource, expected.count) {
+                (BindingResource::Array(values), api::BindingCount::Fixed(count))
+                    if values.len() == count as usize =>
+                {
+                    let elements = values
+                        .iter()
+                        .map(|element| match element {
+                            Some(value) => lower_element(value).map(Some),
+                            None if expected.partially_bound => Ok(None),
+                            None => Err(Error::InvalidState),
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    GlBoundResource::Array(elements)
                 }
+                (BindingResource::Array(_), _) => return Err(Error::InvalidRange),
+                (value, api::BindingCount::One) => lower_element(value)?,
                 _ => return Err(Error::InvalidState),
             };
             resources.push((expected.binding, resource));
@@ -378,9 +545,7 @@ impl ResourceBackend for Gl {
         device: &GlDevice,
         desc: &api::PipelineLayoutDesc<'_, Gl>,
     ) -> Result<GlPipelineLayout> {
-        if !desc.push_constants.is_empty() {
-            return Err(Error::Unsupported("GL pipeline layout shape"));
-        }
+        super::push::validate_ranges(desc.push_constants, super::instance::push_limit(&device.0)?)?;
         let mut groups = Vec::with_capacity(desc.groups.len());
         let mut bindings = Vec::new();
         for (index, group) in desc.groups.iter().enumerate() {
@@ -398,6 +563,7 @@ impl ResourceBackend for Gl {
             state: device.0.clone(),
             groups: groups.into(),
             native: crate::backend::gl::api::GlPipelineLayout { bindings },
+            push_ranges: desc.push_constants.to_vec().into(),
         })
     }
 }
@@ -438,6 +604,45 @@ fn texture_support(
     }
 }
 
+fn sample_type_compatible(
+    sample: api::TextureSampleType,
+    format: crate::backend::gl::api::GlFormat,
+) -> bool {
+    use crate::backend::gl::api::GlFormat as F;
+    let class = match format {
+        F::R8Uint
+        | F::Rg8Uint
+        | F::Rgba8Uint
+        | F::R16Uint
+        | F::Rg16Uint
+        | F::Rgba16Uint
+        | F::Rgb10a2Uint
+        | F::R32Uint
+        | F::R64Uint
+        | F::Rg32Uint
+        | F::Rgba32Uint => api::TextureSampleType::Uint,
+        F::R8Sint
+        | F::Rg8Sint
+        | F::Rgba8Sint
+        | F::R16Sint
+        | F::Rg16Sint
+        | F::Rgba16Sint
+        | F::R32Sint
+        | F::Rg32Sint
+        | F::Rgba32Sint => api::TextureSampleType::Sint,
+        F::Depth16Unorm
+        | F::Depth24Unorm
+        | F::Depth24PlusStencil8
+        | F::Depth32Float
+        | F::Depth32FloatStencil8 => api::TextureSampleType::Depth,
+        F::Stencil8 => return false,
+        _ => api::TextureSampleType::Float,
+    };
+    class == sample
+        || (class == api::TextureSampleType::Float
+            && sample == api::TextureSampleType::UnfilterableFloat)
+}
+
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),
     feature = "native-gles-egl",
@@ -448,21 +653,58 @@ fn texture_support_from_discovery(
     desc: crate::backend::gl::api::GlTextureDesc,
     browser: bool,
 ) -> Support<TextureSupport> {
-    use crate::backend::gl::api::{GlTextureDimension, GlTextureUsage};
-    if !matches!(
-        desc.dimension,
-        GlTextureDimension::D2 | GlTextureDimension::D2Array
-    ) {
+    use crate::backend::gl::api::{
+        GlFormat, GlFormatResourceKind, GlTextureDimension, GlTextureUsage,
+    };
+    let desktop_1d = desc.dimension == GlTextureDimension::D1
+        && matches!(
+            discovery.context().profile(),
+            crate::backend::gl::api::GlFamilyProfile::Desktop { .. }
+        );
+    if !desktop_1d
+        && !matches!(
+            desc.dimension,
+            GlTextureDimension::D2 | GlTextureDimension::D2Array | GlTextureDimension::D3
+        )
+    {
         return Support::Unsupported("GL texture dimension");
     }
-    if browser && desc.sample_count != 1 {
-        return Support::Unsupported("WebGL2 multisample texture storage");
+    if desktop_1d && (desc.extent.height != 1 || desc.extent.depth_or_layers != 1) {
+        return Support::Unsupported("GL 1D texture extent");
     }
-    if desc.dimension == GlTextureDimension::D2Array && desc.sample_count != 1 {
-        return Support::Unsupported("GL multisample texture array storage");
+    let renderbuffer = browser && (desc.sample_count > 1 || desc.format == GlFormat::Stencil8);
+    if renderbuffer
+        && (desc.dimension != GlTextureDimension::D2
+            || desc.extent.depth_or_layers != 1
+            || desc.mip_level_count != 1
+            || desc.usage != GlTextureUsage::RENDER_ATTACHMENT)
+    {
+        return Support::Unsupported("WebGL2 renderbuffer requires attachment-only 2D storage");
     }
-    if desc.dimension == GlTextureDimension::D2Array && desc.format.compressed_info().is_some() {
-        return Support::Unsupported("GL compressed texture array upload");
+    if desc.format.compressed_info().is_some() {
+        if desc.dimension == GlTextureDimension::D3 {
+            return Support::Unsupported(
+                "GL compressed 3D target requires format-specific capability evidence",
+            );
+        }
+        if browser
+            && desc.dimension == GlTextureDimension::D2Array
+            && !matches!(
+                desc.format,
+                GlFormat::Etc2Rgb8Unorm
+                    | GlFormat::Etc2Rgb8Srgb
+                    | GlFormat::Etc2Rgb8A1Unorm
+                    | GlFormat::Etc2Rgb8A1Srgb
+                    | GlFormat::Etc2Rgba8Unorm
+                    | GlFormat::Etc2Rgba8Srgb
+                    | GlFormat::EacR11Unorm
+                    | GlFormat::EacR11Snorm
+                    | GlFormat::EacRg11Unorm
+                    | GlFormat::EacRg11Snorm
+            )
+        {
+            return Support::Unsupported("WebGL compressed array target lacks extension support");
+        }
     }
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
     if !browser && !crate::backend::gl::native::native_texture_format_supported(desc.format) {
@@ -473,22 +715,57 @@ fn texture_support_from_discovery(
         return Support::Unsupported("WebGL2 texture storage mapping");
     }
     let limits = discovery.limits();
-    if desc.extent.width > limits.max_texture_size
-        || desc.extent.height > limits.max_texture_size
-        || desc.extent.depth_or_layers > limits.max_array_texture_layers
+    let spatial_limit = if desc.dimension == GlTextureDimension::D3 {
+        limits.max_3d_texture_size
+    } else {
+        limits.max_texture_size
+    };
+    let depth_limit = if desc.dimension == GlTextureDimension::D3 {
+        limits.max_3d_texture_size
+    } else if desc.dimension == GlTextureDimension::D1 {
+        1
+    } else {
+        limits.max_array_texture_layers
+    };
+    if desc.extent.width > spatial_limit
+        || (desc.dimension != GlTextureDimension::D1 && desc.extent.height > spatial_limit)
+        || desc.extent.depth_or_layers > depth_limit
         || desc.extent.width > i32::MAX as u32
         || desc.extent.height > i32::MAX as u32
         || desc.extent.depth_or_layers > i32::MAX as u32
         || desc.mip_level_count > i32::MAX as u32
-        || desc.sample_count > limits.max_samples.max(1)
+        || (renderbuffer && desc.sample_count > limits.max_samples.max(1))
     {
         return Support::Unsupported("GL texture size or sample count");
     }
-    let max_mips = u32::BITS - desc.extent.width.max(desc.extent.height).leading_zeros();
+    let max_axis = desc
+        .extent
+        .width
+        .max(if desc.dimension == GlTextureDimension::D1 {
+            1
+        } else {
+            desc.extent.height
+        });
+    let max_axis = if desc.dimension == GlTextureDimension::D3 {
+        max_axis.max(desc.extent.depth_or_layers)
+    } else {
+        max_axis
+    };
+    let max_mips = u32::BITS - max_axis.leading_zeros();
     if desc.mip_level_count > max_mips || (desc.sample_count > 1 && desc.mip_level_count != 1) {
         return Support::Unsupported("GL texture mip count");
     }
-    let Some(facts) = discovery.formats().get(desc.format, desc.sample_count) else {
+    let kind = if renderbuffer {
+        GlFormatResourceKind::Renderbuffer
+    } else if desc.dimension == GlTextureDimension::D2Array && desc.sample_count > 1 {
+        GlFormatResourceKind::MultisampleArray
+    } else {
+        GlFormatResourceKind::Texture
+    };
+    let Some(facts) = discovery
+        .formats()
+        .get_for(kind, desc.format, desc.sample_count)
+    else {
         return Support::Unsupported("GL texture format/sample evidence");
     };
     if (desc.usage.contains(GlTextureUsage::SAMPLED) && !facts.sampled)
@@ -501,8 +778,24 @@ fn texture_support_from_discovery(
         return Support::Unsupported("GL texture format usage evidence");
     }
     Support::Supported(TextureSupport {
-        max_extent: [limits.max_texture_size, limits.max_texture_size, 1],
-        max_array_layers: limits.max_array_texture_layers,
+        max_extent: [
+            spatial_limit,
+            if desc.dimension == GlTextureDimension::D1 {
+                1
+            } else {
+                spatial_limit
+            },
+            if desc.dimension == GlTextureDimension::D3 {
+                spatial_limit
+            } else {
+                1
+            },
+        ],
+        max_array_layers: if desc.dimension == GlTextureDimension::D3 {
+            1
+        } else {
+            limits.max_array_texture_layers
+        },
         max_mips,
         sample_counts: vec![desc.sample_count],
         compatible_view_formats: Vec::new(),

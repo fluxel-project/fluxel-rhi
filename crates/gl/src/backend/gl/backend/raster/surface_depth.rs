@@ -5,7 +5,27 @@
 //! pass state while native/browser owners render to a temporary color target.
 
 use crate::backend::gl::backend::types::{Gl, GlTextureView};
-use fluxel_rhi_core::api::{self, AttachmentView, ClearColor, Error, LoadOp, Result};
+use fluxel_rhi_core::api::{self, AttachmentView, Error, LoadOp, Result};
+
+pub(super) fn validate_aspects(
+    attachment: &api::DepthStencilAttachment<'_, Gl>,
+    view: &GlTextureView,
+) -> Result<()> {
+    if (attachment.depth.is_some() && view.aspects.0 & api::TextureAspects::DEPTH.0 == 0)
+        || (attachment.stencil.is_some() && view.aspects.0 & api::TextureAspects::STENCIL.0 == 0)
+    {
+        return Err(Error::InvalidRange);
+    }
+    Ok(())
+}
+
+pub(super) fn native_aspect(view: &GlTextureView) -> crate::backend::gl::api::GlTextureAspect {
+    match view.aspects {
+        api::TextureAspects::DEPTH => crate::backend::gl::api::GlTextureAspect::DepthOnly,
+        api::TextureAspects::STENCIL => crate::backend::gl::api::GlTextureAspect::StencilOnly,
+        _ => crate::backend::gl::api::GlTextureAspect::All,
+    }
+}
 
 #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 pub(super) fn lower_native_view(
@@ -14,17 +34,12 @@ pub(super) fn lower_native_view(
     let Some(attachment) = attachment else {
         return Ok(None);
     };
-    if attachment.depth_read_only || attachment.stencil_read_only || attachment.stencil.is_some() {
-        return Err(Error::Unsupported("GL surface depth-stencil mode"));
-    }
     let AttachmentView::Texture(view) = attachment.view else {
         return Err(Error::Unsupported("GL surface depth attachment"));
     };
     // SAFETY: the returned wrapper stays in GlEncoder through FBO teardown.
     let view = unsafe { view.native_ref() }.clone();
-    if view.native.format != crate::backend::gl::api::GlFormat::Depth32Float {
-        return Err(Error::Unsupported("GL Depth32Float attachment"));
-    }
+    validate_aspects(attachment, &view)?;
     Ok(Some(view))
 }
 
@@ -52,63 +67,56 @@ pub(super) fn lower_native_attachment(
     attachment: &api::DepthStencilAttachment<'_, Gl>,
     view: crate::backend::gl::api::GlTextureView,
 ) -> Result<crate::backend::gl::api::GlDepthStencilAttachment> {
-    let Some((load, store)) = attachment.depth else {
-        return Err(Error::Unsupported("GL stencil-only surface pass"));
+    let (depth_load, depth_store, depth_clear) = match attachment.depth {
+        Some((LoadOp::Clear(value), store))
+            if value.is_finite() && (0.0..=1.0).contains(&value) =>
+        {
+            (
+                crate::backend::gl::api::GlLoadOp::Clear,
+                super::lower_store(store),
+                value,
+            )
+        }
+        Some((LoadOp::Clear(_), _)) => return Err(Error::InvalidRange),
+        Some((_, store)) => (
+            crate::backend::gl::api::GlLoadOp::Load,
+            super::lower_store(store),
+            0.0,
+        ),
+        None => (
+            crate::backend::gl::api::GlLoadOp::Load,
+            crate::backend::gl::api::GlStoreOp::Store,
+            0.0,
+        ),
     };
-    if attachment.stencil.is_some() || attachment.depth_read_only || attachment.stencil_read_only {
-        return Err(Error::Unsupported("GL surface depth-stencil mode"));
-    }
-    let clear = match load {
-        LoadOp::Clear(value) if value.is_finite() && (0.0..=1.0).contains(&value) => value,
-        LoadOp::Clear(_) => return Err(Error::InvalidRange),
-        LoadOp::Load => 0.0,
-        LoadOp::Discard => return Err(Error::Unsupported("GL depth load discard")),
+    let (stencil_load, stencil_store, stencil_clear) = match attachment.stencil {
+        Some((LoadOp::Clear(value), store)) => (
+            crate::backend::gl::api::GlLoadOp::Clear,
+            super::lower_store(store),
+            value,
+        ),
+        Some((_, store)) => (
+            crate::backend::gl::api::GlLoadOp::Load,
+            super::lower_store(store),
+            0,
+        ),
+        None => (
+            crate::backend::gl::api::GlLoadOp::Load,
+            crate::backend::gl::api::GlStoreOp::Store,
+            0,
+        ),
     };
     Ok(crate::backend::gl::api::GlDepthStencilAttachment {
         view,
-        depth_load: match load {
-            LoadOp::Load => crate::backend::gl::api::GlLoadOp::Load,
-            LoadOp::Clear(_) => crate::backend::gl::api::GlLoadOp::Clear,
-            LoadOp::Discard => unreachable!(),
-        },
-        depth_store: super::lower_store(store),
-        stencil_load: crate::backend::gl::api::GlLoadOp::Load,
-        stencil_store: crate::backend::gl::api::GlStoreOp::Store,
+        depth_load,
+        depth_store,
+        stencil_load,
+        stencil_store,
         clear: crate::backend::gl::api::GlDepthStencilClearValue {
-            depth: clear.to_bits(),
-            stencil: 0,
+            depth: depth_clear.to_bits(),
+            stencil: stencil_clear,
         },
     })
-}
-
-#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
-pub(super) fn lower_browser_view(
-    attachment: Option<&api::DepthStencilAttachment<'_, Gl>>,
-) -> Result<Option<GlTextureView>> {
-    let Some(attachment) = attachment else {
-        return Ok(None);
-    };
-    if attachment.depth_read_only
-        || attachment.stencil_read_only
-        || attachment.stencil.is_some()
-        || attachment.depth.is_none()
-    {
-        return Err(Error::Unsupported("WebGL2 surface depth-stencil mode"));
-    }
-    let AttachmentView::Texture(view) = attachment.view else {
-        return Err(Error::Unsupported("WebGL2 surface depth attachment"));
-    };
-    // SAFETY: the encoder owns this clone until blit and FBO deletion.
-    let view = unsafe { view.native_ref() }.clone();
-    if !matches!(
-        view.texture.desc.format,
-        crate::backend::gl::api::GlFormat::Depth32Float
-    ) || view.texture.desc.extent.depth_or_layers != 1
-        || view.texture.desc.mip_level_count != 1
-    {
-        return Err(Error::Unsupported("WebGL2 Depth32Float surface attachment"));
-    }
-    Ok(Some(view))
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
@@ -117,43 +125,62 @@ pub(super) fn begin_browser_surface_raster(
     target: crate::backend::gl::api::GlDefaultFramebufferTarget,
     color: &api::ColorAttachment<'_, Gl>,
     depth_attachment: Option<&api::DepthStencilAttachment<'_, Gl>>,
+    render_area: api::Rect,
+    timestamp_writes: Option<&api::PassTimestampWrites<'_, Gl>>,
 ) -> Result<()> {
-    let clear = match color.load {
-        LoadOp::Clear(value) => Some(value),
-        LoadOp::Load => None,
-        LoadOp::Discard => return Err(Error::Unsupported("GL color load discard")),
-    };
-    let browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
-    let result = if let Some(depth) = lower_browser_view(depth_attachment)? {
-        let ClearColor::Float(color_clear) =
-            clear.ok_or(Error::Unsupported("WebGL2 surface depth color load"))?
-        else {
-            return Err(Error::Unsupported("WebGL2 integer surface clear"));
+    use crate::backend::gl::browser::BrowserDepthAttachment;
+    super::render_area(render_area, [target.width, target.height])?;
+    if let Some(attachment) = depth_attachment {
+        let AttachmentView::Texture(view) = attachment.view else {
+            return Err(Error::InvalidRange);
         };
-        let depth_clear = depth_attachment
-            .and_then(|attachment| attachment.depth)
-            .map(|(load, _)| match load {
-                LoadOp::Clear(value) if value.is_finite() && (0.0..=1.0).contains(&value) => {
-                    Ok(Some(value))
-                }
-                LoadOp::Load => Ok(None),
-                LoadOp::Clear(_) => Err(Error::InvalidRange),
-                LoadOp::Discard => Err(Error::Unsupported("WebGL2 depth load discard")),
-            })
-            .transpose()?
-            .flatten();
+        // SAFETY: the descriptor borrows the view throughout this call.
+        let view = unsafe { view.native_ref() };
+        validate_aspects(attachment, view)?;
+        if view.layer_count != 1
+            || [view.width, view.height] != [target.width, target.height]
+            || view.sample_count != 1
+        {
+            return Err(Error::InvalidRange);
+        }
+    }
+    let timestamps = super::super::query::prepare_pass_timestamps(encoder, timestamp_writes)?;
+    super::super::query::start_pass_timestamps(encoder, timestamps)?;
+    let browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
+    let result = if let Some(attachment) = depth_attachment {
+        let AttachmentView::Texture(view) = attachment.view else {
+            return Err(Error::InvalidRange);
+        };
+        // SAFETY: the pass descriptor borrows the view during this call and the browser retains the texture.
+        let view = unsafe { view.native_ref() };
+        if view.layer_count != 1
+            || [view.width, view.height] != [target.width, target.height]
+            || view.sample_count != 1
+        {
+            return Err(Error::InvalidRange);
+        }
         browser.begin_surface_depth_raster(
             [target.width, target.height],
-            ClearColor::Float(color_clear),
-            depth_clear,
-            &depth.texture.browser,
+            target.color_format,
+            color.load,
+            BrowserDepthAttachment {
+                texture: &view.texture.browser,
+                aspect: native_aspect(view),
+                mip_level: view.mip_level,
+                layer: view.array_layer,
+                depth: attachment.depth,
+                stencil: attachment.stencil,
+            },
+            render_area,
         )
     } else {
-        browser.begin_default_raster([target.width, target.height], clear)
+        let clear = match color.load {
+            LoadOp::Clear(value) => Some(value),
+            LoadOp::Load | LoadOp::Discard => None,
+        };
+        browser.begin_default_raster([target.width, target.height], clear, render_area)
     };
     if let Err(error) = result {
-        // The browser call may have bound/cleared framebuffer state before the
-        // driver reports an error, so this immediate prefix is not reusable.
         encoder.indeterminate = true;
         return Err(error);
     }

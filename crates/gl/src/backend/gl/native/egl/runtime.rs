@@ -6,6 +6,42 @@
 use super::*;
 
 impl EglGlesContext {
+    pub(crate) fn gl_proc(&self, name: &str) -> *const core::ffi::c_void {
+        self.lease
+            .egl
+            .get_proc_address(name)
+            .map(|f| f as *const () as *const core::ffi::c_void)
+            .unwrap_or(core::ptr::null())
+    }
+    pub(crate) fn load_program_resource(
+        &self,
+    ) -> Option<super::super::context::GetProgramResourceFn> {
+        let address = self.lease.egl.get_proc_address("glGetProgramResourceiv")?;
+        // SAFETY: EGL resolves the GLES core function with this exact ABI and
+        // the context remains alive while the dispatch pointer is used.
+        Some(unsafe {
+            core::mem::transmute::<_, super::super::context::GetProgramResourceFn>(address)
+        })
+    }
+    pub(crate) fn load_indexed_blend(&self) -> super::super::indexed_blend::IndexedBlendExtensions {
+        use super::super::indexed_blend::{IndexedBlendExtensions, IndexedBlendFns};
+        let load = |name: &str| {
+            self.lease
+                .egl
+                .get_proc_address(name)
+                .map(|f| f as *const () as *const core::ffi::c_void)
+                .unwrap_or(core::ptr::null())
+        };
+        // SAFETY: this method is called with this EGL context current; the
+        // function pointers remain valid for the retained context lifetime.
+        unsafe {
+            IndexedBlendExtensions {
+                oes: IndexedBlendFns::load(load, "OES"),
+                ext: IndexedBlendFns::load(load, "EXT"),
+            }
+        }
+    }
+
     pub(crate) fn load_unmap_buffer(
         &self,
     ) -> Result<crate::backend::gl::native::context::UnmapBufferFn, GlError> {

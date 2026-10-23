@@ -164,15 +164,10 @@ impl GlVertexLayout {
                 return Err(GlVertexValidationError::AttributeBufferMissing);
             };
             let size = attribute.format.byte_size();
-            let stride = if buffer.stride == 0 {
-                size
-            } else {
-                buffer.stride
-            };
             if attribute
                 .offset
                 .checked_add(size)
-                .is_none_or(|end| end > stride)
+                .is_none_or(|end| buffer.stride != 0 && end > buffer.stride)
             {
                 return Err(GlVertexValidationError::AttributeExceedsStride);
             }
@@ -206,6 +201,24 @@ impl GlVertexLayout {
                 return Err(GlVertexValidationError::BindingMetadataMissing);
             };
             if binding.offset > facts.byte_length {
+                return Err(GlVertexValidationError::BindingOffsetExceedsBuffer);
+            }
+            if self
+                .buffers
+                .iter()
+                .any(|slot| slot.slot == binding.slot && slot.stride == 0)
+                && self
+                    .attributes
+                    .iter()
+                    .filter(|a| a.buffer_slot == binding.slot)
+                    .any(|a| {
+                        binding
+                            .offset
+                            .checked_add(u64::from(a.offset))
+                            .and_then(|n| n.checked_add(u64::from(a.format.byte_size())))
+                            .is_none_or(|end| end > facts.byte_length)
+                    })
+            {
                 return Err(GlVertexValidationError::BindingOffsetExceedsBuffer);
             }
             // Checking the role last keeps the more specific bounds and
@@ -285,6 +298,45 @@ mod tests {
             offset: 12,
         };
         assert_eq!(a, a);
+    }
+    #[test]
+    fn zero_stride_uses_fixed_address_and_checks_attribute_extent() {
+        let stamp = super::super::ContextStamp::new(
+            super::super::DeviceIdentity::new(1).unwrap(),
+            super::super::ContextEpoch::INITIAL,
+        );
+        let buffer = BufferId::new(stamp, 0, 0);
+        let layout = GlVertexLayout {
+            buffers: vec![GlVertexBufferLayout {
+                slot: 0,
+                stride: 0,
+                step_mode: GlVertexStepMode::Vertex,
+            }],
+            attributes: vec![GlVertexAttribute {
+                location: 0,
+                buffer_slot: 0,
+                format: GlVertexFormat::Float32,
+                offset: 4,
+            }],
+        };
+        let binding = GlVertexBufferBinding {
+            slot: 0,
+            buffer,
+            offset: 4,
+        };
+        let metadata = |byte_length| GlVertexBufferMetadata {
+            buffer,
+            byte_length,
+            usage: GlBufferUsage::VERTEX,
+        };
+        assert_eq!(
+            layout.validate_bindings(&[binding], None, &[metadata(12)], stamp),
+            Ok(())
+        );
+        assert_eq!(
+            layout.validate_bindings(&[binding], None, &[metadata(11)], stamp),
+            Err(GlVertexValidationError::BindingOffsetExceedsBuffer)
+        );
     }
     #[test]
     fn rejects_duplicate_buffer_slots() {

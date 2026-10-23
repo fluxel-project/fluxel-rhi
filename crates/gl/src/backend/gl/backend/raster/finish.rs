@@ -10,6 +10,9 @@ use super::super::Gl;
 use super::super::types::GlEncoder;
 
 pub(super) fn abort(encoder: &mut GlEncoder) {
+    encoder.pass_timestamp_end = None;
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    encoder.native_texture_resolves.clear();
     if encoder.occlusion_query_active {
         #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
         {
@@ -23,24 +26,31 @@ pub(super) fn abort(encoder: &mut GlEncoder) {
                 encoder.indeterminate = true;
             }
         }
+        #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+        if encoder.state.owner.end_core_occlusion().is_err() {
+            encoder.indeterminate = true;
+        }
         encoder.occlusion_query_active = false;
     }
     encoder.occlusion_query_set = None;
     // Core calls this only while unwinding a poisoned pass. EndRenderPass is
     // the provider's legal exit from active-pass state; no retry is possible.
     #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
-    if let Some(browser) = encoder.browser.as_mut() {
-        if browser.has_surface_depth_pass() {
-            browser.abort_surface_depth_raster();
-            encoder.raster_extent = None;
-            encoder.raster_pipeline = None;
-            return;
-        }
-        if browser.has_owned_framebuffer_pass() {
-            browser.abort_offscreen_raster();
-            encoder.raster_extent = None;
-            encoder.raster_pipeline = None;
-            return;
+    {
+        encoder.browser_surface_token = None;
+        if let Some(browser) = encoder.browser.as_mut() {
+            if browser.has_surface_depth_pass() {
+                browser.abort_surface_depth_raster();
+                encoder.end_raster_state();
+                encoder.raster_pipeline = None;
+                return;
+            }
+            if browser.has_owned_framebuffer_pass() {
+                browser.abort_offscreen_raster();
+                encoder.end_raster_state();
+                encoder.raster_pipeline = None;
+                return;
+            }
         }
     }
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
@@ -57,7 +67,7 @@ pub(super) fn abort(encoder: &mut GlEncoder) {
         if result.is_err() {
             encoder.indeterminate = true;
         }
-        encoder.raster_extent = None;
+        encoder.end_raster_state();
         encoder.raster_pipeline = None;
         return;
     }
@@ -77,7 +87,7 @@ pub(super) fn abort(encoder: &mut GlEncoder) {
         if result.is_err() {
             encoder.indeterminate = true;
         }
-        encoder.raster_extent = None;
+        encoder.end_raster_state();
         encoder.raster_pipeline = None;
         return;
     }

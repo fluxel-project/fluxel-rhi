@@ -72,6 +72,8 @@ pub(crate) enum GlAttachmentTarget {
 pub(crate) struct GlTextureView {
     pub target: GlAttachmentTarget,
     pub format: GlFormat,
+    /// Plane attached to the framebuffer; All retains the format's planes.
+    pub aspect: super::GlTextureAspect,
     pub mip_level: u32,
     pub array_layer: u32,
     /// Array layers this view serves in one pass; `1` is a plain attachment.
@@ -102,11 +104,10 @@ pub(crate) enum GlStoreOp {
 
 /// IEEE values preserved by bit pattern, keeping pass descriptors hashable.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct GlColorClearValue {
-    pub red: u32,
-    pub green: u32,
-    pub blue: u32,
-    pub alpha: u32,
+pub(crate) enum GlColorClearValue {
+    Float([u32; 4]),
+    Uint([u32; 4]),
+    Sint([i32; 4]),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -136,19 +137,21 @@ pub(crate) struct GlDepthStencilAttachment {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct GlFramebufferDescriptor {
-    pub color_attachments: Vec<GlTextureView>,
+    pub color_attachments: Vec<Option<GlTextureView>>,
     pub depth_stencil_attachment: Option<GlTextureView>,
     /// Explicit `glDrawBuffers` selection over color-attachment indices.
     ///
-    /// Empty keeps the driver's default mapping; a nonempty selection must be
-    /// in bounds, within the discovered draw-buffer count, and duplicate free.
+    /// Empty keeps the driver's default mapping; `u32::MAX` denotes GL_NONE.
+    /// Other indices must name present attachments and be duplicate free.
     pub draw_buffers: Vec<u32>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct GlRenderPassDescriptor {
+    /// Core render area in upper-left coordinates; None means the full target.
+    pub render_area: Option<super::GlScissorRect>,
     pub target: GlRenderTarget,
-    pub color_attachments: Vec<GlColorAttachment>,
+    pub color_attachments: Vec<Option<GlColorAttachment>>,
     pub depth_stencil_attachment: Option<GlDepthStencilAttachment>,
 }
 
@@ -274,7 +277,9 @@ impl GlFramebufferDescriptor {
         max_draw_buffers: u32,
         current: super::ContextStamp,
     ) -> Result<(), GlFramebufferValidationError> {
-        if self.color_attachments.is_empty() && self.depth_stencil_attachment.is_none() {
+        if self.color_attachments.iter().all(Option::is_none)
+            && self.depth_stencil_attachment.is_none()
+        {
             return Err(GlFramebufferValidationError::NoAttachments);
         }
         if self.color_attachments.len() > max_colors as usize {
@@ -284,14 +289,19 @@ impl GlFramebufferDescriptor {
             return Err(GlFramebufferValidationError::TooManyDrawBuffers);
         }
         for (position, index) in self.draw_buffers.iter().enumerate() {
-            if *index as usize >= self.color_attachments.len() {
+            if *index == u32::MAX {
+                continue;
+            }
+            if *index as usize >= self.color_attachments.len()
+                || self.color_attachments[*index as usize].is_none()
+            {
                 return Err(GlFramebufferValidationError::DrawBufferIndexOutOfBounds);
             }
             if self.draw_buffers[..position].contains(index) {
                 return Err(GlFramebufferValidationError::DuplicateDrawBuffer);
             }
         }
-        let mut all = self.color_attachments.clone();
+        let mut all: Vec<_> = self.color_attachments.iter().flatten().copied().collect();
         if let Some(depth) = self.depth_stencil_attachment {
             all.push(depth);
         }
@@ -320,6 +330,7 @@ impl GlFramebufferDescriptor {
         if self
             .color_attachments
             .iter()
+            .flatten()
             .any(|view| view.is_depth_stencil())
         {
             return Err(GlFramebufferValidationError::InvalidColorFormat);
@@ -339,7 +350,9 @@ impl GlFramebufferDescriptor {
     /// count is the whole framebuffer's count; no attachments means no views.
     pub(crate) fn view_count(&self) -> u32 {
         self.color_attachments
-            .first()
+            .iter()
+            .flatten()
+            .next()
             .or(self.depth_stencil_attachment.as_ref())
             .map_or(0, |view| view.layer_count)
     }
@@ -370,8 +383,8 @@ impl GlRenderPassDescriptor {
         if let GlRenderTarget::Default(target) = self.target {
             if self.depth_stencil_attachment.is_some()
                 || self.color_attachments.len() != 1
-                || !matches!(self.color_attachments[0].view, GlPassAttachmentView::DefaultColor(view) if view == target)
-                || self.color_attachments[0].resolve_target.is_some()
+                || !matches!(self.color_attachments[0], Some(GlColorAttachment { view: GlPassAttachmentView::DefaultColor(view), .. }) if view == target)
+                || self.color_attachments[0].is_some_and(|a| a.resolve_target.is_some())
             {
                 return Err(GlFramebufferValidationError::InvalidResolve);
             }
@@ -379,6 +392,9 @@ impl GlRenderPassDescriptor {
         }
         let framebuffer = framebuffer.ok_or(GlFramebufferValidationError::NoAttachments)?;
         framebuffer.validate(max_colors, max_draw_buffers, current)?;
+        if self.depth_stencil_attachment.map(|a| a.view) != framebuffer.depth_stencil_attachment {
+            return Err(GlFramebufferValidationError::DuplicateAttachment);
+        }
         if self.color_attachments.len() != framebuffer.color_attachments.len() {
             return Err(GlFramebufferValidationError::TooManyColorAttachments);
         }
@@ -387,6 +403,11 @@ impl GlRenderPassDescriptor {
             .iter()
             .zip(&framebuffer.color_attachments)
         {
+            let (attachment, view) = match (attachment, view) {
+                (None, None) => continue,
+                (Some(attachment), Some(view)) => (attachment, view),
+                _ => return Err(GlFramebufferValidationError::DuplicateAttachment),
+            };
             if attachment.view != GlPassAttachmentView::Allocated(*view) {
                 return Err(GlFramebufferValidationError::DuplicateAttachment);
             }
@@ -405,9 +426,6 @@ impl GlRenderPassDescriptor {
                     return Err(GlFramebufferValidationError::InvalidResolve);
                 }
             }
-            if attachment.store == GlStoreOp::Discard && attachment.resolve_target.is_none() {
-                return Err(GlFramebufferValidationError::DiscardWithoutResolve);
-            }
         }
         Ok(())
     }
@@ -415,7 +433,9 @@ impl GlRenderPassDescriptor {
     /// Returns the view count this pass renders, taken from its attachments.
     pub(crate) fn view_count(&self) -> u32 {
         self.color_attachments
-            .first()
+            .iter()
+            .flatten()
+            .next()
             .map(|attachment| match attachment.view {
                 GlPassAttachmentView::Allocated(view) => view.layer_count,
                 GlPassAttachmentView::DefaultColor(_) => 1,

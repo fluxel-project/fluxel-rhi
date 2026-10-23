@@ -14,9 +14,19 @@ use super::owner::{
     BrowserTexture, BrowserVertexArray,
 };
 
+mod attachments;
 mod blit;
+mod clear_texture;
+mod compressed_upload;
+pub(super) mod multiview;
+mod pbo_readback;
 mod raster;
-mod readback;
+mod surface_color;
+mod surface_raster;
+pub(crate) use attachments::{
+    BrowserColorAttachment, BrowserDepthAttachment, BrowserResolveAttachment,
+};
+
 mod upload;
 
 impl BrowserEncoder {
@@ -108,6 +118,7 @@ impl BrowserEncoder {
         bytes: &[u8],
     ) -> Result<()> {
         self.same_owner(&destination.owner)?;
+        let destination_raw = destination.texture()?;
         let mip_extent = [
             destination
                 .desc
@@ -139,15 +150,9 @@ impl BrowserEncoder {
         {
             return Err(Error::InvalidRange);
         }
-        let native_y = mip_extent[1]
-            .checked_sub(
-                origin[1]
-                    .checked_add(extent[1])
-                    .ok_or(Error::InvalidRange)?,
-            )
-            .ok_or(Error::InvalidRange)?;
+        let native_y = origin[1];
         self.with_context("write_rgba8_texture", |raw| {
-            raw.bind_texture(Gl::TEXTURE_2D, Some(&destination.raw));
+            raw.bind_texture(Gl::TEXTURE_2D, Some(destination_raw));
             // The typed path uploads an ArrayBufferView to TEXTURE_2D only.
             // UNPACK_FLIP_Y_WEBGL is invalid with a PBO source, so this owner
             // clears any private transfer binding before the WebGL call.
@@ -182,6 +187,7 @@ impl BrowserEncoder {
         extent: [u32; 2],
     ) -> Result<Vec<u8>> {
         self.same_owner(&source.owner)?;
+        let source_raw = source.texture()?;
         let mip_extent = [
             source
                 .desc
@@ -238,7 +244,7 @@ impl BrowserEncoder {
             Gl::FRAMEBUFFER,
             Gl::COLOR_ATTACHMENT0,
             Gl::TEXTURE_2D,
-            Some(&source.raw),
+            Some(source_raw),
             mip as i32,
         );
         let read = state.context.raw.read_pixels_with_opt_u8_array(
@@ -262,12 +268,6 @@ impl BrowserEncoder {
                 "WebGL2 RGBA8 texture readback failed".into(),
             ));
         }
-        let row = extent[0] as usize * 4;
-        for top in 0..extent[1] as usize / 2 {
-            let bottom = extent[1] as usize - 1 - top;
-            let (head, tail) = bytes.split_at_mut(bottom * row);
-            head[top * row..(top + 1) * row].swap_with_slice(&mut tail[..row]);
-        }
         Ok(bytes)
     }
 
@@ -278,7 +278,21 @@ impl BrowserEncoder {
         &mut self,
         extent: [u32; 2],
         clear: Option<ClearColor>,
+        render_area: Rect,
     ) -> Result<()> {
+        if render_area
+            .x
+            .checked_add(render_area.width)
+            .is_none_or(|x| x > extent[0])
+            || render_area
+                .y
+                .checked_add(render_area.height)
+                .is_none_or(|y| y > extent[1])
+            || render_area.width == 0
+            || render_area.height == 0
+        {
+            return Err(Error::InvalidRange);
+        }
         {
             let mut state = self.owner.state.borrow_mut();
             state.ensure_encoder(self.epoch)?;
@@ -292,7 +306,13 @@ impl BrowserEncoder {
             // WebGL clears respect scissor and color write masks. A prior pass
             // may have left either state narrowed, while Core clear ops cover
             // the new pass render area independently of prior draw state.
-            raw.disable(Gl::SCISSOR_TEST);
+            raw.enable(Gl::SCISSOR_TEST);
+            raw.scissor(
+                render_area.x as i32,
+                (extent[1] - render_area.y - render_area.height) as i32,
+                render_area.width as i32,
+                render_area.height as i32,
+            );
             raw.color_mask(true, true, true, true);
             if let Some(clear) = clear {
                 match clear {
@@ -309,6 +329,7 @@ impl BrowserEncoder {
                     raw.clear(Gl::COLOR_BUFFER_BIT);
                 }
             }
+            raw.disable(Gl::SCISSOR_TEST);
         })?;
         self.owner.state.borrow_mut().raster_extent = Some(extent);
         Ok(())
@@ -338,9 +359,7 @@ impl BrowserEncoder {
         self.set_vertex_array(&array.raw)
     }
 
-    /// Applies a public upper-left viewport through the GL lower-left native
-    /// convention. This conversion is deliberately at the owner boundary so
-    /// all Core-facing backends share WebGPU's framebuffer coordinates.
+    /// Applies a viewport to the upper-first texture storage convention.
     pub(crate) fn set_viewport(&mut self, viewport: Viewport) -> Result<()> {
         let extent = self.require_raster()?;
         let right = viewport.x + viewport.width;
@@ -363,7 +382,7 @@ impl BrowserEncoder {
         {
             return Err(Error::InvalidRange);
         }
-        let y = extent[1] as f32 - bottom;
+        let y = viewport.y;
         self.with_context("set_viewport", |raw| {
             raw.viewport(
                 viewport.x as i32,
@@ -375,7 +394,7 @@ impl BrowserEncoder {
         })
     }
 
-    /// Applies a public upper-left scissor through GL's lower-left convention.
+    /// Applies a scissor to the upper-first texture storage convention.
     pub(crate) fn set_scissor(&mut self, rect: Rect) -> Result<()> {
         let extent = self.require_raster()?;
         let right = rect.x.checked_add(rect.width).ok_or(Error::InvalidRange)?;
@@ -388,7 +407,7 @@ impl BrowserEncoder {
         {
             return Err(Error::InvalidRange);
         }
-        let y = extent[1].checked_sub(bottom).ok_or(Error::InvalidRange)?;
+        let y = rect.y;
         self.with_context("set_scissor", |raw| {
             raw.enable(Gl::SCISSOR_TEST);
             raw.scissor(
@@ -448,6 +467,70 @@ impl BrowserEncoder {
         })
     }
 
+    /// Uses the optional WebGL extension for an indexed draw with base vertex.
+    pub(crate) fn draw_elements_base_vertex(
+        &mut self,
+        mode: u32,
+        count: i32,
+        index_type: u32,
+        byte_offset: i32,
+        instances: i32,
+        base_vertex: i32,
+    ) -> Result<()> {
+        use wasm_bindgen::{JsCast, JsValue};
+        self.require_raster()?;
+        if count < 0 || byte_offset < 0 || instances < 0 {
+            return Err(Error::InvalidRange);
+        }
+        let mut result = Ok(());
+        self.with_context("draw_elements_base_vertex", |raw| {
+            let extension =
+                match raw.get_extension("WEBGL_draw_instanced_base_vertex_base_instance") {
+                    Ok(Some(value)) => value,
+                    Ok(None) => {
+                        result = Err(Error::Unsupported("WebGL base vertex extension"));
+                        return;
+                    }
+                    Err(_) => {
+                        result = Err(Error::Backend(
+                            "WebGL base vertex extension lookup failed".into(),
+                        ));
+                        return;
+                    }
+                };
+            let func = js_sys::Reflect::get(
+                &extension,
+                &JsValue::from_str("drawElementsInstancedBaseVertexBaseInstanceWEBGL"),
+            )
+            .ok()
+            .and_then(|value| value.dyn_into::<js_sys::Function>().ok());
+            let Some(func) = func else {
+                result = Err(Error::Backend(
+                    "WebGL base vertex extension entry point missing".into(),
+                ));
+                return;
+            };
+            let args = js_sys::Array::new();
+            for value in [
+                f64::from(mode),
+                f64::from(count),
+                f64::from(index_type),
+                f64::from(byte_offset),
+                f64::from(instances),
+                f64::from(base_vertex),
+                0.0,
+            ] {
+                args.push(&JsValue::from_f64(value));
+            }
+            if func.apply(&extension, &args).is_err() {
+                result = Err(Error::Backend(
+                    "WebGL base vertex draw threw an exception".into(),
+                ));
+            }
+        })?;
+        result
+    }
+
     /// Ends the current raster pass. No command snapshot survives the pass.
     pub(crate) fn end_raster(&mut self) -> Result<()> {
         self.require_raster()?;
@@ -492,6 +575,19 @@ impl BrowserEncoder {
             self.owner.quarantine_issued();
         }
         self.closed = true;
+    }
+
+    // Classify native allocation/attachment failures after releasing their handles.
+    pub(super) fn allocation_error(
+        state: &mut super::owner::BrowserOwnerState,
+        fallback: Error,
+    ) -> Error {
+        if state.context.raw.is_context_lost() {
+            state.mark_lost();
+            Error::DeviceLost
+        } else {
+            fallback
+        }
     }
 
     pub(super) fn with_context(

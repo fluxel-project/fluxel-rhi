@@ -124,6 +124,131 @@ pub(crate) enum GlFormat {
     EacRg11Snorm,
 }
 
+impl GlFormat {
+    /// Integer framebuffer colors cannot use GL's linear blit filter.
+    pub(crate) const fn is_integer_color(self) -> bool {
+        matches!(
+            self,
+            Self::R8Uint
+                | Self::R8Sint
+                | Self::Rg8Uint
+                | Self::Rg8Sint
+                | Self::Rgba8Uint
+                | Self::Rgba8Sint
+                | Self::R16Uint
+                | Self::R16Sint
+                | Self::Rg16Uint
+                | Self::Rg16Sint
+                | Self::Rgba16Uint
+                | Self::Rgba16Sint
+                | Self::Rgb10a2Uint
+                | Self::R32Uint
+                | Self::R32Sint
+                | Self::R64Uint
+                | Self::Rg32Uint
+                | Self::Rg32Sint
+                | Self::Rgba32Uint
+                | Self::Rgba32Sint
+        )
+    }
+
+    pub(crate) const fn is_float_color(self) -> bool {
+        matches!(
+            self,
+            Self::R16Float
+                | Self::Rg16Float
+                | Self::Rgba16Float
+                | Self::R32Float
+                | Self::Rg32Float
+                | Self::Rgba32Float
+                | Self::Rgb9e5Ufloat
+                | Self::Rg11b10Ufloat
+        )
+    }
+
+    pub(crate) fn supports_blit_aspect(
+        self,
+        aspect: crate::backend::gl::api::GlTextureAspect,
+    ) -> bool {
+        use crate::backend::gl::api::GlTextureAspect;
+        match aspect {
+            GlTextureAspect::All => false,
+            GlTextureAspect::DepthOnly => matches!(
+                self,
+                Self::Depth16Unorm
+                    | Self::Depth24Unorm
+                    | Self::Depth24PlusStencil8
+                    | Self::Depth32Float
+                    | Self::Depth32FloatStencil8
+            ),
+            GlTextureAspect::StencilOnly => matches!(
+                self,
+                Self::Stencil8 | Self::Depth24PlusStencil8 | Self::Depth32FloatStencil8
+            ),
+            GlTextureAspect::Color => {
+                !matches!(
+                    self,
+                    Self::Depth16Unorm
+                        | Self::Depth24Unorm
+                        | Self::Depth24PlusStencil8
+                        | Self::Depth32Float
+                        | Self::Depth32FloatStencil8
+                        | Self::Stencil8
+                ) && self.compressed_info().is_none()
+            }
+        }
+    }
+
+    /// GL permits color blits within the same numeric class; depth/stencil
+    /// formats must match exactly.
+    pub(crate) fn blit_compatible(
+        self,
+        other: Self,
+        aspect: crate::backend::gl::api::GlTextureAspect,
+    ) -> bool {
+        use crate::backend::gl::api::GlTextureAspect;
+        if !self.supports_blit_aspect(aspect) || !other.supports_blit_aspect(aspect) {
+            return false;
+        }
+        if aspect != GlTextureAspect::Color {
+            return self == other;
+        }
+        let signed = |format| {
+            matches!(
+                format,
+                Self::R8Sint
+                    | Self::Rg8Sint
+                    | Self::Rgba8Sint
+                    | Self::R16Sint
+                    | Self::Rg16Sint
+                    | Self::Rgba16Sint
+                    | Self::R32Sint
+                    | Self::Rg32Sint
+                    | Self::Rgba32Sint
+            )
+        };
+        self.is_integer_color() == other.is_integer_color()
+            && (!self.is_integer_color() || signed(self) == signed(other))
+    }
+}
+
+#[cfg(test)]
+mod blit_compatibility_tests {
+    use super::GlFormat as F;
+    use crate::backend::gl::api::GlTextureAspect as A;
+
+    #[test]
+    fn blits_obey_color_numeric_class_and_exact_depth_stencil_format() {
+        assert!(F::Rgba8Unorm.blit_compatible(F::R16Float, A::Color));
+        assert!(F::R8Uint.blit_compatible(F::Rgba16Uint, A::Color));
+        assert!(!F::R8Uint.blit_compatible(F::Rgba16Sint, A::Color));
+        assert!(!F::R8Uint.blit_compatible(F::Rgba8Unorm, A::Color));
+        assert!(F::Depth24PlusStencil8.blit_compatible(F::Depth24PlusStencil8, A::StencilOnly));
+        assert!(!F::Depth16Unorm.blit_compatible(F::Depth24Unorm, A::DepthOnly));
+        assert!(!F::Depth16Unorm.blit_compatible(F::Depth16Unorm, A::StencilOnly));
+    }
+}
+
 /// ASTC LDR block dimensions supported by the compressed-format contract.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) enum GlAstcBlock {
@@ -295,41 +420,80 @@ impl GlFormat {
     /// GLES3 has ETC2/EAC in core. This deliberately answers per format, not
     /// per compression family, so a positive ETC2 fact cannot imply BC/ASTC.
     pub(crate) const fn is_core_compressed_for(self, profile: GlFamilyProfile) -> bool {
-        matches!(
-            (profile, self),
-            (
-                GlFamilyProfile::Embedded { major: 3, .. }
-                    | GlFamilyProfile::Desktop {
-                        major: 4,
-                        minor: 3..
-                    },
-                Self::Etc2Rgb8Unorm
-                    | Self::Etc2Rgb8Srgb
-                    | Self::Etc2Rgba8Unorm
-                    | Self::Etc2Rgba8Srgb
-                    | Self::Etc2Rgb8A1Unorm
-                    | Self::Etc2Rgb8A1Srgb
-                    | Self::EacR11Unorm
-                    | Self::EacRg11Unorm
-                    | Self::EacR11Snorm
-                    | Self::EacRg11Snorm
-            )
-        )
+        match profile {
+            GlFamilyProfile::Desktop { major, minor } => {
+                let bc45 = matches!(
+                    self,
+                    Self::Bc4RUnorm | Self::Bc4RSnorm | Self::Bc5RgUnorm | Self::Bc5RgSnorm
+                );
+                let bc67 = matches!(
+                    self,
+                    Self::Bc6hRgbUfloat
+                        | Self::Bc6hRgbSfloat
+                        | Self::Bc7RgbaUnorm
+                        | Self::Bc7RgbaSrgb
+                );
+                let etc = matches!(
+                    self,
+                    Self::Etc2Rgb8Unorm
+                        | Self::Etc2Rgb8Srgb
+                        | Self::Etc2Rgba8Unorm
+                        | Self::Etc2Rgba8Srgb
+                        | Self::Etc2Rgb8A1Unorm
+                        | Self::Etc2Rgb8A1Srgb
+                        | Self::EacR11Unorm
+                        | Self::EacRg11Unorm
+                        | Self::EacR11Snorm
+                        | Self::EacRg11Snorm
+                );
+                bc45 || (bc67 && (major > 4 || minor >= 2)) || (etc && (major > 4 || minor >= 3))
+            }
+            GlFamilyProfile::Embedded { major, minor } => {
+                let etc = matches!(
+                    self,
+                    Self::Etc2Rgb8Unorm
+                        | Self::Etc2Rgb8Srgb
+                        | Self::Etc2Rgba8Unorm
+                        | Self::Etc2Rgba8Srgb
+                        | Self::Etc2Rgb8A1Unorm
+                        | Self::Etc2Rgb8A1Srgb
+                        | Self::EacR11Unorm
+                        | Self::EacRg11Unorm
+                        | Self::EacR11Snorm
+                        | Self::EacRg11Snorm
+                );
+                let astc_ldr = matches!(
+                    self,
+                    Self::Astc {
+                        color_space: GlCompressedColorSpace::Linear | GlCompressedColorSpace::Srgb,
+                        ..
+                    }
+                );
+                etc || (astc_ldr && (major > 3 || minor >= 2))
+            }
+            GlFamilyProfile::WebGl2 => false,
+        }
     }
 
     pub(super) const fn is_non_compressed_core_baseline_for(
         self,
         profile: GlFamilyProfile,
     ) -> bool {
-        // WebGL2 deliberately has a much smaller static internal-format
-        // guarantee set than desktop GL or GLES.  These three are the exact
-        // rows its browser discovery records without an extension or an FBO
-        // probe; accepting the native table wholesale here would turn a
-        // WebGL2 core guarantee into a capability lie.
+        // Admit only sized storage formats guaranteed by the WebGL2 tables.
+        // Availability of storage does not establish every operation: each
+        // discovered row still supplies its exact sampling/rendering facts.
         if matches!(profile, GlFamilyProfile::WebGl2) {
             return matches!(
                 self,
-                Self::Rgba8Unorm | Self::Rgba8Srgb | Self::Depth32Float
+                Self::Rgba8Unorm
+                    | Self::Rgba8Srgb
+                    | Self::Rgba8Uint
+                    | Self::Rgba8Sint
+                    | Self::Depth16Unorm
+                    | Self::Depth24Unorm
+                    | Self::Depth24PlusStencil8
+                    | Self::Depth32Float
+                    | Self::Depth32FloatStencil8
             );
         }
         match self {
@@ -382,10 +546,11 @@ impl GlFormat {
             | Self::Depth24Unorm
             | Self::Depth24PlusStencil8
             | Self::Depth32Float
+            | Self::Depth32FloatStencil8
             | Self::Stencil8 => true,
             // These are desktop-core spellings only at the GL 4.x floor. They
             // are intentionally not promoted to GLES3/WebGL2 guarantees.
-            Self::R64Uint | Self::Depth32FloatStencil8 => {
+            Self::R64Uint => {
                 matches!(profile, GlFamilyProfile::Desktop { .. })
             }
             Self::Bgra8Unorm | Self::Bgra8Srgb => false,
@@ -395,10 +560,32 @@ impl GlFormat {
 
     pub(super) const fn is_supplied_by_extension(self, extension: GlKnownExtension) -> bool {
         match extension {
-            GlKnownExtension::CompressedTextureS3tc
-            | GlKnownExtension::ExtTextureCompressionS3tc => matches!(
+            GlKnownExtension::ExtTextureNorm16 => matches!(
+                self,
+                Self::R16Unorm
+                    | Self::R16Snorm
+                    | Self::Rg16Unorm
+                    | Self::Rg16Snorm
+                    | Self::Rgba16Unorm
+                    | Self::Rgba16Snorm
+            ),
+            GlKnownExtension::CompressedTextureS3tc => matches!(
                 self,
                 Self::Bc1RgbUnorm | Self::Bc1RgbaUnorm | Self::Bc2RgbaUnorm | Self::Bc3RgbaUnorm
+            ),
+            // Desktop GL 4.x has core texture sRGB; combined with EXT S3TC
+            // this exposes the corresponding sRGB compressed formats. Native
+            // discovery admits this evidence for sRGB only on desktop.
+            GlKnownExtension::ExtTextureCompressionS3tc => matches!(
+                self,
+                Self::Bc1RgbUnorm
+                    | Self::Bc1RgbaUnorm
+                    | Self::Bc2RgbaUnorm
+                    | Self::Bc3RgbaUnorm
+                    | Self::Bc1RgbSrgb
+                    | Self::Bc1RgbaSrgb
+                    | Self::Bc2RgbaSrgb
+                    | Self::Bc3RgbaSrgb
             ),
             GlKnownExtension::CompressedTextureS3tcSrgb => matches!(
                 self,
@@ -415,7 +602,7 @@ impl GlFormat {
                 Self::Bc4RUnorm | Self::Bc4RSnorm | Self::Bc5RgUnorm | Self::Bc5RgSnorm
             ),
             // WebGL's one ASTC extension carries an additional
-            // `supportedProfiles` observation for HDR. Browser discovery adds
+            // `getSupportedProfiles()` observation for HDR. Browser discovery adds
             // an HDR row only after that observation; native KHR LDR remains
             // restricted to LDR below.
             GlKnownExtension::CompressedTextureAstc => matches!(self, Self::Astc { .. }),
@@ -429,26 +616,64 @@ impl GlFormat {
             GlKnownExtension::KhrTextureCompressionAstcHdr => matches!(
                 self,
                 Self::Astc {
-                    color_space: GlCompressedColorSpace::Hdr,
+                    color_space: GlCompressedColorSpace::Hdr
+                        | GlCompressedColorSpace::Linear
+                        | GlCompressedColorSpace::Srgb,
                     ..
                 }
             ),
-            GlKnownExtension::CompressedTextureEtc
-            | GlKnownExtension::ArbEs3Compatibility
-            | GlKnownExtension::OesCompressedEtc2Rgb8Texture => matches!(
-                self,
-                Self::Etc2Rgb8Unorm
-                    | Self::Etc2Rgb8Srgb
-                    | Self::Etc2Rgba8Unorm
-                    | Self::Etc2Rgba8Srgb
-                    | Self::Etc2Rgb8A1Unorm
-                    | Self::Etc2Rgb8A1Srgb
-                    | Self::EacR11Unorm
-                    | Self::EacRg11Unorm
-                    | Self::EacR11Snorm
-                    | Self::EacRg11Snorm
-            ),
+            GlKnownExtension::OesCompressedEtc2Rgb8Texture => matches!(self, Self::Etc2Rgb8Unorm),
+            GlKnownExtension::CompressedTextureEtc | GlKnownExtension::ArbEs3Compatibility => {
+                matches!(
+                    self,
+                    Self::Etc2Rgb8Unorm
+                        | Self::Etc2Rgb8Srgb
+                        | Self::Etc2Rgba8Unorm
+                        | Self::Etc2Rgba8Srgb
+                        | Self::Etc2Rgb8A1Unorm
+                        | Self::Etc2Rgb8A1Srgb
+                        | Self::EacR11Unorm
+                        | Self::EacRg11Unorm
+                        | Self::EacR11Snorm
+                        | Self::EacRg11Snorm
+                )
+            }
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod compressed_profile_tests {
+    use super::*;
+    #[test]
+    fn core_and_extension_evidence_is_format_specific() {
+        let gl40 = GlFamilyProfile::Desktop { major: 4, minor: 0 };
+        let gl42 = GlFamilyProfile::Desktop { major: 4, minor: 2 };
+        let es31 = GlFamilyProfile::Embedded { major: 3, minor: 1 };
+        let es32 = GlFamilyProfile::Embedded { major: 3, minor: 2 };
+        let astc = GlFormat::Astc {
+            block: GlAstcBlock::B4x4,
+            color_space: GlCompressedColorSpace::Linear,
+        };
+        assert!(GlFormat::Bc4RUnorm.is_core_compressed_for(gl40));
+        assert!(!GlFormat::Bc7RgbaUnorm.is_core_compressed_for(gl40));
+        assert!(GlFormat::Bc7RgbaUnorm.is_core_compressed_for(gl42));
+        assert!(!astc.is_core_compressed_for(es31));
+        assert!(astc.is_core_compressed_for(es32));
+        assert!(astc.is_supplied_by_extension(GlKnownExtension::KhrTextureCompressionAstcHdr));
+        let hdr = GlFormat::Astc {
+            block: GlAstcBlock::B4x4,
+            color_space: GlCompressedColorSpace::Hdr,
+        };
+        assert!(!hdr.is_supplied_by_extension(GlKnownExtension::KhrTextureCompressionAstcLdr));
+        assert!(
+            GlFormat::Etc2Rgb8Unorm
+                .is_supplied_by_extension(GlKnownExtension::OesCompressedEtc2Rgb8Texture)
+        );
+        assert!(
+            !GlFormat::EacR11Unorm
+                .is_supplied_by_extension(GlKnownExtension::OesCompressedEtc2Rgb8Texture)
+        );
     }
 }

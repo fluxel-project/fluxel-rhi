@@ -260,7 +260,10 @@ fn run(secondary_path: bool, mask: u32) {
                 accesses: AccessMask::DEPTH_WRITE,
             },
         },
-        layout: Some((ImageLayout::DepthStencilAttachment, ImageLayout::DepthStencilAttachment)),
+        layout: Some((
+            ImageLayout::DepthStencilAttachment,
+            ImageLayout::DepthStencilAttachment,
+        )),
         ownership: None,
     })])
     .unwrap();

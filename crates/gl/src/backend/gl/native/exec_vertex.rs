@@ -23,18 +23,18 @@ enum AttributePath {
 const fn attribute_path(format: GlVertexFormat) -> AttributePath {
     use GlVertexFormat as F;
     match format {
-        F::Uint8x2 => AttributePath::Float(2, glow::UNSIGNED_BYTE, false),
-        F::Uint8x4 => AttributePath::Float(4, glow::UNSIGNED_BYTE, false),
-        F::Sint8x2 => AttributePath::Float(2, glow::BYTE, false),
-        F::Sint8x4 => AttributePath::Float(4, glow::BYTE, false),
+        F::Uint8x2 => AttributePath::Integer(2, glow::UNSIGNED_BYTE),
+        F::Uint8x4 => AttributePath::Integer(4, glow::UNSIGNED_BYTE),
+        F::Sint8x2 => AttributePath::Integer(2, glow::BYTE),
+        F::Sint8x4 => AttributePath::Integer(4, glow::BYTE),
         F::Unorm8x2 => AttributePath::Float(2, glow::UNSIGNED_BYTE, true),
         F::Unorm8x4 => AttributePath::Float(4, glow::UNSIGNED_BYTE, true),
         F::Snorm8x2 => AttributePath::Float(2, glow::BYTE, true),
         F::Snorm8x4 => AttributePath::Float(4, glow::BYTE, true),
-        F::Uint16x2 => AttributePath::Float(2, glow::UNSIGNED_SHORT, false),
-        F::Uint16x4 => AttributePath::Float(4, glow::UNSIGNED_SHORT, false),
-        F::Sint16x2 => AttributePath::Float(2, glow::SHORT, false),
-        F::Sint16x4 => AttributePath::Float(4, glow::SHORT, false),
+        F::Uint16x2 => AttributePath::Integer(2, glow::UNSIGNED_SHORT),
+        F::Uint16x4 => AttributePath::Integer(4, glow::UNSIGNED_SHORT),
+        F::Sint16x2 => AttributePath::Integer(2, glow::SHORT),
+        F::Sint16x4 => AttributePath::Integer(4, glow::SHORT),
         F::Unorm16x2 => AttributePath::Float(2, glow::UNSIGNED_SHORT, true),
         F::Unorm16x4 => AttributePath::Float(4, glow::UNSIGNED_SHORT, true),
         F::Snorm16x2 => AttributePath::Float(2, glow::SHORT, true),
@@ -284,13 +284,47 @@ impl NativeGlProvider {
     /// must bind a live VAO from this provider first. `layout` and `buffers`
     /// must have passed the binding validation; this helper only emits their
     /// immediate VAO state and publishes no ownership.
-    unsafe fn emit_attributes(
+    pub(super) unsafe fn emit_attributes(
         &self,
         layout: &GlVertexLayout,
         buffers: &[GlVertexBufferBinding],
     ) -> Result<(), GlError> {
         use glow::HasContext as _;
         unsafe {
+            if layout.buffers.iter().any(|slot| slot.stride == 0) {
+                let profile = self.discovery.context().profile();
+                let available = profile.has_core(
+                    crate::backend::gl::api::GlVersion::new(4, 3),
+                    crate::backend::gl::api::GlVersion::new(3, 1),
+                ) || self
+                    .discovery
+                    .extensions()
+                    .raw_reported_names()
+                    .any(|name| name == "GL_ARB_vertex_attrib_binding");
+                if !available || !self.vertex_binding_entries {
+                    return Err(GlError::Unsupported {
+                        operation: "bind-vertex-array",
+                        reason: "zero stride requires vertex attribute binding",
+                    });
+                }
+                let max = self.gl.get_parameter_i32(glow::MAX_VERTEX_ATTRIB_BINDINGS);
+                if layout
+                    .attributes
+                    .iter()
+                    .filter(|a| {
+                        layout
+                            .buffers
+                            .iter()
+                            .any(|slot| slot.stride == 0 && slot.slot == a.buffer_slot)
+                    })
+                    .any(|a| a.location >= max as u32)
+                {
+                    return Err(GlError::Unsupported {
+                        operation: "bind-vertex-array",
+                        reason: "zero stride vertex binding limit",
+                    });
+                }
+            }
             for slot_layout in &layout.buffers {
                 let Some(binding) = buffers
                     .iter()
@@ -314,12 +348,7 @@ impl NativeGlProvider {
                     .iter()
                     .filter(|attribute| attribute.buffer_slot == slot_layout.slot)
                 {
-                    // Stride zero means tightly packed attribute values.
-                    let stride = if slot_layout.stride == 0 {
-                        attribute_byte_size(attribute.format)
-                    } else {
-                        slot_layout.stride
-                    } as u64;
+                    let stride = slot_layout.stride;
                     let offset = binding.offset.checked_add(u64::from(attribute.offset));
                     let offset = match offset.and_then(|value| i32::try_from(value).ok()) {
                         Some(offset) => offset,
@@ -330,6 +359,37 @@ impl NativeGlProvider {
                             ));
                         }
                     };
+                    if stride == 0 {
+                        // Separate attribute binding interprets zero as a fixed address,
+                        // unlike the legacy pointer API where zero means tightly packed.
+                        self.gl
+                            .bind_vertex_buffer(attribute.location, Some(raw), offset, 0);
+                        match attribute_path(attribute.format) {
+                            AttributePath::Float(size, type_, normalized) => {
+                                self.gl.vertex_attrib_format_f32(
+                                    attribute.location,
+                                    size,
+                                    type_,
+                                    normalized,
+                                    0,
+                                )
+                            }
+                            AttributePath::Integer(size, type_) => self
+                                .gl
+                                .vertex_attrib_format_i32(attribute.location, size, type_, 0),
+                        }
+                        self.gl
+                            .vertex_attrib_binding(attribute.location, attribute.location);
+                        self.gl.vertex_binding_divisor(
+                            attribute.location,
+                            match slot_layout.step_mode {
+                                GlVertexStepMode::Vertex => 0,
+                                GlVertexStepMode::Instance => 1,
+                            },
+                        );
+                        self.gl.enable_vertex_attrib_array(attribute.location);
+                        continue;
+                    }
                     match attribute_path(attribute.format) {
                         AttributePath::Float(size, type_, normalized) => {
                             self.gl.vertex_attrib_pointer_f32(
@@ -366,7 +426,7 @@ impl NativeGlProvider {
     }
 }
 
-const fn attribute_byte_size(format: GlVertexFormat) -> u32 {
+pub(super) const fn attribute_byte_size(format: GlVertexFormat) -> u32 {
     // The same closed table `GlVertexFormat::byte_size` uses, kept local so
     // this module does not depend on private trait items.
     match format {

@@ -58,8 +58,8 @@ topologies, shader stages, queue plans, or device tiers.
 | Vulkan | Graphics and compute, multiple render targets, indirect drawing and dispatch, queries, secondary recording, clears, pipeline caches, mapping, placed memory, and native interop | Descriptor indexing, multiview, ray pipelines and inline ray queries, mesh shaders, sparse textures, graphics/compute queues, GPU-count multi-draw, and external resources depend on device features, extensions, formats and queue support. See the [fixture index](documents/evidence/vulkan-completeness-2026-10-22/README.md) for validation scope. |
 | Metal | Graphics and compute, up to eight render targets, depth/stencil, dynamic uniform/storage offsets, indirect draw and dispatch, standalone clears, copies/resolves, mapping, placement heaps, binary archives, and native interop | Device-gated argument arrays/indexing, mesh/object shaders, acceleration structures and ray queries, multiview, timestamp/occlusion and separate pass counters, cross-packet graphics/compute synchronization, GPU-count multi-draw, placement sparse textures, and external resources. See the [implementation review](documents/evidence/metal-completeness-2026-10-22/README.md) for native boundaries and compile-only evidence. No Metal tests or GPU acceptance were run in this phase, as requested. |
 | Browser WebGPU | Graphics and compute, MRT, depth/stencil, dynamic offsets, indirect draw/dispatch, multi-draw including GPU-count lowering, standalone clears, copies/blits/resolves, buffer mapping and readback, occlusion and optional timestamp queries | Optional native features and limits gate compressed formats, immediates, subgroups, dual-source blending and unclipped depth. Ray/mesh, sparse resources, native multiple queues, multiview, complete pipeline statistics, native heap placement and serialized pipeline caches have no matching standard browser route. |
-| Desktop GL / GLES | Immediate graphics; compute, indirect drawing, and occlusion depend on the actual context and profile | The new advanced routes are not implemented in the public GL backend |
-| Browser WebGL2 | Immediate graphics through the browser owner | No native compute or new advanced route is exposed |
+| Desktop GL / GLES | Immediate graphics, MRT, depth/stencil, copies and resolves; compute and indirect commands where supported | Context, extension and device limits gate queries, desktop pipeline statistics, program caches, and limited multiview. Check the feature and descriptor for each operation. |
+| Browser WebGL2 | Immediate graphics, MRT, depth/stencil, copies/resolves and occlusion | Extensions gate compressed textures and other optional operations. Standard WebGL2 has no compute or compressed-block readback. |
 
 Metal's separate pass-boundary sample API exposes up to eight native counter
 fields with a device availability mask and an error sentinel. It returns raw
@@ -158,9 +158,18 @@ ASTC require a supporting device for GPU validation.
 
 | Compressed family | DX12 | Vulkan | Metal | WebGPU | GL / GLES | WebGL2 |
 | --- | --- | --- | --- | --- | --- | --- |
-| BC1–BC7 | Device-checked public route | Device-checked public route | Device-checked public route; not GPU tested | Optional standard feature; BC1 copy GPU checked | No public route | No public route |
-| ETC2 / EAC | No DXGI mapping | Device-checked public route; GPU validation pending | Apple-family public route; not GPU tested | Optional standard feature; GPU validation pending | No public route | No public route |
-| ASTC | No DXGI mapping | Device-checked public route; GPU validation pending | Apple-family LDR/HDR routes; not GPU tested | Optional LDR feature; GPU validation pending; no HDR mapping | No public route | No public route |
+| BC1–BC7 | Device-checked public route | Device-checked public route; GPU validation is format/device dependent | Device-checked public route; not GPU tested | Optional standard feature; BC1 copy GPU checked | Core/extension-gated upload and sampling; `COPY_SRC` depends on the format and transfer route | Extension-gated upload and sampling; no compressed `COPY_SRC` |
+| ETC2 / EAC | No DXGI mapping | Device-checked public route; GPU validation is format/device dependent | Apple-family public route; not GPU tested | Optional standard feature; GPU validation pending | Core/extension-gated upload and sampling; `COPY_SRC` depends on the format and transfer route | Extension-gated upload and sampling; no compressed `COPY_SRC` |
+| ASTC | No DXGI mapping | Device-checked public route; GPU validation is format/device dependent | Apple-family LDR/HDR routes; not GPU tested | Optional LDR feature; GPU validation pending; no HDR mapping | Core/extension-gated LDR/HDR upload and sampling; `COPY_SRC` depends on the format and transfer route | Extension/profile-gated LDR/HDR upload and sampling; no compressed `COPY_SRC` |
+
+For GL-family compressed textures, query `texture_support` for the exact
+format, dimension, and usage. Compressed `COPY_SRC` depends on native image-copy
+and readback entry points; GLES also requires a compatible copy-image route and
+a probed integer attachment/readback path. WebGL2 has no standard raw compressed
+block readback. The WGL AMD fixture checked raw blocks for 11 representative
+formats, and the GLES ES 3.2 run used Mesa llvmpipe. ASTC HDR was skipped on
+those devices. Windows ANGLE ES 3.1 skips compressed readback when the required
+copy-image extension is absent.
 
 GL implements `ImmediateBackend`; it does not expose deferred queue submission.
 WebGL2 does not provide native multithreaded command recording. WebGPU records

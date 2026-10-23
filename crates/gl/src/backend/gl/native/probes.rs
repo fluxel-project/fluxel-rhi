@@ -33,6 +33,8 @@ pub(crate) enum ProbeAnswer {
     Failed,
     /// The operation completed without error.
     Passed,
+    /// The context was lost while probing; discovery must abort.
+    ContextLost,
 }
 
 impl ProbeAnswer {
@@ -44,7 +46,7 @@ impl ProbeAnswer {
     pub(super) const fn to_operation_probe(self) -> crate::backend::gl::api::GlOperationProbe {
         match self {
             Self::Unavailable => crate::backend::gl::api::GlOperationProbe::NotRun,
-            Self::Failed => crate::backend::gl::api::GlOperationProbe::Failed,
+            Self::Failed | Self::ContextLost => crate::backend::gl::api::GlOperationProbe::Failed,
             Self::Passed => crate::backend::gl::api::GlOperationProbe::Passed,
         }
     }
@@ -54,13 +56,20 @@ impl ProbeAnswer {
 ///
 /// Every field starts `Unavailable`, so a probe backend that cannot run leaves
 /// all optional capabilities fail-closed instead of silently enabled.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProbeReport {
+    pub multiview: ProbeAnswer,
     pub depth_texture_attachment: ProbeAnswer,
     pub depth_renderbuffer_attachment: ProbeAnswer,
     pub rgba16f_attachment: ProbeAnswer,
     pub rgba32f_attachment: ProbeAnswer,
     pub rgba8_storage: ProbeAnswer,
+    pub ordinary_image_storage: [ProbeAnswer; IMAGE_FORMATS.len()],
+    pub ordinary_render: [ProbeAnswer; IMAGE_FORMATS.len()],
+    pub exact_integer_read: [ProbeAnswer; EXACT_INTEGER_FORMATS.len()],
+    pub multisample_texture: [Vec<(u32, ProbeAnswer)>; MSAA_FORMATS.len()],
+    pub multisample_array: [Vec<(u32, ProbeAnswer)>; MSAA_FORMATS.len()],
+    pub multisample_renderbuffer: [Vec<(u32, ProbeAnswer)>; MSAA_FORMATS.len()],
     pub compute: ProbeAnswer,
     pub storage_buffer: ProbeAnswer,
     pub storage_image: ProbeAnswer,
@@ -70,7 +79,136 @@ pub(crate) struct ProbeReport {
     /// `glGetQueryiv(GL_TIMESTAMP, GL_QUERY_COUNTER_BITS)`; `None` when the
     /// driver rejected the query or the loader did not supply the entry point.
     pub query_counter_bits: Option<u32>,
+    pub copy_image_symbols: [bool; 3],
+    pub compressed_get_symbol: bool,
 }
+
+impl Default for ProbeReport {
+    fn default() -> Self {
+        Self {
+            multiview: ProbeAnswer::Unavailable,
+            depth_texture_attachment: ProbeAnswer::Unavailable,
+            depth_renderbuffer_attachment: ProbeAnswer::Unavailable,
+            rgba16f_attachment: ProbeAnswer::Unavailable,
+            rgba32f_attachment: ProbeAnswer::Unavailable,
+            rgba8_storage: ProbeAnswer::Unavailable,
+            ordinary_image_storage: [ProbeAnswer::Unavailable; IMAGE_FORMATS.len()],
+            ordinary_render: [ProbeAnswer::Unavailable; IMAGE_FORMATS.len()],
+            exact_integer_read: [ProbeAnswer::Unavailable; EXACT_INTEGER_FORMATS.len()],
+            multisample_texture: std::array::from_fn(|_| Vec::new()),
+            multisample_array: std::array::from_fn(|_| Vec::new()),
+            multisample_renderbuffer: std::array::from_fn(|_| Vec::new()),
+            compute: ProbeAnswer::Unavailable,
+            storage_buffer: ProbeAnswer::Unavailable,
+            storage_image: ProbeAnswer::Unavailable,
+            indirect_draw: ProbeAnswer::Unavailable,
+            indirect_dispatch: ProbeAnswer::Unavailable,
+            multi_draw_indirect: ProbeAnswer::Unavailable,
+            query_counter_bits: None,
+            copy_image_symbols: [false; 3],
+            compressed_get_symbol: false,
+        }
+    }
+}
+
+pub(super) const EXACT_INTEGER_FORMATS: [crate::backend::gl::api::GlFormat; 19] = {
+    use crate::backend::gl::api::GlFormat as F;
+    [
+        F::R8Uint,
+        F::R8Sint,
+        F::Rg8Uint,
+        F::Rg8Sint,
+        F::Rgba8Uint,
+        F::Rgba8Sint,
+        F::R16Uint,
+        F::R16Sint,
+        F::Rg16Uint,
+        F::Rg16Sint,
+        F::Rgba16Uint,
+        F::Rgba16Sint,
+        F::R32Uint,
+        F::R32Sint,
+        F::Rg32Uint,
+        F::Rg32Sint,
+        F::Rgba32Uint,
+        F::Rgba32Sint,
+        F::Rgb10a2Uint,
+    ]
+};
+
+/// Sized image formats exposed by the common shader contract.
+pub(super) const IMAGE_FORMATS: [(crate::backend::gl::api::GlFormat, u32, &str, &str); 38] = {
+    use crate::backend::gl::api::GlFormat as F;
+    [
+        (F::R32Uint, glow::R32UI, "r32ui", "uimage2D"),
+        (F::R32Sint, glow::R32I, "r32i", "iimage2D"),
+        (F::R32Float, glow::R32F, "r32f", "image2D"),
+        (F::Rg32Uint, glow::RG32UI, "rg32ui", "uimage2D"),
+        (F::Rg32Sint, glow::RG32I, "rg32i", "iimage2D"),
+        (F::Rg32Float, glow::RG32F, "rg32f", "image2D"),
+        (F::Rgba32Uint, glow::RGBA32UI, "rgba32ui", "uimage2D"),
+        (F::Rgba32Sint, glow::RGBA32I, "rgba32i", "iimage2D"),
+        (F::Rgba32Float, glow::RGBA32F, "rgba32f", "image2D"),
+        (F::Rgba16Uint, glow::RGBA16UI, "rgba16ui", "uimage2D"),
+        (F::Rgba16Sint, glow::RGBA16I, "rgba16i", "iimage2D"),
+        (F::Rgba16Float, glow::RGBA16F, "rgba16f", "image2D"),
+        (F::Rgba8Uint, glow::RGBA8UI, "rgba8ui", "uimage2D"),
+        (F::Rgba8Sint, glow::RGBA8I, "rgba8i", "iimage2D"),
+        (F::Rgba8Snorm, glow::RGBA8_SNORM, "rgba8_snorm", "image2D"),
+        (F::Rgba16Unorm, glow::RGBA16, "rgba16", "image2D"),
+        (
+            F::Rgba16Snorm,
+            glow::RGBA16_SNORM,
+            "rgba16_snorm",
+            "image2D",
+        ),
+        (F::R8Unorm, glow::R8, "r8", "image2D"),
+        (F::R8Snorm, glow::R8_SNORM, "r8_snorm", "image2D"),
+        (F::R8Uint, glow::R8UI, "r8ui", "uimage2D"),
+        (F::R8Sint, glow::R8I, "r8i", "iimage2D"),
+        (F::Rg8Unorm, glow::RG8, "rg8", "image2D"),
+        (F::Rg8Snorm, glow::RG8_SNORM, "rg8_snorm", "image2D"),
+        (F::Rg8Uint, glow::RG8UI, "rg8ui", "uimage2D"),
+        (F::Rg8Sint, glow::RG8I, "rg8i", "iimage2D"),
+        (F::R16Unorm, glow::R16, "r16", "image2D"),
+        (F::R16Snorm, glow::R16_SNORM, "r16_snorm", "image2D"),
+        (F::R16Uint, glow::R16UI, "r16ui", "uimage2D"),
+        (F::R16Sint, glow::R16I, "r16i", "iimage2D"),
+        (F::R16Float, glow::R16F, "r16f", "image2D"),
+        (F::Rg16Unorm, glow::RG16, "rg16", "image2D"),
+        (F::Rg16Snorm, glow::RG16_SNORM, "rg16_snorm", "image2D"),
+        (F::Rg16Uint, glow::RG16UI, "rg16ui", "uimage2D"),
+        (F::Rg16Sint, glow::RG16I, "rg16i", "iimage2D"),
+        (F::Rg16Float, glow::RG16F, "rg16f", "image2D"),
+        (F::Rgb10a2Uint, glow::RGB10_A2UI, "rgb10_a2ui", "uimage2D"),
+        (F::Rgb10a2Unorm, glow::RGB10_A2, "rgb10_a2", "image2D"),
+        (
+            F::Rg11b10Ufloat,
+            glow::R11F_G11F_B10F,
+            "r11f_g11f_b10f",
+            "image2D",
+        ),
+    ]
+};
+
+pub(super) const MSAA_FORMATS: [crate::backend::gl::api::GlFormat; 46] = {
+    use crate::backend::gl::api::GlFormat as F;
+    let mut result = [F::Rgba8Unorm; 46];
+    let mut i = 0;
+    while i < IMAGE_FORMATS.len() {
+        result[i] = IMAGE_FORMATS[i].0;
+        i += 1;
+    }
+    result[38] = F::Rgba8Unorm;
+    result[39] = F::Rgba8Srgb;
+    result[40] = F::Depth16Unorm;
+    result[41] = F::Depth24Unorm;
+    result[42] = F::Depth32Float;
+    result[43] = F::Depth24PlusStencil8;
+    result[44] = F::Depth32FloatStencil8;
+    result[45] = F::Stencil8;
+    result
+};
 
 impl ProbeReport {
     /// Guards the optional-capability set on a trivial raster program actually
@@ -97,6 +235,15 @@ impl ProbeReport {
 /// Default implementations are deliberately fail-closed: an implementation
 /// that does not provide a probe keeps the related capability `NotRun`.
 pub(super) trait NativeGlProbes {
+    fn copy_image_symbols(&self) -> [bool; 3] {
+        [false; 3]
+    }
+    fn compressed_get_symbol(&self) -> bool {
+        false
+    }
+    fn multiview_attachment(&self) -> ProbeAnswer {
+        ProbeAnswer::Unavailable
+    }
     /// Reads `GL_QUERY_COUNTER_BITS` for the timestamp query target.
     fn query_counter_bits(&self) -> Option<u32> {
         None
@@ -141,6 +288,51 @@ pub(super) trait NativeGlProbes {
         let _ = source;
         ProbeAnswer::Unavailable
     }
+    fn binds_image_format(
+        &self,
+        _format: u32,
+        _qualifier: &str,
+        _image_type: &str,
+        _desktop: bool,
+    ) -> ProbeAnswer {
+        ProbeAnswer::Unavailable
+    }
+    fn reads_integer_format(
+        &self,
+        _format: u32,
+        _external: u32,
+        _kind: u32,
+        _bytes: u32,
+    ) -> ProbeAnswer {
+        ProbeAnswer::Unavailable
+    }
+    fn multisample_texture_attachment(
+        &self,
+        _format: u32,
+        _attachment: u32,
+        _samples: u32,
+        _immutable: bool,
+    ) -> ProbeAnswer {
+        ProbeAnswer::Unavailable
+    }
+    fn multisample_array_attachment(
+        &self,
+        _format: u32,
+        _attachment: u32,
+        _samples: u32,
+        _profile: GlFamilyProfile,
+        _extensions: &GlExtensionSet,
+    ) -> ProbeAnswer {
+        ProbeAnswer::Unavailable
+    }
+    fn multisample_renderbuffer_attachment(
+        &self,
+        _format: u32,
+        _attachment: u32,
+        _samples: u32,
+    ) -> ProbeAnswer {
+        ProbeAnswer::Unavailable
+    }
     /// Issues one zero-primitive indirect draw through scratch state.
     fn issues_indirect_draw(&self, indexed: bool, stages: &[(u32, &'static str)]) -> ProbeAnswer {
         let _ = (indexed, stages);
@@ -153,9 +345,11 @@ pub(super) trait NativeGlProbes {
     }
 }
 
-/// Minimal `#version 430` pair: a linked raster program with no side effects.
-const DESKTOP_VERTEX: &str = "#version 430\nvoid main() {}\n";
-const DESKTOP_FRAGMENT: &str = "#version 430\nvoid main() {}\n";
+/// Minimal GL 4.0 raster pair; later features have their own shader probes.
+const DESKTOP_VERTEX: &str = "#version 400\nvoid main() {}\n";
+const DESKTOP_FRAGMENT: &str = "#version 400\nvoid main() {}\n";
+const DESKTOP_IMAGE_VERTEX: &str = "#version 420\nvoid main() {}\n";
+const DESKTOP_STORAGE_VERTEX: &str = "#version 430\nvoid main() {}\n";
 /// Minimal `#version 310 es` pair with the same property.
 const ES_VERTEX: &str = "#version 310 es\nvoid main() {}\n";
 const ES_FRAGMENT: &str = "#version 310 es\nvoid main() {}\n";
@@ -176,7 +370,7 @@ const ES_STORAGE: &str = concat!(
 /// Image probes load from one unit and store to another with explicit layout
 /// bindings, so the probe never needs uniform locations.
 const DESKTOP_IMAGE: &str = concat!(
-    "#version 430\n",
+    "#version 420\n",
     "layout(rgba8, binding = 0) readonly uniform image2D probe_source;\n",
     "layout(rgba8, binding = 1) writeonly uniform image2D probe_target;\n",
     "void main() {\n",
@@ -226,6 +420,7 @@ pub(super) fn run_operation_probes(
     probes: &impl NativeGlProbes,
     profile: GlFamilyProfile,
     extensions: &GlExtensionSet,
+    max_samples: u32,
 ) -> ProbeReport {
     let desktop = matches!(profile, GlFamilyProfile::Desktop { .. });
     let trivial: &[(u32, &'static str)] = if desktop {
@@ -269,6 +464,15 @@ pub(super) fn run_operation_probes(
         route_supplied(profile, extensions, Some((4, 3)), Some((3, 1)), None);
 
     ProbeReport {
+        multiview: if matches!(profile, GlFamilyProfile::Embedded { .. })
+            && extensions
+                .raw_reported_names()
+                .any(|name| name == "GL_OVR_multiview2")
+        {
+            probes.multiview_attachment()
+        } else {
+            ProbeAnswer::Unavailable
+        },
         // Depth and float attachment facts are answered by real framebuffer
         // completeness in every native profile.
         depth_texture_attachment: probes.attachment_completes(
@@ -296,6 +500,119 @@ pub(super) fn run_operation_probes(
         } else {
             ProbeAnswer::Unavailable
         },
+        ordinary_image_storage: if image_route {
+            IMAGE_FORMATS.map(|(_, format, qualifier, image_type)| {
+                probes.binds_image_format(format, qualifier, image_type, desktop)
+            })
+        } else {
+            [ProbeAnswer::Unavailable; IMAGE_FORMATS.len()]
+        },
+        ordinary_render: IMAGE_FORMATS.map(|(format, internal, ..)| {
+            match super::exec_copy::upload_encoding(format) {
+                Some((external, kind)) => {
+                    probes.attachment_completes(internal, external, kind, glow::COLOR_ATTACHMENT0)
+                }
+                None => ProbeAnswer::Unavailable,
+            }
+        }),
+        exact_integer_read: EXACT_INTEGER_FORMATS.map(|format| {
+            match (
+                super::resource::native_texture_format(format),
+                super::exec_copy::upload_encoding(format),
+                super::exec_copy::upload_pixel_format(format),
+            ) {
+                (Some(internal), Some((external, kind)), Some(pixel)) => {
+                    probes.reads_integer_format(internal, external, kind, pixel.bytes_per_pixel())
+                }
+                _ => ProbeAnswer::Unavailable,
+            }
+        }),
+        multisample_texture: if super::discovery::supports_multisample_texture_storage(profile) {
+            MSAA_FORMATS.map(|format| {
+                (2..=max_samples)
+                    .map(|samples| {
+                        let Some(internal) = super::resource::native_texture_format(format) else {
+                            return (samples, ProbeAnswer::Unavailable);
+                        };
+                        let attachment = match format {
+                            crate::backend::gl::api::GlFormat::Depth16Unorm
+                            | crate::backend::gl::api::GlFormat::Depth24Unorm
+                            | crate::backend::gl::api::GlFormat::Depth32Float => {
+                                glow::DEPTH_ATTACHMENT
+                            }
+                            crate::backend::gl::api::GlFormat::Depth24PlusStencil8
+                            | crate::backend::gl::api::GlFormat::Depth32FloatStencil8 => {
+                                glow::DEPTH_STENCIL_ATTACHMENT
+                            }
+                            crate::backend::gl::api::GlFormat::Stencil8 => glow::STENCIL_ATTACHMENT,
+                            _ => glow::COLOR_ATTACHMENT0,
+                        };
+                        let immutable = profile.meets(
+                            Some(crate::backend::gl::api::GlVersion::new(4, 3)),
+                            Some(crate::backend::gl::api::GlVersion::new(3, 1)),
+                        );
+                        (
+                            samples,
+                            probes.multisample_texture_attachment(
+                                internal, attachment, samples, immutable,
+                            ),
+                        )
+                    })
+                    .collect()
+            })
+        } else {
+            std::array::from_fn(|_| Vec::new())
+        },
+        multisample_array: MSAA_FORMATS.map(|format| {
+            (2..=max_samples)
+                .map(|samples| {
+                    let Some(internal) = super::resource::native_texture_format(format) else {
+                        return (samples, ProbeAnswer::Unavailable);
+                    };
+                    let attachment = match format {
+                        crate::backend::gl::api::GlFormat::Depth16Unorm
+                        | crate::backend::gl::api::GlFormat::Depth24Unorm
+                        | crate::backend::gl::api::GlFormat::Depth32Float => glow::DEPTH_ATTACHMENT,
+                        crate::backend::gl::api::GlFormat::Depth24PlusStencil8
+                        | crate::backend::gl::api::GlFormat::Depth32FloatStencil8 => {
+                            glow::DEPTH_STENCIL_ATTACHMENT
+                        }
+                        crate::backend::gl::api::GlFormat::Stencil8 => glow::STENCIL_ATTACHMENT,
+                        _ => glow::COLOR_ATTACHMENT0,
+                    };
+                    (
+                        samples,
+                        probes.multisample_array_attachment(
+                            internal, attachment, samples, profile, extensions,
+                        ),
+                    )
+                })
+                .collect()
+        }),
+        multisample_renderbuffer: MSAA_FORMATS.map(|format| {
+            (2..=max_samples)
+                .map(|samples| {
+                    let Some(internal) = super::resource::native_texture_format(format) else {
+                        return (samples, ProbeAnswer::Unavailable);
+                    };
+                    let attachment = match format {
+                        crate::backend::gl::api::GlFormat::Depth16Unorm
+                        | crate::backend::gl::api::GlFormat::Depth24Unorm
+                        | crate::backend::gl::api::GlFormat::Depth32Float => glow::DEPTH_ATTACHMENT,
+                        crate::backend::gl::api::GlFormat::Depth24PlusStencil8
+                        | crate::backend::gl::api::GlFormat::Depth32FloatStencil8 => {
+                            glow::DEPTH_STENCIL_ATTACHMENT
+                        }
+                        crate::backend::gl::api::GlFormat::Stencil8 => glow::STENCIL_ATTACHMENT,
+                        _ => glow::COLOR_ATTACHMENT0,
+                    };
+                    (
+                        samples,
+                        probes.multisample_renderbuffer_attachment(internal, attachment, samples),
+                    )
+                })
+                .collect()
+        }),
         compute: if compute_route {
             probes.dispatches_compute(compute)
         } else {
@@ -337,6 +654,8 @@ pub(super) fn run_operation_probes(
         // keeps a real context from advertising a command no provider serves.
         multi_draw_indirect: ProbeAnswer::Unavailable,
         query_counter_bits: probes.query_counter_bits(),
+        copy_image_symbols: probes.copy_image_symbols(),
+        compressed_get_symbol: probes.compressed_get_symbol(),
     }
     .with_trivial_link_guard(probes, trivial)
 }

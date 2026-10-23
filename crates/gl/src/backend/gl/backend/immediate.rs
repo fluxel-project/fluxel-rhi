@@ -42,6 +42,23 @@ unsafe impl ImmediateBackend for Gl {
         mut encoder: GlEncoder,
         reason: ImmediateCloseReason,
     ) -> ImmediateClose<Self> {
+        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+        if encoder.statistics_query_active || encoder.indeterminate {
+            let result = encoder
+                .state
+                .with_native("close GL pipeline statistics", |provider| {
+                    provider.abort_pipeline_statistics()
+                });
+            if result.is_err() {
+                encoder.indeterminate = true;
+            }
+            if encoder.statistics_query_active && !encoder.indeterminate {
+                return ImmediateClose::Failed {
+                    error: Error::InvalidState,
+                    issued: encoder.issued,
+                };
+            }
+        }
         if encoder.indeterminate {
             // SAFETY: at least one direct native call returned after entering
             // the provider boundary, so its acceptance cannot be reclassified

@@ -11,24 +11,47 @@
 //! version/extension ledger and the loaded entry-point table, never from a
 //! version string alone.
 
+mod clear_texture_direct;
+mod clear_texture_upload;
 mod context;
 mod discovery;
 #[cfg(feature = "native-gles-egl")]
 pub(crate) mod egl;
 mod entry_points;
+mod exec_clear_texture;
+mod exec_compressed_readback;
+mod exec_compressed_upload;
 mod exec_compute;
 mod exec_copy;
 mod exec_framebuffer;
+#[cfg(any(feature = "native-gl-wgl", feature = "native-gles-egl"))]
+mod exec_mapping;
+mod exec_pbo_readback;
+mod exec_pbo_upload;
 mod exec_raster;
 mod exec_shader;
 mod exec_sync;
 mod exec_vertex;
+pub(crate) mod indexed_blend;
+mod indirect_count;
+mod indirect_rebase;
+#[cfg(test)]
+mod indirect_repro;
+mod multisample_array;
+mod multiview;
 mod probe;
 mod probes;
+mod program_cache;
+mod program_resources;
 #[cfg(any(feature = "native-gl-wgl", feature = "native-gles-egl"))]
 pub(crate) mod provider;
+#[cfg(any(feature = "native-gl-wgl", feature = "native-gles-egl"))]
+pub(crate) mod push_uniform;
+mod rasterization;
+mod sampler_border;
 mod surface;
 mod surface_facts;
+pub(crate) mod texture_view;
 #[cfg(all(windows, feature = "native-gl-wgl"))]
 pub(crate) mod wgl;
 
@@ -55,3 +78,8 @@ mod framebuffer_attachment;
 mod resource;
 #[cfg(any(feature = "native-gl-wgl", feature = "native-gles-egl"))]
 pub(crate) use resource::native_texture_format_supported;
+mod cube_mirror;
+mod dummy_binding;
+mod stencil_mirror;
+
+mod stencil_extract;

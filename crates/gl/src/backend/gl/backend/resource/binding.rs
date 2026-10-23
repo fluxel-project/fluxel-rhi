@@ -14,8 +14,13 @@ pub(super) fn lower_bind_group_layout(
 ) -> Result<Vec<GlBindingLayoutEntry>> {
     let mut entries = Vec::with_capacity(desc.entries.len());
     for entry in &desc.entries {
-        if entry.count != BindingCount::One || entry.partially_bound || entry.nonuniform_indexing {
-            return Err(Error::Unsupported("GL bind group arrays or indexing"));
+        if matches!(entry.count, BindingCount::RuntimeSized { .. }) || entry.nonuniform_indexing {
+            return Err(Error::Unsupported(
+                "GL runtime binding arrays or nonuniform indexing",
+            ));
+        }
+        if matches!(entry.count, BindingCount::Fixed(0)) {
+            return Err(Error::InvalidRange);
         }
         if entries
             .iter()
@@ -31,22 +36,46 @@ pub(super) fn lower_bind_group_layout(
                 dynamic_offset,
                 min_size,
             },
+            BindingType::StorageBuffer {
+                dynamic_offset,
+                min_size,
+                access,
+            } => GlBindingSlot::StorageBuffer {
+                dynamic_offset,
+                min_size,
+                access,
+            },
             BindingType::SampledTexture {
-                sample: api::TextureSampleType::Float,
+                sample,
                 dimension,
-                multisampled: false,
+                multisampled,
             } if matches!(
                 dimension,
-                api::TextureViewDimension::D2 | api::TextureViewDimension::D2Array
+                api::TextureViewDimension::D2
+                    | api::TextureViewDimension::D2Array
+                    | api::TextureViewDimension::D3
+                    | api::TextureViewDimension::Cube
+                    | api::TextureViewDimension::CubeArray
             ) =>
             {
-                GlBindingSlot::SampledTexture { dimension }
+                GlBindingSlot::SampledTexture {
+                    dimension,
+                    sample,
+                    multisampled,
+                }
             }
             BindingType::StorageTexture {
                 format,
                 dimension,
                 access,
-            } if matches!(dimension, api::TextureViewDimension::D2) => {
+            } if matches!(
+                dimension,
+                api::TextureViewDimension::D1
+                    | api::TextureViewDimension::D2
+                    | api::TextureViewDimension::D2Array
+                    | api::TextureViewDimension::D3
+            ) =>
+            {
                 GlBindingSlot::StorageTexture {
                     dimension,
                     format,
@@ -54,23 +83,29 @@ pub(super) fn lower_bind_group_layout(
                 }
             }
             BindingType::Sampler {
-                comparison: false, ..
-            } => GlBindingSlot::Sampler,
+                filtering,
+                comparison,
+            } => GlBindingSlot::Sampler {
+                filtering,
+                comparison,
+            },
             _ => return Err(Error::Unsupported("GL binding declaration")),
         };
         entries.push(GlBindingLayoutEntry {
             binding: entry.binding,
             slot,
+            count: entry.count,
+            partially_bound: entry.partially_bound,
+            nonuniform_indexing: entry.nonuniform_indexing,
         });
     }
     entries.sort_by_key(|entry| entry.binding);
     Ok(entries)
 }
 
-/// This GL binding route supports any number of UBOs and at most one sampled
-/// texture. Filtering samples require its WGSL sampler binding; `textureLoad`
-/// also lowers to a GLSL sampler uniform, but needs only the texture unit and
-/// therefore permits a texture-only group. Naga reflection supplies the
+/// Each image/sampler pair uses a linked GLSL sampler unit. `textureLoad`
+/// also lowers to a GLSL sampler uniform, but needs only the texture unit.
+/// Naga reflection supplies the
 /// emitted names before linking. Direct GLSL may use `binding_N` for group
 /// zero; higher groups use `group_G_binding_N` to avoid logical-name aliasing.
 pub(crate) fn lower_program_bindings(
@@ -83,11 +118,8 @@ pub(crate) fn lower_program_bindings(
         .collect();
     let samplers: Vec<_> = entries
         .iter()
-        .filter(|entry| matches!(entry.slot, GlBindingSlot::Sampler))
+        .filter(|entry| matches!(entry.slot, GlBindingSlot::Sampler { .. }))
         .collect();
-    if textures.len() > 1 || samplers.len() > textures.len() {
-        return Err(Error::Unsupported("GL texture/sampler pair layout"));
-    }
     let location = |binding| GlBindingLocation { group, binding };
     let name = |binding| match group {
         0 => format!("binding_{binding}"),
@@ -102,9 +134,22 @@ pub(crate) fn lower_program_bindings(
                     None,
                     vec![name(entry.binding)],
                 ),
+                GlBindingSlot::StorageBuffer { access, .. } => (
+                    GlShaderResourceKind::StorageBuffer(match access {
+                        api::StorageAccess::Read => {
+                            crate::backend::gl::api::GlStorageBufferUsage::ReadOnly
+                        }
+                        api::StorageAccess::Write | api::StorageAccess::ReadWrite => {
+                            crate::backend::gl::api::GlStorageBufferUsage::ReadWrite
+                        }
+                    }),
+                    None,
+                    vec![name(entry.binding)],
+                ),
                 GlBindingSlot::SampledTexture { .. } => (
-                    GlShaderResourceKind::CombinedTextureSampler,
-                    samplers.first().map(|other| location(other.binding)),
+                    GlShaderResourceKind::Texture,
+                    (textures.len() == 1 && samplers.len() == 1)
+                        .then(|| location(samplers[0].binding)),
                     vec![name(entry.binding)],
                 ),
                 GlBindingSlot::StorageTexture { access, .. } => (
@@ -122,22 +167,124 @@ pub(crate) fn lower_program_bindings(
                     None,
                     vec![name(entry.binding)],
                 ),
-                GlBindingSlot::Sampler => (
-                    GlShaderResourceKind::CombinedTextureSampler,
-                    textures.first().map(|other| location(other.binding)),
+                GlBindingSlot::Sampler { .. } => (
+                    GlShaderResourceKind::Sampler,
+                    (textures.len() == 1 && samplers.len() == 1)
+                        .then(|| location(textures[0].binding)),
                     textures
                         .first()
+                        .filter(|_| textures.len() == 1 && samplers.len() == 1)
                         .map(|texture| vec![name(texture.binding)])
                         .unwrap_or_default(),
                 ),
             };
             GlLogicalBinding {
+                element: None,
                 names,
                 location: location(entry.binding),
                 kind,
-                array_count: 1,
+                array_count: match entry.count {
+                    BindingCount::One => 1,
+                    BindingCount::Fixed(count) => count,
+                    BindingCount::RuntimeSized { max_count } => max_count,
+                },
+                fixed_array: matches!(entry.count, BindingCount::Fixed(_)),
+                image_type: match entry.slot {
+                    GlBindingSlot::StorageTexture {
+                        dimension, format, ..
+                    } => {
+                        use api::TextureFormat as F;
+                        let dimension = match dimension {
+                            api::TextureViewDimension::D2 => {
+                                crate::backend::gl::api::GlSampledDimension::D2
+                            }
+                            api::TextureViewDimension::D2Array => {
+                                crate::backend::gl::api::GlSampledDimension::D2Array
+                            }
+                            api::TextureViewDimension::D3 => {
+                                crate::backend::gl::api::GlSampledDimension::D3
+                            }
+                            _ => unreachable!("validated storage image dimension"),
+                        };
+                        let kind = match format {
+                            F::R8Uint
+                            | F::Rg8Uint
+                            | F::Rgba8Uint
+                            | F::R16Uint
+                            | F::Rg16Uint
+                            | F::Rgba16Uint
+                            | F::R32Uint
+                            | F::Rg32Uint
+                            | F::Rgba32Uint
+                            | F::Rgb10a2Uint
+                            | F::R64Uint
+                            | F::Rg64Uint => crate::backend::gl::api::GlSampledKind::Uint,
+                            F::R8Sint
+                            | F::Rg8Sint
+                            | F::Rgba8Sint
+                            | F::R16Sint
+                            | F::Rg16Sint
+                            | F::Rgba16Sint
+                            | F::R32Sint
+                            | F::Rg32Sint
+                            | F::Rgba32Sint => crate::backend::gl::api::GlSampledKind::Sint,
+                            _ => crate::backend::gl::api::GlSampledKind::Float,
+                        };
+                        Some((dimension, kind))
+                    }
+                    _ => None,
+                },
                 pair,
                 image_unit: None,
+                sampled_type: match entry.slot {
+                    GlBindingSlot::SampledTexture {
+                        dimension,
+                        sample,
+                        multisampled,
+                    } => Some(crate::backend::gl::api::GlSampledBindingType::Texture {
+                        dimension: match dimension {
+                            api::TextureViewDimension::D1 => {
+                                crate::backend::gl::api::GlSampledDimension::D1
+                            }
+                            api::TextureViewDimension::D2 => {
+                                crate::backend::gl::api::GlSampledDimension::D2
+                            }
+                            api::TextureViewDimension::D2Array => {
+                                crate::backend::gl::api::GlSampledDimension::D2Array
+                            }
+                            api::TextureViewDimension::D3 => {
+                                crate::backend::gl::api::GlSampledDimension::D3
+                            }
+                            api::TextureViewDimension::Cube => {
+                                crate::backend::gl::api::GlSampledDimension::Cube
+                            }
+                            api::TextureViewDimension::CubeArray => {
+                                crate::backend::gl::api::GlSampledDimension::CubeArray
+                            }
+                            _ => unreachable!("validated sampled texture dimension"),
+                        },
+                        kind: match sample {
+                            api::TextureSampleType::Float
+                            | api::TextureSampleType::UnfilterableFloat => {
+                                crate::backend::gl::api::GlSampledKind::Float
+                            }
+                            api::TextureSampleType::Sint => {
+                                crate::backend::gl::api::GlSampledKind::Sint
+                            }
+                            api::TextureSampleType::Uint => {
+                                crate::backend::gl::api::GlSampledKind::Uint
+                            }
+                            api::TextureSampleType::Depth => {
+                                crate::backend::gl::api::GlSampledKind::Depth
+                            }
+                        },
+                        multisampled,
+                    }),
+                    GlBindingSlot::Sampler { comparison, .. } => {
+                        Some(crate::backend::gl::api::GlSampledBindingType::Sampler { comparison })
+                    }
+                    _ => None,
+                },
             }
         })
         .collect())
@@ -151,6 +298,9 @@ mod tests {
     fn group_index_keeps_same_numbered_uniforms_distinct() {
         let entries = [GlBindingLayoutEntry {
             binding: 0,
+            count: BindingCount::One,
+            partially_bound: false,
+            nonuniform_indexing: false,
             slot: GlBindingSlot::UniformBuffer {
                 dynamic_offset: false,
                 min_size: 16,
@@ -168,34 +318,38 @@ mod tests {
     fn texture_load_layout_needs_no_sampler_binding() {
         let entries = [GlBindingLayoutEntry {
             binding: 0,
+            count: BindingCount::One,
+            partially_bound: false,
+            nonuniform_indexing: false,
             slot: GlBindingSlot::SampledTexture {
                 dimension: api::TextureViewDimension::D2,
+                sample: api::TextureSampleType::Float,
+                multisampled: false,
             },
         }];
         let lowered = lower_program_bindings(0, &entries).expect("texture-only layout");
         assert_eq!(lowered.len(), 1);
         assert_eq!(lowered[0].pair, None);
-        assert!(matches!(
-            lowered[0].kind,
-            GlShaderResourceKind::CombinedTextureSampler
-        ));
+        assert!(matches!(lowered[0].kind, GlShaderResourceKind::Texture));
     }
 
     #[test]
     fn texture_load_layout_does_not_require_a_sampler_resource() {
         let entries = [GlBindingLayoutEntry {
             binding: 0,
+            count: BindingCount::One,
+            partially_bound: false,
+            nonuniform_indexing: false,
             slot: GlBindingSlot::SampledTexture {
                 dimension: api::TextureViewDimension::D2,
+                sample: api::TextureSampleType::Float,
+                multisampled: false,
             },
         }];
         let lowered = lower_program_bindings(0, &entries).expect("textureLoad layout");
 
         assert_eq!(lowered.len(), 1);
-        assert_eq!(
-            lowered[0].kind,
-            GlShaderResourceKind::CombinedTextureSampler
-        );
+        assert_eq!(lowered[0].kind, GlShaderResourceKind::Texture);
         assert_eq!(lowered[0].pair, None);
         assert_eq!(lowered[0].names, ["binding_0"]);
     }

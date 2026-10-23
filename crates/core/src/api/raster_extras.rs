@@ -92,6 +92,10 @@ impl<B: Backend> Device<B> {
     }
 }
 impl<B: Backend> RasterExtras<'_, B> {
+    /// All indirect argument records in this domain must use a zero
+    /// first-instance field unless `DeviceCapabilities::indirect_first_instance`
+    /// is true. This includes GPU-generated records and count-based draws;
+    /// backends do not inspect argument contents on the CPU.
     /// The caller must transition the argument buffer to `INDIRECT_READ` before the pass.
     pub fn draw_indirect(
         &self,

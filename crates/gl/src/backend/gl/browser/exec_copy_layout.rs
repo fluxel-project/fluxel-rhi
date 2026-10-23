@@ -11,8 +11,7 @@
 //! `copyTexSubImage2D` / `readPixels`. This is the backend-provided route for
 //! the common copy semantic (plan functional order 3), not a claim that a
 //! `glCopyImageSubData`-style command exists. Region coordinates follow the
-//! the public upper-left convention.  This native boundary changes rectangle
-//! origins and row order before issuing WebGL's lower-left calls.
+//! the public upper-left convention. Texture row zero is stored at GL row zero.
 
 use std::borrow::Cow;
 use wasm_bindgen::JsValue;
@@ -71,10 +70,7 @@ impl WebGl2BrowserDiscovery {
         self.raw.pixel_storei(Gl::UNPACK_SKIP_PIXELS, 0);
         self.raw.pixel_storei(Gl::UNPACK_SKIP_ROWS, 0);
         self.raw.pixel_storei(Gl::UNPACK_SKIP_IMAGES, 0);
-        // Public CPU row zero is the texture's top row.  WebGL consumes the
-        // first unpacked row as its lower row, so flip the source rows while
-        // callers use the converted lower-left destination origin.
-        self.raw.pixel_storei(Gl::UNPACK_FLIP_Y_WEBGL, 1);
+        self.raw.pixel_storei(Gl::UNPACK_FLIP_Y_WEBGL, 0);
     }
 
     /// Applies the pack half of one transfer layout before `readPixels`.
@@ -235,15 +231,14 @@ pub(super) fn rect_coords(
     let mip = descriptor
         .mip_extent(region.subresource.mip_level)
         .ok_or_else(|| validation(operation, "mip level is outside texture storage"))?;
-    let y = mip
-        .height
-        .checked_sub(
-            region.origin[1]
-                .checked_add(region.extent.height)
-                .ok_or_else(|| validation(operation, "rectangle y overflows"))?,
-        )
-        .ok_or_else(|| validation(operation, "rectangle leaves texture height"))?;
-    let y = i32::try_from(y).map_err(|_| validation(operation, "y exceeds GLint"))?;
+    if region.origin[1]
+        .checked_add(region.extent.height)
+        .is_none_or(|end| end > mip.height)
+    {
+        return Err(validation(operation, "rectangle leaves texture height"));
+    }
+    let y =
+        i32::try_from(region.origin[1]).map_err(|_| validation(operation, "y exceeds GLint"))?;
     let width = i32::try_from(region.extent.width)
         .map_err(|_| validation(operation, "width exceeds GLint"))?;
     let height = i32::try_from(region.extent.height)
@@ -310,8 +305,7 @@ pub(super) fn staged_unpack<'a>(
 
 /// Places readback rows into the caller-declared output layout.
 ///
-/// GL rows arrive lower-first. This helper reverses them while placing into
-/// the public upper-first layout, including padded mappable layouts.
+/// Place native texture rows into the public layout, including padding.
 pub(super) fn place_rows(
     layout: GlPixelLayout,
     region: GlTextureRegion,
@@ -334,7 +328,7 @@ pub(super) fn place_rows(
         let read_base = image * source_image_rows * source_row;
         for row_index in 0..region.extent.height as usize {
             let dst = image_base + row_index * row;
-            let src = read_base + (region.extent.height as usize - 1 - row_index) * source_row;
+            let src = read_base + row_index * source_row;
             if let (Some(dst), Some(src)) = (
                 bytes.get_mut(dst..dst + width_bytes),
                 body.get(src..src + width_bytes),

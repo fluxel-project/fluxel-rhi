@@ -190,4 +190,7 @@ fn mip_count_and_multisample_dimension_are_bounded() {
         desc.validate(),
         Err(GlResourceValidationError::MultisampleRequiresD2)
     );
+    desc.dimension = GlTextureDimension::D2Array;
+    desc.extent.depth_or_layers = 2;
+    assert_eq!(desc.validate(), Ok(()));
 }

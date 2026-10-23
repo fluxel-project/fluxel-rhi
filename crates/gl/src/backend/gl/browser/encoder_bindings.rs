@@ -15,28 +15,115 @@ use super::owner::{
 };
 
 impl BrowserEncoder {
-    /// Binds one sampled texture and sampler to a texture unit immediately.
+    /// Binds a texture and optional sampler to a texture unit immediately.
+    /// `None` clears any sampler left on the unit for sampler-free fetches.
     /// Program uniform assignment is deliberately separate because a bind group
     /// may reuse the same native texture unit across several programs.
+    pub(crate) fn bind_sampled_texture(
+        &mut self,
+        unit: u32,
+        texture: &BrowserTexture,
+        sampler: Option<&BrowserSampler>,
+    ) -> Result<()> {
+        self.same_owner(&texture.owner)?;
+        let texture_raw = texture.texture()?;
+        if let Some(sampler) = sampler {
+            self.same_owner(&sampler.owner)?;
+        }
+        self.require_raster()?;
+        let active_unit = Gl::TEXTURE0.checked_add(unit).ok_or(Error::InvalidRange)?;
+        let target = match texture.desc.dimension {
+            GlTextureDimension::D2 => Gl::TEXTURE_2D,
+            GlTextureDimension::D2Array => Gl::TEXTURE_2D_ARRAY,
+            GlTextureDimension::D3 => Gl::TEXTURE_3D,
+            GlTextureDimension::Cube => Gl::TEXTURE_CUBE_MAP,
+            _ => return Err(Error::Unsupported("WebGL2 sampled texture dimension")),
+        };
+        self.with_context("bind_rgba8_texture", |raw| {
+            raw.active_texture(active_unit);
+            raw.bind_texture(target, Some(texture_raw));
+            raw.bind_sampler(unit, sampler.map(|sampler| &sampler.raw));
+        })
+    }
+
     pub(crate) fn bind_rgba8_texture(
         &mut self,
         unit: u32,
         texture: &BrowserTexture,
         sampler: &BrowserSampler,
     ) -> Result<()> {
+        self.bind_sampled_texture(unit, texture, Some(sampler))
+    }
+
+    /// Updates only the texture half of a combined texture unit.
+    pub(crate) fn bind_sampled_texture_only(
+        &mut self,
+        unit: u32,
+        texture: &BrowserTexture,
+    ) -> Result<()> {
         self.same_owner(&texture.owner)?;
-        self.same_owner(&sampler.owner)?;
+        let texture_raw = texture.texture()?;
         self.require_raster()?;
         let active_unit = Gl::TEXTURE0.checked_add(unit).ok_or(Error::InvalidRange)?;
         let target = match texture.desc.dimension {
             GlTextureDimension::D2 => Gl::TEXTURE_2D,
             GlTextureDimension::D2Array => Gl::TEXTURE_2D_ARRAY,
+            GlTextureDimension::D3 => Gl::TEXTURE_3D,
+            GlTextureDimension::Cube => Gl::TEXTURE_CUBE_MAP,
             _ => return Err(Error::Unsupported("WebGL2 sampled texture dimension")),
         };
-        self.with_context("bind_rgba8_texture", |raw| {
+        self.with_context("bind_sampled_texture_only", |raw| {
             raw.active_texture(active_unit);
-            raw.bind_texture(target, Some(&texture.raw));
-            raw.bind_sampler(unit, Some(&sampler.raw));
+            raw.bind_texture(target, Some(texture_raw));
+        })
+    }
+
+    pub(crate) fn set_depth_stencil_texture_mode(
+        &mut self,
+        texture: &BrowserTexture,
+        stencil: bool,
+    ) -> Result<()> {
+        self.same_owner(&texture.owner)?;
+        let supported = self.owner.stencil_texturing_supported()?;
+        if !supported {
+            return if stencil {
+                Err(Error::Unsupported("WebGL2 stencil texturing extension"))
+            } else {
+                Ok(())
+            };
+        }
+        let texture_raw = texture.texture()?;
+        let target = match texture.desc.dimension {
+            GlTextureDimension::D2 => Gl::TEXTURE_2D,
+            GlTextureDimension::D2Array => Gl::TEXTURE_2D_ARRAY,
+            _ => return Err(Error::Unsupported("WebGL2 depth stencil texture dimension")),
+        };
+        self.with_context("depth stencil texture mode", |raw| {
+            raw.bind_texture(target, Some(texture_raw));
+            raw.tex_parameteri(
+                target,
+                0x90EA,
+                if stencil {
+                    0x1901
+                } else {
+                    Gl::DEPTH_COMPONENT as i32
+                },
+            );
+        })
+    }
+
+    /// Updates only the sampler half of a combined texture unit.
+    pub(crate) fn bind_sampler_only(
+        &mut self,
+        unit: u32,
+        sampler: Option<&BrowserSampler>,
+    ) -> Result<()> {
+        if let Some(sampler) = sampler {
+            self.same_owner(&sampler.owner)?;
+        }
+        self.require_raster()?;
+        self.with_context("bind_sampler_only", |raw| {
+            raw.bind_sampler(unit, sampler.map(|sampler| &sampler.raw))
         })
     }
 
@@ -114,11 +201,14 @@ impl BrowserEncoder {
     ) -> Result<()> {
         self.same_owner(&buffer.owner)?;
         self.require_raster()?;
-        let stride = if layout.stride == 0 {
-            vertex_format_size(attribute.format)
-        } else {
-            layout.stride
-        };
+        // Core zero stride means one constant address; WebGL's legacy
+        // vertexAttribPointer zero stride instead means tightly packed.
+        if layout.stride == 0 {
+            return self.with_context("disable_constant_vertex_attribute", |raw| {
+                raw.disable_vertex_attrib_array(attribute.location);
+            });
+        }
+        let stride = layout.stride;
         let offset = binding_offset
             .checked_add(u64::from(attribute.offset))
             .and_then(|value| i32::try_from(value).ok())
@@ -175,18 +265,18 @@ enum VertexAttributePath {
 const fn vertex_attribute_path(format: GlVertexFormat) -> VertexAttributePath {
     use GlVertexFormat as F;
     match format {
-        F::Uint8x2 => VertexAttributePath::Float(2, Gl::UNSIGNED_BYTE, false),
-        F::Uint8x4 => VertexAttributePath::Float(4, Gl::UNSIGNED_BYTE, false),
-        F::Sint8x2 => VertexAttributePath::Float(2, Gl::BYTE, false),
-        F::Sint8x4 => VertexAttributePath::Float(4, Gl::BYTE, false),
+        F::Uint8x2 => VertexAttributePath::Integer(2, Gl::UNSIGNED_BYTE),
+        F::Uint8x4 => VertexAttributePath::Integer(4, Gl::UNSIGNED_BYTE),
+        F::Sint8x2 => VertexAttributePath::Integer(2, Gl::BYTE),
+        F::Sint8x4 => VertexAttributePath::Integer(4, Gl::BYTE),
         F::Unorm8x2 => VertexAttributePath::Float(2, Gl::UNSIGNED_BYTE, true),
         F::Unorm8x4 => VertexAttributePath::Float(4, Gl::UNSIGNED_BYTE, true),
         F::Snorm8x2 => VertexAttributePath::Float(2, Gl::BYTE, true),
         F::Snorm8x4 => VertexAttributePath::Float(4, Gl::BYTE, true),
-        F::Uint16x2 => VertexAttributePath::Float(2, Gl::UNSIGNED_SHORT, false),
-        F::Uint16x4 => VertexAttributePath::Float(4, Gl::UNSIGNED_SHORT, false),
-        F::Sint16x2 => VertexAttributePath::Float(2, Gl::SHORT, false),
-        F::Sint16x4 => VertexAttributePath::Float(4, Gl::SHORT, false),
+        F::Uint16x2 => VertexAttributePath::Integer(2, Gl::UNSIGNED_SHORT),
+        F::Uint16x4 => VertexAttributePath::Integer(4, Gl::UNSIGNED_SHORT),
+        F::Sint16x2 => VertexAttributePath::Integer(2, Gl::SHORT),
+        F::Sint16x4 => VertexAttributePath::Integer(4, Gl::SHORT),
         F::Unorm16x2 => VertexAttributePath::Float(2, Gl::UNSIGNED_SHORT, true),
         F::Unorm16x4 => VertexAttributePath::Float(4, Gl::UNSIGNED_SHORT, true),
         F::Snorm16x2 => VertexAttributePath::Float(2, Gl::SHORT, true),
@@ -205,19 +295,5 @@ const fn vertex_attribute_path(format: GlVertexFormat) -> VertexAttributePath {
         F::Sint32x2 => VertexAttributePath::Integer(2, Gl::INT),
         F::Sint32x3 => VertexAttributePath::Integer(3, Gl::INT),
         F::Sint32x4 => VertexAttributePath::Integer(4, Gl::INT),
-    }
-}
-
-const fn vertex_format_size(format: GlVertexFormat) -> u32 {
-    use GlVertexFormat as F;
-    match format {
-        F::Uint8x2 | F::Sint8x2 | F::Unorm8x2 | F::Snorm8x2 => 2,
-        F::Uint8x4 | F::Sint8x4 | F::Unorm8x4 | F::Snorm8x4 => 4,
-        F::Uint16x2 | F::Sint16x2 | F::Unorm16x2 | F::Snorm16x2 | F::Float16x2 => 4,
-        F::Uint16x4 | F::Sint16x4 | F::Unorm16x4 | F::Snorm16x4 | F::Float16x4 => 8,
-        F::Float32 | F::Uint32 | F::Sint32 => 4,
-        F::Float32x2 | F::Uint32x2 | F::Sint32x2 => 8,
-        F::Float32x3 | F::Uint32x3 | F::Sint32x3 => 12,
-        F::Float32x4 | F::Uint32x4 | F::Sint32x4 => 16,
     }
 }

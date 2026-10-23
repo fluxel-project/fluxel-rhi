@@ -1,8 +1,8 @@
 //! Synchronous readback tickets for the owner-thread GL backend.
 //!
 //! GL command verbs execute at the call site. Native paths capture their bytes
-//! immediately; WebGL2 retains the source buffer and defers the blocking host
-//! copy until `map_readback`, after the caller's completion proof.
+//! immediately; WebGL2 copies into ticket-owned GPU staging at this command
+//! position and reads those immutable bytes after the completion proof.
 
 use std::{future::Ready, ops::Range, rc::Rc};
 
@@ -57,6 +57,12 @@ impl ReadbackBackend for Gl {
             .end
             .checked_sub(range.start)
             .ok_or(Error::InvalidRange)?;
+        if size == 0 {
+            return Ok(GlReadbackTicket {
+                _state: encoder.state.clone(),
+                source: GlReadbackSource::Bytes(Vec::new()),
+            });
+        }
         #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
         {
             use crate::backend::gl::api::{GlBufferRange, GlCopyDomainApi as _};
@@ -82,12 +88,26 @@ impl ReadbackBackend for Gl {
         }
         #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
         {
-            let _browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
+            use crate::backend::gl::api::{GlBufferDesc, GlBufferUsage};
+            let staging = encoder.state.owner.create_buffer(GlBufferDesc {
+                size,
+                usage: GlBufferUsage::COPY_DESTINATION | GlBufferUsage::MAP_READ,
+            })?;
+            let result = encoder
+                .browser
+                .as_mut()
+                .ok_or(Error::InvalidState)?
+                .copy_browser_buffer(&source.browser, range.start, &staging, 0, size);
+            if let Err(error) = result {
+                encoder.indeterminate = true;
+                return Err(error);
+            }
+            encoder.issued = true;
             return Ok(GlReadbackTicket {
                 _state: encoder.state.clone(),
                 source: GlReadbackSource::Browser {
-                    buffer: source.browser.clone(),
-                    offset: range.start,
+                    buffer: staging,
+                    offset: 0,
                     size,
                 },
             });

@@ -527,6 +527,8 @@ impl InstanceBackend for Vulkan {
                     native_interop: true,
                     external_memory: external_interop,
                     indirect_draw: true,
+                    indirect_first_instance: enabled_features.draw_indirect_first_instance
+                        == vk::TRUE,
                     multi_draw: multi_draw_indirect,
                     multi_draw_count: draw_indirect_count,
                     mesh: mesh_available,

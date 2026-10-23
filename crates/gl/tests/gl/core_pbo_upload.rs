@@ -1,0 +1,1114 @@
+//! Core PBO upload with padded rows and distinct array layers.
+use super::*;
+
+async fn buffer_fill(d: &Device<Gl>) {
+    const SIZE: u64 = 16_408;
+    const END: u64 = 16_400;
+    let buffer = d
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: SIZE,
+            usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            memory: MemoryClass::Device,
+        })
+        .unwrap();
+    let fixture = common::ImmediateFixture {
+        device: d,
+        lane: d.lanes()[0].id,
+    };
+    let plan = common::single_commands_plan(&fixture, 212).unwrap();
+    // SAFETY: buffer and device survive the completion point.
+    let mut session =
+        unsafe { common::begin_commands(&fixture, plan, CompletionRequest::End) }.unwrap();
+    let mut run = session
+        .begin_commands()
+        .unwrap_or_else(|_| panic!("begin commands"));
+    let e = run.commands();
+    e.write_buffer(&buffer, 0, &vec![0xadu8; SIZE as usize])
+        .unwrap();
+    e.clear_buffer(&buffer, 8..END, 0x12345678).unwrap();
+    let ticket = e.readback_buffer(&buffer, 0..SIZE).unwrap();
+    assert!(matches!(run.close(), ImmediateRunOutcome::Issued(_)));
+    let point = match session.finish() {
+        ImmediateFinishOutcome::Issued(prefix) => {
+            prefix.checkpoints.into_iter().next().unwrap().point
+        }
+        _ => panic!("finish"),
+    };
+    d.wait_completion(&point).await.unwrap();
+    // SAFETY: this point covers the fill and readback.
+    let actual = unsafe { d.read_after(ticket, &point).await }.unwrap().bytes;
+    assert_eq!(&actual[..8], &[0xad; 8]);
+    for word in actual[8..END as usize].chunks_exact(4) {
+        assert_eq!(word, &[0x78, 0x56, 0x34, 0x12]);
+    }
+    assert_eq!(&actual[END as usize..], &[0xad; 8]);
+    for range in [1..8, 8..11, 8..SIZE + 4, 12..8] {
+        let plan = common::single_commands_plan(&fixture, 213).unwrap();
+        // SAFETY: the device and buffer remain live during this failed command.
+        let mut session =
+            unsafe { common::begin_commands(&fixture, plan, CompletionRequest::End) }.unwrap();
+        let mut run = session
+            .begin_commands()
+            .unwrap_or_else(|_| panic!("begin invalid commands"));
+        assert!(matches!(
+            run.commands().clear_buffer(&buffer, range, 0),
+            Err(Error::InvalidRange)
+        ));
+    }
+}
+
+async fn readback_snapshot(d: &Device<Gl>) {
+    for read_usage in [BufferUsage::COPY_SRC, BufferUsage::MAP_READ] {
+        let buffer = d
+            .create_buffer(&BufferDesc {
+                label: None,
+                size: 32,
+                usage: BufferUsage::COPY_DST | read_usage,
+                memory: MemoryClass::Device,
+            })
+            .unwrap();
+        let fixture = common::ImmediateFixture {
+            device: d,
+            lane: d.lanes()[0].id,
+        };
+        let plan = common::single_commands_plan(&fixture, 214).unwrap();
+        // SAFETY: all resources remain alive until the checkpoint completes.
+        let mut session =
+            unsafe { common::begin_commands(&fixture, plan, CompletionRequest::End) }.unwrap();
+        let mut run = session
+            .begin_commands()
+            .unwrap_or_else(|_| panic!("begin snapshot"));
+        let e = run.commands();
+        e.write_buffer(&buffer, 0, &[0x11; 32]).unwrap();
+        let first = e.readback_buffer(&buffer, 8..24).unwrap();
+        e.write_buffer(&buffer, 8, &[0x77; 16]).unwrap();
+        let second = e.readback_buffer(&buffer, 8..24).unwrap();
+        assert!(matches!(run.close(), ImmediateRunOutcome::Issued(_)));
+        let point = match session.finish() {
+            ImmediateFinishOutcome::Issued(prefix) => {
+                prefix.checkpoints.into_iter().next().unwrap().point
+            }
+            _ => panic!("finish snapshot"),
+        };
+        d.wait_completion(&point).await.unwrap();
+        // SAFETY: the completion point covers both copies and their tickets.
+        let before = unsafe { d.read_after(first, &point).await }.unwrap().bytes;
+        let after = unsafe { d.read_after(second, &point).await }.unwrap().bytes;
+        assert_eq!(before, [0x11; 16]);
+        assert_eq!(after, [0x77; 16]);
+    }
+}
+
+async fn pbo_upload_impl(d: &Device<Gl>, clear: bool, integer: bool) {
+    let source = r#"
+@group(0) @binding(0) var image: texture_2d_array<f32>;
+@vertex fn vs(@builtin(vertex_index) i:u32)->@builtin(position) vec4f {
+ let p=array<vec2f,3>(vec2f(-1.,-1.),vec2f(3.,-1.),vec2f(-1.,3.)); return vec4f(p[i],0.5,1.);
+}
+@fragment fn fs(@builtin(position) p:vec4f)->@location(0) vec4f {
+ let x=i32(p.x); return textureLoad(image,vec2i(0,x % 2),1+x/2,0);
+}
+"#;
+    let source = if clear {
+        source.replace("vec2i(0,x % 2),1+x/2,0", "vec2i(0,0),1+x/2,x%2")
+    } else {
+        source.to_owned()
+    };
+    let source = if integer {
+        source
+            .replace("texture_2d_array<f32>", "texture_2d_array<u32>")
+            .replace(
+                "return textureLoad(image,vec2i(0,0),1+x/2,x%2);",
+                "return vec4f(textureLoad(image,vec2i(0,0),1+x/2,x%2)) / 255.0;",
+            )
+    } else {
+        source
+    };
+    let shader = |name: &str, stage| ShaderDesc {
+        label: None,
+        format: ShaderFormat::Wgsl,
+        bytes: Arc::from(source.as_bytes()),
+        entries: vec![ShaderEntryPoint {
+            name: name.into(),
+            stage,
+            workgroup_size: None,
+        }],
+        required_features: vec![],
+    };
+    let vertex = d.shader(shader("vs", ShaderStage::Vertex)).await.unwrap();
+    let fragment = d.shader(shader("fs", ShaderStage::Fragment)).await.unwrap();
+    let group_layout = d
+        .create_bind_group_layout(&BindGroupLayoutDesc {
+            label: None,
+            entries: vec![BindGroupLayoutEntry {
+                binding: 0,
+                visibility: vec![ShaderStage::Fragment],
+                ty: BindingType::SampledTexture {
+                    sample: if integer {
+                        TextureSampleType::Uint
+                    } else {
+                        TextureSampleType::Float
+                    },
+                    dimension: TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: BindingCount::One,
+                partially_bound: false,
+                nonuniform_indexing: false,
+            }],
+        })
+        .unwrap();
+    let layout = d
+        .create_pipeline_layout(&PipelineLayoutDesc {
+            label: None,
+            groups: &[&group_layout],
+            push_constants: &[],
+        })
+        .unwrap();
+    let pipeline = d
+        .raster_pipeline(RasterPipelineDesc {
+            label: None,
+            layout,
+            vertex: PipelineStage {
+                module: vertex,
+                entry: "vs".into(),
+                constants: vec![],
+            },
+            fragment: Some(PipelineStage {
+                module: fragment,
+                entry: "fs".into(),
+                constants: vec![],
+            }),
+            vertex_buffers: vec![],
+            color_targets: vec![Some(ColorTargetState {
+                format: TextureFormat::Rgba8Unorm,
+                blend: None,
+                write_mask: 15,
+            })],
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: FrontFace::Ccw,
+                cull_mode: CullMode::None,
+                unclipped_depth: false,
+                polygon_mode: PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: MultisampleState {
+                count: 1,
+                mask: u64::MAX,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        })
+        .await
+        .unwrap();
+    let texture = |extent, layers, usage, format| {
+        d.create_texture(&TextureDesc {
+            label: None,
+            dimension: TextureDimension::D2,
+            extent,
+            array_layers: layers,
+            format,
+            mip_levels: if clear && layers > 1 { 2 } else { 1 },
+            samples: 1,
+            usage,
+            view_formats: vec![],
+        })
+        .unwrap()
+    };
+    let input = texture(
+        [2, 2, 1],
+        3,
+        TextureUsage::COPY_DST | TextureUsage::TEXTURE_BINDING,
+        if integer {
+            TextureFormat::Rgba8Uint
+        } else {
+            TextureFormat::Rgba8Unorm
+        },
+    );
+    let output = texture(
+        [4, 2, 1],
+        1,
+        TextureUsage::RENDER_ATTACHMENT | TextureUsage::COPY_SRC,
+        TextureFormat::Rgba8Unorm,
+    );
+    let view = |texture, dimension, layers, format| {
+        d.create_view(
+            texture,
+            &TextureViewDesc {
+                format,
+                dimension,
+                aspects: TextureAspects::COLOR,
+                mips: 0..if clear && dimension == TextureViewDimension::D2Array {
+                    2
+                } else {
+                    1
+                },
+                layers,
+            },
+        )
+        .unwrap()
+    };
+    let input_view = view(
+        &input,
+        TextureViewDimension::D2Array,
+        0..3,
+        if integer {
+            TextureFormat::Rgba8Uint
+        } else {
+            TextureFormat::Rgba8Unorm
+        },
+    );
+    let output_view = view(
+        &output,
+        TextureViewDimension::D2,
+        0..1,
+        TextureFormat::Rgba8Unorm,
+    );
+    let group = d
+        .create_bind_group(&BindGroupDesc {
+            label: None,
+            layout: &group_layout,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: BindingResource::TextureView(&input_view),
+            }],
+        })
+        .unwrap();
+    let buffer = |size| {
+        d.create_buffer(&BufferDesc {
+            label: None,
+            size,
+            usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            memory: MemoryClass::Device,
+        })
+        .unwrap()
+    };
+    let upload = buffer(128);
+    let read = buffer(32);
+    let mut data = [0xadu8; 128];
+    let colors = [
+        [255, 0, 0, 255],
+        [0, 255, 0, 255],
+        [0, 0, 255, 255],
+        [255, 255, 0, 255],
+    ];
+    for layer in 0..2 {
+        for row in 0..2 {
+            let start = 16 + layer * 48 + row * 16;
+            for x in 0..2 {
+                data[start + x * 4..start + x * 4 + 4].copy_from_slice(&colors[layer * 2 + row]);
+            }
+        }
+    }
+    let fixture = common::ImmediateFixture {
+        device: d,
+        lane: d.lanes()[0].id,
+    };
+    let plan = common::single_commands_plan(&fixture, 211).unwrap();
+    // SAFETY: device and all resources outlive the completion point.
+    let mut session =
+        unsafe { common::begin_commands(&fixture, plan, CompletionRequest::End) }.unwrap();
+    let mut run = session
+        .begin_commands()
+        .unwrap_or_else(|_| panic!("begin commands"));
+    let e = run.commands();
+    e.write_buffer(&upload, 0, &data).unwrap();
+    e.buffer_to_texture(
+        &upload,
+        TexelCopyBufferLayout {
+            offset: 16,
+            bytes_per_row: 16,
+            rows_per_image: 3,
+        },
+        TextureRegion {
+            texture: &input,
+            mip: 0,
+            origin: [0, 0, 1],
+            extent: [2, 2, 2],
+            aspect: TextureAspects::COLOR,
+        },
+    )
+    .unwrap();
+    if clear {
+        e.clear_texture(
+            &input,
+            1..2,
+            1..3,
+            TextureClearValue::Color(if integer {
+                ClearColor::Uint([255, 0, 255, 255])
+            } else {
+                ClearColor::Float([1.0, 0.0, 1.0, 1.0])
+            }),
+        )
+        .unwrap();
+        e.clear_texture(
+            &input,
+            0..1,
+            2..3,
+            TextureClearValue::Color(if integer {
+                ClearColor::Uint([64, 128, 191, 255])
+            } else {
+                ClearColor::Float([0.25, 0.5, 0.75, 1.0])
+            }),
+        )
+        .unwrap();
+    }
+    let attachments = [Some(ColorAttachment {
+        view: AttachmentView::Texture(&output_view),
+        resolve_target: None,
+        load: LoadOp::Clear(ClearColor::Float([0.; 4])),
+        store: StoreOp::Store,
+    })];
+    let mut pass = e
+        .begin_raster(&RasterPassDesc {
+            label: None,
+            colors: &attachments,
+            depth_stencil: None,
+            render_area: Rect {
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 2,
+            },
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            secondary_inheritance: None,
+        })
+        .unwrap();
+    pass.set_pipeline(&pipeline).unwrap();
+    pass.set_bind_group(0, &group, &[]).unwrap();
+    pass.draw(0..3, 0..1).unwrap();
+    pass.finish().unwrap();
+    e.texture_to_buffer(
+        TextureRegion {
+            texture: &output,
+            mip: 0,
+            origin: [0, 0, 0],
+            extent: [4, 2, 1],
+            aspect: TextureAspects::COLOR,
+        },
+        &read,
+        TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: 16,
+            rows_per_image: 2,
+        },
+    )
+    .unwrap();
+    let ticket = e.readback_buffer(&read, 0..32).unwrap();
+    assert!(matches!(run.close(), ImmediateRunOutcome::Issued(_)));
+    let point = match session.finish() {
+        ImmediateFinishOutcome::Issued(prefix) => {
+            prefix.checkpoints.into_iter().next().unwrap().point
+        }
+        _ => panic!("finish"),
+    };
+    d.wait_completion(&point).await.unwrap();
+    // SAFETY: the point covers the upload, draw, and readback.
+    let result = unsafe { d.read_after(ticket, &point).await }.unwrap().bytes;
+    for row in 0..2 {
+        for x in 0..4 {
+            let actual = &result[row * 16 + x * 4..row * 16 + x * 4 + 4];
+            let expected = if clear {
+                match x {
+                    0 => colors[0],
+                    1 | 3 => [255, 0, 255, 255],
+                    _ => [64, 128, 191, 255],
+                }
+            } else {
+                colors[x]
+            };
+            assert_eq!(actual, &expected, "x={x} row={row}");
+        }
+    }
+}
+async fn upload_usage_rejections(d: &Device<Gl>) {
+    let texture = d
+        .create_texture(&TextureDesc {
+            label: None,
+            dimension: TextureDimension::D2,
+            extent: [1, 1, 1],
+            array_layers: 1,
+            format: TextureFormat::Rgba8Unorm,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::TEXTURE_BINDING,
+            view_formats: vec![],
+        })
+        .unwrap();
+    let buffer = |usage| {
+        d.create_buffer(&BufferDesc {
+            label: None,
+            size: 16,
+            usage,
+            memory: MemoryClass::Device,
+        })
+        .unwrap()
+    };
+    let plain = buffer(BufferUsage::VERTEX);
+    let copy_src = buffer(BufferUsage::COPY_SRC);
+    let copy_dst = buffer(BufferUsage::COPY_DST);
+    let fixture = common::ImmediateFixture {
+        device: d,
+        lane: d.lanes()[0].id,
+    };
+    for case in 0..4 {
+        let plan = common::single_commands_plan(&fixture, 215 + case).unwrap();
+        // SAFETY: all resources remain alive for the immediate scope.
+        let mut session =
+            unsafe { common::begin_commands(&fixture, plan, CompletionRequest::End) }.unwrap();
+        let mut run = session
+            .begin_commands()
+            .unwrap_or_else(|_| panic!("begin invalid upload"));
+        let e = run.commands();
+        let result = match case {
+            0 => e.write_texture(
+                TextureRegion {
+                    texture: &texture,
+                    mip: 0,
+                    origin: [0, 0, 0],
+                    extent: [1, 1, 1],
+                    aspect: TextureAspects::COLOR,
+                },
+                TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: 4,
+                    rows_per_image: 1,
+                },
+                &[1, 2, 3, 4],
+            ),
+            1 => e.write_buffer(&plain, 0, &[1, 2, 3, 4]),
+            2 => e.copy_buffer(&plain, 0, &copy_dst, 0, 4),
+            _ => e.copy_buffer(&copy_src, 0, &plain, 0, 4),
+        };
+        assert!(
+            matches!(result, Err(Error::InvalidState)),
+            "case {case}: {result:?}"
+        );
+    }
+}
+
+async fn depth_pbo_upload(d: &Device<Gl>, format: TextureFormat) {
+    let depth32 = format == TextureFormat::Depth32Float;
+    let (upload_offset, bytes_per_row) = if depth32 { (4, 16) } else { (6, 8) };
+    let input = d
+        .create_texture(&TextureDesc {
+            label: None,
+            dimension: TextureDimension::D2,
+            extent: [2, 2, 1],
+            array_layers: 1,
+            format,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::COPY_DST | TextureUsage::COPY_SRC | TextureUsage::TEXTURE_BINDING,
+            view_formats: vec![],
+        })
+        .unwrap();
+    let support_desc = TextureDesc {
+        label: None,
+        dimension: TextureDimension::D2,
+        extent: [2, 2, 1],
+        array_layers: 1,
+        format,
+        mip_levels: 1,
+        samples: 1,
+        usage: TextureUsage::COPY_DST | TextureUsage::COPY_SRC | TextureUsage::TEXTURE_BINDING,
+        view_formats: vec![],
+    };
+    assert!(matches!(
+        d.texture_support(&support_desc),
+        Support::Supported(_)
+    ));
+
+    let source = br#"
+@group(0) @binding(0) var image: texture_depth_2d;
+@vertex fn vs(@builtin(vertex_index) i:u32)->@builtin(position) vec4f {
+ let p=array<vec2f,3>(vec2f(-1.,-1.),vec2f(3.,-1.),vec2f(-1.,3.)); return vec4f(p[i],0.5,1.);
+}
+@fragment fn fs(@builtin(position) p:vec4f)->@location(0) vec4f {
+ let first_row=textureLoad(image,vec2i(0,0),0);
+ let second_row=textureLoad(image,vec2i(0,1),0);
+ return vec4f(first_row,second_row,0.,1.);
+}
+"#;
+    let shader = |name: &str, stage| ShaderDesc {
+        label: None,
+        format: ShaderFormat::Wgsl,
+        bytes: Arc::from(source.as_slice()),
+        entries: vec![ShaderEntryPoint {
+            name: name.into(),
+            stage,
+            workgroup_size: None,
+        }],
+        required_features: vec![],
+    };
+    let vertex = d.shader(shader("vs", ShaderStage::Vertex)).await.unwrap();
+    let fragment = d.shader(shader("fs", ShaderStage::Fragment)).await.unwrap();
+    let group_layout = d
+        .create_bind_group_layout(&BindGroupLayoutDesc {
+            label: None,
+            entries: vec![BindGroupLayoutEntry {
+                binding: 0,
+                visibility: vec![ShaderStage::Fragment],
+                ty: BindingType::SampledTexture {
+                    sample: TextureSampleType::Depth,
+                    dimension: TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: BindingCount::One,
+                partially_bound: false,
+                nonuniform_indexing: false,
+            }],
+        })
+        .unwrap();
+    let layout = d
+        .create_pipeline_layout(&PipelineLayoutDesc {
+            label: None,
+            groups: &[&group_layout],
+            push_constants: &[],
+        })
+        .unwrap();
+    let pipeline = d
+        .raster_pipeline(RasterPipelineDesc {
+            label: None,
+            layout,
+            vertex: PipelineStage {
+                module: vertex,
+                entry: "vs".into(),
+                constants: vec![],
+            },
+            fragment: Some(PipelineStage {
+                module: fragment,
+                entry: "fs".into(),
+                constants: vec![],
+            }),
+            vertex_buffers: vec![],
+            color_targets: vec![Some(ColorTargetState {
+                format: TextureFormat::Rgba8Unorm,
+                blend: None,
+                write_mask: 15,
+            })],
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: FrontFace::Ccw,
+                cull_mode: CullMode::None,
+                unclipped_depth: false,
+                polygon_mode: PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: MultisampleState {
+                count: 1,
+                mask: u64::MAX,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        })
+        .await
+        .unwrap();
+    let input_view = d
+        .create_view(
+            &input,
+            &TextureViewDesc {
+                format,
+                dimension: TextureViewDimension::D2,
+                aspects: TextureAspects::DEPTH,
+                mips: 0..1,
+                layers: 0..1,
+            },
+        )
+        .unwrap();
+    let group = d
+        .create_bind_group(&BindGroupDesc {
+            label: None,
+            layout: &group_layout,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: BindingResource::TextureView(&input_view),
+            }],
+        })
+        .unwrap();
+    let output = d
+        .create_texture(&TextureDesc {
+            label: None,
+            dimension: TextureDimension::D2,
+            extent: [1, 1, 1],
+            array_layers: 1,
+            format: TextureFormat::Rgba8Unorm,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER_ATTACHMENT | TextureUsage::COPY_SRC,
+            view_formats: vec![],
+        })
+        .unwrap();
+    let output_view = d
+        .create_view(
+            &output,
+            &TextureViewDesc {
+                format: TextureFormat::Rgba8Unorm,
+                dimension: TextureViewDimension::D2,
+                aspects: TextureAspects::COLOR,
+                mips: 0..1,
+                layers: 0..1,
+            },
+        )
+        .unwrap();
+    let upload = d
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: 32,
+            usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            memory: MemoryClass::Device,
+        })
+        .unwrap();
+    let read = d
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: 16,
+            usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            memory: MemoryClass::Device,
+        })
+        .unwrap();
+    let depth_read = d
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: 32,
+            usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            memory: MemoryClass::Device,
+        })
+        .unwrap();
+    // Nonzero buffer offset, row padding, and asymmetric texels distinguish
+    // both uploaded rows from untouched storage.
+    let mut bytes = [0xadu8; 32];
+    if depth32 {
+        for (row, values) in [[0.25f32, 1.0f32], [0.0, 1.0]].into_iter().enumerate() {
+            let start = upload_offset as usize + row * bytes_per_row as usize;
+            bytes[start..start + 4].copy_from_slice(&values[0].to_ne_bytes());
+            bytes[start + 4..start + 8].copy_from_slice(&values[1].to_ne_bytes());
+        }
+    } else {
+        for (row, values) in [[0x4000u16, 0xffffu16], [0x0000, 0xffff]]
+            .into_iter()
+            .enumerate()
+        {
+            let start = upload_offset as usize + row * bytes_per_row as usize;
+            bytes[start..start + 2].copy_from_slice(&values[0].to_ne_bytes());
+            bytes[start + 2..start + 4].copy_from_slice(&values[1].to_ne_bytes());
+        }
+    }
+    let colors = [Some(ColorAttachment {
+        view: AttachmentView::Texture(&output_view),
+        resolve_target: None,
+        load: LoadOp::Clear(ClearColor::Float([0.; 4])),
+        store: StoreOp::Store,
+    })];
+    let fixture = common::ImmediateFixture {
+        device: d,
+        lane: d.lanes()[0].id,
+    };
+    let rejected_plan = common::single_commands_plan(&fixture, 519).unwrap();
+    // SAFETY: the resources remain alive while validating the rejected aspect.
+    let mut rejected_session =
+        unsafe { common::begin_commands(&fixture, rejected_plan, CompletionRequest::End) }.unwrap();
+    let mut rejected_run = rejected_session
+        .begin_commands()
+        .unwrap_or_else(|_| panic!("begin invalid depth PBO upload"));
+    assert!(matches!(
+        rejected_run.commands().buffer_to_texture(
+            &upload,
+            TexelCopyBufferLayout {
+                offset: upload_offset,
+                bytes_per_row,
+                rows_per_image: 2,
+            },
+            TextureRegion {
+                texture: &input,
+                mip: 0,
+                origin: [0, 0, 0],
+                extent: [2, 2, 1],
+                aspect: TextureAspects::COLOR,
+            },
+        ),
+        Err(Error::Unsupported(_))
+    ));
+    drop(rejected_run);
+    drop(rejected_session);
+
+    let plan = common::single_commands_plan(&fixture, 520).unwrap();
+    // SAFETY: every resource remains live through the completion point.
+    let mut session =
+        unsafe { common::begin_commands(&fixture, plan, CompletionRequest::End) }.unwrap();
+    let mut run = session
+        .begin_commands()
+        .unwrap_or_else(|_| panic!("begin depth PBO upload"));
+    let e = run.commands();
+    e.write_buffer(&upload, 0, &bytes).unwrap();
+    e.buffer_to_texture(
+        &upload,
+        TexelCopyBufferLayout {
+            offset: upload_offset,
+            bytes_per_row,
+            rows_per_image: 2,
+        },
+        TextureRegion {
+            texture: &input,
+            mip: 0,
+            origin: [0, 0, 0],
+            extent: [2, 2, 1],
+            aspect: TextureAspects::DEPTH,
+        },
+    )
+    .unwrap();
+    let mut pass = e
+        .begin_raster(&RasterPassDesc {
+            label: None,
+            colors: &colors,
+            depth_stencil: None,
+            render_area: Rect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            secondary_inheritance: None,
+        })
+        .unwrap();
+    pass.set_pipeline(&pipeline).unwrap();
+    pass.set_bind_group(0, &group, &[]).unwrap();
+    pass.draw(0..3, 0..1).unwrap();
+    pass.finish().unwrap();
+    e.texture_to_buffer(
+        TextureRegion {
+            texture: &output,
+            mip: 0,
+            origin: [0, 0, 0],
+            extent: [1, 1, 1],
+            aspect: TextureAspects::COLOR,
+        },
+        &read,
+        TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: 4,
+            rows_per_image: 1,
+        },
+    )
+    .unwrap();
+    e.texture_to_buffer(
+        TextureRegion {
+            texture: &input,
+            mip: 0,
+            origin: [0, 0, 0],
+            extent: [2, 2, 1],
+            aspect: TextureAspects::DEPTH,
+        },
+        &depth_read,
+        TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row,
+            rows_per_image: 2,
+        },
+    )
+    .unwrap();
+    let ticket = e.readback_buffer(&read, 0..4).unwrap();
+    let depth_ticket = e.readback_buffer(&depth_read, 0..32).unwrap();
+    assert!(matches!(run.close(), ImmediateRunOutcome::Issued(_)));
+    let point = match session.finish() {
+        ImmediateFinishOutcome::Issued(prefix) => {
+            prefix.checkpoints.into_iter().next().unwrap().point
+        }
+        _ => panic!("finish depth PBO upload"),
+    };
+    d.wait_completion(&point).await.unwrap();
+    // SAFETY: the point covers the PBO upload, sample, render, and readback.
+    let actual = unsafe { d.read_after(ticket, &point).await }.unwrap().bytes;
+    assert_eq!(actual, [64, 0, 0, 255]);
+    let depth = unsafe { d.read_after(depth_ticket, &point).await }
+        .unwrap()
+        .bytes;
+    if depth32 {
+        assert_eq!(
+            &depth[0..8],
+            &[0x00, 0x00, 0x80, 0x3e, 0x00, 0x00, 0x80, 0x3f]
+        );
+        assert_eq!(
+            &depth[16..24],
+            &[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f]
+        );
+    } else {
+        assert_eq!(&depth[0..4], &[0x00, 0x40, 0xff, 0xff]);
+        assert_eq!(&depth[8..12], &[0x00, 0x00, 0xff, 0xff]);
+    }
+}
+
+pub(super) async fn pbo_upload(d: &Device<Gl>, depth_readback: bool) {
+    upload_usage_rejections(d).await;
+    pbo_upload_impl(d, false, false).await;
+    // Depth PBO readback is currently a desktop GL route. The two-row depth
+    // sampling behavior differs across ANGLE profiles and is tracked
+    // separately rather than weakening the GL4+ assertion.
+    if depth_readback {
+        depth_pbo_upload(d, TextureFormat::Depth16Unorm).await;
+        depth_pbo_upload(d, TextureFormat::Depth32Float).await;
+    }
+}
+async fn standalone_texture_clear(d: &Device<Gl>) {
+    pbo_upload_impl(d, true, false).await;
+    pbo_upload_impl(d, true, true).await;
+}
+#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[test]
+#[ignore = "requires a WGL hardware context"]
+fn wgl_core_pbo_upload() {
+    use fluxel_host::{Window, WindowConfig};
+    use std::{
+        future::Future,
+        task::{Context, Poll, Wake, Waker},
+    };
+    struct WakeThread(std::thread::Thread);
+    impl Wake for WakeThread {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    fn block_on<F: Future>(f: F) -> F::Output {
+        let waker = Waker::from(Arc::new(WakeThread(std::thread::current())));
+        let mut cx = Context::from_waker(&waker);
+        let mut f = std::pin::pin!(f);
+        loop {
+            match f.as_mut().poll(&mut cx) {
+                Poll::Ready(v) => return v,
+                Poll::Pending => std::thread::park(),
+            }
+        }
+    }
+    let window = Window::new(WindowConfig::new("GL MRT Core fixture", 120, 64).unwrap()).unwrap();
+    // SAFETY: the window outlives the GL device and all its resources on this thread.
+    let native = unsafe { GlInstance::from_wgl_window(&window, [120, 64]) }.unwrap();
+    let d = block_on(open(native));
+    block_on(pbo_upload(&d, true));
+}
+
+#[cfg(feature = "native-gles-egl")]
+#[test]
+#[ignore = "requires an EGL GLES hardware context"]
+fn gles_core_pbo_upload() {
+    use std::{
+        future::Future,
+        task::{Context, Poll, Wake, Waker},
+    };
+    struct WakeThread(std::thread::Thread);
+    impl Wake for WakeThread {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    fn block_on<F: Future>(f: F) -> F::Output {
+        let waker = Waker::from(Arc::new(WakeThread(std::thread::current())));
+        let mut cx = Context::from_waker(&waker);
+        let mut f = std::pin::pin!(f);
+        loop {
+            match f.as_mut().poll(&mut cx) {
+                Poll::Ready(v) => return v,
+                Poll::Pending => std::thread::park(),
+            }
+        }
+    }
+    let native =
+        GlInstance::gles_pbuffer([8, 8]).expect("open EGL GLES pbuffer for hardware fixture");
+    let d = block_on(open(native));
+    block_on(pbo_upload(&d, false));
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[wasm_bindgen_test::wasm_bindgen_test(async)]
+async fn webgl2_core_pbo_upload() {
+    use wasm_bindgen::JsCast;
+    let canvas = web_sys::window()
+        .unwrap()
+        .document()
+        .unwrap()
+        .create_element("canvas")
+        .unwrap()
+        .dyn_into::<web_sys::HtmlCanvasElement>()
+        .unwrap();
+    canvas.set_width(8);
+    canvas.set_height(8);
+    let d = open(GlInstance::from_webgl2_canvas(canvas).unwrap()).await;
+    pbo_upload(&d, false).await;
+}
+#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[test]
+#[ignore = "requires a WGL hardware context"]
+fn wgl_core_buffer_fill() {
+    use fluxel_host::{Window, WindowConfig};
+    use std::{
+        future::Future,
+        task::{Context, Poll, Wake, Waker},
+    };
+    struct WakeThread(std::thread::Thread);
+    impl Wake for WakeThread {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    fn block_on<F: Future>(f: F) -> F::Output {
+        let waker = Waker::from(Arc::new(WakeThread(std::thread::current())));
+        let mut cx = Context::from_waker(&waker);
+        let mut f = std::pin::pin!(f);
+        loop {
+            match f.as_mut().poll(&mut cx) {
+                Poll::Ready(v) => return v,
+                Poll::Pending => std::thread::park(),
+            }
+        }
+    }
+    let window = Window::new(WindowConfig::new("GL MRT Core fixture", 120, 64).unwrap()).unwrap();
+    // SAFETY: the window outlives the GL device and all its resources on this thread.
+    let native = unsafe { GlInstance::from_wgl_window(&window, [120, 64]) }.unwrap();
+    let d = block_on(open(native));
+    block_on(buffer_fill(&d));
+    block_on(readback_snapshot(&d));
+}
+
+#[cfg(feature = "native-gles-egl")]
+#[test]
+#[ignore = "requires an EGL GLES hardware context"]
+fn gles_core_buffer_fill() {
+    use std::{
+        future::Future,
+        task::{Context, Poll, Wake, Waker},
+    };
+    struct WakeThread(std::thread::Thread);
+    impl Wake for WakeThread {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    fn block_on<F: Future>(f: F) -> F::Output {
+        let waker = Waker::from(Arc::new(WakeThread(std::thread::current())));
+        let mut cx = Context::from_waker(&waker);
+        let mut f = std::pin::pin!(f);
+        loop {
+            match f.as_mut().poll(&mut cx) {
+                Poll::Ready(v) => return v,
+                Poll::Pending => std::thread::park(),
+            }
+        }
+    }
+    let native =
+        GlInstance::gles_pbuffer([8, 8]).expect("open EGL GLES pbuffer for hardware fixture");
+    let d = block_on(open(native));
+    block_on(buffer_fill(&d));
+    block_on(readback_snapshot(&d));
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[wasm_bindgen_test::wasm_bindgen_test(async)]
+async fn webgl2_core_buffer_fill() {
+    use wasm_bindgen::JsCast;
+    let canvas = web_sys::window()
+        .unwrap()
+        .document()
+        .unwrap()
+        .create_element("canvas")
+        .unwrap()
+        .dyn_into::<web_sys::HtmlCanvasElement>()
+        .unwrap();
+    canvas.set_width(8);
+    canvas.set_height(8);
+    let d = open(GlInstance::from_webgl2_canvas(canvas).unwrap()).await;
+    buffer_fill(&d).await;
+    readback_snapshot(&d).await;
+}
+#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[test]
+#[ignore = "requires a WGL hardware context"]
+fn wgl_core_standalone_texture_clear() {
+    use fluxel_host::{Window, WindowConfig};
+    use std::{
+        future::Future,
+        task::{Context, Poll, Wake, Waker},
+    };
+    struct WakeThread(std::thread::Thread);
+    impl Wake for WakeThread {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    fn block_on<F: Future>(f: F) -> F::Output {
+        let waker = Waker::from(Arc::new(WakeThread(std::thread::current())));
+        let mut cx = Context::from_waker(&waker);
+        let mut f = std::pin::pin!(f);
+        loop {
+            match f.as_mut().poll(&mut cx) {
+                Poll::Ready(v) => return v,
+                Poll::Pending => std::thread::park(),
+            }
+        }
+    }
+    let window = Window::new(WindowConfig::new("GL MRT Core fixture", 120, 64).unwrap()).unwrap();
+    // SAFETY: the window outlives the GL device and all its resources on this thread.
+    let native = unsafe { GlInstance::from_wgl_window(&window, [120, 64]) }.unwrap();
+    let d = block_on(open(native));
+    block_on(standalone_texture_clear(&d));
+}
+
+#[cfg(feature = "native-gles-egl")]
+#[test]
+#[ignore = "requires an EGL GLES hardware context"]
+fn gles_core_standalone_texture_clear() {
+    use std::{
+        future::Future,
+        task::{Context, Poll, Wake, Waker},
+    };
+    struct WakeThread(std::thread::Thread);
+    impl Wake for WakeThread {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    fn block_on<F: Future>(f: F) -> F::Output {
+        let waker = Waker::from(Arc::new(WakeThread(std::thread::current())));
+        let mut cx = Context::from_waker(&waker);
+        let mut f = std::pin::pin!(f);
+        loop {
+            match f.as_mut().poll(&mut cx) {
+                Poll::Ready(v) => return v,
+                Poll::Pending => std::thread::park(),
+            }
+        }
+    }
+    let native =
+        GlInstance::gles_pbuffer([8, 8]).expect("open EGL GLES pbuffer for hardware fixture");
+    let d = block_on(open(native));
+    block_on(standalone_texture_clear(&d));
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[wasm_bindgen_test::wasm_bindgen_test(async)]
+async fn webgl2_core_standalone_texture_clear() {
+    use wasm_bindgen::JsCast;
+    let canvas = web_sys::window()
+        .unwrap()
+        .document()
+        .unwrap()
+        .create_element("canvas")
+        .unwrap()
+        .dyn_into::<web_sys::HtmlCanvasElement>()
+        .unwrap();
+    canvas.set_width(8);
+    canvas.set_height(8);
+    let d = open(GlInstance::from_webgl2_canvas(canvas).unwrap()).await;
+    standalone_texture_clear(&d).await;
+}

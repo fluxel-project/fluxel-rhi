@@ -128,3 +128,86 @@ fn exact_u32(value: f32) -> Result<u32> {
     }
     Ok(value as u32)
 }
+
+pub(super) fn set_blend_constant(encoder: &mut GlEncoder, value: [f32; 4]) -> Result<()> {
+    if encoder.raster_extent.is_none() {
+        return Err(Error::InvalidState);
+    }
+    if value.iter().any(|v| !v.is_finite()) {
+        return Err(Error::InvalidRange);
+    }
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    let result = {
+        use crate::backend::gl::api::GlRasterCommandApi as _;
+        encoder
+            .state
+            .with_native("set GL blend constant", |provider| {
+                provider.set_blend_constant(value)
+            })
+            .map_err(native_error)
+    };
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    let result = encoder
+        .browser
+        .as_mut()
+        .ok_or(Error::InvalidState)?
+        .set_blend_constant(value);
+    #[cfg(not(any(
+        all(windows, feature = "native-gl-wgl"),
+        feature = "native-gles-egl",
+        all(target_arch = "wasm32", feature = "webgl2")
+    )))]
+    let result: Result<()> = Err(Error::Unsupported("GL platform context"));
+    if result.is_ok() {
+        encoder.raster_blend_constant = value;
+        encoder.issued = true;
+    } else {
+        encoder.indeterminate = true;
+    }
+    result
+}
+
+pub(super) fn set_stencil_reference(encoder: &mut GlEncoder, value: u32) -> Result<()> {
+    if encoder.raster_extent.is_none() {
+        return Err(Error::InvalidState);
+    }
+    if encoder
+        .raster_pipeline
+        .as_ref()
+        .is_none_or(|pipeline| pipeline.raster.depth_stencil.is_none())
+    {
+        // The stencil compare function comes from the pipeline. Keep the value
+        // until one is selected, then set_raster_pipeline applies it.
+        encoder.raster_stencil_reference = value;
+        return Ok(());
+    }
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    let result = {
+        use crate::backend::gl::api::GlRasterCommandApi as _;
+        encoder
+            .state
+            .with_native("set GL stencil reference", |provider| {
+                provider.set_stencil_reference(value)
+            })
+            .map_err(native_error)
+    };
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    let result = encoder
+        .browser
+        .as_mut()
+        .ok_or(Error::InvalidState)?
+        .set_stencil_reference(value);
+    #[cfg(not(any(
+        all(windows, feature = "native-gl-wgl"),
+        feature = "native-gles-egl",
+        all(target_arch = "wasm32", feature = "webgl2")
+    )))]
+    let result: Result<()> = Err(Error::Unsupported("GL platform context"));
+    if result.is_ok() {
+        encoder.raster_stencil_reference = value;
+        encoder.issued = true;
+    } else {
+        encoder.indeterminate = true;
+    }
+    result
+}

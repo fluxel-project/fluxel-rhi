@@ -339,6 +339,13 @@ impl GlRasterCommandApi for MockComputeStorageApi {
     fn draw_raster(&mut self, draw: GlDrawCommand) -> Result<(), GlError> {
         self.inner.draw_raster(draw)
     }
+    fn set_blend_constant(&mut self, value: [f32; 4]) -> Result<(), GlError> {
+        self.inner.set_blend_constant(value)
+    }
+    fn set_stencil_reference(&mut self, value: u32) -> Result<(), GlError> {
+        self.inner.set_stencil_reference(value)
+    }
+
     fn set_viewport(&mut self, viewport: GlViewport) -> Result<(), GlError> {
         self.inner.set_viewport(viewport)
     }

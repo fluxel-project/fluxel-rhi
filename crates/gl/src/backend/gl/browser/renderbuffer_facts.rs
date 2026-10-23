@@ -48,7 +48,7 @@ struct RenderbufferFormat {
 /// facts for, so one descriptor cannot name a renderbuffer class on one
 /// provider and an unallocatable one on the other. Compressed formats are
 /// absent for the same reason they can never be renderbuffers at all.
-const RENDERBUFFER_FORMATS: [RenderbufferFormat; 3] = [
+const RENDERBUFFER_FORMATS: [RenderbufferFormat; 10] = [
     RenderbufferFormat {
         format: GlFormat::Rgba8Unorm,
         internal: Gl::RGBA8,
@@ -60,6 +60,34 @@ const RENDERBUFFER_FORMATS: [RenderbufferFormat; 3] = [
     RenderbufferFormat {
         format: GlFormat::Depth32Float,
         internal: Gl::DEPTH_COMPONENT32F,
+    },
+    RenderbufferFormat {
+        format: GlFormat::Rgba8Uint,
+        internal: Gl::RGBA8UI,
+    },
+    RenderbufferFormat {
+        format: GlFormat::Rgba8Sint,
+        internal: Gl::RGBA8I,
+    },
+    RenderbufferFormat {
+        format: GlFormat::Depth16Unorm,
+        internal: Gl::DEPTH_COMPONENT16,
+    },
+    RenderbufferFormat {
+        format: GlFormat::Depth24Unorm,
+        internal: Gl::DEPTH_COMPONENT24,
+    },
+    RenderbufferFormat {
+        format: GlFormat::Depth24PlusStencil8,
+        internal: Gl::DEPTH24_STENCIL8,
+    },
+    RenderbufferFormat {
+        format: GlFormat::Depth32FloatStencil8,
+        internal: Gl::DEPTH32F_STENCIL8,
+    },
+    RenderbufferFormat {
+        format: GlFormat::Stencil8,
+        internal: Gl::STENCIL_INDEX8,
     },
 ];
 
@@ -181,7 +209,9 @@ pub(super) fn record_facts(
                     sampled: false,
                     filterable: false,
                     renderable,
-                    blendable: renderable && !is_depth_format(entry.format),
+                    blendable: renderable
+                        && !is_depth_format(entry.format)
+                        && !matches!(entry.format, GlFormat::Rgba8Uint | GlFormat::Rgba8Sint),
                     storage_read: false,
                     storage_write: false,
                     copy_source: false,
@@ -199,7 +229,12 @@ pub(super) fn record_facts(
 const fn is_depth_format(format: GlFormat) -> bool {
     matches!(
         format,
-        GlFormat::Depth16Unorm | GlFormat::Depth24PlusStencil8 | GlFormat::Depth32Float
+        GlFormat::Depth16Unorm
+            | GlFormat::Depth24Unorm
+            | GlFormat::Depth24PlusStencil8
+            | GlFormat::Depth32Float
+            | GlFormat::Depth32FloatStencil8
+            | GlFormat::Stencil8
     )
 }
 

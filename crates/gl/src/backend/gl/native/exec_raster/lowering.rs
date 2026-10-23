@@ -60,6 +60,10 @@ pub(super) const fn blend_factor(factor: GlBlendFactor) -> u32 {
         GlBlendFactor::Constant => glow::CONSTANT_COLOR,
         GlBlendFactor::OneMinusConstant => glow::ONE_MINUS_CONSTANT_COLOR,
         GlBlendFactor::SrcAlphaSaturated => glow::SRC_ALPHA_SATURATE,
+        GlBlendFactor::Src1 => 0x88F9,
+        GlBlendFactor::OneMinusSrc1 => 0x88FA,
+        GlBlendFactor::Src1Alpha => 0x8589,
+        GlBlendFactor::OneMinusSrc1Alpha => 0x88FB,
     }
 }
 

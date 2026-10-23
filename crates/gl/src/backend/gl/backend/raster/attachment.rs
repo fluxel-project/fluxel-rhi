@@ -1,12 +1,12 @@
 //! Color attachment load/store/clear lowering shared by GL pass targets.
 
-use fluxel_rhi_core::api::{ClearColor, Error, LoadOp, Result, StoreOp};
+use fluxel_rhi_core::api::{ClearColor, LoadOp, Result, StoreOp};
 
 pub(super) fn lower_load(value: LoadOp<ClearColor>) -> Result<crate::backend::gl::api::GlLoadOp> {
     Ok(match value {
-        LoadOp::Load => crate::backend::gl::api::GlLoadOp::Load,
         LoadOp::Clear(_) => crate::backend::gl::api::GlLoadOp::Clear,
-        LoadOp::Discard => return Err(Error::Unsupported("GL color load discard")),
+        // Keeping old contents is legal for a discard load.
+        LoadOp::Load | LoadOp::Discard => crate::backend::gl::api::GlLoadOp::Load,
     })
 }
 pub(super) fn lower_store(value: StoreOp) -> crate::backend::gl::api::GlStoreOp {
@@ -18,22 +18,11 @@ pub(super) fn lower_store(value: StoreOp) -> crate::backend::gl::api::GlStoreOp 
 pub(super) fn lower_clear(
     value: LoadOp<ClearColor>,
 ) -> Result<crate::backend::gl::api::GlColorClearValue> {
-    match value {
-        LoadOp::Clear(ClearColor::Float([red, green, blue, alpha])) => {
-            Ok(crate::backend::gl::api::GlColorClearValue {
-                red: red.to_bits(),
-                green: green.to_bits(),
-                blue: blue.to_bits(),
-                alpha: alpha.to_bits(),
-            })
-        }
-        LoadOp::Load => Ok(crate::backend::gl::api::GlColorClearValue {
-            red: 0,
-            green: 0,
-            blue: 0,
-            alpha: 0,
-        }),
-        LoadOp::Clear(_) => Err(Error::Unsupported("GL integer color clear")),
-        LoadOp::Discard => Err(Error::Unsupported("GL color load discard")),
-    }
+    use crate::backend::gl::api::GlColorClearValue as Gl;
+    Ok(match value {
+        LoadOp::Clear(ClearColor::Float(value)) => Gl::Float(value.map(f32::to_bits)),
+        LoadOp::Clear(ClearColor::Uint(value)) => Gl::Uint(value),
+        LoadOp::Clear(ClearColor::Sint(value)) => Gl::Sint(value),
+        LoadOp::Load | LoadOp::Discard => Gl::Float([0; 4]),
+    })
 }

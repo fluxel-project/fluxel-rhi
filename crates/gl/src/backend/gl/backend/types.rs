@@ -41,19 +41,24 @@ impl GlInstance {
         let unmap_buffer = context
             .load_unmap_buffer()
             .map_err(|error| fluxel_rhi_core::api::Error::Backend(format!("{error:?}")))?;
+        let indexed_blend = context.load_indexed_blend();
+        let program_resource = context.load_program_resource();
         let stamp = context.context_stamp();
         // SAFETY: `make_current` above established that this exact platform
         // context is current and exclusively used by this thread. The provider
         // is retained beside that owner and every later operation repeats the
         // currentness transition before touching its GL names.
-        let provider = unsafe {
+        let mut provider = unsafe {
             crate::backend::gl::native::provider::NativeGlProvider::from_current(
                 gl,
                 stamp,
                 unmap_buffer,
+                |name| context.gl_proc(name),
             )
         }
         .map_err(|error| fluxel_rhi_core::api::Error::Backend(format!("{error:?}")))?;
+        provider.set_indexed_blend(indexed_blend);
+        provider.set_program_resource_query(program_resource);
         Ok(Self(Rc::new(GlDeviceState {
             context: RefCell::new(context),
             provider: RefCell::new(provider),
@@ -199,10 +204,13 @@ macro_rules! native_handle {
 native_handle!(
     GlMeshPipeline,
     GlRayPipeline,
-    GlPipelineCache,
     GlAcceleration,
     GlSparseAllocation,
 );
+
+/// Optional native program binaries belonging to one device and driver.
+#[derive(Clone)]
+pub struct GlPipelineCache(pub(crate) Rc<super::cache::GlPipelineCacheInner>);
 
 /// GL query names retained with their owning context and Core query kind.
 ///
@@ -215,6 +223,7 @@ pub struct GlQuerySetInner {
     pub(crate) state: Rc<GlDeviceState>,
     pub(crate) kind: fluxel_rhi_core::api::QueryKind,
     pub(crate) queries: Vec<crate::backend::gl::api::QueryId>,
+    pub(crate) statistics_queries: Vec<crate::backend::gl::api::QueryId>,
     pub(crate) measured: std::cell::RefCell<Vec<bool>>,
 }
 
@@ -243,8 +252,18 @@ impl Drop for GlQuerySetInner {
             for query in self.queries.drain(..) {
                 provider.destroy_query(query)?;
             }
+            for query in self.statistics_queries.drain(..) {
+                provider.destroy_query(query)?;
+            }
             Ok(())
         });
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+impl Drop for GlQuerySetInner {
+    fn drop(&mut self) {
+        self.state.owner.destroy_core_queries(&self.queries);
     }
 }
 
@@ -259,8 +278,10 @@ impl Drop for GlQuerySetInner {
 pub struct GlComputePipeline(Rc<GlComputePipelineInner>);
 
 pub struct GlComputePipelineInner {
+    pub(crate) mip_uniforms: Vec<GlMipUniform>,
     pub(crate) state: Rc<GlDeviceState>,
     pub(crate) layout: GlPipelineLayout,
+    pub(crate) push_uniforms: Vec<super::push::PushUniform>,
     pub(crate) reflection: crate::backend::gl::api::GlProgramReflection,
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
     pub(crate) program: crate::backend::gl::api::ProgramId,
@@ -304,15 +325,25 @@ pub(crate) enum GlBindingSlot {
         dynamic_offset: bool,
         min_size: u64,
     },
+    StorageBuffer {
+        dynamic_offset: bool,
+        min_size: u64,
+        access: fluxel_rhi_core::api::StorageAccess,
+    },
     SampledTexture {
         dimension: fluxel_rhi_core::api::TextureViewDimension,
+        sample: fluxel_rhi_core::api::TextureSampleType,
+        multisampled: bool,
     },
     StorageTexture {
         dimension: fluxel_rhi_core::api::TextureViewDimension,
         format: fluxel_rhi_core::api::TextureFormat,
         access: fluxel_rhi_core::api::StorageAccess,
     },
-    Sampler,
+    Sampler {
+        filtering: bool,
+        comparison: bool,
+    },
 }
 
 /// One validated Core layout entry; `binding` is logical, not a GL slot.
@@ -320,6 +351,9 @@ pub(crate) enum GlBindingSlot {
 pub(crate) struct GlBindingLayoutEntry {
     pub(crate) binding: u32,
     pub(crate) slot: GlBindingSlot,
+    pub(crate) count: fluxel_rhi_core::api::BindingCount,
+    pub(crate) partially_bound: bool,
+    pub(crate) nonuniform_indexing: bool,
 }
 
 /// A small immutable layout for the concrete uniform-buffer plus sampled
@@ -339,9 +373,16 @@ pub(crate) enum GlBoundResource {
         offset: u32,
         size: u32,
     },
+    StorageBuffer {
+        buffer: GlBuffer,
+        offset: u32,
+        size: u32,
+    },
     Texture(GlTextureView),
     StorageTexture(GlTextureView),
     Sampler(GlSampler),
+    /// Fully retained elements of a single descriptor-array dimension.
+    Array(Vec<Option<GlBoundResource>>),
 }
 
 /// An immutable, fully validated binding packet. Applying it issues GL calls
@@ -374,8 +415,55 @@ impl GlBindGroup {
 #[derive(Clone)]
 pub struct GlTextureView {
     pub(crate) texture: GlTexture,
+    pub(crate) aspects: fluxel_rhi_core::api::TextureAspects,
+    /// A true native storage alias, retained separately from its parent.
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    pub(crate) view_texture: Option<GlTexture>,
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    pub(crate) stencil_mirror: Option<GlTexture>,
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    pub(crate) cube_mirror: Option<GlTexture>,
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    pub(crate) cube_mirror: Option<crate::backend::gl::browser::BrowserTexture>,
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    pub(crate) stencil_mirror: Option<crate::backend::gl::browser::BrowserTexture>,
+    pub(crate) source_layer: u32,
+    pub(crate) full_sampling_view: bool,
+    pub(crate) dimension: fluxel_rhi_core::api::TextureViewDimension,
+    pub(crate) mip_count: u32,
+    pub(crate) source_mip: u32,
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    pub(crate) mip_level: u32,
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    pub(crate) array_layer: u32,
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    pub(crate) layer_count: u32,
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    pub(crate) width: u32,
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    pub(crate) height: u32,
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    pub(crate) sample_count: u32,
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
     pub(crate) native: crate::backend::gl::api::GlTextureView,
+}
+
+impl GlTextureView {
+    pub(crate) fn binding_texture(&self) -> &GlTexture {
+        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+        if let Some(texture) = &self.stencil_mirror {
+            return texture;
+        }
+        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+        if let Some(texture) = &self.cube_mirror {
+            return texture;
+        }
+        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+        if let Some(texture) = &self.view_texture {
+            return texture;
+        }
+        &self.texture
+    }
 }
 
 /// One provider-owned sampler allocation shared by cloned Core handles.
@@ -384,6 +472,8 @@ pub struct GlSampler(Rc<GlSamplerInner>);
 
 pub struct GlSamplerInner {
     pub(crate) state: Rc<GlDeviceState>,
+    pub(crate) filtering: bool,
+    pub(crate) comparison: bool,
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
     pub(crate) id: crate::backend::gl::api::SamplerId,
     #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
@@ -425,6 +515,7 @@ pub struct GlPipelineLayout {
     pub(crate) state: Rc<GlDeviceState>,
     pub(crate) groups: Rc<[GlBindGroupLayout]>,
     pub(crate) native: crate::backend::gl::api::GlPipelineLayout,
+    pub(crate) push_ranges: Rc<[fluxel_rhi_core::api::PushConstantRange]>,
 }
 
 /// Linked program, structural vertex-array layout, and fixed raster state.
@@ -436,12 +527,15 @@ pub struct GlPipelineLayout {
 pub struct GlRasterPipeline(Rc<GlRasterPipelineInner>);
 
 pub struct GlRasterPipelineInner {
+    pub(crate) mip_uniforms: Vec<GlMipUniform>,
+    pub(crate) multiview: Option<u32>,
     pub(crate) state: Rc<GlDeviceState>,
     /// Immutable Core layout ABI used when the linked program assigned GL
     /// binding points. Raster bind groups must match this exact declaration.
     pub(crate) layout: GlPipelineLayout,
     /// Program-link evidence maps logical Core bindings to actual UBO points
     /// and combined sampler units. Immediate binds use this map directly.
+    pub(crate) push_uniforms: Vec<super::push::PushUniform>,
     pub(crate) reflection: crate::backend::gl::api::GlProgramReflection,
     /// Structural input ABI. WebGL2 has to re-emit attribute pointers when a
     /// Core setter changes one buffer slot because those pointers retain the
@@ -476,10 +570,16 @@ impl GlRasterPipeline {
         &self,
         viewport: crate::backend::gl::api::GlViewport,
         scissor: Option<crate::backend::gl::api::GlScissorRect>,
+        blend_constant: [f32; 4],
+        stencil_reference: u32,
     ) -> crate::backend::gl::api::GlRasterPipeline {
         let mut state = self.raster.clone();
         state.viewport = viewport;
         state.scissor = scissor;
+        state.blend_constant = blend_constant.map(f32::to_bits);
+        if let Some(depth) = &mut state.depth_stencil {
+            depth.stencil_reference = stencil_reference;
+        }
         crate::backend::gl::api::GlRasterPipeline {
             program: self.program,
             vertex_array: self.vertex_array,
@@ -512,7 +612,7 @@ impl Drop for GlRasterPipelineInner {
 /// Clones retain one allocation record. The record, rather than every wrapper,
 /// owns the native deletion so views and bound packets may extend its lifetime.
 #[derive(Clone)]
-pub struct GlBuffer(Rc<GlBufferInner>);
+pub struct GlBuffer(Rc<GlBufferInner>, Rc<std::cell::Cell<bool>>);
 
 /// Private-data carrier made public only because `GlBuffer` is a public Core
 /// associated type. Its fields stay crate-private and never expose GL handles.
@@ -525,6 +625,14 @@ pub struct GlBufferInner {
     pub(crate) browser: crate::backend::gl::browser::BrowserBuffer,
 }
 
+/// A unique CPU-owned mapping retaining the buffer and its context owner.
+pub struct GlMap {
+    pub(crate) buffer: GlBuffer,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) offset: u64,
+    pub(crate) mode: fluxel_rhi_core::api::MapMode,
+}
+
 impl core::ops::Deref for GlBuffer {
     type Target = GlBufferInner;
 
@@ -535,7 +643,11 @@ impl core::ops::Deref for GlBuffer {
 
 impl GlBuffer {
     pub(crate) fn from_inner(inner: GlBufferInner) -> Self {
-        Self(Rc::new(inner))
+        Self(Rc::new(inner), Rc::new(std::cell::Cell::new(false)))
+    }
+
+    pub(crate) fn map_active(&self) -> &std::cell::Cell<bool> {
+        &self.1
     }
 }
 
@@ -566,6 +678,7 @@ pub struct GlTexture(Rc<GlTextureInner>);
 
 /// See [`GlBufferInner`]: public type shape, crate-private native data.
 pub struct GlTextureInner {
+    pub(crate) view_formats: Vec<fluxel_rhi_core::api::TextureFormat>,
     pub(crate) state: Rc<GlDeviceState>,
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
     pub(crate) id: crate::backend::gl::api::TextureId,
@@ -606,14 +719,25 @@ impl Drop for GlTextureInner {
 pub struct GlShader(Rc<GlShaderInner>);
 
 pub struct GlShaderInner {
+    pub(crate) mip_uniforms: Vec<GlMipUniform>,
     pub(crate) state: Rc<GlDeviceState>,
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
-    pub(crate) id: crate::backend::gl::api::ShaderId,
-    pub(crate) key: crate::backend::gl::api::GlShaderKey,
-    pub(crate) source: crate::backend::gl::api::GlShaderSource,
+    pub(crate) id: Option<crate::backend::gl::api::ShaderId>,
+    pub(crate) source: Option<crate::backend::gl::api::GlShaderSource>,
+    pub(crate) wgsl: Option<fluxel_rhi_core::api::ShaderDesc>,
     /// Names emitted by Naga for Core group/binding declarations. They are
     /// consumed only while linking a pipeline on this context.
     pub(crate) naga_bindings: Vec<GlNagaBindingName>,
+    pub(crate) push_uniforms: Vec<super::push::PushUniform>,
+}
+
+#[derive(Clone)]
+pub(crate) struct GlMipUniform {
+    pub(crate) samples: bool,
+    pub(crate) group: u32,
+    pub(crate) binding: u32,
+    pub(crate) element: Option<u32>,
+    pub(crate) name: String,
 }
 
 #[derive(Clone)]
@@ -622,9 +746,29 @@ pub(crate) struct GlNagaBindingName {
     /// remains alongside the generated name until layout linking validates it.
     pub(crate) group: u32,
     pub(crate) binding: u32,
+    /// Element selected from a fixed resource array, if applicable.
+    pub(crate) element: Option<u32>,
     pub(crate) name: String,
     /// Unit encoded in the GLSL declaration for an image uniform.
     pub(crate) image_unit: Option<u32>,
+    pub(crate) resource_type: Option<GlNagaResourceType>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GlNagaResourceType {
+    SampledTexture {
+        dimension: fluxel_rhi_core::api::TextureViewDimension,
+        sample: fluxel_rhi_core::api::TextureSampleType,
+        multisampled: bool,
+    },
+    Sampler {
+        comparison: bool,
+    },
+    StorageTexture {
+        dimension: fluxel_rhi_core::api::TextureViewDimension,
+        format: fluxel_rhi_core::api::TextureFormat,
+        access: fluxel_rhi_core::api::StorageAccess,
+    },
 }
 
 impl core::ops::Deref for GlShader {
@@ -649,8 +793,10 @@ impl Drop for GlShaderInner {
         // The provider may already be borrowed by a direct immediate verb.
         // Failing that fallible borrow leaves the name to context teardown;
         // Drop must never panic or re-enter a live native table mutation.
-        let _ = self.state.with_native("drop GL shader", |provider| {
-            provider.destroy_shader(self.id)
-        });
+        if let Some(id) = self.id {
+            let _ = self
+                .state
+                .with_native("drop GL shader", |provider| provider.destroy_shader(id));
+        }
     }
 }

@@ -280,6 +280,7 @@ fn target_view(api: &mut MockGlFamilyApi, layer_count: u32) -> GlTextureView {
     GlTextureView {
         target: GlAttachmentTarget::Texture(texture),
         format: GlFormat::Rgba8Unorm,
+        aspect: GlTextureAspect::All,
         mip_level: 0,
         array_layer: 0,
         layer_count,
@@ -292,7 +293,7 @@ fn target_view(api: &mut MockGlFamilyApi, layer_count: u32) -> GlTextureView {
 /// A framebuffer descriptor holding exactly this view.
 fn framebuffer_descriptor(view: GlTextureView) -> GlFramebufferDescriptor {
     GlFramebufferDescriptor {
-        color_attachments: vec![view],
+        color_attachments: vec![Some(view)],
         depth_stencil_attachment: None,
         draw_buffers: vec![],
     }
@@ -300,20 +301,17 @@ fn framebuffer_descriptor(view: GlTextureView) -> GlFramebufferDescriptor {
 
 /// A pass descriptor naming exactly the view its framebuffer was built from.
 fn pass_descriptor(framebuffer: FramebufferId, view: GlTextureView) -> GlRenderPassDescriptor {
+        render_area: None,
     GlRenderPassDescriptor {
+        render_area: None,
         target: super::super::GlRenderTarget::Offscreen(framebuffer),
-        color_attachments: vec![GlColorAttachment {
+        color_attachments: vec![Some(GlColorAttachment {
             view: super::super::GlPassAttachmentView::Allocated(view),
             resolve_target: None,
             load: GlLoadOp::Clear,
             store: GlStoreOp::Store,
-            clear: GlColorClearValue {
-                red: 0,
-                green: 0,
-                blue: 0,
-                alpha: 0,
-            },
-        }],
+            clear: GlColorClearValue::Float([0; 4]),
+        })],
         depth_stencil_attachment: None,
     }
 }
@@ -436,6 +434,7 @@ fn pipeline(program: ProgramId, vertex_array: VertexArrayId) -> GlRasterPipeline
         program,
         vertex_array,
         state: GlRasterState {
+            rasterization: Default::default(),
             topology: GlPrimitiveTopology::Triangles,
             cull_mode: GlCullMode::None,
             front_face: GlFrontFace::CounterClockwise,
@@ -444,7 +443,7 @@ fn pipeline(program: ProgramId, vertex_array: VertexArrayId) -> GlRasterPipeline
             multisample: GlMultisampleState {
                 sample_count: 1,
                 alpha_to_coverage_enabled: false,
-                sample_mask: u32::MAX,
+                sample_mask: u64::MAX,
             },
             viewport: GlViewport {
                 x: 0,

@@ -19,11 +19,19 @@ pub struct GlEncoder {
     /// Current pass extent is transient immediate state used only to construct
     /// a provider descriptor. It is not a recorded command or scheduler.
     pub(crate) raster_extent: Option<[u32; 2]>,
+    pub(crate) raster_multiview: Option<(u32, u32)>,
+    /// Attachments outlive the descriptor used to begin an immediate pass.
+    pub(crate) raster_views: Vec<GlTextureView>,
     /// Dynamic viewport/scissor survive pipeline selection just as they do in
     /// Core. `None` means no raster pass is active; a pass starts with the full
     /// target viewport and disabled scissor.
     pub(crate) raster_viewport: Option<crate::backend::gl::api::GlViewport>,
     pub(crate) raster_scissor: Option<crate::backend::gl::api::GlScissorRect>,
+    pub(crate) raster_blend_constant: [f32; 4],
+    pub(crate) raster_stencil_reference: u32,
+    pub(crate) raster_depth_read_only: bool,
+    pub(crate) raster_stencil_read_only: bool,
+    pub(crate) raster_color_slots: Vec<bool>,
     /// Vertex-input setters describe the one mutable GL VAO. They are applied
     /// directly before draw because a VAO validation requires all slots at
     /// once; this is state, never retained draw work.
@@ -34,11 +42,20 @@ pub struct GlEncoder {
     /// state, not a deferred command record.
     #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
     pub(crate) browser_index: Option<(u64, fluxel_rhi_core::api::IndexFormat)>,
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    pub(crate) browser_vertex_bindings: Vec<(u32, super::types::GlBuffer, u64, u64)>,
     pub(crate) raster_pipeline: Option<GlRasterPipeline>,
+    /// Current Core binding state, retained so a newly linked program can
+    /// install the same resources at its own reflected binding points.
+    pub(crate) bound_groups: Vec<(u32, super::types::GlBindGroup, Vec<u32>)>,
+    pub(crate) push_bytes: [Vec<u8>; 3],
     /// Query set declared by the current raster pass. This is only pass
     /// ownership state; individual query calls still issue immediately.
     pub(crate) occlusion_query_set: Option<GlQuerySet>,
     pub(crate) occlusion_query_active: bool,
+    pub(crate) pass_timestamp_end: Option<(GlQuerySet, u32)>,
+    pub(crate) statistics_query_active: bool,
+    pub(crate) statistics_query_set: Option<GlQuerySet>,
     /// Selected compute pipeline for the current immediate compute pass. It
     /// retains only the linked native program and ABI needed by subsequent
     /// direct binds and dispatches; no dispatch packet is accumulated here.
@@ -59,8 +76,16 @@ pub struct GlEncoder {
     /// same configured target when the pass closes.
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
     pub(crate) offscreen_resolve: Option<GlOffscreenResolve>,
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    pub(crate) native_texture_resolves: Vec<(
+        crate::backend::gl::api::GlTextureView,
+        crate::backend::gl::api::GlTextureView,
+        Option<crate::backend::gl::api::GlScissorRect>,
+    )>,
     #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
     pub(crate) browser: Option<crate::backend::gl::browser::BrowserEncoder>,
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    pub(crate) browser_surface_token: Option<crate::backend::gl::browser::BrowserSurfaceToken>,
 }
 
 impl GlEncoder {
@@ -71,15 +96,29 @@ impl GlEncoder {
             issued: false,
             indeterminate: false,
             raster_extent: None,
+            raster_multiview: None,
+            raster_views: Vec::new(),
             raster_viewport: None,
             raster_scissor: None,
+            raster_blend_constant: [0.0; 4],
+            raster_stencil_reference: 0,
+            raster_depth_read_only: false,
+            raster_stencil_read_only: false,
+            raster_color_slots: Vec::new(),
             vertex_bindings: Vec::new(),
             index_binding: None,
             #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
             browser_index: None,
+            #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+            browser_vertex_bindings: Vec::new(),
             raster_pipeline: None,
+            bound_groups: Vec::new(),
+            push_bytes: std::array::from_fn(|_| Vec::new()),
             occlusion_query_set: None,
             occlusion_query_active: false,
+            pass_timestamp_end: None,
+            statistics_query_active: false,
+            statistics_query_set: None,
             compute_pipeline: None,
             #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
             surface_depth_pass: None,
@@ -87,12 +126,17 @@ impl GlEncoder {
             offscreen_framebuffer: None,
             #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
             offscreen_resolve: None,
+            #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+            native_texture_resolves: Vec::new(),
             #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
             browser: None,
+            #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+            browser_surface_token: None,
         }
     }
 
     pub(crate) fn begin_raster_state(&mut self, extent: [u32; 2]) {
+        self.bound_groups.clear();
         self.raster_extent = Some(extent);
         self.raster_viewport = Some(crate::backend::gl::api::GlViewport {
             x: 0,
@@ -103,9 +147,48 @@ impl GlEncoder {
             max_depth: 1.0f32.to_bits(),
         });
         self.raster_scissor = None;
+        self.raster_blend_constant = [0.0; 4];
+        self.raster_stencil_reference = 0;
+        self.raster_depth_read_only = false;
+        self.raster_stencil_read_only = false;
+    }
+
+    pub(crate) fn set_raster_read_only(
+        &mut self,
+        desc: &fluxel_rhi_core::api::RasterPassDesc<'_, super::types::Gl>,
+    ) {
+        self.raster_multiview = desc
+            .multiview_mask
+            .map(|mask| (mask.count_ones(), mask.trailing_zeros()));
+        self.raster_views.clear();
+        for color in desc.colors.iter().flatten() {
+            for attachment in std::iter::once(&color.view).chain(color.resolve_target.iter()) {
+                if let fluxel_rhi_core::api::AttachmentView::Texture(view) = attachment {
+                    // SAFETY: Core holds the descriptor's view borrow for this call.
+                    self.raster_views.push(unsafe { view.native_ref() }.clone());
+                }
+            }
+        }
+        if let Some(depth) = &desc.depth_stencil {
+            if let fluxel_rhi_core::api::AttachmentView::Texture(view) = &depth.view {
+                // SAFETY: the descriptor keeps this borrowed view alive now.
+                self.raster_views.push(unsafe { view.native_ref() }.clone());
+            }
+        }
+        self.raster_color_slots = desc.colors.iter().map(Option::is_some).collect();
+        self.raster_depth_read_only = desc
+            .depth_stencil
+            .as_ref()
+            .is_some_and(|v| v.depth_read_only);
+        self.raster_stencil_read_only = desc
+            .depth_stencil
+            .as_ref()
+            .is_some_and(|v| v.stencil_read_only);
     }
 
     pub(crate) fn end_raster_state(&mut self) {
+        self.raster_multiview = None;
+        self.raster_views.clear();
         self.raster_extent = None;
         self.raster_viewport = None;
         self.raster_scissor = None;
@@ -120,11 +203,15 @@ pub(crate) struct GlSurfaceDepthPass {
     pub(crate) surface_token: super::surface::GlSurfaceTargetToken,
     pub(crate) framebuffer: crate::backend::gl::api::FramebufferId,
     pub(crate) color: crate::backend::gl::api::TextureId,
-    pub(crate) depth: GlTextureView,
+    pub(crate) depth: Option<GlTextureView>,
+    pub(crate) color_slot: u32,
+    pub(crate) render_area: Option<crate::backend::gl::api::GlScissorRect>,
 }
 
 #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 pub(crate) struct GlOffscreenResolve {
+    pub(crate) source: crate::backend::gl::api::GlTextureView,
     pub(crate) target: crate::backend::gl::api::GlDefaultFramebufferTarget,
     pub(crate) surface_token: super::surface::GlSurfaceTargetToken,
+    pub(crate) render_area: Option<crate::backend::gl::api::GlScissorRect>,
 }

@@ -12,6 +12,7 @@ pub(crate) enum GlTextureDimension {
     D2,
     D3,
     Cube,
+    CubeArray,
     D2Array,
 }
 
@@ -114,10 +115,19 @@ impl GlTextureDesc {
             {
                 return Err(GlResourceValidationError::InvalidCubeExtent);
             }
+            GlTextureDimension::CubeArray
+                if self.extent.width != self.extent.height
+                    || self.extent.depth_or_layers % 6 != 0 =>
+            {
+                return Err(GlResourceValidationError::InvalidCubeExtent);
+            }
             _ => {}
         }
         if self.sample_count > 1
-            && (self.dimension != GlTextureDimension::D2 || self.extent.depth_or_layers != 1)
+            && !matches!(
+                self.dimension,
+                GlTextureDimension::D2 | GlTextureDimension::D2Array
+            )
         {
             return Err(GlResourceValidationError::MultisampleRequiresD2);
         }
@@ -167,7 +177,7 @@ const fn mip_dimension(value: u32, level: u32) -> u32 {
 }
 
 /// A color, depth, or stencil plane.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum GlTextureAspect {
     All,
     Color,

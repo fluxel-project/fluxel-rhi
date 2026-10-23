@@ -1,9 +1,7 @@
 //! Native fixed-raster and draw execution.
 //!
-//! The core GL 4.x/GLES 3.x families blend and mask color globally like
-//! WebGL2: independent per-attachment state needs `EXT_draw_buffers_indexed`,
-//! so mismatched per-target declarations reject with a structured error
-//! instead of being silently collapsed to global state.
+//! Indexed blend and write masks use desktop GL 4.0 or GLES 3.2 core.
+//! Older embedded contexts use the global state path when targets agree.
 
 use super::exec_vertex::{indexed_draw_offset, indexed_draw_span, indexed_draw_type};
 use super::provider::{ActiveRaster, NativeGlProvider};
@@ -22,64 +20,65 @@ pub(super) use lowering::topology_mode;
 use lowering::{blend_factor, blend_operation, compare_function, stencil_operation};
 use rect::native_rect;
 
-impl GlRasterCommandApi for NativeGlProvider {
-    fn set_raster_pipeline(&mut self, pipeline: &GlRasterPipeline) -> Result<(), GlError> {
-        const OP: &str = "set-raster-pipeline";
-        let packet = self.raster_state_packet(pipeline)?;
-        self.context_state
-            .register_pipeline(packet)
-            .map_err(|error| {
-                Self::validation(
-                    OP,
-                    match error {
-                        crate::backend::gl::state::ContextStateError::UnknownPipeline => {
-                            "native raster pipeline was not registered"
-                        }
-                        crate::backend::gl::state::ContextStateError::PipelineIdentityConflict => {
-                            "native raster pipeline identity conflicts with fixed state"
-                        }
-                    },
-                )
-            })?;
-        let diff = self
-            .context_state
-            .prepare_pipeline(packet)
-            .map_err(|error| {
-                Self::validation(
-                    OP,
-                    match error {
-                        crate::backend::gl::state::ContextStateError::UnknownPipeline => {
-                            "native raster pipeline was not registered"
-                        }
-                        crate::backend::gl::state::ContextStateError::PipelineIdentityConflict => {
-                            "native raster pipeline identity conflicts with fixed state"
-                        }
-                    },
-                )
-            })?;
-        if !diff.is_empty() {
-            if let Err(error) = self.apply_raster_pipeline_diff(pipeline, diff) {
-                self.context_state.pipeline_failed();
-                return Err(error);
-            }
-            self.context_state.commit_pipeline(packet);
+impl NativeGlProvider {
+    pub(crate) fn draw_direct_advanced(
+        &mut self,
+        draw: GlDrawCommand,
+        base_vertex: i32,
+        first_instance: u32,
+    ) -> Result<(), GlError> {
+        use crate::backend::gl::api::{GlVertexApi as _, GlVertexStepMode};
+        const OP: &str = "draw-raster";
+        self.assert_ready(OP)?;
+        if base_vertex != 0 && self.base_vertex_draw.is_none() {
+            return Err(GlError::Unsupported {
+                operation: OP,
+                reason: "base vertex draw entry point is unavailable",
+            });
         }
-        // The direct Layer-2 API still installs its declared VAO. The v13
-        // driver instead lets the independent geometry domain bind it after
-        // the pipeline diff, because per-draw buffers may differ.
-        self.ensure_vertex_array(OP, pipeline.vertex_array)?;
-        // The fixed GL state may already match a pipeline from an earlier
-        // pass, but `begin_raster` clears this pass-local draw authority. Keep
-        // the selected program/topology for draw validation even on an exact
-        // ContextState cache hit.
-        self.raster = Some(ActiveRaster {
-            program: pipeline.program,
-            topology: pipeline.state.topology,
-        });
-        Ok(())
+        let program = self
+            .raster
+            .as_ref()
+            .ok_or_else(|| Self::validation(OP, "no raster pipeline is installed"))?
+            .program;
+        let bound = self
+            .bound_vertex_array
+            .ok_or_else(|| Self::validation(OP, "no vertex array is bound"))?;
+        let array = self.vertex_array(OP, bound)?;
+        let original = array.bindings.clone();
+        let index = array.index;
+        let mut shifted = original.clone();
+        for binding in &mut shifted {
+            if let Some(layout) = array.layout.buffers.iter().find(|layout| {
+                layout.slot == binding.slot && layout.step_mode == GlVertexStepMode::Instance
+            }) {
+                binding.offset = binding
+                    .offset
+                    .checked_add(u64::from(first_instance) * u64::from(layout.stride))
+                    .ok_or_else(|| Self::validation(OP, "instance offset overflow"))?;
+            }
+        }
+        if first_instance != 0 {
+            self.bind_vertex_array(bound, &shifted, index)?;
+        }
+        let result = self
+            .set_push_uniforms(
+                program,
+                &[(
+                    naga::back::glsl::FIRST_INSTANCE_BINDING.to_owned(),
+                    super::push_uniform::GlPushUniformValue::Uint(vec![first_instance]),
+                )],
+            )
+            .and_then(|()| self.draw_direct_impl(draw, base_vertex));
+        let restore = if first_instance != 0 {
+            self.bind_vertex_array(bound, &original, index)
+        } else {
+            Ok(())
+        };
+        result.and(restore)
     }
 
-    fn draw_raster(&mut self, draw: GlDrawCommand) -> Result<(), GlError> {
+    fn draw_direct_impl(&mut self, draw: GlDrawCommand, base_vertex: i32) -> Result<(), GlError> {
         use glow::HasContext as _;
         const OP: &str = "draw-raster";
         self.assert_ready(OP)?;
@@ -183,7 +182,17 @@ impl GlRasterCommandApi for NativeGlProvider {
                         .map_err(|_| Self::validation(OP, "index count exceeds i32"))?;
                     let instances = i32::try_from(draw.instance_count)
                         .map_err(|_| Self::validation(OP, "instance count exceeds i32"))?;
-                    if instances == 1 {
+                    if base_vertex != 0 {
+                        self.base_vertex_draw
+                            .expect("entry point checked before drawing")(
+                            mode,
+                            count,
+                            indexed_draw_type(index),
+                            offset as usize as *const core::ffi::c_void,
+                            instances,
+                            base_vertex,
+                        );
+                    } else if instances == 1 {
                         self.gl
                             .draw_elements(mode, count, indexed_draw_type(index), offset);
                     } else {
@@ -199,6 +208,39 @@ impl GlRasterCommandApi for NativeGlProvider {
             }
         }
         self.driver_error(OP)
+    }
+}
+
+impl GlRasterCommandApi for NativeGlProvider {
+    fn set_raster_pipeline(&mut self, pipeline: &GlRasterPipeline) -> Result<(), GlError> {
+        const OP: &str = "set-raster-pipeline";
+        let packet = self.raster_state_packet(pipeline)?;
+        let diff = self.context_state.prepare_dynamic_pipeline(packet);
+        if !diff.is_empty() {
+            if let Err(error) = self.apply_raster_pipeline_diff(pipeline, diff) {
+                self.context_state.pipeline_failed();
+                return Err(error);
+            }
+            self.context_state.commit_pipeline(packet);
+        }
+        // The direct Layer-2 API still installs its declared VAO. The v13
+        // driver instead lets the independent geometry domain bind it after
+        // the pipeline diff, because per-draw buffers may differ.
+        self.ensure_vertex_array(OP, pipeline.vertex_array)?;
+        // The fixed GL state may already match a pipeline from an earlier
+        // pass, but `begin_raster` clears this pass-local draw authority. Keep
+        // the selected program/topology for draw validation even on an exact
+        // ContextState cache hit.
+        self.raster = Some(ActiveRaster {
+            program: pipeline.program,
+            topology: pipeline.state.topology,
+            depth_stencil: pipeline.state.depth_stencil,
+        });
+        Ok(())
+    }
+
+    fn draw_raster(&mut self, draw: GlDrawCommand) -> Result<(), GlError> {
+        self.draw_direct_advanced(draw, 0, 0)
     }
 
     fn set_viewport(&mut self, viewport: GlViewport) -> Result<(), GlError> {
@@ -248,6 +290,43 @@ impl GlRasterCommandApi for NativeGlProvider {
             };
         }
         self.driver_error("set-scissor")
+    }
+    fn set_blend_constant(&mut self, value: [f32; 4]) -> Result<(), GlError> {
+        use glow::HasContext as _;
+        self.assert_ready("set-blend-constant")?;
+        if self.pass.is_none() || value.iter().any(|v| !v.is_finite()) {
+            return Err(Self::validation(
+                "set-blend-constant",
+                "invalid pass or blend constant",
+            ));
+        }
+        // SAFETY: the provider owns the current context and values are finite.
+        unsafe {
+            self.gl.blend_color(value[0], value[1], value[2], value[3]);
+        }
+        self.context_state.pipeline_failed();
+        self.driver_error("set-blend-constant")
+    }
+
+    fn set_stencil_reference(&mut self, value: u32) -> Result<(), GlError> {
+        self.assert_ready("set-stencil-reference")?;
+        let state = self
+            .raster
+            .as_ref()
+            .and_then(|r| r.depth_stencil)
+            .ok_or_else(|| {
+                Self::validation(
+                    "set-stencil-reference",
+                    "no depth stencil pipeline is installed",
+                )
+            })?;
+        // SAFETY: the provider owns the current context and the face states are from the installed pipeline.
+        unsafe {
+            self.apply_stencil_face(glow::FRONT, &state.stencil_front, value);
+            self.apply_stencil_face(glow::BACK, &state.stencil_back, value);
+        }
+        self.context_state.pipeline_failed();
+        self.driver_error("set-stencil-reference")
     }
 }
 
@@ -310,6 +389,7 @@ impl NativeGlProvider {
                 self.select_program(OP, pipeline.program)?;
             }
             if diff.raster {
+                self.apply_rasterization(pipeline.state.rasterization)?;
                 self.apply_raster_block(OP, &pipeline.state, pass_height)?;
             }
             if diff.depth_stencil {
@@ -395,10 +475,8 @@ impl NativeGlProvider {
                     self.gl.cull_face(glow::BACK);
                 }
             }
-            // `gl_FrontFacing` and fixed-function culling use this same native
-            // selection. The Core front-face declaration is therefore passed
-            // through unchanged; viewport-origin conversion only changes the
-            // rectangle origin, not the vertex winding in GL window space.
+            // Pipeline lowering accounts for the vertex-space Y reflection.
+            // Culling and gl_FrontFacing must use the same native winding.
             self.gl.front_face(match state.front_face {
                 GlFrontFace::Clockwise => glow::CW,
                 GlFrontFace::CounterClockwise => glow::CCW,
@@ -427,7 +505,7 @@ impl NativeGlProvider {
                 unsafe {
                     self.gl.disable(glow::DEPTH_TEST);
                     self.gl.disable(glow::STENCIL_TEST);
-                    self.gl.disable(glow::POLYGON_OFFSET_FILL);
+                    self.set_polygon_offset_enabled(false);
                 }
                 Ok(())
             }
@@ -451,25 +529,28 @@ impl NativeGlProvider {
             self.gl.depth_mask(state.depth_write_enabled);
             self.gl.depth_func(compare_function(state.depth_compare));
             // Depth bias travels as exact bits: [slope factor, units, clamp].
-            // The shared semantic exposes no polygon-offset clamp; desktop
-            // expressiveness would require EXT_polygon_offset_clamp, which is
-            // not a typed route, so a nonzero clamp rejects everywhere.
             let (factor, units, clamp) = (
                 f32::from_bits(state.depth_bias[0]),
                 f32::from_bits(state.depth_bias[1]),
                 f32::from_bits(state.depth_bias[2]),
             );
-            if clamp != 0.0 {
-                return Err(Self::validation(
-                    op,
-                    "depth-bias clamp has no typed expression in this contract",
-                ));
+            if clamp != 0.0 && self.polygon_offset_clamp.is_none() {
+                return Err(GlError::Unsupported {
+                    operation: op,
+                    reason: "depth-bias clamp requires native polygon-offset-clamp support",
+                });
             }
             if factor == 0.0 && units == 0.0 {
-                self.gl.disable(glow::POLYGON_OFFSET_FILL);
+                self.set_polygon_offset_enabled(false);
             } else {
-                self.gl.enable(glow::POLYGON_OFFSET_FILL);
-                self.gl.polygon_offset(factor, units);
+                self.set_polygon_offset_enabled(true);
+                if let Some(set_clamped) = self.polygon_offset_clamp.filter(|_| clamp != 0.0) {
+                    set_clamped(factor, units, clamp);
+                } else {
+                    // EXT/core PolygonOffset resets the clamp to zero, so a
+                    // pipeline switch also restores ordinary bias semantics.
+                    self.gl.polygon_offset(factor, units);
+                }
             }
             self.gl.enable(glow::STENCIL_TEST);
             self.apply_stencil_face(glow::FRONT, &state.stencil_front, state.stencil_reference);
@@ -516,24 +597,120 @@ impl NativeGlProvider {
         // masks, and float bits were validated or lowered from closed enums.
         unsafe {
             let Some(first) = state.color_targets.first() else {
-                return Err(Self::validation(
-                    op,
-                    "raster state declares no color target for the active pass",
-                ));
+                return Ok(());
             };
-            // Independent per-attachment blend/write-mask is not expressible
-            // in the common GL core semantic; refuse to collapse differing
-            // declarations silently (EXT_draw_buffers_indexed is not a typed
-            // route in this contract).
+            // Desktop 4.0 provides indexed blend and color masks. ES core
+            // exposes these from 3.2; older ES requires extension entry points.
+            let indexed = match self.discovery.context().profile() {
+                GlFamilyProfile::Desktop { major, .. } => major >= 4,
+                GlFamilyProfile::Embedded { major, minor } => {
+                    major > 3 || (major == 3 && minor >= 2)
+                }
+                _ => false,
+            };
+            let extension = if !indexed
+                && matches!(
+                    self.discovery.context().profile(),
+                    GlFamilyProfile::Embedded { .. }
+                ) {
+                let has = |name| {
+                    self.discovery
+                        .extensions()
+                        .raw_reported_names()
+                        .any(|reported| reported == name)
+                };
+                (has("GL_OES_draw_buffers_indexed")
+                    .then_some(self.indexed_blend.oes)
+                    .flatten())
+                .or_else(|| {
+                    has("GL_EXT_draw_buffers_indexed")
+                        .then_some(self.indexed_blend.ext)
+                        .flatten()
+                })
+            } else {
+                None
+            };
+            if let Some(functions) = extension {
+                for (i, target) in state.color_targets.iter().enumerate() {
+                    let i = i as u32;
+                    (functions.mask)(
+                        i,
+                        u8::from(target.write_mask & 1 != 0),
+                        u8::from(target.write_mask & 2 != 0),
+                        u8::from(target.write_mask & 4 != 0),
+                        u8::from(target.write_mask & 8 != 0),
+                    );
+                    if let Some(blend) = target.blend {
+                        (functions.enable)(glow::BLEND, i);
+                        (functions.func)(
+                            i,
+                            blend_factor(blend.color.src_factor),
+                            blend_factor(blend.color.dst_factor),
+                            blend_factor(blend.alpha.src_factor),
+                            blend_factor(blend.alpha.dst_factor),
+                        );
+                        (functions.equation)(
+                            i,
+                            blend_operation(blend.color.operation),
+                            blend_operation(blend.alpha.operation),
+                        );
+                    } else {
+                        (functions.disable)(glow::BLEND, i);
+                    }
+                }
+                self.gl.blend_color(
+                    f32::from_bits(state.blend_constant[0]),
+                    f32::from_bits(state.blend_constant[1]),
+                    f32::from_bits(state.blend_constant[2]),
+                    f32::from_bits(state.blend_constant[3]),
+                );
+                return Ok(());
+            }
+            if indexed {
+                for (i, target) in state.color_targets.iter().enumerate() {
+                    let i = i as u32;
+                    self.gl.color_mask_draw_buffer(
+                        i,
+                        target.write_mask & 1 != 0,
+                        target.write_mask & 2 != 0,
+                        target.write_mask & 4 != 0,
+                        target.write_mask & 8 != 0,
+                    );
+                    if let Some(blend) = target.blend {
+                        self.gl.enable_draw_buffer(glow::BLEND, i);
+                        self.gl.blend_func_separate_draw_buffer(
+                            i,
+                            blend_factor(blend.color.src_factor),
+                            blend_factor(blend.color.dst_factor),
+                            blend_factor(blend.alpha.src_factor),
+                            blend_factor(blend.alpha.dst_factor),
+                        );
+                        self.gl.blend_equation_separate_draw_buffer(
+                            i,
+                            blend_operation(blend.color.operation),
+                            blend_operation(blend.alpha.operation),
+                        );
+                    } else {
+                        self.gl.disable_draw_buffer(glow::BLEND, i);
+                    }
+                }
+                self.gl.blend_color(
+                    f32::from_bits(state.blend_constant[0]),
+                    f32::from_bits(state.blend_constant[1]),
+                    f32::from_bits(state.blend_constant[2]),
+                    f32::from_bits(state.blend_constant[3]),
+                );
+                return Ok(());
+            }
             if state
                 .color_targets
                 .iter()
                 .any(|target| target.write_mask != first.write_mask || target.blend != first.blend)
             {
-                return Err(Self::validation(
-                    op,
-                    "independent per-attachment blend/write-mask is unavailable in the common semantic",
-                ));
+                return Err(GlError::Unsupported {
+                    operation: op,
+                    reason: "independent blend requires indexed draw-buffer state",
+                });
             }
             self.gl.color_mask(
                 first.write_mask & 0b0001 != 0,
@@ -577,16 +754,30 @@ impl NativeGlProvider {
         state: &GlRasterState,
     ) -> Result<(), GlError> {
         use glow::HasContext as _;
-        // SAFETY: forwarded current-context contract; the capability checks
-        // below reject the sample-mask operation glow cannot express.
+        // SAFETY: forwarded current-context contract; the mask entry is loaded
+        // from this same context only when its core version supports it.
         unsafe {
-            // Multisampling is framebuffer state; only coverage knobs live in
-            // this canonical leaf. glow has no typed `SampleMaski` route.
-            if state.multisample.sample_mask != u32::MAX {
-                return Err(Self::validation(
-                    op,
-                    "explicit sample masks have no typed command in this provider",
-                ));
+            if let Some(sample_mask) = self.sample_mask_entry {
+                if state.multisample.sample_mask == u64::MAX {
+                    self.gl.disable(glow::SAMPLE_MASK);
+                } else {
+                    // Core carries 64 coverage bits. Initialize every active
+                    // native word so borrowed-context high words cannot leak.
+                    for word in 0..state.multisample.sample_count.div_ceil(32) {
+                        let mask = if word < 2 {
+                            (state.multisample.sample_mask >> (word * 32)) as u32
+                        } else {
+                            u32::MAX
+                        };
+                        sample_mask(word, mask);
+                    }
+                    self.gl.enable(glow::SAMPLE_MASK);
+                }
+            } else if state.multisample.sample_mask != u64::MAX {
+                return Err(GlError::Unsupported {
+                    operation: op,
+                    reason: "sample mask requires a native GL/GLES sample-mask entry point",
+                });
             }
             // GLES keeps multisample rasterization enabled for multisampled
             // targets and does not define the desktop GL_MULTISAMPLE toggle.

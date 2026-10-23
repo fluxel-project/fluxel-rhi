@@ -21,8 +21,8 @@ use std::{cell::RefCell, collections::BTreeMap, rc::Rc, task::Waker};
 
 use fluxel_rhi_core::api::{Error, LaneId, Result};
 use web_sys::{
-    WebGl2RenderingContext as Gl, WebGlBuffer, WebGlFramebuffer, WebGlProgram, WebGlSampler,
-    WebGlSync, WebGlTexture, WebGlVertexArrayObject,
+    WebGl2RenderingContext as Gl, WebGlBuffer, WebGlFramebuffer, WebGlProgram, WebGlRenderbuffer,
+    WebGlSampler, WebGlSync, WebGlTexture, WebGlVertexArrayObject,
 };
 
 use super::super::api::GlDiscoverySnapshot;
@@ -42,6 +42,7 @@ pub(crate) struct BrowserOwner {
 enum BrowserDelete {
     Buffer(WebGlBuffer),
     Texture(WebGlTexture),
+    Renderbuffer(WebGlRenderbuffer),
     Program(WebGlProgram),
     VertexArray(WebGlVertexArrayObject),
     Sampler(WebGlSampler),
@@ -52,6 +53,7 @@ impl BrowserDelete {
         match self {
             Self::Buffer(raw) => gl.delete_buffer(Some(&raw)),
             Self::Texture(raw) => gl.delete_texture(Some(&raw)),
+            Self::Renderbuffer(raw) => gl.delete_renderbuffer(Some(&raw)),
             Self::Program(raw) => gl.delete_program(Some(&raw)),
             Self::VertexArray(raw) => gl.delete_vertex_array(Some(&raw)),
             Self::Sampler(raw) => gl.delete_sampler(Some(&raw)),
@@ -74,6 +76,7 @@ pub(crate) struct BrowserEncoder {
     /// framebuffer and retains wrappers to keep the borrowed views live until
     /// the immediate pass closes.
     pub(super) offscreen_pass: Option<BrowserOffscreenPass>,
+    pub(super) stencil_state: Option<super::super::api::GlDepthStencilState>,
 }
 
 pub(super) struct BrowserSurfaceDepthPass {
@@ -83,6 +86,7 @@ pub(super) struct BrowserSurfaceDepthPass {
     /// after `RasterPassDesc` stops borrowing its texture view.
     pub(super) depth: BrowserTexture,
     pub(super) extent: [u32; 2],
+    pub(super) srgb: bool,
 }
 
 /// Owner-local lifetime facts for one single-sample offscreen raster pass.
@@ -93,9 +97,21 @@ pub(super) struct BrowserSurfaceDepthPass {
 /// prevent a caller from dropping their Core views while WebGL still uses them.
 pub(super) struct BrowserOffscreenPass {
     pub(super) framebuffer: WebGlFramebuffer,
-    pub(super) color: BrowserTexture,
+    pub(super) colors: Vec<BrowserTexture>,
     pub(super) depth: Option<BrowserTexture>,
     pub(super) extent: [u32; 2],
+    pub(super) discard: Vec<u32>,
+    pub(super) resolves: Vec<(
+        u32,
+        Option<BrowserTexture>,
+        u32,
+        u32,
+        super::super::api::GlFormat,
+    )>,
+    pub(super) surface_color: Option<WebGlTexture>,
+    pub(super) surface_slot: Option<u32>,
+    pub(super) surface_srgb: bool,
+    pub(super) render_area: fluxel_rhi_core::api::Rect,
 }
 
 pub(super) struct BrowserOwnerState {
@@ -111,6 +127,9 @@ pub(super) struct BrowserOwnerState {
     /// are retired opportunistically; they are never exposed as completion.
     pub(super) quarantined: Vec<WebGlSync>,
     pub(super) raster_extent: Option<[u32; 2]>,
+    pub(super) dummy_textures: BTreeMap<(u32, u32), WebGlTexture>,
+    pub(super) dummy_samplers: BTreeMap<bool, WebGlSampler>,
+    pub(super) dummy_uniform_buffers: BTreeMap<u32, WebGlBuffer>,
 }
 
 pub(super) struct BrowserFence {
@@ -127,6 +146,32 @@ pub(crate) use resources::{
 };
 
 impl BrowserOwner {
+    pub(crate) fn stencil_texturing_supported(&self) -> Result<bool> {
+        let mut state = self.state.borrow_mut();
+        state.ensure_active()?;
+        state
+            .context
+            .raw
+            .get_extension("WEBGL_stencil_texturing")
+            .map(|extension| extension.is_some())
+            .map_err(|_| Error::Backend("WebGL2 stencil extension query failed".into()))
+    }
+    pub(crate) fn dual_source_limit(&self) -> Result<u32> {
+        let mut state = self.state.borrow_mut();
+        state.ensure_active()?;
+        let raw = &state.context.raw;
+        if raw
+            .get_extension("WEBGL_blend_func_extended")
+            .map_err(|_| Error::Backend("WebGL dual-source extension query failed".into()))?
+            .is_none()
+        {
+            return Ok(0);
+        }
+        let value = raw
+            .get_parameter(0x88FC)
+            .map_err(|_| Error::Backend("WebGL dual-source limit query failed".into()))?;
+        Ok(value.as_f64().unwrap_or(0.).max(0.) as u32)
+    }
     /// Takes ownership of an already-created WebGL2 context on its browser
     /// thread. The `Rc` is the thread-affinity proof: this handle is not Send.
     pub(crate) fn new(context: WebGl2BrowserDiscovery) -> Self {
@@ -141,6 +186,9 @@ impl BrowserOwner {
                 completions: BTreeMap::new(),
                 quarantined: Vec::new(),
                 raster_extent: None,
+                dummy_textures: BTreeMap::new(),
+                dummy_samplers: BTreeMap::new(),
+                dummy_uniform_buffers: BTreeMap::new(),
             })),
             pending_deletes: Rc::new(RefCell::new(Vec::new())),
         }
@@ -188,6 +236,7 @@ impl BrowserOwner {
             issued: false,
             surface_depth_pass: None,
             offscreen_pass: None,
+            stencil_state: None,
         })
     }
 
@@ -288,6 +337,10 @@ impl BrowserOwner {
         self.delete_if_active(BrowserDelete::Texture(raw.clone()));
     }
 
+    fn delete_renderbuffer(&self, raw: &WebGlRenderbuffer) {
+        self.delete_if_active(BrowserDelete::Renderbuffer(raw.clone()));
+    }
+
     fn delete_program(&self, raw: &WebGlProgram) {
         self.delete_if_active(BrowserDelete::Program(raw.clone()));
     }
@@ -364,6 +417,15 @@ impl Drop for BrowserOwner {
         };
         if state.ensure_active().is_ok() {
             self.issue_pending_deletes(&mut state);
+            for (_, texture) in std::mem::take(&mut state.dummy_textures) {
+                state.context.raw.delete_texture(Some(&texture));
+            }
+            for (_, sampler) in std::mem::take(&mut state.dummy_samplers) {
+                state.context.raw.delete_sampler(Some(&sampler));
+            }
+            for (_, buffer) in std::mem::take(&mut state.dummy_uniform_buffers) {
+                state.context.raw.delete_buffer(Some(&buffer));
+            }
         }
     }
 }

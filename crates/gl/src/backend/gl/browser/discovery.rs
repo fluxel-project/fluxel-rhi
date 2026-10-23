@@ -230,22 +230,22 @@ impl WebGl2BrowserDiscovery {
             },
             GlOperationProbe::NotRequired,
         );
-        // OVR_multiview2 is acquired when the browser exposes the extension
-        // object, but no multiview attachment probe exists yet: the pass state
-        // that would have to carry a view count is not modelled, so a pass that
-        // claims several views would attach a single layer and render the wrong
-        // picture. The row therefore records the real evidence and stays
-        // permanently disabled until the probe and the multiview attach path
-        // land together (audit P1-7).
+        // The extension object and numeric limit alone do not prove a usable
+        // multiview framebuffer. Probe the actual attachment entry point on a
+        // private two-layer image before publishing this context's capability.
         builder.resolve(
             GlCapability::Multiview,
             CoreOrExtension {
                 desktop_core: None,
                 embedded_core: None,
                 extension: Some(GlKnownExtension::OvrMultiview2),
-                extension_requires_probe: true,
+                extension_requires_probe: false,
             },
-            GlOperationProbe::NotRun,
+            if super::multiview_probe::probe(&raw) {
+                GlOperationProbe::Passed
+            } else {
+                GlOperationProbe::Failed
+            },
         );
         // WEBGL_multi_draw is the browser's only per-draw parameter batch. Its
         // oracle is the complete, callable entry-point set acquired below

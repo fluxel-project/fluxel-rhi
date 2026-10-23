@@ -1,7 +1,8 @@
 //! Native framebuffer, render-pass, and blit execution.
 //!
-//! Pass load/clear executes exactly once per pass through the `glClearBuffer*`
-//! commands, which honor scissor and color, depth, and stencil write masks.
+//! Pass load/clear uses `glClearBuffer*`, which honors scissor and color,
+//! depth, and stencil write masks. A scoped driver workaround splits a logical
+//! color clear into two disjoint write masks.
 //! Pass begin disables scissor, enables writes for cleared attachments, and
 //! invalidates cached pipeline state so the next pipeline restores its masks.
 //! Resolve stays an
@@ -47,17 +48,27 @@ pub(super) const fn draw_buffer_constant(index: u32) -> u32 {
 pub(super) fn framebuffer_shape(descriptor: &GlFramebufferDescriptor) -> (u32, u32, u32) {
     descriptor
         .color_attachments
-        .first()
+        .iter()
+        .flatten()
+        .next()
         .copied()
         .or(descriptor.depth_stencil_attachment)
         .map(|view| (view.width, view.height, view.sample_count))
         .unwrap_or((0, 0, 1))
 }
 
-impl GlFramebufferApi for NativeGlProvider {
-    fn create_framebuffer(
+impl NativeGlProvider {
+    pub(crate) fn create_multiview_framebuffer(
         &mut self,
         descriptor: &GlFramebufferDescriptor,
+    ) -> Result<FramebufferId, GlError> {
+        self.create_framebuffer_mode(descriptor, true)
+    }
+
+    fn create_framebuffer_mode(
+        &mut self,
+        descriptor: &GlFramebufferDescriptor,
+        multiview: bool,
     ) -> Result<FramebufferId, GlError> {
         use glow::HasContext as _;
         const OP: &str = "create-framebuffer";
@@ -65,10 +76,14 @@ impl GlFramebufferApi for NativeGlProvider {
         for view in descriptor
             .color_attachments
             .iter()
+            .flatten()
             .copied()
             .chain(descriptor.depth_stencil_attachment)
         {
             self.validate_attachment(OP, view)?;
+            if multiview {
+                self.validate_multiview_attachment(OP, view)?;
+            }
         }
         let limits = self.discovery.limits();
         descriptor
@@ -90,22 +105,36 @@ impl GlFramebufferApi for NativeGlProvider {
             operation: OP,
             message,
         })?;
-        let attached = self.attach_all(OP, raw, descriptor);
+        let attached = self.attach_all(OP, raw, descriptor, multiview);
         // Depth-only framebuffers must not keep a draw buffer selected.
         // SAFETY: `raw` was allocated by this current provider and is bound by
         // `attach_all` on this same context. Descriptor validation fixed the
         // attachment and draw-buffer indices; the explicit unbind below runs
         // even if completeness or the driver error check fails.
         let result = unsafe {
-            if descriptor.color_attachments.is_empty() {
+            if descriptor.color_attachments.iter().all(Option::is_none) {
                 self.gl.draw_buffers(&[glow::NONE]);
+                self.gl.read_buffer(glow::NONE);
             } else if !descriptor.draw_buffers.is_empty() {
                 let constants: Vec<u32> = descriptor
                     .draw_buffers
                     .iter()
-                    .map(|index| draw_buffer_constant(*index))
+                    .map(|index| {
+                        if *index == u32::MAX {
+                            glow::NONE
+                        } else {
+                            draw_buffer_constant(*index)
+                        }
+                    })
                     .collect();
                 self.gl.draw_buffers(&constants);
+                self.gl.read_buffer(
+                    descriptor
+                        .color_attachments
+                        .iter()
+                        .position(Option::is_some)
+                        .map_or(glow::NONE, |i| draw_buffer_constant(i as u32)),
+                );
             }
             attached.and_then(|()| self.require_complete(OP))
         };
@@ -123,7 +152,14 @@ impl GlFramebufferApi for NativeGlProvider {
             unsafe { self.gl.delete_framebuffer(raw) };
             return Err(error);
         }
-        let slot = self.slot(OP)?;
+        let slot = match self.slot(OP) {
+            Ok(slot) => slot,
+            Err(error) => {
+                // SAFETY: this scratch framebuffer is still owned here.
+                unsafe { self.gl.delete_framebuffer(raw) };
+                return Err(error);
+            }
+        };
         let id = FramebufferId::new(self.context_stamp(), slot, 0);
         self.framebuffers.insert(
             id,
@@ -131,9 +167,25 @@ impl GlFramebufferApi for NativeGlProvider {
                 generation: id.generation,
                 raw,
                 descriptor: descriptor.clone(),
+                multiview,
             },
         );
         Ok(id)
+    }
+}
+
+impl GlFramebufferApi for NativeGlProvider {
+    fn create_framebuffer(
+        &mut self,
+        descriptor: &GlFramebufferDescriptor,
+    ) -> Result<FramebufferId, GlError> {
+        let multiview = descriptor
+            .color_attachments
+            .iter()
+            .flatten()
+            .chain(descriptor.depth_stencil_attachment.iter())
+            .any(|view| view.layer_count > 1);
+        self.create_framebuffer_mode(descriptor, multiview)
     }
 
     fn destroy_framebuffer(&mut self, framebuffer: FramebufferId) -> Result<(), GlError> {
@@ -185,7 +237,7 @@ impl GlFramebufferApi for NativeGlProvider {
         descriptor
             .validate_multiview(self.discovery.max_multiview_view_count())
             .map_err(|_| Self::validation(OP, "multiview view count is not proved"))?;
-        for attachment in &descriptor.color_attachments {
+        for attachment in descriptor.color_attachments.iter().flatten() {
             if let GlPassAttachmentView::Allocated(view) = attachment.view {
                 self.validate_attachment(OP, view)?;
             }
@@ -206,12 +258,24 @@ impl GlFramebufferApi for NativeGlProvider {
                 ));
             }
         }
+        let partial = if let Some(area) = descriptor.render_area {
+            if area.width == 0
+                || area.height == 0
+                || area.x.checked_add(area.width).is_none_or(|x| x > shape.0)
+                || area.y.checked_add(area.height).is_none_or(|y| y > shape.1)
+            {
+                return Err(Self::validation(OP, "render area exceeds framebuffer"));
+            }
+            area.x != 0 || area.y != 0 || area.width != shape.0 || area.height != shape.1
+        } else {
+            false
+        };
         let raw = record.map(|record| record.raw);
         let draw_buffers = record.map(|record| record.descriptor.draw_buffers.clone());
         let discard_color: Vec<bool> = descriptor
             .color_attachments
             .iter()
-            .map(|attachment| attachment.store == GlStoreOp::Discard)
+            .map(|attachment| !partial && attachment.is_some_and(|a| a.store == GlStoreOp::Discard))
             .collect();
         let discard_depth_stencil =
             descriptor
@@ -219,8 +283,8 @@ impl GlFramebufferApi for NativeGlProvider {
                 .as_ref()
                 .map(|attachment| {
                     (
-                        attachment.depth_store == GlStoreOp::Discard,
-                        attachment.stencil_store == GlStoreOp::Discard,
+                        !partial && attachment.depth_store == GlStoreOp::Discard,
+                        !partial && attachment.stencil_store == GlStoreOp::Discard,
                     )
                 });
 
@@ -229,22 +293,61 @@ impl GlFramebufferApi for NativeGlProvider {
         // so the next pipeline reapplies scissor and write masks in full.
         self.context_state.pipeline_failed();
         // SAFETY: current-context contract; the framebuffer is live and the
-        // clears are total exactly once per pass begin.
+        // clears cover the requested render area exactly once per channel.
         unsafe {
             self.gl.bind_framebuffer(glow::FRAMEBUFFER, raw);
+            // Desktop GL requires explicit linear-to-sRGB conversion for sRGB
+            // attachments. GLES performs that conversion without this switch.
+            if matches!(
+                self.discovery.context().profile(),
+                crate::backend::gl::api::GlFamilyProfile::Desktop { .. }
+            ) {
+                let srgb = descriptor
+                    .color_attachments
+                    .iter()
+                    .flatten()
+                    .any(|attachment| {
+                        (match attachment.view {
+                            GlPassAttachmentView::Allocated(view) => view.format,
+                            GlPassAttachmentView::DefaultColor(target) => target.color_format,
+                        }) == crate::backend::gl::api::GlFormat::Rgba8Srgb
+                    });
+                if srgb {
+                    self.gl.enable(glow::FRAMEBUFFER_SRGB);
+                } else {
+                    self.gl.disable(glow::FRAMEBUFFER_SRGB);
+                }
+            }
             if let Some(draw_buffers) = draw_buffers.filter(|buffers| !buffers.is_empty()) {
                 let constants: Vec<u32> = draw_buffers
                     .iter()
-                    .map(|index| draw_buffer_constant(*index))
+                    .map(|index| {
+                        if *index == u32::MAX {
+                            glow::NONE
+                        } else {
+                            draw_buffer_constant(*index)
+                        }
+                    })
                     .collect();
                 self.gl.draw_buffers(&constants);
             }
             // ClearBuffer obeys the same scissor and write masks as Clear.
             // Shared GL uses one global color mask for all attachments.
-            self.gl.disable(glow::SCISSOR_TEST);
+            if let Some(area) = descriptor.render_area {
+                self.gl.enable(glow::SCISSOR_TEST);
+                self.gl.scissor(
+                    area.x as i32,
+                    area.y as i32,
+                    area.width as i32,
+                    area.height as i32,
+                );
+            } else {
+                self.gl.disable(glow::SCISSOR_TEST);
+            }
             if descriptor
                 .color_attachments
                 .iter()
+                .flatten()
                 .any(|a| a.load == GlLoadOp::Clear)
             {
                 self.gl.color_mask(true, true, true, true);
@@ -260,18 +363,55 @@ impl GlFramebufferApi for NativeGlProvider {
                 }
             }
             for (index, attachment) in descriptor.color_attachments.iter().enumerate() {
-                if attachment.load == GlLoadOp::Clear {
-                    let clear = &attachment.clear;
-                    self.gl.clear_buffer_f32_slice(
-                        glow::COLOR,
-                        index as u32,
-                        &[
-                            f32::from_bits(clear.red),
-                            f32::from_bits(clear.green),
-                            f32::from_bits(clear.blue),
-                            f32::from_bits(clear.alpha),
-                        ],
-                    );
+                if let Some(attachment) = attachment.filter(|a| a.load == GlLoadOp::Clear) {
+                    match attachment.clear {
+                        crate::backend::gl::api::GlColorClearValue::Float(v) => {
+                            let needs_split = matches!(attachment.view, GlPassAttachmentView::Allocated(view)
+                                if matches!(view.target, GlAttachmentTarget::Texture(id) if self.texture(OP, id).is_ok_and(|(_, desc)| desc.dimension == GlTextureDimension::D2Array && desc.sample_count > 1))
+                                && view.format == crate::backend::gl::api::GlFormat::Rgba8Unorm)
+                                && self
+                                    .discovery
+                                    .context()
+                                    .version()
+                                    .contains("ANGLE 2.1.22762")
+                                && self
+                                    .discovery
+                                    .context()
+                                    .renderer()
+                                    .contains("AMD Radeon 780M Graphics (0x00001900) Direct3D11");
+                            // This ANGLE/D3D11 implementation can skip a repeated full
+                            // clear when successive FBOs select different MSAA layers.
+                            // Separate channel masks avoid its full-clear path while
+                            // preserving scissor and the logical all-channel clear.
+                            if needs_split {
+                                self.gl.color_mask(true, true, true, false);
+                                self.gl.clear_buffer_f32_slice(
+                                    glow::COLOR,
+                                    index as u32,
+                                    &v.map(f32::from_bits),
+                                );
+                                self.gl.color_mask(false, false, false, true);
+                                self.gl.clear_buffer_f32_slice(
+                                    glow::COLOR,
+                                    index as u32,
+                                    &v.map(f32::from_bits),
+                                );
+                                self.gl.color_mask(true, true, true, true);
+                            } else {
+                                self.gl.clear_buffer_f32_slice(
+                                    glow::COLOR,
+                                    index as u32,
+                                    &v.map(f32::from_bits),
+                                );
+                            }
+                        }
+                        crate::backend::gl::api::GlColorClearValue::Uint(v) => self
+                            .gl
+                            .clear_buffer_u32_slice(glow::COLOR, index as u32, &v),
+                        crate::backend::gl::api::GlColorClearValue::Sint(v) => self
+                            .gl
+                            .clear_buffer_i32_slice(glow::COLOR, index as u32, &v),
+                    }
                 }
             }
             if let Some(attachment) = &descriptor.depth_stencil_attachment {
@@ -332,14 +472,25 @@ impl GlFramebufferApi for NativeGlProvider {
             .iter()
             .enumerate()
             .filter(|(_, discard)| **discard)
-            .map(|(index, _)| draw_buffer_constant(index as u32))
+            .map(|(index, _)| match pass.target {
+                GlRenderTarget::Default(_) => glow::COLOR,
+                _ => draw_buffer_constant(index as u32),
+            })
             .collect();
         if let Some((discard_depth, discard_stencil)) = pass.discard_depth_stencil {
             if discard_depth {
-                invalidate.push(glow::DEPTH_ATTACHMENT);
+                invalidate.push(if matches!(pass.target, GlRenderTarget::Default(_)) {
+                    glow::DEPTH
+                } else {
+                    glow::DEPTH_ATTACHMENT
+                });
             }
             if discard_stencil {
-                invalidate.push(glow::STENCIL_ATTACHMENT);
+                invalidate.push(if matches!(pass.target, GlRenderTarget::Default(_)) {
+                    glow::STENCIL
+                } else {
+                    glow::STENCIL_ATTACHMENT
+                });
             }
         }
         // SAFETY: current-context contract; glInvalidateFramebuffer is issued
@@ -418,20 +569,37 @@ impl GlFramebufferApi for NativeGlProvider {
                 "multisampled blit targets only accept nearest filtering",
             ));
         }
-        // Depth/stencil planes never scale and never filter.
-        if (masks.depth || masks.stencil)
-            && (filter != GlFilterMode::Nearest || region.src_extent != region.dst_extent)
-        {
+        // Depth/stencil planes accept nearest filtering, including scaling.
+        if (masks.depth || masks.stencil) && filter != GlFilterMode::Nearest {
             return Err(Self::validation(
                 OP,
-                "depth/stencil blits require nearest filtering and identical extents",
+                "depth/stencil blits require nearest filtering",
             ));
         }
         let source_raw = self.framebuffer(OP, source)?.raw;
-        let destination_raw = self.framebuffer(OP, destination)?.raw;
+        let destination_record = self.framebuffer(OP, destination)?;
+        let destination_raw = destination_record.raw;
+        let destination_srgb = destination_record
+            .descriptor
+            .color_attachments
+            .iter()
+            .flatten()
+            .any(|view| view.format == crate::backend::gl::api::GlFormat::Rgba8Srgb);
+        self.context_state.pipeline_failed();
         // SAFETY: current-context contract; both framebuffers are live and
         // every bounds/filter rule was validated before the blit.
         unsafe {
+            self.gl.disable(glow::SCISSOR_TEST);
+            if matches!(
+                self.discovery.context().profile(),
+                crate::backend::gl::api::GlFamilyProfile::Desktop { .. }
+            ) {
+                if destination_srgb {
+                    self.gl.enable(glow::FRAMEBUFFER_SRGB);
+                } else {
+                    self.gl.disable(glow::FRAMEBUFFER_SRGB);
+                }
+            }
             self.gl
                 .bind_framebuffer(glow::READ_FRAMEBUFFER, Some(source_raw));
             self.gl

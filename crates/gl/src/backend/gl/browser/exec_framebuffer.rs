@@ -12,9 +12,10 @@ use wasm_bindgen::JsValue;
 use web_sys::{WebGl2RenderingContext as Gl, WebGlFramebuffer};
 
 use super::super::api::{
-    FramebufferId, GlAttachmentTarget, GlBlitMask, GlBlitRegion, GlError, GlFamilyApi as _,
-    GlFilterMode, GlFramebufferApi, GlFramebufferDescriptor, GlLoadOp, GlPassAttachmentView,
-    GlRenderPassDescriptor, GlRenderTarget, GlStoreOp, GlTextureDimension, GlTextureView,
+    FramebufferId, GlAttachmentTarget, GlBlitMask, GlBlitRegion, GlColorClearValue, GlError,
+    GlFamilyApi as _, GlFilterMode, GlFramebufferApi, GlFramebufferDescriptor, GlLoadOp,
+    GlPassAttachmentView, GlRenderPassDescriptor, GlRenderTarget, GlStoreOp, GlTextureDimension,
+    GlTextureView,
 };
 use super::discovery::WebGl2BrowserDiscovery;
 use super::format_map;
@@ -43,7 +44,11 @@ const fn blit_filter(filter: GlFilterMode) -> u32 {
 
 /// The attachment constant of one `drawBuffers` selection entry.
 const fn draw_buffer_constant(index: u32) -> u32 {
-    Gl::COLOR_ATTACHMENT0 + index
+    if index == u32::MAX {
+        Gl::NONE
+    } else {
+        Gl::COLOR_ATTACHMENT0 + index
+    }
 }
 
 fn attachment_list(values: &[u32]) -> JsValue {
@@ -59,7 +64,9 @@ fn attachment_list(values: &[u32]) -> JsValue {
 fn framebuffer_shape(descriptor: &GlFramebufferDescriptor) -> (u32, u32, u32) {
     descriptor
         .color_attachments
-        .first()
+        .iter()
+        .flatten()
+        .next()
         .copied()
         .or(descriptor.depth_stencil_attachment)
         .map(|view| (view.width, view.height, view.sample_count))
@@ -76,6 +83,7 @@ impl GlFramebufferApi for WebGl2BrowserDiscovery {
         for view in descriptor
             .color_attachments
             .iter()
+            .flatten()
             .copied()
             .chain(descriptor.depth_stencil_attachment)
         {
@@ -180,7 +188,7 @@ impl GlFramebufferApi for WebGl2BrowserDiscovery {
         descriptor
             .validate_multiview(self.discovery().max_multiview_view_count())
             .map_err(|_| Self::validation(OP, "multiview view count is not proved"))?;
-        for attachment in &descriptor.color_attachments {
+        for attachment in descriptor.color_attachments.iter().flatten() {
             if let GlPassAttachmentView::Allocated(view) = attachment.view {
                 self.validate_attachment(OP, view)?;
             }
@@ -205,12 +213,24 @@ impl GlFramebufferApi for WebGl2BrowserDiscovery {
         let discard_color: Vec<bool> = descriptor
             .color_attachments
             .iter()
-            .map(|attachment| attachment.store == GlStoreOp::Discard)
+            .map(|attachment| {
+                attachment
+                    .as_ref()
+                    .is_some_and(|a| a.store == GlStoreOp::Discard)
+            })
             .collect();
+        let partial = descriptor.render_area.is_some_and(|area| {
+            area.x != 0 || area.y != 0 || area.width != shape.0 || area.height != shape.1
+        });
+        let discard_color = if partial {
+            vec![false; discard_color.len()]
+        } else {
+            discard_color
+        };
         let discard_depth_stencil = descriptor
             .depth_stencil_attachment
             .as_ref()
-            .map(|attachment| attachment.depth_store == GlStoreOp::Discard);
+            .map(|attachment| !partial && attachment.depth_store == GlStoreOp::Discard);
 
         self.raw.bind_framebuffer(Gl::FRAMEBUFFER, raw.as_ref());
         if let Some(record) = record.filter(|record| !record.descriptor.draw_buffers.is_empty()) {
@@ -224,11 +244,21 @@ impl GlFramebufferApi for WebGl2BrowserDiscovery {
         }
         // clearBuffer* observes the same write masks as clear. The browser
         // provider installs every pipeline state block on the next bind.
-        self.raw.disable(Gl::SCISSOR_TEST);
+        if let Some(area) = descriptor.render_area {
+            self.raw.enable(Gl::SCISSOR_TEST);
+            self.raw.scissor(
+                area.x as i32,
+                area.y as i32,
+                area.width as i32,
+                area.height as i32,
+            );
+        } else {
+            self.raw.disable(Gl::SCISSOR_TEST);
+        }
         if descriptor
             .color_attachments
             .iter()
-            .any(|a| a.load == GlLoadOp::Clear)
+            .any(|a| a.as_ref().is_some_and(|a| a.load == GlLoadOp::Clear))
         {
             self.raw.color_mask(true, true, true, true);
         }
@@ -243,18 +273,24 @@ impl GlFramebufferApi for WebGl2BrowserDiscovery {
             }
         }
         for (index, attachment) in descriptor.color_attachments.iter().enumerate() {
-            if attachment.load == GlLoadOp::Clear {
-                let clear = &attachment.clear;
-                self.raw.clear_bufferfv_with_f32_array(
-                    Gl::COLOR,
-                    index as i32,
-                    &[
-                        f32::from_bits(clear.red),
-                        f32::from_bits(clear.green),
-                        f32::from_bits(clear.blue),
-                        f32::from_bits(clear.alpha),
-                    ],
-                );
+            if let Some(attachment) = attachment {
+                if attachment.load == GlLoadOp::Clear {
+                    match attachment.clear {
+                        GlColorClearValue::Float(v) => self.raw.clear_bufferfv_with_f32_array(
+                            Gl::COLOR,
+                            index as i32,
+                            &v.map(f32::from_bits),
+                        ),
+                        GlColorClearValue::Uint(v) => {
+                            self.raw
+                                .clear_bufferuiv_with_u32_array(Gl::COLOR, index as i32, &v)
+                        }
+                        GlColorClearValue::Sint(v) => {
+                            self.raw
+                                .clear_bufferiv_with_i32_array(Gl::COLOR, index as i32, &v)
+                        }
+                    }
+                }
             }
         }
         if let Some(attachment) = &descriptor.depth_stencil_attachment {
@@ -281,6 +317,7 @@ impl GlFramebufferApi for WebGl2BrowserDiscovery {
                 (false, false) => {}
             }
         }
+        self.raw.disable(Gl::SCISSOR_TEST);
         if let Err(error) = self.driver_error(OP) {
             self.raw.bind_framebuffer(Gl::FRAMEBUFFER, None);
             return Err(error);
@@ -443,7 +480,9 @@ impl WebGl2BrowserDiscovery {
     ) -> Result<(), GlError> {
         self.raw.bind_framebuffer(Gl::FRAMEBUFFER, Some(raw));
         for (index, view) in descriptor.color_attachments.iter().enumerate() {
-            self.attach_one(op, draw_buffer_constant(index as u32), *view)?;
+            if let Some(view) = view {
+                self.attach_one(op, draw_buffer_constant(index as u32), *view)?;
+            }
         }
         if let Some(view) = descriptor.depth_stencil_attachment {
             let point = format_map::depth_attachment_point(view.format).ok_or_else(|| {

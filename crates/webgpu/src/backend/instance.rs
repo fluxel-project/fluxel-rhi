@@ -285,6 +285,7 @@ impl InstanceBackend for WebGpu {
                 storage_buffers: true,
                 storage_textures: true,
                 indirect_draw: js::has_feature(&device, "indirect-first-instance"),
+                indirect_first_instance: js::has_feature(&device, "indirect-first-instance"),
                 multi_draw: js::has_feature(&device, "indirect-first-instance"),
                 multi_draw_count: js::has_feature(&device, "indirect-first-instance"),
                 timestamp: js::has_feature(&device, "timestamp-query"),

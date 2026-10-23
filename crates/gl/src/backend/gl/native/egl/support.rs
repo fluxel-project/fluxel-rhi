@@ -10,8 +10,11 @@ pub(super) fn acquire_display(
 ) -> Result<Rc<EglDisplayLease>, EglProviderError> {
     // SAFETY: khronos-egl validates required symbol loading; the system EGL
     // library is trusted by the OS loader boundary.
-    let egl = unsafe { Egl::load_required() }
-        .map_err(|error| EglProviderError::Load(error.to_string()))?;
+    #[cfg(windows)]
+    let egl = unsafe { Egl::load_required_from_filename("libEGL.dll") };
+    #[cfg(not(windows))]
+    let egl = unsafe { Egl::load_required() };
+    let egl = egl.map_err(|error| EglProviderError::Load(error.to_string()))?;
     // SAFETY: the caller has checked that this native display belongs to the
     // selected raw-handle platform and stays live for the context lease.
     let display =
@@ -143,12 +146,13 @@ pub(super) fn exact_context_attributes(
 }
 
 pub(super) fn parse_gles_version(value: &str) -> Option<EglGlesVersion> {
-    let suffix = value.strip_prefix("OpenGL ES ")?;
-    let version = suffix.split_ascii_whitespace().next()?;
-    match version {
-        "3.0" => Some(EglGlesVersion::V3_0),
-        "3.1" => Some(EglGlesVersion::V3_1),
-        "3.2" => Some(EglGlesVersion::V3_2),
+    let profile = super::super::probe::parse_native_profile(value).ok()?;
+    match profile {
+        GlFamilyProfile::Embedded { major, minor } if major > 3 || minor >= 2 => {
+            Some(EglGlesVersion::V3_2)
+        }
+        GlFamilyProfile::Embedded { major: 3, minor: 1 } => Some(EglGlesVersion::V3_1),
+        GlFamilyProfile::Embedded { major: 3, minor: 0 } => Some(EglGlesVersion::V3_0),
         _ => None,
     }
 }
@@ -259,5 +263,21 @@ fn window_name(handle: RawWindowHandle) -> &'static str {
         RawWindowHandle::Win32(_) => "Win32",
         RawWindowHandle::AndroidNdk(_) => "AndroidNdk",
         _ => "other",
+    }
+}
+#[cfg(test)]
+mod version_tests {
+    use super::{EglGlesVersion, parse_gles_version};
+
+    #[test]
+    fn angle_patch_version_meets_requested_floor() {
+        assert_eq!(
+            parse_gles_version("OpenGL ES 3.0.0 (ANGLE 2.1)"),
+            Some(EglGlesVersion::V3_0)
+        );
+        assert_eq!(
+            parse_gles_version("OpenGL ES 3.2.1 driver"),
+            Some(EglGlesVersion::V3_2)
+        );
     }
 }

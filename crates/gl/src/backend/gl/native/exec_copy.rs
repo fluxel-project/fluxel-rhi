@@ -6,8 +6,7 @@
 //! framebuffer served by `glCopyTexSubImage2D` / `glReadPixels`). The route
 //! decision is a pure function of the discovered profile fact, recorded in
 //! [`texture_copy_route`]. Provider entry points keep Core's WebGPU-style
-//! upper-left texture coordinates; this module converts each validated region
-//! exactly once before issuing the lower-left GL command.
+//! texture row order; logical row zero is native texel row zero.
 
 use super::provider::NativeGlProvider;
 use crate::backend::gl::api::{
@@ -17,6 +16,14 @@ use crate::backend::gl::api::{
 };
 
 impl GlCopyDomainApi for NativeGlProvider {
+    fn buffer_to_texture(
+        &mut self,
+        source: GlBufferRange,
+        destination: GlTextureRegion,
+        layout: GlPixelLayout,
+    ) -> Result<(), GlError> {
+        self.upload_from_pixel_buffer(source, destination, layout)
+    }
     fn copy_buffer_range(
         &mut self,
         source: GlBufferRange,
@@ -72,9 +79,7 @@ impl GlCopyDomainApi for NativeGlProvider {
             self.texture(OP, destination.subresource.texture)?;
         validate_texture_copy(source, source_desc, destination, destination_desc)
             .map_err(|_| Self::validation(OP, "invalid texture copy"))?;
-        // Core texture coordinates are logical upper-left coordinates. Convert
-        // each side against its own mip: differing mip heights make a shared
-        // subtraction wrong even when the copied extent is equal.
+        // Validate each side against its own mip without reversing row order.
         let source = native_texture_region(OP, source_desc, source)?;
         let destination = native_texture_region(OP, destination_desc, destination)?;
         if source.subresource.texture == destination.subresource.texture
@@ -120,16 +125,26 @@ impl GlCopyDomainApi for NativeGlProvider {
                 reason: "format lacks a proved copy fact on this context",
             });
         }
-        ensure_single_2d_rect(OP, source)?;
-        ensure_single_2d_rect(OP, destination)?;
-        match texture_copy_route(self.discovery.context().profile()) {
-            CopyRoute::DirectImage => {
-                self.copy_texture_direct(OP, source, destination, source_name, destination_name)
-            }
+        match if self.copy_image_extension.is_some() {
+            CopyRoute::DirectImage
+        } else {
+            texture_copy_route(self.discovery.context().profile())
+        } {
+            CopyRoute::DirectImage => self.copy_texture_direct(
+                OP,
+                source,
+                destination,
+                source_desc,
+                destination_desc,
+                source_name,
+                destination_name,
+            ),
             CopyRoute::Framebuffer => self.copy_texture_framebuffer(
                 OP,
                 source,
                 destination,
+                source_desc,
+                destination_desc,
                 source_name,
                 destination_name,
             ),
@@ -179,14 +194,20 @@ impl GlCopyDomainApi for NativeGlProvider {
         destination
             .validate_for(desc)
             .map_err(|_| Self::validation(OP, "invalid texture region"))?;
-        if desc.format.compressed_info().is_some() {
-            // Reversing a compressed block-row would still leave pixels inside
-            // every block upside down. Until a format-aware codec is present,
-            // reject rather than publish a texture that violates public row 0.
+        if desc.format == crate::backend::gl::api::GlFormat::Depth16Unorm {
             return Err(GlError::Unsupported {
                 operation: OP,
-                reason: "compressed upload cannot preserve upper-left texel rows",
+                reason: "Depth16 CPU texture upload is not part of the pixel-copy contract",
             });
+        }
+        if desc.format.compressed_info().is_some() {
+            return self.upload_compressed_blocks(
+                name,
+                desc,
+                destination,
+                layout,
+                super::exec_compressed_upload::CompressedSource::Cpu(bytes),
+            );
         }
         // Depth storage is filled through clears and FBO work in GL, never
         // from client pixels in this shared semantic; every other unmapped
@@ -197,26 +218,38 @@ impl GlCopyDomainApi for NativeGlProvider {
                 reason: "format accepts no CPU pixel upload in this shared semantic",
             });
         };
+        if texture::upload_pixel_format(desc.format) != Some(layout.format) {
+            return Err(Self::validation(
+                OP,
+                "pixel layout does not match texture format",
+            ));
+        }
         transfer_format(layout.format).ok_or(GlError::Unsupported {
             operation: OP,
             reason: "pixel encoding has no native transfer route",
         })?;
         ensure_upload_2d_region(OP, desc, destination)?;
+        if desc.dimension == crate::backend::gl::api::GlTextureDimension::D1
+            && self.texture_sub_image_1d.is_none()
+        {
+            return Err(GlError::Unsupported {
+                operation: OP,
+                reason: "glTexSubImage1D unavailable",
+            });
+        }
         let needed = layout
             .required_bytes(destination)
             .map_err(|_| Self::validation(OP, "invalid pixel layout"))?;
-        if u64::try_from(bytes.len()).ok() != Some(needed) {
-            return Err(Self::validation(
-                OP,
-                "upload source length differs from layout",
-            ));
+        if u64::try_from(bytes.len())
+            .ok()
+            .is_none_or(|length| length < needed)
+        {
+            return Err(Self::validation(OP, "upload source is shorter than layout"));
         }
         let native_destination = native_texture_region(OP, desc, destination)?;
         let (level, x, y, width, height) = rect_coords(OP, native_destination)?;
-        // GL consumes the first client row at the lower edge of the native
-        // rectangle. A WebGPU row zero is its upper edge, so pack a reversed
-        // row sequence instead of relying on an unavailable negative stride.
-        let payload = flipped_unpack_rows(OP, layout, destination, bytes)?;
+        // Texture texel y=0 stores Core row zero; pack only layout padding.
+        let payload = packed_unpack_rows(OP, layout, destination, bytes)?;
 
         let saved = self.pixel_store;
         // SAFETY: current-context contract; the layout was validated and the
@@ -224,6 +257,21 @@ impl GlCopyDomainApi for NativeGlProvider {
         let result = unsafe {
             self.apply_tight_unpack();
             match desc.dimension {
+                crate::backend::gl::api::GlTextureDimension::D1 => {
+                    let entry = self
+                        .texture_sub_image_1d
+                        .expect("1D upload entry point was checked before mutation");
+                    self.gl.bind_texture(glow::TEXTURE_1D, Some(name));
+                    entry(
+                        glow::TEXTURE_1D,
+                        level,
+                        x,
+                        width,
+                        gl_format,
+                        gl_type,
+                        payload.as_ptr().cast(),
+                    );
+                }
                 crate::backend::gl::api::GlTextureDimension::D2 => {
                     self.gl.bind_texture(glow::TEXTURE_2D, Some(name));
                     self.gl.tex_sub_image_2d(
@@ -238,7 +286,8 @@ impl GlCopyDomainApi for NativeGlProvider {
                         glow::PixelUnpackData::Slice(Some(payload.as_ref())),
                     );
                 }
-                crate::backend::gl::api::GlTextureDimension::D2Array => {
+                crate::backend::gl::api::GlTextureDimension::D2Array
+                | crate::backend::gl::api::GlTextureDimension::D3 => {
                     let z = destination
                         .subresource
                         .base_layer
@@ -247,9 +296,15 @@ impl GlCopyDomainApi for NativeGlProvider {
                         .ok_or_else(|| Self::validation(OP, "array layer exceeds GLint"))?;
                     let depth = i32::try_from(destination.extent.depth_or_layers)
                         .map_err(|_| Self::validation(OP, "array layer count exceeds GLsizei"))?;
-                    self.gl.bind_texture(glow::TEXTURE_2D_ARRAY, Some(name));
+                    let target =
+                        if desc.dimension == crate::backend::gl::api::GlTextureDimension::D3 {
+                            glow::TEXTURE_3D
+                        } else {
+                            glow::TEXTURE_2D_ARRAY
+                        };
+                    self.gl.bind_texture(target, Some(name));
                     self.gl.tex_sub_image_3d(
-                        glow::TEXTURE_2D_ARRAY,
+                        target,
                         level,
                         x,
                         y,
@@ -292,7 +347,8 @@ pub(super) enum UnpackDirection {
 
 #[path = "exec_copy_texture.rs"]
 mod texture;
-use texture::{CopyRoute, texture_copy_route, upload_encoding};
+use texture::{CopyRoute, texture_copy_route};
+pub(super) use texture::{upload_encoding, upload_pixel_format};
 
 #[path = "exec_readback.rs"]
 mod readback;
@@ -302,13 +358,21 @@ mod readback;
 /// `RGBA`/`UNSIGNED_BYTE` is the only combination every accepted profile must
 /// support through the framebuffer route.
 fn readback_encoding(format: crate::backend::gl::api::GlFormat) -> Option<(u32, u32)> {
-    upload_encoding(format)
+    match format {
+        crate::backend::gl::api::GlFormat::Rgba8Unorm
+        | crate::backend::gl::api::GlFormat::Rgba8Srgb => Some((glow::RGBA, glow::UNSIGNED_BYTE)),
+        _ => None,
+    }
 }
 
 /// The client pixel format a transfer must use, if this backend accepts it.
 fn transfer_format(format: GlPixelFormat) -> Option<()> {
     match format {
-        GlPixelFormat::Rgba8 => Some(()),
+        GlPixelFormat::Rgba8
+        | GlPixelFormat::Red8
+        | GlPixelFormat::Rg8
+        | GlPixelFormat::Depth16
+        | GlPixelFormat::TexelBytes(2 | 4 | 8 | 16) => Some(()),
         // Native GLES has no BGRA upload and the discovered RGBA8 textures
         // accept no RGB/RED encoding; every one of those rejects before
         // touching pixel state.
@@ -331,7 +395,7 @@ fn ensure_single_2d_rect(operation: &'static str, region: GlTextureRegion) -> Re
     Ok(())
 }
 
-/// Admits CPU uploads into either a 2D image or contiguous array layers.
+/// Admits CPU uploads into a 2D image, contiguous array layers, or volume slices.
 ///
 /// The public region has a layer-relative Z coordinate, while GL's 2D-array
 /// upload receives the absolute layer selected by `base_layer + origin.z`.
@@ -343,6 +407,16 @@ fn ensure_upload_2d_region(
     region: GlTextureRegion,
 ) -> Result<(), GlError> {
     match desc.dimension {
+        crate::backend::gl::api::GlTextureDimension::D1
+            if region.subresource.base_layer == 0
+                && region.subresource.layer_count == 1
+                && region.origin[1] == 0
+                && region.origin[2] == 0
+                && region.extent.height == 1
+                && region.extent.depth_or_layers == 1 =>
+        {
+            Ok(())
+        }
         crate::backend::gl::api::GlTextureDimension::D2
             if region.subresource.base_layer == 0
                 && region.subresource.layer_count == 1
@@ -351,10 +425,11 @@ fn ensure_upload_2d_region(
         {
             Ok(())
         }
-        crate::backend::gl::api::GlTextureDimension::D2Array => Ok(()),
+        crate::backend::gl::api::GlTextureDimension::D2Array
+        | crate::backend::gl::api::GlTextureDimension::D3 => Ok(()),
         _ => Err(GlError::Unsupported {
             operation,
-            reason: "this upload route supports two-dimensional images and array layers only",
+            reason: "this upload route supports 2D, 2D-array and 3D textures only",
         }),
     }
 }
@@ -366,27 +441,15 @@ fn validation(operation: &'static str, message: &'static str) -> GlError {
     }
 }
 
-/// Converts a validated Core texture rectangle into the lower-left coordinate
-/// system consumed by native GL texture commands.
-///
-/// `GlTextureRegion` deliberately reaches this boundary in Core's WebGPU
-/// convention. Each mip has a distinct height, so conversion must happen only
-/// after resolving the live descriptor and must not reuse a base-level height.
+/// Texture storage uses Core row zero at GL texel y=0.
 fn native_texture_region(
     operation: &'static str,
     desc: GlTextureDesc,
-    mut region: GlTextureRegion,
+    region: GlTextureRegion,
 ) -> Result<GlTextureRegion, GlError> {
-    let mip = desc
-        .mip_extent(region.subresource.mip_level)
-        .ok_or_else(|| validation(operation, "mip level is not live"))?;
-    let upper_edge = region.origin[1]
-        .checked_add(region.extent.height)
-        .ok_or_else(|| validation(operation, "texture y range overflows"))?;
-    region.origin[1] = mip
-        .height
-        .checked_sub(upper_edge)
-        .ok_or_else(|| validation(operation, "texture y range exceeds its mip"))?;
+    region
+        .validate_for(desc)
+        .map_err(|_| validation(operation, "invalid texture region"))?;
     Ok(region)
 }
 
@@ -408,13 +471,8 @@ fn rect_coords(
     Ok((level, x, y, width, height))
 }
 
-/// Produces tight lower-left rows for a native GL texture upload.
-///
-/// GL has no negative pixel-row stride. The staging copy is therefore required
-/// even when the caller's positive stride was otherwise mappable: the first
-/// WebGPU row becomes the last native row. Array layers retain their order;
-/// each image's rows are reversed independently.
-fn flipped_unpack_rows(
+/// Packs positive-stride Core rows into tight native texture storage order.
+fn packed_unpack_rows(
     operation: &'static str,
     layout: GlPixelLayout,
     region: GlTextureRegion,
@@ -455,7 +513,7 @@ fn flipped_unpack_rows(
                     .ok_or_else(|| validation(operation, "image address overflows"))?,
             )
             .ok_or_else(|| validation(operation, "image address overflows"))?;
-        for gl_row in (0..height).rev() {
+        for gl_row in 0..height {
             let start = image_base
                 .checked_add(
                     gl_row
@@ -476,24 +534,19 @@ fn flipped_unpack_rows(
     Ok(staged)
 }
 
-/// Places readback rows into the caller-declared output layout.
-///
-/// GL rows arrive from the lower edge first. This helper preserves the caller's
-/// declared pitch and padding while scattering them in upper-left row order;
-/// mappable layouts still require that reversal.
+/// Places native texture rows in Core order while preserving output padding.
 fn place_rows(layout: GlPixelLayout, region: GlTextureRegion, body: &[u8], bytes: &mut [u8]) {
-    place_rows_for_extent(layout, region.extent, body, bytes);
+    place_rows_for_extent(layout, region.extent, body, bytes, false);
 }
 
-/// Scatters lower-left GL rows into one public upper-left output extent.
-///
-/// Default-framebuffer readback has no owned `GlTextureRegion`, but must obey
-/// the same public row-zero convention as texture readback.
+/// Scatters rows into the public layout. Window-system default framebuffer
+/// rows retain their native bottom-to-top orientation and require reversal.
 fn place_rows_for_extent(
     layout: GlPixelLayout,
     extent: crate::backend::gl::api::GlExtent3d,
     body: &[u8],
     bytes: &mut [u8],
+    reverse: bool,
 ) {
     let bpp = layout.format.bytes_per_pixel() as usize;
     let width_bytes = (extent.width as usize) * bpp;
@@ -509,7 +562,11 @@ fn place_rows_for_extent(
         };
         for row_index in 0..extent.height as usize {
             let dst = image_base + row_index * row;
-            let gl_row = extent.height as usize - 1 - row_index;
+            let gl_row = if reverse {
+                extent.height as usize - 1 - row_index
+            } else {
+                row_index
+            };
             let src = read_base + gl_row * if mappable { row } else { width_bytes };
             if let (Some(dst), Some(src)) = (
                 bytes.get_mut(dst..dst + width_bytes),

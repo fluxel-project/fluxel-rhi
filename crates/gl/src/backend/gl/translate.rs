@@ -27,8 +27,8 @@ pub(crate) fn lower_buffer_desc(value: &api::BufferDesc) -> api::Result<GlBuffer
         (BufferUsage::INDIRECT, GlBufferUsage::INDIRECT),
         (BufferUsage::MAP_READ, GlBufferUsage::MAP_READ),
         (BufferUsage::MAP_WRITE, GlBufferUsage::MAP_WRITE),
-        // GL has no query-buffer resolve command in this backend. Query
-        // results are observed synchronously and uploaded into this allocation.
+        // Query resolution writes buffer storage through either the native
+        // query-buffer target or the completed-host-result upload route.
         (BufferUsage::QUERY_RESOLVE, GlBufferUsage::COPY_DESTINATION),
     ] {
         if value.usage.contains(core) {
@@ -58,10 +58,6 @@ pub(crate) fn lower_texture_desc(value: &api::TextureDesc) -> api::Result<GlText
         || value.array_layers == 0
         || (value.dimension != TextureDimension::D3 && value.extent[2] != 1)
         || (value.dimension == TextureDimension::D1 && value.extent[1] != 1)
-        || value
-            .view_formats
-            .iter()
-            .any(|format| *format != value.format)
     {
         return Err(api::Error::InvalidRange);
     }
@@ -174,13 +170,58 @@ pub(crate) fn lower_texel_copy_layout(
     format: GlFormat,
 ) -> api::Result<GlPixelLayout> {
     let pixel_format = match format {
-        GlFormat::Rgba8Unorm | GlFormat::Rgba8Srgb => GlPixelFormat::Rgba8,
+        GlFormat::Rgba8Unorm | GlFormat::Rgba8Srgb | GlFormat::Rgba8Uint | GlFormat::Rgba8Sint => {
+            GlPixelFormat::Rgba8
+        }
         GlFormat::Bgra8Unorm | GlFormat::Bgra8Srgb => GlPixelFormat::Bgra8,
-        GlFormat::R8Unorm => GlPixelFormat::Red8,
+        GlFormat::R8Unorm | GlFormat::R8Snorm | GlFormat::R8Uint | GlFormat::R8Sint => {
+            GlPixelFormat::Red8
+        }
+        GlFormat::Rg8Unorm | GlFormat::Rg8Snorm | GlFormat::Rg8Uint | GlFormat::Rg8Sint => {
+            GlPixelFormat::Rg8
+        }
+        GlFormat::Rgba8Snorm => GlPixelFormat::Rgba8,
+        GlFormat::R16Uint
+        | GlFormat::R16Sint
+        | GlFormat::R16Float
+        | GlFormat::R16Unorm
+        | GlFormat::R16Snorm => GlPixelFormat::TexelBytes(2),
+        GlFormat::Rg16Uint
+        | GlFormat::Rg16Sint
+        | GlFormat::Rg16Float
+        | GlFormat::Rg16Unorm
+        | GlFormat::Rg16Snorm
+        | GlFormat::R32Uint
+        | GlFormat::R32Sint
+        | GlFormat::R32Float
+        | GlFormat::Rgb9e5Ufloat
+        | GlFormat::Rgb10a2Uint
+        | GlFormat::Rgb10a2Unorm
+        | GlFormat::Rg11b10Ufloat => GlPixelFormat::TexelBytes(4),
+        GlFormat::Rgba16Uint
+        | GlFormat::Rgba16Sint
+        | GlFormat::Rgba16Float
+        | GlFormat::Rgba16Unorm
+        | GlFormat::Rgba16Snorm
+        | GlFormat::Rg32Uint
+        | GlFormat::Rg32Sint
+        | GlFormat::Rg32Float => GlPixelFormat::TexelBytes(8),
+        GlFormat::Rgba32Uint | GlFormat::Rgba32Sint | GlFormat::Rgba32Float => {
+            GlPixelFormat::TexelBytes(16)
+        }
         GlFormat::Depth16Unorm => GlPixelFormat::Depth16,
         GlFormat::Depth24PlusStencil8 => GlPixelFormat::Depth24Stencil8,
         GlFormat::Depth32Float => GlPixelFormat::Depth32Float,
-        _ => return Err(unsupported("GL pixel transfer format")),
+        _ => {
+            let info = format
+                .compressed_info()
+                .ok_or_else(|| unsupported("GL pixel transfer format"))?;
+            GlPixelFormat::Compressed {
+                block_width: info.block_width,
+                block_height: info.block_height,
+                block_bytes: info.block_bytes,
+            }
+        }
     };
     if layout.bytes_per_row == 0 || layout.rows_per_image == 0 {
         return Err(api::Error::InvalidRange);
@@ -195,7 +236,11 @@ pub(crate) fn lower_texel_copy_layout(
         rows_per_image: layout.rows_per_image,
         offset: layout.offset,
         alignment,
-        repack: GlRepackPolicy::Disallow,
+        // Providers stage or copy individual rows when GL pixel-store cannot
+        // express the Core byte stride directly.
+        repack: GlRepackPolicy::Bounded {
+            max_bytes: u64::MAX,
+        },
     })
 }
 
@@ -303,11 +348,66 @@ pub(crate) fn lower_texture_format(value: TextureFormat) -> api::Result<GlFormat
         TextureFormat::Depth32Float => Depth32Float,
         TextureFormat::Depth32FloatStencil8 => Depth32FloatStencil8,
         TextureFormat::Stencil8 => Stencil8,
+        TextureFormat::Bc1RgbaUnorm => Bc1RgbaUnorm,
+        TextureFormat::Bc1RgbaUnormSrgb => Bc1RgbaSrgb,
+        TextureFormat::Bc2RgbaUnorm => Bc2RgbaUnorm,
+        TextureFormat::Bc2RgbaUnormSrgb => Bc2RgbaSrgb,
+        TextureFormat::Bc3RgbaUnorm => Bc3RgbaUnorm,
+        TextureFormat::Bc3RgbaUnormSrgb => Bc3RgbaSrgb,
+        TextureFormat::Bc4RUnorm => Bc4RUnorm,
+        TextureFormat::Bc4RSnorm => Bc4RSnorm,
+        TextureFormat::Bc5RgUnorm => Bc5RgUnorm,
+        TextureFormat::Bc5RgSnorm => Bc5RgSnorm,
+        TextureFormat::Bc6hRgbUfloat => Bc6hRgbUfloat,
+        TextureFormat::Bc6hRgbFloat => Bc6hRgbSfloat,
+        TextureFormat::Bc7RgbaUnorm => Bc7RgbaUnorm,
+        TextureFormat::Bc7RgbaUnormSrgb => Bc7RgbaSrgb,
+        TextureFormat::Etc2Rgb8Unorm => Etc2Rgb8Unorm,
+        TextureFormat::Etc2Rgb8UnormSrgb => Etc2Rgb8Srgb,
+        TextureFormat::Etc2Rgba8Unorm => Etc2Rgba8Unorm,
+        TextureFormat::Etc2Rgba8UnormSrgb => Etc2Rgba8Srgb,
+        TextureFormat::Etc2Rgb8A1Unorm => Etc2Rgb8A1Unorm,
+        TextureFormat::Etc2Rgb8A1UnormSrgb => Etc2Rgb8A1Srgb,
+        TextureFormat::EacR11Unorm => EacR11Unorm,
+        TextureFormat::EacR11Snorm => EacR11Snorm,
+        TextureFormat::EacRg11Unorm => EacRg11Unorm,
+        TextureFormat::EacRg11Snorm => EacRg11Snorm,
+        TextureFormat::Astc { block, srgb, hdr } => {
+            use crate::backend::gl::api::{GlAstcBlock as B, GlCompressedColorSpace as C};
+            if srgb && hdr {
+                return Err(api::Error::InvalidRange);
+            }
+            let block = match block {
+                [4, 4] => B::B4x4,
+                [5, 4] => B::B5x4,
+                [5, 5] => B::B5x5,
+                [6, 5] => B::B6x5,
+                [6, 6] => B::B6x6,
+                [8, 5] => B::B8x5,
+                [8, 6] => B::B8x6,
+                [8, 8] => B::B8x8,
+                [10, 5] => B::B10x5,
+                [10, 6] => B::B10x6,
+                [10, 8] => B::B10x8,
+                [10, 10] => B::B10x10,
+                [12, 10] => B::B12x10,
+                [12, 12] => B::B12x12,
+                _ => return Err(api::Error::InvalidRange),
+            };
+            Astc {
+                block,
+                color_space: if hdr {
+                    C::Hdr
+                } else if srgb {
+                    C::Srgb
+                } else {
+                    C::Linear
+                },
+            }
+        }
         TextureFormat::R64Uint => R64Uint,
         _ => {
-            return Err(unsupported(
-                "GL compressed or 64-bit two-channel texture format",
-            ));
+            return Err(unsupported("GL 64-bit two-channel texture format"));
         }
     })
 }
@@ -315,6 +415,46 @@ pub(crate) fn lower_texture_format(value: TextureFormat) -> api::Result<GlFormat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compressed_formats_preserve_block_and_color_space() {
+        use crate::backend::gl::api::{GlAstcBlock as B, GlCompressedColorSpace as C};
+        assert_eq!(
+            lower_texture_format(TextureFormat::Bc6hRgbFloat),
+            Ok(GlFormat::Bc6hRgbSfloat)
+        );
+        assert_eq!(
+            lower_texture_format(TextureFormat::Etc2Rgb8A1UnormSrgb),
+            Ok(GlFormat::Etc2Rgb8A1Srgb)
+        );
+        assert_eq!(
+            lower_texture_format(TextureFormat::Astc {
+                block: [10, 6],
+                srgb: false,
+                hdr: true
+            }),
+            Ok(GlFormat::Astc {
+                block: B::B10x6,
+                color_space: C::Hdr
+            })
+        );
+        assert!(
+            lower_texture_format(TextureFormat::Astc {
+                block: [5, 6],
+                srgb: false,
+                hdr: false
+            })
+            .is_err()
+        );
+        assert!(
+            lower_texture_format(TextureFormat::Astc {
+                block: [4, 4],
+                srgb: true,
+                hdr: true
+            })
+            .is_err()
+        );
+    }
 
     #[test]
     fn array_upload_z_becomes_the_subresource_base_once() {

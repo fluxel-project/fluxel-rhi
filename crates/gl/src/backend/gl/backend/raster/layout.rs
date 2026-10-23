@@ -15,5 +15,11 @@ pub(crate) fn matches(expected: &GlBindGroupLayout, actual: &GlBindGroupLayout) 
             .entries
             .iter()
             .zip(actual.entries.iter())
-            .all(|(left, right)| left.binding == right.binding && left.slot == right.slot)
+            .all(|(left, right)| {
+                left.binding == right.binding
+                    && left.slot == right.slot
+                    && left.count == right.count
+                    && left.partially_bound == right.partially_bound
+                    && left.nonuniform_indexing == right.nonuniform_indexing
+            })
 }

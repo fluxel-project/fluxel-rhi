@@ -30,6 +30,7 @@ fn pipeline(program_slot: u32, blend_constant: [u32; 4]) -> GlRasterPipeline {
         program: ProgramId::new(context, program_slot, 1),
         vertex_array: VertexArrayId::new(context, program_slot, 1),
         state: GlRasterState {
+            rasterization: Default::default(),
             topology: GlPrimitiveTopology::Triangles,
             cull_mode: GlCullMode::None,
             front_face: GlFrontFace::CounterClockwise,
@@ -38,7 +39,7 @@ fn pipeline(program_slot: u32, blend_constant: [u32; 4]) -> GlRasterPipeline {
             multisample: GlMultisampleState {
                 sample_count: 1,
                 alpha_to_coverage_enabled: false,
-                sample_mask: u32::MAX,
+                sample_mask: u64::MAX,
             },
             viewport: GlViewport {
                 x: 0,

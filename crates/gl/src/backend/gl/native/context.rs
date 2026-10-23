@@ -7,6 +7,8 @@ use std::rc::Rc;
 /// Native `glUnmapBuffer` signature used where `glow` does not expose its
 /// corruption status return value.
 pub(crate) type UnmapBufferFn = unsafe extern "system" fn(u32) -> u8;
+pub(crate) type GetProgramResourceFn =
+    unsafe extern "system" fn(u32, u32, u32, i32, *const u32, i32, *mut i32, *mut i32);
 
 /// Which platform family owns the current native context.
 ///
@@ -48,6 +50,13 @@ pub(crate) trait NativeContextOwner {
     fn make_current(&mut self, operation: &'static str) -> Result<(), GlError>;
     fn load_glow(&mut self) -> Result<glow::Context, GlError>;
     fn load_unmap_buffer(&self) -> Result<UnmapBufferFn, GlError>;
+    fn gl_proc(&self, name: &str) -> *const core::ffi::c_void;
+    fn load_program_resource(&self) -> Option<GetProgramResourceFn> {
+        None
+    }
+    fn load_indexed_blend(&self) -> super::indexed_blend::IndexedBlendExtensions {
+        Default::default()
+    }
     fn swap_buffers(&mut self) -> Result<(), GlError>;
     /// Records or recreates the drawable at the Host-confirmed extent.
     fn resize_drawable(&mut self, extent: [u32; 2]) -> Result<(), GlError>;
@@ -108,6 +117,42 @@ impl NativeContextOwner for NativePlatformContext {
             Self::Wgl(context) => context.load_unmap_buffer(),
             #[cfg(feature = "native-gles-egl")]
             Self::Egl(context) => context.load_unmap_buffer(),
+        }
+    }
+    fn load_program_resource(&self) -> Option<GetProgramResourceFn> {
+        match self {
+            #[cfg(all(windows, feature = "native-gl-wgl"))]
+            Self::Wgl(context) => {
+                let ptr = NativeContextOwner::gl_proc(context, "glGetProgramResourceiv");
+                if ptr.is_null() {
+                    None
+                } else {
+                    // SAFETY: the platform loader resolves this exact GL entry point.
+                    Some(unsafe {
+                        core::mem::transmute::<*const core::ffi::c_void, GetProgramResourceFn>(ptr)
+                    })
+                }
+            }
+            #[cfg(feature = "native-gles-egl")]
+            Self::Egl(context) => context.load_program_resource(),
+        }
+    }
+
+    fn gl_proc(&self, name: &str) -> *const core::ffi::c_void {
+        match self {
+            #[cfg(all(windows, feature = "native-gl-wgl"))]
+            Self::Wgl(context) => NativeContextOwner::gl_proc(context, name),
+            #[cfg(feature = "native-gles-egl")]
+            Self::Egl(context) => context.gl_proc(name),
+        }
+    }
+
+    fn load_indexed_blend(&self) -> super::indexed_blend::IndexedBlendExtensions {
+        match self {
+            #[cfg(all(windows, feature = "native-gl-wgl"))]
+            Self::Wgl(_) => Default::default(),
+            #[cfg(feature = "native-gles-egl")]
+            Self::Egl(context) => context.load_indexed_blend(),
         }
     }
 

@@ -13,6 +13,7 @@
 pub(crate) mod api;
 pub(crate) mod backend;
 pub(crate) mod capabilities;
+pub(crate) mod clear_texel;
 pub(crate) mod facts;
 pub(crate) mod features;
 pub(crate) mod profile;

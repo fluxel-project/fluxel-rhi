@@ -48,6 +48,8 @@ pub(super) struct BrowserQuery {
     pub(super) raw: WebGlQuery,
     /// The target the query last recorded a measurement for.
     pub(super) target: Option<u32>,
+    /// A disjoint observation invalidates all outstanding timer slots.
+    pub(super) disjoint: bool,
 }
 pub(super) struct BrowserSync {
     pub(super) generation: u32,
@@ -76,6 +78,7 @@ pub(super) struct ActiveRaster {
     /// per-pipeline copy went stale the moment the geometry domain reconciled
     /// inputs, which under the uncached execution mode is on every request.
     pub(super) topology: GlPrimitiveTopology,
+    pub(super) depth_stencil: Option<super::super::api::GlDepthStencilState>,
 }
 
 impl WebGl2BrowserDiscovery {

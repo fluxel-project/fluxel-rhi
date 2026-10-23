@@ -57,6 +57,11 @@ impl<B: MappingBackend> MapLease<B> {
             self.native.as_mut().ok_or(Error::InvalidState)?,
         ))
     }
+    /// Publishes host modifications in this lease-relative range. Callers must
+    /// flush modified bytes before GPU consumers, even on devices whose native
+    /// memory happens to be coherent. Dropping a lease does not promise an
+    /// implicit flush, and a backend must not overwrite subsequent GPU updates
+    /// merely because a previously flushed lease is released.
     pub fn flush(&mut self, bytes: Range<u64>) -> Result<()> {
         if self.mode != MapMode::Write {
             return Err(Error::InvalidState);

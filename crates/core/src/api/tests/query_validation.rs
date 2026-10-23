@@ -184,6 +184,10 @@ fn query_result_layout_and_frequency_are_explicit() {
         ordinal: 0,
     };
     assert_eq!(
+        device.queries(QueryKind::Timestamp).unwrap().resolve_mode(),
+        QueryResolveMode::Ordered
+    );
+    assert_eq!(
         device
             .queries(QueryKind::Timestamp)
             .unwrap()

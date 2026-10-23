@@ -193,7 +193,18 @@ pub(crate) unsafe fn discover_current_glow_identified(
     });
 
     // SAFETY: forwarded from this function's documented caller contract.
-    let probes = GlowProbes::new(context, get_query_iv);
+    let probes = GlowProbes::new(
+        context,
+        get_query_iv,
+        [
+            !proc_loader("glCopyImageSubData").is_null(),
+            !proc_loader("glCopyImageSubDataEXT").is_null(),
+            !proc_loader("glCopyImageSubDataOES").is_null(),
+        ],
+        !proc_loader("glGetCompressedTexImage").is_null(),
+        unsafe { super::multiview::NativeMultiview::load_entry(&proc_loader) },
+        unsafe { super::multisample_array::MultisampleArrayFns::load(&proc_loader) },
+    );
     let query = GlowQuery(context);
     // Both wrappers read the same current context and never run concurrently.
     discover_with_query_pair(&query, &probes, stamp, driver_identity)
@@ -264,11 +275,34 @@ fn discover_with_query_pair(
     let vendor = required_string(query, glow_const::VENDOR, "GL_VENDOR")?;
     let renderer = required_string(query, glow_const::RENDERER, "GL_RENDERER")?;
     let mut extensions = extensions(query, profile)?;
-    let report = run_operation_probes(probes, profile, &extensions);
+    let mut probe_sample_max = query
+        .integer(0x8D57)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0);
+    if supports_multisample_texture_storage(profile) {
+        for token in [0x910E, 0x910F, 0x9110] {
+            probe_sample_max = probe_sample_max.max(
+                query
+                    .integer(token)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .unwrap_or(0),
+            );
+        }
+    }
+    let report = run_operation_probes(probes, profile, &extensions, probe_sample_max);
     // Acquisition says the entry points were loaded, never that they work, so
     // the ledger advances only for the extensions whose probe really ran and
     // passed. This runs before `limits` and `native_formats`, which both read
     // acquisition, and `is_acquired` covers `Probed`, so neither can regress.
+    if report.multiview == ProbeAnswer::ContextLost {
+        return Err(NativeDiscoveryError::QueryFailed(
+            "context lost during multiview probe",
+        ));
+    }
+    if report.multiview == ProbeAnswer::Passed {
+        let _ = extensions.acquire(GlKnownExtension::OvrMultiview2);
+        let _ = extensions.probe(GlKnownExtension::OvrMultiview2);
+    }
     record_extension_probes(profile, &report, &mut extensions);
     let limits = limits::limits(query, profile, &extensions, &report)?;
     let formats = native_formats(profile, &extensions, &limits, &report)?;
@@ -391,11 +425,6 @@ fn discover_with_query_pair(
         },
         GlOperationProbe::NotRun,
     );
-    // Multiview has no core route on any accepted profile: the desktop core
-    // profile it would need does not exist, and the embedded route is the OVR
-    // extension, which is additionally gated on its acquisition. No multiview
-    // attachment probe exists, so the fact stays `NotRun` and every profile
-    // rejects a multiview pass (audit P1-7).
     builder.resolve(
         GlCapability::Multiview,
         CoreOrExtension {
@@ -404,13 +433,16 @@ fn discover_with_query_pair(
             extension: Some(GlKnownExtension::OvrMultiview2),
             extension_requires_probe: true,
         },
-        GlOperationProbe::NotRun,
+        report.multiview.to_operation_probe(),
     );
     builder.resolve(
         GlCapability::TimerQuery,
         CoreOrExtension {
             desktop_core: Some(GlVersion::new(3, 3)),
-            embedded_core: Some(GlVersion::new(3, 0)),
+            // GLES timer queries are extension-defined, not GLES 3 core.
+            // The EXT entry points and disjoint semantics need their own
+            // complete execution path before advertising this capability.
+            embedded_core: None,
             extension: None,
             extension_requires_probe: false,
         },
@@ -515,10 +547,22 @@ fn extensions(
         GlKnownExtension::ArbComputeShader,
         GlKnownExtension::ArbShaderStorageBufferObject,
         GlKnownExtension::ArbShaderImageLoadStore,
+        GlKnownExtension::ArbPipelineStatisticsQuery,
+        GlKnownExtension::ArbQueryBufferObject,
         GlKnownExtension::ExtTextureFilterAnisotropic,
         GlKnownExtension::OesTextureFloatLinear,
+        GlKnownExtension::ExtTextureNorm16,
         GlKnownExtension::KhrRobustness,
         GlKnownExtension::KhrDebug,
+        GlKnownExtension::ExtTextureCompressionS3tc,
+        GlKnownExtension::ExtTextureCompressionRgtc,
+        GlKnownExtension::ArbTextureCompressionBptc,
+        GlKnownExtension::CompressedTextureBptc,
+        GlKnownExtension::CompressedTextureS3tcSrgb,
+        GlKnownExtension::ArbEs3Compatibility,
+        GlKnownExtension::OesCompressedEtc2Rgb8Texture,
+        GlKnownExtension::KhrTextureCompressionAstcLdr,
+        GlKnownExtension::KhrTextureCompressionAstcHdr,
     ] {
         if known.is_legal_for(profile) && result.provenance(known).is_some() {
             let _ = result.acquire(known);
@@ -564,7 +608,7 @@ pub(crate) fn desktop_context_floor_marker() -> String {
 /// point below the floor, and the dispatch table calls it through a null
 /// pointer, which is not a GL error any caller can be handed.
 pub(super) const fn supports_multisample_texture_storage(profile: GlFamilyProfile) -> bool {
-    profile.meets(Some(GlVersion::new(4, 3)), Some(GlVersion::new(3, 1)))
+    profile.meets(Some(GlVersion::new(4, 0)), Some(GlVersion::new(3, 1)))
 }
 
 /// The sample-count class one texture format belongs to.

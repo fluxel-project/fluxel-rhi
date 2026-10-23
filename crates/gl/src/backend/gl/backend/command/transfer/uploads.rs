@@ -1,19 +1,119 @@
 //! Immediate buffer/texture uploads and readback copies.
 use super::*;
-#[cfg(any(
-    all(windows, feature = "native-gl-wgl"),
-    feature = "native-gles-egl",
-    all(target_arch = "wasm32", feature = "webgl2")
-))]
-use std::rc::Rc;
+use crate::backend::gl::api::{GlFormat, GlTextureAspect};
 
 pub(crate) fn buffer_to_texture(
-    _: &mut GlEncoder,
-    _: &GlBuffer,
-    _: TexelCopyBufferLayout,
-    _: TextureRegion<'_, Gl>,
+    encoder: &mut GlEncoder,
+    source: &GlBuffer,
+    layout: TexelCopyBufferLayout,
+    destination: TextureRegion<'_, Gl>,
 ) -> Result<()> {
-    Err(Error::Unsupported("GL buffer-to-texture copy"))
+    // SAFETY: Core holds the texture borrow for this synchronous transfer.
+    let texture = unsafe { destination.texture.native_ref() };
+    let depth_upload = destination.aspect == api::TextureAspects::DEPTH
+        && matches!(
+            texture.desc.format,
+            GlFormat::Depth16Unorm | GlFormat::Depth32Float
+        );
+    let color_upload = destination.aspect == api::TextureAspects::COLOR
+        && (texture.desc.format.compressed_info().is_some()
+            || texture
+                .desc
+                .format
+                .supports_blit_aspect(GlTextureAspect::Color));
+    if !(color_upload || depth_upload) {
+        return Err(Error::Unsupported(
+            "GL buffer-to-texture supports only Depth16/Depth32Float depth uploads",
+        ));
+    }
+    if !std::rc::Rc::ptr_eq(&encoder.state, &source.state)
+        || !std::rc::Rc::ptr_eq(&encoder.state, &texture.state)
+    {
+        return Err(Error::WrongDevice);
+    }
+    if !source
+        .desc
+        .usage
+        .contains(crate::backend::gl::api::GlBufferUsage::COPY_SOURCE)
+        || !texture
+            .desc
+            .usage
+            .contains(crate::backend::gl::api::GlTextureUsage::COPY_DESTINATION)
+    {
+        return Err(Error::InvalidState);
+    }
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    {
+        use crate::backend::gl::api::{GlBufferRange, GlCopyDomainApi as _};
+        let destination = lower_region(destination)?;
+        let layout =
+            crate::backend::gl::translate::lower_texel_copy_layout(layout, texture.desc.format)?;
+        let required = layout
+            .required_bytes(destination)
+            .map_err(|_| Error::InvalidRange)?;
+        if required > source.desc.size {
+            return Err(Error::InvalidRange);
+        }
+        let result = encoder
+            .state
+            .with_native("copy GL buffer to texture", |provider| {
+                provider.buffer_to_texture(
+                    GlBufferRange {
+                        buffer: source.id,
+                        offset: 0,
+                        size: required,
+                    },
+                    destination,
+                    layout,
+                )
+            })
+            .map_err(native_error);
+        if result.is_ok() {
+            encoder.issued = true;
+        } else {
+            encoder.indeterminate = true;
+        }
+        return result;
+    }
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    {
+        let browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
+        let result = if texture.desc.format.compressed_info().is_some() {
+            browser.copy_compressed_buffer_to_texture(
+                &source.browser,
+                layout.offset,
+                layout.bytes_per_row,
+                layout.rows_per_image,
+                &texture.browser,
+                destination.mip,
+                destination.origin,
+                destination.extent,
+            )
+        } else {
+            browser.copy_buffer_to_texture(
+                &source.browser,
+                layout.offset,
+                layout.bytes_per_row,
+                layout.rows_per_image,
+                &texture.browser,
+                destination.mip,
+                destination.origin,
+                destination.extent,
+            )
+        };
+        if result.is_ok() {
+            encoder.issued = true;
+        } else {
+            encoder.indeterminate = true;
+        }
+        return result;
+    }
+    #[cfg(not(any(
+        all(windows, feature = "native-gl-wgl"),
+        feature = "native-gles-egl",
+        all(target_arch = "wasm32", feature = "webgl2")
+    )))]
+    Err(Error::Unsupported("GL buffer-to-texture platform"))
 }
 
 pub(crate) fn texture_to_buffer(
@@ -22,23 +122,47 @@ pub(crate) fn texture_to_buffer(
     dst: &GlBuffer,
     layout: TexelCopyBufferLayout,
 ) -> Result<()> {
+    // Desktop GL exposes depth readback through a depth-only read framebuffer.
+    // Keep native depth readback format-specific: Depth16Unorm uses unsigned
+    // short and Depth32Float uses float. Stencil packing differs by API.
+    let source = unsafe { src.texture.native_ref() };
+    let desktop_depth = src.aspect == api::TextureAspects::DEPTH
+        && matches!(
+            source.desc.format,
+            crate::backend::gl::api::GlFormat::Depth16Unorm
+                | crate::backend::gl::api::GlFormat::Depth32Float
+        );
+    if src.aspect != api::TextureAspects::COLOR && !desktop_depth {
+        return Err(Error::Unsupported(
+            "GL depth/stencil texture-to-buffer transfer",
+        ));
+    }
+    // SAFETY: the region borrows its texture for this immediate operation.
+    let source = unsafe { src.texture.native_ref() };
+    if !std::rc::Rc::ptr_eq(&encoder.state, &source.state)
+        || !std::rc::Rc::ptr_eq(&encoder.state, &dst.state)
+    {
+        return Err(Error::WrongDevice);
+    }
+    if !source
+        .desc
+        .usage
+        .contains(crate::backend::gl::api::GlTextureUsage::COPY_SOURCE)
+        || !dst
+            .desc
+            .usage
+            .contains(crate::backend::gl::api::GlBufferUsage::COPY_DESTINATION)
+    {
+        return Err(Error::InvalidState);
+    }
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
     {
-        use crate::backend::gl::api::{
-            GlBufferRange, GlBufferUsage, GlCopyDomainApi as _, GlTextureUsage,
-        };
+        use crate::backend::gl::api::{GlBufferRange, GlCopyDomainApi as _};
 
         // SAFETY: Core keeps the texture region borrowed for this direct
         // operation; the native reference contributes immutable allocation
         // metadata and is never retained beyond the current GL call.
         let source = unsafe { src.texture.native_ref() };
-        if !Rc::ptr_eq(&encoder.state, &source.state)
-            || !Rc::ptr_eq(&encoder.state, &dst.state)
-            || !source.desc.usage.contains(GlTextureUsage::COPY_SOURCE)
-            || !dst.desc.usage.contains(GlBufferUsage::COPY_DESTINATION)
-        {
-            return Err(Error::InvalidRange);
-        }
         let source_region = lower_region(src)?;
         let pixel_layout =
             crate::backend::gl::translate::lower_texel_copy_layout(layout, source.desc.format)?;
@@ -59,34 +183,14 @@ pub(crate) fn texture_to_buffer(
         let result = encoder
             .state
             .with_native("read GL texture into buffer", |provider| {
-                // `read_texture` performs the historical GL readPixels
-                // operation synchronously; upload the returned top-left
-                // bytes before this command call returns instead of
-                // retaining a CPU copy operation for later replay.
-                let readback = provider.read_texture(source_region, pixel_layout)?;
-                let start = usize::try_from(layout.offset).map_err(|_| {
-                    crate::backend::gl::api::GlError::OutOfMemory {
-                        operation: "read-texture-to-buffer",
-                    }
-                })?;
-                let end = usize::try_from(required).map_err(|_| {
-                    crate::backend::gl::api::GlError::OutOfMemory {
-                        operation: "read-texture-to-buffer",
-                    }
-                })?;
-                let bytes = readback.bytes.get(start..end).ok_or_else(|| {
-                    crate::backend::gl::api::GlError::Validation {
-                        operation: "read-texture-to-buffer",
-                        message: "native readback returned a short pixel buffer".into(),
-                    }
-                })?;
-                provider.upload_buffer(
+                provider.copy_texture_to_buffer(
+                    source_region,
                     GlBufferRange {
                         buffer: dst.id,
-                        offset: layout.offset,
-                        size: write_size,
+                        offset: 0,
+                        size: required,
                     },
-                    bytes,
+                    pixel_layout,
                 )
             })
             .map_err(native_error);
@@ -105,33 +209,24 @@ pub(crate) fn texture_to_buffer(
         // immediate verb. The browser wrapper is borrowed only while
         // `readPixels` and the destination `bufferSubData` execute.
         let source = unsafe { src.texture.native_ref() };
-        use crate::backend::gl::api::{
-            GlBufferUsage, GlFormat, GlTextureDimension, GlTextureUsage,
-        };
-        if !Rc::ptr_eq(&encoder.state, &source.state)
-            || !Rc::ptr_eq(&encoder.state, &dst.state)
-            || !source.desc.usage.contains(GlTextureUsage::COPY_SOURCE)
-            || !dst.desc.usage.contains(GlBufferUsage::COPY_DESTINATION)
+        use crate::backend::gl::api::GlTextureDimension;
+        if src.aspect != api::TextureAspects::COLOR
             || !matches!(
-                source.desc.format,
-                GlFormat::Rgba8Unorm | GlFormat::Rgba8Srgb
+                source.desc.dimension,
+                GlTextureDimension::D2 | GlTextureDimension::D2Array | GlTextureDimension::D3
             )
-            || source.desc.dimension != GlTextureDimension::D2
             || src.aspect != api::TextureAspects::COLOR
         {
             return Err(Error::Unsupported(
-                "WebGL2 texture-to-buffer requires an RGBA8 2D color rectangle",
+                "WebGL2 texture-to-buffer requires a supported color region",
             ));
         }
-        if src.origin[2] != 0 || src.extent[2] != 1 {
-            return Err(Error::InvalidRange);
-        }
         let browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
-        let result = browser.copy_rgba8_texture_to_buffer(
+        let result = browser.copy_texture_to_buffer(
             &source.browser,
             src.mip,
-            [src.origin[0], src.origin[1]],
-            [src.extent[0], src.extent[1]],
+            src.origin,
+            src.extent,
             &dst.browser,
             layout.offset,
             layout.bytes_per_row,
@@ -163,6 +258,16 @@ pub(crate) fn write_buffer(
     offset: u64,
     bytes: &[u8],
 ) -> Result<()> {
+    if !std::rc::Rc::ptr_eq(&encoder.state, &dst.state) {
+        return Err(Error::WrongDevice);
+    }
+    if !dst
+        .desc
+        .usage
+        .contains(crate::backend::gl::api::GlBufferUsage::COPY_DESTINATION)
+    {
+        return Err(Error::InvalidState);
+    }
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
     {
         use crate::backend::gl::api::{GlBufferRange, GlCopyDomainApi as _};
@@ -213,10 +318,23 @@ pub(crate) fn write_texture(
     layout: TexelCopyBufferLayout,
     bytes: &[u8],
 ) -> Result<()> {
+    if dst.aspect != api::TextureAspects::COLOR {
+        return Err(Error::Unsupported("GL depth/stencil texture byte upload"));
+    }
     // SAFETY: Core holds the texture borrow for this synchronous command;
     // its descriptor is immutable allocation metadata used only to choose
     // the validated native pixel-layout lowering.
     let texture = unsafe { dst.texture.native_ref() };
+    if !std::rc::Rc::ptr_eq(&encoder.state, &texture.state) {
+        return Err(Error::WrongDevice);
+    }
+    if !texture
+        .desc
+        .usage
+        .contains(crate::backend::gl::api::GlTextureUsage::COPY_DESTINATION)
+    {
+        return Err(Error::InvalidState);
+    }
     let layout =
         crate::backend::gl::translate::lower_texel_copy_layout(layout, texture.desc.format)?;
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
@@ -241,15 +359,30 @@ pub(crate) fn write_texture(
         #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
         {
             let browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
-            let result = browser.write_texture_region(
-                &texture.browser,
-                dst.mip,
-                dst.origin,
-                dst.extent,
-                layout.bytes_per_row,
-                layout.rows_per_image,
-                bytes,
-            );
+            let result = if texture.desc.format.compressed_info().is_some() {
+                browser.write_compressed_texture(
+                    &texture.browser,
+                    dst.mip,
+                    dst.origin,
+                    dst.extent,
+                    layout.offset,
+                    layout.bytes_per_row,
+                    layout.rows_per_image,
+                    bytes,
+                )
+            } else {
+                let start = usize::try_from(layout.offset).map_err(|_| Error::InvalidRange)?;
+                let payload = bytes.get(start..).ok_or(Error::InvalidRange)?;
+                browser.write_texture_region(
+                    &texture.browser,
+                    dst.mip,
+                    dst.origin,
+                    dst.extent,
+                    layout.bytes_per_row,
+                    layout.rows_per_image,
+                    payload,
+                )
+            };
             if result.is_ok() {
                 encoder.issued = true;
             } else {

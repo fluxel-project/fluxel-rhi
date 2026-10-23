@@ -37,7 +37,12 @@ pub(crate) struct GlLimits {
     pub max_viewports: u32,
     pub max_vertex_texture_image_units: u32,
     pub max_fragment_texture_image_units: u32,
+    pub max_compute_texture_image_units: u32,
     pub max_combined_texture_image_units: u32,
+    /// Default-block uniform vector budget for vertex, fragment and compute.
+    pub max_default_uniform_vectors: [u32; 3],
+    /// Desktop's program-wide location ceiling, where the query exists.
+    pub max_uniform_locations: Option<u32>,
     /// UBO binding, range, alignment and stage limits.
     pub max_uniform_buffer_bindings: u32,
     pub max_uniform_block_size: u64,
@@ -57,6 +62,9 @@ pub(crate) struct GlLimits {
     /// Image-unit limits, independent from storage-buffer limits.
     pub max_image_units: u32,
     pub max_combined_image_units: u32,
+    pub max_vertex_image_uniforms: u32,
+    pub max_fragment_image_uniforms: u32,
+    pub max_compute_image_uniforms: u32,
     /// Sample and compute limits.
     pub max_samples: u32,
     pub max_color_texture_samples: u32,
@@ -81,6 +89,20 @@ pub(crate) struct GlLimits {
 }
 
 impl GlLimits {
+    /// Worst case is one 32-bit scalar per default uniform vector. Pipeline
+    /// linking also accounts for every other active uniform and can reject a
+    /// combination exceeding the shared native program budget.
+    pub(crate) fn push_constant_bytes(&self, compute: bool) -> u32 {
+        let mut vectors =
+            self.max_default_uniform_vectors[0].min(self.max_default_uniform_vectors[1]);
+        if compute {
+            vectors = vectors.min(self.max_default_uniform_vectors[2]);
+        }
+        if let Some(locations) = self.max_uniform_locations {
+            vectors = vectors.min(locations / 2);
+        }
+        vectors.saturating_mul(4) & !3
+    }
     /// Explicit unavailable facts. They satisfy neither profile floors nor optional domains.
     pub const fn unavailable() -> Self {
         Self {
@@ -96,7 +118,10 @@ impl GlLimits {
             max_viewports: 0,
             max_vertex_texture_image_units: 0,
             max_fragment_texture_image_units: 0,
+            max_compute_texture_image_units: 0,
             max_combined_texture_image_units: 0,
+            max_default_uniform_vectors: [0; 3],
+            max_uniform_locations: None,
             max_uniform_buffer_bindings: 0,
             max_uniform_block_size: 0,
             uniform_buffer_offset_alignment: 0,
@@ -113,6 +138,9 @@ impl GlLimits {
             max_combined_storage_blocks: 0,
             max_image_units: 0,
             max_combined_image_units: 0,
+            max_vertex_image_uniforms: 0,
+            max_fragment_image_uniforms: 0,
+            max_compute_image_uniforms: 0,
             max_samples: 0,
             max_color_texture_samples: 0,
             max_depth_texture_samples: 0,
@@ -188,6 +216,23 @@ impl GlLimits {
     /// multiview, so a queried 1 or an unqueried 0 both fail here.
     pub(crate) const fn supports_multiview(&self) -> bool {
         self.max_multiview_view_count >= 2
+    }
+}
+
+#[cfg(test)]
+mod push_limit_tests {
+    use super::GlLimits;
+
+    #[test]
+    fn push_limit_uses_each_available_stage_and_shared_locations() {
+        let mut limits = GlLimits::unavailable();
+        limits.max_default_uniform_vectors = [512, 224, 256];
+        assert_eq!(limits.push_constant_bytes(true), 896);
+        limits.max_uniform_locations = Some(300);
+        assert_eq!(limits.push_constant_bytes(true), 600);
+        limits.max_default_uniform_vectors[2] = 0;
+        assert_eq!(limits.push_constant_bytes(true), 0);
+        assert_eq!(limits.push_constant_bytes(false), 600);
     }
 }
 

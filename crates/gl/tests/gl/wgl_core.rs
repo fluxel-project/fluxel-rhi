@@ -142,32 +142,19 @@ fn wgl_clear_ignores_and_restores_pipeline_write_masks() {
         gl.delete_framebuffer(fbo);
         gl.delete_texture(texture);
     }
-    let mut formats = discovery.formats().clone();
-    formats
-        .record(GlFormatCapabilities {
-            format: GlFormat::Depth24PlusStencil8,
-            resource_kind: GlFormatResourceKind::Texture,
-            sample_count: 1,
-            evidence: GlFormatEvidence::OperationProbed,
-            sampled: false,
-            filterable: false,
-            renderable: true,
-            blendable: false,
-            storage_read: false,
-            storage_write: false,
-            copy_source: false,
-            copy_destination: false,
-        })
-        .unwrap();
-    let discovery = GlDiscoveryBuilder::new(
-        stamp,
-        discovery.context().clone(),
-        discovery.extensions().clone(),
-        discovery.limits(),
-        formats,
-    )
-    .unwrap()
-    .build();
+    // Production discovery now supplies this core format. Do not replace its
+    // exact facts with a fixture-local row: that would bypass the public
+    // format admission used by the raster route being exercised.
+    assert!(
+        discovery
+            .formats()
+            .get_for(
+                GlFormatResourceKind::Texture,
+                GlFormat::Depth24PlusStencil8,
+                1,
+            )
+            .is_some_and(|facts| facts.renderable)
+    );
     // SAFETY: the window and context outlive the provider, and the context stays current on this thread.
     let mut provider = unsafe { NativeGlProvider::from_discovered(gl, discovery, unmap) };
     let depth_desc = GlTextureDesc {
@@ -192,6 +179,7 @@ fn wgl_clear_ignores_and_restores_pipeline_write_masks() {
         })
         .unwrap();
     let view = GlTextureView {
+        aspect: crate::backend::gl::api::GlTextureAspect::All,
         target: GlAttachmentTarget::Texture(depth),
         format: GlFormat::Depth24PlusStencil8,
         mip_level: 0,
@@ -208,7 +196,7 @@ fn wgl_clear_ignores_and_restores_pipeline_write_masks() {
     };
     let framebuffer = provider
         .create_framebuffer(&GlFramebufferDescriptor {
-            color_attachments: vec![color_view],
+            color_attachments: vec![Some(color_view)],
             depth_stencil_attachment: Some(view),
             draw_buffers: vec![0],
         })
@@ -245,6 +233,7 @@ fn wgl_clear_ignores_and_restores_pipeline_write_masks() {
         program,
         vertex_array,
         state: GlRasterState {
+            rasterization: Default::default(),
             topology: GlPrimitiveTopology::Triangles,
             cull_mode: GlCullMode::None,
             front_face: GlFrontFace::CounterClockwise,
@@ -263,7 +252,7 @@ fn wgl_clear_ignores_and_restores_pipeline_write_masks() {
             multisample: GlMultisampleState {
                 sample_count: 1,
                 alpha_to_coverage_enabled: false,
-                sample_mask: u32::MAX,
+                sample_mask: u64::MAX,
             },
             viewport: GlViewport {
                 x: 0,
@@ -278,19 +267,20 @@ fn wgl_clear_ignores_and_restores_pipeline_write_masks() {
         },
     };
     let pass = |value: f32| GlRenderPassDescriptor {
+        render_area: None,
         target: GlRenderTarget::Offscreen(framebuffer),
-        color_attachments: vec![GlColorAttachment {
+        color_attachments: vec![Some(GlColorAttachment {
             view: GlPassAttachmentView::Allocated(color_view),
             resolve_target: None,
             load: GlLoadOp::Clear,
             store: GlStoreOp::Store,
-            clear: GlColorClearValue {
-                red: 0,
-                green: 0.5f32.to_bits(),
-                blue: 1.0f32.to_bits(),
-                alpha: 1.0f32.to_bits(),
-            },
-        }],
+            clear: GlColorClearValue::Float([
+                0,
+                0.5f32.to_bits(),
+                1.0f32.to_bits(),
+                1.0f32.to_bits(),
+            ]),
+        })],
         depth_stencil_attachment: Some(GlDepthStencilAttachment {
             view,
             depth_load: GlLoadOp::Clear,
@@ -304,8 +294,8 @@ fn wgl_clear_ignores_and_restores_pipeline_write_masks() {
         }),
     };
     let mut first = pass(0.25);
-    first.color_attachments[0].clear.green = 0;
-    first.color_attachments[0].clear.blue = 0;
+    first.color_attachments[0].as_mut().unwrap().clear =
+        GlColorClearValue::Float([0, 0, 0, 1.0f32.to_bits()]);
     first
         .depth_stencil_attachment
         .as_mut()
@@ -384,7 +374,7 @@ fn wgl_clear_ignores_and_restores_pipeline_write_masks() {
     assert_eq!(unsafe { provider.gl.get_error() }, glow::NO_ERROR);
     provider.end_render_pass().unwrap();
     let mut stencil_only = pass(0.0);
-    stencil_only.color_attachments[0].load = GlLoadOp::Load;
+    stencil_only.color_attachments[0].as_mut().unwrap().load = GlLoadOp::Load;
     let attachment = stencil_only.depth_stencil_attachment.as_mut().unwrap();
     attachment.depth_load = GlLoadOp::Load;
     attachment.clear.stencil = 0x56;

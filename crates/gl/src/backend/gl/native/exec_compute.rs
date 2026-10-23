@@ -214,10 +214,11 @@ impl GlStorageImageApi for NativeGlProvider {
                 | crate::backend::gl::api::GlTextureDimension::Cube
         );
         let layer = match (image.layered, image.layer) {
-            (true, None) if layered => -1,
-            (false, Some(layer)) if !layered && (layer as u64) < mip.depth_or_layers as u64 => {
-                layer as i32
-            }
+            // GL ignores the layer argument for a layered binding; zero is
+            // valid even on implementations that validate ignored arguments.
+            (true, None) if layered => 0,
+            (false, Some(layer)) if layer < mip.depth_or_layers => i32::try_from(layer)
+                .map_err(|_| Self::validation(OP, "storage image layer exceeds GLint"))?,
             _ => {
                 return Err(Self::validation(
                     OP,
@@ -235,7 +236,8 @@ impl GlStorageImageApi for NativeGlProvider {
             self.gl.bind_image_texture(
                 binding,
                 Some(name),
-                image.level as i32,
+                i32::try_from(image.level)
+                    .map_err(|_| Self::validation(OP, "storage image level exceeds GLint"))?,
                 image.layered,
                 layer,
                 native_image_access(image.access),
@@ -247,6 +249,67 @@ impl GlStorageImageApi for NativeGlProvider {
 }
 
 impl NativeGlProvider {
+    fn validate_indirect_driver(
+        &self,
+        operation: &'static str,
+        program: crate::backend::gl::api::ProgramId,
+    ) -> Result<(), GlError> {
+        let context = self.discovery.context();
+        let affected = context.version().contains("ANGLE 2.1.22762")
+            && context
+                .renderer()
+                .contains("AMD Radeon 780M Graphics (0x00001900) Direct3D11")
+            && context.renderer().contains("D3D11-32.0.21028.2002");
+        if affected
+            && matches!(&self.program(operation, program)?.descriptor.kind, GlProgramKind::Raster { vertex, .. } if vertex.text.contains("gl_VertexID"))
+        {
+            return Err(GlError::Unsupported {
+                operation,
+                reason: "ANGLE D3D11 indirect gl_VertexID driver defect",
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_indirect_vertex_state(&self, operation: &'static str) -> Result<(), GlError> {
+        use crate::backend::gl::api::GlVertexBufferMetadata;
+        if self.pass.is_none() {
+            return Err(Self::validation(operation, "no active render pass"));
+        }
+        let bound = self
+            .bound_vertex_array
+            .ok_or_else(|| Self::validation(operation, "no vertex array is bound"))?;
+        let vertex_array = self.vertex_array(operation, bound)?;
+        let mut metadata = Vec::with_capacity(
+            vertex_array.bindings.len() + usize::from(vertex_array.index.is_some()),
+        );
+        for binding in &vertex_array.bindings {
+            let (_, desc) = self.buffer(operation, binding.buffer)?;
+            metadata.push(GlVertexBufferMetadata {
+                buffer: binding.buffer,
+                byte_length: desc.size,
+                usage: desc.usage,
+            });
+        }
+        if let Some(index) = vertex_array.index {
+            let (_, desc) = self.buffer(operation, index.buffer)?;
+            metadata.push(GlVertexBufferMetadata {
+                buffer: index.buffer,
+                byte_length: desc.size,
+                usage: desc.usage,
+            });
+        }
+        vertex_array
+            .layout
+            .validate_bindings(
+                &vertex_array.bindings,
+                vertex_array.index,
+                &metadata,
+                self.context_stamp(),
+            )
+            .map_err(|_| Self::validation(operation, "vertex bindings are incomplete or invalid"))
+    }
+
     /// Resolves the live indirect command buffer one indirect range names.
     ///
     /// Two facts make an allocation usable as a command buffer, and both are
@@ -291,6 +354,7 @@ impl GlDrawIndirectApi for NativeGlProvider {
             });
         }
         command.validate(OP)?;
+        self.validate_indirect_vertex_state(OP)?;
         let (program, topology) = {
             let raster = self
                 .raster
@@ -298,6 +362,14 @@ impl GlDrawIndirectApi for NativeGlProvider {
                 .ok_or_else(|| Self::validation(OP, "no raster pipeline is installed"))?;
             (raster.program, raster.topology)
         };
+        self.validate_indirect_driver(OP, program)?;
+        self.set_push_uniforms(
+            program,
+            &[(
+                naga::back::glsl::FIRST_INSTANCE_BINDING.to_owned(),
+                super::push_uniform::GlPushUniformValue::Uint(vec![0]),
+            )],
+        )?;
         // This is a raster verb that lives beside the compute ones, so the
         // program the compute path may have selected since the pipeline was
         // installed is re-asserted here exactly as `draw_raster` does it.
@@ -309,32 +381,166 @@ impl GlDrawIndirectApi for NativeGlProvider {
         let bound = self
             .bound_vertex_array
             .ok_or_else(|| Self::validation(OP, "no vertex array is bound"))?;
-        let vertex_array = self.vertex_array(OP, bound)?;
-        let name = self.indirect_command_buffer(OP, command.range)?;
-        let offset = draw_indirect_offset(command.range, command.command_offset)?;
+        let index = self.vertex_array(OP, bound)?.index;
+        if command.abi == GlIndirectAbi::Indexed && index.is_none() {
+            return Err(Self::validation(
+                OP,
+                "indexed indirect draw requires a bound index buffer",
+            ));
+        }
+        let source = self.indirect_command_buffer(OP, command.range)?;
+        let original_offset = draw_indirect_offset(command.range, command.command_offset)?;
+        let scratch = if let Some(index) = index.filter(|_| command.abi == GlIndirectAbi::Indexed) {
+            self.buffer(OP, index.buffer)?;
+            if index.offset != 0 {
+                Some(self.rebase_indirect_indices(source, command, index)?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let name = scratch.unwrap_or(source);
+        let offset = if scratch.is_some() {
+            0
+        } else {
+            original_offset
+        };
         let mode = super::exec_raster::topology_mode(topology);
-        // SAFETY: current-context contract; the ABI, range, usage, and active
-        // pipeline state were validated before any binding changed.
+        // SAFETY: the argument allocation and index state were validated; a rebased scratch buffer is retained until after the call.
         unsafe {
             self.gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(name));
-            match command.abi {
-                GlIndirectAbi::NonIndexed => {
-                    self.gl.draw_arrays_indirect_offset(mode, offset);
+            if let Some(index) = index.filter(|_| command.abi == GlIndirectAbi::Indexed) {
+                self.gl.draw_elements_indirect_offset(
+                    mode,
+                    super::exec_vertex::indexed_draw_type(index),
+                    offset,
+                );
+            } else {
+                self.gl.draw_arrays_indirect_offset(mode, offset);
+            }
+            if let Some(scratch) = scratch {
+                self.gl.delete_buffer(scratch);
+            }
+        }
+        self.driver_error(OP)
+    }
+}
+
+impl NativeGlProvider {
+    pub(crate) fn supports_indirect_count(&self) -> bool {
+        self.indirect_count.is_some()
+            && self
+                .discovery
+                .capabilities()
+                .supports(GlCapability::IndirectDraw)
+    }
+
+    pub(crate) fn multi_draw_count(
+        &mut self,
+        command: GlIndirectCommandRange,
+        count: crate::backend::gl::api::GlIndirectCountRange,
+    ) -> Result<(), GlError> {
+        use glow::HasContext as _;
+        const OP: &str = "multi-draw-indirect-count";
+        self.assert_ready(OP)?;
+        let functions = self.indirect_count.ok_or(GlError::Unsupported {
+            operation: OP,
+            reason: "indirect count entry points are unavailable",
+        })?;
+        if !self.supports_indirect_count() {
+            return Err(GlError::Unsupported {
+                operation: OP,
+                reason: "indirect draw is unavailable",
+            });
+        }
+        command.validate(OP)?;
+        self.validate_indirect_vertex_state(OP)?;
+        count.validate(OP)?;
+        if command.draw_count != count.max_draw_count {
+            return Err(Self::validation(OP, "command and count bounds differ"));
+        }
+        let max = i32::try_from(count.max_draw_count)
+            .map_err(|_| Self::validation(OP, "draw count exceeds GLsizei"))?;
+        let stride = i32::try_from(command.stride)
+            .map_err(|_| Self::validation(OP, "stride exceeds GLsizei"))?;
+        let count_offset = count
+            .range
+            .offset
+            .checked_add(count.count_offset)
+            .and_then(|v| isize::try_from(v).ok())
+            .ok_or_else(|| Self::validation(OP, "count offset exceeds GLintptr"))?;
+        let (program, topology) = {
+            let raster = self
+                .raster
+                .as_ref()
+                .ok_or_else(|| Self::validation(OP, "no raster pipeline is installed"))?;
+            (raster.program, raster.topology)
+        };
+        self.validate_indirect_driver(OP, program)?;
+        self.set_push_uniforms(
+            program,
+            &[(
+                naga::back::glsl::FIRST_INSTANCE_BINDING.to_owned(),
+                super::push_uniform::GlPushUniformValue::Uint(vec![0]),
+            )],
+        )?;
+        let bound = self
+            .bound_vertex_array
+            .ok_or_else(|| Self::validation(OP, "no vertex array is bound"))?;
+        let index = if command.abi == GlIndirectAbi::Indexed {
+            let index = self.vertex_array(OP, bound)?.index.ok_or_else(|| {
+                Self::validation(OP, "indexed indirect draw requires a bound index buffer")
+            })?;
+            self.buffer(OP, index.buffer)?;
+            Some(index)
+        } else {
+            None
+        };
+        let args = self.indirect_command_buffer(OP, command.range)?;
+        let counts = self.indirect_command_buffer(OP, count.range)?;
+        let original_offset = draw_indirect_offset(command.range, command.command_offset)?;
+        let scratch = if let Some(index) = index.filter(|index| index.offset != 0) {
+            Some(self.rebase_indirect_indices(args, command, index)?)
+        } else {
+            None
+        };
+        let offset = if scratch.is_some() {
+            0
+        } else {
+            original_offset
+        };
+        let stride = if scratch.is_some() { 20 } else { stride };
+        if let Err(error) = self.ensure_program(OP, program) {
+            if let Some(scratch) = scratch {
+                // SAFETY: the scratch name was allocated by this current context and has not escaped.
+                unsafe {
+                    self.gl.delete_buffer(scratch);
                 }
-                GlIndirectAbi::Indexed => {
-                    let Some(index) = vertex_array.index else {
-                        return Err(Self::validation(
-                            OP,
-                            "indexed indirect draw requires a bound index buffer",
-                        ));
-                    };
-                    self.buffer(OP, index.buffer)?;
-                    self.gl.draw_elements_indirect_offset(
-                        mode,
-                        super::exec_vertex::indexed_draw_type(index),
-                        offset,
-                    );
-                }
+            }
+            return Err(error);
+        }
+        // SAFETY: the validated parameter and command buffers remain live through the draw.
+        unsafe {
+            self.gl
+                .bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(scratch.unwrap_or(args)));
+            self.gl.bind_buffer(0x80EE, Some(counts)); // GL_PARAMETER_BUFFER[_ARB]
+            let ptr = offset as usize as *const core::ffi::c_void;
+            let mode = super::exec_raster::topology_mode(topology);
+            if let Some(index) = index {
+                (functions.elements)(
+                    mode,
+                    super::exec_vertex::indexed_draw_type(index),
+                    ptr,
+                    count_offset,
+                    max,
+                    stride,
+                );
+            } else {
+                (functions.arrays)(mode, ptr, count_offset, max, stride);
+            }
+            if let Some(scratch) = scratch {
+                self.gl.delete_buffer(scratch);
             }
         }
         self.driver_error(OP)
@@ -478,10 +684,7 @@ pub(super) const fn native_barrier_bits(barriers: u32) -> u32 {
 
 /// The image-unit format constant for one proved storage format.
 const fn native_image_format(format: crate::backend::gl::api::GlFormat) -> Option<u32> {
-    match format {
-        crate::backend::gl::api::GlFormat::Rgba8Unorm => Some(glow::RGBA8),
-        _ => None,
-    }
+    super::resource::native_texture_format(format)
 }
 
 const fn native_image_access(access: GlStorageImageAccess) -> u32 {

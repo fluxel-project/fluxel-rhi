@@ -439,6 +439,21 @@ storage access where supported, and copy row order must agree on the upper-left
 texture convention. Backend adaptation avoids per-scene flips that would
 diverge across APIs.
 
+GL texture storage uses Core row order directly: logical row zero is native
+texel row zero for ordinary and compressed textures. Uploads, image operations,
+copies and readbacks therefore preserve row order. Rasterization reverses the
+vertex clip-space Y coordinate and native winding together, while viewport,
+scissor and fragment positions address these texture rows directly. Surface
+passes use the same offscreen convention; import and publication reverse Y at
+the default framebuffer boundary. A multisample resolve precedes that reversal.
+
+This storage convention also preserves native cube-face adjacency. Reflecting
+each face's sampling direction independently can match face interiors while
+fetching the wrong neighboring face during seamless filtering. Real texture
+views instead share the original storage, with independent admitted mip/layer
+ranges and declared compatible formats. Copying a texture once does not provide
+view aliasing semantics.
+
 #### Desktop GL4 / WGL
 
 The WGL provider owns the current-context relationship and borrows the native
@@ -721,6 +736,14 @@ descriptor schemes rather than exposing each driver's offset ordering.
 
 ### Copies, mapping, and queries preserve precise evidence
 
+Indirect draw support and nonzero first-instance support are separate facts.
+`DeviceCapabilities::indirect_first_instance` guarantees both instanced attribute
+addressing and the shader instance-index contribution. When it is false, callers
+must write zero to that field in every indirect record, including GPU-produced
+and count-controlled records. Backends do not read argument buffers on the CPU
+to enforce this data precondition. Direct draws retain their ordinary range
+semantics independently of this capability.
+
 Generic copies require caller-established `CopySrc`/`CopyDst` states and leave
 those states unchanged. The caller supplies subsequent transitions. Convenience
 uploads own temporary upload transitions; on DX12 their destination starts and
@@ -732,6 +755,12 @@ Mapping requires the caller to establish completion and absence of incompatible
 GPU access. A map lease controls CPU access and unmapping; cancellation must not
 strand native mapping state. Mapping availability is not evidence that earlier
 GPU work completed unless the operation's contract supplies that evidence.
+Callers explicitly flush modified lease-relative byte ranges before GPU readers
+and invalidate completed GPU-written ranges before host readers. Lease release
+does not guarantee publication of unflushed host changes. In particular, dropping
+a previously flushed staging lease must not overwrite later GPU updates. GL uses
+owned host storage for long-lived leases and transient native read mappings for
+snapshots, so safe borrowed slices never retain a driver mapping across resets.
 
 Occlusion query results guarantee zero for no samples passed and nonzero for
 visibility. Exact positive values can represent native counts or boolean
@@ -745,6 +774,15 @@ kind, device, and timestamp slots before native recording. Backends remain
 responsible for supported query routes, active-query sequencing, resolve layout,
 alignment, and native limits. Retaining this small immutable metadata gives
 callers consistent input validation without creating a query scheduler in Core.
+
+`Queries::resolve_mode()` makes native resolve ordering explicit. `Ordered`
+permits resolution after the producer in submission order, without a host wait.
+`AfterCompletion` requires the caller to establish producer completion first;
+the backend checks native query availability before any destination write and
+returns `InvalidState` if a result is still unavailable. WebGL query APIs need
+this mode because they expose completed host results but no GPU query-buffer
+resolve. The caller chooses completion boundaries and browser event-loop
+progress. Core does not poll, delay, or replay query commands.
 
 Both ordinary queue and multi-queue submission validate the same work packet
 before native acceptance: step count/order, payload ownership and kind, lane,

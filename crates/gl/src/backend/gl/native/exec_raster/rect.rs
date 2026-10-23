@@ -1,10 +1,8 @@
-//! GL framebuffer coordinate conversion for raster setters.
-//!
-//! Converts public upper-left rectangles at the GL boundary.
+//! Validation of raster rectangles in the shared Core and GL texture row order.
 
 use super::{GlError, NativeGlProvider};
 
-/// Converts one Core upper-left rectangle into GL's lower-left integer space.
+/// Validates one Core rectangle and converts it to native integer coordinates.
 ///
 /// The height is copied from the *currently active* render pass immediately
 /// before issuing state. It is deliberately not kept in raster state: a later
@@ -20,13 +18,16 @@ pub(super) fn native_rect(
     let upper_edge = y
         .checked_add(height)
         .ok_or_else(|| NativeGlProvider::validation(operation, "rectangle y range overflows"))?;
-    let gl_y = framebuffer_height.checked_sub(upper_edge).ok_or_else(|| {
-        NativeGlProvider::validation(operation, "rectangle exceeds active framebuffer height")
-    })?;
+    if upper_edge > framebuffer_height {
+        return Err(NativeGlProvider::validation(
+            operation,
+            "rectangle exceeds active framebuffer height",
+        ));
+    }
     Ok((
         i32::try_from(x)
             .map_err(|_| NativeGlProvider::validation(operation, "rectangle x exceeds GLint"))?,
-        i32::try_from(gl_y)
+        i32::try_from(y)
             .map_err(|_| NativeGlProvider::validation(operation, "rectangle y exceeds GLint"))?,
         i32::try_from(width).map_err(|_| {
             NativeGlProvider::validation(operation, "rectangle width exceeds GLsizei")

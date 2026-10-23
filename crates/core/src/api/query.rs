@@ -27,6 +27,18 @@ pub enum QueryKind {
     Timestamp,
     PipelineStatistics,
 }
+/// Producer ordering required before resolving query results.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum QueryResolveMode {
+    /// Resolve may follow the producer in GPU submission order without a host wait.
+    #[default]
+    Ordered,
+    /// Establish producer completion first. The backend checks native result
+    /// availability before any destination write. Pending results cannot be
+    /// resolved by the GPU or synchronously forced ready on this route.
+    AfterCompletion,
+}
+
 impl QueryKind {
     /// Size in bytes of each resolved slot. Results use native-endian u64 values.
     pub const fn result_stride(self) -> u64 {
@@ -301,6 +313,10 @@ impl TimestampResultFormat {
 }
 pub trait QueryBackend: CommandBackend {
     fn query_supported(device: &Self::NativeDevice, kind: QueryKind) -> bool;
+    /// Required ordering for this device and query kind.
+    fn query_resolve_mode(_: &Self::NativeDevice, _: QueryKind) -> QueryResolveMode {
+        QueryResolveMode::Ordered
+    }
     /// Reserved timestamp result value, if the native API reports slot errors.
     fn timestamp_result_format(_device: &Self::NativeDevice) -> TimestampResultFormat {
         TimestampResultFormat::default()
@@ -406,6 +422,12 @@ impl<B: QueryBackend> Device<B> {
     }
 }
 impl<B: QueryBackend> Queries<'_, B> {
+    /// Reports whether resolve can follow a producer in submission order or
+    /// requires its completion first. Core never waits, polls, or defers query
+    /// commands on the caller's behalf.
+    pub fn resolve_mode(&self) -> QueryResolveMode {
+        B::query_resolve_mode(&self.device.native, self.kind)
+    }
     /// Result format for this timestamp domain; other query kinds return `None`.
     pub fn timestamp_result_format(&self) -> Option<TimestampResultFormat> {
         (self.kind == QueryKind::Timestamp).then(|| B::timestamp_result_format(&self.device.native))
@@ -539,6 +561,10 @@ impl<B: QueryBackend> Queries<'_, B> {
     /// Each resolved slot must have been written in submission order after its
     /// most recent reset. Backends may validate this when the work is submitted.
     /// Buffer usage, alignment and pass state are checked by the backend.
+    /// When [`Self::resolve_mode`] is [`QueryResolveMode::AfterCompletion`],
+    /// establish producer completion before this call. A result that is still
+    /// unavailable returns [`Error::InvalidState`] before destination writes;
+    /// no pending resolution is retained or replayed later.
     pub fn resolve(
         &self,
         encoder: &mut CommandEncoder<B>,

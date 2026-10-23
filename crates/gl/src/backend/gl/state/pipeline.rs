@@ -94,6 +94,7 @@ pub(crate) struct RasterPipelineBlockInterner {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct RasterBlock {
+    rasterization: super::super::api::GlRasterizationState,
     topology: GlPrimitiveTopology,
     cull_mode: GlCullMode,
     front_face: GlFrontFace,
@@ -127,6 +128,7 @@ impl RasterPipelineBlockInterner {
             program: self.intern_program(pipeline.program, operation)?,
             raster: self.intern_raster(
                 RasterBlock {
+                    rasterization: state.rasterization,
                     topology: state.topology,
                     cull_mode: state.cull_mode,
                     front_face: state.front_face,

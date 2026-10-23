@@ -241,6 +241,9 @@ pub(crate) struct EglGlesContext {
 
 #[cfg(feature = "native-gles-egl")]
 impl super::context::NativeContextOwner for EglGlesContext {
+    fn gl_proc(&self, name: &str) -> *const core::ffi::c_void {
+        EglGlesContext::gl_proc(self, name)
+    }
     fn kind(&self) -> super::context::NativeContextKind {
         EglGlesContext::kind(self)
     }

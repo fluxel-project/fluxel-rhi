@@ -3,8 +3,9 @@
 //! These constructors create WebGL objects immediately for one `BrowserOwner`.
 //! They never cache commands or transfer JavaScript handles into Core.
 
-use crate::backend::gl::api::{GlBufferDesc, GlBufferUsage, GlFamilyApi as _};
+use crate::backend::gl::api::{GlBufferDesc, GlBufferUsage, GlFamilyApi as _, GlFormat};
 use fluxel_rhi_core::api::{Error, Result};
+use wasm_bindgen::JsCast;
 use web_sys::WebGl2RenderingContext as Gl;
 
 use super::owner::{
@@ -67,18 +68,23 @@ impl BrowserOwner {
         let target = match desc.dimension {
             GlTextureDimension::D2 => Gl::TEXTURE_2D,
             GlTextureDimension::D2Array => Gl::TEXTURE_2D_ARRAY,
+            GlTextureDimension::D3 => Gl::TEXTURE_3D,
             _ => return Err(Error::Unsupported("WebGL2 texture dimension")),
         };
         let internal = super::format_map::internal_format(desc.format)
             .ok_or(Error::Unsupported("WebGL2 texture format"))?;
-        if desc.sample_count != 1 {
-            return Err(Error::Unsupported("WebGL2 multisample texture storage"));
-        }
         let mut state = self.state.borrow_mut();
         state.ensure_active()?;
         let limits = state.context.discovery().limits();
-        if desc.extent.width > limits.max_texture_size
-            || desc.extent.height > limits.max_texture_size
+        let xy_limit = if desc.dimension == GlTextureDimension::D3 {
+            limits.max_3d_texture_size
+        } else {
+            limits.max_texture_size
+        };
+        if desc.extent.width > xy_limit
+            || desc.extent.height > xy_limit
+            || (desc.dimension == GlTextureDimension::D3
+                && desc.extent.depth_or_layers > limits.max_3d_texture_size)
             || (matches!(desc.dimension, GlTextureDimension::D2Array)
                 && desc.extent.depth_or_layers > limits.max_array_texture_layers)
             || desc.extent.width > i32::MAX as u32
@@ -88,12 +94,101 @@ impl BrowserOwner {
         {
             return Err(Error::InvalidRange);
         }
+        let renderbuffer_only =
+            desc.sample_count > 1 || desc.format == super::super::api::GlFormat::Stencil8;
+        if renderbuffer_only {
+            use super::super::api::{GlFormatResourceKind, GlTextureUsage};
+            if desc.dimension != GlTextureDimension::D2
+                || desc.extent.depth_or_layers != 1
+                || desc.mip_level_count != 1
+                || desc.usage != GlTextureUsage::RENDER_ATTACHMENT
+            {
+                return Err(Error::Unsupported(
+                    "WebGL2 renderbuffer requires attachment-only 2D storage",
+                ));
+            }
+            let facts = state.context.discovery().formats().get_for(
+                GlFormatResourceKind::Renderbuffer,
+                desc.format,
+                desc.sample_count,
+            );
+            if !facts.is_some_and(|f| f.renderable) {
+                return Err(Error::Unsupported(
+                    "WebGL2 renderbuffer format/sample count",
+                ));
+            }
+            let raw = state
+                .context
+                .raw
+                .create_renderbuffer()
+                .ok_or(Error::OutOfMemory)?;
+            state
+                .context
+                .raw
+                .bind_renderbuffer(Gl::RENDERBUFFER, Some(&raw));
+            if desc.sample_count > 1 {
+                state.context.raw.renderbuffer_storage_multisample(
+                    Gl::RENDERBUFFER,
+                    desc.sample_count as i32,
+                    internal,
+                    desc.extent.width as i32,
+                    desc.extent.height as i32,
+                );
+            } else {
+                state.context.raw.renderbuffer_storage(
+                    Gl::RENDERBUFFER,
+                    internal,
+                    desc.extent.width as i32,
+                    desc.extent.height as i32,
+                );
+            }
+            state.context.raw.bind_renderbuffer(Gl::RENDERBUFFER, None);
+            if state.context.raw.is_context_lost() {
+                state.mark_lost();
+                return Err(Error::DeviceLost);
+            }
+            if state.context.raw.get_error() != Gl::NO_ERROR {
+                state.context.raw.delete_renderbuffer(Some(&raw));
+                return Err(Error::Backend(
+                    "WebGL2 renderbuffer allocation failed".into(),
+                ));
+            }
+            return Ok(BrowserTexture {
+                owner: self.clone(),
+                raw: None,
+                renderbuffer: Some(raw),
+                desc,
+                lifetime: std::rc::Rc::new(()),
+            });
+        }
         let raw = state
             .context
             .raw
             .create_texture()
             .ok_or(Error::OutOfMemory)?;
         state.context.raw.bind_texture(target, Some(&raw));
+        // texelFetch can access integer textures without a sampler object;
+        // WebGL's default linear filter would make those textures incomplete.
+        if super::ordinary_format::encoding(desc.format).is_some_and(|v| v.integer || v.float32)
+            || matches!(
+                desc.format,
+                GlFormat::Depth16Unorm
+                    | GlFormat::Depth24Unorm
+                    | GlFormat::Depth32Float
+                    | GlFormat::Depth24PlusStencil8
+                    | GlFormat::Depth32FloatStencil8
+            )
+        {
+            state.context.raw.tex_parameteri(
+                target,
+                Gl::TEXTURE_MIN_FILTER,
+                Gl::NEAREST_MIPMAP_NEAREST as i32,
+            );
+            state
+                .context
+                .raw
+                .tex_parameteri(target, Gl::TEXTURE_MAG_FILTER, Gl::NEAREST as i32);
+        }
         match desc.dimension {
             GlTextureDimension::D2 => state.context.raw.tex_storage_2d(
                 target,
@@ -102,15 +197,111 @@ impl BrowserOwner {
                 desc.extent.width as i32,
                 desc.extent.height as i32,
             ),
-            GlTextureDimension::D2Array => state.context.raw.tex_storage_3d(
-                target,
-                desc.mip_level_count as i32,
-                internal,
-                desc.extent.width as i32,
-                desc.extent.height as i32,
-                desc.extent.depth_or_layers as i32,
-            ),
+            GlTextureDimension::D2Array | GlTextureDimension::D3 => {
+                state.context.raw.tex_storage_3d(
+                    target,
+                    desc.mip_level_count as i32,
+                    internal,
+                    desc.extent.width as i32,
+                    desc.extent.height as i32,
+                    desc.extent.depth_or_layers as i32,
+                )
+            }
             _ => unreachable!(),
+        }
+        if state.context.raw.is_context_lost() {
+            state.mark_lost();
+            return Err(Error::DeviceLost);
+        }
+        if state.context.raw.get_error() != Gl::NO_ERROR {
+            state.context.raw.delete_texture(Some(&raw));
+            return Err(Error::Backend(
+                "WebGL2 texture storage allocation failed".into(),
+            ));
+        }
+        // Some WebGL implementations leave individual array slices lazily
+        // initialized after immutable allocation. A framebuffer clear to an
+        // untouched slice can then be lost. Touch each slice before exposing
+        // the allocation; this never overwrites caller data. A one-pixel upload
+        // is enough to trigger WebGL's initialization for that subresource.
+        if matches!(
+            desc.dimension,
+            GlTextureDimension::D2Array | GlTextureDimension::D3
+        ) {
+            if let Some(encoding) = super::ordinary_format::encoding(desc.format) {
+                let (format, ty) = (encoding.pixel, encoding.ty);
+                let gl = &state.context.raw;
+                let previous_buffer = gl
+                    .get_parameter(Gl::PIXEL_UNPACK_BUFFER_BINDING)
+                    .ok()
+                    .and_then(|v| v.dyn_into::<web_sys::WebGlBuffer>().ok());
+                let parameters = [
+                    Gl::UNPACK_ALIGNMENT,
+                    Gl::UNPACK_ROW_LENGTH,
+                    Gl::UNPACK_IMAGE_HEIGHT,
+                    Gl::UNPACK_SKIP_PIXELS,
+                    Gl::UNPACK_SKIP_ROWS,
+                    Gl::UNPACK_SKIP_IMAGES,
+                ];
+                let previous: Vec<i32> = parameters
+                    .iter()
+                    .map(|p| {
+                        gl.get_parameter(*p)
+                            .ok()
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0) as i32
+                    })
+                    .collect();
+                gl.bind_buffer(Gl::PIXEL_UNPACK_BUFFER, None);
+                for p in parameters {
+                    gl.pixel_storei(p, if p == Gl::UNPACK_ALIGNMENT { 1 } else { 0 });
+                }
+                let bytes =
+                    super::ordinary_format::typed_pixels(&vec![0; encoding.bytes as usize], ty)?;
+                let mut failed = false;
+                for mip in 0..desc.mip_level_count {
+                    let slices = if desc.dimension == GlTextureDimension::D3 {
+                        desc.extent
+                            .depth_or_layers
+                            .checked_shr(mip)
+                            .unwrap_or(0)
+                            .max(1)
+                    } else {
+                        desc.extent.depth_or_layers
+                    };
+                    for layer in 0..slices {
+                        failed |= gl
+                            .tex_sub_image_3d_with_opt_array_buffer_view(
+                                target,
+                                mip as i32,
+                                0,
+                                0,
+                                layer as i32,
+                                1,
+                                1,
+                                1,
+                                format,
+                                ty,
+                                Some(&bytes),
+                            )
+                            .is_err();
+                    }
+                }
+                for (p, value) in parameters.into_iter().zip(previous) {
+                    gl.pixel_storei(p, value);
+                }
+                gl.bind_buffer(Gl::PIXEL_UNPACK_BUFFER, previous_buffer.as_ref());
+                if failed {
+                    gl.delete_texture(Some(&raw));
+                    if gl.is_context_lost() {
+                        state.mark_lost();
+                        return Err(Error::DeviceLost);
+                    }
+                    return Err(Error::Backend(
+                        "WebGL2 texture subresource initialization failed".into(),
+                    ));
+                }
+            }
         }
         // A sampler may request mip filtering even when this immutable image
         // intentionally has one level. Clamp the texture's mip range to the
@@ -125,6 +316,10 @@ impl BrowserOwner {
             Gl::TEXTURE_MAX_LEVEL,
             desc.mip_level_count as i32 - 1,
         );
+        if state.context.raw.is_context_lost() {
+            state.mark_lost();
+            return Err(Error::DeviceLost);
+        }
         if state.context.raw.get_error() != Gl::NO_ERROR {
             state.context.raw.delete_texture(Some(&raw));
             return Err(Error::Backend(
@@ -133,7 +328,8 @@ impl BrowserOwner {
         }
         Ok(BrowserTexture {
             owner: self.clone(),
-            raw,
+            raw: Some(raw),
+            renderbuffer: None,
             desc,
             lifetime: std::rc::Rc::new(()),
         })

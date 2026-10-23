@@ -15,6 +15,80 @@ use fluxel_rhi_core::api::{
 
 use super::{Gl, GlDevice, GlInstance, spi::native_error, types::GlDeviceState};
 
+pub(super) fn push_limit(state: &std::rc::Rc<GlDeviceState>) -> Result<u32> {
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    {
+        use crate::backend::gl::api::GlFamilyApi as _;
+        return state
+            .with_native("query GL push constant limit", |provider| {
+                let discovery = provider.discovery();
+                Ok(discovery
+                    .limits()
+                    .push_constant_bytes(discovery.capabilities().supports_compute()))
+            })
+            .map_err(native_error);
+    }
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    {
+        return Ok(state
+            .owner
+            .discovery_snapshot()
+            .limits()
+            .push_constant_bytes(false));
+    }
+    #[cfg(not(any(
+        all(windows, feature = "native-gl-wgl"),
+        feature = "native-gles-egl",
+        all(target_arch = "wasm32", feature = "webgl2")
+    )))]
+    {
+        let _ = state;
+        Ok(0)
+    }
+}
+
+pub(super) fn multiview_limit(state: &std::rc::Rc<GlDeviceState>) -> Result<u32> {
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    {
+        use crate::backend::gl::api::{GlCapability, GlFamilyApi as _};
+        return state
+            .with_native("query multiview limits", |provider| {
+                let discovery = provider.discovery();
+                Ok(
+                    if discovery.capabilities().supports(GlCapability::Multiview) {
+                        discovery.max_multiview_view_count().min(32)
+                    } else {
+                        0
+                    },
+                )
+            })
+            .map_err(native_error);
+    }
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    {
+        let discovery = state.owner.discovery_snapshot();
+        return Ok(
+            if discovery
+                .capabilities()
+                .supports(crate::backend::gl::api::GlCapability::Multiview)
+            {
+                discovery.max_multiview_view_count().min(32)
+            } else {
+                0
+            },
+        );
+    }
+    #[cfg(not(any(
+        all(windows, feature = "native-gl-wgl"),
+        feature = "native-gles-egl",
+        all(target_arch = "wasm32", feature = "webgl2")
+    )))]
+    {
+        let _ = state;
+        Ok(0)
+    }
+}
+
 impl InstanceBackend for Gl {
     type NativeInstance = GlInstance;
     type OpenFuture<'a> = Ready<Result<(GlDevice, DeviceCapabilities)>>;
@@ -53,23 +127,36 @@ fn gl_capabilities(
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
     {
         use crate::backend::gl::api::{GlCapability, GlFamilyApi as _};
-        let (limits, compute_storage, indirect_draw, occlusion) = state
+        let (
+            limits,
+            compute_storage,
+            indirect_draw,
+            indirect_count,
+            occlusion,
+            storage_buffers,
+            storage_images,
+        ) = state
             .with_native("read GL device limits", |provider| {
                 let discovery = provider.discovery();
                 let capabilities = discovery.capabilities();
-                // A public compute route needs both a real dispatch probe and
-                // a storage-image probe: example 06 cannot be useful with
-                // only one half, and reporting it would make Core advertise a
-                // pipeline it cannot bind.
+                // Dispatch and storage-image probes describe independent
+                // capabilities; individual bindings retain their own gates.
                 Ok((
                     discovery.limits(),
-                    capabilities.supports(GlCapability::Compute)
-                        && capabilities.supports(GlCapability::StorageImage),
+                    capabilities.supports_compute(),
                     capabilities.supports(GlCapability::IndirectDraw),
+                    provider.supports_indirect_count(),
                     capabilities.supports(GlCapability::OcclusionQuery),
+                    capabilities.supports(GlCapability::StorageBuffer),
+                    capabilities.supports(GlCapability::StorageImage),
                 ))
             })
             .map_err(native_error)?;
+        let native_base_instance = state.with_native("read GL base instance support", |provider| {
+            Ok(matches!(provider.profile(), crate::backend::gl::api::GlFamilyProfile::Desktop { major, minor } if major > 4 || major == 4 && minor >= 2)
+                || provider.discovery().extensions().raw_reported_names().any(|name| name == "GL_ARB_base_instance"))
+        }).map_err(native_error)?;
+        let multiview_views = multiview_limit(state)?;
         return Ok(DeviceCapabilities {
             lanes: Arc::from([LaneInfo {
                 id: LaneId { device, ordinal: 0 },
@@ -77,9 +164,30 @@ fn gl_capabilities(
                 routes: Vec::new(),
             }]),
             compute: compute_storage,
-            storage_textures: compute_storage,
+            // Fixed binding arrays are specialized into ordinary GL resources
+            // at link time. Runtime-sized arrays and nonuniform indexing are
+            // advertised independently and remain disabled.
+            binding_arrays: true,
+            storage_textures: storage_images,
+            storage_buffers,
             indirect_draw,
+            indirect_first_instance: indirect_draw
+                && native_base_instance
+                && super::shader::draw_parameters(&GlDevice(state.clone()))?
+                    != super::shader::DrawParameters::None,
+            multi_draw: indirect_draw,
+            multi_draw_count: indirect_count,
+            push_constants: limits.push_constant_bytes(compute_storage) != 0,
+            multiview: multiview_views > 0,
             occlusion,
+            timestamp: super::query::query_supported(
+                &GlDevice(state.clone()),
+                api::QueryKind::Timestamp,
+            ),
+            pipeline_statistics: super::query::query_supported(
+                &GlDevice(state.clone()),
+                api::QueryKind::PipelineStatistics,
+            ),
             limits: api::DeviceLimits {
                 // GL has no native bind-group object: logical groups are
                 // flattened to UBO points and texture units at pipeline link.
@@ -106,8 +214,8 @@ fn gl_capabilities(
                 max_compute_workgroup_size: compute_storage
                     .then_some(limits.max_compute_work_group_size)
                     .unwrap_or([0; 3]),
-                max_push_constant_bytes: 0,
-                max_multiview_views: 0,
+                max_push_constant_bytes: limits.push_constant_bytes(compute_storage),
+                max_multiview_views: multiview_views,
                 uniform_offset_alignment: limits.uniform_buffer_offset_alignment,
                 storage_offset_alignment: limits.storage_buffer_offset_alignment,
             },
@@ -119,7 +227,19 @@ fn gl_capabilities(
         #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
         {
             let limits = state.owner.discovery_snapshot().limits();
+            let multiview_views = multiview_limit(state)?;
             return Ok(DeviceCapabilities {
+                push_constants: limits.push_constant_bytes(false) != 0,
+                // WebGL2 uses the same fixed-array shader specialization path;
+                // storage textures, runtime arrays and nonuniform indexing
+                // remain separately capability-gated.
+                binding_arrays: true,
+                multiview: multiview_views > 0,
+                occlusion: true,
+                timestamp: super::query::query_supported(
+                    &GlDevice(state.clone()),
+                    api::QueryKind::Timestamp,
+                ),
                 lanes: Arc::from([LaneInfo {
                     id: LaneId { device, ordinal: 0 },
                     class: LaneClass::Graphics,
@@ -142,8 +262,8 @@ fn gl_capabilities(
                     max_vertex_attributes: limits.max_vertex_attributes,
                     max_compute_workgroups: [0; 3],
                     max_compute_workgroup_size: [0; 3],
-                    max_push_constant_bytes: 0,
-                    max_multiview_views: 0,
+                    max_push_constant_bytes: limits.push_constant_bytes(false),
+                    max_multiview_views: multiview_views,
                     uniform_offset_alignment: limits.uniform_buffer_offset_alignment,
                     storage_offset_alignment: 0,
                 },

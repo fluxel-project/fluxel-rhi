@@ -5,6 +5,7 @@
 //! profile-specific private modules.  GL encoders issue calls immediately; no
 //! recorded command list or submission replay is represented here.
 
+pub(crate) mod cache;
 mod command;
 mod completion;
 mod compute;
@@ -12,13 +13,14 @@ mod encoder;
 mod extras;
 mod immediate;
 mod instance;
+mod mapping;
 mod pipeline;
+mod push;
 mod query;
-mod raster;
+pub(crate) mod raster;
 mod readback;
 mod resource;
 mod shader;
-mod shader_texture_origin;
 mod spi;
 mod surface;
 mod types;

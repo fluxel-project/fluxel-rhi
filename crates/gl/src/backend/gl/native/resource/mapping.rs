@@ -69,13 +69,53 @@ pub(crate) const fn native_texture_format(
     format: crate::backend::gl::api::GlFormat,
 ) -> Option<u32> {
     match format {
+        crate::backend::gl::api::GlFormat::R8Unorm => Some(glow::R8),
+        crate::backend::gl::api::GlFormat::R8Snorm => Some(glow::R8_SNORM),
+        crate::backend::gl::api::GlFormat::R8Uint => Some(glow::R8UI),
+        crate::backend::gl::api::GlFormat::R8Sint => Some(glow::R8I),
+        crate::backend::gl::api::GlFormat::Rg8Unorm => Some(glow::RG8),
+        crate::backend::gl::api::GlFormat::Rg8Snorm => Some(glow::RG8_SNORM),
+        crate::backend::gl::api::GlFormat::Rg8Uint => Some(glow::RG8UI),
+        crate::backend::gl::api::GlFormat::Rg8Sint => Some(glow::RG8I),
+        crate::backend::gl::api::GlFormat::Rgba8Snorm => Some(glow::RGBA8_SNORM),
+        crate::backend::gl::api::GlFormat::R16Uint => Some(glow::R16UI),
+        crate::backend::gl::api::GlFormat::R16Sint => Some(glow::R16I),
+        crate::backend::gl::api::GlFormat::R16Float => Some(glow::R16F),
+        crate::backend::gl::api::GlFormat::Rg16Uint => Some(glow::RG16UI),
+        crate::backend::gl::api::GlFormat::Rg16Sint => Some(glow::RG16I),
+        crate::backend::gl::api::GlFormat::Rg16Float => Some(glow::RG16F),
+        crate::backend::gl::api::GlFormat::Rgba16Uint => Some(glow::RGBA16UI),
+        crate::backend::gl::api::GlFormat::Rgba16Sint => Some(glow::RGBA16I),
+        crate::backend::gl::api::GlFormat::R32Uint => Some(glow::R32UI),
+        crate::backend::gl::api::GlFormat::R32Sint => Some(glow::R32I),
+        crate::backend::gl::api::GlFormat::R32Float => Some(glow::R32F),
+        crate::backend::gl::api::GlFormat::Rg32Uint => Some(glow::RG32UI),
+        crate::backend::gl::api::GlFormat::Rg32Sint => Some(glow::RG32I),
+        crate::backend::gl::api::GlFormat::Rg32Float => Some(glow::RG32F),
+        crate::backend::gl::api::GlFormat::Rgba32Uint => Some(glow::RGBA32UI),
+        crate::backend::gl::api::GlFormat::Rgba32Sint => Some(glow::RGBA32I),
+        crate::backend::gl::api::GlFormat::R16Unorm => Some(glow::R16),
+        crate::backend::gl::api::GlFormat::Rg16Unorm => Some(glow::RG16),
+        crate::backend::gl::api::GlFormat::Rgba16Unorm => Some(glow::RGBA16),
+        crate::backend::gl::api::GlFormat::R16Snorm => Some(glow::R16_SNORM),
+        crate::backend::gl::api::GlFormat::Rg16Snorm => Some(glow::RG16_SNORM),
+        crate::backend::gl::api::GlFormat::Rgba16Snorm => Some(glow::RGBA16_SNORM),
+        crate::backend::gl::api::GlFormat::Rgb9e5Ufloat => Some(glow::RGB9_E5),
+        crate::backend::gl::api::GlFormat::Rgb10a2Uint => Some(glow::RGB10_A2UI),
+        crate::backend::gl::api::GlFormat::Rgb10a2Unorm => Some(glow::RGB10_A2),
+        crate::backend::gl::api::GlFormat::Rg11b10Ufloat => Some(glow::R11F_G11F_B10F),
         crate::backend::gl::api::GlFormat::Rgba8Unorm => Some(glow::RGBA8),
         crate::backend::gl::api::GlFormat::Rgba8Srgb => Some(glow::SRGB8_ALPHA8),
+        crate::backend::gl::api::GlFormat::Rgba8Uint => Some(glow::RGBA8UI),
+        crate::backend::gl::api::GlFormat::Rgba8Sint => Some(glow::RGBA8I),
         crate::backend::gl::api::GlFormat::Rgba16Float => Some(glow::RGBA16F),
         crate::backend::gl::api::GlFormat::Rgba32Float => Some(glow::RGBA32F),
         crate::backend::gl::api::GlFormat::Depth32Float => Some(glow::DEPTH_COMPONENT32F),
         crate::backend::gl::api::GlFormat::Depth16Unorm => Some(glow::DEPTH_COMPONENT16),
+        crate::backend::gl::api::GlFormat::Depth24Unorm => Some(glow::DEPTH_COMPONENT24),
         crate::backend::gl::api::GlFormat::Depth24PlusStencil8 => Some(glow::DEPTH24_STENCIL8),
+        crate::backend::gl::api::GlFormat::Depth32FloatStencil8 => Some(glow::DEPTH32F_STENCIL8),
+        crate::backend::gl::api::GlFormat::Stencil8 => Some(glow::STENCIL_INDEX8),
         crate::backend::gl::api::GlFormat::Bc1RgbUnorm => Some(0x83F0),
         crate::backend::gl::api::GlFormat::Bc1RgbaUnorm => Some(0x83F1),
         crate::backend::gl::api::GlFormat::Bc2RgbaUnorm => Some(0x83F2),
@@ -151,10 +191,13 @@ pub(crate) const fn depth_attachment_point(
 ) -> Option<u32> {
     match format {
         crate::backend::gl::api::GlFormat::Depth16Unorm
+        | crate::backend::gl::api::GlFormat::Depth24Unorm
         | crate::backend::gl::api::GlFormat::Depth32Float => Some(glow::DEPTH_ATTACHMENT),
-        crate::backend::gl::api::GlFormat::Depth24PlusStencil8 => {
+        crate::backend::gl::api::GlFormat::Depth24PlusStencil8
+        | crate::backend::gl::api::GlFormat::Depth32FloatStencil8 => {
             Some(glow::DEPTH_STENCIL_ATTACHMENT)
         }
+        crate::backend::gl::api::GlFormat::Stencil8 => Some(glow::STENCIL_ATTACHMENT),
         _ => None,
     }
 }
@@ -165,5 +208,7 @@ pub(crate) const fn has_stencil_plane(format: crate::backend::gl::api::GlFormat)
     matches!(
         format,
         crate::backend::gl::api::GlFormat::Depth24PlusStencil8
+            | crate::backend::gl::api::GlFormat::Depth32FloatStencil8
+            | crate::backend::gl::api::GlFormat::Stencil8
     )
 }

@@ -9,6 +9,22 @@ pub(crate) fn copy_buffer(
     dst_offset: u64,
     bytes: u64,
 ) -> Result<()> {
+    if !std::rc::Rc::ptr_eq(&encoder.state, &src.state)
+        || !std::rc::Rc::ptr_eq(&encoder.state, &dst.state)
+    {
+        return Err(Error::WrongDevice);
+    }
+    if !src
+        .desc
+        .usage
+        .contains(crate::backend::gl::api::GlBufferUsage::COPY_SOURCE)
+        || !dst
+            .desc
+            .usage
+            .contains(crate::backend::gl::api::GlBufferUsage::COPY_DESTINATION)
+    {
+        return Err(Error::InvalidState);
+    }
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
     {
         use crate::backend::gl::api::{GlBufferRange, GlCopyDomainApi as _};
@@ -63,6 +79,25 @@ pub(crate) fn copy_texture(
     src: TextureRegion<'_, Gl>,
     dst: TextureRegion<'_, Gl>,
 ) -> Result<()> {
+    // SAFETY: both Core textures remain borrowed throughout this call.
+    let source = unsafe { src.texture.native_ref() };
+    let destination = unsafe { dst.texture.native_ref() };
+    if !std::rc::Rc::ptr_eq(&encoder.state, &source.state)
+        || !std::rc::Rc::ptr_eq(&encoder.state, &destination.state)
+    {
+        return Err(Error::WrongDevice);
+    }
+    if !source
+        .desc
+        .usage
+        .contains(crate::backend::gl::api::GlTextureUsage::COPY_SOURCE)
+        || !destination
+            .desc
+            .usage
+            .contains(crate::backend::gl::api::GlTextureUsage::COPY_DESTINATION)
+    {
+        return Err(Error::InvalidState);
+    }
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
     {
         use crate::backend::gl::api::GlCopyDomainApi as _;
@@ -91,29 +126,24 @@ pub(crate) fn copy_texture(
         let source = unsafe { src.texture.native_ref() };
         // SAFETY: same Core borrow guarantee as for `source`.
         let destination = unsafe { dst.texture.native_ref() };
-        if src.aspect != api::TextureAspects::COLOR || dst.aspect != api::TextureAspects::COLOR {
-            return Err(Error::Unsupported(
-                "WebGL2 texture copy supports color aspects only",
-            ));
-        }
-        if src.origin[2] != 0
-            || dst.origin[2] != 0
-            || src.extent[2] != 1
-            || dst.extent[2] != 1
-            || src.extent != dst.extent
-        {
+        let aspect = browser_blit_aspect(src.aspect, dst.aspect)?;
+        if source.desc.format != destination.desc.format || src.extent != dst.extent {
             return Err(Error::InvalidRange);
         }
         let browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
         let result = browser.blit_texture_regions(
             &source.browser,
             src.mip,
+            src.origin[2],
             [src.origin[0], src.origin[1]],
             [src.extent[0], src.extent[1]],
             &destination.browser,
             dst.mip,
+            dst.origin[2],
             [dst.origin[0], dst.origin[1]],
             [dst.extent[0], dst.extent[1]],
+            src.extent[2],
+            aspect,
             crate::backend::gl::api::GlFilterMode::Nearest,
         );
         if result.is_ok() {
@@ -155,26 +185,83 @@ pub(crate) fn blit(
             destination_desc,
             &dst,
         )?;
-        if source_desc.format != destination_desc.format
-            || source_desc.sample_count != 1
+        // ES 3.0/3.1 and older desktop GL require fixed and floating-point
+        // framebuffer classes to match even though newer profiles relax this.
+        let (separate_float_class, fixed_source_requires_fixed) = encoder
+            .state
+            .with_native("query blit format rules", |provider| {
+                use crate::backend::gl::api::GlFamilyApi as _;
+                Ok(match provider.profile() {
+                    crate::backend::gl::api::GlFamilyProfile::Desktop { major, minor } => {
+                        (major < 4 || (major == 4 && minor < 3), false)
+                    }
+                    crate::backend::gl::api::GlFamilyProfile::Embedded { major, minor } => {
+                        (false, major < 3 || (major == 3 && minor < 2))
+                    }
+                    crate::backend::gl::api::GlFamilyProfile::WebGl2 => (false, true),
+                })
+            })
+            .map_err(native_error)?;
+        if source_desc.sample_count != 1
             || destination_desc.sample_count != 1
-            || source_desc.dimension != crate::backend::gl::api::GlTextureDimension::D2
-            || destination_desc.dimension != crate::backend::gl::api::GlTextureDimension::D2
+            || !matches!(
+                source_desc.dimension,
+                crate::backend::gl::api::GlTextureDimension::D2
+                    | crate::backend::gl::api::GlTextureDimension::D2Array
+                    | crate::backend::gl::api::GlTextureDimension::D3
+            )
+            || !matches!(
+                destination_desc.dimension,
+                crate::backend::gl::api::GlTextureDimension::D2
+                    | crate::backend::gl::api::GlTextureDimension::D2Array
+                    | crate::backend::gl::api::GlTextureDimension::D3
+            )
             || !source_desc.usage.contains(GlTextureUsage::COPY_SOURCE)
             || !destination_desc
                 .usage
                 .contains(GlTextureUsage::COPY_DESTINATION)
-            || source_region.subresource.aspect != crate::backend::gl::api::GlTextureAspect::Color
-            || destination_region.subresource.aspect
-                != crate::backend::gl::api::GlTextureAspect::Color
-            || source_region.subresource.base_layer != 0
-            || destination_region.subresource.base_layer != 0
-            || source_region.subresource.layer_count != 1
-            || destination_region.subresource.layer_count != 1
-            || source_region.extent.depth_or_layers != 1
-            || destination_region.extent.depth_or_layers != 1
+            || source_region.subresource.aspect != destination_region.subresource.aspect
+            || !source_desc
+                .format
+                .blit_compatible(destination_desc.format, source_region.subresource.aspect)
+            || (separate_float_class
+                && source_region.subresource.aspect
+                    == crate::backend::gl::api::GlTextureAspect::Color
+                && source_desc.format.is_float_color() != destination_desc.format.is_float_color())
+            || (fixed_source_requires_fixed
+                && source_region.subresource.aspect
+                    == crate::backend::gl::api::GlTextureAspect::Color
+                && !source_desc.format.is_integer_color()
+                && !source_desc.format.is_float_color()
+                && destination_desc.format.is_float_color())
+            || (filter == api::FilterMode::Linear
+                && (source_desc.format.is_integer_color()
+                    || source_region.subresource.aspect
+                        != crate::backend::gl::api::GlTextureAspect::Color))
+            || source_region.extent.depth_or_layers != destination_region.extent.depth_or_layers
         {
-            return Err(Error::Unsupported("GL color texture blit shape or usage"));
+            return Err(Error::Unsupported(
+                "GL texture blit format, aspect, filter, shape or usage",
+            ));
+        }
+        let source_layer =
+            if source_desc.dimension == crate::backend::gl::api::GlTextureDimension::D3 {
+                source_region.origin[2]
+            } else {
+                source_region.subresource.base_layer
+            };
+        let destination_layer =
+            if destination_desc.dimension == crate::backend::gl::api::GlTextureDimension::D3 {
+                destination_region.origin[2]
+            } else {
+                destination_region.subresource.base_layer
+            };
+        if source.id == destination.id
+            && source_region.subresource.mip_level == destination_region.subresource.mip_level
+            && source_layer < destination_layer + destination_region.extent.depth_or_layers
+            && destination_layer < source_layer + source_region.extent.depth_or_layers
+        {
+            return Err(Error::InvalidRange);
         }
         let source_mip = source_desc
             .mip_extent(source_region.subresource.mip_level)
@@ -200,35 +287,38 @@ pub(crate) fn blit(
                     .ok_or(Error::InvalidRange)?,
             )
             .ok_or(Error::InvalidRange)?;
-        let source_view = crate::backend::gl::api::GlTextureView {
+        let mut source_view = crate::backend::gl::api::GlTextureView {
+            aspect: source_region.subresource.aspect,
             target: crate::backend::gl::api::GlAttachmentTarget::Texture(source.id),
             format: source_desc.format,
             mip_level: source_region.subresource.mip_level,
-            array_layer: 0,
+            array_layer: if source_desc.dimension == crate::backend::gl::api::GlTextureDimension::D3
+            {
+                source_region.origin[2]
+            } else {
+                source_region.subresource.base_layer
+            },
             layer_count: 1,
             width: source_mip.width,
             height: source_mip.height,
             sample_count: 1,
         };
-        let destination_view = crate::backend::gl::api::GlTextureView {
+        let mut destination_view = crate::backend::gl::api::GlTextureView {
+            aspect: destination_region.subresource.aspect,
             target: crate::backend::gl::api::GlAttachmentTarget::Texture(destination.id),
             format: destination_desc.format,
             mip_level: destination_region.subresource.mip_level,
-            array_layer: 0,
+            array_layer: if destination_desc.dimension
+                == crate::backend::gl::api::GlTextureDimension::D3
+            {
+                destination_region.origin[2]
+            } else {
+                destination_region.subresource.base_layer
+            },
             layer_count: 1,
             width: destination_mip.width,
             height: destination_mip.height,
             sample_count: 1,
-        };
-        let source_framebuffer = crate::backend::gl::api::GlFramebufferDescriptor {
-            color_attachments: vec![source_view],
-            depth_stencil_attachment: None,
-            draw_buffers: vec![0],
-        };
-        let destination_framebuffer = crate::backend::gl::api::GlFramebufferDescriptor {
-            color_attachments: vec![destination_view],
-            depth_stencil_attachment: None,
-            draw_buffers: vec![0],
         };
         let region = crate::backend::gl::api::GlBlitRegion {
             src_offset: [source_region.origin[0], source_y],
@@ -246,28 +336,45 @@ pub(crate) fn blit(
         let result = encoder
             .state
             .with_native("blit GL texture mip", |provider| {
-                let source_fbo = provider.create_framebuffer(&source_framebuffer)?;
-                let destination_fbo = match provider.create_framebuffer(&destination_framebuffer) {
-                    Ok(framebuffer) => framebuffer,
-                    Err(error) => {
-                        let _ = provider.destroy_framebuffer(source_fbo);
-                        return Err(error);
-                    }
-                };
-                let blit = provider.blit_framebuffer(
-                    source_fbo,
-                    destination_fbo,
-                    region,
-                    filter,
-                    crate::backend::gl::api::GlBlitMask {
-                        color: true,
-                        depth: false,
-                        stencil: false,
-                    },
-                );
-                let drop_destination = provider.destroy_framebuffer(destination_fbo);
-                let drop_source = provider.destroy_framebuffer(source_fbo);
-                blit.and(drop_destination).and(drop_source)
+                for _ in 0..source_region.extent.depth_or_layers {
+                    let color = source_region.subresource.aspect
+                        == crate::backend::gl::api::GlTextureAspect::Color;
+                    let framebuffer = |view| crate::backend::gl::api::GlFramebufferDescriptor {
+                        color_attachments: if color { vec![Some(view)] } else { vec![] },
+                        depth_stencil_attachment: if color { None } else { Some(view) },
+                        draw_buffers: if color { vec![0] } else { vec![] },
+                    };
+                    let source_framebuffer = framebuffer(source_view);
+                    let destination_framebuffer = framebuffer(destination_view);
+                    let source_fbo = provider.create_framebuffer(&source_framebuffer)?;
+                    let destination_fbo =
+                        match provider.create_framebuffer(&destination_framebuffer) {
+                            Ok(framebuffer) => framebuffer,
+                            Err(error) => {
+                                let _ = provider.destroy_framebuffer(source_fbo);
+                                return Err(error);
+                            }
+                        };
+                    let blit = provider.blit_framebuffer(
+                        source_fbo,
+                        destination_fbo,
+                        region,
+                        filter,
+                        crate::backend::gl::api::GlBlitMask {
+                            color,
+                            depth: source_region.subresource.aspect
+                                == crate::backend::gl::api::GlTextureAspect::DepthOnly,
+                            stencil: source_region.subresource.aspect
+                                == crate::backend::gl::api::GlTextureAspect::StencilOnly,
+                        },
+                    );
+                    let drop_destination = provider.destroy_framebuffer(destination_fbo);
+                    let drop_source = provider.destroy_framebuffer(source_fbo);
+                    blit.and(drop_destination).and(drop_source)?;
+                    source_view.array_layer += 1;
+                    destination_view.array_layer += 1;
+                }
+                Ok(())
             })
             .map_err(native_error);
         if result.is_ok() {
@@ -283,24 +390,24 @@ pub(crate) fn blit(
         // blit. The browser wrappers are used immediately and never retained.
         let source = unsafe { src.texture.native_ref() };
         let destination = unsafe { dst.texture.native_ref() };
-        if src.aspect != api::TextureAspects::COLOR || dst.aspect != api::TextureAspects::COLOR {
-            return Err(Error::Unsupported(
-                "WebGL2 texture blit supports color aspects only",
-            ));
-        }
-        if src.origin[2] != 0 || dst.origin[2] != 0 || src.extent[2] != 1 || dst.extent[2] != 1 {
+        let aspect = browser_blit_aspect(src.aspect, dst.aspect)?;
+        if src.extent[2] != dst.extent[2] {
             return Err(Error::InvalidRange);
         }
         let browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
         let result = browser.blit_texture_regions(
             &source.browser,
             src.mip,
+            src.origin[2],
             [src.origin[0], src.origin[1]],
             [src.extent[0], src.extent[1]],
             &destination.browser,
             dst.mip,
+            dst.origin[2],
             [dst.origin[0], dst.origin[1]],
             [dst.extent[0], dst.extent[1]],
+            src.extent[2],
+            aspect,
             match filter {
                 api::FilterMode::Nearest => crate::backend::gl::api::GlFilterMode::Nearest,
                 api::FilterMode::Linear => crate::backend::gl::api::GlFilterMode::Linear,
@@ -321,5 +428,22 @@ pub(crate) fn blit(
     {
         let _ = (encoder, src, dst, filter);
         Err(Error::Unsupported("GL texture blit platform"))
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+fn browser_blit_aspect(
+    src: api::TextureAspects,
+    dst: api::TextureAspects,
+) -> Result<crate::backend::gl::api::GlTextureAspect> {
+    use crate::backend::gl::api::GlTextureAspect;
+    if src != dst {
+        return Err(Error::InvalidRange);
+    }
+    match src.0 {
+        1 => Ok(GlTextureAspect::Color),
+        2 => Ok(GlTextureAspect::DepthOnly),
+        4 => Ok(GlTextureAspect::StencilOnly),
+        _ => Err(Error::Unsupported("WebGL2 texture blit aspect")),
     }
 }

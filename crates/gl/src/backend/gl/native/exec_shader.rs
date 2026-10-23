@@ -34,9 +34,9 @@ const SAMPLER_TYPES: &[u32] = &[
 fn vertex_input_columns(type_: u32) -> Option<u8> {
     Some(match type_ {
         0x1404..=0x1406 => 1,          // INT, UNSIGNED_INT, FLOAT
-        0x8B50 | 0x8B56 | 0x8B57 => 2, // FLOAT_VEC2, INT_VEC2, UNSIGNED_INT_VEC2
-        0x8B51 | 0x8B58 | 0x8B59 => 3, // FLOAT_VEC3, INT_VEC3, UNSIGNED_INT_VEC3
-        0x8B52 | 0x8B5A | 0x8B5B => 4, // FLOAT_VEC4, INT_VEC4, UNSIGNED_INT_VEC4
+        0x8B50 | 0x8B53 | 0x8DC6 => 2, // FLOAT_VEC2, INT_VEC2, UNSIGNED_INT_VEC2
+        0x8B51 | 0x8B54 | 0x8DC7 => 3, // FLOAT_VEC3, INT_VEC3, UNSIGNED_INT_VEC3
+        0x8B52 | 0x8B55 | 0x8DC8 => 4, // FLOAT_VEC4, INT_VEC4, UNSIGNED_INT_VEC4
         _ => return None,
     })
 }
@@ -115,7 +115,47 @@ impl GlShaderApi for NativeGlProvider {
         };
         let mut compiled = Vec::new();
         for source in stages {
-            match self.compile_shader_source(OP, source) {
+            let mut source = source.clone();
+            if matches!(
+                self.profile(),
+                crate::backend::gl::api::GlFamilyProfile::Embedded { .. }
+            ) {
+                for (point, binding) in descriptor.layout.bindings.iter().enumerate() {
+                    if !matches!(binding.kind, GlShaderResourceKind::StorageBuffer(_)) {
+                        continue;
+                    }
+                    for name in &binding.names {
+                        let needle = format!("buffer {name} ");
+                        if let Some(pos) = source.text.find(&needle) {
+                            let line_start = source.text[..pos].rfind('\n').map_or(0, |i| i + 1);
+                            let prefix = &source.text[line_start..pos];
+                            let Some(layout) = prefix.find("layout(") else {
+                                return Err(Self::validation(
+                                    OP,
+                                    "storage block has no layout qualifier",
+                                ));
+                            };
+                            let Some(close) = prefix[layout..].find(')') else {
+                                return Err(Self::validation(
+                                    OP,
+                                    "storage block has invalid layout qualifier",
+                                ));
+                            };
+                            if prefix[layout..layout + close].contains("binding") {
+                                // Direct ESSL may already choose its native binding.
+                                // Linked reflection validates that point and the
+                                // immediate binder uses the reflected assignment.
+                                continue;
+                            }
+                            source.text.insert_str(
+                                line_start + layout + close,
+                                &format!(", binding = {point}"),
+                            );
+                        }
+                    }
+                }
+            }
+            match self.compile_shader_source(OP, &source) {
                 Ok(raw) => compiled.push(raw),
                 Err(error) => {
                     self.delete_shaders(&compiled);

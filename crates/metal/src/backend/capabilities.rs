@@ -22,6 +22,7 @@ pub(super) fn describe(device: &MetalDevice, multi_queue: bool) -> DeviceCapabil
         ray_query: shader::ray_query_supported(device),
         multi_queue,
         indirect_draw: true,
+        indirect_first_instance: true,
         multi_draw: true,
         multi_draw_count: device._state.indirect_count_supported,
         push_constants: true,

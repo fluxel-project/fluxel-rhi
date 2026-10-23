@@ -19,6 +19,17 @@ pub use backend::gl::backend::Gl;
 /// A selected, current GL-family context and its adapter discovery entry.
 pub use backend::gl::backend::GlInstance;
 
+#[cfg(all(
+    test,
+    any(
+        all(windows, feature = "native-gl-wgl"),
+        feature = "native-gles-egl",
+        all(target_arch = "wasm32", feature = "webgl2")
+    )
+))]
+#[path = "../tests/gl/core_raster_features.rs"]
+mod core_raster_features;
+
 #[cfg(any(
     feature = "native-gl-wgl",
     feature = "native-gles-egl",

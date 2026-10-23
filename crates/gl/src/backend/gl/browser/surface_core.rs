@@ -42,14 +42,20 @@ impl BrowserSurfaceImage {
         if !self.is_current_for(self.generation) {
             return Err(api::Error::SurfaceOutdated);
         }
-        let extent = self.surface.state.borrow().extent;
+        let state = self.surface.state.borrow();
+        let extent = state.extent;
+        let color_format = match state.format {
+            api::TextureFormat::Rgba8Unorm => crate::backend::gl::api::GlFormat::Rgba8Unorm,
+            api::TextureFormat::Rgba8UnormSrgb => crate::backend::gl::api::GlFormat::Rgba8Srgb,
+            _ => return Err(api::Error::SurfaceOutdated),
+        };
         Ok(crate::backend::gl::api::GlDefaultFramebufferTarget {
             frame_serial: self.serial,
             context: self.surface.owner.context_stamp(),
             width: extent[0],
             height: extent[1],
             sample_count: 1,
-            color_format: crate::backend::gl::api::GlFormat::Rgba8Unorm,
+            color_format,
         })
     }
 }

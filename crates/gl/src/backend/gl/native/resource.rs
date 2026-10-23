@@ -77,17 +77,81 @@ impl crate::backend::gl::api::GlResourceApi for NativeGlProvider {
             operation: OP,
             reason,
         })?;
-        if desc.format.compressed_info().is_some()
-            && desc.dimension != crate::backend::gl::api::GlTextureDimension::D2
+        if desc.sample_count > 1
+            && desc.dimension == api::GlTextureDimension::D2Array
+            && self.multisample_array.is_none()
         {
-            // Compressed definitions use the legacy complete-mip upload route
-            // below this allocator. It has no array-layer spelling yet, so
-            // accepting array storage here would publish an allocation no
-            // command can define correctly.
             return Err(GlError::Unsupported {
                 operation: OP,
-                reason: "compressed native texture arrays have no upload route",
+                reason: "multisample array storage entry unavailable",
             });
+        }
+        if desc.format.compressed_info().is_some()
+            && !matches!(
+                desc.dimension,
+                crate::backend::gl::api::GlTextureDimension::D2
+                    | crate::backend::gl::api::GlTextureDimension::D2Array
+            )
+        {
+            return Err(GlError::Unsupported {
+                operation: OP,
+                reason: "compressed native texture dimension",
+            });
+        }
+        let storage_available = self.texture_storage_entries
+            && match self.discovery.context().profile() {
+                api::GlFamilyProfile::Desktop { major, minor } => {
+                    major > 4
+                        || (major == 4 && minor >= 2)
+                        || self
+                            .discovery
+                            .extensions()
+                            .raw_reported_names()
+                            .any(|name| name == "GL_ARB_texture_storage")
+                }
+                api::GlFamilyProfile::Embedded { major, .. } => major >= 3,
+                _ => false,
+            };
+        if !storage_available
+            && desc.format.compressed_info().is_none()
+            && mutable_texture_format(desc.format).is_none()
+        {
+            return Err(GlError::Unsupported {
+                operation: OP,
+                reason: "mutable texture format unavailable",
+            });
+        }
+        let mut compressed_mips = Vec::new();
+        if let Some(info) = desc.format.compressed_info() {
+            if !storage_available {
+                if (desc.dimension == api::GlTextureDimension::D2
+                    && self.compressed_image_2d.is_none())
+                    || (desc.dimension == api::GlTextureDimension::D2Array
+                        && self.compressed_image_3d.is_none())
+                {
+                    return Err(GlError::Unsupported {
+                        operation: OP,
+                        reason: "compressed allocation entry point unavailable",
+                    });
+                }
+                for level in 0..desc.mip_level_count {
+                    let extent = desc
+                        .mip_extent(level)
+                        .ok_or_else(|| Self::validation(OP, "invalid mip"))?;
+                    let size = info
+                        .checked_encoded_size(extent.width, extent.height)
+                        .map_err(|_| Self::validation(OP, "compressed size overflow"))?
+                        .checked_mul(u64::from(extent.depth_or_layers))
+                        .and_then(|v| i32::try_from(v).ok())
+                        .ok_or_else(|| Self::validation(OP, "compressed image exceeds GLsizei"))?;
+                    compressed_mips.push((
+                        level as i32,
+                        extent.width as i32,
+                        extent.height as i32,
+                        size,
+                    ));
+                }
+            }
         }
         let width = i32::try_from(desc.extent.width)
             .map_err(|_| Self::validation(OP, "width exceeds GLsizei"))?;
@@ -108,18 +172,65 @@ impl crate::backend::gl::api::GlResourceApi for NativeGlProvider {
         // storage class, extent, and format was validated before allocation.
         // A driver error deletes this unpublished name below.
         unsafe {
+            let (restore_target, restore_binding) = match class {
+                TextureStorageClass::SingleSample => match desc.dimension {
+                    api::GlTextureDimension::D1 => (glow::TEXTURE_1D, glow::TEXTURE_BINDING_1D),
+                    api::GlTextureDimension::D2 => (glow::TEXTURE_2D, glow::TEXTURE_BINDING_2D),
+                    api::GlTextureDimension::D2Array => {
+                        (glow::TEXTURE_2D_ARRAY, glow::TEXTURE_BINDING_2D_ARRAY)
+                    }
+                    api::GlTextureDimension::D3 => (glow::TEXTURE_3D, glow::TEXTURE_BINDING_3D),
+                    _ => unreachable!(),
+                },
+                TextureStorageClass::Multisample
+                    if desc.dimension == api::GlTextureDimension::D2Array =>
+                {
+                    (
+                        glow::TEXTURE_2D_MULTISAMPLE_ARRAY,
+                        glow::TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY,
+                    )
+                }
+                TextureStorageClass::Multisample => (
+                    glow::TEXTURE_2D_MULTISAMPLE,
+                    glow::TEXTURE_BINDING_2D_MULTISAMPLE,
+                ),
+            };
+            let previous = self.gl.get_parameter_i32(restore_binding) as u32;
             match class {
                 TextureStorageClass::SingleSample => {
                     let target = single_sample_texture_target(desc.dimension)
                         .expect("storage class already admitted this texture dimension");
                     self.gl.bind_texture(target, Some(name));
-                    if desc.format.compressed_info().is_none() {
+                    if !storage_available {
+                        // Mutable GL 4.0 fallback defines exactly this mip range;
+                        // sampler completeness must not require unallocated mips.
+                        self.gl
+                            .tex_parameter_i32(target, glow::TEXTURE_MAX_LEVEL, levels - 1);
+                    }
+                    // Samplerless texelFetch still needs a complete texture.
+                    // Nearest is legal for integer and unfilterable float
+                    // formats; sampler objects override these defaults.
+                    self.gl.tex_parameter_i32(
+                        target,
+                        glow::TEXTURE_MIN_FILTER,
+                        glow::NEAREST_MIPMAP_NEAREST as i32,
+                    );
+                    self.gl.tex_parameter_i32(
+                        target,
+                        glow::TEXTURE_MAG_FILTER,
+                        glow::NEAREST as i32,
+                    );
+                    if storage_available {
                         match desc.dimension {
+                            crate::backend::gl::api::GlTextureDimension::D1 => {
+                                self.gl.tex_storage_1d(target, levels, internal, width);
+                            }
                             crate::backend::gl::api::GlTextureDimension::D2 => {
                                 self.gl
                                     .tex_storage_2d(target, levels, internal, width, height);
                             }
-                            crate::backend::gl::api::GlTextureDimension::D2Array => {
+                            crate::backend::gl::api::GlTextureDimension::D2Array
+                            | crate::backend::gl::api::GlTextureDimension::D3 => {
                                 self.gl.tex_storage_3d(
                                     target, levels, internal, width, height, layers,
                                 );
@@ -128,6 +239,90 @@ impl crate::backend::gl::api::GlResourceApi for NativeGlProvider {
                                 "texture_storage_class admitted an unsupported dimension"
                             ),
                         }
+                    } else if desc.format.compressed_info().is_none() {
+                        let old_unpack =
+                            self.gl.get_parameter_i32(glow::PIXEL_UNPACK_BUFFER_BINDING) as u32;
+                        self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
+                        let (format, ty) = mutable_texture_format(desc.format)
+                            .expect("validated mutable texture format");
+                        for level in 0..desc.mip_level_count {
+                            let e = desc.mip_extent(level).expect("validated mip");
+                            if desc.dimension == api::GlTextureDimension::D1 {
+                                self.gl.tex_image_1d(
+                                    target,
+                                    level as i32,
+                                    internal as i32,
+                                    e.width as i32,
+                                    0,
+                                    format,
+                                    ty,
+                                    glow::PixelUnpackData::Slice(None),
+                                );
+                            } else if desc.dimension == api::GlTextureDimension::D2 {
+                                self.gl.tex_image_2d(
+                                    target,
+                                    level as i32,
+                                    internal as i32,
+                                    e.width as i32,
+                                    e.height as i32,
+                                    0,
+                                    format,
+                                    ty,
+                                    glow::PixelUnpackData::Slice(None),
+                                );
+                            } else {
+                                self.gl.tex_image_3d(
+                                    target,
+                                    level as i32,
+                                    internal as i32,
+                                    e.width as i32,
+                                    e.height as i32,
+                                    e.depth_or_layers as i32,
+                                    0,
+                                    format,
+                                    ty,
+                                    glow::PixelUnpackData::Slice(None),
+                                );
+                            }
+                        }
+                        self.gl.bind_buffer(
+                            glow::PIXEL_UNPACK_BUFFER,
+                            std::num::NonZeroU32::new(old_unpack).map(glow::NativeBuffer),
+                        );
+                    } else {
+                        let old_unpack =
+                            self.gl.get_parameter_i32(glow::PIXEL_UNPACK_BUFFER_BINDING) as u32;
+                        self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
+                        for &(level, width, height, size) in &compressed_mips {
+                            if desc.dimension == api::GlTextureDimension::D2 {
+                                (self.compressed_image_2d.unwrap())(
+                                    target,
+                                    level,
+                                    internal,
+                                    width,
+                                    height,
+                                    0,
+                                    size,
+                                    core::ptr::null(),
+                                );
+                            } else {
+                                (self.compressed_image_3d.unwrap())(
+                                    target,
+                                    level,
+                                    internal,
+                                    width,
+                                    height,
+                                    layers,
+                                    0,
+                                    size,
+                                    core::ptr::null(),
+                                );
+                            }
+                        }
+                        self.gl.bind_buffer(
+                            glow::PIXEL_UNPACK_BUFFER,
+                            std::num::NonZeroU32::new(old_unpack).map(glow::NativeBuffer),
+                        );
                     }
                 }
                 TextureStorageClass::Multisample => {
@@ -135,18 +330,47 @@ impl crate::backend::gl::api::GlResourceApi for NativeGlProvider {
                     // samples as one block, and the per-texel locations that the
                     // alternative would expose are not expressible in this
                     // layer's vocabulary.
-                    self.gl
-                        .bind_texture(glow::TEXTURE_2D_MULTISAMPLE, Some(name));
-                    self.gl.tex_storage_2d_multisample(
-                        glow::TEXTURE_2D_MULTISAMPLE,
-                        samples,
-                        internal,
-                        width,
-                        height,
-                        true,
-                    );
+                    self.gl.bind_texture(restore_target, Some(name));
+                    if desc.dimension == api::GlTextureDimension::D2Array {
+                        self.multisample_array.unwrap()(
+                            restore_target,
+                            samples,
+                            internal,
+                            width,
+                            height,
+                            layers,
+                            1,
+                        );
+                    } else if self.discovery.context().profile().meets(
+                        Some(api::GlVersion::new(4, 3)),
+                        Some(api::GlVersion::new(3, 1)),
+                    ) {
+                        self.gl.tex_storage_2d_multisample(
+                            glow::TEXTURE_2D_MULTISAMPLE,
+                            samples,
+                            internal,
+                            width,
+                            height,
+                            true,
+                        );
+                    } else {
+                        // Desktop GL 4.0 has mutable multisample texture images;
+                        // immutable TexStorage2DMultisample only arrived in 4.3.
+                        self.gl.tex_image_2d_multisample(
+                            glow::TEXTURE_2D_MULTISAMPLE,
+                            samples,
+                            internal as i32,
+                            width,
+                            height,
+                            true,
+                        );
+                    }
                 }
             }
+            self.gl.bind_texture(
+                restore_target,
+                std::num::NonZeroU32::new(previous).map(glow::NativeTexture),
+            );
         }
         if let Err(error) = self.driver_error(OP) {
             // SAFETY: rollback deletes the unpublished texture created by this
@@ -325,17 +549,33 @@ impl crate::backend::gl::api::GlSamplerApi for NativeGlProvider {
             return Err(error);
         }
         let id = SamplerId::new(self.context_stamp(), self.slot("create-sampler")?, 0);
-        self.samplers.insert(id, name);
+        self.samplers.insert(
+            id,
+            super::sampler_border::NativeSamplerSet {
+                float: name,
+                sint: None,
+                uint: None,
+            },
+        );
         Ok(id)
     }
     fn destroy_sampler(&mut self, id: SamplerId) -> Result<(), GlError> {
         use glow::HasContext as _;
         self.assert_ready("destroy-sampler")?;
-        let name = self.sampler("destroy-sampler", id)?;
+        self.sampler("destroy-sampler", id)?;
+        self.texture_unit_samplers.retain(|_, bound| *bound != id);
+        let names = self.samplers.remove(&id).expect("validated sampler");
         // SAFETY: current-context contract; liveness was checked before mutation.
-        unsafe { self.gl.delete_sampler(name) };
+        unsafe {
+            self.gl.delete_sampler(names.float);
+            if let Some(name) = names.sint {
+                self.gl.delete_sampler(name);
+            }
+            if let Some(name) = names.uint {
+                self.gl.delete_sampler(name);
+            }
+        };
         self.driver_error("destroy-sampler")?;
-        self.samplers.remove(&id);
         Ok(())
     }
 }
@@ -371,27 +611,40 @@ pub(super) enum TextureStorageClass {
 #[cfg(any(feature = "native-gl-wgl", feature = "native-gles-egl"))]
 pub(super) fn texture_storage_class(
     profile: crate::backend::gl::api::GlFamilyProfile,
-    limits: &crate::backend::gl::api::GlLimits,
+    _limits: &crate::backend::gl::api::GlLimits,
     formats: &crate::backend::gl::api::GlFormatTable,
     desc: GlTextureDesc,
 ) -> Result<TextureStorageClass, &'static str> {
-    // D2Array uses the same format facts as D2 but a different target and 3D
-    // storage entry point. Keep that distinction here so no allocation path
-    // can accidentally bind a layered image as TEXTURE_2D. Other dimensions
-    // need their own target and view contracts and remain unsupported.
-    if !matches!(
-        desc.dimension,
-        crate::backend::gl::api::GlTextureDimension::D2
-            | crate::backend::gl::api::GlTextureDimension::D2Array
-    ) {
-        return Err("native texture storage covers 2D and 2D-array targets only");
-    }
-    let facts = formats
-        .get_for(
-            crate::backend::gl::api::GlFormatResourceKind::Texture,
-            desc.format,
-            desc.sample_count,
+    // Array and volume textures share format facts with D2, but use distinct
+    // targets and immutable 3D storage. Desktop GL's core 1D target is also
+    // admitted, while embedded profiles keep their 2D/array/3D contract.
+    let desktop_1d = desc.dimension == crate::backend::gl::api::GlTextureDimension::D1
+        && matches!(
+            profile,
+            crate::backend::gl::api::GlFamilyProfile::Desktop { .. }
+        );
+    if !desktop_1d
+        && !matches!(
+            desc.dimension,
+            crate::backend::gl::api::GlTextureDimension::D2
+                | crate::backend::gl::api::GlTextureDimension::D2Array
+                | crate::backend::gl::api::GlTextureDimension::D3
         )
+    {
+        return Err("native texture storage covers 2D, 2D-array and 3D targets only");
+    }
+    if desktop_1d && (desc.extent.height != 1 || desc.extent.depth_or_layers != 1) {
+        return Err("native 1D texture extent must have height and depth one");
+    }
+    let kind = if desc.sample_count > 1
+        && desc.dimension == crate::backend::gl::api::GlTextureDimension::D2Array
+    {
+        crate::backend::gl::api::GlFormatResourceKind::MultisampleArray
+    } else {
+        crate::backend::gl::api::GlFormatResourceKind::Texture
+    };
+    let facts = formats
+        .get_for(kind, desc.format, desc.sample_count)
         .ok_or("format has no discovery evidence at this sample count")?;
     if desc
         .usage
@@ -432,22 +685,19 @@ pub(super) fn texture_storage_class(
     if desc.sample_count <= 1 {
         return Ok(TextureStorageClass::SingleSample);
     }
-    if desc.dimension != crate::backend::gl::api::GlTextureDimension::D2 {
-        return Err("multisample texture storage requires a two-dimensional target");
+    if !matches!(
+        desc.dimension,
+        crate::backend::gl::api::GlTextureDimension::D2
+            | crate::backend::gl::api::GlTextureDimension::D2Array
+    ) {
+        return Err("multisample texture storage requires a 2D or 2D-array target");
     }
     if !super::discovery::supports_multisample_texture_storage(profile) {
         return Err("this context has no multisample texture storage");
     }
-    // The per-class ceiling is not re-applied here: it is what bounded the fact
-    // this decision just required, and a snapshot whose fact table exceeded its
-    // own recorded ceilings is already rejected when the snapshot is built, so
-    // repeating the comparison could never change the outcome. The multisample
-    // ceiling is a different bound and is checked: it governs every multisample
-    // allocation regardless of format class, and the fact table does not
-    // constrain a texture fact by it.
-    if desc.sample_count > limits.max_samples {
-        return Err("sample count exceeds the recorded multisample ceiling");
-    }
+    // The exact per-format texture fact above governs multisample texture
+    // allocation. GL_MAX_SAMPLES describes renderbuffers and can differ from
+    // the texture-specific sample limits.
     Ok(TextureStorageClass::Multisample)
 }
 
@@ -463,18 +713,38 @@ fn validate_texture_limits(
     limits: &crate::backend::gl::api::GlLimits,
     desc: GlTextureDesc,
 ) -> Result<(), &'static str> {
-    if desc.extent.width > limits.max_texture_size
-        || desc.extent.height > limits.max_texture_size
-        || desc.extent.depth_or_layers > limits.max_array_texture_layers
+    let is_1d = desc.dimension == crate::backend::gl::api::GlTextureDimension::D1;
+    let is_3d = desc.dimension == crate::backend::gl::api::GlTextureDimension::D3;
+    let xy_limit = if is_3d {
+        limits.max_3d_texture_size
+    } else {
+        limits.max_texture_size
+    };
+    let z_limit = if is_3d {
+        limits.max_3d_texture_size
+    } else {
+        limits.max_array_texture_layers
+    };
+    if desc.extent.width > xy_limit
+        || (!is_1d && desc.extent.height > xy_limit)
+        || desc.extent.depth_or_layers > z_limit
         || desc.extent.width > i32::MAX as u32
         || desc.extent.height > i32::MAX as u32
         || desc.extent.depth_or_layers > i32::MAX as u32
         || desc.mip_level_count > i32::MAX as u32
-        || desc.sample_count > limits.max_samples.max(1)
     {
         return Err("texture size or sample count exceeds discovery limits");
     }
-    let max_mips = u32::BITS - desc.extent.width.max(desc.extent.height).leading_zeros();
+    let largest = desc
+        .extent
+        .width
+        .max(if is_1d { 1 } else { desc.extent.height })
+        .max(if is_3d {
+            desc.extent.depth_or_layers
+        } else {
+            1
+        });
+    let max_mips = u32::BITS - largest.leading_zeros();
     if desc.mip_level_count > max_mips || (desc.sample_count > 1 && desc.mip_level_count != 1) {
         return Err("texture mip count exceeds discovery limits");
     }
@@ -490,8 +760,10 @@ const fn single_sample_texture_target(
     dimension: crate::backend::gl::api::GlTextureDimension,
 ) -> Option<u32> {
     match dimension {
+        crate::backend::gl::api::GlTextureDimension::D1 => Some(glow::TEXTURE_1D),
         crate::backend::gl::api::GlTextureDimension::D2 => Some(glow::TEXTURE_2D),
         crate::backend::gl::api::GlTextureDimension::D2Array => Some(glow::TEXTURE_2D_ARRAY),
+        crate::backend::gl::api::GlTextureDimension::D3 => Some(glow::TEXTURE_3D),
         _ => None,
     }
 }
@@ -506,3 +778,22 @@ const fn single_sample_texture_target(
 /// strategy").
 #[cfg(any(feature = "native-gl-wgl", feature = "native-gles-egl"))]
 pub(super) const BUFFER_ALLOCATION_USAGE: u32 = glow::STATIC_DRAW;
+
+/// Transfer tuple used only to define mutable storage on pre-4.2 desktop GL.
+fn mutable_texture_format(format: api::GlFormat) -> Option<(u32, u32)> {
+    use api::GlFormat as F;
+    if let Some(encoding) = super::exec_copy::upload_encoding(format) {
+        return Some(encoding);
+    }
+    Some(match format {
+        F::Rgba8Unorm | F::Rgba8Srgb => (glow::RGBA, glow::UNSIGNED_BYTE),
+        F::Rgba8Uint => (glow::RGBA_INTEGER, glow::UNSIGNED_BYTE),
+        F::Rgba8Sint => (glow::RGBA_INTEGER, glow::BYTE),
+        F::Rgba16Float | F::Rgba32Float => (glow::RGBA, glow::FLOAT),
+        F::Depth16Unorm | F::Depth24Unorm | F::Depth32Float => (glow::DEPTH_COMPONENT, glow::FLOAT),
+        F::Depth24PlusStencil8 => (glow::DEPTH_STENCIL, glow::UNSIGNED_INT_24_8),
+        F::Depth32FloatStencil8 => (glow::DEPTH_STENCIL, glow::FLOAT_32_UNSIGNED_INT_24_8_REV),
+        F::Stencil8 => (glow::STENCIL_INDEX, glow::UNSIGNED_BYTE),
+        _ => return None,
+    })
+}

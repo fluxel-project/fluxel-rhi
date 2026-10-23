@@ -24,7 +24,12 @@ const SAMPLER_TYPES: &[u32] = &[
     0x8B60, // SAMPLER_CUBE
     0x8B62, // SAMPLER_2D_SHADOW
     0x8DC1, // SAMPLER_2D_ARRAY (GLSL 1.30 / ES 3.00 enum)
-    0x8DC5, // SAMPLER_CUBE_SHADOW
+    0x8B5D, 0x8B61, 0x8B63, 0x8B64, 0x8DC0, 0x8DC2, 0x8DC3, 0x8DC9, 0x8DCD, 0x8DCE, 0x8DD0, 0x8DD1,
+    0x8DD5, 0x8DD6, 0x8DD8, 0x900C, 0x900D, 0x900E, 0x900F, 0x9108, 0x9109, 0x910A, 0x910B, 0x910C,
+    0x910D, 0x8DC5, // SAMPLER_CUBE_SHADOW
+    0x8DC4, // SAMPLER_2D_ARRAY_SHADOW
+    0x8DCA, 0x8DCB, 0x8DCC, 0x8DCF, // INT_SAMPLER_2D, 3D, CUBE, 2D_ARRAY
+    0x8DD2, 0x8DD3, 0x8DD4, 0x8DD7, // UNSIGNED_INT_SAMPLER_2D, 3D, CUBE, 2D_ARRAY
 ];
 
 /// Column count of an active vertex-input type, if it maps to the common
@@ -33,9 +38,9 @@ const SAMPLER_TYPES: &[u32] = &[
 fn vertex_input_columns(type_: u32) -> Option<u8> {
     Some(match type_ {
         0x1404..=0x1406 => 1,          // INT, UNSIGNED_INT, FLOAT
-        0x8B50 | 0x8B56 | 0x8B57 => 2, // FLOAT_VEC2, INT_VEC2, UNSIGNED_INT_VEC2
-        0x8B51 | 0x8B58 | 0x8B59 => 3, // FLOAT_VEC3, INT_VEC3, UNSIGNED_INT_VEC3
-        0x8B52 | 0x8B5A | 0x8B5B => 4, // FLOAT_VEC4, INT_VEC4, UNSIGNED_INT_VEC4
+        0x8B50 | 0x8B53 | 0x8DC6 => 2, // FLOAT_VEC2, INT_VEC2, UNSIGNED_INT_VEC2
+        0x8B51 | 0x8B54 | 0x8DC7 => 3, // FLOAT_VEC3, INT_VEC3, UNSIGNED_INT_VEC3
+        0x8B52 | 0x8B55 | 0x8DC8 => 4, // FLOAT_VEC4, INT_VEC4, UNSIGNED_INT_VEC4
         _ => return None,
     })
 }
@@ -326,7 +331,7 @@ impl WebGl2BrowserDiscovery {
             blocks.push(name);
         }
         let uniform_count = self.count_parameter(op, program, Gl::ACTIVE_UNIFORMS)?;
-        let mut samplers: Vec<(String, u32)> = Vec::new();
+        let mut samplers: Vec<(String, u32, u32)> = Vec::new();
         for index in 0..uniform_count {
             let Some(info) = self.raw.get_active_uniform(program, index) else {
                 return Err(GlError::Driver {
@@ -342,110 +347,182 @@ impl WebGl2BrowserDiscovery {
                 .ok()
                 .filter(|size| *size > 0)
                 .unwrap_or(1);
-            samplers.push((base_uniform_name(&info.name()).to_owned(), size));
+            samplers.push((
+                base_uniform_name(&info.name()).to_owned(),
+                size,
+                info.type_(),
+            ));
         }
 
         // Deterministic assignment: uniform blocks take their GL block index;
         // sampler groups receive consecutive units in layout order.
         let mut assignments = Vec::new();
         let mut next_unit = 0u32;
-        let mut paired_texture_units = std::collections::BTreeMap::new();
         let max_units = self.discovery().limits().max_combined_texture_image_units;
-        for (logical_index, binding) in descriptor.layout.bindings.iter().enumerate() {
+        for (uniform_name, active_size, uniform_type) in &samplers {
+            let matches: Vec<_> = descriptor
+                .layout
+                .bindings
+                .iter()
+                .filter(|binding| {
+                    matches!(
+                        binding.kind,
+                        GlShaderResourceKind::Sampler
+                            | GlShaderResourceKind::Texture
+                            | GlShaderResourceKind::CombinedTextureSampler
+                    ) && binding.names.iter().any(|name| name == uniform_name)
+                })
+                .collect();
+            if matches.is_empty()
+                || matches.iter().any(|binding| {
+                    (binding.fixed_array
+                        && binding.element.is_none()
+                        && binding.array_count < *active_size)
+                        || (binding.element.is_some() && *active_size != 1)
+                        || binding
+                            .sampled_type
+                            .is_some_and(|expected| !expected.matches_uniform(*uniform_type))
+                })
+            {
+                return Err(Self::validation(
+                    op,
+                    "active sampler does not match the pipeline layout",
+                ));
+            }
+            let texture_count = matches
+                .iter()
+                .filter(|binding| matches!(binding.kind, GlShaderResourceKind::Texture))
+                .count();
+            let sampler_count = matches
+                .iter()
+                .filter(|binding| matches!(binding.kind, GlShaderResourceKind::Sampler))
+                .count();
+            if texture_count > 1 || sampler_count > 1 {
+                return Err(Self::validation(
+                    op,
+                    "sampler uniform has ambiguous logical bindings",
+                ));
+            }
+            let unit = next_unit;
+            next_unit = unit
+                .checked_add(*active_size)
+                .ok_or(GlError::OutOfMemory { operation: op })?;
+            if next_unit > max_units {
+                return Err(Self::validation(
+                    op,
+                    "sampler assignments exceed the discovered unit count",
+                ));
+            }
+            for element in 0..*active_size {
+                let element_name = if *active_size == 1 {
+                    uniform_name.clone()
+                } else {
+                    format!("{uniform_name}[{element}]")
+                };
+                let Some(location) = self.raw.get_uniform_location(program, &element_name) else {
+                    return Err(GlError::Driver {
+                        operation: op,
+                        message: "sampler uniform has no location".into(),
+                    });
+                };
+                self.raw.uniform1i(Some(&location), (unit + element) as i32);
+            }
+            for binding in matches {
+                for element in 0..*active_size {
+                    assignments.push(GlExecutableBindingAssignment {
+                        element: if binding.fixed_array && binding.element.is_none() {
+                            Some(element)
+                        } else {
+                            binding.element
+                        },
+                        logical: binding.location,
+                        executable: GlExecutableBindingLocation::TextureUnit(unit + element),
+                    });
+                }
+            }
+        }
+        samplers.clear();
+        let mut next_uniform_point = 0u32;
+        for binding in &descriptor.layout.bindings {
             match binding.kind {
                 GlShaderResourceKind::UniformBuffer => {
-                    let index = binding.names.iter().find_map(|name| {
-                        let index = self.raw.get_uniform_block_index(program, name);
-                        (index != Gl::INVALID_INDEX).then_some(index)
-                    });
-                    let Some(index) = index else {
-                        return Err(Self::validation(
-                            op,
-                            "declared uniform block is missing from the linked program",
-                        ));
+                    let direct_array = binding.fixed_array && binding.element.is_none();
+                    let mut elements: Vec<u32> = if direct_array {
+                        blocks
+                            .iter()
+                            .filter_map(|active| {
+                                binding.names.iter().find_map(|base| {
+                                    active
+                                        .strip_prefix(base)?
+                                        .strip_prefix('[')?
+                                        .strip_suffix(']')?
+                                        .parse::<u32>()
+                                        .ok()
+                                        .filter(|index| *index < binding.array_count)
+                                })
+                            })
+                            .collect()
+                    } else {
+                        vec![0]
                     };
-                    let point = u32::try_from(logical_index)
-                        .map_err(|_| GlError::OutOfMemory { operation: op })?;
-                    self.raw.uniform_block_binding(program, index, point);
-                    assignments.push(GlExecutableBindingAssignment {
-                        logical: binding.location,
-                        executable: GlExecutableBindingLocation::UniformBlock(point),
-                    });
-                    blocks.retain(|name| !binding.names.iter().any(|candidate| candidate == name));
+                    elements.sort_unstable();
+                    elements.dedup();
+                    for element in elements {
+                        let names: Vec<_> = binding
+                            .names
+                            .iter()
+                            .map(|name| {
+                                if direct_array {
+                                    format!("{name}[{element}]")
+                                } else {
+                                    name.clone()
+                                }
+                            })
+                            .collect();
+                        let indices: Vec<_> = names
+                            .iter()
+                            .filter_map(|name| {
+                                let index = self.raw.get_uniform_block_index(program, name);
+                                (index != Gl::INVALID_INDEX).then_some(index)
+                            })
+                            .collect();
+                        if indices.is_empty() {
+                            if direct_array {
+                                continue;
+                            }
+                            return Err(Self::validation(
+                                op,
+                                "declared uniform block is missing from the linked program",
+                            ));
+                        }
+                        let point = next_uniform_point;
+                        next_uniform_point = next_uniform_point
+                            .checked_add(1)
+                            .ok_or(GlError::OutOfMemory { operation: op })?;
+                        if point >= self.discovery().limits().max_uniform_buffer_bindings {
+                            return Err(Self::validation(
+                                op,
+                                "uniform buffer assignments exceed device limit",
+                            ));
+                        }
+                        for index in indices {
+                            self.raw.uniform_block_binding(program, index, point);
+                        }
+                        assignments.push(GlExecutableBindingAssignment {
+                            element: if direct_array {
+                                Some(element)
+                            } else {
+                                binding.element
+                            },
+                            logical: binding.location,
+                            executable: GlExecutableBindingLocation::UniformBlock(point),
+                        });
+                        blocks.retain(|name| !names.contains(name));
+                    }
                 }
                 GlShaderResourceKind::Sampler
                 | GlShaderResourceKind::Texture
-                | GlShaderResourceKind::CombinedTextureSampler => {
-                    if let Some(pair) = binding.pair {
-                        if let Some(&unit) = paired_texture_units.get(&pair) {
-                            paired_texture_units.insert(binding.location, unit);
-                            assignments.push(GlExecutableBindingAssignment {
-                                logical: binding.location,
-                                executable: GlExecutableBindingLocation::TextureUnit(unit),
-                            });
-                            continue;
-                        }
-                    }
-                    let declared_size = binding.array_count.max(1);
-                    let found = samplers
-                        .iter()
-                        .find(|(name, _)| binding.names.iter().any(|candidate| candidate == name))
-                        .map(|(name, size)| (name.clone(), *size));
-                    let Some((uniform_name, active_size)) = found else {
-                        return Err(Self::validation(
-                            op,
-                            "declared sampler binding is missing from the linked program",
-                        ));
-                    };
-                    if active_size != declared_size {
-                        return Err(Self::validation(
-                            op,
-                            "sampler array size differs from the declared binding",
-                        ));
-                    }
-                    let unit = next_unit;
-                    next_unit = unit
-                        .checked_add(active_size)
-                        .ok_or(GlError::OutOfMemory { operation: op })?;
-                    if next_unit > max_units {
-                        return Err(Self::validation(
-                            op,
-                            "sampler assignments exceed the discovered unit count",
-                        ));
-                    }
-                    for element in 0..active_size {
-                        let element_name = if active_size == 1 {
-                            uniform_name.clone()
-                        } else {
-                            format!("{uniform_name}[{element}]")
-                        };
-                        let Some(location) = self.raw.get_uniform_location(program, &element_name)
-                        else {
-                            return Err(GlError::Driver {
-                                operation: op,
-                                message: "sampler uniform has no location".into(),
-                            });
-                        };
-                        self.raw.uniform1i(Some(&location), (unit + element) as i32);
-                    }
-                    assignments.push(GlExecutableBindingAssignment {
-                        logical: binding.location,
-                        executable: GlExecutableBindingLocation::TextureUnit(unit),
-                    });
-                    paired_texture_units.insert(binding.location, unit);
-                    if let Some(pair) = binding.pair {
-                        paired_texture_units.insert(pair, unit);
-                    }
-                    let Some(position) =
-                        samplers.iter().position(|(name, _)| name == &uniform_name)
-                    else {
-                        return Err(Self::validation(
-                            op,
-                            "sampler disappeared during reflection",
-                        ));
-                    };
-                    samplers.remove(position);
-                }
+                | GlShaderResourceKind::CombinedTextureSampler => {}
                 // The one refusal in this loop, and it is not a stub.  A WebGL2
                 // program is never a compute program, so a layout naming a
                 // storage binding describes a shader this profile's language
@@ -515,6 +592,21 @@ impl GlBindingApi for WebGl2BrowserDiscovery {
         self.assert_provider_ready(OP)?;
         validate_texture_unit(unit, self.binding_limits())
             .map_err(|error| Self::validation(OP, error.message()))?;
+        if matches!(
+            target,
+            GlTextureTarget::D2Multisample | GlTextureTarget::D2MultisampleArray
+        ) {
+            return Err(GlError::Unsupported {
+                operation: OP,
+                reason: "WebGL2 does not expose multisample textures for shader sampling",
+            });
+        }
+        if target == GlTextureTarget::CubeArray {
+            return Err(GlError::Unsupported {
+                operation: OP,
+                reason: "WebGL2 has no cube array texture target",
+            });
+        }
         let raw = texture
             .map(|texture| {
                 let entry = self.texture(OP, texture)?;
@@ -611,11 +703,15 @@ impl WebGl2BrowserDiscovery {
     }
 }
 
-const fn texture_target(target: GlTextureTarget) -> u32 {
+fn texture_target(target: GlTextureTarget) -> u32 {
     match target {
+        GlTextureTarget::D1 => unreachable!("desktop-only texture target rejected before lowering"),
         GlTextureTarget::D2 => Gl::TEXTURE_2D,
+        GlTextureTarget::D2Multisample => unreachable!("rejected before target lowering"),
         GlTextureTarget::Cube => Gl::TEXTURE_CUBE_MAP,
+        GlTextureTarget::CubeArray => unreachable!("rejected before target lowering"),
         GlTextureTarget::D3 => Gl::TEXTURE_3D,
         GlTextureTarget::D2Array => Gl::TEXTURE_2D_ARRAY,
+        GlTextureTarget::D2MultisampleArray => unreachable!("rejected before target lowering"),
     }
 }

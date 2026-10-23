@@ -16,10 +16,13 @@ use super::types::{GlBuffer, GlEncoder, GlRasterPipeline};
 
 mod attachment;
 pub(crate) mod binding;
+pub(crate) mod cube_mirror;
 mod draw;
 mod dynamic;
 mod finish;
 pub(crate) mod layout;
+#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+pub(crate) mod resolve;
 mod surface_depth;
 use attachment::{lower_clear, lower_load, lower_store};
 #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
@@ -31,12 +34,13 @@ use draw::issue_draw;
 use dynamic::{set_scissor, set_viewport};
 use layout::matches as bind_group_layout_matches;
 #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
-use surface_depth::{begin_browser_surface_raster, lower_browser_view};
+use surface_depth::begin_browser_surface_raster;
 #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 use surface_depth::{
     lower_native_attachment, lower_native_view, validate_native_surface_depth_view,
 };
 
+mod multiview;
 mod offscreen;
 mod vertex;
 #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
@@ -46,11 +50,21 @@ use offscreen::begin_native_offscreen_raster;
 
 impl RasterBackend for Gl {
     fn begin_raster(encoder: &mut GlEncoder, desc: &RasterPassDesc<'_, Self>) -> Result<()> {
-        if desc.timestamp_writes.is_some()
-            || desc.secondary_inheritance.is_some()
-            || desc.multiview_mask.is_some()
-        {
+        if desc.secondary_inheritance.is_some() {
             return Err(Error::Unsupported("GL baseline raster-pass feature"));
+        }
+        if let Some(depth) = &desc.depth_stencil {
+            if depth.depth_read_only
+                && depth.depth.is_some_and(|(load, store)| {
+                    !matches!(load, LoadOp::Load) || !matches!(store, api::StoreOp::Store)
+                })
+                || depth.stencil_read_only
+                    && depth.stencil.is_some_and(|(load, store)| {
+                        !matches!(load, LoadOp::Load) || !matches!(store, api::StoreOp::Store)
+                    })
+            {
+                return Err(Error::InvalidState);
+            }
         }
         let occlusion_query_set = desc.occlusion_query_set.map(|set| {
             // SAFETY: Core borrowed this QuerySet for this begin call; the
@@ -65,21 +79,27 @@ impl RasterBackend for Gl {
                 return Err(Error::WrongDevice);
             }
         }
-        let [Some(color)]: &[Option<api::ColorAttachment<'_, Gl>>] = desc.colors else {
-            return Err(Error::Unsupported(
-                "one GL default-framebuffer color attachment",
-            ));
+        if desc.multiview_mask.is_some() {
+            return multiview::begin(encoder, desc);
+        }
+        let surface_color = match desc.colors {
+            [Some(color)] if matches!(color.view, AttachmentView::Surface(_)) => Some(color),
+            _ => None,
+        };
+        let Some(color) = surface_color else {
+            #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+            return begin_native_offscreen_raster(encoder, desc);
+            #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+            return begin_browser_offscreen_raster(encoder, desc);
+            #[cfg(not(any(
+                all(windows, feature = "native-gl-wgl"),
+                feature = "native-gles-egl",
+                all(target_arch = "wasm32", feature = "webgl2")
+            )))]
+            return Err(Error::Unsupported("GL offscreen raster target"));
         };
         let AttachmentView::Surface(surface) = &color.view else {
-            #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
-            return begin_native_offscreen_raster(encoder, desc, color);
-            #[cfg(not(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl")))]
-            {
-                #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
-                return begin_browser_offscreen_raster(encoder, desc, color);
-                #[cfg(not(all(target_arch = "wasm32", feature = "webgl2")))]
-                return Err(Error::Unsupported("GL offscreen raster target"));
-            }
+            unreachable!()
         };
         if color.resolve_target.is_some() {
             return Err(Error::Unsupported("GL resolve into a surface pass"));
@@ -90,6 +110,12 @@ impl RasterBackend for Gl {
         #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
         let surface_token = unsafe { surface.native_ref() }.target_token();
         let target = unsafe { surface.native_ref() }.default_target()?;
+        #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+        {
+            // Every canvas pass uses the common texture row order. Publication
+            // reverses Y once at the default framebuffer boundary.
+            return begin_browser_offscreen_raster(encoder, desc);
+        }
         let attachment = crate::backend::gl::api::GlColorAttachment {
             view: crate::backend::gl::api::GlPassAttachmentView::DefaultColor(target),
             resolve_target: None,
@@ -98,8 +124,9 @@ impl RasterBackend for Gl {
             clear: lower_clear(color.load)?,
         };
         let native = crate::backend::gl::api::GlRenderPassDescriptor {
+            render_area: render_area(desc.render_area, [target.width, target.height])?,
             target: crate::backend::gl::api::GlRenderTarget::Default(target),
-            color_attachments: vec![attachment],
+            color_attachments: vec![Some(attachment)],
             depth_stencil_attachment: None,
         };
         #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
@@ -117,15 +144,14 @@ impl RasterBackend for Gl {
                 (None, None) => None,
                 _ => return Err(Error::InvalidState),
             };
-            if depth.is_some() && matches!(color.load, LoadOp::Load) {
-                // The temporary color target has no contents until this pass;
-                // preserving framebuffer zero would require an explicit preload.
-                return Err(Error::Unsupported("GL surface depth color load"));
-            }
+            let preload_color = matches!(color.load, LoadOp::Load) || native.render_area.is_some();
+            let timestamps =
+                super::query::prepare_pass_timestamps(encoder, desc.timestamp_writes.as_ref())?;
+            super::query::start_pass_timestamps(encoder, timestamps)?;
             let result = encoder
                 .state
                 .with_native("begin GL raster pass", |provider| {
-                    if let Some(depth) = depth.as_ref() {
+                    {
                         let color_desc = crate::backend::gl::api::GlTextureDesc {
                             dimension: crate::backend::gl::api::GlTextureDimension::D2,
                             extent: crate::backend::gl::api::GlExtent3d {
@@ -142,6 +168,7 @@ impl RasterBackend for Gl {
                         let color_view = crate::backend::gl::api::GlTextureView {
                             target: crate::backend::gl::api::GlAttachmentTarget::Texture(color),
                             format: target.color_format,
+                            aspect: crate::backend::gl::api::GlTextureAspect::All,
                             mip_level: 0,
                             array_layer: 0,
                             layer_count: 1,
@@ -151,8 +178,8 @@ impl RasterBackend for Gl {
                         };
                         let framebuffer = provider.create_framebuffer(
                             &crate::backend::gl::api::GlFramebufferDescriptor {
-                                color_attachments: vec![color_view],
-                                depth_stencil_attachment: Some(depth.native),
+                                color_attachments: vec![Some(color_view)],
+                                depth_stencil_attachment: depth.as_ref().map(|depth| depth.native),
                                 draw_buffers: vec![0],
                             },
                         );
@@ -163,12 +190,24 @@ impl RasterBackend for Gl {
                                 return Err(error);
                             }
                         };
+                        if preload_color {
+                            if let Err(error) =
+                                provider.blit_default_to_framebuffer(target, framebuffer)
+                            {
+                                let _ = provider.destroy_framebuffer(framebuffer);
+                                let _ = provider.destroy_texture_resource(color);
+                                return Err(error);
+                            }
+                        }
                         let mut color_attachment = attachment;
+                        // The temporary source must survive until publication.
+                        color_attachment.store = crate::backend::gl::api::GlStoreOp::Store;
                         color_attachment.view =
                             crate::backend::gl::api::GlPassAttachmentView::Allocated(color_view);
                         let pass = crate::backend::gl::api::GlRenderPassDescriptor {
+                            render_area: native.render_area,
                             target: crate::backend::gl::api::GlRenderTarget::Offscreen(framebuffer),
-                            color_attachments: vec![color_attachment],
+                            color_attachments: vec![Some(color_attachment)],
                             depth_stencil_attachment: depth_pass,
                         };
                         if let Err(error) = provider.begin_render_pass(&pass) {
@@ -182,16 +221,17 @@ impl RasterBackend for Gl {
                             framebuffer,
                             color,
                             depth: depth.clone(),
+                            color_slot: 0,
+                            render_area: native.render_area,
                         });
                         Ok(())
-                    } else {
-                        provider.begin_render_pass(&native)
                     }
                 })
                 .map_err(native_error);
             match result {
                 Ok(()) => {
                     encoder.begin_raster_state([target.width, target.height]);
+                    encoder.set_raster_read_only(desc);
                     encoder.raster_pipeline = None;
                     encoder.vertex_bindings.clear();
                     encoder.index_binding = None;
@@ -209,8 +249,19 @@ impl RasterBackend for Gl {
         {
             #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
             {
-                begin_browser_surface_raster(encoder, target, color, desc.depth_stencil.as_ref())?;
+                // SAFETY: the borrowed acquired image supplies a read-only lease proof.
+                let token = unsafe { surface.native_ref() }.target_token();
+                begin_browser_surface_raster(
+                    encoder,
+                    target,
+                    color,
+                    desc.depth_stencil.as_ref(),
+                    desc.render_area,
+                    desc.timestamp_writes.as_ref(),
+                )?;
+                encoder.browser_surface_token = Some(token);
                 encoder.begin_raster_state([target.width, target.height]);
+                encoder.set_raster_read_only(desc);
                 encoder.raster_pipeline = None;
                 encoder.vertex_bindings.clear();
                 encoder.index_binding = None;
@@ -228,22 +279,60 @@ impl RasterBackend for Gl {
 
     fn set_pipeline(encoder: &mut GlEncoder, pipeline: &GlRasterPipeline) -> Result<()> {
         encoder.raster_extent.ok_or(Error::InvalidState)?;
+        if pipeline.multiview != encoder.raster_multiview.map(|(count, _)| count) {
+            return Err(Error::InvalidState);
+        }
+        if let Some(depth) = pipeline.raster.depth_stencil {
+            let writes_stencil = |face: crate::backend::gl::api::GlStencilFaceState| {
+                use crate::backend::gl::api::GlStencilOperation::Keep;
+                face.write_mask != 0
+                    && (face.fail_op != Keep || face.depth_fail_op != Keep || face.pass_op != Keep)
+            };
+            if encoder.raster_depth_read_only && depth.depth_write_enabled
+                || encoder.raster_stencil_read_only
+                    && (writes_stencil(depth.stencil_front) || writes_stencil(depth.stencil_back))
+            {
+                return Err(Error::InvalidState);
+            }
+        }
         #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
         {
             let viewport = encoder
                 .raster_viewport
                 .expect("active raster pass has a viewport");
-            let native = pipeline.native_with_dynamic_state(viewport, encoder.raster_scissor);
+            let mut native = pipeline.native_with_dynamic_state(
+                viewport,
+                encoder.raster_scissor,
+                encoder.raster_blend_constant,
+                encoder.raster_stencil_reference,
+            );
+            normalize_inactive_color_slots(&mut native.state, &encoder.raster_color_slots);
             use crate::backend::gl::api::GlRasterCommandApi as _;
             let result = encoder
                 .state
                 .with_native("set GL raster pipeline", |provider| {
-                    provider.set_raster_pipeline(&native)
+                    provider.set_raster_pipeline(&native)?;
+                    Ok(())
                 })
                 .map_err(native_error);
             match result {
                 Ok(()) => {
                     encoder.raster_pipeline = Some(pipeline.clone());
+                    let groups = binding::compatible_groups(encoder, &pipeline.layout);
+                    for (slot, group, offsets) in groups {
+                        bind_native_group(
+                            encoder,
+                            &pipeline.layout,
+                            &pipeline.reflection,
+                            pipeline.program,
+                            &pipeline.mip_uniforms,
+                            slot,
+                            &group,
+                            &offsets,
+                        )?;
+                    }
+                    multiview::install(encoder, &pipeline)?;
+                    super::push::upload_raster(encoder)?;
                     encoder.issued = true;
                     Ok(())
                 }
@@ -265,8 +354,14 @@ impl RasterBackend for Gl {
                 let result = (|| {
                     browser.set_raster_program(&pipeline.browser_program)?;
                     browser.set_browser_vertex_array(&pipeline.browser_vertex_array)?;
-                    browser.set_fixed_raster_state(&pipeline.raster)?;
-                    browser.set_depth_state(pipeline.raster.depth_stencil)?;
+                    let mut state = pipeline.raster.clone();
+                    normalize_inactive_color_slots(&mut state, &encoder.raster_color_slots);
+                    state.blend_constant = encoder.raster_blend_constant.map(f32::to_bits);
+                    if let Some(depth) = &mut state.depth_stencil {
+                        depth.stencil_reference = encoder.raster_stencil_reference;
+                    }
+                    browser.set_fixed_raster_state(&state)?;
+                    browser.set_depth_state(state.depth_stencil)?;
                     Ok(())
                 })();
                 if let Err(error) = result {
@@ -274,6 +369,12 @@ impl RasterBackend for Gl {
                     return Err(error);
                 }
                 encoder.raster_pipeline = Some(pipeline.clone());
+                let groups = binding::compatible_groups(encoder, &pipeline.layout);
+                for (slot, group, offsets) in groups {
+                    bind_browser_group(encoder, pipeline, slot, &group, &offsets)?;
+                }
+                multiview::install(encoder, &pipeline)?;
+                super::push::upload_raster(encoder)?;
                 encoder.issued = true;
                 Ok(())
             }
@@ -310,6 +411,8 @@ impl RasterBackend for Gl {
             encoder,
             &pipeline.layout,
             &pipeline.reflection,
+            pipeline.program,
+            &pipeline.mip_uniforms,
             index,
             group,
             dynamic_offsets,
@@ -353,11 +456,11 @@ impl RasterBackend for Gl {
     fn scissor(encoder: &mut GlEncoder, scissor: Rect) -> Result<()> {
         set_scissor(encoder, scissor)
     }
-    fn blend_constant(_: &mut GlEncoder, _: [f32; 4]) -> Result<()> {
-        Err(Error::Unsupported("GL dynamic blend constant"))
+    fn blend_constant(encoder: &mut GlEncoder, value: [f32; 4]) -> Result<()> {
+        dynamic::set_blend_constant(encoder, value)
     }
-    fn stencil_reference(_: &mut GlEncoder, _: u32) -> Result<()> {
-        Err(Error::Unsupported("GL dynamic stencil reference"))
+    fn stencil_reference(encoder: &mut GlEncoder, value: u32) -> Result<()> {
+        dynamic::set_stencil_reference(encoder, value)
     }
 
     fn draw(encoder: &mut GlEncoder, vertices: Range<u32>, instances: Range<u32>) -> Result<()> {
@@ -377,7 +480,7 @@ impl RasterBackend for Gl {
                 instance_count,
             },
         );
-        issue_draw(encoder, &pipeline, draw)
+        issue_draw(encoder, &pipeline, draw, 0, instances.start)
     }
 
     fn draw_indexed(
@@ -386,9 +489,6 @@ impl RasterBackend for Gl {
         base_vertex: i32,
         instances: Range<u32>,
     ) -> Result<()> {
-        if base_vertex != 0 {
-            return Err(Error::Unsupported("GL base-vertex draw"));
-        }
         let pipeline = encoder.raster_pipeline.clone().ok_or(Error::InvalidState)?;
         let index_count = indices
             .end
@@ -405,7 +505,7 @@ impl RasterBackend for Gl {
                 instance_count,
             },
         );
-        issue_draw(encoder, &pipeline, draw)
+        issue_draw(encoder, &pipeline, draw, base_vertex, instances.start)
     }
 
     fn end_raster(encoder: &mut GlEncoder) -> Result<()> {
@@ -419,6 +519,7 @@ impl RasterBackend for Gl {
             let intermediate = encoder.surface_depth_pass.take();
             let offscreen_framebuffer = encoder.offscreen_framebuffer.take();
             let offscreen_resolve = encoder.offscreen_resolve.take();
+            let texture_resolves = std::mem::take(&mut encoder.native_texture_resolves);
             let stale_surface = intermediate
                 .as_ref()
                 .is_some_and(|pass| !pass.surface_token.is_current())
@@ -429,6 +530,8 @@ impl RasterBackend for Gl {
                 .state
                 .with_native("end GL raster pass", |provider| {
                     let pass_result = provider.end_render_pass();
+                    let pass_result =
+                        pass_result.and_then(|()| resolve::textures(provider, &texture_resolves));
                     if let Some(pass) = &intermediate {
                         // Cleanup is mandatory even when ending the pass fails. The
                         // original end error remains the observable failure; a
@@ -445,7 +548,12 @@ impl RasterBackend for Gl {
                         let publish = if stale_surface {
                             Ok(())
                         } else {
-                            provider.blit_framebuffer_to_default(pass.framebuffer, pass.target)
+                            provider.blit_framebuffer_slot_to_default_region(
+                                pass.framebuffer,
+                                pass.color_slot,
+                                pass.target,
+                                pass.render_area,
+                            )
                         };
                         let drop_framebuffer = provider.destroy_framebuffer(pass.framebuffer);
                         let drop_color = provider.destroy_texture_resource(pass.color);
@@ -456,9 +564,12 @@ impl RasterBackend for Gl {
                             return Err(error);
                         }
                         let publish = match &offscreen_resolve {
-                            Some(resolve) if !stale_surface => {
-                                provider.blit_framebuffer_to_default(framebuffer, resolve.target)
-                            }
+                            Some(resolve) if !stale_surface => resolve::surface(
+                                provider,
+                                resolve.source,
+                                resolve.target,
+                                resolve.render_area,
+                            ),
                             Some(_) | None => Ok(()),
                         };
                         let drop_framebuffer = provider.destroy_framebuffer(framebuffer);
@@ -479,7 +590,7 @@ impl RasterBackend for Gl {
             match result {
                 Ok(()) => {
                     encoder.occlusion_query_set = None;
-                    Ok(())
+                    super::query::finish_pass_timestamps(encoder)
                 }
                 Err(error) => {
                     encoder.indeterminate = true;
@@ -491,7 +602,24 @@ impl RasterBackend for Gl {
         {
             #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
             {
+                let stale = encoder
+                    .browser_surface_token
+                    .take()
+                    .is_some_and(|token| !token.is_current());
                 let browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
+                if stale {
+                    if browser.has_surface_depth_pass() {
+                        browser.abort_surface_depth_raster();
+                    } else if browser.has_owned_framebuffer_pass() {
+                        browser.abort_offscreen_raster();
+                    } else {
+                        let _ = browser.end_raster();
+                    }
+                    encoder.end_raster_state();
+                    encoder.raster_pipeline = None;
+                    encoder.occlusion_query_set = None;
+                    return Err(Error::SurfaceOutdated);
+                }
                 let result = if browser.has_surface_depth_pass() {
                     browser.end_surface_depth_raster()
                 } else if browser.has_owned_framebuffer_pass() {
@@ -505,7 +633,7 @@ impl RasterBackend for Gl {
                 if result.is_err() {
                     encoder.indeterminate = true;
                 }
-                result
+                result.and_then(|()| super::query::finish_pass_timestamps(encoder))
             }
             #[cfg(not(all(target_arch = "wasm32", feature = "webgl2")))]
             Err(Error::Unsupported("GL platform context"))
@@ -514,5 +642,54 @@ impl RasterBackend for Gl {
 
     fn abort_raster(encoder: &mut GlEncoder) {
         finish::abort(encoder);
+    }
+}
+
+/// Validates the upper-left Core render area against the active attachments.
+pub(super) fn render_area(
+    rect: Rect,
+    extent: [u32; 2],
+) -> Result<Option<crate::backend::gl::api::GlScissorRect>> {
+    if rect.width == 0
+        || rect.height == 0
+        || rect
+            .x
+            .checked_add(rect.width)
+            .is_none_or(|end| end > extent[0])
+        || rect
+            .y
+            .checked_add(rect.height)
+            .is_none_or(|end| end > extent[1])
+    {
+        return Err(Error::InvalidRange);
+    }
+    if rect.x == 0 && rect.y == 0 && rect.width == extent[0] && rect.height == extent[1] {
+        return Ok(None);
+    }
+    Ok(Some(crate::backend::gl::api::GlScissorRect {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+    }))
+}
+
+/// Empty framebuffer slots cannot receive writes. Match their fixed state to a
+/// live slot so holes do not require an indexed-blend extension.
+fn normalize_inactive_color_slots(
+    state: &mut crate::backend::gl::api::GlRasterState,
+    slots: &[bool],
+) {
+    let first = state
+        .color_targets
+        .iter()
+        .enumerate()
+        .find_map(|(i, value)| slots.get(i).copied().unwrap_or(false).then_some(*value));
+    if let Some(first) = first {
+        for (i, value) in state.color_targets.iter_mut().enumerate() {
+            if !slots.get(i).copied().unwrap_or(false) {
+                *value = first;
+            }
+        }
     }
 }

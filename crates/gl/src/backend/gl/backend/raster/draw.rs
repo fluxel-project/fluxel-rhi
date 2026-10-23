@@ -12,14 +12,24 @@ pub(super) fn issue_draw(
     encoder: &mut GlEncoder,
     pipeline: &GlRasterPipeline,
     draw: crate::backend::gl::api::GlDrawCommand,
+    base_vertex: i32,
+    first_instance: u32,
 ) -> Result<()> {
+    super::cube_mirror::refresh(encoder)?;
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
     {
         use crate::backend::gl::api::GlRasterCommandApi as _;
         let result = encoder
             .state
-            .with_native("draw GL raster", |provider| provider.draw_raster(draw))
-            .map_err(native_error);
+            .with_native("draw GL raster", |provider| {
+                provider.draw_direct_advanced(draw, base_vertex, first_instance)
+            })
+            .map_err(|error| match error {
+                crate::backend::gl::api::GlError::Unsupported { reason, .. } => {
+                    Error::Unsupported(reason)
+                }
+                other => native_error(other),
+            });
         if result.is_ok() {
             encoder.issued = true;
         } else {
@@ -40,8 +50,77 @@ pub(super) fn issue_draw(
                 GlPrimitiveTopology::Triangles => WebGl::TRIANGLES,
                 GlPrimitiveTopology::TriangleStrip => WebGl::TRIANGLE_STRIP,
             };
+            let mut shifted = Vec::new();
+            if first_instance != 0 {
+                for layout in pipeline.vertex_layout.buffers.iter().filter(|l| {
+                    l.step_mode == crate::backend::gl::api::GlVertexStepMode::Instance
+                        && l.stride != 0
+                }) {
+                    let (_, buffer, offset, _) = encoder
+                        .browser_vertex_bindings
+                        .iter()
+                        .find(|(slot, _, _, _)| *slot == layout.slot)
+                        .ok_or(Error::InvalidState)?;
+                    for attribute in pipeline
+                        .vertex_layout
+                        .attributes
+                        .iter()
+                        .filter(|a| a.buffer_slot == layout.slot)
+                    {
+                        let stride = layout.stride;
+                        let target = offset
+                            .checked_add(u64::from(first_instance) * u64::from(stride))
+                            .ok_or(Error::InvalidRange)?;
+                        if target > buffer.desc.size {
+                            return Err(Error::InvalidRange);
+                        }
+                        shifted.push((*layout, *attribute, buffer.clone(), *offset, target));
+                    }
+                }
+            }
+            let mut constants = Vec::new();
+            for layout in pipeline.vertex_layout.buffers.iter().filter(|layout| {
+                layout.stride == 0
+                    && pipeline
+                        .vertex_layout
+                        .attributes
+                        .iter()
+                        .any(|a| a.buffer_slot == layout.slot)
+            }) {
+                let (_, buffer, offset, size) = encoder
+                    .browser_vertex_bindings
+                    .iter()
+                    .find(|(slot, _, _, _)| *slot == layout.slot)
+                    .ok_or(Error::InvalidState)?;
+                for attribute in pipeline
+                    .vertex_layout
+                    .attributes
+                    .iter()
+                    .filter(|a| a.buffer_slot == layout.slot)
+                {
+                    constants.push((*attribute, buffer.clone(), *offset, *size));
+                }
+            }
             let browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
             let result = (|| -> Result<()> {
+                use crate::backend::gl::browser::BrowserPushUniformKind;
+                browser.upload_push_uniform(
+                    &pipeline.browser_program,
+                    naga::back::glsl::FIRST_INSTANCE_BINDING,
+                    BrowserPushUniformKind::Uint { lanes: 1 },
+                    &[first_instance],
+                )?;
+                for (attribute, buffer, offset, size) in &constants {
+                    browser.refresh_constant_vertex_attribute(
+                        &buffer.browser,
+                        attribute,
+                        *offset,
+                        *size,
+                    )?;
+                }
+                for (layout, attribute, buffer, _, target) in &shifted {
+                    browser.set_vertex_attribute(&buffer.browser, layout, attribute, *target)?;
+                }
                 match draw {
                     GlDrawCommand::NonIndexed(draw) => browser.draw_arrays(
                         mode,
@@ -66,17 +145,37 @@ pub(super) fn issue_draw(
                             IndexFormat::Uint16 => WebGl::UNSIGNED_SHORT,
                             IndexFormat::Uint32 => WebGl::UNSIGNED_INT,
                         };
-                        browser.draw_elements(
-                            mode,
-                            i32::try_from(draw.index_count).map_err(|_| Error::InvalidRange)?,
-                            kind,
-                            i32::try_from(offset).map_err(|_| Error::InvalidRange)?,
-                            i32::try_from(draw.instance_count).map_err(|_| Error::InvalidRange)?,
-                        )?;
+                        if base_vertex != 0 {
+                            browser.draw_elements_base_vertex(
+                                mode,
+                                i32::try_from(draw.index_count).map_err(|_| Error::InvalidRange)?,
+                                kind,
+                                i32::try_from(offset).map_err(|_| Error::InvalidRange)?,
+                                i32::try_from(draw.instance_count)
+                                    .map_err(|_| Error::InvalidRange)?,
+                                base_vertex,
+                            )?;
+                        } else {
+                            browser.draw_elements(
+                                mode,
+                                i32::try_from(draw.index_count).map_err(|_| Error::InvalidRange)?,
+                                kind,
+                                i32::try_from(offset).map_err(|_| Error::InvalidRange)?,
+                                i32::try_from(draw.instance_count)
+                                    .map_err(|_| Error::InvalidRange)?,
+                            )?;
+                        }
                     }
                 }
                 Ok(())
             })();
+            let restore = (|| -> Result<()> {
+                for (layout, attribute, buffer, offset, _) in &shifted {
+                    browser.set_vertex_attribute(&buffer.browser, layout, attribute, *offset)?;
+                }
+                Ok(())
+            })();
+            let result = result.and(restore);
             if result.is_ok() {
                 encoder.issued = true;
             } else {

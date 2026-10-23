@@ -5,7 +5,7 @@
 //! a probe: providers may add operation-probed facts later without changing
 //! the meaning of the baseline record.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{GlExtensionSet, GlFamilyProfile, GlKnownExtension, GlLimits};
 
@@ -21,6 +21,8 @@ pub(crate) use format_types::*;
 pub(crate) enum GlFormatResourceKind {
     /// A texture, including a single-sample texture when `sample_count` is 1.
     Texture,
+    /// A two-dimensional multisample array texture.
+    MultisampleArray,
     /// A renderbuffer attachment.
     Renderbuffer,
 }
@@ -73,9 +75,18 @@ pub(crate) struct GlFormatCapabilities {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct GlFormatTable {
     entries: BTreeMap<(GlFormat, GlFormatResourceKind, u32), GlFormatCapabilities>,
+    exact_buffer_readback: BTreeSet<GlFormat>,
 }
 
 impl GlFormatTable {
+    /// Record exact byte-preserving pixel-pack support separately from blits.
+    pub(crate) fn mark_exact_buffer_readback(&mut self, format: GlFormat) {
+        self.exact_buffer_readback.insert(format);
+    }
+
+    pub(crate) fn exact_buffer_readback(&self, format: GlFormat) -> bool {
+        self.exact_buffer_readback.contains(&format)
+    }
     /// Inserts one exact observation; conflicting repeated observations are rejected.
     pub(crate) fn record(
         &mut self,
@@ -223,15 +234,36 @@ impl GlFormatTable {
             }
             let maximum = match facts.resource_kind {
                 GlFormatResourceKind::Renderbuffer => limits.max_samples,
-                GlFormatResourceKind::Texture => match facts.format {
-                    GlFormat::Depth16Unorm
-                    | GlFormat::Depth24Unorm
-                    | GlFormat::Depth24PlusStencil8
-                    | GlFormat::Depth32Float
-                    | GlFormat::Depth32FloatStencil8
-                    | GlFormat::Stencil8 => limits.max_depth_texture_samples,
-                    _ => limits.max_color_texture_samples,
-                },
+                GlFormatResourceKind::Texture | GlFormatResourceKind::MultisampleArray => {
+                    match facts.format {
+                        GlFormat::Depth16Unorm
+                        | GlFormat::Depth24Unorm
+                        | GlFormat::Depth24PlusStencil8
+                        | GlFormat::Depth32Float
+                        | GlFormat::Depth32FloatStencil8
+                        | GlFormat::Stencil8 => limits.max_depth_texture_samples,
+                        GlFormat::R8Uint
+                        | GlFormat::R8Sint
+                        | GlFormat::Rg8Uint
+                        | GlFormat::Rg8Sint
+                        | GlFormat::Rgba8Uint
+                        | GlFormat::Rgba8Sint
+                        | GlFormat::R16Uint
+                        | GlFormat::R16Sint
+                        | GlFormat::Rg16Uint
+                        | GlFormat::Rg16Sint
+                        | GlFormat::Rgba16Uint
+                        | GlFormat::Rgba16Sint
+                        | GlFormat::R32Uint
+                        | GlFormat::R32Sint
+                        | GlFormat::Rg32Uint
+                        | GlFormat::Rg32Sint
+                        | GlFormat::Rgba32Uint
+                        | GlFormat::Rgba32Sint
+                        | GlFormat::Rgb10a2Uint => limits.max_integer_samples,
+                        _ => limits.max_color_texture_samples,
+                    }
+                }
             };
             if facts.sample_count > maximum {
                 return Err(GlFormatTableError::SampleCountExceedsLimit {

@@ -38,8 +38,61 @@ impl Backend for Gl {
 }
 
 impl api::QueryBackend for Gl {
+    fn timestamp_result_format(_device: &GlDevice) -> api::TimestampResultFormat {
+        #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+        {
+            api::TimestampResultFormat {
+                invalid_value: Some(u64::MAX),
+            }
+        }
+        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+        {
+            api::TimestampResultFormat {
+                invalid_value: _device
+                    .0
+                    .with_native("query timer result format", |provider| {
+                        Ok(provider.gles_timestamp_bits().map(|_| u64::MAX))
+                    })
+                    .ok()
+                    .flatten(),
+            }
+        }
+        #[cfg(not(any(
+            all(target_arch = "wasm32", feature = "webgl2"),
+            all(windows, feature = "native-gl-wgl"),
+            feature = "native-gles-egl"
+        )))]
+        {
+            api::TimestampResultFormat::default()
+        }
+    }
+    fn query_resolve_mode(_device: &GlDevice, _kind: api::QueryKind) -> api::QueryResolveMode {
+        #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+        {
+            api::QueryResolveMode::AfterCompletion
+        }
+        #[cfg(not(all(target_arch = "wasm32", feature = "webgl2")))]
+        {
+            api::QueryResolveMode::Ordered
+        }
+    }
     fn query_supported(device: &GlDevice, kind: api::QueryKind) -> bool {
         super::query::query_supported(device, kind)
+    }
+
+    fn timestamp_clock(device: &GlDevice, lane: api::LaneId) -> Option<api::TimestampClock> {
+        if lane.ordinal != 0 {
+            return None;
+        }
+        Some(api::TimestampClock {
+            period_ns: 1.0,
+            valid_bits: super::query::timestamp_bits(device)?,
+        })
+    }
+
+    fn timestamp_frequency(device: &GlDevice, lane: api::LaneId) -> Option<u64> {
+        (lane.ordinal == 0 && super::query::timestamp_bits(device).is_some())
+            .then_some(1_000_000_000)
     }
 
     fn create_query_set(device: &GlDevice, desc: &api::QueryDesc) -> api::Result<GlQuerySet> {
@@ -66,12 +119,12 @@ impl api::QueryBackend for Gl {
         super::query::end_occlusion(encoder)
     }
 
-    fn begin_statistics(_: &mut GlEncoder, _: &GlQuerySet, _: u32) -> api::Result<()> {
-        Err(Error::Unsupported("GL pipeline statistics queries"))
+    fn begin_statistics(encoder: &mut GlEncoder, set: &GlQuerySet, slot: u32) -> api::Result<()> {
+        super::query::begin_statistics(encoder, set, slot)
     }
 
-    fn end_statistics(_: &mut GlEncoder) -> api::Result<()> {
-        Err(Error::Unsupported("GL pipeline statistics queries"))
+    fn end_statistics(encoder: &mut GlEncoder) -> api::Result<()> {
+        super::query::end_statistics(encoder)
     }
 
     fn resolve_queries(
@@ -90,6 +143,7 @@ pub(crate) fn native_error(error: crate::backend::gl::api::GlError) -> Error {
     match error {
         crate::backend::gl::api::GlError::ContextLost { .. } => Error::DeviceLost,
         crate::backend::gl::api::GlError::OutOfMemory { .. } => Error::OutOfMemory,
+        crate::backend::gl::api::GlError::Unsupported { reason, .. } => Error::Unsupported(reason),
         crate::backend::gl::api::GlError::Shader { log, .. }
         | crate::backend::gl::api::GlError::Program { log, .. } => Error::Shader(log),
         other => Error::Backend(format!("{other:?}")),

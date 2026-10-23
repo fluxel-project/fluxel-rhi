@@ -71,6 +71,12 @@ pub(super) fn set_vertex_buffer(
                 Ok(())
             })();
             if result.is_ok() {
+                encoder
+                    .browser_vertex_bindings
+                    .retain(|(old, _, _, _)| *old != slot);
+                encoder
+                    .browser_vertex_bindings
+                    .push((slot, buffer.clone(), offset, size));
                 encoder.issued = true;
             } else {
                 encoder.indeterminate = true;

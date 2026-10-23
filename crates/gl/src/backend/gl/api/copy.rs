@@ -9,9 +9,18 @@ pub(crate) enum GlPixelFormat {
     Bgra8,
     Rgb8,
     Red8,
+    Rg8,
+    /// Uncompressed texels whose layout uses this many bytes.
+    TexelBytes(u8),
     Depth16,
     Depth24Stencil8,
     Depth32Float,
+    /// Compressed data is laid out in complete encoded blocks.
+    Compressed {
+        block_width: u8,
+        block_height: u8,
+        block_bytes: u8,
+    },
 }
 
 impl GlPixelFormat {
@@ -20,7 +29,20 @@ impl GlPixelFormat {
             Self::Rgba8 | Self::Bgra8 | Self::Depth24Stencil8 | Self::Depth32Float => 4,
             Self::Rgb8 => 3,
             Self::Red8 => 1,
-            Self::Depth16 => 2,
+            Self::Depth16 | Self::Rg8 => 2,
+            Self::TexelBytes(bytes) => bytes as u32,
+            Self::Compressed { block_bytes, .. } => block_bytes as u32,
+        }
+    }
+
+    pub(crate) const fn block_extent(self) -> (u32, u32) {
+        match self {
+            Self::Compressed {
+                block_width,
+                block_height,
+                ..
+            } => (block_width as u32, block_height as u32),
+            _ => (1, 1),
         }
     }
 }
@@ -96,9 +118,11 @@ impl GlPixelLayout {
         {
             return Err(GlCopyValidationError::ZeroTransferExtent);
         }
+        let (block_width, block_height) = self.format.block_extent();
         let packed = match region
             .extent
             .width
+            .div_ceil(block_width)
             .checked_mul(self.format.bytes_per_pixel())
         {
             Some(v) => v,
@@ -107,7 +131,7 @@ impl GlPixelLayout {
         if self.bytes_per_row < packed {
             return Err(GlCopyValidationError::RowTooShort);
         }
-        if self.rows_per_image < region.extent.height {
+        if self.rows_per_image < region.extent.height.div_ceil(block_height) {
             return Err(GlCopyValidationError::ImageTooShort);
         }
         if !matches!(self.alignment, 1 | 2 | 4 | 8) {
@@ -141,10 +165,11 @@ impl GlPixelLayout {
         let image_stride = u64::from(self.bytes_per_row)
             .checked_mul(u64::from(self.rows_per_image))
             .ok_or(GlCopyValidationError::LayoutOverflow)?;
-        let final_rows = u64::from(region.extent.height - 1)
+        let (block_width, block_height) = self.format.block_extent();
+        let final_rows = u64::from(region.extent.height.div_ceil(block_height) - 1)
             .checked_mul(u64::from(self.bytes_per_row))
             .ok_or(GlCopyValidationError::LayoutOverflow)?;
-        let final_width = u64::from(region.extent.width)
+        let final_width = u64::from(region.extent.width.div_ceil(block_width))
             .checked_mul(u64::from(self.format.bytes_per_pixel()))
             .ok_or(GlCopyValidationError::LayoutOverflow)?;
         self.offset
@@ -262,6 +287,17 @@ pub(crate) enum GlCopyValidationError {
 /// `scripts/check_gl_architecture.py` confines the constants to provider
 /// execution bodies so the two cannot drift apart.
 pub(crate) trait GlCopyDomainApi: GlFamilyApi {
+    fn buffer_to_texture(
+        &mut self,
+        _: GlBufferRange,
+        _: GlTextureRegion,
+        _: GlPixelLayout,
+    ) -> Result<(), GlError> {
+        Err(GlError::Unsupported {
+            operation: "buffer-to-texture",
+            reason: "provider has no pixel buffer upload",
+        })
+    }
     fn copy_buffer_range(
         &mut self,
         source: GlBufferRange,
@@ -323,6 +359,42 @@ mod tests {
             repack: GlRepackPolicy::Disallow,
         };
         assert_eq!(layout.required_bytes(region), Ok(32));
+    }
+    #[test]
+    fn compressed_layout_counts_block_rows_and_last_partial_block() {
+        let mut region = test_region();
+        region.extent.width = 7;
+        region.extent.height = 5;
+        region.extent.depth_or_layers = 2;
+        let layout = GlPixelLayout {
+            format: GlPixelFormat::Compressed {
+                block_width: 4,
+                block_height: 4,
+                block_bytes: 16,
+            },
+            bytes_per_row: 48,
+            rows_per_image: 3,
+            offset: 16,
+            alignment: 8,
+            repack: GlRepackPolicy::Disallow,
+        };
+        assert_eq!(layout.required_bytes(region), Ok(240));
+        assert_eq!(
+            GlPixelLayout {
+                rows_per_image: 1,
+                ..layout
+            }
+            .required_bytes(region),
+            Err(GlCopyValidationError::ImageTooShort)
+        );
+        assert_eq!(
+            GlPixelLayout {
+                bytes_per_row: 16,
+                ..layout
+            }
+            .required_bytes(region),
+            Err(GlCopyValidationError::RowTooShort)
+        );
     }
     #[test]
     fn pixel_store_alignments_are_checked() {

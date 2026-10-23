@@ -140,7 +140,9 @@ impl GlSyncApi for WebGl2BrowserDiscovery {
 /// negative, non-finite, or absent is reported as no answer rather than being
 /// coerced into a count that was never measured.
 pub(super) fn measured_value(value: f64) -> Option<u64> {
-    (value.is_finite() && value >= 0.0 && value.fract() == 0.0).then_some(value as u64)
+    // JavaScript numbers cannot represent every integer past 2^53 - 1.
+    (value.is_finite() && (0.0..=9_007_199_254_740_991.0).contains(&value) && value.fract() == 0.0)
+        .then_some(value as u64)
 }
 
 impl WebGl2BrowserDiscovery {
@@ -171,6 +173,7 @@ impl GlQueryObjectsApi for WebGl2BrowserDiscovery {
                 generation: id.generation,
                 raw,
                 target: None,
+                disjoint: false,
             },
         );
         Ok(id)
@@ -211,7 +214,32 @@ impl GlQueryObjectsApi for WebGl2BrowserDiscovery {
         // A timer target is read through the extension's own accessors, which
         // also decide whether the interval may be reported at all.
         if target.is_some_and(super::exec_timer::is_timer_target) {
-            return self.timer_result(OP, &raw);
+            if self
+                .queries
+                .get(&query.slot)
+                .is_some_and(|entry| entry.disjoint)
+            {
+                return Ok(
+                    match self
+                        .raw
+                        .get_query_parameter(&raw, Gl::QUERY_RESULT_AVAILABLE)
+                        .as_bool()
+                    {
+                        Some(true) => GlQueryResult::Disjoint,
+                        Some(false) => GlQueryResult::Pending,
+                        None => GlQueryResult::Unknown,
+                    },
+                );
+            }
+            let result = self.timer_result(OP, &raw)?;
+            if result == GlQueryResult::Disjoint {
+                for entry in self.queries.values_mut() {
+                    if entry.target.is_some_and(super::exec_timer::is_timer_target) {
+                        entry.disjoint = true;
+                    }
+                }
+            }
+            return Ok(result);
         }
         let available = self
             .raw
@@ -223,11 +251,12 @@ impl GlQueryObjectsApi for WebGl2BrowserDiscovery {
         if !available {
             return Ok(GlQueryResult::Pending);
         }
-        let value = self
-            .raw
-            .get_query_parameter(&raw, Gl::QUERY_RESULT)
-            .as_f64();
-        Ok(match value.and_then(measured_value) {
+        let answer = self.raw.get_query_parameter(&raw, Gl::QUERY_RESULT);
+        let value = answer
+            .as_bool()
+            .map(u64::from)
+            .or_else(|| answer.as_f64().and_then(measured_value));
+        Ok(match value {
             Some(value) => GlQueryResult::Available(value),
             None => GlQueryResult::Unknown,
         })
@@ -247,8 +276,7 @@ impl GlOcclusionQueryApi for WebGl2BrowserDiscovery {
             .get(&query.slot)
             .map(|entry| entry.raw.clone())
             .ok_or_else(|| Self::validation(OP, "query disappeared"))?;
-        self.raw
-            .begin_query(super::format_map::SAMPLES_PASSED, &raw);
+        self.raw.begin_query(Gl::ANY_SAMPLES_PASSED, &raw);
         self.driver_error(OP)?;
         if let Some(entry) = self.queries.get_mut(&query.slot) {
             entry.target = Some(super::format_map::SAMPLES_PASSED);
@@ -263,7 +291,7 @@ impl GlOcclusionQueryApi for WebGl2BrowserDiscovery {
         let Some(active) = self.active_query.take() else {
             return Err(Self::validation(OP, "no occlusion query is active"));
         };
-        self.raw.end_query(super::format_map::SAMPLES_PASSED);
+        self.raw.end_query(Gl::ANY_SAMPLES_PASSED);
         // `endQuery` is the command that changes the browser's active-query
         // state.  Do not commit the local transition until its error has been
         // observed: on a recoverable API failure the same query still owns the

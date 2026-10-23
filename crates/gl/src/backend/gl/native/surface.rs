@@ -136,9 +136,9 @@ impl GlSurfacePresentationApi for NativeGlProvider {
                         width,
                         height,
                         0,
-                        0,
-                        width,
                         height,
+                        width,
+                        0,
                         glow::COLOR_BUFFER_BIT,
                         glow::NEAREST,
                     );
