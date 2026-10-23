@@ -1,3 +1,0 @@
-# Keep diagnostic and manifest bytes stable across Windows and Unix checkouts.
-performance/** -text
-acceptance/** -text

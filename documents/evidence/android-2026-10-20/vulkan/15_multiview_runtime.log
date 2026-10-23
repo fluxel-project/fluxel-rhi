@@ -1,6 +1,0 @@
---------- beginning of main
-10-20 15:02:37.504  3908  3927 I RustStdoutStderr: VULKAN_ADAPTER=Adreno (TM) 750
-10-20 15:02:37.576  3908  3927 I RustStdoutStderr: VULKAN_SURFACE_CAPS formats=[Rgba8Unorm, Rgba8UnormSrgb] alpha=[Inherit] usages=SurfaceUsage(1) extent=[1920, 1080]..[1920, 1080]
-10-20 15:02:38.368  3908  3927 I RustStdoutStderr: RHI_MULTIVIEW_MODE=native
-10-20 15:02:38.409  3908  3927 I RustStdoutStderr: RHI_FRAME_OK=1
-10-20 15:02:38.550  3908  3927 I RustStdoutStderr: RHI_FRAME_OK=2

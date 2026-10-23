@@ -28,8 +28,8 @@ On 2026-10-21, Vulkan and GLES examples 01-15 each completed two frames using
 the common execution entry. Both example 12 routes completed GPU readback;
 screenshots and readbacks were inspected. The runner publishes pending scene
 state only after execution acceptance and retains failure outcomes through the
-shared standalone-host drain policy. See the
-[migration evidence](../../../documents/evidence/execution-api-2026-10-21/README.md).
+shared standalone-host drain policy. These results describe the tested
+2026-10-21 candidate; they are not a claim about later source revisions.
 
 ## Earlier platform verification checkpoint
 
@@ -61,8 +61,9 @@ shared standalone-host drain policy. See the
   is claimed. The browser page explicitly labels sequential drawing for 13 and
   stops after the requested capture frames.
 
-The retained [Android evidence packet](../../../documents/evidence/android-2026-10-20/README.md)
-records the tested paths, candidate hashes, images and remaining limits.
+The Android results above are limited to the listed emulator and browser
+routes. Candidate metadata, screenshots, readbacks and runtime logs are kept
+in the local verification archive and are not part of the published docs.
 
 The helper writes per-example candidate metadata with HEAD, changed source
 hashes and APK/library hashes, and archives runtime logs before checking for

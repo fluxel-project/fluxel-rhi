@@ -1,7 +1,0 @@
-{
-  "source": "Win32_VideoController queried after acceptance",
-  "name": "AMD Radeon 780M Graphics",
-  "driver_version": "32.0.21028.2002",
-  "browser_adapter": "amd / rdna-3; isFallbackAdapter=false",
-  "note": "The browser hides the exact model and driver; host inventory is supporting evidence."
-}

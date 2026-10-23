@@ -35,13 +35,13 @@ completion requests. It does not establish multi-queue conformance, arbitrary
 plans, or native partial/indeterminate recovery. The RenderGraph's compiler,
 hazard analysis, and resource-retirement tests belong to its own repository.
 
-The [failure-boundary evidence](evidence/execution-failure-2026-10-21/README.md)
-adds exact None/Partial/Unknown slot tests, clean presentation rejection/retry,
-and image/value/checkpoint/uncertainty Drop ordering through failure drain.
-The ignored GPU fixtures were explicitly executed; `#[ignore]` controls routine
-test selection and is not evidence that they have never run. The earlier
-[migration packet](evidence/execution-api-2026-10-21/README.md) also retains actual
-GPU test logs, with its separate native visual-capture limitations.
+Failure-boundary tests cover exact None/Partial/Unknown slot cases, clean
+presentation rejection/retry, and image/value/checkpoint/uncertainty Drop
+ordering through failure drain. The ignored GPU fixtures were explicitly
+executed; `#[ignore]` controls routine test selection and is not evidence that
+they have never run. The common execution migration was exercised on real GPU
+routes; its native visual-capture limits remain separate from the readback
+claim.
 
 A reproducible CPU-only validation diagnostic is in
 [`tools/benchmarks/execution-validation`](../tools/benchmarks/execution-validation/README.md).
@@ -66,8 +66,9 @@ entry does not add native multi-queue or Sparse support. All 15 examples now use
 pre-recording, including example 13 secondary work, and binds it without a
 portable command conversion. GL passes encoding closures directly.
 
-The [execution evidence packet](evidence/rhi-execution-2026-10-20/README.md)
-records the tested candidates and keeps GPU evidence separate from mocks.
+The execution migration was checked on DX12, Vulkan and WGL with focused GPU
+readback and presentation smoke. These results do not establish arbitrary
+cross-lane synchronization, browser execution, or visual correctness.
 
 On Windows, run a finite native workload with explicit backend selection:
 
@@ -95,10 +96,11 @@ Metal validation additionally requires a macOS SDK link, focused real-GPU readba
 
 ## Android emulator example checks
 
-The [2026-10-20 evidence packet](evidence/android-2026-10-20/README.md) records
-Vulkan, GLES and WebGL2 examples 01–15, native readbacks, focused clear-mask GPU
-regressions, and Android HOME/return checks. WebGPU adapter acquisition returned
-null in that emulator's WebView; it is not a WebGPU pass. Use the native
+The Android 14 emulator run covered Vulkan, GLES and WebGL2 examples 01–15,
+native readbacks, focused clear-mask GPU regressions, and Android HOME/return
+checks. WebGPU adapter acquisition returned null in that emulator's WebView; it
+is not a WebGPU pass. Original screenshots and run logs are retained in the
+local Temp archive and are not part of the GitHub source tree. Use the native
 `tools/examples/android/run-capture.ps1` or browser
 `tools/examples/android/browser/run_capture.py` helper for one route at a time.
 The browser export stops after three frames for capture; WebGL2 example 13 is

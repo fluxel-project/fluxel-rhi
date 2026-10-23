@@ -55,8 +55,8 @@ topologies, shader stages, queue plans, or device tiers.
 | Backend | Main implemented GPU features | Advanced feature limits |
 | --- | --- | --- |
 | DX12 | Graphics and compute, multiple render targets, indirect drawing and dispatch, queries, secondary recording, texture clears, and pipeline caches | Device-gated descriptor indexing, up to four multiview views, ray pipelines and inline ray queries, mesh shaders, sparse textures, graphics/compute queues, and GPU-count multi-draw |
-| Vulkan | Graphics and compute, multiple render targets, indirect drawing and dispatch, queries, secondary recording, clears, pipeline caches, mapping, placed memory, and native interop | Descriptor indexing, multiview, ray pipelines and inline ray queries, mesh shaders, sparse textures, graphics/compute queues, GPU-count multi-draw, and external resources depend on device features, extensions, formats and queue support. See the [fixture index](documents/evidence/vulkan-completeness-2026-10-22/README.md) for validation scope. |
-| Metal | Graphics and compute, up to eight render targets, depth/stencil, dynamic uniform/storage offsets, indirect draw and dispatch, standalone clears, copies/resolves, mapping, placement heaps, binary archives, and native interop | Device-gated argument arrays/indexing, mesh/object shaders, acceleration structures and ray queries, multiview, timestamp/occlusion and separate pass counters, cross-packet graphics/compute synchronization, GPU-count multi-draw, placement sparse textures, and external resources. See the [implementation review](documents/evidence/metal-completeness-2026-10-22/README.md) for native boundaries and compile-only evidence. No Metal tests or GPU acceptance were run in this phase, as requested. |
+| Vulkan | Graphics and compute, multiple render targets, indirect drawing and dispatch, queries, secondary recording, clears, pipeline caches, mapping, placed memory, and native interop | Descriptor indexing, multiview, ray pipelines and inline ray queries, mesh shaders, sparse textures, graphics/compute queues, GPU-count multi-draw, and external resources depend on device features, extensions, formats and queue support. |
+| Metal | Graphics and compute, up to eight render targets, depth/stencil, dynamic uniform/storage offsets, indirect draw and dispatch, standalone clears, copies/resolves, mapping, placement heaps, binary archives, and native interop | Device-gated argument arrays/indexing, mesh/object shaders, acceleration structures and ray queries, multiview, timestamp/occlusion and separate pass counters, cross-packet graphics/compute synchronization, GPU-count multi-draw, placement sparse textures, and external resources. No Metal tests or GPU acceptance were run in this phase, as requested. |
 | Browser WebGPU | Graphics and compute, MRT, depth/stencil, dynamic offsets, indirect draw/dispatch, multi-draw including GPU-count lowering, standalone clears, copies/blits/resolves, buffer mapping and readback, occlusion and optional timestamp queries | Optional native features and limits gate compressed formats, immediates, subgroups, dual-source blending and unclipped depth. Ray/mesh, sparse resources, native multiple queues, multiview, complete pipeline statistics, native heap placement and serialized pipeline caches have no matching standard browser route. |
 | Desktop GL / GLES | Immediate graphics, MRT, depth/stencil, copies and resolves; compute and indirect commands where supported | Context, extension and device limits gate queries, desktop pipeline statistics, program caches, and limited multiview. Check the feature and descriptor for each operation. |
 | Browser WebGL2 | Immediate graphics, MRT, depth/stencil, copies/resolves and occlusion | Extensions gate compressed textures and other optional operations. Standard WebGL2 has no compute or compressed-block readback. |
@@ -92,10 +92,8 @@ WebGPU lowers GPU-count drawing into GPU-generated indirect arguments and
 native pass segments, without reading the count on the CPU. Push constants use
 native immediate data only when the browser exposes the required feature and
 limit. Compressed formats remain optional adapter features; the current AMD
-browser evidence covers BC1, not ETC2/EAC or ASTC. The
-[WebGPU acceptance report](documents/evidence/webgpu-completeness-2026-10-22/README.md)
-records the exact GPU tests, browser scenes and remaining standard or contract
-boundaries. Browser examples may select their existing explicit fallbacks for
+browser evidence covers BC1, not ETC2/EAC or ASTC. Browser examples may select
+their existing explicit fallbacks for
 descriptor indexing and multiview; those scenes do not establish backend support
 for either feature.
 
@@ -111,8 +109,7 @@ Direct3D 12 exposes [cached PSO blobs](https://learn.microsoft.com/en-us/windows
 
 The following summarizes implemented public paths. Format, shader-model, tier,
 and resource descriptor checks still apply to each device; a capability does
-not imply that every combination is supported. The [DX12 fixture index](documents/evidence/dx12-completeness-2026-10-22/README.md)
-identifies the corresponding GPU tests and their scope.
+not imply that every combination is supported.
 
 | Area | DX12 public route and limits |
 | --- | --- |
@@ -139,12 +136,9 @@ pending producer in a different packet. The raw-buffer blit fallback has targete
 GPU coverage for 43 ordinary color formats. These are selected paths; cross-numeric
 and mixed-dimension blit semantics are not defined by this coverage.
 
-The [DX12 review follow-up](documents/evidence/dx12-completeness-2026-10-22/review.md)
-tracks the original review items and remaining acceptance work. The
-[performance screening](documents/evidence/dx12-completeness-2026-10-22/performance.md)
-contains the native-call measurements and their reproducibility limits. Targeted
-The [candidate acceptance report](documents/evidence/dx12-completeness-2026-10-22/acceptance/README.md)
-records the complete test run, corrected validation diagnostics and visual scope.
+The DX12 candidate passed its complete hardware suite and final affected tests.
+Corrected validation diagnostics, performance screening and visual scope were
+reviewed; the raw run logs and captures are retained locally.
 
 ### Compressed texture formats
 
@@ -190,12 +184,9 @@ available for advanced execution. See the [execution contract](documents/design-
 Support queries describe implemented native routes. An example may select an
 explicit visual fallback for an unavailable feature; that does not enable the
 feature in the backend. Metal has no completed Apple GPU or visual acceptance.
-See the [advanced candidate evidence](documents/evidence/rhi-advanced-0.17/README.md),
-[conformance matrix](documents/conformance-matrix.md),
-[testing guide](documents/testing.md), and
-[Android evidence](documents/evidence/android-2026-10-20/README.md) for the scope
-of recorded verification. A tested device does not establish support for every
-device using that API.
+See the [conformance matrix](documents/conformance-matrix.md) and
+[testing guide](documents/testing.md) for verification scope. A tested device
+does not establish support for every device using that API.
 
 ## Build and run
 

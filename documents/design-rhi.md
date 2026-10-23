@@ -710,7 +710,9 @@ limits remain authoritative.
 
 At the user's request this phase performs compilation and static review without
 Metal tests. There is no Apple GPU, generated-MSL compiler, presentation or visual
-acceptance claim. See the [Metal implementation review](evidence/metal-completeness-2026-10-22/README.md).
+acceptance claim. The implementation review found no Apple GPU execution
+evidence; the published capability status therefore remains limited to the
+checks available on this host.
 
 ### Binding bounds are caller intent, validated against native limits
 
@@ -794,12 +796,11 @@ the backend's responsibility.
 ## Verification and extension boundary
 
 The [testing guide](testing.md), [conformance matrix](conformance-matrix.md),
-[example instructions](../crates/rhi/examples/README.md), and
-[Android evidence packet](evidence/android-2026-10-20/README.md) record verification
-scope separately from architecture. The Android packet covers the tested Vulkan,
-GLES, and WebGL2 example routes; WebGPU adapter acquisition was unavailable in
-that environment. It does not imply universal Android driver support or close
-renderer-owned restoration integration.
+and [example instructions](../crates/rhi/examples/README.md) record verification
+scope separately from architecture. Android verification covered the tested
+Vulkan, GLES, and WebGL2 example routes; WebGPU adapter acquisition was
+unavailable in that environment. It does not imply universal Android driver
+support or close renderer-owned restoration integration.
 
 Compilation, successful submission, and native validation alone do not prove
 correct GPU output or presentation. A new route needs consistent public support

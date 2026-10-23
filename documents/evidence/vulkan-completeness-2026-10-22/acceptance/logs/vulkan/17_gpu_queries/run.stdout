@@ -1,9 +1,0 @@
-GPU_QUERY_OK timestamp_start=2776392834087 timestamp_end=2776392841587 frequency=100000000 ia_vertices=3 ia_primitives=1
-screenshot: Queued screeshot for frame: 2
-screenshot: Saved image: E:\moyy\program\rust\fluxel\fluxel-rhi\临时\当前验证\vulkan\frozen\demos\17_gpu_queries/2.ppm 
-screenshot: Queued screeshot for frame: 30
-screenshot: Saved image: E:\moyy\program\rust\fluxel\fluxel-rhi\临时\当前验证\vulkan\frozen\demos\17_gpu_queries/30.ppm 
-screenshot: Queued screeshot for frame: 60
-screenshot: Saved image: E:\moyy\program\rust\fluxel\fluxel-rhi\临时\当前验证\vulkan\frozen\demos\17_gpu_queries/60.ppm 
-screenshot: No more frames to capture
-screenshot: Images thread is over

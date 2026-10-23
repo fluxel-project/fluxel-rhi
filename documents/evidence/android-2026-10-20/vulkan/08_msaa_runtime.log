@@ -1,5 +1,0 @@
---------- beginning of main
-10-20 15:04:35.480  4773  4792 I RustStdoutStderr: VULKAN_ADAPTER=Adreno (TM) 750
-10-20 15:04:35.552  4773  4792 I RustStdoutStderr: VULKAN_SURFACE_CAPS formats=[Rgba8Unorm, Rgba8UnormSrgb] alpha=[Inherit] usages=SurfaceUsage(1) extent=[1920, 1080]..[1920, 1080]
-10-20 15:04:35.978  4773  4792 I RustStdoutStderr: RHI_FRAME_OK=1
-10-20 15:04:36.127  4773  4792 I RustStdoutStderr: RHI_FRAME_OK=2

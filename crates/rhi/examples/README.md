@@ -49,10 +49,8 @@ failure policy, not RHI scheduling, device recovery, or renderer retirement.
 
 ## Verification status
 
-The common execution migration is recorded in the
-[2026-10-21 evidence packet](../../../documents/evidence/execution-api-2026-10-21/README.md).
-Its source fingerprints identify the tested worktree based on `efc4dbb`;
-compilation alone does not establish runtime or visual conformance.
+The common execution migration was verified on a worktree based on `efc4dbb`.
+Compilation alone does not establish runtime or visual conformance.
 
 | Route | Migration regression | Limit |
 | --- | --- | --- |
@@ -63,11 +61,9 @@ compilation alone does not establish runtime or visual conformance.
 | Android browser WebGL2 | All 15 completed three frames with nonempty drawing-buffer readback and inspected screenshots | WebView 146 has no available WebGPU adapter |
 | Metal | Backend selects deferred execution; source integration is maintained | Apple GPU and visual acceptance remain unavailable |
 
-Earlier visual baselines and platform-specific capability evidence remain in
-[the testing guide](../../../documents/testing.md),
-[the previous execution packet](../../../documents/evidence/rhi-execution-2026-10-20/README.md),
-and [the Android packet](../../../documents/evidence/android-2026-10-20/README.md).
-Historical evidence is not relabeled as migration-candidate visual evidence.
+Earlier visual baselines and platform-specific capability checks are
+summarized in [the testing guide](../../../documents/testing.md). Historical
+results are not relabeled as migration-candidate visual verification.
 These historical results cover examples 01–15. Examples 16–23 have separate
 DX12 and Vulkan real-GPU evidence for the current development worktree;
 their final candidate evidence is tracked separately. The Vulkan backend did

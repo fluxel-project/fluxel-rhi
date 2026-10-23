@@ -1,6 +1,0 @@
-{
-  "goog:chromeOptions": {
-    "binary": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    "args": ["--enable-unsafe-webgpu", "--disable-gpu-sandbox"]
-  }
-}

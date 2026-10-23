@@ -1,8 +1,0 @@
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on build directory
-   Compiling fluxel-rhi-webgpu v0.16.0 (E:\moyy\program\rust\fluxel\fluxel-rhi\crates\webgpu)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.35s
-     Running unittests src\lib.rs (target\wasm32-unknown-unknown\debug\deps\fluxel_rhi_webgpu-8163d6cec974957d.wasm)

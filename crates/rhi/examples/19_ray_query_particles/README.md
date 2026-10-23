@@ -30,21 +30,17 @@ generated linear-space mip chain and ray-footprint selection.
 On the tested AMD GPU, the unmodified NVIDIA sample's AABB stride 0 produced
 no visible secondary particle candidates. With only that reference stride set
 to 24 bytes, the three RHI frames have mean RGB errors of 0.877, 0.940 and
-0.846 outside the UI; they are still not pixel-identical. See the
-[source-bound comparison](../../../../documents/evidence/rhi-advanced-0.17/demo19-reference-stride/README.md).
+0.846 outside the UI; they are still not pixel-identical.
 Press H to show or hide the settings panel; it is hidden by default. The live
 window has an interactive settings panel driven by host mouse and
 keyboard events. It supports pause, emitter dragging, particle texture,
 orientation, ray reorientation and MLAB choices, but uses a simplified bitmap
 panel instead of matching the original ImGui appearance and interactions.
 The live camera accepts left-button orbit, middle-button pan, Alt plus middle
-button horizontal pan, and wheel zoom. Its controlled input captures are in
-[camera evidence](../../../../documents/evidence/rhi-advanced-0.17/demo19-camera-controls/report.md).
+button horizontal pan, and wheel zoom.
 The original camera trajectory has not yet been compared under identical
 input, and some source behaviors remain missing. Fixed-step readbacks leave
-the panel disabled and use the original static camera for scene comparison;
-earlier live input captures are in the
-[interactive evidence](../../../../documents/evidence/rhi-advanced-0.17/demo19-interactive/report.md).
+the panel disabled and use the original static camera for scene comparison.
 DX12 and Vulkan use adapted HLSL shaders. Set
 `FLUXEL_RAY_QUERY_PRESENT=1` to run an animation in a window using actual
 frame durations and reuse scene resources across frames. As in the source,

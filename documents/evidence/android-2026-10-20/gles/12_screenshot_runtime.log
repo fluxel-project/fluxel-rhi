@@ -1,5 +1,0 @@
---------- beginning of main
-10-20 15:26:32.683  8431  8449 I RustStdoutStderr: GLES_ADAPTER=Qualcomm Adreno (TM) 750 (OpenGL ES 3.1 v1)
-10-20 15:26:33.030  8431  8449 I RustStdoutStderr: RHI_READBACK_OK=/storage/emulated/0/Android/data/org.fluxel.rhicapture/files/12_screenshot.ppm
-10-20 15:26:33.030  8431  8449 I RustStdoutStderr: RHI_FRAME_OK=1
-10-20 15:26:33.047  8431  8449 I RustStdoutStderr: RHI_FRAME_OK=2
