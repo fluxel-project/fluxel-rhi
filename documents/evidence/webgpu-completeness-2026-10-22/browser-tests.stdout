@@ -1,0 +1,76 @@
+Set timeout to 180 seconds...
+Running headless tests in Chrome on `http://127.0.0.1:55390/`
+Try find `webdriver.json` for configure browser's capabilities:
+Ok
+Loading Wasm module...
+using deprecated parameters for the initialization function; pass a single object instead
+
+running 31 tests
+Invoking test: backend::conformance::raster::gpu_partial_msaa_resolve_preserves_destination_outside_area
+test backend::conformance::raster::gpu_partial_msaa_resolve_preserves_destination_outside_area ... ok
+Invoking test: backend::conformance::raster::gpu_mrt_preserves_vertex_and_fragment_immediate_values_independently
+test backend::conformance::raster::gpu_mrt_preserves_vertex_and_fragment_immediate_values_independently ... ok
+Invoking test: backend::tests::canvas_lease_is_exclusive_and_generation_checked
+test backend::tests::canvas_lease_is_exclusive_and_generation_checked ... ok
+Invoking test: backend::tests::typed_wgsl_triangle_pipeline_compiles_in_browser
+test backend::tests::typed_wgsl_triangle_pipeline_compiles_in_browser ... ok
+Invoking test: backend::tests::readable_storage_texture_layout_follows_browser_language_features
+test backend::tests::readable_storage_texture_layout_follows_browser_language_features ... ok
+Invoking test: backend::tests::invalid_texture_and_view_descriptors_fail_before_browser_validation
+test backend::tests::invalid_texture_and_view_descriptors_fail_before_browser_validation ... ok
+Invoking test: backend::tests::typed_webgpu_resources_are_created_in_browser
+test backend::tests::typed_webgpu_resources_are_created_in_browser ... ok
+Invoking test: backend::tests::core_instance_opens_typed_webgpu_device
+test backend::tests::core_instance_opens_typed_webgpu_device ... ok
+Invoking test: backend::tests::browser_opens_a_webgpu_device
+test backend::tests::browser_opens_a_webgpu_device ... ok
+Invoking test: backend::conformance::buffers::gpu_mapping_write_read_and_exclusion_cover_exact_ranges
+test backend::conformance::buffers::gpu_mapping_write_read_and_exclusion_cover_exact_ranges ... ok
+Invoking test: backend::conformance::buffers::gpu_misaligned_buffer_copy_preserves_untouched_words
+test backend::conformance::buffers::gpu_misaligned_buffer_copy_preserves_untouched_words ... ok
+Invoking test: backend::conformance::buffers::gpu_unaligned_writes_preserve_neighbor_bytes_and_readback_crops
+test backend::conformance::buffers::gpu_unaligned_writes_preserve_neighbor_bytes_and_readback_crops ... ok
+Invoking test: backend::conformance::shader::gpu_multi_draw_count_keeps_attachment_queries_and_render_state
+test backend::conformance::shader::gpu_multi_draw_count_keeps_attachment_queries_and_render_state ... ok
+Invoking test: backend::conformance::shader::gpu_required_subgroup_size_matches_shader_builtin
+test backend::conformance::shader::gpu_required_subgroup_size_matches_shader_builtin ... ok
+Invoking test: backend::conformance::shader::gpu_scalar_push_pointer_helper_reads_written_value
+test backend::conformance::shader::gpu_scalar_push_pointer_helper_reads_written_value ... ok
+Invoking test: backend::conformance::operations::gpu_immediate_arrays_alignment_and_pointer_helpers_keep_byte_layout
+test backend::conformance::operations::gpu_immediate_arrays_alignment_and_pointer_helpers_keep_byte_layout ... ok
+Invoking test: backend::conformance::operations::gpu_blit_integer_depth_and_volume_paths_produce_expected_texels
+test backend::conformance::operations::gpu_blit_integer_depth_and_volume_paths_produce_expected_texels ... ok
+Invoking test: backend::conformance::operations::gpu_compute_constants_and_indirect_dispatch_change_output
+test backend::conformance::operations::gpu_compute_constants_and_indirect_dispatch_change_output ... ok
+Invoking test: backend::conformance::operations::gpu_compressed_blocks_upload_and_copy_without_byte_changes
+SKIP compressed Etc2Rgb8Unorm: adapter format capability
+SKIP compressed Astc { block: [4, 4], srgb: false, hdr: false }: adapter format capability
+test backend::conformance::operations::gpu_compressed_blocks_upload_and_copy_without_byte_changes ... ok
+Invoking test: backend::conformance::operations::gpu_partial_attachment_clear_preserves_pixels_outside_area
+test backend::conformance::operations::gpu_partial_attachment_clear_preserves_pixels_outside_area ... ok
+Invoking test: backend::conformance::textures::gpu_combined_depth_array_copy_covers_both_layers
+test backend::conformance::textures::gpu_combined_depth_array_copy_covers_both_layers ... ok
+Invoking test: backend::conformance::textures::gpu_clear_1d_and_nonrenderable_color_formats
+test backend::conformance::textures::gpu_clear_1d_and_nonrenderable_color_formats ... ok
+Invoking test: backend::conformance::textures::gpu_combined_depth_stencil_single_aspect_copy_preserves_other_plane
+test backend::conformance::textures::gpu_combined_depth_stencil_single_aspect_copy_preserves_other_plane ... ok
+Invoking test: backend::conformance::textures::gpu_color_transfer_repacking_keeps_odd_offset_rows
+test backend::conformance::textures::gpu_color_transfer_repacking_keeps_odd_offset_rows ... ok
+Invoking test: backend::conformance::textures::gpu_depth_upload_buffer_stride_and_linear_blit_preserve_values
+test backend::conformance::textures::gpu_depth_upload_buffer_stride_and_linear_blit_preserve_values ... ok
+Invoking test: backend::conformance::query_capacity::gpu_repeated_occlusion_exceeds_native_pass_capacity
+test backend::conformance::query_capacity::gpu_repeated_occlusion_exceeds_native_pass_capacity ... ok
+Invoking test: backend::conformance::browser_gpu_environment_records_adapter_and_features
+WEBGPU_ENV {"vendor":"amd","architecture":"rdna-3","device":"","description":"","isFallbackAdapter":false,"features":["depth32float-stencil8","rg11b10ufloat-renderable","bgra8unorm-storage","texture-formats-tier1","chromium-experimental-multi-draw-indirect","texture-compression-bc","dual-source-blending","chromium-experimental-sampling-resource-table","core-features-and-limits","chromium-experimental-timestamp-query-inside-passes","float32-filterable","indirect-first-instance","float32-blendable","atomic-vec2u-min-max","subgroup-size-control","texture-compression-unaligned","depth-clip-control","texture-compression-bc-sliced-3d","shader-f16","clip-distances","timestamp-query","texture-formats-tier2","primitive-index","texture-component-swizzle","subgroups"],"userAgent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36"}
+test backend::conformance::browser_gpu_environment_records_adapter_and_features ... ok
+Invoking test: backend::conformance::surface::gpu_canvas_configurations_and_native_usage
+test backend::conformance::surface::gpu_canvas_configurations_and_native_usage ... ok
+Invoking test: backend::conformance::multisample::gpu_msaa_combined_depth_stencil_copy_preserves_every_sample
+test backend::conformance::multisample::gpu_msaa_combined_depth_stencil_copy_preserves_every_sample ... ok
+Invoking test: backend::conformance::queries::gpu_attachmentless_sample_switch_and_reused_occlusion_slots
+test backend::conformance::queries::gpu_attachmentless_sample_switch_and_reused_occlusion_slots ... ok
+Invoking test: backend::conformance::queries::gpu_timestamp_pass_boundaries_resolve_nanoseconds
+test backend::conformance::queries::gpu_timestamp_pass_boundaries_resolve_nanoseconds ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 filtered out; finished in 3.72s
+

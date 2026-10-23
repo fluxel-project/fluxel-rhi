@@ -1,0 +1,30 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on artifact directory
+    Checking hashbrown v0.17.1
+   Compiling serde_core v1.0.229
+   Compiling zmij v1.0.23
+   Compiling naga v30.0.1
+   Compiling serde v1.0.229
+    Checking bit-vec v0.9.1
+   Compiling serde_json v1.0.154
+    Checking codespan-reporting v0.13.1
+    Checking memchr v2.8.3
+   Compiling serde_derive v1.0.229
+    Checking spirv v0.4.0+sdk-1.4.341.0
+    Checking itoa v1.0.18
+   Compiling wasm-bindgen-test-macro v0.3.78
+   Compiling async-trait v0.1.92
+    Checking wasm-bindgen-test-shared v0.2.128
+    Checking nu-ansi-term v0.50.3
+    Checking bit-set v0.10.0
+    Checking oorandom v11.1.5
+    Checking cast v0.3.0
+    Checking indexmap v2.14.2
+    Checking petgraph v0.8.3
+    Checking naga-types v30.0.1
+    Checking wasm-bindgen-test v0.3.78
+    Checking fluxel-rhi-webgpu v0.16.0 (E:\moyy\program\rust\fluxel\fluxel-rhi\crates\webgpu)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 50.77s
