@@ -1,6 +1,7 @@
 //! WebGL2 ordinary texel storage and exact client transfer encodings.
 use crate::backend::gl::api::GlFormat as F;
 use fluxel_rhi_core::api::{Error, Result};
+use wasm_bindgen::JsCast;
 use web_sys::WebGl2RenderingContext as G;
 
 #[derive(Clone, Copy)]
@@ -125,6 +126,18 @@ pub(super) fn type_bytes(ty: u32) -> usize {
     }
 }
 
+/// Returns the byte count selected from an RGBA8 pixel-pack read for formats
+/// whose direct RED/RG `readPixels` pair is not accepted by some WebGL2
+/// implementations. The encoder copies these leading channels out of a small
+/// GPU scratch PBO, so no normalized value crosses the CPU boundary.
+pub(super) fn widened_unorm_readback_bytes(format: F) -> Option<u8> {
+    match format {
+        F::R8Unorm => Some(1),
+        F::Rg8Unorm => Some(2),
+        _ => None,
+    }
+}
+
 pub(super) fn typed_pixels(bytes: &[u8], ty: u32) -> Result<js_sys::Object> {
     if bytes.len() % type_bytes(ty) != 0 {
         return Err(Error::InvalidRange);
@@ -141,18 +154,81 @@ pub(super) fn typed_pixels(bytes: &[u8], ty: u32) -> Result<js_sys::Object> {
     })
 }
 
-/// Probe the exact source format and type into a scratch pixel-pack buffer.
-/// A renderable format is insufficient: WebGL readPixels can require a wider
-/// type or different channel layout, which would change Core's raw bytes.
+/// Reads an ArrayBufferView's backing bytes without converting its elements.
+fn typed_view_bytes(view: &js_sys::Object) -> Option<Vec<u8>> {
+    let key = |name| wasm_bindgen::JsValue::from_str(name);
+    let buffer = js_sys::Reflect::get(view, &key("buffer"))
+        .ok()?
+        .dyn_into::<js_sys::ArrayBuffer>()
+        .ok()?;
+    let offset = js_sys::Reflect::get(view, &key("byteOffset"))
+        .ok()?
+        .as_f64()
+        .and_then(|value| u32::try_from(value as u64).ok())?;
+    let length = js_sys::Reflect::get(view, &key("byteLength"))
+        .ok()?
+        .as_f64()
+        .and_then(|value| u32::try_from(value as u64).ok())?;
+    Some(js_sys::Uint8Array::new_with_byte_offset_and_length(&buffer, offset, length).to_vec())
+}
+
+/// Probe an exact ordinary-color readback with known endpoint and interior
+/// values. A renderable format is insufficient: WebGL `readPixels` can require
+/// a wider type or different channel layout, which would change Core bytes.
 pub(super) fn exact_readback_supported(gl: &G, format: F) -> bool {
     let Some(e) = encoding(format) else {
         return false;
     };
-    // Integer transfer preserves the represented bits. Float and SNORM
-    // readPixels conversions may canonicalize NaNs or collapse distinct
-    // encodings of -1, so an accepted pair does not prove a raw byte copy.
-    if !e.integer {
+    // Float and SNORM reads can canonicalize NaNs or collapse distinct -1
+    // encodings. This probe therefore only publishes integer and UNORM pairs.
+    let unorm = matches!(
+        format,
+        F::R8Unorm
+            | F::Rg8Unorm
+            | F::Rgba8Unorm
+            | F::R16Unorm
+            | F::Rg16Unorm
+            | F::Rgba16Unorm
+            | F::Rgb10a2Unorm
+    );
+    if !e.integer && !unorm {
         return false;
+    }
+    if !matches!(
+        e.ty,
+        G::UNSIGNED_BYTE
+            | G::BYTE
+            | G::UNSIGNED_SHORT
+            | G::SHORT
+            | G::UNSIGNED_INT
+            | G::INT
+            | G::UNSIGNED_INT_2_10_10_10_REV
+    ) {
+        return false;
+    }
+    let widened_bytes = widened_unorm_readback_bytes(format);
+    let mut expected = vec![0; usize::from(e.bytes) * 4];
+    match e.ty {
+        G::UNSIGNED_BYTE | G::BYTE => {
+            for (index, byte) in expected.iter_mut().enumerate() {
+                *byte = [0, 255, 1, 128, 17, 239][index % 6];
+            }
+        }
+        G::UNSIGNED_SHORT | G::SHORT => {
+            for (index, chunk) in expected.chunks_exact_mut(2).enumerate() {
+                chunk.copy_from_slice(
+                    &[0u16, u16::MAX, 1, 0x8000, 0x11ff, 0xee00][index % 6].to_ne_bytes(),
+                );
+            }
+        }
+        G::UNSIGNED_INT | G::INT | G::UNSIGNED_INT_2_10_10_10_REV => {
+            for (index, chunk) in expected.chunks_exact_mut(4).enumerate() {
+                chunk.copy_from_slice(
+                    &[0u32, u32::MAX, 0x8000_0001, 0x3555_55aa][index % 4].to_ne_bytes(),
+                );
+            }
+        }
+        _ => unreachable!(),
     }
 
     let Some(texture) = gl.create_texture() else {
@@ -162,13 +238,25 @@ pub(super) fn exact_readback_supported(gl: &G, format: F) -> bool {
         gl.delete_texture(Some(&texture));
         return false;
     };
-    let Some(buffer) = gl.create_buffer() else {
-        gl.delete_framebuffer(Some(&framebuffer));
-        gl.delete_texture(Some(&texture));
-        return false;
-    };
     gl.bind_texture(G::TEXTURE_2D, Some(&texture));
-    gl.tex_storage_2d(G::TEXTURE_2D, 1, e.internal, 1, 1);
+    gl.tex_storage_2d(G::TEXTURE_2D, 1, e.internal, 2, 2);
+    // The probe's two-texel rows are tightly packed even for R8/R16.
+    gl.pixel_storei(G::UNPACK_ALIGNMENT, 1);
+    let upload = typed_pixels(&expected, e.ty).ok();
+    let uploaded = upload.is_some_and(|pixels| {
+        gl.tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_array_buffer_view(
+            G::TEXTURE_2D,
+            0,
+            0,
+            0,
+            2,
+            2,
+            e.pixel,
+            e.ty,
+            Some(&pixels),
+        )
+        .is_ok()
+    });
     gl.bind_framebuffer(G::READ_FRAMEBUFFER, Some(&framebuffer));
     gl.framebuffer_texture_2d(
         G::READ_FRAMEBUFFER,
@@ -178,20 +266,32 @@ pub(super) fn exact_readback_supported(gl: &G, format: F) -> bool {
         0,
     );
     gl.read_buffer(G::COLOR_ATTACHMENT0);
-    gl.bind_buffer(G::PIXEL_PACK_BUFFER, Some(&buffer));
-    gl.buffer_data_with_i32(G::PIXEL_PACK_BUFFER, e.bytes as i32, G::STREAM_READ);
     gl.pixel_storei(G::PACK_ALIGNMENT, 1);
     let complete = gl.check_framebuffer_status(G::READ_FRAMEBUFFER) == G::FRAMEBUFFER_COMPLETE;
-    let called = complete
-        && gl
-            .read_pixels_with_f64(0, 0, 1, 1, e.pixel, e.ty, 0.0)
-            .is_ok();
-    let ok = called && gl.get_error() == G::NO_ERROR && !gl.is_context_lost();
+    let (read_pixel, read_ty, expected_readback) = if let Some(channel_bytes) = widened_bytes {
+        let mut rgba = Vec::with_capacity(4 * 4);
+        for texel in expected.chunks_exact(usize::from(e.bytes)) {
+            rgba.extend_from_slice(&texel[..usize::from(channel_bytes)]);
+            rgba.extend_from_slice(&[0; 2][..3 - usize::from(channel_bytes)]);
+            rgba.push(u8::MAX);
+        }
+        (G::RGBA, G::UNSIGNED_BYTE, rgba)
+    } else {
+        (e.pixel, e.ty, expected.clone())
+    };
+    let pixels = typed_pixels(&vec![0; expected_readback.len()], read_ty).ok();
+    let called = uploaded
+        && complete
+        && pixels.as_ref().is_some_and(|pixels| {
+            gl.read_pixels_with_opt_array_buffer_view(0, 0, 2, 2, read_pixel, read_ty, Some(pixels))
+                .is_ok()
+        });
+    let exact = pixels.is_some_and(|pixels| typed_view_bytes(&pixels) == Some(expected_readback));
+    let ok = called && exact && gl.get_error() == G::NO_ERROR && !gl.is_context_lost();
     gl.pixel_storei(G::PACK_ALIGNMENT, 4);
-    gl.bind_buffer(G::PIXEL_PACK_BUFFER, None);
+    gl.pixel_storei(G::UNPACK_ALIGNMENT, 4);
     gl.bind_framebuffer(G::READ_FRAMEBUFFER, None);
     gl.bind_texture(G::TEXTURE_2D, None);
-    gl.delete_buffer(Some(&buffer));
     gl.delete_framebuffer(Some(&framebuffer));
     gl.delete_texture(Some(&texture));
     let _ = gl.get_error();

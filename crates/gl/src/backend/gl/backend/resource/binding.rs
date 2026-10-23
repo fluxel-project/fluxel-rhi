@@ -104,7 +104,6 @@ pub(super) fn lower_bind_group_layout(
 /// Reject an impossible runtime capacity before shader expansion can allocate
 /// per-element IR. More precise per-stage and combined-pair checks occur when
 /// linking the selected pipeline; this is only the absolute native ceiling.
-#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 pub(super) fn validate_runtime_capacities(
     entries: &[GlBindingLayoutEntry],
     limits: crate::backend::gl::api::GlLimits,

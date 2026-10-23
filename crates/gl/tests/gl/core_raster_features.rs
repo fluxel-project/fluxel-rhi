@@ -294,6 +294,17 @@ async fn open(native: GlInstance) -> Device<Gl> {
             })
             .unwrap();
     }
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    {
+        // SAFETY: the fixture reads immutable discovery facts from its device.
+        let native = unsafe { device.native_ref() };
+        let discovery = native.0.owner.discovery_snapshot();
+        wasm_bindgen_test::console_log!(
+            "WebGL GPU: {}; {:?}",
+            discovery.context().renderer(),
+            discovery.context().flags()
+        );
+    }
     device
 }
 
@@ -774,3 +785,47 @@ mod gles_plane_readback;
 #[cfg(feature = "native-gles-egl")]
 #[path = "core_gles_float_alias.rs"]
 mod gles_float_alias;
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[path = "core_binding_runtime_webgl.rs"]
+mod binding_runtime_webgl;
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[path = "core_binding_runtime_webgl_uniform.rs"]
+mod binding_runtime_webgl_uniform;
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[path = "core_webgl_depth16.rs"]
+mod webgl_depth16;
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[path = "core_webgl_depth16_array.rs"]
+mod webgl_depth16_array;
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[path = "core_webgl_d16_exhaustive.rs"]
+mod webgl_d16_exhaustive;
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[path = "core_webgl_depth32.rs"]
+mod webgl_depth32;
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[path = "core_webgl_unorm_readback.rs"]
+mod webgl_unorm_readback;
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[path = "core_webgl_unorm_feedback.rs"]
+mod webgl_unorm_feedback;
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[path = "core_webgl_stencil_transfer.rs"]
+mod webgl_stencil_transfer;
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[path = "core_webgl_stencil_array.rs"]
+mod webgl_stencil_array;
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[path = "core_webgl_stencil_depth_preserve.rs"]
+mod webgl_stencil_depth_preserve;

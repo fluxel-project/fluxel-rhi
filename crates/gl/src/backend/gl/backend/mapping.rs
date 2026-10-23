@@ -1,8 +1,8 @@
 //! GL mapping leases.
 //!
 //! Desktop GL buffer storage and GLES EXT_buffer_storage use coherent persistent
-//! native mappings. Other native profiles and WebGL use a snapshot that may
-//! require a blocking read.
+//! native mappings. WebGL snapshots through a fenced staging copy; older native
+//! profiles use a snapshot that may require a blocking read.
 //! Snapshot write leases upload flushed ranges immediately; releasing a snapshot
 //! does not publish unflushed writes. Read invalidation refreshes the requested
 //! snapshot range. Persistent leases instead retain their buffer and context;
@@ -11,21 +11,109 @@
 use super::types::{Gl, GlBuffer, GlDevice, GlMap};
 use fluxel_rhi_core::api::{self, Error, Result};
 use std::{
-    future::{Ready, ready},
+    future::{Future, Ready, ready},
     ops::Range,
     rc::Rc,
 };
 
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+pub struct WebGlMapFuture {
+    buffer: GlBuffer,
+    staging: Option<crate::backend::gl::browser::BrowserBuffer>,
+    wait: Option<crate::backend::gl::browser::BrowserCompletionFuture>,
+    size: u64,
+    offset: u64,
+    mode: api::MapMode,
+    complete: bool,
+    failed: Option<Error>,
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+impl Future for WebGlMapFuture {
+    type Output = Result<GlMap>;
+
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
+        if let Some(error) = self.failed.take() {
+            return core::task::Poll::Ready(Err(error));
+        }
+        match core::pin::Pin::new(self.wait.as_mut().expect("browser map wait")).poll(cx) {
+            core::task::Poll::Pending => core::task::Poll::Pending,
+            core::task::Poll::Ready(Err(error)) => {
+                self.buffer.map_active().set(false);
+                self.complete = true;
+                core::task::Poll::Ready(Err(error))
+            }
+            core::task::Poll::Ready(Ok(())) => {
+                let staging = self.staging.as_ref().expect("browser map staging");
+                let len = self.size;
+                match self.buffer.state.owner.read_buffer(staging, 0, len) {
+                    Ok(bytes) => {
+                        self.complete = true;
+                        let Ok(len) = usize::try_from(len) else {
+                            self.buffer.map_active().set(false);
+                            return core::task::Poll::Ready(Err(Error::OutOfMemory));
+                        };
+                        core::task::Poll::Ready(Ok(GlMap {
+                            buffer: self.buffer.clone(),
+                            bytes,
+                            offset: self.offset,
+                            mode: self.mode,
+                            len,
+                        }))
+                    }
+                    Err(error) => {
+                        self.buffer.map_active().set(false);
+                        self.complete = true;
+                        core::task::Poll::Ready(Err(error))
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+impl WebGlMapFuture {
+    fn failed(buffer: &GlBuffer, error: Error) -> Self {
+        Self {
+            buffer: buffer.clone(),
+            staging: None,
+            wait: None,
+            offset: 0,
+            size: 0,
+            mode: api::MapMode::Read,
+            complete: true,
+            failed: Some(error),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+impl Drop for WebGlMapFuture {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.buffer.map_active().set(false);
+        }
+    }
+}
+
 impl api::MappingBackend for Gl {
     type NativeMap = GlMap;
+    #[cfg(not(all(target_arch = "wasm32", feature = "webgl2")))]
     type MapFuture<'a> = Ready<Result<GlMap>>;
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    type MapFuture<'a> = WebGlMapFuture;
     fn map<'a>(
         device: &'a GlDevice,
         buffer: &'a GlBuffer,
         range: Range<u64>,
         mode: api::MapMode,
     ) -> Self::MapFuture<'a> {
-        ready((|| {
+        #[cfg(not(all(target_arch = "wasm32", feature = "webgl2")))]
+        return ready((|| {
             if !Rc::ptr_eq(&device.0, &buffer.state) {
                 return Err(Error::WrongDevice);
             }
@@ -80,31 +168,6 @@ impl api::MappingBackend for Gl {
                     len: (range.end - range.start) as usize,
                 })
             }
-            #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
-            {
-                use crate::backend::gl::api::GlBufferUsage;
-                let required = if mode == api::MapMode::Read {
-                    GlBufferUsage::MAP_READ
-                } else {
-                    GlBufferUsage::MAP_WRITE
-                };
-                if !buffer.desc.usage.contains(required) {
-                    return Err(Error::Unsupported("buffer lacks requested mapping usage"));
-                }
-                let bytes = device.0.owner.read_buffer(
-                    &buffer.browser,
-                    range.start,
-                    range.end - range.start,
-                )?;
-                buffer.map_active().set(true);
-                Ok(GlMap {
-                    buffer: buffer.clone(),
-                    bytes,
-                    offset: range.start,
-                    mode,
-                    len: (range.end - range.start) as usize,
-                })
-            }
             #[cfg(not(any(
                 all(windows, feature = "native-gl-wgl"),
                 feature = "native-gles-egl",
@@ -114,7 +177,52 @@ impl api::MappingBackend for Gl {
                 let _ = mode;
                 Err(Error::Unsupported("GL native buffer mapping"))
             }
-        })())
+        })());
+        #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+        {
+            use crate::backend::gl::api::GlBufferUsage;
+            if !Rc::ptr_eq(&device.0, &buffer.state) {
+                return WebGlMapFuture::failed(buffer, Error::WrongDevice);
+            }
+            if range.start >= range.end || range.end > buffer.desc.size {
+                return WebGlMapFuture::failed(buffer, Error::InvalidRange);
+            }
+            if buffer.map_active().get() {
+                return WebGlMapFuture::failed(buffer, Error::InvalidState);
+            }
+            let required = if mode == api::MapMode::Read {
+                GlBufferUsage::MAP_READ
+            } else {
+                GlBufferUsage::MAP_WRITE
+            };
+            if !buffer.desc.usage.contains(required) {
+                return WebGlMapFuture::failed(
+                    buffer,
+                    Error::Unsupported("buffer lacks requested mapping usage"),
+                );
+            }
+            let size = range.end - range.start;
+            match device
+                .0
+                .owner
+                .stage_map_read(&buffer.browser, range.start, size)
+            {
+                Ok((staging, completion)) => {
+                    buffer.map_active().set(true);
+                    WebGlMapFuture {
+                        buffer: buffer.clone(),
+                        staging: Some(staging),
+                        wait: Some(completion.wait()),
+                        size,
+                        offset: range.start,
+                        mode,
+                        complete: false,
+                        failed: None,
+                    }
+                }
+                Err(error) => WebGlMapFuture::failed(buffer, error),
+            }
+        }
     }
     fn bytes(map: &GlMap) -> &[u8] {
         #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]

@@ -52,6 +52,31 @@ async fn mapping(d: &Device<Gl>) {
         MapMode::Write,
     );
     drop(cancelled);
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    {
+        use std::{
+            future::Future as _,
+            task::{Context, Poll, Wake, Waker},
+        };
+        struct IgnoreWake;
+        impl Wake for IgnoreWake {
+            fn wake(self: Arc<Self>) {}
+        }
+        let waker = Waker::from(Arc::new(IgnoreWake));
+        let mut cx = Context::from_waker(&waker);
+        // SAFETY: no GPU work accesses the buffer and this pending lease is
+        // cancelled before another request is made.
+        let mut pending = Box::pin(<Gl as MappingBackend>::map(
+            unsafe { d.native_ref() },
+            unsafe { upload.native_ref() },
+            0..4,
+            MapMode::Write,
+        ));
+        // WebGL fences cannot become signaled in the task that creates them.
+        // A first poll must return control to the browser rather than wait.
+        assert!(matches!(pending.as_mut().poll(&mut cx), Poll::Pending));
+        drop(pending);
+    }
     // SAFETY: no GPU accesses overlap these host leases.
     let mut map = unsafe { d.map_buffer(&upload, 8..40, MapMode::Write).await }.unwrap();
     for (i, byte) in map.bytes_mut().unwrap().iter_mut().enumerate() {

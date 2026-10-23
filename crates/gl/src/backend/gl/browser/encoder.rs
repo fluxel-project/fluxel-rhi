@@ -18,9 +18,13 @@ mod attachments;
 mod blit;
 mod clear_texture;
 mod compressed_upload;
+mod depth_upload;
 pub(super) mod multiview;
+pub(super) mod normalized_readback;
+mod packed_depth_upload;
 mod pbo_readback;
 mod raster;
+mod stencil_transfer;
 mod surface_color;
 mod surface_raster;
 pub(crate) use attachments::{

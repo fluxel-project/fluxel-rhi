@@ -5,7 +5,7 @@ use super::super::owner::{BrowserBuffer, BrowserEncoder, BrowserTexture};
 use crate::backend::gl::api::{GlFamilyApi as _, GlTextureDimension, GlTextureUsage};
 use fluxel_rhi_core::api::{Error, Result};
 use wasm_bindgen::JsCast;
-use web_sys::{WebGl2RenderingContext as Gl, WebGlBuffer, WebGlFramebuffer};
+use web_sys::{WebGl2RenderingContext as Gl, WebGlBuffer, WebGlFramebuffer, WebGlTexture};
 
 impl BrowserEncoder {
     pub(crate) fn copy_texture_to_buffer(
@@ -21,6 +21,32 @@ impl BrowserEncoder {
     ) -> Result<()> {
         self.same_owner(&source.owner)?;
         self.same_owner(&destination.owner)?;
+        let normalized_format = matches!(
+            source.desc.format,
+            crate::backend::gl::api::GlFormat::Depth16Unorm
+                | crate::backend::gl::api::GlFormat::R16Unorm
+                | crate::backend::gl::api::GlFormat::Rg16Unorm
+                | crate::backend::gl::api::GlFormat::Rgba16Unorm
+                | crate::backend::gl::api::GlFormat::Rgb10a2Unorm
+        );
+        let normalized_supported = normalized_format && {
+            let state = self.owner.state.borrow();
+            super::normalized_readback::supports_format(&state.context.raw, source.desc.format)
+        };
+        if normalized_supported
+            || source.desc.format == crate::backend::gl::api::GlFormat::Depth16Unorm
+        {
+            return self.copy_normalized_texture_to_buffer(
+                source,
+                mip,
+                origin,
+                extent,
+                destination,
+                offset,
+                bytes_per_row,
+                rows_per_image,
+            );
+        }
         let texture = source.texture()?;
         if !source.desc.usage.contains(GlTextureUsage::COPY_SOURCE) || source.desc.sample_count != 1
         {
@@ -80,6 +106,22 @@ impl BrowserEncoder {
             {
                 return Err(Error::Unsupported("WebGL2 pixel-pack framebuffer format"));
             }
+        }
+        if let Some(channel_bytes) =
+            super::super::ordinary_format::widened_unorm_readback_bytes(source.desc.format)
+        {
+            return self.copy_widened_unorm_texture_to_buffer(
+                source,
+                texture,
+                mip,
+                origin,
+                extent,
+                destination,
+                offset,
+                bytes_per_row,
+                rows_per_image,
+                channel_bytes,
+            );
         }
         let mut inner = Ok(());
         let outer = self.with_context("texture_to_pixel_pack_buffer", |raw| {
@@ -227,6 +269,168 @@ impl BrowserEncoder {
                     );
                     raw.delete_buffer(Some(scratch));
                 }
+                raw.delete_framebuffer(Some(&framebuffer));
+                result
+            };
+            inner = operation();
+        });
+        outer.and(inner)
+    }
+
+    /// Reads an R8/RG8 attachment through the portable RGBA/UNSIGNED_BYTE
+    /// WebGL2 pair, then copies its leading channel bytes from a row-sized PBO
+    /// scratch allocation into the caller's buffer. This is deliberately a
+    /// bounded native O(texels) fallback: it does not map or read GPU bytes on
+    /// the CPU, and avoids claiming RED/RG pixel-pack support where ANGLE does
+    /// not expose it.
+    #[allow(clippy::too_many_arguments)]
+    fn copy_widened_unorm_texture_to_buffer(
+        &mut self,
+        source: &BrowserTexture,
+        texture: &WebGlTexture,
+        mip: u32,
+        origin: [u32; 3],
+        extent: [u32; 3],
+        destination: &BrowserBuffer,
+        offset: u64,
+        bytes_per_row: u32,
+        rows_per_image: u32,
+        channel_bytes: u8,
+    ) -> Result<()> {
+        let layer_stride = u64::from(bytes_per_row) * u64::from(rows_per_image);
+        let mut inner = Ok(());
+        let outer = self.with_context("texture_to_widened_pixel_pack_buffer", |raw| {
+            let operation = || -> Result<()> {
+                let previous_framebuffer = raw
+                    .get_parameter(Gl::READ_FRAMEBUFFER_BINDING)
+                    .map_err(|_| Error::InvalidState)?;
+                let previous_pack = raw
+                    .get_parameter(Gl::PIXEL_PACK_BUFFER_BINDING)
+                    .map_err(|_| Error::InvalidState)?;
+                let previous_copy_read = raw
+                    .get_parameter(Gl::COPY_READ_BUFFER_BINDING)
+                    .map_err(|_| Error::InvalidState)?;
+                let previous_copy_write = raw
+                    .get_parameter(Gl::COPY_WRITE_BUFFER_BINDING)
+                    .map_err(|_| Error::InvalidState)?;
+                let number = |parameter| {
+                    raw.get_parameter(parameter)
+                        .ok()
+                        .and_then(|value| value.as_f64())
+                        .map(|value| value as i32)
+                        .ok_or(Error::InvalidState)
+                };
+                let alignment = number(Gl::PACK_ALIGNMENT)?;
+                let row_length = number(Gl::PACK_ROW_LENGTH)?;
+                let skip_rows = number(Gl::PACK_SKIP_ROWS)?;
+                let skip_pixels = number(Gl::PACK_SKIP_PIXELS)?;
+                let framebuffer = raw.create_framebuffer().ok_or(Error::OutOfMemory)?;
+                let Some(scratch) = raw.create_buffer() else {
+                    raw.delete_framebuffer(Some(&framebuffer));
+                    return Err(Error::OutOfMemory);
+                };
+                raw.bind_framebuffer(Gl::READ_FRAMEBUFFER, Some(&framebuffer));
+                raw.bind_buffer(Gl::PIXEL_PACK_BUFFER, Some(&scratch));
+                let scratch_bytes = extent[0]
+                    .checked_mul(4)
+                    .and_then(|value| i32::try_from(value).ok())
+                    .ok_or(Error::InvalidRange)?;
+                raw.buffer_data_with_i32(Gl::PIXEL_PACK_BUFFER, scratch_bytes, Gl::STREAM_READ);
+                raw.pixel_storei(Gl::PACK_ALIGNMENT, 1);
+                raw.pixel_storei(Gl::PACK_ROW_LENGTH, 0);
+                raw.pixel_storei(Gl::PACK_SKIP_ROWS, 0);
+                raw.pixel_storei(Gl::PACK_SKIP_PIXELS, 0);
+
+                let mut result = Ok(());
+                for layer in 0..extent[2] {
+                    if source.desc.dimension == GlTextureDimension::D2 {
+                        raw.framebuffer_texture_2d(
+                            Gl::READ_FRAMEBUFFER,
+                            Gl::COLOR_ATTACHMENT0,
+                            Gl::TEXTURE_2D,
+                            Some(texture),
+                            mip as i32,
+                        );
+                    } else {
+                        raw.framebuffer_texture_layer(
+                            Gl::READ_FRAMEBUFFER,
+                            Gl::COLOR_ATTACHMENT0,
+                            Some(texture),
+                            mip as i32,
+                            (origin[2] + layer) as i32,
+                        );
+                    }
+                    if raw.check_framebuffer_status(Gl::READ_FRAMEBUFFER)
+                        != Gl::FRAMEBUFFER_COMPLETE
+                    {
+                        result = Err(Error::Backend(
+                            "WebGL2 widened pixel-pack framebuffer incomplete".into(),
+                        ));
+                        break;
+                    }
+                    raw.read_buffer(Gl::COLOR_ATTACHMENT0);
+                    for row in 0..extent[1] {
+                        if raw
+                            .read_pixels_with_f64(
+                                origin[0] as i32,
+                                (origin[1] + row) as i32,
+                                extent[0] as i32,
+                                1,
+                                Gl::RGBA,
+                                Gl::UNSIGNED_BYTE,
+                                0.0,
+                            )
+                            .is_err()
+                        {
+                            result = Err(Error::Backend(
+                                "WebGL2 widened pixel-pack readPixels threw an exception".into(),
+                            ));
+                            break;
+                        }
+                        for column in 0..extent[0] {
+                            let position = offset
+                                + u64::from(layer) * layer_stride
+                                + u64::from(row) * u64::from(bytes_per_row)
+                                + u64::from(column) * u64::from(channel_bytes);
+                            raw.bind_buffer(Gl::COPY_READ_BUFFER, Some(&scratch));
+                            raw.bind_buffer(Gl::COPY_WRITE_BUFFER, Some(&destination.raw));
+                            raw.copy_buffer_sub_data_with_f64_and_f64_and_f64(
+                                Gl::COPY_READ_BUFFER,
+                                Gl::COPY_WRITE_BUFFER,
+                                f64::from(column * 4),
+                                position as f64,
+                                f64::from(channel_bytes),
+                            );
+                        }
+                        if result.is_err() {
+                            break;
+                        }
+                    }
+                    if result.is_err() {
+                        break;
+                    }
+                }
+                raw.pixel_storei(Gl::PACK_ALIGNMENT, alignment);
+                raw.pixel_storei(Gl::PACK_ROW_LENGTH, row_length);
+                raw.pixel_storei(Gl::PACK_SKIP_ROWS, skip_rows);
+                raw.pixel_storei(Gl::PACK_SKIP_PIXELS, skip_pixels);
+                raw.bind_buffer(
+                    Gl::PIXEL_PACK_BUFFER,
+                    previous_pack.dyn_ref::<WebGlBuffer>(),
+                );
+                raw.bind_framebuffer(
+                    Gl::READ_FRAMEBUFFER,
+                    previous_framebuffer.dyn_ref::<WebGlFramebuffer>(),
+                );
+                raw.bind_buffer(
+                    Gl::COPY_READ_BUFFER,
+                    previous_copy_read.dyn_ref::<WebGlBuffer>(),
+                );
+                raw.bind_buffer(
+                    Gl::COPY_WRITE_BUFFER,
+                    previous_copy_write.dyn_ref::<WebGlBuffer>(),
+                );
+                raw.delete_buffer(Some(&scratch));
                 raw.delete_framebuffer(Some(&framebuffer));
                 result
             };

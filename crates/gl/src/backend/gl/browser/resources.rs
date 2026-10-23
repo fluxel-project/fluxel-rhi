@@ -98,13 +98,22 @@ impl BrowserOwner {
             desc.sample_count > 1 || desc.format == super::super::api::GlFormat::Stencil8;
         if renderbuffer_only {
             use super::super::api::{GlFormatResourceKind, GlTextureUsage};
+            let standalone_stencil_copy =
+                desc.format == GlFormat::Stencil8 && desc.sample_count == 1;
+            let admitted_usage = GlTextureUsage::RENDER_ATTACHMENT
+                | GlTextureUsage::COPY_SOURCE
+                | GlTextureUsage::COPY_DESTINATION;
             if desc.dimension != GlTextureDimension::D2
                 || desc.extent.depth_or_layers != 1
                 || desc.mip_level_count != 1
-                || desc.usage != GlTextureUsage::RENDER_ATTACHMENT
+                || if standalone_stencil_copy {
+                    desc.usage.is_empty() || !admitted_usage.contains(desc.usage)
+                } else {
+                    desc.usage != GlTextureUsage::RENDER_ATTACHMENT
+                }
             {
                 return Err(Error::Unsupported(
-                    "WebGL2 renderbuffer requires attachment-only 2D storage",
+                    "WebGL2 renderbuffer requires single-layer attachment storage",
                 ));
             }
             let facts = state.context.discovery().formats().get_for(

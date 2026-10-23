@@ -106,6 +106,9 @@ pub(super) fn upload_encoding(format: GlFormat) -> Option<(u32, u32)> {
     if format == GlFormat::Depth16Unorm {
         return Some((Gl::DEPTH_COMPONENT, Gl::UNSIGNED_SHORT));
     }
+    if format == GlFormat::Depth32Float {
+        return Some((Gl::DEPTH_COMPONENT, Gl::FLOAT));
+    }
     if let Some(encoding) = super::ordinary_format::encoding(format) {
         return Some((encoding.pixel, encoding.ty));
     }
@@ -114,6 +117,17 @@ pub(super) fn upload_encoding(format: GlFormat) -> Option<(u32, u32)> {
         GlFormat::Rgba8Uint => Some((Gl::RGBA_INTEGER, Gl::UNSIGNED_BYTE)),
         GlFormat::Rgba8Sint => Some((Gl::RGBA_INTEGER, Gl::BYTE)),
         _ => None,
+    }
+}
+
+/// Bytes per texel for a WebGL2 direct client/PBO upload.  Packed depth-stencil
+/// formats deliberately stay absent: Core exposes their planes separately and
+/// WebGL2 cannot accept a matching independent plane upload.
+pub(super) fn upload_bytes_per_pixel(format: GlFormat) -> Option<u8> {
+    match format {
+        GlFormat::Depth16Unorm => Some(2),
+        GlFormat::Depth32Float => Some(4),
+        _ => super::ordinary_format::encoding(format).map(|encoding| encoding.bytes),
     }
 }
 
@@ -480,7 +494,10 @@ pub(super) fn webgl2_baseline_formats(
             Gl::COLOR_ATTACHMENT0,
         )
         .unwrap_or(false);
-        if renderable && super::ordinary_format::exact_readback_supported(raw, format) {
+        if renderable
+            && (super::ordinary_format::exact_readback_supported(raw, format)
+                || super::encoder::normalized_readback::supports_format(raw, format))
+        {
             formats.mark_exact_buffer_readback(format);
         }
         formats
@@ -518,6 +535,12 @@ pub(super) fn webgl2_baseline_formats(
                 Gl::COLOR_ATTACHMENT0,
             )
             .unwrap_or(false);
+            if renderable
+                && (super::ordinary_format::exact_readback_supported(raw, format)
+                    || super::encoder::normalized_readback::supports_format(raw, format))
+            {
+                formats.mark_exact_buffer_readback(format);
+            }
             formats
                 .record(GlFormatCapabilities {
                     format,

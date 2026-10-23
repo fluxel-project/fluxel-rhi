@@ -42,13 +42,24 @@ pub(super) fn texture_support_from_discovery(
         return Support::Unsupported("GL depth/stencil formats do not permit 3D texture storage");
     }
     let renderbuffer = browser && (desc.sample_count > 1 || desc.format == GlFormat::Stencil8);
+    let standalone_stencil_copy =
+        renderbuffer && desc.format == GlFormat::Stencil8 && desc.sample_count == 1;
+    let renderbuffer_usage = GlTextureUsage::RENDER_ATTACHMENT
+        | GlTextureUsage::COPY_SOURCE
+        | GlTextureUsage::COPY_DESTINATION;
     if renderbuffer
         && (desc.dimension != GlTextureDimension::D2
             || desc.extent.depth_or_layers != 1
             || desc.mip_level_count != 1
-            || desc.usage != GlTextureUsage::RENDER_ATTACHMENT)
+            || if standalone_stencil_copy {
+                desc.usage.is_empty() || !renderbuffer_usage.contains(desc.usage)
+            } else {
+                desc.usage != GlTextureUsage::RENDER_ATTACHMENT
+            })
     {
-        return Support::Unsupported("WebGL2 renderbuffer requires attachment-only 2D storage");
+        return Support::Unsupported(
+            "WebGL2 renderbuffer requires single-layer attachment storage",
+        );
     }
     if desc.format.compressed_info().is_some() {
         if desc.dimension == GlTextureDimension::D3
@@ -141,10 +152,22 @@ pub(super) fn texture_support_from_discovery(
     else {
         return Support::Unsupported("GL texture format/sample evidence");
     };
+    if standalone_stencil_copy && !facts.renderable {
+        return Support::Unsupported("WebGL2 stencil transfers require a renderable attachment");
+    }
     if (desc.usage.contains(GlTextureUsage::SAMPLED) && !facts.sampled)
         || (desc.usage.contains(GlTextureUsage::RENDER_ATTACHMENT) && !facts.renderable)
-        || (desc.usage.contains(GlTextureUsage::COPY_SOURCE) && !facts.copy_source)
-        || (desc.usage.contains(GlTextureUsage::COPY_DESTINATION) && !facts.copy_destination)
+        // WebGL2's format table does not claim generic renderbuffer copy
+        // support. The sole admitted exception is S8 single-sample
+        // private-FBO blit below; it is typed, non-sampled, and still
+        // requires actual renderability from this context. Public usage may
+        // be copy-only because this backend owns those transient attachments.
+        || (desc.usage.contains(GlTextureUsage::COPY_SOURCE)
+            && !facts.copy_source
+            && !standalone_stencil_copy)
+        || (desc.usage.contains(GlTextureUsage::COPY_DESTINATION)
+            && !facts.copy_destination
+            && !standalone_stencil_copy)
         || (desc.usage.contains(GlTextureUsage::STORAGE_BINDING)
             && !(facts.storage_read || facts.storage_write))
     {

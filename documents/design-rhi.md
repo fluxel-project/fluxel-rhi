@@ -629,6 +629,79 @@ browser implementation includes a typed GL-family provider and a Core
 `BrowserOwner`/`BrowserEncoder` execution path; they have distinct native call
 boundaries and need their own validation. Neither is a deferred CPU command log.
 
+Runtime-sized sampled-texture and sampler arrays specialize a declared finite
+maximum into ordinary native slots. Native slot limits are checked before shader
+expansion; partial bindings and short prefixes retain the same Core rules as
+fixed arrays. This does not expose an unbounded descriptor heap. The combined
+nonuniform texture/storage-buffer capability stays disabled because WebGL2 has
+no storage-buffer interface.
+
+Mapping issues a GPU copy into a private staging buffer and inserts a fence.
+Its future yields to the browser until that fence signals, then obtains the CPU
+snapshot with `getBufferSubData`. Cancelling the future releases the pending map
+lease and retains native completion safety. Explicit invalidation refreshes a
+snapshot only after the caller has established completion for the source work.
+There is no blocking fence wait or CPU snapshot during the initial map request.
+
+Direct ordinary integer and UNORM texture-to-buffer transfers require a successful
+byte-comparison probe for the actual attachment and readback encoding. R8/RG8
+UNORM use portable RGBA8 pixel-pack reads followed by GPU buffer subrange copies
+that retain only the declared channels. This fallback issues one read per row
+and one native copy per texel; it never downloads intermediate pixels to CPU.
+An available texture-to-texture copy does not imply exact raw-buffer readback.
+SNORM duplicate endpoint encodings and floating-point NaN payloads cannot be
+promised through numeric `readPixels` conversions.
+
+When vertex `highp` exposes at least 23 mantissa bits, normalized transform
+feedback reconstructs R16/RG16/RGBA16 UNORM and RGB10A2 into their exact integer
+encodings even when direct pixel-pack pairs are unavailable. It supports 2D,
+array, and 3D color regions with independent row/image strides. This fallback
+does not admit non-injective SNORM or floating-point bit representations.
+
+Single-sample 2D Depth16 supports CPU uploads, GPU pixel-unpack uploads, depth
+copies, and exact buffer readback through a private transform-feedback draw;
+the readback also supports depth-array subregions with independent image stride.
+The draw reconstructs two 16-bit normalized values per output word, followed by
+GPU copies into the caller's padded rows. Private bindings and objects are
+scoped to the operation. Depth PBO uploads compact the requested source rows on
+GPU and upload the complete rectangle in one call; no CPU readback is involved.
+Depth32Float CPU and PBO uploads are validated by numeric depth sampling, which
+does not establish a portable raw floating-point depth readback representation.
+
+Stencil8 renderbuffers accept attachment and copy usage, including copy-only
+resources, while remaining unavailable for sampled/storage bindings. Stencil
+byte-plane uploads use a private R8UI texture and eight fixed stencil-write
+draws. Readback uses stencil tests to produce exact Boolean color channels,
+then transform feedback packs those channels into bytes. The same operations
+support the stencil plane of packed depth/stencil textures, including array
+subregions, without relying on stencil texture sampling. They reject active
+query, transform-feedback, or raster scopes rather than altering their results.
+
+Depth32FloatStencil8 depth-plane uploads expand compact float texels into a
+private packed PBO, use the native packed PBO upload overload, and blit only
+depth into the destination. The stencil plane remains unchanged. Both upload
+directions have output tests that observe preservation of the other plane and
+subsequent ordinary raster work. Depth24Plus remains opaque: there is no
+portable raw 24-bit depth byte plane to expose.
+
+The following remaining limits follow the browser API rather than missing Rust
+bindings. They are reported as unsupported instead of introducing CPU execution
+or a second scheduler:
+
+| Domain | WebGL2 boundary |
+| --- | --- |
+| Compressed texture clear | No native clear of arbitrary compressed blocks and no renderable compressed attachment; software codecs are outside this backend. |
+| Arbitrary multiview mask | OVR exposes one contiguous base/count range, with a common base for framebuffer attachments. |
+| Multiview with an active timer query | OVR explicitly rejects draw/clear with more than one view while a timer query is active. |
+| GPU-count multi-draw | `WEBGL_multi_draw` consumes CPU arrays, with no indirect argument/count-buffer execution interface. |
+| Pipeline statistics | Available query targets do not express Core's complete pipeline-statistics fields. |
+| Serialized native program binaries | WebGL2 removes the program-binary entry points. Shader-source reuse does not constitute a native binary cache. |
+| Polygon point mode and conservative rasterization | No matching exposed browser route. Line polygon mode, depth clamp, and other optional raster states use their actual browser extensions when available. |
+
+These limits are defined by the [WebGL2 specification](https://registry.khronos.org/webgl/specs/latest/2.0/),
+[OVR multiview extension](https://registry.khronos.org/webgl/extensions/OVR_multiview2/),
+and [multi-draw extension](https://registry.khronos.org/webgl/extensions/WEBGL_multi_draw/).
+
 WebGL2 has no native compute or secondary command recording route. Example 13's
 historical `multithreaded_recording` name does not change this: its WebGL2 scene
 uses sequential drawing. A finite capture may intentionally stop after frame

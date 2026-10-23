@@ -93,7 +93,39 @@ pub(crate) fn buffer_to_texture(
     #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
     {
         let browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
-        let result = if texture.desc.format.compressed_info().is_some() {
+        let result = if packed_upload && destination.aspect == api::TextureAspects::DEPTH {
+            browser
+                .copy_packed_depth32f_to_texture(
+                    &source.browser,
+                    layout.offset,
+                    layout.bytes_per_row,
+                    layout.rows_per_image,
+                    &texture.browser,
+                    destination.mip,
+                    destination.origin,
+                    destination.extent,
+                )
+                .and_then(|handled| {
+                    if handled {
+                        Ok(())
+                    } else {
+                        Err(Error::Unsupported("WebGL2 packed depth upload format"))
+                    }
+                })
+        } else if destination.aspect == api::TextureAspects::STENCIL
+            && (stencil_upload || packed_upload)
+        {
+            browser.write_stencil_buffer(
+                &texture.browser,
+                destination.mip,
+                destination.origin,
+                destination.extent,
+                layout.bytes_per_row,
+                layout.rows_per_image,
+                &source.browser,
+                layout.offset,
+            )
+        } else if texture.desc.format.compressed_info().is_some() {
             browser.copy_compressed_buffer_to_texture(
                 &source.browser,
                 layout.offset,
@@ -251,27 +283,48 @@ pub(crate) fn texture_to_buffer(
         let source = unsafe { src.texture.native_ref() };
         use crate::backend::gl::api::GlTextureDimension;
         if src.aspect != api::TextureAspects::COLOR
+            && !(src.aspect == api::TextureAspects::DEPTH
+                && source.desc.format == GlFormat::Depth16Unorm)
+            && !(src.aspect == api::TextureAspects::STENCIL
+                && matches!(
+                    source.desc.format,
+                    GlFormat::Stencil8
+                        | GlFormat::Depth24PlusStencil8
+                        | GlFormat::Depth32FloatStencil8
+                ))
             || !matches!(
                 source.desc.dimension,
                 GlTextureDimension::D2 | GlTextureDimension::D2Array | GlTextureDimension::D3
             )
-            || src.aspect != api::TextureAspects::COLOR
         {
             return Err(Error::Unsupported(
-                "WebGL2 texture-to-buffer requires a supported color region",
+                "WebGL2 texture-to-buffer requires a supported color or depth region",
             ));
         }
         let browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
-        let result = browser.copy_texture_to_buffer(
-            &source.browser,
-            src.mip,
-            src.origin,
-            src.extent,
-            &dst.browser,
-            layout.offset,
-            layout.bytes_per_row,
-            layout.rows_per_image,
-        );
+        let result = if src.aspect == api::TextureAspects::STENCIL {
+            browser.copy_stencil_to_buffer(
+                &source.browser,
+                src.mip,
+                src.origin,
+                src.extent,
+                &dst.browser,
+                layout.offset,
+                layout.bytes_per_row,
+                layout.rows_per_image,
+            )
+        } else {
+            browser.copy_texture_to_buffer(
+                &source.browser,
+                src.mip,
+                src.origin,
+                src.extent,
+                &dst.browser,
+                layout.offset,
+                layout.bytes_per_row,
+                layout.rows_per_image,
+            )
+        };
         if result.is_ok() {
             encoder.issued = true;
         } else {
@@ -387,12 +440,6 @@ pub(crate) fn write_texture(
     if !color_upload && !depth_upload && !stencil_upload && !packed_upload {
         return Err(Error::Unsupported("GL depth/stencil texture byte upload"));
     }
-    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
-    if depth_upload || stencil_upload || packed_upload {
-        return Err(Error::Unsupported(
-            "WebGL2 depth/stencil CPU texture upload",
-        ));
-    }
     if !texture
         .desc
         .usage
@@ -431,7 +478,33 @@ pub(crate) fn write_texture(
         #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
         {
             let browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
-            let result = if texture.desc.format.compressed_info().is_some() {
+            let result = if packed_upload && dst.aspect == api::TextureAspects::DEPTH {
+                let start = usize::try_from(layout.offset).map_err(|_| Error::InvalidRange)?;
+                let payload = bytes.get(start..).ok_or(Error::InvalidRange)?;
+                browser.write_packed_depth32f_client(
+                    &texture.browser,
+                    dst.mip,
+                    dst.origin,
+                    dst.extent,
+                    layout.bytes_per_row,
+                    layout.rows_per_image,
+                    payload,
+                )
+            } else if dst.aspect == api::TextureAspects::STENCIL
+                && (stencil_upload || packed_upload)
+            {
+                let start = usize::try_from(layout.offset).map_err(|_| Error::InvalidRange)?;
+                let payload = bytes.get(start..).ok_or(Error::InvalidRange)?;
+                browser.write_stencil_client(
+                    &texture.browser,
+                    dst.mip,
+                    dst.origin,
+                    dst.extent,
+                    layout.bytes_per_row,
+                    layout.rows_per_image,
+                    payload,
+                )
+            } else if texture.desc.format.compressed_info().is_some() {
                 browser.write_compressed_texture(
                     &texture.browser,
                     dst.mip,

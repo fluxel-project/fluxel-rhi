@@ -139,6 +139,7 @@ pub(super) struct BrowserFence {
 }
 
 mod completion;
+mod mapping;
 mod resources;
 
 pub(crate) use resources::{
@@ -272,23 +273,38 @@ impl BrowserOwner {
         if offset.checked_add(size).is_none_or(|end| end > source.size) {
             return Err(Error::InvalidRange);
         }
+        const MAX_EXACT_WEBGL_OFFSET: u64 = (1_u64 << 53) - 1;
+        if offset > MAX_EXACT_WEBGL_OFFSET
+            || size > MAX_EXACT_WEBGL_OFFSET
+            || offset
+                .checked_add(size)
+                .is_none_or(|end| end > MAX_EXACT_WEBGL_OFFSET)
+        {
+            return Err(Error::InvalidRange);
+        }
         let mut bytes = vec![0; usize::try_from(size).map_err(|_| Error::OutOfMemory)?];
         let mut state = self.state.borrow_mut();
         state.ensure_active()?;
-        state
-            .context
-            .raw
-            .bind_buffer(Gl::COPY_READ_BUFFER, Some(&source.raw));
-        state.context.raw.get_buffer_sub_data_with_f64_and_u8_array(
+        use wasm_bindgen::JsCast;
+        let raw = &state.context.raw;
+        let prior = raw
+            .get_parameter(Gl::COPY_READ_BUFFER_BINDING)
+            .ok()
+            .and_then(|value| value.dyn_into::<WebGlBuffer>().ok());
+        raw.bind_buffer(Gl::COPY_READ_BUFFER, Some(&source.raw));
+        raw.get_buffer_sub_data_with_f64_and_u8_array(
             Gl::COPY_READ_BUFFER,
             offset as f64,
             &mut bytes,
         );
-        if state.context.raw.is_context_lost() {
+        let lost = raw.is_context_lost();
+        let error = raw.get_error();
+        raw.bind_buffer(Gl::COPY_READ_BUFFER, prior.as_ref());
+        if lost {
             state.mark_lost();
             return Err(Error::DeviceLost);
         }
-        if state.context.raw.get_error() != Gl::NO_ERROR {
+        if error != Gl::NO_ERROR {
             return Err(Error::Backend("WebGL2 buffer readback failed".into()));
         }
         Ok(bytes)

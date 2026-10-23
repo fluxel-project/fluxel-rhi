@@ -28,16 +28,10 @@ impl BrowserEncoder {
         let texture = destination.texture()?;
         let (format, kind) = super::super::format_map::upload_encoding(destination.desc.format)
             .ok_or(Error::Unsupported("WebGL2 buffer-to-texture format"))?;
-        let bytes_per_pixel =
-            if destination.desc.format == crate::backend::gl::api::GlFormat::Depth16Unorm {
-                2
-            } else {
-                u64::from(
-                    super::super::ordinary_format::encoding(destination.desc.format)
-                        .ok_or(Error::Unsupported("WebGL2 buffer-to-texture format"))?
-                        .bytes,
-                )
-            };
+        let bytes_per_pixel = u64::from(
+            super::super::format_map::upload_bytes_per_pixel(destination.desc.format)
+                .ok_or(Error::Unsupported("WebGL2 buffer-to-texture format"))?,
+        );
         if mip >= destination.desc.mip_level_count || extent.contains(&0) {
             return Err(Error::InvalidRange);
         }
@@ -93,6 +87,23 @@ impl BrowserEncoder {
             GlTextureDimension::D2 => return Err(Error::InvalidRange),
             _ => return Err(Error::Unsupported("WebGL2 texture dimension")),
         };
+        if self.copy_depth_pbo_to_texture(
+            source,
+            offset,
+            bytes_per_row,
+            rows_per_image,
+            destination,
+            texture,
+            mip,
+            origin,
+            extent,
+            target,
+            format,
+            kind,
+            row_bytes,
+        )? {
+            return Ok(());
+        }
         // WebGL requires the unpack offset to be aligned to the transfer type,
         // while Core permits arbitrary byte offsets. Copy each row on GPU to an
         // aligned scratch buffer when necessary; never map the source on CPU.
@@ -241,13 +252,17 @@ impl BrowserEncoder {
 
         self.same_owner(&destination.owner)?;
         let destination_raw = destination.texture()?;
-        let encoding = super::super::ordinary_format::encoding(destination.desc.format)
-            .ok_or(Error::Unsupported("WebGL2 texture upload format"))?;
+        let (pixel_format, pixel_type) =
+            super::super::format_map::upload_encoding(destination.desc.format)
+                .ok_or(Error::Unsupported("WebGL2 texture upload format"))?;
+        let bytes_per_pixel =
+            super::super::format_map::upload_bytes_per_pixel(destination.desc.format)
+                .ok_or(Error::Unsupported("WebGL2 texture upload format"))?;
         if mip >= destination.desc.mip_level_count || extent.contains(&0) {
             return Err(Error::InvalidRange);
         }
         let row_bytes = (extent[0] as usize)
-            .checked_mul(encoding.bytes as usize)
+            .checked_mul(bytes_per_pixel as usize)
             .ok_or(Error::InvalidRange)?;
         let row_stride = bytes_per_row as usize;
         let layer_stride = row_stride
@@ -310,7 +325,6 @@ impl BrowserEncoder {
                 packed.extend_from_slice(&bytes[start..start + row_bytes]);
             }
         }
-        let (pixel_format, pixel_type) = (encoding.pixel, encoding.ty);
         self.with_context("prepare_texture_region_upload", |raw| {
             raw.bind_texture(target, Some(destination_raw));
             raw.bind_buffer(Gl::PIXEL_UNPACK_BUFFER, None);

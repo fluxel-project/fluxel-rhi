@@ -287,18 +287,11 @@ impl ResourceBackend for Gl {
         desc: &api::BindGroupLayoutDesc,
     ) -> Result<GlBindGroupLayout> {
         let entries = binding::lower_bind_group_layout(desc)?;
-        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
         if entries
             .iter()
             .any(|entry| matches!(entry.count, api::BindingCount::RuntimeSized { .. }))
         {
-            use crate::backend::gl::api::GlFamilyApi as _;
-            let limits = device
-                .0
-                .with_native("query GL runtime array limits", |provider| {
-                    Ok(provider.discovery().limits())
-                })
-                .map_err(native_error)?;
+            let limits = runtime_array_limits(device)?;
             binding::validate_runtime_capacities(&entries, limits)?;
         }
         Ok(GlBindGroupLayout {
@@ -592,6 +585,36 @@ impl ResourceBackend for Gl {
             native: crate::backend::gl::api::GlPipelineLayout { bindings },
             push_ranges: desc.push_constants.to_vec().into(),
         })
+    }
+}
+
+/// Obtains the exact native slot facts before a RuntimeSized layout permits
+/// Naga specialization. This intentionally runs at layout creation rather
+/// than at pipeline linking, where an enormous advertised max_count would
+/// already have expanded private shader IR.
+fn runtime_array_limits(device: &GlDevice) -> Result<crate::backend::gl::api::GlLimits> {
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    {
+        use crate::backend::gl::api::GlFamilyApi as _;
+        return device
+            .0
+            .with_native("query GL runtime array limits", |provider| {
+                Ok(provider.discovery().limits())
+            })
+            .map_err(native_error);
+    }
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    {
+        return Ok(device.0.owner.discovery_snapshot().limits());
+    }
+    #[cfg(not(any(
+        all(windows, feature = "native-gl-wgl"),
+        feature = "native-gles-egl",
+        all(target_arch = "wasm32", feature = "webgl2")
+    )))]
+    {
+        let _ = device;
+        Err(Error::Unsupported("GL platform context"))
     }
 }
 

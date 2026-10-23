@@ -5,7 +5,8 @@
 //! payload or FBO survives this call.
 
 use fluxel_rhi_core::api::{Error, Result};
-use web_sys::WebGl2RenderingContext as Gl;
+use wasm_bindgen::JsCast;
+use web_sys::{WebGl2RenderingContext as Gl, WebGlFramebuffer};
 
 use super::super::owner::{BrowserEncoder, BrowserTexture};
 
@@ -28,10 +29,33 @@ impl BrowserEncoder {
     ) -> Result<()> {
         self.same_owner(&source.owner)?;
         self.same_owner(&destination.owner)?;
-        let source_raw = source.texture()?;
-        let destination_raw = destination.texture()?;
         let src = source.desc;
         let dst = destination.desc;
+        // A standalone S8 allocation is a WebGL renderbuffer, not a texture.
+        // It has one mip/layer and is admitted solely for typed stencil
+        // attachment blits. Do not generalize this to other renderbuffers:
+        // their Core copy contract may require resolves, sampling, or planes
+        // which framebuffer_renderbuffer cannot provide.
+        let standalone_stencil_renderbuffers = src.format
+            == crate::backend::gl::api::GlFormat::Stencil8
+            && dst.format == crate::backend::gl::api::GlFormat::Stencil8
+            && src.sample_count == 1
+            && dst.sample_count == 1
+            && source.raw.is_none()
+            && destination.raw.is_none()
+            && source.renderbuffer.is_some()
+            && destination.renderbuffer.is_some();
+        if !standalone_stencil_renderbuffers
+            && (source.renderbuffer.is_some() || destination.renderbuffer.is_some())
+        {
+            return Err(Error::Unsupported("WebGL2 renderbuffer blit format"));
+        }
+        let source_raw = (!standalone_stencil_renderbuffers)
+            .then(|| source.texture())
+            .transpose()?;
+        let destination_raw = (!standalone_stencil_renderbuffers)
+            .then(|| destination.texture())
+            .transpose()?;
         let src_extent = src.mip_extent(source_mip).ok_or(Error::InvalidRange)?;
         let dst_extent = dst.mip_extent(destination_mip).ok_or(Error::InvalidRange)?;
         if !matches!(
@@ -55,13 +79,29 @@ impl BrowserEncoder {
                 .owner
                 .discovery_snapshot()
                 .formats()
-                .get(src.format, 1)
+                .get_for(
+                    if standalone_stencil_renderbuffers {
+                        crate::backend::gl::api::GlFormatResourceKind::Renderbuffer
+                    } else {
+                        crate::backend::gl::api::GlFormatResourceKind::Texture
+                    },
+                    src.format,
+                    1,
+                )
                 .is_none_or(|facts| !facts.renderable)
             || self
                 .owner
                 .discovery_snapshot()
                 .formats()
-                .get(dst.format, 1)
+                .get_for(
+                    if standalone_stencil_renderbuffers {
+                        crate::backend::gl::api::GlFormatResourceKind::Renderbuffer
+                    } else {
+                        crate::backend::gl::api::GlFormatResourceKind::Texture
+                    },
+                    dst.format,
+                    1,
+                )
                 .is_none_or(|facts| !facts.renderable)
             || (filter == crate::backend::gl::api::GlFilterMode::Linear
                 && (src.format.is_integer_color()
@@ -93,10 +133,8 @@ impl BrowserEncoder {
             || destination_origin[1]
                 .checked_add(destination_extent[1])
                 .is_none_or(|end| end > dst_extent.height)
-            || (js_sys::Object::is(
-                <web_sys::WebGlTexture as AsRef<wasm_bindgen::JsValue>>::as_ref(source_raw),
-                <web_sys::WebGlTexture as AsRef<wasm_bindgen::JsValue>>::as_ref(destination_raw),
-            ) && source_mip == destination_mip
+            || (same_storage(source, destination)
+                && source_mip == destination_mip
                 && source_layer < destination_layer + layers
                 && destination_layer < source_layer + layers)
         {
@@ -119,6 +157,13 @@ impl BrowserEncoder {
         state.ensure_encoder(self.epoch)?;
         state.ensure_active()?;
         let raw = &state.context.raw;
+        let previous_read = raw
+            .get_parameter(Gl::READ_FRAMEBUFFER_BINDING)
+            .map_err(|_| Error::InvalidState)?;
+        let previous_draw = raw
+            .get_parameter(Gl::DRAW_FRAMEBUFFER_BINDING)
+            .map_err(|_| Error::InvalidState)?;
+        let previous_scissor = raw.is_enabled(Gl::SCISSOR_TEST);
         use crate::backend::gl::api::{GlFormat, GlTextureAspect};
         let attachment = match src.format {
             GlFormat::Depth24PlusStencil8 | GlFormat::Depth32FloatStencil8 => {
@@ -147,19 +192,26 @@ impl BrowserEncoder {
         let mut destination_complete = true;
         for layer in 0..layers {
             raw.bind_framebuffer(Gl::FRAMEBUFFER, Some(&src_fbo));
-            if src.dimension == crate::backend::gl::api::GlTextureDimension::D2 {
+            if standalone_stencil_renderbuffers {
+                raw.framebuffer_renderbuffer(
+                    Gl::FRAMEBUFFER,
+                    attachment,
+                    Gl::RENDERBUFFER,
+                    source.renderbuffer.as_ref(),
+                );
+            } else if src.dimension == crate::backend::gl::api::GlTextureDimension::D2 {
                 raw.framebuffer_texture_2d(
                     Gl::FRAMEBUFFER,
                     attachment,
                     Gl::TEXTURE_2D,
-                    Some(source_raw),
+                    source_raw,
                     source_mip as i32,
                 );
             } else {
                 raw.framebuffer_texture_layer(
                     Gl::FRAMEBUFFER,
                     attachment,
-                    Some(source_raw),
+                    source_raw,
                     source_mip as i32,
                     (source_layer + layer) as i32,
                 );
@@ -175,19 +227,26 @@ impl BrowserEncoder {
                 break;
             }
             raw.bind_framebuffer(Gl::FRAMEBUFFER, Some(&dst_fbo));
-            if dst.dimension == crate::backend::gl::api::GlTextureDimension::D2 {
+            if standalone_stencil_renderbuffers {
+                raw.framebuffer_renderbuffer(
+                    Gl::FRAMEBUFFER,
+                    attachment,
+                    Gl::RENDERBUFFER,
+                    destination.renderbuffer.as_ref(),
+                );
+            } else if dst.dimension == crate::backend::gl::api::GlTextureDimension::D2 {
                 raw.framebuffer_texture_2d(
                     Gl::FRAMEBUFFER,
                     attachment,
                     Gl::TEXTURE_2D,
-                    Some(destination_raw),
+                    destination_raw,
                     destination_mip as i32,
                 );
             } else {
                 raw.framebuffer_texture_layer(
                     Gl::FRAMEBUFFER,
                     attachment,
-                    Some(destination_raw),
+                    destination_raw,
                     destination_mip as i32,
                     (destination_layer + layer) as i32,
                 );
@@ -223,7 +282,19 @@ impl BrowserEncoder {
             );
             self.issued = true;
         }
-        raw.bind_framebuffer(Gl::FRAMEBUFFER, None);
+        raw.bind_framebuffer(
+            Gl::READ_FRAMEBUFFER,
+            previous_read.dyn_ref::<WebGlFramebuffer>(),
+        );
+        raw.bind_framebuffer(
+            Gl::DRAW_FRAMEBUFFER,
+            previous_draw.dyn_ref::<WebGlFramebuffer>(),
+        );
+        if previous_scissor {
+            raw.enable(Gl::SCISSOR_TEST);
+        } else {
+            raw.disable(Gl::SCISSOR_TEST);
+        }
         raw.delete_framebuffer(Some(&dst_fbo));
         raw.delete_framebuffer(Some(&src_fbo));
         if state.context.raw.is_context_lost() {
@@ -242,5 +313,27 @@ impl BrowserEncoder {
             ));
         }
         Ok(())
+    }
+}
+
+/// Texture and renderbuffer handles are distinct WebGL object types. Compare
+/// the actual object identity so self-overlap remains rejected for S8
+/// renderbuffers as it already is for texture mip/layer ranges.
+fn same_storage(source: &BrowserTexture, destination: &BrowserTexture) -> bool {
+    match (
+        source.raw.as_ref(),
+        destination.raw.as_ref(),
+        source.renderbuffer.as_ref(),
+        destination.renderbuffer.as_ref(),
+    ) {
+        (Some(source), Some(destination), None, None) => js_sys::Object::is(
+            <web_sys::WebGlTexture as AsRef<wasm_bindgen::JsValue>>::as_ref(source),
+            <web_sys::WebGlTexture as AsRef<wasm_bindgen::JsValue>>::as_ref(destination),
+        ),
+        (None, None, Some(source), Some(destination)) => js_sys::Object::is(
+            <web_sys::WebGlRenderbuffer as AsRef<wasm_bindgen::JsValue>>::as_ref(source),
+            <web_sys::WebGlRenderbuffer as AsRef<wasm_bindgen::JsValue>>::as_ref(destination),
+        ),
+        _ => false,
     }
 }

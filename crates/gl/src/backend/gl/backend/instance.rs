@@ -236,10 +236,20 @@ fn gl_capabilities(
             let multiview_views = multiview_limit(state)?;
             return Ok(DeviceCapabilities {
                 push_constants: limits.push_constant_bytes(false) != 0,
-                // WebGL2 uses the same fixed-array shader specialization path;
-                // storage textures, runtime arrays and nonuniform indexing
-                // remain separately capability-gated.
+                // WebGL2 has no unsized descriptor-array primitive, but the
+                // Core contract is explicitly bounded: the GL lowering
+                // specializes each RuntimeSized declaration to its layout's
+                // max_count and assigns ordinary WebGL texture/UBO slots.
+                // Layout creation rejects a capacity which cannot fit this
+                // context before shader specialization can expand it.
+                //
+                // Do not expose the combined nonuniform feature here. Its
+                // public contract also includes SSBO indexing, which WebGL2
+                // does not provide; ESSL opaque-array indexing consequently
+                // remains limited to the dynamically-uniform cases accepted
+                // by WebGL2.
                 binding_arrays: true,
+                runtime_sized_binding_arrays: true,
                 multiview: multiview_views > 0,
                 occlusion: true,
                 timestamp: super::query::query_supported(
