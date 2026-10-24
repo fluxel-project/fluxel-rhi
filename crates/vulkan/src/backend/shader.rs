@@ -117,6 +117,7 @@ pub(super) fn create(device: &VulkanDevice, desc: &api::ShaderDesc) -> Result<Vu
             "shaderClipDistance" => return Err(Error::Unsupported("Vulkan shaderClipDistance")),
             api::SHADER_FEATURE_RAY_QUERY if device.0.ray_support.query => {}
             api::SHADER_FEATURE_RAY_QUERY => return Err(Error::Unsupported("Vulkan ray query")),
+            "subgroups" => {}
             _ => return Err(Error::Unsupported("Vulkan shader required feature")),
         }
     }
@@ -128,6 +129,8 @@ pub(super) fn create(device: &VulkanDevice, desc: &api::ShaderDesc) -> Result<Vu
     let mut bytes = Cursor::new(desc.bytes.as_ref());
     let words =
         read_spv(&mut bytes).map_err(|error| Error::Shader(format!("invalid SPIR-V: {error}")))?;
+    subgroup::validate_spirv(device, desc, &words)?;
+    numeric::validate_spirv(device, &words)?;
     let info = vk::ShaderModuleCreateInfo::default().code(&words);
     // SAFETY: `words` is a whole-word slice that lives through this call and
     // DeviceState owns the live logical device. Driver-reported SPIR-V semantic
@@ -150,3 +153,7 @@ pub(crate) use sampler::usage as sampler_usage;
 #[path = "shader_wgsl.rs"]
 mod wgsl;
 pub(crate) use wgsl::{compile_variant, create_wgsl};
+#[path = "shader_numeric.rs"]
+mod numeric;
+#[path = "shader_subgroup.rs"]
+mod subgroup;

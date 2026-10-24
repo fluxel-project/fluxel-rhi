@@ -415,7 +415,7 @@ fn multisample_resolve_readback() {
         label: None,
         dimension: TextureDimension::D2,
         extent: [4, 4, 1],
-        array_layers: 1,
+        array_layers: 2,
         format: TextureFormat::Rgba8Unorm,
         mip_levels: 1,
         samples,
@@ -423,8 +423,13 @@ fn multisample_resolve_readback() {
         view_formats: vec![],
     };
     let ms_desc = make_desc(4, TextureUsage::RENDER_ATTACHMENT);
-    let resolved_desc = make_desc(1, TextureUsage::RENDER_ATTACHMENT | TextureUsage::COPY_SRC);
-    if matches!(device.texture_support(&ms_desc), Support::Unsupported(_)) {
+    let resolved_desc = make_desc(1, TextureUsage::COPY_DST | TextureUsage::COPY_SRC);
+    if matches!(device.texture_support(&ms_desc), Support::Unsupported(_))
+        || matches!(
+            device.texture_support(&resolved_desc),
+            Support::Unsupported(_)
+        )
+    {
         eprintln!("SKIP 4x resolve: device capability");
         return;
     }
@@ -433,7 +438,7 @@ fn multisample_resolve_readback() {
     let output = device
         .create_buffer(&BufferDesc {
             label: None,
-            size: 64,
+            size: 128,
             usage: BufferUsage::COPY_DST | BufferUsage::MAP_READ,
             memory: MemoryClass::Readback,
         })
@@ -447,17 +452,54 @@ fn multisample_resolve_readback() {
         stages: StageMask::COLOR_OUTPUT,
         accesses: AccessMask::COLOR_READ,
     };
+    let transition = |texture, layers, from, to, from_uses, to_uses| {
+        ResourceTransition::Texture(TextureBarrier {
+            target: Subresources {
+                texture,
+                aspects: TextureAspects::COLOR,
+                mips: 0..1,
+                layers,
+            },
+            usage: StateTransition {
+                from: from_uses,
+                to: to_uses,
+            },
+            layout: Some((from, to)),
+            ownership: None,
+        })
+    };
+    let array_region = |texture, layer| TextureRegion {
+        texture,
+        mip: 0,
+        origin: [0, 0, layer],
+        extent: [4, 4, 1],
+        aspect: TextureAspects::COLOR,
+    };
     let mut e = device.encoder(device.lanes()[0].id).unwrap();
+    // Layer zero is deliberately outside the resolve region: a standalone
+    // resolve may not overwrite neighboring array layers.
+    e.write_texture(
+        array_region(&destination, 0),
+        TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: 16,
+            rows_per_image: 4,
+        },
+        &[17; 64],
+    )
+    .unwrap();
     e.transition_resources(&[
-        texture_transition(
+        transition(
             &source,
+            1..2,
             ImageLayout::Undefined,
             ImageLayout::ColorAttachment,
             no_access(),
             color_write,
         ),
-        texture_transition(
+        transition(
             &destination,
+            1..2,
             ImageLayout::Undefined,
             ImageLayout::ResolveDst,
             no_access(),
@@ -468,29 +510,48 @@ fn multisample_resolve_readback() {
     e.clear_texture(
         &source,
         0..1,
-        0..1,
+        1..2,
         TextureClearValue::Color(ClearColor::Float([1.0, 0.0, 0.0, 1.0])),
     )
     .unwrap();
-    e.transition_resources(&[texture_transition(
+    e.transition_resources(&[transition(
         &source,
+        1..2,
         ImageLayout::ColorAttachment,
         ImageLayout::ResolveSrc,
         color_write,
         color_read,
     )])
     .unwrap();
-    e.resolve(region4(&source), region4(&destination)).unwrap();
-    e.transition_resources(&[texture_transition(
-        &destination,
-        ImageLayout::ResolveDst,
-        ImageLayout::CopySrc,
-        color_write,
-        copy_read(),
-    )])
+    e.resolve(array_region(&source, 1), array_region(&destination, 1))
+        .unwrap();
+    e.transition_resources(&[
+        transition(
+            &destination,
+            0..1,
+            ImageLayout::Common,
+            ImageLayout::CopySrc,
+            copy_write(),
+            copy_read(),
+        ),
+        transition(
+            &destination,
+            1..2,
+            ImageLayout::ResolveDst,
+            ImageLayout::CopySrc,
+            color_write,
+            copy_read(),
+        ),
+    ])
     .unwrap();
     e.texture_to_buffer(
-        region4(&destination),
+        TextureRegion {
+            texture: &destination,
+            mip: 0,
+            origin: [0, 0, 0],
+            extent: [4, 4, 2],
+            aspect: TextureAspects::COLOR,
+        },
         &output,
         TexelCopyBufferLayout {
             offset: 0,
@@ -499,11 +560,14 @@ fn multisample_resolve_readback() {
         },
     )
     .unwrap();
-    let ticket = e.readback_buffer(&output, 0..64).unwrap();
+    let ticket = e.readback_buffer(&output, 0..128).unwrap();
     let receipt = submit(&device, vec![e.finish().unwrap()], false);
     let point = &receipt.checkpoints[0].point;
     block_on(device.wait_completion(point)).unwrap();
     // SAFETY: the completion point covers the readback.
     let data = block_on(unsafe { device.read_after(ticket, point) }).unwrap();
-    assert_eq!(data.bytes, [255, 0, 0, 255].repeat(16));
+    assert_eq!(
+        data.bytes,
+        [[17; 64].as_slice(), [255, 0, 0, 255].repeat(16).as_slice()].concat()
+    );
 }

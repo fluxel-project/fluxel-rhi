@@ -131,7 +131,7 @@ pub(super) fn begin_raster(
                 attachment = attachment
                     .resolve_mode(resolve_mode(format))
                     .resolve_image_view(resolve_view)
-                    .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+                    .resolve_image_layout(vk::ImageLayout::GENERAL);
             }
         }
         attachments.push(attachment);

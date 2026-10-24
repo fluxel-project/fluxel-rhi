@@ -4,7 +4,9 @@
 //! externally synchronized queue call. Core owns work ordering; this module
 //! only lowers its plan and retains issued native work until fence completion.
 
-use super::{DeviceState, Vulkan, VulkanDevice, VulkanEncoder, vk_error};
+use super::{
+    DeviceState, Vulkan, VulkanDevice, VulkanEncoder, encoder::ExternalBoundary, vk_error,
+};
 use ash::vk;
 use fluxel_rhi_core::api::{
     self, DeferredBackend, Error, Result, RetryableSubmit, StepPayload, SubmitOutcome,
@@ -20,8 +22,52 @@ impl RecordedWork {
     }
 }
 
-// Each imported binary semaphore brackets exactly the recorded work that
-// owns it. Timeline dependencies wrap the first and last such submissions.
+/// Submits one exact native fragment. Timeline values are supplied for the
+/// Core plan semaphores and zero for binary external semaphores.
+fn submit_fragment(
+    device: &VulkanDevice,
+    queue: vk::Queue,
+    commands: &[vk::CommandBuffer],
+    waits: &[(vk::Semaphore, u64)],
+    signals: &[(vk::Semaphore, u64)],
+    timeline: bool,
+) -> Result<()> {
+    let wait_semaphores: Vec<_> = waits.iter().map(|(semaphore, _)| *semaphore).collect();
+    let wait_values: Vec<_> = waits.iter().map(|(_, value)| *value).collect();
+    let signal_semaphores: Vec<_> = signals.iter().map(|(semaphore, _)| *semaphore).collect();
+    let signal_values: Vec<_> = signals.iter().map(|(_, value)| *value).collect();
+    let stages = vec![vk::PipelineStageFlags::ALL_COMMANDS; wait_semaphores.len()];
+    let mut timeline_info = vk::TimelineSemaphoreSubmitInfo::default()
+        .wait_semaphore_values(&wait_values)
+        .signal_semaphore_values(&signal_values);
+    let mut info = vk::SubmitInfo::default()
+        .wait_semaphores(&wait_semaphores)
+        .wait_dst_stage_mask(&stages)
+        .command_buffers(commands)
+        .signal_semaphores(&signal_semaphores);
+    if timeline {
+        info = info.push_next(&mut timeline_info);
+    }
+    let _queue = device
+        .0
+        .queue_gate
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    // SAFETY: queue access is serialized; command buffers and every semaphore
+    // owner remain retained by RecordedWork through completion/uncertainty.
+    unsafe {
+        device
+            .0
+            .device
+            .queue_submit(queue, &[info], vk::Fence::null())
+    }
+    .map_err(vk_error)
+}
+
+// Each imported binary semaphore brackets its exact Core record boundary.
+// Waits are attached to the following command segment and signals to the
+// preceding one, so Vulkan's submit scopes match Core source order directly.
+// Timeline dependencies wrap the first and final native submissions.
 fn submit_external_records(
     device: &VulkanDevice,
     queue: vk::Queue,
@@ -30,58 +76,51 @@ fn submit_external_records(
     signals: &[(vk::Semaphore, u64)],
     timeline: bool,
 ) -> Result<()> {
+    let mut first = true;
+    let mut pending_wait: Option<vk::Semaphore> = None;
     for (index, record) in records.iter().enumerate() {
-        let mut wait_semaphores = Vec::new();
-        let mut wait_values = Vec::new();
-        if index == 0 {
-            for &(semaphore, value) in waits {
-                wait_semaphores.push(semaphore);
-                wait_values.push(value);
+        for segment in &record.encoder.external_segments {
+            let command = [segment.command];
+            let mut segment_waits = if first { waits.to_vec() } else { Vec::new() };
+            if let Some(wait) = pending_wait.take() {
+                segment_waits.push((wait, 0));
+            }
+            let segment_signals = match &segment.boundary {
+                ExternalBoundary::Wait(_) => Vec::new(),
+                ExternalBoundary::Signal(semaphore) => vec![(semaphore.semaphore, 0)],
+            };
+            submit_fragment(
+                device,
+                queue,
+                &command,
+                &segment_waits,
+                &segment_signals,
+                timeline,
+            )?;
+            first = false;
+            if let ExternalBoundary::Wait(semaphore) = &segment.boundary {
+                pending_wait = Some(semaphore.semaphore);
             }
         }
-        for semaphore in &record.encoder.external_waits {
-            wait_semaphores.push(semaphore.semaphore);
-            wait_values.push(0);
+        let command = [record.command()];
+        let final_signals = if index + 1 == records.len() {
+            signals
+        } else {
+            &[]
+        };
+        let mut final_waits = if first { waits.to_vec() } else { Vec::new() };
+        if let Some(wait) = pending_wait.take() {
+            final_waits.push((wait, 0));
         }
-        let mut signal_semaphores = Vec::new();
-        let mut signal_values = Vec::new();
-        for semaphore in &record.encoder.external_signals {
-            signal_semaphores.push(semaphore.semaphore);
-            signal_values.push(0);
-        }
-        if index + 1 == records.len() {
-            for &(semaphore, value) in signals {
-                signal_semaphores.push(semaphore);
-                signal_values.push(value);
-            }
-        }
-        let stages = vec![vk::PipelineStageFlags::ALL_COMMANDS; wait_semaphores.len()];
-        let commands = [record.command()];
-        let mut timeline_info = vk::TimelineSemaphoreSubmitInfo::default()
-            .wait_semaphore_values(&wait_values)
-            .signal_semaphore_values(&signal_values);
-        let mut info = vk::SubmitInfo::default()
-            .wait_semaphores(&wait_semaphores)
-            .wait_dst_stage_mask(&stages)
-            .command_buffers(&commands)
-            .signal_semaphores(&signal_semaphores);
-        if timeline {
-            info = info.push_next(&mut timeline_info);
-        }
-        let _queue = device
-            .0
-            .queue_gate
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        // SAFETY: queue is externally synchronized and RecordedWork retains the
-        // command buffer and imported semaphore owners through fence completion.
-        unsafe {
-            device
-                .0
-                .device
-                .queue_submit(queue, &[info], vk::Fence::null())
-        }
-        .map_err(vk_error)?;
+        submit_fragment(
+            device,
+            queue,
+            &command,
+            &final_waits,
+            final_signals,
+            timeline,
+        )?;
+        first = false;
     }
     Ok(())
 }
@@ -350,10 +389,9 @@ impl DeferredBackend for Vulkan {
                         .collect::<Vec<_>>();
                     if !commands.is_empty() {
                         let info = vk::SubmitInfo::default().command_buffers(&commands);
-                        let has_external = issued[start..].iter().any(|record| {
-                            !record.encoder.external_waits.is_empty()
-                                || !record.encoder.external_signals.is_empty()
-                        });
+                        let has_external = issued[start..]
+                            .iter()
+                            .any(|record| !record.encoder.external_segments.is_empty());
                         let result = if has_external {
                             submit_external_records(
                                 device,

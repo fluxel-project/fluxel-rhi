@@ -306,14 +306,28 @@ fn texture_transfer(
         .level_count(state.mips.end - state.mips.start)
         .base_array_layer(state.layers.start)
         .layer_count(state.layers.end - state.layers.start);
+    let owned_access = |layout: api::ImageLayout, uses: api::TextureUses| {
+        if super::transition::resolve_scope(layout) {
+            Ok(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)
+        } else {
+            super::transition::accesses(uses.accesses)
+        }
+    };
+    let owned_stage = |layout: api::ImageLayout, uses: api::TextureUses| {
+        if super::transition::resolve_scope(layout) {
+            Ok(vk::PipelineStageFlags::ALL_COMMANDS)
+        } else {
+            super::transition::stages(uses.stages)
+        }
+    };
     let barrier = vk::ImageMemoryBarrier::default()
         .src_access_mask(if acquire {
             vk::AccessFlags::empty()
         } else {
-            super::transition::accesses(state.usage.from.accesses)?
+            owned_access(state.layout.0, state.usage.from)?
         })
         .dst_access_mask(if acquire {
-            super::transition::accesses(state.usage.to.accesses)?
+            owned_access(state.layout.1, state.usage.to)?
         } else {
             vk::AccessFlags::empty()
         })
@@ -334,10 +348,10 @@ fn texture_transfer(
     let source = if acquire {
         vk::PipelineStageFlags::TOP_OF_PIPE
     } else {
-        super::transition::stages(state.usage.from.stages)?
+        owned_stage(state.layout.0, state.usage.from)?
     };
     let dest = if acquire {
-        super::transition::stages(state.usage.to.stages)?
+        owned_stage(state.layout.1, state.usage.to)?
     } else {
         vk::PipelineStageFlags::BOTTOM_OF_PIPE
     };
@@ -405,8 +419,8 @@ impl api::ExternalBackend for Vulkan {
         if !Arc::ptr_eq(&encoder.device, &sync.0.device) {
             return Err(Error::WrongDevice);
         }
+        encoder.split_external_boundary(super::encoder::ExternalBoundary::Wait(sync.0))?;
         buffer_transfer(encoder, memory, true)?;
-        encoder.external_waits.push(sync.0);
         Ok(())
     }
     fn release_external(
@@ -415,7 +429,8 @@ impl api::ExternalBackend for Vulkan {
     ) -> Result<VulkanExternalSync> {
         let sync = exportable_semaphore(&encoder.owner)?;
         buffer_transfer(encoder, memory, false)?;
-        encoder.external_signals.push(sync.0.clone());
+        encoder
+            .split_external_boundary(super::encoder::ExternalBoundary::Signal(sync.0.clone()))?;
         Ok(sync)
     }
     fn acquire_external_texture(
@@ -427,8 +442,8 @@ impl api::ExternalBackend for Vulkan {
         if !Arc::ptr_eq(&encoder.device, &sync.0.device) {
             return Err(Error::WrongDevice);
         }
+        encoder.split_external_boundary(super::encoder::ExternalBoundary::Wait(sync.0))?;
         texture_transfer(encoder, texture, state, true)?;
-        encoder.external_waits.push(sync.0);
         Ok(())
     }
     fn release_external_texture(
@@ -438,7 +453,8 @@ impl api::ExternalBackend for Vulkan {
     ) -> Result<VulkanExternalSync> {
         let sync = exportable_semaphore(&encoder.owner)?;
         texture_transfer(encoder, texture, state, false)?;
-        encoder.external_signals.push(sync.0.clone());
+        encoder
+            .split_external_boundary(super::encoder::ExternalBoundary::Signal(sync.0.clone()))?;
         Ok(sync)
     }
 }

@@ -6,6 +6,7 @@ use std::os::windows::io::{FromRawHandle, OwnedHandle};
 
 const SIZE: u64 = 256;
 const PATTERN: u32 = 0x4c58_5248;
+const RETURN_PATTERN: u32 = 0x5248_4932;
 
 /// Lives until the consumer has released and completed use of the allocation.
 struct Producer {
@@ -267,7 +268,7 @@ impl Drop for Producer {
 impl Producer {
     /// Waits on the consumer's exported semaphore, reacquires queue ownership,
     /// and verifies the actual allocation using a fresh GPU-to-host copy.
-    fn verify_return(&self, handle: OwnedHandle) {
+    fn verify_return(&self, handle: OwnedHandle, expected: u32) {
         use std::os::windows::io::AsRawHandle;
         let sem_api = ash::khr::external_semaphore_win32::Device::new(&self.instance, &self.device);
         let semaphore = unsafe {
@@ -349,6 +350,27 @@ impl Producer {
                 &[acquire],
                 &[],
             );
+            // The opaque external handoff is invisible to validation's
+            // cross-device history. Re-establish conservative local memory
+            // visibility after the acquire before this producer queue reads a
+            // buffer it originally filled before releasing it externally.
+            let visible = vk::BufferMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::MEMORY_WRITE)
+                .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .buffer(self.buffer)
+                .offset(0)
+                .size(SIZE);
+            self.device.cmd_pipeline_barrier(
+                commands[0],
+                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[visible],
+                &[],
+            );
             self.device.cmd_copy_buffer(
                 commands[0],
                 self.buffer,
@@ -372,7 +394,7 @@ impl Producer {
                 .unwrap();
             let bytes = std::slice::from_raw_parts(ptr.cast::<u32>(), (SIZE / 4) as usize);
             assert!(
-                bytes.iter().all(|value| *value == PATTERN),
+                bytes.iter().all(|value| *value == expected),
                 "returned external memory was not preserved"
             );
             self.device.unmap_memory(memory);
@@ -442,11 +464,39 @@ fn win32_external_buffer_and_semaphore_round_trip() {
             memory: MemoryClass::Readback,
         })
         .unwrap();
+    let marker = device
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: 8,
+            usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            memory: MemoryClass::Device,
+        })
+        .unwrap();
+    let marker_readback = device
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: 8,
+            usage: BufferUsage::COPY_DST | BufferUsage::MAP_READ,
+            memory: MemoryClass::Readback,
+        })
+        .unwrap();
     // Two work items in one step exercise a signal in the first submit and a
     // wait in the second. The Win32 export/import preserves the same payload.
     let mut first = device.encoder(lane).unwrap();
+    // This command must remain before the imported semaphore wait.
+    first
+        .write_buffer(&marker, 0, &0x1122_3344u32.to_ne_bytes())
+        .unwrap();
     external.acquire(&mut first, &memory, sync).unwrap();
     let handoff = external.release(&mut first, &memory).unwrap();
+    // This command must remain after the release signal, on a fresh native CB.
+    first
+        .write_buffer(&marker, 4, &0x5566_7788u32.to_ne_bytes())
+        .unwrap();
+    first
+        .copy_buffer(&marker, 0, &marker_readback, 0, 8)
+        .unwrap();
+    let marker_ticket = first.readback_buffer(&marker_readback, 0..8).unwrap();
     let handoff_handle = handoff.into_native().export_handle().unwrap();
     // SAFETY: the first command buffer releases the allocation and signals this payload.
     let handoff_sync =
@@ -457,6 +507,27 @@ fn win32_external_buffer_and_semaphore_round_trip() {
         .unwrap();
     encoder.copy_buffer(&buffer, 0, &readback, 0, SIZE).unwrap();
     let ticket = encoder.readback_buffer(&readback, 0..SIZE).unwrap();
+    encoder
+        .transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
+            target: BufferSlice {
+                buffer: &buffer,
+                range: 0..SIZE,
+            },
+            usage: StateTransition {
+                from: BufferUses {
+                    stages: StageMask::COPY,
+                    accesses: AccessMask::COPY_READ,
+                },
+                to: BufferUses {
+                    stages: StageMask::COPY,
+                    accesses: AccessMask::COPY_WRITE,
+                },
+            },
+            ownership: None,
+        })])
+        .unwrap();
+    let returned_bytes = RETURN_PATTERN.to_ne_bytes().repeat((SIZE / 4) as usize);
+    encoder.write_buffer(&buffer, 0, &returned_bytes).unwrap();
     let release = external.release(&mut encoder, &memory).unwrap();
     let plan = unsafe {
         SubmissionPlan::from_compiled(
@@ -494,10 +565,148 @@ fn win32_external_buffer_and_semaphore_round_trip() {
     let returned_handle = release.into_native().export_handle().unwrap();
     block(device.wait_completion(&point)).unwrap();
     let data = unsafe { block(device.read_after(ticket, &point)).unwrap().bytes };
+    let marker_data = unsafe {
+        block(device.read_after(marker_ticket, &point))
+            .unwrap()
+            .bytes
+    };
+    assert_eq!(
+        marker_data,
+        [0x44, 0x33, 0x22, 0x11, 0x88, 0x77, 0x66, 0x55,]
+    );
     assert_eq!(data.len(), SIZE as usize);
     assert!(
         data.chunks_exact(4)
             .all(|bytes| u32::from_ne_bytes(bytes.try_into().unwrap()) == PATTERN)
     );
-    producer.verify_return(returned_handle);
+    producer.verify_return(returned_handle, RETURN_PATTERN);
+}
+
+#[test]
+fn win32_external_buffer_compute_lane_round_trip() {
+    use fluxel_rhi_core::api::*;
+    use fluxel_rhi_vulkan::{VulkanExternalHandle, VulkanExternalMemoryHandle, VulkanInstance};
+    use std::{future::Future, sync::Arc};
+    fn block<F: Future>(f: F) -> F::Output {
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let mut f = std::pin::pin!(f);
+        loop {
+            if let std::task::Poll::Ready(value) = f.as_mut().poll(&mut cx) {
+                return value;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    let Some((producer, memory_handle, semaphore_handle)) = Producer::start() else {
+        eprintln!("Vulkan external memory or semaphore handles unavailable; skipping");
+        return;
+    };
+    let device = block(VulkanInstance::new().unwrap().open_default()).unwrap();
+    let Some(lane) = device
+        .lanes()
+        .iter()
+        .find(|lane| lane.class == LaneClass::Compute)
+        .map(|lane| lane.id)
+    else {
+        eprintln!("independent Vulkan compute lane unavailable; skipping");
+        return;
+    };
+    let external = device.external().expect("external handle support");
+    // SAFETY: the producer exported the live allocation with matching opaque
+    // Win32 metadata and transfers ownership through the semaphore below.
+    let memory = unsafe {
+        external.import_memory(
+            VulkanExternalHandle::Memory(VulkanExternalMemoryHandle {
+                handle: memory_handle,
+                allocation_size: producer.allocation_size,
+                memory_type_index: producer.memory_type_index,
+                dedicated: true,
+                image_offset: 0,
+            }),
+            &ExternalResourceDesc {
+                size: SIZE,
+                offset: 0,
+                usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            },
+        )
+    }
+    .unwrap();
+    // SAFETY: producer signals the exported binary semaphore after writing
+    // and releasing the buffer to QUEUE_FAMILY_EXTERNAL.
+    let sync =
+        unsafe { external.import_sync(VulkanExternalHandle::Semaphore(semaphore_handle)) }.unwrap();
+    let buffer = external.buffer(&memory).unwrap();
+    let output = device
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: SIZE,
+            usage: BufferUsage::COPY_DST | BufferUsage::MAP_READ,
+            memory: MemoryClass::Readback,
+        })
+        .unwrap();
+    let mut encoder = device.encoder(lane).unwrap();
+    external.acquire(&mut encoder, &memory, sync).unwrap();
+    encoder.copy_buffer(&buffer, 0, &output, 0, SIZE).unwrap();
+    let ticket = encoder.readback_buffer(&output, 0..SIZE).unwrap();
+    encoder
+        .transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
+            target: BufferSlice {
+                buffer: &buffer,
+                range: 0..SIZE,
+            },
+            usage: StateTransition {
+                from: BufferUses {
+                    stages: StageMask::COPY,
+                    accesses: AccessMask::COPY_READ,
+                },
+                to: BufferUses {
+                    stages: StageMask::COPY,
+                    accesses: AccessMask::COPY_WRITE,
+                },
+            },
+            ownership: None,
+        })])
+        .unwrap();
+    let returned_bytes = RETURN_PATTERN.to_ne_bytes().repeat((SIZE / 4) as usize);
+    encoder.write_buffer(&buffer, 0, &returned_bytes).unwrap();
+    let release = external.release(&mut encoder, &memory).unwrap();
+    let plan = unsafe {
+        SubmissionPlan::from_compiled(
+            PlanId {
+                device: device.id(),
+                ordinal: 774003,
+            },
+            Arc::from([StepDesc {
+                lane,
+                kind: StepKind::Commands,
+                waits: vec![],
+            }]),
+        )
+    };
+    let step = plan.step(0);
+    let receipt = match unsafe {
+        device.queue().submit(SubmitPacket {
+            plan,
+            steps: vec![BoundStep {
+                step,
+                payload: StepPayload::Commands(vec![encoder.finish().unwrap()]),
+            }],
+            completion: CompletionRequest::End,
+        })
+    } {
+        SubmitOutcome::Accepted(receipt) => receipt,
+        _ => panic!("external compute-lane submission failed"),
+    };
+    let point = &receipt.checkpoints[0].point;
+    block(device.wait_completion(point)).unwrap();
+    let bytes = unsafe { block(device.read_after(ticket, point)).unwrap().bytes };
+    assert!(
+        bytes
+            .chunks_exact(4)
+            .all(|bytes| u32::from_ne_bytes(bytes.try_into().unwrap()) == PATTERN)
+    );
+    producer.verify_return(
+        release.into_native().export_handle().unwrap(),
+        RETURN_PATTERN,
+    );
 }

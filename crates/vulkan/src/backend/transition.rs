@@ -281,14 +281,19 @@ fn texture(encoder: &mut VulkanEncoder, barrier: &api::TextureBarrier<'_, Vulkan
     } else {
         range
     };
+    let resolve_scope = resolve_scope(old_layout) || resolve_scope(new_layout);
     let native = vk::ImageMemoryBarrier::default()
         .src_access_mask(if transfer.is_some_and(|t| !t.release) {
             vk::AccessFlags::empty()
+        } else if resolve_scope {
+            vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE
         } else {
             accesses(barrier.usage.from.accesses)?
         })
         .dst_access_mask(if transfer.is_some_and(|t| t.release) {
             vk::AccessFlags::empty()
+        } else if resolve_scope {
+            vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE
         } else {
             accesses(barrier.usage.to.accesses)?
         })
@@ -304,7 +309,9 @@ fn texture(encoder: &mut VulkanEncoder, barrier: &api::TextureBarrier<'_, Vulkan
         .dst_queue_family_index(transfer.map_or(vk::QUEUE_FAMILY_IGNORED, |t| t.dst))
         .image(texture.native())
         .subresource_range(native_range);
-    let source_stages = if transfer.is_some_and(|t| !t.release)
+    let source_stages = if resolve_scope {
+        vk::PipelineStageFlags::ALL_COMMANDS
+    } else if transfer.is_some_and(|t| !t.release)
         || (barrier.usage.from.stages == api::StageMask::EMPTY
             && barrier.usage.from.accesses == api::AccessMask::EMPTY)
     {
@@ -315,7 +322,9 @@ fn texture(encoder: &mut VulkanEncoder, barrier: &api::TextureBarrier<'_, Vulkan
     pipeline_barrier(
         encoder,
         source_stages,
-        if transfer.is_some_and(|t| t.release) {
+        if resolve_scope {
+            vk::PipelineStageFlags::ALL_COMMANDS
+        } else if transfer.is_some_and(|t| t.release) {
             vk::PipelineStageFlags::BOTTOM_OF_PIPE
         } else {
             stages(barrier.usage.to.stages)?
@@ -530,7 +539,13 @@ pub(super) fn validate_texture_use(
         ),
     ];
     for (access, expected_usage) in required {
-        if accesses.contains(access) && !usage.contains(expected_usage) {
+        let resolve_copy_usage = (layout == api::ImageLayout::ResolveSrc
+            && access == api::AccessMask::COLOR_READ
+            && usage.contains(api::TextureUsage::COPY_SRC))
+            || (layout == api::ImageLayout::ResolveDst
+                && access == api::AccessMask::COLOR_WRITE
+                && usage.contains(api::TextureUsage::COPY_DST));
+        if accesses.contains(access) && !usage.contains(expected_usage) && !resolve_copy_usage {
             return Err(Error::Unsupported("Vulkan texture transition usage"));
         }
     }
@@ -556,10 +571,18 @@ pub(super) fn validate_texture_use(
         {
             return Err(Error::Unsupported("Vulkan ColorAttachment layout access"));
         }
-        api::ImageLayout::ResolveSrc if !accesses.contains(api::AccessMask::COLOR_READ) => {
+        api::ImageLayout::ResolveSrc
+            if !accesses.contains(api::AccessMask::COLOR_READ)
+                || !(usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
+                    || usage.contains(api::TextureUsage::COPY_SRC)) =>
+        {
             return Err(Error::Unsupported("Vulkan ResolveSrc layout access"));
         }
-        api::ImageLayout::ResolveDst if !accesses.contains(api::AccessMask::COLOR_WRITE) => {
+        api::ImageLayout::ResolveDst
+            if !accesses.contains(api::AccessMask::COLOR_WRITE)
+                || !(usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
+                    || usage.contains(api::TextureUsage::COPY_DST)) =>
+        {
             return Err(Error::Unsupported("Vulkan ResolveDst layout access"));
         }
         api::ImageLayout::DepthStencilAttachment
@@ -600,14 +623,36 @@ pub(super) fn layout(layout: api::ImageLayout) -> vk::ImageLayout {
         api::ImageLayout::CopySrc => vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
         api::ImageLayout::CopyDst => vk::ImageLayout::TRANSFER_DST_OPTIMAL,
         api::ImageLayout::ColorAttachment => vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        api::ImageLayout::ResolveSrc | api::ImageLayout::ResolveDst => {
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
-        }
+        // GENERAL is legal for both dynamic-rendering attachment resolves and
+        // standalone vkCmdResolveImage. It avoids guessing which path follows.
+        api::ImageLayout::ResolveSrc | api::ImageLayout::ResolveDst => vk::ImageLayout::GENERAL,
         api::ImageLayout::DepthStencilAttachment => {
             vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
         }
         api::ImageLayout::DepthReadOnly => vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL,
         api::ImageLayout::Present => vk::ImageLayout::PRESENT_SRC_KHR,
+    }
+}
+
+/// Resolve layouts deliberately use `GENERAL`, so their command scope cannot
+/// be inferred from an attachment-only access mask.
+pub(super) const fn resolve_scope(layout: api::ImageLayout) -> bool {
+    matches!(
+        layout,
+        api::ImageLayout::ResolveSrc | api::ImageLayout::ResolveDst
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_layouts_require_conservative_scope() {
+        assert!(resolve_scope(api::ImageLayout::ResolveSrc));
+        assert!(resolve_scope(api::ImageLayout::ResolveDst));
+        assert!(!resolve_scope(api::ImageLayout::ColorAttachment));
+        assert!(!resolve_scope(api::ImageLayout::CopySrc));
     }
 }
 

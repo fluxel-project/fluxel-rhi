@@ -399,6 +399,14 @@ fn check_readonly(readonly_depth: bool) {
             AccessMask::STENCIL_READ
         },
     };
+    // A following writable attachment uses both Load and Store. Keep this
+    // transition conservative: Vulkan synchronization treats the preceding
+    // attachment store and following attachment load as write and read even
+    // when this fixture's pipeline only exercises one plane directly.
+    let attachment_load_store_plane = TextureUses {
+        stages: StageMask::FRAGMENT,
+        accesses: read_plane.accesses | write_plane.accesses,
+    };
     let plane_barrier = |from, to, before, after| {
         ResourceTransition::Texture(TextureBarrier {
             target: Subresources {
@@ -473,8 +481,8 @@ fn check_readonly(readonly_depth: bool) {
     pass.draw(0..3, 0..1).unwrap();
     pass.finish().unwrap();
     e.transition_resources(&[plane_barrier(
-        read_plane,
-        write_plane,
+        attachment_load_store_plane,
+        attachment_load_store_plane,
         ImageLayout::DepthReadOnly,
         ImageLayout::DepthStencilAttachment,
     )])

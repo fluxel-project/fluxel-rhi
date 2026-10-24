@@ -1,6 +1,7 @@
 //! Vulkan adapter discovery and logical-device opening.
 //!
-//! This module owns feature negotiation and creates the single graphics queue.
+//! This module owns feature negotiation and creates the exposed graphics and
+//! optional compute queues.
 //! It reports facts to Core but does not schedule work; command submission and
 //! resource lifetime remain in their dedicated backend modules.
 
@@ -255,9 +256,11 @@ impl InstanceBackend for Vulkan {
                             || core_features.sparse_residency_image3_d == vk::TRUE),
                 )
             };
+            let mut enabled11 = vk::PhysicalDeviceVulkan11Features::default();
             let mut enabled12 = vk::PhysicalDeviceVulkan12Features::default();
             let mut enabled13 = vk::PhysicalDeviceVulkan13Features::default();
             let mut supported = vk::PhysicalDeviceFeatures2::default()
+                .push_next(&mut enabled11)
                 .push_next(&mut enabled12)
                 .push_next(&mut enabled13);
             // SAFETY: each output node is live until the synchronous query returns.
@@ -309,14 +312,16 @@ impl InstanceBackend for Vulkan {
                 .map(|(index, _)| index as u32);
             let compute_family = separate_compute_family.unwrap_or(family);
             let compute_info = family_properties[compute_family as usize];
-            let sparse_image = sparse_features
-                && family_info
-                    .queue_flags
-                    .contains(vk::QueueFlags::SPARSE_BINDING);
             let has_compute_queue = (separate_compute_family.is_some()
                 || (family_info.queue_count >= 2
                     && family_info.queue_flags.contains(vk::QueueFlags::COMPUTE)))
                 && timeline_semaphore;
+            let sparse_queues = super::queue_support::sparse_queues(
+                sparse_features,
+                family_info.queue_flags,
+                has_compute_queue.then_some(compute_info.queue_flags),
+            );
+            let sparse_image = sparse_queues.images_available;
             let priorities = if has_compute_queue && compute_family == family {
                 vec![1.0_f32, 1.0]
             } else {
@@ -351,6 +356,14 @@ impl InstanceBackend for Vulkan {
             if external_semaphore_handles {
                 extensions.push(external_names.1.as_ptr());
             }
+            let mut vulkan11 = vk::PhysicalDeviceVulkan11Features::default()
+                .storage_buffer16_bit_access(enabled11.storage_buffer16_bit_access == vk::TRUE)
+                .uniform_and_storage_buffer16_bit_access(
+                    enabled11.uniform_and_storage_buffer16_bit_access == vk::TRUE,
+                )
+                .storage_push_constant16(enabled11.storage_push_constant16 == vk::TRUE)
+                .storage_input_output16(enabled11.storage_input_output16 == vk::TRUE)
+                .multiview(multiview);
             let mut vulkan13 = vk::PhysicalDeviceVulkan13Features::default()
                 .dynamic_rendering(true)
                 .maintenance4(enabled13.maintenance4 == vk::TRUE)
@@ -358,6 +371,13 @@ impl InstanceBackend for Vulkan {
                 .subgroup_size_control(enabled13.subgroup_size_control == vk::TRUE)
                 .compute_full_subgroups(enabled13.compute_full_subgroups == vk::TRUE);
             let mut vulkan12 = vk::PhysicalDeviceVulkan12Features::default()
+                .storage_buffer8_bit_access(enabled12.storage_buffer8_bit_access == vk::TRUE)
+                .uniform_and_storage_buffer8_bit_access(
+                    enabled12.uniform_and_storage_buffer8_bit_access == vk::TRUE,
+                )
+                .storage_push_constant8(enabled12.storage_push_constant8 == vk::TRUE)
+                .shader_float16(enabled12.shader_float16 == vk::TRUE)
+                .shader_int8(enabled12.shader_int8 == vk::TRUE)
                 .runtime_descriptor_array(enabled12.runtime_descriptor_array == vk::TRUE)
                 .descriptor_binding_variable_descriptor_count(
                     enabled12.descriptor_binding_variable_descriptor_count == vk::TRUE,
@@ -380,11 +400,12 @@ impl InstanceBackend for Vulkan {
                 .separate_depth_stencil_layouts(
                     enabled12.separate_depth_stencil_layouts == vk::TRUE,
                 )
+                .shader_subgroup_extended_types(
+                    enabled12.shader_subgroup_extended_types == vk::TRUE,
+                )
                 .draw_indirect_count(draw_indirect_count)
                 .timeline_semaphore(timeline_semaphore)
                 .buffer_device_address(ray_support.acceleration);
-            let mut multiview_features =
-                vk::PhysicalDeviceMultiviewFeatures::default().multiview(multiview);
             let mut mesh_enable = vk::PhysicalDeviceMeshShaderFeaturesEXT::default()
                 .mesh_shader(mesh_available)
                 .task_shader(task_available)
@@ -402,7 +423,7 @@ impl InstanceBackend for Vulkan {
                 .enabled_features(&enabled_features)
                 .push_next(&mut vulkan13)
                 .push_next(&mut vulkan12)
-                .push_next(&mut multiview_features);
+                .push_next(&mut vulkan11);
             if mesh_available {
                 create = create.push_next(&mut mesh_enable);
             }
@@ -460,9 +481,8 @@ impl InstanceBackend for Vulkan {
                     external_semaphore_handles,
                     compute_family,
                     compute_timestamp_bits: compute_info.timestamp_valid_bits,
-                    compute_sparse_binding: compute_info
-                        .queue_flags
-                        .contains(vk::QueueFlags::SPARSE_BINDING),
+                    compute_sparse_binding: sparse_queues.compute_binding,
+                    graphics_sparse_binding: sparse_queues.graphics_binding,
                     graphics_compute: family_info.queue_flags.contains(vk::QueueFlags::COMPUTE),
                     max_compute_workgroups: limits.max_compute_work_group_count,
                     max_compute_workgroup_size: limits.max_compute_work_group_size,
@@ -493,6 +513,26 @@ impl InstanceBackend for Vulkan {
                     min_subgroup_size: subgroup.min_subgroup_size,
                     max_subgroup_size: subgroup.max_subgroup_size,
                     required_subgroup_size_stages: subgroup.required_subgroup_size_stages,
+                    subgroup_stages: core11_properties.subgroup_supported_stages,
+                    subgroup_operations: core11_properties.subgroup_supported_operations,
+                    subgroup_quad_operations_in_all_stages: core11_properties
+                        .subgroup_quad_operations_in_all_stages
+                        == vk::TRUE,
+                    shader_precision: ShaderPrecisionFeatures {
+                        float16: vulkan12.shader_float16 == vk::TRUE,
+                        int8: vulkan12.shader_int8 == vk::TRUE,
+                        storage_buffer16: vulkan11.storage_buffer16_bit_access == vk::TRUE,
+                        uniform_and_storage_buffer16: vulkan11
+                            .uniform_and_storage_buffer16_bit_access
+                            == vk::TRUE,
+                        storage_push_constant16: vulkan11.storage_push_constant16 == vk::TRUE,
+                        storage_input_output16: vulkan11.storage_input_output16 == vk::TRUE,
+                        storage_buffer8: vulkan12.storage_buffer8_bit_access == vk::TRUE,
+                        uniform_and_storage_buffer8: vulkan12
+                            .uniform_and_storage_buffer8_bit_access
+                            == vk::TRUE,
+                        storage_push_constant8: vulkan12.storage_push_constant8 == vk::TRUE,
+                    },
                     lane_frontier: Mutex::new([None, None]),
                     device: native,
                     instance: instance.0.clone(),

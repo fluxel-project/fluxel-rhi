@@ -264,6 +264,39 @@ pub(super) fn bind(e: &mut VulkanEncoder, p: &VulkanRayPipeline) -> Result<()> {
     e.ray_pipelines.push(p.clone());
     Ok(())
 }
+
+/// Reinstalls the sole native state that can legally survive an external
+/// boundary.  Raster and compute passes cannot cross one, while ray binding
+/// may occur on an idle encoder before a later trace command.
+pub(crate) fn restore_after_external_boundary(e: &mut VulkanEncoder) -> Result<()> {
+    let Some(pipeline) = e.ray_pipelines.last().cloned() else {
+        return Ok(());
+    };
+    let bindings = super::super::raster::prepare_groups(&pipeline.0.layout, &e.ray_bound_groups)?;
+    // SAFETY: the fresh primary buffer belongs to this encoder; retained
+    // pipeline and bind groups were previously validated for this layout.
+    unsafe {
+        e.device.device.cmd_bind_pipeline(
+            e.command,
+            vk::PipelineBindPoint::RAY_TRACING_KHR,
+            pipeline.0.native,
+        );
+    }
+    for (slot, set, offsets) in &bindings {
+        // SAFETY: preparation checked descriptor layout compatibility.
+        unsafe {
+            e.device.device.cmd_bind_descriptor_sets(
+                e.command,
+                vk::PipelineBindPoint::RAY_TRACING_KHR,
+                pipeline.0.layout.native(),
+                *slot,
+                &[*set],
+                offsets,
+            );
+        }
+    }
+    Ok(())
+}
 pub(super) fn bind_group(
     e: &mut VulkanEncoder,
     slot: u32,

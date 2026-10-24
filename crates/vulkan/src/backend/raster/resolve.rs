@@ -1,8 +1,8 @@
 //! Attachment resolve workaround for nonzero image-view base layers.
 //!
 //! Some Vulkan drivers fail to resolve a single nonzero array layer inside
-//! dynamic rendering. The attachment is stored, then resolved natively after
-//! the rendering scope, restoring the explicit attachment layouts afterward.
+//! dynamic rendering. The source attachment is stored and temporarily moved to
+//! `GENERAL`; the target remains in the explicit `ResolveDst` (`GENERAL`) state.
 use super::*;
 
 pub(crate) struct PendingResolve {
@@ -37,43 +37,22 @@ pub(super) fn finish(e: &VulkanEncoder, resolves: &[PendingResolve]) {
                 .subresource_range(range)
         };
         let sr = range(r.source_mip, r.source_layer);
-        let dr = range(r.destination_mip, r.destination_layer);
-        let before = [
-            barrier(
-                r.source,
-                sr,
-                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                vk::AccessFlags::TRANSFER_READ,
-            ),
-            barrier(
-                r.destination,
-                dr,
-                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                vk::AccessFlags::TRANSFER_WRITE,
-            ),
-        ];
-        let after = [
-            barrier(
-                r.source,
-                sr,
-                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                vk::AccessFlags::TRANSFER_READ,
-                vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-            ),
-            barrier(
-                r.destination,
-                dr,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                vk::AccessFlags::TRANSFER_WRITE,
-                vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-            ),
-        ];
+        let before = [barrier(
+            r.source,
+            sr,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::ImageLayout::GENERAL,
+            vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            vk::AccessFlags::MEMORY_READ,
+        )];
+        let after = [barrier(
+            r.source,
+            sr,
+            vk::ImageLayout::GENERAL,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::AccessFlags::MEMORY_READ,
+            vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+        )];
         let sub = |mip, layer| {
             vk::ImageSubresourceLayers::default()
                 .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -101,7 +80,7 @@ pub(super) fn finish(e: &VulkanEncoder, resolves: &[PendingResolve]) {
             e.device.device.cmd_pipeline_barrier(
                 e.command,
                 vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::ALL_COMMANDS,
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
@@ -110,14 +89,14 @@ pub(super) fn finish(e: &VulkanEncoder, resolves: &[PendingResolve]) {
             e.device.device.cmd_resolve_image(
                 e.command,
                 r.source,
-                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                vk::ImageLayout::GENERAL,
                 r.destination,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::GENERAL,
                 &[region],
             );
             e.device.device.cmd_pipeline_barrier(
                 e.command,
-                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::ALL_COMMANDS,
                 vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
                 vk::DependencyFlags::empty(),
                 &[],

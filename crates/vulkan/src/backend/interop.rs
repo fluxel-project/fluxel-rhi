@@ -3,6 +3,10 @@
 //! Device guards retain the device; encoder guards are additionally bounded by
 //! the Core encoder borrow. Native callers own all synchronization and retain
 //! resources referenced by commands they record.
+//! An RHI external acquire or release may end the current native command
+//! buffer to place its queue semaphore at that exact boundary. Callers that
+//! resume raw Vulkan recording after such an RHI operation must rebind their
+//! own Vulkan state; only RHI-owned native state is restored.
 //! The raw pointer is the dispatchable `VkDevice` or `VkCommandBuffer` handle
 //! selected by the request, not a pointer to an `ash` wrapper.
 

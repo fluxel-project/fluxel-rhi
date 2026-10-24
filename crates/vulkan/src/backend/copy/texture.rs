@@ -438,112 +438,36 @@ pub(crate) fn resolve(
         || dst.aspect != src.aspect
         || s.desc().dimension != api::TextureDimension::D2
         || d.desc().dimension != api::TextureDimension::D2
-        || !s
+        || !(s
             .desc()
             .usage
             .contains(api::TextureUsage::RENDER_ATTACHMENT)
-        || !d
+            || s.desc().usage.contains(api::TextureUsage::COPY_SRC))
+        || !(d
             .desc()
             .usage
             .contains(api::TextureUsage::RENDER_ATTACHMENT)
+            || d.desc().usage.contains(api::TextureUsage::COPY_DST))
         || s.native() == d.native()
     {
         return Err(Error::InvalidRange);
     }
-    let image_barrier = |t: &super::super::VulkanTexture,
-                         r: &api::TextureRegion<'_, super::super::Vulkan>,
-                         old,
-                         new,
-                         from,
-                         to| {
-        let l = layers(t, r);
-        vk::ImageMemoryBarrier::default()
-            .src_access_mask(from)
-            .dst_access_mask(to)
-            .old_layout(old)
-            .new_layout(new)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(t.native())
-            .subresource_range(
-                vk::ImageSubresourceRange::default()
-                    .aspect_mask(l.aspect_mask)
-                    .base_mip_level(l.mip_level)
-                    .level_count(1)
-                    .base_array_layer(l.base_array_layer)
-                    .layer_count(l.layer_count),
-            )
-    };
-    let before = [
-        image_barrier(
-            s,
-            &src,
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-            vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-            vk::AccessFlags::TRANSFER_READ,
-        ),
-        image_barrier(
-            d,
-            &dst,
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-            vk::AccessFlags::TRANSFER_WRITE,
-        ),
-    ];
-    let after = [
-        image_barrier(
-            s,
-            &src,
-            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            vk::AccessFlags::TRANSFER_READ,
-            vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-        ),
-        image_barrier(
-            d,
-            &dst,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            vk::AccessFlags::TRANSFER_WRITE,
-            vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-        ),
-    ];
     let region = vk::ImageResolve::default()
         .src_subresource(layers(s, &src))
         .src_offset(offset(s, &src))
         .dst_subresource(layers(d, &dst))
         .dst_offset(offset(d, &dst))
         .extent(extent(s, &src));
-    // SAFETY: validated attachment usages supply transfer flags; explicit Resolve
-    // states are restored after the native resolve, and both images are retained.
+    // SAFETY: ResolveSrc/ResolveDst transitions establish GENERAL layout and the
+    // required memory dependency. Both images and regions are retained.
     unsafe {
-        e.device.device.cmd_pipeline_barrier(
-            e.command,
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &before,
-        );
         e.device.device.cmd_resolve_image(
             e.command,
             s.native(),
-            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            vk::ImageLayout::GENERAL,
             d.native(),
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::GENERAL,
             &[region],
-        );
-        e.device.device.cmd_pipeline_barrier(
-            e.command,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &after,
         );
     }
     e.textures.extend([s.clone(), d.clone()]);

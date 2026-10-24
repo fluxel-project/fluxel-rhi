@@ -5,7 +5,7 @@
 //! no renderer scheduler or CPU command replay layer lives here.
 //! `InstanceState` outlives every `DeviceState`, and each DeviceState outlives
 //! all private native children through retained `Arc`s. This root selects one
-//! graphics queue and reports its capabilities; submission, resource state and
+//! graphics queue and an optional compute queue and reports their capabilities; submission, resource state and
 //! WSI policy are owned by their narrow sibling modules.
 
 use std::{
@@ -48,6 +48,7 @@ mod memory;
 mod mesh;
 mod pipeline;
 mod query;
+mod queue_support;
 mod raster;
 mod ray;
 mod readback;
@@ -59,9 +60,27 @@ mod submit;
 mod surface;
 mod transition;
 
-/// Logical Vulkan device and its one direct graphics queue.
+/// Logical Vulkan device and its exposed native queues.
 #[derive(Clone)]
 pub struct VulkanDevice(Arc<DeviceState>);
+
+/// Logical-device shader precision and storage features actually enabled.
+///
+/// The direct SPIR-V route inspects only capabilities whose Vulkan feature is
+/// explicit. Keeping copied booleans instead of feature-chain nodes prevents
+/// capability admission from observing physical support that was not enabled.
+#[derive(Clone, Copy)]
+struct ShaderPrecisionFeatures {
+    float16: bool,
+    int8: bool,
+    storage_buffer16: bool,
+    uniform_and_storage_buffer16: bool,
+    storage_push_constant16: bool,
+    storage_input_output16: bool,
+    storage_buffer8: bool,
+    uniform_and_storage_buffer8: bool,
+    storage_push_constant8: bool,
+}
 
 struct DeviceState {
     /// Base features actually enabled on the logical device.
@@ -79,6 +98,10 @@ struct DeviceState {
     min_subgroup_size: u32,
     max_subgroup_size: u32,
     required_subgroup_size_stages: vk::ShaderStageFlags,
+    subgroup_stages: vk::ShaderStageFlags,
+    subgroup_operations: vk::SubgroupFeatureFlags,
+    subgroup_quad_operations_in_all_stages: bool,
+    shader_precision: ShaderPrecisionFeatures,
     conservative_rasterization: bool,
     maintenance5: bool,
     external_memory_handles: bool,
@@ -86,6 +109,7 @@ struct DeviceState {
     compute_family: u32,
     compute_timestamp_bits: u32,
     compute_sparse_binding: bool,
+    graphics_sparse_binding: bool,
     graphics_compute: bool,
     max_compute_workgroups: [u32; 3],
     max_compute_workgroup_size: [u32; 3],

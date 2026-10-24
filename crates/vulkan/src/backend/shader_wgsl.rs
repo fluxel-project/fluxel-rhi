@@ -76,6 +76,15 @@ fn parsed(
     {
         caps |= naga::valid::Capabilities::CLIP_DISTANCE;
     }
+    if super::subgroup::requested(desc) {
+        caps |= naga::valid::Capabilities::SUBGROUP;
+        if super::subgroup::supports_stage(device, api::ShaderStage::Vertex) {
+            caps |= naga::valid::Capabilities::SUBGROUP_VERTEX_STAGE;
+        }
+        if super::subgroup::supports_stage(device, api::ShaderStage::Compute) {
+            caps |= naga::valid::Capabilities::SUBGROUP_BARRIER;
+        }
+    }
     let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), caps)
         .validate(&module)
         .map_err(|e| Error::Shader(e.emit_to_string(source)))?;
@@ -99,6 +108,7 @@ pub(crate) fn create_wgsl(device: &VulkanDevice, desc: &api::ShaderDesc) -> Resu
         match feature.as_str() {
             "shaderClipDistance" if device.0.shader_clip_distance => {}
             api::SHADER_FEATURE_RAY_QUERY if device.0.ray_support.query => {}
+            "subgroups" => super::subgroup::validate_declared(device, desc)?,
             _ => return Err(Error::Unsupported("Vulkan WGSL required feature")),
         }
     }
@@ -167,6 +177,12 @@ pub(crate) fn compile_variant(
     )
     .map_err(|e| Error::Shader(e.to_string()))?;
     let mut options = naga::back::spv::Options::default();
+    // Vulkan's subgroup capabilities require SPIR-V 1.3. The backend's
+    // advertised target is Vulkan 1.3, so emit that version instead of
+    // Naga's conservative 1.0 default when subgroup builtins are present.
+    if super::subgroup::requested(desc) {
+        options.lang_version = (1, 3);
+    }
     // Raster recording already uses a negative-height viewport to match the
     // WebGPU coordinate convention; a shader Y flip would invert it twice.
     options

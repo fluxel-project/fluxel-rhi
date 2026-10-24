@@ -906,8 +906,14 @@ they store no CPU draw/dispatch replay stream and derive no dependencies.
 Vulkan currently imports opaque Win32 handles or opaque file descriptors when
 the relevant extensions and per-resource import features are available. Win32
 handles are closed after import; successful FD imports transfer ownership to
-Vulkan, while failed imports close the FD. Binary semaphore waits and signals
-are submitted around their recorded work and retained until completion. The
+Vulkan, while failed imports close the FD. Each explicit external acquire or
+release ends the current native command-buffer segment. Binary waits attach to
+the following segment and binary signals to the preceding segment, preserving
+commands before acquire and after release. Plan timeline waits and completion
+signals still wrap the first and final submissions. Ordinary unsegmented work
+retains batching; every segment, semaphore and command pool remains alive until
+completion or the existing indeterminate-handoff quarantine. No draw/dispatch
+commands are saved for CPU replay. The
 Win32 route has independent-device GPU readback fixtures for buffers and images;
 the FD route has a Linux cross-compilation check but no real-GPU evidence yet.
 
@@ -1009,6 +1015,34 @@ device supports them.
   simultaneously bound to different tiles without the aliasing feature; the
   supported route rejects such overlap and includes sparse queue work in
   completion coverage.
+- Sparse capability may come from either created graphics or compute lane.
+  Submission checks that the selected lane itself supports sparse binding;
+  an uncreated queue family cannot supply a reported capability. A separate
+  sparse-only queue has no lane role in the current Core model.
+- Standalone color resolve preserves caller-selected `ResolveSrc`/`ResolveDst`
+  states, which map to `GENERAL` on Vulkan. Matching multisample/single-sample
+  2D regions use `vkCmdResolveImage` directly, accepting render-attachment or
+  corresponding copy usage. Dynamic-rendering resolve targets use the same
+  `GENERAL` layout. Resolve barriers conservatively cover both transfer and
+  attachment access without inferring state from creation flags. Native image
+  allocation retains the transfer usages needed by the admitted resolve paths;
+  full format/usage/extent/sample combinations are queried before admission.
+  Vulkan requires a graphics-capable command-buffer family for this command.
+- Shader subgroup admission checks supported stages and operation families.
+  Direct SPIR-V capabilities are checked against those native facts; quad
+  operations remain valid in fragment and compute stages when
+  `subgroupQuadOperationsInAllStages` is false. WGSL subgroup builtins use the
+  backend-specific `subgroups` requirement; the pinned Naga parser does not
+  accept the `enable subgroups;` directive. Subgroup-size control remains a
+  separate device property and compute pipeline option.
+- Supported 8/16-bit shader and storage features are explicitly enabled on the
+  logical device using coherent Vulkan 1.1/1.2 feature nodes. Direct SPIR-V
+  precision/storage capabilities are checked against enabled features, including
+  the base 16/64-bit integer and 64-bit float features. Native specialization
+  retains each Core scalar representation. The
+  [precision fixture](../crates/vulkan/tests/assets/precision/precision.comp)
+  and [GPU check](../crates/vulkan/tests/subgroup_gpu.rs) cover half/int8
+  specialization and 8/16-bit storage readback without a runtime SDK compiler.
 - Native graphics and compute queues use timeline semaphore waits for explicit
   cross-queue dependencies. Timestamp and pipeline-statistics queries use
   native query pools and report only the fields admitted by the public layout.

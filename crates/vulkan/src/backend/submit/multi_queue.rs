@@ -74,7 +74,11 @@ impl api::MultiQueueBackend for Vulkan {
                     StepPayload::Present(_) => {}
                     StepPayload::SparseBind(binds)
                         if device.0.sparse_image
-                            && (desc.lane.ordinal == 0 || device.0.compute_sparse_binding)
+                            && (if desc.lane.ordinal == 0 {
+                                device.0.graphics_sparse_binding
+                            } else {
+                                device.0.compute_sparse_binding
+                            })
                             && !binds.is_empty() => {}
                     _ => {
                         return Err(Error::Unsupported(
@@ -390,10 +394,10 @@ impl api::MultiQueueBackend for Vulkan {
                 } else {
                     Ok(())
                 }
-            } else if issued[start..].iter().any(|record| {
-                !record.encoder.external_waits.is_empty()
-                    || !record.encoder.external_signals.is_empty()
-            }) {
+            } else if issued[start..]
+                .iter()
+                .any(|record| !record.encoder.external_segments.is_empty())
+            {
                 let waits: Vec<_> = wait_semaphores
                     .iter()
                     .copied()

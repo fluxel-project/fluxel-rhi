@@ -1,6 +1,7 @@
 //! Optional Vulkan acceleration structures, ray pipelines, and ray query support.
 mod acceleration;
 mod pipeline;
+pub(super) use pipeline::restore_after_external_boundary;
 pub(crate) mod probe;
 use super::{Vulkan, VulkanBindGroup, VulkanBuffer, VulkanDevice, VulkanEncoder};
 pub use acceleration::VulkanAcceleration;
