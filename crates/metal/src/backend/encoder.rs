@@ -13,6 +13,7 @@ mod clear;
 mod clear_buffer;
 pub(super) mod indirect_count;
 mod raster;
+mod transition;
 
 #[cfg(target_vendor = "apple")]
 type NativeIndexBuffer = (
@@ -73,12 +74,33 @@ pub struct MetalCommandEncoder {
     pub(crate) command:
         objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>>,
     #[cfg(target_vendor = "apple")]
-    pub(crate) prior_commands:
-        Vec<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>>>,
+    pub(crate) raster_descriptor: Option<objc2::rc::Retained<objc2_metal::MTLRenderPassDescriptor>>,
     #[cfg(target_vendor = "apple")]
-    pub(crate) indirect_prepass: Option<
-        objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>>,
-    >,
+    pub(crate) raster_pipeline: Option<MetalRasterPipeline>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) raster_viewport: Option<api::Viewport>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) raster_scissor: Option<api::Rect>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) raster_blend_constant: [f32; 4],
+    #[cfg(target_vendor = "apple")]
+    pub(crate) raster_stencil_reference: u32,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) raster_statistics: bool,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) raster_split: bool,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) occlusion_slot: Option<u32>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) occlusion_segments:
+        Vec<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer>>>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) transition_event:
+        Option<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLEvent>>>,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) transition_value: u64,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) visibility_merge_pipeline: crate::backend::query::VisibilityMergeCache,
     #[cfg(target_vendor = "apple")]
     pub(super) prepared_draws: Vec<indirect_count::PreparedDraws>,
     #[cfg(target_vendor = "apple")]
@@ -201,8 +223,19 @@ impl CommandBackend for Metal {
                 raster_bindings: Vec::new(),
                 raster_groups: std::collections::BTreeMap::new(),
                 command,
-                prior_commands: Vec::new(),
-                indirect_prepass: None,
+                raster_descriptor: None,
+                raster_pipeline: None,
+                raster_viewport: None,
+                raster_scissor: None,
+                raster_blend_constant: [0.0; 4],
+                raster_stencil_reference: 0,
+                raster_statistics: false,
+                raster_split: false,
+                occlusion_slot: None,
+                occlusion_segments: Vec::new(),
+                transition_event: None,
+                transition_value: 0,
+                visibility_merge_pipeline: device._state.visibility_merge_pipeline.clone(),
                 prepared_draws: Vec::new(),
                 raster_pipeline_bound: false,
                 indirect_count_enabled: device._state.indirect_count_supported,
@@ -231,41 +264,7 @@ impl CommandBackend for Metal {
         encoder: &mut MetalCommandEncoder,
         ops: &[ResourceTransition<'_, Self>],
     ) -> api::Result<()> {
-        for op in ops {
-            if let ResourceTransition::Acceleration { before, after, .. } = op {
-                if !acceleration_scope_supported(*before) || !acceleration_scope_supported(*after) {
-                    return Err(api::Error::Unsupported(
-                        "Metal acceleration transition scope",
-                    ));
-                }
-            }
-        }
-        if ops.is_empty() {
-            return Ok(());
-        }
-        // A command-buffer event forms a full native memory boundary. This is
-        // needed for heap aliasing and argument-buffer resources, for which
-        // Metal's automatic hazard tracking alone is insufficient. Metal has no
-        // queue-family ownership; cross-queue order comes from the submitted plan.
-        #[cfg(target_vendor = "apple")]
-        {
-            use objc2::runtime::NSObjectProtocol as _;
-            use objc2_metal::{MTLCommandBuffer as _, MTLDevice as _};
-            let device = encoder.command.device();
-            if !device.respondsToSelector(objc2::sel!(newEvent)) {
-                return Err(api::Error::Unsupported("Metal events unavailable"));
-            }
-            let event = device.newEvent().ok_or(api::Error::OutOfMemory)?;
-            encoder.command.encodeSignalEvent_value(&event, 1);
-            encoder.command.encodeWaitForEvent_value(&event, 1);
-        }
-        #[cfg(not(target_vendor = "apple"))]
-        {
-            let _ = encoder;
-            return Err(api::Error::Unsupported("Metal requires an Apple target"));
-        }
-
-        Ok(())
+        transition::record(encoder, ops)
     }
 
     fn copy_buffer(
@@ -459,37 +458,5 @@ impl CommandBackend for Metal {
         value: api::TextureClearValue,
     ) -> api::Result<()> {
         clear::clear_texture(encoder, texture, mips, layers, value)
-    }
-}
-
-fn acceleration_scope_supported(scope: api::AccessScope) -> bool {
-    // Native event synchronization is a full boundary and accepts broad scopes
-    // such as ALL_COMMANDS / ALL without requiring stage-specific lowering.
-    scope.accesses.0 == 0 || scope.stages.0 != 0
-}
-
-#[cfg(test)]
-mod acceleration_transition_tests {
-    use super::{acceleration_scope_supported, api};
-
-    #[test]
-    fn accepts_build_and_supported_shader_read_scopes() {
-        let scope = |stages, accesses| api::AccessScope { stages, accesses };
-        assert!(acceleration_scope_supported(scope(
-            api::StageMask::ACCELERATION,
-            api::AccessMask::ACCEL_WRITE
-        )));
-        assert!(acceleration_scope_supported(scope(
-            api::StageMask::COMPUTE,
-            api::AccessMask::ACCEL_READ
-        )));
-        assert!(acceleration_scope_supported(scope(
-            api::StageMask::FRAGMENT,
-            api::AccessMask::ACCEL_READ
-        )));
-        assert!(!acceleration_scope_supported(scope(
-            api::StageMask::EMPTY,
-            api::AccessMask::ACCEL_WRITE
-        )));
     }
 }

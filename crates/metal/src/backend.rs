@@ -1,6 +1,6 @@
 //! Metal instance and device ownership.
 //!
-//! This module owns adapter discovery and one native command queue per device.
+//! This module owns adapter discovery and one native command queue per exposed lane.
 //! Resource creation, command lowering, completion, and Surface lifetimes are
 //! split into private modules so each native boundary owns its invariants.
 
@@ -97,6 +97,8 @@ struct DeviceState {
     indirect_dispatch_supported: bool,
     #[cfg(target_vendor = "apple")]
     indirect_count_supported: bool,
+    #[cfg(target_vendor = "apple")]
+    visibility_merge_pipeline: query::VisibilityMergeCache,
 }
 
 #[derive(Clone)]
@@ -258,6 +260,7 @@ impl InstanceBackend for Metal {
                         ),
                         indirect_dispatch_supported,
                         indirect_count_supported,
+                        visibility_merge_pipeline: Arc::new(Mutex::new(None)),
                     }),
                 };
                 let caps = capabilities::describe(&device, multi_queue_supported);

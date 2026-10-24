@@ -8,6 +8,8 @@ mod clear_area;
 mod partial_resolve;
 mod pass;
 #[cfg(target_vendor = "apple")]
+pub(super) mod resume;
+#[cfg(target_vendor = "apple")]
 pub(super) use bindings::write_push;
 
 use std::ops::Range;
@@ -127,6 +129,7 @@ impl RasterBackend for Metal {
                 objc2_metal::MTLDepthClipMode::Clip
             });
             encoder.raster_pipeline_bound = true;
+            encoder.raster_pipeline = Some(pipeline.clone());
             render.setRenderPipelineState(&pipeline.state);
             render.setDepthStencilState(pipeline.depth_state.as_deref());
             render.setDepthBias_slopeScale_clamp(
@@ -285,6 +288,7 @@ impl RasterBackend for Metal {
                     znear: viewport.min_depth as f64,
                     zfar: viewport.max_depth as f64,
                 });
+            encoder.raster_viewport = Some(viewport);
             Ok(())
         }
         #[cfg(not(target_vendor = "apple"))]
@@ -318,6 +322,7 @@ impl RasterBackend for Metal {
                     width: right.saturating_sub(x) as usize,
                     height: bottom.saturating_sub(y) as usize,
                 });
+            encoder.raster_scissor = Some(rect);
             Ok(())
         }
         #[cfg(not(target_vendor = "apple"))]
@@ -335,6 +340,7 @@ impl RasterBackend for Metal {
                 .as_ref()
                 .ok_or(api::Error::InvalidState)?
                 .setBlendColorRed_green_blue_alpha(value[0], value[1], value[2], value[3]);
+            encoder.raster_blend_constant = value;
             Ok(())
         }
         #[cfg(not(target_vendor = "apple"))]
@@ -352,6 +358,7 @@ impl RasterBackend for Metal {
                 .as_ref()
                 .ok_or(api::Error::InvalidState)?
                 .setStencilReferenceValue(value);
+            encoder.raster_stencil_reference = value;
             Ok(())
         }
         #[cfg(not(target_vendor = "apple"))]
@@ -458,6 +465,8 @@ impl RasterBackend for Metal {
             }
             let render = encoder.render.take().ok_or(api::Error::InvalidState)?;
             render.endEncoding();
+            resume::statistics_boundary(encoder)?;
+            super::super::query::finish_occlusion_segments(encoder)?;
             for (source, target, area, mask) in std::mem::take(&mut encoder.raster_resolves) {
                 partial_resolve::resolve_area(&encoder.command, &source, &target, area, mask)?;
             }
@@ -466,7 +475,14 @@ impl RasterBackend for Metal {
                 use api::QueryBackend as _;
                 Metal::write_timestamp(encoder, &set, slot)?;
             }
-            encoder.indirect_prepass = None;
+            encoder.raster_statistics = false;
+            encoder.raster_split = false;
+            encoder.raster_descriptor = None;
+            encoder.raster_pipeline = None;
+            encoder.raster_viewport = None;
+            encoder.raster_scissor = None;
+            encoder.occlusion_slot = None;
+            encoder.occlusion_segments.clear();
             encoder.raster_resolves.clear();
             encoder.raster_area = None;
             encoder.raster_view_mask = None;
@@ -491,7 +507,14 @@ impl RasterBackend for Metal {
                 use objc2_metal::MTLCommandEncoder as _;
                 render.endEncoding();
             }
-            encoder.indirect_prepass = None;
+            encoder.raster_statistics = false;
+            encoder.raster_split = false;
+            encoder.raster_descriptor = None;
+            encoder.raster_pipeline = None;
+            encoder.raster_viewport = None;
+            encoder.raster_scissor = None;
+            encoder.occlusion_slot = None;
+            encoder.occlusion_segments.clear();
             encoder.raster_resolves.clear();
             encoder.raster_area = None;
             encoder.raster_view_mask = None;

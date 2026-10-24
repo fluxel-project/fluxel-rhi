@@ -1244,6 +1244,39 @@ WebGL2 cannot use this route: its API exposes no CopyImage entry point, and its
 ES 3.0 framebuffer-blit rules reject multisampled draw framebuffers. A native
 MSAA-to-single-sample resolve does not establish same-sample image-copy support.
 
+## Metal recording and synchronization review
+
+An ordinary raster pass stays in its encoder's original `MTLCommandBuffer`.
+Only a nonzero GPU-count draw suspends the native render encoder, retains the
+attachments with Store, generates its ICB in a compute encoder, and resumes with
+Load in the same command buffer. Native pipeline/binding/dynamic state is
+reinstalled; previously encoded draws are never replayed. Final attachment
+store/resolve actions and timestamp ends remain at the logical pass boundary.
+Occlusion segments use private visibility buffers and a device-cached native
+merge pipeline to preserve the portable zero/nonzero result. Pass-statistics
+segments retain the first start sample and serialize end-sample writes; ordinary
+passes without statistics incur none of that counter synchronization.
+
+Every transition batch is range/aspect validated before native encoding. Ordinary
+resource-specific transitions use native tracking only when the actual Metal
+resource reports Tracked. Untracked resources, global boundaries and aliasing
+retain full event synchronization; one event is allocated lazily per encoder
+and its monotonically increasing values are reused. A transition cannot insert
+a command-buffer event inside an active render/compute encoder. Heap-default
+untracked resources are not mistaken for tracked device allocations. This
+lowers explicit dependencies and introduces no resource-history tracker.
+
+`nextDrawable` is synchronous even though the Surface SPI wraps its result in
+`Ready`. Drawable exhaustion can block the calling thread until availability or
+the configured timeout. The host/renderer must bound frames in flight and
+acquire late; RHI does not add a drawable-acquisition thread pool.
+
+Per-upload shared staging allocation remains a profiling candidate. The review
+provided no measured bottleneck, and this phase intentionally runs no Metal
+tests at the user's request. A completion-retired upload allocator is therefore
+not introduced speculatively, and no frame-time improvement or Apple GPU
+acceptance is claimed from the compile/static checks.
+
 ## Metal transfer lowering
 
 `clear_buffer` preserves Core's repeated 32-bit word semantics. Words made of

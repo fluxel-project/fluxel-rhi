@@ -13,8 +13,8 @@ pub(super) fn begin_raster(
     #[cfg(target_vendor = "apple")]
     {
         use objc2_metal::{
-            MTLCommandBuffer as _, MTLCommandQueue as _, MTLRenderPassDescriptor, MTLResource as _,
-            MTLStoreAction, MTLTexture as _,
+            MTLCommandBuffer as _, MTLRenderPassDescriptor, MTLResource as _, MTLStoreAction,
+            MTLTexture as _,
         };
         if let Some(mask) = desc.multiview_mask {
             if mask == 0 {
@@ -303,16 +303,6 @@ pub(super) fn begin_raster(
         } else {
             None
         };
-        // Reserve the preparation command buffer before the render buffer.
-        // They are recorded independently but committed in this order at submit.
-        let split = if encoder.indirect_count_enabled {
-            let queue = encoder.command.commandQueue();
-            let prepass = queue.commandBuffer().ok_or(api::Error::OutOfMemory)?;
-            let render_command = queue.commandBuffer().ok_or(api::Error::OutOfMemory)?;
-            Some((prepass, render_command))
-        } else {
-            None
-        };
         if let Some(writes) = &desc.timestamp_writes {
             use fluxel_rhi_core::api::QueryBackend as _;
             // SAFETY: Core validated the query set identity, kind and slots.
@@ -324,13 +314,10 @@ pub(super) fn begin_raster(
         } else {
             encoder.raster_end_timestamp = None;
         }
-        let render_command = split
-            .as_ref()
-            .map_or(&encoder.command, |(_, command)| command)
-            .clone();
         if partial_area {
             use objc2_metal::MTLCommandEncoder as _;
-            let clear = render_command
+            let clear = encoder
+                .command
                 .renderCommandEncoderWithDescriptor(&descriptor)
                 .ok_or(api::Error::OutOfMemory)?;
             let result = super::clear_area::clear_area(
@@ -343,21 +330,18 @@ pub(super) fn begin_raster(
         }
         // Only the user's render pass is sampled; the internal clear draw must
         // not contribute primitives or fragment invocations to pass counters.
+        encoder.raster_split = false;
+        encoder.raster_statistics = encoder.pending_statistics.is_some();
         super::super::super::query::configure_raster_statistics(encoder, &descriptor)?;
         super::super::super::query::configure_occlusion(
             encoder,
             &descriptor,
             desc.occlusion_query_set,
         )?;
-        let render = render_command
+        let render = encoder
+            .command
             .renderCommandEncoderWithDescriptor(&descriptor)
             .ok_or(api::Error::OutOfMemory)?;
-        if let Some((prepass, render_command)) = split {
-            encoder.prior_commands.push(encoder.command.clone());
-            encoder.prior_commands.push(prepass.clone());
-            encoder.indirect_prepass = Some(prepass);
-            encoder.command = render_command;
-        }
         use objc2_metal::{MTLRenderCommandEncoder as _, MTLScissorRect, MTLViewport};
         render.setScissorRect(MTLScissorRect {
             x: area.x as usize,
@@ -386,7 +370,20 @@ pub(super) fn begin_raster(
             depth_format,
         ));
         encoder.raster_pipeline_bound = false;
+        encoder.raster_pipeline = None;
         encoder.mesh_threads = None;
+        encoder.raster_viewport = Some(api::Viewport {
+            x: area.x as f32,
+            y: area.y as f32,
+            width: area.width as f32,
+            height: area.height as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        });
+        encoder.raster_scissor = Some(area);
+        encoder.raster_blend_constant = [0.0; 4];
+        encoder.raster_stencil_reference = 0;
+        encoder.raster_descriptor = Some(descriptor);
         encoder.render = Some(render);
         Ok(())
     }

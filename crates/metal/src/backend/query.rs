@@ -14,6 +14,12 @@ use std::{
 };
 
 #[cfg(target_vendor = "apple")]
+#[path = "query_occlusion.rs"]
+mod occlusion;
+#[cfg(target_vendor = "apple")]
+pub(super) use occlusion::{VisibilityMergeCache, finish_occlusion_segments, split_occlusion};
+
+#[cfg(target_vendor = "apple")]
 const _: () = {
     assert!(
         std::mem::size_of::<objc2_metal::MTLCounterResultStatistic>()
@@ -185,6 +191,8 @@ pub(super) fn configure_occlusion(
         None
     };
     e.occlusion_active = false;
+    e.occlusion_slot = None;
+    e.occlusion_segments.clear();
     Ok(())
 }
 
@@ -500,6 +508,7 @@ impl QueryBackend for Metal {
                     slot as usize * 8,
                 );
             e.occlusion_active = true;
+            e.occlusion_slot = Some(slot);
             e.query_ops.push(QueryOp::Write(set.clone(), slot));
             Ok(())
         }
@@ -521,6 +530,7 @@ impl QueryBackend for Metal {
                 .ok_or(Error::InvalidState)?
                 .setVisibilityResultMode_offset(objc2_metal::MTLVisibilityResultMode::Disabled, 0);
             e.occlusion_active = false;
+            e.occlusion_slot = None;
             Ok(())
         }
         #[cfg(not(target_vendor = "apple"))]

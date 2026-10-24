@@ -41,8 +41,6 @@ pub struct MetalRecordedWork {
     pub(super) command:
         objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>>,
     #[cfg(target_vendor = "apple")]
-    pub(super) prior_commands: Vec<NativeCommandBuffer>,
-    #[cfg(target_vendor = "apple")]
     prepared_draws: Vec<super::encoder::indirect_count::PreparedDraws>,
     #[cfg(target_vendor = "apple")]
     pub(super) lane: u32,
@@ -158,7 +156,6 @@ impl DeferredBackend for Metal {
             // lifetime decisions through actual GPU completion.
             Ok(MetalRecordedWork {
                 command: encoder.command,
-                prior_commands: encoder.prior_commands,
                 prepared_draws: encoder.prepared_draws,
                 lane: encoder.lane,
                 query_ops: encoder.query_ops,
@@ -432,14 +429,6 @@ impl DeferredBackend for Metal {
                         Arc::new(super::query::commit_ops(&work.query_ops, work.lane));
                     work.retain_indirect_arguments_until_completed();
                     work.submit_ray_builds();
-                    for command in &work.prior_commands {
-                        prefix.push(track_command(
-                            device,
-                            command,
-                            Some((query_commit.clone(), work.lane)),
-                        ));
-                        command.commit();
-                    }
                     prefix.push(track_command(
                         device,
                         &work.command,

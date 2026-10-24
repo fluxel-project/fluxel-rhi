@@ -535,14 +535,6 @@ impl MultiQueueBackend for Metal {
                         std::sync::Arc::new(super::query::commit_ops(&work.query_ops, work.lane));
                     work.retain_indirect_arguments_until_completed();
                     work.submit_ray_builds();
-                    for command in &work.prior_commands {
-                        covered.push(super::submit::track_command(
-                            device,
-                            command,
-                            Some((query_commit.clone(), work.lane)),
-                        ));
-                        command.commit();
-                    }
                     covered.push(super::submit::track_command(
                         device,
                         &work.command,

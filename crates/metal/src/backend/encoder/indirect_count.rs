@@ -1,10 +1,8 @@
 //! GPU conversion of raw indirect draw records into Metal ICBs.
 //!
-//! The converter must run after prior buffer producers and before the render
-//! pass. Its result owns all resources referenced through argument buffers;
-//! the caller must retain it until both command buffers complete. This module
-//! Device creation probes the actual kernel and native interfaces before exposing
-//! the capability. The scheduler retains each preparation through completion.
+//! A counted draw ends the active render encoder, converts records through a
+//! compute encoder on the same command buffer, then resumes and executes the
+//! ICBs. This is direct native lowering, not CPU replay or scheduling.
 
 use crate::backend::{Metal, MetalBuffer, MetalCommandEncoder};
 use fluxel_rhi_core::api;
@@ -121,7 +119,6 @@ impl api::RasterExtrasOps<Metal> for RasterExtras {
                 encoder.indirect_count_enabled,
                 encoder.raster_pipeline_bound,
                 encoder.mesh_threads.is_some(),
-                encoder.indirect_prepass.is_some(),
                 encoder.render.is_some(),
                 indexed,
                 encoder.index_buffer.is_some(),
@@ -133,7 +130,7 @@ impl api::RasterExtrasOps<Metal> for RasterExtras {
                     .index_buffer
                     .as_ref()
                     .ok_or(api::Error::InvalidState)?;
-                Some((raw, *offset, *size, *format))
+                Some((raw.clone(), *offset, *size, *format))
             } else {
                 None
             };
@@ -151,20 +148,20 @@ impl api::RasterExtrasOps<Metal> for RasterExtras {
             if max == 0 {
                 return Ok(());
             }
-            let prepass = encoder
-                .indirect_prepass
-                .as_ref()
-                .ok_or(api::Error::InvalidState)?;
+            super::raster::resume::end_for_indirect_count(encoder)?;
             let draws = prepare(
-                prepass,
+                &encoder.command,
                 args,
                 args_offset,
                 count,
                 count_offset,
                 max,
                 stride,
-                index,
+                index
+                    .as_ref()
+                    .map(|(raw, offset, size, format)| (raw, *offset, *size, *format)),
             )?;
+            super::raster::resume::resume_after_indirect_count(encoder)?;
             super::raster::for_view_batches(encoder, |render| draws.encode_render(render))?;
             encoder.prepared_draws.push(draws);
             Ok(())
@@ -210,12 +207,11 @@ fn valid_recording_state(
     enabled: bool,
     pipeline: bool,
     mesh: bool,
-    prepass: bool,
     render: bool,
     indexed: bool,
     index_bound: bool,
 ) -> bool {
-    enabled && pipeline && !mesh && prepass && render && (!indexed || index_bound)
+    enabled && pipeline && !mesh && render && (!indexed || index_bound)
 }
 
 #[cfg(any(target_vendor = "apple", test))]
@@ -302,27 +298,16 @@ mod tests {
     }
 
     #[test]
-    fn recording_requires_active_raster_pipeline_prepass_and_index_when_indexed() {
-        assert!(valid_recording_state(
-            true, true, false, true, true, false, false
-        ));
-        assert!(valid_recording_state(
-            true, true, false, true, true, true, true
-        ));
+    fn recording_requires_active_raster_pipeline_render_and_index_when_indexed() {
+        assert!(valid_recording_state(true, true, false, true, false, false));
+        assert!(valid_recording_state(true, true, false, true, true, true));
         assert!(!valid_recording_state(
-            false, true, false, true, true, false, false
+            false, true, false, true, false, false
         ));
+        assert!(!valid_recording_state(true, true, true, true, false, false));
         assert!(!valid_recording_state(
-            true, true, true, true, true, false, false
+            true, true, false, false, false, false
         ));
-        assert!(!valid_recording_state(
-            true, true, false, false, true, false, false
-        ));
-        assert!(!valid_recording_state(
-            true, true, false, true, false, false, false
-        ));
-        assert!(!valid_recording_state(
-            true, true, false, true, true, true, false
-        ));
+        assert!(!valid_recording_state(true, true, false, true, true, false));
     }
 }
