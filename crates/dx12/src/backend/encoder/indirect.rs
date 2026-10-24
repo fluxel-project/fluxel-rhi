@@ -238,19 +238,14 @@ fn execute_vertex_indices(
         let dst = u64::from(i) * u64::from(expanded_stride);
         // SAFETY: all source and scratch ranges were checked above; both buffers are retained.
         unsafe {
+            // The two base-index fields are adjacent in both native argument
+            // layouts, matching the two root constants at the scratch head.
             encoder.list.CopyBufferRegion(
                 &scratch.resource,
                 dst,
                 &args.resource,
                 src + if indexed { 12 } else { 8 },
-                4,
-            );
-            encoder.list.CopyBufferRegion(
-                &scratch.resource,
-                dst + 4,
-                &args.resource,
-                src + if indexed { 16 } else { 12 },
-                4,
+                8,
             );
             encoder.list.CopyBufferRegion(
                 &scratch.resource,

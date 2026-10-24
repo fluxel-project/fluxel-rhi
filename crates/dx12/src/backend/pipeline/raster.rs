@@ -7,7 +7,6 @@
 //! objects and layout mapping for later command encoding.
 use fluxel_rhi_core::api::{self, Error, Result};
 use std::{
-    future::{Ready, ready},
     mem::ManuallyDrop,
     sync::{Arc, Mutex},
 };
@@ -46,12 +45,14 @@ pub(crate) struct RasterPipelineState {
     pub(in crate::backend) multiview: Option<u32>,
 }
 impl api::PipelineBackend for Dx12 {
-    type RasterPipelineFuture<'a> = Ready<Result<Dx12RasterPipeline>>;
+    type RasterPipelineFuture<'a> = super::worker::ColdFuture<Dx12RasterPipeline>;
     fn create_raster_pipeline<'a>(
         device: &'a Dx12Device,
         desc: &'a api::RasterPipelineDesc<Self>,
     ) -> Self::RasterPipelineFuture<'a> {
-        ready(create_raster(device, desc))
+        let device = (*device).clone();
+        let desc = (*desc).clone();
+        super::worker::submit(move || create_raster(&device, &desc))
     }
 }
 

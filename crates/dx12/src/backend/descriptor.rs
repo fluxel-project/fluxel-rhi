@@ -33,6 +33,9 @@ mod descriptor_array;
 mod group;
 #[path = "descriptor/layout.rs"]
 mod layout;
+#[cfg(test)]
+#[path = "descriptor/tests.rs"]
+mod tests;
 #[path = "descriptor/write.rs"]
 mod write;
 pub(crate) use group::create_bind_group;
@@ -89,19 +92,7 @@ impl Heap {
         let Ok(mut free) = self.free.lock() else {
             return;
         };
-        let index = free.partition_point(|range| range.start < start);
-        free.insert(index, start..end);
-        let mut merged: Vec<Range<u32>> = Vec::with_capacity(free.len());
-        for range in free.drain(..) {
-            if let Some(previous) = merged.last_mut() {
-                if range.start <= previous.end {
-                    previous.end = previous.end.max(range.end);
-                    continue;
-                }
-            }
-            merged.push(range);
-        }
-        *free = merged;
+        release_range(&mut free, start..end);
     }
 
     fn gpu(&self, index: u32) -> D3D12_GPU_DESCRIPTOR_HANDLE {
@@ -117,6 +108,34 @@ impl Heap {
         let mut handle = unsafe { self.native.GetCPUDescriptorHandleForHeapStart() };
         handle.ptr += usize::try_from(index.saturating_mul(self.increment)).unwrap_or(0);
         handle
+    }
+}
+
+/// Inserts one returned interval into an ordered, disjoint free list.
+///
+/// Descriptor allocations are released exactly once, so a valid returned
+/// interval can meet at most its immediate predecessor and successor.
+/// Coalescing just those neighbors preserves the free-list invariant without
+/// draining every interval or allocating a replacement `Vec` per drop.
+fn release_range(free: &mut Vec<Range<u32>>, mut returned: Range<u32>) {
+    let index = free.partition_point(|range| range.start < returned.start);
+    let merge_previous = index > 0 && free[index - 1].end >= returned.start;
+    let merge_next = index < free.len() && free[index].start <= returned.end;
+    match (merge_previous, merge_next) {
+        (true, true) => {
+            let next_end = free[index].end;
+            let previous = &mut free[index - 1];
+            previous.end = previous.end.max(returned.end).max(next_end);
+            free.remove(index);
+        }
+        (true, false) => {
+            free[index - 1].end = free[index - 1].end.max(returned.end);
+        }
+        (false, true) => {
+            returned.end = returned.end.max(free[index].end);
+            free[index] = returned;
+        }
+        (false, false) => free.insert(index, returned),
     }
 }
 

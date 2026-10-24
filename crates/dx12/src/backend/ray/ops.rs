@@ -4,21 +4,22 @@ use super::super::{
     encoder::Dx12Encoder,
 };
 use fluxel_rhi_core::api::{self, Error, Result};
-use std::{
-    future::{Ready, ready},
-    sync::Arc,
-};
+use std::sync::Arc;
 use windows::{Win32::Graphics::Direct3D12::*, core::Interface};
 
 pub struct Ray;
 impl api::RayOps<Dx12> for Ray {
     const AVAILABLE: bool = true;
-    type PipelineFuture<'a> = Ready<Result<Dx12RayPipeline>>;
+    type PipelineFuture<'a> = super::super::pipeline::worker::ColdFuture<Dx12RayPipeline>;
     fn create_pipeline<'a>(
         device: &'a Dx12Device,
         desc: &'a api::RayPipelineDesc<Dx12>,
     ) -> Self::PipelineFuture<'a> {
-        ready(super::pipeline::create_pipeline(device, desc))
+        let device = (*device).clone();
+        let desc = (*desc).clone();
+        super::super::pipeline::worker::submit(move || {
+            super::pipeline::create_pipeline(&device, &desc)
+        })
     }
     fn set_pipeline(encoder: &mut Dx12Encoder, pipeline: &Dx12RayPipeline) -> Result<()> {
         let list = encoder

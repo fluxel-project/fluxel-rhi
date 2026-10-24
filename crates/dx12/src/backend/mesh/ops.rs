@@ -1,18 +1,19 @@
 //! Mesh dispatch and its command-list lifetime management.
 use super::super::{Dx12, Dx12Buffer, Dx12Device, Dx12MeshPipeline, encoder::Dx12Encoder};
 use fluxel_rhi_core::api::{self, Error, Result};
-use std::future::{Ready, ready};
 use windows::{Win32::Graphics::Direct3D12::*, core::Interface};
 
 pub struct Mesh;
 impl api::MeshOps<Dx12> for Mesh {
     const AVAILABLE: bool = true;
-    type PipelineFuture<'a> = Ready<Result<Dx12MeshPipeline>>;
+    type PipelineFuture<'a> = super::super::pipeline::worker::ColdFuture<Dx12MeshPipeline>;
     fn create_pipeline<'a>(
         device: &'a Dx12Device,
         desc: &'a api::MeshPipelineDesc<Dx12>,
     ) -> Self::PipelineFuture<'a> {
-        ready(super::create_pipeline(device, desc))
+        let device = (*device).clone();
+        let desc = (*desc).clone();
+        super::super::pipeline::worker::submit(move || super::create_pipeline(&device, &desc))
     }
     fn bind_pipeline(encoder: &mut Dx12Encoder, pipeline: &Dx12MeshPipeline) -> Result<()> {
         if encoder.raster_state.as_ref().is_some_and(|state| {

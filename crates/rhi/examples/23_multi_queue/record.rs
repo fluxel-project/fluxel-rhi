@@ -353,6 +353,10 @@ impl<
                 payload: StepPayload::Present(PresentBinding::new(image)),
             },
         ];
+        // The present frontier transitively covers both command steps through
+        // the declared waits. End may also return independent lane points, so
+        // vector order cannot identify the evidence needed for frame reuse.
+        let present_step = plan.step(2);
         // SAFETY: see plan construction; the caller waits before resource reuse.
         match unsafe {
             d.queue().submit(SubmitPacket {
@@ -364,7 +368,12 @@ impl<
             SubmitOutcome::Accepted(r) => r
                 .checkpoints
                 .into_iter()
-                .next()
+                .find(|checkpoint| {
+                    checkpoint
+                        .covers
+                        .lane_frontiers
+                        .contains(&(self.graphics, present_step))
+                })
                 .map(|c| c.point)
                 .ok_or(Error::InvalidState),
             SubmitOutcome::Rejected { error, .. } => Err(error),

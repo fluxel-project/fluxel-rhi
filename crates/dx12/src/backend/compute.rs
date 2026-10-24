@@ -7,11 +7,7 @@
 //! group clones are retained by the encoder solely until the submission fence
 //! proves D3D12 has stopped reading their native objects.
 
-use std::{
-    future::{Ready, ready},
-    mem::ManuallyDrop,
-    sync::Arc,
-};
+use std::{mem::ManuallyDrop, sync::Arc};
 
 use fluxel_rhi_core::api::{self, Error, Result};
 use windows::{Win32::Graphics::Direct3D12::*, core::Interface};
@@ -87,13 +83,15 @@ pub struct Compute;
 
 impl api::ComputeOps<Dx12> for Compute {
     const AVAILABLE: bool = true;
-    type PipelineFuture<'a> = Ready<Result<Dx12ComputePipeline>>;
+    type PipelineFuture<'a> = super::pipeline::worker::ColdFuture<Dx12ComputePipeline>;
 
     fn create_pipeline<'a>(
         device: &'a Dx12Device,
         desc: &'a api::ComputePipelineDesc<Dx12>,
     ) -> Self::PipelineFuture<'a> {
-        ready(create_pipeline(device, desc))
+        let device = (*device).clone();
+        let desc = (*desc).clone();
+        super::pipeline::worker::submit(move || create_pipeline(&device, &desc))
     }
     fn begin(_: &mut super::encoder::Dx12Encoder) -> Result<()> {
         // Ending a compute pass does not reset D3D12 root state. Keep the

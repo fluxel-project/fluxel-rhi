@@ -1298,7 +1298,8 @@ support is an immutable OPTIONS12 fact queried once during device opening.
 
 The WGSL vertex-index indirect ABI caches its indexed/non-indexed command
 signatures on the matching raster pipeline, whose root signature they reference.
-It still performs three native buffer copies per draw record. Diagnostic runs
+It performs two native buffer copies per draw record after coalescing the two
+adjacent base-index fields into one eight-byte copy. Diagnostic runs
 at 1, 3 and 10,000 draws preserve the GPU output, and show the large batch's
 linear recording cost. Adjacent first/warm samples are diagnostic, not an
 isolated frame-rate benchmark. Compute argument packing remains deferred until
@@ -1703,7 +1704,7 @@ passes. This is a focused matrix, not all-driver conformance.
 
 The remaining per-record copies belong specifically to the WGSL vertex/index
 ABI path, not all DX12 indirect draws. That path expands each 16/20-byte argument
-record with two root constants, using three CopyBufferRegion calls before one
+record with two root constants, using two CopyBufferRegion calls before one
 ExecuteIndirect. Cached command signatures remove repeated signature creation,
 not this layout conversion. A GPU compute packing pass is possible, but replacing
 the current path requires small/large-batch measurements and equivalent explicit
@@ -1722,3 +1723,70 @@ It is a distinct capture/precompilation mechanism, not the current PSO library;
 the repository's pinned windows 0.62.2 bindings and backend do not expose/integrate
 that route. It needs separate runtime/SDK admission and contract work rather than
 a fabricated successful cache hit.
+
+## Second DX12 runtime review corrections
+
+Submission retirement follows the native queue that issued the work. Each used
+lane signals its own terminal fence, retains its recorded owners against that
+fence, and contributes its own End checkpoint. Requested Steps points likewise
+name the issuing queue's fence. Retiring resources no longer inserts an implicit
+Direct-queue wait for independent Compute work. Explicit plan waits, external
+queue boundaries, and the caller's explicit wait_idle join retain their native
+semantics. Query sealing follows the issuing lane; uncertain work remains
+quarantined on that lane, while sparse mappings remain Direct-only. This uses
+D3D12's [explicit multi-engine fence model](https://learn.microsoft.com/en-us/windows/win32/direct3d12/user-mode-heap-synchronization),
+without adding resource scheduling or a hazard tracker.
+
+A controlled real-GPU test holds Compute behind an imported native fence and
+submits unrelated Direct work. The prior revision blocks the Direct checkpoint
+until that gate opens; the corrected implementation completes its Direct
+checkpoint and verifies the copied bytes before release. This demonstrates the
+removed dependency, not a general frame-rate result. Example 23 selects the
+checkpoint covering its Present frontier, which transitively follows its
+explicit Compute-to-Graphics dependency, rather than relying on vector order.
+Its DX12 and Vulkan presentations and particle readbacks were checked.
+
+Shader validation and raster, compute, mesh and ray pipeline creation use a
+bounded cold-object worker. Owned descriptors and native device leases cross the
+thread boundary; command recording and submission stay on their existing paths.
+The future admits work without blocking its executor. Full capacity yields
+Pending with capacity notification, rather than rejecting a valid burst.
+Cancellation drops unadmitted work, skips cancelled queued jobs and discards
+in-progress results after native compilation returns. Native compilation itself
+cannot be interrupted. Worker initialization failure and job panic become
+structured errors. This is a host-side compilation facility, not a GPU scheduler.
+
+Descriptor release preserves the ordered free-range vector and coalesces only
+its immediate neighbors, avoiding the previous full-list drain and replacement
+allocation per return. Allocation remains the same simple first-fit search.
+Randomized release checks compare every state with the former algorithm, and a
+real shader-visible heap churn test verifies complete recovery. These establish
+mechanism and correctness, not a renderer throughput claim.
+
+The WGSL indirect ABI retains its linear conversion but copies the two adjacent
+root-constant fields together. Five adjacent baseline/candidate GPU-verified
+samples at 10,000 draws measured median warm recording intervals of 1,760 and
+1,371 microseconds on the tested Radeon 780M. These isolate CPU recording of a
+particular batch; they do not measure GPU packing duration or universal FPS.
+A compute-packing replacement remains conditional on a measured candidate with
+acceptable small-batch and resource-state costs. The submission gate likewise
+keeps query preflight and state commit atomic. The existing single-thread cost
+fixture does not establish a contention bottleneck, so this review does not
+introduce query reservations or another submission scheduler to shorten it.
+
+The opt-in hardware diagnostics also measure submission-gate wait and hold time
+for pre-recorded packets submitted by one or four CPU threads. Contention is
+observable, but these intervals include native handoff and do not isolate the
+immutable preflight cost; query validation and commit therefore retain their
+atomic gate. Production builds carry no timing state or clock reads. A future
+lock-scope change requires attribution of a meaningful caller workload, not just
+the existence of mutex contention.
+
+Cold-worker validation includes full-capacity backpressure, waker replacement,
+cancellation deregistration, panic resolution and lost-wake coverage. Each
+pending future owns one removable admission registration, so replaced or cancelled
+waiters do not accumulate until the next dequeue. A real-GPU burst above queue
+capacity creates usable compute PSOs and verifies dispatch/readback after partial
+cancellation. In an isolated diagnostic run, polling the first 32 PSO futures
+occupied the caller for about 308 ms on the synchronous baseline versus 59 us
+with the worker; this measures caller occupancy, not faster native compilation.

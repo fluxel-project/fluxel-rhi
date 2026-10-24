@@ -64,6 +64,7 @@ pub use memory::Dx12Heap;
 
 /// Direct3D 12 selected once by the host.  Resource and command associated
 /// types stay concrete throughout the typed execution API.
+#[derive(Clone)]
 pub struct Dx12;
 impl Dx12 {
     /// Creates a typed surface for a live Win32 window owned by the caller.
@@ -275,8 +276,8 @@ impl Backend for Dx12 {
 }
 
 impl api::ShaderBackend for Dx12 {
-    type DirectFuture<'a> = Ready<Result<Dx12Shader>>;
-    type NagaFuture<'a> = Ready<Result<Dx12Shader>>;
+    type DirectFuture<'a> = pipeline::worker::ColdFuture<Dx12Shader>;
+    type NagaFuture<'a> = pipeline::worker::ColdFuture<Dx12Shader>;
     fn shader_route(device: &Dx12Device, desc: &api::ShaderDesc) -> api::ShaderRoute {
         if !shader_features_supported(
             &desc.required_features,
@@ -327,7 +328,8 @@ impl api::ShaderBackend for Dx12 {
         desc: &'a api::ShaderDesc,
         _: &'a api::ShaderTarget,
     ) -> Self::DirectFuture<'a> {
-        ready(match desc.format {
+        let desc = desc.clone();
+        pipeline::worker::submit(move || match desc.format {
             api::ShaderFormat::Dxil if desc.bytes.is_empty() => {
                 Err(Error::Shader("empty DXIL artifact".into()))
             }
@@ -339,7 +341,7 @@ impl api::ShaderBackend for Dx12 {
             api::ShaderFormat::Hlsl(_) if desc.bytes.is_empty() => {
                 Err(Error::Shader("empty HLSL source".into()))
             }
-            api::ShaderFormat::Hlsl(_) if !direct_hlsl_entries_supported(desc) => {
+            api::ShaderFormat::Hlsl(_) if !direct_hlsl_entries_supported(&desc) => {
                 Err(Error::Unsupported("DX12 HLSL shader stage"))
             }
             api::ShaderFormat::Hlsl(model) if !(60..=69).contains(&model) => {
@@ -361,11 +363,14 @@ impl api::ShaderBackend for Dx12 {
         desc: &'a api::ShaderDesc,
         _: &'a api::ShaderTarget,
     ) -> Self::NagaFuture<'a> {
-        ready(shader_naga::validate_source(desc).map(|()| Dx12Shader {
-            bytes: Arc::from([]),
-            entries: desc.entries.clone(),
-            source: Some(Dx12ShaderSource::Wgsl(desc.clone())),
-        }))
+        let desc = desc.clone();
+        pipeline::worker::submit(move || {
+            shader_naga::validate_source(&desc).map(|()| Dx12Shader {
+                bytes: Arc::from([]),
+                entries: desc.entries.clone(),
+                source: Some(Dx12ShaderSource::Wgsl(desc)),
+            })
+        })
     }
 }
 

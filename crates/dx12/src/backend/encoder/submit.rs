@@ -4,9 +4,9 @@
 //! issues steps on the direct and compute queues, with native fence signals and
 //! waits for cross-queue dependencies. The submission gate serializes packet
 //! validation and handoff; each queue lock serializes its native operations.
-//! An aggregate direct-queue fence waits for the compute frontier before it
-//! provides completion evidence for retained work from both queues. A fence
-//! value of `u64::MAX` denotes device removal or quarantined uncertainty.
+//! Each queue retains its own submitted owners behind its own fence: a direct
+//! fence is never completion evidence for compute work. A fence value of
+//! `u64::MAX` denotes device removal or quarantined uncertainty.
 
 use super::*;
 impl api::CompletionBackend for Dx12 {
@@ -139,8 +139,9 @@ fn signal_queue(device: &Dx12Device) -> Result<u64, Error> {
 fn checkpoint(
     device: &Dx12Device,
     device_id: api::DeviceId,
+    lane: LaneId,
     value: u64,
-    lane_frontiers: &[(LaneId, api::StepId)],
+    frontier: api::StepId,
 ) -> api::Checkpoint<Dx12> {
     api::Checkpoint {
         // SAFETY: this completion point carries only a cloned device-owned
@@ -149,13 +150,18 @@ fn checkpoint(
             CompletionPoint::from_native(
                 device_id,
                 Dx12Completion {
-                    fence: device.0.fence.clone(),
+                    fence: super::super::queue::fence(device, lane.ordinal)
+                        .expect("validated lane")
+                        .clone(),
                     value,
                 },
             )
         },
         covers: CompletionCoverage {
-            lane_frontiers: lane_frontiers.to_vec(),
+            // A queue fence proves only its own ordered prefix. Dependencies
+            // that make another lane observable are represented by the plan's
+            // explicit native queue waits, never by an implicit terminal join.
+            lane_frontiers: vec![(lane, frontier)],
         },
     }
 }
@@ -177,12 +183,63 @@ fn retain_indeterminate(device: &Dx12Device, issued: Vec<Dx12RecordedWork>) {
         for record in &issued {
             super::query::invalidate_ops(&record.encoder.query_ops);
         }
+        let mut direct = Vec::new();
+        let mut compute = Vec::new();
+        for record in issued {
+            match record.lane.ordinal {
+                0 => direct.push(record),
+                1 => compute.push(record),
+                _ => unreachable!("submission preflight validates DX12 lanes"),
+            }
+        }
+        if !direct.is_empty() {
+            device
+                .0
+                .in_flight
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push((u64::MAX, direct));
+        }
+        if !compute.is_empty() {
+            device
+                .0
+                .multi_queue
+                .in_flight
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push((u64::MAX, compute));
+        }
+    }
+}
+
+fn retain_submitted(device: &Dx12Device, values: [Option<u64>; 2], issued: Vec<Dx12RecordedWork>) {
+    let mut direct = Vec::new();
+    let mut compute = Vec::new();
+    for record in issued {
+        match record.lane.ordinal {
+            0 => direct.push(record),
+            1 => compute.push(record),
+            _ => unreachable!("submission preflight validates DX12 lanes"),
+        }
+    }
+    if !direct.is_empty() {
+        let value = values[0].expect("direct work has a terminal direct fence");
         device
             .0
             .in_flight
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .push((u64::MAX, issued));
+            .push((value, direct));
+    }
+    if !compute.is_empty() {
+        let value = values[1].expect("compute work has a terminal compute fence");
+        device
+            .0
+            .multi_queue
+            .in_flight
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((value, compute));
     }
 }
 
@@ -326,11 +383,7 @@ unsafe fn submit_packet(
     packet: api::MultiQueuePacket<Dx12>,
 ) -> api::MultiQueueSubmitOutcome<Dx12> {
     use api::MultiQueueSubmitOutcome as Outcome;
-    let _submission = device
-        .0
-        .query_submission_gate
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+    let _submission = crate::diagnostics::lock_submission_gate(&device.0.query_submission_gate);
     let validate = || -> Result<(), Error> {
         // SAFETY: querying both device-owned fences has no queue side effect.
         if unsafe { device.0.fence.GetCompletedValue() } == u64::MAX
@@ -494,15 +547,17 @@ unsafe fn submit_packet(
     let mut waits: Vec<_> = waits.into_iter().map(Some).collect();
     let mut accepted = Vec::new();
     let mut presents = Vec::new();
-    let mut frontiers = Vec::new();
+    let mut frontiers = [None; 2];
     let mut checkpoints = Vec::new();
     let mut issued = Vec::new();
     let mut sparse_issued = Vec::new();
     let mut values = Vec::<Option<(u32, u64)>>::new();
     let mut pending_queries = [Vec::<usize>::new(), Vec::<usize>::new()];
-    let mut compute_seen = false;
-    let mut compute_dirty = false;
-    let mut compute_value = None;
+    // A lane is dirty from its most recent native handoff until a fence is
+    // queued after it.  Terminal ownership and checkpoints use that same
+    // per-lane fence rather than joining compute into direct.
+    let mut lane_dirty = [false; 2];
+    let mut lane_values = [None; 2];
     let mut tokens = Vec::new();
     macro_rules! handoff {
         ($operation:expr) => {
@@ -637,10 +692,7 @@ unsafe fn submit_packet(
                 });
             }
         }
-        if lane.ordinal == 1 {
-            compute_seen = true;
-            compute_dirty = true;
-        }
+        lane_dirty[lane.ordinal as usize] = true;
         let value = if needs_signal[id.index as usize] {
             let value = handoff!(super::super::queue::signal(device, lane.ordinal));
             let fence = super::super::queue::fence(device, lane.ordinal).expect("validated lane");
@@ -651,18 +703,15 @@ unsafe fn submit_packet(
                 fence,
                 value,
             );
-            if lane.ordinal == 1 {
-                compute_value = Some(value);
-                compute_dirty = false;
-            }
+            lane_values[lane.ordinal as usize] = Some(value);
+            lane_dirty[lane.ordinal as usize] = false;
             Some(value)
         } else {
             None
         };
         values.push(value.map(|v| (lane.ordinal, v)));
         accepted.push(id);
-        frontiers.retain(|(l, _)| *l != lane);
-        frontiers.push((lane, id));
+        frontiers[lane.ordinal as usize] = Some((lane, id));
         for request in signals.iter().filter(|s| s.producer == id) {
             let native = Dx12GpuSignal {
                 fence: super::super::queue::fence(device, lane.ordinal)
@@ -683,77 +732,65 @@ unsafe fn submit_packet(
             });
         }
         if requested.contains(&id) {
-            if compute_seen {
-                if compute_dirty {
-                    let value = handoff!(super::super::queue::signal(device, 1));
-                    seal_pending(
-                        &issued,
-                        &mut pending_queries[1],
-                        1,
-                        &device.0.multi_queue.fence,
-                        value,
-                    );
-                    compute_value = Some(value);
-                    compute_dirty = false;
-                }
-                handoff!(super::super::queue::wait(
-                    device,
-                    0,
-                    &device.0.multi_queue.fence,
-                    compute_value.expect("compute frontier signaled")
-                ));
-            }
-            let fence_value = handoff!(signal_queue(device));
+            // A requested checkpoint covers this step's lane prefix only.
+            // Do not add a direct<-compute wait here: cross-lane visibility is
+            // already represented by the plan dependency processed above.
+            let fence_value = if lane_dirty[lane.ordinal as usize] {
+                handoff!(super::super::queue::signal(device, lane.ordinal))
+            } else {
+                lane_values[lane.ordinal as usize]
+                    .expect("accepted lane has a previously signaled frontier")
+            };
             seal_pending(
                 &issued,
-                &mut pending_queries[0],
-                0,
-                &device.0.fence,
+                &mut pending_queries[lane.ordinal as usize],
+                lane.ordinal,
+                super::super::queue::fence(device, lane.ordinal).expect("validated lane"),
                 fence_value,
             );
-            checkpoints.push(checkpoint(
-                device,
-                plan.id().device,
-                fence_value,
-                &frontiers,
-            ));
+            lane_values[lane.ordinal as usize] = Some(fence_value);
+            lane_dirty[lane.ordinal as usize] = false;
+            checkpoints.push(checkpoint(device, plan.id().device, lane, fence_value, id));
         }
     }
-    let retention = if accepted.is_empty() {
-        None
-    } else {
-        if compute_seen {
-            if compute_dirty {
-                let value = handoff!(super::super::queue::signal(device, 1));
+    if !accepted.is_empty() {
+        for ordinal in 0..2 {
+            if lane_dirty[ordinal] {
+                let value = handoff!(super::super::queue::signal(device, ordinal as u32));
                 seal_pending(
                     &issued,
-                    &mut pending_queries[1],
-                    1,
-                    &device.0.multi_queue.fence,
+                    &mut pending_queries[ordinal],
+                    ordinal as u32,
+                    super::super::queue::fence(device, ordinal as u32).expect("validated lane"),
                     value,
                 );
-                compute_value = Some(value);
+                lane_values[ordinal] = Some(value);
+                lane_dirty[ordinal] = false;
             }
-            handoff!(super::super::queue::wait(
-                device,
-                0,
-                &device.0.multi_queue.fence,
-                compute_value.expect("compute frontier signaled")
-            ));
         }
-        Some(handoff!(signal_queue(device)))
-    };
-    if let Some(value) = retention {
-        seal_pending(&issued, &mut pending_queries[0], 0, &device.0.fence, value);
-        device
-            .0
-            .in_flight
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push((value, issued));
-        retain_sparse(device, value, sparse_issued);
+        retain_submitted(device, lane_values, issued);
+        // Sparse mappings are direct-queue operations. Validation above
+        // rejects compute-lane sparse steps, so their owner follows only the
+        // direct timeline even when compute work is also present.
+        if !sparse_issued.is_empty() {
+            retain_sparse(
+                device,
+                lane_values[0].expect("accepted direct sparse work has a fence"),
+                sparse_issued,
+            );
+        }
         if matches!(completion, api::CompletionRequest::End) {
-            checkpoints.push(checkpoint(device, plan.id().device, value, &frontiers));
+            for (ordinal, frontier) in frontiers.into_iter().enumerate() {
+                if let Some((lane, step)) = frontier {
+                    checkpoints.push(checkpoint(
+                        device,
+                        plan.id().device,
+                        lane,
+                        lane_values[ordinal].expect("accepted lane has a terminal fence"),
+                        step,
+                    ));
+                }
+            }
         }
         retire(device);
     }
