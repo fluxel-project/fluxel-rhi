@@ -40,6 +40,9 @@ pub(super) fn describe(device: &MetalDevice, multi_queue: bool) -> DeviceCapabil
         external_memory: true,
         native_interop: true,
         limits: DeviceLimits {
+            // Logical indices do not allocate native slots. These values are
+            // index-space bounds, not a guarantee for every resource mixture;
+            // pipeline creation checks combined per-stage Metal slot budgets.
             max_bind_groups: u32::MAX,
             max_bindings_per_group: u32::MAX,
             max_color_attachments: 8,

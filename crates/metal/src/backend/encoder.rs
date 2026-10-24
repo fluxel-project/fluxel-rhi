@@ -24,6 +24,10 @@ type NativeIndexBuffer = (
 );
 
 pub struct MetalCommandEncoder {
+    #[cfg(target_vendor = "apple")]
+    pub(super) upload_pool: super::upload::UploadPool,
+    #[cfg(target_vendor = "apple")]
+    pub(super) upload_slices: Vec<super::upload::UploadSlice>,
     pub(crate) lane: u32,
     pub(super) query_ops: Vec<super::query::QueryOp>,
     #[cfg(target_vendor = "apple")]
@@ -108,6 +112,8 @@ pub struct MetalCommandEncoder {
     #[cfg(target_vendor = "apple")]
     pub(crate) indirect_count_enabled: bool,
     #[cfg(target_vendor = "apple")]
+    pub(super) indirect_count_converter: Option<indirect_count::ConverterCache>,
+    #[cfg(target_vendor = "apple")]
     pub(crate) render: Option<
         objc2::rc::Retained<
             objc2::runtime::ProtocolObject<dyn objc2_metal::MTLRenderCommandEncoder>,
@@ -188,6 +194,8 @@ impl CommandBackend for Metal {
             };
             let command = queue.commandBuffer().ok_or(api::Error::OutOfMemory)?;
             Ok(MetalCommandEncoder {
+                upload_pool: device._state.upload_pool.clone(),
+                upload_slices: Vec::new(),
                 lane: lane.ordinal,
                 query_ops: Vec::new(),
                 external_buffers: Vec::new(),
@@ -239,6 +247,7 @@ impl CommandBackend for Metal {
                 prepared_draws: Vec::new(),
                 raster_pipeline_bound: false,
                 indirect_count_enabled: device._state.indirect_count_supported,
+                indirect_count_converter: device._state.indirect_count_converter.clone(),
                 render: None,
                 compute: None,
                 workgroup_size: None,
@@ -377,68 +386,7 @@ impl CommandBackend for Metal {
         offset: u64,
         bytes: &[u8],
     ) -> api::Result<()> {
-        #[cfg(target_vendor = "apple")]
-        {
-            use objc2_metal::{
-                MTLBlitCommandEncoder as _, MTLBuffer as _, MTLCommandBuffer as _,
-                MTLCommandEncoder as _, MTLDevice as _, MTLResourceOptions,
-            };
-            if encoder.render.is_some() || encoder.compute.is_some() {
-                return Err(api::Error::InvalidState);
-            }
-            if !dst.usage.contains(api::BufferUsage::COPY_DST)
-                || offset
-                    .checked_add(bytes.len() as u64)
-                    .is_none_or(|end| end > dst.size())
-            {
-                return Err(api::Error::InvalidRange);
-            }
-            if bytes.is_empty() {
-                return Ok(());
-            }
-            let staging = encoder
-                .command
-                .device()
-                .newBufferWithLength_options(bytes.len(), MTLResourceOptions::StorageModeShared)
-                .ok_or(api::Error::OutOfMemory)?;
-            let pointer = staging.contents().cast::<u8>().as_ptr();
-            // SAFETY: the shared staging allocation is at least bytes.len()
-            // bytes, and both pointers are valid and nonoverlapping.
-            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, bytes.len()) };
-            if offset & 3 != 0 || bytes.len() & 3 != 0 {
-                let destination = usize::try_from(offset).map_err(|_| api::Error::InvalidRange)?;
-                return super::copy::copy_bytes(
-                    &encoder.command,
-                    &staging,
-                    0,
-                    &dst.raw,
-                    destination,
-                    bytes.len(),
-                );
-            }
-            let blit = encoder
-                .command
-                .blitCommandEncoder()
-                .ok_or(api::Error::OutOfMemory)?;
-            // SAFETY: the staging buffer length and destination range were
-            // checked above; Metal retains the staging buffer through execution.
-            unsafe {
-                blit.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
-                    &staging,
-                    0,
-                    &dst.raw,
-                    offset as usize,
-                    bytes.len(),
-                );
-            }
-            blit.endEncoding();
-            Ok(())
-        }
-        #[cfg(not(target_vendor = "apple"))]
-        {
-            let _ = (encoder, dst, offset, bytes);
-            Err(api::Error::Unsupported("Metal requires an Apple target"))
-        }
+        super::copy::write_buffer(encoder, dst, offset, bytes)
     }
 
     fn write_texture(

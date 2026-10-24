@@ -424,6 +424,9 @@ fn create(
         // Metal fixes topology in the mesh function's output type and has no
         // public reflection API for it. The descriptor must match the native
         // shader's output topology, as for the remaining native shader ABI.
+        // The WGSL route currently admits vertex/fragment/compute only, so
+        // there is no parsed mesh topology to validate here. Native MSL and
+        // metallib topology remain a caller contract, not reflected metadata.
         let (mesh_fn, mesh_threads, mesh_bindings) =
             function(&desc.mesh, api::ShaderStage::Mesh, MTLFunctionType::Mesh)?;
         let mesh_threads =

@@ -18,7 +18,7 @@ mod texture;
 
 #[allow(unused_imports)] // CommandBackend delegate is kept adjacent to other copy SPI exports.
 pub(super) use blit::blit;
-pub(super) use buffer::{buffer_to_texture, texture_to_buffer};
+pub(super) use buffer::{buffer_to_texture, texture_to_buffer, write_buffer};
 pub(super) use texture::{copy_texture, resolve, write_texture};
 
 pub(super) fn validate_region(

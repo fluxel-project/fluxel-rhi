@@ -1391,11 +1391,13 @@ lowers explicit dependencies and introduces no resource-history tracker.
 the configured timeout. The host/renderer must bound frames in flight and
 acquire late; RHI does not add a drawable-acquisition thread pool.
 
-Per-upload shared staging allocation remains a profiling candidate. The review
-provided no measured bottleneck, and this phase intentionally runs no Metal
-tests at the user's request. A completion-retired upload allocator is therefore
-not introduced speculatively, and no frame-time improvement or Apple GPU
-acceptance is claimed from the compile/static checks.
+Shared staging uploads now suballocate encoder-local slices from device-owned
+native MTLBuffer pages. Submitted slices are retained by the native completion
+handler before commit; cancellation releases only unsubmitted leases. Idle pages
+hold native buffers without a Rust DeviceState reference and are cleared during
+device teardown. This removes per-write native buffer creation; no frame-time
+improvement or Apple GPU acceptance is claimed without measurements. Metal tests
+remain omitted at the user's request.
 
 ## Metal transfer lowering
 
@@ -1527,3 +1529,50 @@ the surface's exit state. Both MRT/array resolve and WSI presentation regression
 pass without validation errors after the fix. The independent source review
 confirmed no further P0/P1/P2 findings in the reviewed paths; this remains focused
 Windows/780M acceptance, not an all-device or Metal test claim.
+
+
+## Metal review dispositions
+
+Adapter discovery uses the pinned objc2-metal 0.3.2 platform wrapper. Its
+`device.rs` implements MTLCopyAllDevices through the native enumeration API on
+macOS/Catalyst, and through MTLCreateSystemDefaultDevice on other Apple platforms.
+The review's unavailable-iOS-symbol diagnosis therefore does not apply to this
+call site; the Rust wrapper is not a direct call to that symbol on iOS.
+
+Indirect-count conversion keeps its immutable Metal library, function and compute
+pipeline in the device-owned converter. Each recording gets a fresh argument
+encoder because its bound argument-buffer state is mutable. Capability probing
+and actual execution use the same successfully created converter. This caches
+native compilation objects without caching or replaying application commands.
+
+Mesh output topology is part of the native shader ABI. The WGSL route currently
+admits only vertex, fragment and compute entry points, so it supplies no parsed
+mesh metadata that could be checked here. Mesh pipelines validate supported Core
+topology categories and native function stages; native MSL/metallib callers must
+match the mesh output type to the descriptor. The backend does not pretend that
+opaque library reflection proves this topology. Logical bind-group/index limits
+also do not guarantee every resource combination: pipeline creation validates
+combined per-stage native buffer, texture and sampler slot budgets.
+
+Secondary recording, ray pipelines and traditional pipeline-statistics queries
+retain their documented unsupported boundaries. They are not implemented with
+CPU command replay, software tracing or fabricated query results. Synchronous
+nextDrawable acquisition remains an explicit native behavior; this Windows-only
+review provides no Apple runtime latency or GPU acceptance claim.
+
+A generation change between Core surface preflight and final native handoff now
+returns SurfaceOutdated. Reusing an already handed-off lease still returns
+InvalidState. The final handoff checks the generation under the same lock used
+by surface reconfiguration.
+
+Metal TLAS rebuilds keep one accepted BLAS/contribution snapshot and one
+owner-scoped recorded replacement. Cancellation leaves the accepted snapshot
+unchanged; each native command-buffer completion handler holds its build inputs
+until terminal execution and replaces the snapshot only on success. Checkpoints
+also cover that metadata publication, independently of callback ordering. Old
+BLAS owners and contribution metadata are not appended to the TLAS forever.
+
+The final independent Metal source review found no further confirmed P0/P1/P2
+issues after these changes. MSRV 1.87 Windows and aarch64-apple-darwin all-target
+compilation checks pass. No Metal tests were executed; compilation and source
+review do not establish native GPU, WSI, iOS linking or performance acceptance.

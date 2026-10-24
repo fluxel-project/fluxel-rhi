@@ -38,6 +38,8 @@ type CheckpointMarker = (
 
 pub struct MetalRecordedWork {
     #[cfg(target_vendor = "apple")]
+    upload_slices: Vec<super::upload::UploadSlice>,
+    #[cfg(target_vendor = "apple")]
     pub(super) command:
         objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>>,
     #[cfg(target_vendor = "apple")]
@@ -68,7 +70,7 @@ impl MetalRecordedWork {
             return;
         }
         for build in &self.ray_builds {
-            build.submit();
+            build.submit(&self.command);
         }
     }
 
@@ -77,6 +79,14 @@ impl MetalRecordedWork {
         if self.ray_builds.is_empty() {
             return;
         }
+        // Native terminal handlers need not provide ordering between callbacks.
+        // The public checkpoint must also cover publication of the accepted
+        // BLAS snapshot before a caller can bind/rebuild the completed TLAS.
+        covered.extend(
+            self.ray_builds
+                .iter()
+                .map(|build| build.publication_completion()),
+        );
         let output = Completion::new();
         Arc::new(CompletionJoin {
             children: std::mem::take(covered),
@@ -99,6 +109,7 @@ impl MetalRecordedWork {
             && self.argument_arrays.is_empty()
             && self.external_buffers.is_empty()
             && self.external_textures.is_empty()
+            && self.upload_slices.is_empty()
         {
             return;
         }
@@ -108,6 +119,7 @@ impl MetalRecordedWork {
         let argument_arrays = self.argument_arrays.clone();
         let external_buffers = self.external_buffers.clone();
         let external_textures = self.external_textures.clone();
+        let upload_slices = self.upload_slices.clone();
         let callback = block2::RcBlock::new(
             move |_: std::ptr::NonNull<
                 objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandBuffer>,
@@ -119,6 +131,7 @@ impl MetalRecordedWork {
                     argument_arrays.len(),
                     external_buffers.len(),
                     external_textures.len(),
+                    upload_slices.len(),
                 );
             },
         );
@@ -155,6 +168,7 @@ impl DeferredBackend for Metal {
             // in a Rust keep-alive vector; Core still owns public resource
             // lifetime decisions through actual GPU completion.
             Ok(MetalRecordedWork {
+                upload_slices: encoder.upload_slices,
                 command: encoder.command,
                 prepared_draws: encoder.prepared_draws,
                 lane: encoder.lane,

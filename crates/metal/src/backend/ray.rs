@@ -1,8 +1,8 @@
 //! Metal acceleration structure construction. Pipeline-style tracing is unavailable.
 //!
 //! Native objects and their inputs are retained by Metal command buffers using
-//! retained references. TLAS dependencies are retained across completed builds
-//! so recorded encoders can declare all indirect resources that may be used.
+//! retained references. A TLAS keeps only the BLAS set accepted by its most
+//! recent completed build; each in-flight native build owns its own snapshot.
 use super::{Metal, MetalBuffer, MetalCommandEncoder, MetalDevice};
 use fluxel_rhi_core::api::{self, RayOps};
 use std::future::{Ready, ready};
@@ -13,163 +13,11 @@ mod vertex;
 use vertex::acceleration_vertex_format;
 
 #[cfg(any(target_vendor = "apple", test))]
-struct FrozenDependencies<T> {
-    phase: std::sync::Arc<std::sync::Mutex<BuildState>>,
-    values: std::sync::Mutex<Vec<T>>,
-    #[cfg(target_vendor = "apple")]
-    contributions: std::sync::Mutex<Vec<Vec<u32>>>,
-}
-
+mod dependencies;
 #[cfg(any(target_vendor = "apple", test))]
-enum BuildState {
-    Empty,
-    Recording(u64, bool),
-    Submitted,
-    Ready,
-    Failed,
-}
-
-#[cfg(any(target_vendor = "apple", test))]
-impl<T> Default for FrozenDependencies<T> {
-    fn default() -> Self {
-        Self {
-            phase: std::sync::Arc::new(std::sync::Mutex::new(BuildState::Empty)),
-            values: std::sync::Mutex::new(Vec::new()),
-            #[cfg(target_vendor = "apple")]
-            contributions: std::sync::Mutex::new(Vec::new()),
-        }
-    }
-}
-
-#[cfg(any(target_vendor = "apple", test))]
-impl<T> FrozenDependencies<T> {
-    fn with_snapshot<R>(&self, owner: u64, f: impl FnOnce(&[T]) -> R) -> api::Result<R> {
-        let guard = self.phase.lock().unwrap_or_else(|p| p.into_inner());
-        match &*guard {
-            BuildState::Recording(current, _) if *current == owner => (),
-            BuildState::Ready => (),
-            _ => return Err(api::Error::InvalidState),
-        }
-        let values = self.values.lock().unwrap_or_else(|p| p.into_inner());
-        Ok(f(&values))
-    }
-
-    fn freeze(&self, owner: u64, values: Vec<T>) -> api::Result<()> {
-        let mut guard = self.phase.lock().unwrap_or_else(|p| p.into_inner());
-        let previous = match *guard {
-            BuildState::Empty => false,
-            BuildState::Ready => true,
-            _ => return Err(api::Error::InvalidState),
-        };
-        // Preserve all earlier BLAS references: recorded TLAS users declare this
-        // conservative union, and a later rebuild can change its instance list.
-        self.values
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .extend(values);
-        *guard = BuildState::Recording(owner, previous);
-        Ok(())
-    }
-
-    fn abandon(&self, owner: u64) {
-        let mut state = self.phase.lock().unwrap_or_else(|p| p.into_inner());
-        if let BuildState::Recording(current, previous) = *state {
-            if current == owner {
-                #[cfg(target_vendor = "apple")]
-                self.contributions
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .pop();
-                if !previous {
-                    self.values
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .clear();
-                }
-                *state = if previous {
-                    BuildState::Ready
-                } else {
-                    BuildState::Empty
-                };
-            }
-        }
-    }
-
-    #[cfg(test)]
-    fn submit(&self, owner: u64) {
-        let mut state = self.phase.lock().unwrap_or_else(|p| p.into_inner());
-        if matches!(&*state, BuildState::Recording(current, _) if *current == owner) {
-            *state = BuildState::Submitted;
-        }
-    }
-
-    #[cfg(test)]
-    fn complete(&self, success: bool) {
-        let mut state = self.phase.lock().unwrap_or_else(|p| p.into_inner());
-        if matches!(*state, BuildState::Submitted) {
-            *state = if success {
-                BuildState::Ready
-            } else {
-                BuildState::Failed
-            };
-        }
-    }
-}
+pub(super) use dependencies::{BuildCompletion, BuildReservation, FrozenDependencies};
 
 pub struct MetalRay;
-
-#[cfg(any(target_vendor = "apple", test))]
-pub(super) struct BuildReservation {
-    owner: u64,
-    phase: std::sync::Arc<std::sync::Mutex<BuildState>>,
-    #[cfg(target_vendor = "apple")]
-    dependencies: std::sync::Arc<FrozenDependencies<MetalAcceleration>>,
-}
-
-#[cfg(any(target_vendor = "apple", test))]
-impl Drop for BuildReservation {
-    fn drop(&mut self) {
-        #[cfg(target_vendor = "apple")]
-        self.dependencies.abandon(self.owner);
-        #[cfg(not(target_vendor = "apple"))]
-        {
-            let mut state = self.phase.lock().unwrap_or_else(|p| p.into_inner());
-            if matches!(&*state, BuildState::Recording(owner, _) if *owner == self.owner) {
-                *state = BuildState::Empty;
-            }
-        }
-    }
-}
-
-#[cfg(any(target_vendor = "apple", test))]
-impl BuildReservation {
-    pub(super) fn submit(&self) {
-        let mut state = self.phase.lock().unwrap_or_else(|p| p.into_inner());
-        if matches!(&*state, BuildState::Recording(owner, _) if *owner == self.owner) {
-            *state = BuildState::Submitted;
-        }
-    }
-    pub(super) fn completion(&self) -> BuildCompletion {
-        BuildCompletion(self.phase.clone())
-    }
-}
-
-#[cfg(any(target_vendor = "apple", test))]
-pub(super) struct BuildCompletion(std::sync::Arc<std::sync::Mutex<BuildState>>);
-
-#[cfg(any(target_vendor = "apple", test))]
-impl BuildCompletion {
-    pub(super) fn complete(&self, success: bool) {
-        let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        if matches!(*state, BuildState::Submitted) {
-            *state = if success {
-                BuildState::Ready
-            } else {
-                BuildState::Failed
-            };
-        }
-    }
-}
 #[derive(Clone)]
 pub struct MetalAcceleration {
     #[cfg(target_vendor = "apple")]
@@ -241,13 +89,7 @@ impl MetalAcceleration {
         if !self.is_tlas {
             return Err(api::Error::InvalidState);
         }
-        self.dependencies.with_snapshot(owner, |_| {
-            let snapshots = self
-                .dependencies
-                .contributions
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            let values = snapshots.last().ok_or(api::Error::InvalidState)?;
+        self.dependencies.with_contributions(owner, |values| {
             let size = values
                 .len()
                 .checked_mul(std::mem::size_of::<u32>())
@@ -293,21 +135,17 @@ impl MetalAcceleration {
             if !structure.is_tlas || !std::ptr::eq(device, &*structure.device._state._device) {
                 return Err(api::Error::InvalidState);
             }
-            structure.dependencies.with_snapshot(owner, |_| {
-                let snapshots = structure
-                    .dependencies
-                    .contributions
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
-                let values = snapshots.last().ok_or(api::Error::InvalidState)?;
-                packed[index] =
-                    u32::try_from(packed.len()).map_err(|_| api::Error::InvalidRange)?;
-                packed.extend_from_slice(values);
-                if values.is_empty() {
-                    packed.push(0);
-                }
-                Ok::<_, api::Error>(())
-            })??;
+            structure
+                .dependencies
+                .with_contributions(owner, |values| {
+                    packed[index] =
+                        u32::try_from(packed.len()).map_err(|_| api::Error::InvalidRange)?;
+                    packed.extend_from_slice(values);
+                    if values.is_empty() {
+                        packed.push(0);
+                    }
+                    Ok::<_, api::Error>(())
+                })??;
         }
         let size = packed
             .len()
@@ -418,25 +256,29 @@ impl RayOps<Metal> for MetalRay {
                 .accelerationStructureCommandEncoder()
                 .ok_or(api::Error::OutOfMemory)?;
             if dst.is_tlas {
-                if let Err(error) = dst.dependencies.freeze(encoder.ray_owner, dependencies) {
-                    native.endEncoding();
-                    return Err(error);
-                }
+                let snapshot = dependencies.clone();
                 let api::AccelerationInput::Tlas(instances) = &input.input else {
                     unreachable!()
                 };
-                dst.dependencies
-                    .contributions
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .push(instances.iter().map(|i| i.shader_table_offset).collect());
+                let contributions: Vec<u32> = instances
+                    .iter()
+                    .map(|instance| instance.shader_table_offset)
+                    .collect();
+                if let Err(error) =
+                    dst.dependencies
+                        .freeze(encoder.ray_owner, dependencies, contributions.clone())
+                {
+                    native.endEncoding();
+                    return Err(error);
+                }
                 encoder
                     .ray_builds
-                    .push(std::sync::Arc::new(BuildReservation {
-                        owner: encoder.ray_owner,
-                        phase: dst.dependencies.phase.clone(),
-                        dependencies: dst.dependencies.clone(),
-                    }));
+                    .push(std::sync::Arc::new(BuildReservation::new(
+                        encoder.ray_owner,
+                        dst.dependencies.clone(),
+                        snapshot,
+                        contributions,
+                    )));
             }
             native.buildAccelerationStructure_descriptor_scratchBuffer_scratchBufferOffset(
                 &dst.raw,
@@ -760,8 +602,7 @@ fn valid_aabb_range(size: u64, offset: u64, stride: u64, count: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{FrozenDependencies, valid_aabb_range};
-    use std::sync::{Arc, Barrier};
+    use super::valid_aabb_range;
 
     #[test]
     fn bounding_boxes_require_valid_native_alignment_and_complete_buffer_range() {
@@ -771,77 +612,5 @@ mod tests {
         assert!(!valid_aabb_range(80, 8, 24, 2));
         assert!(!valid_aabb_range(u64::MAX, u64::MAX - 7, 24, u32::MAX));
         assert!(!valid_aabb_range(80, 0, 24, 0));
-    }
-
-    #[test]
-    fn tlas_dependencies_are_fixed_before_binding_and_cannot_be_rebuilt() {
-        let dependencies = FrozenDependencies::default();
-        assert!(dependencies.with_snapshot(1, |_| ()).is_err());
-        assert!(dependencies.freeze(1, vec![1, 2]).is_ok());
-        assert!(dependencies.with_snapshot(2, |_| ()).is_err());
-        assert_eq!(
-            dependencies
-                .with_snapshot(1, |values| values.to_vec())
-                .unwrap(),
-            [1, 2]
-        );
-        assert!(dependencies.freeze(2, vec![3]).is_err());
-        dependencies.abandon(1);
-        assert!(dependencies.freeze(2, vec![3]).is_ok());
-        dependencies.submit(2);
-        assert!(dependencies.with_snapshot(2, |_| ()).is_err());
-        dependencies.complete(true);
-        assert_eq!(
-            dependencies
-                .with_snapshot(1, |values| values.to_vec())
-                .unwrap(),
-            [3]
-        );
-        let failed = FrozenDependencies::default();
-        failed.freeze(1, vec![1]).unwrap();
-        failed.submit(1);
-        failed.complete(false);
-        assert!(failed.with_snapshot(1, |_| ()).is_err());
-        assert!(failed.freeze(2, vec![2]).is_err());
-    }
-
-    #[test]
-    fn abandoned_recording_releases_dependencies() {
-        let dependencies = FrozenDependencies::default();
-        let blas = Arc::new(());
-        let weak = Arc::downgrade(&blas);
-        dependencies.freeze(7, vec![blas]).unwrap();
-        assert!(weak.upgrade().is_some());
-        dependencies.abandon(7);
-        assert!(weak.upgrade().is_none());
-        assert!(dependencies.freeze(8, vec![Arc::new(())]).is_ok());
-    }
-
-    #[test]
-    fn concurrent_builds_choose_one_complete_dependency_set() {
-        let dependencies = Arc::new(FrozenDependencies::default());
-        let barrier = Arc::new(Barrier::new(3));
-        let workers: Vec<_> = (0..2)
-            .map(|id| {
-                let (dependencies, barrier) = (dependencies.clone(), barrier.clone());
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    dependencies.freeze(id + 1, vec![id, id])
-                })
-            })
-            .collect();
-        barrier.wait();
-        let successes = workers
-            .into_iter()
-            .map(|w| w.join().unwrap())
-            .filter(|r| r.is_ok())
-            .count();
-        assert_eq!(successes, 1);
-        let snapshot = dependencies
-            .with_snapshot(1, |v| v.to_vec())
-            .or_else(|_| dependencies.with_snapshot(2, |v| v.to_vec()))
-            .unwrap();
-        assert_eq!(snapshot.len(), 2);
-        assert_eq!(snapshot[0], snapshot[1]);
     }
 }

@@ -67,6 +67,8 @@ mod sparse;
 mod submit;
 mod surface;
 mod texture;
+#[cfg(target_vendor = "apple")]
+mod upload;
 
 pub(crate) use bindings::{MetalBindGroup, MetalBindGroupLayout, MetalPipelineLayout};
 pub(crate) use encoder::MetalCommandEncoder;
@@ -98,7 +100,18 @@ struct DeviceState {
     #[cfg(target_vendor = "apple")]
     indirect_count_supported: bool,
     #[cfg(target_vendor = "apple")]
+    indirect_count_converter: Option<encoder::indirect_count::ConverterCache>,
+    #[cfg(target_vendor = "apple")]
     visibility_merge_pipeline: query::VisibilityMergeCache,
+    #[cfg(target_vendor = "apple")]
+    upload_pool: upload::UploadPool,
+}
+
+#[cfg(target_vendor = "apple")]
+impl Drop for DeviceState {
+    fn drop(&mut self) {
+        self.upload_pool.clear();
+    }
 }
 
 #[derive(Clone)]
@@ -139,8 +152,13 @@ unsafe impl api::NativeImageLease for MetalSurfaceImage {
             .surface_generation
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !lease_generation_is_current(self.generation, generation, *current, self.handed_off) {
+        if self.handed_off {
             return Err(Error::InvalidState);
+        }
+        // Reconfiguration may invalidate the lease after Core's preflight but
+        // before this final, generation-locked native handoff.
+        if self.generation != generation || *current != self.generation {
+            return Err(Error::SurfaceOutdated);
         }
         self.handed_off = true;
         Ok(())
@@ -246,7 +264,11 @@ impl InstanceBackend for Metal {
                 let multi_queue_supported = native.respondsToSelector(objc2::sel!(newSharedEvent))
                     && native.newSharedEvent().is_some();
                 let indirect_dispatch_supported = compute::supports_indirect_dispatch(&native);
-                let indirect_count_supported = encoder::indirect_count::probe(&native);
+                let indirect_count_converter =
+                    encoder::indirect_count::ConverterCache::new(&native)
+                        .ok()
+                        .filter(|converter| encoder::indirect_count::probe(&native, converter));
+                let indirect_count_supported = indirect_count_converter.is_some();
                 let device = MetalDevice {
                     _state: Arc::new(DeviceState {
                         _device: native,
@@ -260,7 +282,9 @@ impl InstanceBackend for Metal {
                         ),
                         indirect_dispatch_supported,
                         indirect_count_supported,
+                        indirect_count_converter,
                         visibility_merge_pipeline: Arc::new(Mutex::new(None)),
+                        upload_pool: upload::UploadPool::default(),
                     }),
                 };
                 let caps = capabilities::describe(&device, multi_queue_supported);
@@ -313,6 +337,9 @@ impl MetalInstance {
     pub fn new() -> api::Result<Self> {
         #[cfg(target_vendor = "apple")]
         {
+            // objc2-metal 0.3.2 wraps the platform availability boundary:
+            // macOS/Catalyst enumerate; iOS/tvOS/visionOS call the default-
+            // device API instead. This is not a direct unavailable iOS symbol.
             let devices = objc2_metal::MTLCopyAllDevices().to_vec();
             Ok(Self {
                 _state: Arc::new(InstanceState { devices }),

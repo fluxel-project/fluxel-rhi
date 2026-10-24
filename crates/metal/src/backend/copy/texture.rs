@@ -320,8 +320,8 @@ pub(in crate::backend) fn write_texture(
     #[cfg(target_vendor = "apple")]
     {
         use objc2_metal::{
-            MTLBlitCommandEncoder as _, MTLBuffer as _, MTLCommandBuffer as _,
-            MTLCommandEncoder as _, MTLDevice as _, MTLOrigin, MTLResourceOptions, MTLSize,
+            MTLBlitCommandEncoder as _, MTLCommandBuffer as _, MTLCommandEncoder as _,
+            MTLDevice as _, MTLOrigin, MTLSize,
         };
 
         let pixel_format = crate::backend::texture::metal_format(desc.format)
@@ -330,7 +330,9 @@ pub(in crate::backend) fn write_texture(
             .command
             .device()
             .minimumLinearTextureAlignmentForPixelFormat(pixel_format)
-            .max(1);
+            .max(1)
+            .checked_next_power_of_two()
+            .ok_or(api::Error::InvalidRange)?;
         let native_row = align_up(tight_row as usize, alignment).ok_or(api::Error::InvalidRange)?;
         let rows = dst.extent[1].div_ceil(bh) as usize;
         let staging_bytes = native_row
@@ -350,27 +352,19 @@ pub(in crate::backend) fn write_texture(
             };
             let staging_data =
                 repack_rows(bytes, image_layout, tight_row as usize, rows, native_row)?;
-            let staging = encoder
-                .command
-                .device()
-                .newBufferWithLength_options(staging_bytes, MTLResourceOptions::StorageModeShared)
-                .ok_or(api::Error::OutOfMemory)?;
-            // SAFETY: the shared staging allocation has `staging_bytes` capacity,
-            // equal to the fully initialized repacked vector length.
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    staging_data.as_ptr(),
-                    staging.contents().cast::<u8>().as_ptr(),
-                    staging_bytes,
-                );
-            }
+            let staging = encoder.upload_pool.write(
+                &encoder.command.device(),
+                &mut encoder.upload_slices,
+                &staging_data,
+                alignment,
+            )?;
             // SAFETY: region validation bounds the image coordinates, the staging
             // buffer is fully populated, and row/image strides satisfy Metal's
             // pixel-format alignment requirement. The command buffer retains both.
             unsafe {
                 blit.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin_options(
-                &staging,
-                0,
+                &staging.buffer,
+                staging.offset,
                 native_row,
                 staging_bytes,
                 MTLSize {

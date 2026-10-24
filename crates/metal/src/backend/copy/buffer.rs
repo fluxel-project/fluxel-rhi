@@ -6,6 +6,74 @@ use super::{block, validate_copy_images, validate_region};
 use crate::backend::{Metal, MetalBuffer, MetalCommandEncoder};
 use fluxel_rhi_core::api::{self, TextureRegion};
 
+/// Upload host bytes through an encoder-local slice of a shared staging page.
+/// The caller's `UploadSlice` retention becomes command-buffer completion
+/// retention when recording is finished.
+pub(in crate::backend) fn write_buffer(
+    encoder: &mut MetalCommandEncoder,
+    dst: &MetalBuffer,
+    offset: u64,
+    bytes: &[u8],
+) -> api::Result<()> {
+    #[cfg(target_vendor = "apple")]
+    {
+        use objc2_metal::{
+            MTLBlitCommandEncoder as _, MTLCommandBuffer as _, MTLCommandEncoder as _,
+        };
+        if encoder.render.is_some() || encoder.compute.is_some() {
+            return Err(api::Error::InvalidState);
+        }
+        if !dst.usage.contains(api::BufferUsage::COPY_DST)
+            || offset
+                .checked_add(bytes.len() as u64)
+                .is_none_or(|end| end > dst.size())
+        {
+            return Err(api::Error::InvalidRange);
+        }
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let staging = encoder.upload_pool.write(
+            &encoder.command.device(),
+            &mut encoder.upload_slices,
+            bytes,
+            4,
+        )?;
+        if offset & 3 != 0 || bytes.len() & 3 != 0 {
+            let destination = usize::try_from(offset).map_err(|_| api::Error::InvalidRange)?;
+            return super::byte_copy::copy_bytes(
+                &encoder.command,
+                &staging.buffer,
+                staging.offset,
+                &dst.raw,
+                destination,
+                bytes.len(),
+            );
+        }
+        let blit = encoder
+            .command
+            .blitCommandEncoder()
+            .ok_or(api::Error::OutOfMemory)?;
+        // SAFETY: the retained page range and destination range were validated.
+        unsafe {
+            blit.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
+                &staging.buffer,
+                staging.offset,
+                &dst.raw,
+                offset as usize,
+                bytes.len(),
+            );
+        }
+        blit.endEncoding();
+        Ok(())
+    }
+    #[cfg(not(target_vendor = "apple"))]
+    {
+        let _ = (encoder, dst, offset, bytes);
+        Err(api::Error::Unsupported("Metal requires an Apple target"))
+    }
+}
+
 pub(in crate::backend) fn buffer_to_texture(
     encoder: &mut MetalCommandEncoder,
     src: &MetalBuffer,

@@ -17,36 +17,60 @@ use crate::backend::MetalBuffer;
 
 type Buffer = Retained<ProtocolObject<dyn MTLBuffer>>;
 type Icb = Retained<ProtocolObject<dyn MTLIndirectCommandBuffer>>;
-type Converter = (
-    Retained<ProtocolObject<dyn objc2_metal::MTLComputePipelineState>>,
-    Retained<ProtocolObject<dyn objc2_metal::MTLArgumentEncoder>>,
-);
+/// Device-owned immutable native objects for indirect-count conversion.
+///
+/// The pipeline and its source library are immutable after construction. This
+/// cache deliberately retains no Rust `MetalDevice`/`DeviceState` Arc: normal
+/// native Metal ownership is bounded by the owning DeviceState field.
+#[derive(Clone)]
+pub(in crate::backend) struct ConverterCache {
+    _library: Retained<ProtocolObject<dyn objc2_metal::MTLLibrary>>,
+    function: Retained<ProtocolObject<dyn objc2_metal::MTLFunction>>,
+    pipeline: Retained<ProtocolObject<dyn objc2_metal::MTLComputePipelineState>>,
+}
 
-fn converter(device: &ProtocolObject<dyn objc2_metal::MTLDevice>) -> api::Result<Converter> {
-    use objc2::runtime::NSObjectProtocol as _;
-    let source = NSString::from_str(include_str!("../indirect_count.metal"));
-    let options = objc2_metal::MTLCompileOptions::new();
-    options.setLanguageVersion(objc2_metal::MTLLanguageVersion::Version2_2);
-    let library = device
-        .newLibraryWithSource_options_error(&source, Some(&options))
-        .map_err(|e| api::Error::Shader(format!("Metal ICB conversion: {e:?}")))?;
-    let function = library
-        .newFunctionWithName(&NSString::from_str("fluxel_generate_draws"))
-        .ok_or_else(|| api::Error::Shader("Metal ICB conversion entry missing".into()))?;
-    if !function.respondsToSelector(objc2::sel!(newArgumentEncoderWithBufferIndex:)) {
-        return Err(api::Error::Unsupported("Metal ICB argument encoder"));
+impl ConverterCache {
+    pub(in crate::backend) fn new(
+        device: &ProtocolObject<dyn objc2_metal::MTLDevice>,
+    ) -> api::Result<Self> {
+        use objc2::runtime::NSObjectProtocol as _;
+        let source = NSString::from_str(include_str!("../indirect_count.metal"));
+        let options = objc2_metal::MTLCompileOptions::new();
+        options.setLanguageVersion(objc2_metal::MTLLanguageVersion::Version2_2);
+        let library = device
+            .newLibraryWithSource_options_error(&source, Some(&options))
+            .map_err(|e| api::Error::Shader(format!("Metal ICB conversion: {e:?}")))?;
+        let function = library
+            .newFunctionWithName(&NSString::from_str("fluxel_generate_draws"))
+            .ok_or_else(|| api::Error::Shader("Metal ICB conversion entry missing".into()))?;
+        if !function.respondsToSelector(objc2::sel!(newArgumentEncoderWithBufferIndex:)) {
+            return Err(api::Error::Unsupported("Metal ICB argument encoder"));
+        }
+        let pipeline = device
+            .newComputePipelineStateWithFunction_error(&function)
+            .map_err(|e| api::Error::Backend(format!("Metal ICB pipeline: {e:?}")))?;
+        Ok(Self {
+            _library: library,
+            function,
+            pipeline,
+        })
     }
-    let pipeline = device
-        .newComputePipelineStateWithFunction_error(&function)
-        .map_err(|e| api::Error::Backend(format!("Metal ICB pipeline: {e:?}")))?;
-    // SAFETY: buffer zero is the kernel's declared argument-buffer parameter.
-    let argument_encoder = unsafe { function.newArgumentEncoderWithBufferIndex(0) };
-    Ok((pipeline, argument_encoder))
+
+    /// Returns a fresh mutable encoder. Binding an argument buffer mutates this
+    /// object, so it must never be shared by concurrent command recorders.
+    fn argument_encoder(&self) -> Retained<ProtocolObject<dyn objc2_metal::MTLArgumentEncoder>> {
+        // SAFETY: buffer zero is the kernel's declared argument-buffer
+        // parameter, validated while constructing this cache.
+        unsafe { self.function.newArgumentEncoderWithBufferIndex(0) }
+    }
 }
 
 /// Probe the exact runtime compiler, ICB allocation and encoder selectors.
 /// No command is submitted, and every temporary native object is discarded.
-pub(in crate::backend) fn probe(device: &ProtocolObject<dyn objc2_metal::MTLDevice>) -> bool {
+pub(in crate::backend) fn probe(
+    device: &ProtocolObject<dyn objc2_metal::MTLDevice>,
+    converter: &ConverterCache,
+) -> bool {
     use objc2::runtime::NSObjectProtocol as _;
     use objc2_metal::MTLCommandQueue as _;
     if !device.respondsToSelector(objc2::sel!(supportsFamily:)) {
@@ -62,10 +86,8 @@ pub(in crate::backend) fn probe(device: &ProtocolObject<dyn objc2_metal::MTLDevi
     {
         return false;
     }
-    let Ok((pipeline, arguments)) = converter(device) else {
-        return false;
-    };
-    if pipeline.threadExecutionWidth() == 0
+    let arguments = converter.argument_encoder();
+    if converter.pipeline.threadExecutionWidth() == 0
         || arguments.encodedLength() == 0
         || !arguments.respondsToSelector(objc2::sel!(setIndirectCommandBuffer:atIndex:))
     {
@@ -186,6 +208,7 @@ impl PreparedDraws {
 }
 
 pub(in crate::backend) fn prepare(
+    converter: &ConverterCache,
     command: &ProtocolObject<dyn objc2_metal::MTLCommandBuffer>,
     args: &MetalBuffer,
     args_offset: u64,
@@ -207,7 +230,7 @@ pub(in crate::backend) fn prepare(
         index.is_some(),
     )?;
     let device = command.device();
-    let (pipeline, argument_encoder) = converter(&device)?;
+    let argument_encoder = converter.argument_encoder();
     let mut result = PreparedDraws {
         chunks: Vec::new(),
         _argument_buffers: Vec::new(),
@@ -271,7 +294,7 @@ pub(in crate::backend) fn prepare(
         let compute = command
             .computeCommandEncoder()
             .ok_or(api::Error::OutOfMemory)?;
-        compute.setComputePipelineState(&pipeline);
+        compute.setComputePipelineState(&converter.pipeline);
         let params = Parameters {
             argument_word_offset: args_offset / 4,
             count_word_offset: count_offset / 4,
@@ -298,7 +321,7 @@ pub(in crate::backend) fn prepare(
         }
         let resource = ProtocolObject::<dyn MTLResource>::from_ref(&*icb);
         compute.useResource_usage(resource, MTLResourceUsage::Write);
-        let width = pipeline.threadExecutionWidth().max(1);
+        let width = converter.pipeline.threadExecutionWidth().max(1);
         compute.dispatchThreadgroups_threadsPerThreadgroup(
             MTLSize {
                 width: (len as usize).div_ceil(width),

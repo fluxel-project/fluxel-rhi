@@ -149,7 +149,12 @@ impl api::RasterExtrasOps<Metal> for RasterExtras {
                 return Ok(());
             }
             super::raster::resume::end_for_indirect_count(encoder)?;
+            let converter = encoder
+                .indirect_count_converter
+                .as_ref()
+                .ok_or(api::Error::Unsupported("Metal indirect draw count"))?;
             let draws = prepare(
+                converter,
                 &encoder.command,
                 args,
                 args_offset,
@@ -262,7 +267,7 @@ fn chunks(max: u32) -> impl Iterator<Item = (u32, u32)> {
 #[cfg(target_vendor = "apple")]
 mod native;
 #[cfg(target_vendor = "apple")]
-pub(in crate::backend) use native::{PreparedDraws, prepare, probe};
+pub(in crate::backend) use native::{ConverterCache, PreparedDraws, prepare, probe};
 
 #[cfg(test)]
 mod tests {
