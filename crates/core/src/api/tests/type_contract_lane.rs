@@ -1,5 +1,6 @@
 //! Lane-admission regressions for the Core test backend.
 
+use super::type_contract_tests::NativeShared;
 use super::*;
 
 #[test]
