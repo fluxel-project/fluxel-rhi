@@ -47,7 +47,7 @@ pub(super) fn texture_support_from_discovery(
     let renderbuffer_usage = GlTextureUsage::RENDER_ATTACHMENT
         | GlTextureUsage::COPY_SOURCE
         | GlTextureUsage::COPY_DESTINATION;
-    // Exact multisample image-copy facts can admit a matching-sample Desktop
+    // Exact multisample image-copy facts can admit a matching-sample native
     // direct image copy; they never imply pixel upload or readback support.
     // Independently, a renderable multisample color attachment can be a
     // COPY_SOURCE for an immediate color resolve. Keep that fallback tied to

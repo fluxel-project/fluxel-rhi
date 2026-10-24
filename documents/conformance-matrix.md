@@ -22,7 +22,7 @@ as a passing matrix column.
 | Surface acquire, graphics submit, present | Numbered Windows examples | Examples 01–15, two frames each with validation layer | Numbered three-frame browser tests |
 | Texture upload, views, samplers, depth | Examples 02–09 | Examples 02–09 | Examples 02–09 |
 | Compute dispatch | Example 06 | Example 06 | Example 06, native compute pass |
-| Texture array and indirect draw | Example 10 | Example 10, including multi-draw | Example 10, texture array and `drawIndexedIndirect`; multi-draw is not advertised |
+| Texture array and indirect draw | Example 10 | Example 10, including multi-draw | Example 10, texture array and `drawIndexedIndirect`; separate fixtures cover GPU-count lowering |
 | Occlusion query and readback | Example 11 | Example 11; observed teapot 246604 and sphere 2878 samples | Example 11, native query resolve and staging readback |
 | Image readback | Example 12 | Example 12; PPM and GPU capture pixel-identical | Example 12, texture-to-buffer copy and async map |
 | Secondary raster work | Example 13 | Example 13; native secondary command buffers | Unsupported; example 13 preserves the scene using sequential primary recording |
@@ -30,6 +30,22 @@ as a passing matrix column.
 | Two-view multiview | Example 15 | Example 15; native view mask `0b11` and `ViewIndex` | Unsupported; example 15 renders each eye in a separate pass |
 
 The DX12 column identifies implemented example paths, not a fresh hardware pass for every row. Vulkan and WebGPU screenshot comparisons use the local C++ reference captures, excluding the C++ HUD. The current Vulkan candidate ran all 15 examples for two frames on AMD Radeon 780M (driver `25.10.28.02`) with `VK_LAYER_KHRONOS_validation`; every example exited successfully with zero validation diagnostics. Visual review found matching scenes across all 15. Example 09's requested anisotropic sampler is now enabled when supported by the device. Example 14 declares the texture upload, shader-read, and return-to-common transitions explicitly. Example 13's presentation was visually checked from swapchain GPU readback because desktop capture was occluded. Example 07 retains the source demo's intentional 7×7 reflection blur. The 14 shared-example transition change was rerun on DX12 with the debug layer and no diagnostics. WebGPU ran all 15 browser tests for three frames each in Chrome 155.0.8059.40 on an AMD RDNA 3 adapter (`isFallbackAdapter = false`) and produced fresh 1280×720 captures for visual comparison. Its 05/13/14/15 fallback scenes prove visible output only; they do not prove the unavailable native capabilities in their row.
+
+## Core-interface gap review
+
+This review is separate from the historical example matrix above. Surface and
+new visual acceptance were not repeated while the desktop could be locked.
+Raw diagnostics and screenshots remain local.
+
+| Backend | Current result | Verification limit |
+| --- | --- | --- |
+| DX12 | Explicit memory, native/external execution, resolve/clear, shader routes and runtime arrays completed | 276 focused/headless checks; tier-4 sparse-tail path unavailable on this GPU |
+| Vulkan | Exact external boundaries, resolve usages/layout, subgroup and enabled precision/storage features completed | 90 checks with Khronos synchronization validation after targeted fixes; sparse depth formats unavailable |
+| WebGPU | Standalone regional resolve, storage-buffer views and independent indirect feature reporting completed | 36 effective headless browser checks on an AMD hardware adapter |
+| Metal | Word clear and filtered color blit added; upload and resolve usage contracts corrected | Apple-target compile/static review only; no Metal tests, as requested |
+| GL4+ | Native same-sample color image copy added, including nonzero multisample-array layers | 2 hardware output fixtures plus ordinary unit tests |
+| GLES3+ | ES 3.2 core and ES 3.1 EXT/OES image-copy lowering implemented | Software API checks pass; new hardware acceptance remains incomplete due to unavailable Windows capability and unresolved WSL runtime failures |
+| WebGL2 | Existing standalone resolve remains the native MSAA transfer route | Same-sample image copy has no matching API; multisampled framebuffer-blit destinations are forbidden |
 
 ## Updating this matrix
 

@@ -654,8 +654,8 @@ pub(super) fn texture_storage_class(
         .usage
         .contains(crate::backend::gl::api::GlTextureUsage::COPY_SOURCE)
         && !facts.copy_source
-        // Exact native facts can admit a matching-sample Desktop direct image
-        // copy; they never imply pixel readback. A renderable multisample
+        // Exact native facts can admit a matching-sample direct image copy;
+        // they never imply pixel readback. A renderable multisample
         // color attachment is also admitted as a narrow resolve source, which
         // immediately reduces it to one sample before regular readback.
         && !(desc.sample_count > 1

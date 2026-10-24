@@ -231,7 +231,7 @@ fn multisample_facts_require_exact_format_count_and_resource_probe() {
 }
 
 #[test]
-fn desktop_msaa_color_copy_facts_require_direct_image_and_exact_probes() {
+fn msaa_color_copy_facts_require_direct_image_and_exact_probes() {
     let limits = GlLimits::unavailable();
     let mut extensions = GlExtensionSet::default();
     let mut report = ProbeReport::default();
@@ -288,15 +288,51 @@ fn desktop_msaa_color_copy_facts_require_direct_image_and_exact_probes() {
     assert!(array_facts.copy_source);
     assert!(array_facts.copy_destination);
 
-    // The first implementation intentionally leaves GLES false even when its
-    // core symbol and the matching allocation probe are present.
-    let embedded = texture_facts(
+    // GLES 3.2 gains the core direct-image route only with the loaded symbol.
+    let embedded32 = texture_facts(
         GlFamilyProfile::Embedded { major: 3, minor: 2 },
         &extensions,
         &report,
     );
-    assert!(!embedded.copy_source);
-    assert!(!embedded.copy_destination);
+    assert!(embedded32.copy_source);
+    assert!(embedded32.copy_destination);
+
+    // GLES 3.1 must name an extension and load its matching ABI entry point.
+    let embedded31 = GlFamilyProfile::Embedded { major: 3, minor: 1 };
+    let mut ext = GlExtensionSet::default();
+    let facts = texture_facts(embedded31, &ext, &report);
+    assert!(!facts.copy_source);
+    ext.report_raw("GL_EXT_copy_image");
+    let facts = texture_facts(embedded31, &ext, &report);
+    assert!(!facts.copy_source);
+    report.copy_image_symbols[1] = true;
+    let facts = texture_facts(embedded31, &ext, &report);
+    assert!(facts.copy_source);
+    assert!(facts.copy_destination);
+
+    // OES uses its separate loaded entry and remains unavailable to GLES 3.0.
+    let mut oes = GlExtensionSet::default();
+    oes.report_raw("GL_OES_copy_image");
+    let mut oes_report = report.clone();
+    oes_report.copy_image_symbols[1] = false;
+    let facts = texture_facts(embedded31, &oes, &oes_report);
+    assert!(!facts.copy_source);
+    oes_report.copy_image_symbols[2] = true;
+    let facts = texture_facts(embedded31, &oes, &oes_report);
+    assert!(facts.copy_source);
+    assert!(facts.copy_destination);
+    let facts = texture_facts(
+        GlFamilyProfile::Embedded { major: 3, minor: 0 },
+        &oes,
+        &oes_report,
+    );
+    assert!(!facts.copy_source);
+    assert!(!facts.copy_destination);
+
+    // WebGL2 exposes no corresponding direct image-copy operation.
+    let webgl = texture_facts(GlFamilyProfile::WebGl2, &extensions, &report);
+    assert!(!webgl.copy_source);
+    assert!(!webgl.copy_destination);
 
     // Older Desktop contexts need the advertised extension as well as the
     // loaded ABI entry point.

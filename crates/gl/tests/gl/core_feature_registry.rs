@@ -287,7 +287,7 @@ mod msaa_array_formats;
 #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 #[path = "core_msaa_array_sampling.rs"]
 mod msaa_array_sampling;
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 #[path = "core_msaa_copy.rs"]
 mod msaa_copy;
 #[path = "core_multiview.rs"]

@@ -177,8 +177,8 @@ impl GlCopyDomainApi for NativeGlProvider {
         }
         // Multisample color images are admitted only after discovery proved
         // the direct image-copy entry point. They must never fall through to
-        // the FBO route: that route has distinct API-family semantics and is
-        // deliberately not the GLES/WebGL capability being opened here.
+        // the FBO route: that route has distinct API-family semantics; WebGL
+        // therefore keeps its multisample-copy facts false.
         match if source_desc.sample_count > 1 || self.copy_image_extension.is_some() {
             CopyRoute::DirectImage
         } else {

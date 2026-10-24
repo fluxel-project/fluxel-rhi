@@ -1,4 +1,4 @@
-//! WGL MSAA texture-copy regressions.
+//! Desktop GL and GLES MSAA texture-copy regressions.
 //!
 //! Distinct sample-mask draws give the source an observable per-sample pattern.
 //! A later resolve proves that `copy_texture` retained that sample storage.
@@ -139,12 +139,12 @@ async fn pipelines(device: &Device<Gl>) -> [RasterPipeline<Gl>; 3] {
     ]
 }
 
-async fn copy_msaa_samples(device: &Device<Gl>, layers: u32) {
+async fn copy_msaa_samples(device: &Device<Gl>, profile: &str, layers: u32) {
     let [red, green, blue] = pipelines(device).await;
     let ms_desc = texture_desc(4, layers);
     if !matches!(device.texture_support(&ms_desc), Support::Supported(_)) {
         eprintln!(
-            "SKIP WGL MSAA {}copy: profile rejects 4x Rgba8Unorm{}",
+            "SKIP {profile} MSAA {}copy: texture_support rejects 4x Rgba8Unorm{} with COPY_SRC|COPY_DST",
             if layers == 1 { "" } else { "array " },
             if layers == 1 { "" } else { " array" }
         );
@@ -306,7 +306,7 @@ async fn copy_msaa_samples(device: &Device<Gl>, layers: u32) {
     }
 }
 
-#[cfg(all(windows, feature = "native-gl-wgl"))]
+#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
     use std::task::{Context, Poll, Wake, Waker};
     struct WakeThread(std::thread::Thread);
@@ -341,12 +341,32 @@ fn with_wgl(test: impl FnOnce(&Device<Gl>)) {
 #[test]
 #[ignore = "requires an explicit WGL hardware-test run"]
 fn wgl_core_msaa_copy_preserves_samples() {
-    with_wgl(|device| block_on(copy_msaa_samples(device, 1)));
+    with_wgl(|device| block_on(copy_msaa_samples(device, "WGL", 1)));
 }
 
 #[cfg(all(windows, feature = "native-gl-wgl"))]
 #[test]
 #[ignore = "requires an explicit WGL hardware-test run"]
 fn wgl_core_msaa_copy_array_layer_preserves_samples() {
-    with_wgl(|device| block_on(copy_msaa_samples(device, 2)));
+    with_wgl(|device| block_on(copy_msaa_samples(device, "WGL", 2)));
+}
+
+#[cfg(feature = "native-gles-egl")]
+#[test]
+#[ignore = "requires an EGL GLES hardware context"]
+fn gles_core_msaa_copy_preserves_samples() {
+    let native =
+        GlInstance::gles_pbuffer([8, 8]).expect("open EGL GLES pbuffer for MSAA-copy fixture");
+    let device = block_on(open(native));
+    block_on(copy_msaa_samples(&device, "GLES", 1));
+}
+
+#[cfg(feature = "native-gles-egl")]
+#[test]
+#[ignore = "requires an EGL GLES hardware context"]
+fn gles_core_msaa_copy_array_layer_preserves_samples() {
+    let native = GlInstance::gles_pbuffer([8, 8])
+        .expect("open EGL GLES pbuffer for MSAA-array-copy fixture");
+    let device = block_on(open(native));
+    block_on(copy_msaa_samples(&device, "GLES", 2));
 }

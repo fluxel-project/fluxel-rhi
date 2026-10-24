@@ -438,11 +438,16 @@ impl NativeGlProvider {
                         "attachment sample count does not match the allocation",
                     ));
                 }
-                let facts = self.discovery.formats().get_for(
-                    crate::backend::gl::api::GlFormatResourceKind::Texture,
-                    view.format,
-                    view.sample_count,
-                );
+                let kind = if desc.sample_count > 1 && desc.dimension == GlTextureDimension::D2Array
+                {
+                    crate::backend::gl::api::GlFormatResourceKind::MultisampleArray
+                } else {
+                    crate::backend::gl::api::GlFormatResourceKind::Texture
+                };
+                let facts = self
+                    .discovery
+                    .formats()
+                    .get_for(kind, view.format, view.sample_count);
                 if facts.is_none_or(|facts| !facts.renderable) {
                     return Err(GlError::Unsupported {
                         operation: op,

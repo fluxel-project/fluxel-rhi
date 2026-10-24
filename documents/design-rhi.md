@@ -1223,6 +1223,23 @@ not enable multisample pixel uploads, buffer readback, or a framebuffer-copy
 fallback. Resolve remains a separate operation that reduces sample count.
 Selected depth/stencil-plane copies remain on their existing restricted paths.
 
+GLES uses the same direct-image lowering for ES 3.2 core, or ES 3.1 with an
+advertised `EXT_copy_image` / `OES_copy_image` and its corresponding loaded
+entry. The extensions accept valid texture targets and require matching sample
+counts; absence of the multisample token in their older source text does not
+itself exclude later valid texture targets. Single-sample extension paths remain
+unchanged. MSAA-array framebuffer validation uses its separate array-format fact,
+not the ordinary multisample-texture record.
+
+New GLES MSAA-copy hardware acceptance is incomplete: the Windows runtime lacks
+CopyImage, and the tested WSL Mesa/D3D12 configuration produced invalid source
+readback and native crashes. An existing sample-mask/resolve control also crashed
+after correct readback. Software Mesa ES 3.2 core and ES 3.1 extension tests pass;
+these validate API lowering but do not substitute for hardware acceptance. No
+speculative extension exclusion, driver blacklist or EGL teardown workaround is
+inferred from those failures.
+
+
 WebGL2 cannot use this route: its API exposes no CopyImage entry point, and its
 ES 3.0 framebuffer-blit rules reject multisampled draw framebuffers. A native
 MSAA-to-single-sample resolve does not establish same-sample image-copy support.
