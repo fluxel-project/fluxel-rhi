@@ -92,7 +92,11 @@ impl Drop for Registration {
 pub(crate) struct AbandonedFenceEvent {
     pub(super) value: u64,
     pub(super) fence: ID3D12Fence,
-    event: HANDLE,
+    event: Option<HANDLE>,
+    // Only failed autonomous-retirement setup uses this.  Its submission has
+    // already reached D3D12, so losing every public Device must not release
+    // native owners before a later explicit recovery observes the fence.
+    owner: Option<Dx12Device>,
 }
 
 // A HANDLE is an OS value; this type only transfers and closes it. It never
@@ -105,8 +109,82 @@ impl Drop for AbandonedFenceEvent {
     fn drop(&mut self) {
         // SAFETY: this type owns the event HANDLE after the future transfers
         // it; retirement only drops it once its fence can no longer signal it.
-        unsafe {
-            let _ = CloseHandle(self.event);
+        if let Some(event) = self.event.take() {
+            // SAFETY: this entry owns the transferred event HANDLE.
+            unsafe {
+                let _ = CloseHandle(event);
+            }
+        }
+    }
+}
+
+impl AbandonedFenceEvent {
+    pub(super) fn retain_after(&self, completed: u64) -> bool {
+        // A registration failure after native handoff is quarantined on device
+        // loss: there is no successful completion proof that can retire the
+        // already-issued owners. Ordinary cancelled futures do not carry an
+        // owner and may release their event on loss.
+        (completed == u64::MAX && self.owner.is_some())
+            || (completed != u64::MAX && self.value > completed)
+    }
+}
+
+/// Transfers a cancelled future's event to ordinary fence-only retirement.
+///
+/// This path deliberately keeps no extra device Arc; failed autonomous
+/// retirement registration uses the separate quarantine helper below.
+pub(super) fn retain_abandoned_event(
+    device: &Dx12Device,
+    fence: ID3D12Fence,
+    value: u64,
+    event: HANDLE,
+) {
+    retain_event(device, fence, value, Some(event), None);
+}
+
+/// Retains a failed autonomous-retirement registration. Unlike a cancelled
+/// future, native work was already accepted, so this narrow quarantine keeps
+/// the device alive until a later retirement pass has completion evidence.
+pub(super) fn retain_failed_retirement_event(
+    device: &Dx12Device,
+    fence: ID3D12Fence,
+    value: u64,
+    event: Option<HANDLE>,
+) {
+    retain_event(device, fence, value, event, Some(device.clone()));
+}
+
+fn retain_event(
+    device: &Dx12Device,
+    fence: ID3D12Fence,
+    value: u64,
+    event: Option<HANDLE>,
+    owner: Option<Dx12Device>,
+) {
+    // SAFETY: the caller transfers exclusive event ownership and the cloned
+    // fence is valid for this read-only completion query.
+    let completed = unsafe { fence.GetCompletedValue() };
+    if matches!(fence_progress(completed, value), Ok(false))
+        || (owner.is_some() && completed == u64::MAX)
+    {
+        device
+            .0
+            .abandoned_fence_events
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(AbandonedFenceEvent {
+                value,
+                fence,
+                event,
+                owner,
+            });
+    } else {
+        // SAFETY: completion/loss means this event will not be observed by a
+        // threadpool wait; close the transferred handle exactly once.
+        if let Some(event) = event {
+            unsafe {
+                let _ = CloseHandle(event);
+            }
         }
     }
 }
@@ -213,26 +291,7 @@ impl Drop for Dx12FenceFuture {
         // event, including a concurrent retire pass.
         drop(registration);
         if let Some(event) = event {
-            // SAFETY: the future owns this cloned fence; query is read-only.
-            let completed = unsafe { self.fence.GetCompletedValue() };
-            if matches!(fence_progress(completed, self.value), Ok(false)) {
-                self.device
-                    .0
-                    .abandoned_fence_events
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .push(AbandonedFenceEvent {
-                        value: self.value,
-                        fence: self.fence.clone(),
-                        event,
-                    });
-            } else {
-                // SAFETY: completion already proves Windows will not signal
-                // this event again; this future still owns the HANDLE exactly once.
-                unsafe {
-                    let _ = CloseHandle(event);
-                }
-            }
+            retain_abandoned_event(&self.device, self.fence.clone(), self.value, event);
         }
         retire(&self.device);
     }

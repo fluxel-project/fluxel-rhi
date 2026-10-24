@@ -59,8 +59,79 @@ fn run(indexed: bool, indirect: u8, native: bool, negative: bool) {
     run_inner(indexed, indirect, native, negative, None);
 }
 
+#[derive(Clone, Copy)]
+struct Batch {
+    count: u32,
+    stride: u32,
+    offset: u64,
+    gpu_count: bool,
+    count_offset: u64,
+}
+
+#[test]
+fn wgsl_packing_offset_stride_and_gpu_count_chunk_boundary() {
+    for indexed in [false, true] {
+        for stride in [if indexed { 20 } else { 16 }, 32] {
+            run_inner(
+                indexed,
+                4,
+                false,
+                indexed,
+                Some(Batch {
+                    count: 257,
+                    stride,
+                    offset: 12,
+                    gpu_count: false,
+                    count_offset: 0,
+                }),
+            );
+        }
+    }
+    run_inner(
+        false,
+        4,
+        false,
+        false,
+        Some(Batch {
+            count: 257,
+            stride: 32,
+            offset: 28,
+            gpu_count: true,
+            count_offset: 20,
+        }),
+    );
+    // One record beyond the native dispatch-x limit. The GPU writes count=1;
+    // the last record has a different color, catching an unclamped second chunk.
+    run_inner(
+        false,
+        4,
+        false,
+        false,
+        Some(Batch {
+            count: 65_535 * 64 + 1,
+            stride: 16,
+            offset: 12,
+            gpu_count: true,
+            count_offset: 0,
+        }),
+    );
+}
+
 fn run_indirect_batch(count: u32) -> [Duration; 2] {
-    run_inner(false, 4, false, false, Some(count)).expect("batch benchmark records a duration")
+    run_inner(
+        false,
+        4,
+        false,
+        false,
+        Some(Batch {
+            count,
+            stride: 16,
+            offset: 0,
+            gpu_count: false,
+            count_offset: 0,
+        }),
+    )
+    .expect("batch benchmark records a duration")
 }
 
 fn run_inner(
@@ -68,7 +139,7 @@ fn run_inner(
     indirect: u8,
     native: bool,
     negative: bool,
-    batch_count: Option<u32>,
+    batch: Option<Batch>,
 ) -> Option<[Duration; 2]> {
     let d = block_on(Dx12Instance::new().unwrap().open_default()).unwrap();
     let lane = d
@@ -205,8 +276,8 @@ fn run_inner(
     let dst = d
         .create_buffer(&BufferDesc {
             label: None,
-            size: 8192,
-            usage: BufferUsage::COPY_DST.union(BufferUsage::MAP_READ),
+            size: 8208,
+            usage: BufferUsage::COPY_DST | BufferUsage::MAP_READ | BufferUsage::QUERY_RESOLVE,
             memory: MemoryClass::Readback,
         })
         .unwrap();
@@ -218,7 +289,9 @@ fn run_inner(
             memory: MemoryClass::Device,
         })
         .unwrap();
-    let args_size = batch_count.map_or(52, |count| u64::from(count) * 16);
+    let args_size = batch.map_or(52, |batch| {
+        batch.offset + u64::from(batch.count) * u64::from(batch.stride)
+    });
     let args = d
         .create_buffer(&BufferDesc {
             label: None,
@@ -237,10 +310,19 @@ fn run_inner(
     } else {
         [3u32, 1, 5, 9, 0, 1]
     };
-    let data: Vec<u8> = if let Some(count) = batch_count {
-        let mut records = Vec::with_capacity(count as usize * 16);
-        for _ in 0..count {
-            records.extend([3u32, 1, 5, 9].into_iter().flat_map(u32::to_le_bytes));
+    let data: Vec<u8> = if let Some(batch) = batch {
+        let mut records = vec![0u8; args_size as usize];
+        for index in 0..batch.count {
+            let start = (batch.offset + u64::from(index) * u64::from(batch.stride)) as usize;
+            let mut record = words;
+            if index + 1 == batch.count {
+                record[if indexed { 4 } else { 3 }] = if batch.gpu_count { 77 } else { 10 };
+            }
+            let length = if indexed { 5 } else { 4 };
+            for (word, value) in record[..length].iter().enumerate() {
+                records[start + word * 4..start + word * 4 + 4]
+                    .copy_from_slice(&value.to_le_bytes());
+            }
         }
         records
     } else {
@@ -249,7 +331,8 @@ fn run_inner(
     if indirect != 3 {
         e.write_buffer(&args, 0, &data).unwrap();
     }
-    if indirect == 3 {
+    let gpu_producer = indirect == 3 || batch.is_some_and(|batch| batch.gpu_count);
+    if gpu_producer {
         let gl = d
             .create_bind_group_layout(&BindGroupLayoutDesc {
                 label: None,
@@ -288,13 +371,16 @@ fn run_inner(
                 push_constants: &[],
             })
             .unwrap();
-        let code = if indexed {
-            "a[0]=3u; a[1]=1u; a[2]=0u; a[3]=4294967295u; a[4]=9u; a[6]=3u; a[7]=1u; a[8]=0u; a[9]=4294967295u; a[10]=10u;"
+        let code = if let Some(batch) = batch.filter(|batch| batch.gpu_count) {
+            format!("a[{}]=1u;", batch.count_offset / 4)
+        } else if indexed {
+            "a[0]=3u; a[1]=1u; a[2]=0u; a[3]=4294967295u; a[4]=9u; a[6]=3u; a[7]=1u; a[8]=0u; a[9]=4294967295u; a[10]=10u;".to_owned()
         } else {
-            "a[0]=3u; a[1]=1u; a[2]=5u; a[3]=9u; a[5]=3u; a[6]=1u; a[7]=5u; a[8]=10u;"
+            "a[0]=3u; a[1]=1u; a[2]=5u; a[3]=9u; a[5]=3u; a[6]=1u; a[7]=5u; a[8]=10u;".to_owned()
         };
+        let count_write = if indirect == 3 { "a[12]=2u;" } else { "" };
         let source = format!(
-            "@group(0) @binding(0) var<storage, read_write> a: array<u32>; @compute @workgroup_size(1) fn main() {{ {code} a[12]=2u; }}"
+            "@group(0) @binding(0) var<storage, read_write> a: array<u32>; @compute @workgroup_size(1) fn main() {{ {code} {count_write} }}"
         );
         let shader = block_on(d.shader(ShaderDesc {
             label: None,
@@ -369,12 +455,12 @@ fn run_inner(
             },
             usage: StateTransition {
                 from: BufferUses {
-                    stages: if indirect == 3 {
+                    stages: if gpu_producer {
                         StageMask::COMPUTE
                     } else {
                         StageMask::EMPTY
                     },
-                    accesses: if indirect == 3 {
+                    accesses: if gpu_producer {
                         AccessMask::SHADER_WRITE
                     } else {
                         AccessMask::EMPTY
@@ -427,6 +513,15 @@ fn run_inner(
         load: LoadOp::Clear(ClearColor::Float([0.0, 0.0, 0.0, 1.0])),
         store: StoreOp::Store,
     })];
+    let timestamps = batch.map(|_| {
+        d.queries(QueryKind::Timestamp)
+            .unwrap()
+            .create(&QueryDesc {
+                kind: QueryKind::Timestamp,
+                count: 2,
+            })
+            .unwrap()
+    });
     let mut pass = e
         .begin_raster(&RasterPassDesc {
             label: None,
@@ -439,7 +534,11 @@ fn run_inner(
                 height: 16,
             },
             multiview_mask: None,
-            timestamp_writes: None,
+            timestamp_writes: timestamps.as_ref().map(|set| PassTimestampWrites {
+                set,
+                begin: Some(0),
+                end: Some(1),
+            }),
             occlusion_query_set: None,
             secondary_inheritance: None,
         })
@@ -467,15 +566,39 @@ fn run_inner(
     }
     let extras = d.raster_extras().unwrap();
     let recording = if indirect == 4 {
+        let batch = batch.unwrap();
+        let mut record = |pass: &mut RasterPass<'_, _>| {
+            if batch.gpu_count {
+                extras
+                    .multi_draw_count(
+                        pass,
+                        &args,
+                        batch.offset,
+                        &args,
+                        batch.count_offset,
+                        batch.count,
+                        batch.stride,
+                        indexed,
+                    )
+                    .unwrap();
+            } else {
+                extras
+                    .multi_draw(
+                        pass,
+                        &args,
+                        batch.offset,
+                        batch.count,
+                        batch.stride,
+                        indexed,
+                    )
+                    .unwrap();
+            }
+        };
         let start = Instant::now();
-        extras
-            .multi_draw(&mut pass, &args, 0, batch_count.unwrap(), 16, false)
-            .unwrap();
+        record(&mut pass);
         let cold = start.elapsed();
         let start = Instant::now();
-        extras
-            .multi_draw(&mut pass, &args, 0, batch_count.unwrap(), 16, false)
-            .unwrap();
+        record(&mut pass);
         Some([cold, start.elapsed()])
     } else {
         match (indexed, indirect) {
@@ -512,6 +635,12 @@ fn run_inner(
     };
 
     pass.finish().unwrap();
+    if let Some(set) = &timestamps {
+        d.queries(QueryKind::Timestamp)
+            .unwrap()
+            .resolve(&mut e, set, 0..2, &dst, 8192)
+            .unwrap();
+    }
     e.transition_resources(&[barrier(
         render,
         copy,
@@ -536,7 +665,7 @@ fn run_inner(
         )
         .unwrap();
     }
-    let ticket = e.readback_buffer(&dst, 0..8192).unwrap();
+    let ticket = e.readback_buffer(&dst, 0..8208).unwrap();
     let id = PlanId {
         device: d.id(),
         ordinal: 755321,
@@ -566,17 +695,37 @@ fn run_inner(
     };
     let point = match outcome {
         SubmitOutcome::Accepted(r) => r.checkpoints.into_iter().next().unwrap().point,
-        _ => panic!("submission rejected"),
+        SubmitOutcome::Rejected { error, .. }
+        | SubmitOutcome::Indeterminate { error, .. }
+        | SubmitOutcome::PartiallyAccepted { error, .. } => panic!("submission failed: {error:?}"),
     };
     block_on(d.wait_completion(&point)).unwrap();
     // SAFETY: the awaited completion point covers the readback.
     let bytes = unsafe { block_on(d.read_after(ticket, &point)).unwrap().bytes };
+    if let Some(batch) = batch {
+        let first = u64::from_le_bytes(bytes[8192..8200].try_into().unwrap());
+        let last = u64::from_le_bytes(bytes[8200..8208].try_into().unwrap());
+        assert!(
+            last >= first && first != 0,
+            "invalid timestamp pair {first}..{last}"
+        );
+        let frequency = d
+            .queries(QueryKind::Timestamp)
+            .unwrap()
+            .timestamp_frequency(lane)
+            .unwrap();
+        let gpu_ns = u128::from(last - first) * 1_000_000_000 / u128::from(frequency);
+        eprintln!(
+            "indirect pass pack+draw count={} indexed={} stride={} offset={} gpu_count={} gpu_ns={gpu_ns}",
+            batch.count, indexed, batch.stride, batch.offset, batch.gpu_count
+        );
+    }
     let center = 8 * 256 + 8 * 4;
     assert_eq!(
         &bytes[center..center + 4],
         if native {
             &[0, 0, 0, 255]
-        } else if indirect == 3 {
+        } else if indirect == 3 || batch.is_some_and(|batch| !batch.gpu_count) {
             &[5, 10, 0, 255]
         } else {
             &[5, 9, 0, 255]

@@ -206,82 +206,66 @@ fn execute_vertex_indices(
     let pipeline = encoder.pipeline.clone().ok_or(Error::InvalidState)?;
     let root_index = pipeline.0.vertex_index_root.ok_or(Error::InvalidState)?;
     let root = pipeline.0.root.clone();
-    let record_size = if indexed { 20u32 } else { 16u32 };
-    let expanded_stride = record_size + 8;
-    let size = u64::from(expanded_stride)
-        .checked_mul(u64::from(count))
-        .ok_or(Error::InvalidRange)?;
-    let scratch = <Dx12 as api::ResourceBackend>::create_buffer(
-        &encoder.device,
-        &api::BufferDesc {
-            label: None,
-            size,
-            usage: api::BufferUsage::COPY_DST | api::BufferUsage::INDIRECT,
-            memory: api::MemoryClass::Device,
-        },
-    )?;
     let signature = vertex_index_signature(&pipeline, &encoder.device, root_index, &root, indexed)?;
-    barrier(
-        &encoder.list,
-        &args.resource,
-        D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
-        D3D12_RESOURCE_STATE_COPY_SOURCE,
-    );
-    barrier(
-        &encoder.list,
-        &scratch.resource,
-        D3D12_RESOURCE_STATE_COMMON,
-        D3D12_RESOURCE_STATE_COPY_DEST,
-    );
-    for i in 0..count {
-        let src = offset + u64::from(i) * u64::from(stride);
-        let dst = u64::from(i) * u64::from(expanded_stride);
-        // SAFETY: all source and scratch ranges were checked above; both buffers are retained.
+    if count == 0 {
+        return Ok(());
+    }
+    if count <= 3 {
+        let scratch =
+            super::indirect_pack::copy_small(encoder, args, offset, count, stride, indexed)?;
+        // SAFETY: the tiny fixed-size conversion restored INDIRECT_ARGUMENT;
+        // both argument/count resources and the native signature are retained.
         unsafe {
-            // The two base-index fields are adjacent in both native argument
-            // layouts, matching the two root constants at the scratch head.
-            encoder.list.CopyBufferRegion(
+            encoder.list.ExecuteIndirect(
+                &signature,
+                count,
                 &scratch.resource,
-                dst,
-                &args.resource,
-                src + if indexed { 12 } else { 8 },
-                8,
-            );
-            encoder.list.CopyBufferRegion(
-                &scratch.resource,
-                dst + 8,
-                &args.resource,
-                src,
-                u64::from(record_size),
+                0,
+                count_buffer.map(|(buffer, _)| &buffer.resource),
+                count_buffer.map_or(0, |(_, offset)| offset),
             );
         }
+        encoder.buffers.push(scratch);
+        if let Some((buffer, _)) = count_buffer {
+            encoder.buffers.push(buffer.clone());
+        }
+        encoder.indirect_signatures.push(signature);
+        return Ok(());
     }
-    barrier(
-        &encoder.list,
-        &args.resource,
-        D3D12_RESOURCE_STATE_COPY_SOURCE,
-        D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
-    );
-    barrier(
-        &encoder.list,
-        &scratch.resource,
-        D3D12_RESOURCE_STATE_COPY_DEST,
-        D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
-    );
-    // SAFETY: scratch records and optional count are in INDIRECT_ARGUMENT and retained until completion.
-    unsafe {
-        encoder.list.ExecuteIndirect(
-            &signature,
-            count,
-            &scratch.resource,
-            0,
-            count_buffer.map(|(buffer, _)| &buffer.resource),
-            count_buffer.map_or(0, |(_, offset)| offset),
-        );
-    }
-    encoder.buffers.extend([args.clone(), scratch]);
-    if let Some((buffer, _)) = count_buffer {
-        encoder.buffers.push(buffer.clone());
+    let chunk_limit = super::indirect_pack::chunk_records(stride, indexed)?;
+    let mut first = 0u32;
+    while first < count {
+        let chunk = (count - first).min(chunk_limit);
+        let chunk_offset = offset
+            .checked_add(u64::from(first) * u64::from(stride))
+            .ok_or(Error::InvalidRange)?;
+        let scratch = super::indirect_pack::record(
+            encoder,
+            args,
+            chunk_offset,
+            chunk,
+            stride,
+            indexed,
+            count_buffer,
+            first,
+        )?;
+        // The private compute PSO is global command-list state. Restore the
+        // raster pipeline and bindings before each native indirect batch.
+        super::restore_after_internal_draw(encoder)?;
+        // SAFETY: the packed records and optional GPU-clamped count occupy
+        // nonoverlapping ranges of this retained INDIRECT_ARGUMENT buffer.
+        unsafe {
+            encoder.list.ExecuteIndirect(
+                &signature,
+                chunk,
+                &scratch.buffer.resource,
+                0,
+                scratch.count_offset.map(|_| &scratch.buffer.resource),
+                scratch.count_offset.unwrap_or(0),
+            );
+        }
+        encoder.buffers.push(scratch.buffer);
+        first += chunk;
     }
     encoder.indirect_signatures.push(signature);
     Ok(())

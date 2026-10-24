@@ -113,6 +113,8 @@ struct Dx12DeviceState {
     pub(super) mip_blit_cache: Arc<encoder::MipBlitCache>,
     pub(super) blit_compute_cache: Arc<encoder::BlitComputeCache>,
     pub(super) integer_clear_cache: Arc<encoder::integer_clear::IntegerClearCache>,
+    /// Immutable private compute PSO used only to pack WGSL indirect records.
+    pub(super) indirect_pack_cache: Arc<encoder::indirect_pack::IndirectPackCache>,
     /// Dropped futures cannot unregister SetEventOnCompletion, so their HANDLE
     /// ownership stays here until the associated fence has passed it.
     pub(super) abandoned_fence_events: Mutex<Vec<encoder::fence_wait::AbandonedFenceEvent>>,

@@ -9,6 +9,8 @@
 //! `u64::MAX` denotes device removal or quarantined uncertainty.
 
 use super::*;
+
+mod preflight;
 impl api::CompletionBackend for Dx12 {
     type WaitFuture<'a>
         = super::fence_wait::Dx12FenceFuture
@@ -77,7 +79,7 @@ pub(super) fn retire(device: &Dx12Device) {
         .retain(|event| {
             // SAFETY: each abandoned event retains its own native fence.
             let event_completed = unsafe { event.fence.GetCompletedValue() };
-            event_completed != u64::MAX && event.value > event_completed
+            event.retain_after(event_completed)
         });
     // SAFETY: this independent fence belongs to the device's compute queue.
     let compute_completed = unsafe { device.0.multi_queue.fence.GetCompletedValue() };
@@ -212,17 +214,22 @@ fn retain_indeterminate(device: &Dx12Device, issued: Vec<Dx12RecordedWork>) {
     }
 }
 
-fn retain_submitted(device: &Dx12Device, values: [Option<u64>; 2], issued: Vec<Dx12RecordedWork>) {
+fn retain_submitted(
+    device: &Dx12Device,
+    values: [Option<u64>; 2],
+    issued: &mut Vec<Dx12RecordedWork>,
+) -> [bool; 2] {
     let mut direct = Vec::new();
     let mut compute = Vec::new();
-    for record in issued {
+    for record in issued.drain(..) {
         match record.lane.ordinal {
             0 => direct.push(record),
             1 => compute.push(record),
             _ => unreachable!("submission preflight validates DX12 lanes"),
         }
     }
-    if !direct.is_empty() {
+    let retained = [!direct.is_empty(), !compute.is_empty()];
+    if retained[0] {
         let value = values[0].expect("direct work has a terminal direct fence");
         device
             .0
@@ -231,7 +238,7 @@ fn retain_submitted(device: &Dx12Device, values: [Option<u64>; 2], issued: Vec<D
             .unwrap_or_else(|p| p.into_inner())
             .push((value, direct));
     }
-    if !compute.is_empty() {
+    if retained[1] {
         let value = values[1].expect("compute work has a terminal compute fence");
         device
             .0
@@ -241,6 +248,7 @@ fn retain_submitted(device: &Dx12Device, values: [Option<u64>; 2], issued: Vec<D
             .unwrap_or_else(|p| p.into_inner())
             .push((value, compute));
     }
+    retained
 }
 
 fn retain_sparse(
@@ -383,124 +391,32 @@ unsafe fn submit_packet(
     packet: api::MultiQueuePacket<Dx12>,
 ) -> api::MultiQueueSubmitOutcome<Dx12> {
     use api::MultiQueueSubmitOutcome as Outcome;
+    let prepared = match preflight::packet(device, &packet) {
+        Ok(prepared) => prepared,
+        Err(error) => return Outcome::Rejected { error, packet },
+    };
     let _submission = crate::diagnostics::lock_submission_gate(&device.0.query_submission_gate);
-    let validate = || -> Result<(), Error> {
-        // SAFETY: querying both device-owned fences has no queue side effect.
+    // Device removal can occur after the lock-free packet preflight. Recheck
+    // it while the query/native handoff gate is held, alongside mutable query
+    // admission, so no accepted query state races a removed device.
+    let validate_under_gate = || -> Result<(), Error> {
         if unsafe { device.0.fence.GetCompletedValue() } == u64::MAX
             || unsafe { device.0.multi_queue.fence.GetCompletedValue() } == u64::MAX
         {
             return Err(Error::DeviceLost);
         }
-        for (index, step) in packet.work.steps.iter().enumerate() {
-            let desc = &packet.work.plan.steps()[index];
-            if desc.lane.device != packet.work.plan.id().device || desc.lane.ordinal > 1 {
-                return Err(Error::WrongLane);
-            }
-            for wait in &desc.waits {
-                if wait.previous.plan != packet.work.plan.id()
-                    || wait.previous.index as usize >= index
-                {
-                    return Err(Error::InvalidState);
-                }
-            }
-            match &step.payload {
-                StepPayload::Commands(work) => {
-                    for record in work {
-                        // SAFETY: Core checked owning backend and device before calling this method.
-                        let native = unsafe { record.native_ref() };
-                        if !native.encoder.closed
-                            || native.lane != desc.lane
-                            || native.encoder.closed_segments.len()
-                                != native.encoder.queue_boundaries.len()
-                        {
-                            return Err(Error::InvalidState);
-                        }
-                    }
-                }
-                StepPayload::SparseBind(binds) => {
-                    if desc.lane.ordinal != 0 {
-                        return Err(Error::Unsupported(
-                            "DX12 sparse mappings require direct lane",
-                        ));
-                    }
-                    if !device.0.sparse_supported || binds.is_empty() {
-                        return Err(Error::InvalidRange);
-                    }
-                    binds
-                        .iter()
-                        .try_for_each(super::super::sparse::validate_bind)?;
-                }
-                StepPayload::Present(_) if desc.lane.ordinal != 0 || index == 0 => {
-                    return Err(Error::InvalidState);
-                }
-                _ => {}
-            }
-        }
-        // Track only ordering already present in the submitted plan. Same-lane
-        // order is implicit; explicit waits import the producer's frontier.
-        let mut coverage = Vec::<[Option<usize>; 2]>::new();
-        let mut external_waits = Vec::<Vec<(ID3D12Fence, u64)>>::new();
-        let mut lanes: [Option<usize>; 2] = [None; 2];
-        for (index, desc) in packet.work.plan.steps().iter().enumerate() {
-            let lane = desc.lane.ordinal as usize;
-            let mut frontier = lanes[lane]
-                .map(|previous| coverage[previous])
-                .unwrap_or([None; 2]);
-            let mut native_frontier = lanes[lane]
-                .map(|previous| external_waits[previous].clone())
-                .unwrap_or_default();
-            for wait in &desc.waits {
-                for (slot, imported) in frontier
-                    .iter_mut()
-                    .zip(coverage[wait.previous.index as usize])
-                {
-                    *slot = (*slot).max(imported);
-                }
-                for (fence, value) in &external_waits[wait.previous.index as usize] {
-                    if let Some((_, current)) = native_frontier
-                        .iter_mut()
-                        .find(|(known, _)| known.as_raw() == fence.as_raw())
-                    {
-                        *current = (*current).max(*value);
-                    } else {
-                        native_frontier.push((fence.clone(), *value));
-                    }
-                }
-            }
-            for wait in packet
-                .waits
-                .iter()
-                .filter(|wait| wait.signal.consumer().index as usize == index)
-            {
-                // SAFETY: Core validated token ownership; preflight only borrows its immutable native point.
-                let signal = unsafe { wait.signal.native_ref() };
-                if let Some((_, value)) = native_frontier
-                    .iter_mut()
-                    .find(|(known, _)| known.as_raw() == signal.fence.as_raw())
-                {
-                    *value = (*value).max(signal.value);
-                } else {
-                    native_frontier.push((signal.fence.clone(), signal.value));
-                }
-            }
-            frontier[lane] = Some(index);
-            coverage.push(frontier);
-            external_waits.push(native_frontier);
-            lanes[lane] = Some(index);
-        }
         super::query::validate_ops(
             packet.work.steps.iter().flat_map(|step| {
                 let index = step.step.index as usize;
-                let lane = packet.work.plan.steps()[step.step.index as usize]
-                    .lane
-                    .ordinal;
+                let lane = packet.work.plan.steps()[index].lane.ordinal;
                 match &step.payload {
                     StepPayload::Commands(work) => work.as_slice(),
                     _ => &[],
                 }
                 .iter()
                 .flat_map(move |record| {
-                    // SAFETY: packet identity checked by Core, this borrow is read-only.
+                    // SAFETY: packet identity was checked by Core and preflight;
+                    // this only borrows immutable recorded query operations.
                     unsafe { record.native_ref() }
                         .encoder
                         .query_ops
@@ -508,12 +424,11 @@ unsafe fn submit_packet(
                         .map(move |op| (lane, index, op))
                 })
             }),
-            &coverage,
-            &external_waits,
-        )?;
-        Ok(())
+            &prepared.coverage,
+            &prepared.external_waits,
+        )
     };
-    if let Err(error) = validate() {
+    if let Err(error) = validate_under_gate() {
         return Outcome::Rejected { error, packet };
     }
     retire(device);
@@ -768,16 +683,40 @@ unsafe fn submit_packet(
                 lane_dirty[ordinal] = false;
             }
         }
-        retain_submitted(device, lane_values, issued);
+        let retained_lanes = retain_submitted(device, lane_values, &mut issued);
         // Sparse mappings are direct-queue operations. Validation above
         // rejects compute-lane sparse steps, so their owner follows only the
         // direct timeline even when compute work is also present.
-        if !sparse_issued.is_empty() {
+        let retained_sparse = !sparse_issued.is_empty();
+        if retained_sparse {
             retain_sparse(
                 device,
                 lane_values[0].expect("accepted direct sparse work has a fence"),
                 sparse_issued,
             );
+        }
+        // Every terminal fence gets one autonomous OS completion observation.
+        // Register only after every owner for that lane has entered its
+        // in-flight store, otherwise a fast completion could retire an earlier
+        // subset and strand later ownership without another API call.
+        for ordinal in 0..2 {
+            if retained_lanes[ordinal] || (ordinal == 0 && retained_sparse) {
+                if let Err(error) = retirement::register(
+                    device,
+                    ordinal as u32,
+                    lane_values[ordinal].expect("retained lane has a terminal fence"),
+                ) {
+                    // Handoff and query commit have already occurred. The
+                    // in-flight stores retain every owner, so report the
+                    // truthful uncertain boundary rather than Accepted.
+                    return Outcome::Indeterminate {
+                        error,
+                        uncertain: unsafe {
+                            api::NativeUncertainty::from_native(plan.id().device, ())
+                        },
+                    };
+                }
+            }
         }
         if matches!(completion, api::CompletionRequest::End) {
             for (ordinal, frontier) in frontiers.into_iter().enumerate() {

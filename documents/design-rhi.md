@@ -1298,13 +1298,11 @@ support is an immutable OPTIONS12 fact queried once during device opening.
 
 The WGSL vertex-index indirect ABI caches its indexed/non-indexed command
 signatures on the matching raster pipeline, whose root signature they reference.
-It performs two native buffer copies per draw record after coalescing the two
-adjacent base-index fields into one eight-byte copy. Diagnostic runs
-at 1, 3 and 10,000 draws preserve the GPU output, and show the large batch's
-linear recording cost. Adjacent first/warm samples are diagnostic, not an
-isolated frame-rate benchmark. Compute argument packing remains deferred until
-a measured candidate demonstrates a useful large-batch benefit and acceptable
-small-batch overhead; the linear path is not described as eliminated.
+A device-cached compute kernel packs larger batches directly on the GPU. Its
+root signature and PSO are prepared during cold WGSL pipeline creation. A
+measured one-to-three-record native-copy fast path bounds copying to six calls,
+avoiding fixed dispatch/descriptor overhead for those tiny batches. Larger
+record counts do not generate a CPU-side per-record copy loop.
 
 TLAS dependency retention separates the latest accepted build from recorded or
 in-flight work. Recording/cancelling a build does not replace committed BLAS
@@ -1700,16 +1698,16 @@ regressions; the batched workaround then passed those three plus related
 multiview/3D/array regressions. Ignored native fixtures are not counted as GPU
 passes. This is a focused matrix, not all-driver conformance.
 
-## Remaining DX12 indirect and ray-cache boundaries
+## DX12 indirect conversion and ray-cache boundary
 
-The remaining per-record copies belong specifically to the WGSL vertex/index
-ABI path, not all DX12 indirect draws. That path expands each 16/20-byte argument
-record with two root constants, using two CopyBufferRegion calls before one
-ExecuteIndirect. Cached command signatures remove repeated signature creation,
-not this layout conversion. A GPU compute packing pass is possible, but replacing
-the current path requires small/large-batch measurements and equivalent explicit
-resource-state/lifetime handling. The linear conversion is an unfinished
-optimization rather than a DX12 hardware capability ceiling.
+WGSL vertex/index builtins require two root constants in addition to each
+16/20-byte native argument record. GPU packing expands those records without
+reading arguments on the CPU. Each private window respects the shader's 32-bit
+local byte addresses and native dispatch limits while preserving u64 resource
+offsets. GPU-count batches write a clamped count per window, including zero for
+windows beyond the GPU's selected count. Raw SRV bases are aligned to 16 bytes;
+the shader accounts for the permitted four-byte public offset. Native DXIL/HLSL
+indirect routes retain their ordinary ExecuteIndirect ABI.
 
 The current persistent cache stores ID3D12PipelineState objects through the
 pipeline-library route, while DXR creates ID3D12StateObject. A live state-object
@@ -1763,24 +1761,21 @@ Randomized release checks compare every state with the former algorithm, and a
 real shader-visible heap churn test verifies complete recovery. These establish
 mechanism and correctness, not a renderer throughput claim.
 
-The WGSL indirect ABI retains its linear conversion but copies the two adjacent
-root-constant fields together. Five adjacent baseline/candidate GPU-verified
-samples at 10,000 draws measured median warm recording intervals of 1,760 and
-1,371 microseconds on the tested Radeon 780M. These isolate CPU recording of a
-particular batch; they do not measure GPU packing duration or universal FPS.
-A compute-packing replacement remains conditional on a measured candidate with
-acceptable small-batch and resource-state costs. The submission gate likewise
-keeps query preflight and state commit atomic. The existing single-thread cost
-fixture does not establish a contention bottleneck, so this review does not
-introduce query reservations or another submission scheduler to shorten it.
+The WGSL indirect converter uses bounded GPU dispatches and restores the
+caller's graphics state before ExecuteIndirect. Scratch buffers, argument/count
+buffers and descriptor ranges follow the recording's native-fence lifetime.
+GPU timestamp/readback guards cover tiny and large batches, indexed and padded
+records, signed base-vertex bits, nonzero source/count offsets, and a count-selected
+batch crossing the native dispatch boundary. The small native-copy fast path is
+strictly bounded to at most three records; it does not scale with large batches.
 
-The opt-in hardware diagnostics also measure submission-gate wait and hold time
-for pre-recorded packets submitted by one or four CPU threads. Contention is
-observable, but these intervals include native handoff and do not isolate the
-immutable preflight cost; query validation and commit therefore retain their
-atomic gate. Production builds carry no timing state or clock reads. A future
-lock-scope change requires attribution of a meaningful caller workload, not just
-the existence of mutex contention.
+Immutable packet/coverage preflight runs before the submission gate. Device-loss
+observation, query admission, native handoff, query state commit and sealing stay
+atomic inside the gate. Opt-in hardware diagnostics measure wait/hold intervals
+for pre-recorded packets from one/four submitting CPU threads. Those intervals
+include native handoff and do not imply a universal throughput gain. Production
+builds carry no timing state or clock reads; no query reservation system or
+additional submission scheduler is introduced.
 
 Cold-worker validation includes full-capacity backpressure, waker replacement,
 cancellation deregistration, panic resolution and lost-wake coverage. Each
@@ -1810,3 +1805,33 @@ callers needing an independently mutable vector explicitly use to_vec(). Native
 backend checkpoint operations continue borrowing a StepId slice. Failure effects,
 accepted-prefix ownership and completion coverage are unchanged. Plan compilation
 pays the identity-storage cost once; no Renderer frame API or scheduler is added.
+
+DX12 retained work also has autonomous terminal-fence observation. A one-shot
+Windows fence event and thread-pool callback releases completed native owners
+when the application requested no completion points and performs no later RHI
+operation. This breaks the Device/in-flight encoder strong-reference cycle.
+Owners enter their lane stores before registration; already-completed fences
+retire synchronously. The callback owns its temporary Device lease independently
+of those stores and releases it after retirement. This is completion observation,
+not command scheduling or periodic GPU polling.
+
+Setup programs the fence event before arming the wait. Event/wait/programming
+failures return Indeterminate after native handoff and place an error-only owner
+in recoverable quarantine; explicit idle recovery releases it after completion.
+Device removal preserves uncertain owners. Gated real-GPU tests drop all public
+Device/resource/receipt handles before releasing native Direct/Compute gates,
+then verify final ownership disappears without another RHI call. Separate
+thread-local fault injection covers all three setup stages and explicit recovery.
+Callback teardown follows the documented
+[Windows wait-object lifetime](https://learn.microsoft.com/en-us/windows/win32/api/threadpoolapiset/nf-threadpoolapiset-closethreadpoolwait)
+and avoids waiting for its own callback.
+
+Final packing diagnostics used adjacent baseline/candidate pairs with identical
+input records and GPU timestamp/readback checks. At 10,000 records, median warm
+CPU recording was 1,298 versus 409 microseconds and the measured two-batch GPU
+pass was 17.07 versus 8.46 milliseconds on Radeon 780M. Tiny-batch intervals
+largely overlap; their fixed native-copy guard avoids unnecessary compute setup.
+These are focused diagnostics, not application FPS or all-driver guarantees.
+Private SRV windows also respect the guaranteed native view span. Arithmetic
+beyond a 16-GiB source offset is checked separately; that is not a claim of a
+physical multi-gigabyte allocation test.

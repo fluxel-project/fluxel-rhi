@@ -291,6 +291,12 @@ fn create_raster(
     if let (Some(cache), Some(key)) = (cache, key.as_ref()) {
         let _ = cache.0.store(key, &state);
     }
+    // This finite private utility is required only by WGSL vertex-index
+    // indirect draws. `create_raster` itself runs in the bounded cold worker,
+    // so recording never compiles its DXC/PSO payload on the caller thread.
+    if vertex_index_root.is_some() {
+        let _ = device.0.indirect_pack_cache.get_or_create(device)?;
+    }
     Ok(Dx12RasterPipeline(Arc::new(RasterPipelineState {
         root,
         layout,

@@ -226,6 +226,7 @@ impl InstanceBackend for Dx12 {
                     blit_compute_cache: Arc::default(),
                     mip_blit_cache: Arc::default(),
                     integer_clear_cache: Arc::default(),
+                    indirect_pack_cache: Arc::default(),
                     indirect_signatures: Arc::default(),
                     abandoned_fence_events: Mutex::new(Vec::new()),
                     descriptors,
