@@ -1,7 +1,8 @@
-//! Desktop GL and GLES MSAA texture-copy regressions.
+//! Desktop GL MSAA copy and explicit GLES rejection regressions.
 //!
 //! Distinct sample-mask draws give the source an observable per-sample pattern.
 //! A later resolve proves that `copy_texture` retained that sample storage.
+//! GLES rejects same-sample MSAA copy while retaining standalone resolve.
 use super::*;
 
 const SHADER: &[u8] = br#"
@@ -306,6 +307,42 @@ async fn copy_msaa_samples(device: &Device<Gl>, profile: &str, layers: u32) {
     }
 }
 
+fn gles_msaa_copy_is_disabled(device: &Device<Gl>, layers: u32) {
+    let copy = texture_desc(4, layers);
+    assert!(matches!(
+        device.texture_support(&copy),
+        Support::Unsupported(_)
+    ));
+    assert!(matches!(
+        device.create_texture(&copy),
+        Err(Error::Unsupported(_))
+    ));
+    let mut destination_only = copy.clone();
+    destination_only.usage = TextureUsage::COPY_DST;
+    assert!(matches!(
+        device.texture_support(&destination_only),
+        Support::Unsupported(_)
+    ));
+    // Resolve-source usage remains admissible whenever this exact MSAA
+    // attachment itself is available. An unavailable array allocation is not
+    // evidence about ordinary 2D resolve or the new copy policy.
+    let mut attachment = copy.clone();
+    attachment.usage = TextureUsage::RENDER_ATTACHMENT;
+    if matches!(device.texture_support(&attachment), Support::Supported(_)) {
+        attachment.usage |= TextureUsage::COPY_SRC;
+        assert!(matches!(
+            device.texture_support(&attachment),
+            Support::Supported(_)
+        ));
+    }
+    let ordinary = texture_desc(1, layers);
+    assert!(matches!(
+        device.texture_support(&ordinary),
+        Support::Supported(_)
+    ));
+    eprintln!("GLES {layers}-layer MSAA copy rejected; single-sample copy retained");
+}
+
 #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
     use std::task::{Context, Poll, Wake, Waker};
@@ -354,19 +391,19 @@ fn wgl_core_msaa_copy_array_layer_preserves_samples() {
 #[cfg(feature = "native-gles-egl")]
 #[test]
 #[ignore = "requires an EGL GLES hardware context"]
-fn gles_core_msaa_copy_preserves_samples() {
+fn gles_core_msaa_copy_is_unsupported() {
     let native =
         GlInstance::gles_pbuffer([8, 8]).expect("open EGL GLES pbuffer for MSAA-copy fixture");
     let device = block_on(open(native));
-    block_on(copy_msaa_samples(&device, "GLES", 1));
+    gles_msaa_copy_is_disabled(&device, 1);
 }
 
 #[cfg(feature = "native-gles-egl")]
 #[test]
 #[ignore = "requires an EGL GLES hardware context"]
-fn gles_core_msaa_copy_array_layer_preserves_samples() {
+fn gles_core_msaa_copy_array_is_unsupported() {
     let native = GlInstance::gles_pbuffer([8, 8])
         .expect("open EGL GLES pbuffer for MSAA-array-copy fixture");
     let device = block_on(open(native));
-    block_on(copy_msaa_samples(&device, "GLES", 2));
+    gles_msaa_copy_is_disabled(&device, 2);
 }

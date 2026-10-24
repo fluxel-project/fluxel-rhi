@@ -458,7 +458,7 @@ pub(super) fn native_formats(
                         blendable: single.blendable,
                         storage_read: false,
                         storage_write: false,
-                        // A loaded Desktop GL or GLES direct image-copy entry
+                        // A loaded Desktop GL direct image-copy entry
                         // can copy a matching multisample *color* texture
                         // image. This remains a narrow image-copy fact: it
                         // neither admits pixel uploads/readback nor applies to
@@ -662,7 +662,11 @@ const fn compressed_direct_copy(profile: GlFamilyProfile) -> bool {
 ///
 /// WebGL deliberately has no route here: its framebuffer blit can resolve a
 /// multisample source to a single-sample destination, but cannot copy between
-/// multisample images.
+/// multisample images. GLES is deliberately excluded by Fluxel policy, not by
+/// a GLES specification ceiling: WSL Mesa/D3D12 had invalid readback and a
+/// native crash, while LDPlayer only proved 2D 4x and reports
+/// `FRAMEBUFFER_INCOMPLETE_ATTACHMENT` (0x8cd6) for the MSAA array layer.
+/// Its image-copy entries remain available to the separate single-sample routes.
 fn msaa_direct_image_copy(
     profile: GlFamilyProfile,
     extensions: &GlExtensionSet,
@@ -678,16 +682,7 @@ fn msaa_direct_image_copy(
             let core = major > 4 || (major == 4 && minor >= 3);
             report.copy_image_symbols[0] && (core || named("GL_ARB_copy_image"))
         }
-        GlFamilyProfile::Embedded { major, minor } => {
-            let core = major > 3 || (major == 3 && minor >= 2);
-            (core && report.copy_image_symbols[0])
-                || ((major, minor) >= (3, 1)
-                    && named("GL_EXT_copy_image")
-                    && report.copy_image_symbols[1])
-                || ((major, minor) >= (3, 1)
-                    && named("GL_OES_copy_image")
-                    && report.copy_image_symbols[2])
-        }
+        GlFamilyProfile::Embedded { .. } => false,
         GlFamilyProfile::WebGl2 => false,
     }
 }

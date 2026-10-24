@@ -44,7 +44,7 @@ Raw diagnostics and screenshots remain local.
 | WebGPU | Standalone regional resolve, storage-buffer views and independent indirect feature reporting completed | 36 effective headless browser checks on an AMD hardware adapter |
 | Metal | Word clear and filtered color blit added; upload and resolve usage contracts corrected | Apple-target compile/static review only; no Metal tests, as requested |
 | GL4+ | Native same-sample color image copy added, including nonzero multisample-array layers | 2 hardware output fixtures plus ordinary unit tests |
-| GLES3+ | ES 3.2 core and ES 3.1 EXT/OES image-copy lowering implemented | Software API checks pass; new hardware acceptance remains incomplete due to unavailable Windows capability and unresolved WSL runtime failures |
+| GLES3+ | Same-sample MSAA copy explicitly Unsupported; single-sample image copy and standalone MSAA resolve retained | LDPlayer passes 2D 4x copy but rejects MSAA-array attachments; prior WSL native failures remain unresolved. The complete MSAA-copy feature is disabled pending acceptance |
 | WebGL2 | Existing standalone resolve remains the native MSAA transfer route | Focused AMD/ANGLE hardware test passes resolve and MSAA-copy-destination rejection; same-sample image copy has no matching standard API |
 
 ## Updating this matrix

@@ -231,7 +231,7 @@ fn multisample_facts_require_exact_format_count_and_resource_probe() {
 }
 
 #[test]
-fn msaa_color_copy_facts_require_direct_image_and_exact_probes() {
+fn msaa_color_copy_facts_are_desktop_only_with_exact_probes() {
     let limits = GlLimits::unavailable();
     let mut extensions = GlExtensionSet::default();
     let mut report = ProbeReport::default();
@@ -288,16 +288,18 @@ fn msaa_color_copy_facts_require_direct_image_and_exact_probes() {
     assert!(array_facts.copy_source);
     assert!(array_facts.copy_destination);
 
-    // GLES 3.2 gains the core direct-image route only with the loaded symbol.
+    // GLES image-copy entries remain usable for single-sample routes, but the
+    // common RHI contract does not advertise same-sample MSAA copy without
+    // complete ordinary-and-array hardware evidence.
     let embedded32 = texture_facts(
         GlFamilyProfile::Embedded { major: 3, minor: 2 },
         &extensions,
         &report,
     );
-    assert!(embedded32.copy_source);
-    assert!(embedded32.copy_destination);
+    assert!(!embedded32.copy_source);
+    assert!(!embedded32.copy_destination);
 
-    // GLES 3.1 must name an extension and load its matching ABI entry point.
+    // This remains false even when GLES 3.1 exposes either extension ABI.
     let embedded31 = GlFamilyProfile::Embedded { major: 3, minor: 1 };
     let mut ext = GlExtensionSet::default();
     let facts = texture_facts(embedded31, &ext, &report);
@@ -307,8 +309,8 @@ fn msaa_color_copy_facts_require_direct_image_and_exact_probes() {
     assert!(!facts.copy_source);
     report.copy_image_symbols[1] = true;
     let facts = texture_facts(embedded31, &ext, &report);
-    assert!(facts.copy_source);
-    assert!(facts.copy_destination);
+    assert!(!facts.copy_source);
+    assert!(!facts.copy_destination);
 
     // OES uses its separate loaded entry and remains unavailable to GLES 3.0.
     let mut oes = GlExtensionSet::default();
@@ -319,8 +321,8 @@ fn msaa_color_copy_facts_require_direct_image_and_exact_probes() {
     assert!(!facts.copy_source);
     oes_report.copy_image_symbols[2] = true;
     let facts = texture_facts(embedded31, &oes, &oes_report);
-    assert!(facts.copy_source);
-    assert!(facts.copy_destination);
+    assert!(!facts.copy_source);
+    assert!(!facts.copy_destination);
     let facts = texture_facts(
         GlFamilyProfile::Embedded { major: 3, minor: 0 },
         &oes,

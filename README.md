@@ -59,7 +59,7 @@ topologies, shader stages, queue plans, or device tiers.
 | Metal | Graphics and compute, up to eight render targets, depth/stencil, dynamic uniform/storage offsets, indirect draw and dispatch, standalone word/texture clears, copies/resolves, filtered color blits, mapping, placement heaps, binary archives, and native interop | Device-gated argument arrays/indexing, mesh/object shaders, acceleration structures and ray queries, multiview, timestamp/occlusion and separate pass counters, cross-packet graphics/compute synchronization, GPU-count multi-draw, placement sparse textures, and external resources. No Metal tests or GPU acceptance were run in this phase, as requested. |
 | Browser WebGPU | Graphics and compute, MRT, depth/stencil, dynamic offsets, indirect draw/dispatch, multi-draw including GPU-count lowering, standalone clears, copies/blits/resolves, buffer mapping and readback, occlusion and optional timestamp queries | Optional native features and limits gate compressed formats, immediates, subgroups, dual-source blending and unclipped depth. Ray/mesh, sparse resources, native multiple queues, multiview, complete pipeline statistics, native heap placement and serialized pipeline caches have no matching standard browser route. |
 | Desktop GL4+ | Immediate graphics, MRT, depth/stencil transfers, standalone resolves, matching-sample MSAA color texture copies, 1D sampled textures, Float64 vertex attributes, direct shader constants, bounded runtime binding arrays, GPU-staged readback, compute and indirect commands where supported | Native limits gate nonuniform indexing, persistent coherent mapping, GPU-count drawing, queries/statistics, program binary caches, conservative rasterization and contiguous OVR multiview. |
-| GLES3+ | Immediate graphics, MRT, bounded runtime arrays, depth/stencil uploads and copies, optional native MSAA color image copies, GPU-staged readback; compute, nonuniform indexing and indirect commands where supported | ES3.1 and extensions gate GPU-count lowering, sampled depth/stencil readback, coherent persistent mapping, exact color readback, queries, program caches and contiguous OVR multiview. |
+| GLES3+ | Immediate graphics, MRT, bounded runtime arrays, depth/stencil uploads and copies, standalone MSAA resolves, GPU-staged readback; compute, nonuniform indexing and indirect commands where supported | Same-sample MSAA texture copy is Unsupported pending complete runtime acceptance. ES3.1 and extensions gate GPU-count lowering, sampled depth/stencil readback, coherent persistent mapping, exact color readback, queries, program caches and contiguous OVR multiview. |
 | Browser WebGL2 | Immediate graphics, MRT, bounded runtime binding arrays, depth/stencil plane transfers, copies/resolves, GPU-staged readback, asynchronous snapshot mapping, and occlusion | Native limits bound array specialization and exact format readback; the combined nonuniform texture/SSBO feature remains unavailable. Extensions gate compressed textures and other optional operations. Standard WebGL2 has no compute or compressed-block readback. |
 
 Metal's separate pass-boundary sample API exposes up to eight native counter
@@ -107,12 +107,14 @@ their existing explicit fallbacks for
 descriptor indexing and multiview; those scenes do not establish backend support
 for either feature.
 
-GLES matching-sample color image copy uses ES 3.2 core or the loaded ES 3.1
-EXT/OES CopyImage route. Its new 2D/array tests pass on software Mesa; hardware
-acceptance remains incomplete. The tested Windows ANGLE runtime lacks the
-feature, while WSL Mesa/D3D12 produced a source-readback failure and native
-crashes, including one in an existing control without the new copy operation.
-These results do not establish a portable driver defect or a hardware pass.
+GLES same-sample MSAA texture copy is explicitly Unsupported, including contexts
+with ES 3.2 core or ES 3.1 EXT/OES CopyImage. LDPlayer Android 14 passes the 2D
+4x sample-pattern copy/resolve check, but its MSAA-array attachment is incomplete;
+earlier WSL Mesa/D3D12 native failures also remain unresolved. The feature stays
+disabled until complete acceptance, as explained in the
+[design boundary](documents/design-rhi.md#gl-family-multisample-copy-boundary).
+Single-sample GLES copies, standalone MSAA resolves and desktop GL MSAA copy
+remain available under their existing capability checks.
 
 ### DX12 pipeline cache
 

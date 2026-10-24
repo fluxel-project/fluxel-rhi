@@ -1254,22 +1254,31 @@ not enable multisample pixel uploads, buffer readback, or a framebuffer-copy
 fallback. Resolve remains a separate operation that reduces sample count.
 Selected depth/stencil-plane copies remain on their existing restricted paths.
 
-GLES uses the same direct-image lowering for ES 3.2 core, or ES 3.1 with an
-advertised `EXT_copy_image` / `OES_copy_image` and its corresponding loaded
-entry. The extensions accept valid texture targets and require matching sample
-counts; absence of the multisample token in their older source text does not
-itself exclude later valid texture targets. Single-sample extension paths remain
-unchanged. MSAA-array framebuffer validation uses its separate array-format fact,
-not the ordinary multisample-texture record.
+GLES same-sample MSAA texture copy is **Unsupported in this backend**, including
+ES 3.2 core and ES 3.1 `EXT_copy_image` / `OES_copy_image` contexts. Discovery
+keeps multisample copy-source/destination facts false. A multisample color
+attachment may still carry `COPY_SRC` for the separate standalone resolve
+operation; `COPY_DST` does not acquire same-sample MSAA copy support. Ordinary
+single-sample GLES image copies and MSAA-to-single-sample resolve are unchanged.
 
-New GLES MSAA-copy hardware acceptance is incomplete: the Windows runtime lacks
-CopyImage, and the tested WSL Mesa/D3D12 configuration produced invalid source
-readback and native crashes. An existing sample-mask/resolve control also crashed
-after correct readback. Software Mesa ES 3.2 core and ES 3.1 extension tests pass;
-these validate API lowering but do not substitute for hardware acceptance. No
-speculative extension exclusion, driver blacklist or EGL teardown workaround is
-inferred from those failures.
+This is an explicit project validation restriction, not a claim that the GLES
+standard lacks image-copy capability. Software Mesa tests passed, but WSL
+Mesa/D3D12 produced invalid source readback and native crashes, including a
+sample-mask/resolve control that crashed after correct readback. The additional
+LDPlayer Android 14 GLES 3.1 test passed the 2D 4x sample-mask/copy/resolve workload
+and normal context teardown. Its multisample-array storage allocation and sample
+query succeeded, but attaching layer 1 returned
+`FRAMEBUFFER_INCOMPLETE_ATTACHMENT`; RHI therefore rejected that array route
+before copying. The emulator reports an Adreno renderer through its translation
+layer; this does not establish execution on a physical Adreno GPU.
 
+Those observations neither resolve the earlier native failures nor complete
+GLES array-copy acceptance. At the user's request, the backend disables the
+whole GLES same-sample MSAA-copy feature instead of advertising the partially
+verified route. Re-enabling requires focused per-sample 2D and nonzero-array-layer
+copy/resolve/readback checks with clean native execution and teardown on a
+usable GLES runtime, plus resolution of the outstanding failure classification.
+No speculative driver blacklist, EGL teardown workaround or CPU copy is added.
 
 WebGL2 cannot use this route: its API exposes no CopyImage entry point, and its
 ES 3.0 framebuffer-blit rules reject multisampled draw framebuffers. A native
