@@ -2,7 +2,8 @@
 use super::*;
 use crate::api::tests::type_contract_tests::{
     GL_ABANDONED, GL_CHECKPOINT_UNKNOWN, GL_CHECKPOINTS, GL_CLOSE_FAILURE, GL_DEVICE,
-    GL_EMERGENCY_UNKNOWN, GL_TRANSITIONS, GL_WAIT_REJECT, GlLocal, NativeShared,
+    GL_EMERGENCY_UNKNOWN, GL_EMPTY_STEP_CHECKPOINTS, GL_TRANSITIONS, GL_WAIT_REJECT, GlLocal,
+    NativeShared,
 };
 use std::{cell::Cell, rc::Rc, sync::Arc};
 
@@ -72,6 +73,7 @@ fn immediate() -> Device<GlLocal> {
     GL_CLOSE_FAILURE.with(|mode| mode.set(0));
     GL_WAIT_REJECT.with(|v| v.set(false));
     GL_CHECKPOINT_UNKNOWN.with(|v| v.set(false));
+    GL_EMPTY_STEP_CHECKPOINTS.with(|v| v.set(false));
     GL_EMERGENCY_UNKNOWN.with(|v| v.set(false));
     GL_CHECKPOINTS.with(|calls| calls.set(0));
     GL_TRANSITIONS.with(|calls| calls.set(0));
@@ -488,4 +490,61 @@ fn completion_checkpoint_failure_does_not_invent_a_failed_step() {
     assert_eq!(facts.status, ExecutionStatus::Indeterminate);
     assert_eq!(facts.accepted.unwrap(), &[plan.step(0)]);
     assert_eq!(facts.failed_step, None);
+}
+
+#[test]
+fn requested_immediate_step_observer_failure_keeps_the_issued_step_unknown() {
+    let device = immediate();
+    let plan = plan(&device, &[StepKind::Commands]);
+    // SAFETY: this mock references no GPU resources.
+    let mut execution = unsafe {
+        device.begin_execution(
+            plan.clone(),
+            CompletionRequest::Steps(Arc::from([plan.step(0)])),
+        )
+    }
+    .unwrap();
+    GL_CHECKPOINT_UNKNOWN.with(|v| v.set(true));
+    assert!(execution.commands(plan.step(0), |_| Ok(())).is_err());
+    // SAFETY: the session already reported its indeterminate issued prefix.
+    let outcome = unsafe { execution.finish() };
+    let facts = outcome.facts();
+    assert_eq!(facts.status, ExecutionStatus::Indeterminate);
+    assert_eq!(facts.accepted.unwrap(), &[plan.step(0)]);
+    assert_eq!(facts.failed_step, None);
+}
+
+#[test]
+fn empty_close_time_step_checkpoints_fall_back_to_conservative_steps_proof() {
+    let device = immediate();
+    let plan = plan(&device, &[StepKind::Commands, StepKind::Commands]);
+    // This mock returns Covered(empty) for each close-time single-step request,
+    // but a real terminal checkpoint for the full requested Steps set.
+    GL_EMPTY_STEP_CHECKPOINTS.with(|v| v.set(true));
+    // SAFETY: this mock references no GPU resources.
+    let mut execution = unsafe {
+        device.begin_execution(
+            plan.clone(),
+            CompletionRequest::Steps(Arc::from([plan.step(0), plan.step(1)])),
+        )
+    }
+    .unwrap();
+    execution.commands(plan.step(0), |_| Ok(())).unwrap();
+    execution.commands(plan.step(1), |_| Ok(())).unwrap();
+
+    // SAFETY: this mock references no GPU resources.
+    let outcome = unsafe { execution.finish() };
+    let facts = outcome.facts();
+    assert_eq!(facts.status, ExecutionStatus::Accepted);
+    assert_eq!(facts.accepted.unwrap(), &[plan.step(0), plan.step(1)]);
+    let checkpoints = facts.checkpoints.expect("terminal fallback checkpoint");
+    assert_eq!(checkpoints.len(), 1);
+    assert_eq!(
+        checkpoints[0].covers.lane_frontiers,
+        vec![(device.lanes()[0].id, plan.step(1))]
+    );
+    // Two close-time empty observations plus exactly one conservative finish
+    // observation prove that finish did not silently publish empty evidence.
+    GL_CHECKPOINTS.with(|calls| assert_eq!(calls.get(), 3));
+    GL_EMPTY_STEP_CHECKPOINTS.with(|v| v.set(false));
 }

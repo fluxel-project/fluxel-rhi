@@ -24,6 +24,7 @@ pub(crate) struct GlowProbes<'a> {
     tex_image_read_symbol: bool,
     multiview: Option<super::super::multiview::NativeMultiview>,
     multisample_array: super::super::multisample_array::MultisampleArrayFns,
+    multi_draw_indirect: Option<super::super::multi_draw_indirect::MultiDrawIndirectFns>,
     fatal_error: std::cell::Cell<bool>,
 }
 
@@ -42,6 +43,7 @@ impl<'a> GlowProbes<'a> {
         tex_image_read_symbol: bool,
         multiview: Option<super::super::multiview::NativeMultiview>,
         multisample_array: super::super::multisample_array::MultisampleArrayFns,
+        multi_draw_indirect: Option<super::super::multi_draw_indirect::MultiDrawIndirectFns>,
     ) -> Self {
         Self {
             gl,
@@ -54,6 +56,7 @@ impl<'a> GlowProbes<'a> {
             tex_image_read_symbol,
             multiview,
             multisample_array,
+            multi_draw_indirect,
             fatal_error: std::cell::Cell::new(false),
         }
     }
@@ -513,6 +516,65 @@ impl NativeGlProbes for GlowProbes<'_> {
                     .draw_elements_indirect_offset(glow::TRIANGLES, glow::UNSIGNED_INT, 0);
             } else {
                 self.gl.draw_arrays_indirect_offset(glow::TRIANGLES, 0);
+            }
+            self.take_error()
+        };
+        if errored {
+            ProbeAnswer::Failed
+        } else {
+            ProbeAnswer::Passed
+        }
+    }
+
+    fn issues_multi_draw_indirect(
+        &self,
+        indexed: bool,
+        stages: &[(u32, &'static str)],
+    ) -> ProbeAnswer {
+        use glow::HasContext as _;
+        let Some(functions) = self.multi_draw_indirect else {
+            return ProbeAnswer::Unavailable;
+        };
+        let mut scratch = ProbeScratch::new(self.gl);
+        if !self.link_active_program(stages, &mut scratch) {
+            return ProbeAnswer::Failed;
+        }
+        // SAFETY: the route gate promises this exact unsuffixed desktop ABI;
+        // both zero-count records are defined no-ops and remain in a scratch
+        // indirect buffer for the duration of the call.
+        let errored = unsafe {
+            let vertex_array = self.gl.create_vertex_array();
+            let Ok(vertex_array) = vertex_array else {
+                return ProbeAnswer::Unavailable;
+            };
+            scratch.vertex_array = Some(vertex_array);
+            self.gl.bind_vertex_array(Some(vertex_array));
+            let command = self.gl.create_buffer();
+            let Ok(command) = command else {
+                return ProbeAnswer::Unavailable;
+            };
+            scratch.buffers.push(command);
+            self.gl
+                .bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(command));
+            let record: &[u8] = if indexed { &[0; 40] } else { &[0; 32] };
+            self.gl
+                .buffer_data_u8_slice(glow::DRAW_INDIRECT_BUFFER, record, glow::STATIC_DRAW);
+            if indexed {
+                let elements = self.gl.create_buffer();
+                let Ok(elements) = elements else {
+                    return ProbeAnswer::Unavailable;
+                };
+                scratch.buffers.push(elements);
+                self.gl
+                    .bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(elements));
+                self.gl.buffer_data_u8_slice(
+                    glow::ELEMENT_ARRAY_BUFFER,
+                    &[0; 20],
+                    glow::STATIC_DRAW,
+                );
+                (functions.elements)(glow::TRIANGLES, glow::UNSIGNED_INT, core::ptr::null(), 2, 0);
+            } else {
+                (functions.arrays)(glow::TRIANGLES, core::ptr::null(), 2, 0);
             }
             self.take_error()
         };

@@ -129,6 +129,7 @@ pub struct ImmediateSession<B: ImmediateBackend> {
     failed: bool,
     terminal: Option<ImmediateRunOutcome<B>>,
     failure_effect: Option<StepEffect>,
+    step_checkpoints: Vec<(StepId, Vec<Checkpoint<B>>)>,
     closed: bool,
 }
 impl<B: ImmediateBackend> Device<B> {
@@ -155,11 +156,40 @@ impl<B: ImmediateBackend> Device<B> {
             failed: false,
             terminal: None,
             failure_effect: None,
+            step_checkpoints: Vec::new(),
             closed: false,
         })
     }
 }
 impl<B: ImmediateBackend> ImmediateSession<B> {
+    fn requested_step_checkpoint(&mut self, step: StepId) -> Option<ImmediateRunOutcome<B>> {
+        let CompletionRequest::Steps(requested) = &self.completion else {
+            return None;
+        };
+        if !requested.contains(&step) {
+            return None;
+        }
+        let request = CompletionRequest::Steps(Arc::from([step]));
+        let issued = self.prefix(self.issued_count);
+        match B::checkpoints(&self.device.native, &self.plan, &issued, &request) {
+            CheckpointOutcome::Covered(checkpoints) => {
+                self.step_checkpoints.push((step, checkpoints));
+                None
+            }
+            CheckpointOutcome::Indeterminate(uncertain) => {
+                // The step was already closed as issued. Completion observer
+                // installation failed after that fact, so its effect is not a
+                // clean failed slot and the true issued prefix must escape.
+                self.failure_effect = Some(StepEffect::Unknown);
+                self.failed = true;
+                Some(ImmediateRunOutcome::Indeterminate {
+                    error: Error::InvalidState,
+                    prefix: self.take_issued_steps(),
+                    uncertain,
+                })
+            }
+        }
+    }
     fn prefix(&self, count: usize) -> Vec<StepId> {
         (0..count).map(|index| self.plan.step(index)).collect()
     }
@@ -188,7 +218,8 @@ impl<B: ImmediateBackend> ImmediateSession<B> {
                 self.issued_count += 1;
                 self.history_count += 1;
                 self.cursor += 1;
-                ImmediateRunOutcome::Issued(step)
+                self.requested_step_checkpoint(step)
+                    .unwrap_or(ImmediateRunOutcome::Issued(step))
             }
             ImmediateClose::Failed { error, issued } => {
                 self.failure_effect = Some(if issued {
@@ -318,7 +349,47 @@ impl<B: ImmediateBackend> ImmediateSession<B> {
         // A completion request is useful only if it covers every issued step.
         // If the backend cannot prove coverage, expose indeterminacy rather
         // than fabricating a completion point from a later or unrelated event.
-        match B::checkpoints(&self.device.native, &self.plan, &steps, &self.completion) {
+        let completion = match &self.completion {
+            CompletionRequest::Steps(requested) => {
+                let mut checkpoints = Vec::new();
+                for step in requested.iter() {
+                    let Some((_, checkpoints_for_step)) = self
+                        .step_checkpoints
+                        .iter()
+                        .find(|(recorded, points)| recorded == step && !points.is_empty())
+                    else {
+                        // Preserve the established conservative Steps path for
+                        // backends that returned no close-time point.
+                        return match B::checkpoints(
+                            &self.device.native,
+                            &self.plan,
+                            &steps,
+                            &self.completion,
+                        ) {
+                            CheckpointOutcome::Covered(checkpoints) => {
+                                ImmediateFinishOutcome::Issued(IssuedPrefix { steps, checkpoints })
+                            }
+                            CheckpointOutcome::Indeterminate(uncertain) => {
+                                ImmediateFinishOutcome::Failed(ImmediateRunOutcome::Indeterminate {
+                                    error: Error::InvalidState,
+                                    prefix: steps,
+                                    uncertain,
+                                })
+                            }
+                        };
+                    };
+                    checkpoints.extend(checkpoints_for_step.iter().map(|checkpoint| Checkpoint {
+                        point: checkpoint.point.clone(),
+                        covers: CompletionCoverage {
+                            lane_frontiers: checkpoint.covers.lane_frontiers.clone(),
+                        },
+                    }));
+                }
+                CheckpointOutcome::Covered(checkpoints)
+            }
+            _ => B::checkpoints(&self.device.native, &self.plan, &steps, &self.completion),
+        };
+        match completion {
             CheckpointOutcome::Covered(checkpoints) => {
                 ImmediateFinishOutcome::Issued(IssuedPrefix { steps, checkpoints })
             }

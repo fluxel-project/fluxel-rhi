@@ -10,6 +10,87 @@ use crate::backend::gl::api::{
 };
 use glow::HasContext as _;
 
+mod transaction;
+use transaction::IndirectCountTransaction;
+
+/// Context-owned fixed compute lowering. The caller supplies every varying
+/// record shape through uniforms, so this native program never encodes a draw
+/// count, chunk base, index delta, or operation-specific allocation.
+pub(crate) struct IndirectCountUtility {
+    program: glow::NativeProgram,
+    base: Option<glow::NativeUniformLocation>,
+    draws: Option<glow::NativeUniformLocation>,
+    count_pos: Option<glow::NativeUniformLocation>,
+    words: Option<glow::NativeUniformLocation>,
+    delta: Option<glow::NativeUniformLocation>,
+    indexed: Option<glow::NativeUniformLocation>,
+}
+
+impl IndirectCountUtility {
+    pub(crate) unsafe fn create(gl: &glow::Context) -> Result<Self, GlError> {
+        const OP: &str = "GLES multi-draw-indirect-count utility";
+        const SOURCE: &str = "#version 310 es\nprecision highp int;\nlayout(local_size_x=64) in;\nlayout(std430,binding=0) readonly buffer S { uint src[]; };\nlayout(std430,binding=1) writeonly buffer D { uint dst[]; };\nuniform uint u_base; uniform uint u_draws; uniform uint u_count_pos; uniform uint u_words; uniform uint u_delta; uniform uint u_indexed;\nvoid main(){ uint i=gl_GlobalInvocationID.x; if(i>=u_draws)return; uint p=i*u_words; bool enabled=u_base+i<src[u_count_pos]; for(uint j=0u;j<u_words;j++)dst[p+j]=enabled?src[p+j]:0u; if(enabled&&u_indexed!=0u)dst[p+2u]=src[p+2u]+u_delta; }";
+        // SAFETY: current-context contract belongs to NativeGlProvider.
+        let shader = unsafe { gl.create_shader(glow::COMPUTE_SHADER) }
+            .map_err(|_| GlError::OutOfMemory { operation: OP })?;
+        unsafe {
+            gl.shader_source(shader, SOURCE);
+            gl.compile_shader(shader);
+        }
+        if !unsafe { gl.get_shader_compile_status(shader) } {
+            let message = unsafe { gl.get_shader_info_log(shader) };
+            unsafe { gl.delete_shader(shader) };
+            return Err(GlError::Driver {
+                operation: OP,
+                message,
+            });
+        }
+        let program = match unsafe { gl.create_program() } {
+            Ok(program) => program,
+            Err(_) => {
+                unsafe { gl.delete_shader(shader) };
+                return Err(GlError::OutOfMemory { operation: OP });
+            }
+        };
+        unsafe {
+            gl.attach_shader(program, shader);
+            gl.link_program(program);
+            gl.delete_shader(shader);
+        }
+        if !unsafe { gl.get_program_link_status(program) } {
+            let message = unsafe { gl.get_program_info_log(program) };
+            unsafe { gl.delete_program(program) };
+            return Err(GlError::Driver {
+                operation: OP,
+                message,
+            });
+        }
+        Ok(Self {
+            base: unsafe { gl.get_uniform_location(program, "u_base") },
+            draws: unsafe { gl.get_uniform_location(program, "u_draws") },
+            count_pos: unsafe { gl.get_uniform_location(program, "u_count_pos") },
+            words: unsafe { gl.get_uniform_location(program, "u_words") },
+            delta: unsafe { gl.get_uniform_location(program, "u_delta") },
+            indexed: unsafe { gl.get_uniform_location(program, "u_indexed") },
+            program,
+        })
+    }
+    pub(crate) unsafe fn destroy(self, gl: &glow::Context) {
+        unsafe { gl.delete_program(self.program) }
+    }
+}
+
+impl NativeGlProvider {
+    /// Called by the context-current device teardown path before the GL
+    /// dispatch table is released.
+    pub(crate) unsafe fn clear_indirect_count_utility(&mut self) {
+        if let Some(utility) = self.indirect_count_utility.take() {
+            // SAFETY: caller established that this provider's context is current.
+            unsafe { utility.destroy(&self.gl) };
+        }
+    }
+}
+
 #[cfg(test)]
 thread_local! { static TEST_CHUNK_CAPACITY: std::cell::Cell<u32> = const { std::cell::Cell::new(u32::MAX) }; }
 
@@ -146,112 +227,52 @@ impl NativeGlProvider {
             )],
         )?;
         self.ensure_program(OP, program)?;
-        let source = format!(
-            "#version 310 es\nprecision highp int;\nlayout(local_size_x=64) in; layout(std430,binding=0) readonly buffer S {{ uint src[]; }}; layout(std430,binding=1) writeonly buffer D {{ uint dst[]; }}; uniform uint u_base; uniform uint u_draws; uniform uint u_count_pos; void main() {{ uint i=gl_GlobalInvocationID.x; if(i>=u_draws)return; uint p=i*{words}u; bool enabled=u_base+i<src[u_count_pos]; for(uint j=0u;j<{words}u;j++) dst[p+j]=enabled ? src[p+j] : 0u; {} }}",
-            if index.is_some() {
-                format!("if(enabled) dst[p+2u]=src[p+2u]+{delta}u;")
-            } else {
-                String::new()
-            }
-        );
         // SAFETY: all offsets and sizes are validated against live GL allocations;
         // transient objects and every affected binding/program are restored below.
         unsafe {
-            let shader = self
-                .gl
-                .create_shader(glow::COMPUTE_SHADER)
-                .map_err(|_| GlError::OutOfMemory { operation: OP })?;
-            self.gl.shader_source(shader, &source);
-            self.gl.compile_shader(shader);
-            if !self.gl.get_shader_compile_status(shader) {
-                let message = self.gl.get_shader_info_log(shader);
-                self.gl.delete_shader(shader);
-                return Err(GlError::Driver {
-                    operation: OP,
-                    message,
-                });
+            if self.indirect_count_utility.is_none() {
+                self.indirect_count_utility = Some(IndirectCountUtility::create(&self.gl)?);
             }
-            let utility = match self.gl.create_program() {
-                Ok(v) => v,
-                Err(_) => {
-                    self.gl.delete_shader(shader);
-                    return Err(GlError::OutOfMemory { operation: OP });
-                }
-            };
-            self.gl.attach_shader(utility, shader);
-            self.gl.link_program(utility);
-            self.gl.delete_shader(shader);
-            if !self.gl.get_program_link_status(utility) {
-                let message = self.gl.get_program_info_log(utility);
-                self.gl.delete_program(utility);
-                return Err(GlError::Driver {
-                    operation: OP,
-                    message,
-                });
-            }
-            let input = match self.gl.create_buffer() {
-                Ok(v) => v,
-                Err(_) => {
-                    self.gl.delete_program(utility);
-                    return Err(GlError::OutOfMemory { operation: OP });
-                }
-            };
-            let output = match self.gl.create_buffer() {
-                Ok(v) => v,
-                Err(_) => {
-                    self.gl.delete_buffer(input);
-                    self.gl.delete_program(utility);
-                    return Err(GlError::OutOfMemory { operation: OP });
-                }
-            };
-            let snapshot = match self.gl.create_buffer() {
-                Ok(v) => v,
-                Err(_) => {
-                    self.gl.delete_buffer(input);
-                    self.gl.delete_buffer(output);
-                    self.gl.delete_program(utility);
-                    return Err(GlError::OutOfMemory { operation: OP });
-                }
-            };
-            let handle = |raw: i32| core::num::NonZeroU32::new(raw as u32).map(glow::NativeBuffer);
-            let generic = handle(
-                self.gl
-                    .get_parameter_i32(glow::SHADER_STORAGE_BUFFER_BINDING),
-            );
-            let read = handle(self.gl.get_parameter_i32(glow::COPY_READ_BUFFER_BINDING));
-            let write = handle(self.gl.get_parameter_i32(glow::COPY_WRITE_BUFFER_BINDING));
-            let indirect = handle(
-                self.gl
-                    .get_parameter_i32(glow::DRAW_INDIRECT_BUFFER_BINDING),
-            );
-            let old_program =
-                core::num::NonZeroU32::new(self.gl.get_parameter_i32(glow::CURRENT_PROGRAM) as u32)
-                    .map(glow::NativeProgram);
-            let old = [0, 1].map(|i| {
+            let (
+                utility_program,
+                base_uniform,
+                draws_uniform,
+                count_uniform,
+                words_uniform,
+                delta_uniform,
+                indexed_uniform,
+            ) = {
+                let utility = self
+                    .indirect_count_utility
+                    .as_ref()
+                    .expect("utility was installed");
                 (
-                    handle(
-                        self.gl
-                            .get_parameter_indexed_i32(glow::SHADER_STORAGE_BUFFER_BINDING, i),
-                    ),
-                    self.gl
-                        .get_parameter_indexed_i64(glow::SHADER_STORAGE_BUFFER_START, i),
-                    self.gl
-                        .get_parameter_indexed_i64(glow::SHADER_STORAGE_BUFFER_SIZE, i),
+                    utility.program,
+                    utility.base.clone(),
+                    utility.draws.clone(),
+                    utility.count_pos.clone(),
+                    utility.words.clone(),
+                    utility.delta.clone(),
+                    utility.indexed.clone(),
                 )
-            });
-            if old
-                .iter()
-                .any(|(b, o, n)| b.is_some() && (*o < 0 || *n < 0))
-            {
-                self.gl.delete_buffer(input);
-                self.gl.delete_buffer(output);
-                self.gl.delete_buffer(snapshot);
-                self.gl.delete_program(utility);
-                return Err(GlError::Unsupported {
-                    operation: OP,
-                    reason: "existing SSBO binding has a negative range",
-                });
-            }
+            };
+            let mut transaction =
+                IndirectCountTransaction::capture(self.gl.clone(), self.buffer_functions, OP)?;
+            let input = self
+                .gl
+                .create_buffer()
+                .map_err(|_| GlError::OutOfMemory { operation: OP })?;
+            transaction.retain_temporary(input);
+            let output = self
+                .gl
+                .create_buffer()
+                .map_err(|_| GlError::OutOfMemory { operation: OP })?;
+            transaction.retain_temporary(output);
+            let snapshot = self
+                .gl
+                .create_buffer()
+                .map_err(|_| GlError::OutOfMemory { operation: OP })?;
+            transaction.retain_temporary(snapshot);
             self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(input));
             self.buffer_data_size_wide(
                 glow::COPY_WRITE_BUFFER,
@@ -309,9 +330,6 @@ impl NativeGlProvider {
                 }
                 result = self.driver_error(OP);
             }
-            let base_uniform = self.gl.get_uniform_location(utility, "u_base");
-            let draws_uniform = self.gl.get_uniform_location(utility, "u_draws");
-            let count_uniform = self.gl.get_uniform_location(utility, "u_count_pos");
             let mut base = 0u32;
             while base < count.max_draw_count && result.is_ok() {
                 let draws = (count.max_draw_count - base).min(chunk_capacity);
@@ -342,10 +360,14 @@ impl NativeGlProvider {
                     .bind_buffer_base(glow::SHADER_STORAGE_BUFFER, 0, Some(input));
                 self.gl
                     .bind_buffer_base(glow::SHADER_STORAGE_BUFFER, 1, Some(output));
-                self.gl.use_program(Some(utility));
+                self.gl.use_program(Some(utility_program));
                 self.gl.uniform_1_u32(base_uniform.as_ref(), base);
                 self.gl.uniform_1_u32(draws_uniform.as_ref(), draws);
                 self.gl.uniform_1_u32(count_uniform.as_ref(), count_pos);
+                self.gl.uniform_1_u32(words_uniform.as_ref(), words);
+                self.gl.uniform_1_u32(delta_uniform.as_ref(), delta);
+                self.gl
+                    .uniform_1_u32(indexed_uniform.as_ref(), u32::from(index.is_some()));
                 self.gl.dispatch_compute(draws.div_ceil(64), 1, 1);
                 self.gl.memory_barrier(glow::COMMAND_BARRIER_BIT);
                 if let Err(error) = self.driver_error(OP) {
@@ -354,23 +376,7 @@ impl NativeGlProvider {
                 }
                 // Draw shaders must see their original SSBO bindings, not the
                 // private compute utility's input and output buffers.
-                for (i, (buffer, offset, size)) in old.iter().copied().enumerate() {
-                    if buffer.is_some() && size > 0 {
-                        self.bind_buffer_range_wide(
-                            glow::SHADER_STORAGE_BUFFER,
-                            i as u32,
-                            buffer,
-                            offset as u64,
-                            size as u64,
-                            OP,
-                        )?;
-                    } else {
-                        self.gl
-                            .bind_buffer_base(glow::SHADER_STORAGE_BUFFER, i as u32, buffer);
-                    }
-                }
-                self.gl.bind_buffer(glow::SHADER_STORAGE_BUFFER, generic);
-                self.gl.use_program(old_program);
+                transaction.restore_draw_state();
                 self.gl
                     .bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(output));
                 let mode = super::exec_raster::topology_mode(topology);
@@ -418,31 +424,10 @@ impl NativeGlProvider {
                 result = self.driver_error(OP);
                 base += draws;
             }
-            for (i, (buffer, offset, size)) in old.into_iter().enumerate() {
-                if buffer.is_some() && size > 0 {
-                    self.bind_buffer_range_wide(
-                        glow::SHADER_STORAGE_BUFFER,
-                        i as u32,
-                        buffer,
-                        offset as u64,
-                        size as u64,
-                        OP,
-                    )?;
-                } else {
-                    self.gl
-                        .bind_buffer_base(glow::SHADER_STORAGE_BUFFER, i as u32, buffer);
-                }
-            }
-            self.gl.bind_buffer(glow::SHADER_STORAGE_BUFFER, generic);
-            self.gl.bind_buffer(glow::COPY_READ_BUFFER, read);
-            self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, write);
-            self.gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, indirect);
-            self.gl.use_program(old_program);
-            self.gl.delete_buffer(input);
-            self.gl.delete_buffer(output);
-            self.gl.delete_buffer(snapshot);
-            self.gl.delete_program(utility);
-            result
+            // Normal completion must also observe restoration/deletion errors.
+            // Early `?` exits still use the guard's rollback during unwinding.
+            drop(transaction);
+            result.and(self.driver_error(OP))
         }
     }
 }

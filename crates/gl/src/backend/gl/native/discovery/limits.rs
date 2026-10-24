@@ -286,12 +286,10 @@ pub(super) fn limits(
             glow_const::MAX_COMPUTE_WORK_GROUP_INVOCATIONS,
             "GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS",
         )?,
-        // GL_ARB_indirect_parameters has no query token for a hardware draw
-        // count limit. Keep this optional device limit absent; the GPU-count
-        // command is separately enabled from its acquired desktop route and
-        // loaded entry points. At issue time, its `GLsizei` argument and the
-        // validated command-buffer range bound the submitted draw count.
-        max_multi_draw_indirect_count: None,
+        // Multi-draw has no hardware-limit query. The count parameter is a
+        // `GLsizei`, so this is the largest ABI-representable request, not an
+        // observation or claim about a driver's hardware batching capacity.
+        max_multi_draw_indirect_count: Some(i32::MAX as u32),
         // The view count is only queryable on a context that acquired the
         // multiview extension; without it the fact is 0 and the multiview floor
         // cannot be met by any route.

@@ -10,7 +10,9 @@ use fluxel_rhi_core::api::{
 };
 
 mod binding;
+mod sampler_lowering;
 mod support;
+use sampler_lowering::{lower_address, lower_compare, lower_filter, lower_mip_filter};
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),
     feature = "native-gles-egl",
@@ -39,17 +41,20 @@ fn lower_buffer_binding_range(
 impl ResourceBackend for Gl {
     fn buffer_support(device: &GlDevice, desc: &BufferDesc) -> Support<BufferSupport> {
         match crate::backend::gl::translate::lower_buffer_desc(desc) {
-            Ok(_) => {
+            Ok(lowered) => {
                 #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
                 {
                     let max_size = match device
                         .0
                         .with_native("query GL buffer address limit", |provider| {
-                            Ok(provider.advertised_max_buffer_bytes())
+                            Ok(provider.max_buffer_bytes_for(lowered))
                         }) {
                         Ok(max_size) => max_size,
                         Err(_) => return Support::Unsupported("native GL context unavailable"),
                     };
+                    if lowered.size > max_size {
+                        return Support::Unsupported("GL buffer exceeds native ABI range");
+                    }
                     return Support::Supported(BufferSupport {
                         alignment: 1,
                         max_size,
@@ -58,6 +63,9 @@ impl ResourceBackend for Gl {
                 #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
                 {
                     let _ = device;
+                    if lowered.size > i32::MAX as u64 {
+                        return Support::Unsupported("WebGL2 buffer exceeds GLsizei range");
+                    }
                     return Support::Supported(BufferSupport {
                         alignment: 1,
                         max_size: i32::MAX as u64,
@@ -787,48 +795,6 @@ fn sample_type_compatible(
 /// Converts only the addressing modes that every adopted GL profile exposes.
 /// Border and zero addressing need texture-border state or shader emulation;
 /// neither is part of the direct 02 route.
-fn lower_address(value: api::AddressMode) -> Result<crate::backend::gl::api::GlAddressMode> {
-    match value {
-        api::AddressMode::ClampToEdge => Ok(crate::backend::gl::api::GlAddressMode::ClampToEdge),
-        api::AddressMode::Repeat => Ok(crate::backend::gl::api::GlAddressMode::Repeat),
-        api::AddressMode::MirrorRepeat => {
-            Ok(crate::backend::gl::api::GlAddressMode::MirroredRepeat)
-        }
-        api::AddressMode::ClampToBorder | api::AddressMode::ClampToZero => {
-            Err(Error::Unsupported("GL sampler address mode"))
-        }
-    }
-}
-
-fn lower_filter(value: api::FilterMode) -> crate::backend::gl::api::GlFilterMode {
-    match value {
-        api::FilterMode::Nearest => crate::backend::gl::api::GlFilterMode::Nearest,
-        api::FilterMode::Linear => crate::backend::gl::api::GlFilterMode::Linear,
-    }
-}
-
-fn lower_mip_filter(value: api::FilterMode) -> crate::backend::gl::api::GlMipmapFilterMode {
-    match value {
-        api::FilterMode::Nearest => crate::backend::gl::api::GlMipmapFilterMode::Nearest,
-        api::FilterMode::Linear => crate::backend::gl::api::GlMipmapFilterMode::Linear,
-    }
-}
-
-fn lower_compare(value: api::CompareFunction) -> crate::backend::gl::api::GlCompareFunction {
-    match value {
-        api::CompareFunction::Never => crate::backend::gl::api::GlCompareFunction::Never,
-        api::CompareFunction::Less => crate::backend::gl::api::GlCompareFunction::Less,
-        api::CompareFunction::Equal => crate::backend::gl::api::GlCompareFunction::Equal,
-        api::CompareFunction::LessEqual => crate::backend::gl::api::GlCompareFunction::LessEqual,
-        api::CompareFunction::Greater => crate::backend::gl::api::GlCompareFunction::Greater,
-        api::CompareFunction::NotEqual => crate::backend::gl::api::GlCompareFunction::NotEqual,
-        api::CompareFunction::GreaterEqual => {
-            crate::backend::gl::api::GlCompareFunction::GreaterEqual
-        }
-        api::CompareFunction::Always => crate::backend::gl::api::GlCompareFunction::Always,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::lower_buffer_binding_range;

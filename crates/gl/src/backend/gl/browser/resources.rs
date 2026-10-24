@@ -16,6 +16,8 @@ use super::owner::{
 impl BrowserOwner {
     /// Allocates a dynamic byte-addressable buffer for the static backend.
     pub(crate) fn create_buffer(&self, desc: GlBufferDesc) -> Result<BrowserBuffer> {
+        desc.validate().map_err(|_| Error::InvalidRange)?;
+        let size = i32::try_from(desc.size).map_err(|_| Error::InvalidRange)?;
         self.drain_pending_deletes()?;
         let mut state = self.state.borrow_mut();
         state.ensure_active()?;
@@ -38,7 +40,7 @@ impl BrowserOwner {
         state
             .context
             .raw
-            .buffer_data_with_f64(target, desc.size as f64, Gl::DYNAMIC_DRAW);
+            .buffer_data_with_i32(target, size, Gl::DYNAMIC_DRAW);
         if state.context.raw.get_error() != Gl::NO_ERROR {
             state.context.raw.delete_buffer(Some(&raw));
             return Err(Error::Backend("WebGL2 buffer allocation failed".into()));
@@ -229,11 +231,12 @@ impl BrowserOwner {
                 "WebGL2 texture storage allocation failed".into(),
             ));
         }
-        // Some WebGL implementations leave individual array slices lazily
-        // initialized after immutable allocation. A framebuffer clear to an
-        // untouched slice can then be lost. Touch each slice before exposing
-        // the allocation; this never overwrites caller data. A one-pixel upload
-        // is enough to trigger WebGL's initialization for that subresource.
+        // Some browser implementations retain lazy per-slice initialization
+        // after immutable allocation. An untouched slice can then lose its
+        // first framebuffer clear, so explicitly touch every subresource
+        // before exposing the allocation. One 1x1 zero column covers every
+        // slice in a mip with one native call; this avoids the former
+        // per-slice call loop while preserving the driver workaround.
         if matches!(
             desc.dimension,
             GlTextureDimension::D2Array | GlTextureDimension::D3
@@ -266,8 +269,6 @@ impl BrowserOwner {
                 for p in parameters {
                     gl.pixel_storei(p, if p == Gl::UNPACK_ALIGNMENT { 1 } else { 0 });
                 }
-                let bytes =
-                    super::ordinary_format::typed_pixels(&vec![0; encoding.bytes as usize], ty)?;
                 let mut failed = false;
                 for mip in 0..desc.mip_level_count {
                     let slices = if desc.dimension == GlTextureDimension::D3 {
@@ -279,23 +280,26 @@ impl BrowserOwner {
                     } else {
                         desc.extent.depth_or_layers
                     };
-                    for layer in 0..slices {
-                        failed |= gl
-                            .tex_sub_image_3d_with_opt_array_buffer_view(
-                                target,
-                                mip as i32,
-                                0,
-                                0,
-                                layer as i32,
-                                1,
-                                1,
-                                1,
-                                format,
-                                ty,
-                                Some(&bytes),
-                            )
-                            .is_err();
-                    }
+                    let byte_count = usize::try_from(slices)
+                        .ok()
+                        .and_then(|slices| slices.checked_mul(encoding.bytes as usize))
+                        .ok_or(Error::InvalidRange)?;
+                    let bytes = super::ordinary_format::typed_pixels(&vec![0; byte_count], ty)?;
+                    failed |= gl
+                        .tex_sub_image_3d_with_opt_array_buffer_view(
+                            target,
+                            mip as i32,
+                            0,
+                            0,
+                            0,
+                            1,
+                            1,
+                            slices as i32,
+                            format,
+                            ty,
+                            Some(&bytes),
+                        )
+                        .is_err();
                 }
                 for (p, value) in parameters.into_iter().zip(previous) {
                     gl.pixel_storei(p, value);

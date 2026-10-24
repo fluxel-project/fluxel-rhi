@@ -184,7 +184,12 @@ async fn indirect(d: &Device<Gl>, builtin: bool, broken_driver: bool, gpu_shared
     let separate_count = buffer(16, BufferUsage::INDIRECT | BufferUsage::COPY_DST);
     let count_buffer = if gpu_shared { &args } else { &separate_count };
     let indices = buffer(16, BufferUsage::INDEX | BufferUsage::COPY_DST);
-    let out: Vec<_> = (0..8)
+    // Native WGL exercises explicit tight and padded record strides, and
+    // both native indexed batching and nonzero-index-offset GPU rebasing.
+    // The GPU-shared count case keeps its
+    // count word at byte 4, so it deliberately retains the non-overlapping
+    // padded command layout.
+    let out: Vec<_> = (0..24)
         .map(|_| buffer(256, BufferUsage::COPY_DST | BufferUsage::COPY_SRC))
         .collect();
     let producer = if gpu_shared {
@@ -325,193 +330,230 @@ async fn indirect(d: &Device<Gl>, builtin: bool, broken_driver: bool, gpu_shared
         .unwrap();
     let extras = d.raster_extras().unwrap();
     let mut tickets = Vec::new();
-    for indexed in [true, false] {
-        let mut words = vec![0u8; 80];
-        for (base, first) in [(16usize, 0u32), (48, 3)] {
-            let values = if indexed {
-                vec![3u32, 1, first, 0, 0]
+    let index_modes: &[(bool, u64)] = if gpu_shared {
+        &[(true, 4), (false, 0)]
+    } else {
+        &[(true, 4), (true, 0), (false, 0)]
+    };
+    for &(indexed, index_offset) in index_modes {
+        let layouts: &[(u64, u32)] = if gpu_shared {
+            &[(16, 32)]
+        } else {
+            &[(0, 0), (16, 32)]
+        };
+        for &(command_offset, stride) in layouts {
+            // Core uses an explicit record stride; native GL's zero-stride
+            // spelling is only accepted below that public contract.
+            let stride = if stride == 0 {
+                if indexed { 20 } else { 16 }
             } else {
-                vec![3u32, 1, first, 0]
+                stride
             };
-            for (i, value) in values.iter().enumerate() {
-                words[base + i * 4..base + i * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            let record_stride = stride as usize;
+            let mut words = vec![0u8; 80];
+            for (base, first) in [
+                (command_offset as usize, 0u32),
+                (command_offset as usize + record_stride, 3),
+            ] {
+                let values = if indexed {
+                    vec![3u32, 1, first + if index_offset == 0 { 2 } else { 0 }, 0, 0]
+                } else {
+                    vec![3u32, 1, first, 0]
+                };
+                for (i, value) in values.iter().enumerate() {
+                    words[base + i * 4..base + i * 4 + 4].copy_from_slice(&value.to_le_bytes());
+                }
             }
-        }
-        e.write_buffer(&args, 0, &words).unwrap();
-        if gpu_shared {
-            e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
-                target: BufferSlice {
-                    buffer: &args,
-                    range: 0..80,
-                },
-                usage: StateTransition {
-                    from: BufferUses {
-                        stages: StageMask::COPY,
-                        accesses: AccessMask::COPY_WRITE,
+            e.write_buffer(&args, 0, &words).unwrap();
+            if gpu_shared {
+                e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
+                    target: BufferSlice {
+                        buffer: &args,
+                        range: 0..80,
                     },
-                    to: BufferUses {
-                        stages: StageMask::INDIRECT,
-                        accesses: AccessMask::INDIRECT_READ,
+                    usage: StateTransition {
+                        from: BufferUses {
+                            stages: StageMask::COPY,
+                            accesses: AccessMask::COPY_WRITE,
+                        },
+                        to: BufferUses {
+                            stages: StageMask::INDIRECT,
+                            accesses: AccessMask::INDIRECT_READ,
+                        },
                     },
-                },
-                ownership: None,
-            })])
-            .unwrap();
-        }
-        for gpu_count in [None, Some(0u32), Some(1), Some(3)] {
-            let counted = gpu_count.is_some();
-            if counted && !caps.multi_draw_count {
-                continue;
+                    ownership: None,
+                })])
+                .unwrap();
             }
-            if let Some(value) = gpu_count {
-                if let Some((compute, pipeline, group, uniform)) = &producer {
-                    let mut bytes = [0u8; 16];
-                    bytes[..4].copy_from_slice(&value.to_le_bytes());
-                    e.write_buffer(uniform, 0, &bytes).unwrap();
-                    e.transition_resources(&[
-                        ResourceTransition::Buffer(BufferBarrier {
+            for gpu_count in [None, Some(0u32), Some(1), Some(3)] {
+                let counted = gpu_count.is_some();
+                if counted && !caps.multi_draw_count {
+                    continue;
+                }
+                if let Some(value) = gpu_count {
+                    if let Some((compute, pipeline, group, uniform)) = &producer {
+                        let mut bytes = [0u8; 16];
+                        bytes[..4].copy_from_slice(&value.to_le_bytes());
+                        e.write_buffer(uniform, 0, &bytes).unwrap();
+                        e.transition_resources(&[
+                            ResourceTransition::Buffer(BufferBarrier {
+                                target: BufferSlice {
+                                    buffer: &args,
+                                    range: 0..80,
+                                },
+                                usage: StateTransition {
+                                    from: BufferUses {
+                                        stages: StageMask::INDIRECT,
+                                        accesses: AccessMask::INDIRECT_READ,
+                                    },
+                                    to: BufferUses {
+                                        stages: StageMask::COMPUTE,
+                                        accesses: AccessMask::SHADER_WRITE,
+                                    },
+                                },
+                                ownership: None,
+                            }),
+                            ResourceTransition::Buffer(BufferBarrier {
+                                target: BufferSlice {
+                                    buffer: uniform,
+                                    range: 0..16,
+                                },
+                                usage: StateTransition {
+                                    from: BufferUses {
+                                        stages: StageMask::COPY,
+                                        accesses: AccessMask::COPY_WRITE,
+                                    },
+                                    to: BufferUses {
+                                        stages: StageMask::COMPUTE,
+                                        accesses: AccessMask::UNIFORM_READ,
+                                    },
+                                },
+                                ownership: None,
+                            }),
+                        ])
+                        .unwrap();
+                        let mut cp = compute.begin(e).unwrap();
+                        cp.set_pipeline(pipeline).unwrap();
+                        cp.set_bind_group(0, group, &[]).unwrap();
+                        cp.dispatch([1, 1, 1]).unwrap();
+                        cp.finish().unwrap();
+                        e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
                             target: BufferSlice {
                                 buffer: &args,
                                 range: 0..80,
                             },
                             usage: StateTransition {
                                 from: BufferUses {
-                                    stages: StageMask::INDIRECT,
-                                    accesses: AccessMask::INDIRECT_READ,
-                                },
-                                to: BufferUses {
                                     stages: StageMask::COMPUTE,
                                     accesses: AccessMask::SHADER_WRITE,
                                 },
-                            },
-                            ownership: None,
-                        }),
-                        ResourceTransition::Buffer(BufferBarrier {
-                            target: BufferSlice {
-                                buffer: uniform,
-                                range: 0..16,
-                            },
-                            usage: StateTransition {
-                                from: BufferUses {
-                                    stages: StageMask::COPY,
-                                    accesses: AccessMask::COPY_WRITE,
-                                },
                                 to: BufferUses {
-                                    stages: StageMask::COMPUTE,
-                                    accesses: AccessMask::UNIFORM_READ,
+                                    stages: StageMask::INDIRECT,
+                                    accesses: AccessMask::INDIRECT_READ,
                                 },
                             },
                             ownership: None,
-                        }),
-                    ])
-                    .unwrap();
-                    let mut cp = compute.begin(e).unwrap();
-                    cp.set_pipeline(pipeline).unwrap();
-                    cp.set_bind_group(0, group, &[]).unwrap();
-                    cp.dispatch([1, 1, 1]).unwrap();
-                    cp.finish().unwrap();
-                    e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
-                        target: BufferSlice {
-                            buffer: &args,
-                            range: 0..80,
+                        })])
+                        .unwrap();
+                    } else {
+                        e.write_buffer(count_buffer, 4, &value.to_le_bytes())
+                            .unwrap();
+                    }
+                }
+                let colors = [Some(ColorAttachment {
+                    view: AttachmentView::Texture(&view),
+                    resolve_target: None,
+                    load: LoadOp::Clear(ClearColor::Float([0., 0., 0., 1.])),
+                    store: StoreOp::Store,
+                })];
+                let mut pass = e
+                    .begin_raster(&RasterPassDesc {
+                        label: None,
+                        colors: &colors,
+                        depth_stencil: None,
+                        render_area: Rect {
+                            x: 0,
+                            y: 0,
+                            width: 8,
+                            height: 8,
                         },
-                        usage: StateTransition {
-                            from: BufferUses {
-                                stages: StageMask::COMPUTE,
-                                accesses: AccessMask::SHADER_WRITE,
-                            },
-                            to: BufferUses {
-                                stages: StageMask::INDIRECT,
-                                accesses: AccessMask::INDIRECT_READ,
-                            },
-                        },
-                        ownership: None,
-                    })])
+                        multiview_mask: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: query.as_ref().map(|(_, set)| set),
+                        secondary_inheritance: None,
+                    })
                     .unwrap();
-                } else {
-                    e.write_buffer(count_buffer, 4, &value.to_le_bytes())
+                pass.set_pipeline(&pipeline).unwrap();
+                if let Some((_, _, group)) = &shade {
+                    pass.set_bind_group(0, group, &[]).unwrap();
+                }
+                if !builtin {
+                    pass.set_vertex_buffer(0, &positions, 0..48).unwrap();
+                }
+                if indexed {
+                    pass.set_index_buffer(&indices, index_offset..16, IndexFormat::Uint16)
                         .unwrap();
                 }
-            }
-            let colors = [Some(ColorAttachment {
-                view: AttachmentView::Texture(&view),
-                resolve_target: None,
-                load: LoadOp::Clear(ClearColor::Float([0., 0., 0., 1.])),
-                store: StoreOp::Store,
-            })];
-            let mut pass = e
-                .begin_raster(&RasterPassDesc {
-                    label: None,
-                    colors: &colors,
-                    depth_stencil: None,
-                    render_area: Rect {
-                        x: 0,
-                        y: 0,
-                        width: 8,
-                        height: 8,
+                if let Some((queries, set)) = &query {
+                    queries
+                        .begin_occlusion(&mut pass, set, tickets.len() as u32)
+                        .unwrap();
+                }
+                let result = if counted {
+                    extras.multi_draw_count(
+                        &mut pass,
+                        &args,
+                        command_offset,
+                        count_buffer,
+                        4,
+                        2,
+                        stride,
+                        indexed,
+                    )
+                } else {
+                    extras.multi_draw(&mut pass, &args, command_offset, 2, stride, indexed)
+                };
+                if broken_driver && builtin {
+                    assert!(matches!(
+                        result,
+                        Err(Error::Unsupported(
+                            "ANGLE D3D11 indirect gl_VertexID driver defect"
+                        ))
+                    ));
+                    drop(pass);
+                    let _ = run.close();
+                    let _ = session.abort(Error::InvalidState);
+                    return;
+                }
+                result.unwrap();
+                if let Some((queries, _)) = &query {
+                    queries.end_occlusion(&mut pass).unwrap();
+                }
+                pass.finish().unwrap();
+                let buffer = &out[tickets.len()];
+                e.texture_to_buffer(
+                    TextureRegion {
+                        texture: &texture,
+                        mip: 0,
+                        origin: [0, 0, 0],
+                        extent: [8, 8, 1],
+                        aspect: TextureAspects::COLOR,
                     },
-                    multiview_mask: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: query.as_ref().map(|(_, set)| set),
-                    secondary_inheritance: None,
-                })
+                    buffer,
+                    TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: 32,
+                        rows_per_image: 8,
+                    },
+                )
                 .unwrap();
-            pass.set_pipeline(&pipeline).unwrap();
-            if let Some((_, _, group)) = &shade {
-                pass.set_bind_group(0, group, &[]).unwrap();
-            }
-            if !builtin {
-                pass.set_vertex_buffer(0, &positions, 0..48).unwrap();
-            }
-            if indexed {
-                pass.set_index_buffer(&indices, 4..16, IndexFormat::Uint16)
-                    .unwrap();
-            }
-            if let Some((queries, set)) = &query {
-                queries
-                    .begin_occlusion(&mut pass, set, tickets.len() as u32)
-                    .unwrap();
-            }
-            let result = if counted {
-                extras.multi_draw_count(&mut pass, &args, 16, count_buffer, 4, 2, 32, indexed)
-            } else {
-                extras.multi_draw(&mut pass, &args, 16, 2, 32, indexed)
-            };
-            if broken_driver && builtin {
-                assert!(matches!(
-                    result,
-                    Err(Error::Unsupported(
-                        "ANGLE D3D11 indirect gl_VertexID driver defect"
-                    ))
+                tickets.push((
+                    e.readback_buffer(buffer, 0..256).unwrap(),
+                    gpu_count,
+                    indexed,
+                    stride,
                 ));
-                drop(pass);
-                let _ = run.close();
-                let _ = session.abort(Error::InvalidState);
-                return;
             }
-            result.unwrap();
-            if let Some((queries, _)) = &query {
-                queries.end_occlusion(&mut pass).unwrap();
-            }
-            pass.finish().unwrap();
-            let buffer = &out[tickets.len()];
-            e.texture_to_buffer(
-                TextureRegion {
-                    texture: &texture,
-                    mip: 0,
-                    origin: [0, 0, 0],
-                    extent: [8, 8, 1],
-                    aspect: TextureAspects::COLOR,
-                },
-                buffer,
-                TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: 32,
-                    rows_per_image: 8,
-                },
-            )
-            .unwrap();
-            tickets.push((e.readback_buffer(buffer, 0..256).unwrap(), gpu_count));
         }
     }
     assert!(matches!(run.close(), ImmediateRunOutcome::Issued(_)));
@@ -522,12 +564,12 @@ async fn indirect(d: &Device<Gl>, builtin: bool, broken_driver: bool, gpu_shared
         _ => panic!("finish"),
     };
     d.wait_completion(&point).await.unwrap();
-    for (ticket, gpu_count) in tickets {
+    for (ticket, gpu_count, indexed, stride) in tickets {
         let counted = gpu_count.is_some();
         // SAFETY: the point covers the draw and readback.
         let bytes = unsafe { d.read_after(ticket, &point).await }.unwrap().bytes;
         eprintln!(
-            "builtin={builtin} counted={counted} rows={:?}",
+            "builtin={builtin} indexed={indexed} stride={stride} counted={counted} rows={:?}",
             (0..8)
                 .map(|y| (0..8)
                     .map(|x| if bytes[y * 32 + x * 4] > 0 { "#" } else { "." })

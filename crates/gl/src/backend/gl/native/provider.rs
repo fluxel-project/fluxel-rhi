@@ -43,6 +43,8 @@ pub(crate) struct NativeGlProvider {
     pub(super) storage_block_entries: Option<super::program_resources::StorageBlockEntries>,
     pub(super) indexed_blend: super::indexed_blend::IndexedBlendExtensions,
     pub(super) indirect_count: Option<super::indirect_count::IndirectCountFns>,
+    pub(super) multi_draw_indirect: Option<super::multi_draw_indirect::MultiDrawIndirectFns>,
+    pub(super) indirect_count_utility: Option<super::indirect_count_emulated::IndirectCountUtility>,
     pub(super) multiview: Option<super::multiview::NativeMultiview>,
     pub(super) multisample_array: Option<super::multisample_array::StorageFn>,
     pub(super) storage_3d_nonzero_mip: bool,
@@ -641,6 +643,9 @@ impl crate::backend::gl::api::GlFamilyApi for NativeGlProvider {
     fn context_lost(&mut self) -> Result<(), GlError> {
         self.assert_ready("context-lost")?;
         self.lifecycle = GlContextLifecycle::Lost;
+        // Lost-context names must never be deleted through a restored or
+        // different context. The native context owns their final reclamation.
+        self.indirect_count_utility.take();
         self.reset_executable_state();
         Ok(())
     }

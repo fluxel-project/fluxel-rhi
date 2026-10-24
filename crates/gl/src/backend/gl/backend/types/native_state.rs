@@ -3,6 +3,26 @@
 use super::GlDeviceState;
 
 #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+impl Drop for GlDeviceState {
+    fn drop(&mut self) {
+        use crate::backend::gl::native::NativeContextOwner as _;
+        // Rc confines this final owner to its context thread. The platform
+        // owner is still alive here; no GL deletion may run unless this exact
+        // context can be made current. Lost contexts reclaim their own names.
+        if self
+            .context
+            .get_mut()
+            .make_current("retire GL utilities")
+            .is_ok()
+        {
+            // SAFETY: the exact retained owner context is current on this
+            // thread, and final Rc destruction makes the provider exclusive.
+            unsafe { self.provider.get_mut().clear_indirect_count_utility() };
+        }
+    }
+}
+
+#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 impl GlDeviceState {
     /// Executes a platform-context operation without borrowing the GL object
     /// provider. Presentation uses this after an image lease is irrevocably

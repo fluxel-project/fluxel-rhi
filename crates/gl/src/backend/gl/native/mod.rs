@@ -29,6 +29,7 @@ mod exec_copy;
 mod exec_framebuffer;
 #[cfg(any(feature = "native-gl-wgl", feature = "native-gles-egl"))]
 mod exec_mapping;
+mod exec_multi_draw;
 mod exec_pbo_readback;
 mod exec_pbo_upload;
 mod exec_raster;
@@ -44,6 +45,7 @@ mod indirect_rebase;
 #[cfg(test)]
 mod indirect_repro;
 pub(crate) mod interop;
+mod multi_draw_indirect;
 mod multisample_array;
 mod multiview;
 #[cfg(any(feature = "native-gl-wgl", feature = "native-gles-egl"))]

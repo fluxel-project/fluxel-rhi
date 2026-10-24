@@ -379,6 +379,18 @@ pub(super) trait NativeGlProbes {
         let _ = (indexed, stages);
         ProbeAnswer::Unavailable
     }
+    /// Issues two zero-primitive commands through one typed multi-draw entry
+    /// point. The executor uses the same entry point, so a missing loader or a
+    /// rejected batch remains unavailable instead of being inferred from the
+    /// single-draw route.
+    fn issues_multi_draw_indirect(
+        &self,
+        indexed: bool,
+        stages: &[(u32, &'static str)],
+    ) -> ProbeAnswer {
+        let _ = (indexed, stages);
+        ProbeAnswer::Unavailable
+    }
     /// Issues one no-op indirect dispatch through scratch state.
     fn issues_indirect_dispatch(&self, compute_source: &'static str) -> ProbeAnswer {
         let _ = compute_source;
@@ -503,6 +515,13 @@ pub(super) fn run_operation_probes(
     let indirect_route = route_supplied(profile, extensions, Some((4, 0)), Some((3, 1)), None);
     let indirect_dispatch_route =
         route_supplied(profile, extensions, Some((4, 3)), Some((3, 1)), None);
+    let multi_draw_indirect_route = route_supplied(
+        profile,
+        extensions,
+        Some((4, 3)),
+        None,
+        Some(GlKnownExtension::ArbMultiDrawIndirect),
+    );
 
     ProbeReport {
         compressed_alias_read: Default::default(),
@@ -693,14 +712,16 @@ pub(super) fn run_operation_probes(
         } else {
             ProbeAnswer::Unavailable
         },
-        // glow 0.18 does not bind glMultiDrawArraysIndirect, so neither a probe
-        // nor an executor can exist; the capability stays fail-closed instead
-        // of pretending a portable count limit exists. This is the recorded
-        // narrowing rather than a missing probe (plan P2-15): the domain's
-        // supported range is the mock route, which is the only one that has the
-        // verb and a count limit to enable it with, and this answer is what
-        // keeps a real context from advertising a command no provider serves.
-        multi_draw_indirect: ProbeAnswer::Unavailable,
+        multi_draw_indirect: if multi_draw_indirect_route {
+            let non_indexed = probes.issues_multi_draw_indirect(false, trivial);
+            if non_indexed != ProbeAnswer::Passed {
+                non_indexed
+            } else {
+                probes.issues_multi_draw_indirect(true, trivial)
+            }
+        } else {
+            ProbeAnswer::Unavailable
+        },
         query_counter_bits: probes.query_counter_bits(),
         copy_image_symbols: probes.copy_image_symbols(),
         compressed_get_symbol: probes.compressed_get_symbol(),
@@ -731,8 +752,8 @@ pub(super) fn run_operation_probes(
 ///
 /// Extensions with no command probe are absent by construction: the anisotropic
 /// filter name is read as a limit, the timer-query route is proved by the
-/// counter-width observation rather than by a command, and the multiview and
-/// batch rows have no probe on this path at all.
+/// counter-width observation rather than by a command, and multiview has no
+/// native command probe on this path.
 pub(super) fn record_extension_probes(
     profile: GlFamilyProfile,
     report: &ProbeReport,
@@ -747,6 +768,10 @@ pub(super) fn record_extension_probes(
         (
             GlKnownExtension::ArbShaderImageLoadStore,
             report.storage_image,
+        ),
+        (
+            GlKnownExtension::ArbMultiDrawIndirect,
+            report.multi_draw_indirect,
         ),
     ] {
         if answer == ProbeAnswer::Passed

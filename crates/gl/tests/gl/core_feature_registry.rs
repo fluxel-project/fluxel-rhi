@@ -3,6 +3,8 @@
 
 #[path = "core_independent_resolve.rs"]
 mod independent_resolve;
+#[path = "core_step_checkpoints.rs"]
+mod step_checkpoints;
 
 #[cfg(all(windows, feature = "native-gl-wgl"))]
 #[path = "core_direct_glsl_f64_vertex.rs"]

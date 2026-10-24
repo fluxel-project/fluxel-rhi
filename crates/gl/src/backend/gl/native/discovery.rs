@@ -225,6 +225,10 @@ pub(crate) unsafe fn discover_current_glow_identified(
         !proc_loader("glGetTexImage").is_null(),
         unsafe { super::multiview::NativeMultiview::load_entry(&proc_loader) },
         unsafe { super::multisample_array::MultisampleArrayFns::load(&proc_loader) },
+        // `GL_ARB_multi_draw_indirect` deliberately uses the core symbol
+        // names. Keep the typed pair with the probe so an export alone never
+        // turns into a capability without executing the command.
+        unsafe { super::multi_draw_indirect::MultiDrawIndirectFns::load_symbols(&proc_loader) },
     );
     let query = GlowQuery(context);
     // Both wrappers read the same current context and never run concurrently.
@@ -488,8 +492,8 @@ fn discover_with_query_pair(
         CoreOrExtension {
             desktop_core: Some(GlVersion::new(4, 3)),
             embedded_core: None,
-            extension: None,
-            extension_requires_probe: false,
+            extension: Some(GlKnownExtension::ArbMultiDrawIndirect),
+            extension_requires_probe: true,
         },
         report.multi_draw_indirect.to_operation_probe(),
     );

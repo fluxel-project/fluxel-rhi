@@ -43,6 +43,7 @@ pub(crate) mod type_contract_tests {
         static DRAW_CALLS: Cell<usize> = const { Cell::new(0) };
         pub(crate) static GL_TRANSITIONS: Cell<usize> = const { Cell::new(0) };
         pub(crate) static GL_CHECKPOINTS: Cell<usize> = const { Cell::new(0) };
+        pub(crate) static GL_EMPTY_STEP_CHECKPOINTS: Cell<bool> = const { Cell::new(false) };
         pub(crate) static GL_CLOSE_FAILURE: Cell<u8> = const { Cell::new(0) };
         pub(crate) static GL_WAIT_REJECT: Cell<bool> = const { Cell::new(false) };
         pub(crate) static GL_CHECKPOINT_UNKNOWN: Cell<bool> = const { Cell::new(false) };
@@ -376,9 +377,9 @@ pub(crate) mod type_contract_tests {
         }
         fn checkpoints(
             _: &Rc<()>,
-            _: &SubmissionPlan<Self>,
-            _: &[StepId],
-            _: &CompletionRequest,
+            plan: &SubmissionPlan<Self>,
+            issued: &[StepId],
+            request: &CompletionRequest,
         ) -> CheckpointOutcome<Self> {
             GL_CHECKPOINTS.with(|calls| calls.set(calls.get() + 1));
             if GL_CHECKPOINT_UNKNOWN.with(|v| v.replace(false)) {
@@ -386,6 +387,31 @@ pub(crate) mod type_contract_tests {
                     device: GL_DEVICE.with(|id| id.get().unwrap()),
                     native: (),
                 })
+            } else if GL_EMPTY_STEP_CHECKPOINTS.with(|v| v.get())
+                && matches!(request, CompletionRequest::Steps(steps) if steps.len() == 1)
+            {
+                CheckpointOutcome::Covered(Vec::new())
+            } else if GL_EMPTY_STEP_CHECKPOINTS.with(|v| v.get())
+                && matches!(request, CompletionRequest::Steps(steps) if steps.len() > 1)
+            {
+                let Some(&frontier) = issued.last() else {
+                    return CheckpointOutcome::Covered(Vec::new());
+                };
+                CheckpointOutcome::Covered(vec![Checkpoint {
+                    // SAFETY: this mock point belongs to the fixture device.
+                    point: unsafe {
+                        CompletionPoint::from_native(
+                            GL_DEVICE.with(|id| id.get().unwrap()),
+                            Rc::new(()),
+                        )
+                    },
+                    covers: CompletionCoverage {
+                        lane_frontiers: vec![(
+                            plan.steps()[frontier.index as usize].lane,
+                            frontier,
+                        )],
+                    },
+                }])
             } else {
                 CheckpointOutcome::Covered(Vec::new())
             }

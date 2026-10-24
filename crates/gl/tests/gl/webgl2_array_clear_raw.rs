@@ -23,27 +23,28 @@ fn webgl2_raw_initialized_array_mip_clear() {
     gl.bind_texture(Gl::TEXTURE_2D_ARRAY, Some(&texture));
     gl.tex_storage_3d(Gl::TEXTURE_2D_ARRAY, 2, Gl::RGBA8, 4, 4, 2);
     check("storage");
-    // A one-pixel upload to each slice forces WebGL's subresource
-    // initialization before the framebuffer clear is issued.
+    // ANGLE/D3D11 can lose a first attachment clear for an untouched array
+    // slice despite immutable-storage initialization rules. Touch every layer
+    // of each mip with one 1x1 zero column, matching BrowserOwner's allocation
+    // workaround without returning to one native call per layer.
     for mip in 0..2 {
-        for layer in 0..2 {
-            let data: js_sys::Object = js_sys::Uint8Array::new_with_length(4).into();
-            gl.tex_sub_image_3d_with_opt_array_buffer_view(
-                Gl::TEXTURE_2D_ARRAY,
-                mip,
-                0,
-                0,
-                layer,
-                1,
-                1,
-                1,
-                Gl::RGBA,
-                Gl::UNSIGNED_BYTE,
-                Some(&data),
-            )
-            .unwrap();
-            check("initialize");
-        }
+        let layers = 2_i32;
+        let zeros = js_sys::Uint8Array::new_with_length((layers * 4) as u32);
+        gl.tex_sub_image_3d_with_opt_array_buffer_view(
+            Gl::TEXTURE_2D_ARRAY,
+            mip,
+            0,
+            0,
+            0,
+            1,
+            1,
+            layers,
+            Gl::RGBA,
+            Gl::UNSIGNED_BYTE,
+            Some(&zeros),
+        )
+        .unwrap();
+        check("batched initialization");
     }
     for mip in 0..2 {
         for layer in 0..2 {

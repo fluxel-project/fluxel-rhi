@@ -9,9 +9,12 @@ use crate::backend::gl::native::buffer_abi::pointer_sized;
 const BUFFER_ALLOCATION_USAGE: u32 = glow::STATIC_DRAW;
 
 impl NativeGlProvider {
-    /// The largest buffer this provider can address through its loaded ABI.
-    /// This is an addressing fact, not an allocation promise.
-    pub(crate) const fn advertised_max_buffer_bytes(&self) -> u64 {
+    /// The largest buffer this descriptor can address through the selected
+    /// allocation ABI. This is an addressing fact, not an allocation promise.
+    pub(crate) const fn max_buffer_bytes_for(&self, _desc: GlBufferDesc) -> u64 {
+        // BufferStorage itself has a wide allocation ABI, but a persistent
+        // allocation also maps its entire range. Without the loaded wide
+        // family that map uses glow's i32 API, which remains the real ceiling.
         super::super::buffer_abi::advertised_native_max_buffer_bytes(
             self.buffer_functions.is_some(),
         )
@@ -24,9 +27,28 @@ impl NativeGlProvider {
             operation: "create-buffer",
             message: error.message(),
         })?;
+        if desc.size > self.max_buffer_bytes_for(desc) {
+            return Err(Self::validation(
+                "create-buffer",
+                "buffer exceeds selected GL ABI",
+            ));
+        }
         let size = pointer_sized(desc.size).ok_or_else(|| {
             Self::validation("create-buffer", "buffer exceeds native GL pointer range")
         })?;
+        // Choose and validate the allocation entry point before allocating a
+        // name. Direct provider callers do not necessarily pass through the
+        // SPI support probe, so this must match `max_buffer_bytes_for` here.
+        let persistent = self.buffer_storage.is_some()
+            && (desc.usage.contains(api::GlBufferUsage::MAP_READ)
+                || desc.usage.contains(api::GlBufferUsage::MAP_WRITE));
+        let narrow_size = if persistent || self.buffer_functions.is_some() {
+            None
+        } else {
+            Some(i32::try_from(size).map_err(|_| {
+                Self::validation("create-buffer", "GL buffer ABI entry points unavailable")
+            })?)
+        };
         let slot = self.slot("create-buffer")?;
         // SAFETY: current-context contract; all validation completed before GL mutation.
         let name = unsafe { self.gl.create_buffer() }.map_err(|message| GlError::Driver {
@@ -37,9 +59,6 @@ impl NativeGlProvider {
         // the allocation, not restored on return (`GlCopyDomainApi` documents
         // why).
         // SAFETY: see above.
-        let persistent = self.buffer_storage.is_some()
-            && (desc.usage.contains(api::GlBufferUsage::MAP_READ)
-                || desc.usage.contains(api::GlBufferUsage::MAP_WRITE));
         let mapping = unsafe {
             self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(name));
             if persistent {
@@ -53,12 +72,9 @@ impl NativeGlProvider {
                         BUFFER_ALLOCATION_USAGE,
                     );
                 } else {
-                    let size = i32::try_from(size).map_err(|_| {
-                        Self::validation("create-buffer", "GL buffer ABI entry points unavailable")
-                    })?;
                     self.gl.buffer_data_size(
                         glow::COPY_WRITE_BUFFER,
-                        size,
+                        narrow_size.expect("narrow GL buffer ABI was prevalidated"),
                         BUFFER_ALLOCATION_USAGE,
                     );
                 }

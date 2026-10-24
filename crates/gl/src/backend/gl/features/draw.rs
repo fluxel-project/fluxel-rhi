@@ -1,7 +1,7 @@
 //! Feature-route requirements for raster drawing.
 
 use super::{
-    GL40, GL43, GL46, GLES31, GLES32, GlExtension as E, GlFeature as F, GlFunction as Fn, NEVER,
+    GL40, GL43, GL46, GLES31, GlExtension as E, GlFeature as F, GlFunction as Fn, NEVER,
     Requirement,
 };
 
@@ -15,7 +15,9 @@ pub(super) fn requirement(feature: F) -> Option<Requirement> {
         },
         F::MultiDrawIndirect => Requirement {
             desktop_core: GL43,
-            gles_core: GLES32,
+            // GLES 3.2 has no core MDI command family; do not advertise the
+            // desktop ARB route through an embedded version number.
+            gles_core: NEVER,
             extensions: &[E::ArbMultiDrawIndirect],
             functions: &[Fn::MultiDrawArraysIndirect, Fn::MultiDrawElementsIndirect],
         },

@@ -478,7 +478,19 @@ impl<B: ExecutionBackend + ImmediateBackend> ExecutionMode<B> for ImmediateExecu
             }
             outcome => {
                 let error = run_error(&outcome);
-                state.failed_slot = Some(step);
+                // Close-time completion installation may fail after this exact
+                // immediate step was issued. Its true prefix includes `step`,
+                // so it is accepted-but-indeterminate, not a failed slot.
+                let issued = matches!(
+                    &outcome,
+                    ImmediateRunOutcome::Indeterminate { prefix, .. }
+                        if prefix.last() == Some(&step)
+                );
+                if issued {
+                    state.cursor += 1;
+                } else {
+                    state.failed_slot = Some(step);
+                }
                 state.failure = Some(outcome);
                 Err(error)
             }
@@ -519,7 +531,16 @@ impl<B: ExecutionBackend + ImmediateBackend> ExecutionMode<B> for ImmediateExecu
             ImmediatePresentResult::Run(outcome) => {
                 let error = run_error(&outcome);
                 state.rejected_present = None;
-                state.failed_slot = Some(step);
+                let issued = matches!(
+                    &outcome,
+                    ImmediateRunOutcome::Indeterminate { prefix, .. }
+                        if prefix.last() == Some(&step)
+                );
+                if issued {
+                    state.cursor += 1;
+                } else {
+                    state.failed_slot = Some(step);
+                }
                 state.failure = Some(outcome);
                 Err(PresentError {
                     error,

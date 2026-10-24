@@ -84,29 +84,26 @@ impl RasterExtrasOps<Gl> for GlExtras {
         #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
         {
             use crate::backend::gl::api::{
-                GlBufferRange, GlDrawIndirectApi as _, GlIndirectAbi, GlIndirectCommandRange,
+                GlBufferRange, GlIndirectAbi, GlIndirectCommandRange, GlMultiDrawIndirectApi as _,
             };
             let result = encoder
                 .state
                 .with_native("multi draw GL indirect", |provider| {
-                    for i in 0..count {
-                        provider.draw_indirect(GlIndirectCommandRange {
-                            range: GlBufferRange {
-                                buffer: arguments.id,
-                                offset: 0,
-                                size: arguments.desc.size & !3,
-                            },
-                            command_offset: offset + u64::from(i) * u64::from(stride),
-                            draw_count: 1,
-                            stride,
-                            abi: if indexed {
-                                GlIndirectAbi::Indexed
-                            } else {
-                                GlIndirectAbi::NonIndexed
-                            },
-                        })?;
-                    }
-                    Ok(())
+                    provider.multi_draw_indirect(GlIndirectCommandRange {
+                        range: GlBufferRange {
+                            buffer: arguments.id,
+                            offset: 0,
+                            size: arguments.desc.size & !3,
+                        },
+                        command_offset: offset,
+                        draw_count: count,
+                        stride,
+                        abi: if indexed {
+                            GlIndirectAbi::Indexed
+                        } else {
+                            GlIndirectAbi::NonIndexed
+                        },
+                    })
                 })
                 .map_err(indirect_error);
             if result.is_ok() {

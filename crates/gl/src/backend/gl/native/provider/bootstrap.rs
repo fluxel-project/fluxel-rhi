@@ -162,6 +162,10 @@ impl NativeGlProvider {
         let indirect_count = unsafe {
             super::super::indirect_count::IndirectCountFns::load(&discovery, &proc_loader)
         };
+        // SAFETY: the proc loader belongs to this current context.
+        let multi_draw_indirect = unsafe {
+            super::super::multi_draw_indirect::MultiDrawIndirectFns::load(&discovery, &proc_loader)
+        };
         let multiview =
             unsafe { super::super::multiview::NativeMultiview::load(&discovery, &proc_loader) };
         let mut provider = Self::assemble(gl, discovery, unmap_buffer);
@@ -219,6 +223,7 @@ impl NativeGlProvider {
                 false,
                 None,
                 Default::default(),
+                None,
             )
             .storage_3d_nonzero_mip(desktop)?;
         }
@@ -245,6 +250,7 @@ impl NativeGlProvider {
                 })?;
         }
         provider.indirect_count = indirect_count;
+        provider.multi_draw_indirect = multi_draw_indirect;
         // SAFETY: the loader and provider belong to the same current context.
         let profile = provider.discovery.context().profile();
         let ext = provider.discovery.extensions();
@@ -471,6 +477,8 @@ impl NativeGlProvider {
             storage_block_entries: None,
             indexed_blend: Default::default(),
             indirect_count: None,
+            multi_draw_indirect: None,
+            indirect_count_utility: None,
             multiview: None,
             multisample_array: None,
             storage_3d_nonzero_mip: false,

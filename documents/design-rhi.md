@@ -1639,3 +1639,86 @@ ETC2 and ASTC subcases are skipped because that adapter does not expose those
 format features; BC runs. Independent final source review confirms no further
 P0/P1/P2 findings in the reviewed changes. This is browser/device-specific
 acceptance, not a claim for every browser, optional feature or GPU.
+
+## GL-family review corrections
+
+Buffer support and allocation select the same ABI ceiling. Native buffer sizes
+are limited by the actually loaded pointer-width allocation and mapping family,
+with an i32 fallback when that family is absent. Persistent storage alone does
+not lift the ceiling: mapping its full range must use the same admitted ABI.
+WebGL2 uses its i32 bound for admission and validates conversion before creating
+a browser buffer. Native allocation also converts before allocating a name;
+subsequent failures delete unpublished objects. These are addressing limits,
+not promises that physical memory can satisfy every admitted allocation.
+
+Immediate Steps requests now capture completion at each requested successful
+command/present close using the existing ImmediateBackend checkpoint operation.
+Core retains only completion facts, including all returned lane points, and
+returns them in request order with duplicates preserved. None/End and Deferred
+recording are unchanged. Backends which return no close-time point retain their
+previous conservative finish-time route. Core previously permitted later
+conservative proof, so this fixes observation precision rather than claiming
+that every old terminal-only result was incorrect. If observation fails after a
+step has issued, the accepted prefix keeps that step and reports indeterminacy;
+it does not falsely classify the step as having no native effect.
+
+Desktop GL 4.3 or ARB_multi_draw_indirect can issue one native multi-draw call.
+Both typed entry points and real two-record array/indexed probes must succeed
+before that native capability is published. The ARB entry points use the
+[unsuffixed names](https://registry.khronos.org/OpenGL/extensions/ARB/ARB_multi_draw_indirect.txt).
+The reported count ceiling is GLsizei's signed-32-bit ABI limit, not a queried
+hardware batching capacity. GLES 3.2 is not treated as core multi-draw-indirect;
+its [EXT route](https://registry.khronos.org/OpenGL/extensions/EXT/EXT_multi_draw_indirect.txt)
+is a distinct optional capability. Missing/unproved batch support retains direct
+native single-indirect calls; arguments remain on the GPU. Indexed nonzero base
+offsets retain their existing GPU rebase lowering without CPU decoding.
+
+GLES counted draws use a context-owned fixed compute program with per-operation
+uniforms. A transaction snapshots native program, generic/indexed SSBO, copy and
+indirect bindings before mutation. It restores them on every return path and
+deletes each successfully acquired scratch buffer, including partial allocation
+failures. The program is deleted only from the final owner-thread teardown after
+making that exact context current; a lost context discards its stale name without
+calling into a different generation. No command stream is cached or replayed.
+
+WebGL2 array/3D immutable storage retains its initialization workaround. On the
+tested Chrome/ANGLE driver, removing the touches loses the first attachment
+clear of untouched slices even though immutable-storage rules and GL error
+checks appear satisfied. One 1x1 zero column covering all slices of a mip now
+replaces individual per-slice uploads. This reduces initialization calls from
+mips-times-slices to one per mip while retaining the demonstrated workaround;
+it does not allocate a CPU-sized copy of the entire texture.
+
+Focused acceptance covers native GL 4.6 / Radeon 780M array/indexed multi-draw,
+tight/padded arguments, nonzero index-base GPU rebasing and GPU count outputs;
+GL Steps coverage and readbacks on WGL, GLES and WebGL2; and GLES failure-injection
+binding restoration/scratch deletion. The GLES runtime is LDPlayer Android 14,
+whose Qualcomm/Adreno label identifies its translation layer, not the physical
+GPU. Browser acceptance first passed 112 tests and exposed three initialization
+regressions; the batched workaround then passed those three plus related
+multiview/3D/array regressions. Ignored native fixtures are not counted as GPU
+passes. This is a focused matrix, not all-driver conformance.
+
+## Remaining DX12 indirect and ray-cache boundaries
+
+The remaining per-record copies belong specifically to the WGSL vertex/index
+ABI path, not all DX12 indirect draws. That path expands each 16/20-byte argument
+record with two root constants, using three CopyBufferRegion calls before one
+ExecuteIndirect. Cached command signatures remove repeated signature creation,
+not this layout conversion. A GPU compute packing pass is possible, but replacing
+the current path requires small/large-batch measurements and equivalent explicit
+resource-state/lifetime handling. The linear conversion is an unfinished
+optimization rather than a DX12 hardware capability ceiling.
+
+The current persistent cache stores ID3D12PipelineState objects through the
+pipeline-library route, while DXR creates ID3D12StateObject. A live state-object
+reuse cache or storing shader inputs does not by itself implement the existing
+persistent native-cache contract. Passing a ray cache therefore remains explicitly
+unsupported instead of being ignored. This does not mean DX12 can never support
+ray-pipeline caching: Microsoft's newer
+[State Object Database specification](https://github.com/microsoft/DirectX-Specs/blob/master/d3d/StateObjectDatabase.md)
+includes raytracing descriptions and DXIL as part of Advanced Shader Delivery.
+It is a distinct capture/precompilation mechanism, not the current PSO library;
+the repository's pinned windows 0.62.2 bindings and backend do not expose/integrate
+that route. It needs separate runtime/SDK admission and contract work rather than
+a fabricated successful cache hit.
