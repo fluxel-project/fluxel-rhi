@@ -319,16 +319,6 @@ impl NativeGlProvider {
                 "destination buffer range is too short",
             ));
         }
-        let end_offset = destination
-            .offset
-            .checked_add(end)
-            .ok_or_else(|| Self::validation(OP, "buffer offset overflow"))?;
-        if end_offset > u32::MAX as u64 {
-            return Err(Self::validation(
-                OP,
-                "pixel buffer offset exceeds GL offset",
-            ));
-        }
         let z = source
             .subresource
             .base_layer
@@ -348,12 +338,6 @@ impl NativeGlProvider {
             .checked_mul(bytes_per_pixel)
             .and_then(|x| i32::try_from(x).ok())
             .ok_or_else(|| Self::validation(OP, "readback row exceeds GL buffer size"))?;
-        if scratch_needed && end_offset > i32::MAX as u64 {
-            return Err(Self::validation(
-                OP,
-                "unaligned destination exceeds GL buffer copy range",
-            ));
-        }
         // SAFETY: all objects belong to the current context; every destination
         // row is within the validated buffer range. A temporary read FBO and
         // PACK state are restored even if completeness or a GL call fails.
@@ -466,29 +450,63 @@ impl NativeGlProvider {
                         + stride * u64::from(layer)
                         + u64::from(layout.bytes_per_row) * u64::from(row);
                     let y = (source.origin[1] + row) as i32;
-                    self.gl.read_pixels(
-                        x,
-                        y,
-                        width,
-                        1,
-                        read_format,
-                        read_type,
-                        glow::PixelPackData::BufferOffset(if aligned.is_some() {
-                            0
-                        } else {
-                            offset as u32
-                        }),
-                    );
+                    let pack_offset = if aligned.is_some() { 0 } else { offset };
+                    if let Some(read_pixels) = self.buffer_functions.and_then(|f| f.read_pixels) {
+                        read_pixels(
+                            x,
+                            y,
+                            width,
+                            1,
+                            read_format,
+                            read_type,
+                            usize::try_from(pack_offset).map_err(|_| {
+                                Self::validation(OP, "PBO offset exceeds native address range")
+                            })? as *mut core::ffi::c_void,
+                        );
+                    } else {
+                        self.gl.read_pixels(
+                            x,
+                            y,
+                            width,
+                            1,
+                            read_format,
+                            read_type,
+                            glow::PixelPackData::BufferOffset(u32::try_from(pack_offset).map_err(
+                                |_| {
+                                    Self::validation(
+                                        OP,
+                                        "wide PBO readback entry point unavailable",
+                                    )
+                                },
+                            )?),
+                        );
+                    }
                     if let Some(aligned) = aligned {
                         self.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(aligned));
                         self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(buffer));
-                        self.gl.copy_buffer_sub_data(
-                            glow::COPY_READ_BUFFER,
-                            glow::COPY_WRITE_BUFFER,
-                            0,
-                            offset as i32,
-                            scratch_size,
-                        );
+                        if let Some(functions) = self.buffer_functions {
+                            (functions.copy_buffer_sub_data)(
+                                glow::COPY_READ_BUFFER,
+                                glow::COPY_WRITE_BUFFER,
+                                0,
+                                isize::try_from(offset).map_err(|_| {
+                                    Self::validation(OP, "PBO offset exceeds native GLintptr")
+                                })?,
+                                isize::try_from(scratch_size).map_err(|_| {
+                                    Self::validation(OP, "scratch size exceeds native GLsizeiptr")
+                                })?,
+                            );
+                        } else {
+                            self.gl.copy_buffer_sub_data(
+                                glow::COPY_READ_BUFFER,
+                                glow::COPY_WRITE_BUFFER,
+                                0,
+                                i32::try_from(offset).map_err(|_| {
+                                    Self::validation(OP, "GL buffer ABI entry points unavailable")
+                                })?,
+                                scratch_size,
+                            );
+                        }
                     }
                 }
                 if let Err(error) = self.driver_error(OP) {

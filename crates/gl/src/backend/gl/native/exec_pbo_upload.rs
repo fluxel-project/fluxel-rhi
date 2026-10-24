@@ -238,55 +238,132 @@ impl NativeGlProvider {
                     let upload_offset = if let Some(scratch) = scratch {
                         self.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(buffer));
                         self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(scratch));
-                        self.gl.copy_buffer_sub_data(
-                            glow::COPY_READ_BUFFER,
-                            glow::COPY_WRITE_BUFFER,
-                            offset as i32,
-                            0,
-                            width_bytes as i32,
-                        );
+                        if let Some(functions) = self.buffer_functions {
+                            (functions.copy_buffer_sub_data)(
+                                glow::COPY_READ_BUFFER,
+                                glow::COPY_WRITE_BUFFER,
+                                isize::try_from(offset).map_err(|_| {
+                                    Self::validation(OP, "PBO offset exceeds native GLintptr")
+                                })?,
+                                0,
+                                isize::try_from(width_bytes).map_err(|_| {
+                                    Self::validation(OP, "PBO row exceeds native GLsizeiptr")
+                                })?,
+                            );
+                        } else {
+                            self.gl.copy_buffer_sub_data(
+                                glow::COPY_READ_BUFFER,
+                                glow::COPY_WRITE_BUFFER,
+                                i32::try_from(offset).map_err(|_| {
+                                    Self::validation(OP, "GL buffer ABI entry points unavailable")
+                                })?,
+                                0,
+                                i32::try_from(width_bytes).map_err(|_| {
+                                    Self::validation(OP, "GL buffer ABI entry points unavailable")
+                                })?,
+                            );
+                        }
                         0
                     } else {
-                        offset as u32
+                        offset
                     };
                     let y = (dest.origin[1] + row) as i32;
                     if target == glow::TEXTURE_1D {
-                        self.texture_sub_image_1d
-                            .expect("1D upload entry point was checked before mutation")(
+                        let entry = self
+                            .buffer_functions
+                            .and_then(|f| f.tex_sub_image_1d)
+                            .or(self.texture_sub_image_1d)
+                            .ok_or(GlError::Unsupported {
+                                operation: OP,
+                                reason: "glTexSubImage1D unavailable",
+                            })?;
+                        entry(
                             target,
                             level,
                             x,
                             width,
                             format,
                             kind,
-                            upload_offset as usize as *const core::ffi::c_void,
+                            usize::try_from(upload_offset).map_err(|_| {
+                                Self::validation(OP, "PBO offset exceeds native address range")
+                            })? as *const core::ffi::c_void,
                         );
                     } else if target == glow::TEXTURE_2D {
-                        self.gl.tex_sub_image_2d(
-                            target,
-                            level,
-                            x,
-                            y,
-                            width,
-                            1,
-                            format,
-                            kind,
-                            glow::PixelUnpackData::BufferOffset(upload_offset),
-                        );
+                        if let Some(entry) = self.buffer_functions.and_then(|f| f.tex_sub_image_2d)
+                        {
+                            entry(
+                                target,
+                                level,
+                                x,
+                                y,
+                                width,
+                                1,
+                                format,
+                                kind,
+                                usize::try_from(upload_offset).map_err(|_| {
+                                    Self::validation(OP, "PBO offset exceeds native address range")
+                                })? as *const core::ffi::c_void,
+                            );
+                        } else {
+                            self.gl.tex_sub_image_2d(
+                                target,
+                                level,
+                                x,
+                                y,
+                                width,
+                                1,
+                                format,
+                                kind,
+                                glow::PixelUnpackData::BufferOffset(
+                                    u32::try_from(upload_offset).map_err(|_| {
+                                        Self::validation(
+                                            OP,
+                                            "wide PBO upload entry point unavailable",
+                                        )
+                                    })?,
+                                ),
+                            );
+                        }
                     } else {
-                        self.gl.tex_sub_image_3d(
-                            target,
-                            level,
-                            x,
-                            y,
-                            (z + layer) as i32,
-                            width,
-                            1,
-                            1,
-                            format,
-                            kind,
-                            glow::PixelUnpackData::BufferOffset(upload_offset),
-                        );
+                        if let Some(entry) = self.buffer_functions.and_then(|f| f.tex_sub_image_3d)
+                        {
+                            entry(
+                                target,
+                                level,
+                                x,
+                                y,
+                                (z + layer) as i32,
+                                width,
+                                1,
+                                1,
+                                format,
+                                kind,
+                                usize::try_from(upload_offset).map_err(|_| {
+                                    Self::validation(OP, "PBO offset exceeds native address range")
+                                })? as *const core::ffi::c_void,
+                            );
+                        } else {
+                            self.gl.tex_sub_image_3d(
+                                target,
+                                level,
+                                x,
+                                y,
+                                (z + layer) as i32,
+                                width,
+                                1,
+                                1,
+                                format,
+                                kind,
+                                glow::PixelUnpackData::BufferOffset(
+                                    u32::try_from(upload_offset).map_err(|_| {
+                                        Self::validation(
+                                            OP,
+                                            "wide PBO upload entry point unavailable",
+                                        )
+                                    })?,
+                                ),
+                            );
+                        }
                     }
                 }
             }

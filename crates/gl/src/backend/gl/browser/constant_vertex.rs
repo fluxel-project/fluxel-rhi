@@ -54,6 +54,9 @@ impl BrowserEncoder {
             F::Snorm16x4 => (4, 2, 3),
             F::Float16x2 => (2, 2, 4),
             F::Float16x4 => (4, 2, 4),
+            F::Float64 | F::Float64x2 | F::Float64x3 | F::Float64x4 => {
+                return Err(Error::Unsupported("WebGL2 Float64 vertex attributes"));
+            }
             F::Float32 => (1, 4, 5),
             F::Float32x2 => (2, 4, 5),
             F::Float32x3 => (3, 4, 5),

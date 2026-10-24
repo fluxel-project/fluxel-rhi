@@ -125,8 +125,8 @@ pub enum MockCall {
     BindUniformBuffer {
         index: u32,
         buffer: Option<BufferId>,
-        offset: u32,
-        size: u32,
+        offset: u64,
+        size: u64,
     },
     BlitFramebuffer {
         source: FramebufferId,

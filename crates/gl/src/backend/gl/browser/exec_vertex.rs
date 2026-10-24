@@ -44,6 +44,9 @@ const fn attribute_path(format: GlVertexFormat) -> AttributePath {
         F::Snorm16x4 => AttributePath::Float(4, Gl::SHORT, true),
         F::Float16x2 => AttributePath::Float(2, Gl::HALF_FLOAT, false),
         F::Float16x4 => AttributePath::Float(4, Gl::HALF_FLOAT, false),
+        F::Float64 | F::Float64x2 | F::Float64x3 | F::Float64x4 => {
+            panic!("Float64 vertex attributes are rejected by WebGL2 VAO creation")
+        }
         F::Float32 => AttributePath::Float(1, Gl::FLOAT, false),
         F::Float32x2 => AttributePath::Float(2, Gl::FLOAT, false),
         F::Float32x3 => AttributePath::Float(3, Gl::FLOAT, false),
@@ -90,6 +93,20 @@ impl GlVertexApi for WebGl2BrowserDiscovery {
                 OP,
                 "attribute location exceeds the discovered limit",
             ));
+        }
+        if layout.attributes.iter().any(|attribute| {
+            matches!(
+                attribute.format,
+                GlVertexFormat::Float64
+                    | GlVertexFormat::Float64x2
+                    | GlVertexFormat::Float64x3
+                    | GlVertexFormat::Float64x4
+            )
+        }) {
+            return Err(GlError::Unsupported {
+                operation: OP,
+                reason: "Float64 vertex attributes require desktop GL",
+            });
         }
         let raw = self
             .raw
@@ -373,6 +390,10 @@ const fn attribute_byte_size(format: GlVertexFormat) -> u32 {
         GlVertexFormat::Float32x2 | GlVertexFormat::Uint32x2 | GlVertexFormat::Sint32x2 => 8,
         GlVertexFormat::Float32x3 | GlVertexFormat::Uint32x3 | GlVertexFormat::Sint32x3 => 12,
         GlVertexFormat::Float32x4 | GlVertexFormat::Uint32x4 | GlVertexFormat::Sint32x4 => 16,
+        GlVertexFormat::Float64 => 8,
+        GlVertexFormat::Float64x2 => 16,
+        GlVertexFormat::Float64x3 => 24,
+        GlVertexFormat::Float64x4 => 32,
     }
 }
 

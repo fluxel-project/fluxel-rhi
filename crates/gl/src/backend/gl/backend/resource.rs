@@ -22,13 +22,57 @@ pub(crate) use binding::lower_program_bindings;
 
 use super::{Gl, GlDevice, spi::native_error, types::*};
 
+/// Preserves Core's 64-bit range; dynamic offsets are added at bind time.
+fn lower_buffer_binding_range(
+    start: u64,
+    end: u64,
+    allocation: u64,
+    min_size: u64,
+) -> Result<(u64, u64)> {
+    let size = end.checked_sub(start).ok_or(Error::InvalidRange)?;
+    if end > allocation || size == 0 || size < min_size {
+        return Err(Error::InvalidRange);
+    }
+    Ok((start, size))
+}
+
 impl ResourceBackend for Gl {
-    fn buffer_support(_: &GlDevice, desc: &BufferDesc) -> Support<BufferSupport> {
+    fn buffer_support(device: &GlDevice, desc: &BufferDesc) -> Support<BufferSupport> {
         match crate::backend::gl::translate::lower_buffer_desc(desc) {
-            Ok(_) => Support::Supported(BufferSupport {
-                alignment: 1,
-                max_size: i32::MAX as u64,
-            }),
+            Ok(_) => {
+                #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+                {
+                    let max_size = match device
+                        .0
+                        .with_native("query GL buffer address limit", |provider| {
+                            Ok(provider.advertised_max_buffer_bytes())
+                        }) {
+                        Ok(max_size) => max_size,
+                        Err(_) => return Support::Unsupported("native GL context unavailable"),
+                    };
+                    return Support::Supported(BufferSupport {
+                        alignment: 1,
+                        max_size,
+                    });
+                }
+                #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+                {
+                    let _ = device;
+                    return Support::Supported(BufferSupport {
+                        alignment: 1,
+                        max_size: i32::MAX as u64,
+                    });
+                }
+                #[cfg(not(any(
+                    all(windows, feature = "native-gl-wgl"),
+                    feature = "native-gles-egl",
+                    all(target_arch = "wasm32", feature = "webgl2")
+                )))]
+                {
+                    let _ = device;
+                    Support::Unsupported("GL platform context")
+                }
+            }
             Err(Error::Unsupported(reason)) => Support::Unsupported(reason),
             Err(_) => Support::Unsupported("invalid GL buffer description"),
         }
@@ -287,6 +331,7 @@ impl ResourceBackend for Gl {
         desc: &api::BindGroupLayoutDesc,
     ) -> Result<GlBindGroupLayout> {
         let entries = binding::lower_bind_group_layout(desc)?;
+        validate_sampled_texture_dimensions(device, &entries)?;
         if entries
             .iter()
             .any(|entry| matches!(entry.count, api::BindingCount::RuntimeSized { .. }))
@@ -331,15 +376,12 @@ impl ResourceBackend for Gl {
                         // SPI call. The wrapper is borrowed for this synchronous
                         // extraction, then cloned into the returned bind group.
                         let buffer = unsafe { buffer.native_ref() };
-                        let offset = u32::try_from(range.start).map_err(|_| Error::InvalidRange)?;
-                        let size = range
-                            .end
-                            .checked_sub(range.start)
-                            .ok_or(Error::InvalidRange)?;
-                        let size = u32::try_from(size).map_err(|_| Error::InvalidRange)?;
-                        if range.end > buffer.desc.size || size == 0 || u64::from(size) < min_size {
-                            return Err(Error::InvalidRange);
-                        }
+                        let (offset, size) = lower_buffer_binding_range(
+                            range.start,
+                            range.end,
+                            buffer.desc.size,
+                            min_size,
+                        )?;
                         if !std::rc::Rc::ptr_eq(&device.0, &buffer.state) {
                             return Err(Error::InvalidState);
                         }
@@ -356,15 +398,12 @@ impl ResourceBackend for Gl {
                     ) => {
                         // SAFETY: Core retains the borrowed buffer through creation; the clone retains it thereafter.
                         let buffer = unsafe { buffer.native_ref() };
-                        let offset = u32::try_from(range.start).map_err(|_| Error::InvalidRange)?;
-                        let size = range
-                            .end
-                            .checked_sub(range.start)
-                            .ok_or(Error::InvalidRange)?;
-                        let size = u32::try_from(size).map_err(|_| Error::InvalidRange)?;
-                        if range.end > buffer.desc.size || size == 0 || u64::from(size) < min_size {
-                            return Err(Error::InvalidRange);
-                        }
+                        let (offset, size) = lower_buffer_binding_range(
+                            range.start,
+                            range.end,
+                            buffer.desc.size,
+                            min_size,
+                        )?;
                         if !std::rc::Rc::ptr_eq(&device.0, &buffer.state) {
                             return Err(Error::WrongDevice);
                         }
@@ -588,6 +627,58 @@ impl ResourceBackend for Gl {
     }
 }
 
+/// 1D sampled textures are desktop GL objects.  Keep the layout contract
+/// explicit instead of deferring the GLES/WebGL failure until shader linking
+/// or a draw binds an impossible texture target.
+fn validate_sampled_texture_dimensions(
+    device: &GlDevice,
+    entries: &[GlBindingLayoutEntry],
+) -> Result<()> {
+    if !entries.iter().any(|entry| {
+        matches!(
+            entry.slot,
+            GlBindingSlot::SampledTexture {
+                dimension: api::TextureViewDimension::D1,
+                ..
+            }
+        )
+    }) {
+        return Ok(());
+    }
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    {
+        use crate::backend::gl::api::GlFamilyApi as _;
+        let desktop = device
+            .0
+            .with_native("validate GL 1D sampled texture", |provider| {
+                Ok(matches!(
+                    provider.discovery().context().profile(),
+                    crate::backend::gl::api::GlFamilyProfile::Desktop { .. }
+                ))
+            })
+            .map_err(native_error)?;
+        return desktop.then_some(()).ok_or(Error::Unsupported(
+            "GL 1D sampled texture requires desktop GL",
+        ));
+    }
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    {
+        let _ = device;
+        return Err(Error::Unsupported(
+            "GL 1D sampled texture requires desktop GL",
+        ));
+    }
+    #[cfg(not(any(
+        all(windows, feature = "native-gl-wgl"),
+        feature = "native-gles-egl",
+        all(target_arch = "wasm32", feature = "webgl2")
+    )))]
+    {
+        let _ = device;
+        Err(Error::Unsupported("GL platform context"))
+    }
+}
+
 /// Obtains the exact native slot facts before a RuntimeSized layout permits
 /// Naga specialization. This intentionally runs at layout creation rather
 /// than at pipeline linking, where an enormous advertised max_count would
@@ -735,5 +826,24 @@ fn lower_compare(value: api::CompareFunction) -> crate::backend::gl::api::GlComp
             crate::backend::gl::api::GlCompareFunction::GreaterEqual
         }
         api::CompareFunction::Always => crate::backend::gl::api::GlCompareFunction::Always,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lower_buffer_binding_range;
+    use fluxel_rhi_core::api::Error;
+
+    #[test]
+    fn buffer_binding_lowering_preserves_offsets_above_four_gib() {
+        let start = 4_u64 * 1024 * 1024 * 1024 + 256;
+        assert_eq!(
+            lower_buffer_binding_range(start, start + 512, start + 1024, 512),
+            Ok((start, 512))
+        );
+        assert_eq!(
+            lower_buffer_binding_range(start, start + 511, start + 1024, 512),
+            Err(Error::InvalidRange)
+        );
     }
 }

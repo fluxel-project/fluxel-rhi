@@ -91,17 +91,22 @@ impl NativeGlProvider {
             .checked_add(u64::from(count.max_draw_count - 1) * stride)
             .and_then(|v| v.checked_add(record))
             .ok_or_else(|| Self::validation(OP, "argument offset overflow"))?;
-        if end > i32::MAX as u64
+        let max_buffer_bytes =
+            super::buffer_abi::advertised_native_max_buffer_bytes(self.buffer_functions.is_some());
+        if end > max_buffer_bytes
             || count_offset
                 .checked_add(4)
-                .is_none_or(|v| v > i32::MAX as u64)
+                .is_none_or(|v| v > max_buffer_bytes)
         {
-            return Err(Self::validation(OP, "buffer copy offset exceeds GLint"));
+            return Err(Self::validation(
+                OP,
+                "buffer copy offset exceeds native GLintptr",
+            ));
         }
         let limits = self.discovery.limits();
         let capacity = ((limits
             .max_storage_block_size
-            .min(i32::MAX as u64)
+            .min(max_buffer_bytes)
             .saturating_sub(4))
             / record)
             .min(u64::from(limits.max_compute_work_group_count[0]) * 64)
@@ -116,8 +121,11 @@ impl NativeGlProvider {
         let capacity = capacity.min(u64::from(TEST_CHUNK_CAPACITY.with(|value| value.get())));
         let chunk_capacity = u32::try_from(capacity.min(u64::from(count.max_draw_count)))
             .map_err(|_| Self::validation(OP, "chunk size"))?;
-        let buffer_bytes = i32::try_from(u64::from(chunk_capacity) * record + 4)
-            .map_err(|_| Self::validation(OP, "scratch size"))?;
+        let buffer_bytes = u64::from(chunk_capacity)
+            .checked_mul(record)
+            .and_then(|value| value.checked_add(4))
+            .filter(|value| *value <= max_buffer_bytes)
+            .ok_or_else(|| Self::validation(OP, "scratch size exceeds native GLsizeiptr"))?;
         // GL's buffer allocation/copy interface uses signed offsets. Snapshot
         // all records before any draw so later chunks cannot observe changes.
         let snapshot_data = u64::from(count.max_draw_count)
@@ -125,10 +133,10 @@ impl NativeGlProvider {
             .ok_or_else(|| Self::validation(OP, "snapshot size overflow"))?;
         let snapshot_size = snapshot_data
             .checked_add(4)
-            .and_then(|v| i32::try_from(v).ok())
+            .filter(|value| *value <= max_buffer_bytes)
             .ok_or(GlError::Unsupported {
                 operation: OP,
-                reason: "indirect snapshot exceeds GL buffer limit",
+                reason: "indirect snapshot exceeds native GL buffer limit",
             })?;
         self.set_push_uniforms(
             program,
@@ -231,56 +239,72 @@ impl NativeGlProvider {
                         .get_parameter_indexed_i64(glow::SHADER_STORAGE_BUFFER_SIZE, i),
                 )
             });
-            if old.iter().any(|(b, o, n)| {
-                b.is_some() && (*o < 0 || *n < 0 || *o > i32::MAX as i64 || *n > i32::MAX as i64)
-            }) {
+            if old
+                .iter()
+                .any(|(b, o, n)| b.is_some() && (*o < 0 || *n < 0))
+            {
                 self.gl.delete_buffer(input);
                 self.gl.delete_buffer(output);
                 self.gl.delete_buffer(snapshot);
                 self.gl.delete_program(utility);
                 return Err(GlError::Unsupported {
                     operation: OP,
-                    reason: "existing SSBO binding cannot be restored",
+                    reason: "existing SSBO binding has a negative range",
                 });
             }
             self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(input));
-            self.gl
-                .buffer_data_size(glow::COPY_WRITE_BUFFER, buffer_bytes, glow::STREAM_DRAW);
+            self.buffer_data_size_wide(
+                glow::COPY_WRITE_BUFFER,
+                buffer_bytes,
+                glow::STREAM_DRAW,
+                OP,
+            )?;
             self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(output));
-            self.gl
-                .buffer_data_size(glow::COPY_WRITE_BUFFER, buffer_bytes - 4, glow::STREAM_DRAW);
+            self.buffer_data_size_wide(
+                glow::COPY_WRITE_BUFFER,
+                buffer_bytes - 4,
+                glow::STREAM_DRAW,
+                OP,
+            )?;
             self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(snapshot));
-            self.gl
-                .buffer_data_size(glow::COPY_WRITE_BUFFER, snapshot_size, glow::STREAM_DRAW);
+            self.buffer_data_size_wide(
+                glow::COPY_WRITE_BUFFER,
+                snapshot_size,
+                glow::STREAM_DRAW,
+                OP,
+            )?;
             let mut result = self.driver_error(OP);
             if result.is_ok() {
                 self.gl.memory_barrier(glow::BUFFER_UPDATE_BARRIER_BIT);
                 self.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(counts));
-                self.gl.copy_buffer_sub_data(
+                self.copy_buffer_sub_data_wide(
                     glow::COPY_READ_BUFFER,
                     glow::COPY_WRITE_BUFFER,
-                    count_offset as i32,
-                    snapshot_data as i32,
+                    count_offset,
+                    snapshot_data,
                     4,
-                );
+                    OP,
+                )?;
                 self.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(args));
                 if stride == record {
-                    self.gl.copy_buffer_sub_data(
+                    self.copy_buffer_sub_data_wide(
                         glow::COPY_READ_BUFFER,
                         glow::COPY_WRITE_BUFFER,
-                        src_offset as i32,
+                        src_offset,
                         0,
-                        snapshot_data as i32,
-                    );
+                        snapshot_data,
+                        OP,
+                    )?;
                 } else {
                     for i in 0..count.max_draw_count {
-                        self.gl.copy_buffer_sub_data(
+                        self.copy_buffer_sub_data_wide(
                             glow::COPY_READ_BUFFER,
                             glow::COPY_WRITE_BUFFER,
-                            (src_offset + u64::from(i) * stride) as i32,
-                            (u64::from(i) * record) as i32,
-                            record as i32,
-                        );
+                            src_offset + u64::from(i) * stride,
+                            u64::from(i) * record,
+                            record,
+                            OP,
+                        )?;
                     }
                 }
                 result = self.driver_error(OP);
@@ -297,20 +321,22 @@ impl NativeGlProvider {
                 );
                 self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(input));
                 self.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(snapshot));
-                self.gl.copy_buffer_sub_data(
+                self.copy_buffer_sub_data_wide(
                     glow::COPY_READ_BUFFER,
                     glow::COPY_WRITE_BUFFER,
-                    snapshot_data as i32,
-                    (count_pos * 4) as i32,
+                    snapshot_data,
+                    u64::from(count_pos) * 4,
                     4,
-                );
-                self.gl.copy_buffer_sub_data(
+                    OP,
+                )?;
+                self.copy_buffer_sub_data_wide(
                     glow::COPY_READ_BUFFER,
                     glow::COPY_WRITE_BUFFER,
-                    (u64::from(base) * record) as i32,
+                    u64::from(base) * record,
                     0,
-                    (u64::from(draws) * record) as i32,
-                );
+                    u64::from(draws) * record,
+                    OP,
+                )?;
                 self.gl.memory_barrier(glow::SHADER_STORAGE_BARRIER_BIT);
                 self.gl
                     .bind_buffer_base(glow::SHADER_STORAGE_BUFFER, 0, Some(input));
@@ -330,13 +356,14 @@ impl NativeGlProvider {
                 // private compute utility's input and output buffers.
                 for (i, (buffer, offset, size)) in old.iter().copied().enumerate() {
                     if buffer.is_some() && size > 0 {
-                        self.gl.bind_buffer_range(
+                        self.bind_buffer_range_wide(
                             glow::SHADER_STORAGE_BUFFER,
                             i as u32,
                             buffer,
-                            offset as i32,
-                            size as i32,
-                        );
+                            offset as u64,
+                            size as u64,
+                            OP,
+                        )?;
                     } else {
                         self.gl
                             .bind_buffer_base(glow::SHADER_STORAGE_BUFFER, i as u32, buffer);
@@ -348,15 +375,44 @@ impl NativeGlProvider {
                     .bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(output));
                 let mode = super::exec_raster::topology_mode(topology);
                 for i in 0..draws {
-                    let offset = (u64::from(i) * record) as i32;
+                    let offset = u64::from(i)
+                        .checked_mul(record)
+                        .and_then(|value| isize::try_from(value).ok())
+                        .expect("scratch allocation bounded every indirect record offset");
                     if let Some(index) = index {
-                        self.gl.draw_elements_indirect_offset(
-                            mode,
-                            super::exec_vertex::indexed_draw_type(index),
-                            offset,
-                        );
+                        if let Some(draw_elements_indirect) = self.draw_functions.elements_indirect
+                        {
+                            draw_elements_indirect(
+                                mode,
+                                super::exec_vertex::indexed_draw_type(index),
+                                offset as usize as *const core::ffi::c_void,
+                            );
+                        } else {
+                            self.gl.draw_elements_indirect_offset(
+                                mode,
+                                super::exec_vertex::indexed_draw_type(index),
+                                i32::try_from(offset).map_err(|_| {
+                                    Self::validation(
+                                        OP,
+                                        "wide DrawElementsIndirect entry point unavailable",
+                                    )
+                                })?,
+                            );
+                        }
                     } else {
-                        self.gl.draw_arrays_indirect_offset(mode, offset);
+                        if let Some(draw_arrays_indirect) = self.draw_functions.arrays_indirect {
+                            draw_arrays_indirect(mode, offset as usize as *const core::ffi::c_void);
+                        } else {
+                            self.gl.draw_arrays_indirect_offset(
+                                mode,
+                                i32::try_from(offset).map_err(|_| {
+                                    Self::validation(
+                                        OP,
+                                        "wide DrawArraysIndirect entry point unavailable",
+                                    )
+                                })?,
+                            );
+                        }
                     }
                 }
                 result = self.driver_error(OP);
@@ -364,13 +420,14 @@ impl NativeGlProvider {
             }
             for (i, (buffer, offset, size)) in old.into_iter().enumerate() {
                 if buffer.is_some() && size > 0 {
-                    self.gl.bind_buffer_range(
+                    self.bind_buffer_range_wide(
                         glow::SHADER_STORAGE_BUFFER,
                         i as u32,
                         buffer,
-                        offset as i32,
-                        size as i32,
-                    );
+                        offset as u64,
+                        size as u64,
+                        OP,
+                    )?;
                 } else {
                     self.gl
                         .bind_buffer_base(glow::SHADER_STORAGE_BUFFER, i as u32, buffer);

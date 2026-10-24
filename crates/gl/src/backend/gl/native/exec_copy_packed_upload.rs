@@ -296,13 +296,15 @@ impl NativeGlProvider {
                                 + u64::from(layout.bytes_per_row)
                                     * (u64::from(layout.rows_per_image) * u64::from(layer)
                                         + u64::from(row));
-                            self.gl.copy_buffer_sub_data(
+                            self.copy_buffer_sub_data_wide(
                                 glow::COPY_READ_BUFFER,
                                 glow::COPY_WRITE_BUFFER,
-                                offset as i32,
-                                row as i32 * row_bytes as i32,
-                                row_bytes as i32,
-                            );
+                                offset,
+                                u64::from(row)
+                                    * u64::try_from(row_bytes).expect("row size fits u64"),
+                                u64::try_from(row_bytes).expect("row size fits u64"),
+                                op,
+                            )?;
                         }
                         if result.is_err() {
                             break;

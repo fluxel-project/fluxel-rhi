@@ -21,7 +21,7 @@ mod query;
 pub(crate) mod raster;
 mod readback;
 mod resource;
-mod shader;
+pub(crate) mod shader;
 pub(crate) mod spi;
 mod surface;
 mod types;

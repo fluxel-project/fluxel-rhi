@@ -23,6 +23,10 @@ pub(crate) enum GlVertexFormat {
     Snorm16x4,
     Float16x2,
     Float16x4,
+    Float64,
+    Float64x2,
+    Float64x3,
+    Float64x4,
     Float32,
     Float32x2,
     Float32x3,
@@ -139,6 +143,10 @@ impl GlVertexFormat {
             Self::Float32x2 | Self::Uint32x2 | Self::Sint32x2 => 8,
             Self::Float32x3 | Self::Uint32x3 | Self::Sint32x3 => 12,
             Self::Float32x4 | Self::Uint32x4 | Self::Sint32x4 => 16,
+            Self::Float64 => 8,
+            Self::Float64x2 => 16,
+            Self::Float64x3 => 24,
+            Self::Float64x4 => 32,
         }
     }
 }
@@ -298,6 +306,23 @@ mod tests {
             offset: 12,
         };
         assert_eq!(a, a);
+    }
+    #[test]
+    fn float64_attribute_extent_uses_its_native_byte_width() {
+        let layout = GlVertexLayout {
+            buffers: vec![GlVertexBufferLayout {
+                slot: 0,
+                stride: 16,
+                step_mode: GlVertexStepMode::Vertex,
+            }],
+            attributes: vec![GlVertexAttribute {
+                location: 0,
+                buffer_slot: 0,
+                format: GlVertexFormat::Float64x2,
+                offset: 0,
+            }],
+        };
+        assert_eq!(layout.validate(), Ok(()));
     }
     #[test]
     fn zero_stride_uses_fixed_address_and_checks_attribute_extent() {

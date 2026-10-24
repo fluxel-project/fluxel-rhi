@@ -146,23 +146,17 @@ impl GlStorageBufferApi for NativeGlProvider {
         }
         .validate_for(desc)
         .map_err(|_| Self::validation(OP, "storage buffer range is outside the allocation"))?;
-        let (offset, size) = {
-            let offset = i32::try_from(range.offset)
-                .map_err(|_| Self::validation(OP, "offset exceeds GLintptr"))?;
-            let size = i32::try_from(range.size)
-                .map_err(|_| Self::validation(OP, "size exceeds GLintptr"))?;
-            (offset, size)
-        };
         // SAFETY: current-context contract; binding index, alignment, usage,
         // and range were validated against the live allocation.
         unsafe {
-            self.gl.bind_buffer_range(
+            self.bind_buffer_range_wide(
                 glow::SHADER_STORAGE_BUFFER,
                 binding,
                 Some(name),
-                offset,
-                size,
-            );
+                range.offset,
+                range.size,
+                OP,
+            )?;
         }
         self.driver_error(OP)
     }
@@ -414,13 +408,35 @@ impl GlDrawIndirectApi for NativeGlProvider {
         unsafe {
             self.gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(name));
             if let Some(index) = index.filter(|_| command.abi == GlIndirectAbi::Indexed) {
-                self.gl.draw_elements_indirect_offset(
-                    mode,
-                    super::exec_vertex::indexed_draw_type(index),
-                    offset,
-                );
+                if let Some(draw_elements_indirect) = self.draw_functions.elements_indirect {
+                    draw_elements_indirect(
+                        mode,
+                        super::exec_vertex::indexed_draw_type(index),
+                        offset as usize as *const core::ffi::c_void,
+                    );
+                } else {
+                    self.gl.draw_elements_indirect_offset(
+                        mode,
+                        super::exec_vertex::indexed_draw_type(index),
+                        i32::try_from(offset).map_err(|_| {
+                            Self::validation(
+                                OP,
+                                "wide DrawElementsIndirect entry point unavailable",
+                            )
+                        })?,
+                    );
+                }
             } else {
-                self.gl.draw_arrays_indirect_offset(mode, offset);
+                if let Some(draw_arrays_indirect) = self.draw_functions.arrays_indirect {
+                    draw_arrays_indirect(mode, offset as usize as *const core::ffi::c_void);
+                } else {
+                    self.gl.draw_arrays_indirect_offset(
+                        mode,
+                        i32::try_from(offset).map_err(|_| {
+                            Self::validation(OP, "wide DrawArraysIndirect entry point unavailable")
+                        })?,
+                    );
+                }
             }
             if let Some(scratch) = scratch {
                 self.gl.delete_buffer(scratch);
@@ -592,7 +608,14 @@ impl GlDispatchIndirectApi for NativeGlProvider {
         unsafe {
             self.gl
                 .bind_buffer(glow::DISPATCH_INDIRECT_BUFFER, Some(name));
-            self.gl.dispatch_compute_indirect(offset);
+            if let Some(dispatch_indirect) = self.draw_functions.dispatch_indirect {
+                dispatch_indirect(offset);
+            } else {
+                self.gl
+                    .dispatch_compute_indirect(i32::try_from(offset).map_err(|_| {
+                        Self::validation(OP, "wide DispatchComputeIndirect entry point unavailable")
+                    })?);
+            }
         }
         self.driver_error(OP)
     }
@@ -612,7 +635,7 @@ fn resolve_indirect_offset(
     operation: &'static str,
     range: GlBufferRange,
     command_offset: u64,
-) -> Result<i32, GlError> {
+) -> Result<isize, GlError> {
     let absolute = range
         .offset
         .checked_add(command_offset)
@@ -620,7 +643,7 @@ fn resolve_indirect_offset(
             operation,
             message: "indirect record offset overflows the buffer address space".into(),
         })?;
-    i32::try_from(absolute).map_err(|_| GlError::Validation {
+    isize::try_from(absolute).map_err(|_| GlError::Validation {
         operation,
         message: "indirect record offset exceeds GLintptr".into(),
     })
@@ -635,7 +658,7 @@ fn resolve_indirect_offset(
 pub(super) fn draw_indirect_offset(
     range: GlBufferRange,
     command_offset: u64,
-) -> Result<i32, GlError> {
+) -> Result<isize, GlError> {
     resolve_indirect_offset("draw-indirect", range, command_offset)
 }
 
@@ -643,7 +666,7 @@ pub(super) fn draw_indirect_offset(
 pub(super) fn dispatch_indirect_offset(
     range: GlBufferRange,
     command_offset: u64,
-) -> Result<i32, GlError> {
+) -> Result<isize, GlError> {
     resolve_indirect_offset("dispatch-indirect", range, command_offset)
 }
 

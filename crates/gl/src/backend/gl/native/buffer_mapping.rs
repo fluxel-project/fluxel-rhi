@@ -29,7 +29,7 @@ pub(super) fn storage_entry(
 impl NativeGlProvider {
     pub(super) unsafe fn allocate_persistent_buffer(
         &mut self,
-        size: i32,
+        size: isize,
     ) -> Result<*mut u8, GlError> {
         const OP: &str = "create-persistent-buffer";
         let flags = glow::MAP_READ_BIT
@@ -50,12 +50,24 @@ impl NativeGlProvider {
         self.driver_error(OP)?;
         // SAFETY: the immutable allocation above allows each requested bit.
         let ptr = unsafe {
-            self.gl.map_buffer_range(
-                glow::COPY_WRITE_BUFFER,
-                0,
-                size,
-                flags & !glow::DYNAMIC_STORAGE_BIT,
-            )
+            if let Some(functions) = self.buffer_functions {
+                (functions.map_buffer_range)(
+                    glow::COPY_WRITE_BUFFER,
+                    0,
+                    size,
+                    flags & !glow::DYNAMIC_STORAGE_BIT,
+                )
+                .cast::<u8>()
+            } else {
+                let size = i32::try_from(size)
+                    .map_err(|_| Self::validation(OP, "GL buffer ABI entry points unavailable"))?;
+                self.gl.map_buffer_range(
+                    glow::COPY_WRITE_BUFFER,
+                    0,
+                    size,
+                    flags & !glow::DYNAMIC_STORAGE_BIT,
+                )
+            }
         };
         if let Err(error) = self.driver_error(OP) {
             if !ptr.is_null() {
@@ -75,7 +87,13 @@ impl NativeGlProvider {
         // The public lease yields Rust byte slices, which require initialized
         // bytes even before the first GPU write. No GPU work has seen this
         // allocation yet, and this coherent mapping covers the entire store.
-        unsafe { core::ptr::write_bytes(ptr, 0, size as usize) };
+        unsafe {
+            core::ptr::write_bytes(
+                ptr,
+                0,
+                usize::try_from(size).expect("validated positive GL size"),
+            )
+        };
         Ok(ptr)
     }
 

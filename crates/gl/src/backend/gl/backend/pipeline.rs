@@ -296,6 +296,12 @@ fn create_raster_pipeline(
             source.stage = crate::backend::gl::api::GlShaderStage::Fragment;
             source.entry_point = "main".into();
             source.source_hash = crate::backend::gl::api::GlShaderKey([0x69; 32]);
+            if source.spirv.is_some() {
+                source.spirv = Some(super::shader::spirv::empty_fragment());
+                source.source_hash = crate::backend::gl::api::GlShaderKey([0x6a; 32]);
+                source.text.clear();
+                return source;
+            }
             source.text = match source.dialect {
                 crate::backend::gl::api::GlShaderDialect::Desktop { version } => {
                     format!("#version {version} core\nvoid main() {{}}\n")

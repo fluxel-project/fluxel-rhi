@@ -258,6 +258,9 @@ pub(crate) fn lower_shader_source(
         (GlProfile::Embedded { .. } | GlProfile::WebGl2, ShaderFormat::GlslEs(version)) => {
             GlShaderDialect::Embedded { version }
         }
+        (GlProfile::Desktop { .. }, ShaderFormat::SpirV) => {
+            GlShaderDialect::Desktop { version: 400 }
+        }
         _ => return Err(unsupported("GL direct shader format/profile")),
     };
     let stage = match entry.stage {
@@ -266,9 +269,20 @@ pub(crate) fn lower_shader_source(
         api::ShaderStage::Compute => GlShaderStage::Compute,
         _ => return Err(unsupported("GL shader stage")),
     };
-    let text = core::str::from_utf8(&desc.bytes)
-        .map_err(|_| api::Error::Shader("GLSL source is not UTF-8".into()))?
-        .to_owned();
+    let spirv = matches!(desc.format, ShaderFormat::SpirV)
+        .then(|| spirv_words(&desc.bytes))
+        .transpose()?
+        .map(|words| GlSpirvSource {
+            words,
+            specialization: Vec::new(),
+        });
+    let text = if spirv.is_some() {
+        String::new()
+    } else {
+        core::str::from_utf8(&desc.bytes)
+            .map_err(|_| api::Error::Shader("GLSL source is not UTF-8".into()))?
+            .to_owned()
+    };
     let key = GlShaderKey(source_key(&desc.bytes, &entry.name));
     let source = GlShaderSource {
         stage,
@@ -276,12 +290,34 @@ pub(crate) fn lower_shader_source(
         entry_point: entry.name.clone(),
         source_hash: key,
         text,
+        spirv,
         debug_name: desc.label.clone(),
     };
     source
         .validate_for(profile)
         .map_err(|_| api::Error::InvalidState)?;
+    if let Some(spirv) = &source.spirv {
+        crate::backend::gl::backend::shader::spirv::validate_entry(
+            &spirv.words,
+            &entry.name,
+            entry.stage,
+        )?;
+    }
     Ok((key, source))
+}
+
+fn spirv_words(bytes: &[u8]) -> api::Result<Vec<u32>> {
+    if bytes.len() < 20 || bytes.len() % 4 != 0 {
+        return Err(api::Error::Shader("invalid SPIR-V byte length".into()));
+    }
+    let words: Vec<u32> = bytes
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes(word.try_into().expect("exact chunk")))
+        .collect();
+    if words[0] != 0x0723_0203 || words[3] == 0 {
+        return Err(api::Error::Shader("invalid SPIR-V header".into()));
+    }
+    Ok(words)
 }
 
 fn source_key(bytes: &[u8], entry: &str) -> [u8; 32] {

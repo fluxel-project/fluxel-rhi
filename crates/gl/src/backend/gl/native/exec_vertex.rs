@@ -18,6 +18,8 @@ enum AttributePath {
     Float(i32, u32, bool),
     /// `vertexAttribIPointer` with these `(size, type)` values.
     Integer(i32, u32),
+    /// `vertexAttribLPointer` for double-precision shader inputs.
+    Double(i32),
 }
 
 const fn attribute_path(format: GlVertexFormat) -> AttributePath {
@@ -41,6 +43,10 @@ const fn attribute_path(format: GlVertexFormat) -> AttributePath {
         F::Snorm16x4 => AttributePath::Float(4, glow::SHORT, true),
         F::Float16x2 => AttributePath::Float(2, glow::HALF_FLOAT, false),
         F::Float16x4 => AttributePath::Float(4, glow::HALF_FLOAT, false),
+        F::Float64 => AttributePath::Double(1),
+        F::Float64x2 => AttributePath::Double(2),
+        F::Float64x3 => AttributePath::Double(3),
+        F::Float64x4 => AttributePath::Double(4),
         F::Float32 => AttributePath::Float(1, glow::FLOAT, false),
         F::Float32x2 => AttributePath::Float(2, glow::FLOAT, false),
         F::Float32x3 => AttributePath::Float(3, glow::FLOAT, false),
@@ -70,6 +76,30 @@ const fn index_size(format: GlIndexFormat) -> u64 {
     }
 }
 
+impl NativeGlProvider {
+    /// `glVertexAttribLPointer` is core in desktop GL 4.1 and is exposed by
+    /// `GL_ARB_vertex_attrib_64bit` on otherwise supported GL 4.0 contexts.
+    /// GLES deliberately has no route: its vertex input API has no matching
+    /// double-precision attribute representation.
+    fn supports_f64_vertex_attributes(&self) -> bool {
+        match self.discovery.context().profile() {
+            crate::backend::gl::api::GlFamilyProfile::Desktop { major, minor } => {
+                ((major, minor) >= (4, 1)
+                    || self
+                        .discovery
+                        .extensions()
+                        .raw_reported_names()
+                        .any(|name| name == "GL_ARB_vertex_attrib_64bit"))
+                    && self
+                        .vertex_functions
+                        .is_some_and(super::buffer_abi::NativeVertexFunctions::supports_f64)
+            }
+            crate::backend::gl::api::GlFamilyProfile::Embedded { .. }
+            | crate::backend::gl::api::GlFamilyProfile::WebGl2 => false,
+        }
+    }
+}
+
 impl GlVertexApi for NativeGlProvider {
     fn create_vertex_array(&mut self, layout: &GlVertexLayout) -> Result<VertexArrayId, GlError> {
         use glow::HasContext as _;
@@ -88,6 +118,21 @@ impl GlVertexApi for NativeGlProvider {
                 OP,
                 "attribute location exceeds the discovered limit",
             ));
+        }
+        if layout.attributes.iter().any(|attribute| {
+            matches!(
+                attribute.format,
+                GlVertexFormat::Float64
+                    | GlVertexFormat::Float64x2
+                    | GlVertexFormat::Float64x3
+                    | GlVertexFormat::Float64x4
+            )
+        }) && !self.supports_f64_vertex_attributes()
+        {
+            return Err(GlError::Unsupported {
+                operation: OP,
+                reason: "Float64 vertex attributes require desktop GL 4.1 or GL_ARB_vertex_attrib_64bit",
+            });
         }
         // SAFETY: current-context contract.
         let raw = unsafe { self.gl.create_vertex_array() }.map_err(|message| GlError::Driver {
@@ -291,6 +336,7 @@ impl NativeGlProvider {
     ) -> Result<(), GlError> {
         use glow::HasContext as _;
         unsafe {
+            let vertex_functions = self.vertex_functions;
             if layout.buffers.iter().any(|slot| slot.stride == 0) {
                 let profile = self.discovery.context().profile();
                 let available = profile.has_core(
@@ -350,20 +396,45 @@ impl NativeGlProvider {
                 {
                     let stride = slot_layout.stride;
                     let offset = binding.offset.checked_add(u64::from(attribute.offset));
-                    let offset = match offset.and_then(|value| i32::try_from(value).ok()) {
+                    let offset = match offset.and_then(|value| isize::try_from(value).ok()) {
                         Some(offset) => offset,
                         None => {
                             return Err(Self::validation(
                                 "bind-vertex-array",
-                                "attribute offset exceeds the binding representation",
+                                "attribute offset exceeds native GLintptr",
                             ));
                         }
                     };
                     if stride == 0 {
                         // Separate attribute binding interprets zero as a fixed address,
                         // unlike the legacy pointer API where zero means tightly packed.
-                        self.gl
-                            .bind_vertex_buffer(attribute.location, Some(raw), offset, 0);
+                        if matches!(attribute_path(attribute.format), AttributePath::Double(_))
+                            && !vertex_functions.is_some_and(
+                                super::buffer_abi::NativeVertexFunctions::supports_zero_stride_f64,
+                            )
+                        {
+                            return Err(GlError::Unsupported {
+                                operation: "bind-vertex-array",
+                                reason: "zero-stride Float64 attributes require native BindVertexBuffer and VertexAttribLFormat",
+                            });
+                        }
+                        if let Some(bind_vertex_buffer) =
+                            vertex_functions.and_then(|functions| functions.bind_vertex_buffer)
+                        {
+                            bind_vertex_buffer(attribute.location, raw.0.get(), offset, 0);
+                        } else {
+                            self.gl.bind_vertex_buffer(
+                                attribute.location,
+                                Some(raw),
+                                i32::try_from(offset).map_err(|_| {
+                                    Self::validation(
+                                        "bind-vertex-array",
+                                        "wide BindVertexBuffer entry point unavailable",
+                                    )
+                                })?,
+                                0,
+                            );
+                        }
                         match attribute_path(attribute.format) {
                             AttributePath::Float(size, type_, normalized) => {
                                 self.gl.vertex_attrib_format_f32(
@@ -377,6 +448,14 @@ impl NativeGlProvider {
                             AttributePath::Integer(size, type_) => self
                                 .gl
                                 .vertex_attrib_format_i32(attribute.location, size, type_, 0),
+                            AttributePath::Double(size) => (vertex_functions
+                                .and_then(|functions| functions.attrib_l_format)
+                                .expect("zero-stride Float64 preflight loaded LFormat"))(
+                                attribute.location,
+                                size,
+                                glow::DOUBLE,
+                                0,
+                            ),
                         }
                         self.gl
                             .vertex_attrib_binding(attribute.location, attribute.location);
@@ -392,22 +471,64 @@ impl NativeGlProvider {
                     }
                     match attribute_path(attribute.format) {
                         AttributePath::Float(size, type_, normalized) => {
-                            self.gl.vertex_attrib_pointer_f32(
-                                attribute.location,
-                                size,
-                                type_,
-                                normalized,
-                                stride as i32,
-                                offset,
-                            );
+                            if let Some(functions) = vertex_functions {
+                                (functions.attrib_pointer)(
+                                    attribute.location,
+                                    size,
+                                    type_,
+                                    u8::from(normalized),
+                                    stride as i32,
+                                    offset as usize as *const core::ffi::c_void,
+                                );
+                            } else {
+                                self.gl.vertex_attrib_pointer_f32(
+                                    attribute.location,
+                                    size,
+                                    type_,
+                                    normalized,
+                                    stride as i32,
+                                    i32::try_from(offset).map_err(|_| {
+                                        Self::validation(
+                                            "bind-vertex-array",
+                                            "wide vertex pointer entry point unavailable",
+                                        )
+                                    })?,
+                                );
+                            }
                         }
                         AttributePath::Integer(size, type_) => {
-                            self.gl.vertex_attrib_pointer_i32(
+                            if let Some(functions) = vertex_functions {
+                                (functions.attrib_i_pointer)(
+                                    attribute.location,
+                                    size,
+                                    type_,
+                                    stride as i32,
+                                    offset as usize as *const core::ffi::c_void,
+                                );
+                            } else {
+                                self.gl.vertex_attrib_pointer_i32(
+                                    attribute.location,
+                                    size,
+                                    type_,
+                                    stride as i32,
+                                    i32::try_from(offset).map_err(|_| {
+                                        Self::validation(
+                                            "bind-vertex-array",
+                                            "wide vertex pointer entry point unavailable",
+                                        )
+                                    })?,
+                                );
+                            }
+                        }
+                        AttributePath::Double(size) => {
+                            (vertex_functions
+                                .and_then(|functions| functions.attrib_l_pointer)
+                                .expect("Float64 support preflight loaded LPointer"))(
                                 attribute.location,
                                 size,
-                                type_,
+                                glow::DOUBLE,
                                 stride as i32,
-                                offset,
+                                offset as usize as *const core::ffi::c_void,
                             );
                         }
                     }
@@ -452,6 +573,10 @@ pub(super) const fn attribute_byte_size(format: GlVertexFormat) -> u32 {
         GlVertexFormat::Float32x2 | GlVertexFormat::Uint32x2 | GlVertexFormat::Sint32x2 => 8,
         GlVertexFormat::Float32x3 | GlVertexFormat::Uint32x3 | GlVertexFormat::Sint32x3 => 12,
         GlVertexFormat::Float32x4 | GlVertexFormat::Uint32x4 | GlVertexFormat::Sint32x4 => 16,
+        GlVertexFormat::Float64 => 8,
+        GlVertexFormat::Float64x2 => 16,
+        GlVertexFormat::Float64x3 => 24,
+        GlVertexFormat::Float64x4 => 32,
     }
 }
 

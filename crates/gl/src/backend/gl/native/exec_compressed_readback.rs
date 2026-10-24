@@ -168,13 +168,14 @@ impl NativeGlProvider {
                             + layout.offset
                             + u64::from(layer) * output_stride
                             + u64::from(row) * u64::from(layout.bytes_per_row);
-                        self.gl.copy_buffer_sub_data(
+                        self.copy_buffer_sub_data_wide(
                             glow::COPY_READ_BUFFER,
                             glow::COPY_WRITE_BUFFER,
-                            src as i32,
-                            dst as i32,
-                            row_bytes as i32,
-                        );
+                            src,
+                            dst,
+                            u64::from(row_bytes),
+                            OP,
+                        )?;
                     }
                 }
                 result = self.driver_error(OP);
@@ -431,13 +432,14 @@ impl NativeGlProvider {
                         + layout.offset
                         + u64::from(layer) * stride
                         + u64::from(row) * u64::from(layout.bytes_per_row);
-                    self.gl.copy_buffer_sub_data(
+                    self.copy_buffer_sub_data_wide(
                         glow::COPY_READ_BUFFER,
                         glow::COPY_WRITE_BUFFER,
                         0,
-                        offset as i32,
-                        row_bytes,
-                    );
+                        offset,
+                        u64::try_from(row_bytes).expect("validated row size"),
+                        OP,
+                    )?;
                 }
                 result = self.driver_error(OP);
             }

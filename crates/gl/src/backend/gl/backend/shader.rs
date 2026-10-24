@@ -18,6 +18,9 @@ use super::{Gl, GlDevice};
 mod glsl_source;
 use glsl_source::{apply_embedded_precision_defaults, apply_public_clip_depth_abi};
 
+mod direct_constants;
+pub(crate) mod spirv;
+
 mod binding_array;
 mod binding_array_dynamic;
 mod binding_array_dynamic_buffer;
@@ -77,12 +80,32 @@ impl ShaderBackend for Gl {
         let format = match desc.format {
             api::ShaderFormat::Glsl(version) => api::ShaderFormat::Glsl(version),
             api::ShaderFormat::GlslEs(version) => api::ShaderFormat::GlslEs(version),
+            api::ShaderFormat::SpirV
+                if matches!(
+                    profile,
+                    crate::backend::gl::profile::GlProfile::Desktop { .. }
+                ) && spirv_supported(device) =>
+            {
+                api::ShaderFormat::SpirV
+            }
             _ => return ShaderRoute::Unsupported,
         };
         ShaderRoute::Direct(ShaderTarget {
             format,
-            environment: naga_environment(profile, false).into(),
-            abi_key: "fluxel-gl-position-yz-row-order-v2".into(),
+            environment: if matches!(desc.format, api::ShaderFormat::SpirV) {
+                "opengl-spirv-1.0".into()
+            } else {
+                naga_environment(profile, false).into()
+            },
+            // Direct SPIR-V cannot be source-rewritten like direct GLSL. Its
+            // producer must target the native GL coordinate/resource ABI; do
+            // not advertise the GLSL/WGSL adaptation ABI for that artifact.
+            abi_key: if matches!(desc.format, api::ShaderFormat::SpirV) {
+                "fluxel-gl-native-spirv-v1"
+            } else {
+                "fluxel-gl-position-yz-row-order-v2"
+            }
+            .into(),
         })
     }
 
@@ -100,6 +123,23 @@ impl ShaderBackend for Gl {
         _: &'a ShaderTarget,
     ) -> Self::NagaFuture<'a> {
         ready(wgsl::compile_wgsl(device, desc))
+    }
+}
+
+fn spirv_supported(device: &GlDevice) -> bool {
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    {
+        return device
+            .0
+            .with_native("query GL SPIR-V shader capability", |provider| {
+                Ok(provider.supports_spirv())
+            })
+            .unwrap_or(false);
+    }
+    #[cfg(not(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl")))]
+    {
+        let _ = device;
+        false
     }
 }
 
@@ -152,20 +192,25 @@ fn compile_direct(device: &GlDevice, desc: &ShaderDesc) -> Result<GlShader> {
     };
     let profile = shader_profile(device).ok_or(Error::Unsupported("GL platform context"))?;
     let (_, mut source) = crate::backend::gl::translate::lower_shader_source(profile, desc, entry)?;
-    apply_embedded_precision_defaults(&mut source);
-    apply_public_clip_depth_abi(&mut source)?;
-    source.source_hash = crate::backend::gl::api::GlShaderKey(source_key(
-        source.text.as_bytes(),
-        &source.entry_point,
-    ));
-    publish_shader(
-        device,
-        source,
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        "compile Core GL shader",
-    )
+    if source.spirv.is_none() {
+        apply_embedded_precision_defaults(&mut source);
+        apply_public_clip_depth_abi(&mut source)?;
+    }
+    refresh_source_key(&mut source);
+    // Direct GLSL constants are supplied by `PipelineStage`, not `ShaderDesc`.
+    // Compiling here would make an otherwise valid `#define FOO` use fail
+    // before materialization has injected FOO.  Program creation below always
+    // compiles the retained immutable source after stage specialization.
+    Ok(GlShader::from_inner(GlShaderInner {
+        state: device.0.clone(),
+        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+        id: None,
+        source: Some(source),
+        wgsl: None,
+        naga_bindings: Vec::new(),
+        push_uniforms: Vec::new(),
+        mip_uniforms: Vec::new(),
+    }))
 }
 
 fn publish_shader(
@@ -306,20 +351,28 @@ pub(super) fn materialize_stage(
             "compile WGSL-derived GL shader",
         );
     }
-    if !constants.is_empty() {
-        return Err(Error::Unsupported("GL direct GLSL pipeline constants"));
-    }
     let source = shader.source.as_ref().ok_or(Error::InvalidState)?;
     if source.entry_point != entry || source.stage != wgsl::gl_stage(stage)? {
         return Err(Error::InvalidState);
     }
-    if multiview.is_some() {
+    if !constants.is_empty() || multiview.is_some() {
         let mut source = source.clone();
-        source.text = wgsl::lower_multiview(source.text, stage, multiview)?;
-        source.source_hash = crate::backend::gl::api::GlShaderKey(source_key(
-            source.text.as_bytes(),
-            &source.entry_point,
-        ));
+        if source.spirv.is_some() {
+            spirv::specialize(&mut source, constants)?;
+            refresh_source_key(&mut source);
+            if multiview.is_some() {
+                return Err(Error::Unsupported("GL SPIR-V multiview ABI"));
+            }
+        } else {
+            direct_constants::apply(&mut source, constants)?;
+        }
+        if multiview.is_some() {
+            source.text = wgsl::lower_multiview(source.text, stage, multiview)?;
+            source.source_hash = crate::backend::gl::api::GlShaderKey(source_key(
+                source.text.as_bytes(),
+                &source.entry_point,
+            ));
+        }
         return publish_shader(
             device,
             source,
@@ -330,6 +383,26 @@ pub(super) fn materialize_stage(
         );
     }
     Ok(shader.clone())
+}
+
+fn refresh_source_key(source: &mut crate::backend::gl::api::GlShaderSource) {
+    if let Some(spirv) = &source.spirv {
+        let mut bytes = Vec::with_capacity(spirv.words.len() * 4 + spirv.specialization.len() * 8);
+        for word in &spirv.words {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        for (id, value) in &spirv.specialization {
+            bytes.extend_from_slice(&id.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        source.source_hash =
+            crate::backend::gl::api::GlShaderKey(source_key(&bytes, &source.entry_point));
+    } else {
+        source.source_hash = crate::backend::gl::api::GlShaderKey(source_key(
+            source.text.as_bytes(),
+            &source.entry_point,
+        ));
+    }
 }
 
 fn shader_resource_limits(device: &GlDevice, stage: api::ShaderStage) -> Result<(u32, u32)> {

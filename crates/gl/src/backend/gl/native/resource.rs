@@ -654,6 +654,18 @@ pub(super) fn texture_storage_class(
         .usage
         .contains(crate::backend::gl::api::GlTextureUsage::COPY_SOURCE)
         && !facts.copy_source
+        // Generic native copy/readback operations reject multisample storage.
+        // A renderable multisample color attachment is the narrow exception:
+        // it is consumed solely by the FBO resolve path, which immediately
+        // reduces it to one sample before any regular copy can observe it.
+        && !(desc.sample_count > 1
+            && desc
+                .usage
+                .contains(crate::backend::gl::api::GlTextureUsage::RENDER_ATTACHMENT)
+            && desc
+                .format
+                .supports_blit_aspect(crate::backend::gl::api::GlTextureAspect::Color)
+            && facts.renderable)
     {
         return Err("format is not a copy source at this sample count");
     }

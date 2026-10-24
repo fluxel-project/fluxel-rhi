@@ -78,8 +78,8 @@ pub(crate) fn validate_texture_unit(
 pub(crate) fn validate_uniform_buffer_binding(
     index: u32,
     buffer: Option<BufferId>,
-    offset: u32,
-    size: u32,
+    offset: u64,
+    size: u64,
     limits: GlBindingLimits,
 ) -> Result<(), GlBindingValidationError> {
     if index >= limits.max_uniform_buffer_bindings {
@@ -92,7 +92,7 @@ pub(crate) fn validate_uniform_buffer_binding(
         return Ok(());
     }
     if limits.uniform_buffer_offset_alignment == 0
-        || u64::from(offset) % limits.uniform_buffer_offset_alignment != 0
+        || offset % limits.uniform_buffer_offset_alignment != 0
     {
         return Err(GlBindingValidationError::UniformOffsetMisaligned);
     }
@@ -104,17 +104,17 @@ pub(crate) fn validate_uniform_buffer_binding(
 /// `size == 0` resolves to `allocation - offset`, which must keep at least one
 /// byte: an offset at or past the allocation binds nothing in either form.
 pub(crate) fn validate_uniform_range(
-    offset: u32,
-    size: u32,
+    offset: u64,
+    size: u64,
     allocation: u64,
 ) -> Result<(), GlBindingValidationError> {
-    if u64::from(offset) >= allocation {
+    if offset >= allocation {
         return Err(GlBindingValidationError::UniformOffsetExceedsAllocation);
     }
     let end = match size {
-        0 => u64::from(offset),
-        size => u64::from(offset)
-            .checked_add(u64::from(size))
+        0 => offset,
+        size => offset
+            .checked_add(size)
             .ok_or(GlBindingValidationError::UniformRangeOutOfBounds)?,
     };
     if end > allocation {
@@ -148,8 +148,8 @@ pub(crate) trait GlBindingApi: GlFamilyApi {
         &mut self,
         index: u32,
         buffer: Option<BufferId>,
-        offset: u32,
-        size: u32,
+        offset: u64,
+        size: u64,
     ) -> Result<(), GlError>;
 }
 
@@ -219,5 +219,15 @@ mod tests {
             validate_uniform_range(0, 513, 512),
             Err(GlBindingValidationError::UniformRangeOutOfBounds)
         );
+    }
+
+    #[test]
+    fn uniform_ranges_keep_a_64_bit_native_address() {
+        let offset = 4_u64 * 1024 * 1024 * 1024 + 256;
+        assert_eq!(
+            validate_uniform_buffer_binding(0, Some(buffer()), offset, 256, limits()),
+            Ok(())
+        );
+        assert_eq!(validate_uniform_range(offset, 256, offset + 512), Ok(()));
     }
 }

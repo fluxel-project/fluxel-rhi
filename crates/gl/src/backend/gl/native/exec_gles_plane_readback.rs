@@ -307,13 +307,42 @@ impl NativeGlProvider {
                                     * (u64::from(layout.rows_per_image) * u64::from(layer)
                                         + u64::from(y))
                                 + u64::from(x) * bpp as u64;
-                            self.gl.copy_buffer_sub_data(
-                                glow::COPY_READ_BUFFER,
-                                glow::COPY_WRITE_BUFFER,
-                                (i * 4) as i32,
-                                to as i32,
-                                bpp as i32,
-                            );
+                            let source_offset = i.checked_mul(4).ok_or_else(|| {
+                                Self::validation(op, "scratch source offset overflow")
+                            })?;
+                            let copy_size =
+                                u64::try_from(bpp).expect("pixel component count fits u64");
+                            if let Some(functions) = self.buffer_functions {
+                                (functions.copy_buffer_sub_data)(
+                                    glow::COPY_READ_BUFFER,
+                                    glow::COPY_WRITE_BUFFER,
+                                    isize::try_from(source_offset).map_err(|_| {
+                                        Self::validation(op, "scratch source exceeds native range")
+                                    })?,
+                                    isize::try_from(to).map_err(|_| {
+                                        Self::validation(op, "destination exceeds native range")
+                                    })?,
+                                    isize::try_from(copy_size).expect("byte component fits isize"),
+                                );
+                            } else {
+                                self.gl.copy_buffer_sub_data(
+                                    glow::COPY_READ_BUFFER,
+                                    glow::COPY_WRITE_BUFFER,
+                                    i32::try_from(source_offset).map_err(|_| {
+                                        Self::validation(
+                                            op,
+                                            "GL buffer ABI entry points unavailable",
+                                        )
+                                    })?,
+                                    i32::try_from(to).map_err(|_| {
+                                        Self::validation(
+                                            op,
+                                            "GL buffer ABI entry points unavailable",
+                                        )
+                                    })?,
+                                    i32::try_from(copy_size).expect("pixel component fits i32"),
+                                );
+                            }
                         }
                     }
                 }
@@ -327,13 +356,16 @@ impl NativeGlProvider {
             self.gl.bind_sampler(0, old_sampler);
             self.gl.active_texture(old_active);
             if old_index.is_some() && old_size > 0 {
-                self.gl.bind_buffer_range(
+                self.bind_buffer_range_wide(
                     glow::SHADER_STORAGE_BUFFER,
                     0,
                     old_index,
-                    old_offset as i32,
-                    old_size as i32,
-                );
+                    u64::try_from(old_offset)
+                        .map_err(|_| Self::validation(op, "saved SSBO offset is negative"))?,
+                    u64::try_from(old_size)
+                        .map_err(|_| Self::validation(op, "saved SSBO size is negative"))?,
+                    op,
+                )?;
             } else {
                 self.gl
                     .bind_buffer_base(glow::SHADER_STORAGE_BUFFER, 0, old_index);

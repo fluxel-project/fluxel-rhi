@@ -389,8 +389,8 @@ impl GlBindingApi for MockComputeStorageApi {
         &mut self,
         index: u32,
         buffer: Option<BufferId>,
-        offset: u32,
-        size: u32,
+        offset: u64,
+        size: u64,
     ) -> Result<(), GlError> {
         self.inner.bind_uniform_buffer(index, buffer, offset, size)
     }

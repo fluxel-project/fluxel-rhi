@@ -11,11 +11,13 @@
 //! version/extension ledger and the loaded entry-point table, never from a
 //! version string alone.
 
+pub(crate) mod buffer_abi;
 mod buffer_mapping;
 mod clear_texture_direct;
 mod clear_texture_upload;
 mod context;
 mod discovery;
+pub(crate) mod draw_abi;
 #[cfg(feature = "native-gles-egl")]
 pub(crate) mod egl;
 mod entry_points;
@@ -55,6 +57,7 @@ pub(crate) mod provider;
 pub(crate) mod push_uniform;
 mod rasterization;
 mod sampler_border;
+mod spirv;
 mod surface;
 mod surface_facts;
 pub(crate) mod texture_view;
@@ -77,7 +80,13 @@ pub(crate) use probe::{NativeProfileError, parse_native_profile};
 #[path = "../../../../tests/gl/wgl_core.rs"]
 mod wgl_core_conformance;
 
+mod shader_bindings;
+mod shader_blocks;
+mod shader_compile;
+mod shader_interfaces;
 mod shader_link;
+mod spirv_opaque;
+mod spirv_vertex;
 
 mod framebuffer_attachment;
 

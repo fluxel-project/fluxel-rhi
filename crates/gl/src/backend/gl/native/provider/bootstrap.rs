@@ -165,6 +165,20 @@ impl NativeGlProvider {
         let multiview =
             unsafe { super::super::multiview::NativeMultiview::load(&discovery, &proc_loader) };
         let mut provider = Self::assemble(gl, discovery, unmap_buffer);
+        // SAFETY: these symbols are resolved by the current WGL/EGL context.
+        provider.vertex_functions =
+            unsafe { super::super::buffer_abi::NativeVertexFunctions::load(&proc_loader) };
+        // SAFETY: these names are resolved by the same current WGL/EGL context.
+        provider.draw_functions =
+            unsafe { super::super::draw_abi::NativeDrawFunctions::load(&proc_loader) };
+        // SAFETY: the loader belongs to this current, thread-affine context;
+        // the typed table uses the native pointer-width buffer ABI.
+        provider.buffer_functions =
+            unsafe { super::super::buffer_abi::NativeBufferFunctions::load(&proc_loader) };
+        // SAFETY: optional entries belong to this exact current desktop
+        // context, whose version/extension capability is checked by the loader.
+        provider.spirv =
+            unsafe { super::super::spirv::NativeSpirvFns::load(&provider.discovery, &proc_loader) };
         let extensions = provider.discovery.extensions();
         let storage = super::super::buffer_mapping::storage_entry(
             provider.discovery.context().profile(),
@@ -447,6 +461,10 @@ impl NativeGlProvider {
         Self {
             gl: std::rc::Rc::new(gl),
             unmap_buffer,
+            buffer_functions: None,
+            vertex_functions: None,
+            draw_functions: Default::default(),
+            spirv: None,
             buffer_storage: None,
             persistent_buffers: BTreeMap::new(),
             program_resource: None,

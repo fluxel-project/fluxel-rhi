@@ -32,6 +32,10 @@ pub(crate) struct NativeGlProvider {
     /// object tables.
     pub(super) gl: std::rc::Rc<glow::Context>,
     pub(super) unmap_buffer: super::context::UnmapBufferFn,
+    pub(super) buffer_functions: Option<super::buffer_abi::NativeBufferFunctions>,
+    pub(super) vertex_functions: Option<super::buffer_abi::NativeVertexFunctions>,
+    pub(super) draw_functions: super::draw_abi::NativeDrawFunctions,
+    pub(super) spirv: Option<super::spirv::NativeSpirvFns>,
     pub(super) buffer_storage:
         Option<unsafe extern "system" fn(u32, isize, *const core::ffi::c_void, u32)>,
     pub(super) persistent_buffers: BTreeMap<BufferId, *mut u8>,
@@ -179,6 +183,19 @@ pub(crate) struct NativeGlProvider {
 }
 
 impl NativeGlProvider {
+    /// Whether this exact context supplied the complete pointer-width buffer
+    /// command family.  Capability reporting must use this fact rather than
+    /// infer availability from the GL version string.
+    pub(crate) const fn supports_wide_buffer_abi(&self) -> bool {
+        self.buffer_functions.is_some()
+    }
+
+    /// Both the feature ledger and both callable ARB/core commands were proved
+    /// while this exact context was current.
+    pub(crate) const fn supports_spirv(&self) -> bool {
+        self.spirv.is_some()
+    }
+
     pub(crate) fn supports_storage_3d_nonzero_mip(&self) -> bool {
         self.storage_3d_nonzero_mip
     }

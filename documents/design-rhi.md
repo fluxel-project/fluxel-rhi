@@ -517,6 +517,58 @@ views instead share the original storage, with independent admitted mip/layer
 ranges and declared compatible formats. Copying a texture once does not provide
 view aliasing semantics.
 
+Direct GLSL sources retain their declared profile and use the existing public
+clip-coordinate wrapper. Pipeline constants become named preprocessor definitions
+immediately after `#version`. Constant names must be non-reserved identifiers;
+values must have a finite, unambiguous spelling in that GLSL profile. Direct
+modules retain immutable source and compile at pipeline materialization, after
+constant insertion. WGSL overrides continue to use Naga specialization.
+
+Desktop OpenGL SPIR-V uses the `fluxel-gl-native-spirv-v1` artifact ABI and
+`opengl-spirv-1.0` environment. It requires GL 4.6 or `ARB_gl_spirv` plus the
+actual binary/specialization entry points. `ShaderDesc` declares the selected
+native entry, and each pipeline stage must match it. The producer targets OpenGL and the
+backend's native coordinate convention; this path does not translate Vulkan
+artifacts or insert WGSL coordinate fixes. Raster stages must use the same
+native artifact format. A vertex-only raster pipeline receives an empty native
+SPIR-V fragment stage, allowing ordinary depth-only rendering.
+
+The direct artifact interface uses `DescriptorSet = 0`. Within each independent
+native namespace (UBO, SSBO, sampled texture, storage image), `Binding` is the
+flattened index of Core declarations sorted by `(group, binding, element)`;
+a fixed array reserves its contiguous element span. Sampler objects follow the
+texture/sampler pairing in each Core group: one sampler declaration can serve
+that group's textures, or equal-sized declaration lists pair in binding order.
+Paired fixed arrays use matching element indices; a single scalar sampler can
+serve a texture array. Other pairings must be expressed through the WGSL route
+or an artifact layout matching this native ABI.
+
+Opaque `UniformConstant` variables require explicit `Location` decorations.
+The backend reads their type, array length, binding, and location from the
+artifact; it never guesses a uniform location from an active-resource index or
+requires the driver to retain resource names. Array lengths in this ABI use
+literal or scalar specialization constants, and interface decorations are
+specified directly. Names from `OpName`, or decimal `SpecId` strings, select
+typed specialization values. Each native value occupies one 32-bit word.
+The parser is structural preflight, not a complete SPIR-V validator: callers
+provide trusted artifacts and native specialization/linking remains authoritative.
+The [ARB specification](https://registry.khronos.org/OpenGL/extensions/ARB/ARB_gl_spirv.txt)
+permits reflected names to be empty. Explicit artifact locations also avoid
+dependence on driver-specific uniform-location interface-query behavior.
+GLES and WebGL2 do not inherit this desktop artifact path.
+
+Native buffer operations use pointer-sized `GLintptr` and `GLsizeiptr` entry
+points, including pixel-buffer offsets. The advertised addressable range is
+not an allocation guarantee: actual allocation remains subject to driver memory
+budgets. Browser WebGL2 retains its JavaScript API limits.
+
+Standalone color resolve operates independently of raster passes. It preserves
+texture row order and validates equal formats, matching extents, multisample
+source and single-sample destination. GLES/WebGL multisample blits require
+matching source/destination coordinates; offset relocation therefore uses an
+immediate single-sample intermediate and a second native blit, without retaining
+or replaying application commands.
+
 #### Desktop GL4+ / WGL
 
 The WGL provider owns the current-context relationship and borrows the native

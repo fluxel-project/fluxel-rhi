@@ -37,6 +37,10 @@ pub(super) fn lower_vertex_format(
         VertexFormat::Snorm16(4) => Gl::Snorm16x4,
         VertexFormat::Float16(2) => Gl::Float16x2,
         VertexFormat::Float16(4) => Gl::Float16x4,
+        VertexFormat::Float64(1) => Gl::Float64,
+        VertexFormat::Float64(2) => Gl::Float64x2,
+        VertexFormat::Float64(3) => Gl::Float64x3,
+        VertexFormat::Float64(4) => Gl::Float64x4,
         _ => return Err(Error::Unsupported("GL vertex format")),
     })
 }

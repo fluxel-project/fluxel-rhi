@@ -531,6 +531,7 @@ pub(super) fn lower_wgsl_with_limits(
         entry_point: entry.name.clone(),
         source_hash: crate::backend::gl::api::GlShaderKey(source_key(text.as_bytes(), &entry.name)),
         text,
+        spirv: None,
         debug_name: desc.label.clone(),
     };
     apply_embedded_precision_defaults(&mut lowered);

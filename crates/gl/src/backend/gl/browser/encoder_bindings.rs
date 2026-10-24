@@ -147,13 +147,15 @@ impl BrowserEncoder {
         if size == 0 || end > buffer.size {
             return Err(Error::InvalidRange);
         }
+        let offset = i32::try_from(offset).map_err(|_| Error::InvalidRange)?;
+        let size = i32::try_from(size).map_err(|_| Error::InvalidRange)?;
         self.with_context("bind_uniform_buffer_named", |raw| {
             raw.bind_buffer_range_with_f64_and_f64(
                 Gl::UNIFORM_BUFFER,
                 binding,
                 Some(&buffer.raw),
-                offset as f64,
-                size as f64,
+                f64::from(offset),
+                f64::from(size),
             );
         })
     }
@@ -283,6 +285,9 @@ const fn vertex_attribute_path(format: GlVertexFormat) -> VertexAttributePath {
         F::Snorm16x4 => VertexAttributePath::Float(4, Gl::SHORT, true),
         F::Float16x2 => VertexAttributePath::Float(2, Gl::HALF_FLOAT, false),
         F::Float16x4 => VertexAttributePath::Float(4, Gl::HALF_FLOAT, false),
+        F::Float64 | F::Float64x2 | F::Float64x3 | F::Float64x4 => {
+            panic!("Float64 vertex attributes are rejected by WebGL2 VAO creation")
+        }
         F::Float32 => VertexAttributePath::Float(1, Gl::FLOAT, false),
         F::Float32x2 => VertexAttributePath::Float(2, Gl::FLOAT, false),
         F::Float32x3 => VertexAttributePath::Float(3, Gl::FLOAT, false),

@@ -214,13 +214,14 @@ impl NativeGlProvider {
                             .copy_from_slice(
                                 &bytes[offset as usize..(offset + u64::from(row_bytes)) as usize],
                             ),
-                        CompressedSource::Buffer(..) => self.gl.copy_buffer_sub_data(
+                        CompressedSource::Buffer(..) => self.copy_buffer_sub_data_wide(
                             glow::COPY_READ_BUFFER,
                             glow::COPY_WRITE_BUFFER,
-                            offset as i32,
-                            dst as i32,
-                            row_bytes as i32,
-                        ),
+                            offset,
+                            dst,
+                            u64::from(row_bytes),
+                            OP,
+                        )?,
                     }
                 }
                 let pixels = match source {

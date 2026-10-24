@@ -34,6 +34,7 @@ impl NativeGlProvider {
         &self,
         op: &'static str,
         program: glow::NativeProgram,
+        numeric: bool,
     ) -> Result<Vec<(u32, String)>, GlError> {
         let entries = self.storage_block_entries.ok_or(GlError::Unsupported {
             operation: op,
@@ -87,7 +88,35 @@ impl NativeGlProvider {
             }
             let name = std::str::from_utf8(&buf[..len as usize])
                 .map_err(|_| Self::validation(op, "invalid storage block name encoding"))?;
-            result.push((index, name.to_owned()));
+            if numeric || name.is_empty() {
+                let query = self.program_resource.ok_or_else(|| {
+                    Self::validation(op, "program-interface binding query unavailable")
+                })?;
+                let (mut written, mut binding) = (0, -1);
+                // SAFETY: `index` is a live storage-block resource index.
+                unsafe {
+                    query(
+                        program.0.get(),
+                        glow::SHADER_STORAGE_BLOCK,
+                        index,
+                        1,
+                        [glow::BUFFER_BINDING].as_ptr(),
+                        1,
+                        &mut written,
+                        &mut binding,
+                    )
+                };
+                self.driver_error(op)?;
+                if written != 1 || binding < 0 {
+                    return Err(Self::validation(
+                        op,
+                        "unnamed storage block has no numeric binding",
+                    ));
+                }
+                result.push((index, format!("@{binding}")));
+            } else {
+                result.push((index, name.to_owned()));
+            }
         }
         Ok(result)
     }

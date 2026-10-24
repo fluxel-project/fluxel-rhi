@@ -14,6 +14,7 @@ use crate::backend::gl::api::{
     GlPixelLayout, GlPixelStoreState, GlReadback, GlTextureDesc, GlTextureRegion, GlTextureUsage,
     validate_texture_copy,
 };
+use crate::backend::gl::native::buffer_abi::pointer_sized;
 
 impl GlCopyDomainApi for NativeGlProvider {
     fn buffer_to_texture(
@@ -41,12 +42,12 @@ impl GlCopyDomainApi for NativeGlProvider {
         if source.size != destination.size {
             return Err(Self::validation(OP, "copy sizes differ"));
         }
-        let read_offset = i32::try_from(source.offset)
-            .map_err(|_| Self::validation(OP, "source offset exceeds GLintptr"))?;
-        let write_offset = i32::try_from(destination.offset)
-            .map_err(|_| Self::validation(OP, "destination offset exceeds GLintptr"))?;
-        let size = i32::try_from(source.size)
-            .map_err(|_| Self::validation(OP, "copy size exceeds GLsizeiptr"))?;
+        let read_offset = pointer_sized(source.offset)
+            .ok_or_else(|| Self::validation(OP, "source offset exceeds native GLintptr"))?;
+        let write_offset = pointer_sized(destination.offset)
+            .ok_or_else(|| Self::validation(OP, "destination offset exceeds native GLintptr"))?;
+        let size = pointer_sized(source.size)
+            .ok_or_else(|| Self::validation(OP, "copy size exceeds native GLsizeiptr"))?;
         // The copy targets are Layer 1-private scratch: bind immediately before
         // use, no restore on return (`GlCopyDomainApi` documents why).
         // SAFETY: current-context contract; both live resources and all ranges
@@ -56,13 +57,29 @@ impl GlCopyDomainApi for NativeGlProvider {
                 .bind_buffer(glow::COPY_READ_BUFFER, Some(source_name));
             self.gl
                 .bind_buffer(glow::COPY_WRITE_BUFFER, Some(destination_name));
-            self.gl.copy_buffer_sub_data(
-                glow::COPY_READ_BUFFER,
-                glow::COPY_WRITE_BUFFER,
-                read_offset,
-                write_offset,
-                size,
-            );
+            if let Some(functions) = self.buffer_functions {
+                (functions.copy_buffer_sub_data)(
+                    glow::COPY_READ_BUFFER,
+                    glow::COPY_WRITE_BUFFER,
+                    read_offset,
+                    write_offset,
+                    size,
+                );
+            } else {
+                let read_offset = i32::try_from(read_offset)
+                    .map_err(|_| Self::validation(OP, "GL buffer ABI entry points unavailable"))?;
+                let write_offset = i32::try_from(write_offset)
+                    .map_err(|_| Self::validation(OP, "GL buffer ABI entry points unavailable"))?;
+                let size = i32::try_from(size)
+                    .map_err(|_| Self::validation(OP, "GL buffer ABI entry points unavailable"))?;
+                self.gl.copy_buffer_sub_data(
+                    glow::COPY_READ_BUFFER,
+                    glow::COPY_WRITE_BUFFER,
+                    read_offset,
+                    write_offset,
+                    size,
+                );
+            }
         }
         self.driver_error(OP)
     }
@@ -186,8 +203,8 @@ impl GlCopyDomainApi for NativeGlProvider {
         if u64::try_from(bytes.len()).ok() != Some(destination.size) {
             return Err(Self::validation(OP, "byte length differs from the range"));
         }
-        let offset = i32::try_from(destination.offset)
-            .map_err(|_| Self::validation(OP, "offset exceeds GLintptr"))?;
+        let offset = pointer_sized(destination.offset)
+            .ok_or_else(|| Self::validation(OP, "offset exceeds native GLintptr"))?;
         // COPY_WRITE_BUFFER keeps ARRAY_BUFFER and ELEMENT_ARRAY_BUFFER
         // vertex-state bindings untouched by transfer work.  The copy targets
         // themselves are Layer 1-private scratch: bound immediately before use,
@@ -195,8 +212,21 @@ impl GlCopyDomainApi for NativeGlProvider {
         // SAFETY: current-context contract; the exact byte slice was validated.
         unsafe {
             self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(name));
-            self.gl
-                .buffer_sub_data_u8_slice(glow::COPY_WRITE_BUFFER, offset, bytes);
+            if let Some(functions) = self.buffer_functions {
+                (functions.buffer_sub_data)(
+                    glow::COPY_WRITE_BUFFER,
+                    offset,
+                    isize::try_from(bytes.len()).map_err(|_| {
+                        Self::validation(OP, "upload size exceeds native GLsizeiptr")
+                    })?,
+                    bytes.as_ptr().cast(),
+                );
+            } else {
+                let offset = i32::try_from(offset)
+                    .map_err(|_| Self::validation(OP, "GL buffer ABI entry points unavailable"))?;
+                self.gl
+                    .buffer_sub_data_u8_slice(glow::COPY_WRITE_BUFFER, offset, bytes);
+            }
         }
         self.driver_error(OP)
     }

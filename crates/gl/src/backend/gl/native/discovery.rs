@@ -144,6 +144,13 @@ pub(crate) unsafe fn discover_current_glow_identified(
             // optional queries fail closed instead of turning them into support.
             (!self.take_error()).then_some(i64::from(value))
         }
+        fn integer64(&self, name: u32) -> Option<i64> {
+            // SAFETY: upheld by discover_current_glow's current-context contract.
+            let value = unsafe { self.0.get_parameter_i64(name) };
+            // SAFETY: see integer.  Storage-block size is specified as GLint64,
+            // so querying it through the i32 route would truncate a legal limit.
+            (!self.take_error()).then_some(value)
+        }
         fn integer_pair(&self, name: u32) -> Option<[i64; 2]> {
             let mut values = [0_i32; 2];
             // SAFETY: upheld by discover_current_glow's current-context contract.
@@ -251,6 +258,9 @@ impl<Q: NativeGlQuery + NativeGlProbes> NativeGlQuery for NativeOnly<'_, Q> {
     }
     fn integer(&self, name: u32) -> Option<i64> {
         self.0.integer(name)
+    }
+    fn integer64(&self, name: u32) -> Option<i64> {
+        self.0.integer64(name)
     }
     fn integer_pair(&self, name: u32) -> Option<[i64; 2]> {
         self.0.integer_pair(name)

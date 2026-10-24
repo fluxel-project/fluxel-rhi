@@ -10,6 +10,12 @@ pub(crate) trait NativeGlQuery {
     fn take_error(&self) -> bool;
     fn string(&self, name: u32) -> Option<String>;
     fn integer(&self, name: u32) -> Option<i64>;
+    /// Reads a `GLint64`-valued limit.  Most discovery facts are `GLint`; the
+    /// default keeps simple mock queries compatible when a wider value is not
+    /// relevant to their fixture.
+    fn integer64(&self, name: u32) -> Option<i64> {
+        self.integer(name)
+    }
     fn integer_pair(&self, name: u32) -> Option<[i64; 2]>;
     fn indexed_integer(&self, name: u32, index: u32) -> Option<i64>;
     fn float(&self, name: u32) -> Option<f32>;

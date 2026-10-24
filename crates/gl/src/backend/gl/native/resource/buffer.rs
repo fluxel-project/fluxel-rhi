@@ -4,10 +4,19 @@
 //! resource reference is retired with its context current.
 use super::NativeGlProvider;
 use crate::backend::gl::api::{self, BufferId, GlBufferDesc, GlError, GlFamilyApi as _};
+use crate::backend::gl::native::buffer_abi::pointer_sized;
 
 const BUFFER_ALLOCATION_USAGE: u32 = glow::STATIC_DRAW;
 
 impl NativeGlProvider {
+    /// The largest buffer this provider can address through its loaded ABI.
+    /// This is an addressing fact, not an allocation promise.
+    pub(crate) const fn advertised_max_buffer_bytes(&self) -> u64 {
+        super::super::buffer_abi::advertised_native_max_buffer_bytes(
+            self.buffer_functions.is_some(),
+        )
+    }
+
     pub(super) fn create_native_buffer(&mut self, desc: GlBufferDesc) -> Result<BufferId, GlError> {
         use glow::HasContext as _;
         self.assert_ready("create-buffer")?;
@@ -15,8 +24,9 @@ impl NativeGlProvider {
             operation: "create-buffer",
             message: error.message(),
         })?;
-        let size = i32::try_from(desc.size)
-            .map_err(|_| Self::validation("create-buffer", "buffer exceeds GLsizei"))?;
+        let size = pointer_sized(desc.size).ok_or_else(|| {
+            Self::validation("create-buffer", "buffer exceeds native GL pointer range")
+        })?;
         let slot = self.slot("create-buffer")?;
         // SAFETY: current-context contract; all validation completed before GL mutation.
         let name = unsafe { self.gl.create_buffer() }.map_err(|message| GlError::Driver {
@@ -35,8 +45,23 @@ impl NativeGlProvider {
             if persistent {
                 self.allocate_persistent_buffer(size).map(Some)
             } else {
-                self.gl
-                    .buffer_data_size(glow::COPY_WRITE_BUFFER, size, BUFFER_ALLOCATION_USAGE);
+                if let Some(functions) = self.buffer_functions {
+                    (functions.buffer_data)(
+                        glow::COPY_WRITE_BUFFER,
+                        size,
+                        core::ptr::null(),
+                        BUFFER_ALLOCATION_USAGE,
+                    );
+                } else {
+                    let size = i32::try_from(size).map_err(|_| {
+                        Self::validation("create-buffer", "GL buffer ABI entry points unavailable")
+                    })?;
+                    self.gl.buffer_data_size(
+                        glow::COPY_WRITE_BUFFER,
+                        size,
+                        BUFFER_ALLOCATION_USAGE,
+                    );
+                }
                 self.driver_error("create-buffer").map(|()| None)
             }
         };

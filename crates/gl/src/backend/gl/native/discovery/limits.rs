@@ -164,11 +164,14 @@ pub(super) fn limits(
             glow_const::MAX_SHADER_STORAGE_BUFFER_BINDINGS,
             "GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS",
         )?,
-        max_storage_block_size: u64::from(optional(
-            optional_routes.storage,
-            glow_const::MAX_SHADER_STORAGE_BLOCK_SIZE,
-            "GL_MAX_SHADER_STORAGE_BLOCK_SIZE",
-        )?),
+        max_storage_block_size: if optional_routes.storage {
+            query
+                .integer64(glow_const::MAX_SHADER_STORAGE_BLOCK_SIZE)
+                .and_then(|value| u64::try_from(value).ok())
+                .unwrap_or(0)
+        } else {
+            0
+        },
         storage_buffer_offset_alignment: u64::from(optional(
             optional_routes.storage,
             glow_const::SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT,
@@ -337,12 +340,12 @@ fn optional_limit_routes(
 
 #[cfg(test)]
 mod optional_limit_route_tests {
-    use super::{NativeGlQuery, ProbeReport, limits, optional_limit_routes};
+    use super::{NativeGlQuery, ProbeReport, glow_const, limits, optional_limit_routes};
     use crate::backend::gl::api::{GlExtensionSet, GlFamilyProfile};
     use std::cell::RefCell;
 
     #[derive(Default)]
-    struct Query(RefCell<Vec<u32>>);
+    struct Query(RefCell<Vec<u32>>, RefCell<Vec<u32>>);
     impl NativeGlQuery for Query {
         fn take_error(&self) -> bool {
             false
@@ -359,6 +362,14 @@ mod optional_limit_route_tests {
                 glow::MAX_COMPUTE_TEXTURE_IMAGE_UNITS => 13,
                 glow::MAX_COMBINED_IMAGE_UNIFORMS => 11,
                 _ => 1,
+            })
+        }
+        fn integer64(&self, token: u32) -> Option<i64> {
+            self.1.borrow_mut().push(token);
+            Some(if token == glow_const::MAX_SHADER_STORAGE_BLOCK_SIZE {
+                5_i64 * 1024 * 1024 * 1024
+            } else {
+                1
             })
         }
         fn integer_pair(&self, _: u32) -> Option<[i64; 2]> {
@@ -468,5 +479,30 @@ mod optional_limit_route_tests {
         assert!(routes.compute);
         assert!(routes.storage);
         assert!(routes.image);
+    }
+
+    #[test]
+    fn storage_block_limit_uses_glint64_query() {
+        let query = Query::default();
+        let result = limits(
+            &query,
+            GlFamilyProfile::Desktop { major: 4, minor: 3 },
+            &GlExtensionSet::default(),
+            &ProbeReport::default(),
+        )
+        .unwrap();
+        assert_eq!(result.max_storage_block_size, 5 * 1024 * 1024 * 1024);
+        assert!(
+            query
+                .1
+                .borrow()
+                .contains(&glow_const::MAX_SHADER_STORAGE_BLOCK_SIZE)
+        );
+        assert!(
+            !query
+                .0
+                .borrow()
+                .contains(&glow_const::MAX_SHADER_STORAGE_BLOCK_SIZE)
+        );
     }
 }

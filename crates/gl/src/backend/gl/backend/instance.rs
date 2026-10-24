@@ -136,6 +136,7 @@ fn gl_capabilities(
             storage_buffers,
             storage_images,
             native_binding_arrays,
+            wide_buffer_abi,
         ) = state
             .with_native("read GL device limits", |provider| {
                 let discovery = provider.discovery();
@@ -151,6 +152,7 @@ fn gl_capabilities(
                     capabilities.supports(GlCapability::StorageBuffer),
                     capabilities.supports(GlCapability::StorageImage),
                     matches!(provider.profile(), crate::backend::gl::api::GlFamilyProfile::Desktop { major, .. } if major >= 4) || matches!(provider.profile(), crate::backend::gl::api::GlFamilyProfile::Embedded { major, .. } if major >= 3),
+                    provider.supports_wide_buffer_abi(),
                 ))
             })
             .map_err(native_error)?;
@@ -206,9 +208,14 @@ fn gl_capabilities(
                 max_color_attachments: limits.max_color_attachments,
                 max_texture_dimension_2d: limits.max_texture_size,
                 max_texture_array_layers: limits.max_array_texture_layers,
-                // GL does not expose a portable maximum buffer allocation.
-                // The direct resource route validates sizes against GLsizei.
-                max_buffer_bytes: i32::MAX as u64,
+                // GL does not expose a portable maximum allocation. Native
+                // `GLsizeiptr`/`GLintptr` are pointer-sized, so publish the
+                // ABI addressing ceiling; a real allocation may still report
+                // GL_OUT_OF_MEMORY. WebGL keeps its separate JS-facing bound.
+                max_buffer_bytes:
+                    crate::backend::gl::native::buffer_abi::advertised_native_max_buffer_bytes(
+                        wide_buffer_abi,
+                    ),
                 // Vertex attributes may source distinct buffers through one
                 // VAO. GL exposes an attribute-count limit, not a separate
                 // binding-slot count, therefore this is the proven ceiling.

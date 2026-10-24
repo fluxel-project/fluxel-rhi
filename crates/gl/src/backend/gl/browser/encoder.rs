@@ -24,6 +24,7 @@ pub(super) mod normalized_readback;
 mod packed_depth_upload;
 mod pbo_readback;
 mod raster;
+mod resolve;
 mod stencil_transfer;
 mod surface_color;
 mod surface_raster;

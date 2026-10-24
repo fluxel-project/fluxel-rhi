@@ -156,13 +156,16 @@ impl NativeGlProvider {
                 .memory_barrier(glow::COMMAND_BARRIER_BIT | glow::SHADER_STORAGE_BARRIER_BIT);
             for (i, (buffer, offset, size)) in old.into_iter().enumerate() {
                 if buffer.is_some() && size > 0 {
-                    self.gl.bind_buffer_range(
+                    self.bind_buffer_range_wide(
                         glow::SHADER_STORAGE_BUFFER,
                         i as u32,
                         buffer,
-                        offset as i32,
-                        size as i32,
-                    );
+                        u64::try_from(offset)
+                            .map_err(|_| Self::validation(OP, "saved SSBO offset is negative"))?,
+                        u64::try_from(size)
+                            .map_err(|_| Self::validation(OP, "saved SSBO size is negative"))?,
+                        OP,
+                    )?;
                 } else {
                     self.gl
                         .bind_buffer_base(glow::SHADER_STORAGE_BUFFER, i as u32, buffer);

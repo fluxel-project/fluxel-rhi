@@ -52,8 +52,8 @@ impl GlBindingApi for MockGlFamilyApi {
         &mut self,
         index: u32,
         buffer: Option<BufferId>,
-        offset: u32,
-        size: u32,
+        offset: u64,
+        size: u64,
     ) -> Result<(), GlError> {
         self.ready("bind-uniform-buffer")?;
         if let Err(error) =

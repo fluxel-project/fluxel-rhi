@@ -50,6 +50,7 @@ pub(super) fn lower_bind_group_layout(
             } if matches!(
                 dimension,
                 api::TextureViewDimension::D2
+                    | api::TextureViewDimension::D1
                     | api::TextureViewDimension::D2Array
                     | api::TextureViewDimension::D3
                     | api::TextureViewDimension::Cube

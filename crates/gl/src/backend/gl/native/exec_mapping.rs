@@ -4,6 +4,7 @@
 //! owned by its Core buffer wrapper for the entire mapping lifetime.
 use super::provider::NativeGlProvider;
 use crate::backend::gl::api::{BufferId, GlBufferUsage, GlError, GlFamilyApi as _};
+use crate::backend::gl::native::buffer_abi::pointer_sized;
 use glow::HasContext as _;
 
 impl NativeGlProvider {
@@ -31,10 +32,10 @@ impl NativeGlProvider {
         if length == 0 || offset.checked_add(length).is_none_or(|end| end > desc.size) {
             return Err(Self::validation(OP, "invalid mapping range"));
         }
-        let offset = i32::try_from(offset)
-            .map_err(|_| Self::validation(OP, "mapping offset exceeds GL range"))?;
-        let length = i32::try_from(length)
-            .map_err(|_| Self::validation(OP, "mapping length exceeds GL range"))?;
+        let offset = pointer_sized(offset)
+            .ok_or_else(|| Self::validation(OP, "mapping offset exceeds native GL range"))?;
+        let length = pointer_sized(length)
+            .ok_or_else(|| Self::validation(OP, "mapping length exceeds native GL range"))?;
         // SAFETY: current context and live validated allocation; prior binding is restored on every path.
         unsafe {
             let prior = self.gl.get_parameter_i32(glow::COPY_WRITE_BUFFER_BINDING) as u32;
@@ -47,8 +48,19 @@ impl NativeGlProvider {
                 core::ptr::null_mut()
             } else {
                 let flags = glow::MAP_READ_BIT;
-                self.gl
-                    .map_buffer_range(glow::COPY_WRITE_BUFFER, offset, length, flags)
+                if let Some(functions) = self.buffer_functions {
+                    (functions.map_buffer_range)(glow::COPY_WRITE_BUFFER, offset, length, flags)
+                        .cast::<u8>()
+                } else {
+                    let offset = i32::try_from(offset).map_err(|_| {
+                        Self::validation(OP, "GL buffer ABI entry points unavailable")
+                    })?;
+                    let length = i32::try_from(length).map_err(|_| {
+                        Self::validation(OP, "GL buffer ABI entry points unavailable")
+                    })?;
+                    self.gl
+                        .map_buffer_range(glow::COPY_WRITE_BUFFER, offset, length, flags)
+                }
             };
             self.gl.bind_buffer(
                 glow::COPY_WRITE_BUFFER,

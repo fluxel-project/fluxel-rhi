@@ -13,6 +13,7 @@ use super::spi::native_error;
 use super::{Gl, GlDevice, types::*};
 
 mod clear;
+mod resolve;
 mod transfer;
 mod transition;
 
@@ -72,6 +73,14 @@ impl CommandBackend for Gl {
         dst: TextureRegion<'_, Gl>,
     ) -> Result<()> {
         transfer::copy_texture(encoder, src, dst)
+    }
+
+    fn resolve(
+        encoder: &mut GlEncoder,
+        src: TextureRegion<'_, Gl>,
+        dst: TextureRegion<'_, Gl>,
+    ) -> Result<()> {
+        resolve::texture(encoder, src, dst)
     }
 
     fn blit(

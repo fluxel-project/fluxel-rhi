@@ -139,12 +139,11 @@ impl NativeGlProvider {
         if end > destination.size {
             return Err(Self::validation(OP, "destination too short"));
         }
-        let total_end = destination
+        let _total_end = destination
             .offset
             .checked_add(end)
-            .and_then(|v| i32::try_from(v).ok())
-            .ok_or_else(|| Self::validation(OP, "destination exceeds GL range"))?;
-        let _ = total_end;
+            .and_then(|v| isize::try_from(v).ok())
+            .ok_or_else(|| Self::validation(OP, "destination exceeds native GL range"))?;
         let level = i32::try_from(source.subresource.mip_level)
             .map_err(|_| Self::validation(OP, "mip exceeds GL range"))?;
         let x = i32::try_from(source.origin[0])
@@ -231,13 +230,14 @@ impl NativeGlProvider {
                     if let Some(scratch) = scratch {
                         self.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(scratch));
                         self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(buffer));
-                        self.gl.copy_buffer_sub_data(
+                        self.copy_buffer_sub_data_wide(
                             glow::COPY_READ_BUFFER,
                             glow::COPY_WRITE_BUFFER,
                             0,
-                            offset as i32,
-                            row_bytes,
-                        );
+                            offset,
+                            u64::try_from(row_bytes).expect("validated row size"),
+                            OP,
+                        )?;
                     }
                 }
             }
@@ -388,13 +388,14 @@ impl NativeGlProvider {
                             + layout.offset
                             + output_stride * u64::from(layer)
                             + u64::from(layout.bytes_per_row) * u64::from(row);
-                        self.gl.copy_buffer_sub_data(
+                        self.copy_buffer_sub_data_wide(
                             glow::COPY_READ_BUFFER,
                             glow::COPY_WRITE_BUFFER,
-                            src as i32,
-                            dst as i32,
-                            row_bytes,
-                        );
+                            src,
+                            dst,
+                            u64::try_from(row_bytes).expect("validated row size"),
+                            OP,
+                        )?;
                     }
                 }
                 result = self.driver_error(OP);

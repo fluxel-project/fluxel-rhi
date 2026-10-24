@@ -647,8 +647,8 @@ impl GlBindingApi for WebGl2BrowserDiscovery {
         &mut self,
         index: u32,
         buffer: Option<BufferId>,
-        offset: u32,
-        size: u32,
+        offset: u64,
+        size: u64,
     ) -> Result<(), GlError> {
         const OP: &str = "bind-uniform-buffer";
         self.assert_provider_ready(OP)?;
@@ -668,11 +668,11 @@ impl GlBindingApi for WebGl2BrowserDiscovery {
         };
         validate_uniform_range(offset, size, desc.size)
             .map_err(|error| Self::validation(OP, error.message()))?;
-        let resolved = if size == 0 {
-            desc.size - u64::from(offset)
-        } else {
-            u64::from(size)
-        };
+        let resolved = if size == 0 { desc.size - offset } else { size };
+        let offset = i32::try_from(offset)
+            .map_err(|_| Self::validation(OP, "WebGL buffer offset exceeds i32"))?;
+        let resolved = i32::try_from(resolved)
+            .map_err(|_| Self::validation(OP, "WebGL buffer range exceeds i32"))?;
         let raw = self
             .buffers
             .get(&buffer.slot)
@@ -684,8 +684,11 @@ impl GlBindingApi for WebGl2BrowserDiscovery {
             Gl::UNIFORM_BUFFER,
             index,
             Some(&raw),
-            u64::from(offset) as f64,
-            resolved as f64,
+            // WebGL's implementation-facing range ABI is bounded to signed
+            // 32-bit byte addresses even though the JS overload uses f64.
+            // Do not round a wider private packet into a different address.
+            f64::from(offset),
+            f64::from(resolved),
         );
         self.driver_error(OP)
     }

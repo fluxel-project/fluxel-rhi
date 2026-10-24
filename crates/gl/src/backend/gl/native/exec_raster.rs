@@ -176,8 +176,10 @@ impl NativeGlProvider {
                         return Err(Self::validation(OP, "indexed draw leaves the index buffer"));
                     }
                     let offset = indexed_draw_offset(index, draw.first_index)
-                        .and_then(|value| i32::try_from(value).ok())
-                        .ok_or_else(|| Self::validation(OP, "index offset exceeds i32"))?;
+                        .and_then(|value| isize::try_from(value).ok())
+                        .ok_or_else(|| {
+                            Self::validation(OP, "index offset exceeds native GLintptr")
+                        })?;
                     let count = i32::try_from(draw.index_count)
                         .map_err(|_| Self::validation(OP, "index count exceeds i32"))?;
                     let instances = i32::try_from(draw.instance_count)
@@ -193,16 +195,51 @@ impl NativeGlProvider {
                             base_vertex,
                         );
                     } else if instances == 1 {
-                        self.gl
-                            .draw_elements(mode, count, indexed_draw_type(index), offset);
+                        if let Some(draw_elements) = self.draw_functions.elements {
+                            draw_elements(
+                                mode,
+                                count,
+                                indexed_draw_type(index),
+                                offset as usize as *const core::ffi::c_void,
+                            );
+                        } else {
+                            self.gl.draw_elements(
+                                mode,
+                                count,
+                                indexed_draw_type(index),
+                                i32::try_from(offset).map_err(|_| {
+                                    Self::validation(
+                                        OP,
+                                        "wide DrawElements entry point unavailable",
+                                    )
+                                })?,
+                            );
+                        }
                     } else {
-                        self.gl.draw_elements_instanced(
-                            mode,
-                            count,
-                            indexed_draw_type(index),
-                            offset,
-                            instances,
-                        );
+                        if let Some(draw_elements_instanced) =
+                            self.draw_functions.elements_instanced
+                        {
+                            draw_elements_instanced(
+                                mode,
+                                count,
+                                indexed_draw_type(index),
+                                offset as usize as *const core::ffi::c_void,
+                                instances,
+                            );
+                        } else {
+                            self.gl.draw_elements_instanced(
+                                mode,
+                                count,
+                                indexed_draw_type(index),
+                                i32::try_from(offset).map_err(|_| {
+                                    Self::validation(
+                                        OP,
+                                        "wide DrawElementsInstanced entry point unavailable",
+                                    )
+                                })?,
+                                instances,
+                            );
+                        }
                     }
                 }
             }

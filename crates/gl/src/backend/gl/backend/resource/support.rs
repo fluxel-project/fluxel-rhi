@@ -47,6 +47,19 @@ pub(super) fn texture_support_from_discovery(
     let renderbuffer_usage = GlTextureUsage::RENDER_ATTACHMENT
         | GlTextureUsage::COPY_SOURCE
         | GlTextureUsage::COPY_DESTINATION;
+    // A multisample color attachment cannot use the generic GL copy/readback
+    // paths, whose executors reject multisample storage.  It can nevertheless
+    // be a COPY_SOURCE for the one supported operation: an immediate color
+    // resolve.  Keep this admission tied to an actually renderable color
+    // attachment; discovery's `copy_source` flag remains the proof for every
+    // generic copy/readback route.
+    let multisample_resolve_source = desc.sample_count > 1
+        && desc.usage.contains(GlTextureUsage::RENDER_ATTACHMENT)
+        && desc.usage.contains(GlTextureUsage::COPY_SOURCE)
+        && desc
+            .format
+            .supports_blit_aspect(crate::backend::gl::api::GlTextureAspect::Color);
+    let resolve_usage = GlTextureUsage::RENDER_ATTACHMENT | GlTextureUsage::COPY_SOURCE;
     if renderbuffer
         && (desc.dimension != GlTextureDimension::D2
             || desc.extent.depth_or_layers != 1
@@ -54,7 +67,7 @@ pub(super) fn texture_support_from_discovery(
             || if standalone_stencil_copy {
                 desc.usage.is_empty() || !renderbuffer_usage.contains(desc.usage)
             } else {
-                desc.usage != GlTextureUsage::RENDER_ATTACHMENT
+                desc.usage.is_empty() || !resolve_usage.contains(desc.usage)
             })
     {
         return Support::Unsupported(
@@ -152,8 +165,10 @@ pub(super) fn texture_support_from_discovery(
     else {
         return Support::Unsupported("GL texture format/sample evidence");
     };
-    if standalone_stencil_copy && !facts.renderable {
-        return Support::Unsupported("WebGL2 stencil transfers require a renderable attachment");
+    if (standalone_stencil_copy || multisample_resolve_source) && !facts.renderable {
+        return Support::Unsupported(
+            "WebGL2 framebuffer transfers require a renderable attachment",
+        );
     }
     if (desc.usage.contains(GlTextureUsage::SAMPLED) && !facts.sampled)
         || (desc.usage.contains(GlTextureUsage::RENDER_ATTACHMENT) && !facts.renderable)
@@ -164,7 +179,8 @@ pub(super) fn texture_support_from_discovery(
         // be copy-only because this backend owns those transient attachments.
         || (desc.usage.contains(GlTextureUsage::COPY_SOURCE)
             && !facts.copy_source
-            && !standalone_stencil_copy)
+            && !standalone_stencil_copy
+            && !multisample_resolve_source)
         || (desc.usage.contains(GlTextureUsage::COPY_DESTINATION)
             && !facts.copy_destination
             && !standalone_stencil_copy)

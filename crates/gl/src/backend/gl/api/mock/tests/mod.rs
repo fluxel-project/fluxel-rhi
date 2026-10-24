@@ -301,7 +301,6 @@ fn framebuffer_descriptor(view: GlTextureView) -> GlFramebufferDescriptor {
 
 /// A pass descriptor naming exactly the view its framebuffer was built from.
 fn pass_descriptor(framebuffer: FramebufferId, view: GlTextureView) -> GlRenderPassDescriptor {
-        render_area: None,
     GlRenderPassDescriptor {
         render_area: None,
         target: super::super::GlRenderTarget::Offscreen(framebuffer),
@@ -390,6 +389,7 @@ fn compute_program() -> GlProgramDescriptor {
                 entry_point: "main".into(),
                 source_hash: GlShaderKey([9; 32]),
                 text: "void main() {}".into(),
+                spirv: None,
                 debug_name: None,
             },
         },
@@ -411,6 +411,7 @@ fn raster_program() -> GlProgramDescriptor {
         entry_point: "main".into(),
         source_hash: GlShaderKey([hash; 32]),
         text: text.into(),
+        spirv: None,
         debug_name: None,
     };
     GlProgramDescriptor {

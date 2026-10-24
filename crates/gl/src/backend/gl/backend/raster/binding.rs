@@ -238,12 +238,12 @@ pub(crate) fn bind_native_group(
                             });
                         };
                         let offset = offset
-                            .checked_add(dynamic_offset(group, binding, offsets).map_err(|_| {
+                            .checked_add(u64::from(dynamic_offset(group, binding, offsets).map_err(|_| {
                                 crate::backend::gl::api::GlError::Driver {
                                     operation: "bind reflected GL group",
                                     message: "invalid dynamic offset".into(),
                                 }
-                            })?)
+                            })?))
                             .ok_or(crate::backend::gl::api::GlError::OutOfMemory {
                                 operation: "bind reflected GL group",
                             })?;
@@ -289,8 +289,12 @@ pub(crate) fn bind_native_group(
                             point,
                             crate::backend::gl::api::GlStorageBufferRange {
                                 buffer: buffer.id,
-                                offset: u64::from(*offset) + u64::from(dynamic),
-                                size: u64::from(*size),
+                                offset: offset.checked_add(u64::from(dynamic)).ok_or(
+                                    crate::backend::gl::api::GlError::OutOfMemory {
+                                        operation: "bind reflected GL group",
+                                    },
+                                )?,
+                                size: *size,
                                 usage,
                             },
                         )?;
@@ -517,7 +521,7 @@ pub(super) fn bind_browser_group(
                         return Err(Error::InvalidState);
                     };
                     let offset = offset
-                        .checked_add(dynamic_offset(group, binding, offsets)?)
+                        .checked_add(u64::from(dynamic_offset(group, binding, offsets)?))
                         .ok_or(Error::InvalidRange)?;
                     let alignment = encoder
                         .state
@@ -525,15 +529,15 @@ pub(super) fn bind_browser_group(
                         .discovery_snapshot()
                         .limits()
                         .uniform_buffer_offset_alignment;
-                    if alignment == 0 || u64::from(offset) % alignment != 0 {
+                    if alignment == 0 || offset % alignment != 0 {
                         return Err(Error::InvalidRange);
                     }
                     browser.bind_uniform_buffer_named(
                         &pipeline.browser_program,
                         point,
                         &buffer.browser,
-                        u64::from(offset),
-                        u64::from(*size),
+                        offset,
+                        *size,
                     )?;
                 }
                 (

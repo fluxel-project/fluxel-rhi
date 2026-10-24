@@ -14,6 +14,7 @@ fn pipeline(provider: &mut WebGl2BrowserDiscovery, z: &str, green: bool) -> GlRa
         entry_point: "main".into(),
         source_hash: GlShaderKey([hash; 32]),
         text,
+        spirv: None,
         debug_name: None,
     };
     let (program, _) = provider.create_program(&GlProgramDescriptor {

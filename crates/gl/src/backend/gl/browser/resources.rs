@@ -103,13 +103,14 @@ impl BrowserOwner {
             let admitted_usage = GlTextureUsage::RENDER_ATTACHMENT
                 | GlTextureUsage::COPY_SOURCE
                 | GlTextureUsage::COPY_DESTINATION;
+            let resolve_usage = GlTextureUsage::RENDER_ATTACHMENT | GlTextureUsage::COPY_SOURCE;
             if desc.dimension != GlTextureDimension::D2
                 || desc.extent.depth_or_layers != 1
                 || desc.mip_level_count != 1
                 || if standalone_stencil_copy {
                     desc.usage.is_empty() || !admitted_usage.contains(desc.usage)
                 } else {
-                    desc.usage != GlTextureUsage::RENDER_ATTACHMENT
+                    desc.usage.is_empty() || !resolve_usage.contains(desc.usage)
                 }
             {
                 return Err(Error::Unsupported(

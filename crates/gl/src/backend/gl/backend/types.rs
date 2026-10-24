@@ -312,13 +312,13 @@ pub struct GlBindGroupLayout {
 pub(crate) enum GlBoundResource {
     UniformBuffer {
         buffer: GlBuffer,
-        offset: u32,
-        size: u32,
+        offset: u64,
+        size: u64,
     },
     StorageBuffer {
         buffer: GlBuffer,
-        offset: u32,
-        size: u32,
+        offset: u64,
+        size: u64,
     },
     Texture(GlTextureView),
     StorageTexture(GlTextureView),

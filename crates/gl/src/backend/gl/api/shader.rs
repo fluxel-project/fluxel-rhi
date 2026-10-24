@@ -42,7 +42,14 @@ pub(crate) struct GlShaderSource {
     pub entry_point: String,
     pub source_hash: GlShaderKey,
     pub text: String,
+    /// Desktop GL SPIR-V artifact. Text remains empty for this route.
+    pub spirv: Option<GlSpirvSource>,
     pub debug_name: Option<String>,
+}
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct GlSpirvSource {
+    pub words: Vec<u32>,
+    pub specialization: Vec<(u32, u32)>,
 }
 /// Fluxel's logical binding key. It deliberately is not a GL binding point.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -308,6 +315,7 @@ pub(crate) struct GlProgramDescriptor {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum GlShaderValidationError {
+    MixedShaderFormats,
     WrongStage,
     EmptySource,
     EmptyEntryPoint,
@@ -341,6 +349,9 @@ impl GlProgramDescriptor {
     pub(crate) fn validate(&self) -> Result<(), GlShaderValidationError> {
         match &self.kind {
             GlProgramKind::Raster { vertex, fragment } => {
+                if vertex.spirv.is_some() != fragment.spirv.is_some() {
+                    return Err(GlShaderValidationError::MixedShaderFormats);
+                }
                 if vertex.stage != GlShaderStage::Vertex
                     || fragment.stage != GlShaderStage::Fragment
                 {
@@ -376,7 +387,7 @@ impl GlProgramDescriptor {
 }
 impl GlShaderSource {
     pub(crate) fn validate(&self) -> Result<(), GlShaderValidationError> {
-        if self.text.is_empty() {
+        if self.text.is_empty() && self.spirv.is_none() {
             return Err(GlShaderValidationError::EmptySource);
         }
         if self.entry_point.is_empty() {
@@ -395,6 +406,11 @@ impl GlShaderSource {
         profile: GlFamilyProfile,
     ) -> Result<(), GlShaderValidationError> {
         self.validate()?;
+        if self.spirv.is_some() {
+            return matches!(profile, GlFamilyProfile::Desktop { .. })
+                .then_some(())
+                .ok_or(GlShaderValidationError::DialectProfileMismatch);
+        }
         match (profile, self.dialect) {
             (GlFamilyProfile::WebGl2, GlShaderDialect::Embedded { version: 300 }) => Ok(()),
             (
@@ -504,6 +520,35 @@ pub(crate) trait GlShaderApi: GlFamilyApi {
 mod tests {
     use super::*;
     #[test]
+    fn raster_stages_cannot_mix_native_artifact_formats() {
+        let source = |stage| GlShaderSource {
+            stage,
+            dialect: GlShaderDialect::Desktop { version: 460 },
+            entry_point: "main".into(),
+            source_hash: GlShaderKey([0; 32]),
+            text: "void main() {}".into(),
+            spirv: None,
+            debug_name: None,
+        };
+        let mut fragment = source(GlShaderStage::Fragment);
+        fragment.spirv = Some(GlSpirvSource {
+            words: vec![],
+            specialization: vec![],
+        });
+        let program = GlProgramDescriptor {
+            kind: GlProgramKind::Raster {
+                vertex: source(GlShaderStage::Vertex),
+                fragment,
+            },
+            layout: GlPipelineLayout { bindings: vec![] },
+            debug_name: None,
+        };
+        assert_eq!(
+            program.validate(),
+            Err(GlShaderValidationError::MixedShaderFormats)
+        );
+    }
+    #[test]
     fn fixed_one_element_assignment_keeps_array_identity() {
         let location = GlBindingLocation {
             group: 0,
@@ -570,6 +615,7 @@ mod tests {
             entry_point: "main".into(),
             source_hash: GlShaderKey([7; 32]),
             text: "void main() {}".into(),
+            spirv: None,
             debug_name: None,
         }
     }

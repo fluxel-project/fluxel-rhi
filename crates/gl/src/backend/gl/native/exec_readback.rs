@@ -14,6 +14,7 @@ use crate::backend::gl::api::{
     GlBufferRange, GlError, GlExtent3d, GlFamilyApi as _, GlPixelFormat, GlPixelLayout, GlReadback,
     GlRepackPolicy, GlTextureRegion,
 };
+use crate::backend::gl::native::buffer_abi::pointer_sized;
 
 impl NativeGlProvider {
     pub(super) fn read_buffer_now(&mut self, source: GlBufferRange) -> Result<Vec<u8>, GlError> {
@@ -24,8 +25,8 @@ impl NativeGlProvider {
         source
             .validate_for(desc)
             .map_err(|_| Self::validation(OP, "invalid source buffer range"))?;
-        let offset = i32::try_from(source.offset)
-            .map_err(|_| Self::validation(OP, "offset exceeds GLintptr"))?;
+        let offset = pointer_sized(source.offset)
+            .ok_or_else(|| Self::validation(OP, "offset exceeds native GLintptr"))?;
         let mut out = vec![
             0u8;
             usize::try_from(source.size)
@@ -61,19 +62,35 @@ impl NativeGlProvider {
             self.discovery.context().profile(),
             crate::backend::gl::api::GlFamilyProfile::Embedded { .. }
         ) {
-            let length = i32::try_from(source.size)
-                .map_err(|_| Self::validation(OP, "read size exceeds GLsizeiptr"))?;
+            let length = pointer_sized(source.size)
+                .ok_or_else(|| Self::validation(OP, "read size exceeds native GLsizeiptr"))?;
             // SAFETY: the buffer and range were validated above and are bound
             // to COPY_READ_BUFFER on this current GLES context. GLES 3.0 has
             // mapBufferRange but not desktop GetBufferSubData; the mapping is
             // copied before it is unmapped and never escapes this call.
             let data_intact = unsafe {
-                let mapped = self.gl.map_buffer_range(
-                    glow::COPY_READ_BUFFER,
-                    offset,
-                    length,
-                    glow::MAP_READ_BIT,
-                );
+                let mapped = if let Some(functions) = self.buffer_functions {
+                    (functions.map_buffer_range)(
+                        glow::COPY_READ_BUFFER,
+                        offset,
+                        length,
+                        glow::MAP_READ_BIT,
+                    )
+                    .cast::<u8>()
+                } else {
+                    let offset = i32::try_from(offset).map_err(|_| {
+                        Self::validation(OP, "GL buffer ABI entry points unavailable")
+                    })?;
+                    let length = i32::try_from(length).map_err(|_| {
+                        Self::validation(OP, "GL buffer ABI entry points unavailable")
+                    })?;
+                    self.gl.map_buffer_range(
+                        glow::COPY_READ_BUFFER,
+                        offset,
+                        length,
+                        glow::MAP_READ_BIT,
+                    )
+                };
                 if mapped.is_null() {
                     return Err(GlError::Driver {
                         operation: OP,
@@ -92,8 +109,25 @@ impl NativeGlProvider {
         } else {
             // SAFETY: current-context contract; the exact byte slice was validated.
             unsafe {
-                self.gl
-                    .get_buffer_sub_data(glow::COPY_READ_BUFFER, offset, &mut out);
+                if let Some(get_buffer_sub_data) = self
+                    .buffer_functions
+                    .and_then(|functions| functions.get_buffer_sub_data)
+                {
+                    get_buffer_sub_data(
+                        glow::COPY_READ_BUFFER,
+                        offset,
+                        isize::try_from(out.len()).map_err(|_| {
+                            Self::validation(OP, "read size exceeds native GLsizeiptr")
+                        })?,
+                        out.as_mut_ptr().cast(),
+                    );
+                } else {
+                    let offset = i32::try_from(offset).map_err(|_| {
+                        Self::validation(OP, "GL buffer ABI entry points unavailable")
+                    })?;
+                    self.gl
+                        .get_buffer_sub_data(glow::COPY_READ_BUFFER, offset, &mut out);
+                }
             }
         }
         self.driver_error(OP)?;

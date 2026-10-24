@@ -207,6 +207,7 @@ fn wgl_clear_ignores_and_restores_pipeline_write_masks() {
         entry_point: "main".into(),
         source_hash: GlShaderKey([byte; 32]),
         text: source.into(),
+        spirv: None,
         debug_name: None,
     };
     let (program, _) = provider.create_program(&GlProgramDescriptor {

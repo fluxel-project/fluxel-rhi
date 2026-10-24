@@ -95,6 +95,7 @@ fn embedded_precision_defaults_follow_version_and_extensions() {
         source_hash: GlShaderKey([0; 32]),
         text: "#version 300 es\n#extension GL_EXT_texture_norm16 : enable\nout vec4 color;\n"
             .into(),
+        spirv: None,
         debug_name: None,
     };
     apply_embedded_precision_defaults(&mut source);
@@ -108,6 +109,7 @@ fn embedded_precision_defaults_follow_version_and_extensions() {
         entry_point: "main".into(),
         source_hash: GlShaderKey([0; 32]),
         text: "#version 400 core\nvoid main() {}\n".into(),
+        spirv: None,
         debug_name: None,
     };
     let original = desktop.text.clone();
