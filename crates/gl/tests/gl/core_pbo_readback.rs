@@ -112,6 +112,47 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
     }
 }
 
+/// A readback ticket observes its command position, including an offset range,
+/// even when the source is overwritten before the completion is awaited.
+async fn buffer_ticket_snapshot(d: &Device<Gl>) {
+    let source = d
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: 64,
+            usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            memory: MemoryClass::Device,
+        })
+        .unwrap();
+    let fixture = common::ImmediateFixture {
+        device: d,
+        lane: d.lanes()[0].id,
+    };
+    let plan = common::single_commands_plan(&fixture, 1601).unwrap();
+    // SAFETY: the buffer and device outlive the covering completion.
+    let mut session =
+        unsafe { common::begin_commands(&fixture, plan, CompletionRequest::End) }.unwrap();
+    let mut run = session.begin_commands().unwrap_or_else(|_| panic!("begin"));
+    let commands = run.commands();
+    let initial: Vec<u8> = (0..64).map(|i| (i as u8).wrapping_mul(11)).collect();
+    commands.write_buffer(&source, 0, &initial).unwrap();
+    let before = commands.readback_buffer(&source, 7..39).unwrap();
+    commands.write_buffer(&source, 0, &[0xc7; 64]).unwrap();
+    let after = commands.readback_buffer(&source, 7..39).unwrap();
+    assert!(matches!(run.close(), ImmediateRunOutcome::Issued(_)));
+    let point = match session.finish() {
+        ImmediateFinishOutcome::Issued(prefix) => {
+            prefix.checkpoints.into_iter().next().unwrap().point
+        }
+        _ => panic!("finish"),
+    };
+    d.wait_completion(&point).await.unwrap();
+    // SAFETY: this point covers both ticket captures and the source overwrite.
+    let first = unsafe { d.read_after(before, &point) }.await.unwrap();
+    let second = unsafe { d.read_after(after, &point) }.await.unwrap();
+    assert_eq!(first.bytes, initial[7..39]);
+    assert_eq!(second.bytes, [0xc7; 32]);
+}
+
 #[cfg(all(windows, feature = "native-gl-wgl"))]
 #[test]
 #[ignore = "requires a WGL hardware context"]
@@ -124,6 +165,7 @@ fn wgl_core_pbo_readback_volume() {
     ));
     block_on(readback_volume(&d, TextureDimension::D2));
     block_on(readback_volume(&d, TextureDimension::D3));
+    block_on(buffer_ticket_snapshot(&d));
 }
 
 #[cfg(feature = "native-gles-egl")]
@@ -133,4 +175,5 @@ fn gles_core_pbo_readback_volume() {
     let d = block_on(open(GlInstance::gles_pbuffer([8, 8]).unwrap()));
     block_on(readback_volume(&d, TextureDimension::D2));
     block_on(readback_volume(&d, TextureDimension::D3));
+    block_on(buffer_ticket_snapshot(&d));
 }

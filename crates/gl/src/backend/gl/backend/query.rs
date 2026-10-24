@@ -274,7 +274,12 @@ pub(crate) fn reset(encoder: &mut GlEncoder, set: &GlQuerySet, range: Range<u32>
 
 pub(crate) fn write_timestamp(encoder: &mut GlEncoder, set: &GlQuerySet, slot: u32) -> Result<()> {
     if encoder.raster_multiview.is_some() {
-        return Err(Error::Unsupported("OVR multiview timer queries"));
+        // OVR_multiview makes a timestamp undefined if its execution interval
+        // touches a multiview draw framebuffer. Pass boundaries are different:
+        // begin is emitted before binding that FBO and end after it is unbound.
+        return Err(Error::Unsupported(
+            "timestamp inside an active OVR multiview raster pass",
+        ));
     }
     if set.kind != api::QueryKind::Timestamp || !Rc::ptr_eq(&encoder.state, &set.state) {
         return Err(Error::InvalidState);

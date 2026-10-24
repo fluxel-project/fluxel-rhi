@@ -87,11 +87,6 @@ pub(super) fn begin(
     first: u32,
     count: u32,
 ) -> Result<()> {
-    // OVR_multiview leaves timer query results undefined while a multiview
-    // draw framebuffer participates in the query interval.
-    if desc.timestamp_writes.is_some() {
-        return Err(Error::Unsupported("GL multiview timestamp queries"));
-    }
     let mut extent = None;
     let mut samples = None;
     let mut views = Vec::with_capacity(desc.colors.len());

@@ -292,6 +292,13 @@ mod msaa_array_sampling;
 mod msaa_copy;
 #[path = "core_multiview.rs"]
 mod multiview;
+#[cfg(any(
+    all(windows, feature = "native-gl-wgl"),
+    feature = "native-gles-egl",
+    all(target_arch = "wasm32", feature = "webgl2")
+))]
+#[path = "core_multiview_timestamp.rs"]
+mod multiview_timestamp;
 #[cfg(all(windows, feature = "native-gl-wgl"))]
 #[path = "core_native_color_readback.rs"]
 mod native_color_readback;

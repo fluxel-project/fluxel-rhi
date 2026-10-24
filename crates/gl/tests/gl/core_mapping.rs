@@ -43,6 +43,18 @@ async fn mapping(d: &Device<Gl>) {
         unsafe { d.map_buffer(&upload, 0..4, MapMode::Read).await },
         Err(Error::Unsupported(_))
     ));
+    // SAFETY: both raw objects belong to this device; the backend must reject
+    // the incompatible mode from immutable usage before any native access.
+    assert!(matches!(
+        <Gl as MappingBackend>::map(
+            unsafe { d.native_ref() },
+            unsafe { download.native_ref() },
+            0..4,
+            MapMode::Write,
+        )
+        .await,
+        Err(Error::Unsupported(_))
+    ));
     // SAFETY: both native references belong to this device and there is no
     // overlapping GPU work. Dropping an unpolled native future must unmap it.
     let cancelled = <Gl as MappingBackend>::map(

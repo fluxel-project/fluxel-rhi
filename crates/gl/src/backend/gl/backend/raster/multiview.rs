@@ -25,9 +25,6 @@ pub(super) fn begin(encoder: &mut GlEncoder, desc: &RasterPassDesc<'_, Gl>) -> R
     if count > limit {
         return Err(Error::InvalidRange);
     }
-    if desc.timestamp_writes.is_some() {
-        return Err(Error::Unsupported("OVR multiview timer queries"));
-    }
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
     {
         return native::begin(encoder, desc, first, count);

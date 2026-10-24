@@ -1,20 +1,137 @@
 //! GL mapping leases.
 //!
 //! Desktop GL buffer storage and GLES EXT_buffer_storage use coherent persistent
-//! native mappings. WebGL snapshots through a fenced staging copy; older native
-//! profiles use a snapshot that may require a blocking read.
+//! native mappings. Other native profiles and WebGL snapshot through a fenced
+//! GPU staging copy, then expose CPU-owned bytes after that fence completes.
 //! Snapshot write leases upload flushed ranges immediately; releasing a snapshot
 //! does not publish unflushed writes. Read invalidation refreshes the requested
 //! snapshot range. Persistent leases instead retain their buffer and context;
 //! coherent memory needs no copy on flush/invalidate, but the caller must still
 //! establish completion and exclude conflicting GPU accesses while borrowing.
 use super::types::{Gl, GlBuffer, GlDevice, GlMap};
-use fluxel_rhi_core::api::{self, Error, Result};
-use std::{
-    future::{Future, Ready, ready},
-    ops::Range,
-    rc::Rc,
+#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+use super::{
+    completion::{GlCompletion, NativeWaitFuture},
+    types::GlBufferInner,
 };
+use fluxel_rhi_core::api::{self, Error, Result};
+#[cfg(any(
+    all(windows, feature = "native-gl-wgl"),
+    feature = "native-gles-egl",
+    all(target_arch = "wasm32", feature = "webgl2")
+))]
+use std::rc::Rc;
+use std::{
+    future::Future,
+    ops::Range,
+    pin::Pin,
+    task::{Context, Poll},
+};
+
+/// A native non-persistent map captures the requested bytes at map creation
+/// into a private staging buffer, then observes the resulting GL fence from
+/// the owner thread.  It never maps a driver buffer while that copy is
+/// outstanding, so polling is non-blocking just like a Core completion wait.
+pub struct NativeMapFuture(NativeMapFutureState);
+
+enum NativeMapFutureState {
+    Ready(Option<Result<GlMap>>),
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    Staged {
+        buffer: GlBuffer,
+        staging: GlBuffer,
+        wait: NativeWaitFuture,
+        size: u64,
+        offset: u64,
+        mode: api::MapMode,
+        complete: bool,
+    },
+}
+
+fn required_usage(mode: api::MapMode) -> crate::backend::gl::api::GlBufferUsage {
+    match mode {
+        api::MapMode::Read => crate::backend::gl::api::GlBufferUsage::MAP_READ,
+        api::MapMode::Write => crate::backend::gl::api::GlBufferUsage::MAP_WRITE,
+    }
+}
+
+impl NativeMapFuture {
+    fn ready(result: Result<GlMap>) -> Self {
+        Self(NativeMapFutureState::Ready(Some(result)))
+    }
+}
+
+impl Future for NativeMapFuture {
+    type Output = Result<GlMap>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match &mut self.as_mut().get_mut().0 {
+            NativeMapFutureState::Ready(result) => {
+                Poll::Ready(result.take().unwrap_or(Err(Error::InvalidState)))
+            }
+            #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+            NativeMapFutureState::Staged {
+                buffer,
+                staging,
+                wait,
+                size,
+                offset,
+                mode,
+                complete,
+            } => match Pin::new(wait).poll(cx) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(Err(error)) => {
+                    buffer.map_active().set(false);
+                    *complete = true;
+                    Poll::Ready(Err(error))
+                }
+                Poll::Ready(Ok(())) => {
+                    use crate::backend::gl::api::{GlBufferRange, GlCopyDomainApi as _};
+                    let result = staging
+                        .state
+                        .with_native("read staged GL mapping", |provider| {
+                            provider.read_buffer(GlBufferRange {
+                                buffer: staging.id,
+                                offset: 0,
+                                size: *size,
+                            })
+                        })
+                        .map_err(map_error)
+                        .and_then(|bytes| {
+                            let len = usize::try_from(*size).map_err(|_| Error::OutOfMemory)?;
+                            Ok(GlMap {
+                                buffer: buffer.clone(),
+                                bytes,
+                                offset: *offset,
+                                mode: *mode,
+                                persistent: None,
+                                len,
+                            })
+                        });
+                    if result.is_err() {
+                        buffer.map_active().set(false);
+                    }
+                    *complete = true;
+                    Poll::Ready(result)
+                }
+            },
+        }
+    }
+}
+
+impl Drop for NativeMapFuture {
+    fn drop(&mut self) {
+        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+        if let NativeMapFutureState::Staged {
+            buffer, complete, ..
+        } = &mut self.0
+        {
+            if !*complete {
+                buffer.map_active().set(false);
+            }
+        }
+    }
+}
 
 #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
 pub struct WebGlMapFuture {
@@ -103,7 +220,7 @@ impl Drop for WebGlMapFuture {
 impl api::MappingBackend for Gl {
     type NativeMap = GlMap;
     #[cfg(not(all(target_arch = "wasm32", feature = "webgl2")))]
-    type MapFuture<'a> = Ready<Result<GlMap>>;
+    type MapFuture<'a> = NativeMapFuture;
     #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
     type MapFuture<'a> = WebGlMapFuture;
     fn map<'a>(
@@ -113,74 +230,120 @@ impl api::MappingBackend for Gl {
         mode: api::MapMode,
     ) -> Self::MapFuture<'a> {
         #[cfg(not(all(target_arch = "wasm32", feature = "webgl2")))]
-        return ready((|| {
-            if !Rc::ptr_eq(&device.0, &buffer.state) {
-                return Err(Error::WrongDevice);
-            }
-            if range.start >= range.end || range.end > buffer.desc.size {
-                return Err(Error::InvalidRange);
-            }
-            if buffer.map_active().get() {
-                return Err(Error::InvalidState);
-            }
+        {
             #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
             {
-                let persistent = device
+                if !Rc::ptr_eq(&device.0, &buffer.state) {
+                    return NativeMapFuture::ready(Err(Error::WrongDevice));
+                }
+                if range.start >= range.end || range.end > buffer.desc.size {
+                    return NativeMapFuture::ready(Err(Error::InvalidRange));
+                }
+                if buffer.map_active().get() {
+                    return NativeMapFuture::ready(Err(Error::InvalidState));
+                }
+                let required = required_usage(mode);
+                if !buffer.desc.usage.contains(required) {
+                    return NativeMapFuture::ready(Err(Error::Unsupported(
+                        "buffer lacks requested mapping usage",
+                    )));
+                }
+                let persistent = match device
                     .0
                     .with_native("map GL persistent buffer", |provider| {
                         provider.persistent_buffer_lease(buffer.id, mode == api::MapMode::Write)
                     })
-                    .map_err(map_error)?;
+                    .map_err(map_error)
+                {
+                    Ok(persistent) => persistent,
+                    Err(error) => return NativeMapFuture::ready(Err(error)),
+                };
                 if let Some(ptr) = persistent {
-                    let len = usize::try_from(range.end - range.start)
-                        .map_err(|_| Error::InvalidRange)?;
-                    let offset = usize::try_from(range.start).map_err(|_| Error::InvalidRange)?;
+                    let len = match usize::try_from(range.end - range.start) {
+                        Ok(len) => len,
+                        Err(_) => return NativeMapFuture::ready(Err(Error::InvalidRange)),
+                    };
+                    let offset = match usize::try_from(range.start) {
+                        Ok(offset) => offset,
+                        Err(_) => return NativeMapFuture::ready(Err(Error::InvalidRange)),
+                    };
                     // SAFETY: creation mapped the entire buffer and range was validated.
                     let ptr = unsafe { core::ptr::NonNull::new_unchecked(ptr.add(offset)) };
                     buffer.map_active().set(true);
-                    return Ok(GlMap {
+                    return NativeMapFuture::ready(Ok(GlMap {
                         buffer: buffer.clone(),
                         bytes: Vec::new(),
                         offset: range.start,
                         mode,
                         persistent: Some(ptr),
                         len,
-                    });
+                    }));
                 }
-                let bytes = device
+
+                use crate::backend::gl::api::{
+                    GlBufferDesc, GlBufferRange, GlBufferUsage, GlCopyDomainApi as _,
+                    GlResourceApi as _,
+                };
+                let size = range.end - range.start;
+                let desc = GlBufferDesc {
+                    size,
+                    usage: GlBufferUsage::COPY_DESTINATION | GlBufferUsage::MAP_READ,
+                };
+                let id = match device
                     .0
-                    .with_native("snapshot GL mapping", |provider| {
-                        provider.snapshot_buffer_lease(
-                            buffer.id,
-                            range.start,
-                            range.end - range.start,
-                            mode == api::MapMode::Write,
-                        )
+                    .with_native("create GL map staging", |provider| {
+                        provider.create_buffer_resource(desc)
                     })
-                    .map_err(map_error)?;
+                    .map_err(map_error)
+                {
+                    Ok(id) => id,
+                    Err(error) => return NativeMapFuture::ready(Err(error)),
+                };
+                let staging = GlBuffer::from_inner(GlBufferInner {
+                    state: device.0.clone(),
+                    id,
+                    desc,
+                });
+                let copy = device.0.with_native("stage GL buffer map", |provider| {
+                    provider.copy_buffer_range(
+                        GlBufferRange {
+                            buffer: buffer.id,
+                            offset: range.start,
+                            size,
+                        },
+                        GlBufferRange {
+                            buffer: staging.id,
+                            offset: 0,
+                            size,
+                        },
+                    )
+                });
+                if let Err(error) = copy {
+                    return NativeMapFuture::ready(Err(map_error(error)));
+                }
+                let completion = match GlCompletion::after_issued(device.0.clone()) {
+                    Ok(completion) => completion,
+                    Err(error) => return NativeMapFuture::ready(Err(error)),
+                };
                 buffer.map_active().set(true);
-                Ok(GlMap {
+                NativeMapFuture(NativeMapFutureState::Staged {
                     buffer: buffer.clone(),
-                    bytes,
+                    staging,
+                    wait: NativeWaitFuture::new(completion),
+                    size,
                     offset: range.start,
                     mode,
-                    persistent: None,
-                    len: (range.end - range.start) as usize,
+                    complete: false,
                 })
             }
             #[cfg(not(any(
                 all(windows, feature = "native-gl-wgl"),
-                feature = "native-gles-egl",
-                all(target_arch = "wasm32", feature = "webgl2")
+                feature = "native-gles-egl"
             )))]
-            {
-                let _ = mode;
-                Err(Error::Unsupported("GL native buffer mapping"))
-            }
-        })());
+            return NativeMapFuture::ready(Err(Error::Unsupported("GL native buffer mapping")));
+        }
         #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
         {
-            use crate::backend::gl::api::GlBufferUsage;
             if !Rc::ptr_eq(&device.0, &buffer.state) {
                 return WebGlMapFuture::failed(buffer, Error::WrongDevice);
             }
@@ -190,11 +353,7 @@ impl api::MappingBackend for Gl {
             if buffer.map_active().get() {
                 return WebGlMapFuture::failed(buffer, Error::InvalidState);
             }
-            let required = if mode == api::MapMode::Read {
-                GlBufferUsage::MAP_READ
-            } else {
-                GlBufferUsage::MAP_WRITE
-            };
+            let required = required_usage(mode);
             if !buffer.desc.usage.contains(required) {
                 return WebGlMapFuture::failed(
                     buffer,

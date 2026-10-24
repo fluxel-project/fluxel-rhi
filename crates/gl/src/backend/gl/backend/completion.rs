@@ -197,14 +197,17 @@ impl Future for GlWaitFuture<'_> {
 }
 
 #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
-struct NativeWaitFuture {
+/// Owner-thread wait primitive shared by Core completion points and private
+/// native staging operations.  It owns only completion evidence and a timer;
+/// polling it is the sole place that observes a GL fence.
+pub(crate) struct NativeWaitFuture {
     completion: GlCompletion,
     retry: Option<Delay>,
 }
 
 #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 impl NativeWaitFuture {
-    fn new(completion: GlCompletion) -> Self {
+    pub(crate) fn new(completion: GlCompletion) -> Self {
         Self {
             completion,
             retry: None,

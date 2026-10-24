@@ -610,9 +610,14 @@ Desktop `OVR_multiview2` uses the same contiguous-view contract as GLES. Nonzero
 attachment bases are represented with native texture-view aliases, keeping the
 OVR attachment base zero and retaining the aliases through pass teardown. Those
 ranges therefore require a creatable texture view. There is no native arbitrary
-view-mask parameter in this route, and timer-query results during multiview
-rendering are undefined by the [OVR specification](https://registry.khronos.org/OpenGL/extensions/OVR/OVR_multiview.txt).
-Neither combination is advertised. Compressed color clears also remain outside
+view-mask parameter in this route. Pass-boundary timestamp writes are issued
+before binding the multiview framebuffer and after unbinding it, so they remain
+outside the restricted framebuffer interval. Timestamp writes inside an active
+multiview pass remain unsupported: the [OVR specification](https://registry.khronos.org/OpenGL/extensions/OVR/OVR_multiview.txt)
+leaves their results undefined without EXT_multiview_timer_query. Browser
+boundaries likewise use instantaneous queryCounterEXT, without an active
+elapsed-time query spanning multiview draw or clear commands. Compressed color
+clears also remain outside
 the native route: [ARB_clear_texture](https://registry.khronos.org/OpenGL/extensions/ARB/ARB_clear_texture.txt)
 explicitly rejects compressed internal formats, which cannot be framebuffer
 color attachments. This backend does not add a software block codec.
@@ -660,8 +665,13 @@ Failure of this raw route does not disable ordinary texture copies.
 `EXT_buffer_storage` on ES3.1 provides persistent coherent mapping when the
 extension-specific entry point is present. Readback staging copies from its
 existing mapping after completion, rather than mapping the same store twice.
-Contexts without that extension retain the snapshot mapping path. Local GPU
-checks cover an ANGLE D3D11 runtime and a separate installed ANGLE Vulkan runtime;
+Contexts without that extension issue a private GPU staging copy and fence for
+non-persistent map requests. The owner-thread future reuses the completion wait
+primitive and reads staging only after the fence signals. Cancellation releases
+the pending map lease; map usage and device/range checks apply before issuing
+native work. Snapshot write leases publish only flushed subranges, and explicit
+invalidation still requires the caller to establish producer completion. Local
+GPU checks cover an ANGLE D3D11 runtime and a separate installed ANGLE Vulkan runtime;
 an extension absent on one is not classified as absent throughout GLES.
 
 GLES3.1 compute, SSBO and indirect draw support also provide GPU-count drawing.
@@ -1095,9 +1105,10 @@ Core's exact eleven pipeline-statistics fields differ from Metal's
 The separate pass-boundary statistics domain returns available raw counter fields
 and invalid-value sentinels. These samples do not imply the eleven-field query or
 that subtraction is meaningful. Timestamp and occlusion support are checked on
-the device. GPU-count multi-draw converts the raw arguments to native ICBs in a
-GPU pass before raster execution; its buffers must already be in the declared
-indirect-read state before that raster pass.
+the device. GPU-count multi-draw prepares native ICBs at the count-draw command
+position, suspending and reopening the render encoder only when needed. Its
+buffers must already be in the declared indirect-read state before that raster
+pass.
 
 Mapping uses shared host storage with exclusive mapping leases. Placement heaps,
 binary archives, borrowed native interop and device-compatible external resources
@@ -1111,6 +1122,26 @@ Metal tests. There is no Apple GPU, generated-MSL compiler, presentation or visu
 acceptance claim. The implementation review found no Apple GPU execution
 evidence; the published capability status therefore remains limited to the
 checks available on this host.
+
+### GL recording review validation
+
+The focused recording review preserves immediate native execution and the GL
+state cache. It adds no command scheduler, resource-state history, or draw replay.
+Readback tickets capture their command position in GPU staging, including when
+the source is overwritten before completion. Non-query-buffer resolve uses
+`AfterCompletion` and checks availability before reading results or modifying
+the destination.
+
+Focused hardware checks on Radeon 780M cover WGL persistent mapping, ANGLE
+D3D11 GLES non-persistent staging mapping, cancellation/remapping, explicit
+flush/invalidation, readback snapshot preservation, and GLES occlusion resolve.
+WGL also validates the non-query-buffer timestamp route and multiview pass
+boundary timestamp results with surrounding sentinel bytes. Chrome WebGL2
+checks mapping and completion-gated occlusion. The tested GLES and browser
+runtimes do not expose usable timestamp counters; their multiview timestamp
+checks skip that optional combination and do not establish positive coverage.
+These checks do not establish new Surface, visible-example, or all-format
+acceptance. Metal retains the separate no-runtime-tests boundary above.
 
 ### Binding bounds are caller intent, validated against native limits
 
