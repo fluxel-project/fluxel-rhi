@@ -15,8 +15,12 @@ mod queries;
 mod query_capacity;
 #[path = "conformance/raster.rs"]
 mod raster;
+#[path = "conformance/resolve.rs"]
+mod resolve;
 #[path = "conformance/shader.rs"]
 mod shader;
+#[path = "conformance/storage_view.rs"]
+mod storage_view;
 #[path = "conformance/surface.rs"]
 mod surface;
 #[path = "conformance/textures.rs"]

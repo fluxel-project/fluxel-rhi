@@ -1213,6 +1213,30 @@ additional to this shared integrity check. Invalid input returns the original
 owning packet as a clean rejection; native partial/uncertain acceptance remains
 the backend's responsibility.
 
+## Browser WebGPU native operation coverage
+
+Standalone color resolve records an empty native render pass with `loadOp:
+load`, `storeOp: store`, and a resolve target. A full, equally sized attachment
+pair resolves directly. Subrectangles and different destination sizes use a
+full-source-mip, single-sample scratch texture; an exact native copy writes a
+`COPY_DST` target, or a scissored `textureLoad` draw writes an attachment-only
+target. The source and pixels outside the destination region remain defined.
+This path requires the native WebGPU multisample shape and renderable color
+resolve format. The standard format table excludes integer, 32-bit float, and 16-bit normalized
+color resolves even where multisampled attachments are available; these are
+rejected before recording. Depth/stencil resolves have no equivalent standard
+interface.
+No CPU sample processing or command replay is involved.
+
+Standard indirect draws are available independently of the optional
+`indirect-first-instance` feature. The latter controls only nonzero first
+instance values. Multi-draw uses direct native encoding, with GPU-generated
+arguments for count-buffer variants. Core `StorageBufferView` bindings lower
+to native buffer, offset and size after Core validates their view contract;
+there is no separate WebGPU structured-buffer-view object. Native alignment
+and resource limits still apply. The backend requests `core-features-and-limits`
+when the adapter advertises it, alongside the existing optional native features.
+
 ## Verification and extension boundary
 
 The [testing guide](testing.md), [conformance matrix](conformance-matrix.md),

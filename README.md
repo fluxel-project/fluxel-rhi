@@ -93,7 +93,13 @@ build's completion succeeds; recording that consumer early returns
 allows a new recording. A failed submitted build cannot be reused.
 
 WebGPU lowers GPU-count drawing into GPU-generated indirect arguments and
-native pass segments, without reading the count on the CPU. Push constants use
+native pass segments, without reading the count on the CPU. Standard indirect
+commands do not require `indirect-first-instance`; that optional feature only
+permits nonzero first-instance arguments. Standalone color resolve preserves
+its multisampled source and supports source/destination rectangles through a
+native full-mip scratch resolve and exact copy or scissored attachment transfer.
+Explicit storage-buffer views use native buffer bindings with their declared
+range. Push constants use
 native immediate data only when the browser exposes the required feature and
 limit. Compressed formats remain optional adapter features; the current AMD
 browser evidence covers BC1, not ETC2/EAC or ASTC. Browser examples may select

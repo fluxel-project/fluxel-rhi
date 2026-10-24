@@ -88,6 +88,12 @@ pub(super) struct DeviceState {
     validation_listener: RefCell<Option<Closure<dyn FnMut(JsValue)>>>,
 }
 
+/// WebGPU always exposes indirect draw commands.  The optional feature only
+/// permits nonzero `firstInstance` values in their argument records.
+fn indirect_capabilities(indirect_first_instance: bool) -> (bool, bool, bool, bool) {
+    (true, indirect_first_instance, true, true)
+}
+
 impl Drop for DeviceState {
     fn drop(&mut self) {
         // The browser may retain a native device through a resource after the
@@ -175,6 +181,9 @@ impl InstanceBackend for WebGpu {
                 .map(|name| (*name).to_owned())
                 .collect::<Vec<_>>();
             for feature in [
+                // Enables the non-default texture binding view dimensions that
+                // Core's texture-view contract can express.
+                "core-features-and-limits",
                 "depth-clip-control",
                 "depth32float-stencil8",
                 "texture-compression-bc",
@@ -280,14 +289,16 @@ impl InstanceBackend for WebGpu {
                     .flatten()
                     .filter_map(|value| value.ok()?.as_string())
                     .collect();
+            let (indirect_draw, indirect_first_instance, multi_draw, multi_draw_count) =
+                indirect_capabilities(js::has_feature(&device, "indirect-first-instance"));
             let caps = DeviceCapabilities {
                 compute: true,
                 storage_buffers: true,
                 storage_textures: true,
-                indirect_draw: js::has_feature(&device, "indirect-first-instance"),
-                indirect_first_instance: js::has_feature(&device, "indirect-first-instance"),
-                multi_draw: js::has_feature(&device, "indirect-first-instance"),
-                multi_draw_count: js::has_feature(&device, "indirect-first-instance"),
+                indirect_draw,
+                indirect_first_instance,
+                multi_draw,
+                multi_draw_count,
                 timestamp: js::has_feature(&device, "timestamp-query"),
                 push_constants: limit_u32(&limits, "maxImmediateSize") > 0
                     && wgsl_language_features.contains("immediate_address_space"),
@@ -383,6 +394,17 @@ fn limit_u64(limits: &JsValue, name: &str) -> u64 {
         .and_then(|value| value.as_f64())
         .filter(|value| value.is_finite() && *value >= 0.0)
         .map_or(0, |value| value as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::indirect_capabilities;
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn indirect_commands_do_not_depend_on_first_instance_feature() {
+        assert_eq!(indirect_capabilities(false), (true, false, true, true));
+        assert_eq!(indirect_capabilities(true), (true, true, true, true));
+    }
 }
 
 impl fluxel_rhi_core::api::ExecutionBackend for WebGpu {

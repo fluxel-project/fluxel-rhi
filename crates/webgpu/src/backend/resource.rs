@@ -500,9 +500,12 @@ impl api::ResourceBackend for WebGpu {
             let native = descriptor();
             field(&native, "binding", JsValue::from_f64(entry.binding as f64))?;
             let resource = match &entry.resource {
-                api::BindingResource::Buffer { buffer, range } => {
+                api::BindingResource::Buffer { buffer, range }
+                | api::BindingResource::StorageBufferView { buffer, range, .. } => {
                     // SAFETY: `Device::create_bind_group` checked this buffer's
-                    // DeviceId; this borrow ends before any asynchronous work.
+                    // DeviceId. Both Core buffer forms lower to WebGPU's one
+                    // `GPUBufferBinding` representation; the explicit storage
+                    // view ABI was validated by Core before this SPI call.
                     let native_buffer = unsafe { buffer.native_ref() };
                     if range.start >= range.end || range.end > native_buffer.size {
                         return Err(Error::InvalidRange);

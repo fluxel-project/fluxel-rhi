@@ -63,6 +63,9 @@ pub(super) fn pass(encoder: &WebGpuEncoder) -> Result<&JsValue> {
     encoder.pass.as_ref().ok_or(Error::InvalidState)
 }
 
+#[path = "resolve.rs"]
+mod resolve;
+
 #[path = "command_texture.rs"]
 mod texture_ops;
 pub(super) use texture_ops::texel_block;
@@ -260,6 +263,14 @@ impl api::CommandBackend for WebGpu {
             .keep_alive
             .extend([source.raw.clone(), target.raw.clone()]);
         Ok(())
+    }
+
+    fn resolve(
+        encoder: &mut WebGpuEncoder,
+        src: api::TextureRegion<'_, Self>,
+        dst: api::TextureRegion<'_, Self>,
+    ) -> Result<()> {
+        resolve::record(encoder, src, dst)
     }
 
     fn buffer_to_texture(

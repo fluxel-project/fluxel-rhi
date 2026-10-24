@@ -126,6 +126,11 @@ pub(super) fn capabilities(
                     | F::Rg11b10Ufloat
             ));
     let multisample = render
+        // Compatibility-mode devices do not guarantee multisampled integer,
+        // R32Float or Rgba16Float attachments. Use enabled device facts, not
+        // format renderability alone, for these standard core-only formats.
+        && (!(integer || matches!(format, F::R32Float | F::Rgba16Float))
+            || js::has_feature(&device.0.device, "core-features-and-limits"))
         && !matches!(
             format,
             F::R32Uint

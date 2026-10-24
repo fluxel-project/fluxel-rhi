@@ -292,8 +292,37 @@ pub(super) fn prepare_resolve(
 }
 
 pub(super) fn finish_resolve(encoder: &mut WebGpuEncoder, pending: PartialResolve) -> Result<()> {
+    let origin = [pending.area.x, pending.area.y];
+    finish_resolve_region(
+        encoder,
+        pending.source_view,
+        pending.destination_view,
+        pending.format,
+        pending.area,
+        origin,
+    )
+}
+
+/// Copies an already resolved scratch image into an exact attachment rectangle.
+/// The native draw is recorded immediately; outside pixels retain their contents.
+pub(super) fn finish_resolve_region(
+    encoder: &mut WebGpuEncoder,
+    source_view: JsValue,
+    destination_view: JsValue,
+    format: api::TextureFormat,
+    area: api::Rect,
+    source_origin: [u32; 2],
+) -> Result<()> {
+    let pending = PartialResolve {
+        source_view,
+        destination_view,
+        format,
+        area,
+    };
+    let dx = i64::from(source_origin[0]) - i64::from(area.x);
+    let dy = i64::from(source_origin[1]) - i64::from(area.y);
     let code = format!(
-        "{VERTEX}@group(0) @binding(0) var source: texture_2d<f32>; @fragment fn fs(@builtin(position) p: vec4f)->@location(0) vec4f {{ return textureLoad(source, vec2i(p.xy), 0); }}"
+        "{VERTEX}@group(0) @binding(0) var source: texture_2d<f32>; @fragment fn fs(@builtin(position) p: vec4f)->@location(0) vec4f {{ return textureLoad(source, vec2i(p.xy) + vec2i({dx}, {dy}), 0); }}"
     );
     let pipe = pipeline(encoder, pending.format, 1, &code, false, false)?;
     let layout = js::call1(&pipe, "getBindGroupLayout", &number(0u32)).map_err(error)?;
