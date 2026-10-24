@@ -17,7 +17,11 @@ impl Drop for GlDeviceState {
         {
             // SAFETY: the exact retained owner context is current on this
             // thread, and final Rc destruction makes the provider exclusive.
-            unsafe { self.provider.get_mut().clear_indirect_count_utility() };
+            unsafe {
+                let provider = self.provider.get_mut();
+                provider.clear_indirect_count_utility();
+                provider.clear_indirect_count_scratch();
+            };
         }
     }
 }

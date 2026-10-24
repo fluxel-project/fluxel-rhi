@@ -86,6 +86,14 @@ impl EglGlesContext {
             operation: "eglMakeCurrent",
             lifecycle: self.lifecycle,
         })?;
+        if self.lease.egl.get_current_context() == Some(self.context)
+            && self.lease.egl.get_current_display() == Some(self.lease.display)
+            && self.lease.egl.get_current_surface(khronos_egl::DRAW) == Some(surface)
+            && self.lease.egl.get_current_surface(khronos_egl::READ) == Some(surface)
+        {
+            self.lifecycle = GlContextLifecycle::Active;
+            return Ok(());
+        }
         self.lease
             .egl
             .make_current(

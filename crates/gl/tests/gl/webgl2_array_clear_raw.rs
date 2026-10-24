@@ -87,3 +87,101 @@ fn webgl2_raw_initialized_array_mip_clear() {
         }
     }
 }
+
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[wasm_bindgen_test::wasm_bindgen_test(async)]
+async fn webgl2_rhi_array_zero_init_restores_unpack_state() {
+    use crate::{Gl as BackendGl, GlInstance};
+    use fluxel_rhi_core::api::{
+        AdapterId, DeviceRequest, Instance, InstanceId, TextureDesc, TextureDimension,
+        TextureFormat, TextureUsage,
+    };
+
+    let canvas: web_sys::HtmlCanvasElement = web_sys::window()
+        .unwrap()
+        .document()
+        .unwrap()
+        .create_element("canvas")
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    canvas.set_width(8);
+    canvas.set_height(8);
+    // Keep this handle to the context adopted by `GlInstance`: setting and
+    // reading the state through a second raw handle still addresses the same
+    // BrowserOwner WebGL context.
+    let raw: Gl = canvas
+        .get_context("webgl2")
+        .unwrap()
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    let native = GlInstance::from_webgl2_canvas(canvas).unwrap();
+    let instance_id = InstanceId::allocate().unwrap();
+    // SAFETY: `native` owns the canvas context for the full fixture.
+    let instance = unsafe { Instance::<BackendGl>::from_native(instance_id, native) };
+    let device = instance
+        .open(DeviceRequest {
+            adapter: AdapterId {
+                instance: instance_id,
+                ordinal: 0,
+            },
+            required_features: vec![],
+        })
+        .await
+        .unwrap();
+
+    let pbo = raw.create_buffer().unwrap();
+    raw.bind_buffer(Gl::PIXEL_UNPACK_BUFFER, Some(&pbo));
+    raw.buffer_data_with_i32(Gl::PIXEL_UNPACK_BUFFER, 256, Gl::STREAM_DRAW);
+    let parameters = [
+        (Gl::UNPACK_ALIGNMENT, 8),
+        (Gl::UNPACK_ROW_LENGTH, 7),
+        (Gl::UNPACK_IMAGE_HEIGHT, 9),
+        (Gl::UNPACK_SKIP_PIXELS, 1),
+        (Gl::UNPACK_SKIP_ROWS, 2),
+        (Gl::UNPACK_SKIP_IMAGES, 1),
+    ];
+    for (parameter, value) in parameters {
+        raw.pixel_storei(parameter, value);
+    }
+
+    let assert_unpack = |label: &str| {
+        let bound = raw
+            .get_parameter(Gl::PIXEL_UNPACK_BUFFER_BINDING)
+            .unwrap()
+            .dyn_into::<web_sys::WebGlBuffer>()
+            .unwrap();
+        assert_eq!(bound, pbo, "{label}: PBO binding");
+        for (parameter, expected) in parameters {
+            let actual = raw.get_parameter(parameter).unwrap().as_f64().unwrap() as i32;
+            assert_eq!(actual, expected, "{label}: pixel-store {parameter:#x}");
+        }
+        assert_eq!(raw.get_error(), Gl::NO_ERROR, "{label}: raw error");
+    };
+    let texture = |dimension, extent, array_layers| {
+        device
+            .create_texture(&TextureDesc {
+                label: None,
+                dimension,
+                extent,
+                array_layers,
+                format: TextureFormat::Rgba8Unorm,
+                mip_levels: 2,
+                samples: 1,
+                usage: TextureUsage::COPY_SRC
+                    | TextureUsage::COPY_DST
+                    | TextureUsage::TEXTURE_BINDING,
+                view_formats: vec![],
+            })
+            .unwrap()
+    };
+    let array = texture(TextureDimension::D2, [4, 4, 1], 3);
+    assert_unpack("D2 array allocation");
+    let volume = texture(TextureDimension::D3, [4, 4, 3], 1);
+    assert_unpack("D3 allocation");
+
+    drop((array, volume));
+    raw.bind_buffer(Gl::PIXEL_UNPACK_BUFFER, None);
+    raw.delete_buffer(Some(&pbo));
+}

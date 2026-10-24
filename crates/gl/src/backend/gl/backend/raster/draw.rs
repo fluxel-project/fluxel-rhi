@@ -8,6 +8,37 @@ use fluxel_rhi_core::api::{Error, IndexFormat, Result};
 use crate::backend::gl::backend::spi::native_error;
 use crate::backend::gl::backend::types::{GlEncoder, GlRasterPipeline};
 
+/// WebGL validates the secondary fragment output for dual-source blending at
+/// draw time. Keep that narrow contract synchronous: unlike ordinary draw
+/// errors it is a pipeline/program compatibility failure the caller has
+/// historically received from `draw`, and delaying it to `end_raster` would
+/// make an invalid pipeline appear accepted. All other draw errors aggregate at
+/// the raster-pass boundary.
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+fn browser_dual_source_draw_boundary(pipeline: &GlRasterPipeline) -> bool {
+    use crate::backend::gl::api::GlBlendFactor;
+    pipeline.raster.color_targets.iter().any(|target| {
+        target.blend.is_some_and(|blend| {
+            [
+                blend.color.src_factor,
+                blend.color.dst_factor,
+                blend.alpha.src_factor,
+                blend.alpha.dst_factor,
+            ]
+            .iter()
+            .any(|factor| {
+                matches!(
+                    factor,
+                    GlBlendFactor::Src1
+                        | GlBlendFactor::OneMinusSrc1
+                        | GlBlendFactor::Src1Alpha
+                        | GlBlendFactor::OneMinusSrc1Alpha
+                )
+            })
+        })
+    })
+}
+
 pub(super) fn issue_draw(
     encoder: &mut GlEncoder,
     pipeline: &GlRasterPipeline,
@@ -102,6 +133,7 @@ pub(super) fn issue_draw(
                 }
             }
             let browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
+            let strict_dual_source = browser_dual_source_draw_boundary(pipeline);
             let result = (|| -> Result<()> {
                 use crate::backend::gl::browser::BrowserPushUniformKind;
                 browser.upload_push_uniform(
@@ -166,6 +198,9 @@ pub(super) fn issue_draw(
                             )?;
                         }
                     }
+                }
+                if strict_dual_source {
+                    browser.observe_raster_boundary("draw dual-source WebGL raster")?;
                 }
                 Ok(())
             })();

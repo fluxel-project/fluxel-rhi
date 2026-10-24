@@ -6,12 +6,70 @@
 use crate::backend::gl::api::{GlBufferDesc, GlBufferUsage, GlFamilyApi as _, GlFormat};
 use fluxel_rhi_core::api::{Error, Result};
 use wasm_bindgen::JsCast;
-use web_sys::WebGl2RenderingContext as Gl;
+use web_sys::{WebGl2RenderingContext as Gl, WebGlBuffer};
 
 use super::owner::{
     BrowserBuffer, BrowserOwner, BrowserRasterProgram, BrowserSampler, BrowserTexture,
     BrowserVertexArray,
 };
+
+/// Saves WebGL's actual client-unpack state around the array/D3 initialization
+/// workaround. Browser encoders can legitimately leave a scoped non-default
+/// unpack state while resource allocation is re-entered, so this must not
+/// assume a global canonical state.
+struct ScopedUnpackState<'a> {
+    gl: &'a Gl,
+    buffer: Option<WebGlBuffer>,
+    values: [i32; 6],
+}
+
+impl<'a> ScopedUnpackState<'a> {
+    fn enter(gl: &'a Gl) -> Self {
+        let parameters = [
+            Gl::UNPACK_ALIGNMENT,
+            Gl::UNPACK_ROW_LENGTH,
+            Gl::UNPACK_IMAGE_HEIGHT,
+            Gl::UNPACK_SKIP_PIXELS,
+            Gl::UNPACK_SKIP_ROWS,
+            Gl::UNPACK_SKIP_IMAGES,
+        ];
+        let values = parameters.map(|parameter| {
+            gl.get_parameter(parameter)
+                .ok()
+                .and_then(|value| value.as_f64())
+                .unwrap_or(0.0) as i32
+        });
+        let buffer = gl
+            .get_parameter(Gl::PIXEL_UNPACK_BUFFER_BINDING)
+            .ok()
+            .and_then(|value| value.dyn_into::<WebGlBuffer>().ok());
+        gl.bind_buffer(Gl::PIXEL_UNPACK_BUFFER, None);
+        for (parameter, value) in parameters.into_iter().zip([1, 0, 0, 0, 0, 0]) {
+            gl.pixel_storei(parameter, value);
+        }
+        Self { gl, buffer, values }
+    }
+}
+
+impl Drop for ScopedUnpackState<'_> {
+    fn drop(&mut self) {
+        for (parameter, value) in [
+            Gl::UNPACK_ALIGNMENT,
+            Gl::UNPACK_ROW_LENGTH,
+            Gl::UNPACK_IMAGE_HEIGHT,
+            Gl::UNPACK_SKIP_PIXELS,
+            Gl::UNPACK_SKIP_ROWS,
+            Gl::UNPACK_SKIP_IMAGES,
+        ]
+        .into_iter()
+        .zip(self.values)
+        {
+            self.gl.pixel_storei(parameter, value);
+        }
+        self.gl
+            .bind_buffer(Gl::PIXEL_UNPACK_BUFFER, self.buffer.as_ref());
+    }
+}
 
 impl BrowserOwner {
     /// Allocates a dynamic byte-addressable buffer for the static backend.
@@ -236,7 +294,10 @@ impl BrowserOwner {
         // first framebuffer clear, so explicitly touch every subresource
         // before exposing the allocation. One 1x1 zero column covers every
         // slice in a mip with one native call; this avoids the former
-        // per-slice call loop while preserving the driver workaround.
+        // per-slice call loop while preserving the driver workaround. Reuse
+        // the largest column source for every mip: WebGL consumes only the
+        // requested prefix, so it avoids one CPU allocation and JS typed-array
+        // conversion per level.
         if matches!(
             desc.dimension,
             GlTextureDimension::D2Array | GlTextureDimension::D3
@@ -244,31 +305,16 @@ impl BrowserOwner {
             if let Some(encoding) = super::ordinary_format::encoding(desc.format) {
                 let (format, ty) = (encoding.pixel, encoding.ty);
                 let gl = &state.context.raw;
-                let previous_buffer = gl
-                    .get_parameter(Gl::PIXEL_UNPACK_BUFFER_BINDING)
+                let max_slices = desc.extent.depth_or_layers;
+                let byte_count = usize::try_from(max_slices)
                     .ok()
-                    .and_then(|v| v.dyn_into::<web_sys::WebGlBuffer>().ok());
-                let parameters = [
-                    Gl::UNPACK_ALIGNMENT,
-                    Gl::UNPACK_ROW_LENGTH,
-                    Gl::UNPACK_IMAGE_HEIGHT,
-                    Gl::UNPACK_SKIP_PIXELS,
-                    Gl::UNPACK_SKIP_ROWS,
-                    Gl::UNPACK_SKIP_IMAGES,
-                ];
-                let previous: Vec<i32> = parameters
-                    .iter()
-                    .map(|p| {
-                        gl.get_parameter(*p)
-                            .ok()
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(0.0) as i32
-                    })
-                    .collect();
-                gl.bind_buffer(Gl::PIXEL_UNPACK_BUFFER, None);
-                for p in parameters {
-                    gl.pixel_storei(p, if p == Gl::UNPACK_ALIGNMENT { 1 } else { 0 });
-                }
+                    .and_then(|slices| slices.checked_mul(encoding.bytes as usize))
+                    .ok_or(Error::InvalidRange)?;
+                // Build the reusable client source before changing GL state,
+                // so an allocation/conversion failure cannot leave a partial
+                // unpack scope behind.
+                let zeros = super::ordinary_format::typed_pixels(&vec![0; byte_count], ty)?;
+                let unpack = ScopedUnpackState::enter(gl);
                 let mut failed = false;
                 for mip in 0..desc.mip_level_count {
                     let slices = if desc.dimension == GlTextureDimension::D3 {
@@ -280,11 +326,6 @@ impl BrowserOwner {
                     } else {
                         desc.extent.depth_or_layers
                     };
-                    let byte_count = usize::try_from(slices)
-                        .ok()
-                        .and_then(|slices| slices.checked_mul(encoding.bytes as usize))
-                        .ok_or(Error::InvalidRange)?;
-                    let bytes = super::ordinary_format::typed_pixels(&vec![0; byte_count], ty)?;
                     failed |= gl
                         .tex_sub_image_3d_with_opt_array_buffer_view(
                             target,
@@ -297,14 +338,13 @@ impl BrowserOwner {
                             slices as i32,
                             format,
                             ty,
-                            Some(&bytes),
+                            Some(&zeros),
                         )
                         .is_err();
                 }
-                for (p, value) in parameters.into_iter().zip(previous) {
-                    gl.pixel_storei(p, value);
-                }
-                gl.bind_buffer(Gl::PIXEL_UNPACK_BUFFER, previous_buffer.as_ref());
+                // Restore before deleting the failed allocation, preserving
+                // the caller's actual PBO and unpack values on every exit.
+                drop(unpack);
                 if failed {
                     gl.delete_texture(Some(&raw));
                     if gl.is_context_lost() {

@@ -40,12 +40,24 @@ pub(super) fn abort(encoder: &mut GlEncoder) {
         encoder.browser_surface_token = None;
         if let Some(browser) = encoder.browser.as_mut() {
             if browser.has_surface_depth_pass() {
+                if browser
+                    .observe_raster_boundary("abort WebGL surface depth raster")
+                    .is_err()
+                {
+                    encoder.indeterminate = true;
+                }
                 browser.abort_surface_depth_raster();
                 encoder.end_raster_state();
                 encoder.raster_pipeline = None;
                 return;
             }
             if browser.has_owned_framebuffer_pass() {
+                if browser
+                    .observe_raster_boundary("abort WebGL offscreen raster")
+                    .is_err()
+                {
+                    encoder.indeterminate = true;
+                }
                 browser.abort_offscreen_raster();
                 encoder.end_raster_state();
                 encoder.raster_pipeline = None;

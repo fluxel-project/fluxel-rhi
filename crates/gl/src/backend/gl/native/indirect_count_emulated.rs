@@ -10,6 +10,7 @@ use crate::backend::gl::api::{
 };
 use glow::HasContext as _;
 
+pub(super) mod scratch;
 mod transaction;
 use transaction::IndirectCountTransaction;
 
@@ -88,6 +89,13 @@ impl NativeGlProvider {
             // SAFETY: caller established that this provider's context is current.
             unsafe { utility.destroy(&self.gl) };
         }
+    }
+
+    /// Called by the context-current device teardown path after outstanding
+    /// transactions have restored their bindings.
+    pub(crate) unsafe fn clear_indirect_count_scratch(&mut self) {
+        // SAFETY: caller established that this provider's exact context is current.
+        unsafe { self.indirect_count_scratch.clear(&self.gl) };
     }
 }
 
@@ -258,21 +266,17 @@ impl NativeGlProvider {
             };
             let mut transaction =
                 IndirectCountTransaction::capture(self.gl.clone(), self.buffer_functions, OP)?;
-            let input = self
-                .gl
-                .create_buffer()
-                .map_err(|_| GlError::OutOfMemory { operation: OP })?;
-            transaction.retain_temporary(input);
-            let output = self
-                .gl
-                .create_buffer()
-                .map_err(|_| GlError::OutOfMemory { operation: OP })?;
-            transaction.retain_temporary(output);
-            let snapshot = self
-                .gl
-                .create_buffer()
-                .map_err(|_| GlError::OutOfMemory { operation: OP })?;
-            transaction.retain_temporary(snapshot);
+            let scratch_bytes = buffer_bytes
+                .checked_add(buffer_bytes - 4)
+                .and_then(|value| value.checked_add(snapshot_size))
+                .ok_or_else(|| Self::validation(OP, "scratch size overflow"))?;
+            let scratch = self.indirect_count_scratch.lease(
+                self.gl.clone(),
+                [buffer_bytes, buffer_bytes - 4, snapshot_size],
+                OP,
+            )?;
+            transaction.retain_scratch(scratch, scratch_bytes);
+            let [input, output, snapshot] = transaction.scratch_buffers();
             self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(input));
             self.buffer_data_size_wide(
                 glow::COPY_WRITE_BUFFER,

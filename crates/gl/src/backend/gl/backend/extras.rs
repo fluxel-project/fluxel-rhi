@@ -180,9 +180,10 @@ impl RasterExtrasOps<Gl> for GlExtras {
             };
             let result = encoder
                 .state
-                .with_native("multi draw GL indirect count", |provider| {
-                    provider.multi_draw_count(command, count)
-                })
+                .with_native(
+                    crate::backend::gl::native::INDIRECT_COUNT_OPERATION,
+                    |provider| provider.multi_draw_count(command, count),
+                )
                 .map_err(indirect_error);
             if result.is_ok() {
                 encoder.issued = true;

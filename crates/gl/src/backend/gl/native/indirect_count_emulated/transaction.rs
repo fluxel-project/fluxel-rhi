@@ -2,13 +2,16 @@
 //!
 //! The utility changes global program and buffer bindings while it owns three
 //! unpublished scratch buffers. Every fallible operation after the first
-//! allocation is covered by this guard, so failures restore caller state and
-//! delete the scratch names without relying on an ad-hoc error-path ladder.
+//! allocation is covered by this guard, so failures restore caller state before
+//! recycling bounded scratch or deleting transient names, without an ad-hoc
+//! error-path ladder.
 
 use std::rc::Rc;
 
 use crate::backend::gl::{api::GlError, native::buffer_abi::NativeBufferFunctions};
 use glow::HasContext as _;
+
+use super::scratch::IndirectCountScratchLease;
 
 #[derive(Clone, Copy)]
 struct IndexedSsbo {
@@ -26,6 +29,7 @@ pub(super) struct IndirectCountTransaction {
     indirect: Option<glow::NativeBuffer>,
     program: Option<glow::NativeProgram>,
     indexed_ssbo: [IndexedSsbo; 2],
+    scratch: Option<(IndirectCountScratchLease, u64)>,
     temporary: Vec<glow::NativeBuffer>,
 }
 
@@ -80,12 +84,26 @@ impl IndirectCountTransaction {
             gl,
             wide,
             indexed_ssbo,
+            scratch: None,
             temporary: Vec::with_capacity(3),
         })
     }
 
     pub(super) fn retain_temporary(&mut self, buffer: glow::NativeBuffer) {
         self.temporary.push(buffer);
+    }
+
+    pub(super) fn retain_scratch(&mut self, scratch: IndirectCountScratchLease, bytes: u64) {
+        debug_assert!(self.scratch.is_none(), "one lowering owns one scratch set");
+        self.scratch = Some((scratch, bytes));
+    }
+
+    pub(super) fn scratch_buffers(&self) -> [glow::NativeBuffer; 3] {
+        self.scratch
+            .as_ref()
+            .expect("scratch must be retained before it is used")
+            .0
+            .buffers()
     }
 
     /// Restores the raster-visible part of state between compute and drawing.
@@ -149,6 +167,9 @@ impl Drop for IndirectCountTransaction {
                 .bind_buffer(glow::COPY_WRITE_BUFFER, self.copy_write);
             self.gl
                 .bind_buffer(glow::DRAW_INDIRECT_BUFFER, self.indirect);
+            if let Some((scratch, bytes)) = self.scratch.take() {
+                scratch.release(bytes);
+            }
             for buffer in self.temporary.drain(..) {
                 self.gl.delete_buffer(buffer);
             }
@@ -165,11 +186,14 @@ fn gles_failure_injection_restores_bindings_and_deletes_scratch() {
         native::egl::{EglGlesContext, EglGlesVersion, EglPbufferSize},
     };
 
+    use super::scratch::IndirectCountScratchPool;
+
     let stamp = ContextStamp::new(DeviceIdentity::new(999).unwrap(), ContextEpoch::INITIAL);
     let mut context =
         EglGlesContext::new_pbuffer(stamp, EglPbufferSize::PROBE, EglGlesVersion::V3_1).unwrap();
     context.make_current().unwrap();
     let gl = Rc::new(context.load_glow().unwrap());
+    let pool = IndirectCountScratchPool::default();
     // SAFETY: this test owns the current pbuffer context and every name below.
     unsafe {
         let generic = gl.create_buffer().unwrap();
@@ -206,9 +230,17 @@ fn gles_failure_injection_restores_bindings_and_deletes_scratch() {
             "fixture baseline indexed SSBO 1"
         );
 
-        let scratch = {
+        let (scratch, pooled) = {
             let mut transaction =
                 IndirectCountTransaction::capture(gl.clone(), None, "failure-injection").unwrap();
+            let lease = pool
+                .lease(gl.clone(), [64, 60, 4], "failure-injection")
+                .unwrap();
+            let pooled = lease.buffers();
+            transaction.retain_scratch(lease, 128);
+            for buffer in pooled {
+                gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(buffer));
+            }
             let scratch = gl.create_buffer().unwrap();
             transaction.retain_temporary(scratch);
             gl.bind_buffer(glow::SHADER_STORAGE_BUFFER, Some(scratch));
@@ -219,7 +251,7 @@ fn gles_failure_injection_restores_bindings_and_deletes_scratch() {
             gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(scratch));
             let injected: Result<(), ()> = Err(());
             assert!(injected.is_err());
-            scratch
+            (scratch, pooled)
         };
 
         assert_eq!(
@@ -241,6 +273,17 @@ fn gles_failure_injection_restores_bindings_and_deletes_scratch() {
             indexed_one.0.get()
         );
         assert!(!gl.is_buffer(scratch));
+        assert!(gl.is_buffer(pooled[0]), "rollback returns the pooled set");
+        let reuse = pool
+            .lease(gl.clone(), [64, 60, 4], "failure-injection")
+            .unwrap();
+        assert_eq!(reuse.buffers(), pooled, "next lowering reuses rollback scratch");
+        reuse.release(128);
+        pool.clear(&gl);
+        assert!(
+            !gl.is_buffer(pooled[0]),
+            "current-context teardown deletes returned scratch"
+        );
         assert_eq!(gl.get_error(), glow::NO_ERROR);
         for buffer in [
             generic,

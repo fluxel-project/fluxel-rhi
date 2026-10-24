@@ -509,7 +509,13 @@ impl GlFramebufferApi for NativeGlProvider {
                 self.driver_error(OP)
             };
             self.gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-            result
+            // This is the raster-pass observation boundary. In particular it
+            // observes a sticky error left by a direct draw, whose hot path
+            // intentionally does not issue `glGetError` per draw. Keep the
+            // first operation error, but always sample after restoring the
+            // framebuffer so cleanup failures are drained as well.
+            let boundary = self.driver_error(OP);
+            result.and(boundary)
         }
     }
 

@@ -36,8 +36,8 @@ pub(super) type Hwnd = *mut c_void;
 pub(super) type Hdc = *const c_void;
 
 /// The RHI current-binding arbiter is thread-local because WGL currentness is.
-/// It never substitutes bookkeeping for a driver bind: every executable seam
-/// still calls `wglMakeCurrent` before touching GL or WGL.
+/// It never substitutes bookkeeping for native currentness: every executable
+/// seam checks the actual HGLRC/HDC pair and binds it when necessary.
 #[derive(Default)]
 struct CurrentBindingArbiter(Cell<Option<usize>>);
 

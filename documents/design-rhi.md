@@ -1678,9 +1678,11 @@ offsets retain their existing GPU rebase lowering without CPU decoding.
 
 GLES counted draws use a context-owned fixed compute program with per-operation
 uniforms. A transaction snapshots native program, generic/indexed SSBO, copy and
-indirect bindings before mutation. It restores them on every return path and
-deletes each successfully acquired scratch buffer, including partial allocation
-failures. The program is deleted only from the final owner-thread teardown after
+indirect bindings before mutation. It restores them on every return path before
+returning a bounded three-buffer scratch set to its context-local pool. Requests
+above 16 MiB remain transient; partial allocations and other temporary objects
+are deleted on failure. The program and idle scratch names are deleted only
+from the final owner-thread teardown after
 making that exact context current; a lost context discards its stale name without
 calling into a different generation. No command stream is cached or replayed.
 
@@ -1993,3 +1995,55 @@ channel. No timer, GPU polling or command replay implements acquisition.
 This revision has Windows and Apple-target Rust compilation plus independent
 source review only. Metal tests and GPU/presentation/performance validation
 were explicitly omitted; no Apple runtime acceptance is claimed.
+
+
+## GL owner-thread observation and driver-call boundaries
+
+Native GL/GLES completion waits begin with a zero-time owner-thread fence
+query. Pending observations use timer delays of 1, 2, 4 and then at most 8
+milliseconds. A spurious executor poll waits on the same timer rather than
+querying GL again. The timer service only wakes the owner executor; no GL
+operation, recording or resource ownership moves to another thread.
+
+A focused WGL diagnostic compared the observation of an already-signaled native
+fence after an armed retry timer: median 16.4 milliseconds with the previous
+16-millisecond delay versus 1.6 with the initial short retry, over 16 alternating
+pairs. Each sample made one native observation. Owner-thread cycle counts were
+recorded separately; timer-service CPU time and renderer FPS were not measured.
+Long GPU work deliberately trades more frequent bounded observations for lower
+completion latency.
+
+WGL currentness checks the actual HGLRC/HDC pair. EGL checks context, display,
+draw surface and read surface. Matching bindings skip redundant native binds;
+foreign currentness always reinstalls the owned context. An ATI WGL compatibility
+exception reasserts the pair at the native indirect-count seam. On the tested
+Radeon 780M driver, the general fast path produced stale count output; rebind at
+that seam restored correct output, while an extra flush or draw-error query did
+not. The exception changes neither capabilities nor the GPU-count algorithm.
+A 20,000-call native diagnostic measured currentness-guard, raw MakeCurrent and
+empty error-query costs; these are driver-call diagnostics, not frame-rate data.
+
+Ordinary direct-draw driver errors stay sticky until the raster-pass boundary.
+Pass end and abort observe them and preserve indeterminate issued-work facts;
+resource, binding and other native checks retain their own boundaries. WebGL
+pipelines using secondary-source blend factors keep an immediate post-draw check
+to preserve the existing missing-secondary-output error contract. No driver
+error is discarded to improve the hot path.
+
+WebGL array/3D initialization retains the demonstrated ANGLE first-clear
+workaround. One maximum-sized zero column is converted to a typed source and
+reused by all mips, consuming only each mip's required prefix. A native-state
+scope saves and restores the actual PBO and all six UNPACK parameters on every
+exit, including initialization failure. No global default PixelStore assumption
+is substituted for that state.
+
+Focused validation passed 274 WGL ordinary tests and six WGL hardware fixtures,
+including currentness recovery, retry timing, Steps, indirect drawing, native
+interop and MRT. The 156 ignored WGL fixtures are not hardware passes. LDPlayer
+GLES passed scratch reuse, rollback, repeated counted draws, Steps, raster and
+interop checks; its Adreno label denotes a translation layer. The browser run
+passed 115 tests and exposed the dual-source observation regression; retaining
+that narrow immediate check then passed both dual-source tests. WebGL PBO and
+all UNPACK state restoration also executed successfully. All three GL profiles
+passed their MSRV 1.87 compilation checks. These are focused available-driver
+results and do not establish all-driver support.

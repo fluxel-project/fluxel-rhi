@@ -116,6 +116,14 @@ snippets together, and call
 SPIR-V shaders. The worker URL is a backend deployment setting and does not
 enter Core resource or command contracts.
 
+Native GL/GLES completion waits remain on the context owner thread, with
+1–8 ms timer backoff. GLES counted draws reuse bounded context-local scratch
+buffers. WGL/EGL skip redundant binds only after checking actual native
+currentness, with a narrow ATI WGL indirect-count compatibility rebind. Ordinary
+draw errors are observed at pass boundaries; WebGL dual-source draws retain
+immediate error reporting. Array/3D initialization preserves PBO and UNPACK
+state while reusing one zero source across mips.
+
 GLES same-sample MSAA texture copy is explicitly Unsupported, including contexts
 with ES 3.2 core or ES 3.1 EXT/OES CopyImage. LDPlayer Android 14 passes the 2D
 4x sample-pattern copy/resolve check, but its MSAA-array attachment is incomplete;

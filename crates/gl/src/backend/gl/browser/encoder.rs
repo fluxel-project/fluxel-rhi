@@ -434,7 +434,7 @@ impl BrowserEncoder {
         instances: i32,
     ) -> Result<()> {
         self.require_raster()?;
-        self.with_context("draw_arrays", |raw| {
+        self.with_context_deferred_error("draw_arrays", |raw| {
             if instances == 1 {
                 raw.draw_arrays(mode, first, count);
             } else {
@@ -457,7 +457,7 @@ impl BrowserEncoder {
         if count < 0 || byte_offset < 0 || instances < 0 {
             return Err(Error::InvalidRange);
         }
-        self.with_context("draw_elements", |raw| {
+        self.with_context_deferred_error("draw_elements", |raw| {
             if instances == 1 {
                 raw.draw_elements_with_i32(mode, count, index_type, byte_offset);
             } else {
@@ -488,7 +488,7 @@ impl BrowserEncoder {
             return Err(Error::InvalidRange);
         }
         let mut result = Ok(());
-        self.with_context("draw_elements_base_vertex", |raw| {
+        self.with_context_deferred_error("draw_elements_base_vertex", |raw| {
             let extension =
                 match raw.get_extension("WEBGL_draw_instanced_base_vertex_base_instance") {
                     Ok(Some(value)) => value,
@@ -539,8 +539,19 @@ impl BrowserEncoder {
     /// Ends the current raster pass. No command snapshot survives the pass.
     pub(crate) fn end_raster(&mut self) -> Result<()> {
         self.require_raster()?;
+        // Aggregate direct-draw errors at the pass boundary. This preserves
+        // WebGL's sticky error fact without making every hot draw call issue a
+        // costly `getError` round-trip.
+        let result = self.observe_raster_boundary("end_raster");
         self.owner.state.borrow_mut().raster_extent = None;
-        Ok(())
+        result
+    }
+
+    /// Observes deferred direct-draw errors before an active raster pass is
+    /// retired, including the abort path used when Core discards `finish`.
+    pub(crate) fn observe_raster_boundary(&mut self, operation: &'static str) -> Result<()> {
+        self.require_raster()?;
+        self.with_context(operation, |_| {})
     }
 
     /// Releases a normally closed immediate scope without inserting hidden
@@ -617,6 +628,26 @@ impl BrowserEncoder {
                 "WebGL2 {operation} failed with GL error {error}"
             )))
         }
+    }
+
+    /// Issues a direct draw while retaining the sticky driver error for the
+    /// raster-pass boundary. Context loss is still observed immediately: it
+    /// changes resource lifetime, unlike an ordinary deferred GL error.
+    fn with_context_deferred_error(
+        &mut self,
+        _operation: &'static str,
+        issue: impl FnOnce(&Gl),
+    ) -> Result<()> {
+        let mut state = self.owner.state.borrow_mut();
+        state.ensure_encoder(self.epoch)?;
+        state.ensure_active()?;
+        issue(&state.context.raw);
+        self.issued = true;
+        if state.context.raw.is_context_lost() {
+            state.mark_lost();
+            return Err(Error::DeviceLost);
+        }
+        Ok(())
     }
 
     pub(super) fn require_raster(&self) -> Result<[u32; 2]> {

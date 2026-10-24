@@ -244,7 +244,9 @@ impl NativeGlProvider {
                 }
             }
         }
-        self.driver_error(OP)
+        // Direct draw errors remain sticky until the raster-pass observation
+        // boundary. Pass end/abort reports them and poisons uncertain work.
+        Ok(())
     }
 }
 

@@ -608,6 +608,17 @@ impl RasterBackend for Gl {
                     .is_some_and(|token| !token.is_current());
                 let browser = encoder.browser.as_mut().ok_or(Error::InvalidState)?;
                 if stale {
+                    // Even though the stale lease determines the returned
+                    // error, consume a deferred direct-draw error before
+                    // abandoning the pass so close_immediate reports the
+                    // issued prefix as indeterminate rather than cleanly
+                    // rejected.
+                    if browser
+                        .observe_raster_boundary("abort stale WebGL raster")
+                        .is_err()
+                    {
+                        encoder.indeterminate = true;
+                    }
                     if browser.has_surface_depth_pass() {
                         browser.abort_surface_depth_raster();
                     } else if browser.has_owned_framebuffer_pass() {

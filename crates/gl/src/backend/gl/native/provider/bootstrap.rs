@@ -479,6 +479,7 @@ impl NativeGlProvider {
             indirect_count: None,
             multi_draw_indirect: None,
             indirect_count_utility: None,
+            indirect_count_scratch: Default::default(),
             multiview: None,
             multisample_array: None,
             storage_3d_nonzero_mip: false,

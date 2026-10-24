@@ -100,3 +100,8 @@ mod dummy_binding;
 mod stencil_mirror;
 
 mod stencil_extract;
+
+/// Stable native seam tag shared by the immediate lowering and platform
+/// currentness compatibility check. Keep this identity separate from ad-hoc
+/// caller diagnostics so label changes cannot bypass the driver workaround.
+pub(crate) const INDIRECT_COUNT_OPERATION: &str = "multi draw GL indirect count";

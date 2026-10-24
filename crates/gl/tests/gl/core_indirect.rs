@@ -697,6 +697,9 @@ fn gles_core_indirect() {
         && name.contains("D3D11-32.0.21028.2002");
     let d = block_on(open(native));
     block_on(indirect(&d, false, broken, false));
+    // A second count lowering on the same GLES context must keep the first
+    // draw's GPU-written count ordering while reusing its private scratch.
+    block_on(indirect(&d, false, broken, false));
     block_on(indirect(&d, true, broken, false));
 }
 

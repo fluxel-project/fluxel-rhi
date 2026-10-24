@@ -44,6 +44,7 @@ pub(crate) struct NativeGlProvider {
     pub(super) indexed_blend: super::indexed_blend::IndexedBlendExtensions,
     pub(super) indirect_count: Option<super::indirect_count::IndirectCountFns>,
     pub(super) multi_draw_indirect: Option<super::multi_draw_indirect::MultiDrawIndirectFns>,
+    pub(crate) indirect_count_scratch: super::indirect_count_emulated::scratch::IndirectCountScratchPool,
     pub(super) indirect_count_utility: Option<super::indirect_count_emulated::IndirectCountUtility>,
     pub(super) multiview: Option<super::multiview::NativeMultiview>,
     pub(super) multisample_array: Option<super::multisample_array::StorageFn>,
@@ -646,6 +647,7 @@ impl crate::backend::gl::api::GlFamilyApi for NativeGlProvider {
         // Lost-context names must never be deleted through a restored or
         // different context. The native context owns their final reclamation.
         self.indirect_count_utility.take();
+        self.indirect_count_scratch.discard_lost();
         self.reset_executable_state();
         Ok(())
     }

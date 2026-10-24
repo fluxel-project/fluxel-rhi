@@ -203,6 +203,9 @@ impl Future for GlWaitFuture<'_> {
 pub(crate) struct NativeWaitFuture {
     completion: GlCompletion,
     retry: Option<Delay>,
+    next_retry: Duration,
+    #[cfg(test)]
+    observations: usize,
 }
 
 #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
@@ -211,6 +214,9 @@ impl NativeWaitFuture {
         Self {
             completion,
             retry: None,
+            next_retry: Duration::from_millis(1),
+            #[cfg(test)]
+            observations: 0,
         }
     }
 }
@@ -229,11 +235,17 @@ impl Future for NativeWaitFuture {
             }
             self.retry = None;
         }
+        #[cfg(test)]
+        {
+            self.observations += 1;
+        }
         match native_completion_status(&self.completion.state, &self.completion) {
             CompletionState::Complete => Poll::Ready(Ok(())),
             CompletionState::Failed(error) => Poll::Ready(Err(error)),
             CompletionState::Pending => {
-                let retry = self.retry.insert(retry_delay());
+                let duration = self.next_retry;
+                self.next_retry = next_retry_interval(duration);
+                let retry = self.retry.insert(retry_delay(duration));
                 let _ = Pin::new(retry).poll(cx);
                 Poll::Pending
             }
@@ -249,8 +261,15 @@ impl Future for NativeWaitFuture {
 /// executor reference. The delay service only wakes this future; it never
 /// captures a provider or queries GL from another thread.
 #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
-fn retry_delay() -> Delay {
-    Delay::new(Duration::from_millis(16))
+fn retry_delay(duration: Duration) -> Delay {
+    Delay::new(duration)
+}
+
+/// Short critical-path observation, then bounded backoff for long GPU work.
+/// A timer firing admits one query; extra executor polls never query GL.
+#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+fn next_retry_interval(previous: Duration) -> Duration {
+    previous.saturating_mul(2).min(Duration::from_millis(8))
 }
 impl CompletionBackend for Gl {
     type WaitFuture<'a> = GlWaitFuture<'a>;
@@ -400,3 +419,7 @@ fn native_error(error: crate::backend::gl::api::GlError) -> Error {
         other => Error::Backend(format!("{other:?}")),
     }
 }
+
+#[cfg(all(test, windows, feature = "native-gl-wgl"))]
+#[path = "completion/tests.rs"]
+mod tests;
