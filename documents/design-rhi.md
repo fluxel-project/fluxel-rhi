@@ -833,10 +833,54 @@ native API could theoretically do.
 Standalone texture clear selects nonempty mip and array-layer ranges and a
 color or depth value. It clears whole selected subresources; the caller supplies
 the transition to color-attachment or depth-write state. The DX12 route requires
-render-attachment usage and currently accepts float color clears for RGBA8 or
-BGRA8 unorm and depth clears for Depth32Float. Other formats and stencil clears
-are not covered. Standalone buffer clear remains unsupported by DX12. Render
-pass attachment load clears are a separate operation.
+render-attachment usage and a graphics lane. It supports device-renderable float
+and integer color formats and depth clears, including selected mips and layers.
+The depth clear preserves stencil; Core does not define a standalone stencil
+clear value. Render-pass attachment load clears are a separate operation.
+DX12 standalone buffer clear writes a repeated little-endian `u32` to a nonempty
+four-byte-aligned `COPY_DST` range in device or readback memory. A single bounded
+upload pattern is reused by native copies; the destination remains `COPY_DEST`.
+
+DX12 standalone color resolve accepts matching multisample/single-sample 2D
+formats with native `MULTISAMPLE_RESOLVE` support. Source usage includes
+`RENDER_ATTACHMENT` or `COPY_SRC`; destination usage includes
+`RENDER_ATTACHMENT` or `COPY_DST`. The caller establishes `ResolveSrc` and
+`ResolveDst` states. Whole subresources use `ResolveSubresource`; partial
+rectangles with independent offsets and array layers use command-list version
+1. This average-color operation does not define a depth/stencil resolve policy.
+
+DX12 placed memory uses native allocation requirements and retains the heap
+inside every placed buffer or texture. Native memory classes are default mixed
+heaps (0, resource heap tier 2 only), upload buffers (1), readback buffers (2),
+default buffers (3), non-render-target/non-depth textures (4), and render-target
+or depth textures (5). Select a class from `native_type_bits`; placement validates
+the exact device, class, range and alignment. Mixed and RT/DS heaps use 4 MiB
+heap alignment to accommodate multisampling. Heap allocation policy and alias
+selection remain with the caller. Explicit Core alias barriers lower to native
+aliasing barriers and retain both resource owners through GPU completion.
+They do not transfer initialized contents into the newly activated native
+resource identity. A placed attachment first used through
+`Undefined -> ColorAttachment` or `Undefined -> DepthStencilAttachment` lowers
+to a whole-subresource `DiscardResource` before the application initializes it
+with a full clear, copy, or render pass. The same lowering applies to sparse
+attachments; it is a native execution detail, not resource-state inference.
+
+Resource-less global barriers preserve resource states and texture layouts.
+DX12 uses enhanced global barriers when options 12 and command-list version 7
+are available, with queue-compatible synchronization and conservative cache
+scopes where Core does not distinguish native accesses. `ALL` covers the GPU
+work supported by that queue, including ray dispatch and acceleration builds
+on compute queues. Older runtimes retain a restricted null-UAV barrier route;
+general copy/attachment scopes require enhanced barriers. Explicit host scopes
+need completion and mapping synchronization, not a command-list memory barrier.
+
+DX12 scoped native interop returns a borrowed `ID3D12Device` or the actual
+`ID3D12GraphicsCommandList` COM pointer. The guard owns an interface reference;
+encoder access also holds Core's exclusive encoder borrow. Foreign commands
+must restore native state, obey explicit resource states and retain their own
+dependencies through GPU completion. They must not close, reset or separately
+submit the borrowed list. An external acquire/release may open a new native
+list, so foreign code must reestablish its own bindings after such a boundary.
 
 External resource import is an explicit bridge contract. The bridge provides
 an owned native handle and the producer's exact allocation and resource
@@ -847,6 +891,17 @@ layouts. The producer's synchronization payload is imported before acquire;
 release returns a payload signaled only when the recorded work is submitted
 and reaches the release. The bridge must not use the resource outside the
 matching ownership interval or wait twice on a binary semaphore payload.
+
+DX12 imports owned NT resource handles and shared-fence handles with explicit
+timeline values. Opened COM resources outlive the consumed handles. Texture
+metadata, buffer memory class, native flags and binding capacity are validated
+against the imported resource; an object handle is not an implicit buffer slice.
+At each explicit acquire/release, the backend closes the current native list
+and opens the next. Submission executes those lists and queue fence waits or
+signals in exactly the recorded order. Ordinary work without such boundaries
+retains batched list submission. These native segments retain COM objects and
+allocator ownership through fence retirement, including indeterminate failure;
+they store no CPU draw/dispatch replay stream and derive no dependencies.
 
 Vulkan currently imports opaque Win32 handles or opaque file descriptors when
 the relevant extensions and per-resource import features are available. Win32
@@ -876,9 +931,12 @@ support for every native API option or every device.
   route is restricted to its supported triangle pipeline, attachment formats,
   sample counts and depth state. See the
   [mesh GPU fixture](../crates/dx12/tests/mesh_gpu.rs).
-- Sparse textures require tiled-resource support. The current route accepts
-  single-layer, single-sample RGBA8 2D textures with copy and sampled usage;
-  standard mips and the packed mip tail use the backend's reported tiling.
+- Sparse textures require tiled-resource and per-format support. The route
+  supports validated single-sample 2D arrays and tier-3 3D resources, including
+  native-supported color, BC and depth uses. Standard mips and packed tails use
+  the returned native tiling. Array packed tails require tier 4 and consistent
+  per-slice metadata; the current test device lacks this optional capability,
+  so its tier-4 fixture reports a runtime skip rather than GPU acceptance.
   Mapping and residency changes are exercised by the
   [sparse GPU fixtures](../crates/dx12/tests/sparse_gpu.rs).
   A sparse bind does not initialize contents or attachment compression metadata.
@@ -899,8 +957,38 @@ support for every native API option or every device.
   the argument, stride, range and state requirements in the Core contract and
   DX12 backend. The [GPU fixture](../crates/dx12/tests/multi_count_gpu.rs)
   checks the resulting output.
-- The restricted standalone texture clear route above is exercised by the
-  [clear GPU fixture](../crates/dx12/tests/clear_gpu.rs).
+- Standalone texture clear uses the attachment-state contract described above;
+  it cannot run on a compute queue merely because D3D12 also offers a different
+  UAV-state clear operation. Standalone buffer clear and partial color resolve
+  have focused [buffer-clear](../crates/dx12/tests/clear_buffer_gpu.rs) and
+  [resolve](../crates/dx12/tests/resolve_gpu.rs) readback fixtures.
+- Bounded runtime WGSL binding arrays specialize to the selected pipeline
+  layout's `RuntimeSized` capacity; an equally sized fixed layout is not
+  interchangeable. The backend-specific `subgroups` shader requirement needs
+  native WaveOps. Required compute subgroup size additionally needs shader
+  model 6.6 and a supported native wave size; DXC compiles the selected WGSL
+  entry with `WaveSize`. Direct HLSL sources use `Hlsl(major * 10 + minor)`:
+  shader models 60–69 are checked against the device before admission. The
+  selected vertex, fragment or compute entry is compiled at PSO creation with
+  DXC, using the same native binding ABI as DXIL: Core group maps to register
+  space and binding maps to its register within the CBV/SRV/UAV/sampler class.
+  Vertex-buffer locations use `LOCATION<n>` input semantics; Naga-generated
+  WGSL uses its separate `LOC<n>` convention.
+  Overlapping ranges within a native register class are rejected; WGSL uses
+  its separate layout-aware remapping. Native HLSL coordinates and builtins
+  receive no WGSL coordinate or vertex-index rewrite.
+  HLSL pipeline constants are validated identifier/finite-value `-D` macros;
+  integer widths, finite half values and full-precision double values retain
+  their numeric meanings. A requested wave size first preprocesses macros and
+  conditionals in memory, then annotates the active `void entry(...)` definition.
+  Combining an existing `WaveSize` annotation with the pipeline option is
+  rejected. Source includes
+  require provenance and an include resolver absent from the bytes-only Core
+  input, so this route does not resolve filesystem includes.
+  Direct DXIL artifacts cannot be modified by this
+  pipeline option or by post-hoc specialization constants.
+- Native pipeline statistics are interval counters. They do not implement
+  Core's separate Metal-style vertex/fragment start/end sample domain.
 
 ### Current Vulkan advanced routes
 

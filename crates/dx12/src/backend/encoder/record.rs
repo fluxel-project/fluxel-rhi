@@ -8,6 +8,21 @@
 
 use super::*;
 impl api::CommandBackend for Dx12 {
+    fn resolve(
+        encoder: &mut Dx12Encoder,
+        src: api::TextureRegion<'_, Self>,
+        dst: api::TextureRegion<'_, Self>,
+    ) -> Result<(), Error> {
+        super::resolve::texture(encoder, src, dst)
+    }
+    fn clear_buffer(
+        encoder: &mut Dx12Encoder,
+        dst: &super::Dx12Buffer,
+        range: std::ops::Range<u64>,
+        value: u32,
+    ) -> Result<(), Error> {
+        super::buffer_clear::record(encoder, dst, range, value)
+    }
     fn clear_texture(
         encoder: &mut Dx12Encoder,
         texture: &super::Dx12Texture,
@@ -134,14 +149,14 @@ impl api::CommandBackend for Dx12 {
                         validate_compute_states(encoder, before, after)?;
                         (before, after)
                     };
-                    let discard = texture.0.sparse.is_some()
+                    let discard = (texture.0.sparse.is_some() || texture.0.backing_heap.is_some())
                         && from_layout == api::ImageLayout::Undefined
                         && barrier_op.ownership.is_none()
                         && ((!depth && after == D3D12_RESOURCE_STATE_RENDER_TARGET)
                             || (depth && after == D3D12_RESOURCE_STATE_DEPTH_WRITE));
                     if discard && encoder.is_compute {
                         return Err(Error::Unsupported(
-                            "DX12 sparse attachment discard requires graphics queue",
+                            "DX12 attachment discard requires graphics queue",
                         ));
                     }
                     for layer in barrier_op.target.layers.clone() {
@@ -176,9 +191,11 @@ impl api::CommandBackend for Dx12 {
                                         FirstSubresource: subresource,
                                         NumSubresources: 1,
                                     };
-                                    // SAFETY: Undefined explicitly relinquishes these contents,
-                                    // the transition above establishes the required attachment
-                                    // state, and the region selects this complete subresource.
+                                    // SAFETY: Undefined explicitly relinquishes these contents.
+                                    // This is needed for sparse and placed identities: an alias
+                                    // barrier does not initialize a newly activated RT/DS
+                                    // resource. The transition establishes attachment state and
+                                    // the region selects this complete subresource.
                                     unsafe {
                                         encoder
                                             .list
@@ -221,7 +238,12 @@ impl api::CommandBackend for Dx12 {
                     }
                     encoder.accelerations.push(acceleration.clone());
                 }
-                _ => return Err(Error::Unsupported("DX12 resource transition")),
+                api::ResourceTransition::Aliasing { before, after } => {
+                    super::aliasing::record(encoder, before, after);
+                }
+                api::ResourceTransition::Global { before, after } => {
+                    super::global_barrier::record(encoder, *before, *after)?;
+                }
             }
         }
         Ok(())

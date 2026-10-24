@@ -25,7 +25,7 @@ fn same_resource(
     left.as_raw() == right.as_raw()
 }
 
-fn validate_region(
+pub(super) fn validate_region(
     texture: &Dx12Texture,
     region: &api::TextureRegion<'_, crate::backend::Dx12>,
 ) -> Result<u32> {

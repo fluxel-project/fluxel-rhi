@@ -16,6 +16,148 @@ fn block<F: Future>(f: F) -> F::Output {
 }
 
 #[test]
+fn enhanced_global_copy_scope_records_or_runtime_skips() {
+    let d = block(Dx12Instance::new().unwrap().open_default()).unwrap();
+    let graphics = d
+        .lanes()
+        .iter()
+        .find(|v| v.class == LaneClass::Graphics)
+        .unwrap()
+        .id;
+    let run = |lane, global, ordinal| -> Result<Vec<u8>> {
+        let buffer = d.create_buffer(&BufferDesc {
+            label: None,
+            size: 256,
+            usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            memory: MemoryClass::Device,
+        })?;
+        let readback = d.create_buffer(&BufferDesc {
+            label: None,
+            size: 256,
+            usage: BufferUsage::COPY_DST | BufferUsage::MAP_READ,
+            memory: MemoryClass::Readback,
+        })?;
+        let copy_write = BufferUses {
+            stages: StageMask::COPY,
+            accesses: AccessMask::COPY_WRITE,
+        };
+        let copy_read = BufferUses {
+            stages: StageMask::COPY,
+            accesses: AccessMask::COPY_READ,
+        };
+        let mut e = d.encoder(lane)?;
+        e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
+            target: BufferSlice {
+                buffer: &buffer,
+                range: 0..256,
+            },
+            usage: StateTransition {
+                from: BufferUses {
+                    stages: StageMask::EMPTY,
+                    accesses: AccessMask::EMPTY,
+                },
+                to: copy_write,
+            },
+            ownership: None,
+        })])?;
+        // Both clears execute in unchanged COPY_DEST state. The Global
+        // transition supplies only their memory dependency.
+        e.clear_buffer(&buffer, 0..256, 0x1122_3344)?;
+        e.transition_resources(&[global])?;
+        e.clear_buffer(&buffer, 0..256, 0xa1b2_c3d4)?;
+        e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
+            target: BufferSlice {
+                buffer: &buffer,
+                range: 0..256,
+            },
+            usage: StateTransition {
+                from: copy_write,
+                to: copy_read,
+            },
+            ownership: None,
+        })])?;
+        e.copy_buffer(&buffer, 0, &readback, 0, 256)?;
+        let ticket = e.readback_buffer(&readback, 0..256)?;
+        let work = e.finish()?;
+        let plan = unsafe {
+            SubmissionPlan::from_compiled(
+                PlanId {
+                    device: d.id(),
+                    ordinal,
+                },
+                Arc::from([StepDesc {
+                    lane,
+                    kind: StepKind::Commands,
+                    waits: vec![],
+                }]),
+            )
+        };
+        let point = match unsafe {
+            d.queue().submit(SubmitPacket {
+                steps: vec![BoundStep {
+                    step: plan.step(0),
+                    payload: StepPayload::Commands(vec![work]),
+                }],
+                plan,
+                completion: CompletionRequest::End,
+            })
+        } {
+            SubmitOutcome::Accepted(receipt) => {
+                receipt.checkpoints.into_iter().next().unwrap().point
+            }
+            _ => return Err(Error::InvalidState),
+        };
+        block(d.wait_completion(&point))?;
+        Ok(unsafe { block(d.read_after(ticket, &point))?.bytes })
+    };
+
+    let copy_global = ResourceTransition::Global {
+        before: AccessScope {
+            stages: StageMask::COPY,
+            accesses: AccessMask::COPY_WRITE,
+        },
+        after: AccessScope {
+            stages: StageMask::COPY,
+            accesses: AccessMask::COPY_WRITE,
+        },
+    };
+    match run(graphics, copy_global, 0x67_10_01) {
+        Ok(bytes) => {
+            assert_eq!(&bytes[..4], &0xa1b2_c3d4_u32.to_le_bytes());
+            eprintln!("Enhanced global Copy write->write: submitted and read back");
+        }
+        Err(Error::Unsupported(reason)) => {
+            eprintln!("SKIP: enhanced global copy barrier unavailable at runtime: {reason}");
+            return;
+        }
+        Err(error) => panic!("unexpected global barrier error: {error:?}"),
+    }
+
+    let Some(compute) = d
+        .lanes()
+        .iter()
+        .find(|v| v.class == LaneClass::Compute)
+        .map(|v| v.id)
+    else {
+        eprintln!("SKIP: no DX12 compute lane for Global ALL/ALL acceptance");
+        return;
+    };
+    let all = ResourceTransition::Global {
+        before: AccessScope {
+            stages: StageMask::ALL_COMMANDS,
+            accesses: AccessMask::ALL,
+        },
+        after: AccessScope {
+            stages: StageMask::ALL_COMMANDS,
+            accesses: AccessMask::ALL,
+        },
+    };
+    let bytes = run(compute, all, 0x67_10_02).expect("compute Global ALL/ALL submission");
+    assert_eq!(&bytes[..4], &0xa1b2_c3d4_u32.to_le_bytes());
+    eprintln!("Enhanced global ALL/ALL on compute lane: submitted and read back");
+}
+
+#[test]
 fn uint_storage_view_writes_selected_array_slice() {
     let d = block(Dx12Instance::new().unwrap().open_default()).unwrap();
     let lane = d
@@ -147,6 +289,28 @@ fn uint_storage_view_writes_selected_array_slice() {
         ImageLayout::Common,
         ImageLayout::General,
     )])
+    .unwrap();
+    {
+        let mut pass = d.compute().unwrap().begin(&mut e).unwrap();
+        pass.set_pipeline(&pipeline).unwrap();
+        pass.set_bind_group(0, &group, &[]).unwrap();
+        pass.dispatch([1, 1, 1]).unwrap();
+        pass.finish().unwrap();
+    }
+    // The texture stays in UAV/General state: this is solely a memory
+    // dependency between a producer and consumer, not a layout transition.
+    // On enhanced-barrier runtimes it records a global barrier; older DX12
+    // runtimes use the valid null-UAV subset.
+    e.transition_resources(&[ResourceTransition::Global {
+        before: AccessScope {
+            stages: StageMask::COMPUTE,
+            accesses: AccessMask::SHADER_WRITE,
+        },
+        after: AccessScope {
+            stages: StageMask::COMPUTE,
+            accesses: AccessMask::SHADER_WRITE,
+        },
+    }])
     .unwrap();
     {
         let mut pass = d.compute().unwrap().begin(&mut e).unwrap();

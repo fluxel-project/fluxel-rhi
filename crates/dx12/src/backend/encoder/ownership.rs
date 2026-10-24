@@ -24,8 +24,13 @@ pub(super) fn states(
     {
         return Err(Error::WrongLane);
     }
-    let allowed_stages =
-        api::StageMask::COPY.0 | api::StageMask::INDIRECT.0 | api::StageMask::COMPUTE.0;
+    // DXR dispatch and acceleration builds are native compute-list operations
+    // too. Their inputs use the same NON_PIXEL/UAV states admitted below.
+    let allowed_stages = api::StageMask::COPY.0
+        | api::StageMask::INDIRECT.0
+        | api::StageMask::COMPUTE.0
+        | api::StageMask::RAY.0
+        | api::StageMask::ACCELERATION.0;
     let allowed_states = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER.0
         | D3D12_RESOURCE_STATE_UNORDERED_ACCESS.0
         | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE.0

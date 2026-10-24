@@ -16,7 +16,7 @@ use std::{
 use fluxel_rhi_core::api::{self, Error, Result};
 use windows::{Win32::Graphics::Direct3D12::*, core::Interface};
 
-use super::{Dx12, Dx12ComputePipeline, Dx12Device};
+use super::{Dx12, Dx12ComputePipeline, Dx12Device, Dx12ShaderSource};
 
 pub(crate) struct ComputePipelineState {
     pub(crate) root: ID3D12RootSignature,
@@ -316,13 +316,52 @@ fn validate_raw_bindings(encoder: &super::encoder::Dx12Encoder) -> Result<()> {
     Ok(())
 }
 
+/// HLSL `[WaveSize(N)]` requires SM 6.6 and a native wave-operation range.
+/// D3D12 has no PSO field for this: the compiler bakes the requirement into
+/// generated WGSL-derived DXIL after this admission check.
+fn validate_required_wave_size(device: &Dx12Device, size: u32) -> Result<()> {
+    if !size.is_power_of_two() {
+        return Err(Error::InvalidRange);
+    }
+    let mut model = D3D12_FEATURE_DATA_SHADER_MODEL {
+        HighestShaderModel: D3D_SHADER_MODEL_6_6,
+    };
+    // SAFETY: `model` is exactly the structure D3D12 fills synchronously.
+    let sm66 = unsafe {
+        device.0.native.CheckFeatureSupport(
+            D3D12_FEATURE_SHADER_MODEL,
+            (&mut model as *mut D3D12_FEATURE_DATA_SHADER_MODEL).cast(),
+            std::mem::size_of_val(&model) as u32,
+        )
+    }
+    .is_ok()
+        && model.HighestShaderModel.0 >= D3D_SHADER_MODEL_6_6.0;
+    if !sm66 {
+        return Err(Error::Unsupported(
+            "DX12 required subgroup size needs shader model 6.6",
+        ));
+    }
+    let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS1::default();
+    // SAFETY: `options` is exactly the structure D3D12 fills synchronously.
+    let wave_ops = unsafe {
+        device.0.native.CheckFeatureSupport(
+            D3D12_FEATURE_D3D12_OPTIONS1,
+            (&mut options as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS1).cast(),
+            std::mem::size_of_val(&options) as u32,
+        )
+    }
+    .is_ok()
+        && options.WaveOps.as_bool();
+    if !wave_ops || size < options.WaveLaneCountMin || size > options.WaveLaneCountMax {
+        return Err(Error::Unsupported("DX12 required subgroup size"));
+    }
+    Ok(())
+}
+
 fn create_pipeline(
     device: &Dx12Device,
     desc: &api::ComputePipelineDesc<Dx12>,
 ) -> Result<Dx12ComputePipeline> {
-    if desc.required_subgroup_size.is_some() {
-        return Err(Error::Unsupported("DX12 compute pipeline option"));
-    }
     // SAFETY: pipeline descriptors are device-checked by Core; this borrows
     // immutable shader native state during synchronous PSO creation.
     let shader = unsafe { desc.compute.module.native_ref() };
@@ -336,37 +375,82 @@ fn create_pipeline(
     // SAFETY: same-device layout native state is cloned to retain its root
     // signature independently of the caller's descriptor borrow.
     let layout = unsafe { desc.layout.native_ref() }.0.clone();
-    let compiled = if let Some(source) = &shader.wgsl {
-        let entry = shader
-            .entries
-            .iter()
-            .find(|entry| {
-                entry.name == desc.compute.entry && entry.stage == api::ShaderStage::Compute
-            })
-            .ok_or(Error::InvalidState)?;
-        Some(super::shader_naga::compile_variant_with_typed_map(
-            source,
-            entry,
-            &desc.compute.constants,
-            &layout.register_map,
-            &layout.binding_types,
-        )?)
-    } else {
-        if !layout.native_abi_compatible {
-            return Err(Error::Unsupported("DX12 DXIL descriptor register overlap"));
+    let (compiled, raw_storage_bindings, num_workgroups_constants) = match &shader.source {
+        Some(Dx12ShaderSource::Wgsl(source)) => {
+            if let Some(size) = desc.required_subgroup_size {
+                validate_required_wave_size(device, size)?;
+            }
+            let entry = shader
+                .entries
+                .iter()
+                .find(|entry| {
+                    entry.name == desc.compute.entry && entry.stage == api::ShaderStage::Compute
+                })
+                .ok_or(Error::InvalidState)?;
+            let compiled = super::shader_naga::compile_variant_with_typed_map(
+                source,
+                entry,
+                &desc.compute.constants,
+                &layout.register_map,
+                &layout.binding_types,
+                &layout.runtime_binding_capacities,
+                desc.required_subgroup_size,
+            )?;
+            (
+                Some(compiled.bytes),
+                compiled.raw_storage_bindings,
+                compiled.num_workgroups_constants,
+            )
         }
-        if !desc.compute.constants.is_empty() {
-            return Err(Error::Unsupported("DX12 DXIL specialization"));
+        Some(Dx12ShaderSource::Hlsl(source)) => {
+            if !layout.native_abi_compatible {
+                return Err(Error::Unsupported("DX12 HLSL descriptor register overlap"));
+            }
+            let api::ShaderFormat::Hlsl(model) = source.format else {
+                return Err(Error::InvalidState);
+            };
+            let mut text = std::str::from_utf8(&source.bytes)
+                .map_err(|_| Error::Shader("HLSL is not UTF-8".into()))?
+                .to_owned();
+            if let Some(size) = desc.required_subgroup_size {
+                validate_required_wave_size(device, size)?;
+                if model < 66 {
+                    return Err(Error::Unsupported(
+                        "DX12 HLSL required subgroup size needs shader model 6.6",
+                    ));
+                }
+                text = super::shader_naga::preprocess_direct_hlsl(&text, &desc.compute.constants)?;
+                text = super::shader_naga::inject_direct_hlsl(&text, &desc.compute.entry, size)?;
+            }
+            (
+                Some(super::shader_naga::compile_direct_hlsl(
+                    &text,
+                    &desc.compute.entry,
+                    api::ShaderStage::Compute,
+                    model,
+                    &desc.compute.constants,
+                )?),
+                Vec::new(),
+                false,
+            )
         }
-        None
+        None => {
+            if !layout.native_abi_compatible {
+                return Err(Error::Unsupported("DX12 DXIL descriptor register overlap"));
+            }
+            if !desc.compute.constants.is_empty() {
+                return Err(Error::Unsupported("DX12 DXIL specialization"));
+            }
+            if desc.required_subgroup_size.is_some() {
+                return Err(Error::Unsupported(
+                    "DX12 DXIL required subgroup size is immutable in native artifact",
+                ));
+            }
+            (None, Vec::new(), false)
+        }
     };
-    let bytes: &[u8] = compiled
-        .as_ref()
-        .map_or(&shader.bytes, |entry| &entry.bytes);
-    let (root, root_bytes, num_workgroups_root) = if compiled
-        .as_ref()
-        .is_some_and(|entry| entry.num_workgroups_constants)
-    {
+    let bytes: &[u8] = compiled.as_deref().unwrap_or(&shader.bytes);
+    let (root, root_bytes, num_workgroups_root) = if num_workgroups_constants {
         let (root, bytes, index) =
             layout
                 .num_workgroups_root
@@ -443,7 +527,7 @@ fn create_pipeline(
         layout,
         state,
         num_workgroups_root,
-        raw_storage_bindings: compiled.map_or_else(Vec::new, |entry| entry.raw_storage_bindings),
+        raw_storage_bindings,
     })))
 }
 

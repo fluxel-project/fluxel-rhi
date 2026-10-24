@@ -1,6 +1,20 @@
 //! Preflight array mip restrictions before native reserved-resource creation.
 use super::*;
 
+pub(super) fn supports_packed_array_tails(device: &Dx12Device) -> api::Result<bool> {
+    let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS::default();
+    // SAFETY: options has exactly the structure required by this synchronous query.
+    unsafe {
+        device.0.native.CheckFeatureSupport(
+            D3D12_FEATURE_D3D12_OPTIONS,
+            (&mut options as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS).cast(),
+            std::mem::size_of_val(&options) as u32,
+        )
+    }
+    .map_err(native_error)?;
+    Ok(options.TiledResourcesTier.0 >= D3D12_TILED_RESOURCES_TIER_4.0)
+}
+
 pub(super) fn validate_array_mips(
     device: &Dx12Device,
     desc: &api::TextureDesc,
@@ -13,17 +27,7 @@ pub(super) fn validate_array_mips(
     // the driver to create the array. Tier 4 is handled by the returned
     // tiling metadata below instead of assuming the older restriction.
     if desc.array_layers > 1 {
-        let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS::default();
-        // SAFETY: options has exactly the structure required by this query.
-        unsafe {
-            device.0.native.CheckFeatureSupport(
-                D3D12_FEATURE_D3D12_OPTIONS,
-                (&mut options as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS).cast(),
-                std::mem::size_of_val(&options) as u32,
-            )
-        }
-        .map_err(native_error)?;
-        if options.TiledResourcesTier.0 < D3D12_TILED_RESOURCES_TIER_4.0 {
+        if !supports_packed_array_tails(device)? {
             let probe_desc = D3D12_RESOURCE_DESC {
                 DepthOrArraySize: 1,
                 MipLevels: 1,

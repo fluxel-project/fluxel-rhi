@@ -19,7 +19,7 @@ use windows::{
     core::PCSTR,
 };
 
-use super::super::{Dx12, Dx12Device, Dx12RasterPipeline};
+use super::super::{Dx12, Dx12Device, Dx12RasterPipeline, Dx12ShaderSource};
 use super::fixed::{
     depth_format, lower_depth, lower_raster, lower_targets, stencil_writes, validate_depth,
 };
@@ -110,7 +110,10 @@ fn create_raster(
     let vertex_strides = vertex_strides?;
     // Naga emits LOC<n>; caller-provided DXIL follows the LOCATION<n> ABI.
     // SAFETY: Core has validated this shader's device identity.
-    let wgsl_vertex = unsafe { desc.vertex.module.native_ref() }.wgsl.is_some();
+    let wgsl_vertex = matches!(
+        unsafe { desc.vertex.module.native_ref() }.source,
+        Some(Dx12ShaderSource::Wgsl(_))
+    );
     let names: Vec<Vec<u8>> = desc
         .vertex_buffers
         .iter()
@@ -323,25 +326,49 @@ fn stage(
                 need, s.entry
             ))
         })?;
-    if let Some(source) = &n.wgsl {
-        let compiled = super::super::shader_naga::compile_variant_with_typed_map(
-            source,
-            entry,
-            &s.constants,
-            &layout.register_map,
-            &layout.binding_types,
-        )?;
-        Ok((
-            compiled.bytes,
-            compiled.raw_storage_bindings,
-            compiled.vertex_index_constants,
-        ))
-    } else if !layout.native_abi_compatible {
-        Err(Error::Unsupported("DX12 DXIL descriptor register overlap"))
-    } else if !s.constants.is_empty() {
-        Err(Error::Unsupported("DX12 DXIL specialization"))
-    } else {
-        Ok((n.bytes.to_vec(), Vec::new(), false))
+    match &n.source {
+        Some(Dx12ShaderSource::Wgsl(source)) => {
+            let compiled = super::super::shader_naga::compile_variant_with_typed_map(
+                source,
+                entry,
+                &s.constants,
+                &layout.register_map,
+                &layout.binding_types,
+                &layout.runtime_binding_capacities,
+                None,
+            )?;
+            Ok((
+                compiled.bytes,
+                compiled.raw_storage_bindings,
+                compiled.vertex_index_constants,
+            ))
+        }
+        Some(Dx12ShaderSource::Hlsl(source)) => {
+            if !layout.native_abi_compatible {
+                return Err(Error::Unsupported("DX12 HLSL descriptor register overlap"));
+            }
+            let api::ShaderFormat::Hlsl(model) = source.format else {
+                return Err(Error::InvalidState);
+            };
+            let text = std::str::from_utf8(&source.bytes)
+                .map_err(|_| Error::Shader("HLSL is not UTF-8".into()))?;
+            Ok((
+                super::super::shader_naga::compile_direct_hlsl(
+                    text,
+                    &s.entry,
+                    need,
+                    model,
+                    &s.constants,
+                )?,
+                Vec::new(),
+                false,
+            ))
+        }
+        None if !layout.native_abi_compatible => {
+            Err(Error::Unsupported("DX12 DXIL descriptor register overlap"))
+        }
+        None if !s.constants.is_empty() => Err(Error::Unsupported("DX12 DXIL specialization")),
+        None => Ok((n.bytes.to_vec(), Vec::new(), false)),
     }
 }
 fn bytecode(v: &[u8]) -> D3D12_SHADER_BYTECODE {

@@ -201,6 +201,60 @@ fn retain_sparse(
     }
 }
 
+/// Executes one encoder's native lists in their recorded order. Ordinary work
+/// remains batched by the caller; this slower path is used only when an
+/// explicit external queue boundary split the list.
+fn execute_segmented(queue: &ID3D12CommandQueue, work: &Dx12RecordedWork) -> Result<(), Error> {
+    use super::external_segment::QueueBoundary;
+    debug_assert_eq!(
+        work.encoder.closed_segments.len(),
+        work.encoder.queue_boundaries.len()
+    );
+    for (segment, boundary) in work
+        .encoder
+        .closed_segments
+        .iter()
+        .zip(&work.encoder.queue_boundaries)
+    {
+        let list = Some(
+            segment
+                .list
+                .cast::<ID3D12CommandList>()
+                .expect("graphics command list interface"),
+        );
+        // SAFETY: the closed list belongs to this selected lane and the queue
+        // lock held by the caller serializes all native queue operations.
+        unsafe { queue.ExecuteCommandLists(&[list]) };
+        crate::diagnostics::record(crate::diagnostics::Operation::ExecuteCalls, 1);
+        crate::diagnostics::record(crate::diagnostics::Operation::SubmittedLists, 1);
+        match boundary {
+            QueueBoundary::Wait { fence, value } => {
+                // SAFETY: the external fence is retained by the recorded work
+                // and this wait appears exactly at its explicit Core boundary.
+                unsafe { queue.Wait(fence, *value) }.map_err(native_error)?;
+            }
+            QueueBoundary::Signal { fence, value } => {
+                // SAFETY: this shared fence is retained by the recorded work
+                // and receives the exact value created for this release.
+                unsafe { queue.Signal(fence, *value) }.map_err(native_error)?;
+                crate::diagnostics::record(crate::diagnostics::Operation::QueueSignal, 1);
+            }
+        }
+    }
+    let final_list = Some(
+        work.encoder
+            .list
+            .cast::<ID3D12CommandList>()
+            .expect("graphics command list interface"),
+    );
+    // SAFETY: as above, the final list is closed and the caller owns queue
+    // serialization. It follows every explicit boundary in the source order.
+    unsafe { queue.ExecuteCommandLists(&[final_list]) };
+    crate::diagnostics::record(crate::diagnostics::Operation::ExecuteCalls, 1);
+    crate::diagnostics::record(crate::diagnostics::Operation::SubmittedLists, 1);
+    Ok(())
+}
+
 impl DeferredBackend for Dx12 {
     type NativeRecordedWork = Dx12RecordedWork;
     fn finish_encoder(mut encoder: Dx12Encoder, lane: LaneId) -> Result<Dx12RecordedWork, Error> {
@@ -298,7 +352,11 @@ unsafe fn submit_packet(
                     for record in work {
                         // SAFETY: Core checked owning backend and device before calling this method.
                         let native = unsafe { record.native_ref() };
-                        if !native.encoder.closed || native.lane != desc.lane {
+                        if !native.encoder.closed
+                            || native.lane != desc.lane
+                            || native.encoder.closed_segments.len()
+                                != native.encoder.queue_boundaries.len()
+                        {
                             return Err(Error::InvalidState);
                         }
                     }
@@ -508,29 +566,40 @@ unsafe fn submit_packet(
                     (&device.0.multi_queue.queue, &device.0.multi_queue.lock)
                 };
                 let _queue = lock.lock().unwrap_or_else(|p| p.into_inner());
-                let lists: Vec<_> = issued[first..]
+                let segmented = issued[first..]
                     .iter()
-                    .map(|native| {
-                        Some(
-                            native
-                                .encoder
-                                .list
-                                .cast::<ID3D12CommandList>()
-                                .expect("graphics command list interface"),
-                        )
-                    })
-                    .collect();
-                if !lists.is_empty() {
-                    // SAFETY: preflight checked every closed list and its lane;
-                    // execution order and hazards are supplied by the caller.
-                    crate::diagnostics::record(crate::diagnostics::Operation::ExecuteCalls, 1);
-                    crate::diagnostics::record(
-                        crate::diagnostics::Operation::SubmittedLists,
-                        lists.len() as u64,
-                    );
-                    unsafe {
-                        queue.ExecuteCommandLists(&lists);
+                    .any(|native| !native.encoder.closed_segments.is_empty());
+                if segmented {
+                    for native in &issued[first..] {
+                        handoff!(execute_segmented(queue, native));
                     }
+                } else {
+                    let lists: Vec<_> = issued[first..]
+                        .iter()
+                        .map(|native| {
+                            Some(
+                                native
+                                    .encoder
+                                    .list
+                                    .cast::<ID3D12CommandList>()
+                                    .expect("graphics command list interface"),
+                            )
+                        })
+                        .collect();
+                    if !lists.is_empty() {
+                        // SAFETY: preflight checked every closed list and its lane;
+                        // execution order and hazards are supplied by the caller.
+                        crate::diagnostics::record(crate::diagnostics::Operation::ExecuteCalls, 1);
+                        crate::diagnostics::record(
+                            crate::diagnostics::Operation::SubmittedLists,
+                            lists.len() as u64,
+                        );
+                        unsafe {
+                            queue.ExecuteCommandLists(&lists);
+                        }
+                    }
+                }
+                if first != issued.len() {
                     for index in first..issued.len() {
                         super::query::commit_ops(&issued[index].encoder.query_ops, lane.ordinal);
                         if !issued[index].encoder.query_ops.is_empty() {

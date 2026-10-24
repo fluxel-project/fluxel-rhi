@@ -197,6 +197,78 @@ pub(crate) fn issue_bind(device: &Dx12Device, bind: &api::SparseBind<Dx12>) -> S
     }
 }
 
+/// Verifies that `GetResourceTiling` repeated the first-slice layout for
+/// every array slice and marked every packed mip with its sentinel value.
+fn validate_array_tiling_metadata(
+    sub: &[D3D12_SUBRESOURCE_TILING],
+    mip_levels: u32,
+    array_layers: u32,
+    standard_mips: u32,
+    layer_stride: u32,
+) -> api::Result<()> {
+    let expected = usize::try_from(
+        mip_levels
+            .checked_mul(array_layers)
+            .ok_or(api::Error::InvalidRange)?,
+    )
+    .map_err(|_| api::Error::InvalidRange)?;
+    if sub.len() != expected || standard_mips > mip_levels {
+        return Err(api::Error::Unsupported("DX12 sparse array tiling metadata"));
+    }
+    for layer in 0..array_layers {
+        let base = usize::try_from(layer * mip_levels).map_err(|_| api::Error::InvalidRange)?;
+        for mip in 0..mip_levels {
+            let item = sub[base + mip as usize];
+            if mip < standard_mips {
+                let first = sub[mip as usize];
+                if item.WidthInTiles != first.WidthInTiles
+                    || item.HeightInTiles != first.HeightInTiles
+                    || item.DepthInTiles != first.DepthInTiles
+                    || item.StartTileIndexInOverallResource
+                        != first.StartTileIndexInOverallResource + layer * layer_stride
+                {
+                    return Err(api::Error::Unsupported(
+                        "DX12 sparse array standard mip metadata",
+                    ));
+                }
+            } else if item.StartTileIndexInOverallResource != D3D12_PACKED_TILE {
+                return Err(api::Error::Unsupported(
+                    "DX12 sparse array packed mip metadata",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn standard(start: u32) -> D3D12_SUBRESOURCE_TILING {
+        D3D12_SUBRESOURCE_TILING {
+            WidthInTiles: 2,
+            HeightInTiles: 1,
+            DepthInTiles: 1,
+            StartTileIndexInOverallResource: start,
+        }
+    }
+
+    #[test]
+    fn array_packed_tail_metadata_repeats_each_slice() {
+        let mut packed = D3D12_SUBRESOURCE_TILING::default();
+        packed.StartTileIndexInOverallResource = D3D12_PACKED_TILE;
+        let metadata = [standard(0), packed, standard(8), packed];
+        validate_array_tiling_metadata(&metadata, 2, 2, 1, 8).unwrap();
+    }
+
+    #[test]
+    fn array_packed_tail_metadata_rejects_non_sentinel_tail() {
+        let metadata = [standard(0), standard(2), standard(8), standard(10)];
+        assert!(validate_array_tiling_metadata(&metadata, 2, 2, 1, 8).is_err());
+    }
+}
+
 impl api::SparseBackend for Dx12 {
     fn create_sparse_texture(
         device: &Dx12Device,
@@ -407,7 +479,11 @@ impl api::SparseBackend for Dx12 {
         let mut count = 0;
         let mut packed = D3D12_PACKED_MIP_INFO::default();
         let mut shape = D3D12_TILE_SHAPE::default();
-        let mut sub_count = desc.mip_levels;
+        let expected_subresources = desc
+            .mip_levels
+            .checked_mul(desc.array_layers)
+            .ok_or(api::Error::InvalidRange)?;
+        let mut sub_count = expected_subresources;
         let mut sub = vec![D3D12_SUBRESOURCE_TILING::default(); sub_count as usize];
         // SAFETY: outputs match the query and sub contains sub_count elements.
         unsafe {
@@ -426,8 +502,13 @@ impl api::SparseBackend for Dx12 {
             return Err(api::Error::Unsupported("DX12 sparse array tiling"));
         }
         let layer_stride = count / desc.array_layers;
-        if sub_count != desc.mip_levels
-            || standard_count + u32::from(packed.NumPackedMips) != desc.mip_levels
+        let packed_mips = u32::from(packed.NumPackedMips);
+        let packed_tiles = packed.NumTilesForPackedMips;
+        let packed_arrays_allowed =
+            desc.array_layers == 1 || array::supports_packed_array_tails(device)?;
+        if sub_count != expected_subresources
+            || standard_count + packed_mips != desc.mip_levels
+            || (!packed_arrays_allowed && desc.array_layers > 1 && packed_mips != 0)
             || count == 0
             || shape.WidthInTexels == 0
             || shape.HeightInTexels == 0
@@ -457,26 +538,30 @@ impl api::SparseBackend for Dx12 {
             ]);
             starts.push(item.StartTileIndexInOverallResource);
         }
-        // Tier 4 can expose packed array mip tails. This path requires GPU
-        // conformance on a Tier 4 device before it can be advertised.
-        if desc.array_layers > 1 && packed.NumPackedMips != 0 {
-            return Err(api::Error::Unsupported("DX12 sparse packed array mip tail"));
-        }
-        let packed_tail = if packed.NumPackedMips == 0 {
+        // The packed-mip descriptor is per array slice. Tier 4 permits these
+        // tails for texture arrays; older tiers were rejected before creation.
+        validate_array_tiling_metadata(
+            &sub,
+            desc.mip_levels,
+            desc.array_layers,
+            standard_count,
+            layer_stride,
+        )?;
+        let packed_tail = if packed_mips == 0 {
             None
         } else {
             if packed.NumTilesForPackedMips == 0
                 || packed
                     .StartTileIndexInOverallResource
-                    .checked_add(packed.NumTilesForPackedMips)
+                    .checked_add(packed_tiles)
                     .is_none_or(|end| end > layer_stride)
             {
                 return Err(api::Error::Unsupported("DX12 sparse packed mip tiling"));
             }
             Some(api::SparsePackedMipTail {
                 first_mip: standard_count,
-                mip_count: u32::from(packed.NumPackedMips),
-                tile_count: packed.NumTilesForPackedMips,
+                mip_count: packed_mips,
+                tile_count: packed_tiles,
             })
         };
         let tiling = api::SparseTextureTiling::from_aspects(vec![api::SparseAspectTiling {
@@ -499,6 +584,7 @@ impl api::SparseBackend for Dx12 {
         .expect("one sparse aspect");
         Ok(Dx12Texture(Arc::new(super::texture::TextureState {
             resource,
+            backing_heap: None,
             desc: desc.clone(),
             sparse: Some(SparseTextureState {
                 tiling,

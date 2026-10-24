@@ -39,20 +39,28 @@ use windows::core::Interface;
 
 mod compute;
 mod descriptor;
+mod device;
 mod encoder;
+mod external;
+mod interop;
 mod mapping;
+mod memory;
 mod mesh;
 mod pipeline;
 mod query;
 mod queue;
 mod ray;
 mod readback;
+mod resource;
 mod sampler;
 mod secondary;
 mod shader_naga;
 mod sparse;
 mod surface;
 mod texture;
+
+pub use external::{Dx12ExternalHandle, Dx12ExternalSync};
+pub use memory::Dx12Heap;
 
 /// Direct3D 12 selected once by the host.  Resource and command associated
 /// types stay concrete throughout the typed execution API.
@@ -84,6 +92,9 @@ struct Dx12DeviceState {
     pub(super) ray_query_supported: bool,
     pub(super) mesh_supported: bool,
     pub(super) sparse_supported: bool,
+    /// Resource Heap Tier 2 permits a heap that mixes buffers and texture
+    /// classes. Tier 1 requires the narrow heap flags selected by memory.rs.
+    pub(super) resource_heap_tier2: bool,
     pub(super) sparse_in_flight: Mutex<Vec<(u64, Vec<sparse::SparseRetained>)>>,
     pub(super) queue: ID3D12CommandQueue,
     pub(super) multi_queue: queue::MultiQueueState,
@@ -184,6 +195,9 @@ pub struct Dx12Buffer {
     pub(super) usage: api::BufferUsage,
     pub(super) memory: api::MemoryClass,
     pub(super) indirect_signatures: Arc<Mutex<HashMap<(bool, u32), ID3D12CommandSignature>>>,
+    /// A placed resource keeps its native heap alive independently of the
+    /// caller's `MemoryHeap` wrapper. Committed resources leave this empty.
+    pub(super) backing_heap: Option<windows::Win32::Graphics::Direct3D12::ID3D12Heap>,
 }
 #[derive(Clone)]
 pub struct Dx12PipelineCache(pub(crate) Arc<pipeline::cache::PipelineCacheState>);
@@ -215,7 +229,15 @@ pub struct Dx12BindGroup(pub(crate) Arc<descriptor::BindGroupState>);
 pub struct Dx12Shader {
     pub(crate) bytes: Arc<[u8]>,
     pub(crate) entries: Vec<api::ShaderEntryPoint>,
-    pub(crate) wgsl: Option<api::ShaderDesc>,
+    /// Source needs entry-specific DXC compilation only for dialects whose
+    /// artifact depends on pipeline specialization or stage selection.
+    pub(crate) source: Option<Dx12ShaderSource>,
+}
+
+#[derive(Clone)]
+pub(crate) enum Dx12ShaderSource {
+    Wgsl(api::ShaderDesc),
+    Hlsl(api::ShaderDesc),
 }
 #[derive(Clone)]
 pub struct Dx12ComputePipeline(pub(crate) Arc<compute::ComputePipelineState>);
@@ -249,460 +271,15 @@ impl Backend for Dx12 {
     type Extras = encoder::RasterExtras;
 }
 
-impl InstanceBackend for Dx12 {
-    type NativeInstance = Dx12Instance;
-    type OpenFuture<'a> = Ready<Result<(Dx12Device, DeviceCapabilities)>>;
-    fn enumerate(instance: &Dx12Instance, scope: InstanceId) -> Result<Vec<AdapterInfo>> {
-        // SAFETY: the instance owns the factory; ordinal zero is the only
-        // adapter this backend advertises and the returned COM object is owned.
-        let adapter = unsafe { instance.factory.EnumAdapters1(0) }.map_err(native_error)?;
-        // SAFETY: `adapter` is a live COM interface and GetDesc1 only writes
-        // an initialized value returned by the Windows binding.
-        let desc = unsafe { adapter.GetDesc1() }.map_err(native_error)?;
-        let end = desc
-            .Description
-            .iter()
-            .position(|x| *x == 0)
-            .unwrap_or(desc.Description.len());
-        Ok(vec![AdapterInfo {
-            id: AdapterId {
-                instance: scope,
-                ordinal: 0,
-            },
-            name: String::from_utf16_lossy(&desc.Description[..end]),
-        }])
-    }
-    fn open<'a>(
-        instance: &'a Dx12Instance,
-        device: DeviceId,
-        request: &'a DeviceRequest,
-    ) -> Self::OpenFuture<'a> {
-        let result = (|| {
-            if request.adapter.ordinal != 0 {
-                return Err(Error::Unsupported("the requested DXGI adapter"));
-            }
-            if !request.required_features.is_empty() {
-                return Err(Error::Unsupported("requested DX12 device features"));
-            }
-            let diagnostics = std::env::var_os("FLUXEL_DX12_DEBUG").is_some();
-            if diagnostics {
-                let mut debug: Option<ID3D12Debug> = None;
-                // SAFETY: `debug` is a valid local output slot for this COM query.
-                unsafe { D3D12GetDebugInterface(&mut debug) }.map_err(native_error)?;
-                // SAFETY: the returned interface remains owned by `debug` for
-                // this call and EnableDebugLayer has no borrowed Rust inputs.
-                unsafe {
-                    debug
-                        .ok_or_else(|| Error::Backend("D3D12 debug interface unavailable".into()))?
-                        .EnableDebugLayer();
-                }
-            }
-            // SAFETY: factory ownership and the advertised ordinal match
-            // enumerate above; the returned adapter COM reference is retained locally.
-            let adapter = unsafe { instance.factory.EnumAdapters1(0) }.map_err(native_error)?;
-            let mut native: Option<ID3D12Device> = None;
-            // SAFETY: adapter is live and `native` is the output slot for the
-            // newly created device interface.
-            unsafe { D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut native) }
-                .map_err(native_error)?;
-            let native = native
-                .ok_or_else(|| Error::Backend("D3D12CreateDevice returned no device".into()))?;
-            let mut gpu_va = windows::Win32::Graphics::Direct3D12::
-                D3D12_FEATURE_DATA_GPU_VIRTUAL_ADDRESS_SUPPORT::default();
-            // SAFETY: the initialized structure has the exact type and size
-            // requested by this synchronous D3D12 feature query.
-            unsafe {
-                native.CheckFeatureSupport(
-                    windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_GPU_VIRTUAL_ADDRESS_SUPPORT,
-                    (&mut gpu_va as *mut _) as *mut _,
-                    std::mem::size_of_val(&gpu_va) as u32,
-                )
-            }
-            .map_err(native_error)?;
-            let max_buffer_bytes =
-                max_committed_buffer_bytes(gpu_va.MaxGPUVirtualAddressBitsPerProcess)?;
-            let ray_device = ray::probe(&native);
-            let ray_supported = ray_device.is_some();
-            let ray_query_supported = ray::probe_inline(&native);
-            let mesh_supported = mesh::probe(&native);
-            let mut options =
-                windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS::default();
-            // SAFETY: this structure matches the feature query selector.
-            let sparse_supported = unsafe { native.CheckFeatureSupport(windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_D3D12_OPTIONS, &mut options as *mut _ as *mut _, std::mem::size_of_val(&options) as u32) }.is_ok()
-                && options.TiledResourcesTier != windows::Win32::Graphics::Direct3D12::D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED;
-            let mut shader_model =
-                windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_SHADER_MODEL {
-                    HighestShaderModel: windows::Win32::Graphics::Direct3D12::D3D_SHADER_MODEL_6_0,
-                };
-            // SAFETY: the feature struct is the exact size/type requested and
-            // stays valid for D3D12's synchronous feature query.
-            let descriptor_indexing = unsafe {
-                native.CheckFeatureSupport(
-                    windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_SHADER_MODEL,
-                    (&mut shader_model as *mut _) as *mut _,
-                    std::mem::size_of_val(&shader_model) as u32,
-                )
-            }
-            .is_ok()
-                && shader_model.HighestShaderModel.0
-                    >= windows::Win32::Graphics::Direct3D12::D3D_SHADER_MODEL_6_0.0;
-            let mut options3 =
-                windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS3::default();
-            // SAFETY: as above, this query receives the exact initialized
-            // feature structure and does not retain its pointer.
-            let multiview = unsafe {
-                native.CheckFeatureSupport(
-                    windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_D3D12_OPTIONS3,
-                    (&mut options3 as *mut _) as *mut _,
-                    std::mem::size_of_val(&options3) as u32,
-                )
-            }
-            .is_ok()
-                && options3.ViewInstancingTier.0
-                    >= windows::Win32::Graphics::Direct3D12::D3D12_VIEW_INSTANCING_TIER_1.0
-                && native
-                    .cast::<windows::Win32::Graphics::Direct3D12::ID3D12Device2>()
-                    .is_ok();
-            let queue_desc = D3D12_COMMAND_QUEUE_DESC {
-                Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
-                Priority: D3D12_COMMAND_QUEUE_PRIORITY_NORMAL.0,
-                Flags: D3D12_COMMAND_QUEUE_FLAG_NONE,
-                NodeMask: 0,
-            };
-            // SAFETY: queue descriptor is fully initialized and native owns
-            // the returned queue COM interface.
-            let queue = unsafe { native.CreateCommandQueue::<ID3D12CommandQueue>(&queue_desc) }
-                .map_err(native_error)?;
-            // SAFETY: the device creates and returns an owned fence with the
-            // supplied initial value and no borrowed pointer arguments.
-            let fence = unsafe { native.CreateFence::<ID3D12Fence>(0, D3D12_FENCE_FLAG_NONE) }
-                .map_err(native_error)?;
-            let lane = LaneId { device, ordinal: 0 };
-            let compute_lane = LaneId { device, ordinal: 1 };
-            let descriptors = descriptor::create_heaps(&native)?;
-            let debug_info = if diagnostics {
-                let info: ID3D12InfoQueue1 = native.cast().map_err(native_error)?;
-                let mut cookie = 0;
-                // SAFETY: info owns the callback registration until device
-                // destruction; the callback context is null and its ABI matches.
-                unsafe {
-                    info.RegisterMessageCallback(
-                        Some(debug_message),
-                        D3D12_MESSAGE_CALLBACK_FLAG_NONE,
-                        std::ptr::null_mut(),
-                        &mut cookie,
-                    )
-                }
-                .map_err(native_error)?;
-                Some(info)
-            } else {
-                None
-            };
-            Ok((
-                Dx12Device(Arc::new(Dx12DeviceState {
-                    native: native.clone(),
-                    max_buffer_bytes,
-                    ray_device,
-                    ray_query_supported,
-                    mesh_supported,
-                    sparse_supported,
-                    sparse_in_flight: Mutex::new(Vec::new()),
-                    multi_queue: queue::MultiQueueState::new(&native)?,
-                    queue,
-                    fence,
-                    next_fence: AtomicU64::new(1),
-                    queue_lock: Mutex::new(()),
-                    query_submission_gate: Mutex::new(()),
-                    in_flight: Mutex::new(Vec::new()),
-                    direct_commands: Arc::default(),
-                    upload_pool: Arc::default(),
-                    mip_blit_cache: Arc::default(),
-                    integer_clear_cache: Arc::default(),
-                    indirect_signatures: Arc::default(),
-                    abandoned_fence_events: Mutex::new(Vec::new()),
-                    descriptors,
-                    _debug_info: debug_info,
-                })),
-                DeviceCapabilities {
-                    lanes: Arc::from([
-                        LaneInfo {
-                            id: lane,
-                            class: LaneClass::Graphics,
-                            routes: vec![
-                                (lane, api::WaitRoute::SameQueue),
-                                (compute_lane, api::WaitRoute::NativeGpuWait),
-                            ],
-                        },
-                        LaneInfo {
-                            id: compute_lane,
-                            class: LaneClass::Compute,
-                            routes: vec![
-                                (compute_lane, api::WaitRoute::SameQueue),
-                                (lane, api::WaitRoute::NativeGpuWait),
-                            ],
-                        },
-                    ]),
-                    limits: DeviceLimits {
-                        max_bind_groups: 8,
-                        max_bindings_per_group: 64,
-                        max_color_attachments: 8,
-                        max_texture_dimension_2d: 16_384,
-                        max_texture_array_layers: 2_048,
-                        max_multiview_views: if multiview { 4 } else { 0 },
-                        max_buffer_bytes,
-                        max_vertex_buffers: 32,
-                        max_vertex_attributes: 32,
-                        // D3D12 guarantees these dispatch dimensions at feature
-                        // level 11; this path exposes one direct queue.
-                        max_compute_workgroups: [65_535; 3],
-                        max_compute_workgroup_size: [1_024, 1_024, 64],
-                        uniform_offset_alignment: 256,
-                        max_push_constant_bytes: 128,
-                        ..Default::default()
-                    },
-                    compute: true,
-                    multi_queue: true,
-                    mesh: mesh_supported,
-                    sparse: sparse_supported,
-                    ray: ray_supported,
-                    acceleration_structure: ray_supported,
-                    ray_query: ray_query_supported,
-                    storage_textures: true,
-                    storage_buffers: true,
-                    timestamp: true,
-                    occlusion: true,
-                    pipeline_statistics: true,
-                    push_constants: true,
-                    indirect_draw: true,
-                    indirect_first_instance: true,
-                    multi_draw: true,
-                    multi_draw_count: true,
-                    binding_arrays: descriptor_indexing,
-                    runtime_sized_binding_arrays: descriptor_indexing,
-                    nonuniform_sampled_texture_and_storage_buffer_indexing: descriptor_indexing,
-                    secondary_commands: true,
-                    multiview,
-                    ..Default::default()
-                },
-            ))
-        })();
-        ready(result)
-    }
-}
-
-impl api::ResourceBackend for Dx12 {
-    fn buffer_support(
-        device: &Dx12Device,
-        desc: &api::BufferDesc,
-    ) -> api::Support<api::BufferSupport> {
-        if desc.size == 0 {
-            api::Support::Unsupported("zero-sized buffers")
-        } else if desc.size > device.0.max_buffer_bytes {
-            api::Support::Unsupported("DX12 buffer size limit")
-        } else if desc.usage.contains(api::BufferUsage::UNIFORM)
-            && desc
-                .size
-                .checked_add(255)
-                .map(|size| size & !255)
-                .is_none_or(|size| size > device.0.max_buffer_bytes)
-        {
-            api::Support::Unsupported("DX12 padded uniform buffer size limit")
-        } else if matches!(desc.memory, api::MemoryClass::Readback) {
-            let readback_writes = api::BufferUsage::COPY_DST.0 | api::BufferUsage::QUERY_RESOLVE.0;
-            if desc.usage.contains(api::BufferUsage::MAP_READ)
-                && desc.usage.0 & readback_writes != 0
-                && desc.usage.0 & !(readback_writes | api::BufferUsage::MAP_READ.0) == 0
-            {
-                api::Support::Supported(api::BufferSupport {
-                    alignment: 1,
-                    max_size: device.0.max_buffer_bytes,
-                })
-            } else {
-                api::Support::Unsupported("DX12 readback buffer usage")
-            }
-        } else if matches!(desc.memory, api::MemoryClass::Upload) {
-            let allowed = api::BufferUsage::MAP_WRITE.0
-                | api::BufferUsage::COPY_SRC.0
-                | api::BufferUsage::VERTEX.0
-                | api::BufferUsage::INDEX.0
-                | api::BufferUsage::UNIFORM.0
-                | api::BufferUsage::INDIRECT.0
-                | api::BufferUsage::STORAGE.0
-                | api::BufferUsage::ACCEL_BUILD_INPUT.0
-                | api::BufferUsage::SHADER_TABLE.0;
-            if desc.usage.0
-                & (api::BufferUsage::ACCEL_BUILD_INPUT.0 | api::BufferUsage::SHADER_TABLE.0)
-                != 0
-                && device.0.ray_device.is_none()
-            {
-                api::Support::Unsupported("DX12 ray tracing tier 1.0")
-            } else if desc.usage.contains(api::BufferUsage::MAP_WRITE)
-                && desc.usage.0 & !allowed == 0
-            {
-                api::Support::Supported(api::BufferSupport {
-                    alignment: 1,
-                    max_size: device.0.max_buffer_bytes,
-                })
-            } else {
-                api::Support::Unsupported("DX12 upload buffer usage")
-            }
-        } else if desc.usage.0
-            & (api::BufferUsage::ACCEL_BUILD_INPUT.0
-                | api::BufferUsage::ACCEL_SCRATCH.0
-                | api::BufferUsage::SHADER_TABLE.0)
-            != 0
-            && device.0.ray_device.is_none()
-        {
-            api::Support::Unsupported("DX12 ray tracing tier 1.0")
-        } else if desc.usage.0
-            & !(api::BufferUsage::VERTEX.0
-                | api::BufferUsage::INDEX.0
-                | api::BufferUsage::UNIFORM.0
-                | api::BufferUsage::STORAGE.0
-                | api::BufferUsage::COPY_DST.0
-                | api::BufferUsage::COPY_SRC.0
-                | api::BufferUsage::INDIRECT.0
-                | api::BufferUsage::QUERY_RESOLVE.0
-                | api::BufferUsage::ACCEL_BUILD_INPUT.0
-                | api::BufferUsage::ACCEL_SCRATCH.0
-                | api::BufferUsage::SHADER_TABLE.0)
-            != 0
-        {
-            api::Support::Unsupported("DX12 buffer usage")
-        } else {
-            api::Support::Supported(api::BufferSupport {
-                alignment: 1,
-                max_size: device.0.max_buffer_bytes,
-            })
-        }
-    }
-    fn texture_support(
-        device: &Dx12Device,
-        desc: &api::TextureDesc,
-    ) -> api::Support<api::TextureSupport> {
-        texture::support(device, desc)
-    }
-    fn create_buffer(device: &Dx12Device, desc: &api::BufferDesc) -> Result<Dx12Buffer> {
-        if let api::Support::Unsupported(reason) =
-            <Self as api::ResourceBackend>::buffer_support(device, desc)
-        {
-            return Err(Error::Unsupported(reason));
-        }
-        let readback = desc.memory == api::MemoryClass::Readback;
-        let upload = desc.memory == api::MemoryClass::Upload;
-        let allocation_size = if desc.usage.contains(api::BufferUsage::UNIFORM) {
-            desc.size.checked_add(255).ok_or(Error::InvalidRange)? & !255
-        } else {
-            desc.size
-        };
-        if allocation_size > device.0.max_buffer_bytes {
-            return Err(Error::InvalidRange);
-        }
-        let heap = D3D12_HEAP_PROPERTIES {
-            Type: if readback {
-                windows::Win32::Graphics::Direct3D12::D3D12_HEAP_TYPE_READBACK
-            } else if upload {
-                windows::Win32::Graphics::Direct3D12::D3D12_HEAP_TYPE_UPLOAD
-            } else {
-                D3D12_HEAP_TYPE_DEFAULT
-            },
-            CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-            MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
-            CreationNodeMask: 1,
-            VisibleNodeMask: 1,
-        };
-        let native = D3D12_RESOURCE_DESC {
-            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-            Alignment: 0,
-            Width: allocation_size,
-            Height: 1,
-            DepthOrArraySize: 1,
-            MipLevels: 1,
-            Format: DXGI_FORMAT_UNKNOWN,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-            Flags: if !upload
-                && (desc.usage.contains(api::BufferUsage::ACCEL_SCRATCH)
-                    || desc.usage.contains(api::BufferUsage::STORAGE))
-            {
-                windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
-            } else {
-                D3D12_RESOURCE_FLAG_NONE
-            },
-        };
-        let mut resource = None;
-        // SAFETY: heap and buffer descriptors are initialized local values;
-        // D3D12 writes the owned resource COM interface into `resource` only.
-        unsafe {
-            device.0.native.CreateCommittedResource(
-                &heap,
-                D3D12_HEAP_FLAG_NONE,
-                &native,
-                if readback {
-                    windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_COPY_DEST
-                } else if upload {
-                    windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_GENERIC_READ
-                } else {
-                    D3D12_RESOURCE_STATE_COMMON
-                },
-                None,
-                &mut resource,
-            )
-        }
-        .map_err(native_error)?;
-        Ok(Dx12Buffer {
-            resource: resource.ok_or_else(|| {
-                Error::Backend("CreateCommittedResource returned no buffer".into())
-            })?,
-            size: desc.size,
-            allocation_size,
-            mapped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            usage: desc.usage,
-            memory: desc.memory,
-            indirect_signatures: device.0.indirect_signatures.clone(),
-        })
-    }
-    fn create_texture(device: &Dx12Device, desc: &api::TextureDesc) -> Result<Dx12Texture> {
-        texture::create(device, desc)
-    }
-    fn create_view(
-        device: &Dx12Device,
-        texture: &Dx12Texture,
-        desc: &api::TextureViewDesc,
-    ) -> Result<Dx12TextureView> {
-        texture::create_view(device, texture, desc)
-    }
-    fn create_sampler(device: &Dx12Device, desc: &api::SamplerDesc) -> Result<Dx12Sampler> {
-        sampler::create_sampler(device, desc)
-    }
-    fn create_bind_group_layout(
-        device: &Dx12Device,
-        desc: &api::BindGroupLayoutDesc,
-    ) -> Result<Dx12BindGroupLayout> {
-        descriptor::create_bind_group_layout(device, desc)
-    }
-    fn create_bind_group(
-        device: &Dx12Device,
-        desc: &api::BindGroupDesc<'_, Self>,
-    ) -> Result<Dx12BindGroup> {
-        descriptor::create_bind_group(device, desc)
-    }
-    fn create_pipeline_layout(
-        device: &Dx12Device,
-        desc: &api::PipelineLayoutDesc<'_, Self>,
-    ) -> Result<Dx12PipelineLayout> {
-        pipeline::create_pipeline_layout(device, desc)
-    }
-}
-
 impl api::ShaderBackend for Dx12 {
     type DirectFuture<'a> = Ready<Result<Dx12Shader>>;
     type NagaFuture<'a> = Ready<Result<Dx12Shader>>;
     fn shader_route(device: &Dx12Device, desc: &api::ShaderDesc) -> api::ShaderRoute {
-        if !shader_features_supported(&desc.required_features, device.0.ray_query_supported) {
+        if !shader_features_supported(
+            &desc.required_features,
+            device.0.ray_query_supported,
+            shader_naga::wave_ops_supported(&device.0.native),
+        ) {
             return api::ShaderRoute::Unsupported;
         }
         match desc.format {
@@ -711,6 +288,16 @@ impl api::ShaderBackend for Dx12 {
                 environment: "d3d12".into(),
                 abi_key: "dxil".into(),
             }),
+            api::ShaderFormat::Hlsl(model)
+                if direct_hlsl_entries_supported(desc)
+                    && shader_naga::hlsl_shader_model_supported(&device.0.native, model) =>
+            {
+                api::ShaderRoute::Direct(api::ShaderTarget {
+                    format: api::ShaderFormat::Dxil,
+                    environment: "d3d12".into(),
+                    abi_key: format!("hlsl-sm{model}"),
+                })
+            }
             api::ShaderFormat::Wgsl
                 if !desc.entries.is_empty()
                     && desc.entries.iter().all(|e| {
@@ -737,14 +324,33 @@ impl api::ShaderBackend for Dx12 {
         desc: &'a api::ShaderDesc,
         _: &'a api::ShaderTarget,
     ) -> Self::DirectFuture<'a> {
-        ready(if desc.bytes.is_empty() {
-            Err(Error::Shader("empty DXIL artifact".into()))
-        } else {
-            Ok(Dx12Shader {
+        ready(match desc.format {
+            api::ShaderFormat::Dxil if desc.bytes.is_empty() => {
+                Err(Error::Shader("empty DXIL artifact".into()))
+            }
+            api::ShaderFormat::Dxil => Ok(Dx12Shader {
                 bytes: desc.bytes.clone(),
                 entries: desc.entries.clone(),
-                wgsl: None,
-            })
+                source: None,
+            }),
+            api::ShaderFormat::Hlsl(_) if desc.bytes.is_empty() => {
+                Err(Error::Shader("empty HLSL source".into()))
+            }
+            api::ShaderFormat::Hlsl(_) if !direct_hlsl_entries_supported(desc) => {
+                Err(Error::Unsupported("DX12 HLSL shader stage"))
+            }
+            api::ShaderFormat::Hlsl(model) if !(60..=69).contains(&model) => {
+                Err(Error::Unsupported("DX12 HLSL shader model"))
+            }
+            api::ShaderFormat::Hlsl(_) => match std::str::from_utf8(&desc.bytes) {
+                Ok(_) => Ok(Dx12Shader {
+                    bytes: Arc::from([]),
+                    entries: desc.entries.clone(),
+                    source: Some(Dx12ShaderSource::Hlsl(desc.clone())),
+                }),
+                Err(_) => Err(Error::Shader("HLSL is not UTF-8".into())),
+            },
+            _ => Err(Error::Unsupported("DX12 direct shader format")),
         })
     }
     fn compile_naga<'a>(
@@ -755,15 +361,30 @@ impl api::ShaderBackend for Dx12 {
         ready(shader_naga::validate_source(desc).map(|()| Dx12Shader {
             bytes: Arc::from([]),
             entries: desc.entries.clone(),
-            wgsl: Some(desc.clone()),
+            source: Some(Dx12ShaderSource::Wgsl(desc.clone())),
         }))
     }
 }
 
-fn shader_features_supported(features: &[String], ray_query_supported: bool) -> bool {
+fn direct_hlsl_entries_supported(desc: &api::ShaderDesc) -> bool {
+    !desc.entries.is_empty()
+        && desc.entries.iter().all(|entry| {
+            matches!(
+                entry.stage,
+                api::ShaderStage::Compute | api::ShaderStage::Vertex | api::ShaderStage::Fragment
+            )
+        })
+}
+
+fn shader_features_supported(
+    features: &[String],
+    ray_query_supported: bool,
+    wave_ops_supported: bool,
+) -> bool {
     features.iter().all(|feature| match feature.as_str() {
         api::SHADER_FEATURE_RAY_QUERY => ray_query_supported,
         "shaderClipDistance" => true,
+        "subgroups" => wave_ops_supported,
         _ => false,
     })
 }
@@ -787,15 +408,27 @@ mod shader_feature_tests {
     #[test]
     fn validates_ray_query_and_known_legacy_feature() {
         let ray = vec![api::SHADER_FEATURE_RAY_QUERY.to_owned()];
-        assert!(!shader_features_supported(&ray, false));
-        assert!(shader_features_supported(&ray, true));
+        assert!(!shader_features_supported(&ray, false, false));
+        assert!(shader_features_supported(&ray, true, false));
         assert!(shader_features_supported(
             &["shaderClipDistance".into()],
+            false,
+            false,
+        ));
+        assert!(!shader_features_supported(
+            &["subgroups".into()],
+            false,
             false
+        ));
+        assert!(shader_features_supported(
+            &["subgroups".into()],
+            false,
+            true
         ));
         assert!(!shader_features_supported(
             &["unknown-feature".into()],
-            true
+            true,
+            true,
         ));
     }
 

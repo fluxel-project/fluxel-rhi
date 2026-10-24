@@ -212,3 +212,64 @@ pub(super) fn wgsl_binding_shape(
     };
     Ok((class, count))
 }
+
+/// Turns WGSL's unbounded binding-array syntax into the exact nonzero capacity
+/// declared by the selected Core pipeline layout.  D3D12 descriptor tables are
+/// fixed-size root-signature ranges; Core supplies the per-layout bound rather
+/// than letting a shader reserve an arbitrary device-wide maximum.
+///
+/// A fixed public array may have the same descriptor count, but it is a
+/// distinct contract.  The parallel runtime-capacity map therefore proves the
+/// matching binding was declared `RuntimeSized`, instead of inferring it from
+/// capacity alone.
+pub(super) fn specialize_runtime_arrays(
+    module: &mut naga::Module,
+    runtime_binding_capacities: Option<&[(u32, u32, u32)]>,
+    require_layout: bool,
+) -> Result<()> {
+    let arrays: Vec<_> = module
+        .global_variables
+        .iter()
+        .filter_map(|(handle, global)| match module.types[global.ty].inner {
+            naga::TypeInner::BindingArray {
+                base,
+                size: naga::ArraySize::Dynamic,
+            } => Some((handle, base, global.binding.clone())),
+            _ => None,
+        })
+        .collect();
+    for (handle, base, binding) in arrays {
+        let binding = binding.ok_or(Error::Shader(
+            "DX12 WGSL runtime binding array requires a binding".into(),
+        ))?;
+        let Some(capacities) = runtime_binding_capacities else {
+            return Err(Error::Unsupported(
+                "DX12 WGSL runtime binding array requires pipeline layout",
+            ));
+        };
+        let capacity = capacities
+            .iter()
+            .find(|&&(group, slot, _)| group == binding.group && slot == binding.binding)
+            .map(|&(_, _, capacity)| capacity)
+            .ok_or_else(|| {
+                if require_layout {
+                    Error::Shader(
+                        "WGSL runtime binding array requires RuntimeSized pipeline binding".into(),
+                    )
+                } else {
+                    Error::Unsupported("DX12 WGSL runtime binding array requires pipeline layout")
+                }
+            })?;
+        let size = std::num::NonZeroU32::new(capacity).ok_or(Error::InvalidRange)?;
+        let ty = naga::Type {
+            name: None,
+            inner: naga::TypeInner::BindingArray {
+                base,
+                size: naga::ArraySize::Constant(size),
+            },
+        };
+        let ty = module.types.insert(ty, naga::Span::UNDEFINED);
+        module.global_variables[handle].ty = ty;
+    }
+    Ok(())
+}

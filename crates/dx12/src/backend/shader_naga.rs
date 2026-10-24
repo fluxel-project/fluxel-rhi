@@ -5,14 +5,16 @@
 //! plus supported textures and scalar samplers.
 #[path = "shader_naga/binding.rs"]
 mod binding;
+#[path = "shader_naga/dxc.rs"]
+mod dxc;
+#[path = "shader_naga/validation.rs"]
+mod validation;
+#[path = "shader_naga/wave_size.rs"]
+mod wave_size;
 use binding::{validate_binding_type, wgsl_binding_shape};
 use fluxel_rhi_core::api::{self, Error, Result};
-use windows::Win32::Foundation::{FreeLibrary, HMODULE};
-use windows::Win32::Graphics::Direct3D::Dxc::{
-    CLSID_DxcCompiler, DXC_CP_UTF8, DxcBuffer, IDxcCompiler3, IDxcResult,
-};
-use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
-use windows::core::{GUID, HRESULT, Interface, PCWSTR};
+use validation::validation_capabilities;
+pub(crate) use wave_size::{inject_direct_hlsl, wave_ops_supported};
 
 pub(crate) fn shader_model_supported(
     device: &windows::Win32::Graphics::Direct3D12::ID3D12Device,
@@ -33,23 +35,73 @@ pub(crate) fn shader_model_supported(
         && model.HighestShaderModel.0 >= D3D_SHADER_MODEL_6_0.0
 }
 
-fn validation_capabilities(desc: &api::ShaderDesc) -> naga::valid::Capabilities {
-    let mut caps = naga::valid::Capabilities::SAMPLER_NON_UNIFORM_INDEXING;
-    if desc
-        .required_features
-        .iter()
-        .any(|x| x == api::SHADER_FEATURE_RAY_QUERY)
-    {
-        caps |= naga::valid::Capabilities::RAY_QUERY;
+/// Checks the explicitly requested native HLSL shader model. `Hlsl(66)` means
+/// shader model 6.6; DXC receives the corresponding `*_6_6` profile.
+pub(crate) fn hlsl_shader_model_supported(
+    device: &windows::Win32::Graphics::Direct3D12::ID3D12Device,
+    model: u16,
+) -> bool {
+    use windows::Win32::Graphics::Direct3D12::*;
+    let Some(requested) = native_shader_model(model) else {
+        return false;
+    };
+    let mut reported = D3D12_FEATURE_DATA_SHADER_MODEL {
+        HighestShaderModel: requested,
+    };
+    // SAFETY: `reported` is valid writable storage for this synchronous query.
+    unsafe {
+        device.CheckFeatureSupport(
+            D3D12_FEATURE_SHADER_MODEL,
+            (&mut reported as *mut D3D12_FEATURE_DATA_SHADER_MODEL).cast(),
+            std::mem::size_of_val(&reported) as u32,
+        )
     }
-    if desc
-        .required_features
-        .iter()
-        .any(|x| x == "shaderClipDistance")
-    {
-        caps |= naga::valid::Capabilities::CLIP_DISTANCE;
+    .is_ok()
+        && reported.HighestShaderModel.0 >= requested.0
+}
+
+fn native_shader_model(
+    model: u16,
+) -> Option<windows::Win32::Graphics::Direct3D12::D3D_SHADER_MODEL> {
+    // D3D12 encodes 6.0 through 6.9 as 0x60 through 0x69. Keeping this
+    // conversion here makes Core's compact `major * 10 + minor` spelling
+    // explicit and rejects future/other-major values until DXC support is
+    // deliberately evaluated.
+    (60..=69)
+        .contains(&model)
+        .then_some(windows::Win32::Graphics::Direct3D12::D3D_SHADER_MODEL(
+            i32::from(0x60 + model - 60),
+        ))
+}
+
+pub(crate) fn hlsl_profile(stage: api::ShaderStage, model: u16) -> Result<String> {
+    if !(60..=69).contains(&model) {
+        return Err(Error::Unsupported("DX12 HLSL shader model"));
     }
-    caps
+    let stage = match stage {
+        api::ShaderStage::Vertex => "vs",
+        api::ShaderStage::Fragment => "ps",
+        api::ShaderStage::Compute => "cs",
+        _ => return Err(Error::Unsupported("DX12 HLSL shader stage")),
+    };
+    Ok(format!("{stage}_{}_{}", model / 10, model % 10))
+}
+
+pub(crate) fn compile_direct_hlsl(
+    source: &str,
+    entry: &str,
+    stage: api::ShaderStage,
+    model: u16,
+    constants: &[(String, api::SpecializationValue)],
+) -> Result<Vec<u8>> {
+    dxc::compile_hlsl(source, entry, &hlsl_profile(stage, model)?, constants)
+}
+
+pub(crate) fn preprocess_direct_hlsl(
+    source: &str,
+    constants: &[(String, api::SpecializationValue)],
+) -> Result<String> {
+    dxc::preprocess_hlsl(source, constants)
 }
 
 pub(crate) fn validate_source(desc: &api::ShaderDesc) -> Result<()> {
@@ -100,7 +152,7 @@ pub struct CompiledShader {
 }
 
 pub fn compile(desc: &api::ShaderDesc) -> Result<CompiledShader> {
-    compile_inner(desc, None, &[], None, false)
+    compile_inner(desc, None, &[], None, None, None, false)
 }
 
 /// Compile one pipeline variant. The caller must include the entry, stage,
@@ -110,7 +162,7 @@ pub fn compile_variant(
     entry: &api::ShaderEntryPoint,
     constants: &[(String, api::SpecializationValue)],
 ) -> Result<CompiledEntry> {
-    compile_variant_impl(desc, entry, constants, &[], None, false)
+    compile_variant_impl(desc, entry, constants, &[], None, None, None, false)
 }
 
 pub fn compile_variant_with_typed_map(
@@ -119,6 +171,8 @@ pub fn compile_variant_with_typed_map(
     constants: &[(String, api::SpecializationValue)],
     register_map: &[(u32, u32, u32, u8, u32)],
     binding_types: &[(u32, u32, api::BindingType)],
+    runtime_binding_capacities: &[(u32, u32, u32)],
+    required_wave_size: Option<u32>,
 ) -> Result<CompiledEntry> {
     compile_variant_impl(
         desc,
@@ -126,6 +180,8 @@ pub fn compile_variant_with_typed_map(
         constants,
         register_map,
         Some(binding_types),
+        Some(runtime_binding_capacities),
+        required_wave_size,
         true,
     )
 }
@@ -137,7 +193,7 @@ pub fn compile_variant_with_map(
     constants: &[(String, api::SpecializationValue)],
     register_map: &[(u32, u32, u32, u8, u32)],
 ) -> Result<CompiledEntry> {
-    compile_variant_impl(desc, entry, constants, register_map, None, true)
+    compile_variant_impl(desc, entry, constants, register_map, None, None, None, true)
 }
 
 fn compile_variant_impl(
@@ -146,6 +202,8 @@ fn compile_variant_impl(
     constants: &[(String, api::SpecializationValue)],
     register_map: &[(u32, u32, u32, u8, u32)],
     binding_types: Option<&[(u32, u32, api::BindingType)]>,
+    runtime_binding_capacities: Option<&[(u32, u32, u32)]>,
+    required_wave_size: Option<u32>,
     require_layout: bool,
 ) -> Result<CompiledEntry> {
     if !desc
@@ -164,6 +222,8 @@ fn compile_variant_impl(
         Some(constants),
         register_map,
         binding_types,
+        runtime_binding_capacities,
+        required_wave_size,
         require_layout,
     )?;
     Ok(compiled.entries.remove(0))
@@ -174,6 +234,8 @@ fn compile_inner(
     constants: Option<&[(String, api::SpecializationValue)]>,
     register_map: &[(u32, u32, u32, u8, u32)],
     binding_types: Option<&[(u32, u32, api::BindingType)]>,
+    runtime_binding_capacities: Option<&[(u32, u32, u32)]>,
+    required_wave_size: Option<u32>,
     require_layout: bool,
 ) -> Result<CompiledShader> {
     if desc.format != api::ShaderFormat::Wgsl
@@ -232,7 +294,7 @@ fn compile_inner(
             }
         }
     }
-    let (module, info) = if constants.is_some() {
+    let (module, _info) = if constants.is_some() {
         let entry = &desc.entries[0];
         let stage = match entry.stage {
             api::ShaderStage::Vertex => naga::ShaderStage::Vertex,
@@ -254,6 +316,13 @@ fn compile_inner(
         )
     };
     let mut module = module.into_owned();
+    binding::specialize_runtime_arrays(&mut module, runtime_binding_capacities, require_layout)?;
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        validation_capabilities(desc),
+    )
+    .validate(&module)
+    .map_err(|e| Error::Shader(e.emit_to_string(source)))?;
     let array_handles: Vec<_> = module
         .global_variables
         .iter()
@@ -290,7 +359,9 @@ fn compile_inner(
         array_samplers.push((binding.group, register, comparison, size, marker));
     }
     let mut options = naga::back::hlsl::Options {
-        shader_model: if desc
+        shader_model: if required_wave_size.is_some() {
+            naga::back::hlsl::ShaderModel::V6_6
+        } else if desc
             .required_features
             .iter()
             .any(|x| x == api::SHADER_FEATURE_RAY_QUERY)
@@ -415,7 +486,9 @@ fn compile_inner(
             ),
             api::ShaderStage::Compute => (
                 naga::ShaderStage::Compute,
-                if desc
+                if required_wave_size.is_some() {
+                    "cs_6_6"
+                } else if desc
                     .required_features
                     .iter()
                     .any(|x| x == api::SHADER_FEATURE_RAY_QUERY)
@@ -536,7 +609,13 @@ fn compile_inner(
                 .collect();
             hlsl = lower_scalar_samplers(&hlsl, &samplers, &groups)?;
         }
-        let bytes = compile_hlsl(&hlsl, &name, profile)?;
+        if let Some(size) = required_wave_size {
+            if stage != naga::ShaderStage::Compute {
+                return Err(Error::InvalidState);
+            }
+            hlsl = wave_size::inject(&hlsl, &name, size)?;
+        }
+        let bytes = dxc::compile_hlsl(&hlsl, &name, profile, &[])?;
         let raw_storage_bindings = module
             .global_variables
             .iter()
@@ -762,68 +841,4 @@ fn uses_num_workgroups(
             .any(|member| uses_num_workgroups(module, member.ty, member.binding.as_ref()));
     }
     false
-}
-
-struct Library(HMODULE);
-impl Drop for Library {
-    fn drop(&mut self) {
-        // SAFETY: all COM objects from this module are dropped before this owner.
-        let _ = unsafe { FreeLibrary(self.0) };
-    }
-}
-
-fn compile_hlsl(source: &str, entry: &str, profile: &str) -> Result<Vec<u8>> {
-    // SAFETY: LoadLibraryW receives a static nul-terminated DLL name.
-    let library = Library(
-        unsafe { LoadLibraryW(windows::core::w!("dxcompiler.dll")) }
-            .map_err(|_| Error::Unsupported("DXC runtime unavailable"))?,
-    );
-    // SAFETY: the name is static and the module remains loaded through the COM calls.
-    let proc = unsafe { GetProcAddress(library.0, windows::core::s!("DxcCreateInstance")) }
-        .ok_or(Error::Unsupported("DXC entry point unavailable"))?;
-    type Create =
-        unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut core::ffi::c_void) -> HRESULT;
-    // SAFETY: DxcCreateInstance has the documented signature for this named export.
-    let create: Create = unsafe { std::mem::transmute(proc) };
-    let mut object = std::ptr::null_mut();
-    // SAFETY: object is a valid output pointer and both GUIDs name the requested compiler.
-    unsafe { create(&CLSID_DxcCompiler, &IDxcCompiler3::IID, &mut object).ok() }
-        .map_err(|e| Error::Shader(e.to_string()))?;
-    // SAFETY: successful DxcCreateInstance returned a newly owned IDxcCompiler3.
-    let compiler = unsafe { IDxcCompiler3::from_raw(object) };
-    let strings: Vec<Vec<u16>> = ["-T", profile, "-E", entry]
-        .into_iter()
-        .map(|s| s.encode_utf16().chain(Some(0)).collect())
-        .collect();
-    let args: Vec<PCWSTR> = strings.iter().map(|s| PCWSTR(s.as_ptr())).collect();
-    let buffer = DxcBuffer {
-        Ptr: source.as_ptr().cast(),
-        Size: source.len(),
-        Encoding: DXC_CP_UTF8.0,
-    };
-    // SAFETY: buffer and argument strings remain live through the synchronous compilation.
-    let result: IDxcResult = unsafe { compiler.Compile(&buffer, Some(&args), None) }
-        .map_err(|e| Error::Shader(e.to_string()))?;
-    // SAFETY: the operation result is live and owns the returned blobs.
-    let status = unsafe { result.GetStatus() }.map_err(|e| Error::Shader(e.to_string()))?;
-    if status.is_err() {
-        // SAFETY: error blob data remains valid while the blob is alive.
-        let detail = unsafe { result.GetErrorBuffer() }
-            .ok()
-            .map(|blob| unsafe {
-                String::from_utf8_lossy(std::slice::from_raw_parts(
-                    blob.GetBufferPointer().cast(),
-                    blob.GetBufferSize(),
-                ))
-                .into_owned()
-            })
-            .unwrap_or_else(|| format!("{status:?}"));
-        return Err(Error::Shader(detail));
-    }
-    // SAFETY: successful compilation owns an output blob; copy it before releasing COM.
-    let blob = unsafe { result.GetResult() }.map_err(|e| Error::Shader(e.to_string()))?;
-    let bytes =
-        unsafe { std::slice::from_raw_parts(blob.GetBufferPointer().cast(), blob.GetBufferSize()) }
-            .to_vec();
-    Ok(bytes)
 }

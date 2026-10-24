@@ -31,6 +31,11 @@ pub(crate) struct PipelineLayoutState {
     pub(crate) num_workgroups_root: Option<(ID3D12RootSignature, Vec<u8>, u32)>,
     pub(crate) register_map: Vec<(u32, u32, u32, u8, u32)>,
     pub(crate) binding_types: Vec<(u32, u32, api::BindingType)>,
+    /// Explicit capacities for public runtime-sized arrays.  This stays
+    /// separate from `register_map`: a fixed array can reserve the same number
+    /// of descriptors, but WGSL's dynamic binding-array syntax must not be
+    /// accepted for that different public contract.
+    pub(crate) runtime_binding_capacities: Vec<(u32, u32, u32)>,
     pub(crate) native_abi_compatible: bool,
     pub(crate) groups: Vec<Arc<descriptor::BindGroupLayoutState>>,
     /// One root CBV table parameter per logical group.  Group ordinal is both
@@ -99,6 +104,7 @@ pub(crate) fn create_pipeline_layout(
     let mut groups = Vec::with_capacity(desc.groups.len());
     let mut register_map = Vec::new();
     let mut binding_types = Vec::new();
+    let mut runtime_binding_capacities = Vec::new();
     let mut native_abi_compatible = true;
     for (group, layout) in desc.groups.iter().enumerate() {
         // SAFETY: the Core descriptor is tied to this device; this borrow is
@@ -127,6 +133,13 @@ pub(crate) fn create_pipeline_layout(
                 class as u8,
                 slot.descriptor_count,
             ));
+            if slot.runtime_sized {
+                runtime_binding_capacities.push((
+                    group as u32,
+                    slot.binding,
+                    slot.descriptor_count,
+                ));
+            }
         }
         let mapped = |binding| {
             register_map
@@ -368,6 +381,7 @@ pub(crate) fn create_pipeline_layout(
         num_workgroups_root,
         register_map,
         binding_types,
+        runtime_binding_capacities,
         native_abi_compatible,
         groups,
         tables,

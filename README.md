@@ -54,7 +54,7 @@ topologies, shader stages, queue plans, or device tiers.
 
 | Backend | Main implemented GPU features | Advanced feature limits |
 | --- | --- | --- |
-| DX12 | Graphics and compute, multiple render targets, indirect drawing and dispatch, queries, secondary recording, texture clears, and pipeline caches | Device-gated descriptor indexing, up to four multiview views, ray pipelines and inline ray queries, mesh shaders, sparse textures, graphics/compute queues, and GPU-count multi-draw |
+| DX12 | Graphics and compute, multiple render targets, indirect drawing and dispatch, queries, secondary recording, standalone clears/resolves, placed memory, native/external interop, and pipeline caches | Device-gated descriptor indexing, bounded runtime arrays, source wave-size selection, up to four multiview views, ray pipelines and inline ray queries, mesh shaders, sparse textures, graphics/compute queues, and GPU-count multi-draw |
 | Vulkan | Graphics and compute, multiple render targets, indirect drawing and dispatch, queries, secondary recording, clears, pipeline caches, mapping, placed memory, and native interop | Descriptor indexing, multiview, ray pipelines and inline ray queries, mesh shaders, sparse textures, graphics/compute queues, GPU-count multi-draw, and external resources depend on device features, extensions, formats and queue support. |
 | Metal | Graphics and compute, up to eight render targets, depth/stencil, dynamic uniform/storage offsets, indirect draw and dispatch, standalone clears, copies/resolves, mapping, placement heaps, binary archives, and native interop | Device-gated argument arrays/indexing, mesh/object shaders, acceleration structures and ray queries, multiview, timestamp/occlusion and separate pass counters, cross-packet graphics/compute synchronization, GPU-count multi-draw, placement sparse textures, and external resources. No Metal tests or GPU acceptance were run in this phase, as requested. |
 | Browser WebGPU | Graphics and compute, MRT, depth/stencil, dynamic offsets, indirect draw/dispatch, multi-draw including GPU-count lowering, standalone clears, copies/blits/resolves, buffer mapping and readback, occlusion and optional timestamp queries | Optional native features and limits gate compressed formats, immediates, subgroups, dual-source blending and unclipped depth. Ray/mesh, sparse resources, native multiple queues, multiview, complete pipeline statistics, native heap placement and serialized pipeline caches have no matching standard browser route. |
@@ -116,12 +116,19 @@ not imply that every combination is supported.
 | --- | --- |
 | Raster | Up to eight color attachments, per-target blend and write masks, depth/stencil, read-only depth/stencil views, and attachment clears and resolves. Supported sample counts and formats remain device-dependent. |
 | Compute and indirect | Compute dispatch, indirect dispatch, indirect draw, and GPU-count multi-draw. Dynamic uniform and bounded raw/structured storage offsets are validated and retained through completion. |
-| Resources | Buffer memory classes, texture upload/copy/readback, including array and depth mip paths, sampling and storage views, descriptor arrays, and standalone clears. Query format support for the actual resource and usage. |
+| Resources | Buffer memory classes, heap placement and explicit alias barriers, texture upload/copy/readback, sampling/storage views, standalone buffer/texture clears and partial array resolves. Native COM interop and shared-resource/fence imports preserve explicit command boundaries. Query format support for the actual resource and usage. |
 | Bindings | Descriptor arrays and indexing are gated by device capabilities and descriptor restrictions. Push constants have stage-specific visibility; dynamic offsets apply to the full bound range. |
 | Secondary and multiview | Secondary bundles preserve primary graphics state; supported view instancing tiers expose up to four views with view masks. |
 | Advanced | Acceleration structures, ray pipelines, ray queries, mesh shaders, sparse resources, queries, and multiple queues require the corresponding reported capability and supported descriptor. |
 
-DX12 accepts native DXIL and WGSL vertex, fragment, and compute entries. WGSL is
+DX12 accepts native DXIL, plus WGSL and direct HLSL vertex, fragment, and compute
+entries. `Hlsl(60)` means shader model 6.0, `Hlsl(66)` means 6.6; models 60–69
+are admitted only when the runtime reports support. HLSL uses the native DXIL
+register/space and coordinate ABI, with checked finite pipeline constants
+supplied as `-D` macros at PSO compilation. Selected compute wave sizes require
+shader model 6.6 and a supported native wave size. DXC preprocesses HLSL macros
+and conditionals in memory before annotating its active compute entry; includes
+have no resolver in the bytes-only shader contract. WGSL is
 validated and lowered to HLSL by Naga, then compiled with the DXC runtime; DXC
 and the required shader model must be available. Shader resources, overrides,
 stages, and binding forms are subject to the supported lowering subset. Selected

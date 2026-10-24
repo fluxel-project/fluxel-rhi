@@ -321,7 +321,7 @@ fn map_remap_case(format: TextureFormat, layers: u32, layer: u32) {
 }
 
 #[test]
-fn all_mips_multiple_heaps_and_packed_tail() {
+fn tier4_array_packed_tail_maps_each_slice_or_skips() {
     all_mips_case(1, 0);
     all_mips_case(2, 1);
 }
@@ -354,6 +354,7 @@ fn all_mips_case(layers: u32, layer: u32) {
                     | "DX12 sparse packed array mip tail"
                     | "DX12 sparse array mip layout"
             ));
+            eprintln!("SKIP: Tier 4 packed array tails unavailable: {reason}");
             return;
         }
         Err(error) => panic!("sparse texture creation failed: {error:?}"),

@@ -1,7 +1,8 @@
 //! Direct command-list allocation and encoder-owned lifetime retention.
 //!
-//! Each encoder owns exactly one allocator/list pair until it becomes
-//! `Dx12RecordedWork`.  Submission keeps that work alive through its fence;
+//! Each encoder owns one current allocator/list pair and may close earlier
+//! pairs at explicit external-synchronization boundaries. Submission keeps all
+//! of that native work alive through its fence;
 //! only retired work returns the pair to `DirectCommandPool`.  The pool reuses
 //! native D3D12 objects but does not retain, reorder, or replay commands.
 //! Resource references on `Dx12Encoder` exist solely to keep the native
@@ -15,6 +16,22 @@ use std::sync::{Arc, Mutex};
 /// them in the device's in-flight list.
 pub(crate) struct DirectCommandPool {
     available: Mutex<Vec<(ID3D12CommandAllocator, ID3D12GraphicsCommandList)>>,
+}
+
+/// A closed primary command list retained by one encoder after an explicit
+/// queue-level external synchronization boundary. It is not a replay record:
+/// D3D12 commands have already been recorded into this native list.
+pub(crate) struct ClosedPrimarySegment {
+    pub(crate) allocator: ID3D12CommandAllocator,
+    pub(crate) list: ID3D12GraphicsCommandList,
+}
+
+/// Native queue operation issued immediately after the matching closed
+/// segment. `Wait` and `Signal` are D3D12 queue operations, not command-list
+/// commands, so retaining this narrow sequence preserves Core call order.
+pub(crate) enum QueueBoundary {
+    Wait { fence: ID3D12Fence, value: u64 },
+    Signal { fence: ID3D12Fence, value: u64 },
 }
 
 impl DirectCommandPool {
@@ -83,6 +100,10 @@ pub struct Dx12Encoder {
     pub(crate) device: Dx12Device,
     pub(crate) allocator: ID3D12CommandAllocator,
     pub(crate) list: ID3D12GraphicsCommandList,
+    /// Native lists closed before an external queue boundary. Boundary `i`
+    /// runs after `closed_segments[i]`; the open `list` is always final.
+    pub(crate) closed_segments: Vec<ClosedPrimarySegment>,
+    pub(crate) queue_boundaries: Vec<QueueBoundary>,
     direct_commands: Arc<DirectCommandPool>,
     pub(crate) is_compute: bool,
     pub(crate) mip_blit_cache: Arc<super::mipmap::MipBlitCache>,
@@ -244,6 +265,8 @@ impl Dx12Encoder {
             device: device.clone(),
             allocator,
             list,
+            closed_segments: Vec::new(),
+            queue_boundaries: Vec::new(),
             direct_commands: device.0.direct_commands.clone(),
             is_compute,
             mip_blit_cache: device.0.mip_blit_cache.clone(),
@@ -288,6 +311,47 @@ impl Dx12Encoder {
     }
 }
 
+impl Dx12Encoder {
+    /// Ends the current native list at an explicit Core external boundary,
+    /// retains it for submission, and opens the following list. The operation
+    /// records no CPU command stream and never derives a dependency.
+    pub(crate) fn split_external_boundary(&mut self, boundary: QueueBoundary) -> Result<(), Error> {
+        if self.closed || self.active_occlusion.is_some() || self.active_statistics.is_some() {
+            return Err(Error::InvalidState);
+        }
+        let (next_allocator, next_list) = if self.is_compute {
+            self.device
+                .0
+                .multi_queue
+                .commands
+                .acquire(&self.device.0.native)?
+        } else {
+            self.direct_commands.acquire(&self.device.0.native)?
+        };
+        // SAFETY: this encoder exclusively owns its current still-open list.
+        // A failed close leaves the encoder unusable; the caller's Core path
+        // poisons it and no closed list is returned to an object pool.
+        unsafe { self.list.Close() }.map_err(native_error)?;
+        let prior = ClosedPrimarySegment {
+            allocator: std::mem::replace(&mut self.allocator, next_allocator),
+            list: std::mem::replace(&mut self.list, next_list),
+        };
+        self.closed_segments.push(prior);
+        self.queue_boundaries.push(boundary);
+        debug_assert_eq!(self.closed_segments.len(), self.queue_boundaries.len());
+        super::heaps::install(&self.device, &self.list);
+        // The fresh list has no bound native state. Reinstall only the current
+        // native state snapshots; this is state restoration, never command
+        // replay. Core prohibits an external boundary inside an active pass.
+        if self.pipeline.is_some() || self.mesh_pipeline.is_some() {
+            super::raster_snapshot::restore(self)?;
+        } else if self.compute_pipeline.is_some() || self.ray_pipeline.is_some() {
+            super::super::compute::restore_compute_state(self)?;
+        }
+        Ok(())
+    }
+}
+
 impl Drop for Dx12Encoder {
     fn drop(&mut self) {
         // `Dx12RecordedWork` remains in the device's in-flight list until the
@@ -296,16 +360,17 @@ impl Drop for Dx12Encoder {
         // unfinished list is still open and cannot legally be reset, so a
         // failed recording simply releases its native objects instead.
         if self.closed {
-            if self.is_compute {
-                self.device
-                    .0
-                    .multi_queue
-                    .commands
-                    .release(self.allocator.clone(), self.list.clone());
-            } else {
-                self.direct_commands
-                    .release(self.allocator.clone(), self.list.clone());
+            let release = |allocator, list| {
+                if self.is_compute {
+                    self.device.0.multi_queue.commands.release(allocator, list);
+                } else {
+                    self.direct_commands.release(allocator, list);
+                }
+            };
+            for segment in self.closed_segments.drain(..) {
+                release(segment.allocator, segment.list);
             }
+            release(self.allocator.clone(), self.list.clone());
         }
     }
 }

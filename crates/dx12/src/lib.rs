@@ -3,7 +3,7 @@
 #[cfg(windows)]
 mod backend;
 #[cfg(windows)]
-pub use backend::{Dx12, Dx12Instance};
+pub use backend::{Dx12, Dx12ExternalHandle, Dx12ExternalSync, Dx12Heap, Dx12Instance};
 
 #[cfg(all(windows, feature = "hardware-tests"))]
 #[doc(hidden)]

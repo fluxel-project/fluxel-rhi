@@ -24,6 +24,9 @@ use windows::Win32::Graphics::{Direct3D12::*, Dxgi::Common::*};
 
 pub(crate) struct TextureState {
     pub(super) resource: ID3D12Resource,
+    /// A placed resource retains the heap backing it until all texture/view
+    /// and recorded-work references have retired.
+    pub(super) backing_heap: Option<ID3D12Heap>,
     pub(super) desc: api::TextureDesc,
     pub(super) sparse: Option<super::sparse::SparseTextureState>,
 }
@@ -85,7 +88,15 @@ pub(crate) fn support(dv: &Dx12Device, d: &api::TextureDesc) -> api::Support<api
     }
 }
 
-pub(crate) fn create(dv: &Dx12Device, d: &api::TextureDesc) -> Result<Dx12Texture> {
+/// Native description and clear metadata used identically for committed and
+/// placed texture allocations.
+pub(crate) struct AllocationDesc {
+    pub(crate) resource: D3D12_RESOURCE_DESC,
+    pub(crate) clear: Option<D3D12_CLEAR_VALUE>,
+    pub(crate) initial_state: D3D12_RESOURCE_STATES,
+}
+
+pub(crate) fn allocation_desc(dv: &Dx12Device, d: &api::TextureDesc) -> Result<AllocationDesc> {
     valid(d).map_err(Error::Unsupported)?;
     if !format_available(dv, d) {
         return Err(Error::Unsupported("DX12 texture format support"));
@@ -96,13 +107,6 @@ pub(crate) fn create(dv: &Dx12Device, d: &api::TextureDesc) -> Result<Dx12Textur
         ));
     }
     let depth = is_depth(d.format);
-    let heap = D3D12_HEAP_PROPERTIES {
-        Type: D3D12_HEAP_TYPE_DEFAULT,
-        CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-        MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
-        CreationNodeMask: 1,
-        VisibleNodeMask: 1,
-    };
     let flags = if depth {
         D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
     } else {
@@ -182,6 +186,26 @@ pub(crate) fn create(dv: &Dx12Device, d: &api::TextureDesc) -> Result<Dx12Textur
     } else {
         None
     };
+    Ok(AllocationDesc {
+        resource: rd,
+        clear,
+        initial_state: if depth {
+            D3D12_RESOURCE_STATE_DEPTH_WRITE
+        } else {
+            D3D12_RESOURCE_STATE_COMMON
+        },
+    })
+}
+
+pub(crate) fn create(dv: &Dx12Device, d: &api::TextureDesc) -> Result<Dx12Texture> {
+    let allocation = allocation_desc(dv, d)?;
+    let heap = D3D12_HEAP_PROPERTIES {
+        Type: D3D12_HEAP_TYPE_DEFAULT,
+        CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+        MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
+        CreationNodeMask: 1,
+        VisibleNodeMask: 1,
+    };
     let mut resource = None;
     // SAFETY: heap/resource descriptors are fully initialized local values;
     // D3D12 writes the created COM reference to the valid `resource` output.
@@ -189,19 +213,16 @@ pub(crate) fn create(dv: &Dx12Device, d: &api::TextureDesc) -> Result<Dx12Textur
         dv.0.native.CreateCommittedResource(
             &heap,
             D3D12_HEAP_FLAG_NONE,
-            &rd,
-            if depth {
-                D3D12_RESOURCE_STATE_DEPTH_WRITE
-            } else {
-                D3D12_RESOURCE_STATE_COMMON
-            },
-            clear.as_ref().map(|value| value as *const _),
+            &allocation.resource,
+            allocation.initial_state,
+            allocation.clear.as_ref().map(|value| value as *const _),
             &mut resource,
         )
     }
     .map_err(err)?;
     Ok(Dx12Texture(Arc::new(TextureState {
         resource: resource.ok_or(Error::OutOfMemory)?,
+        backing_heap: None,
         desc: d.clone(),
         sparse: None,
     })))

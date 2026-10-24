@@ -26,13 +26,17 @@ use super::{
     Dx12RasterPipeline, Dx12Texture, native_error,
 };
 
+mod aliasing;
 mod blit_compute;
+mod buffer_clear;
 mod clear;
 mod coordinates;
 mod copy;
 mod core;
 mod depth_readback;
+pub(crate) mod external_segment;
 pub(super) mod fence_wait;
+mod global_barrier;
 mod heaps;
 mod indirect;
 pub(crate) mod integer_clear;
@@ -43,6 +47,7 @@ mod raster;
 pub(crate) mod raster_snapshot;
 mod readback;
 mod record;
+mod resolve;
 pub(crate) mod secondary;
 mod submit;
 mod transition;
