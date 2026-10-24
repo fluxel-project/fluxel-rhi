@@ -16,6 +16,9 @@ pub use ops::Ray;
 pub(crate) mod pipeline;
 mod trace;
 
+#[cfg(all(test, feature = "hardware-tests"))]
+mod retention_gpu;
+
 use super::{Dx12, Dx12Acceleration, Dx12Device};
 use fluxel_rhi_core::api::{self, Error, Result};
 use std::sync::{Arc, Mutex};
@@ -25,20 +28,95 @@ pub(crate) struct AccelerationState {
     pub(crate) resource: ID3D12Resource,
     pub(crate) size: u64,
     pub(crate) is_top_level: bool,
-    // A TLAS stores BLAS GPU virtual addresses. Every recorded build version
-    // stays valid until the TLAS itself is dropped, including concurrent or
-    // abandoned builds: completion order cannot safely select a single owner.
-    referenced_blas: Mutex<Vec<Arc<AccelerationState>>>,
+    // The BLAS addresses in native TLAS storage are mutable in place.  This
+    // names only the version that crossed ExecuteCommandLists; recording and
+    // cancellation never alter it.
+    committed_blas: Mutex<Vec<Dx12Acceleration>>,
 }
 
-fn retain_unique<T>(retained: &mut Vec<Arc<T>>, incoming: impl IntoIterator<Item = Arc<T>>) {
+/// A TLAS build attached to the native command-list segment that records it.
+/// It is metadata for ownership publication, never a replayable GPU command.
+pub(crate) struct RecordedTlasBuild {
+    pub(crate) target: Dx12Acceleration,
+    pub(crate) blas: Vec<Dx12Acceleration>,
+    pub(crate) segment: usize,
+}
+
+fn extend_unique(
+    retained: &mut Vec<Dx12Acceleration>,
+    incoming: impl IntoIterator<Item = Dx12Acceleration>,
+) {
     for value in incoming {
         if !retained
             .iter()
-            .any(|existing| Arc::ptr_eq(existing, &value))
+            .any(|existing| Arc::ptr_eq(&existing.0, &value.0))
         {
             retained.push(value);
         }
+    }
+}
+
+fn committed(acceleration: &Dx12Acceleration) -> Vec<Dx12Acceleration> {
+    acceleration
+        .0
+        .committed_blas
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+/// Pins the conservative dependency union for one native Execute batch.
+///
+/// `bound_groups` covers raster and compute inline ray queries as well as
+/// dispatch rays: the backend cannot infer which shader instruction consumes
+/// an acceleration structure, so every retained binding is a possible use.
+pub(crate) fn pin_batch(work: &mut [super::encoder::Dx12RecordedWork]) {
+    if work.is_empty() {
+        return;
+    }
+    let mut dependencies = Vec::new();
+    for record in work.iter() {
+        for group in &record.encoder.bound_groups {
+            for acceleration in group.0.accelerations() {
+                if acceleration.0.is_top_level {
+                    extend_unique(&mut dependencies, committed(acceleration));
+                }
+            }
+        }
+        for secondary in &record.encoder.secondary {
+            for group in &secondary.groups {
+                for acceleration in group.0.accelerations() {
+                    if acceleration.0.is_top_level {
+                        extend_unique(&mut dependencies, committed(acceleration));
+                    }
+                }
+            }
+        }
+        for build in &record.encoder.ray_builds {
+            extend_unique(&mut dependencies, build.blas.clone());
+        }
+    }
+    // One record in this accepted batch owns the union through the enclosing
+    // fence-retired `issued` list. This is bounded by that batch, never TLAS
+    // history, and also protects an indeterminate handoff quarantine.
+    extend_unique(&mut work[0].encoder.accelerations, dependencies);
+}
+
+/// Publishes just the builds whose native command-list segment was accepted.
+pub(crate) fn publish_segment(work: &super::encoder::Dx12RecordedWork, segment: usize) {
+    for build in work
+        .encoder
+        .ray_builds
+        .iter()
+        .filter(|build| build.segment == segment)
+    {
+        let mut committed = build
+            .target
+            .0
+            .committed_blas
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *committed = build.blas.clone();
     }
 }
 
@@ -119,7 +197,7 @@ fn create_acceleration(
         resource: resource.ok_or(Error::OutOfMemory)?,
         size,
         is_top_level: matches!(desc.input, api::AccelerationInput::Tlas(_)),
-        referenced_blas: Mutex::new(Vec::new()),
+        committed_blas: Mutex::new(Vec::new()),
     })))
 }
 
@@ -189,7 +267,7 @@ fn build(
                 AccelerationStructure: address,
             });
             encoder.accelerations.push(blas.clone());
-            referenced_blas.push(blas.0.clone());
+            referenced_blas.push(blas.clone());
         }
         let length = native_instances
             .len()
@@ -265,20 +343,21 @@ fn build(
         .list
         .cast::<ID3D12GraphicsCommandList4>()
         .map_err(super::native_error)?;
-    if !referenced_blas.is_empty() {
-        let mut retained = dst
-            .0
-            .referenced_blas
-            .lock()
-            .map_err(|_| Error::Backend("DX12 acceleration ownership lock poisoned".into()))?;
-        retain_unique(&mut retained, referenced_blas);
-    }
     // SAFETY: native geometry pointers are valid for the synchronous command
     // recording call; caller-provided resource states follow Core barriers.
     unsafe { list.BuildRaytracingAccelerationStructure(&native, None) };
     encoder.buffers.extend(geometry.buffers);
     encoder.buffers.push(scratch.clone());
     encoder.accelerations.push(dst.clone());
+    if dst.0.is_top_level {
+        let mut unique = Vec::new();
+        extend_unique(&mut unique, referenced_blas);
+        encoder.ray_builds.push(RecordedTlasBuild {
+            target: dst.clone(),
+            blas: unique,
+            segment: encoder.closed_segments.len(),
+        });
+    }
     Ok(())
 }
 
@@ -325,28 +404,4 @@ pub(super) fn probe_inline(device: &ID3D12Device) -> bool {
     .is_ok()
         && shader_model.HighestShaderModel.0 >= D3D_SHADER_MODEL_6_5.0;
     has_tier && has_shader_model && device.cast::<ID3D12Device5>().is_ok()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tlas_retains_each_distinct_blas_until_tlas_release() {
-        let first = Arc::new(());
-        let second = Arc::new(());
-        let first_weak = Arc::downgrade(&first);
-        let second_weak = Arc::downgrade(&second);
-        let mut retained = Vec::new();
-        retain_unique(&mut retained, [first.clone(), first.clone()]);
-        retain_unique(&mut retained, [second.clone()]);
-        assert_eq!(retained.len(), 2);
-        drop(first);
-        drop(second);
-        assert!(first_weak.upgrade().is_some());
-        assert!(second_weak.upgrade().is_some());
-        drop(retained);
-        assert!(first_weak.upgrade().is_none());
-        assert!(second_weak.upgrade().is_none());
-    }
 }

@@ -69,6 +69,9 @@ pub(crate) fn create_pipeline(
 ) -> Result<Dx12RayPipeline> {
     let ray_device = super::ray_device(device)?;
     if desc.cache.is_some() {
+        // The existing cache persists native ID3D12PipelineState blobs. DXR
+        // creates ID3D12StateObject instead; ignoring the supplied cache or
+        // storing shader source would falsely claim native cache support.
         return Err(Error::Unsupported("DX12 ray state object cache"));
     }
     if desc.shaders.is_empty()

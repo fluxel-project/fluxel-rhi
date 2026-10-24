@@ -2,7 +2,11 @@
 #![cfg(all(windows, feature = "hardware-tests"))]
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_dx12::Dx12Instance;
-use std::{future::Future, sync::Arc};
+use std::{
+    future::Future,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 fn block_on<F: Future>(f: F) -> F::Output {
     let w = std::task::Waker::noop();
@@ -31,7 +35,41 @@ fn native_and_wgsl_draw_index_semantics() {
     run(true, 3, false, true);
 }
 
+/// A diagnostic recording benchmark for the WGSL `vertex_index` indirect
+/// lowering.  It is deliberately a real-GPU gate: the reported CPU intervals
+/// are adjacent first/warm `multi_draw` calls on one pipeline, while the later
+/// readback proves that every selected command count still produces the
+/// expected pixel.
+///
+/// This is not a universal draw benchmark. It isolates the backend's native
+/// lowering of a single non-indexed indirect batch with no user bindings.
+#[test]
+fn wgsl_vertex_index_indirect_recording_counts() {
+    for count in [1, 3, 10_000] {
+        let [cold, warm] = run_indirect_batch(count);
+        eprintln!(
+            "wgsl_vertex_index_indirect_recording count={count} cold_us={} warm_us={}",
+            cold.as_micros(),
+            warm.as_micros()
+        );
+    }
+}
+
 fn run(indexed: bool, indirect: u8, native: bool, negative: bool) {
+    run_inner(indexed, indirect, native, negative, None);
+}
+
+fn run_indirect_batch(count: u32) -> [Duration; 2] {
+    run_inner(false, 4, false, false, Some(count)).expect("batch benchmark records a duration")
+}
+
+fn run_inner(
+    indexed: bool,
+    indirect: u8,
+    native: bool,
+    negative: bool,
+    batch_count: Option<u32>,
+) -> Option<[Duration; 2]> {
     let d = block_on(Dx12Instance::new().unwrap().open_default()).unwrap();
     let lane = d
         .lanes()
@@ -180,10 +218,11 @@ fn run(indexed: bool, indirect: u8, native: bool, negative: bool) {
             memory: MemoryClass::Device,
         })
         .unwrap();
+    let args_size = batch_count.map_or(52, |count| u64::from(count) * 16);
     let args = d
         .create_buffer(&BufferDesc {
             label: None,
-            size: 52,
+            size: args_size,
             usage: BufferUsage::INDIRECT | BufferUsage::COPY_DST | BufferUsage::STORAGE,
             memory: MemoryClass::Device,
         })
@@ -198,7 +237,15 @@ fn run(indexed: bool, indirect: u8, native: bool, negative: bool) {
     } else {
         [3u32, 1, 5, 9, 0, 1]
     };
-    let data: Vec<u8> = words.into_iter().flat_map(u32::to_le_bytes).collect();
+    let data: Vec<u8> = if let Some(count) = batch_count {
+        let mut records = Vec::with_capacity(count as usize * 16);
+        for _ in 0..count {
+            records.extend([3u32, 1, 5, 9].into_iter().flat_map(u32::to_le_bytes));
+        }
+        records
+    } else {
+        words.into_iter().flat_map(u32::to_le_bytes).collect()
+    };
     if indirect != 3 {
         e.write_buffer(&args, 0, &data).unwrap();
     }
@@ -276,7 +323,7 @@ fn run(indexed: bool, indirect: u8, native: bool, negative: bool) {
         e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
             target: BufferSlice {
                 buffer: &args,
-                range: 0..52,
+                range: 0..args_size,
             },
             usage: StateTransition {
                 from: BufferUses {
@@ -318,7 +365,7 @@ fn run(indexed: bool, indirect: u8, native: bool, negative: bool) {
         ResourceTransition::Buffer(BufferBarrier {
             target: BufferSlice {
                 buffer: &args,
-                range: 0..52,
+                range: 0..args_size,
             },
             usage: StateTransition {
                 from: BufferUses {
@@ -419,36 +466,50 @@ fn run(indexed: bool, indirect: u8, native: bool, negative: bool) {
             .unwrap();
     }
     let extras = d.raster_extras().unwrap();
-    match (indexed, indirect) {
-        (false, 0) => pass.draw(5..8, 9..10).unwrap(),
-        (true, 0) => pass.draw_indexed(0..3, base, 9..10).unwrap(),
-        (_, 1) => extras.draw_indirect(&mut pass, &args, 0, indexed).unwrap(),
-        (_, 2) => extras
-            .multi_draw_count(
-                &mut pass,
-                &args,
-                0,
-                &args,
-                20,
-                1,
-                if indexed { 20 } else { 16 },
-                indexed,
-            )
-            .unwrap(),
-        (_, 3) => extras
-            .multi_draw_count(
-                &mut pass,
-                &args,
-                0,
-                &args,
-                48,
-                2,
-                if indexed { 24 } else { 20 },
-                indexed,
-            )
-            .unwrap(),
-        _ => unreachable!(),
-    }
+    let recording = if indirect == 4 {
+        let start = Instant::now();
+        extras
+            .multi_draw(&mut pass, &args, 0, batch_count.unwrap(), 16, false)
+            .unwrap();
+        let cold = start.elapsed();
+        let start = Instant::now();
+        extras
+            .multi_draw(&mut pass, &args, 0, batch_count.unwrap(), 16, false)
+            .unwrap();
+        Some([cold, start.elapsed()])
+    } else {
+        match (indexed, indirect) {
+            (false, 0) => pass.draw(5..8, 9..10).unwrap(),
+            (true, 0) => pass.draw_indexed(0..3, base, 9..10).unwrap(),
+            (_, 1) => extras.draw_indirect(&mut pass, &args, 0, indexed).unwrap(),
+            (_, 2) => extras
+                .multi_draw_count(
+                    &mut pass,
+                    &args,
+                    0,
+                    &args,
+                    20,
+                    1,
+                    if indexed { 20 } else { 16 },
+                    indexed,
+                )
+                .unwrap(),
+            (_, 3) => extras
+                .multi_draw_count(
+                    &mut pass,
+                    &args,
+                    0,
+                    &args,
+                    48,
+                    2,
+                    if indexed { 24 } else { 20 },
+                    indexed,
+                )
+                .unwrap(),
+            _ => unreachable!(),
+        }
+        None
+    };
 
     pass.finish().unwrap();
     e.transition_resources(&[barrier(
@@ -521,4 +582,5 @@ fn run(indexed: bool, indirect: u8, native: bool, negative: bool) {
             &[5, 9, 0, 255]
         }
     );
+    recording
 }

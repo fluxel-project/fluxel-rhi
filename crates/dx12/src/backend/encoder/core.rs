@@ -109,7 +109,6 @@ pub struct Dx12Encoder {
     pub(crate) mip_blit_cache: Arc<super::mipmap::MipBlitCache>,
     pub(crate) uploads: Vec<windows::Win32::Graphics::Direct3D12::ID3D12Resource>,
     pub(crate) upload_arena: super::upload::UploadArena,
-    pub(crate) blit_compute_objects: Vec<(ID3D12RootSignature, ID3D12PipelineState)>,
     pub(crate) compute_snapshot: super::super::compute::ComputeSnapshot,
     pub(crate) mip_blit_heaps: Vec<ID3D12DescriptorHeap>,
     pub(crate) mip_blit_descriptors: Vec<super::super::descriptor::TemporaryDescriptorPair>,
@@ -129,6 +128,9 @@ pub struct Dx12Encoder {
     pub(crate) buffers: Vec<Dx12Buffer>,
     pub(crate) textures: Vec<Dx12Texture>,
     pub(crate) accelerations: Vec<super::super::Dx12Acceleration>,
+    /// TLAS builds recorded in each native-list segment. Submission publishes
+    /// them only after that segment crossed `ExecuteCommandLists`.
+    pub(crate) ray_builds: Vec<super::super::ray::RecordedTlasBuild>,
     pub(crate) pipeline: Option<Dx12RasterPipeline>,
     pub(crate) raster_pipelines: Vec<Dx12RasterPipeline>,
     pub(crate) compute_pipelines: Vec<Dx12ComputePipeline>,
@@ -272,7 +274,6 @@ impl Dx12Encoder {
             mip_blit_cache: device.0.mip_blit_cache.clone(),
             uploads: Vec::new(),
             upload_arena: super::upload::UploadArena::new(device.0.upload_pool.clone()),
-            blit_compute_objects: Vec::new(),
             compute_snapshot: Default::default(),
             mip_blit_heaps: Vec::new(),
             mip_blit_descriptors: Vec::new(),
@@ -290,6 +291,7 @@ impl Dx12Encoder {
             buffers: Vec::new(),
             textures: Vec::new(),
             accelerations: Vec::new(),
+            ray_builds: Vec::new(),
             pipeline: None,
             raster_pipelines: Vec::new(),
             compute_pipelines: Vec::new(),

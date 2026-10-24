@@ -281,17 +281,7 @@ fn scope(
 }
 
 fn enhanced_supported(device: &Dx12Device) -> bool {
-    let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS12::default();
-    // SAFETY: D3D12 fills exactly this stack-owned structure synchronously.
-    unsafe {
-        device.0.native.CheckFeatureSupport(
-            D3D12_FEATURE_D3D12_OPTIONS12,
-            (&mut options as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS12).cast(),
-            std::mem::size_of_val(&options) as u32,
-        )
-    }
-    .is_ok()
-        && options.EnhancedBarriersSupported.as_bool()
+    device.0.enhanced_barriers_supported
 }
 
 fn legacy_uav(before: api::AccessScope, after: api::AccessScope) -> bool {

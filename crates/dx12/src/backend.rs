@@ -86,8 +86,8 @@ struct Dx12DeviceState {
     pub(super) native: ID3D12Device,
     /// Committed buffers consume the process GPU virtual-address range.
     pub(super) max_buffer_bytes: u64,
-    /// Native interface is retained only on devices that report DXR tier 1.0.
-    /// Public capability remains disabled until the complete ray path exists.
+    /// Native interface is retained only on devices that report DXR tier 1.0;
+    /// the opened device reports that fact through the ray capability.
     pub(super) ray_device: Option<windows::Win32::Graphics::Direct3D12::ID3D12Device5>,
     pub(super) ray_query_supported: bool,
     pub(super) mesh_supported: bool,
@@ -95,6 +95,8 @@ struct Dx12DeviceState {
     /// Resource Heap Tier 2 permits a heap that mixes buffers and texture
     /// classes. Tier 1 requires the narrow heap flags selected by memory.rs.
     pub(super) resource_heap_tier2: bool,
+    /// Immutable OPTIONS12 fact queried once when the native device opens.
+    pub(super) enhanced_barriers_supported: bool,
     pub(super) sparse_in_flight: Mutex<Vec<(u64, Vec<sparse::SparseRetained>)>>,
     pub(super) queue: ID3D12CommandQueue,
     pub(super) multi_queue: queue::MultiQueueState,
@@ -108,6 +110,7 @@ struct Dx12DeviceState {
     pub(super) direct_commands: Arc<encoder::DirectCommandPool>,
     pub(super) upload_pool: Arc<encoder::upload::UploadPool>,
     pub(super) mip_blit_cache: Arc<encoder::MipBlitCache>,
+    pub(super) blit_compute_cache: Arc<encoder::BlitComputeCache>,
     pub(super) integer_clear_cache: Arc<encoder::integer_clear::IntegerClearCache>,
     /// Dropped futures cannot unregister SetEventOnCompletion, so their HANDLE
     /// ownership stays here until the associated fence has passed it.

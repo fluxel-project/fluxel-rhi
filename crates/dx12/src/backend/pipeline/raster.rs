@@ -9,7 +9,7 @@ use fluxel_rhi_core::api::{self, Error, Result};
 use std::{
     future::{Ready, ready},
     mem::ManuallyDrop,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use windows::{
     Win32::{
@@ -33,6 +33,10 @@ pub(crate) struct RasterPipelineState {
     pub(in crate::backend) strip_index_format: Option<api::IndexFormat>,
     pub(in crate::backend) raw_storage_bindings: Vec<(u32, u32)>,
     pub(in crate::backend) vertex_index_root: Option<u32>,
+    /// At most one native ABI signature for each indexed/non-indexed variant.
+    /// Keeping it with this root prevents stale pointer keys and device-wide
+    /// retention of every historical pipeline.
+    pub(in crate::backend) vertex_indirect_signatures: Mutex<[Option<ID3D12CommandSignature>; 2]>,
     pub(in crate::backend) depth_writes: bool,
     pub(in crate::backend) stencil_writes: bool,
     pub(in crate::backend) vertex_strides: Vec<u32>,
@@ -294,6 +298,7 @@ fn create_raster(
         strip_index_format: desc.primitive.strip_index_format,
         raw_storage_bindings,
         vertex_index_root,
+        vertex_indirect_signatures: Mutex::new([None, None]),
         depth_writes: depth.is_some_and(|d| d.depth_write_enabled),
         stencil_writes: stencil_writes(depth),
         vertex_strides,

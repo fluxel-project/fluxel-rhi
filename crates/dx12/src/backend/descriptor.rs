@@ -296,7 +296,7 @@ pub(crate) struct BindGroupState {
     device: ID3D12Device,
     shadow_views: Option<ID3D12DescriptorHeap>,
     _textures: Vec<super::Dx12TextureView>,
-    _accelerations: Vec<super::Dx12Acceleration>,
+    accelerations: Vec<super::Dx12Acceleration>,
     _samplers: Vec<super::Dx12Sampler>,
     view_start: u32,
     view_count: u32,
@@ -457,6 +457,10 @@ impl BindGroupState {
     }
     pub(crate) fn buffers(&self) -> &[Dx12Buffer] {
         &self.buffers
+    }
+    /// Acceleration structures addressed by this immutable descriptor table.
+    pub(crate) fn accelerations(&self) -> &[super::Dx12Acceleration] {
+        &self.accelerations
     }
     /// Whether every descriptor slot is a bound raw storage buffer view.
     pub(crate) fn storage_views_are_raw(&self, binding: u32) -> bool {

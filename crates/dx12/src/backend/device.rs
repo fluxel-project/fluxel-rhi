@@ -5,29 +5,60 @@
 //! infer resource uses or build an execution schedule.
 
 use super::*;
+use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_NOT_FOUND, DXGI_ERROR_UNSUPPORTED, IDXGIAdapter1};
+
+const REQUESTED_ADAPTER_UNAVAILABLE: &str = "the requested DXGI adapter";
+
+/// Resolves a public DXGI ordinal without narrowing an untrusted `u64`.
+///
+/// DXGI ordinals are dense `u32` values and end with `DXGI_ERROR_NOT_FOUND`.
+/// Keeping that translation here makes `enumerate` and `open` agree on both
+/// the ordinal namespace and the structured error returned for stale IDs.
+fn adapter_at(instance: &Dx12Instance, ordinal: u64) -> Result<IDXGIAdapter1> {
+    let ordinal =
+        u32::try_from(ordinal).map_err(|_| Error::Unsupported(REQUESTED_ADAPTER_UNAVAILABLE))?;
+    // SAFETY: the factory is owned by `instance`; the returned COM reference
+    // is transferred to the caller on success.
+    match unsafe { instance.factory.EnumAdapters1(ordinal) } {
+        Ok(adapter) => Ok(adapter),
+        Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => {
+            Err(Error::Unsupported(REQUESTED_ADAPTER_UNAVAILABLE))
+        }
+        Err(error) => Err(native_error(error)),
+    }
+}
+
+fn adapter_name(adapter: &IDXGIAdapter1) -> Result<String> {
+    // SAFETY: `adapter` is a live COM interface and GetDesc1 only writes an
+    // initialized descriptor returned by the Windows binding.
+    let desc = unsafe { adapter.GetDesc1() }.map_err(native_error)?;
+    let end = desc
+        .Description
+        .iter()
+        .position(|x| *x == 0)
+        .unwrap_or(desc.Description.len());
+    Ok(String::from_utf16_lossy(&desc.Description[..end]))
+}
 
 impl InstanceBackend for Dx12 {
     type NativeInstance = Dx12Instance;
     type OpenFuture<'a> = Ready<Result<(Dx12Device, DeviceCapabilities)>>;
     fn enumerate(instance: &Dx12Instance, scope: InstanceId) -> Result<Vec<AdapterInfo>> {
-        // SAFETY: the instance owns the factory; ordinal zero is the only
-        // adapter this backend advertises and the returned COM object is owned.
-        let adapter = unsafe { instance.factory.EnumAdapters1(0) }.map_err(native_error)?;
-        // SAFETY: `adapter` is a live COM interface and GetDesc1 only writes
-        // an initialized value returned by the Windows binding.
-        let desc = unsafe { adapter.GetDesc1() }.map_err(native_error)?;
-        let end = desc
-            .Description
-            .iter()
-            .position(|x| *x == 0)
-            .unwrap_or(desc.Description.len());
-        Ok(vec![AdapterInfo {
-            id: AdapterId {
-                instance: scope,
-                ordinal: 0,
-            },
-            name: String::from_utf16_lossy(&desc.Description[..end]),
-        }])
+        let mut adapters = Vec::new();
+        for ordinal in 0..=u32::MAX {
+            match adapter_at(instance, u64::from(ordinal)) {
+                Ok(adapter) => adapters.push(AdapterInfo {
+                    id: AdapterId {
+                        instance: scope,
+                        ordinal: u64::from(ordinal),
+                    },
+                    name: adapter_name(&adapter)?,
+                }),
+                Err(Error::Unsupported(REQUESTED_ADAPTER_UNAVAILABLE)) => break,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(adapters)
     }
     fn open<'a>(
         instance: &'a Dx12Instance,
@@ -35,9 +66,6 @@ impl InstanceBackend for Dx12 {
         request: &'a DeviceRequest,
     ) -> Self::OpenFuture<'a> {
         let result = (|| {
-            if request.adapter.ordinal != 0 {
-                return Err(Error::Unsupported("the requested DXGI adapter"));
-            }
             if !request.required_features.is_empty() {
                 return Err(Error::Unsupported("requested DX12 device features"));
             }
@@ -54,14 +82,19 @@ impl InstanceBackend for Dx12 {
                         .EnableDebugLayer();
                 }
             }
-            // SAFETY: factory ownership and the advertised ordinal match
-            // enumerate above; the returned adapter COM reference is retained locally.
-            let adapter = unsafe { instance.factory.EnumAdapters1(0) }.map_err(native_error)?;
+            let adapter = adapter_at(instance, request.adapter.ordinal)?;
             let mut native: Option<ID3D12Device> = None;
             // SAFETY: adapter is live and `native` is the output slot for the
             // newly created device interface.
-            unsafe { D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut native) }
-                .map_err(native_error)?;
+            unsafe { D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut native) }.map_err(
+                |error| {
+                    if error.code() == DXGI_ERROR_UNSUPPORTED {
+                        Error::Unsupported("D3D12 on the requested DXGI adapter")
+                    } else {
+                        native_error(error)
+                    }
+                },
+            )?;
             let native = native
                 .ok_or_else(|| Error::Backend("D3D12CreateDevice returned no device".into()))?;
             let mut gpu_va = windows::Win32::Graphics::Direct3D12::
@@ -89,6 +122,19 @@ impl InstanceBackend for Dx12 {
                 && options.TiledResourcesTier != windows::Win32::Graphics::Direct3D12::D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED;
             let resource_heap_tier2 = options.ResourceHeapTier.0
                 >= windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_HEAP_TIER_2.0;
+            let mut options12 =
+                windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS12::default();
+            // SAFETY: as above, the feature structure exactly matches the
+            // synchronous D3D12 OPTIONS12 query and is not retained by D3D12.
+            let enhanced_barriers_supported = unsafe {
+                native.CheckFeatureSupport(
+                    windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_D3D12_OPTIONS12,
+                    (&mut options12 as *mut _) as *mut _,
+                    std::mem::size_of_val(&options12) as u32,
+                )
+            }
+            .is_ok()
+                && options12.EnhancedBarriersSupported.as_bool();
             let mut shader_model =
                 windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_SHADER_MODEL {
                     HighestShaderModel: windows::Win32::Graphics::Direct3D12::D3D_SHADER_MODEL_6_0,
@@ -166,6 +212,7 @@ impl InstanceBackend for Dx12 {
                     mesh_supported,
                     sparse_supported,
                     resource_heap_tier2,
+                    enhanced_barriers_supported,
                     sparse_in_flight: Mutex::new(Vec::new()),
                     multi_queue: queue::MultiQueueState::new(&native)?,
                     queue,
@@ -176,6 +223,7 @@ impl InstanceBackend for Dx12 {
                     in_flight: Mutex::new(Vec::new()),
                     direct_commands: Arc::default(),
                     upload_pool: Arc::default(),
+                    blit_compute_cache: Arc::default(),
                     mip_blit_cache: Arc::default(),
                     integer_clear_cache: Arc::default(),
                     indirect_signatures: Arc::default(),
@@ -252,3 +300,49 @@ impl InstanceBackend for Dx12 {
         ready(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        future::Future,
+        task::{Context, Poll, Waker},
+    };
+
+    #[test]
+    fn enumerate_exposes_every_dxgi_ordinal_in_order() -> Result<()> {
+        let instance = Dx12Instance::new()?.instance()?;
+        let adapters = instance.enumerate()?;
+        for (ordinal, adapter) in adapters.iter().enumerate() {
+            assert_eq!(adapter.id.ordinal, ordinal as u64);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn open_rejects_an_identifier_for_an_unenumerated_ordinal() -> Result<()> {
+        let instance = Dx12Instance::new()?.instance()?;
+        let adapters = instance.enumerate()?;
+        let Some(last) = adapters.last() else {
+            // A system with no DXGI adapters has no adapter identity to mutate.
+            return Ok(());
+        };
+        let requested = AdapterId {
+            instance: last.id.instance,
+            ordinal: last.id.ordinal + 1,
+        };
+        let mut open = std::pin::pin!(instance.open(DeviceRequest {
+            adapter: requested,
+            required_features: Vec::new(),
+        }));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            open.as_mut().poll(&mut context),
+            Poll::Ready(Err(Error::Unsupported(REQUESTED_ADAPTER_UNAVAILABLE)))
+        ));
+        Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "hardware-tests"))]
+mod adapter_gpu;

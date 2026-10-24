@@ -13,6 +13,53 @@ fn block<F: Future>(f: F) -> F::Output {
         }
     }
 }
+
+#[test]
+fn advertised_view_formats_match_declared_native_views() {
+    let device = block(Dx12Instance::new().unwrap().open_default()).unwrap();
+    for (base, alternate) in [
+        (TextureFormat::Rgba8Unorm, TextureFormat::Rgba8UnormSrgb),
+        (TextureFormat::Rgba8UnormSrgb, TextureFormat::Rgba8Unorm),
+        (TextureFormat::Bgra8Unorm, TextureFormat::Bgra8UnormSrgb),
+        (TextureFormat::Bgra8UnormSrgb, TextureFormat::Bgra8Unorm),
+    ] {
+        let mut desc = TextureDesc {
+            label: None,
+            dimension: TextureDimension::D2,
+            extent: [4, 4, 1],
+            array_layers: 1,
+            format: base,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER_ATTACHMENT | TextureUsage::TEXTURE_BINDING,
+            view_formats: vec![alternate],
+        };
+        let support = match device.texture_support(&desc) {
+            Support::Supported(support) => support,
+            _ => panic!("expected native support for {base:?}/{alternate:?}"),
+        };
+        assert_eq!(support.compatible_view_formats, [base, alternate]);
+        let texture = device.create_texture(&desc).unwrap();
+        let view = |format| TextureViewDesc {
+            format,
+            dimension: TextureViewDimension::D2,
+            aspects: TextureAspects::COLOR,
+            mips: 0..1,
+            layers: 0..1,
+        };
+        device.create_view(&texture, &view(base)).unwrap();
+        device.create_view(&texture, &view(alternate)).unwrap();
+        desc.view_formats.clear();
+        let support = match device.texture_support(&desc) {
+            Support::Supported(support) => support,
+            _ => panic!("expected native base-format support"),
+        };
+        assert_eq!(support.compatible_view_formats, [base]);
+        let texture = device.create_texture(&desc).unwrap();
+        assert!(device.create_view(&texture, &view(alternate)).is_err());
+    }
+}
+
 #[test]
 fn srgb_reinterpret_sample_readback() {
     let format = TextureFormat::Rgba8Unorm;

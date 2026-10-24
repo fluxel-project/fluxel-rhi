@@ -203,7 +203,7 @@ fn execute_vertex_indices(
     indexed: bool,
     count_buffer: Option<(&Dx12Buffer, u64)>,
 ) -> Result<(), Error> {
-    let pipeline = encoder.pipeline.as_ref().ok_or(Error::InvalidState)?;
+    let pipeline = encoder.pipeline.clone().ok_or(Error::InvalidState)?;
     let root_index = pipeline.0.vertex_index_root.ok_or(Error::InvalidState)?;
     let root = pipeline.0.root.clone();
     let record_size = if indexed { 20u32 } else { 16u32 };
@@ -220,43 +220,7 @@ fn execute_vertex_indices(
             memory: api::MemoryClass::Device,
         },
     )?;
-    let parameters = [
-        D3D12_INDIRECT_ARGUMENT_DESC {
-            Type: D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT,
-            Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0 {
-                Constant: D3D12_INDIRECT_ARGUMENT_DESC_0_1 {
-                    RootParameterIndex: root_index,
-                    DestOffsetIn32BitValues: 0,
-                    Num32BitValuesToSet: 2,
-                },
-            },
-        },
-        D3D12_INDIRECT_ARGUMENT_DESC {
-            Type: if indexed {
-                D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED
-            } else {
-                D3D12_INDIRECT_ARGUMENT_TYPE_DRAW
-            },
-            Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0::default(),
-        },
-    ];
-    let desc = D3D12_COMMAND_SIGNATURE_DESC {
-        ByteStride: expanded_stride,
-        NumArgumentDescs: 2,
-        pArgumentDescs: parameters.as_ptr(),
-        NodeMask: 0,
-    };
-    let mut signature = None;
-    // SAFETY: the argument descriptors and matching root signature remain live through creation.
-    unsafe {
-        encoder
-            .device
-            .0
-            .native
-            .CreateCommandSignature(&desc, Some(&root), &mut signature)
-    }
-    .map_err(native_error)?;
-    let signature: ID3D12CommandSignature = signature.ok_or(Error::InvalidState)?;
+    let signature = vertex_index_signature(&pipeline, &encoder.device, root_index, &root, indexed)?;
     barrier(
         &encoder.list,
         &args.resource,
@@ -326,4 +290,67 @@ fn execute_vertex_indices(
     }
     encoder.indirect_signatures.push(signature);
     Ok(())
+}
+
+/// Lazily creates the two command signatures whose ABI adds the WGSL
+/// `vertex_index`/`instance_index` root constants.  The cache belongs to the
+/// raster pipeline because D3D12 validates the exact root signature supplied
+/// at creation; device-wide pointer-key caches would retain unrelated roots
+/// and could pair a recycled identity with the wrong ABI.
+fn vertex_index_signature(
+    pipeline: &Dx12RasterPipeline,
+    device: &Dx12Device,
+    root_index: u32,
+    root: &ID3D12RootSignature,
+    indexed: bool,
+) -> Result<ID3D12CommandSignature, Error> {
+    let slot = usize::from(indexed);
+    let mut signatures = pipeline
+        .0
+        .vertex_indirect_signatures
+        .lock()
+        .map_err(|_| Error::Backend("DX12 vertex indirect signature cache poisoned".into()))?;
+    if let Some(signature) = &signatures[slot] {
+        return Ok(signature.clone());
+    }
+    let arguments = [
+        D3D12_INDIRECT_ARGUMENT_DESC {
+            Type: D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT,
+            Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0 {
+                Constant: D3D12_INDIRECT_ARGUMENT_DESC_0_1 {
+                    RootParameterIndex: root_index,
+                    DestOffsetIn32BitValues: 0,
+                    Num32BitValuesToSet: 2,
+                },
+            },
+        },
+        D3D12_INDIRECT_ARGUMENT_DESC {
+            Type: if indexed {
+                D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED
+            } else {
+                D3D12_INDIRECT_ARGUMENT_TYPE_DRAW
+            },
+            Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0::default(),
+        },
+    ];
+    let desc = D3D12_COMMAND_SIGNATURE_DESC {
+        ByteStride: if indexed { 28 } else { 24 },
+        NumArgumentDescs: arguments.len() as u32,
+        pArgumentDescs: arguments.as_ptr(),
+        NodeMask: 0,
+    };
+    let mut output: Option<ID3D12CommandSignature> = None;
+    // SAFETY: the descriptors and pipeline-owned matching root signature stay
+    // live for the synchronous call; the immutable COM result is retained by
+    // this pipeline and cloned into each encoder that executes it.
+    unsafe {
+        device
+            .0
+            .native
+            .CreateCommandSignature(&desc, Some(root), &mut output)
+    }
+    .map_err(native_error)?;
+    let signature = output.ok_or(Error::InvalidState)?;
+    signatures[slot] = Some(signature.clone());
+    Ok(signature)
 }

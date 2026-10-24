@@ -463,7 +463,7 @@ pub(crate) fn create_bind_group(
         device: device.0.native.clone(),
         shadow_views,
         _textures: textures,
-        _accelerations: accelerations,
+        accelerations,
         _samplers: samplers,
         view_start: start,
         view_count,

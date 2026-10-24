@@ -230,8 +230,13 @@ fn blit_preserves_compute_dynamic_bindings_and_push_constants() {
         extent: [4, 4, 1],
         aspect: TextureAspects::COLOR,
     };
-    e.blit(region(&source), region(&target), FilterMode::Nearest)
-        .unwrap();
+    // Repeated calls exercise one cached immutable native variant while each
+    // call owns its descriptors and scratch independently. The subsequent
+    // dispatch still checks restoration of the user compute bindings.
+    for _ in 0..8 {
+        e.blit(region(&source), region(&target), FilterMode::Nearest)
+            .unwrap();
+    }
     {
         let mut p = d.compute().unwrap().begin(&mut e).unwrap();
         p.dispatch([1, 1, 1]).unwrap();

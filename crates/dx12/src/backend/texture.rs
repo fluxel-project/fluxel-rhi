@@ -77,7 +77,7 @@ pub(crate) fn support(dv: &Dx12Device, d: &api::TextureDesc) -> api::Support<api
                 } else {
                     supported_sample_counts(dv, d)
                 },
-                compatible_view_formats: vec![d.format],
+                compatible_view_formats: permitted_view_formats(dv, d),
                 filterable: !depth
                     && format_has_support(dv, d.format, D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE),
                 blendable: !depth && d.usage.contains(api::TextureUsage::RENDER_ATTACHMENT),
@@ -86,6 +86,34 @@ pub(crate) fn support(dv: &Dx12Device, d: &api::TextureDesc) -> api::Support<api
         }
         Err(x) => api::Support::Unsupported(x),
     }
+}
+
+// Share reinterpretation admission between capability reporting and view creation.
+fn view_format_available(
+    dv: &Dx12Device,
+    desc: &api::TextureDesc,
+    view: api::TextureFormat,
+) -> bool {
+    if view == desc.format {
+        return true;
+    }
+    desc.view_formats.contains(&view)
+        && (!desc.usage.contains(api::TextureUsage::TEXTURE_BINDING)
+            || format_has_support(dv, view, D3D12_FORMAT_SUPPORT1_SHADER_LOAD))
+        && (!(desc.samples > 1 && desc.usage.contains(api::TextureUsage::TEXTURE_BINDING))
+            || format_has_support(dv, view, D3D12_FORMAT_SUPPORT1_MULTISAMPLE_LOAD))
+        && (!desc.usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
+            || format_has_support(dv, view, D3D12_FORMAT_SUPPORT1_RENDER_TARGET))
+}
+
+fn permitted_view_formats(dv: &Dx12Device, desc: &api::TextureDesc) -> Vec<api::TextureFormat> {
+    let mut formats = vec![desc.format];
+    for &view in &desc.view_formats {
+        if !formats.contains(&view) && view_format_available(dv, desc, view) {
+            formats.push(view);
+        }
+    }
+    formats
 }
 
 /// Native description and clear metadata used identically for committed and
@@ -239,26 +267,7 @@ pub(crate) fn create_view(
     }
     let depth = is_depth(texture.desc.format);
     let array = texture.desc.array_layers > 1 || v.dimension == api::TextureViewDimension::D2Array;
-    if (v.format != texture.desc.format && !texture.desc.view_formats.contains(&v.format))
-        || (v.format != texture.desc.format
-            && texture
-                .desc
-                .usage
-                .contains(api::TextureUsage::TEXTURE_BINDING)
-            && !format_has_support(dv, v.format, D3D12_FORMAT_SUPPORT1_SHADER_LOAD))
-        || (v.format != texture.desc.format
-            && texture.desc.samples > 1
-            && texture
-                .desc
-                .usage
-                .contains(api::TextureUsage::TEXTURE_BINDING)
-            && !format_has_support(dv, v.format, D3D12_FORMAT_SUPPORT1_MULTISAMPLE_LOAD))
-        || (v.format != texture.desc.format
-            && texture
-                .desc
-                .usage
-                .contains(api::TextureUsage::RENDER_ATTACHMENT)
-            && !format_has_support(dv, v.format, D3D12_FORMAT_SUPPORT1_RENDER_TARGET))
+    if !view_format_available(dv, &texture.desc, v.format)
         || !match texture.desc.dimension {
             api::TextureDimension::D1 => v.dimension == api::TextureViewDimension::D1,
             api::TextureDimension::D2 => matches!(

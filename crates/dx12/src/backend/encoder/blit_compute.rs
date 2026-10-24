@@ -1,5 +1,220 @@
 //! Compute-queue rectangle blit using a retained typed UAV staging texture.
 use super::*;
+#[cfg(all(test, feature = "hardware-tests"))]
+mod cache_gpu;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+
+/// Immutable device-native objects for one compute-blit shader variant.
+///
+/// Descriptors, staging resources, and command-list state deliberately do not
+/// enter this object: they are recording-specific and must remain owned by the
+/// encoder until its work retires.
+pub(crate) struct BlitComputePipeline {
+    root: ID3D12RootSignature,
+    state: ID3D12PipelineState,
+}
+
+/// The complete set of shipped compute-blit DXIL variants is finite: 36 typed
+/// UAV variants and 12 raw-buffer fallback variants. Keeping the cache on the
+/// device avoids serializing root signatures or creating PSOs per recording.
+pub(crate) struct BlitComputeCache(Mutex<HashMap<BlitComputeShader, Arc<BlitComputePipeline>>>);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum BlitComputeShader {
+    Typed {
+        source_view: u8,
+        target_view: u8,
+        kind: u8,
+    },
+    Buffer {
+        source_view: u8,
+        kind: u8,
+    },
+}
+
+impl BlitComputeShader {
+    fn bytes(self) -> &'static [u8] {
+        match self {
+            Self::Buffer { source_view, kind } => match (source_view, kind) {
+                (0, 0) => include_bytes!("../../assets/blit_buffer_d2_float.dxil"),
+                (0, 1) => include_bytes!("../../assets/blit_buffer_d2_uint.dxil"),
+                (0, 2) => include_bytes!("../../assets/blit_buffer_d2_sint.dxil"),
+                (1, 0) => include_bytes!("../../assets/blit_buffer_array_float.dxil"),
+                (1, 1) => include_bytes!("../../assets/blit_buffer_array_uint.dxil"),
+                (1, 2) => include_bytes!("../../assets/blit_buffer_array_sint.dxil"),
+                (2, 0) => include_bytes!("../../assets/blit_buffer_d1_float.dxil"),
+                (2, 1) => include_bytes!("../../assets/blit_buffer_d1_uint.dxil"),
+                (2, 2) => include_bytes!("../../assets/blit_buffer_d1_sint.dxil"),
+                (3, 0) => include_bytes!("../../assets/blit_buffer_d3_float.dxil"),
+                (3, 1) => include_bytes!("../../assets/blit_buffer_d3_uint.dxil"),
+                (3, 2) => include_bytes!("../../assets/blit_buffer_d3_sint.dxil"),
+                _ => unreachable!("validated compute blit buffer shader variant"),
+            },
+            Self::Typed {
+                source_view,
+                target_view,
+                kind,
+            } => match (source_view, target_view, kind) {
+                (0, 0, 0) => include_bytes!("../../assets/blit_cs_d2_d1_float.dxil"),
+                (0, 0, 1) => include_bytes!("../../assets/blit_cs_d2_d1_uint.dxil"),
+                (0, 0, 2) => include_bytes!("../../assets/blit_cs_d2_d1_sint.dxil"),
+                (0, 1, 0) => include_bytes!("../../assets/blit_cs_d2_d2_float.dxil"),
+                (0, 1, 1) => include_bytes!("../../assets/blit_cs_d2_d2_uint.dxil"),
+                (0, 1, 2) => include_bytes!("../../assets/blit_cs_d2_d2_sint.dxil"),
+                (0, 2, 0) => include_bytes!("../../assets/blit_cs_d2_d3_float.dxil"),
+                (0, 2, 1) => include_bytes!("../../assets/blit_cs_d2_d3_uint.dxil"),
+                (0, 2, 2) => include_bytes!("../../assets/blit_cs_d2_d3_sint.dxil"),
+                (1, 0, 0) => include_bytes!("../../assets/blit_cs_array_d1_float.dxil"),
+                (1, 0, 1) => include_bytes!("../../assets/blit_cs_array_d1_uint.dxil"),
+                (1, 0, 2) => include_bytes!("../../assets/blit_cs_array_d1_sint.dxil"),
+                (1, 1, 0) => include_bytes!("../../assets/blit_cs_array_d2_float.dxil"),
+                (1, 1, 1) => include_bytes!("../../assets/blit_cs_array_d2_uint.dxil"),
+                (1, 1, 2) => include_bytes!("../../assets/blit_cs_array_d2_sint.dxil"),
+                (1, 2, 0) => include_bytes!("../../assets/blit_cs_array_d3_float.dxil"),
+                (1, 2, 1) => include_bytes!("../../assets/blit_cs_array_d3_uint.dxil"),
+                (1, 2, 2) => include_bytes!("../../assets/blit_cs_array_d3_sint.dxil"),
+                (2, 0, 0) => include_bytes!("../../assets/blit_cs_d1_d1_float.dxil"),
+                (2, 0, 1) => include_bytes!("../../assets/blit_cs_d1_d1_uint.dxil"),
+                (2, 0, 2) => include_bytes!("../../assets/blit_cs_d1_d1_sint.dxil"),
+                (2, 1, 0) => include_bytes!("../../assets/blit_cs_d1_d2_float.dxil"),
+                (2, 1, 1) => include_bytes!("../../assets/blit_cs_d1_d2_uint.dxil"),
+                (2, 1, 2) => include_bytes!("../../assets/blit_cs_d1_d2_sint.dxil"),
+                (2, 2, 0) => include_bytes!("../../assets/blit_cs_d1_d3_float.dxil"),
+                (2, 2, 1) => include_bytes!("../../assets/blit_cs_d1_d3_uint.dxil"),
+                (2, 2, 2) => include_bytes!("../../assets/blit_cs_d1_d3_sint.dxil"),
+                (3, 0, 0) => include_bytes!("../../assets/blit_cs_d3_d1_float.dxil"),
+                (3, 0, 1) => include_bytes!("../../assets/blit_cs_d3_d1_uint.dxil"),
+                (3, 0, 2) => include_bytes!("../../assets/blit_cs_d3_d1_sint.dxil"),
+                (3, 1, 0) => include_bytes!("../../assets/blit_cs_d3_d2_float.dxil"),
+                (3, 1, 1) => include_bytes!("../../assets/blit_cs_d3_d2_uint.dxil"),
+                (3, 1, 2) => include_bytes!("../../assets/blit_cs_d3_d2_sint.dxil"),
+                (3, 2, 0) => include_bytes!("../../assets/blit_cs_d3_d3_float.dxil"),
+                (3, 2, 1) => include_bytes!("../../assets/blit_cs_d3_d3_uint.dxil"),
+                (3, 2, 2) => include_bytes!("../../assets/blit_cs_d3_d3_sint.dxil"),
+                _ => unreachable!("validated typed compute blit shader variant"),
+            },
+        }
+    }
+}
+
+impl BlitComputeCache {
+    const MAX_VARIANTS: usize = 48;
+
+    fn get_or_create(
+        &self,
+        device: &ID3D12Device,
+        shader: BlitComputeShader,
+    ) -> Result<Arc<BlitComputePipeline>, Error> {
+        let mut cache = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(pipeline) = cache.get(&shader) {
+            return Ok(pipeline.clone());
+        }
+        if cache.len() >= Self::MAX_VARIANTS {
+            return Err(Error::InvalidState);
+        }
+        let pipeline = Arc::new(create_pipeline(device, shader)?);
+        cache.insert(shader, pipeline.clone());
+        Ok(pipeline)
+    }
+}
+
+impl Default for BlitComputeCache {
+    fn default() -> Self {
+        Self(Mutex::new(HashMap::with_capacity(Self::MAX_VARIANTS)))
+    }
+}
+
+fn create_pipeline(
+    device: &ID3D12Device,
+    shader: BlitComputeShader,
+) -> Result<BlitComputePipeline, Error> {
+    let ranges = [
+        D3D12_DESCRIPTOR_RANGE {
+            RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+            NumDescriptors: 1,
+            ..Default::default()
+        },
+        D3D12_DESCRIPTOR_RANGE {
+            RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
+            NumDescriptors: 1,
+            ..Default::default()
+        },
+        D3D12_DESCRIPTOR_RANGE {
+            RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
+            NumDescriptors: 1,
+            ..Default::default()
+        },
+    ];
+    let table = |range: &D3D12_DESCRIPTOR_RANGE| D3D12_ROOT_PARAMETER {
+        ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+        Anonymous: D3D12_ROOT_PARAMETER_0 {
+            DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                NumDescriptorRanges: 1,
+                pDescriptorRanges: range,
+            },
+        },
+        ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+    };
+    let constants = |register, count| D3D12_ROOT_PARAMETER {
+        ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+        Anonymous: D3D12_ROOT_PARAMETER_0 {
+            Constants: D3D12_ROOT_CONSTANTS {
+                ShaderRegister: register,
+                RegisterSpace: 0,
+                Num32BitValues: count,
+            },
+        },
+        ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+    };
+    let params = [
+        table(&ranges[0]),
+        table(&ranges[1]),
+        table(&ranges[2]),
+        constants(0, 5),
+        constants(1, 6),
+    ];
+    let root_desc = D3D12_ROOT_SIGNATURE_DESC {
+        NumParameters: params.len() as u32,
+        pParameters: params.as_ptr(),
+        ..Default::default()
+    };
+    let mut blob = None;
+    // SAFETY: serialized root pointers remain live during this call.
+    unsafe {
+        D3D12SerializeRootSignature(&root_desc, D3D_ROOT_SIGNATURE_VERSION_1, &mut blob, None)
+    }
+    .map_err(native_error)?;
+    let blob = blob.ok_or(Error::OutOfMemory)?;
+    // SAFETY: the blob owns the returned bytes until root-signature creation returns.
+    let bytes =
+        unsafe { std::slice::from_raw_parts(blob.GetBufferPointer().cast(), blob.GetBufferSize()) };
+    // SAFETY: serialized bytes are from D3D12SerializeRootSignature.
+    let root = unsafe { device.CreateRootSignature::<ID3D12RootSignature>(0, bytes) }
+        .map_err(native_error)?;
+    let bytes = shader.bytes();
+    let mut desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
+        pRootSignature: ManuallyDrop::new(Some(root.clone())),
+        CS: D3D12_SHADER_BYTECODE {
+            pShaderBytecode: bytes.as_ptr().cast(),
+            BytecodeLength: bytes.len(),
+        },
+        ..Default::default()
+    };
+    // SAFETY: shader and root signature remain valid throughout pipeline creation.
+    let state = unsafe { device.CreateComputePipelineState::<ID3D12PipelineState>(&desc) };
+    // SAFETY: release the temporary cloned root reference held by the descriptor.
+    unsafe { ManuallyDrop::drop(&mut desc.pRootSignature) };
+    Ok(BlitComputePipeline {
+        root,
+        state: state.map_err(native_error)?,
+    })
+}
 
 pub(crate) fn blit_compute(
     encoder: &mut Dx12Encoder,
@@ -119,83 +334,22 @@ pub(crate) fn blit_compute(
             _ => return Err(Error::InvalidState),
         }
     };
-    let ranges = [
-        D3D12_DESCRIPTOR_RANGE {
-            RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-            NumDescriptors: 1,
-            ..Default::default()
-        },
-        D3D12_DESCRIPTOR_RANGE {
-            RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
-            NumDescriptors: 1,
-            ..Default::default()
-        },
-        D3D12_DESCRIPTOR_RANGE {
-            RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
-            NumDescriptors: 1,
-            ..Default::default()
-        },
-    ];
-    let table = |range: &D3D12_DESCRIPTOR_RANGE| D3D12_ROOT_PARAMETER {
-        ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
-        Anonymous: D3D12_ROOT_PARAMETER_0 {
-            DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
-                NumDescriptorRanges: 1,
-                pDescriptorRanges: range,
-            },
-        },
-        ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
-    };
-    let constants = |register, count| D3D12_ROOT_PARAMETER {
-        ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
-        Anonymous: D3D12_ROOT_PARAMETER_0 {
-            Constants: D3D12_ROOT_CONSTANTS {
-                ShaderRegister: register,
-                RegisterSpace: 0,
-                Num32BitValues: count,
-            },
-        },
-        ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
-    };
-    let params = [
-        table(&ranges[0]),
-        table(&ranges[1]),
-        table(&ranges[2]),
-        constants(0, 5),
-        constants(1, 6),
-    ];
-    let root_desc = D3D12_ROOT_SIGNATURE_DESC {
-        NumParameters: params.len() as u32,
-        pParameters: params.as_ptr(),
-        ..Default::default()
-    };
-    let mut blob = None;
-    // SAFETY: serialized root pointers remain live during this call.
-    unsafe {
-        D3D12SerializeRootSignature(&root_desc, D3D_ROOT_SIGNATURE_VERSION_1, &mut blob, None)
-    }
-    .map_err(native_error)?;
-    let blob = blob.ok_or(Error::OutOfMemory)?;
-    // SAFETY: the blob owns the returned bytes until this creation returns.
-    let bytes =
-        unsafe { std::slice::from_raw_parts(blob.GetBufferPointer().cast(), blob.GetBufferSize()) };
     let device = &encoder.device.0.native;
-    // SAFETY: serialized bytes are from D3D12SerializeRootSignature.
-    let root = unsafe { device.CreateRootSignature::<ID3D12RootSignature>(0, bytes) }
-        .map_err(native_error)?;
-    let mut desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
-        pRootSignature: ManuallyDrop::new(Some(root.clone())),
-        CS: D3D12_SHADER_BYTECODE {
-            pShaderBytecode: shader.as_ptr().cast(),
-            BytecodeLength: shader.len(),
-        },
-        ..Default::default()
+    let shader_key = if typed {
+        BlitComputeShader::Typed {
+            source_view,
+            target_view,
+            kind,
+        }
+    } else {
+        BlitComputeShader::Buffer { source_view, kind }
     };
-    // SAFETY: shader and root signature remain valid throughout pipeline creation.
-    let state = unsafe { device.CreateComputePipelineState::<ID3D12PipelineState>(&desc) };
-    // SAFETY: release the temporary cloned root reference.
-    unsafe { ManuallyDrop::drop(&mut desc.pRootSignature) };
-    let state = state.map_err(native_error)?;
+    debug_assert_eq!(shader, shader_key.bytes());
+    let pipeline = encoder
+        .device
+        .0
+        .blit_compute_cache
+        .get_or_create(device, shader_key)?;
     let output_desc = encoder.device.0.descriptors.temporary_pair()?;
     let heap = D3D12_HEAP_PROPERTIES {
         Type: D3D12_HEAP_TYPE_DEFAULT,
@@ -325,9 +479,6 @@ pub(crate) fn blit_compute(
     let output_gpu = output_desc.view_gpu();
     encoder.mip_blit_descriptors.push(output_desc);
     encoder.uploads.push(output.clone());
-    encoder
-        .blit_compute_objects
-        .push((root.clone(), state.clone()));
     let source_size = [
         (src.desc.extent[0] >> source.mip).max(1),
         (src.desc.extent[1] >> source.mip).max(1),
@@ -446,8 +597,8 @@ pub(crate) fn blit_compute(
         ];
         // SAFETY: root arguments and descriptors remain live through submission.
         unsafe {
-            encoder.list.SetComputeRootSignature(&root);
-            encoder.list.SetPipelineState(&state);
+            encoder.list.SetComputeRootSignature(&pipeline.root);
+            encoder.list.SetPipelineState(&pipeline.state);
             encoder.list.SetComputeRootDescriptorTable(0, source_gpu);
             encoder.list.SetComputeRootDescriptorTable(1, output_gpu);
             encoder.list.SetComputeRootDescriptorTable(2, sampler_gpu);

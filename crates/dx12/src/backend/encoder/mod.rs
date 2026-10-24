@@ -52,6 +52,7 @@ pub(crate) mod secondary;
 mod submit;
 mod transition;
 pub(crate) mod upload;
+pub(crate) use blit_compute::BlitComputeCache;
 pub(super) use coordinates::{scissor as validate_scissor, viewport as validate_viewport};
 pub(crate) use core::DirectCommandPool;
 pub use core::{Dx12Completion, Dx12Encoder, Dx12RecordedWork, RasterExtras};

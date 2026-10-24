@@ -210,11 +210,12 @@ fn execute_segmented(queue: &ID3D12CommandQueue, work: &Dx12RecordedWork) -> Res
         work.encoder.closed_segments.len(),
         work.encoder.queue_boundaries.len()
     );
-    for (segment, boundary) in work
+    for (index, (segment, boundary)) in work
         .encoder
         .closed_segments
         .iter()
         .zip(&work.encoder.queue_boundaries)
+        .enumerate()
     {
         let list = Some(
             segment
@@ -225,6 +226,7 @@ fn execute_segmented(queue: &ID3D12CommandQueue, work: &Dx12RecordedWork) -> Res
         // SAFETY: the closed list belongs to this selected lane and the queue
         // lock held by the caller serializes all native queue operations.
         unsafe { queue.ExecuteCommandLists(&[list]) };
+        super::super::ray::publish_segment(work, index);
         crate::diagnostics::record(crate::diagnostics::Operation::ExecuteCalls, 1);
         crate::diagnostics::record(crate::diagnostics::Operation::SubmittedLists, 1);
         match boundary {
@@ -250,6 +252,7 @@ fn execute_segmented(queue: &ID3D12CommandQueue, work: &Dx12RecordedWork) -> Res
     // SAFETY: as above, the final list is closed and the caller owns queue
     // serialization. It follows every explicit boundary in the source order.
     unsafe { queue.ExecuteCommandLists(&[final_list]) };
+    super::super::ray::publish_segment(work, work.encoder.closed_segments.len());
     crate::diagnostics::record(crate::diagnostics::Operation::ExecuteCalls, 1);
     crate::diagnostics::record(crate::diagnostics::Operation::SubmittedLists, 1);
     Ok(())
@@ -569,6 +572,10 @@ unsafe fn submit_packet(
                 let segmented = issued[first..]
                     .iter()
                     .any(|native| !native.encoder.closed_segments.is_empty());
+                // Pin submitted TLAS dependencies before native handoff. This
+                // deliberately covers every retained bind group, including
+                // inline ray queries in raster and compute shaders.
+                super::super::ray::pin_batch(&mut issued[first..]);
                 if segmented {
                     for native in &issued[first..] {
                         handoff!(execute_segmented(queue, native));
@@ -596,6 +603,9 @@ unsafe fn submit_packet(
                         );
                         unsafe {
                             queue.ExecuteCommandLists(&lists);
+                        }
+                        for native in &issued[first..] {
+                            super::super::ray::publish_segment(native, 0);
                         }
                     }
                 }

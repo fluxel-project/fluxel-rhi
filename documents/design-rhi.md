@@ -1281,6 +1281,49 @@ All 23 unsupported Linux native entries exit with status 1; browser example
 compilation is recorded separately. This is focused acceptance, not a new
 all-platform or Metal runtime validation claim.
 
+## DX12 native-object and dependency review
+
+DXGI enumeration exposes every native adapter ordinal, and device opening uses
+the selected ordinal with a checked conversion and an actual D3D12 device
+creation check. The default helper still selects the first enumerated adapter;
+explicit adapter choice belongs to the caller. Texture support reports the base
+format and declared compatible view formats admitted by the same native checks
+used for view creation. Neither change expands the set of DXGI texture formats.
+
+Compute blits reuse device-owned immutable root signatures and PSOs keyed by the
+exact shipped shader variant. Descriptors and scratch resources remain per-work
+retention. The cache has a finite set of 36 typed-UAV and 12 buffer variants;
+no application commands or execution schedule are cached. Enhanced-barrier
+support is an immutable OPTIONS12 fact queried once during device opening.
+
+The WGSL vertex-index indirect ABI caches its indexed/non-indexed command
+signatures on the matching raster pipeline, whose root signature they reference.
+It still performs three native buffer copies per draw record. Diagnostic runs
+at 1, 3 and 10,000 draws preserve the GPU output, and show the large batch's
+linear recording cost. Adjacent first/warm samples are diagnostic, not an
+isolated frame-rate benchmark. Compute argument packing remains deferred until
+a measured candidate demonstrates a useful large-batch benefit and acceptable
+small-batch overhead; the linear path is not described as eliminated.
+
+TLAS dependency retention separates the latest accepted build from recorded or
+in-flight work. Recording/cancelling a build does not replace committed BLAS
+dependencies. Before native execution, the submitted batch retains the union of
+current dependencies and new build inputs, including primary and secondary
+bindings that can perform inline ray queries. Only builds in an executed native
+command-list segment publish new committed dependencies. The batch's existing
+fence retirement or indeterminate-work quarantine retains old dependencies; the
+TLAS no longer permanently appends every historical BLAS. This metadata owns
+native lifetimes and does not infer hazards, replay commands, or schedule work.
+
+Focused native checks cover DXGI adapter LUID identity, declared view creation
+and sRGB sampling, repeated immutable blit-object reuse, repeated blits followed
+by user compute work, and 32 TLAS rebuilds with cancellation and actual old-owner
+release checks. Ray-query and ray-pipeline output checks remain separate gates.
+The serialized DXR pipeline-cache limitation remains explicit and nonblocking:
+the existing [pipeline library](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nn-d3d12-id3d12pipelinelibrary)
+caches PSOs, while DXR uses [state objects](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nn-d3d12-id3d12stateobject).
+Supplying a ray cache is rejected rather than silently treated as a cache hit.
+
 ## GL-family multisample copy boundary
 
 Desktop GL 4.3+ or `ARB_copy_image` may copy matching-sample color texture
