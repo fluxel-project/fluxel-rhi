@@ -45,6 +45,7 @@ def main() -> None:
     workspace = args.workspace.resolve()
     profile = "release" if args.release else "debug"
     wasm = workspace / "target" / "wasm32-unknown-unknown" / profile / "examples" / f"{args.demo}.wasm"
+    worker_wasm = workspace / "target" / "wasm32-unknown-unknown" / profile / "fluxel_rhi_webgpu.wasm"
     output = args.out.resolve()
     cargo = [
         "cargo", "build", "-p", "fluxel-rhi", "--no-default-features",
@@ -54,7 +55,14 @@ def main() -> None:
     if args.release:
         cargo.append("--release")
     bindgen = ["wasm-bindgen", str(wasm), "--target", "web", "--out-dir", str(output), "--out-name", "demo"]
-    for command in (cargo, bindgen):
+    worker_cargo = ["cargo", "build", "-p", "fluxel-rhi-webgpu", "--target", "wasm32-unknown-unknown"]
+    if args.release:
+        worker_cargo.append("--release")
+    worker_bindgen = ["wasm-bindgen", str(worker_wasm), "--target", "web", "--out-dir", str(output), "--out-name", "fluxel_shader_worker"]
+    commands = (cargo, bindgen)
+    if args.backend == "webgpu":
+        commands += (worker_cargo, worker_bindgen)
+    for command in commands:
         print(" ".join(command))
         if not args.dry_run:
             subprocess.run(command, cwd=workspace, check=True)

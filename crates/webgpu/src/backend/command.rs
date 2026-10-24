@@ -9,6 +9,17 @@ use fluxel_rhi_core::api::{self, Error, Result};
 use js_sys::{Array, Object, Uint8Array};
 use wasm_bindgen::JsValue;
 
+#[cfg(test)]
+thread_local! { static UPLOAD_PAGE_CREATES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
+#[cfg(test)]
+pub(super) fn reset_upload_page_creates() {
+    UPLOAD_PAGE_CREATES.with(|count| count.set(0));
+}
+#[cfg(test)]
+pub(super) fn upload_page_creates() -> u32 {
+    UPLOAD_PAGE_CREATES.with(|count| count.get())
+}
+
 #[path = "clear_fallback.rs"]
 mod clear_fallback;
 #[path = "depth_upload.rs"]
@@ -16,7 +27,9 @@ mod depth_upload;
 #[path = "stencil_copy.rs"]
 mod stencil_copy;
 #[path = "unaligned.rs"]
-mod unaligned;
+pub(super) mod unaligned;
+#[path = "command/upload.rs"]
+mod upload;
 
 use super::{
     instance::{WebGpu, WebGpuDevice},
@@ -41,6 +54,7 @@ pub struct WebGpuEncoder {
     pub(super) occlusion_pending: Vec<super::query_segments::QuerySegments>,
     pub(super) occlusion_active: bool,
     pub(super) keep_alive: Vec<JsValue>,
+    pub(super) upload_pages: Vec<upload::UploadPage>,
 }
 
 pub(super) fn error(value: JsValue) -> Error {
@@ -100,6 +114,7 @@ impl api::CommandBackend for WebGpu {
             occlusion_pending: Vec::new(),
             occlusion_active: false,
             keep_alive: Vec::new(),
+            upload_pages: Vec::new(),
         })
     }
 
@@ -429,33 +444,20 @@ impl api::CommandBackend for WebGpu {
             }
             return Ok(());
         }
-        let padded_size = (bytes.len() as u64)
-            .checked_add(3)
-            .ok_or(Error::InvalidRange)?
-            & !3;
-        let desc = object();
-        field(&desc, "size", number(padded_size as f64))?;
-        field(&desc, "usage", number(4_u32))?;
-        field(&desc, "mappedAtCreation", JsValue::TRUE)?;
-        let staging = js::call1(&encoder.device.0.device, "createBuffer", &desc).map_err(error)?;
-        let mapped = js::call0(&staging, "getMappedRange").map_err(error)?;
-        let mut padded = vec![0_u8; padded_size as usize];
-        padded[..bytes.len()].copy_from_slice(bytes);
-        Uint8Array::new(&mapped).copy_from(&padded);
-        js::call0(&staging, "unmap").map_err(error)?;
+        let (staging, source_offset, padded_size) = upload::write(encoder, bytes)?;
         js::call(
             &encoder.raw,
             "copyBufferToBuffer",
             &[
                 staging.clone(),
-                number(0_u32),
+                number(source_offset as f64),
                 dst.raw.clone(),
                 number(offset as f64),
                 number(padded_size as f64),
             ],
         )
         .map_err(error)?;
-        encoder.keep_alive.extend([staging, dst.raw.clone()]);
+        encoder.keep_alive.push(dst.raw.clone());
         Ok(())
     }
 
@@ -490,15 +492,29 @@ impl api::CommandBackend for WebGpu {
             encoder.keep_alive.push(dst.raw.clone());
             return Ok(());
         }
-        // Bound temporary CPU memory independently of the destination size.
+        // Upload one repeated pattern, then record native copies from that
+        // encoder-local page. This avoids a staging allocation per chunk.
         let bytes = value.to_le_bytes();
         let chunk = bytes.repeat(16384);
+        let (staging, source_offset, _) = upload::write(encoder, &chunk)?;
         let mut offset = range.start;
         while offset < range.end {
             let length = (range.end - offset).min(chunk.len() as u64) as usize;
-            Self::write_buffer(encoder, dst, offset, &chunk[..length])?;
+            js::call(
+                &encoder.raw,
+                "copyBufferToBuffer",
+                &[
+                    staging.clone(),
+                    number(source_offset as f64),
+                    dst.raw.clone(),
+                    number(offset as f64),
+                    number(length as f64),
+                ],
+            )
+            .map_err(error)?;
             offset += length as u64;
         }
+        encoder.keep_alive.push(dst.raw.clone());
         Ok(())
     }
 

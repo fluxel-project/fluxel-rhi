@@ -28,6 +28,7 @@ mod readback;
 mod resource;
 mod resource_validation;
 mod subgroup;
+mod shader_worker;
 mod submit;
 mod surface;
 mod utility;

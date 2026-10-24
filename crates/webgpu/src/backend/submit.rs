@@ -6,6 +6,7 @@
 
 use std::{
     cell::RefCell,
+    collections::BTreeMap,
     future::Future,
     pin::Pin,
     rc::Rc,
@@ -28,12 +29,27 @@ pub struct RecordedWork {
     keep_alive: Vec<JsValue>,
 }
 
-#[derive(Clone)]
-pub struct Completion(Rc<RefCell<CompletionInner>>);
+pub struct Completion(Rc<RefCell<CompletionInner>>, Option<u64>);
+impl Clone for Completion {
+    fn clone(&self) -> Self {
+        Self(self.0.clone(), None)
+    }
+}
+impl Drop for Completion {
+    fn drop(&mut self) {
+        if let Some(id) = self.1.take() {
+            self.0.borrow_mut().wakers.remove(&id);
+        }
+    }
+}
 
 struct CompletionInner {
     state: api::CompletionState,
-    wakers: Vec<Waker>,
+    // Validation errors can fail a point before the native queue is done.
+    // Only the queue promise supplies retirement evidence.
+    native_settled: bool,
+    wakers: BTreeMap<u64, Waker>,
+    next_registration: u64,
 }
 
 pub(super) struct InFlight {
@@ -43,10 +59,15 @@ pub(super) struct InFlight {
 
 impl Completion {
     fn new(promise: Promise, device: WebGpuDevice) -> Self {
-        let result = Self(Rc::new(RefCell::new(CompletionInner {
-            state: api::CompletionState::Pending,
-            wakers: Vec::new(),
-        })));
+        let result = Self(
+            Rc::new(RefCell::new(CompletionInner {
+                state: api::CompletionState::Pending,
+                native_settled: false,
+                wakers: BTreeMap::new(),
+                next_registration: 0,
+            })),
+            None,
+        );
         let pending = result.clone();
         spawn_local(async move {
             let state = match JsFuture::from(promise).await {
@@ -57,7 +78,11 @@ impl Completion {
                 },
                 Err(error) => api::CompletionState::Failed(Error::Backend(js::message(&error))),
             };
+            pending.0.borrow_mut().native_settled = true;
             pending.settled(state);
+            // Promise settlement is the retirement trigger, including None
+            // submissions whose caller never asks for another RHI operation.
+            retire(&device);
         });
         result
     }
@@ -74,7 +99,7 @@ impl Completion {
             inner.state = state;
             std::mem::take(&mut inner.wakers)
         };
-        for waker in wakers {
+        for waker in wakers.into_values() {
             waker.wake();
         }
     }
@@ -92,17 +117,30 @@ impl Future for Completion {
     type Output = Result<()>;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut inner = self.0.borrow_mut();
+        let this = self.get_mut();
+        let mut inner = this.0.borrow_mut();
         match &inner.state {
             api::CompletionState::Complete => Poll::Ready(Ok(())),
             api::CompletionState::Failed(error) => Poll::Ready(Err(error.clone())),
             api::CompletionState::Pending => {
-                if !inner
-                    .wakers
-                    .iter()
-                    .any(|waker| waker.will_wake(context.waker()))
-                {
-                    inner.wakers.push(context.waker().clone());
+                let id = match this.1 {
+                    Some(id) => id,
+                    None => {
+                        let Some(next) = inner.next_registration.checked_add(1) else {
+                            return Poll::Ready(Err(Error::InvalidRange));
+                        };
+                        let id = inner.next_registration;
+                        inner.next_registration = next;
+                        this.1 = Some(id);
+                        id
+                    }
+                };
+                match inner.wakers.get_mut(&id) {
+                    Some(waker) if waker.will_wake(context.waker()) => {}
+                    Some(waker) => *waker = context.waker().clone(),
+                    None => {
+                        inner.wakers.insert(id, context.waker().clone());
+                    }
                 }
                 Poll::Pending
             }
@@ -127,7 +165,7 @@ fn retire(device: &WebGpuDevice) {
         .0
         .in_flight
         .borrow_mut()
-        .retain(|flight| matches!(flight.completion.state(), api::CompletionState::Pending));
+        .retain(|flight| !flight.completion.0.borrow().native_settled);
 }
 
 /// Issues one browser queue boundary and retains its native objects until the
@@ -471,3 +509,7 @@ impl api::DeferredBackend for WebGpu {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "submit/tests.rs"]
+mod tests;

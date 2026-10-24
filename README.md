@@ -107,6 +107,15 @@ their existing explicit fallbacks for
 descriptor indexing and multiview; those scenes do not establish backend support
 for either feature.
 
+WebGPU SPIR-V translation runs in a dedicated CPU worker; WGSL needs no worker
+asset. The supplied browser bundle tools build and configure the worker module.
+For a custom page, build `fluxel-rhi-webgpu` as Wasm, run `wasm-bindgen --target
+web --out-name fluxel_shader_worker`, deploy the generated JavaScript, Wasm and
+snippets together, and call
+`WebGpuInstance::configure_spirv_worker(worker_glue_url)` before creating
+SPIR-V shaders. The worker URL is a backend deployment setting and does not
+enter Core resource or command contracts.
+
 GLES same-sample MSAA texture copy is explicitly Unsupported, including contexts
 with ES 3.2 core or ES 3.1 EXT/OES CopyImage. LDPlayer Android 14 passes the 2D
 4x sample-pattern copy/resolve check, but its MSAA-array attachment is incomplete;

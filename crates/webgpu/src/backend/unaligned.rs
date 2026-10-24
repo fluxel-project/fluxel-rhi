@@ -135,7 +135,7 @@ pub(super) fn copy_word(
 }
 
 // Parameter data changes per operation while these WGSL kernels stay fixed.
-const PATCH: &str = r#"
+pub(in crate::backend) const PATCH: &str = r#"
 struct Params { mask: u32, value: u32, pad0: u32, pad1: u32 }
 @group(0) @binding(0) var<storage, read_write> word: array<u32>;
 @group(0) @binding(1) var<uniform> params: Params;
@@ -143,7 +143,7 @@ struct Params { mask: u32, value: u32, pad0: u32, pad1: u32 }
     word[0] = (word[0] & ~params.mask) | params.value;
 }
 "#;
-const COPY: &str = r#"
+pub(in crate::backend) const COPY: &str = r#"
 struct Params {
     source_words: u32, dest_words: u32, first: u32, end: u32,
     source_first: u32, pad0: u32, pad1: u32, pad2: u32

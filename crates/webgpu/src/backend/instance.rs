@@ -49,6 +49,17 @@ impl WebGpuInstance {
         Ok(Self { gpu })
     }
 
+    /// Configures the ES-module glue URL of the dedicated SPIR-V translator.
+    ///
+    /// Deploy the worker cdylib with `wasm-bindgen --target web` and pass its
+    /// generated JavaScript URL before creating SPIR-V shaders. The worker's
+    /// adjacent Wasm asset must also be available. WGSL needs no worker.
+    /// Configuration is local to this browser execution context and is shared
+    /// by its WebGPU instances; it does not change the portable Core API.
+    pub fn configure_spirv_worker(&self, worker_glue_url: &str) -> Result<()> {
+        super::shader_worker::configure(worker_glue_url)
+    }
+
     /// Creates a typed Core instance on the browser owner thread.
     pub fn instance(&self) -> Result<api::Instance<WebGpu>> {
         // SAFETY: `self` is this backend's only native instance value and the
@@ -349,20 +360,27 @@ impl InstanceBackend for WebGpu {
                 render_utility_pipelines: RefCell::new(std::collections::BTreeMap::new()),
                 validation_listener: RefCell::new(None),
             }));
+            super::utility::prewarm_fixed(&native).await?;
             let weak_for_errors = Rc::downgrade(&native.0);
-            let listener =
-                Closure::<dyn FnMut(JsValue)>::new(move |event: JsValue| {
-                    if let Some(state) = weak_for_errors.upgrade() {
-                        let error = js::property(&event, "error").unwrap_or(event);
-                        let message = js::message(&error);
-                        *state.validation_error.borrow_mut() = Some(message.clone());
-                        for flight in state.in_flight.borrow().iter() {
-                            flight.completion.settled(api::CompletionState::Failed(
-                                Error::Backend(message.clone()),
-                            ));
-                        }
+            let listener = Closure::<dyn FnMut(JsValue)>::new(move |event: JsValue| {
+                if let Some(state) = weak_for_errors.upgrade() {
+                    let error = js::property(&event, "error").unwrap_or(event);
+                    let message = js::message(&error);
+                    *state.validation_error.borrow_mut() = Some(message.clone());
+                    // Release the list borrow before waking user futures.
+                    let points: Vec<_> = state
+                        .in_flight
+                        .borrow()
+                        .iter()
+                        .map(|flight| flight.completion.clone())
+                        .collect();
+                    for point in points {
+                        point.settled(api::CompletionState::Failed(Error::Backend(
+                            message.clone(),
+                        )));
                     }
-                });
+                }
+            });
             js::call(
                 &native.0.device,
                 "addEventListener",
@@ -378,10 +396,14 @@ impl InstanceBackend for WebGpu {
                 let _ = JsFuture::from(lost).await;
                 if let Some(state) = weak.upgrade() {
                     state.lost.set(true);
-                    for flight in state.in_flight.borrow().iter() {
-                        flight
-                            .completion
-                            .settled(api::CompletionState::Failed(Error::DeviceLost));
+                    let points: Vec<_> = state
+                        .in_flight
+                        .borrow()
+                        .iter()
+                        .map(|flight| flight.completion.clone())
+                        .collect();
+                    for point in points {
+                        point.settled(api::CompletionState::Failed(Error::DeviceLost));
                     }
                 }
             });

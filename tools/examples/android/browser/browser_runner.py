@@ -129,6 +129,7 @@ try {{
   {'const gl = canvas.getContext(\'webgl2\', {alpha:false, antialias:false, preserveDrawingBuffer:true}); if (!gl) throw new Error(\'WebGL2 is unavailable\');' if backend == 'webgl2' else 'if (!navigator.gpu) throw new Error(\'WebGPU is unavailable\');'}
   const module = await import('./demo.js');
   await module.default();
+  {'module.fluxel_webgpu_configure_spirv_worker(new URL(\'./fluxel_shader_worker.js\', import.meta.url).href);' if backend == 'webgpu' else ''}
   if (typeof module['{entry}'] !== 'function') throw new Error('missing wasm export: {entry}');
   await module['{entry}'](canvas, 3);
   const verification = {'webgl2Readback()' if backend == 'webgl2' else '{webgpu:true}'};

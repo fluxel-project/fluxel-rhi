@@ -29,7 +29,7 @@ fn field(object: &JsValue, name: &str, value: JsValue) -> Result<()> {
 
 impl api::ShaderBackend for WebGpu {
     type DirectFuture<'a> = Ready<Result<JsValue>>;
-    type NagaFuture<'a> = Ready<Result<JsValue>>;
+    type NagaFuture<'a> = Pin<Box<dyn Future<Output = Result<JsValue>> + 'a>>;
 
     fn shader_route(_: &WebGpuDevice, desc: &api::ShaderDesc) -> api::ShaderRoute {
         match desc.format {
@@ -80,30 +80,11 @@ impl api::ShaderBackend for WebGpu {
         device: &'a WebGpuDevice,
         desc: &'a api::ShaderDesc,
         _: &'a api::ShaderTarget,
-    ) -> Ready<Result<JsValue>> {
-        let result = (|| {
-            let module = naga::front::spv::parse_u8_slice(
-                &desc.bytes,
-                &naga::front::spv::Options {
-                    // Fluxel's scene matrices already apply the framebuffer
-                    // coordinate convention for these checked-in shaders.
-                    adjust_coordinate_space: false,
-                    ..Default::default()
-                },
-            )
-            .map_err(|error| Error::Shader(format!("SPIR-V parse: {error}")))?;
-            let info = naga::valid::Validator::new(
-                naga::valid::ValidationFlags::all(),
-                naga::valid::Capabilities::all(),
-            )
-            .validate(&module)
-            .map_err(|error| Error::Shader(format!("SPIR-V validation: {error}")))?;
-            let source = naga::back::wgsl::write_string(
-                &module,
-                &info,
-                naga::back::wgsl::WriterFlags::empty(),
-            )
-            .map_err(|error| Error::Shader(format!("WGSL emission: {error}")))?;
+    ) -> Self::NagaFuture<'a> {
+        let bytes = desc.bytes.to_vec();
+        let label = desc.label.clone();
+        Box::pin(async move {
+            let source = super::shader_worker::translate_async(bytes).await?;
             let native = object();
             field(
                 &native,
@@ -114,15 +95,14 @@ impl api::ShaderBackend for WebGpu {
                     &source
                 }),
             )?;
-            if let Some(label) = &desc.label {
+            if let Some(label) = &label {
                 field(&native, "label", JsValue::from_str(label))?;
             }
             let module =
                 js::call1(&device.0.device, "createShaderModule", &native).map_err(error)?;
             super::subgroup::remember(&module, &source);
             Ok(module)
-        })();
-        ready(result)
+        })
     }
 }
 

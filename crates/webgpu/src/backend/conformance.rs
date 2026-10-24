@@ -75,7 +75,11 @@ async fn browser_gpu_environment_records_adapter_and_features() {
 }
 
 async fn open() -> Device<WebGpu> {
-    WebGpuInstance::new().unwrap().open_default().await.unwrap()
+    let instance = WebGpuInstance::new().unwrap();
+    if let Some(url) = option_env!("FLUXEL_WEBGPU_TEST_SHADER_WORKER_URL") {
+        instance.configure_spirv_worker(url).unwrap();
+    }
+    instance.open_default().await.unwrap()
 }
 
 async fn submit(d: &Device<WebGpu>, encoder: CommandEncoder<WebGpu>) -> CompletionPoint<WebGpu> {
@@ -128,3 +132,15 @@ fn buffer(
     })
     .unwrap()
 }
+
+#[path = "conformance/completion_retirement.rs"]
+mod completion_retirement;
+#[path = "conformance/indirect_count_packing.rs"]
+mod indirect_count_packing;
+#[path = "conformance/stencil_copy.rs"]
+mod stencil_copy;
+#[path = "conformance/upload_arena.rs"]
+mod upload_arena;
+
+#[path = "conformance/shader_worker.rs"]
+mod shader_worker;

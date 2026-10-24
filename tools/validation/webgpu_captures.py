@@ -51,6 +51,7 @@ try {
   const query=new URLSearchParams(location.search);
   const module=await import(`./${query.get('demo')}/demo.js`);
   await module.default();
+  module.fluxel_webgpu_configure_spirv_worker(new URL(`./${query.get('demo')}/fluxel_shader_worker.js`, import.meta.url).href);
   await module[query.get('entry')](document.querySelector('canvas'),3);
 } catch(error) { window.result.error=String(error); }
 window.result.done=true;
@@ -85,10 +86,15 @@ def main():
         subprocess.run(build, cwd=ROOT, stdout=stdout, stderr=stderr, check=True)
     bindgen = shutil.which("wasm-bindgen")
     assert bindgen, "wasm-bindgen is required"
+    worker_build = ["cargo", f"+{args.toolchain}", "build", "-p", "fluxel-rhi-webgpu", "--target", "wasm32-unknown-unknown"]
+    subprocess.run(worker_build, cwd=ROOT, check=True)
+    worker_wasm = ROOT / "target/wasm32-unknown-unknown/debug/fluxel_rhi_webgpu.wasm"
     for name, _entry in cases:
         subprocess.run([bindgen, str(ROOT / "target/wasm32-unknown-unknown/debug/examples" / f"{name}.wasm"),
                         "--target", "web", "--out-dir", str(web / name), "--out-name", "demo"],
                        cwd=ROOT, check=True)
+        subprocess.run([bindgen, str(worker_wasm), "--target", "web", "--out-dir", str(web / name),
+                        "--out-name", "fluxel_shader_worker"], cwd=ROOT, check=True)
     (web / "capture.html").write_text(PAGE, encoding="utf-8")
     handler = functools.partial(QuietHandler, directory=str(web))
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)

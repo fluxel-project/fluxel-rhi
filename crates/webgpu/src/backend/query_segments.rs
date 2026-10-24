@@ -11,7 +11,7 @@ use wasm_bindgen::JsValue;
 /// Fixed GPU reduction kernel. Dynamic segment count and logical query slot
 /// are supplied by a uniform buffer, so split passes reuse one device-local
 /// compute pipeline instead of compiling WGSL for every flush.
-const REDUCE_WGSL: &str = r#"
+pub(super) const REDUCE_WGSL: &str = r#"
 struct Parameters {
     count: u32,
     slot: u32,

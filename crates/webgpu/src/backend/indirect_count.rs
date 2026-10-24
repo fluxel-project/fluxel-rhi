@@ -7,6 +7,9 @@ use fluxel_rhi_core::api::{self, Error, Result};
 use js_sys::{Array, Uint32Array};
 use wasm_bindgen::JsValue;
 
+#[cfg(test)]
+use std::cell::Cell;
+
 use super::{
     command::{WebGpuEncoder, error, field, number, object},
     js,
@@ -16,12 +19,12 @@ use super::{
 /// One fixed conversion program serves both indexed and non-indexed records.
 /// Per-chunk shape is supplied through a small uniform buffer so recording no
 /// longer recompiles WGSL or a compute pipeline for each chunk.
-const CONVERTER_WGSL: &str = r#"
+pub(super) const CONVERTER_WGSL: &str = r#"
 struct Parameters {
     base: u32,
     chunk_count: u32,
     words: u32,
-    _padding: u32,
+    source_stride_words: u32,
 };
 @group(0) @binding(0) var<storage, read> source: array<u32>;
 @group(0) @binding(1) var<storage, read> count: array<u32>;
@@ -32,11 +35,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     let draw = gid.y * nw.x * 64u + gid.x;
     if (draw >= parameters.chunk_count) { return; }
     for (var j = 0u; j < parameters.words; j++) {
-        let i = draw * parameters.words + j;
-        output[i] = select(0u, source[i], draw + parameters.base < count[0]);
+        let output_word = draw * parameters.words + j;
+        let source_word = draw * parameters.source_stride_words + j;
+        output[output_word] = select(0u, source[source_word], draw + parameters.base < count[0]);
     }
 }
 "#;
+
+#[cfg(test)]
+thread_local! {
+    /// Narrow conformance hook: force chunks without large device buffers.
+    static TEST_CHUNK_CAPACITY: Cell<Option<u32>> = const { Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn set_test_chunk_capacity(capacity: Option<u32>) {
+    TEST_CHUNK_CAPACITY.with(|value| value.set(capacity));
+}
 
 /// Check the complete operation before ending the active raster pass. This
 /// does not create resources or record GPU commands.
@@ -117,10 +132,36 @@ fn validate_inner(
     } else {
         max_dimension * max_dimension.min((u64::from(u32::MAX) / 64) / max_dimension) * 64
     };
-    let capacity = (scratch_limit / command_size)
+    let output_capacity = (scratch_limit / command_size)
         .min(u64::from(u32::MAX) / (command_size / 4))
         .min(dispatch_limit)
         .min(u64::from(u32::MAX));
+    // The staging binding must include each record's source padding.  It is a
+    // single contiguous GPU copy per chunk, never one encoder copy per draw.
+    let source_capacity = scratch_limit
+        .checked_sub(command_size)
+        .map(|available| available / u64::from(stride) + 1)
+        .unwrap_or(0);
+    // WGSL array addressing is u32. Bound the complete source window and the
+    // `draw * stride_words + word` expression, not merely native u64 bytes.
+    let words = command_size / 4;
+    let stride_words = u64::from(stride / 4);
+    let gpu_source_capacity = (u64::from(u32::MAX)
+        .checked_sub(words)
+        .ok_or(Error::InvalidRange)?
+        / stride_words)
+        + 1;
+    let capacity = output_capacity
+        .min(source_capacity)
+        .min(gpu_source_capacity);
+    #[cfg(test)]
+    let capacity = TEST_CHUNK_CAPACITY.with(|test_capacity| {
+        if let Some(test_capacity) = test_capacity.get() {
+            capacity.min(u64::from(test_capacity))
+        } else {
+            capacity
+        }
+    });
     if capacity == 0 || max_dimension == 0 {
         return Err(Error::Unsupported("WebGPU indirect count device limits"));
     }
@@ -182,10 +223,14 @@ pub(super) fn prepare(
     while base < max_draw_count {
         let chunk_count = (max_draw_count - base).min(capacity);
         let packed_size = command_size * u64::from(chunk_count);
+        let source_size = u64::from(chunk_count - 1)
+            .checked_mul(u64::from(stride))
+            .and_then(|size| size.checked_add(command_size))
+            .ok_or(Error::InvalidRange)?;
         let workgroups = u64::from(chunk_count).div_ceil(64);
         let x = workgroups.min(max_dimension);
         let y = workgroups.div_ceil(x);
-        let input = create_buffer(packed_size, 8 | 128)?;
+        let input = create_buffer(source_size, 8 | 128)?;
         let output = create_buffer(packed_size, 128 | 256)?;
         let parameter_desc = object();
         field(&parameter_desc, "size", number(16u32))?;
@@ -197,6 +242,7 @@ pub(super) fn prepare(
         parameter_words.set_index(0, base);
         parameter_words.set_index(1, chunk_count);
         parameter_words.set_index(2, (command_size / 4) as u32);
+        parameter_words.set_index(3, stride / 4);
         js::call0(&parameters, "unmap").map_err(error)?;
         let entries = Array::new();
         for (binding, buffer) in [&input, &count_copy, &output, &parameters]
@@ -214,42 +260,21 @@ pub(super) fn prepare(
         field(&group_desc, "layout", layout.clone())?;
         field(&group_desc, "entries", entries.into())?;
         let group = js::call1(device, "createBindGroup", &group_desc).map_err(error)?;
-        if u64::from(stride) == command_size {
-            // Tight records already match the conversion buffer's packed ABI,
-            // so one native copy replaces one command-encoder call per draw.
-            js::call(
-                &encoder.raw,
-                "copyBufferToBuffer",
-                &[
-                    args.raw.clone(),
-                    number((args_offset + u64::from(base) * command_size) as f64),
-                    input.clone(),
-                    number(0u32),
-                    number(packed_size as f64),
-                ],
-            )
-            .map_err(error)?;
-        } else {
-            // Padding is part of the source ABI. Keep the established direct
-            // copies until a separately measured GPU packing path is justified.
-            for i in 0..chunk_count {
-                js::call(
-                    &encoder.raw,
-                    "copyBufferToBuffer",
-                    &[
-                        args.raw.clone(),
-                        number(
-                            (args_offset + (u64::from(base) + u64::from(i)) * u64::from(stride))
-                                as f64,
-                        ),
-                        input.clone(),
-                        number((u64::from(i) * command_size) as f64),
-                        number(command_size as f64),
-                    ],
-                )
-                .map_err(error)?;
-            }
-        }
+        // Copy the complete padded source window once. The fixed GPU kernel
+        // gathers the command words at `stride` into the packed ABI consumed
+        // by the native indirect calls; no CPU readback/replay occurs here.
+        js::call(
+            &encoder.raw,
+            "copyBufferToBuffer",
+            &[
+                args.raw.clone(),
+                number((args_offset + u64::from(base) * u64::from(stride)) as f64),
+                input.clone(),
+                number(0u32),
+                number(source_size as f64),
+            ],
+        )
+        .map_err(error)?;
         let pass = js::call1(&encoder.raw, "beginComputePass", &object()).map_err(error)?;
         js::call1(&pass, "setPipeline", &pipeline).map_err(error)?;
         js::call(&pass, "setBindGroup", &[number(0u32), group.clone()]).map_err(error)?;

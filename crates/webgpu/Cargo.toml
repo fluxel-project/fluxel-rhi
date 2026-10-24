@@ -7,6 +7,12 @@ license = "MIT OR Apache-2.0"
 description = "Browser WebGPU backend for Fluxel RHI"
 repository = "https://github.com/fluxel-project/fluxel-rhi"
 
+[lib]
+# The rlib serves Rust consumers.  The cdylib is the deliberately narrow
+# browser-worker asset that translates SPIR-V without borrowing a WebGPU
+# device or moving any browser GPU object off its owner thread.
+crate-type = ["rlib", "cdylib"]
+
 [dependencies]
 fluxel-rhi-core = { path = "../core" }
 
