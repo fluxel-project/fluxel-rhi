@@ -6,6 +6,7 @@
 use super::{Metal, MetalTexture};
 use fluxel_rhi_core::api::{self, TextureRegion};
 
+mod blit;
 mod buffer;
 #[cfg(target_vendor = "apple")]
 mod byte_copy;
@@ -15,6 +16,8 @@ pub(super) use byte_copy::copy_bytes;
 mod multisample_plane;
 mod texture;
 
+#[allow(unused_imports)] // CommandBackend delegate is kept adjacent to other copy SPI exports.
+pub(super) use blit::blit;
 pub(super) use buffer::{buffer_to_texture, texture_to_buffer};
 pub(super) use texture::{copy_texture, resolve, write_texture};
 

@@ -18,9 +18,11 @@ pub(in crate::backend) use formats::color_attachment_format;
 #[cfg(target_vendor = "apple")]
 pub(in crate::backend) use formats::is_blendable;
 #[cfg(target_vendor = "apple")]
+pub(super) use formats::is_filterable;
+#[cfg(target_vendor = "apple")]
 pub(super) use formats::metal_format;
 #[cfg(target_vendor = "apple")]
-use formats::{aspect_for_format, is_32bit_float, is_filterable, needs_32bit_msaa_family};
+use formats::{aspect_for_format, is_32bit_float, needs_32bit_msaa_family};
 use formats::{
     compatible_formats, format_supported, is_bc, is_compressed, is_etc_or_astc, max_mip_levels,
     storage_format,

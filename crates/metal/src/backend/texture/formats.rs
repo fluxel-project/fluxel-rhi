@@ -61,7 +61,7 @@ pub(super) fn aspect_for_format(format: TextureFormat) -> u8 {
 }
 
 #[cfg(target_vendor = "apple")]
-pub(super) fn is_filterable(format: TextureFormat) -> bool {
+pub(crate) fn is_filterable(format: TextureFormat) -> bool {
     if is_compressed(format) {
         return true;
     }

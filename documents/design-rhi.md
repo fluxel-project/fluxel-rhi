@@ -1213,6 +1213,32 @@ additional to this shared integrity check. Invalid input returns the original
 owning packet as a clean rejection; native partial/uncertain acceptance remains
 the backend's responsibility.
 
+## Metal transfer lowering
+
+`clear_buffer` preserves Core's repeated 32-bit word semantics. Words made of
+one repeated byte use Metal's native byte-fill operation; other values use a
+bounded 64 KiB shared upload pattern and native buffer copies. The command
+buffer retains the upload through GPU execution. The operation requires an
+idle encoder, `COPY_DST`, and a nonempty in-range whole-word interval.
+
+Color blits for single-sample 2D textures and array slices use native sampling
+and render commands between private scratch textures, followed by an exact
+copy into the destination region. This preserves the public `COPY_SRC` /
+`COPY_DST` contract even for imported textures without shader-read or render-
+target usage. It supports mip levels, offsets, scaling, same-numeric-class
+format conversion, and nonoverlapping regions of the same texture. Integer
+sources use nearest reads; linear filtering checks native format/family facts.
+Framebuffer-only resources and unsupported shape/format combinations return
+structured errors before lowering. This is direct native recording, with no
+CPU replay or resource scheduler.
+
+Standalone color resolves accept render-attachment or copy-source usage on
+the source, and render-attachment or copy-destination usage on the target. Their
+private native attachments carry the additional render-target permissions.
+These additions received Apple-target type checking and independent static
+review only; Metal tests and GPU acceptance were intentionally not run in this
+phase at the user's request.
+
 ## Browser WebGPU native operation coverage
 
 Standalone color resolve records an empty native render pass with `loadOp:

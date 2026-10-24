@@ -202,8 +202,10 @@ pub(in crate::backend) fn resolve(
         || src.aspect != api::TextureAspects::COLOR
         || dst.aspect != src.aspect
         || src.extent != dst.extent
-        || !sd.usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
-        || !dd.usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
+        || !(sd.usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
+            || sd.usage.contains(api::TextureUsage::COPY_SRC))
+        || !(dd.usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
+            || dd.usage.contains(api::TextureUsage::COPY_DST))
     {
         return Err(api::Error::InvalidRange);
     }

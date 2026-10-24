@@ -10,6 +10,7 @@ use fluxel_rhi_core::api::{self, CommandBackend, LaneId, ResourceTransition, Tex
 use super::{Metal, MetalBuffer, MetalDevice, MetalRasterPipeline};
 
 mod clear;
+mod clear_buffer;
 pub(super) mod indirect_count;
 mod raster;
 
@@ -129,6 +130,24 @@ pub struct MetalCommandEncoder {
 }
 
 impl CommandBackend for Metal {
+    fn blit(
+        encoder: &mut MetalCommandEncoder,
+        src: TextureRegion<'_, Metal>,
+        dst: TextureRegion<'_, Metal>,
+        filter: api::FilterMode,
+    ) -> api::Result<()> {
+        super::copy::blit(encoder, src, dst, filter)
+    }
+
+    fn clear_buffer(
+        encoder: &mut MetalCommandEncoder,
+        dst: &MetalBuffer,
+        range: std::ops::Range<u64>,
+        value: u32,
+    ) -> api::Result<()> {
+        clear_buffer::clear_buffer(encoder, dst, range, value)
+    }
+
     fn begin_encoder(device: &MetalDevice, lane: LaneId) -> api::Result<MetalCommandEncoder> {
         if lane.ordinal > 1 {
             return Err(api::Error::WrongLane);
@@ -365,9 +384,13 @@ impl CommandBackend for Metal {
                 MTLBlitCommandEncoder as _, MTLBuffer as _, MTLCommandBuffer as _,
                 MTLCommandEncoder as _, MTLDevice as _, MTLResourceOptions,
             };
-            if offset
-                .checked_add(bytes.len() as u64)
-                .is_none_or(|end| end > dst.size())
+            if encoder.render.is_some() || encoder.compute.is_some() {
+                return Err(api::Error::InvalidState);
+            }
+            if !dst.usage.contains(api::BufferUsage::COPY_DST)
+                || offset
+                    .checked_add(bytes.len() as u64)
+                    .is_none_or(|end| end > dst.size())
             {
                 return Err(api::Error::InvalidRange);
             }
