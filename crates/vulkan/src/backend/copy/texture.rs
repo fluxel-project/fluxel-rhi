@@ -2,7 +2,7 @@
 
 mod region;
 
-use super::super::{VulkanBuffer, VulkanEncoder, resource, upload};
+use super::super::{VulkanBuffer, VulkanEncoder, resource};
 use ash::vk;
 use fluxel_rhi_core::api::{self, Error, Result};
 use region::{buffer_region, extent, image_region, layers, offset};
@@ -209,7 +209,7 @@ pub(crate) fn write_texture(
         family,
         &mut e.upload_slices,
         bytes,
-        upload::copy_offset_alignment(&e.device),
+        e.device.upload_copy_offset_alignment,
         layout.offset,
     )?;
     let copy_layout = api::TexelCopyBufferLayout {

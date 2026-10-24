@@ -1,6 +1,6 @@
 //! Buffer transfer commands and staging uploads.
 
-use super::super::{VulkanBuffer, VulkanEncoder, upload};
+use super::super::{VulkanBuffer, VulkanEncoder};
 use ash::vk;
 use fluxel_rhi_core::api::{self, Error, Result};
 
@@ -65,10 +65,9 @@ pub(crate) fn write_buffer(
         family,
         &mut encoder.upload_slices,
         bytes,
-        upload::copy_offset_alignment(&encoder.device),
+        encoder.device.upload_copy_offset_alignment,
         0,
     )?;
-    before_transfer(encoder);
     // SAFETY: encoder owns a recording command buffer; upload and destination
     // are retained by it through fence completion and ranges were checked above.
     unsafe {
@@ -85,44 +84,31 @@ pub(crate) fn write_buffer(
     }
     // The upload helper owns its temporary CopyDst state. Return to its
     // documented idle boundary without guessing the caller's next usage.
-    after_upload(encoder);
+    after_upload(encoder, dst, offset, bytes.len() as u64);
     encoder.buffers.push(dst.clone());
     Ok(())
 }
 
-fn before_transfer(encoder: &VulkanEncoder) {
-    let barrier = vk::MemoryBarrier::default()
-        .src_access_mask(vk::AccessFlags::MEMORY_WRITE)
-        .dst_access_mask(vk::AccessFlags::TRANSFER_READ | vk::AccessFlags::TRANSFER_WRITE);
-    // SAFETY: this barrier is recorded into the owned command buffer and names
-    // no resource handle, only the explicit Core transfer ordering boundary.
-    unsafe {
-        encoder.device.device.cmd_pipeline_barrier(
-            encoder.command,
-            vk::PipelineStageFlags::ALL_COMMANDS,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::DependencyFlags::empty(),
-            &[barrier],
-            &[],
-            &[],
-        );
-    }
-}
-
-fn after_upload(encoder: &VulkanEncoder) {
-    let barrier = vk::MemoryBarrier::default()
+fn after_upload(encoder: &VulkanEncoder, dst: &VulkanBuffer, offset: u64, size: u64) {
+    let barrier = vk::BufferMemoryBarrier::default()
         .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-        .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE);
-    // SAFETY: this post-copy barrier remains within the same recording command
-    // buffer and does not infer a later resource state.
+        .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .buffer(dst.0.buffer)
+        .offset(offset)
+        .size(size);
+    // SAFETY: write_buffer's documented idle boundary is scoped to the copied
+    // destination range. Later GPU dependencies are still explicit Core
+    // buffer barriers; no usage tracker is introduced here.
     unsafe {
         encoder.device.device.cmd_pipeline_barrier(
             encoder.command,
             vk::PipelineStageFlags::TRANSFER,
             vk::PipelineStageFlags::ALL_COMMANDS,
             vk::DependencyFlags::empty(),
-            &[barrier],
             &[],
+            &[barrier],
             &[],
         );
     }

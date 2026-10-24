@@ -171,21 +171,6 @@ impl UploadPool {
     }
 }
 
-/// Vulkan's optimal buffer-copy offset alignment is a device limit.  The
-/// fixed four-byte rule remains relevant for `vkCmdCopyBuffer` as well.
-pub(super) fn copy_offset_alignment(device: &DeviceState) -> u64 {
-    // SAFETY: the physical device remains owned by `device.instance`.
-    let optimal = unsafe {
-        device
-            .instance
-            .instance
-            .get_physical_device_properties(device.physical)
-    }
-    .limits
-    .optimal_buffer_copy_offset_alignment;
-    4_u64.max(optimal).next_power_of_two()
-}
-
 fn allocate_from(
     lease: &Arc<Lease>,
     bytes: u64,
@@ -238,7 +223,7 @@ fn create_page(
     minimum: u64,
     pool: &PoolInner,
 ) -> Result<RawPage> {
-    let size = DEFAULT_PAGE_BYTES.max(minimum);
+    let size = page_size(minimum);
     let info = vk::BufferCreateInfo::default()
         .size(size)
         .usage(vk::BufferUsageFlags::TRANSFER_SRC)
@@ -326,7 +311,13 @@ fn create_page(
         buffer,
         memory,
         mapped,
-        size: requirements.size,
+        // Copy bounds are constrained by the buffer's declared size. Vulkan
+        // allocation padding is not valid buffer address space.
+        size,
         family,
     })
+}
+
+fn page_size(minimum: u64) -> u64 {
+    DEFAULT_PAGE_BYTES.max(minimum)
 }

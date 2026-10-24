@@ -1,34 +1,36 @@
-//! Native timeline synchronization for independent queues in one family.
+//! Native timeline synchronization and per-lane retirement for exposed queues.
 
 use super::{
     completion::{Completion, fence_waiter, retain_with_sync},
     *,
 };
 
-pub(in crate::backend) struct Timeline {
-    device: Arc<DeviceState>,
-    pub(in crate::backend) semaphore: vk::Semaphore,
+pub(in crate::backend) use super::Timeline;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_MULTI_SUBMITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static TEST_FAIL_TERMINAL_SUBMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
-impl Drop for Timeline {
-    fn drop(&mut self) {
-        // SAFETY: submitted waits and signals retain this owner until retirement.
-        unsafe { self.device.device.destroy_semaphore(self.semaphore, None) };
-    }
+
+#[cfg(test)]
+pub(super) fn reset_test_submit_count() {
+    TEST_MULTI_SUBMITS.with(|count| count.set(0));
 }
-impl Timeline {
-    fn new(device: &VulkanDevice) -> Result<Arc<Self>> {
-        let mut kind = vk::SemaphoreTypeCreateInfo::default()
-            .semaphore_type(vk::SemaphoreType::TIMELINE)
-            .initial_value(0);
-        let info = vk::SemaphoreCreateInfo::default().push_next(&mut kind);
-        // SAFETY: feature was enabled at device creation; info lives for this call.
-        let semaphore =
-            unsafe { device.0.device.create_semaphore(&info, None) }.map_err(vk_error)?;
-        Ok(Arc::new(Self {
-            device: device.0.clone(),
-            semaphore,
-        }))
-    }
+
+#[cfg(test)]
+pub(super) fn test_submit_count() -> u64 {
+    TEST_MULTI_SUBMITS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(super) fn inject_terminal_submit_failure() {
+    TEST_FAIL_TERMINAL_SUBMIT.with(|fail| fail.set(true));
+}
+
+#[cfg(test)]
+fn take_terminal_submit_failure() -> bool {
+    TEST_FAIL_TERMINAL_SUBMIT.with(|fail| fail.replace(false))
 }
 
 pub struct VulkanGpuSignal {
@@ -43,6 +45,8 @@ impl api::MultiQueueBackend for Vulkan {
         packet: api::MultiQueuePacket<Self>,
     ) -> api::MultiQueueSubmitOutcome<Self> {
         use api::MultiQueueSubmitOutcome as Outcome;
+        #[cfg(test)]
+        TEST_MULTI_SUBMITS.with(|count| count.set(count.get() + 1));
         let _gate = device
             .0
             .submit_gate
@@ -131,23 +135,21 @@ impl api::MultiQueueBackend for Vulkan {
         if let Err(error) = super::super::sparse::validate_transaction(&transaction) {
             return Outcome::Rejected { error, packet };
         }
-        let timelines = match (Timeline::new(device), Timeline::new(device)) {
-            (Ok(a), Ok(b)) => [a, b],
-            (Err(error), _) | (_, Err(error)) => return Outcome::Rejected { error, packet },
+        let timelines = match Timeline::acquire(device) {
+            Ok(timelines) => timelines,
+            Err(error) => return Outcome::Rejected { error, packet },
         };
-        let fence = match unsafe {
+        let make_terminal = || unsafe {
             device
                 .0
                 .device
                 .create_fence(&vk::FenceCreateInfo::default(), None)
-        } {
-            Ok(fence) => Completion::new(device.0.clone(), fence),
-            Err(error) => {
-                return Outcome::Rejected {
-                    error: vk_error(error),
-                    packet,
-                };
-            }
+                .map(|fence| Completion::new(device.0.clone(), fence))
+                .map_err(vk_error)
+        };
+        let mut terminal_fences = match (make_terminal(), make_terminal()) {
+            (Ok(graphics), Ok(compute)) => [Some(graphics), Some(compute)],
+            (Err(error), _) | (_, Err(error)) => return Outcome::Rejected { error, packet },
         };
         let mut present_signals = (0..first).map(|_| None).collect::<Vec<_>>();
         for step in &packet.work.steps {
@@ -216,22 +218,13 @@ impl api::MultiQueueBackend for Vulkan {
         } = packet;
         let mut waits: Vec<_> = waits.into_iter().map(Some).collect();
         let mut values = [0u64; 2];
-        let mut prior = {
-            let frontier = device
-                .0
-                .lane_frontier
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            frontier.each_ref().map(|entry| {
-                entry
-                    .as_ref()
-                    .and_then(|(timeline, value)| timeline.upgrade().map(|t| (t, *value)))
-            })
-        };
         let mut step_values: Vec<(usize, u64)> = vec![(usize::MAX, 0); first];
         let mut issued = Vec::new();
         let mut retained = timelines.to_vec();
         let mut sparse_issued = Vec::new();
+        let mut lane_work: [Vec<RecordedWork>; 2] = std::array::from_fn(|_| Vec::new());
+        let mut lane_sparse: [Vec<super::super::sparse::PreparedSparseBind>; 2] =
+            std::array::from_fn(|_| Vec::new());
         let mut accepted = Vec::new();
         let mut frontiers = Vec::new();
         let mut tokens = Vec::new();
@@ -246,10 +239,18 @@ impl api::MultiQueueBackend for Vulkan {
                         record.encoder.lane.ordinal,
                     );
                 }
+                for record in lane_work.iter().flatten() {
+                    super::super::query::invalidate_ops(
+                        &record.encoder.query_ops,
+                        record.encoder.lane.ordinal,
+                    );
+                }
                 std::mem::forget(issued);
                 std::mem::forget(retained);
                 std::mem::forget(sparse_issued);
-                std::mem::forget(fence);
+                std::mem::forget(lane_work);
+                std::mem::forget(lane_sparse);
+                std::mem::forget(terminal_fences);
                 std::mem::forget(step_fences);
                 return Outcome::Indeterminate {
                     error: $error,
@@ -279,10 +280,6 @@ impl api::MultiQueueBackend for Vulkan {
             if values[lane] != 0 {
                 wait_semaphores.push(timelines[lane].semaphore);
                 wait_values.push(values[lane]);
-            } else if let Some((timeline, value)) = prior[lane].take() {
-                wait_semaphores.push(timeline.semaphore);
-                wait_values.push(value);
-                retained.push(timeline);
             }
             for entry in &mut waits {
                 if entry.as_ref().is_some_and(|w| w.signal.consumer() == id) {
@@ -338,7 +335,10 @@ impl api::MultiQueueBackend for Vulkan {
                 .iter()
                 .any(|record| !record.encoder.external_segments.is_empty());
             let commands: Vec<_> = issued[start..].iter().map(RecordedWork::command).collect();
-            values[lane] += 1;
+            values[lane] = match timelines[lane].next_value() {
+                Ok(value) => value,
+                Err(error) => uncertain!(error),
+            };
             let mut signal_values = vec![values[lane]];
             let mut signal_semaphores = vec![timelines[lane].semaphore];
             if let Some((_, semaphore)) = &present_binding {
@@ -382,16 +382,20 @@ impl api::MultiQueueBackend for Vulkan {
                             .unwrap_or_else(|p| p.into_inner());
                         bind.submit(device, queue, &dependencies, &timelines[lane], values[lane])
                     };
-                    sparse_issued.push(bind);
+                    sparse_issued.push((lane, bind));
                     if let Err(e) = result {
                         error = Some(e);
                         break;
                     }
                     previous = Some(values[lane]);
-                    values[lane] += 1;
+                    values[lane] = match timelines[lane].next_value() {
+                        Ok(value) => value,
+                        Err(error) => uncertain!(error),
+                    };
                 }
                 if error.is_none() {
-                    values[lane] -= 1;
+                    values[lane] =
+                        previous.expect("non-empty sparse binding issued a timeline value");
                 }
                 if let Some(error) = error {
                     Err(error)
@@ -446,12 +450,6 @@ impl api::MultiQueueBackend for Vulkan {
                 }
                 super::super::query::commit_ops(&record.encoder.query_ops, lane as u32);
             }
-            device
-                .0
-                .lane_frontier
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())[lane] =
-                Some((Arc::downgrade(&timelines[lane]), values[lane]));
             if let Some((mut binding, _)) = present_binding {
                 // SAFETY: the queue signal was accepted before handing off the image.
                 if let Err(error) = unsafe { binding.try_handoff() } {
@@ -486,29 +484,15 @@ impl api::MultiQueueBackend for Vulkan {
             }
             if let Some(index) = step_fences.iter().position(|(step, _)| *step == id) {
                 let marker = step_fences.remove(index).1;
-                let semaphore = [timelines[0].semaphore, timelines[1].semaphore];
-                let marker_values = values;
-                let stages = [vk::PipelineStageFlags::ALL_COMMANDS; 2];
-                let mut ti = vk::TimelineSemaphoreSubmitInfo::default()
-                    .wait_semaphore_values(&marker_values);
-                let info = vk::SubmitInfo::default()
-                    .wait_semaphores(&semaphore)
-                    .wait_dst_stage_mask(&stages)
-                    .push_next(&mut ti);
                 let result = {
                     let _queue = device
                         .0
                         .queue_gate
                         .lock()
                         .unwrap_or_else(|p| p.into_inner());
-                    // SAFETY: marker waits for both lane frontiers before its fence signals.
-                    unsafe {
-                        device.0.device.queue_submit(
-                            device.0.graphics_queue,
-                            &[info],
-                            marker.fence(),
-                        )
-                    }
+                    // SAFETY: same-queue order proves this requested step and
+                    // its explicit Vulkan waits; no unrelated lane is joined.
+                    unsafe { device.0.device.queue_submit(queue, &[], marker.fence()) }
                 };
                 if let Err(error) = result {
                     std::mem::forget(marker);
@@ -519,45 +503,76 @@ impl api::MultiQueueBackend for Vulkan {
                         api::CompletionPoint::from_native(plan.id().device, marker.clone())
                     },
                     covers: api::CompletionCoverage {
-                        lane_frontiers: frontiers.clone(),
+                        lane_frontiers: vec![(desc.lane, id)],
                     },
                 });
-                retain_with_sync(marker, Vec::new(), timelines.to_vec(), Vec::new());
+                retain_with_sync(
+                    marker,
+                    Vec::new(),
+                    vec![timelines[lane].clone()],
+                    Vec::new(),
+                );
             }
         }
-        let semaphores = [timelines[0].semaphore, timelines[1].semaphore];
-        let wait_values = values;
-        let stages = [vk::PipelineStageFlags::ALL_COMMANDS; 2];
-        let mut ti = vk::TimelineSemaphoreSubmitInfo::default().wait_semaphore_values(&wait_values);
-        let info = vk::SubmitInfo::default()
-            .wait_semaphores(&semaphores)
-            .wait_dst_stage_mask(&stages)
-            .push_next(&mut ti);
-        let result = {
-            let _queue = device
-                .0
-                .queue_gate
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            // SAFETY: the marker waits for both lane frontiers and owns its fence.
-            unsafe {
-                device
+        for work in issued.drain(..) {
+            lane_work[work.encoder.lane.ordinal as usize].push(work);
+        }
+        for (lane, bind) in sparse_issued.drain(..) {
+            lane_sparse[lane].push(bind);
+        }
+        for lane in 0..2 {
+            if values[lane] == 0 {
+                continue;
+            }
+            let marker = terminal_fences[lane]
+                .take()
+                .expect("active queue has a terminal fence");
+            let queue = if lane == 0 {
+                device.0.graphics_queue
+            } else {
+                device.0.compute_queue.expect("compute lane was validated")
+            };
+            let result = {
+                #[cfg(test)]
+                if take_terminal_submit_failure() {
+                    std::mem::forget(marker);
+                    uncertain!(Error::Backend(
+                        "injected Vulkan terminal marker failure".into()
+                    ));
+                }
+                let _queue = device
                     .0
-                    .device
-                    .queue_submit(device.0.graphics_queue, &[info], fence.fence())
+                    .queue_gate
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                // SAFETY: this marker follows only its own queue's accepted
+                // submissions, so it supplies per-lane retirement evidence.
+                unsafe { device.0.device.queue_submit(queue, &[], marker.fence()) }
+            };
+            if let Err(error) = result {
+                std::mem::forget(marker);
+                uncertain!(vk_error(error));
             }
-        };
-        if let Err(error) = result {
-            uncertain!(vk_error(error));
-        }
-        retain_with_sync(fence.clone(), issued, retained, sparse_issued);
-        if matches!(completion, api::CompletionRequest::End) {
-            checkpoints.push(api::Checkpoint {
-                point: unsafe { api::CompletionPoint::from_native(plan.id().device, fence) },
-                covers: api::CompletionCoverage {
-                    lane_frontiers: frontiers,
-                },
-            });
+            retain_with_sync(
+                marker.clone(),
+                std::mem::take(&mut lane_work[lane]),
+                retained.clone(),
+                std::mem::take(&mut lane_sparse[lane]),
+            );
+            if matches!(completion, api::CompletionRequest::End) {
+                if let Some((lane_id, step)) =
+                    frontiers.iter().find(|(id, _)| id.ordinal as usize == lane)
+                {
+                    checkpoints.push(api::Checkpoint {
+                        point: unsafe {
+                            api::CompletionPoint::from_native(plan.id().device, marker)
+                        },
+                        covers: api::CompletionCoverage {
+                            lane_frontiers: vec![(*lane_id, *step)],
+                        },
+                    });
+                }
+            }
         }
         Outcome::Accepted(api::MultiQueueReceipt {
             work: api::SubmissionReceipt {
@@ -571,3 +586,7 @@ impl api::MultiQueueBackend for Vulkan {
         })
     }
 }
+
+#[cfg(all(test, feature = "hardware-tests"))]
+#[path = "multi_queue/tests.rs"]
+mod hardware_tests;

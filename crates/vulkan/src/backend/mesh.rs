@@ -8,7 +8,6 @@ use fluxel_rhi_core::api::{self, Error, Result};
 use std::{
     collections::HashMap,
     ffi::CString,
-    future::{Ready, ready},
     sync::{Arc, Mutex},
 };
 
@@ -59,12 +58,14 @@ impl Drop for MeshPipeline {
 pub struct Mesh;
 impl api::MeshOps<Vulkan> for Mesh {
     const AVAILABLE: bool = true;
-    type PipelineFuture<'a> = Ready<Result<VulkanMeshPipeline>>;
+    type PipelineFuture<'a> = super::cold_worker::ColdFuture<VulkanMeshPipeline>;
     fn create_pipeline<'a>(
         d: &'a VulkanDevice,
         desc: &'a api::MeshPipelineDesc<Vulkan>,
     ) -> Self::PipelineFuture<'a> {
-        ready(create(d, desc, 0))
+        let device = d.clone();
+        let desc = copy_desc(desc);
+        super::cold_worker::submit(move || create(&device, &desc, 0))
     }
     fn bind_pipeline(e: &mut VulkanEncoder, p: &VulkanMeshPipeline) -> Result<()> {
         if !e.raster

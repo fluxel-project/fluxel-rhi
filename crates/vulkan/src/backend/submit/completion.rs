@@ -7,19 +7,17 @@ use super::{DeviceState, RecordedWork, Vulkan, VulkanDevice, vk_error};
 use ash::vk;
 use fluxel_rhi_core::api::{self, CompletionState, Error, Result};
 use std::{
+    collections::BTreeMap,
     future::Future,
     pin::Pin,
-    sync::{
-        Arc, Mutex, OnceLock,
-        mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender},
-    },
+    sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
-    time::Duration,
 };
 
 struct WaitState {
     result: Option<Result<()>>,
-    wakers: Vec<Waker>,
+    wakers: BTreeMap<u64, Waker>,
+    next_registration: u64,
 }
 
 #[derive(Clone)]
@@ -43,7 +41,8 @@ impl Completion {
             fence,
             wait: Mutex::new(WaitState {
                 result: None,
-                wakers: Vec::new(),
+                wakers: BTreeMap::new(),
+                next_registration: 0,
             }),
         }))
     }
@@ -58,8 +57,9 @@ impl Completion {
             wait.result = Some(result);
             std::mem::take(&mut wait.wakers)
         };
-        for waker in wakers {
-            waker.wake();
+        for waker in wakers.into_values() {
+            // A caller-provided waker must not kill the retirement worker.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| waker.wake()));
         }
     }
 
@@ -72,21 +72,40 @@ impl Completion {
             .clone()
     }
 }
+/// Independent native fence observations; polling never calls into the driver.
 pub struct FenceFuture {
-    completion: Option<Completion>,
+    registrations: Vec<(Completion, Option<u64>)>,
     immediate: Option<Result<()>>,
 }
 impl FenceFuture {
     fn pending(completion: Completion) -> Self {
+        Self::pending_many(vec![completion])
+    }
+    fn pending_many(completions: Vec<Completion>) -> Self {
         Self {
-            completion: Some(completion),
+            registrations: completions.into_iter().map(|point| (point, None)).collect(),
             immediate: None,
         }
     }
     fn immediate(result: Result<()>) -> Self {
         Self {
-            completion: None,
+            registrations: Vec::new(),
             immediate: Some(result),
+        }
+    }
+}
+impl Drop for FenceFuture {
+    fn drop(&mut self) {
+        for (point, id) in &mut self.registrations {
+            if let Some(id) = id.take() {
+                point
+                    .0
+                    .wait
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .wakers
+                    .remove(&id);
+            }
         }
     }
 }
@@ -97,196 +116,52 @@ impl Future for FenceFuture {
         if let Some(result) = &this.immediate {
             return Poll::Ready(result.clone());
         }
-        let completion = this
-            .completion
-            .as_ref()
-            .expect("completion future has a fence");
-        let mut wait = completion.0.wait.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(result) = &wait.result {
-            Poll::Ready(result.clone())
-        } else {
-            if !wait.wakers.iter().any(|waker| waker.will_wake(cx.waker())) {
-                wait.wakers.push(cx.waker().clone());
+        let mut pending = false;
+        let mut failure = None;
+        for (point, registration) in &mut this.registrations {
+            let mut wait = point.0.wait.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(result) = &wait.result {
+                if let Err(error) = result {
+                    failure.get_or_insert_with(|| error.clone());
+                }
+                if let Some(id) = registration.take() {
+                    wait.wakers.remove(&id);
+                }
+                continue;
             }
-            Poll::Pending
-        }
-    }
-}
-
-/// One bounded observer for submitted Vulkan fences.
-///
-/// It owns only fences and already-recorded native work.  In particular it
-/// never chooses queue order, submits commands, or interprets recorded work.
-/// A dropped `FenceFuture` leaves its `Completion` in this queue, so command
-/// pools and upload allocations still remain alive until the GPU is finished.
-pub(super) struct FenceWaiter {
-    sender: Sender<FenceJob>,
-}
-
-struct FenceJob {
-    completion: Completion,
-    work: Vec<RecordedWork>,
-    sync: Vec<Arc<super::multi_queue::Timeline>>,
-    sparse: Vec<super::super::sparse::PreparedSparseBind>,
-}
-static FENCE_WAITER: OnceLock<std::result::Result<FenceWaiter, String>> = OnceLock::new();
-
-// This bounds notification latency while keeping the observer asleep whenever
-// no producer sends a job.  It is deliberately a timed receive, rather than a
-// Future polling loop: `FenceFuture` is only woken by `Completion::publish`.
-const OBSERVATION_INTERVAL: Duration = Duration::from_millis(2);
-
-/// Completes one job after its native fence has supplied a definitive result.
-///
-/// Publication precedes optional capture and retirement.  A waiter therefore
-/// observes GPU completion independently of slow filesystem I/O, while the
-/// capture worker retains its command resources until it has read them.
-fn finish_job(job: FenceJob, result: Result<()>, captures: &SyncSender<Vec<RecordedWork>>) {
-    let FenceJob {
-        completion,
-        work,
-        sync,
-        sparse,
-    } = job;
-    let completed = result.is_ok();
-    completion.publish(result);
-    if completed {
-        // Capture is optional instrumentation.  The dedicated bounded worker
-        // must not make a completed fence delay another fence's notification.
-        // If that worker is unavailable, dropping is safe because completion
-        // was already established; capture failure never changes RHI result.
-        if work.iter().any(|item| item.encoder.capture.is_some()) {
-            // Never let diagnostic filesystem throughput head-of-line-block
-            // native completion observation. There is normally only one
-            // process-wide capture, but a full bounded queue may drop it.
-            let _ = captures.try_send(work);
-        }
-        drop(sync);
-        drop(sparse);
-    } else {
-        // A failed status query is not retirement evidence. Keep every native
-        // owner (including the fence/device) quarantined exactly as before.
-        std::mem::forget(work);
-        std::mem::forget(sync);
-        std::mem::forget(sparse);
-        std::mem::forget(completion);
-    }
-}
-
-fn capture_worker(receiver: Receiver<Vec<RecordedWork>>) {
-    for work in receiver {
-        // Capture is diagnostic-only; errors must not retroactively fail a
-        // completion that has already been published to the caller.
-        let _ = super::super::capture::write_completed(&work);
-    }
-}
-
-fn observe_fences(receiver: Receiver<FenceJob>, captures: SyncSender<Vec<RecordedWork>>) {
-    let mut active = Vec::new();
-    loop {
-        // A finite channel wait lets newly submitted jobs join the active set
-        // promptly, even while an earlier fence is intentionally unsignaled.
-        match receiver.recv_timeout(OBSERVATION_INTERVAL) {
-            Ok(job) => active.push(job),
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) if active.is_empty() => return,
-            // The process-global sender normally prevents this case. If it is
-            // ever dropped while jobs remain, retain the finite observation
-            // cadence rather than spin on an immediately-disconnected channel.
-            Err(RecvTimeoutError::Disconnected) => std::thread::park_timeout(OBSERVATION_INTERVAL),
-        }
-        while let Ok(job) = receiver.try_recv() {
-            active.push(job);
-        }
-
-        let mut index = 0;
-        while index < active.len() {
-            let completion = &active[index].completion;
-            // SAFETY: every active job owns its fence and retains the logical
-            // device. A zero-time status query neither accesses a queue nor
-            // changes fence state, so all independent devices can be scanned.
-            let result = unsafe {
-                completion
-                    .0
-                    .device
-                    .device
-                    .wait_for_fences(&[completion.0.fence], true, 0)
+            pending = true;
+            let id = match *registration {
+                Some(id) => id,
+                None => {
+                    let Some(next) = wait.next_registration.checked_add(1) else {
+                        return Poll::Ready(Err(Error::InvalidState));
+                    };
+                    let id = wait.next_registration;
+                    wait.next_registration = next;
+                    *registration = Some(id);
+                    id
+                }
             };
-            match result {
-                Ok(()) => {
-                    let job = active.swap_remove(index);
-                    finish_job(job, Ok(()), &captures);
-                }
-                Err(vk::Result::TIMEOUT) => index += 1,
-                Err(error) => {
-                    let job = active.swap_remove(index);
-                    finish_job(job, Err(vk_error(error)), &captures);
+            match wait.wakers.get_mut(&id) {
+                Some(waker) if waker.will_wake(cx.waker()) => {}
+                Some(waker) => *waker = cx.waker().clone(),
+                None => {
+                    wait.wakers.insert(id, cx.waker().clone());
                 }
             }
+        }
+        if let Some(error) = failure {
+            Poll::Ready(Err(error))
+        } else if pending {
+            Poll::Pending
+        } else {
+            Poll::Ready(Ok(()))
         }
     }
 }
 
-pub(super) fn fence_waiter() -> Result<&'static FenceWaiter> {
-    match FENCE_WAITER.get_or_init(|| {
-        let (sender, receiver) = mpsc::channel::<FenceJob>();
-        // Capture is optional test instrumentation. A capacity of one bounds
-        // retained capture work without making the completion observer wait
-        // behind filesystem I/O.
-        let (capture_sender, capture_receiver) = mpsc::sync_channel::<Vec<RecordedWork>>(1);
-        std::thread::Builder::new()
-            .name("fluxel-vulkan-capture-writer".into())
-            .spawn(move || capture_worker(capture_receiver))
-            .map_err(|error| format!("Vulkan capture worker: {error}"))?;
-        std::thread::Builder::new()
-            .name("fluxel-vulkan-fence-waiter".into())
-            .spawn(move || observe_fences(receiver, capture_sender))
-            .map(|_| FenceWaiter { sender })
-            .map_err(|error| format!("Vulkan fence waiter: {error}"))
-    }) {
-        Ok(waiter) => Ok(waiter),
-        Err(message) => Err(Error::Backend(message.clone())),
-    }
-}
-
-// The waiter is only a native completion observer and owner of already issued
-// command pools/uploads. It never schedules GPU commands or replays CPU work.
-pub(super) fn retain_until_fence(completion: Completion, work: Vec<RecordedWork>) {
-    retain_with_sync(completion, work, Vec::new(), Vec::new());
-}
-
-pub(super) fn retain_with_sync(
-    completion: Completion,
-    work: Vec<RecordedWork>,
-    sync: Vec<Arc<super::multi_queue::Timeline>>,
-    sparse: Vec<super::super::sparse::PreparedSparseBind>,
-) {
-    let job = FenceJob {
-        completion: completion.clone(),
-        work,
-        sync,
-        sparse,
-    };
-    match fence_waiter() {
-        Ok(waiter) => match waiter.sender.send(job) {
-            Ok(()) => {}
-            Err(error) => {
-                // A native submission may already reference this work. Never
-                // drop it on an observer failure; leaking this exceptional
-                // ownership is safer than a synchronous host wait or an early
-                // Vulkan command-pool destruction.
-                std::mem::forget(error.0);
-                completion.publish(Err(Error::Backend(
-                    "Vulkan fence waiter unavailable".into(),
-                )));
-            }
-        },
-        Err(error) => {
-            std::mem::forget(job);
-            completion.publish(Err(error));
-        }
-    }
-}
+mod observer;
+pub(super) use observer::{fence_waiter, retain_until_fence, retain_with_sync};
 
 impl api::CompletionBackend for Vulkan {
     type WaitFuture<'a> = FenceFuture;
@@ -310,45 +185,50 @@ impl api::CompletionBackend for Vulkan {
     }
 
     fn wait_idle(device: &VulkanDevice) -> Self::WaitFuture<'_> {
-        // SAFETY: DeviceState owns the logical device and Completion immediately
-        // becomes the sole owner of the newly created fence on success.
-        let fence = match unsafe {
-            device
-                .0
-                .device
-                .create_fence(&vk::FenceCreateInfo::default(), None)
-        } {
-            Ok(fence) => fence,
-            Err(error) => return FenceFuture::immediate(Err(vk_error(error))),
-        };
-        let completion = Completion::new(device.0.clone(), fence);
-        let result = {
-            let _submit = device
-                .0
-                .submit_gate
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            let _queue = device
-                .0
-                .queue_gate
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            // SAFETY: submit_gate and queue_gate serialize this empty marker
-            // submission; the new fence belongs to this logical device.
-            unsafe {
+        // Install independent markers under the submission gate. Waiting on both
+        // is a CPU completion aggregate, never an implicit GPU queue join.
+        if let Err(error) = fence_waiter() {
+            return FenceFuture::immediate(Err(error));
+        }
+        let _submit = device
+            .0
+            .submit_gate
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _queue = device
+            .0
+            .queue_gate
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mut queues = vec![device.0.graphics_queue];
+        if let Some(compute) = device.0.compute_queue {
+            if compute != device.0.graphics_queue {
+                queues.push(compute);
+            }
+        }
+        let mut points = Vec::with_capacity(queues.len());
+        for queue in queues {
+            // SAFETY: the logical device is retained and owns the new fence.
+            let fence = match unsafe {
                 device
                     .0
                     .device
-                    .queue_submit(device.0.graphics_queue, &[], fence)
+                    .create_fence(&vk::FenceCreateInfo::default(), None)
+            } {
+                Ok(fence) => fence,
+                Err(error) => return FenceFuture::immediate(Err(vk_error(error))),
+            };
+            let point = Completion::new(device.0.clone(), fence);
+            // SAFETY: both native queue external-synchronization gates are held.
+            if let Err(error) = unsafe { device.0.device.queue_submit(queue, &[], fence) } {
+                // Failed submit does not establish whether the fence was used.
+                std::mem::forget(point);
+                return FenceFuture::immediate(Err(vk_error(error)));
             }
-        };
-        if let Err(error) = result {
-            // Queue submission failure is not retirement evidence for this fence.
-            std::mem::forget(completion);
-            return FenceFuture::immediate(Err(vk_error(error)));
+            retain_until_fence(point.clone(), Vec::new());
+            points.push(point);
         }
-        retain_until_fence(completion.clone(), Vec::new());
-        FenceFuture::pending(completion)
+        FenceFuture::pending_many(points)
     }
 }
 

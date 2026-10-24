@@ -1481,12 +1481,15 @@ fence retirement, and return pages before releasing their device owner. Idle
 native pages do not retain DeviceState, avoiding a device ownership cycle.
 Texture layout offsets and native copy alignment both apply to suballocations.
 
-A fixed completion observer checks all pending native fences at a bounded timed
-interval instead of waiting indefinitely for the first fence. Future polling
-only registers a waker. Independent devices can publish completion while an
-earlier fence remains blocked; failed native observations preserve quarantine.
-Optional diagnostic capture uses a separate bounded worker and cannot block
-completion observation. Saturated diagnostic capture may be omitted.
+The completion observer blocks on job arrival while idle. Active fences are
+grouped by logical device for zero-time wait-any checks; per-fence status calls
+are only needed when that device batch reports progress. Observation backs off
+from 250 microseconds to at most 2 milliseconds, with bounded intake so a
+producer burst cannot starve retirement. Future polling only installs a
+replaceable, cancellation-safe wake registration. Independent devices can
+publish while another fence remains blocked; failed native observations retain
+uncertain owners. Optional capture has a separate bounded worker and cannot
+block completion observation. Saturated diagnostic capture may be omitted.
 
 Command pools use exclusive queue-family/command-level leases and reuse reset
 command buffers. Secondary recording keeps its native inheritance and simultaneous
@@ -1835,3 +1838,59 @@ These are focused diagnostics, not application FPS or all-driver guarantees.
 Private SRV windows also respect the guaranteed native view span. Arithmetic
 beyond a 16-GiB source offset is checked separately; that is not a claim of a
 physical multi-gigabyte allocation test.
+
+
+## Vulkan submission and cold-object execution
+
+Submission routing follows the packet's actual lanes, sparse operations and
+explicit synchronization requirements. Device sparse/timeline capability alone
+does not select multi-queue submission for graphics-only work. Each active lane
+has its own terminal fence and retention set; End checkpoints cover their own
+frontiers. No terminal graphics marker waits on an independent compute frontier.
+A failed terminal marker preserves even owners already partitioned into lane
+retirement sets; failure does not establish completion. Only explicit plan
+edges and GPU tokens introduce cross-queue waits. `wait_idle`
+observes a marker on every exposed native queue without adding a GPU queue join.
+
+Timeline-capable devices own a persistent pair of raw queue semaphores and
+monotonic counters. Packet wrappers and exported tokens retain the device but
+the device does not retain those wrappers. Thus tokens remain valid across
+packets and idle periods without recreating semaphores or introducing an
+ownership cycle. Native queue access remains externally synchronized.
+
+Host-coherent upload bytes are written before native submission, which supplies
+the host-to-device visibility boundary. Buffer uploads record their copy and a
+barrier restricted to the written destination range; they no longer surround
+each write with global memory barriers. Dependencies on earlier GPU consumers
+remain the caller's explicit barrier responsibility. Copy-offset alignment is
+cached at device initialization rather than queried for each upload.
+
+Device-local readback uses family-local, persistently mapped staging leases.
+Both the ticket and recording retain the lease and its device, so cancelling
+the ticket cannot recycle an in-flight page and an outstanding ticket remains
+safe after the public device is dropped. The raw-page lease drops before its
+device owner. Idle pages do not retain the device and the cache keeps at most
+32 standard 4 MiB pages; oversized pages are released. Buffer capacity excludes
+native memory-allocation padding. Host results copy bytes out only after
+completion proof.
+
+Shader translation and raster, compute, mesh and ray pipeline creation use a
+bounded cold-object worker. Futures own cloned descriptors and retain their
+device; a full admission queue applies asynchronous backpressure rather than
+rejecting valid bursts. Cancellation removes its wake registration, and caller waker panics cannot
+terminate the worker or overwrite a successful result. Native pipeline-cache
+access remains synchronized. Resource creation and command
+recording retain their existing native execution paths; the worker neither
+records nor schedules GPU commands.
+
+
+The focused Vulkan execution gate passed 41 library tests (including explicit
+hardware fixtures) and 36 affected GPU integration tests with Khronos
+synchronization validation. Controlled gates exercised graphics family 0 and
+compute family 1: graphics completed while compute was held, and `wait_idle`
+remained pending until compute was released. A terminal-marker fault injection
+verified that already-submitted lane owners remain quarantined. Readback tests
+covered ticket-only device lifetime, cancellation and completion-only reuse.
+Example 23 presented 12 frames and its 1280 by 720 particle readback was opened
+and checked. MSRV 1.87 all-target Vulkan compilation passed. These are focused
+checks on the available device, not all-driver or frame-rate claims.

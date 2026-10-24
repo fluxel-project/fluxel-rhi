@@ -67,6 +67,7 @@ pub struct VulkanEncoder {
     pub(super) attachments: Vec<VulkanTextureView>,
     pub(super) uploads: Vec<VulkanBuffer>,
     pub(crate) upload_slices: Vec<super::upload::UploadSlice>,
+    pub(crate) readback_slices: Vec<super::readback::ReadbackSlice>,
     pub(super) buffers: Vec<VulkanBuffer>,
     pub(super) textures: Vec<VulkanTexture>,
     pub(super) queries: Vec<super::VulkanQuerySet>,
@@ -141,6 +142,7 @@ impl VulkanEncoder {
             attachments: Vec::new(),
             uploads: Vec::new(),
             upload_slices: Vec::new(),
+            readback_slices: Vec::new(),
             buffers: Vec::new(),
             textures: Vec::new(),
             queries: Vec::new(),
@@ -185,6 +187,7 @@ impl Drop for VulkanEncoder {
         // Raw staging leases must return while this encoder still owns its
         // DeviceState, including failed recordings with no retained target.
         self.upload_slices.clear();
+        self.readback_slices.clear();
         // Reset/return the exclusive native page before releasing the final
         // DeviceState owner. Submitted encoders remain fence-retained.
         drop(self.pool.take());

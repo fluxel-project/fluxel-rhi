@@ -463,6 +463,19 @@ impl InstanceBackend for Vulkan {
             let properties =
                 unsafe { instance.0.instance.get_physical_device_properties(physical) };
             let limits = properties.limits;
+            let queue_timelines = if timeline_semaphore {
+                match super::submit::queue_timeline::RawQueueTimeline::new_pair(&native) {
+                    Ok(timelines) => Some(timelines),
+                    Err(error) => {
+                        // SAFETY: device creation succeeded but no child state
+                        // has escaped; unwind this otherwise unowned device.
+                        unsafe { native.destroy_device(None) };
+                        return Err(error);
+                    }
+                }
+            } else {
+                None
+            };
             // SAFETY: the queried format and physical device belong to this
             // still-live instance; the driver returns plain copied properties.
             let rgba8_features = unsafe {
@@ -475,6 +488,11 @@ impl InstanceBackend for Vulkan {
             Ok((
                 VulkanDevice(Arc::new(DeviceState {
                     upload_pool: super::upload::UploadPool::default(),
+                    upload_copy_offset_alignment: limits
+                        .optimal_buffer_copy_offset_alignment
+                        .max(4)
+                        .next_power_of_two(),
+                    readback_pool: super::readback::ReadbackPool::default(),
                     command_pools: super::command_pool::CommandPoolCache::new(&native),
                     descriptor_pools: super::pipeline::descriptor_pool::DescriptorPoolCache::new(
                         &native,
@@ -538,7 +556,7 @@ impl InstanceBackend for Vulkan {
                             == vk::TRUE,
                         storage_push_constant8: vulkan12.storage_push_constant8 == vk::TRUE,
                     },
-                    lane_frontier: Mutex::new([None, None]),
+                    queue_timelines,
                     device: native,
                     instance: instance.0.clone(),
                     physical,

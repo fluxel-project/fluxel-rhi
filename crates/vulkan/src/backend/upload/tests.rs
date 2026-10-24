@@ -1,13 +1,88 @@
 //! Real-device diagnostics for the private staging-page pool.
 //!
 //! This is intentionally a backend unit fixture: it reads private counters
-//! without widening the public RHI contract.  It creates a real logical
-//! device and records real Vulkan copies, but does not call submission because
-//! its purpose is the cancellation/reuse ownership boundary.
+//! without widening the public RHI contract. Fixtures cover cancellation,
+//! submitted timeline-gated work, completion-gated reuse and device lifetime.
 
 use crate::backend::{Vulkan, VulkanInstance};
+use ash::vk;
 use fluxel_rhi_core::api::*;
-use std::{future::Future, sync::Arc};
+use std::{
+    future::Future,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+struct TimelineGate {
+    state: Arc<crate::backend::DeviceState>,
+    semaphore: vk::Semaphore,
+    released: bool,
+}
+impl TimelineGate {
+    fn release(&mut self) {
+        if !std::mem::replace(&mut self.released, true) {
+            let info = vk::SemaphoreSignalInfo::default()
+                .semaphore(self.semaphore)
+                .value(1);
+            unsafe { self.state.device.signal_semaphore(&info) }
+                .expect("release readback test gate");
+        }
+    }
+}
+impl Drop for TimelineGate {
+    fn drop(&mut self) {
+        if !std::mem::replace(&mut self.released, true) {
+            let info = vk::SemaphoreSignalInfo::default()
+                .semaphore(self.semaphore)
+                .value(1);
+            let _ = unsafe { self.state.device.signal_semaphore(&info) };
+        }
+        unsafe { self.state.device.destroy_semaphore(self.semaphore, None) };
+    }
+}
+fn hold_graphics_queue(device: &Device<Vulkan>) -> Option<TimelineGate> {
+    let state = unsafe { device.native_ref() }.0.clone();
+    if !state.timeline_semaphore {
+        return None;
+    }
+    let mut kind = vk::SemaphoreTypeCreateInfo::default()
+        .semaphore_type(vk::SemaphoreType::TIMELINE)
+        .initial_value(0);
+    let semaphore = unsafe {
+        state.device.create_semaphore(
+            &vk::SemaphoreCreateInfo::default().push_next(&mut kind),
+            None,
+        )
+    }
+    .ok()?;
+    let waits = [semaphore];
+    let stages = [vk::PipelineStageFlags::ALL_COMMANDS];
+    let values = [1];
+    let mut timeline = vk::TimelineSemaphoreSubmitInfo::default().wait_semaphore_values(&values);
+    let submit = vk::SubmitInfo::default()
+        .wait_semaphores(&waits)
+        .wait_dst_stage_mask(&stages)
+        .push_next(&mut timeline);
+    let submitted = {
+        let _queue = state.queue_gate.lock().unwrap_or_else(|p| p.into_inner());
+        // SAFETY: queue_gate serializes this private gate submission with RHI.
+        unsafe {
+            state
+                .device
+                .queue_submit(state.graphics_queue, &[submit], vk::Fence::null())
+        }
+        .is_ok()
+    };
+    if !submitted {
+        unsafe { state.device.destroy_semaphore(semaphore, None) };
+        return None;
+    }
+    Some(TimelineGate {
+        state,
+        semaphore,
+        released: false,
+    })
+}
 
 fn block<F: Future>(future: F) -> F::Output {
     let mut future = std::pin::pin!(future);
@@ -20,6 +95,14 @@ fn block<F: Future>(future: F) -> F::Output {
     }
 }
 
+fn wait_until(label: &str, predicate: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !predicate() {
+        assert!(Instant::now() < deadline, "timed out waiting for {label}");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 fn rgba_region(texture: &Texture<Vulkan>) -> TextureRegion<'_, Vulkan> {
     TextureRegion {
         texture,
@@ -28,6 +111,15 @@ fn rgba_region(texture: &Texture<Vulkan>) -> TextureRegion<'_, Vulkan> {
         extent: [2, 2, 1],
         aspect: TextureAspects::COLOR,
     }
+}
+
+#[test]
+fn upload_page_logical_capacity_never_uses_allocation_padding() {
+    assert_eq!(super::page_size(1), super::DEFAULT_PAGE_BYTES);
+    assert_eq!(
+        super::page_size(super::DEFAULT_PAGE_BYTES + 7),
+        super::DEFAULT_PAGE_BYTES + 7
+    );
 }
 
 #[test]
@@ -107,8 +199,10 @@ fn texture_write_with_nonzero_layout_and_page_offsets_round_trips() {
         .create_buffer(&BufferDesc {
             label: None,
             size: 40,
-            usage: BufferUsage::COPY_DST | BufferUsage::MAP_READ,
-            memory: MemoryClass::Readback,
+            // Keep this copy result device-local so `readback_buffer` must
+            // acquire a pooled raw staging page rather than map it directly.
+            usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            memory: MemoryClass::Device,
         })
         .unwrap();
     let layout = TexelCopyBufferLayout {
@@ -193,4 +287,150 @@ fn texture_write_with_nonzero_layout_and_page_offsets_round_trips() {
         .bytes;
     assert_eq!(&actual[16..24], &source[16..24]);
     assert_eq!(&actual[32..40], &source[32..40]);
+}
+
+#[test]
+#[ignore = "requires a real Vulkan adapter; run with --features hardware-tests -- --ignored"]
+fn readback_pages_stay_busy_until_encoder_and_ticket_cancellation_releases_them() {
+    let device = block(VulkanInstance::new().unwrap().open_default()).unwrap();
+    let lane = device.lanes()[0].id;
+    let source = device
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: 16,
+            usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            memory: MemoryClass::Device,
+        })
+        .unwrap();
+    // SAFETY: diagnostics are private immutable counters while device owns pool.
+    let pool = unsafe { device.native_ref() }.0.readback_pool.clone();
+    let before = pool.diagnostics();
+    assert_eq!(before.idle, 0, "fresh device has no readback page");
+    let mut first = device.encoder(lane).unwrap();
+    let first_ticket = first.readback_buffer(&source, 0..16).unwrap();
+    let allocated = pool.diagnostics();
+    assert_eq!(allocated.creates - before.creates, 1);
+    drop(first_ticket);
+    // Encoder-held slice must keep the page unavailable even after ticket drop.
+    let mut second = device.encoder(lane).unwrap();
+    let second_ticket = second.readback_buffer(&source, 0..16).unwrap();
+    assert_eq!(pool.diagnostics().creates - before.creates, 2);
+    drop(second_ticket);
+    drop(first);
+    drop(second);
+    // Cancelled encoders return both pages; the next ticket reuses one.
+    let mut reused = device.encoder(lane).unwrap();
+    let ticket = reused.readback_buffer(&source, 0..16).unwrap();
+    assert_eq!(pool.diagnostics().creates - before.creates, 2);
+    drop(ticket);
+    drop(reused);
+}
+
+#[test]
+#[ignore = "requires a real Vulkan adapter; run with --features hardware-tests -- --ignored"]
+fn dropped_public_device_stays_alive_until_device_local_readback_ticket_drops() {
+    let device = block(VulkanInstance::new().unwrap().open_default()).unwrap();
+    let lane = device.lanes()[0].id;
+    // SAFETY: this weak reference observes only private lifetime ownership.
+    let weak = Arc::downgrade(&unsafe { device.native_ref() }.0);
+    let source = device
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: 16,
+            usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            memory: MemoryClass::Device,
+        })
+        .unwrap();
+    let mut encoder = device.encoder(lane).unwrap();
+    let ticket = encoder.readback_buffer(&source, 0..16).unwrap();
+    drop(encoder);
+    drop(source);
+    drop(device);
+    assert!(
+        weak.upgrade().is_some(),
+        "ticket owns raw-page device lifetime"
+    );
+    drop(ticket);
+    assert!(
+        weak.upgrade().is_none(),
+        "raw page does not form a device cycle"
+    );
+}
+
+#[test]
+#[ignore = "requires a real Vulkan adapter; run with --features hardware-tests -- --ignored"]
+fn submitted_readback_page_is_not_reused_until_the_held_queue_completes() {
+    let device = block(VulkanInstance::new().unwrap().open_default()).unwrap();
+    let Some(mut gate) = hold_graphics_queue(&device) else {
+        eprintln!("Vulkan timeline semaphore unavailable; skipping");
+        return;
+    };
+    let lane = device.lanes()[0].id;
+    let source = device
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: 16,
+            usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            memory: MemoryClass::Device,
+        })
+        .unwrap();
+    let pool = unsafe { device.native_ref() }.0.readback_pool.clone();
+    let before = pool.diagnostics();
+    assert_eq!(before.idle, 0, "fresh device has no readback page");
+    let mut encoder = device.encoder(lane).unwrap();
+    let ticket = encoder.readback_buffer(&source, 0..16).unwrap();
+    let work = encoder.finish().unwrap();
+    let plan = unsafe {
+        SubmissionPlan::from_compiled(
+            PlanId {
+                device: device.id(),
+                ordinal: 880_002,
+            },
+            Arc::from([StepDesc {
+                lane,
+                kind: StepKind::Commands,
+                waits: vec![],
+            }]),
+        )
+    };
+    let receipt = match unsafe {
+        device.queue().submit(SubmitPacket {
+            plan: plan.clone(),
+            steps: vec![BoundStep {
+                step: plan.step(0),
+                payload: StepPayload::Commands(vec![work]),
+            }],
+            completion: CompletionRequest::End,
+        })
+    } {
+        SubmitOutcome::Accepted(receipt) => receipt,
+        _ => panic!("gated readback submission rejected"),
+    };
+    drop(ticket);
+    let mut while_held = device.encoder(lane).unwrap();
+    let held_ticket = while_held.readback_buffer(&source, 0..16).unwrap();
+    assert_eq!(
+        pool.diagnostics().creates - before.creates,
+        2,
+        "submitted work retains its page after ticket drop"
+    );
+    gate.release();
+    let point = &receipt.checkpoints[0].point;
+    block(device.wait_completion(point)).unwrap();
+    wait_until("submitted readback page retirement", || {
+        pool.diagnostics().idle >= 1
+    });
+    // Keep the second page leased. The following allocation can therefore
+    // only succeed without a create by reusing the completed submitted page.
+    let mut reused = device.encoder(lane).unwrap();
+    let ticket = reused.readback_buffer(&source, 0..16).unwrap();
+    assert_eq!(
+        pool.diagnostics().creates - before.creates,
+        2,
+        "completed page was reused"
+    );
+    drop(ticket);
+    drop(reused);
+    drop(held_ticket);
+    drop(while_held);
 }

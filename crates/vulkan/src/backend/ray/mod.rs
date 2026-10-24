@@ -12,17 +12,18 @@ use super::{Vulkan, VulkanBindGroup, VulkanBuffer, VulkanDevice, VulkanEncoder};
 pub use acceleration::VulkanAcceleration;
 use fluxel_rhi_core::api::{self, Error, Result};
 pub use pipeline::VulkanRayPipeline;
-use std::future::{Ready, ready};
 
 pub struct VulkanRay;
 impl api::RayOps<Vulkan> for VulkanRay {
     const AVAILABLE: bool = true;
-    type PipelineFuture<'a> = Ready<Result<VulkanRayPipeline>>;
+    type PipelineFuture<'a> = super::cold_worker::ColdFuture<VulkanRayPipeline>;
     fn create_pipeline<'a>(
         device: &'a VulkanDevice,
         desc: &'a api::RayPipelineDesc<Vulkan>,
     ) -> Self::PipelineFuture<'a> {
-        ready(pipeline::create(device, desc))
+        let device = device.clone();
+        let desc = desc.clone();
+        super::cold_worker::submit(move || pipeline::create(&device, &desc))
     }
     fn set_pipeline(encoder: &mut VulkanEncoder, pipeline: &VulkanRayPipeline) -> Result<()> {
         pipeline::bind(encoder, pipeline)

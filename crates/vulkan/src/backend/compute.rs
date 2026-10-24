@@ -1,7 +1,6 @@
 //! Immediate Vulkan compute command lowering.
 
 use super::*;
-use std::future::{Ready, ready};
 
 /// Static ComputeOps implementation for Vulkan.
 pub struct VulkanCompute;
@@ -9,7 +8,7 @@ pub struct VulkanCompute;
 impl api::ComputeOps<Vulkan> for VulkanCompute {
     const AVAILABLE: bool = true;
     type PipelineFuture<'a>
-        = Ready<Result<VulkanComputePipeline>>
+        = super::cold_worker::ColdFuture<VulkanComputePipeline>
     where
         Vulkan: 'a;
 
@@ -17,7 +16,9 @@ impl api::ComputeOps<Vulkan> for VulkanCompute {
         device: &'a VulkanDevice,
         desc: &'a api::ComputePipelineDesc<Vulkan>,
     ) -> Self::PipelineFuture<'a> {
-        ready(pipeline::create_compute(device, desc))
+        let device = device.clone();
+        let desc = desc.clone();
+        super::cold_worker::submit(move || pipeline::create_compute(&device, &desc))
     }
 
     fn begin(e: &mut VulkanEncoder) -> Result<()> {

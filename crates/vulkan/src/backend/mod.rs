@@ -20,6 +20,7 @@ use fluxel_rhi_core::api::{
 };
 
 /// Vulkan backend selected once by the caller.
+#[derive(Clone)]
 pub struct Vulkan;
 
 #[cfg(all(test, feature = "hardware-tests"))]
@@ -43,6 +44,7 @@ pub use external::{VulkanExternalHandle, VulkanExternalMemoryHandle, VulkanExter
 
 mod capture;
 mod clear;
+mod cold_worker;
 mod command_pool;
 mod compute;
 mod copy;
@@ -89,6 +91,8 @@ struct ShaderPrecisionFeatures {
 
 struct DeviceState {
     upload_pool: upload::UploadPool,
+    upload_copy_offset_alignment: u64,
+    readback_pool: readback::ReadbackPool,
     command_pools: command_pool::CommandPoolCache,
     descriptor_pools: pipeline::descriptor_pool::DescriptorPoolCache,
     /// Base features actually enabled on the logical device.
@@ -122,7 +126,10 @@ struct DeviceState {
     max_compute_workgroups: [u32; 3],
     max_compute_workgroup_size: [u32; 3],
     max_compute_workgroup_invocations: u32,
-    lane_frontier: Mutex<[Option<(std::sync::Weak<submit::multi_queue::Timeline>, u64)>; 2]>,
+    /// Raw device-owned queue timelines. Wrappers retained by submitted jobs
+    /// point back to DeviceState but never own these semaphores, so reuse does
+    /// not form a State -> wrapper -> State cycle.
+    queue_timelines: Option<[submit::queue_timeline::RawQueueTimeline; 2]>,
     device: ash::Device,
     // The device may outlive the typed VulkanInstance returned by its creator.
     // Retaining this owner keeps the dispatch table and VkInstance alive until
@@ -319,8 +326,16 @@ impl Drop for DeviceState {
         // SAFETY: resource, encoder, surface and completion Arcs all retain
         // DeviceState, so no child Vulkan object can outlive this destroy call.
         self.upload_pool.clear();
+        self.readback_pool.clear();
         self.command_pools.clear();
         self.descriptor_pools.clear();
+        if let Some(timelines) = self.queue_timelines.take() {
+            for timeline in timelines {
+                // SAFETY: no wrapper outlives this final DeviceState owner;
+                // each raw semaphore belongs to this logical device.
+                unsafe { self.device.destroy_semaphore(timeline.semaphore, None) };
+            }
+        }
         unsafe { self.device.destroy_device(None) };
     }
 }
@@ -404,12 +419,14 @@ impl api::ResourceBackend for Vulkan {
 }
 
 impl api::PipelineBackend for Vulkan {
-    type RasterPipelineFuture<'a> = Ready<Result<VulkanRasterPipeline>>;
+    type RasterPipelineFuture<'a> = cold_worker::ColdFuture<VulkanRasterPipeline>;
     fn create_raster_pipeline<'a>(
         device: &'a VulkanDevice,
         desc: &'a api::RasterPipelineDesc<Self>,
     ) -> Self::RasterPipelineFuture<'a> {
-        ready(pipeline::create_raster(device, desc))
+        let device = device.clone();
+        let desc = desc.clone();
+        cold_worker::submit(move || pipeline::create_raster(&device, &desc))
     }
 }
 
@@ -578,8 +595,8 @@ impl api::CommandBackend for Vulkan {
 }
 
 impl api::ShaderBackend for Vulkan {
-    type DirectFuture<'a> = Ready<Result<VulkanShader>>;
-    type NagaFuture<'a> = Ready<Result<VulkanShader>>;
+    type DirectFuture<'a> = cold_worker::ColdFuture<VulkanShader>;
+    type NagaFuture<'a> = cold_worker::ColdFuture<VulkanShader>;
     fn shader_route(_: &VulkanDevice, desc: &api::ShaderDesc) -> api::ShaderRoute {
         match desc.format {
             api::ShaderFormat::SpirV => api::ShaderRoute::Direct(api::ShaderTarget {
@@ -600,14 +617,18 @@ impl api::ShaderBackend for Vulkan {
         desc: &'a api::ShaderDesc,
         _: &'a api::ShaderTarget,
     ) -> Self::DirectFuture<'a> {
-        ready(shader::create(device, desc))
+        let device = device.clone();
+        let desc = desc.clone();
+        cold_worker::submit(move || shader::create(&device, &desc))
     }
     fn compile_naga<'a>(
         device: &'a VulkanDevice,
         desc: &'a api::ShaderDesc,
         _: &'a api::ShaderTarget,
     ) -> Self::NagaFuture<'a> {
-        ready(shader::create_wgsl(device, desc))
+        let device = device.clone();
+        let desc = desc.clone();
+        cold_worker::submit(move || shader::create_wgsl(&device, &desc))
     }
 }
 
