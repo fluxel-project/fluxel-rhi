@@ -31,18 +31,22 @@ impl<
             stages: StageMask::COMPUTE,
             accesses: AccessMask::SHADER_READ,
         };
+        let graphics_read = BufferUses {
+            stages: StageMask::VERTEX,
+            accesses: AccessMask::SHADER_READ,
+        };
         let write = BufferUses {
             stages: StageMask::COMPUTE,
             accesses: AccessMask::SHADER_WRITE,
         };
-        let barrier = |i: usize, from, to| {
+        let barrier = |i: usize, from, to, ownership| {
             ResourceTransition::Buffer(BufferBarrier {
                 target: BufferSlice {
                     buffer: &self.particles[i],
                     range: 0..SIZE,
                 },
                 usage: StateTransition { from, to },
-                ownership: None,
+                ownership,
             })
         };
         let mut c = d.encoder(self.compute)?;
@@ -60,6 +64,7 @@ impl<
                         accesses: AccessMask::COPY_WRITE,
                     },
                     read,
+                    None,
                 ),
                 barrier(
                     1,
@@ -68,27 +73,61 @@ impl<
                         accesses: AccessMask::EMPTY,
                     },
                     write,
+                    None,
                 ),
             ])?;
         } else {
-            c.transition_resources(&[barrier(output, read, write)])?;
+            // The previous graphics submission returned this input buffer to
+            // compute ownership. The host waited for that submission before
+            // recording this frame, which is the inter-frame dependency.
+            c.transition_resources(&[
+                barrier(
+                    input,
+                    graphics_read,
+                    read,
+                    Some(OwnershipTransfer::Acquire {
+                        from: self.graphics,
+                        to: self.compute,
+                    }),
+                ),
+                barrier(output, read, write, None),
+            ])?;
         }
         let mut pass = d.compute().ok_or(Error::InvalidState)?.begin(&mut c)?;
         pass.set_pipeline(&self.compute_pipeline)?;
         pass.set_bind_group(0, &self.compute_groups[input], &[])?;
         pass.dispatch([79, 1, 1])?;
         pass.finish()?;
-        c.transition_resources(&[barrier(output, write, read)])?;
+        // Vulkan exclusive resources need both sides of the compute-to-graphics
+        // hand-off. The matching acquire is the first graphics command below.
+        c.transition_resources(&[barrier(
+            output,
+            write,
+            graphics_read,
+            Some(OwnershipTransfer::Release {
+                from: self.compute,
+                to: self.graphics,
+            }),
+        )])?;
         let mut e = d.encoder(self.graphics)?;
+        e.transition_resources(&[barrier(
+            output,
+            write,
+            graphics_read,
+            Some(OwnershipTransfer::Acquire {
+                from: self.compute,
+                to: self.graphics,
+            }),
+        )])?;
         let particle_ticket = if self.frame == 0 {
             let copy = BufferUses {
                 stages: StageMask::COPY,
                 accesses: AccessMask::COPY_READ,
             };
-            e.transition_resources(&[barrier(output, read, copy)])?;
+            e.transition_resources(&[barrier(output, graphics_read, copy, None)])?;
             e.copy_buffer(&self.particles[output], 0, &self.particle_readback, 0, SIZE)?;
             let ticket = e.readback_buffer(&self.particle_readback, 0..SIZE)?;
-            e.transition_resources(&[barrier(output, copy, read)])?;
+            e.transition_resources(&[barrier(output, copy, graphics_read, None)])?;
             Some(ticket)
         } else {
             None
@@ -167,6 +206,18 @@ impl<
         pass.set_bind_group(0, &self.draw_groups[output], &[])?;
         pass.draw(0..6, 0..10000)?;
         pass.finish()?;
+        // The next time this buffer is read it is the compute input. This
+        // release pairs with that next frame's acquire above; no ownership
+        // tracker is involved.
+        e.transition_resources(&[barrier(
+            output,
+            graphics_read,
+            read,
+            Some(OwnershipTransfer::Release {
+                from: self.graphics,
+                to: self.compute,
+            }),
+        )])?;
         let ticket = if self.frame == 0 {
             e.transition_resources(&[ResourceTransition::Texture(TextureBarrier {
                 target: range(),
@@ -271,7 +322,14 @@ impl<
                     StepDesc {
                         lane: self.graphics,
                         kind: StepKind::Commands,
-                        waits: vec![wait(0, StageMask::VERTEX, AccessMask::SHADER_READ)],
+                        // Frame zero reads the particle buffer back before the
+                        // vertex shader consumes it. Later frames only need
+                        // VERTEX, but this fixed plan must cover both paths.
+                        waits: vec![wait(
+                            0,
+                            StageMask::COPY | StageMask::VERTEX,
+                            AccessMask::COPY_READ | AccessMask::SHADER_READ,
+                        )],
                     },
                     StepDesc {
                         lane: self.graphics,
@@ -309,9 +367,20 @@ impl<
                 .next()
                 .map(|c| c.point)
                 .ok_or(Error::InvalidState),
-            _ => {
-                utils::block_on(d.wait_idle())?;
-                Err(Error::InvalidState)
+            SubmitOutcome::Rejected { error, .. } => Err(error),
+            SubmitOutcome::PartiallyAccepted { error, .. }
+            | SubmitOutcome::Indeterminate { error, .. } => {
+                // Keep the native outcome (and its retained work) alive until
+                // idle. Returning a drain error would hide the actual submit
+                // failure; if drain itself fails we cannot safely drop that
+                // work, so terminate without running destructors.
+                if let Err(drain_error) = utils::block_on(d.wait_idle()) {
+                    eprintln!(
+                        "23_multi_queue: submission failed: {error:?}; GPU drain failed: {drain_error:?}"
+                    );
+                    std::process::abort();
+                }
+                Err(error)
             }
         }
     }

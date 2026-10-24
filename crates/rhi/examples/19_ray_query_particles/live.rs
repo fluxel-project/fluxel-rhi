@@ -357,7 +357,25 @@ fn submit<B: DeferredBackend + ExecutionBackend<Mode = DeferredExecution>>(
                 .ok_or(Error::InvalidState)?
                 .point
         }
-        _ => return Err(Error::InvalidState),
+        SubmitOutcome::Rejected { error, .. } => return Err(error),
+        outcome => {
+            let error = match &outcome {
+                SubmitOutcome::PartiallyAccepted { error, .. }
+                | SubmitOutcome::Indeterminate { error, .. } => error.clone(),
+                _ => unreachable!("accepted and rejected outcomes handled above"),
+            };
+            // Keep the native outcome (and its retained work) alive through
+            // the drain. A drain failure cannot replace the submit failure:
+            // terminate before the retained outcome is dropped instead.
+            if let Err(drain_error) = block_on(device.wait_idle()) {
+                eprintln!(
+                    "19_ray_query_particles live submission failed: {error:?}; GPU drain failed: {drain_error:?}"
+                );
+                std::process::abort();
+            }
+            drop(outcome);
+            return Err(error);
+        }
     };
     block_on(device.wait_completion(&point))
 }

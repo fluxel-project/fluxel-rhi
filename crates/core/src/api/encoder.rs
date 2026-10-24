@@ -136,6 +136,12 @@ impl<B: CommandBackend> CommandEncoder<B> {
         if lane.device != device.id {
             return Err(Error::WrongLane);
         }
+        // Some legacy/direct backends have no lane inventory. When the
+        // opened device did publish one, reject an ordinal outside it before
+        // crossing the native recording boundary.
+        if !device.lanes().is_empty() && !device.lanes().iter().any(|info| info.id == lane) {
+            return Err(Error::WrongLane);
+        }
         Ok(Self {
             device: device.id,
             lane,

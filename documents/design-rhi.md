@@ -1244,6 +1244,43 @@ additional to this shared integrity check. Invalid input returns the original
 owning packet as a clean rejection; native partial/uncertain acceptance remains
 the backend's responsibility.
 
+## Example execution acceptance
+
+The native example acceptance policy is separate from compile availability.
+An unsupported native entry point exits with a failure status. WASM module
+initialization is not GPU execution: browser checks must await the applicable
+canvas entry point and inspect its GPU/output result.
+
+## Core and examples synchronization review
+
+Exclusive Vulkan resources crossing native queue families require matching
+`OwnershipTransfer::Release` and `Acquire` barriers. A semaphore wait alone does
+not transfer resource ownership. Example 23 supplies both compute-to-graphics
+halves and returns each rendered particle buffer to compute before its next
+use. Its graphics wait includes COPY and VERTEX because the first frame copies
+particle data before vertex consumption. The existing host completion boundary
+orders the next frame; RHI does not infer a state history or schedule transfers.
+
+Examples 19, 21 and 23 preserve the original error for rejected, partially
+accepted and indeterminate submissions. Potentially issued outcomes stay alive
+through the existing GPU drain. A failed drain reports both failures and stops
+without unwinding; it is not treated as completion or successful recovery.
+
+Core's additional integrity checks do not change execution models. An oversized
+`SubmissionPlan::step` index produces an invalid sentinel instead of wrapping
+onto a valid step; validated plans cannot contain that sentinel index. Encoder
+creation checks a published lane inventory before SPI. Same-plan GPU signal
+consumers are checked against their descriptor index and lane; future-plan
+consumers remain valid and are checked when their actual wait is submitted.
+
+Focused validation covers 64 Core tests, an explicitly required Graphics family
+0 / Compute family 1 three-round exclusive-buffer transfer/readback scenario,
+Vulkan multi-queue tests under Khronos synchronization validation, and four
+frames of Example 23 on both Vulkan and DX12 with particle/image readback.
+All 23 unsupported Linux native entries exit with status 1; browser example
+compilation is recorded separately. This is focused acceptance, not a new
+all-platform or Metal runtime validation claim.
+
 ## GL-family multisample copy boundary
 
 Desktop GL 4.3+ or `ARB_copy_image` may copy matching-sample color texture

@@ -454,4 +454,8 @@ fn main() {
 )))]
 fn main() {
     eprintln!("04_dynamic_uniform_buffer requires Windows and DX12");
+    // WASM module initialization is not GPU execution. Unsupported native
+    // launches must not count as a GPU test pass.
+    #[cfg(not(target_arch = "wasm32"))]
+    std::process::exit(1);
 }

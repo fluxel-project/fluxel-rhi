@@ -43,6 +43,29 @@ fn plan<B: Backend>(device: &Device<B>, kinds: &[StepKind]) -> SubmissionPlan<B>
     // SAFETY: the test supplies a device-local, ordered, single-lane plan.
     unsafe { SubmissionPlan::from_compiled(id, steps) }
 }
+
+#[test]
+fn oversized_public_step_does_not_alias_a_valid_slot() {
+    let id = DeviceId::allocate().unwrap();
+    let plan = unsafe {
+        SubmissionPlan::<NativeShared>::from_compiled(
+            PlanId {
+                device: id,
+                ordinal: 9,
+            },
+            Arc::from([StepDesc {
+                lane: LaneId {
+                    device: id,
+                    ordinal: 0,
+                },
+                kind: StepKind::Commands,
+                waits: Vec::new(),
+            }]),
+        )
+    };
+    assert_ne!(plan.step(usize::MAX), plan.step(0));
+    assert_eq!(plan.step(usize::MAX).index, u32::MAX);
+}
 fn immediate() -> Device<GlLocal> {
     let id = DeviceId::allocate().unwrap();
     GL_DEVICE.with(|device| device.set(Some(id)));

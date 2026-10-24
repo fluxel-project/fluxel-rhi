@@ -580,5 +580,9 @@ fn main() {
     all(target_os = "linux", feature = "native-gles-egl")
 )))]
 fn main() {
-    eprintln!("14_descriptor_indexing requires Windows and runtime descriptor indexing")
+    eprintln!("14_descriptor_indexing requires Windows and runtime descriptor indexing");
+    // WASM module initialization is not GPU execution. Unsupported native
+    // launches must not count as a GPU test pass.
+    #[cfg(not(target_arch = "wasm32"))]
+    std::process::exit(1);
 }

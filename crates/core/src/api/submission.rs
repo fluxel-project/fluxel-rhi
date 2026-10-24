@@ -65,7 +65,10 @@ impl<B: Backend> SubmissionPlan<B> {
     pub fn step(&self, index: usize) -> StepId {
         StepId {
             plan: self.id,
-            index: index as u32,
+            // `validate_for_execution` limits a usable plan to `u32::MAX`
+            // entries, so this sentinel can never identify a valid slot. Do
+            // not let an oversized public `usize` wrap onto an earlier step.
+            index: u32::try_from(index).unwrap_or(u32::MAX),
         }
     }
 }

@@ -787,6 +787,8 @@ pub(crate) mod type_contract_tests {
             Err(Error::WrongLane)
         ));
     }
+    #[path = "../type_contract_lane.rs"]
+    mod type_contract_lane;
     #[test]
     fn dropped_immediate_session_reports_issued_prefix_to_backend() {
         ABANDONED_STEPS.with(|count| count.set(0));

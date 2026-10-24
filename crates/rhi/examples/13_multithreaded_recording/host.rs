@@ -129,5 +129,9 @@ pub(super) fn run() {
 pub(super) fn run() {
     eprintln!(
         "13_multithreaded_recording requires Windows and a backend with secondary raster commands"
-    )
+    );
+    // WASM module initialization is not GPU execution. Unsupported native
+    // launches must not count as a GPU test pass.
+    #[cfg(not(target_arch = "wasm32"))]
+    std::process::exit(1);
 }

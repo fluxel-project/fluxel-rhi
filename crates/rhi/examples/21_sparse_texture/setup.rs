@@ -363,7 +363,7 @@ impl<
         };
         let step = plan.step(0);
         // SAFETY: the scene retains texture and allocations until completion, which is awaited before access.
-        let receipt = match unsafe {
+        let outcome = unsafe {
             d.queue().submit(SubmitPacket {
                 plan,
                 steps: vec![BoundStep {
@@ -372,11 +372,27 @@ impl<
                 }],
                 completion: CompletionRequest::End,
             })
-        } {
+        };
+        let receipt = match outcome {
             SubmitOutcome::Accepted(receipt) => receipt,
-            _ => {
-                utils::block_on(d.wait_idle())?;
-                return Err(Error::InvalidState);
+            SubmitOutcome::Rejected { error, .. } => return Err(error),
+            outcome => {
+                let error = match &outcome {
+                    SubmitOutcome::PartiallyAccepted { error, .. }
+                    | SubmitOutcome::Indeterminate { error, .. } => error.clone(),
+                    _ => unreachable!("accepted and rejected outcomes handled above"),
+                };
+                // Keep the native outcome (and its retained sparse bindings)
+                // alive through the drain. If that fails, do not drop it or
+                // replace the original submission error with the drain error.
+                if let Err(drain_error) = utils::block_on(d.wait_idle()) {
+                    eprintln!(
+                        "21_sparse_texture sparse bind failed: {error:?}; GPU drain failed: {drain_error:?}"
+                    );
+                    std::process::abort();
+                }
+                drop(outcome);
+                return Err(error);
             }
         };
         let point = receipt

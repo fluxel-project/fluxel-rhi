@@ -109,4 +109,5 @@ fn main() {
 #[cfg(not(windows))]
 fn main() {
     eprintln!("23_multi_queue currently requires Windows and DX12");
+    std::process::exit(1);
 }

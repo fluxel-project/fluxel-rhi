@@ -111,14 +111,14 @@ fn compute_producer_direct_consumer() {
         stages: StageMask::COPY,
         accesses: AccessMask::COPY_READ,
     };
-    let barrier = |from, to| {
+    let barrier = |from, to, ownership| {
         ResourceTransition::Buffer(BufferBarrier {
             target: BufferSlice {
                 buffer: &buffer,
                 range: 0..80,
             },
             usage: StateTransition { from, to },
-            ownership: None,
+            ownership,
         })
     };
     let mut producer = d.encoder(compute).unwrap();
@@ -172,6 +172,16 @@ fn compute_producer_direct_consumer() {
         .unwrap();
     consumer.copy_buffer(&buffer, 0, &dest, 0, 80).unwrap();
     let ticket = consumer.readback_buffer(&dest, 0..80).unwrap();
+    consumer
+        .transition_resources(&[barrier(
+            read,
+            write,
+            Some(OwnershipTransfer::Release {
+                from: direct,
+                to: compute,
+            }),
+        )])
+        .unwrap();
     let mkplan = |ordinal, lane| unsafe {
         SubmissionPlan::from_compiled(
             PlanId {
@@ -242,10 +252,19 @@ fn compute_producer_direct_consumer() {
             expected
         );
     }
-    // A single ordinary packet must honor its explicit cross-lane StepWait.
+    // Host completion above establishes the inter-frame dependency. Reacquire
+    // the buffer before compute overwrites it, then repeat the paired transfer
+    // in an ordinary multi-lane packet.
     let mut producer = d.encoder(compute).unwrap();
     producer
-        .transition_resources(&[barrier(read, write)])
+        .transition_resources(&[barrier(
+            read,
+            write,
+            Some(OwnershipTransfer::Acquire {
+                from: direct,
+                to: compute,
+            }),
+        )])
         .unwrap();
     {
         let mut pass = d.compute().unwrap().begin(&mut producer).unwrap();
@@ -255,9 +274,26 @@ fn compute_producer_direct_consumer() {
         pass.finish().unwrap();
     }
     producer
-        .transition_resources(&[barrier(write, read)])
+        .transition_resources(&[barrier(
+            write,
+            read,
+            Some(OwnershipTransfer::Release {
+                from: compute,
+                to: direct,
+            }),
+        )])
         .unwrap();
     let mut consumer = d.encoder(direct).unwrap();
+    consumer
+        .transition_resources(&[barrier(
+            write,
+            read,
+            Some(OwnershipTransfer::Acquire {
+                from: compute,
+                to: direct,
+            }),
+        )])
+        .unwrap();
     consumer.copy_buffer(&buffer, 0, &dest, 0, 80).unwrap();
     let ticket = consumer.readback_buffer(&dest, 0..80).unwrap();
     let id = PlanId {
@@ -291,7 +327,8 @@ fn compute_producer_direct_consumer() {
     };
     let a = plan.step(0);
     let b = plan.step(1);
-    // SAFETY: StepWait covers the producer's writes before direct copy.
+    // SAFETY: StepWait covers the producer's writes before the matching direct
+    // acquire and copy; each ownership transfer has a paired opposite half.
     let outcome = unsafe {
         d.queue().submit(SubmitPacket {
             plan,

@@ -414,6 +414,19 @@ impl<B: MultiQueueBackend> MultiQueueDomain<'_, B> {
                 {
                     return Err(Error::WrongLane);
                 }
+                // A signal may target a later submission with a different
+                // plan, whose slots are unavailable here. If it names this
+                // packet's plan, however, validate the concrete consumer
+                // slot and its declared lane before the backend sees it.
+                if signal.consumer.plan == plan.id {
+                    let consumer = plan
+                        .steps
+                        .get(signal.consumer.index as usize)
+                        .ok_or(Error::InvalidState)?;
+                    if consumer.lane != signal.consumer_lane {
+                        return Err(Error::WrongLane);
+                    }
+                }
             }
             for wait in &packet.waits {
                 let signal = &wait.signal;

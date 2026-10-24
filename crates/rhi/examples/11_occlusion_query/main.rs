@@ -420,5 +420,9 @@ fn main() {
     all(target_os = "linux", feature = "native-gles-egl")
 )))]
 fn main() {
-    eprintln!("11_occlusion_query requires a supported native or browser backend")
+    eprintln!("11_occlusion_query requires a supported native or browser backend");
+    // WASM module initialization is not GPU execution. Unsupported native
+    // launches must not count as a GPU test pass.
+    #[cfg(not(target_arch = "wasm32"))]
+    std::process::exit(1);
 }

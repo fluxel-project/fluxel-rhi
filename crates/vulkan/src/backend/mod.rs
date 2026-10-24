@@ -22,6 +22,9 @@ use fluxel_rhi_core::api::{
 /// Vulkan backend selected once by the caller.
 pub struct Vulkan;
 
+#[cfg(all(test, feature = "hardware-tests"))]
+mod queue_ownership_gpu;
+
 /// Process-local Vulkan instance used for adapter enumeration and opening.
 #[derive(Clone)]
 pub struct VulkanInstance(Arc<InstanceState>);

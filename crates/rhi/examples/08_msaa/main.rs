@@ -245,4 +245,8 @@ fn main() {
 )))]
 fn main() {
     eprintln!("08_msaa requires a supported native or browser backend");
+    // WASM module initialization is not GPU execution. Unsupported native
+    // launches must not count as a GPU test pass.
+    #[cfg(not(target_arch = "wasm32"))]
+    std::process::exit(1);
 }

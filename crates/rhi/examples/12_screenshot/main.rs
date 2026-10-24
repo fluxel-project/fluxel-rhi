@@ -542,4 +542,8 @@ fn main() {
 )))]
 fn main() {
     eprintln!("12_screenshot requires a backend implementing ReadbackBackend");
+    // WASM module initialization is not GPU execution. Unsupported native
+    // launches must not count as a GPU test pass.
+    #[cfg(not(target_arch = "wasm32"))]
+    std::process::exit(1);
 }

@@ -110,4 +110,8 @@ fn main() {
 #[cfg(not(windows))]
 fn main() {
     eprintln!("18_meshlet_instancing currently requires Windows");
+    // WASM module initialization is not GPU execution. Unsupported native
+    // launches must not count as a GPU test pass.
+    #[cfg(not(target_arch = "wasm32"))]
+    std::process::exit(1);
 }

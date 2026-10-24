@@ -207,6 +207,22 @@ fn signal_and_wait_metadata_are_checked_before_backend() {
             },
             Error::WrongLane,
         ),
+        (
+            GpuSignalRequest {
+                producer: plan.step(0),
+                consumer: plan.step(2),
+                consumer_lane,
+            },
+            Error::InvalidState,
+        ),
+        (
+            GpuSignalRequest {
+                producer: plan.step(0),
+                consumer: plan.step(1),
+                consumer_lane: producer_lane,
+            },
+            Error::WrongLane,
+        ),
     ];
     for (signal, expected) in cases {
         let packet = MultiQueuePacket {
@@ -340,6 +356,38 @@ fn signal_and_wait_metadata_are_checked_before_backend() {
         }
     }
     SUBMIT_CALLS.with(|calls| assert_eq!(calls.get(), 0));
+}
+
+#[test]
+fn future_plan_signal_reaches_the_backend_without_current_plan_slot_validation() {
+    let (device, plan, _producer_lane, consumer_lane) = multi_fixture();
+    let future = PlanId {
+        device: device.id(),
+        ordinal: plan.id().ordinal + 1,
+    };
+    let packet = MultiQueuePacket {
+        work: work_for(&plan),
+        signals: vec![GpuSignalRequest {
+            producer: plan.step(0),
+            consumer: StepId {
+                plan: future,
+                index: 99,
+            },
+            consumer_lane,
+        }],
+        waits: vec![],
+    };
+    SUBMIT_CALLS.with(|calls| calls.set(0));
+    // SAFETY: the mock cleanly rejects and this signal is intentionally for a
+    // distinct future plan, whose slot metadata is not present in this packet.
+    assert!(matches!(
+        unsafe { device.multi_queue().unwrap().submit(packet) },
+        MultiQueueSubmitOutcome::Rejected {
+            error: Error::Unsupported("mock"),
+            ..
+        }
+    ));
+    SUBMIT_CALLS.with(|calls| assert_eq!(calls.get(), 1));
 }
 
 #[test]
