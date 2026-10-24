@@ -63,7 +63,7 @@ pub(super) fn create_layout(
     let groups = Array::new();
     for group in desc.groups {
         // SAFETY: Core checked each layout's device identity.
-        groups.push(unsafe { group.native_ref() });
+        groups.push(&unsafe { group.native_ref() }.raw);
     }
     field(&descriptor, "bindGroupLayouts", groups.into())?;
     if total > 0 {

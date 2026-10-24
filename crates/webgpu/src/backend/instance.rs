@@ -26,7 +26,9 @@ use super::{
     indirect::WebGpuExtras,
     js,
     query::WebGpuQuerySet,
-    resource::{WebGpuBuffer, WebGpuTexture, WebGpuTextureView},
+    resource::{
+        WebGpuBindGroupLayout, WebGpuBuffer, WebGpuSampler, WebGpuTexture, WebGpuTextureView,
+    },
     submit::{Completion, InFlight},
     surface::{WebGpuImageLease, WebGpuSurface},
 };
@@ -85,6 +87,8 @@ pub(super) struct DeviceState {
     pub(super) lost: Cell<bool>,
     pub(super) validation_error: RefCell<Option<String>>,
     pub(super) wgsl_language_features: std::collections::BTreeSet<String>,
+    pub(super) utility_pipelines: RefCell<std::collections::BTreeMap<&'static str, JsValue>>,
+    pub(super) render_utility_pipelines: RefCell<std::collections::BTreeMap<String, JsValue>>,
     validation_listener: RefCell<Option<Closure<dyn FnMut(JsValue)>>>,
 }
 
@@ -117,8 +121,8 @@ impl Backend for WebGpu {
     type NativeBuffer = WebGpuBuffer;
     type NativeTexture = WebGpuTexture;
     type NativeTextureView = WebGpuTextureView;
-    type NativeSampler = JsValue;
-    type NativeBindGroupLayout = JsValue;
+    type NativeSampler = WebGpuSampler;
+    type NativeBindGroupLayout = WebGpuBindGroupLayout;
     type NativeBindGroup = JsValue;
     type NativePipelineLayout = JsValue;
     type NativeShader = JsValue;
@@ -341,6 +345,8 @@ impl InstanceBackend for WebGpu {
                 lost: Cell::new(false),
                 validation_error: RefCell::new(None),
                 wgsl_language_features,
+                utility_pipelines: RefCell::new(std::collections::BTreeMap::new()),
+                render_utility_pipelines: RefCell::new(std::collections::BTreeMap::new()),
                 validation_listener: RefCell::new(None),
             }));
             let weak_for_errors = Rc::downgrade(&native.0);

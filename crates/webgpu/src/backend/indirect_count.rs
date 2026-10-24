@@ -4,7 +4,7 @@
 //! and the count are snapshotted at this command position; the output contains
 //! tightly packed 16-byte (non-indexed) or 20-byte (indexed) commands.
 use fluxel_rhi_core::api::{self, Error, Result};
-use js_sys::Array;
+use js_sys::{Array, Uint32Array};
 use wasm_bindgen::JsValue;
 
 use super::{
@@ -12,6 +12,31 @@ use super::{
     js,
     resource::{WebGpuBuffer, device_limit},
 };
+
+/// One fixed conversion program serves both indexed and non-indexed records.
+/// Per-chunk shape is supplied through a small uniform buffer so recording no
+/// longer recompiles WGSL or a compute pipeline for each chunk.
+const CONVERTER_WGSL: &str = r#"
+struct Parameters {
+    base: u32,
+    chunk_count: u32,
+    words: u32,
+    _padding: u32,
+};
+@group(0) @binding(0) var<storage, read> source: array<u32>;
+@group(0) @binding(1) var<storage, read> count: array<u32>;
+@group(0) @binding(2) var<storage, read_write> output: array<u32>;
+@group(0) @binding(3) var<uniform> parameters: Parameters;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let draw = gid.y * nw.x * 64u + gid.x;
+    if (draw >= parameters.chunk_count) { return; }
+    for (var j = 0u; j < parameters.words; j++) {
+        let i = draw * parameters.words + j;
+        output[i] = select(0u, source[i], draw + parameters.base < count[0]);
+    }
+}
+"#;
 
 /// Check the complete operation before ending the active raster pass. This
 /// does not create resources or record GPU commands.
@@ -150,6 +175,8 @@ pub(super) fn prepare(
         ],
     )
     .map_err(error)?;
+    let pipeline = super::utility::pipeline(&encoder.device, "indirect-count", CONVERTER_WGSL)?;
+    let layout = js::call1(&pipeline, "getBindGroupLayout", &number(0u32)).map_err(error)?;
     let mut outputs = Vec::new();
     let mut base = 0u32;
     while base < max_draw_count {
@@ -160,36 +187,22 @@ pub(super) fn prepare(
         let y = workgroups.div_ceil(x);
         let input = create_buffer(packed_size, 8 | 128)?;
         let output = create_buffer(packed_size, 128 | 256)?;
-        let module_desc = object();
-        let words = command_size / 4;
-        let code = format!(
-            r#"
-@group(0) @binding(0) var<storage, read> source: array<u32>;
-@group(0) @binding(1) var<storage, read> count: array<u32>;
-@group(0) @binding(2) var<storage, read_write> output: array<u32>;
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {{
-    let draw = gid.y * nw.x * 64u + gid.x;
-    if (draw >= {chunk_count}u) {{ return; }}
-    for (var j = 0u; j < {words}u; j++) {{
-        let i = draw * {words}u + j;
-        output[i] = select(0u, source[i], draw + {base}u < count[0]);
-    }}
-}}
-"#
-        );
-        field(&module_desc, "code", JsValue::from_str(&code))?;
-        let module = js::call1(device, "createShaderModule", &module_desc).map_err(error)?;
-        let stage = object();
-        field(&stage, "module", module.clone())?;
-        field(&stage, "entryPoint", JsValue::from_str("main"))?;
-        let desc = object();
-        field(&desc, "layout", JsValue::from_str("auto"))?;
-        field(&desc, "compute", stage)?;
-        let pipeline = js::call1(device, "createComputePipeline", &desc).map_err(error)?;
-        let layout = js::call1(&pipeline, "getBindGroupLayout", &number(0u32)).map_err(error)?;
+        let parameter_desc = object();
+        field(&parameter_desc, "size", number(16u32))?;
+        field(&parameter_desc, "usage", number(64u32))?;
+        field(&parameter_desc, "mappedAtCreation", JsValue::TRUE)?;
+        let parameters = js::call1(device, "createBuffer", &parameter_desc).map_err(error)?;
+        let mapped = js::call0(&parameters, "getMappedRange").map_err(error)?;
+        let parameter_words = Uint32Array::new(&mapped);
+        parameter_words.set_index(0, base);
+        parameter_words.set_index(1, chunk_count);
+        parameter_words.set_index(2, (command_size / 4) as u32);
+        js::call0(&parameters, "unmap").map_err(error)?;
         let entries = Array::new();
-        for (binding, buffer) in [&input, &count_copy, &output].into_iter().enumerate() {
+        for (binding, buffer) in [&input, &count_copy, &output, &parameters]
+            .into_iter()
+            .enumerate()
+        {
             let resource = object();
             field(&resource, "buffer", buffer.clone())?;
             let item = object();
@@ -198,24 +211,44 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
             entries.push(&item);
         }
         let group_desc = object();
-        field(&group_desc, "layout", layout)?;
+        field(&group_desc, "layout", layout.clone())?;
         field(&group_desc, "entries", entries.into())?;
         let group = js::call1(device, "createBindGroup", &group_desc).map_err(error)?;
-        for i in 0..chunk_count {
+        if u64::from(stride) == command_size {
+            // Tight records already match the conversion buffer's packed ABI,
+            // so one native copy replaces one command-encoder call per draw.
             js::call(
                 &encoder.raw,
                 "copyBufferToBuffer",
                 &[
                     args.raw.clone(),
-                    number(
-                        (args_offset + (u64::from(base) + u64::from(i)) * u64::from(stride)) as f64,
-                    ),
+                    number((args_offset + u64::from(base) * command_size) as f64),
                     input.clone(),
-                    number((u64::from(i) * command_size) as f64),
-                    number(command_size as f64),
+                    number(0u32),
+                    number(packed_size as f64),
                 ],
             )
             .map_err(error)?;
+        } else {
+            // Padding is part of the source ABI. Keep the established direct
+            // copies until a separately measured GPU packing path is justified.
+            for i in 0..chunk_count {
+                js::call(
+                    &encoder.raw,
+                    "copyBufferToBuffer",
+                    &[
+                        args.raw.clone(),
+                        number(
+                            (args_offset + (u64::from(base) + u64::from(i)) * u64::from(stride))
+                                as f64,
+                        ),
+                        input.clone(),
+                        number((u64::from(i) * command_size) as f64),
+                        number(command_size as f64),
+                    ],
+                )
+                .map_err(error)?;
+            }
         }
         let pass = js::call1(&encoder.raw, "beginComputePass", &object()).map_err(error)?;
         js::call1(&pass, "setPipeline", &pipeline).map_err(error)?;
@@ -229,7 +262,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
         js::call0(&pass, "end").map_err(error)?;
         encoder
             .keep_alive
-            .extend([input, output.clone(), module, pipeline, group]);
+            .extend([input, output.clone(), parameters, group]);
         outputs.push((output, chunk_count));
         base += chunk_count;
     }

@@ -6,6 +6,7 @@
 //! leases and device loss are handled by their dedicated modules; no renderer
 //! scheduling or CPU command replay lives here.
 
+mod binding_validation;
 mod bindings;
 mod blit;
 mod command;
@@ -29,6 +30,7 @@ mod resource_validation;
 mod subgroup;
 mod submit;
 mod surface;
+mod utility;
 
 pub use instance::{WebGpu, WebGpuInstance};
 

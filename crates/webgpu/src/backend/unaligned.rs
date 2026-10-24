@@ -40,36 +40,8 @@ pub(super) fn patch(
         ],
     )
     .map_err(error)?;
-    let module_desc = object();
-    let code = format!(
-        "@group(0) @binding(0) var<storage, read_write> word: array<u32>; @compute @workgroup_size(1) fn main() {{ word[0] = (word[0] & ~{mask}u) | {value}u; }}"
-    );
-    field(&module_desc, "code", JsValue::from_str(&code))?;
-    let module = js::call1(device, "createShaderModule", &module_desc).map_err(error)?;
-    let stage = object();
-    field(&stage, "module", module)?;
-    field(&stage, "entryPoint", JsValue::from_str("main"))?;
-    let pipeline_desc = object();
-    field(&pipeline_desc, "layout", JsValue::from_str("auto"))?;
-    field(&pipeline_desc, "compute", stage)?;
-    let pipeline = js::call1(device, "createComputePipeline", &pipeline_desc).map_err(error)?;
-    let layout = js::call1(&pipeline, "getBindGroupLayout", &number(0u32)).map_err(error)?;
-    let resource = object();
-    field(&resource, "buffer", temporary.clone())?;
-    let entry = object();
-    field(&entry, "binding", number(0u32))?;
-    field(&entry, "resource", resource)?;
-    let entries = Array::new();
-    entries.push(&entry);
-    let group_desc = object();
-    field(&group_desc, "layout", layout)?;
-    field(&group_desc, "entries", entries.into())?;
-    let group = js::call1(device, "createBindGroup", &group_desc).map_err(error)?;
-    let pass = js::call1(&encoder.raw, "beginComputePass", &object()).map_err(error)?;
-    js::call1(&pass, "setPipeline", &pipeline).map_err(error)?;
-    js::call(&pass, "setBindGroup", &[number(0u32), group]).map_err(error)?;
-    js::call1(&pass, "dispatchWorkgroups", &number(1u32)).map_err(error)?;
-    js::call0(&pass, "end").map_err(error)?;
+    let pipeline = super::super::utility::pipeline(&encoder.device, "word-patch", PATCH)?;
+    execute(encoder, &temporary, &pipeline, &[mask, value, 0, 0], 1)?;
     js::call(
         &encoder.raw,
         "copyBufferToBuffer",
@@ -127,44 +99,23 @@ pub(super) fn copy_word(
         )
         .map_err(error)?;
     }
-    let code = format!(
-        "@group(0) @binding(0) var<storage, read_write> words: array<u32>; @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id: vec3<u32>) {{ let w = id.x; if (w >= {dest_words}u) {{ return; }} var result = words[{source_words}u + w]; for (var i = 0u; i < 4u; i++) {{ let d = w * 4u + i; if (d >= {first}u && d < {end}u) {{ let s = d - {first}u + {source_first}u; let byte = (words[s / 4u] >> ((s % 4u) * 8u)) & 255u; let shift = i * 8u; result = (result & ~(255u << shift)) | (byte << shift); }} }} words[{source_words}u + w] = result; }}",
-        source_words = source_size / 4,
-        dest_words = dest_size / 4,
-        end = first + count
-    );
-    let module_desc = object();
-    field(&module_desc, "code", JsValue::from_str(&code))?;
-    let module = js::call1(device, "createShaderModule", &module_desc).map_err(error)?;
-    let stage = object();
-    field(&stage, "module", module)?;
-    field(&stage, "entryPoint", JsValue::from_str("main"))?;
-    let pipeline_desc = object();
-    field(&pipeline_desc, "layout", JsValue::from_str("auto"))?;
-    field(&pipeline_desc, "compute", stage)?;
-    let pipeline = js::call1(device, "createComputePipeline", &pipeline_desc).map_err(error)?;
-    let layout = js::call1(&pipeline, "getBindGroupLayout", &number(0u32)).map_err(error)?;
-    let resource = object();
-    field(&resource, "buffer", temp.clone())?;
-    let entry = object();
-    field(&entry, "binding", number(0u32))?;
-    field(&entry, "resource", resource)?;
-    let entries = Array::new();
-    entries.push(&entry);
-    let gd = object();
-    field(&gd, "layout", layout)?;
-    field(&gd, "entries", entries.into())?;
-    let group = js::call1(device, "createBindGroup", &gd).map_err(error)?;
-    let pass = js::call1(&encoder.raw, "beginComputePass", &object()).map_err(error)?;
-    js::call1(&pass, "setPipeline", &pipeline).map_err(error)?;
-    js::call(&pass, "setBindGroup", &[number(0u32), group]).map_err(error)?;
-    js::call1(
-        &pass,
-        "dispatchWorkgroups",
-        &number((dest_size / 4).div_ceil(64)),
-    )
-    .map_err(error)?;
-    js::call0(&pass, "end").map_err(error)?;
+    let pipeline = super::super::utility::pipeline(&encoder.device, "word-copy", COPY)?;
+    execute(
+        encoder,
+        &temp,
+        &pipeline,
+        &[
+            source_size / 4,
+            dest_size / 4,
+            first as u32,
+            (first + count) as u32,
+            source_first as u32,
+            0,
+            0,
+            0,
+        ],
+        (dest_size / 4).div_ceil(64),
+    )?;
     js::call(
         &encoder.raw,
         "copyBufferToBuffer",
@@ -180,5 +131,83 @@ pub(super) fn copy_word(
     encoder
         .keep_alive
         .extend([temp, pipeline, src.raw.clone(), dst.raw.clone()]);
+    Ok(())
+}
+
+// Parameter data changes per operation while these WGSL kernels stay fixed.
+const PATCH: &str = r#"
+struct Params { mask: u32, value: u32, pad0: u32, pad1: u32 }
+@group(0) @binding(0) var<storage, read_write> word: array<u32>;
+@group(0) @binding(1) var<uniform> params: Params;
+@compute @workgroup_size(1) fn main() {
+    word[0] = (word[0] & ~params.mask) | params.value;
+}
+"#;
+const COPY: &str = r#"
+struct Params {
+    source_words: u32, dest_words: u32, first: u32, end: u32,
+    source_first: u32, pad0: u32, pad1: u32, pad2: u32
+}
+@group(0) @binding(0) var<storage, read_write> words: array<u32>;
+@group(0) @binding(1) var<uniform> params: Params;
+@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let w = id.x;
+    if (w >= params.dest_words) { return; }
+    var result = words[params.source_words + w];
+    for (var i = 0u; i < 4u; i++) {
+        let d = w * 4u + i;
+        if (d >= params.first && d < params.end) {
+            let s = d - params.first + params.source_first;
+            let byte = (words[s / 4u] >> ((s % 4u) * 8u)) & 255u;
+            let shift = i * 8u;
+            result = (result & ~(255u << shift)) | (byte << shift);
+        }
+    }
+    words[params.source_words + w] = result;
+}
+"#;
+
+fn execute(
+    encoder: &mut WebGpuEncoder,
+    temporary: &JsValue,
+    pipeline: &JsValue,
+    parameters: &[u32],
+    groups: u32,
+) -> Result<()> {
+    let desc = object();
+    field(&desc, "size", number((parameters.len() * 4) as u32))?;
+    field(&desc, "usage", number(64u32))?; // GPUBufferUsage::UNIFORM
+    field(&desc, "mappedAtCreation", JsValue::TRUE)?;
+    let params = js::call1(&encoder.device.0.device, "createBuffer", &desc).map_err(error)?;
+    let mapped = js::call0(&params, "getMappedRange").map_err(error)?;
+    let bytes: Vec<_> = parameters
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect();
+    js_sys::Uint8Array::new(&mapped).copy_from(&bytes);
+    js::call0(&params, "unmap").map_err(error)?;
+    let entries = Array::new();
+    for (binding, buffer) in [temporary, &params].into_iter().enumerate() {
+        let resource = object();
+        field(&resource, "buffer", buffer.clone())?;
+        let entry = object();
+        field(&entry, "binding", number(binding as u32))?;
+        field(&entry, "resource", resource)?;
+        entries.push(&entry);
+    }
+    let desc = object();
+    field(
+        &desc,
+        "layout",
+        js::call1(pipeline, "getBindGroupLayout", &number(0u32)).map_err(error)?,
+    )?;
+    field(&desc, "entries", entries.into())?;
+    let group = js::call1(&encoder.device.0.device, "createBindGroup", &desc).map_err(error)?;
+    let pass = js::call1(&encoder.raw, "beginComputePass", &object()).map_err(error)?;
+    js::call1(&pass, "setPipeline", pipeline).map_err(error)?;
+    js::call(&pass, "setBindGroup", &[number(0u32), group.clone()]).map_err(error)?;
+    js::call1(&pass, "dispatchWorkgroups", &number(groups)).map_err(error)?;
+    js::call0(&pass, "end").map_err(error)?;
+    encoder.keep_alive.extend([params, group]);
     Ok(())
 }

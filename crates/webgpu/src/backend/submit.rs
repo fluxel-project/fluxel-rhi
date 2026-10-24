@@ -130,6 +130,71 @@ fn retire(device: &WebGpuDevice) {
         .retain(|flight| matches!(flight.completion.state(), api::CompletionState::Pending));
 }
 
+/// Issues one browser queue boundary and retains its native objects until the
+/// queue's promise settles. Once `queue.submit` has been called, every error
+/// is necessarily indeterminate: JavaScript cannot report whether the queue
+/// accepted the boundary before throwing or before completion observation was
+/// installed.
+fn submit_batch(
+    device: &WebGpuDevice,
+    commands: Array,
+    resources: Vec<JsValue>,
+) -> Result<Completion> {
+    if let Err(error) = js::call1(&device.0.queue, "submit", &commands.into()) {
+        device.0.uncertain_resources.borrow_mut().extend(resources);
+        return Err(Error::Backend(js::message(&error)));
+    }
+    let point = match queue_completion(device) {
+        Ok(point) => point,
+        Err(error) => {
+            device.0.uncertain_resources.borrow_mut().extend(resources);
+            return Err(error);
+        }
+    };
+    device.0.in_flight.borrow_mut().push(InFlight {
+        completion: point.clone(),
+        _resources: resources,
+    });
+    Ok(point)
+}
+
+fn indeterminate(device: &WebGpuDevice, error: Error) -> api::SubmitOutcome<WebGpu> {
+    api::SubmitOutcome::Indeterminate {
+        error,
+        // SAFETY: callers invoke this only after crossing a browser queue or
+        // present-handoff boundary, so Core must retain recovery ownership.
+        uncertain: unsafe { api::NativeUncertainty::from_native(device.0.id, ()) },
+    }
+}
+
+fn flush_batch(
+    device: &WebGpuDevice,
+    frontier: api::StepId,
+    commands: &mut Array,
+    resources: &mut Vec<JsValue>,
+    pending_presents: &mut Vec<(api::StepId, api::PresentBinding<WebGpu>)>,
+    presents: &mut Vec<api::PresentReceipt>,
+    issued_boundaries: &mut Vec<(api::StepId, Completion)>,
+) -> Result<()> {
+    let point = submit_batch(
+        device,
+        std::mem::replace(commands, Array::new()),
+        std::mem::take(resources),
+    )?;
+    for (step, mut binding) in pending_presents.drain(..) {
+        // SAFETY: queue submission for this batch succeeded first; a failed
+        // browser handoff therefore leaves an indeterminate native boundary
+        // and the in-flight batch remains retained.
+        unsafe { binding.try_handoff() }?;
+        presents.push(api::PresentReceipt {
+            step: Some(step),
+            accepted: true,
+        });
+    }
+    issued_boundaries.push((frontier, point));
+    Ok(())
+}
+
 impl api::CompletionBackend for WebGpu {
     type WaitFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
 
@@ -226,81 +291,109 @@ impl api::DeferredBackend for WebGpu {
         retire(device);
         let api::SubmitPacket {
             plan,
-            mut steps,
+            steps,
             completion,
         } = packet;
-        let commands = Array::new();
-        let mut resources = Vec::new();
-        for bound in &mut steps {
-            if let api::StepPayload::Commands(work) = &mut bound.payload {
-                for work in std::mem::take(work) {
-                    // SAFETY: the packet was validated for this device/lane and
-                    // `work` is consumed exactly once by this submit call.
-                    let native = unsafe { work.into_native() };
-                    commands.push(&native.command_buffer);
-                    resources.push(native.command_buffer);
-                    resources.extend(native.keep_alive);
-                }
-            }
-        }
-        if let Err(error) = js::call1(&device.0.queue, "submit", &commands.into()) {
-            device.0.uncertain_resources.borrow_mut().extend(resources);
-            return api::SubmitOutcome::Indeterminate {
-                error: Error::Backend(js::message(&error)),
-                // SAFETY: queue submission was entered; the retained resource
-                // set marks this device's native issue boundary as uncertain.
-                uncertain: unsafe { api::NativeUncertainty::from_native(device.0.id, ()) },
-            };
-        }
-        let point = match queue_completion(device) {
-            Ok(point) => point,
-            Err(error) => {
-                device.0.uncertain_resources.borrow_mut().extend(resources);
-                return api::SubmitOutcome::Indeterminate {
-                    error,
-                    // SAFETY: queue submission succeeded but completion fence
-                    // creation failed, leaving this device's issue boundary uncertain.
-                    uncertain: unsafe { api::NativeUncertainty::from_native(device.0.id, ()) },
-                };
-            }
+        let requested = match &completion {
+            api::CompletionRequest::Steps(steps) => steps.to_vec(),
+            _ => Vec::new(),
         };
-        device.0.in_flight.borrow_mut().push(InFlight {
-            completion: point.clone(),
-            _resources: resources,
-        });
+        let segmented = matches!(completion, api::CompletionRequest::Steps(_));
+        let mut commands = Array::new();
+        let mut resources = Vec::new();
         let mut presents = Vec::new();
         let mut accepted = Vec::new();
-        for mut bound in steps {
-            accepted.push(bound.step);
-            if let api::StepPayload::Present(binding) = &mut bound.payload {
-                // SAFETY: packet validation proved this is the live exclusive
-                // lease; after queue submission, failed handoff is indeterminate.
-                if let Err(error) = unsafe { binding.try_handoff() } {
-                    return api::SubmitOutcome::Indeterminate {
-                        error,
-                        // SAFETY: GPU commands were already accepted, so this
-                        // device owns the indeterminate presentation boundary.
-                        uncertain: unsafe { api::NativeUncertainty::from_native(device.0.id, ()) },
-                    };
+        let mut pending_presents: Vec<(api::StepId, api::PresentBinding<WebGpu>)> = Vec::new();
+        let mut checkpoints = Vec::new();
+        let mut issued_boundaries = Vec::new();
+        for bound in steps {
+            let step = bound.step;
+            match bound.payload {
+                api::StepPayload::Commands(work) => {
+                    for work in work {
+                        // SAFETY: the packet was validated for this device/lane
+                        // and `work` is consumed exactly once by this submit call.
+                        let native = unsafe { work.into_native() };
+                        commands.push(&native.command_buffer);
+                        resources.push(native.command_buffer);
+                        resources.extend(native.keep_alive);
+                    }
                 }
-                presents.push(api::PresentReceipt {
-                    step: Some(bound.step),
-                    accepted: true,
+                api::StepPayload::Present(binding) => pending_presents.push((step, binding)),
+                api::StepPayload::SparseBind(_) => unreachable!("prevalidated WebGPU plan"),
+            }
+            accepted.push(step);
+            if segmented && requested.contains(&step) {
+                if let Err(error) = flush_batch(
+                    device,
+                    step,
+                    &mut commands,
+                    &mut resources,
+                    &mut pending_presents,
+                    &mut presents,
+                    &mut issued_boundaries,
+                ) {
+                    return indeterminate(device, error);
+                }
+            }
+        }
+        // `None`/`End` deliberately remain one browser submission.  `Steps`
+        // emits a tail boundary only when work or a present follows its final
+        // requested checkpoint, retaining that tail without exposing a token.
+        if !segmented || !resources.is_empty() || !pending_presents.is_empty() {
+            let frontier = accepted.last().copied().unwrap_or(api::StepId {
+                plan: plan.id(),
+                index: 0,
+            });
+            if let Err(error) = flush_batch(
+                device,
+                frontier,
+                &mut commands,
+                &mut resources,
+                &mut pending_presents,
+                &mut presents,
+                &mut issued_boundaries,
+            ) {
+                return indeterminate(device, error);
+            }
+        }
+        // A request list may contain duplicates or be deliberately ordered
+        // differently from execution. Each requested item refers to the one
+        // native boundary emitted immediately after that exact plan step.
+        for requested_step in &requested {
+            let (_, point) = issued_boundaries
+                .iter()
+                .find(|(frontier, _)| frontier == requested_step)
+                .expect("validated requested WebGPU completion boundary");
+            checkpoints.push(api::Checkpoint {
+                // SAFETY: this promise was installed after the matching queue
+                // submit boundary on this device.
+                point: unsafe { api::CompletionPoint::from_native(device.0.id, point.clone()) },
+                covers: api::CompletionCoverage {
+                    lane_frontiers: vec![(
+                        plan.steps()[requested_step.index as usize].lane,
+                        *requested_step,
+                    )],
+                },
+            });
+        }
+        if matches!(completion, api::CompletionRequest::End) {
+            if let Some(frontier) = accepted.last().copied() {
+                let (_, point) = issued_boundaries
+                    .last()
+                    .expect("one WebGPU batch was issued for accepted work");
+                checkpoints.push(api::Checkpoint {
+                    // SAFETY: the final queue promise follows the full packet.
+                    point: unsafe { api::CompletionPoint::from_native(device.0.id, point.clone()) },
+                    covers: api::CompletionCoverage {
+                        lane_frontiers: vec![(
+                            plan.steps()[frontier.index as usize].lane,
+                            frontier,
+                        )],
+                    },
                 });
             }
         }
-        let last = accepted.last().copied();
-        let checkpoints = match (&completion, last) {
-            (api::CompletionRequest::None, _) | (_, None) => Vec::new(),
-            (_, Some(frontier)) => vec![api::Checkpoint {
-                // SAFETY: `point` was created from this device's queue after
-                // accepted submission and therefore belongs to `device.0.id`.
-                point: unsafe { api::CompletionPoint::from_native(device.0.id, point) },
-                covers: api::CompletionCoverage {
-                    lane_frontiers: vec![(plan.steps()[frontier.index as usize].lane, frontier)],
-                },
-            }],
-        };
         let index = device.0.next_submission.get();
         device.0.next_submission.set(index.saturating_add(1));
         api::SubmitOutcome::Accepted(api::SubmissionReceipt {

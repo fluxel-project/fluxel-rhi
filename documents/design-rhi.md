@@ -1576,3 +1576,66 @@ The final independent Metal source review found no further confirmed P0/P1/P2
 issues after these changes. MSRV 1.87 Windows and aarch64-apple-darwin all-target
 compilation checks pass. No Metal tests were executed; compilation and source
 review do not establish native GPU, WSI, iOS linking or performance acceptance.
+
+## WebGPU review corrections
+
+Buffer support and creation share one native-usage admission function. Illegal
+mapping combinations are rejected before browser object creation. The explicit
+logical MAP_READ | QUERY_RESOLVE route uses non-mappable native resolve storage
+with COPY_SRC plus a MAP_READ staging copy. Buffer objects retain their actual
+native usage; mapping and readback use those facts rather than the logical usage.
+
+Bind-group layouts and samplers retain backend-local descriptor metadata beside
+their browser handles. Bind-group creation checks buffer usage, range, minimum
+binding size, alignment and native binding-size limits; sampled/storage texture
+usage, view shape and numeric/sample class; and sampler comparison/filtering
+compatibility before issuing createBindGroup. Filtering layouts admit nearest
+samplers, while non-filtering layouts reject linear samplers. Storage binding
+sizes must be multiples of four; this rule is not imposed on uniform sizes.
+These checks do not move platform handles or metadata into Core.
+
+None and End completion requests retain a single batched queue submission.
+Steps requests submit only at the requested boundaries and install a separate
+onSubmittedWorkDone promise after each boundary. A trailing unrequested batch
+still receives internal completion retention. Checkpoints report the exact
+requested frontier; this observes the native single queue and adds no scheduler,
+CPU command replay or artificial multi-queue model.
+
+Fixed byte-patch/copy, indirect-count conversion and occlusion-segment reduction
+compute kernels use device-local immutable pipeline caches. Per-operation masks,
+values, chunk bases and counts are passed in retained uniform buffers. Partial
+clear/resolve, color/depth blit, depth upload and stencil-copy render utilities
+likewise cache only finite native format/sample/shape variants; colors, offsets,
+rectangles and strides remain per-operation parameters. Mutable bind groups and
+scratch resources remain local to recorded native work.
+
+A Chrome diagnostic compares the same fixed byte-patch kernel with its device
+cache retained versus explicitly invalidated before every operation. Across three
+interleaved samples, median CPU recording times were 1.240 versus 1.950 ms for
+16 patches, and 5.965 versus 7.815 ms for 128 patches. Every sample checks exact
+GPU readback and untouched neighboring bytes. This isolates cache reuse; it is
+not an old-revision or renderer frame-rate benchmark. Tightly packed indirect-count source
+records use one native copy per chunk. Padded-stride packing still records
+per-draw copies; a different GPU packing algorithm requires a measured candidate
+before replacing that path.
+
+The existing native texture usage lowering remains intact: where legal, logical
+COPY_SRC resources receive the private native texture-binding capability needed
+by GPU blit lowering, and renderable COPY_DST resources receive render-attachment
+capability. These facts must be read alongside logical descriptors when auditing
+utility paths. Cube view validation does not impose an invented six-layer base
+alignment; the WebGPU standard constrains the cube layer count.
+
+Secondary recording, multi-queue, pipeline statistics, persistent native pipeline
+cache, mesh/ray, sparse/placed memory and external/native interop retain their
+standard WebGPU capability boundaries. No CPU implementation fabricates support
+for these operations.
+
+Focused browser acceptance on Windows / Chrome 155 / AMD RDNA 3 (non-fallback
+adapter) passes 42 tests, including native query readback, invalid descriptor
+recovery, per-step checkpoints, byte-exact transfers, counted draws, split-pass
+queries, partial render areas, MSAA, depth/stencil and canvas configuration.
+ETC2 and ASTC subcases are skipped because that adapter does not expose those
+format features; BC runs. Independent final source review confirms no further
+P0/P1/P2 findings in the reviewed changes. This is browser/device-specific
+acceptance, not a claim for every browser, optional feature or GPU.

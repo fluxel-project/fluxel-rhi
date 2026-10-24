@@ -60,10 +60,11 @@ impl api::ReadbackBackend for WebGpu {
         if range.end > src.size || size == 0 {
             return Err(Error::InvalidRange);
         }
-        if !src.usage.contains(api::BufferUsage::MAP_READ) {
-            if !src.usage.contains(api::BufferUsage::COPY_SRC)
-                && !src.usage.contains(api::BufferUsage::QUERY_RESOLVE)
-            {
+        // Logical MAP_READ on a query-resolve buffer is deliberately lowered
+        // without the native map bit. Route from the actual native usage so it
+        // always gets the required private MAP_READ staging buffer.
+        if src.native_usage & 1 == 0 {
+            if src.native_usage & 4 == 0 {
                 return Err(Error::InvalidRange);
             }
             // `MAP_READ | QUERY_RESOLVE` is prohibited by WebGPU.  Resource
@@ -104,6 +105,7 @@ impl api::ReadbackBackend for WebGpu {
                     raw: staging,
                     size: native_size,
                     usage: api::BufferUsage::MAP_READ.union(api::BufferUsage::COPY_DST),
+                    native_usage: 9,
                     mapped: std::rc::Rc::new(std::cell::Cell::new(false)),
                 },
                 range: 0..native_size,

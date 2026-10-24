@@ -5,7 +5,7 @@
 //! native encoder, which retains them through queue completion.
 
 use fluxel_rhi_core::api::{self, Error, FilterMode, Result};
-use js_sys::{Array, Object};
+use js_sys::{Array, Float32Array, Object, Uint32Array};
 use wasm_bindgen::JsValue;
 
 use super::{command::WebGpuEncoder, instance::WebGpu, js};
@@ -16,6 +16,8 @@ mod depth;
 const SHADER: &str = r#"
 @group(0) @binding(0) var source_texture: texture_2d<f32>;
 @group(0) @binding(1) var source_sampler: sampler;
+struct Parameters { scale: vec2<f32>, offset: vec2<f32>, normalized_z: f32, slice: u32 };
+@group(0) @binding(2) var<uniform> parameters: Parameters;
 
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
@@ -26,7 +28,7 @@ struct VertexOut {
     let uv = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
     var out: VertexOut;
     out.position = vec4<f32>(uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.0, 1.0);
-    out.uv = uv;
+    out.uv = uv * parameters.scale + parameters.offset;
     return out;
 }
 
@@ -38,8 +40,6 @@ struct VertexOut {
 pub(super) struct BlitCache {
     pipeline: JsValue,
     layout: JsValue,
-    linear: JsValue,
-    nearest: JsValue,
 }
 
 fn object() -> JsValue {
@@ -67,23 +67,15 @@ fn number(value: u32) -> JsValue {
 }
 
 fn cache(
-    device: &JsValue,
+    encoder: &WebGpuEncoder,
     target_format: &str,
-    uv_scale: [f32; 2],
-    uv_offset: [f32; 2],
     sample_type: &str,
     use_load: bool,
-    source_z: Option<(u32, f32)>,
+    source_3d: bool,
     source_1d: bool,
+    filter: FilterMode,
 ) -> Result<BlitCache> {
-    let module_desc = object();
-    let mut source = SHADER.replace(
-        "out.uv = uv;",
-        &format!(
-            "out.uv = uv * vec2<f32>({:.9}, {:.9}) + vec2<f32>({:.9}, {:.9});",
-            uv_scale[0], uv_scale[1], uv_offset[0], uv_offset[1]
-        ),
-    );
+    let mut source = SHADER.to_owned();
     if use_load {
         source = source.replace(
             "var source_texture: texture_2d<f32>;",
@@ -92,7 +84,7 @@ fn cache(
         source = source.replace("@group(0) @binding(1) var source_sampler: sampler;", "");
         source = source.replace("@location(0) vec4<f32> {\n    return textureSample(source_texture, source_sampler, in.uv);", &format!("@location(0) vec4<{sample_type}> {{\n    let size = textureDimensions(source_texture);\n    let coord = min(vec2<u32>(in.uv * vec2<f32>(size)), size - vec2<u32>(1u));\n    return textureLoad(source_texture, vec2<i32>(coord), 0);"));
     }
-    if let Some((slice, normalized_z)) = source_z {
+    if source_3d {
         source = source.replace("texture_2d<", "texture_3d<");
         source = source.replace(
             "let size = textureDimensions(source_texture);",
@@ -100,14 +92,11 @@ fn cache(
         );
         source = source.replace(
             "textureLoad(source_texture, vec2<i32>(coord), 0)",
-            &format!("textureLoad(source_texture, vec3<i32>(vec2<i32>(coord), {slice}), 0)"),
+            "textureLoad(source_texture, vec3<i32>(vec2<i32>(coord), i32(parameters.slice)), 0)",
         );
         source = source.replace(
             "textureSample(source_texture, source_sampler, in.uv)",
-            &format!(
-                "textureSample(source_texture, source_sampler, vec3<f32>(in.uv, {:.9}))",
-                normalized_z
-            ),
+            "textureSample(source_texture, source_sampler, vec3<f32>(in.uv, parameters.normalized_z))",
         );
     }
     if source_1d {
@@ -125,37 +114,33 @@ fn cache(
             "textureSample(source_texture, source_sampler, in.uv.x)",
         );
     }
-    field(&module_desc, "code", JsValue::from_str(&source))?;
-    let module = call1(device, "createShaderModule", &module_desc)?;
-    let vertex = object();
-    field(&vertex, "module", module.clone())?;
-    field(&vertex, "entryPoint", JsValue::from_str("vs_main"))?;
-    let fragment = object();
-    field(&fragment, "module", module)?;
-    field(&fragment, "entryPoint", JsValue::from_str("fs_main"))?;
-    let target = object();
-    field(&target, "format", JsValue::from_str(target_format))?;
-    let targets = Array::new();
-    targets.push(&target);
-    field(&fragment, "targets", targets.into())?;
-    let desc = object();
-    field(&desc, "layout", JsValue::from_str("auto"))?;
-    field(&desc, "vertex", vertex)?;
-    field(&desc, "fragment", fragment)?;
-    let pipeline = call1(device, "createRenderPipeline", &desc)?;
-    let layout = call1(&pipeline, "getBindGroupLayout", &number(0))?;
-    let make_sampler = |mode: &str| -> Result<JsValue> {
+    let key = format!(
+        "blit-{target_format}-{sample_type}-{}-{}-{}-{:?}",
+        use_load, source_3d, source_1d, filter
+    );
+    let pipeline = super::utility::render_pipeline(&encoder.device, key, || {
+        let module_desc = object();
+        field(&module_desc, "code", JsValue::from_str(&source))?;
+        let module = call1(&encoder.device.0.device, "createShaderModule", &module_desc)?;
+        let vertex = object();
+        field(&vertex, "module", module.clone())?;
+        field(&vertex, "entryPoint", JsValue::from_str("vs_main"))?;
+        let fragment = object();
+        field(&fragment, "module", module)?;
+        field(&fragment, "entryPoint", JsValue::from_str("fs_main"))?;
+        let target = object();
+        field(&target, "format", JsValue::from_str(target_format))?;
+        let targets = Array::new();
+        targets.push(&target);
+        field(&fragment, "targets", targets.into())?;
         let desc = object();
-        field(&desc, "minFilter", JsValue::from_str(mode))?;
-        field(&desc, "magFilter", JsValue::from_str(mode))?;
-        call1(device, "createSampler", &desc)
-    };
-    Ok(BlitCache {
-        pipeline,
-        layout,
-        linear: make_sampler("linear")?,
-        nearest: make_sampler("nearest")?,
-    })
+        field(&desc, "layout", JsValue::from_str("auto"))?;
+        field(&desc, "vertex", vertex)?;
+        field(&desc, "fragment", fragment)?;
+        call1(&encoder.device.0.device, "createRenderPipeline", &desc)
+    })?;
+    let layout = call1(&pipeline, "getBindGroupLayout", &number(0))?;
+    Ok(BlitCache { pipeline, layout })
 }
 
 fn mip_extent(base: u32, mip: u32) -> u32 {
@@ -335,30 +320,20 @@ fn blit_inner(
         return Err(Error::InvalidRange);
     }
     let target_format = super::resource::texture_format(target.desc.format)?;
+    let normalized_z = if desc.dimension == api::TextureDimension::D3 {
+        source_z
+            .unwrap_or((src.origin[2] as f32 + 0.5) / mip_extent(desc.extent[2], src.mip) as f32)
+    } else {
+        0.0
+    };
     let cache = cache(
-        &encoder.device.0.device,
+        encoder,
         target_format,
-        [
-            src.extent[0] as f32 / source_width as f32,
-            src.extent[1] as f32 / source_height as f32,
-        ],
-        [
-            src.origin[0] as f32 / source_width as f32,
-            src.origin[1] as f32 / source_height as f32,
-        ],
         source_type,
         use_load,
-        if desc.dimension == api::TextureDimension::D3 {
-            Some((
-                src.origin[2],
-                source_z.unwrap_or(
-                    (src.origin[2] as f32 + 0.5) / mip_extent(desc.extent[2], src.mip) as f32,
-                ),
-            ))
-        } else {
-            None
-        },
+        desc.dimension == api::TextureDimension::D3,
         desc.dimension == api::TextureDimension::D1,
+        filter,
     )?;
     // A sampled intermediate supplies the private usage required by the
     // render implementation without changing the public COPY_SRC contract.
@@ -448,14 +423,31 @@ fn blit_inner(
     let entries = Array::new();
     let mut resources = vec![(0, source_view.clone())];
     if !use_load {
-        resources.push((
-            1,
-            match filter {
-                FilterMode::Linear => cache.linear.clone(),
-                FilterMode::Nearest => cache.nearest.clone(),
-            },
-        ));
+        let sampler_desc = object();
+        let mode = match filter {
+            FilterMode::Linear => "linear",
+            FilterMode::Nearest => "nearest",
+        };
+        field(&sampler_desc, "minFilter", JsValue::from_str(mode))?;
+        field(&sampler_desc, "magFilter", JsValue::from_str(mode))?;
+        let sampler = call1(&encoder.device.0.device, "createSampler", &sampler_desc)?;
+        resources.push((1, sampler));
     }
+    let parameter_desc = object();
+    field(&parameter_desc, "size", number(32))?;
+    field(&parameter_desc, "usage", number(64))?;
+    field(&parameter_desc, "mappedAtCreation", JsValue::TRUE)?;
+    let parameters = call1(&encoder.device.0.device, "createBuffer", &parameter_desc)?;
+    let mapped = call0(&parameters, "getMappedRange")?;
+    let floats = Float32Array::new(&mapped);
+    floats.set_index(0, src.extent[0] as f32 / source_width as f32);
+    floats.set_index(1, src.extent[1] as f32 / source_height as f32);
+    floats.set_index(2, src.origin[0] as f32 / source_width as f32);
+    floats.set_index(3, src.origin[1] as f32 / source_height as f32);
+    floats.set_index(4, normalized_z);
+    Uint32Array::new(&mapped).set_index(5, src.origin[2]);
+    call0(&parameters, "unmap")?;
+    resources.push((2, parameters.clone()));
     for (binding, resource) in resources {
         let entry = object();
         field(&entry, "binding", number(binding))?;
@@ -507,9 +499,9 @@ fn blit_inner(
         target.raw.clone(),
         temp,
         source_view,
+        parameters,
         temp_view,
         bind,
-        cache.pipeline.clone(),
     ]);
     Ok(())
 }

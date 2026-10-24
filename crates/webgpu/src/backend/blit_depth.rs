@@ -1,9 +1,10 @@
 //! Depth blits use fragment depth writes to preserve the rest of the attachment.
+use super::super::utility;
 use super::{
     Error, FilterMode, JsValue, Result, WebGpu, WebGpuEncoder, api, call, call0, call1, field,
     mip_extent, number, object,
 };
-use js_sys::Array;
+use js_sys::{Array, Float32Array};
 
 pub(super) fn blit_depth(
     encoder: &mut WebGpuEncoder,
@@ -59,13 +60,6 @@ pub(super) fn blit_depth(
     if !fmt.starts_with("depth") || !sf.starts_with("depth") {
         return Err(Error::Unsupported("WebGPU depth blit format"));
     }
-    let uv = format!(
-        "vec2<f32>({:.9}, {:.9}) + uv * vec2<f32>({:.9}, {:.9})",
-        src.origin[0] as f32 / sw as f32,
-        src.origin[1] as f32 / sh as f32,
-        src.extent[0] as f32 / sw as f32,
-        src.extent[1] as f32 / sh as f32
-    );
     let value = match filter {
         FilterMode::Nearest => {
             "textureLoad(tex, vec2<i32>(min(vec2<u32>(uv * vec2<f32>(textureDimensions(tex))), textureDimensions(tex) - vec2<u32>(1u))), 0)"
@@ -73,7 +67,7 @@ pub(super) fn blit_depth(
         FilterMode::Linear => "linear_depth(uv)",
     };
     let mut code = format!(
-        "@group(0) @binding(0) var tex: texture_depth_2d; fn linear_depth(uv: vec2<f32>) -> f32 {{ let size=vec2<i32>(textureDimensions(tex)); let p=uv*vec2<f32>(size)-vec2<f32>(0.5); let base=vec2<i32>(floor(p)); let f=fract(p); let a=clamp(base,vec2<i32>(0),size-vec2<i32>(1)); let b=clamp(base+vec2<i32>(1),vec2<i32>(0),size-vec2<i32>(1)); return mix(mix(textureLoad(tex,a,0),textureLoad(tex,vec2<i32>(b.x,a.y),0),f.x),mix(textureLoad(tex,vec2<i32>(a.x,b.y),0),textureLoad(tex,b,0),f.x),f.y); }} struct O {{ @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32>, }}; @vertex fn vs(@builtin(vertex_index) i: u32) -> O {{ let uv = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u)); var o: O; o.pos = vec4<f32>(uv * vec2<f32>(2., -2.) + vec2<f32>(-1., 1.), 0., 1.); o.uv = {uv}; return o; }} @fragment fn fs(o: O) -> @builtin(frag_depth) f32 {{ let uv = o.uv; return {value}; }}"
+        "@group(0) @binding(0) var tex: texture_depth_2d; @group(0) @binding(1) var<uniform> region: vec4<f32>; fn linear_depth(uv: vec2<f32>) -> f32 {{ let size=vec2<i32>(textureDimensions(tex)); let p=uv*vec2<f32>(size)-vec2<f32>(0.5); let base=vec2<i32>(floor(p)); let f=fract(p); let a=clamp(base,vec2<i32>(0),size-vec2<i32>(1)); let b=clamp(base+vec2<i32>(1),vec2<i32>(0),size-vec2<i32>(1)); return mix(mix(textureLoad(tex,a,0),textureLoad(tex,vec2<i32>(b.x,a.y),0),f.x),mix(textureLoad(tex,vec2<i32>(a.x,b.y),0),textureLoad(tex,b,0),f.x),f.y); }} struct O {{ @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32>, }}; @vertex fn vs(@builtin(vertex_index) i: u32) -> O {{ let uv = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u)); var o: O; o.pos = vec4<f32>(uv * vec2<f32>(2., -2.) + vec2<f32>(-1., 1.), 0., 1.); o.uv = region.xy + uv * region.zw; return o; }} @fragment fn fs(o: O) -> @builtin(frag_depth) f32 {{ let uv = o.uv; return {value}; }}"
     );
     if sd.samples > 1 {
         code = code
@@ -87,29 +81,34 @@ pub(super) fn blit_depth(
                 "textureDimensions(tex) - vec2<u32>(1u))), i32(sample))",
             );
     }
-    let md = object();
-    field(&md, "code", JsValue::from_str(&code))?;
-    let module = call1(&encoder.device.0.device, "createShaderModule", &md)?;
-    let vertex = object();
-    field(&vertex, "module", module.clone())?;
-    field(&vertex, "entryPoint", JsValue::from_str("vs"))?;
-    let fragment = object();
-    field(&fragment, "module", module)?;
-    field(&fragment, "entryPoint", JsValue::from_str("fs"))?;
-    field(&fragment, "targets", Array::new().into())?;
-    let ds = object();
-    field(&ds, "format", JsValue::from_str(fmt))?;
-    field(&ds, "depthWriteEnabled", JsValue::TRUE)?;
-    field(&ds, "depthCompare", JsValue::from_str("always"))?;
-    let pd = object();
-    field(&pd, "layout", JsValue::from_str("auto"))?;
-    field(&pd, "vertex", vertex)?;
-    field(&pd, "fragment", fragment)?;
-    field(&pd, "depthStencil", ds)?;
-    let ms = object();
-    field(&ms, "count", number(sd.samples))?;
-    field(&pd, "multisample", ms)?;
-    let pipeline = call1(&encoder.device.0.device, "createRenderPipeline", &pd)?;
+    let key = format!("depth-blit:{fmt}:{}:{filter:?}", sd.samples);
+    let cache_device = encoder.device.clone();
+    let native_device = cache_device.clone();
+    let pipeline = utility::render_pipeline(&cache_device, key, move || {
+        let md = object();
+        field(&md, "code", JsValue::from_str(&code))?;
+        let module = call1(&native_device.0.device, "createShaderModule", &md)?;
+        let vertex = object();
+        field(&vertex, "module", module.clone())?;
+        field(&vertex, "entryPoint", JsValue::from_str("vs"))?;
+        let fragment = object();
+        field(&fragment, "module", module)?;
+        field(&fragment, "entryPoint", JsValue::from_str("fs"))?;
+        field(&fragment, "targets", Array::new().into())?;
+        let ds = object();
+        field(&ds, "format", JsValue::from_str(fmt))?;
+        field(&ds, "depthWriteEnabled", JsValue::TRUE)?;
+        field(&ds, "depthCompare", JsValue::from_str("always"))?;
+        let pd = object();
+        field(&pd, "layout", JsValue::from_str("auto"))?;
+        field(&pd, "vertex", vertex)?;
+        field(&pd, "fragment", fragment)?;
+        field(&pd, "depthStencil", ds)?;
+        let ms = object();
+        field(&ms, "count", number(sd.samples))?;
+        field(&pd, "multisample", ms)?;
+        call1(&native_device.0.device, "createRenderPipeline", &pd)
+    })?;
     let layout = call1(&pipeline, "getBindGroupLayout", &number(0))?;
     let alias = js_sys::Object::is(&source.raw, &target.raw);
     let sampled = if alias {
@@ -164,6 +163,26 @@ pub(super) fn blit_depth(
     field(&e, "binding", number(0))?;
     field(&e, "resource", sv.clone())?;
     entries.push(&e);
+    let uniform_desc = object();
+    field(&uniform_desc, "size", number(16))?;
+    field(&uniform_desc, "usage", number(64))?;
+    field(&uniform_desc, "mappedAtCreation", JsValue::TRUE)?;
+    let uniform = call1(&encoder.device.0.device, "createBuffer", &uniform_desc)?;
+    let mapped = call0(&uniform, "getMappedRange")?;
+    let values = Float32Array::new(&mapped);
+    values.set_index(0, src.origin[0] as f32 / sw as f32);
+    values.set_index(1, src.origin[1] as f32 / sh as f32);
+    values.set_index(2, src.extent[0] as f32 / sw as f32);
+    values.set_index(3, src.extent[1] as f32 / sh as f32);
+    call0(&uniform, "unmap")?;
+    let e = object();
+    field(&e, "binding", number(1))?;
+    let resource = object();
+    field(&resource, "buffer", uniform.clone())?;
+    field(&resource, "offset", number(0))?;
+    field(&resource, "size", number(16))?;
+    field(&e, "resource", resource)?;
+    entries.push(&e);
     let bd = object();
     field(&bd, "layout", layout)?;
     field(&bd, "entries", entries.into())?;
@@ -212,6 +231,7 @@ pub(super) fn blit_depth(
         sv,
         dv,
         bind,
+        uniform,
         pipeline,
     ]);
     Ok(())

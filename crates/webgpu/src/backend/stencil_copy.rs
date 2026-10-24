@@ -1,4 +1,5 @@
 //! Copy a stencil aspect through a uint sampled view and stencil replacement.
+use super::super::utility;
 use super::{Result, WebGpu, WebGpuEncoder, api, error, field, js, number, object};
 use js_sys::{Array, Uint32Array};
 use wasm_bindgen::JsValue;
@@ -22,37 +23,42 @@ pub(super) fn copy(
             )
             .replace("vec2<i32>(p.xy),0)", "vec2<i32>(p.xy),i32(sample))");
     }
-    let md = object();
-    field(&md, "code", JsValue::from_str(&code))?;
-    let module = js::call1(&encoder.device.0.device, "createShaderModule", &md).map_err(error)?;
-    let vertex = object();
-    field(&vertex, "module", module.clone())?;
-    field(&vertex, "entryPoint", JsValue::from_str("vs"))?;
-    let fragment = object();
-    field(&fragment, "module", module)?;
-    field(&fragment, "entryPoint", JsValue::from_str("fs"))?;
-    field(&fragment, "targets", Array::new().into())?;
-    let stencil = object();
-    field(&stencil, "compare", JsValue::from_str("always"))?;
-    field(&stencil, "passOp", JsValue::from_str("replace"))?;
-    let ds = object();
-    field(&ds, "format", JsValue::from_str(fmt))?;
-    field(&ds, "depthWriteEnabled", JsValue::FALSE)?;
-    field(&ds, "depthCompare", JsValue::from_str("always"))?;
-    field(&ds, "stencilFront", stencil.clone())?;
-    field(&ds, "stencilBack", stencil)?;
-    field(&ds, "stencilReadMask", number(255u32))?;
-    field(&ds, "stencilWriteMask", number(255u32))?;
-    let pd = object();
-    field(&pd, "layout", JsValue::from_str("auto"))?;
-    field(&pd, "vertex", vertex)?;
-    field(&pd, "fragment", fragment)?;
-    field(&pd, "depthStencil", ds)?;
-    let ms = object();
-    field(&ms, "count", number(source.desc.samples))?;
-    field(&pd, "multisample", ms)?;
-    let pipeline =
-        js::call1(&encoder.device.0.device, "createRenderPipeline", &pd).map_err(error)?;
+    let key = format!("stencil-copy:{fmt}:{}", source.desc.samples);
+    let cache_device = encoder.device.clone();
+    let native_device = cache_device.clone();
+    let pipeline = utility::render_pipeline(&cache_device, key, move || {
+        let md = object();
+        field(&md, "code", JsValue::from_str(&code))?;
+        let module =
+            js::call1(&native_device.0.device, "createShaderModule", &md).map_err(error)?;
+        let vertex = object();
+        field(&vertex, "module", module.clone())?;
+        field(&vertex, "entryPoint", JsValue::from_str("vs"))?;
+        let fragment = object();
+        field(&fragment, "module", module)?;
+        field(&fragment, "entryPoint", JsValue::from_str("fs"))?;
+        field(&fragment, "targets", Array::new().into())?;
+        let stencil = object();
+        field(&stencil, "compare", JsValue::from_str("always"))?;
+        field(&stencil, "passOp", JsValue::from_str("replace"))?;
+        let ds = object();
+        field(&ds, "format", JsValue::from_str(fmt))?;
+        field(&ds, "depthWriteEnabled", JsValue::FALSE)?;
+        field(&ds, "depthCompare", JsValue::from_str("always"))?;
+        field(&ds, "stencilFront", stencil.clone())?;
+        field(&ds, "stencilBack", stencil)?;
+        field(&ds, "stencilReadMask", number(255u32))?;
+        field(&ds, "stencilWriteMask", number(255u32))?;
+        let pd = object();
+        field(&pd, "layout", JsValue::from_str("auto"))?;
+        field(&pd, "vertex", vertex)?;
+        field(&pd, "fragment", fragment)?;
+        field(&pd, "depthStencil", ds)?;
+        let ms = object();
+        field(&ms, "count", number(source.desc.samples))?;
+        field(&pd, "multisample", ms)?;
+        js::call1(&native_device.0.device, "createRenderPipeline", &pd).map_err(error)
+    })?;
     let layout = js::call1(&pipeline, "getBindGroupLayout", &number(0u32)).map_err(error)?;
     let ud = object();
     field(&ud, "size", number(65536u32))?;
@@ -65,8 +71,8 @@ pub(super) fn copy(
         words.set_index(i * 64, i);
     }
     js::call0(&uniforms, "unmap").map_err(error)?;
+    let alias = js_sys::Object::is(&source.raw, &target.raw);
     for layer in 0..src.extent[2] {
-        let alias = js_sys::Object::is(&source.raw, &target.raw);
         let sampled = if alias {
             let td = object();
             let size = object();

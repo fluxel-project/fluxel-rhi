@@ -7,6 +7,7 @@ use super::{
 };
 use fluxel_rhi_core::api::{self, Result};
 use js_sys::Array;
+use js_sys::Uint8Array;
 use wasm_bindgen::JsValue;
 
 pub(super) fn view_info(
@@ -33,7 +34,7 @@ pub(super) fn view_info(
     }
 }
 
-fn pipeline(
+fn create_pipeline(
     encoder: &WebGpuEncoder,
     format: api::TextureFormat,
     samples: u32,
@@ -92,6 +93,54 @@ fn pipeline(
     js::call1(&encoder.device.0.device, "createRenderPipeline", &desc).map_err(error)
 }
 
+fn pipeline(
+    encoder: &WebGpuEncoder,
+    key: String,
+    format: api::TextureFormat,
+    samples: u32,
+    code: String,
+    depth: bool,
+    stencil: bool,
+) -> Result<JsValue> {
+    super::utility::render_pipeline(&encoder.device, key, || {
+        create_pipeline(encoder, format, samples, &code, depth, stencil)
+    })
+}
+
+fn uniform(encoder: &mut WebGpuEncoder, bytes: &[u8]) -> Result<JsValue> {
+    let desc = object();
+    field(&desc, "size", number(bytes.len() as u32))?;
+    // GPUBufferUsage::UNIFORM; mapping avoids a queue-side operation between
+    // command encoding steps and makes this value an encoder-local resource.
+    field(&desc, "usage", number(64u32))?;
+    field(&desc, "mappedAtCreation", JsValue::TRUE)?;
+    let buffer = js::call1(&encoder.device.0.device, "createBuffer", &desc).map_err(error)?;
+    let mapped = js::call0(&buffer, "getMappedRange").map_err(error)?;
+    Uint8Array::new(&mapped).copy_from(bytes);
+    js::call0(&buffer, "unmap").map_err(error)?;
+    encoder.keep_alive.push(buffer.clone());
+    Ok(buffer)
+}
+
+fn uniform_group(encoder: &mut WebGpuEncoder, pipe: &JsValue, bytes: &[u8]) -> Result<JsValue> {
+    let buffer = uniform(encoder, bytes)?;
+    let resource = object();
+    field(&resource, "buffer", buffer)?;
+    let entry = object();
+    field(&entry, "binding", number(0u32))?;
+    field(&entry, "resource", resource)?;
+    let entries = Array::new();
+    entries.push(&entry);
+    let desc = object();
+    field(
+        &desc,
+        "layout",
+        js::call1(pipe, "getBindGroupLayout", &number(0u32)).map_err(error)?,
+    )?;
+    field(&desc, "entries", entries.into())?;
+    js::call1(&encoder.device.0.device, "createBindGroup", &desc).map_err(error)
+}
+
 const VERTEX: &str = "@vertex fn vs(@builtin(vertex_index) i:u32)->@builtin(position) vec4f { let p=array<vec2f,3>(vec2f(-1.0,-1.0),vec2f(3.0,-1.0),vec2f(-1.0,3.0)); return vec4f(p[i],0.0,1.0); }\n";
 
 fn draw(
@@ -99,6 +148,7 @@ fn draw(
     attachment: JsValue,
     depth_attachment: bool,
     pipe: JsValue,
+    group: Option<JsValue>,
     area: api::Rect,
     stencil: Option<u32>,
 ) -> Result<()> {
@@ -112,6 +162,9 @@ fn draw(
     field(&pass_desc, "colorAttachments", colors.into())?;
     let pass = js::call1(&encoder.raw, "beginRenderPass", &pass_desc).map_err(error)?;
     js::call1(&pass, "setPipeline", &pipe).map_err(error)?;
+    if let Some(group) = &group {
+        js::call(&pass, "setBindGroup", &[number(0u32), group.clone()]).map_err(error)?;
+    }
     js::call(
         &pass,
         "setScissorRect",
@@ -129,6 +182,9 @@ fn draw(
     js::call(&pass, "draw", &[number(3u32)]).map_err(error)?;
     js::call0(&pass, "end").map_err(error)?;
     encoder.keep_alive.push(pipe);
+    if let Some(group) = group {
+        encoder.keep_alive.push(group);
+    }
     Ok(())
 }
 
@@ -142,45 +198,41 @@ pub(super) fn clear(
             continue;
         };
         let (view, format, _, samples) = view_info(&color.view);
-        let (ty, expr) = match value {
+        let (ty, kind, bytes) = match value {
             api::ClearColor::Float(v) => (
                 "vec4f",
-                format!(
-                    "vec4f({})",
-                    v.iter()
-                        .map(|x| format!("bitcast<f32>({}u)", x.to_bits()))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                ),
+                "float",
+                v.into_iter().flat_map(f32::to_le_bytes).collect::<Vec<_>>(),
             ),
             api::ClearColor::Uint(v) => (
                 "vec4u",
-                format!(
-                    "vec4u({})",
-                    v.iter()
-                        .map(|x| format!("{}u", x))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                ),
+                "uint",
+                v.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>(),
             ),
             api::ClearColor::Sint(v) => (
                 "vec4i",
-                format!(
-                    "vec4i({})",
-                    v.iter()
-                        .map(|x| format!("bitcast<i32>({}u)", *x as u32))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                ),
+                "sint",
+                v.into_iter().flat_map(i32::to_le_bytes).collect::<Vec<_>>(),
             ),
         };
-        let code = format!("{VERTEX}@fragment fn fs()->@location(0) {ty} {{ return {expr}; }}");
-        let pipe = pipeline(encoder, format, samples, &code, false, false)?;
+        let code = format!(
+            "{VERTEX}@group(0) @binding(0) var<uniform> value: {ty}; @fragment fn fs()->@location(0) {ty} {{ return value; }}"
+        );
+        let pipe = pipeline(
+            encoder,
+            format!("partial-clear-color:{kind}:{format:?}:{samples}"),
+            format,
+            samples,
+            code,
+            false,
+            false,
+        )?;
+        let group = uniform_group(encoder, &pipe, &bytes)?;
         let attachment = object();
         field(&attachment, "view", view.clone())?;
         field(&attachment, "loadOp", JsValue::from_str("load"))?;
         field(&attachment, "storeOp", JsValue::from_str("store"))?;
-        draw(encoder, attachment, false, pipe, area, None)?;
+        draw(encoder, attachment, false, pipe, Some(group), area, None)?;
         encoder.keep_alive.push(view);
     }
     if let Some(depth) = &desc.depth_stencil {
@@ -200,22 +252,27 @@ pub(super) fn clear(
         });
         if depth_clear.is_some() || stencil_clear.is_some() {
             let (view, format, _, samples) = view_info(&depth.view);
-            let fragment = if let Some(value) = depth_clear {
-                format!(
-                    "@fragment fn fs()->@builtin(frag_depth) f32 {{ return bitcast<f32>({}u); }}",
-                    value.to_bits()
-                )
+            let fragment = if depth_clear.is_some() {
+                "@group(0) @binding(0) var<uniform> value: f32; @fragment fn fs()->@builtin(frag_depth) f32 { return value; }".to_string()
             } else {
                 "@fragment fn fs() {}".to_string()
             };
             let pipe = pipeline(
                 encoder,
+                format!(
+                    "partial-clear-depth:{format:?}:{samples}:{}:{}",
+                    depth_clear.is_some(),
+                    stencil_clear.is_some()
+                ),
                 format,
                 samples,
-                &format!("{VERTEX}{fragment}"),
+                format!("{VERTEX}{fragment}"),
                 depth_clear.is_some(),
                 stencil_clear.is_some(),
             )?;
+            let group = depth_clear
+                .map(|value| uniform_group(encoder, &pipe, &value.to_le_bytes()))
+                .transpose()?;
             let attachment = object();
             field(&attachment, "view", view.clone())?;
             let has_depth = !matches!(format, api::TextureFormat::Stencil8);
@@ -241,7 +298,7 @@ pub(super) fn clear(
                     field(&attachment, "stencilReadOnly", JsValue::TRUE)?;
                 }
             }
-            draw(encoder, attachment, true, pipe, area, stencil_clear)?;
+            draw(encoder, attachment, true, pipe, group, area, stencil_clear)?;
             encoder.keep_alive.push(view);
         }
     }
@@ -322,15 +379,33 @@ pub(super) fn finish_resolve_region(
     let dx = i64::from(source_origin[0]) - i64::from(area.x);
     let dy = i64::from(source_origin[1]) - i64::from(area.y);
     let code = format!(
-        "{VERTEX}@group(0) @binding(0) var source: texture_2d<f32>; @fragment fn fs(@builtin(position) p: vec4f)->@location(0) vec4f {{ return textureLoad(source, vec2i(p.xy) + vec2i({dx}, {dy}), 0); }}"
+        "{VERTEX}@group(0) @binding(0) var source: texture_2d<f32>; @group(0) @binding(1) var<uniform> source_offset: vec2i; @fragment fn fs(@builtin(position) p: vec4f)->@location(0) vec4f {{ return textureLoad(source, vec2i(p.xy) + source_offset, 0); }}"
     );
-    let pipe = pipeline(encoder, pending.format, 1, &code, false, false)?;
+    let pipe = pipeline(
+        encoder,
+        format!("partial-resolve-color:{:?}", pending.format),
+        pending.format,
+        1,
+        code,
+        false,
+        false,
+    )?;
     let layout = js::call1(&pipe, "getBindGroupLayout", &number(0u32)).map_err(error)?;
     let entry = object();
     field(&entry, "binding", number(0u32))?;
     field(&entry, "resource", pending.source_view.clone())?;
     let entries = Array::new();
     entries.push(&entry);
+    let mut offset = Vec::with_capacity(8);
+    offset.extend_from_slice(&(dx as i32).to_le_bytes());
+    offset.extend_from_slice(&(dy as i32).to_le_bytes());
+    let buffer = uniform(encoder, &offset)?;
+    let uniform_resource = object();
+    field(&uniform_resource, "buffer", buffer)?;
+    let uniform_entry = object();
+    field(&uniform_entry, "binding", number(1u32))?;
+    field(&uniform_entry, "resource", uniform_resource)?;
+    entries.push(&uniform_entry);
     let group_desc = object();
     field(&group_desc, "layout", layout)?;
     field(&group_desc, "entries", entries.into())?;

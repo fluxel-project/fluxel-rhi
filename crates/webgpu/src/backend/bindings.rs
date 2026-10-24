@@ -68,6 +68,9 @@ pub(super) fn binding_layout_entry(
             dimension,
             multisampled,
         } => {
+            if *multisampled && matches!(sample, api::TextureSampleType::Float) {
+                return Err(Error::InvalidState);
+            }
             let texture = descriptor();
             field(
                 &texture,

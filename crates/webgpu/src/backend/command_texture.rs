@@ -285,6 +285,7 @@ pub(super) fn copy_unaligned_rows(
         raw: raw.clone(),
         size,
         usage: api::BufferUsage::COPY_SRC.union(api::BufferUsage::COPY_DST),
+        native_usage: 4 | 8,
         mapped: std::rc::Rc::new(std::cell::Cell::new(false)),
     };
     if !buffer_is_source && buffer.usage.contains(api::BufferUsage::MAP_READ) {

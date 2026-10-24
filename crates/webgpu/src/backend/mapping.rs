@@ -71,7 +71,14 @@ impl api::MappingBackend for WebGpu {
                 api::MapMode::Read => api::BufferUsage::MAP_READ,
                 api::MapMode::Write => api::BufferUsage::MAP_WRITE,
             };
-            if !buffer.usage.contains(usage) || range.start >= range.end || range.end > buffer.size
+            let native_bit = match mode {
+                api::MapMode::Read => 1,
+                api::MapMode::Write => 2,
+            };
+            if !buffer.usage.contains(usage)
+                || buffer.native_usage & native_bit == 0
+                || range.start >= range.end
+                || range.end > buffer.size
             {
                 return Err(Error::InvalidRange);
             }

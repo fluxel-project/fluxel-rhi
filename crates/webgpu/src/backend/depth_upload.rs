@@ -1,6 +1,7 @@
 //! Upload float depth through a fragment shader when WebGPU forbids texel copies.
+use super::super::utility;
 use super::{Result, WebGpu, WebGpuEncoder, api, error, field, js, number, object};
-use js_sys::Array;
+use js_sys::{Array, Uint32Array};
 use wasm_bindgen::JsValue;
 
 pub(super) fn upload(
@@ -36,6 +37,7 @@ pub(super) fn upload(
                     raw,
                     size,
                     usage: api::BufferUsage::COPY_SRC.union(api::BufferUsage::COPY_DST),
+                    native_usage: 4 | 8 | 128,
                     mapped: std::rc::Rc::new(std::cell::Cell::new(false)),
                 };
                 let source_buffer = wrap(source.clone(), 0);
@@ -64,32 +66,33 @@ pub(super) fn upload(
                 )
                 .map_err(error)?;
             }
-            let code = format!(
-                "@group(0) @binding(0) var<storage, read> data: array<u32>; struct O {{ @builtin(position) p: vec4<f32>, }}; @vertex fn vs(@builtin(vertex_index) i: u32) -> O {{ let uv=vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u)); var o:O; o.p=vec4<f32>(uv * vec2<f32>(2., -2.) + vec2<f32>(-1., 1.), 0., 1.); return o; }} @fragment fn fs(@builtin(position) p:vec4<f32>) -> @builtin(frag_depth) f32 {{ let x=u32(p.x); let y=u32(p.y)-{row}u; return bitcast<f32>(data[y*{stride}u+x]); }}",
-                stride = actual_stride / 4
-            );
-            let md = object();
-            field(&md, "code", JsValue::from_str(&code))?;
-            let module =
-                js::call1(&encoder.device.0.device, "createShaderModule", &md).map_err(error)?;
-            let vertex = object();
-            field(&vertex, "module", module.clone())?;
-            field(&vertex, "entryPoint", JsValue::from_str("vs"))?;
-            let fragment = object();
-            field(&fragment, "module", module)?;
-            field(&fragment, "entryPoint", JsValue::from_str("fs"))?;
-            field(&fragment, "targets", Array::new().into())?;
-            let ds = object();
-            field(&ds, "format", JsValue::from_str(format))?;
-            field(&ds, "depthWriteEnabled", JsValue::TRUE)?;
-            field(&ds, "depthCompare", JsValue::from_str("always"))?;
-            let pd = object();
-            field(&pd, "layout", JsValue::from_str("auto"))?;
-            field(&pd, "vertex", vertex)?;
-            field(&pd, "fragment", fragment)?;
-            field(&pd, "depthStencil", ds)?;
-            let pipeline =
-                js::call1(&encoder.device.0.device, "createRenderPipeline", &pd).map_err(error)?;
+            let key = format!("depth-upload:{format}");
+            let cache_device = encoder.device.clone();
+            let native_device = cache_device.clone();
+            let pipeline = utility::render_pipeline(&cache_device, key, move || {
+                let code = "@group(0) @binding(0) var<storage, read> data: array<u32>; @group(0) @binding(1) var<uniform> parameters: vec2<u32>; struct O { @builtin(position) p: vec4<f32>, }; @vertex fn vs(@builtin(vertex_index) i: u32) -> O { let uv=vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u)); var o:O; o.p=vec4<f32>(uv * vec2<f32>(2., -2.) + vec2<f32>(-1., 1.), 0., 1.); return o; } @fragment fn fs(@builtin(position) p:vec4<f32>) -> @builtin(frag_depth) f32 { let x=u32(p.x); let y=u32(p.y)-parameters.x; return bitcast<f32>(data[y*parameters.y+x]); }";
+                let md = object();
+                field(&md, "code", JsValue::from_str(code))?;
+                let module =
+                    js::call1(&native_device.0.device, "createShaderModule", &md).map_err(error)?;
+                let vertex = object();
+                field(&vertex, "module", module.clone())?;
+                field(&vertex, "entryPoint", JsValue::from_str("vs"))?;
+                let fragment = object();
+                field(&fragment, "module", module)?;
+                field(&fragment, "entryPoint", JsValue::from_str("fs"))?;
+                field(&fragment, "targets", Array::new().into())?;
+                let ds = object();
+                field(&ds, "format", JsValue::from_str(format))?;
+                field(&ds, "depthWriteEnabled", JsValue::TRUE)?;
+                field(&ds, "depthCompare", JsValue::from_str("always"))?;
+                let pd = object();
+                field(&pd, "layout", JsValue::from_str("auto"))?;
+                field(&pd, "vertex", vertex)?;
+                field(&pd, "fragment", fragment)?;
+                field(&pd, "depthStencil", ds)?;
+                js::call1(&native_device.0.device, "createRenderPipeline", &pd).map_err(error)
+            })?;
             let layout =
                 js::call1(&pipeline, "getBindGroupLayout", &number(0u32)).map_err(error)?;
             let r = object();
@@ -98,6 +101,25 @@ pub(super) fn upload(
             field(&e, "binding", number(0u32))?;
             field(&e, "resource", r)?;
             let entries = Array::new();
+            entries.push(&e);
+            let parameter_desc = object();
+            field(&parameter_desc, "size", number(16u32))?;
+            field(&parameter_desc, "usage", number(64u32))?;
+            field(&parameter_desc, "mappedAtCreation", JsValue::TRUE)?;
+            let parameters = js::call1(&encoder.device.0.device, "createBuffer", &parameter_desc)
+                .map_err(error)?;
+            let mapped = js::call0(&parameters, "getMappedRange").map_err(error)?;
+            let words = Uint32Array::new(&mapped);
+            words.set_index(0, row as u32);
+            words.set_index(1, (actual_stride / 4) as u32);
+            js::call0(&parameters, "unmap").map_err(error)?;
+            let e = object();
+            field(&e, "binding", number(1u32))?;
+            let r = object();
+            field(&r, "buffer", parameters.clone())?;
+            field(&r, "offset", number(0u32))?;
+            field(&r, "size", number(16u32))?;
+            field(&e, "resource", r)?;
             entries.push(&e);
             let bd = object();
             field(&bd, "layout", layout)?;
@@ -142,7 +164,9 @@ pub(super) fn upload(
             )
             .map_err(error)?;
             js::call0(&pass, "end").map_err(error)?;
-            encoder.keep_alive.extend([temp, pipeline, bind, view]);
+            encoder
+                .keep_alive
+                .extend([temp, parameters, pipeline, bind, view]);
             row += rows;
         }
     }

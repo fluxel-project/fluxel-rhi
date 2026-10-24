@@ -3,8 +3,16 @@ use super::{WebGpu, WebGpuInstance};
 use fluxel_rhi_core::api::*;
 use std::sync::Arc;
 use wasm_bindgen_test::*;
+#[path = "conformance/binding_validation.rs"]
+mod binding_validation;
+#[path = "conformance/blit_usage.rs"]
+mod blit_usage;
+#[path = "conformance/buffer_usage.rs"]
+mod buffer_usage;
 #[path = "conformance/buffers.rs"]
 mod buffers;
+#[path = "conformance/completion_steps.rs"]
+mod completion_steps;
 #[path = "conformance/multisample.rs"]
 mod multisample;
 #[path = "conformance/operations.rs"]
@@ -25,6 +33,8 @@ mod storage_view;
 mod surface;
 #[path = "conformance/textures.rs"]
 mod textures;
+#[path = "conformance/utility_cache.rs"]
+mod utility_cache;
 
 #[wasm_bindgen_test(async)]
 async fn browser_gpu_environment_records_adapter_and_features() {

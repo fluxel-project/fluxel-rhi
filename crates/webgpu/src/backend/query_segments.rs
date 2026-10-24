@@ -5,8 +5,36 @@ use super::{
     query::WebGpuQuerySet,
 };
 use fluxel_rhi_core::api::{Error, Result};
-use js_sys::Array;
+use js_sys::{Array, Uint32Array};
 use wasm_bindgen::JsValue;
+
+/// Fixed GPU reduction kernel. Dynamic segment count and logical query slot
+/// are supplied by a uniform buffer, so split passes reuse one device-local
+/// compute pipeline instead of compiling WGSL for every flush.
+const REDUCE_WGSL: &str = r#"
+struct Parameters {
+    count: u32,
+    slot: u32,
+    _padding0: u32,
+    _padding1: u32,
+};
+@group(0) @binding(0) var<storage, read> src: array<u32>;
+@group(0) @binding(1) var<storage, read_write> dst: array<u32>;
+@group(0) @binding(2) var<uniform> parameters: Parameters;
+@compute @workgroup_size(1)
+fn main() {
+    var lo: u32 = 0u;
+    var hi: u32 = 0u;
+    for (var i: u32 = 0u; i < parameters.count; i++) {
+        let at = i * 64u;
+        let old = lo;
+        lo += src[at];
+        hi += src[at + 1u] + select(0u, 1u, lo < old);
+    }
+    dst[parameters.slot * 2u] = lo;
+    dst[parameters.slot * 2u + 1u] = hi;
+}
+"#;
 
 pub(super) struct QuerySegments {
     pub(super) set: WebGpuQuerySet,
@@ -74,6 +102,7 @@ pub(super) fn flush_pending(encoder: &mut WebGpuEncoder) -> Result<()> {
 }
 fn flush_one(encoder: &mut WebGpuEncoder, query: QuerySegments) -> Result<()> {
     let count = query.native.len();
+    let count_u32 = u32::try_from(count).map_err(|_| Error::InvalidRange)?;
     let bytes = (count as u64).checked_mul(256).ok_or(Error::InvalidRange)?;
     let scratch = buffer(encoder, bytes, 512 | 128)?;
     let output = query
@@ -96,27 +125,21 @@ fn flush_one(encoder: &mut WebGpuEncoder, query: QuerySegments) -> Result<()> {
         )
         .map_err(error)?;
     }
-    let code = format!(
-        "@group(0) @binding(0) var<storage,read> src:array<u32>; @group(0) @binding(1) var<storage,read_write> dst:array<u32>; @compute @workgroup_size(1) fn main() {{ var lo:u32=0u; var hi:u32=0u; for(var i:u32=0u;i<{}u;i++) {{ let at=i*64u; let old=lo; lo+=src[at]; hi+=src[at+1u]+select(0u,1u,lo<old); }} dst[{}u]=lo; dst[{}u]=hi; }}",
-        count,
-        query.slot * 2,
-        query.slot * 2 + 1
-    );
-    let shader = object();
-    field(&shader, "code", JsValue::from_str(&code))?;
-    let module =
-        js::call1(&encoder.device.0.device, "createShaderModule", &shader).map_err(error)?;
-    let stage = object();
-    field(&stage, "module", module)?;
-    field(&stage, "entryPoint", JsValue::from_str("main"))?;
-    let desc = object();
-    field(&desc, "layout", JsValue::from_str("auto"))?;
-    field(&desc, "compute", stage)?;
-    let pipeline =
-        js::call1(&encoder.device.0.device, "createComputePipeline", &desc).map_err(error)?;
+    let pipeline = super::utility::pipeline(&encoder.device, "query-segment-reduce", REDUCE_WGSL)?;
     let layout = js::call1(&pipeline, "getBindGroupLayout", &number(0u32)).map_err(error)?;
+    let parameter_desc = object();
+    field(&parameter_desc, "size", number(16u32))?;
+    field(&parameter_desc, "usage", number(64u32))?;
+    field(&parameter_desc, "mappedAtCreation", JsValue::TRUE)?;
+    let parameters =
+        js::call1(&encoder.device.0.device, "createBuffer", &parameter_desc).map_err(error)?;
+    let mapped = js::call0(&parameters, "getMappedRange").map_err(error)?;
+    let words = Uint32Array::new(&mapped);
+    words.set_index(0, count_u32);
+    words.set_index(1, query.slot);
+    js::call0(&parameters, "unmap").map_err(error)?;
     let entries_js = Array::new();
-    for (binding, raw) in [(0u32, &scratch), (1u32, &output)] {
+    for (binding, raw) in [(0u32, &scratch), (1u32, &output), (2u32, &parameters)] {
         let resource = object();
         field(&resource, "buffer", raw.clone())?;
         let entry = object();
@@ -136,7 +159,7 @@ fn flush_one(encoder: &mut WebGpuEncoder, query: QuerySegments) -> Result<()> {
     js::call0(&pass, "end").map_err(error)?;
     encoder
         .keep_alive
-        .extend([scratch, output, pipeline, group]);
+        .extend([scratch, output, parameters, group]);
     encoder
         .keep_alive
         .extend(query.native.into_iter().map(|(raw, _)| raw));

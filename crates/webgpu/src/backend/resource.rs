@@ -20,6 +20,8 @@ pub struct WebGpuBuffer {
     pub(super) raw: JsValue,
     pub(super) size: u64,
     pub(super) usage: api::BufferUsage,
+    /// Actual `GPUBufferUsage` bits after WebGPU-specific lowering.
+    pub(super) native_usage: u32,
     pub(super) mapped: Rc<Cell<bool>>,
 }
 
@@ -34,6 +36,18 @@ pub struct WebGpuTextureView {
     pub(super) raw: JsValue,
     pub(super) _texture: WebGpuTexture,
     pub(super) desc: api::TextureViewDesc,
+}
+
+#[derive(Clone)]
+pub struct WebGpuSampler {
+    pub(super) raw: JsValue,
+    pub(super) desc: api::SamplerDesc,
+}
+
+#[derive(Clone)]
+pub struct WebGpuBindGroupLayout {
+    pub(super) raw: JsValue,
+    pub(super) entries: Vec<api::BindGroupLayoutEntry>,
 }
 
 fn backend_error(error: JsValue) -> Error {
@@ -79,7 +93,35 @@ fn buffer_usage(usage: api::BufferUsage) -> Result<u32> {
 /// readback contract still expresses that a resolved query buffer is readable;
 /// its ReadbackBackend lowering copies it into a private MAP_READ staging
 /// buffer.  Give that source the required native COPY_SRC usage here.
-fn native_buffer_usage(usage: api::BufferUsage) -> Result<u32> {
+pub(super) fn native_buffer_usage(usage: api::BufferUsage) -> Result<u32> {
+    // WebGPU mapping bits have exclusive native combinations. The one RHI
+    // exception is query resolve readback: it is represented logically as
+    // MAP_READ but lowered to a non-mappable resolve source plus staging.
+    let query_readback = usage.contains(api::BufferUsage::MAP_READ)
+        && usage.contains(api::BufferUsage::QUERY_RESOLVE);
+    if query_readback {
+        let allowed = api::BufferUsage::MAP_READ
+            .union(api::BufferUsage::QUERY_RESOLVE)
+            .union(api::BufferUsage::COPY_SRC)
+            .union(api::BufferUsage::COPY_DST);
+        if usage.0 & !allowed.0 != 0 {
+            return Err(Error::Unsupported(
+                "WebGPU query readback usage combination",
+            ));
+        }
+    }
+    if usage.contains(api::BufferUsage::MAP_READ) && !query_readback {
+        let allowed = api::BufferUsage::MAP_READ.union(api::BufferUsage::COPY_DST);
+        if usage.0 & !allowed.0 != 0 {
+            return Err(Error::Unsupported("WebGPU MAP_READ usage combination"));
+        }
+    }
+    if usage.contains(api::BufferUsage::MAP_WRITE) {
+        let allowed = api::BufferUsage::MAP_WRITE.union(api::BufferUsage::COPY_SRC);
+        if usage.0 & !allowed.0 != 0 {
+            return Err(Error::Unsupported("WebGPU MAP_WRITE usage combination"));
+        }
+    }
     let usage = if usage.contains(api::BufferUsage::INDIRECT) {
         usage.union(api::BufferUsage::COPY_SRC)
     } else {
@@ -90,8 +132,7 @@ fn native_buffer_usage(usage: api::BufferUsage) -> Result<u32> {
     } else {
         usage
     };
-    if usage.contains(api::BufferUsage::MAP_READ) && usage.contains(api::BufferUsage::QUERY_RESOLVE)
-    {
+    if query_readback {
         let without_map_read = api::BufferUsage(usage.0 & !api::BufferUsage::MAP_READ.0)
             .union(api::BufferUsage::COPY_SRC);
         return buffer_usage(without_map_read);
@@ -213,11 +254,8 @@ impl api::ResourceBackend for WebGpu {
         let object = descriptor();
         let native_size = desc.size.checked_add(3).ok_or(Error::InvalidRange)? & !3;
         field(&object, "size", JsValue::from_f64(native_size as f64))?;
-        field(
-            &object,
-            "usage",
-            JsValue::from_f64(native_buffer_usage(desc.usage)? as f64),
-        )?;
+        let native_usage = native_buffer_usage(desc.usage)?;
+        field(&object, "usage", JsValue::from_f64(native_usage as f64))?;
         if let Some(label) = &desc.label {
             field(&object, "label", JsValue::from_str(label))?;
         }
@@ -226,6 +264,7 @@ impl api::ResourceBackend for WebGpu {
             raw,
             size: desc.size,
             usage: desc.usage,
+            native_usage,
             mapped: Rc::new(Cell::new(false)),
         })
     }
@@ -386,7 +425,7 @@ impl api::ResourceBackend for WebGpu {
         })
     }
 
-    fn create_sampler(device: &WebGpuDevice, desc: &api::SamplerDesc) -> Result<JsValue> {
+    fn create_sampler(device: &WebGpuDevice, desc: &api::SamplerDesc) -> Result<WebGpuSampler> {
         if desc.border.is_some() {
             return Err(Error::Unsupported("WebGPU sampler border color"));
         }
@@ -464,13 +503,16 @@ impl api::ResourceBackend for WebGpu {
         if let Some(label) = &desc.label {
             field(&object, "label", JsValue::from_str(label))?;
         }
-        js::call1(&device.0.device, "createSampler", &object).map_err(backend_error)
+        Ok(WebGpuSampler {
+            raw: js::call1(&device.0.device, "createSampler", &object).map_err(backend_error)?,
+            desc: desc.clone(),
+        })
     }
 
     fn create_bind_group_layout(
         device: &WebGpuDevice,
         desc: &api::BindGroupLayoutDesc,
-    ) -> Result<JsValue> {
+    ) -> Result<WebGpuBindGroupLayout> {
         let object = descriptor();
         let entries = Array::new();
         for entry in &desc.entries {
@@ -483,7 +525,11 @@ impl api::ResourceBackend for WebGpu {
         if let Some(label) = &desc.label {
             field(&object, "label", JsValue::from_str(label))?;
         }
-        js::call1(&device.0.device, "createBindGroupLayout", &object).map_err(backend_error)
+        Ok(WebGpuBindGroupLayout {
+            raw: js::call1(&device.0.device, "createBindGroupLayout", &object)
+                .map_err(backend_error)?,
+            entries: desc.entries.clone(),
+        })
     }
 
     fn create_bind_group(
@@ -493,10 +539,16 @@ impl api::ResourceBackend for WebGpu {
         let object = descriptor();
         // SAFETY: `Device::create_bind_group` checks `desc.layout.device` and
         // every entry's device against this device before this SPI call.
-        let layout = unsafe { desc.layout.native_ref() }.clone();
-        field(&object, "layout", layout)?;
+        let layout = unsafe { desc.layout.native_ref() };
+        field(&object, "layout", layout.raw.clone())?;
         let entries = Array::new();
         for entry in desc.entries {
+            let layout_entry = layout
+                .entries
+                .iter()
+                .find(|candidate| candidate.binding == entry.binding)
+                .ok_or(Error::InvalidState)?;
+            super::binding_validation::validate(device, layout_entry, &entry.resource)?;
             let native = descriptor();
             field(&native, "binding", JsValue::from_f64(entry.binding as f64))?;
             let resource = match &entry.resource {
@@ -528,7 +580,7 @@ impl api::ResourceBackend for WebGpu {
                 api::BindingResource::Sampler(sampler) => {
                     // SAFETY: `Device::create_bind_group` checked this sampler's
                     // DeviceId before entering the backend SPI.
-                    unsafe { sampler.native_ref() }.clone()
+                    unsafe { sampler.native_ref() }.raw.clone()
                 }
                 _ => return Err(Error::Unsupported("WebGPU binding resource")),
             };
