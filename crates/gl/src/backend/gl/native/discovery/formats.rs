@@ -458,8 +458,19 @@ pub(super) fn native_formats(
                         blendable: single.blendable,
                         storage_read: false,
                         storage_write: false,
-                        copy_source: false,
-                        copy_destination: false,
+                        // Desktop GL 4.3+ (or ARB_copy_image) can copy a
+                        // matching multisample *color* texture image directly.
+                        // This remains a narrow image-copy fact: it neither
+                        // admits pixel uploads/readback nor applies to
+                        // renderbuffers or selected depth/stencil planes.
+                        copy_source: format
+                            .supports_blit_aspect(crate::backend::gl::api::GlTextureAspect::Color)
+                            && kind != GlFormatResourceKind::Renderbuffer
+                            && desktop_msaa_copy_image(profile, extensions, report),
+                        copy_destination: format
+                            .supports_blit_aspect(crate::backend::gl::api::GlTextureAspect::Color)
+                            && kind != GlFormatResourceKind::Renderbuffer
+                            && desktop_msaa_copy_image(profile, extensions, report),
                     })
                     .map_err(|error| {
                         NativeDiscoveryError::Snapshot(GlDiscoveryError::InvalidFormats(error))
@@ -645,6 +656,23 @@ const fn compressed_direct_copy(profile: GlFamilyProfile) -> bool {
         GlFamilyProfile::Embedded { major, minor } => major > 3 || (major == 3 && minor >= 2),
         GlFamilyProfile::WebGl2 => false,
     }
+}
+
+/// The Desktop-only image-copy route used for equal-sample MSAA copies.
+///
+/// GLES has a separately selected core/EXT/OES route; do not accidentally
+/// advertise it while this first implementation is limited to Desktop GL.
+fn desktop_msaa_copy_image(
+    profile: GlFamilyProfile,
+    extensions: &GlExtensionSet,
+    report: &ProbeReport,
+) -> bool {
+    let is_desktop = matches!(profile, GlFamilyProfile::Desktop { .. });
+    let core = matches!(profile, GlFamilyProfile::Desktop { major, minor } if major > 4 || (major == 4 && minor >= 3));
+    let arb = extensions
+        .raw_reported_names()
+        .any(|name| name == "GL_ARB_copy_image");
+    is_desktop && report.copy_image_symbols[0] && (core || arb)
 }
 
 fn rgba8_texture_facts() -> GlFormatCapabilities {

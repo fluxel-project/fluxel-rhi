@@ -397,9 +397,20 @@ fn texture_copy_target_and_z(
 ) -> Result<(u32, i32), GlError> {
     let (target, z) = match desc.dimension {
         GlTextureDimension::D1 => (glow::TEXTURE_1D, 0),
-        GlTextureDimension::D2 => (glow::TEXTURE_2D, 0),
+        GlTextureDimension::D2 => (
+            if desc.sample_count > 1 {
+                glow::TEXTURE_2D_MULTISAMPLE
+            } else {
+                glow::TEXTURE_2D
+            },
+            0,
+        ),
         GlTextureDimension::D2Array => (
-            glow::TEXTURE_2D_ARRAY,
+            if desc.sample_count > 1 {
+                glow::TEXTURE_2D_MULTISAMPLE_ARRAY
+            } else {
+                glow::TEXTURE_2D_ARRAY
+            },
             region
                 .subresource
                 .base_layer

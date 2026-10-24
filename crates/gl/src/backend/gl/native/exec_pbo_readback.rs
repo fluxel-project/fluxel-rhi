@@ -43,6 +43,14 @@ impl NativeGlProvider {
         const OP: &str = "texture-to-buffer";
         self.assert_ready(OP)?;
         let (texture, desc) = self.texture(OP, source.subresource.texture)?;
+        // MSAA copy facts admit only matching-sample image copies. Pixel
+        // transfer APIs cannot address multisample texture storage.
+        if desc.sample_count != 1 {
+            return Err(GlError::Unsupported {
+                operation: OP,
+                reason: "multisample pixel-buffer readback is unavailable",
+            });
+        }
         let (buffer, buffer_desc) = self.buffer(OP, destination.buffer)?;
         source
             .validate_for(desc)

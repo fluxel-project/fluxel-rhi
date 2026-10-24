@@ -1213,6 +1213,20 @@ additional to this shared integrity check. Invalid input returns the original
 owning packet as a clean rejection; native partial/uncertain acceptance remains
 the backend's responsibility.
 
+## GL-family multisample copy boundary
+
+Desktop GL 4.3+ or `ARB_copy_image` may copy matching-sample color texture
+images directly through `CopyImageSubData`. Admission requires the loaded
+native entry and exact probed format, sample count and texture kind; ordinary
+MSAA textures and multisample arrays have separate facts. This permission does
+not enable multisample pixel uploads, buffer readback, or a framebuffer-copy
+fallback. Resolve remains a separate operation that reduces sample count.
+Selected depth/stencil-plane copies remain on their existing restricted paths.
+
+WebGL2 cannot use this route: its API exposes no CopyImage entry point, and its
+ES 3.0 framebuffer-blit rules reject multisampled draw framebuffers. A native
+MSAA-to-single-sample resolve does not establish same-sample image-copy support.
+
 ## Metal transfer lowering
 
 `clear_buffer` preserves Core's repeated 32-bit word semantics. Words made of

@@ -47,12 +47,12 @@ pub(super) fn texture_support_from_discovery(
     let renderbuffer_usage = GlTextureUsage::RENDER_ATTACHMENT
         | GlTextureUsage::COPY_SOURCE
         | GlTextureUsage::COPY_DESTINATION;
-    // A multisample color attachment cannot use the generic GL copy/readback
-    // paths, whose executors reject multisample storage.  It can nevertheless
-    // be a COPY_SOURCE for the one supported operation: an immediate color
-    // resolve.  Keep this admission tied to an actually renderable color
-    // attachment; discovery's `copy_source` flag remains the proof for every
-    // generic copy/readback route.
+    // Exact multisample image-copy facts can admit a matching-sample Desktop
+    // direct image copy; they never imply pixel upload or readback support.
+    // Independently, a renderable multisample color attachment can be a
+    // COPY_SOURCE for an immediate color resolve. Keep that fallback tied to
+    // an actually renderable color attachment; discovery's `copy_source` flag
+    // remains the proof for every generic copy/readback route.
     let multisample_resolve_source = desc.sample_count > 1
         && desc.usage.contains(GlTextureUsage::RENDER_ATTACHMENT)
         && desc.usage.contains(GlTextureUsage::COPY_SOURCE)

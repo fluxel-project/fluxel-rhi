@@ -88,18 +88,21 @@ impl GlCopyDomainApi for MockGlFamilyApi {
                 "copy source and destination name the same mip",
             );
         }
-        if sd.sample_count != 1 || dd.sample_count != 1 {
-            // Multisample transfer belongs to the resolve word.
-            return self.invalid("copy-texture", "copy operates on single-sample textures");
-        }
-        // The executable backends resolve copy facts at sample count one.
+        let copy_kind = |desc: GlTextureDesc| {
+            if desc.sample_count > 1 && desc.dimension == GlTextureDimension::D2Array {
+                GlFormatResourceKind::MultisampleArray
+            } else {
+                GlFormatResourceKind::Texture
+            }
+        };
+        // Copy facts are exact in both resource kind and sample count.
         let facts = self.discovery.formats();
         let source_copy = facts
-            .get_for(GlFormatResourceKind::Texture, sd.format, 1)
+            .get_for(copy_kind(sd), sd.format, sd.sample_count)
             .map(|fact| fact.copy_source)
             .unwrap_or(false);
         let destination_copy = facts
-            .get_for(GlFormatResourceKind::Texture, dd.format, 1)
+            .get_for(copy_kind(dd), dd.format, dd.sample_count)
             .map(|fact| fact.copy_destination)
             .unwrap_or(false);
         if !sd.usage.contains(GlTextureUsage::COPY_SOURCE)
@@ -126,6 +129,12 @@ impl GlCopyDomainApi for MockGlFamilyApi {
     ) -> Result<(), GlError> {
         self.ready("upload-texture")?;
         let desc = self.texture("upload-texture", d.subresource.texture)?;
+        if desc.sample_count != 1 {
+            return self.error_result(GlError::Unsupported {
+                operation: "upload-texture",
+                reason: "multisample pixel transfer is unavailable",
+            });
+        }
         d.validate_for(desc).map_err(|_| GlError::Validation {
             operation: "upload-texture",
             message: "invalid texture upload".into(),
@@ -212,6 +221,12 @@ impl GlCopyDomainApi for MockGlFamilyApi {
     ) -> Result<GlReadback, GlError> {
         self.ready("read-texture")?;
         let desc = self.texture("read-texture", s.subresource.texture)?;
+        if desc.sample_count != 1 {
+            return self.error_result(GlError::Unsupported {
+                operation: "read-texture",
+                reason: "multisample pixel transfer is unavailable",
+            });
+        }
         s.validate_for(desc).map_err(|_| GlError::Validation {
             operation: "read-texture",
             message: "invalid read region".into(),

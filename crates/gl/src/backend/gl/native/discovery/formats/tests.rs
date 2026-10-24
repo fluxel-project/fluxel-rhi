@@ -231,6 +231,85 @@ fn multisample_facts_require_exact_format_count_and_resource_probe() {
 }
 
 #[test]
+fn desktop_msaa_color_copy_facts_require_direct_image_and_exact_probes() {
+    let limits = GlLimits::unavailable();
+    let mut extensions = GlExtensionSet::default();
+    let mut report = ProbeReport::default();
+    let rgba = super::super::super::probes::MSAA_FORMATS
+        .iter()
+        .position(|&format| format == GlFormat::Rgba8Unorm)
+        .unwrap();
+    let table = |profile, extensions: &GlExtensionSet, report: &ProbeReport| {
+        native_formats(profile, extensions, &limits, report).unwrap()
+    };
+    let texture_facts = |profile, extensions: &GlExtensionSet, report: &ProbeReport| {
+        table(profile, extensions, report)
+            .get_for(GlFormatResourceKind::Texture, GlFormat::Rgba8Unorm, 4)
+            .unwrap()
+    };
+
+    report.multisample_texture[rgba].push((4, ProbeAnswer::Passed));
+    let desktop = GlFamilyProfile::Desktop { major: 4, minor: 3 };
+    let facts = texture_facts(desktop, &extensions, &report);
+    assert!(!facts.copy_source);
+    assert!(!facts.copy_destination);
+
+    report.copy_image_symbols[0] = true;
+    let facts = texture_facts(desktop, &extensions, &report);
+    assert!(facts.copy_source);
+    assert!(facts.copy_destination);
+
+    // A fact for one exact format/resource/count cannot stand in for an
+    // unprobed format or multisample-array allocation.
+    let facts = table(desktop, &extensions, &report);
+    assert!(
+        facts
+            .get_for(GlFormatResourceKind::Texture, GlFormat::Rgba8Uint, 4)
+            .is_none()
+    );
+    assert!(
+        facts
+            .get_for(
+                GlFormatResourceKind::MultisampleArray,
+                GlFormat::Rgba8Unorm,
+                4
+            )
+            .is_none()
+    );
+
+    report.multisample_array[rgba].push((4, ProbeAnswer::Passed));
+    let array_facts = table(desktop, &extensions, &report)
+        .get_for(
+            GlFormatResourceKind::MultisampleArray,
+            GlFormat::Rgba8Unorm,
+            4,
+        )
+        .unwrap();
+    assert!(array_facts.copy_source);
+    assert!(array_facts.copy_destination);
+
+    // The first implementation intentionally leaves GLES false even when its
+    // core symbol and the matching allocation probe are present.
+    let embedded = texture_facts(
+        GlFamilyProfile::Embedded { major: 3, minor: 2 },
+        &extensions,
+        &report,
+    );
+    assert!(!embedded.copy_source);
+    assert!(!embedded.copy_destination);
+
+    // Older Desktop contexts need the advertised extension as well as the
+    // loaded ABI entry point.
+    let old_desktop = GlFamilyProfile::Desktop { major: 4, minor: 2 };
+    let facts = texture_facts(old_desktop, &extensions, &report);
+    assert!(!facts.copy_source);
+    extensions.report_raw("GL_ARB_copy_image");
+    let facts = texture_facts(old_desktop, &extensions, &report);
+    assert!(facts.copy_source);
+    assert!(facts.copy_destination);
+}
+
+#[test]
 fn direct_color_copy_source_needs_profile_extension_and_loaded_entry() {
     let limits = GlLimits::unavailable();
     let mut extensions = GlExtensionSet::default();

@@ -143,6 +143,14 @@ impl NativeGlProvider {
         const OP: &str = "read-texture";
         self.assert_ready(OP)?;
         let (name, desc) = self.texture(OP, source.subresource.texture)?;
+        // MSAA copy facts admit only matching-sample image copies. Pixel
+        // transfer APIs cannot address multisample texture storage.
+        if desc.sample_count != 1 {
+            return Err(GlError::Unsupported {
+                operation: OP,
+                reason: "multisample pixel readback is unavailable",
+            });
+        }
         source
             .validate_for(desc)
             .map_err(|_| Self::validation(OP, "invalid read region"))?;

@@ -120,14 +120,15 @@ impl GlCopyDomainApi for NativeGlProvider {
                 "copy source and destination name the same mip",
             ));
         }
-        if source_desc.sample_count != 1 || destination_desc.sample_count != 1 {
-            // The shared copy semantic is single-sample; multisample transfer
-            // is a resolve word (`blit_framebuffer`), not a texture copy.
-            return Err(Self::validation(
-                OP,
-                "copy operates on single-sample textures",
-            ));
-        }
+        let copy_kind = |desc: GlTextureDesc| {
+            if desc.sample_count > 1
+                && desc.dimension == crate::backend::gl::api::GlTextureDimension::D2Array
+            {
+                GlFormatResourceKind::MultisampleArray
+            } else {
+                GlFormatResourceKind::Texture
+            }
+        };
         if !source_desc.usage.contains(GlTextureUsage::COPY_SOURCE)
             || !destination_desc
                 .usage
@@ -140,11 +141,19 @@ impl GlCopyDomainApi for NativeGlProvider {
         }
         let facts = self.discovery.formats();
         let source_copy = facts
-            .get_for(GlFormatResourceKind::Texture, source_desc.format, 1)
+            .get_for(
+                copy_kind(source_desc),
+                source_desc.format,
+                source_desc.sample_count,
+            )
             .map(|fact| fact.copy_source)
             .unwrap_or(false);
         let destination_copy = facts
-            .get_for(GlFormatResourceKind::Texture, destination_desc.format, 1)
+            .get_for(
+                copy_kind(destination_desc),
+                destination_desc.format,
+                destination_desc.sample_count,
+            )
             .map(|fact| fact.copy_destination)
             .unwrap_or(false);
         if !source_copy || !destination_copy {
@@ -166,7 +175,11 @@ impl GlCopyDomainApi for NativeGlProvider {
                 destination_name,
             );
         }
-        match if self.copy_image_extension.is_some() {
+        // Multisample color images are admitted only after discovery proved
+        // the direct image-copy entry point. They must never fall through to
+        // the FBO route: that route has distinct API-family semantics and is
+        // deliberately not the GLES/WebGL capability being opened here.
+        match if source_desc.sample_count > 1 || self.copy_image_extension.is_some() {
             CopyRoute::DirectImage
         } else {
             texture_copy_route(self.discovery.context().profile())
@@ -245,6 +258,14 @@ impl GlCopyDomainApi for NativeGlProvider {
         const OP: &str = "upload-texture";
         self.assert_ready(OP)?;
         let (name, desc) = self.texture(OP, destination.subresource.texture)?;
+        // MSAA copy facts admit only matching-sample image copies. Pixel
+        // transfer APIs cannot address multisample texture storage.
+        if desc.sample_count != 1 {
+            return Err(GlError::Unsupported {
+                operation: OP,
+                reason: "multisample pixel upload is unavailable",
+            });
+        }
         destination
             .validate_for(desc)
             .map_err(|_| Self::validation(OP, "invalid texture region"))?;
