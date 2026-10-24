@@ -9,8 +9,6 @@
 #[path = "shader_variant.rs"]
 pub(crate) mod variant;
 
-use std::future::{Ready, ready};
-
 use fluxel_rhi_core::api::{
     self, ShaderBackend, ShaderDesc, ShaderFormat, ShaderRoute, ShaderTarget,
 };
@@ -42,8 +40,8 @@ pub(crate) fn normalize_push_address_space(source: &str) -> String {
 }
 
 impl ShaderBackend for Metal {
-    type DirectFuture<'a> = Ready<api::Result<MetalShader>>;
-    type NagaFuture<'a> = Ready<api::Result<MetalShader>>;
+    type DirectFuture<'a> = super::cold::ColdFuture<MetalShader>;
+    type NagaFuture<'a> = super::cold_cpu::CpuFuture<MetalShader>;
 
     fn shader_route(_: &MetalDevice, desc: &ShaderDesc) -> ShaderRoute {
         route(desc)
@@ -54,13 +52,24 @@ impl ShaderBackend for Metal {
         desc: &'a ShaderDesc,
         _: &'a ShaderTarget,
     ) -> Self::DirectFuture<'a> {
-        ready(match desc.format {
-            ShaderFormat::MetalLibrary => load_library(device, &desc.bytes, desc.entries.clone()),
-            ShaderFormat::MetalSource => {
-                compile_library(device, &desc.bytes, desc.entries.clone(), Vec::new(), false)
-            }
-            _ => Err(api::Error::Unsupported("Metal direct shader format")),
-        })
+        match desc.format {
+            // A precompiled metallib has no native compilation work to defer.
+            ShaderFormat::MetalLibrary => super::cold::ColdFuture::ready(load_library(
+                device,
+                &desc.bytes,
+                desc.entries.clone(),
+            )),
+            ShaderFormat::MetalSource => compile_library_async(
+                device,
+                desc.bytes.clone(),
+                desc.entries.clone(),
+                Vec::new(),
+                false,
+            ),
+            _ => super::cold::ColdFuture::ready(Err(api::Error::Unsupported(
+                "Metal direct shader format",
+            ))),
+        }
     }
 
     fn compile_naga<'a>(
@@ -68,46 +77,54 @@ impl ShaderBackend for Metal {
         desc: &'a ShaderDesc,
         _: &'a ShaderTarget,
     ) -> Self::NagaFuture<'a> {
-        let result = (|| {
-            let source = std::str::from_utf8(&desc.bytes)
-                .map_err(|error| api::Error::Shader(error.to_string()))?;
-            let normalized = normalize_push_address_space(source);
-            let module = naga::front::wgsl::parse_str(&normalized)
-                .map_err(|error| api::Error::Shader(error.emit_to_string(&normalized)))?;
-            if module.types.iter().any(|(_, ty)| {
-                matches!(
-                    ty.inner,
-                    naga::TypeInner::AccelerationStructure { .. }
-                        | naga::TypeInner::RayQuery { .. }
-                )
-            }) && !ray_query_supported(device)
-            {
-                return Err(api::Error::Unsupported("Metal device ray query"));
-            }
-            naga::valid::Validator::new(
-                naga::valid::ValidationFlags::all(),
-                naga::valid::Capabilities::all(),
-            )
-            .validate(&module)
-            .map_err(|error| api::Error::Shader(error.to_string()))?;
-            validate_entry_points(&module, desc)?;
-            #[cfg(target_vendor = "apple")]
-            {
-                let _ = device;
-                Ok(MetalShader {
-                    _library: None,
-                    entries: desc.entries.clone(),
-                    entry_names: Vec::new(),
-                    wgsl_source: Some(desc.bytes.clone()),
-                })
-            }
-            #[cfg(not(target_vendor = "apple"))]
-            {
-                let _ = device;
-                Err(api::Error::Unsupported("Metal requires an Apple target"))
-            }
-        })();
-        ready(result)
+        // Naga is CPU-only but can be expensive. Never run it on a caller or
+        // Metal callback queue; the bounded worker owns only Send Rust data.
+        let ray_query = ray_query_supported(device);
+        let bytes = desc.bytes.clone();
+        let entries = desc.entries.clone();
+        super::cold_cpu::spawn_cpu(move || compile_naga_cpu(bytes, entries, ray_query))
+    }
+}
+
+fn compile_naga_cpu(
+    bytes: std::sync::Arc<[u8]>,
+    entries: Vec<api::ShaderEntryPoint>,
+    ray_query_supported: bool,
+) -> api::Result<MetalShader> {
+    let source =
+        std::str::from_utf8(&bytes).map_err(|error| api::Error::Shader(error.to_string()))?;
+    let normalized = normalize_push_address_space(source);
+    let module = naga::front::wgsl::parse_str(&normalized)
+        .map_err(|error| api::Error::Shader(error.emit_to_string(&normalized)))?;
+    if module.types.iter().any(|(_, ty)| {
+        matches!(
+            ty.inner,
+            naga::TypeInner::AccelerationStructure { .. } | naga::TypeInner::RayQuery { .. }
+        )
+    }) && !ray_query_supported
+    {
+        return Err(api::Error::Unsupported("Metal device ray query"));
+    }
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::all(),
+    )
+    .validate(&module)
+    .map_err(|error| api::Error::Shader(error.to_string()))?;
+    validate_entry_points(&module, &entries)?;
+    #[cfg(target_vendor = "apple")]
+    {
+        Ok(MetalShader {
+            _library: None,
+            entries,
+            entry_names: Vec::new(),
+            wgsl_source: Some(bytes),
+        })
+    }
+    #[cfg(not(target_vendor = "apple"))]
+    {
+        let _ = (bytes, entries);
+        Err(api::Error::Unsupported("Metal requires an Apple target"))
     }
 }
 
@@ -150,11 +167,14 @@ fn ray_query_supported(_: &MetalDevice) -> bool {
     false
 }
 
-fn validate_entry_points(module: &naga::Module, desc: &ShaderDesc) -> api::Result<()> {
-    if desc.entries.is_empty() {
+fn validate_entry_points(
+    module: &naga::Module,
+    entries: &[api::ShaderEntryPoint],
+) -> api::Result<()> {
+    if entries.is_empty() {
         return Err(api::Error::InvalidState);
     }
-    for requested in &desc.entries {
+    for requested in entries {
         let stage = match requested.stage {
             api::ShaderStage::Vertex => naga::ShaderStage::Vertex,
             api::ShaderStage::Fragment => naga::ShaderStage::Fragment,
@@ -248,46 +268,89 @@ fn load_library(
 }
 
 #[cfg(target_vendor = "apple")]
-fn compile_library(
+pub(crate) fn compile_library_async(
     device: &MetalDevice,
-    bytes: &[u8],
+    bytes: std::sync::Arc<[u8]>,
     entries: Vec<api::ShaderEntryPoint>,
     entry_names: Vec<(String, String)>,
     ray_query: bool,
-) -> api::Result<MetalShader> {
+) -> super::cold::ColdFuture<MetalShader> {
+    use objc2::rc::Retained;
     use objc2_foundation::NSString;
     use objc2_metal::{MTLCompileOptions, MTLDevice as _, MTLLanguageVersion};
 
-    let source =
-        std::str::from_utf8(bytes).map_err(|error| api::Error::Shader(error.to_string()))?;
-    let source = NSString::from_str(source);
+    let source = match std::str::from_utf8(&bytes) {
+        Ok(source) => NSString::from_str(source),
+        Err(error) => {
+            return super::cold::ColdFuture::ready(Err(api::Error::Shader(error.to_string())));
+        }
+    };
     let options = ray_query.then(|| {
         let options = MTLCompileOptions::new();
         options.setLanguageVersion(MTLLanguageVersion::Version2_4);
         options
     });
-    let library = device
-        ._state
-        ._device
-        .newLibraryWithSource_options_error(&source, options.as_deref())
-        .map_err(|error| api::Error::Shader(format!("Metal shader library: {error:?}")))?;
-    Ok(MetalShader {
-        _library: Some(library),
-        entries,
-        entry_names,
-        wgsl_source: None,
-    })
+    let (future, completer) = super::cold::pending();
+    let metadata = std::sync::Mutex::new(Some((entries, entry_names)));
+    let callback_source = source.clone();
+    let callback_options = options.clone();
+    // Keep source/options and the result metadata alive until Metal invokes the
+    // handler. A dropped Rust future only stops observation; Metal may still
+    // compile and safely release these captures on its callback queue.
+    let callback = block2::RcBlock::new(move |library, error| {
+        let _source = &callback_source;
+        let _options = &callback_options;
+        let result = if let Some(library) = unsafe { Retained::retain(library) } {
+            match metadata
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+            {
+                Some((entries, entry_names)) => Ok(MetalShader {
+                    _library: Some(library),
+                    entries,
+                    entry_names,
+                    wgsl_source: None,
+                }),
+                None => Err(api::Error::Backend(
+                    "Metal shader completion invoked twice".into(),
+                )),
+            }
+        } else {
+            let error = unsafe { Retained::retain(error) };
+            Err(api::Error::Shader(format!(
+                "Metal shader library: {error:?}"
+            )))
+        };
+        completer.finish(result);
+    });
+    // SAFETY: `callback` has the exact generated completion-handler ABI and
+    // Metal copies it before this method returns. Its captures retain every
+    // Objective-C input and all Rust result metadata through callback entry.
+    unsafe {
+        device
+            ._state
+            ._device
+            .newLibraryWithSource_options_completionHandler(
+                &source,
+                options.as_deref(),
+                block2::RcBlock::as_ptr(&callback),
+            );
+    }
+    future
 }
 
 #[cfg(not(target_vendor = "apple"))]
-fn compile_library(
+pub(crate) fn compile_library_async(
     _: &MetalDevice,
-    _: &[u8],
+    _: std::sync::Arc<[u8]>,
     _: Vec<api::ShaderEntryPoint>,
     _: Vec<(String, String)>,
     _: bool,
-) -> api::Result<MetalShader> {
-    Err(api::Error::Unsupported("Metal requires an Apple target"))
+) -> super::cold::ColdFuture<MetalShader> {
+    super::cold::ColdFuture::ready(Err(api::Error::Unsupported(
+        "Metal requires an Apple target",
+    )))
 }
 
 #[cfg(test)]
@@ -330,11 +393,11 @@ mod tests {
             }],
             required_features: Vec::new(),
         };
-        assert!(validate_entry_points(&module, &desc).is_ok());
+        assert!(validate_entry_points(&module, &desc.entries).is_ok());
         let mut mismatch = desc;
         mismatch.entries[0].stage = api::ShaderStage::Fragment;
         assert!(matches!(
-            validate_entry_points(&module, &mismatch),
+            validate_entry_points(&module, &mismatch.entries),
             Err(api::Error::Shader(_))
         ));
     }

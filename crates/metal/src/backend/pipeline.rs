@@ -4,9 +4,8 @@
 //! Pipeline creation preserves color attachment slots, including holes, and
 //! command encoding checks the matching render pass signature.
 
-use std::future::{Ready, ready};
-
 use fluxel_rhi_core::api::{self, PipelineBackend, RasterPipelineDesc};
+use std::{future::Future, pin::Pin};
 
 use super::{Metal, MetalDevice, binding_abi};
 
@@ -69,17 +68,17 @@ pub struct MetalComputePipeline {
 }
 
 impl PipelineBackend for Metal {
-    type RasterPipelineFuture<'a> = Ready<api::Result<MetalRasterPipeline>>;
+    type RasterPipelineFuture<'a> = Pin<Box<dyn Future<Output = api::Result<MetalRasterPipeline>> + 'a>>;
 
     fn create_raster_pipeline<'a>(
         device: &'a MetalDevice,
         desc: &'a RasterPipelineDesc<Self>,
     ) -> Self::RasterPipelineFuture<'a> {
-        ready(create_raster_pipeline(device, desc))
+        Box::pin(create_raster_pipeline(device, desc))
     }
 }
 
-fn create_raster_pipeline(
+async fn create_raster_pipeline(
     device: &MetalDevice,
     desc: &RasterPipelineDesc<Metal>,
 ) -> api::Result<MetalRasterPipeline> {
@@ -89,7 +88,7 @@ fn create_raster_pipeline(
         use objc2_foundation::{NSObjectProtocol as _, NSString};
         use objc2_metal::{
             MTLDepthStencilDescriptor, MTLDevice as _, MTLFunction as _, MTLFunctionType,
-            MTLLibrary as _, MTLRenderPipelineDescriptor, MTLStencilDescriptor,
+            MTLRenderPipelineDescriptor, MTLStencilDescriptor,
             MTLVertexDescriptor,
         };
         if desc.depth_stencil.is_some_and(|depth| {
@@ -114,16 +113,16 @@ fn create_raster_pipeline(
         // SAFETY: Core verified shader and layout device identities.
         let layout = unsafe { desc.layout.native_ref().clone() };
         let vertex = unsafe { desc.vertex.module.native_ref() };
-        let (vertex_function, vertex_bindings, _) = super::shader::variant::native_function(
+        let (vertex_function, vertex_bindings, _) = super::shader::variant::native_function_async(
             device,
             vertex,
-            &desc.vertex.entry,
+            desc.vertex.entry.clone(),
             api::ShaderStage::Vertex,
-            &desc.vertex.constants,
-            &layout,
+            desc.vertex.constants.clone(),
+            layout.clone(),
             desc.vertex_buffers.len(),
             desc.multiview.is_some(),
-        )?;
+        ).await?;
         if vertex_function.functionType() != MTLFunctionType::Vertex {
             return Err(api::Error::Shader(
                 "Metal entry is not a vertex function".into(),
@@ -133,16 +132,16 @@ fn create_raster_pipeline(
         let fragment_function = if let Some(stage) = &desc.fragment {
             // SAFETY: Core verified the fragment shader belongs to this device.
             let shader = unsafe { stage.module.native_ref() };
-            let (function, binding, _) = super::shader::variant::native_function(
+            let (function, binding, _) = super::shader::variant::native_function_async(
                 device,
                 shader,
-                &stage.entry,
+                stage.entry.clone(),
                 api::ShaderStage::Fragment,
-                &stage.constants,
-                &layout,
+                stage.constants.clone(),
+                layout.clone(),
                 0,
                 desc.multiview.is_some(),
-            )?;
+            ).await?;
             if function.functionType() != MTLFunctionType::Fragment {
                 return Err(api::Error::Shader(
                     "Metal entry is not a fragment function".into(),
@@ -304,27 +303,49 @@ fn create_raster_pipeline(
         if let Some(label) = desc.label.as_deref() {
             descriptor.setLabel(Some(&NSString::from_str(label)));
         }
-        let mut reflection = None;
-        let mut create = || {
-            device
-                ._state
-                ._device
-                .newRenderPipelineStateWithDescriptor_options_reflection_error(
-                    &descriptor,
-                    objc2_metal::MTLPipelineOption::ArgumentInfo
-                        | objc2_metal::MTLPipelineOption::BufferTypeInfo,
-                    Some(&mut reflection),
-                )
-                .map_err(|error| api::Error::Backend(format!("Metal raster pipeline: {error:?}")))
-        };
-        let state = if let Some(cache) = &desc.cache {
+        let archive_lease = if let Some(cache) = &desc.cache {
             // SAFETY: Core verified cache provenance before pipeline creation.
-            unsafe { cache.native_ref() }.with_render(&descriptor, create)?
+            Some(unsafe { cache.native_ref() }.prepare_render(&descriptor).await?)
         } else {
-            create()?
+            None
         };
-        let reflection = reflection.ok_or(api::Error::InvalidState)?;
-        use objc2::runtime::NSObjectProtocol as _;
+        let (future, completer) = super::cold::pending();
+        let inputs = std::cell::RefCell::new(Some((
+            archive_lease,
+            descriptor.clone(),
+            vertex_function.clone(),
+            fragment_function.clone(),
+        )));
+        let callback = block2::RcBlock::new(move |
+            state: *mut objc2::runtime::ProtocolObject<dyn objc2_metal::MTLRenderPipelineState>,
+            reflection: *mut objc2_metal::MTLRenderPipelineReflection,
+            error: *mut objc2_foundation::NSError,
+        | {
+            let result = if !error.is_null() {
+                // SAFETY: Metal supplies a valid NSError for failed compilation.
+                Err(api::Error::Backend(format!("Metal raster pipeline: {:?}", unsafe { &*error })))
+            } else {
+                // SAFETY: successful completion lends valid native objects until
+                // this block returns; retain them for the future's consumer.
+                let state = unsafe { objc2::rc::Retained::retain(state) }
+                    .ok_or(api::Error::InvalidState);
+                let reflection = unsafe { objc2::rc::Retained::retain(reflection) }
+                    .ok_or(api::Error::InvalidState);
+                state.and_then(|state| reflection.map(|reflection| (state, reflection)))
+            };
+            completer.finish(result);
+            drop(inputs.borrow_mut().take());
+        });
+        // SAFETY: Metal copies the block; `inputs` keeps every descriptor
+        // dependency and the cache read lease alive through completion.
+        unsafe {
+            device._state._device.newRenderPipelineStateWithDescriptor_options_completionHandler(
+                &descriptor,
+                objc2_metal::MTLPipelineOption::ArgumentInfo | objc2_metal::MTLPipelineOption::BufferTypeInfo,
+                block2::RcBlock::as_ptr(&callback).cast(),
+            );
+        }
+        let (state, reflection) = future.await?;
         for stage in &mut stage_bindings {
             match stage.stage {
                 api::ShaderStage::Vertex

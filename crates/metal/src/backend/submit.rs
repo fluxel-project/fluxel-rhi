@@ -459,8 +459,12 @@ impl DeferredBackend for Metal {
                 }
                 accepted.push(*step);
                 record_frontier(&mut frontiers, lane, *step);
+                // Only this step's terminal facts and the previous frontier
+                // participate in the next link. Keeping the entire historical
+                // prefix here makes repeated steps quadratic in CPU work.
                 let lane_completion = Completion::new();
-                join_into(&lane_completion, prefix.clone());
+                join_into(&lane_completion, std::mem::take(&mut prefix));
+                prefix.push(lane_completion.clone());
                 device
                     ._state
                     .lane_frontier

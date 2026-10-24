@@ -2,8 +2,10 @@
 //!
 //! Metal consumes and emits archives through file URLs. Each temporary
 //! directory is created exclusively, is private to this process, and lives as
-//! long as a loaded archive. A mutex serializes archive mutation, pipeline
-//! creation against it, and serialization; no pipeline state is CPU replayed.
+//! long as a loaded archive. A read/write lease serializes archive mutation and
+//! serialization against native archive use. Pipeline creation retains a read
+//! lease through its native completion callback, so it never races a mutable
+//! archive operation while the archive mutex itself is not held for compilation.
 use super::{Metal, MetalDevice};
 use fluxel_rhi_core::api::{CacheBackend, Error, Result};
 
@@ -11,7 +13,23 @@ use fluxel_rhi_core::api::{CacheBackend, Error, Result};
 #[derive(Clone)]
 pub struct MetalPipelineCache {
     #[cfg(target_vendor = "apple")]
-    inner: std::sync::Arc<std::sync::Mutex<CacheInner>>,
+    inner: std::sync::Arc<CacheInner>,
+    #[cfg(target_vendor = "apple")]
+    access: std::sync::Arc<ArchiveAccess>,
+}
+
+/// Keeps a binary archive (and its backing input URL) alive after descriptor
+/// setup has released the write lease.
+///
+/// Pipeline creation owns this lease until its native completion callback. The
+/// archive itself remains attached to the native descriptor, while retaining
+/// the cache here also preserves the temporary source file that Metal may
+/// access lazily. The read lease prevents archive mutation or serialization
+/// during cold native compilation without holding an exclusive mutex.
+#[cfg(target_vendor = "apple")]
+pub(super) struct PreparedArchive {
+    _cache: MetalPipelineCache,
+    _read: ArchiveReadLease,
 }
 
 #[cfg(target_vendor = "apple")]
@@ -19,6 +37,255 @@ struct CacheInner {
     archive: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBinaryArchive>>,
     // Metal may retain the URL and access archive bytes after construction.
     _input: Option<TemporaryArchive>,
+}
+
+/// A small ownership gate around one non-`Send`/non-`Sync` native archive.
+///
+/// `objc2-metal` deliberately does not declare `MTLBinaryArchive` as
+/// `Send + Sync`, and Apple's archive documentation does not promise that
+/// adding/serializing can overlap descriptor consumption. The gate therefore
+/// treats native creation as a read use and add/serialize as exclusive writes.
+/// It is intentionally separate from the native archive so a read lease can
+/// span an asynchronous completion without keeping a mutex locked.
+#[cfg(target_vendor = "apple")]
+struct ArchiveAccess {
+    state: std::sync::Mutex<ArchiveAccessState>,
+    changed: std::sync::Condvar,
+}
+
+#[cfg(target_vendor = "apple")]
+struct ArchiveAccessState {
+    readers: usize,
+    writer: bool,
+    next_waiter: u64,
+    writers: std::collections::VecDeque<(u64, std::task::Waker)>,
+}
+
+#[cfg(target_vendor = "apple")]
+struct ArchiveWriteLease(Option<std::sync::Arc<ArchiveAccess>>);
+
+#[cfg(target_vendor = "apple")]
+struct ArchiveReadLease(std::sync::Arc<ArchiveAccess>);
+
+#[cfg(target_vendor = "apple")]
+struct ArchiveWriteFuture {
+    access: std::sync::Arc<ArchiveAccess>,
+    registration: Option<u64>,
+}
+
+#[cfg(target_vendor = "apple")]
+impl ArchiveAccess {
+    fn new() -> Self {
+        Self {
+            state: std::sync::Mutex::new(ArchiveAccessState {
+                readers: 0,
+                writer: false,
+                next_waiter: 0,
+                writers: std::collections::VecDeque::new(),
+            }),
+            changed: std::sync::Condvar::new(),
+        }
+    }
+
+    fn write(self: &std::sync::Arc<Self>) -> ArchiveWriteFuture {
+        ArchiveWriteFuture {
+            access: self.clone(),
+            registration: None,
+        }
+    }
+
+    /// Used only by synchronous cache serialization. Public cold-pipeline
+    /// admission uses `write` and never parks a
+    /// task executor thread.
+    fn write_blocking(self: &std::sync::Arc<Self>) -> ArchiveWriteLease {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        while state.writer || state.readers != 0 {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(|poison| poison.into_inner());
+        }
+        state.writer = true;
+        ArchiveWriteLease(Some(self.clone()))
+    }
+
+    fn wake_next_writer(&self) {
+        let waker = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            state.writers.front().map(|(_, waker)| waker.clone())
+        };
+        if let Some(waker) = waker {
+            // A foreign completion callback may drop the final read lease.
+            // Never allow an executor's waker panic to unwind through ObjC.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| waker.wake()));
+        }
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+impl std::future::Future for ArchiveWriteFuture {
+    type Output = Result<ArchiveWriteLease>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let access = self.access.clone();
+        let mut state = access
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let registration = match self.registration {
+            Some(value) => value,
+            None if !state.writer && state.readers == 0 && state.writers.is_empty() => {
+                state.writer = true;
+                return std::task::Poll::Ready(Ok(ArchiveWriteLease(Some(access.clone()))));
+            }
+            None => {
+                let value = state.next_waiter;
+                let Some(next) = value.checked_add(1) else {
+                    return std::task::Poll::Ready(Err(Error::InvalidState));
+                };
+                state.next_waiter = next;
+                state.writers.push_back((value, context.waker().clone()));
+                self.registration = Some(value);
+                value
+            }
+        };
+        if !state.writer
+            && state.readers == 0
+            && state
+                .writers
+                .front()
+                .is_some_and(|(value, _)| *value == registration)
+        {
+            state.writers.pop_front();
+            state.writer = true;
+            self.registration = None;
+            return std::task::Poll::Ready(Ok(ArchiveWriteLease(Some(access.clone()))));
+        }
+        if let Some((_, waker)) = state
+            .writers
+            .iter_mut()
+            .find(|(value, _)| *value == registration)
+        {
+            if !waker.will_wake(context.waker()) {
+                *waker = context.waker().clone();
+            }
+        }
+        std::task::Poll::Pending
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+impl Drop for ArchiveWriteFuture {
+    fn drop(&mut self) {
+        let Some(registration) = self.registration.take() else {
+            return;
+        };
+        let was_front = {
+            let mut state = self
+                .access
+                .state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let was_front = state
+                .writers
+                .front()
+                .is_some_and(|(value, _)| *value == registration);
+            state.writers.retain(|(value, _)| *value != registration);
+            was_front
+        };
+        if was_front {
+            self.access.wake_next_writer();
+        }
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+impl ArchiveWriteLease {
+    fn into_read(mut self) -> ArchiveReadLease {
+        let access = self
+            .0
+            .take()
+            .expect("writer lease owns archive access until read conversion");
+        let mut state = access
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        debug_assert!(state.writer);
+        state.writer = false;
+        state.readers += 1;
+        access.changed.notify_all();
+        drop(state);
+        ArchiveReadLease(access)
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+impl Drop for ArchiveWriteLease {
+    fn drop(&mut self) {
+        let Some(access) = self.0.take() else {
+            return;
+        };
+        let mut state = access
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        debug_assert!(state.writer);
+        state.writer = false;
+        access.changed.notify_all();
+        drop(state);
+        access.wake_next_writer();
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+impl Clone for ArchiveReadLease {
+    fn clone(&self) -> Self {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        debug_assert!(!state.writer && state.readers != 0);
+        state.readers += 1;
+        Self(self.0.clone())
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+impl Drop for ArchiveReadLease {
+    fn drop(&mut self) {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        debug_assert!(state.readers != 0);
+        state.readers -= 1;
+        if state.readers == 0 {
+            self.0.changed.notify_all();
+            drop(state);
+            self.0.wake_next_writer();
+        }
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+impl Clone for PreparedArchive {
+    fn clone(&self) -> Self {
+        Self {
+            _cache: self._cache.clone(),
+            _read: self._read.clone(),
+        }
+    }
 }
 
 #[cfg(target_vendor = "apple")]
@@ -113,10 +380,11 @@ impl CacheBackend for Metal {
                 .newBinaryArchiveWithDescriptor_error(&descriptor)
                 .map_err(|error| Error::Backend(format!("Metal archive creation: {error:?}")))?;
             Ok(MetalPipelineCache {
-                inner: std::sync::Arc::new(std::sync::Mutex::new(CacheInner {
+                inner: std::sync::Arc::new(CacheInner {
                     archive,
                     _input: input,
-                })),
+                }),
+                access: std::sync::Arc::new(ArchiveAccess::new()),
             })
         }
         #[cfg(not(target_vendor = "apple"))]
@@ -130,11 +398,9 @@ impl CacheBackend for Metal {
         {
             use objc2::runtime::NSObjectProtocol as _;
             use objc2_metal::MTLBinaryArchive as _;
-            let inner = cache
+            let _write = cache.access.write_blocking();
+            if !cache
                 .inner
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
-            if !inner
                 .archive
                 .respondsToSelector(objc2::sel!(serializeToURL:error:))
             {
@@ -144,9 +410,13 @@ impl CacheBackend for Metal {
             }
             let temp = TemporaryArchive::new()?;
             let url = temp.url()?;
-            inner.archive.serializeToURL_error(&url).map_err(|error| {
-                Error::Backend(format!("Metal archive serialization: {error:?}"))
-            })?;
+            cache
+                .inner
+                .archive
+                .serializeToURL_error(&url)
+                .map_err(|error| {
+                    Error::Backend(format!("Metal archive serialization: {error:?}"))
+                })?;
             std::fs::read(&temp.file)
                 .map_err(|error| Error::Backend(format!("Metal archive output: {error}")))
         }
@@ -160,46 +430,65 @@ impl CacheBackend for Metal {
 
 #[cfg(target_vendor = "apple")]
 impl MetalPipelineCache {
-    pub(super) fn with_render<T>(
+    /// Adds one render descriptor to the shared archive and attaches that same
+    /// archive to it. The expensive native pipeline creation must run only
+    /// after this returns, while retaining the returned read lease.
+    pub(super) async fn prepare_render(
         &self,
         desc: &objc2_metal::MTLRenderPipelineDescriptor,
-        create: impl FnOnce() -> Result<T>,
-    ) -> Result<T> {
+    ) -> Result<PreparedArchive> {
+        let write = self.access.write().await?;
+        self.attach_render(desc, write)
+    }
+
+    fn attach_render(
+        &self,
+        desc: &objc2_metal::MTLRenderPipelineDescriptor,
+        write: ArchiveWriteLease,
+    ) -> Result<PreparedArchive> {
         use objc2::runtime::NSObjectProtocol as _;
         use objc2_metal::MTLBinaryArchive as _;
-        let inner = self
+        if !self
             .inner
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        if !inner
             .archive
             .respondsToSelector(objc2::sel!(addRenderPipelineFunctionsWithDescriptor:error:))
         {
             return Err(Error::Unsupported("Metal render binary archive on this OS"));
         }
-        inner
+        self.inner
             .archive
             .addRenderPipelineFunctionsWithDescriptor_error(desc)
             .map_err(|error| {
                 Error::Backend(format!("Metal archive render functions: {error:?}"))
             })?;
-        desc.setBinaryArchives(Some(&objc2_foundation::NSArray::from_slice(&[
-            &*inner.archive
-        ])));
-        create()
+        desc.setBinaryArchives(Some(&objc2_foundation::NSArray::from_slice(&[&*self
+            .inner
+            .archive])));
+        Ok(PreparedArchive {
+            _cache: self.clone(),
+            _read: write.into_read(),
+        })
     }
-    pub(super) fn with_compute<T>(
+
+    /// Adds one compute descriptor to the archive and returns the ownership
+    /// lease required through native compilation completion.
+    pub(super) async fn prepare_compute(
         &self,
         desc: &objc2_metal::MTLComputePipelineDescriptor,
-        create: impl FnOnce() -> Result<T>,
-    ) -> Result<T> {
+    ) -> Result<PreparedArchive> {
+        let write = self.access.write().await?;
+        self.attach_compute(desc, write)
+    }
+
+    fn attach_compute(
+        &self,
+        desc: &objc2_metal::MTLComputePipelineDescriptor,
+        write: ArchiveWriteLease,
+    ) -> Result<PreparedArchive> {
         use objc2::runtime::NSObjectProtocol as _;
         use objc2_metal::MTLBinaryArchive as _;
-        let inner = self
+        if !self
             .inner
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        if !inner
             .archive
             .respondsToSelector(objc2::sel!(addComputePipelineFunctionsWithDescriptor:error:))
         {
@@ -207,41 +496,56 @@ impl MetalPipelineCache {
                 "Metal compute binary archive on this OS",
             ));
         }
-        inner
+        self.inner
             .archive
             .addComputePipelineFunctionsWithDescriptor_error(desc)
             .map_err(|error| {
                 Error::Backend(format!("Metal archive compute functions: {error:?}"))
             })?;
-        desc.setBinaryArchives(Some(&objc2_foundation::NSArray::from_slice(&[
-            &*inner.archive
-        ])));
-        create()
+        desc.setBinaryArchives(Some(&objc2_foundation::NSArray::from_slice(&[&*self
+            .inner
+            .archive])));
+        Ok(PreparedArchive {
+            _cache: self.clone(),
+            _read: write.into_read(),
+        })
     }
-    pub(super) fn with_mesh<T>(
+
+    /// Adds one mesh descriptor to the archive and returns the ownership lease
+    /// required through native compilation completion.
+    pub(super) async fn prepare_mesh(
         &self,
         desc: &objc2_metal::MTLMeshRenderPipelineDescriptor,
-        create: impl FnOnce() -> Result<T>,
-    ) -> Result<T> {
+    ) -> Result<PreparedArchive> {
+        let write = self.access.write().await?;
+        self.attach_mesh(desc, write)
+    }
+
+    fn attach_mesh(
+        &self,
+        desc: &objc2_metal::MTLMeshRenderPipelineDescriptor,
+        write: ArchiveWriteLease,
+    ) -> Result<PreparedArchive> {
         use objc2::runtime::NSObjectProtocol as _;
         use objc2_metal::MTLBinaryArchive as _;
-        let inner = self
+        if !self
             .inner
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        if !inner
             .archive
             .respondsToSelector(objc2::sel!(addMeshRenderPipelineFunctionsWithDescriptor:error:))
         {
             return Err(Error::Unsupported("Metal mesh binary archive on this OS"));
         }
-        inner
+        self.inner
             .archive
             .addMeshRenderPipelineFunctionsWithDescriptor_error(desc)
             .map_err(|error| Error::Backend(format!("Metal archive mesh functions: {error:?}")))?;
-        desc.setBinaryArchives(Some(&objc2_foundation::NSArray::from_slice(&[
-            &*inner.archive
-        ])));
-        create()
+        desc.setBinaryArchives(Some(&objc2_foundation::NSArray::from_slice(&[&*self
+            .inner
+            .archive])));
+        Ok(PreparedArchive {
+            _cache: self.clone(),
+            _read: write.into_read(),
+        })
     }
+
 }

@@ -1,6 +1,6 @@
-//! Independent Metal queue submission using per-step native GPU events.
+//! Independent Metal queue submission using explicit native boundary events.
 //!
-//! Fresh per-execution events synchronize command and present steps, including
+//! Events at required boundaries synchronize command and present steps, including
 //! cross-packet waits. Apple GPU and presentation acceptance is still pending.
 use super::{Metal, MetalDevice};
 use fluxel_rhi_core::api::{self, MultiQueueBackend, MultiQueueSubmitOutcome as Outcome};
@@ -13,104 +13,10 @@ pub struct MetalGpuSignal {
 }
 
 #[cfg(target_vendor = "apple")]
-struct ReleaseOnFailure {
-    completion: super::submit::Completion,
-    event: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLSharedEvent>>,
-}
+#[path = "multi_queue/retirement.rs"]
+mod retirement;
 #[cfg(target_vendor = "apple")]
-impl ReleaseOnFailure {
-    fn observe(self: &std::sync::Arc<Self>) {
-        use objc2_metal::MTLSharedEvent as _;
-        let waker = std::task::Waker::from(self.clone());
-        if matches!(self.completion.watch(&waker), Some(Err(_))) {
-            // A failed producer still releases native waits. Their host
-            // completion also joins the producer failure, so no result is
-            // reported as successful. GPU signals use the larger value 2.
-            self.event.setSignaledValue(1);
-        }
-    }
-}
-#[cfg(target_vendor = "apple")]
-impl std::task::Wake for ReleaseOnFailure {
-    fn wake(self: std::sync::Arc<Self>) {
-        self.observe();
-    }
-    fn wake_by_ref(self: &std::sync::Arc<Self>) {
-        self.observe();
-    }
-}
-
-#[cfg(target_vendor = "apple")]
-struct SparseDispatch {
-    ready: super::submit::Completion,
-    done: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLSharedEvent>>,
-    queue: std::sync::Arc<
-        std::sync::Mutex<
-            objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTL4CommandQueue>>,
-        >,
-    >,
-    binds: std::sync::Mutex<Option<Vec<super::sparse::PreparedSparseBind>>>,
-}
-// SAFETY: this one-shot callback owns retained native resources. Access to the
-// mapping queue is serialized by its shared mutex, each bind's mutable mapping
-// bookkeeping is separately locked, and the event supports cross-thread signals.
-// No Objective-C encoder is shared; GPU dependencies are explicit.
-#[cfg(target_vendor = "apple")]
-unsafe impl Send for SparseDispatch {}
-#[cfg(target_vendor = "apple")]
-unsafe impl Sync for SparseDispatch {}
-#[cfg(target_vendor = "apple")]
-impl SparseDispatch {
-    fn observe(self: &std::sync::Arc<Self>) {
-        use objc2_metal::{MTL4CommandQueue as _, MTLSharedEvent as _};
-        let waker = std::task::Waker::from(self.clone());
-        let Some(result) = self.ready.watch(&waker) else {
-            return;
-        };
-        let Some(binds) = self.binds.lock().unwrap_or_else(|e| e.into_inner()).take() else {
-            return;
-        };
-        if result.is_err() {
-            self.done.setSignaledValue(1);
-            return;
-        }
-        let queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
-        for bind in &binds {
-            bind.enqueue(&queue);
-        }
-        let retained_queue = queue.clone();
-        let event = self.done.clone();
-        let retained_event = event.clone();
-        let callback = block2::RcBlock::new(
-            move |_: std::ptr::NonNull<
-                objc2::runtime::ProtocolObject<dyn objc2_metal::MTLSharedEvent>,
-            >,
-                  _: u64| {
-                let _ = (&binds, &retained_queue, &retained_event);
-            },
-        );
-        let listener = objc2_metal::MTLSharedEventListener::new();
-        // SAFETY: Metal copies the callback; it retains mappings and the queue until signal completion.
-        unsafe {
-            event.notifyListener_atValue_block(
-                &listener,
-                1,
-                block2::RcBlock::as_ptr(&callback).cast(),
-            )
-        };
-        let native = objc2::runtime::ProtocolObject::<dyn objc2_metal::MTLEvent>::from_ref(&*event);
-        queue.signalEvent_value(native, 1);
-    }
-}
-#[cfg(target_vendor = "apple")]
-impl std::task::Wake for SparseDispatch {
-    fn wake(self: std::sync::Arc<Self>) {
-        self.observe();
-    }
-    fn wake_by_ref(self: &std::sync::Arc<Self>) {
-        self.observe();
-    }
-}
+use retirement::{ReleaseOnFailure, SparseDispatch};
 
 impl MultiQueueBackend for Metal {
     type NativeGpuSignal = MetalGpuSignal;
@@ -267,22 +173,67 @@ impl MultiQueueBackend for Metal {
             let mut markers = Vec::with_capacity(plan_steps.len());
             let mut waits = Vec::with_capacity(plan_steps.len());
             let mut sparse_bridges = Vec::with_capacity(plan_steps.len());
-            for desc in plan_steps {
+            let mut last_lane = [None, None];
+            for (i, desc) in plan_steps.iter().enumerate() {
+                last_lane[desc.lane.ordinal as usize] = Some(i);
+            }
+            // Same-queue Metal command-buffer order is already a dependency.
+            // Precompute only native cross-queue/token boundaries once, so
+            // allocation and every encodeWait consumer share one definition.
+            let mut signals_event = vec![false; plan_steps.len()];
+            let mut waits_event = vec![false; plan_steps.len()];
+            for (consumer, desc) in plan_steps.iter().enumerate() {
+                for edge in desc.waits.iter().filter(|edge| {
+                    edge.previous.index as usize >= start
+                        && plan.steps()[edge.previous.index as usize].lane != desc.lane
+                }) {
+                    let producer = edge.previous.index as usize - start;
+                    if plan_steps[producer].lane != desc.lane {
+                        signals_event[producer] = true;
+                        waits_event[consumer] = true;
+                    }
+                }
+            }
+            for signal in &packet.signals {
+                signals_event[signal.producer.index as usize - start] = true;
+            }
+            for wait in &packet.waits {
+                waits_event[wait.signal.consumer().index as usize - start] = true;
+            }
+            for (i, desc) in plan_steps.iter().enumerate() {
                 let queue = if desc.lane.ordinal == 0 {
                     &device._state._queue
                 } else {
                     &device._state.compute_queue
                 };
-                let (Some(event), Some(wait), Some(marker)) = (
-                    device._state._device.newSharedEvent(),
-                    queue.commandBuffer(),
-                    queue.commandBuffer(),
-                ) else {
+                let requested = match &packet.work.completion {
+                    CompletionRequest::None => false,
+                    CompletionRequest::End => last_lane.contains(&Some(i)),
+                    CompletionRequest::Steps(steps) => steps.contains(&plan.step(start + i)),
+                };
+                // Every active lane gets one terminal marker even for None so
+                // submitted owners have native retirement evidence. Other
+                // markers exist only at explicit event/checkpoint boundaries.
+                let terminal = last_lane.contains(&Some(i));
+                let needs_marker = signals_event[i]
+                    || requested
+                    || terminal
+                    || desc.kind == api::StepKind::SparseBind;
+                let event = signals_event[i]
+                    .then(|| device._state._device.newSharedEvent())
+                    .flatten();
+                let needs_wait = waits_event[i] || desc.kind == api::StepKind::SparseBind;
+                let wait = needs_wait.then(|| queue.commandBuffer()).flatten();
+                let marker = needs_marker.then(|| queue.commandBuffer()).flatten();
+                if signals_event[i] && event.is_none()
+                    || (needs_wait && wait.is_none())
+                    || (needs_marker && marker.is_none())
+                {
                     return Outcome::Rejected {
                         error: api::Error::OutOfMemory,
                         packet,
                     };
-                };
+                }
                 events.push(event);
                 waits.push(wait);
                 markers.push(marker);
@@ -303,35 +254,46 @@ impl MultiQueueBackend for Metal {
                 }
             }
             for (i, desc) in plan_steps.iter().enumerate() {
-                for edge in desc
-                    .waits
-                    .iter()
-                    .filter(|edge| edge.previous.index as usize >= start)
-                {
+                for edge in desc.waits.iter().filter(|edge| {
+                    edge.previous.index as usize >= start
+                        && plan.steps()[edge.previous.index as usize].lane != desc.lane
+                }) {
                     let event =
                         objc2::runtime::ProtocolObject::<dyn objc2_metal::MTLEvent>::from_ref(
-                            &*events[edge.previous.index as usize - start],
+                            &**events[edge.previous.index as usize - start]
+                                .as_ref()
+                                .expect("cross-queue producer owns event"),
                         );
-                    waits[i].encodeWaitForEvent_value(event, 1);
+                    waits[i]
+                        .as_ref()
+                        .expect("cross-queue consumer owns wait buffer")
+                        .encodeWaitForEvent_value(event, 1);
                 }
-                let event = objc2::runtime::ProtocolObject::<dyn objc2_metal::MTLEvent>::from_ref(
-                    &*events[i],
-                );
-                markers[i].encodeSignalEvent_value(event, 2);
+                if let Some(event) = &events[i] {
+                    let event =
+                        objc2::runtime::ProtocolObject::<dyn objc2_metal::MTLEvent>::from_ref(
+                            &**event,
+                        );
+                    markers[i]
+                        .as_ref()
+                        .expect("event signal owns marker")
+                        .encodeSignalEvent_value(event, 2);
+                }
                 if let StepPayload::Present(binding) = &packet.work.steps[i].payload {
                     let command = &present_commands
                         .iter()
                         .find(|(step, _)| *step == packet.work.steps[i].step)
                         .expect("present preallocated")
                         .1;
-                    for edge in desc
-                        .waits
-                        .iter()
-                        .filter(|edge| edge.previous.index as usize >= start)
-                    {
+                    for edge in desc.waits.iter().filter(|edge| {
+                        edge.previous.index as usize >= start
+                            && plan.steps()[edge.previous.index as usize].lane != desc.lane
+                    }) {
                         let event =
                             objc2::runtime::ProtocolObject::<dyn objc2_metal::MTLEvent>::from_ref(
-                                &*events[edge.previous.index as usize - start],
+                                &**events[edge.previous.index as usize - start]
+                                    .as_ref()
+                                    .expect("present producer owns event"),
                             );
                         command.encodeWaitForEvent_value(event, 1);
                     }
@@ -352,7 +314,10 @@ impl MultiQueueBackend for Metal {
                         objc2::runtime::ProtocolObject::<dyn objc2_metal::MTLEvent>::from_ref(
                             &**done,
                         );
-                    waits[i].encodeSignalEvent_value(ready, 1);
+                    waits[i]
+                        .as_ref()
+                        .expect("sparse bridge owns wait buffer")
+                        .encodeSignalEvent_value(ready, 1);
                     bridge.encodeWaitForEvent_value(done, 1);
                 }
             }
@@ -385,7 +350,10 @@ impl MultiQueueBackend for Metal {
                         request.consumer,
                         request.consumer_lane,
                         MetalGpuSignal {
-                            event: events[producer_index].clone(),
+                            event: events[producer_index]
+                                .as_ref()
+                                .expect("exported producer owns event")
+                                .clone(),
                             producer: step_completions[producer_index].clone(),
                         },
                     )
@@ -400,7 +368,10 @@ impl MultiQueueBackend for Metal {
                 let event = objc2::runtime::ProtocolObject::<dyn objc2_metal::MTLEvent>::from_ref(
                     &*signal.event,
                 );
-                waits[i].encodeWaitForEvent_value(event, 1);
+                waits[i]
+                    .as_ref()
+                    .expect("external wait owns command buffer")
+                    .encodeWaitForEvent_value(event, 1);
                 external[i].push(signal.producer.clone());
             }
             let api::MultiQueuePacket {
@@ -503,11 +474,13 @@ impl MultiQueueBackend for Metal {
                     }
                 }
                 remaining_waits.retain(|wait| wait.signal.consumer() != bound.step);
-                std::sync::Arc::new(ReleaseOnFailure {
-                    completion: step_completions[i].clone(),
-                    event: events[i].clone(),
-                })
-                .observe();
+                if let Some(event) = events[i].clone() {
+                    std::sync::Arc::new(ReleaseOnFailure {
+                        completion: step_completions[i].clone(),
+                        event,
+                    })
+                    .observe();
+                }
                 let desc = &plan_steps[i];
                 let mut covered = Vec::new();
                 covered.extend(external[i].iter().cloned());
@@ -521,8 +494,10 @@ impl MultiQueueBackend for Metal {
                 {
                     covered.push(step_completions[edge.previous.index as usize - start].clone());
                 }
-                covered.push(super::submit::track_command(device, &waits[i], None));
-                waits[i].commit();
+                if let Some(wait) = &waits[i] {
+                    covered.push(super::submit::track_command(device, wait, None));
+                    wait.commit();
+                }
                 let records = match bound.payload {
                     StepPayload::Commands(records) => records,
                     StepPayload::Present(_) => Vec::new(),
@@ -565,7 +540,9 @@ impl MultiQueueBackend for Metal {
                     covered.push(super::submit::track_command(device, bridge, None));
                     bridge.commit();
                 }
-                covered.push(super::submit::track_command(device, &markers[i], None));
+                if let Some(marker) = &markers[i] {
+                    covered.push(super::submit::track_command(device, marker, None));
+                }
                 super::submit::join_into(&step_completions[i], covered);
                 lane_frontier[desc.lane.ordinal as usize] = Some(step_completions[i].clone());
                 device
@@ -574,7 +551,9 @@ impl MultiQueueBackend for Metal {
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())[desc.lane.ordinal as usize] =
                     Some(step_completions[i].clone());
-                markers[i].commit();
+                if let Some(marker) = &markers[i] {
+                    marker.commit();
+                }
                 accepted.push(bound.step);
                 if let Some((_, point)) = completions.iter().find(|(index, _)| *index == i) {
                     // A marker proves only its own queue prefix, not unordered other lanes.

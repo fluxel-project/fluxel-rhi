@@ -5,7 +5,7 @@
 //! resource hazards and cross-queue synchronization remain the caller's responsibility.
 use super::{Metal, MetalBuffer, MetalCommandEncoder, MetalDevice};
 use fluxel_rhi_core::api::{self, MeshOps};
-use std::future::{Ready, ready};
+use std::{future::Future, pin::Pin};
 
 pub struct MetalMesh;
 #[derive(Clone)]
@@ -17,12 +17,12 @@ pub struct MetalMeshPipeline {
 }
 impl MeshOps<Metal> for MetalMesh {
     const AVAILABLE: bool = true;
-    type PipelineFuture<'a> = Ready<api::Result<MetalMeshPipeline>>;
+    type PipelineFuture<'a> = Pin<Box<dyn Future<Output = api::Result<MetalMeshPipeline>> + 'a>>;
     fn create_pipeline<'a>(
         device: &'a MetalDevice,
         desc: &'a api::MeshPipelineDesc<Metal>,
     ) -> Self::PipelineFuture<'a> {
-        ready(create(device, desc))
+        Box::pin(create(device, desc))
     }
     fn bind_pipeline(
         encoder: &mut MetalCommandEncoder,
@@ -329,7 +329,7 @@ pub(super) fn mesh_supported(device: &MetalDevice) -> bool {
         let native = &device._state._device;
         native.respondsToSelector(objc2::sel!(supportsFamily:))
             && native.respondsToSelector(
-                objc2::sel!(newRenderPipelineStateWithMeshDescriptor:options:reflection:error:),
+                objc2::sel!(newRenderPipelineStateWithMeshDescriptor:options:completionHandler:),
             )
             && native.supportsFamily(MTLGPUFamily::Metal3)
     }
@@ -340,7 +340,47 @@ pub(super) fn mesh_supported(device: &MetalDevice) -> bool {
     }
 }
 
-fn create(
+/// Resolves one mesh-pipeline stage without retaining a borrow of the public
+/// descriptor across the shader cold future.
+#[cfg(target_vendor = "apple")]
+async fn mesh_function(
+    device: &MetalDevice,
+    stage: &api::PipelineStage<Metal>,
+    layout: &super::bindings::MetalPipelineLayout,
+    expected: api::ShaderStage,
+    native_type: objc2_metal::MTLFunctionType,
+) -> api::Result<(
+    objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLFunction>>,
+    Option<[u32; 3]>,
+    super::shader::variant::StageBindings,
+)> {
+    use objc2_metal::MTLFunction as _;
+    // SAFETY: Core verifies shader device identity before entering SPI.
+    let shader = unsafe { stage.module.native_ref() };
+    let declared_workgroup = shader
+        .entries
+        .iter()
+        .find(|entry| entry.name == stage.entry && entry.stage == expected)
+        .ok_or_else(|| api::Error::Shader("Metal mesh entry metadata missing".into()))?
+        .workgroup_size;
+    let (function, bindings, workgroup) = super::shader::variant::native_function_async(
+        device,
+        shader,
+        stage.entry.clone(),
+        expected,
+        stage.constants.clone(),
+        layout.clone(),
+        0,
+        false,
+    )
+    .await?;
+    if function.functionType() != native_type {
+        return Err(api::Error::Shader("Metal mesh function type mismatch".into()));
+    }
+    Ok((function, workgroup.or(declared_workgroup), bindings))
+}
+
+async fn create(
     device: &MetalDevice,
     desc: &api::MeshPipelineDesc<Metal>,
 ) -> api::Result<MetalMeshPipeline> {
@@ -370,7 +410,7 @@ fn create(
     #[cfg(target_vendor = "apple")]
     {
         use objc2_metal::{
-            MTLDepthStencilDescriptor, MTLDevice as _, MTLFunction as _, MTLFunctionType,
+            MTLDepthStencilDescriptor, MTLDevice as _, MTLFunctionType,
             MTLMeshRenderPipelineDescriptor, MTLPipelineOption, MTLStencilDescriptor,
         };
         let native = &device._state._device;
@@ -393,34 +433,6 @@ fn create(
         }
         // SAFETY: Core checked the layout belongs to this device.
         let layout = unsafe { desc.layout.native_ref().clone() };
-        let function = |stage: &api::PipelineStage<Metal>,
-                        expected: api::ShaderStage,
-                        native_type: MTLFunctionType|
-         -> api::Result<_> {
-            // SAFETY: Core verifies shader device identity before entering SPI.
-            let shader = unsafe { stage.module.native_ref() };
-            let entry = shader
-                .entries
-                .iter()
-                .find(|e| e.name == stage.entry && e.stage == expected)
-                .ok_or_else(|| api::Error::Shader("Metal mesh entry metadata missing".into()))?;
-            let (function, bindings, workgroup) = super::shader::variant::native_function(
-                device,
-                shader,
-                &stage.entry,
-                expected,
-                &stage.constants,
-                &layout,
-                0,
-                false,
-            )?;
-            if function.functionType() != native_type {
-                return Err(api::Error::Shader(
-                    "Metal mesh function type mismatch".into(),
-                ));
-            }
-            Ok((function, workgroup.or(entry.workgroup_size), bindings))
-        };
         // Metal fixes topology in the mesh function's output type and has no
         // public reflection API for it. The descriptor must match the native
         // shader's output topology, as for the remaining native shader ABI.
@@ -428,12 +440,12 @@ fn create(
         // there is no parsed mesh topology to validate here. Native MSL and
         // metallib topology remain a caller contract, not reflected metadata.
         let (mesh_fn, mesh_threads, mesh_bindings) =
-            function(&desc.mesh, api::ShaderStage::Mesh, MTLFunctionType::Mesh)?;
+            mesh_function(device, &desc.mesh, &layout, api::ShaderStage::Mesh, MTLFunctionType::Mesh).await?;
         let mesh_threads =
             mesh_threads.ok_or_else(|| api::Error::Shader("Metal mesh threads missing".into()))?;
         let (object_fn, object_threads, object_bindings) = if let Some(stage) = &desc.task {
             let (function, threads, bindings) =
-                function(stage, api::ShaderStage::Task, MTLFunctionType::Object)?;
+                mesh_function(device, stage, &layout, api::ShaderStage::Task, MTLFunctionType::Object).await?;
             (
                 Some(function),
                 threads.ok_or_else(|| api::Error::Shader("Metal object threads missing".into()))?,
@@ -444,7 +456,7 @@ fn create(
         };
         let (fragment, fragment_bindings) = if let Some(stage) = &desc.fragment {
             let (function, _, bindings) =
-                function(stage, api::ShaderStage::Fragment, MTLFunctionType::Fragment)?;
+                mesh_function(device, stage, &layout, api::ShaderStage::Fragment, MTLFunctionType::Fragment).await?;
             (Some(function), Some(bindings))
         } else {
             (None, None)
@@ -560,22 +572,50 @@ fn create(
             }
             color_formats.push(Some(format));
         }
-        let mut reflection = None;
-        let mut create = || {
-            native
-                .newRenderPipelineStateWithMeshDescriptor_options_reflection_error(
-                    &descriptor,
-                    MTLPipelineOption::ArgumentInfo | MTLPipelineOption::BufferTypeInfo,
-                    Some(&mut reflection),
-                )
-                .map_err(|e| api::Error::Backend(format!("Metal mesh pipeline: {e:?}")))
-        };
-        let state = if let Some(cache) = &desc.cache {
+        let archive_lease = if let Some(cache) = &desc.cache {
             // SAFETY: Core verified cache provenance before pipeline creation.
-            unsafe { cache.native_ref() }.with_mesh(&descriptor, create)?
+            Some(unsafe { cache.native_ref() }.prepare_mesh(&descriptor).await?)
         } else {
-            create()?
+            None
         };
+        let (future, completer) = super::cold::pending();
+        let inputs = std::cell::RefCell::new(Some((
+            archive_lease,
+            descriptor.clone(),
+            mesh_fn.clone(),
+            object_fn.clone(),
+            fragment.clone(),
+        )));
+        let callback = block2::RcBlock::new(move |
+            state: *mut objc2::runtime::ProtocolObject<dyn objc2_metal::MTLRenderPipelineState>,
+            reflection: *mut objc2_metal::MTLRenderPipelineReflection,
+            error: *mut objc2_foundation::NSError,
+        | {
+            let result = if !error.is_null() {
+                // SAFETY: Metal supplies a valid NSError for failed compilation.
+                Err(api::Error::Backend(format!("Metal mesh pipeline: {:?}", unsafe { &*error })))
+            } else {
+                // SAFETY: callback-owned native values are retained before the
+                // Objective-C block returns.
+                let state = unsafe { objc2::rc::Retained::retain(state) }
+                    .ok_or(api::Error::InvalidState);
+                let reflection = unsafe { objc2::rc::Retained::retain(reflection) }
+                    .ok_or(api::Error::InvalidState);
+                state.and_then(|state| reflection.map(|reflection| (state, reflection)))
+            };
+            completer.finish(result);
+            drop(inputs.borrow_mut().take());
+        });
+        // SAFETY: Metal copies the block. Its captures retain the descriptor,
+        // all native functions, and the binary-archive read lease.
+        unsafe {
+            native.newRenderPipelineStateWithMeshDescriptor_options_completionHandler(
+                &descriptor,
+                MTLPipelineOption::ArgumentInfo | MTLPipelineOption::BufferTypeInfo,
+                block2::RcBlock::as_ptr(&callback).cast(),
+            );
+        }
+        let (state, reflection) = future.await?;
         // The actual native limits may be lower than the general device maximum.
         use objc2_metal::MTLRenderPipelineState as _;
         if mesh_count > state.maxTotalThreadsPerMeshThreadgroup()
@@ -586,7 +626,6 @@ fn create(
         let mut bindings = vec![mesh_bindings];
         bindings.extend(object_bindings);
         bindings.extend(fragment_bindings);
-        let reflection = reflection.ok_or(api::Error::InvalidState)?;
         use objc2::runtime::NSObjectProtocol as _;
         for stage in &mut bindings {
             match stage.stage {

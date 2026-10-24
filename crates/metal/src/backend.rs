@@ -42,6 +42,8 @@ mod argument;
 mod binding_abi;
 mod bindings;
 mod cache;
+mod cold;
+mod cold_cpu;
 #[cfg(target_vendor = "apple")]
 mod capabilities;
 mod compute;

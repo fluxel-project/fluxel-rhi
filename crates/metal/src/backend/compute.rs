@@ -4,9 +4,8 @@
 //! module encodes each operation on one native compute encoder and stores no
 //! replay list or backend-side resource state.
 
-use std::future::{Ready, ready};
-
 use fluxel_rhi_core::api::{self, ComputeOps};
+use std::{future::Future, pin::Pin};
 
 use super::{Metal, MetalCommandEncoder, MetalComputePipeline, MetalDevice};
 
@@ -14,13 +13,13 @@ pub struct Compute;
 
 impl ComputeOps<Metal> for Compute {
     const AVAILABLE: bool = true;
-    type PipelineFuture<'a> = Ready<api::Result<MetalComputePipeline>>;
+    type PipelineFuture<'a> = Pin<Box<dyn Future<Output = api::Result<MetalComputePipeline>> + 'a>>;
 
     fn create_pipeline<'a>(
         device: &'a MetalDevice,
         desc: &'a api::ComputePipelineDesc<Metal>,
     ) -> Self::PipelineFuture<'a> {
-        ready(pipeline::create_pipeline(device, desc))
+        Box::pin(pipeline::create_pipeline(device, desc))
     }
 
     fn begin(encoder: &mut MetalCommandEncoder) -> api::Result<()> {

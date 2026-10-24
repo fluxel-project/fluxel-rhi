@@ -10,6 +10,8 @@ use std::sync::{Arc, Mutex, Weak};
 
 #[cfg(target_vendor = "apple")]
 const DEFAULT_PAGE_BYTES: usize = 4 * 1024 * 1024;
+/// Idle staging memory is bounded independently of transient in-flight work.
+const MAX_IDLE_BYTES: usize = 32 * 1024 * 1024;
 
 #[cfg(target_vendor = "apple")]
 #[derive(Clone, Default)]
@@ -21,14 +23,21 @@ pub(super) struct UploadPool;
 
 #[cfg(target_vendor = "apple")]
 struct PoolInner {
-    idle: Mutex<Vec<RawPage>>,
+    idle: Mutex<IdlePages>,
+}
+
+#[cfg(target_vendor = "apple")]
+#[derive(Default)]
+struct IdlePages {
+    pages: Vec<RawPage>,
+    bytes: usize,
 }
 
 #[cfg(target_vendor = "apple")]
 impl Default for PoolInner {
     fn default() -> Self {
         Self {
-            idle: Mutex::new(Vec::new()),
+            idle: Mutex::new(IdlePages::default()),
         }
     }
 }
@@ -59,10 +68,15 @@ impl Drop for Lease {
             return;
         };
         if let Some(pool) = self.pool.upgrade() {
-            pool.idle
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push(page);
+            let mut idle = pool.idle.lock().unwrap_or_else(|p| p.into_inner());
+            // Preserve predictable steady-state pages only. Oversized uploads
+            // are one-shot peaks and should release their MTLBuffer promptly.
+            if page.size <= DEFAULT_PAGE_BYTES
+                && idle.bytes.saturating_add(page.size) <= MAX_IDLE_BYTES
+            {
+                idle.bytes += page.size;
+                idle.pages.push(page);
+            }
         }
     }
 }
@@ -85,11 +99,9 @@ impl UploadPool {
     /// its queue/device owners are dropped; submitted leases remain held by
     /// their command-buffer completion handlers.
     pub(super) fn clear(&self) {
-        self.0
-            .idle
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clear();
+        let mut idle = self.0.idle.lock().unwrap_or_else(|p| p.into_inner());
+        idle.pages.clear();
+        idle.bytes = 0;
     }
 
     pub(super) fn write(
@@ -132,8 +144,10 @@ impl UploadPool {
         minimum: usize,
     ) -> fluxel_rhi_core::api::Result<RawPage> {
         let mut idle = self.0.idle.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(index) = idle.iter().position(|page| page.size >= minimum) {
-            return Ok(idle.swap_remove(index));
+        if let Some(index) = idle.pages.iter().position(|page| page.size >= minimum) {
+            let page = idle.pages.swap_remove(index);
+            idle.bytes -= page.size;
+            return Ok(page);
         }
         drop(idle);
         use objc2_metal::MTLDevice as _;

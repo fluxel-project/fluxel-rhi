@@ -1385,10 +1385,11 @@ a command-buffer event inside an active render/compute encoder. Heap-default
 untracked resources are not mistaken for tracked device allocations. This
 lowers explicit dependencies and introduces no resource-history tracker.
 
-`nextDrawable` is synchronous even though the Surface SPI wraps its result in
-`Ready`. Drawable exhaustion can block the calling thread until availability or
-the configured timeout. The host/renderer must bound frames in flight and
-acquire late; RHI does not add a drawable-acquisition thread pool.
+`nextDrawable` is a blocking native operation. One bounded per-surface worker
+performs it outside Surface future construction and polling; a full admission
+slot applies asynchronous backpressure. The host/renderer still bounds frames
+in flight and acquires late. Cancellation releases an unobserved drawable, and
+epoch checks prevent an old acquisition from minting a new-generation lease.
 
 Shared staging uploads now suballocate encoder-local slices from device-owned
 native MTLBuffer pages. Submitted slices are retained by the native completion
@@ -1558,9 +1559,9 @@ combined per-stage native buffer, texture and sampler slot budgets.
 
 Secondary recording, ray pipelines and traditional pipeline-statistics queries
 retain their documented unsupported boundaries. They are not implemented with
-CPU command replay, software tracing or fabricated query results. Synchronous
-nextDrawable acquisition remains an explicit native behavior; this Windows-only
-review provides no Apple runtime latency or GPU acceptance claim.
+CPU command replay, software tracing or fabricated query results. Native
+nextDrawable blocking is confined to the dedicated acquisition worker; this
+Windows-hosted review provides no Apple runtime latency or GPU acceptance claim.
 
 A generation change between Core surface preflight and final native handoff now
 returns SurfaceOutdated. Reusing an already handed-off lease still returns
@@ -1954,3 +1955,41 @@ writes use one page, pattern clear adds no page, and reversed encoder submission
 preserves bytes. A packaged three-frame triangle example ran and its capture
 was opened. ETC2 and ASTC subcases remained adapter-capability skips; they are
 not claimed as hardware passes. MSRV 1.87 Wasm all-target compilation passed.
+
+
+## Metal cold creation and native boundary costs
+
+Single-queue completion bookkeeping chains the preceding frontier with only the
+current step's native completions. It no longer clones and rejoins every
+historical completion at each step. Multi-queue lowering allocates shared events
+only for cross-queue producers and explicit GPU tokens; wait buffers exist only
+for their consumers or sparse bridges. Native markers remain at requested
+checkpoints, event producers, sparse boundaries and active lane terminals.
+Same-queue order supplies the remaining ordering. Failure release and host
+completion coverage retain their original semantics.
+
+MSL source libraries, native function-constant specialization and raster,
+compute and mesh pipelines use Metal's completion-handler creation methods.
+Callbacks retain input descriptors, functions and archive leases, and retain
+native output/error objects before returning. Cancelling a future removes its
+observer rather than abandoning native inputs. Pure Naga validation and MSL
+emission run in a bounded CPU worker; ordinary resource creation and native
+command recording keep their direct paths.
+
+A binary archive has FIFO asynchronous writer admission for add/attach, then a
+read lease through native compilation. Mutating or serializing cannot overlap
+that use, and no mutex remains locked across asynchronous compilation. Wakes
+occur outside locks and cannot unwind through native callbacks. Synchronous
+serialization remains an explicitly synchronous operation. Idle upload caching
+retains standard pages of at most 4 MiB within a 32 MiB byte budget; larger peak
+allocations are released after completion.
+
+Drawable acquisition retains only a narrow layer/drawable transfer boundary.
+Each worker job has an autorelease pool, observes cancellation and checks the
+surface epoch; the future rechecks the epoch when returning the lease. The
+worker does not retain its own sender, so an idle surface drop closes its
+channel. No timer, GPU polling or command replay implements acquisition.
+
+This revision has Windows and Apple-target Rust compilation plus independent
+source review only. Metal tests and GPU/presentation/performance validation
+were explicitly omitted; no Apple runtime acceptance is claimed.

@@ -4,12 +4,11 @@
 //! retains the supplied layer, binds it to this Metal device, and issues
 //! generation-bound drawable leases. Configure publishes a new generation only
 //! after validating the complete request and applying native layer settings.
-//! Drawable acquisition calls `nextDrawable` synchronously and reports an
-//! unavailable drawable instead of fabricating a texture. Enabling
-//! `allowsNextDrawableTimeout` bounds the wait, but does not make this call
-//! asynchronous: the calling thread can still block until a drawable arrives
-//! or the configured timeout expires. Wrapping it in `Ready` only reflects the
-//! SPI shape and must not be treated as a nonblocking UI-thread operation.
+//! Drawable acquisition is performed by one bounded, per-surface native worker.
+//! `nextDrawable` is never called by construction or polling of the public
+//! Future. A cancelled request is discarded on completion; reconfiguration
+//! increments the shared generation, so an old worker request cannot mint a
+//! lease for the replacement configuration.
 
 #[cfg(target_vendor = "apple")]
 use super::MetalDevice;
@@ -24,6 +23,12 @@ use std::{
     rc::Rc,
     sync::{Arc, Mutex},
 };
+#[cfg(target_vendor = "apple")]
+mod acquire;
+#[cfg(target_vendor = "apple")]
+use acquire::AcquireWorker;
+#[cfg(target_vendor = "apple")]
+pub use acquire::MetalAcquireFuture;
 
 const MAX_FRAME_LATENCY: u32 = 3;
 
@@ -58,6 +63,8 @@ struct MetalSurfaceState {
     layer: objc2::rc::Retained<objc2_quartz_core::CAMetalLayer>,
     generation: Arc<Mutex<u64>>,
     #[cfg(target_vendor = "apple")]
+    acquire_worker: Arc<AcquireWorker>,
+    #[cfg(target_vendor = "apple")]
     configured: bool,
     #[cfg(target_vendor = "apple")]
     max_extent: u32,
@@ -78,10 +85,12 @@ impl MetalSurface {
         // Prevent an unbounded nextDrawable wait when the host pauses or
         // configures a zero-sized view. A timed-out acquire returns SurfaceOutdated.
         layer.setAllowsNextDrawableTimeout(true);
+        let acquire_worker = AcquireWorker::new()?;
         Ok(Self {
             state: Rc::new(RefCell::new(MetalSurfaceState {
                 layer,
                 generation: Arc::new(Mutex::new(0)),
+                acquire_worker,
                 #[cfg(target_vendor = "apple")]
                 configured: false,
                 max_extent: super::texture::max_texture_dimension_2d(&device._state._device),
@@ -102,6 +111,9 @@ impl MetalSurface {
 
 impl SurfaceBackend for Metal {
     type ConfigureFuture<'a> = Ready<api::Result<()>>;
+    #[cfg(target_vendor = "apple")]
+    type AcquireFuture<'a> = MetalAcquireFuture<'a>;
+    #[cfg(not(target_vendor = "apple"))]
     type AcquireFuture<'a> = Ready<api::Result<MetalSurfaceImage>>;
 
     fn generation(surface: &MetalSurface) -> u64 {
@@ -314,28 +326,25 @@ impl SurfaceBackend for Metal {
     fn acquire<'a>(surface: &'a mut MetalSurface) -> Self::AcquireFuture<'a> {
         #[cfg(target_vendor = "apple")]
         {
-            use objc2_quartz_core::CAMetalDrawable as _;
-
             let state = surface.state.borrow();
 
             if !state.configured {
-                return ready(Err(api::Error::InvalidState));
+                return acquire::failed(
+                    state.acquire_worker.clone(),
+                    state.generation.clone(),
+                    api::Error::InvalidState,
+                );
             }
             let generation = *state
                 .generation
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let Some(drawable) = state.layer.nextDrawable() else {
-                return ready(Err(api::Error::SurfaceOutdated));
-            };
-            let texture = drawable.texture();
-            ready(Ok(MetalSurfaceImage {
+            acquire::begin(
+                state.acquire_worker.clone(),
+                state.layer.clone(),
                 generation,
-                surface_generation: state.generation.clone(),
-                handed_off: false,
-                drawable,
-                texture,
-            }))
+                state.generation.clone(),
+            )
         }
         #[cfg(not(target_vendor = "apple"))]
         {
