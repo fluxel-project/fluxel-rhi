@@ -14,93 +14,8 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StepKind {
-    Commands,
-    SparseBind,
-    Present,
-}
-#[derive(Clone, Copy, Debug)]
-pub struct StepWait {
-    pub previous: StepId,
-    pub destination: AccessScope,
-}
-pub struct StepDesc {
-    pub lane: LaneId,
-    pub kind: StepKind,
-    pub waits: Vec<StepWait>,
-}
-pub struct SubmissionPlan<B: Backend> {
-    pub(crate) id: PlanId,
-    pub(crate) steps: Arc<[StepDesc]>,
-    _backend: PhantomData<fn() -> B>,
-}
-impl<B: Backend> Clone for SubmissionPlan<B> {
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id,
-            steps: self.steps.clone(),
-            _backend: PhantomData,
-        }
-    }
-}
-impl<B: Backend> SubmissionPlan<B> {
-    /// # Safety
-    /// Renderer supplies an ordered, device-local, realizable execution layout.
-    /// RHI does not sort or validate a second DAG at submission time.
-    pub unsafe fn from_compiled(id: PlanId, steps: Arc<[StepDesc]>) -> Self {
-        Self {
-            id,
-            steps,
-            _backend: PhantomData,
-        }
-    }
-    pub fn id(&self) -> PlanId {
-        self.id
-    }
-    pub fn steps(&self) -> &[StepDesc] {
-        &self.steps
-    }
-    pub fn step(&self, index: usize) -> StepId {
-        StepId {
-            plan: self.id,
-            // `validate_for_execution` limits a usable plan to `u32::MAX`
-            // entries, so this sentinel can never identify a valid slot. Do
-            // not let an oversized public `usize` wrap onto an earlier step.
-            index: u32::try_from(index).unwrap_or(u32::MAX),
-        }
-    }
-}
-
-impl<B: Backend> SubmissionPlan<B> {
-    /// Validate the device-local ordered topology before executing it.
-    ///
-    /// This checks identity, lane membership and predecessor indices; it does
-    /// not infer hazards, resource transitions, or cross-lane synchronization.
-    pub fn validate_for_execution(&self, device: &Device<B>) -> Result<()> {
-        if self.id.device != device.id {
-            return Err(Error::WrongDevice);
-        }
-        if self.steps.len() > u32::MAX as usize {
-            return Err(Error::InvalidRange);
-        }
-        for (index, step) in self.steps.iter().enumerate() {
-            if step.lane.device != device.id {
-                return Err(Error::WrongDevice);
-            }
-            if !device.lanes().iter().any(|lane| lane.id == step.lane) {
-                return Err(Error::WrongLane);
-            }
-            for wait in &step.waits {
-                if wait.previous.plan != self.id || wait.previous.index as usize >= index {
-                    return Err(Error::InvalidState);
-                }
-            }
-        }
-        Ok(())
-    }
-}
+mod plan;
+pub use plan::{IssuedSteps, StepDesc, StepKind, StepWait, SubmissionPlan};
 
 /// Host observation only. It cannot be used as a GPU queue wait.
 pub struct CompletionPoint<B: Backend> {
@@ -207,7 +122,7 @@ pub struct SubmissionReceipt<B: Backend> {
 }
 /// A true issue prefix with no mandatory per-step fence.
 pub struct IssuedPrefix<B: Backend> {
-    pub steps: Vec<StepId>,
+    pub steps: IssuedSteps,
     pub checkpoints: Vec<Checkpoint<B>>,
 }
 pub struct NativeUncertainty<B: Backend> {

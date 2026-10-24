@@ -267,12 +267,7 @@ impl<B: ExecutionBackend + DeferredBackend> ExecutionMode<B> for DeferredExecuti
         completion: CompletionRequest,
     ) -> Result<Self::State> {
         plan.validate_for_execution(device)?;
-        if !device.caps.sparse
-            && plan
-                .steps
-                .iter()
-                .any(|step| step.kind == StepKind::SparseBind)
-        {
+        if !device.caps.sparse && plan.has_sparse() {
             return Err(Error::Unsupported(
                 "sparse steps are not supported by this execution facade",
             ));
@@ -417,11 +412,7 @@ impl<B: ExecutionBackend + ImmediateBackend> ExecutionMode<B> for ImmediateExecu
         plan: SubmissionPlan<B>,
         completion: CompletionRequest,
     ) -> Result<Self::State> {
-        if plan
-            .steps
-            .iter()
-            .any(|step| step.kind == StepKind::SparseBind)
-        {
+        if plan.has_sparse() {
             return Err(Error::Unsupported(
                 "sparse steps are not supported by this execution facade",
             ));

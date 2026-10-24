@@ -202,7 +202,7 @@ mod tests {
         let outcome = ImmediateRunOutcome::<NativeShared>::Failed {
             error: Error::InvalidState,
             prefix: IssuedPrefix {
-                steps: vec![step],
+                steps: IssuedSteps::from_test_steps(Arc::from([step])),
                 checkpoints: vec![checkpoint],
             },
         };

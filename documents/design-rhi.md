@@ -1790,3 +1790,23 @@ capacity creates usable compute PSOs and verifies dispatch/readback after partia
 cancellation. In an isolated diagnostic run, polling the first 32 PSO futures
 occupied the caller for about 308 ms on the synchronous baseline versus 59 us
 with the worker; this measures caller occupancy, not faster native compilation.
+
+## Reusable Core plan validation and immediate prefixes
+
+A compiled SubmissionPlan shares immutable metadata across its clones: step
+identities, the presence of sparse steps and its topology-validation result.
+Every execution still checks the actual DeviceId before consulting that result.
+Device identity and its negotiated lane set are immutable under the existing
+unsafe Device::from_native contract, so both successful topology validation and
+its errors can be reused. Resource bindings, completion requests, submitted
+payloads and recovery frontiers remain validated for each owning packet; this is
+not a cache of resource state or recorded commands.
+
+Immediate success and uncertainty results expose IssuedSteps, a read-only shared
+prefix of the plan's cached step identities. Its slice view, borrowed iteration
+and consuming copied iteration preserve the exact prefix without rebuilding a
+Vec on each finish or requested checkpoint. Cloning a prefix shares its backing;
+callers needing an independently mutable vector explicitly use to_vec(). Native
+backend checkpoint operations continue borrowing a StepId slice. Failure effects,
+accepted-prefix ownership and completion coverage are unchanged. Plan compilation
+pays the identity-storage cost once; no Renderer frame API or scheduler is added.

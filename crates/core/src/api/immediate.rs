@@ -52,7 +52,7 @@ pub enum ImmediateRunOutcome<B: Backend> {
     },
     Indeterminate {
         error: Error,
-        prefix: Vec<StepId>,
+        prefix: IssuedSteps,
         uncertain: NativeUncertainty<B>,
     },
 }
@@ -190,10 +190,10 @@ impl<B: ImmediateBackend> ImmediateSession<B> {
             }
         }
     }
-    fn prefix(&self, count: usize) -> Vec<StepId> {
-        (0..count).map(|index| self.plan.step(index)).collect()
+    fn prefix(&self, count: usize) -> IssuedSteps {
+        self.plan.issued_steps(count)
     }
-    fn take_issued_steps(&mut self) -> Vec<StepId> {
+    fn take_issued_steps(&mut self) -> IssuedSteps {
         let steps = self.prefix(self.issued_count);
         self.issued_count = 0;
         steps
