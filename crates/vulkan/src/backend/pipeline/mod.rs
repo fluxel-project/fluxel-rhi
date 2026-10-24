@@ -8,6 +8,7 @@
 mod binding;
 pub(crate) mod cache;
 mod compute;
+pub(crate) mod descriptor_pool;
 pub(crate) mod fixed;
 mod vertex_format;
 pub(crate) use vertex_format::vformat as native_vertex_format;

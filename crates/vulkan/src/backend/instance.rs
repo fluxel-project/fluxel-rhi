@@ -474,6 +474,11 @@ impl InstanceBackend for Vulkan {
             .optimal_tiling_features;
             Ok((
                 VulkanDevice(Arc::new(DeviceState {
+                    upload_pool: super::upload::UploadPool::default(),
+                    command_pools: super::command_pool::CommandPoolCache::new(&native),
+                    descriptor_pools: super::pipeline::descriptor_pool::DescriptorPoolCache::new(
+                        &native,
+                    ),
                     features: enabled_features,
                     conservative_rasterization,
                     maintenance5,

@@ -1,6 +1,6 @@
 //! Buffer transfer commands and staging uploads.
 
-use super::super::{VulkanBuffer, VulkanEncoder, resource, vk_error};
+use super::super::{VulkanBuffer, VulkanEncoder, upload};
 use ash::vk;
 use fluxel_rhi_core::api::{self, Error, Result};
 
@@ -55,42 +55,29 @@ pub(crate) fn write_buffer(
     {
         return Err(Error::InvalidRange);
     }
-    let upload = resource::create_buffer(
-        &encoder.owner,
-        &api::BufferDesc {
-            label: Some("Vulkan buffer staging".into()),
-            size: bytes.len() as u64,
-            usage: api::BufferUsage::COPY_SRC,
-            memory: api::MemoryClass::Upload,
-        },
+    let family = if encoder.lane.ordinal == 1 {
+        encoder.device.compute_family
+    } else {
+        encoder.device.graphics_family
+    };
+    let upload = encoder.device.upload_pool.write(
+        &encoder.device,
+        family,
+        &mut encoder.upload_slices,
+        bytes,
+        upload::copy_offset_alignment(&encoder.device),
+        0,
     )?;
-    // SAFETY: this freshly allocated upload buffer owns host-visible coherent
-    // memory and no GPU submission can observe it before the copy is recorded.
-    let mapped = unsafe {
-        encoder.device.device.map_memory(
-            upload.0.memory,
-            0,
-            bytes.len() as u64,
-            vk::MemoryMapFlags::empty(),
-        )
-    }
-    .map_err(vk_error)?;
-    // SAFETY: the mapping covers `bytes.len()` from offset zero; copy then
-    // unmap completes before this allocation is used by any recorded command.
-    unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.cast(), bytes.len());
-        encoder.device.device.unmap_memory(upload.0.memory);
-    }
     before_transfer(encoder);
     // SAFETY: encoder owns a recording command buffer; upload and destination
     // are retained by it through fence completion and ranges were checked above.
     unsafe {
         encoder.device.device.cmd_copy_buffer(
             encoder.command,
-            upload.0.buffer,
+            upload.buffer,
             dst.0.buffer,
             &[vk::BufferCopy {
-                src_offset: 0,
+                src_offset: upload.offset,
                 dst_offset: offset,
                 size: bytes.len() as u64,
             }],
@@ -99,7 +86,6 @@ pub(crate) fn write_buffer(
     // The upload helper owns its temporary CopyDst state. Return to its
     // documented idle boundary without guessing the caller's next usage.
     after_upload(encoder);
-    encoder.uploads.push(upload);
     encoder.buffers.push(dst.clone());
     Ok(())
 }

@@ -12,6 +12,10 @@ pub(crate) struct PendingResolve {
     pub(super) destination_mip: u32,
     pub(super) source_layer: u32,
     pub(super) destination_layer: u32,
+    /// Surface images are temporarily placed in the color-attachment layout
+    /// by the WSI pass setup, while ordinary resolve targets already arrive in
+    /// their Core-selected `GENERAL` layout.
+    pub(super) destination_is_surface: bool,
     pub(super) area: api::Rect,
 }
 
@@ -37,6 +41,7 @@ pub(super) fn finish(e: &VulkanEncoder, resolves: &[PendingResolve]) {
                 .subresource_range(range)
         };
         let sr = range(r.source_mip, r.source_layer);
+        let dr = range(r.destination_mip, r.destination_layer);
         let before = [barrier(
             r.source,
             sr,
@@ -51,6 +56,22 @@ pub(super) fn finish(e: &VulkanEncoder, resolves: &[PendingResolve]) {
             vk::ImageLayout::GENERAL,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             vk::AccessFlags::MEMORY_READ,
+            vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+        )];
+        let destination_before = [barrier(
+            r.destination,
+            dr,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::ImageLayout::GENERAL,
+            vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            vk::AccessFlags::TRANSFER_WRITE,
+        )];
+        let destination_after = [barrier(
+            r.destination,
+            dr,
+            vk::ImageLayout::GENERAL,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::AccessFlags::TRANSFER_WRITE,
             vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
         )];
         let sub = |mip, layer| {
@@ -86,6 +107,21 @@ pub(super) fn finish(e: &VulkanEncoder, resolves: &[PendingResolve]) {
                 &[],
                 &before,
             );
+            // A fallback resolve to a surface cannot use dynamic rendering's
+            // resolve attachment.  The surface setup put it in
+            // COLOR_ATTACHMENT_OPTIMAL for the common direct-attachment path;
+            // make the actual `vkCmdResolveImage` layout and access explicit.
+            if r.destination_is_surface {
+                e.device.device.cmd_pipeline_barrier(
+                    e.command,
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &destination_before,
+                );
+            }
             e.device.device.cmd_resolve_image(
                 e.command,
                 r.source,
@@ -103,6 +139,19 @@ pub(super) fn finish(e: &VulkanEncoder, resolves: &[PendingResolve]) {
                 &[],
                 &after,
             );
+            if r.destination_is_surface {
+                // `capture::finish` owns the common surface exit and expects
+                // this image in the color-attachment layout.
+                e.device.device.cmd_pipeline_barrier(
+                    e.command,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &destination_after,
+                );
+            }
         }
     }
 }

@@ -2,7 +2,7 @@
 
 mod region;
 
-use super::super::{VulkanBuffer, VulkanEncoder, resource, vk_error};
+use super::super::{VulkanBuffer, VulkanEncoder, resource, upload};
 use ash::vk;
 use fluxel_rhi_core::api::{self, Error, Result};
 use region::{buffer_region, extent, image_region, layers, offset};
@@ -199,31 +199,35 @@ pub(crate) fn write_texture(
     if !d.desc().usage.contains(api::TextureUsage::COPY_DST) || d.desc().samples != 1 {
         return Err(Error::InvalidRange);
     }
-    let copy = buffer_region(d, &dst, layout, bytes.len() as u64)?;
-    let upload = resource::create_buffer(
-        &e.owner,
-        &api::BufferDesc {
-            label: Some("Vulkan texture staging".into()),
-            size: bytes.len() as u64,
-            usage: api::BufferUsage::COPY_SRC,
-            memory: api::MemoryClass::Upload,
-        },
+    let family = if e.lane.ordinal == 1 {
+        e.device.compute_family
+    } else {
+        e.device.graphics_family
+    };
+    let upload = e.device.upload_pool.write(
+        &e.device,
+        family,
+        &mut e.upload_slices,
+        bytes,
+        upload::copy_offset_alignment(&e.device),
+        layout.offset,
     )?;
-    // SAFETY: fresh coherent host-visible allocation has no concurrent users.
-    let mapped = unsafe {
-        e.device.device.map_memory(
-            upload.0.memory,
-            0,
-            bytes.len() as u64,
-            vk::MemoryMapFlags::empty(),
-        )
-    }
-    .map_err(vk_error)?;
-    // SAFETY: the mapping covers the input bytes and is unmapped before submission.
-    unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.cast(), bytes.len());
-        e.device.device.unmap_memory(upload.0.memory);
-    }
+    let copy_layout = api::TexelCopyBufferLayout {
+        offset: upload
+            .offset
+            .checked_add(layout.offset)
+            .ok_or(Error::InvalidRange)?,
+        ..layout
+    };
+    let copy = buffer_region(
+        d,
+        &dst,
+        copy_layout,
+        upload
+            .offset
+            .checked_add(bytes.len() as u64)
+            .ok_or(Error::InvalidRange)?,
+    )?;
     let l = layers(d, &dst);
     let coupled = matches!(
         d.desc().format,
@@ -290,7 +294,7 @@ pub(crate) fn write_texture(
         );
         e.device.device.cmd_copy_buffer_to_image(
             e.command,
-            upload.0.buffer,
+            upload.buffer,
             d.native(),
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             &[copy],
@@ -305,7 +309,6 @@ pub(crate) fn write_texture(
             &[to_idle],
         );
     }
-    e.uploads.push(upload);
     e.textures.push(d.clone());
     Ok(())
 }

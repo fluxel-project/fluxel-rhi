@@ -333,6 +333,10 @@ impl api::MultiQueueBackend for Vulkan {
                 }
                 StepPayload::SparseBind(_) => sparse_step = true,
             }
+            super::super::ray::retention::pin_batch(&mut issued[start..]);
+            let has_external = issued[start..]
+                .iter()
+                .any(|record| !record.encoder.external_segments.is_empty());
             let commands: Vec<_> = issued[start..].iter().map(RecordedWork::command).collect();
             values[lane] += 1;
             let mut signal_values = vec![values[lane]];
@@ -394,10 +398,7 @@ impl api::MultiQueueBackend for Vulkan {
                 } else {
                     Ok(())
                 }
-            } else if issued[start..]
-                .iter()
-                .any(|record| !record.encoder.external_segments.is_empty())
-            {
+            } else if has_external {
                 let waits: Vec<_> = wait_semaphores
                     .iter()
                     .copied()
@@ -437,6 +438,12 @@ impl api::MultiQueueBackend for Vulkan {
                 uncertain!(error);
             }
             for record in &issued[start..] {
+                if !has_external {
+                    super::super::ray::retention::publish_segment(
+                        record,
+                        record.encoder.external_segments.len(),
+                    );
+                }
                 super::super::query::commit_ops(&record.encoder.query_ops, lane as u32);
             }
             device

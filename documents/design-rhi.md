@@ -1462,3 +1462,68 @@ answers, native creation/execution/lifetime behavior, focused real-GPU output
 checks, and surface/visual evidence where applicable. Extending a backend must
 preserve these ownership boundaries; a consumer fallback or another backend's
 successful run cannot stand in for its missing native implementation.
+
+## Vulkan native lifetime and allocation review
+
+TLAS storage retains the latest accepted BLAS dependency set rather than every
+historical rebuild. Recording and cancellation leave this set unchanged. Before
+native submission, a batch pins both current dependencies of bound TLAS objects
+(including secondary bindings) and the new build inputs. Each command-buffer
+segment publishes its new dependency set only after successful native submission.
+Existing fence retirement or uncertain-submission quarantine retains the old
+owners; this metadata does not plan hazards or replay GPU commands.
+
+Buffer and texture writes suballocate persistently mapped, host-coherent staging
+pages. Pages are local to a queue family because their buffers use exclusive
+sharing. Encoder leases keep copied bytes alive until cancellation or submission
+fence retirement, and return pages before releasing their device owner. Idle
+native pages do not retain DeviceState, avoiding a device ownership cycle.
+Texture layout offsets and native copy alignment both apply to suballocations.
+
+A fixed completion observer checks all pending native fences at a bounded timed
+interval instead of waiting indefinitely for the first fence. Future polling
+only registers a waker. Independent devices can publish completion while an
+earlier fence remains blocked; failed native observations preserve quarantine.
+Optional diagnostic capture uses a separate bounded worker and cannot block
+completion observation. Saturated diagnostic capture may be omitted.
+
+Command pools use exclusive queue-family/command-level leases and reuse reset
+command buffers. Secondary recording keeps its native inheritance and simultaneous
+use semantics. Bind groups and sampler variants lease single-set descriptor
+pool pages. Pools reset only after their owners retire; inactive command and
+descriptor caches each retain at most 32 pages, destroying excess pages without
+changing public capability. These caches contain native allocation objects,
+not application commands, pass schedules, or a second RenderGraph.
+
+A local native-object microbenchmark on Radeon 780M measured median command
+pool create/allocate/begin/end/destroy at 212.253 microseconds versus 1.630 for
+reset/rebegin; descriptor create/allocate/destroy was 1.137 versus 0.030 for
+allocate/reset. These diagnostic object-operation measurements motivated reuse;
+they are not renderer frame-rate claims.
+
+WSI acquisition retains the worker-side acquire-fence handshake and cancellation
+model. A waker-driven, two-window diagnostic measured 60 warmed acquisitions per
+mode: median 563.8 microseconds for FIFO and 704.4 for Immediate, with respective
+95th percentiles 2811.6 and 2375.5 microseconds. These end-to-end measurements do
+not isolate the fence's cost or establish a bottleneck. Replacing the handshake
+with GPU-only semaphore acquisition remains deferred until a measured candidate
+justifies the additional cancellation and present-retirement machinery. Retired
+swapchains are released after a replacement image has presented and its present
+wait has been proven consumed on reacquisition, not on the first acquire alone.
+
+Focused acceptance includes 22 library tests (including the real-device TLAS
+rebuild/cancellation and independent-fence observation regressions), three
+explicit hardware fixtures for staging reuse/offset readback and distinct queue
+families, and native mapping, copy, sampler, MRT and WSI tests. The distinct-family
+fixture exercises Graphics family 0 and Compute family 1. Example 13 also runs
+12 frames of native parallel secondary recording; its GPU frame readback was
+opened and checked for the expected UFO field and star background.
+
+Strict synchronization validation additionally exposed a surface fallback-resolve
+bug: a nonzero-layer MSAA source used a transfer resolve into an attachment-layout
+surface without the matching layout and transfer-write dependencies. The backend
+now brackets that resolve with color-attachment/general transitions and restores
+the surface's exit state. Both MRT/array resolve and WSI presentation regressions
+pass without validation errors after the fix. The independent source review
+confirmed no further P0/P1/P2 findings in the reviewed paths; this remains focused
+Windows/780M acceptance, not an all-device or Metal test claim.

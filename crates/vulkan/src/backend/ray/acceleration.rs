@@ -6,6 +6,8 @@ use ash::vk;
 use fluxel_rhi_core::api::{self, Error, Result};
 use std::sync::{Arc, Mutex};
 
+use super::retention::{RecordedTlasBuild, extend_unique};
+
 #[derive(Clone)]
 pub struct VulkanAcceleration(pub(crate) Arc<AccelerationState>);
 pub(crate) struct AccelerationState {
@@ -15,7 +17,10 @@ pub(crate) struct AccelerationState {
     memory: vk::DeviceMemory,
     size: u64,
     pub(crate) top: bool,
-    children: Mutex<Vec<VulkanAcceleration>>,
+    /// BLAS objects named by the last TLAS build that actually crossed the
+    /// Vulkan queue boundary.  Recording a replacement build is deliberately
+    /// not publication: its command buffer may be cancelled or rejected.
+    pub(super) committed_blas: Mutex<Vec<VulkanAcceleration>>,
 }
 impl Drop for AccelerationState {
     fn drop(&mut self) {
@@ -390,7 +395,7 @@ pub(crate) fn create(
         memory,
         size,
         top,
-        children: Mutex::new(Vec::new()),
+        committed_blas: Mutex::new(Vec::new()),
     })))
 }
 pub(crate) fn build(
@@ -537,20 +542,23 @@ pub(crate) fn build(
         .as_ref()
         .ok_or(Error::Unsupported("Vulkan acceleration structures"))?
         .acceleration;
-    if !children.is_empty() {
-        let mut retained =
-            dst.0.children.lock().map_err(|_| {
-                Error::Backend("Vulkan acceleration ownership lock poisoned".into())
-            })?;
-        retained.extend(children.iter().cloned());
-    }
     // SAFETY: all geometry addresses and scratch ranges were validated; the
     // caller supplies the required preceding resource transitions. The encoder
     // retains every native input and destination through GPU completion.
     unsafe { loader.cmd_build_acceleration_structures(encoder.command, &[info], &[&ranges]) };
     encoder.buffers.extend(input.buffers);
     encoder.buffers.push(scratch.clone());
-    encoder.accelerations.extend(children);
+    encoder.accelerations.extend(children.iter().cloned());
     encoder.accelerations.push(dst.clone());
+    if dst.0.top {
+        let mut blas = Vec::new();
+        extend_unique(&mut blas, children);
+        encoder.ray_builds.push(RecordedTlasBuild {
+            target: dst.clone(),
+            blas,
+            // Closed external buffers precede the active command buffer.
+            segment: encoder.external_segments.len(),
+        });
+    }
     Ok(())
 }

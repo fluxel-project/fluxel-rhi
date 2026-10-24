@@ -28,21 +28,22 @@ pub(super) enum Snapshot {
     },
 }
 pub(super) struct Variant {
+    // Field order is lifetime-critical: return/reset this page before the
+    // DeviceState owners below can be the final logical-device reference.
+    #[allow(dead_code)]
+    pool: super::super::descriptor_pool::DescriptorPoolLease,
     device: Arc<DeviceState>,
     _layout: VulkanBindGroupLayout,
     key: Vec<(u32, u8)>,
-    pool: vk::DescriptorPool,
     sampler: Option<vk::Sampler>,
     set: vk::DescriptorSet,
 }
 impl Drop for Variant {
     fn drop(&mut self) {
-        // SAFETY: group retention covers submitted uses; pool is destroyed before its layout.
-        unsafe {
-            self.device.device.destroy_descriptor_pool(self.pool, None);
-            if let Some(sampler) = self.sampler {
-                self.device.device.destroy_sampler(sampler, None);
-            }
+        // The page lease resets only after this variant is no longer retained
+        // by its fence-owned group; sampler lifetime remains native-local.
+        if let Some(sampler) = self.sampler {
+            unsafe { self.device.device.destroy_sampler(sampler, None) }
         }
     }
 }
@@ -106,16 +107,8 @@ fn create(group: &Group, layout: &VulkanBindGroupLayout, key: Vec<(u32, u8)>) ->
             });
         }
     }
-    // SAFETY: sizes are derived from the validated descriptor layout and checked counts.
-    let pool = unsafe {
-        group.device.device.create_descriptor_pool(
-            &vk::DescriptorPoolCreateInfo::default()
-                .max_sets(1)
-                .pool_sizes(&sizes),
-            None,
-        )
-    }
-    .map_err(vk_error)?;
+    let pool = group.device.descriptor_pools.lease(&sizes)?;
+    let native_pool = pool.pool();
     let mut variant = Variant {
         device: group.device.clone(),
         _layout: layout.clone(),
@@ -129,7 +122,7 @@ fn create(group: &Group, layout: &VulkanBindGroupLayout, key: Vec<(u32, u8)>) ->
     let mut variable_info = vk::DescriptorSetVariableDescriptorCountAllocateInfo::default()
         .descriptor_counts(&variable);
     let mut allocate = vk::DescriptorSetAllocateInfo::default()
-        .descriptor_pool(pool)
+        .descriptor_pool(native_pool)
         .set_layouts(&layouts);
     if !variable.is_empty() {
         allocate = allocate.push_next(&mut variable_info);

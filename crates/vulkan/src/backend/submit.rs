@@ -14,7 +14,7 @@ use fluxel_rhi_core::api::{
 use std::sync::Arc;
 
 pub struct RecordedWork {
-    pub(super) encoder: VulkanEncoder,
+    pub(crate) encoder: VulkanEncoder,
 }
 impl RecordedWork {
     fn command(&self) -> vk::CommandBuffer {
@@ -79,7 +79,7 @@ fn submit_external_records(
     let mut first = true;
     let mut pending_wait: Option<vk::Semaphore> = None;
     for (index, record) in records.iter().enumerate() {
-        for segment in &record.encoder.external_segments {
+        for (segment_index, segment) in record.encoder.external_segments.iter().enumerate() {
             let command = [segment.command];
             let mut segment_waits = if first { waits.to_vec() } else { Vec::new() };
             if let Some(wait) = pending_wait.take() {
@@ -97,6 +97,7 @@ fn submit_external_records(
                 &segment_signals,
                 timeline,
             )?;
+            super::ray::retention::publish_segment(record, segment_index);
             first = false;
             if let ExternalBoundary::Wait(semaphore) = &segment.boundary {
                 pending_wait = Some(semaphore.semaphore);
@@ -120,6 +121,7 @@ fn submit_external_records(
             final_signals,
             timeline,
         )?;
+        super::ray::retention::publish_segment(record, record.encoder.external_segments.len());
         first = false;
     }
     Ok(())
@@ -383,6 +385,7 @@ impl DeferredBackend for Vulkan {
                         // and Vulkan submission consumes it exactly once.
                         unsafe { record.into_native() }
                     }));
+                    super::ray::retention::pin_batch(&mut issued[start..]);
                     let commands = issued[start..]
                         .iter()
                         .map(RecordedWork::command)
@@ -422,6 +425,12 @@ impl DeferredBackend for Vulkan {
                             return indeterminate(error, issued);
                         }
                         for record in &issued[start..] {
+                            if !has_external {
+                                super::ray::retention::publish_segment(
+                                    record,
+                                    record.encoder.external_segments.len(),
+                                );
+                            }
                             super::query::commit_ops(&record.encoder.query_ops, 0);
                         }
                     }

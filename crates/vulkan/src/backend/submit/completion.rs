@@ -11,9 +11,10 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Mutex, OnceLock,
-        mpsc::{self, Sender},
+        mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender},
     },
     task::{Context, Poll, Waker},
+    time::Duration,
 };
 
 struct WaitState {
@@ -130,44 +131,116 @@ struct FenceJob {
 }
 static FENCE_WAITER: OnceLock<std::result::Result<FenceWaiter, String>> = OnceLock::new();
 
+// This bounds notification latency while keeping the observer asleep whenever
+// no producer sends a job.  It is deliberately a timed receive, rather than a
+// Future polling loop: `FenceFuture` is only woken by `Completion::publish`.
+const OBSERVATION_INTERVAL: Duration = Duration::from_millis(2);
+
+/// Completes one job after its native fence has supplied a definitive result.
+///
+/// Publication precedes optional capture and retirement.  A waiter therefore
+/// observes GPU completion independently of slow filesystem I/O, while the
+/// capture worker retains its command resources until it has read them.
+fn finish_job(job: FenceJob, result: Result<()>, captures: &SyncSender<Vec<RecordedWork>>) {
+    let FenceJob {
+        completion,
+        work,
+        sync,
+        sparse,
+    } = job;
+    let completed = result.is_ok();
+    completion.publish(result);
+    if completed {
+        // Capture is optional instrumentation.  The dedicated bounded worker
+        // must not make a completed fence delay another fence's notification.
+        // If that worker is unavailable, dropping is safe because completion
+        // was already established; capture failure never changes RHI result.
+        if work.iter().any(|item| item.encoder.capture.is_some()) {
+            // Never let diagnostic filesystem throughput head-of-line-block
+            // native completion observation. There is normally only one
+            // process-wide capture, but a full bounded queue may drop it.
+            let _ = captures.try_send(work);
+        }
+        drop(sync);
+        drop(sparse);
+    } else {
+        // A failed status query is not retirement evidence. Keep every native
+        // owner (including the fence/device) quarantined exactly as before.
+        std::mem::forget(work);
+        std::mem::forget(sync);
+        std::mem::forget(sparse);
+        std::mem::forget(completion);
+    }
+}
+
+fn capture_worker(receiver: Receiver<Vec<RecordedWork>>) {
+    for work in receiver {
+        // Capture is diagnostic-only; errors must not retroactively fail a
+        // completion that has already been published to the caller.
+        let _ = super::super::capture::write_completed(&work);
+    }
+}
+
+fn observe_fences(receiver: Receiver<FenceJob>, captures: SyncSender<Vec<RecordedWork>>) {
+    let mut active = Vec::new();
+    loop {
+        // A finite channel wait lets newly submitted jobs join the active set
+        // promptly, even while an earlier fence is intentionally unsignaled.
+        match receiver.recv_timeout(OBSERVATION_INTERVAL) {
+            Ok(job) => active.push(job),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) if active.is_empty() => return,
+            // The process-global sender normally prevents this case. If it is
+            // ever dropped while jobs remain, retain the finite observation
+            // cadence rather than spin on an immediately-disconnected channel.
+            Err(RecvTimeoutError::Disconnected) => std::thread::park_timeout(OBSERVATION_INTERVAL),
+        }
+        while let Ok(job) = receiver.try_recv() {
+            active.push(job);
+        }
+
+        let mut index = 0;
+        while index < active.len() {
+            let completion = &active[index].completion;
+            // SAFETY: every active job owns its fence and retains the logical
+            // device. A zero-time status query neither accesses a queue nor
+            // changes fence state, so all independent devices can be scanned.
+            let result = unsafe {
+                completion
+                    .0
+                    .device
+                    .device
+                    .wait_for_fences(&[completion.0.fence], true, 0)
+            };
+            match result {
+                Ok(()) => {
+                    let job = active.swap_remove(index);
+                    finish_job(job, Ok(()), &captures);
+                }
+                Err(vk::Result::TIMEOUT) => index += 1,
+                Err(error) => {
+                    let job = active.swap_remove(index);
+                    finish_job(job, Err(vk_error(error)), &captures);
+                }
+            }
+        }
+    }
+}
+
 pub(super) fn fence_waiter() -> Result<&'static FenceWaiter> {
     match FENCE_WAITER.get_or_init(|| {
         let (sender, receiver) = mpsc::channel::<FenceJob>();
+        // Capture is optional test instrumentation. A capacity of one bounds
+        // retained capture work without making the completion observer wait
+        // behind filesystem I/O.
+        let (capture_sender, capture_receiver) = mpsc::sync_channel::<Vec<RecordedWork>>(1);
+        std::thread::Builder::new()
+            .name("fluxel-vulkan-capture-writer".into())
+            .spawn(move || capture_worker(capture_receiver))
+            .map_err(|error| format!("Vulkan capture worker: {error}"))?;
         std::thread::Builder::new()
             .name("fluxel-vulkan-fence-waiter".into())
-            .spawn(move || {
-                for job in receiver {
-                    // SAFETY: this observer owns an accepted fence, retains its
-                    // device, and only waits; it does not access the queue.
-                    let result = unsafe {
-                        job.completion.0.device.device.wait_for_fences(
-                            &[job.completion.0.fence],
-                            true,
-                            u64::MAX,
-                        )
-                    }
-                    .map_err(vk_error);
-                    // Completion represents GPU evidence only.  Optional
-                    // visual capture is test instrumentation and must never
-                    // turn completed GPU work into a failed RHI completion.
-                    let completed = result.is_ok();
-                    job.completion.publish(result);
-                    if completed {
-                        let _ = super::super::capture::write_completed(&job.work);
-                    }
-                    if completed {
-                        drop(job.work);
-                        drop(job.sync);
-                        drop(job.sparse);
-                    } else {
-                        // A failed wait does not prove the queue has retired native objects.
-                        std::mem::forget(job.work);
-                        std::mem::forget(job.sync);
-                        std::mem::forget(job.sparse);
-                        std::mem::forget(job.completion);
-                    }
-                }
-            })
+            .spawn(move || observe_fences(receiver, capture_sender))
             .map(|_| FenceWaiter { sender })
             .map_err(|error| format!("Vulkan fence waiter: {error}"))
     }) {
@@ -276,5 +349,172 @@ impl api::CompletionBackend for Vulkan {
         }
         retain_until_fence(completion.clone(), Vec::new());
         FenceFuture::pending(completion)
+    }
+}
+
+#[cfg(all(test, feature = "hardware-tests"))]
+mod hardware_tests {
+    //! Real-driver regression for independent-device fence observation.
+    //!
+    //! The first queue waits on an unsignaled timeline value, so its marker
+    //! fence cannot retire. The second logical device has an independent
+    //! queue and marker fence; it must still publish before the timeline is
+    //! released. This exercises the actual global waiter rather than a mock
+    //! readiness source.
+
+    use super::{Completion, FenceFuture, Vulkan, retain_until_fence};
+    use crate::backend::VulkanInstance;
+    use ash::vk;
+    use fluxel_rhi_core::api::Device;
+    use std::{
+        future::Future,
+        sync::{Arc, mpsc::sync_channel},
+        task::{Context, Poll, Wake, Waker},
+        time::Duration,
+    };
+
+    struct ThreadWake(std::thread::Thread);
+    impl Wake for ThreadWake {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    fn block_on<F: Future>(future: F) -> F::Output {
+        let waker = Waker::from(Arc::new(ThreadWake(std::thread::current())));
+        let mut context = Context::from_waker(&waker);
+        let mut future = std::pin::pin!(future);
+        loop {
+            match future.as_mut().poll(&mut context) {
+                Poll::Ready(value) => return value,
+                Poll::Pending => std::thread::park(),
+            }
+        }
+    }
+
+    fn device() -> Device<Vulkan> {
+        block_on(VulkanInstance::new().unwrap().open_default()).unwrap()
+    }
+
+    #[test]
+    fn held_timeline_fence_does_not_head_of_line_block_another_device() {
+        let held_device = device();
+        let independent_device = device();
+        // SAFETY: these native handles are only used below while their typed
+        // Core devices remain alive; this test does not expose them elsewhere.
+        let held_native = unsafe { held_device.native_ref() }.clone();
+        let independent_native = unsafe { independent_device.native_ref() }.clone();
+        let held_state = held_native.0.clone();
+        let independent_state = independent_native.0.clone();
+        if !held_state.timeline_semaphore {
+            // The regression requires a native timeline wait to hold a fence
+            // without adding arbitrary GPU work. Older real devices simply do
+            // not expose that Vulkan mechanism.
+            return;
+        }
+
+        let mut timeline_type = vk::SemaphoreTypeCreateInfo::default()
+            .semaphore_type(vk::SemaphoreType::TIMELINE)
+            .initial_value(0);
+        let timeline_info = vk::SemaphoreCreateInfo::default().push_next(&mut timeline_type);
+        // SAFETY: held_state owns the logical device and this test owns the
+        // resulting semaphore until both submissions have completed.
+        let timeline = unsafe { held_state.device.create_semaphore(&timeline_info, None) }.unwrap();
+        let held = Completion::new(
+            held_state.clone(),
+            // SAFETY: the new fence belongs exclusively to this Completion.
+            unsafe {
+                held_state
+                    .device
+                    .create_fence(&vk::FenceCreateInfo::default(), None)
+            }
+            .unwrap(),
+        );
+        let independent = Completion::new(
+            independent_state.clone(),
+            // SAFETY: the new fence belongs exclusively to this Completion.
+            unsafe {
+                independent_state
+                    .device
+                    .create_fence(&vk::FenceCreateInfo::default(), None)
+            }
+            .unwrap(),
+        );
+
+        let wait_values = [1];
+        let waits = [timeline];
+        let stages = [vk::PipelineStageFlags::ALL_COMMANDS];
+        let mut wait_timeline =
+            vk::TimelineSemaphoreSubmitInfo::default().wait_semaphore_values(&wait_values);
+        let held_submit = vk::SubmitInfo::default()
+            .wait_semaphores(&waits)
+            .wait_dst_stage_mask(&stages)
+            .push_next(&mut wait_timeline);
+        {
+            let _queue = held_state
+                .queue_gate
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            // SAFETY: the queue gate serializes this test submission; the
+            // timeline wait prevents `held` from signalling until below.
+            unsafe {
+                held_state.device.queue_submit(
+                    held_state.graphics_queue,
+                    &[held_submit],
+                    held.fence(),
+                )
+            }
+            .unwrap();
+        }
+        {
+            let _queue = independent_state
+                .queue_gate
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            // SAFETY: independent_state owns its queue and fence; this empty
+            // marker has no dependency on the held timeline submission.
+            unsafe {
+                independent_state.device.queue_submit(
+                    independent_state.graphics_queue,
+                    &[],
+                    independent.fence(),
+                )
+            }
+            .unwrap();
+        }
+
+        retain_until_fence(held.clone(), Vec::new());
+        retain_until_fence(independent.clone(), Vec::new());
+        let independent_published = independent.clone();
+        let (done, notified) = sync_channel(1);
+        std::thread::spawn(move || {
+            done.send(block_on(FenceFuture::pending(independent)))
+                .unwrap();
+        });
+        // A one-worker infinite wait would time out here behind `held`.
+        notified
+            .recv_timeout(Duration::from_secs(2))
+            .expect("independent marker must publish while the first fence is held")
+            .unwrap();
+        assert!(matches!(independent_published.result(), Some(Ok(()))));
+        assert!(
+            held.result().is_none(),
+            "held marker retired before its timeline signal"
+        );
+
+        let signal = vk::SemaphoreSignalInfo::default()
+            .semaphore(timeline)
+            .value(1);
+        // SAFETY: this host signal supplies exactly the value awaited by the
+        // earlier queue submission; unlike a later same-queue submission it
+        // cannot be ordered behind that wait.
+        unsafe { held_state.device.signal_semaphore(&signal) }.unwrap();
+        block_on(FenceFuture::pending(held.clone())).unwrap();
+        assert!(matches!(held.result(), Some(Ok(()))));
+        // SAFETY: the held marker proves both submissions consumed `timeline`.
+        unsafe { held_state.device.destroy_semaphore(timeline, None) };
     }
 }

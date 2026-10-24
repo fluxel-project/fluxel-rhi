@@ -1,6 +1,6 @@
 //! Vulkan secondary command-buffer lowering for inherited raster passes.
 //!
-//! Each `VulkanSecondaryEncoder` owns its command pool, so worker threads
+//! Each `VulkanSecondaryEncoder` exclusively leases a command-pool page, so worker threads
 //! never touch the primary encoder's externally synchronized pool.  A closed
 //! work item retains that pool and every native object referenced by its
 //! commands until the parent recorded work has passed its submission fence.
@@ -14,9 +14,17 @@ use super::*;
 #[derive(Clone)]
 pub struct VulkanSecondaryWork(std::sync::Arc<SecondaryWork>);
 
+impl VulkanSecondaryWork {
+    pub(crate) fn groups(&self) -> &[VulkanBindGroup] {
+        &self.0.groups
+    }
+}
+
 struct SecondaryWork {
+    // Keeps DeviceState alive until Drop returns the native page to its cache.
+    #[allow(dead_code)]
     device: std::sync::Arc<DeviceState>,
-    pool: vk::CommandPool,
+    pool: Option<super::command_pool::CommandPoolLease>,
     command: vk::CommandBuffer,
     signature: api::SecondaryRasterDesc,
     // These values deliberately have no command-time reads: retaining them
@@ -31,19 +39,16 @@ struct SecondaryWork {
 
 impl Drop for SecondaryWork {
     fn drop(&mut self) {
-        // The parent encoder retains this work through its completion fence,
-        // so this pool cannot be destroyed while the queue can execute
-        // `command`. The retained references drop immediately afterwards.
-        // SAFETY: retained parent work holds this Arc until its submission
-        // fence; this final owner destroys a pool no queue can still execute.
-        unsafe { self.device.device.destroy_command_pool(self.pool, None) };
+        // The parent encoder retains this work through its completion fence;
+        // only then can the exclusive page be reset and returned.
+        drop(self.pool.take());
     }
 }
 
 /// Worker-local state for a single secondary command buffer.
 pub struct VulkanSecondaryEncoder {
     device: std::sync::Arc<DeviceState>,
-    pool: vk::CommandPool,
+    pool: Option<super::command_pool::CommandPoolLease>,
     command: vk::CommandBuffer,
     signature: api::SecondaryRasterDesc,
     layout: Option<vk::PipelineLayout>,
@@ -58,11 +63,9 @@ pub struct VulkanSecondaryEncoder {
 
 impl Drop for VulkanSecondaryEncoder {
     fn drop(&mut self) {
-        if self.pool != vk::CommandPool::null() {
-            // SAFETY: an unclosed secondary has never been handed to a parent;
-            // this encoder exclusively owns its transient pool.
-            unsafe { self.device.device.destroy_command_pool(self.pool, None) };
-        }
+        // An unclosed secondary was never handed to a parent, so returning its
+        // exclusive page is immediately safe.
+        drop(self.pool.take());
     }
 }
 
@@ -91,32 +94,11 @@ impl api::SecondaryBackend for Vulkan {
             ),
             None => None,
         };
-        // SAFETY: DeviceState owns the live device and this worker receives an
-        // independent pool for the selected graphics queue family.
-        let pool = unsafe {
-            device.0.device.create_command_pool(
-                &vk::CommandPoolCreateInfo::default()
-                    .queue_family_index(device.0.graphics_family)
-                    .flags(vk::CommandPoolCreateFlags::TRANSIENT),
-                None,
-            )
-        }
-        .map_err(vk_error)?;
-        let alloc = vk::CommandBufferAllocateInfo::default()
-            .command_pool(pool)
-            .level(vk::CommandBufferLevel::SECONDARY)
-            .command_buffer_count(1);
-        // SAFETY: `pool` was just created on this live device and `alloc`
-        // requests exactly one secondary buffer from that still-owned pool.
-        let command = match unsafe { device.0.device.allocate_command_buffers(&alloc) } {
-            Ok(buffers) => buffers[0],
-            Err(error) => {
-                // SAFETY: allocation failed, so no command buffer can retain
-                // this local pool and this path is its sole owner.
-                unsafe { device.0.device.destroy_command_pool(pool, None) };
-                return Err(vk_error(error));
-            }
-        };
+        let mut pool = device
+            .0
+            .command_pools
+            .lease(device.0.graphics_family, vk::CommandBufferLevel::SECONDARY)?;
+        let command = pool.allocate()?;
         let mut inheritance = vk::CommandBufferInheritanceRenderingInfo::default()
             .color_attachment_formats(&color_formats)
             .rasterization_samples(samples)
@@ -144,12 +126,9 @@ impl api::SecondaryBackend for Vulkan {
                     | vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE,
             )
             .inheritance_info(&legacy_inheritance);
-        // SAFETY: `command` was allocated from `pool`; inheritance describes
+        // SAFETY: `command` came from this exclusive page; inheritance describes
         // the checked secondary signature and is borrowed only for this call.
         if let Err(error) = unsafe { device.0.device.begin_command_buffer(command, &begin) } {
-            // SAFETY: a failed begin cannot make the command executable; this
-            // function still uniquely owns the pool and its allocated buffer.
-            unsafe { device.0.device.destroy_command_pool(pool, None) };
             return Err(vk_error(error));
         }
         // SAFETY: the secondary is recording and owns these dynamic defaults.
@@ -163,7 +142,7 @@ impl api::SecondaryBackend for Vulkan {
         }
         Ok(VulkanSecondaryEncoder {
             device: device.0.clone(),
-            pool,
+            pool: Some(pool),
             command,
             signature: desc.clone(),
             layout: None,
@@ -450,16 +429,13 @@ impl api::SecondaryBackend for Vulkan {
         unsafe { encoder.device.device.end_command_buffer(encoder.command) }.map_err(vk_error)?;
         let work = VulkanSecondaryWork(std::sync::Arc::new(SecondaryWork {
             device: encoder.device.clone(),
-            pool: encoder.pool,
+            pool: encoder.pool.take(),
             command: encoder.command,
             signature: encoder.signature.clone(),
             buffers: std::mem::take(&mut encoder.buffers),
             groups: std::mem::take(&mut encoder.groups),
             pipelines: std::mem::take(&mut encoder.pipelines),
         }));
-        // The work Arc now owns this pool.  Prevent the recorder's Drop from
-        // destroying it while the command buffer is still referenced.
-        encoder.pool = vk::CommandPool::null();
         Ok(work)
     }
 

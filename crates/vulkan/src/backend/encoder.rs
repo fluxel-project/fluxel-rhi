@@ -6,7 +6,8 @@
 
 use super::{
     DeviceState, VulkanBindGroup, VulkanBuffer, VulkanComputePipeline, VulkanDevice,
-    VulkanRasterPipeline, VulkanTexture, VulkanTextureView, vk_error,
+    VulkanRasterPipeline, VulkanTexture, VulkanTextureView, command_pool::CommandPoolLease,
+    vk_error,
 };
 use ash::vk;
 use fluxel_rhi_core::api::{Error, Result};
@@ -23,7 +24,7 @@ pub struct VulkanEncoder {
     pub(super) owner: VulkanDevice,
     pub(super) lane: fluxel_rhi_core::api::LaneId,
     pub(super) device: Arc<DeviceState>,
-    pub(super) pool: vk::CommandPool,
+    pub(super) pool: Option<CommandPoolLease>,
     pub(super) command: vk::CommandBuffer,
     /// Closed primary buffers separated by an explicit external queue
     /// synchronization boundary.  The active `command` is the final segment.
@@ -57,6 +58,7 @@ pub struct VulkanEncoder {
     pub(super) mesh_active: Option<bool>,
     pub(super) mesh_pipelines: Vec<super::VulkanMeshPipeline>,
     pub(super) accelerations: Vec<super::VulkanAcceleration>,
+    pub(crate) ray_builds: Vec<super::ray::RecordedTlasBuild>,
     pub(super) ray_pipelines: Vec<super::VulkanRayPipeline>,
     pub(super) ray_layout_state: Option<super::pipeline::VulkanPipelineLayout>,
     pub(super) pipelines: Vec<VulkanRasterPipeline>,
@@ -64,6 +66,7 @@ pub struct VulkanEncoder {
     pub(super) groups: Vec<VulkanBindGroup>,
     pub(super) attachments: Vec<VulkanTextureView>,
     pub(super) uploads: Vec<VulkanBuffer>,
+    pub(crate) upload_slices: Vec<super::upload::UploadSlice>,
     pub(super) buffers: Vec<VulkanBuffer>,
     pub(super) textures: Vec<VulkanTexture>,
     pub(super) queries: Vec<super::VulkanQuerySet>,
@@ -84,46 +87,26 @@ pub(super) struct ExternalSegment {
     pub(super) boundary: ExternalBoundary,
 }
 
-fn begin_primary(device: &ash::Device, pool: vk::CommandPool) -> Result<vk::CommandBuffer> {
-    let alloc = vk::CommandBufferAllocateInfo::default()
-        .command_pool(pool)
-        .level(vk::CommandBufferLevel::PRIMARY)
-        .command_buffer_count(1);
-    // SAFETY: `pool` is live, exclusively owned by this encoder and was made
-    // for its lane's queue family.
-    let command = unsafe { device.allocate_command_buffers(&alloc) }.map_err(vk_error)?[0];
-    let begin =
-        vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-    // SAFETY: the freshly allocated primary buffer has no prior recording.
-    unsafe { device.begin_command_buffer(command, &begin) }.map_err(vk_error)?;
-    Ok(command)
+fn begin_primary(pool: &mut CommandPoolLease) -> Result<vk::CommandBuffer> {
+    pool.begin()
 }
 impl VulkanEncoder {
     pub(super) fn new(device: &VulkanDevice, lane: fluxel_rhi_core::api::LaneId) -> Result<Self> {
-        let info = vk::CommandPoolCreateInfo::default()
-            .queue_family_index(if lane.ordinal == 1 {
-                device.0.compute_family
-            } else {
-                device.0.graphics_family
-            })
-            .flags(vk::CommandPoolCreateFlags::TRANSIENT);
-        // SAFETY: DeviceState owns a live logical device and this pool is
-        // restricted to the lane's queue family; VulkanEncoder becomes its owner.
-        let pool = unsafe { device.0.device.create_command_pool(&info, None) }.map_err(vk_error)?;
-        let command = match begin_primary(&device.0.device, pool) {
-            Ok(command) => command,
-            Err(error) => {
-                // SAFETY: a failed begin leaves the locally owned pool safe to
-                // destroy; it has not been submitted.
-                unsafe { device.0.device.destroy_command_pool(pool, None) };
-                return Err(error);
-            }
+        let family = if lane.ordinal == 1 {
+            device.0.compute_family
+        } else {
+            device.0.graphics_family
         };
+        let mut pool = device
+            .0
+            .command_pools
+            .lease(family, vk::CommandBufferLevel::PRIMARY)?;
+        let command = begin_primary(&mut pool)?;
         Ok(Self {
             owner: device.clone(),
             lane,
             device: device.0.clone(),
-            pool,
+            pool: Some(pool),
             command,
             external_segments: Vec::new(),
             raster: false,
@@ -149,6 +132,7 @@ impl VulkanEncoder {
             mesh_active: None,
             mesh_pipelines: Vec::new(),
             accelerations: Vec::new(),
+            ray_builds: Vec::new(),
             ray_pipelines: Vec::new(),
             ray_layout_state: None,
             pipelines: Vec::new(),
@@ -156,6 +140,7 @@ impl VulkanEncoder {
             groups: Vec::new(),
             attachments: Vec::new(),
             uploads: Vec::new(),
+            upload_slices: Vec::new(),
             buffers: Vec::new(),
             textures: Vec::new(),
             queries: Vec::new(),
@@ -181,7 +166,7 @@ impl VulkanEncoder {
         }
         // Allocate and begin first so an allocation failure leaves the active
         // command buffer recording and no externally visible boundary exists.
-        let next = begin_primary(&self.device.device, self.pool)?;
+        let next = begin_primary(self.pool.as_mut().ok_or(Error::InvalidState)?)?;
         // SAFETY: this encoder exclusively owns the active recording buffer.
         unsafe { self.device.device.end_command_buffer(self.command) }.map_err(vk_error)?;
         let prior = std::mem::replace(&mut self.command, next);
@@ -197,11 +182,11 @@ impl VulkanEncoder {
 }
 impl Drop for VulkanEncoder {
     fn drop(&mut self) {
-        if self.pool != vk::CommandPool::null() {
-            // SAFETY: submitted encoders move into RecordedWork and remain
-            // retained until their fence; this Drop runs only for unsubmitted
-            // or completed work, and owns the pool and all its command buffers.
-            unsafe { self.device.device.destroy_command_pool(self.pool, None) }
-        }
+        // Raw staging leases must return while this encoder still owns its
+        // DeviceState, including failed recordings with no retained target.
+        self.upload_slices.clear();
+        // Reset/return the exclusive native page before releasing the final
+        // DeviceState owner. Submitted encoders remain fence-retained.
+        drop(self.pool.take());
     }
 }

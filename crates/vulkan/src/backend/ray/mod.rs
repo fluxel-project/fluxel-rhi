@@ -1,6 +1,11 @@
 //! Optional Vulkan acceleration structures, ray pipelines, and ray query support.
 mod acceleration;
+pub(crate) mod retention;
+pub(crate) use retention::RecordedTlasBuild;
+
 mod pipeline;
+#[cfg(all(test, windows, feature = "hardware-tests"))]
+mod retention_gpu;
 pub(super) use pipeline::restore_after_external_boundary;
 pub(crate) mod probe;
 use super::{Vulkan, VulkanBindGroup, VulkanBuffer, VulkanDevice, VulkanEncoder};

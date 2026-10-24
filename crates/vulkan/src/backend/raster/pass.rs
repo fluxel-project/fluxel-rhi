@@ -91,14 +91,21 @@ pub(super) fn begin_raster(
                             view.image(),
                             view.mip_range().start,
                             view.layer_range().start,
+                            false,
                         ))
                     }
                     api::AttachmentView::Surface(image) => {
                         let surface = surface_attachment(image);
-                        surface.transfer_dst.then_some((surface.image, 0, 0))
+                        surface.transfer_dst.then_some((surface.image, 0, 0, true))
                     }
                 };
-                if let Some((destination, destination_mip, destination_layer)) = destination {
+                if let Some((
+                    destination,
+                    destination_mip,
+                    destination_layer,
+                    destination_is_surface,
+                )) = destination
+                {
                     if source_layer != 0 || destination_layer != 0 {
                         let mask = d.multiview_mask.unwrap_or(1);
                         for index in 0..32 {
@@ -110,6 +117,7 @@ pub(super) fn begin_raster(
                                     destination_mip,
                                     source_layer: source_layer + index,
                                     destination_layer: destination_layer + index,
+                                    destination_is_surface,
                                     area: d.render_area,
                                 });
                             }

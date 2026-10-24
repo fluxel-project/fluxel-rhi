@@ -1,12 +1,13 @@
 //! Vulkan descriptor-set layouts, pools, and bind groups.
 //!
-//! A bind group owns the descriptor pool that allocated its sole set and retains
+//! A bind group exclusively leases a one-set descriptor-pool page and retains
 //! every referenced resource. Encoders retain the bind group through GPU
-//! completion, so destroying the pool cannot invalidate an in-flight set.
+//! completion, so resetting that page cannot invalidate an in-flight set.
 
 use super::super::{
     DeviceState, VulkanBuffer, VulkanDevice, VulkanSampler, VulkanTextureView, vk_error,
 };
+use super::descriptor_pool::DescriptorPoolLease;
 use ash::vk;
 use fluxel_rhi_core::api::{self, Error, Result};
 use std::{
@@ -28,6 +29,18 @@ impl VulkanBindGroup {
     }
     pub(crate) fn layout(&self) -> vk::DescriptorSetLayout {
         self.0._layout.native()
+    }
+
+    /// Retains acceleration structures referenced by this group for native
+    /// TLAS-build work that must outlive the Core recorder.
+    pub(crate) fn accelerations(&self) -> impl Iterator<Item = &super::super::VulkanAcceleration> {
+        self.0
+            ._retained
+            .iter()
+            .filter_map(|retained| match retained {
+                Retained::Acceleration(acceleration) => Some(acceleration),
+                _ => None,
+            })
     }
 
     /// Validates one offset per Core binding and expands array offsets to the
@@ -72,8 +85,12 @@ impl VulkanBindGroup {
     }
 }
 struct Group {
+    // Lease destruction returns the sole descriptor-set page after fence
+    // retirement; declaring it first makes that reset happen while the later
+    // DeviceState-owning fields still keep the logical device alive.
+    #[allow(dead_code)]
+    pool: DescriptorPoolLease,
     device: Arc<DeviceState>,
-    pool: vk::DescriptorPool,
     pub(crate) set: vk::DescriptorSet,
     // Vulkan requires this layout to outlive descriptor sets allocated from it.
     _layout: VulkanBindGroupLayout,
@@ -93,19 +110,15 @@ struct DynamicUniform {
     alignment: u64,
 }
 enum Retained {
+    // These values are intentionally never command-read: their sole purpose
+    // is to keep the native handles alive through descriptor-set retirement.
+    #[allow(dead_code)]
     Buffer(VulkanBuffer),
+    #[allow(dead_code)]
     View(VulkanTextureView),
+    #[allow(dead_code)]
     Sampler(VulkanSampler),
     Acceleration(super::super::VulkanAcceleration),
-}
-impl Drop for Group {
-    fn drop(&mut self) {
-        // SAFETY: Group owns the descriptor pool and retains its set/layout
-        // inputs; submitted encoders retain the Group through fence retirement.
-        unsafe {
-            self.device.device.destroy_descriptor_pool(self.pool, None);
-        }
-    }
 }
 pub(crate) fn create_group(
     device: &VulkanDevice,
@@ -153,26 +166,15 @@ pub(crate) fn create_group(
             });
         }
     }
-    // Each bind group owns a small pool for its one set. This keeps allocation
-    // lifetime identical to the group and avoids a backend-wide descriptor-set
-    // allocator whose retirement policy would duplicate Renderer ownership.
-    // SAFETY: pool sizes are derived from the validated layout and one set is
-    // requested. DeviceState keeps the logical device alive for the result.
-    let pool = unsafe {
-        device.0.device.create_descriptor_pool(
-            &vk::DescriptorPoolCreateInfo::default()
-                .max_sets(1)
-                .pool_sizes(&sizes),
-            None,
-        )
-    }
-    .map_err(vk_error)?;
+    // One lease owns one set/page. Group retention through the submission
+    // fence is exactly the proof required for its eventual pool reset.
+    let pool = device.0.descriptor_pools.lease(&sizes)?;
     let layouts = [layout.0.layout];
     let variable_counts = variable_count.into_iter().collect::<Vec<_>>();
     let mut variable_allocate = vk::DescriptorSetVariableDescriptorCountAllocateInfo::default()
         .descriptor_counts(&variable_counts);
     let mut allocate = vk::DescriptorSetAllocateInfo::default()
-        .descriptor_pool(pool)
+        .descriptor_pool(pool.pool())
         .set_layouts(&layouts);
     if !variable_counts.is_empty() {
         allocate = allocate.push_next(&mut variable_allocate);
@@ -182,9 +184,6 @@ pub(crate) fn create_group(
     let set = match unsafe { device.0.device.allocate_descriptor_sets(&allocate) } {
         Ok(v) => v[0],
         Err(e) => {
-            // SAFETY: allocation failed before a Group took ownership, so this
-            // function is the unique owner of `pool` and the device is live.
-            unsafe { device.0.device.destroy_descriptor_pool(pool, None) };
             return Err(vk_error(e));
         }
     };

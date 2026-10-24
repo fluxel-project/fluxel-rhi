@@ -43,6 +43,7 @@ pub use external::{VulkanExternalHandle, VulkanExternalMemoryHandle, VulkanExter
 
 mod capture;
 mod clear;
+mod command_pool;
 mod compute;
 mod copy;
 mod encoder;
@@ -62,6 +63,7 @@ mod sparse;
 mod submit;
 mod surface;
 mod transition;
+mod upload;
 
 /// Logical Vulkan device and its exposed native queues.
 #[derive(Clone)]
@@ -86,6 +88,9 @@ struct ShaderPrecisionFeatures {
 }
 
 struct DeviceState {
+    upload_pool: upload::UploadPool,
+    command_pools: command_pool::CommandPoolCache,
+    descriptor_pools: pipeline::descriptor_pool::DescriptorPoolCache,
     /// Base features actually enabled on the logical device.
     features: vk::PhysicalDeviceFeatures,
     texture_compression_astc_hdr: bool,
@@ -313,6 +318,9 @@ impl Drop for DeviceState {
         // released their DeviceState owner.
         // SAFETY: resource, encoder, surface and completion Arcs all retain
         // DeviceState, so no child Vulkan object can outlive this destroy call.
+        self.upload_pool.clear();
+        self.command_pools.clear();
+        self.descriptor_pools.clear();
         unsafe { self.device.destroy_device(None) };
     }
 }

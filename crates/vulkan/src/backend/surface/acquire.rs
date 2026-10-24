@@ -170,8 +170,11 @@ fn acquire_once(state: &Arc<SurfaceState>) -> Result<Option<VulkanSurfaceImage>>
         // SAFETY: the acquire fence proves present consumed this semaphore.
         unsafe { state.device.0.device.destroy_semaphore(semaphore, None) };
         for retired in inner.retired.drain(..) {
-            // SAFETY: the first acquire on the replacement chain proves these
-            // retired present waits are consumed; SurfaceState owns all objects.
+            // SAFETY: reacquiring a replacement-chain image with a present
+            // wait proves its previous presentation consumed that wait. The
+            // replacement has therefore presented, retiring the old chain's
+            // outstanding presents; its first acquire alone is not proof.
+            // SurfaceState owns all retired objects.
             unsafe {
                 for view in retired.views {
                     state.device.0.device.destroy_image_view(view, None);
