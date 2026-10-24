@@ -277,6 +277,45 @@ async fn webgl2_core_independent_resolve() {
         .unwrap();
     canvas.set_width(8);
     canvas.set_height(8);
-    let device = open(GlInstance::from_webgl2_canvas(canvas).unwrap()).await;
+    let native = GlInstance::from_webgl2_canvas(canvas.clone()).unwrap();
+    let device = open(native).await;
+    let raw = canvas
+        .get_context("webgl2")
+        .unwrap()
+        .unwrap()
+        .dyn_into::<web_sys::WebGl2RenderingContext>()
+        .unwrap();
+    if raw
+        .get_extension("WEBGL_debug_renderer_info")
+        .unwrap()
+        .is_some()
+    {
+        wasm_bindgen_test::console_log!(
+            "WEBGL2_RESOLVE_RENDERER {:?}",
+            raw.get_parameter(0x9246).unwrap()
+        );
+    }
+    let mut desc = TextureDesc {
+        label: None,
+        dimension: TextureDimension::D2,
+        extent: [4, 4, 1],
+        array_layers: 1,
+        format: TextureFormat::Rgba8Unorm,
+        mip_levels: 1,
+        samples: 4,
+        usage: TextureUsage::RENDER_ATTACHMENT | TextureUsage::COPY_SRC,
+        view_formats: vec![],
+    };
+    assert!(matches!(
+        device.texture_support(&desc),
+        Support::Supported(_)
+    ));
+    // WebGL2 can resolve this source but has no same-sample image-copy route:
+    // ES framebuffer blits reject a multisampled draw framebuffer.
+    desc.usage |= TextureUsage::COPY_DST;
+    assert!(matches!(
+        device.texture_support(&desc),
+        Support::Unsupported(_)
+    ));
     standalone_resolve(&device).await;
 }

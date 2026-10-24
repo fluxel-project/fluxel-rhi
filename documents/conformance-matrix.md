@@ -45,7 +45,7 @@ Raw diagnostics and screenshots remain local.
 | Metal | Word clear and filtered color blit added; upload and resolve usage contracts corrected | Apple-target compile/static review only; no Metal tests, as requested |
 | GL4+ | Native same-sample color image copy added, including nonzero multisample-array layers | 2 hardware output fixtures plus ordinary unit tests |
 | GLES3+ | ES 3.2 core and ES 3.1 EXT/OES image-copy lowering implemented | Software API checks pass; new hardware acceptance remains incomplete due to unavailable Windows capability and unresolved WSL runtime failures |
-| WebGL2 | Existing standalone resolve remains the native MSAA transfer route | Same-sample image copy has no matching API; multisampled framebuffer-blit destinations are forbidden |
+| WebGL2 | Existing standalone resolve remains the native MSAA transfer route | Focused AMD/ANGLE hardware test passes resolve and MSAA-copy-destination rejection; same-sample image copy has no matching standard API |
 
 ## Updating this matrix
 
