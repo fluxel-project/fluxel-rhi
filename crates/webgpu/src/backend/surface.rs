@@ -68,7 +68,7 @@ impl WebGpu {
         })));
         // SAFETY: this freshly created native surface is associated exactly
         // once with `device.id()` and has no outstanding image lease.
-        Ok(unsafe { api::Surface::from_native(device.id(), api::SurfaceId::allocate()?, native) })
+        Ok(unsafe { api::Surface::from_native(device, api::SurfaceId::allocate()?, native) })
     }
 }
 

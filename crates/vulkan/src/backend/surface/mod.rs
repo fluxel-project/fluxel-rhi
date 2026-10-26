@@ -237,11 +237,7 @@ pub(crate) unsafe fn create_surface(
     // SAFETY: SurfaceState is newly allocated for this Core device and owns
     // every native WSI object it will expose through VulkanSurface.
     Ok(unsafe {
-        api::Surface::from_native(
-            device.id(),
-            api::SurfaceId::allocate()?,
-            VulkanSurface(state),
-        )
+        api::Surface::from_native(device, api::SurfaceId::allocate()?, VulkanSurface(state))
     })
 }
 

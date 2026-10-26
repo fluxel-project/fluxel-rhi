@@ -24,7 +24,7 @@ impl Gl {
         let surface = BrowserSurface::new(native.0.owner.clone());
         // SAFETY: this new browser surface is bound to exactly `device`; no
         // lease exists before Core publishes the returned Surface wrapper.
-        Ok(unsafe { api::Surface::from_native(device.id(), api::SurfaceId::allocate()?, surface) })
+        Ok(unsafe { api::Surface::from_native(device, api::SurfaceId::allocate()?, surface) })
     }
 }
 

@@ -219,6 +219,7 @@ pub struct SurfaceImage<B: Backend> {
     pub(crate) surface: SurfaceId,
     pub(crate) generation: u64,
     pub(crate) native: B::NativeSurfaceImage,
+    pub(crate) stats: Arc<RhiStats>,
 }
 impl<B: Backend> SurfaceImage<B> {
     pub fn device(&self) -> DeviceId {
@@ -278,6 +279,7 @@ impl<B: Backend> PresentBinding<B> {
             return Err(Error::InvalidState);
         }
         self.image.native.try_handoff(self.image.generation)?;
+        self.image.stats.record_present_accepted();
         self.handed_off = true;
         Ok(())
     }
@@ -459,7 +461,14 @@ impl<B: DeferredBackend> Queue<B> {
             };
         }
         // SAFETY: packet validation above established this queue's device ownership.
-        unsafe { B::submit(&self.device.native, packet) }
+        let outcome = unsafe { B::submit(&self.device.native, packet) };
+        if matches!(
+            &outcome,
+            SubmitOutcome::Accepted(_) | SubmitOutcome::PartiallyAccepted { .. }
+        ) {
+            self.device.stats.record_submit();
+        }
+        outcome
     }
     /// # Safety
     /// Caller has observed every checkpoint in the accepted frontier.
@@ -473,6 +482,13 @@ impl<B: DeferredBackend> Queue<B> {
             };
         }
         // SAFETY: tail validation above established the same device and accepted frontier.
-        unsafe { B::resume(&self.device.native, tail) }
+        let outcome = unsafe { B::resume(&self.device.native, tail) };
+        if matches!(
+            &outcome,
+            SubmitOutcome::Accepted(_) | SubmitOutcome::PartiallyAccepted { .. }
+        ) {
+            self.device.stats.record_submit();
+        }
+        outcome
     }
 }

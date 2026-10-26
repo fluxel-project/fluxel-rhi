@@ -82,7 +82,15 @@ impl<B: Backend> RasterExtras<'_, B> {
         if offset % 4 != 0 {
             return Err(Error::InvalidRange);
         }
-        pass.call(|e| B::Extras::draw_indirect(e, &args.native, offset, indexed))
+        let result = pass.call(|e| B::Extras::draw_indirect(e, &args.native, offset, indexed));
+        if result.is_ok() {
+            if indexed {
+                pass.encoder.stats.record_draw_indexed();
+            } else {
+                pass.encoder.stats.record_draw();
+            }
+        }
+        result
     }
     /// The caller must transition the argument buffer to `INDIRECT_READ` before the pass.
     pub fn multi_draw(
@@ -111,7 +119,16 @@ impl<B: Backend> RasterExtras<'_, B> {
             // clamped, or diagnosed after partial command recording.
             return Err(Error::InvalidRange);
         }
-        pass.call(|e| B::Extras::multi_draw(e, &args.native, offset, count, stride, indexed))
+        let result =
+            pass.call(|e| B::Extras::multi_draw(e, &args.native, offset, count, stride, indexed));
+        if result.is_ok() {
+            if indexed {
+                pass.encoder.stats.record_draw_indexed();
+            } else {
+                pass.encoder.stats.record_draw();
+            }
+        }
+        result
     }
     /// Draws up to `max` commands using the GPU-written count. The caller must
     /// transition both argument and count buffers to `INDIRECT_READ` before the
@@ -145,7 +162,7 @@ impl<B: Backend> RasterExtras<'_, B> {
         {
             return Err(Error::InvalidRange);
         }
-        pass.call(|e| {
+        let result = pass.call(|e| {
             B::Extras::multi_draw_count(
                 e,
                 &args.native,
@@ -156,7 +173,15 @@ impl<B: Backend> RasterExtras<'_, B> {
                 stride,
                 indexed,
             )
-        })
+        });
+        if result.is_ok() {
+            if indexed {
+                pass.encoder.stats.record_draw_indexed();
+            } else {
+                pass.encoder.stats.record_draw();
+            }
+        }
+        result
     }
     pub fn push_constants(
         &self,
@@ -174,6 +199,10 @@ impl<B: Backend> RasterExtras<'_, B> {
         if pass.encoder.device != self.device.id {
             return Err(Error::WrongDevice);
         }
-        pass.call(|e| B::Extras::set_push_constants(e, stages, offset, bytes))
+        let result = pass.call(|e| B::Extras::set_push_constants(e, stages, offset, bytes));
+        if result.is_ok() {
+            pass.encoder.stats.record_push_constant_write();
+        }
+        result
     }
 }

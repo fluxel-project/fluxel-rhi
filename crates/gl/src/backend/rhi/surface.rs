@@ -146,7 +146,7 @@ impl Gl {
         })));
         // SAFETY: the state was created solely for this device and contains no
         // lease until Core returns the newly associated Surface to its caller.
-        Ok(unsafe { api::Surface::from_native(device.id(), api::SurfaceId::allocate()?, surface) })
+        Ok(unsafe { api::Surface::from_native(device, api::SurfaceId::allocate()?, surface) })
     }
 
     /// Featureless builds cannot synthesize a host drawable.

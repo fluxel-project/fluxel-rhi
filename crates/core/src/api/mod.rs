@@ -53,6 +53,8 @@ mod query;
 pub use query::*;
 mod memory;
 pub use memory::*;
+mod stats;
+pub use stats::*;
 mod external;
 pub use external::*;
 mod secondary;

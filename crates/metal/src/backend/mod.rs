@@ -395,7 +395,7 @@ impl Metal {
         let native = MetalSurface::from_layer(native_device, layer)?;
         // SAFETY: `native` was created for `device`; the allocated surface ID
         // is unique and Surface owns the retained CAMetalLayer association.
-        Ok(unsafe { api::Surface::from_native(device.id(), api::SurfaceId::allocate()?, native) })
+        Ok(unsafe { api::Surface::from_native(device, api::SurfaceId::allocate()?, native) })
     }
 }
 

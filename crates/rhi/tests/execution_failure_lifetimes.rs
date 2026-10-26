@@ -271,7 +271,7 @@ fn run(mode: Mode) -> Vec<&'static str> {
     let device = unsafe { Device::<Mock>::from_native(id, state.clone(), caps) };
     // SAFETY: the surface is owned by the same synthetic device.
     let mut surface =
-        unsafe { Surface::<Mock>::from_native(id, SurfaceId::allocate().unwrap(), state.clone()) };
+        unsafe { Surface::<Mock>::from_native(&device, SurfaceId::allocate().unwrap(), state.clone()) };
     let image = utils::block_on(surface.acquire()).unwrap();
     // The caller owns scene resources, including on encode failure.
     let owner = Token {

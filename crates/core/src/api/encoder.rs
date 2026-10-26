@@ -32,6 +32,7 @@ pub struct CommandEncoder<B: CommandBackend> {
     pub(crate) poisoned: bool,
     pub(crate) multiview: bool,
     pub(crate) max_multiview_views: u32,
+    pub(crate) stats: RhiStatsLocal,
 }
 impl<B: CommandBackend> CommandEncoder<B> {
     pub(crate) fn new(device: &Device<B>, lane: LaneId) -> Result<Self> {
@@ -52,6 +53,7 @@ impl<B: CommandBackend> CommandEncoder<B> {
             poisoned: false,
             multiview: device.caps.multiview,
             max_multiview_views: device.caps.limits.max_multiview_views,
+            stats: device.stats.local(),
         })
     }
     pub(crate) fn ready(&mut self) -> Result<&mut B::NativeEncoder> {
@@ -95,7 +97,12 @@ impl<B: CommandBackend> CommandEncoder<B> {
         if src.device != self.device || dst.device != self.device {
             return Err(Error::WrongDevice);
         }
-        self.call(|e| B::copy_buffer(e, &src.native, src_offset, &dst.native, dst_offset, bytes))
+        let result = self
+            .call(|e| B::copy_buffer(e, &src.native, src_offset, &dst.native, dst_offset, bytes));
+        if result.is_ok() {
+            self.stats.record_copy();
+        }
+        result
     }
     pub fn copy_texture(
         &mut self,
@@ -105,13 +112,21 @@ impl<B: CommandBackend> CommandEncoder<B> {
         if src.texture.device != self.device || dst.texture.device != self.device {
             return Err(Error::WrongDevice);
         }
-        self.call(|e| B::copy_texture(e, src, dst))
+        let result = self.call(|e| B::copy_texture(e, src, dst));
+        if result.is_ok() {
+            self.stats.record_copy();
+        }
+        result
     }
     pub fn resolve(&mut self, src: TextureRegion<'_, B>, dst: TextureRegion<'_, B>) -> Result<()> {
         if src.texture.device != self.device || dst.texture.device != self.device {
             return Err(Error::WrongDevice);
         }
-        self.call(|e| B::resolve(e, src, dst))
+        let result = self.call(|e| B::resolve(e, src, dst));
+        if result.is_ok() {
+            self.stats.record_copy();
+        }
+        result
     }
     pub fn blit(
         &mut self,
@@ -122,13 +137,21 @@ impl<B: CommandBackend> CommandEncoder<B> {
         if src.texture.device != self.device || dst.texture.device != self.device {
             return Err(Error::WrongDevice);
         }
-        self.call(|e| B::blit(e, src, dst, filter))
+        let result = self.call(|e| B::blit(e, src, dst, filter));
+        if result.is_ok() {
+            self.stats.record_blit();
+        }
+        result
     }
     pub fn clear_buffer(&mut self, dst: &Buffer<B>, range: Range<u64>, value: u32) -> Result<()> {
         if dst.device != self.device {
             return Err(Error::WrongDevice);
         }
-        self.call(|e| B::clear_buffer(e, &dst.native, range, value))
+        let result = self.call(|e| B::clear_buffer(e, &dst.native, range, value));
+        if result.is_ok() {
+            self.stats.record_clear();
+        }
+        result
     }
     /// Clears all texels in each selected mip and array layer.
     /// The caller must arrange explicit transitions to the appropriate color
@@ -152,7 +175,11 @@ impl<B: CommandBackend> CommandEncoder<B> {
                 return Err(Error::InvalidRange);
             }
         }
-        self.call(|e| B::clear_texture(e, &dst.native, mips, layers, value))
+        let result = self.call(|e| B::clear_texture(e, &dst.native, mips, layers, value));
+        if result.is_ok() {
+            self.stats.record_clear();
+        }
+        result
     }
     pub fn buffer_to_texture(
         &mut self,
@@ -163,7 +190,11 @@ impl<B: CommandBackend> CommandEncoder<B> {
         if src.device != self.device || dst.texture.device != self.device {
             return Err(Error::WrongDevice);
         }
-        self.call(|e| B::buffer_to_texture(e, &src.native, layout, dst))
+        let result = self.call(|e| B::buffer_to_texture(e, &src.native, layout, dst));
+        if result.is_ok() {
+            self.stats.record_copy();
+        }
+        result
     }
     pub fn texture_to_buffer(
         &mut self,
@@ -174,13 +205,21 @@ impl<B: CommandBackend> CommandEncoder<B> {
         if src.texture.device != self.device || dst.device != self.device {
             return Err(Error::WrongDevice);
         }
-        self.call(|e| B::texture_to_buffer(e, src, &dst.native, layout))
+        let result = self.call(|e| B::texture_to_buffer(e, src, &dst.native, layout));
+        if result.is_ok() {
+            self.stats.record_copy();
+        }
+        result
     }
     pub fn write_buffer(&mut self, dst: &Buffer<B>, offset: u64, bytes: &[u8]) -> Result<()> {
         if dst.device != self.device {
             return Err(Error::WrongDevice);
         }
-        self.call(|e| B::write_buffer(e, &dst.native, offset, bytes))
+        let result = self.call(|e| B::write_buffer(e, &dst.native, offset, bytes));
+        if result.is_ok() {
+            self.stats.record_write();
+        }
+        result
     }
     pub fn write_texture(
         &mut self,
@@ -191,7 +230,11 @@ impl<B: CommandBackend> CommandEncoder<B> {
         if dst.texture.device != self.device {
             return Err(Error::WrongDevice);
         }
-        self.call(|e| B::write_texture(e, dst, layout, bytes))
+        let result = self.call(|e| B::write_texture(e, dst, layout, bytes));
+        if result.is_ok() {
+            self.stats.record_write();
+        }
+        result
     }
 }
 
@@ -296,7 +339,11 @@ impl<B: RasterBackend> RasterPass<'_, B> {
         if p.device != self.encoder.device {
             return Err(Error::WrongDevice);
         }
-        self.call(|e| B::set_pipeline(e, &p.native))
+        let result = self.call(|e| B::set_pipeline(e, &p.native));
+        if result.is_ok() {
+            self.encoder.stats.record_pipeline_bind();
+        }
+        result
     }
     /// Binds a group and applies dynamic buffer offsets.
     ///
@@ -309,7 +356,11 @@ impl<B: RasterBackend> RasterPass<'_, B> {
         if g.device != self.encoder.device {
             return Err(Error::WrongDevice);
         }
-        self.call(|e| B::set_bind_group(e, slot, &g.native, offsets))
+        let result = self.call(|e| B::set_bind_group(e, slot, &g.native, offsets));
+        if result.is_ok() {
+            self.encoder.stats.record_bind_group_bind();
+        }
+        result
     }
     pub fn set_vertex_buffer(
         &mut self,
@@ -323,7 +374,7 @@ impl<B: RasterBackend> RasterPass<'_, B> {
         if range.start > range.end {
             return Err(Error::InvalidRange);
         }
-        self.call(|e| {
+        let result = self.call(|e| {
             B::set_vertex_buffer(
                 e,
                 slot,
@@ -331,7 +382,11 @@ impl<B: RasterBackend> RasterPass<'_, B> {
                 range.start,
                 range.end - range.start,
             )
-        })
+        });
+        if result.is_ok() {
+            self.encoder.stats.record_vertex_buffer_bind();
+        }
+        result
     }
     pub fn set_index_buffer(
         &mut self,
@@ -345,7 +400,7 @@ impl<B: RasterBackend> RasterPass<'_, B> {
         if range.start > range.end {
             return Err(Error::InvalidRange);
         }
-        self.call(|e| {
+        let result = self.call(|e| {
             B::set_index_buffer(
                 e,
                 &buffer.native,
@@ -353,25 +408,49 @@ impl<B: RasterBackend> RasterPass<'_, B> {
                 range.end - range.start,
                 format,
             )
-        })
+        });
+        if result.is_ok() {
+            self.encoder.stats.record_index_buffer_bind();
+        }
+        result
     }
     pub fn viewport(&mut self, v: Viewport) -> Result<()> {
-        self.call(|e| B::viewport(e, v))
+        let result = self.call(|e| B::viewport(e, v));
+        if result.is_ok() {
+            self.encoder.stats.record_viewport_set();
+        }
+        result
     }
     pub fn scissor(&mut self, v: Rect) -> Result<()> {
-        self.call(|e| B::scissor(e, v))
+        let result = self.call(|e| B::scissor(e, v));
+        if result.is_ok() {
+            self.encoder.stats.record_scissor_set();
+        }
+        result
     }
     pub fn blend_constant(&mut self, v: [f32; 4]) -> Result<()> {
-        self.call(|e| B::blend_constant(e, v))
+        let result = self.call(|e| B::blend_constant(e, v));
+        if result.is_ok() {
+            self.encoder.stats.record_blend_constant_set();
+        }
+        result
     }
     pub fn stencil_reference(&mut self, v: u32) -> Result<()> {
-        self.call(|e| B::stencil_reference(e, v))
+        let result = self.call(|e| B::stencil_reference(e, v));
+        if result.is_ok() {
+            self.encoder.stats.record_stencil_reference_set();
+        }
+        result
     }
     pub fn draw(&mut self, vertices: Range<u32>, instances: Range<u32>) -> Result<()> {
         if !valid_u32_range(&vertices) || !valid_u32_range(&instances) {
             return Err(Error::InvalidRange);
         }
-        self.call(|e| B::draw(e, vertices, instances))
+        let result = self.call(|e| B::draw(e, vertices, instances));
+        if result.is_ok() {
+            self.encoder.stats.record_draw();
+        }
+        result
     }
     pub fn draw_indexed(
         &mut self,
@@ -382,7 +461,11 @@ impl<B: RasterBackend> RasterPass<'_, B> {
         if !valid_u32_range(&indices) || !valid_u32_range(&instances) {
             return Err(Error::InvalidRange);
         }
-        self.call(|e| B::draw_indexed(e, indices, base_vertex, instances))
+        let result = self.call(|e| B::draw_indexed(e, indices, base_vertex, instances));
+        if result.is_ok() {
+            self.encoder.stats.record_draw_indexed();
+        }
+        result
     }
     pub fn finish(mut self) -> Result<()> {
         if self.encoder.poisoned {

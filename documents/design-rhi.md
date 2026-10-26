@@ -255,6 +255,17 @@ the contracts implemented by backend crates. Shared descriptors and result
 meanings avoid translation between subtly different definitions of the same
 operation.
 
+`Device::stats()` exposes a stable reference to its shared Core `RhiStats`
+object in every build profile. Its snapshots count successful Core command and
+binding requests plus surface acquisitions and accepted present handoffs with
+relaxed atomics. These counters report requested operations, not backend-native
+state changes. A caller derives an interval present rate from two snapshots
+and its own monotonic clock; Core does not define application frame boundaries
+or claim that a present handoff reached the display. Snapshot reads perform
+atomic loads only. This path takes no lock and performs no native GPU query.
+Per-encoder command counters are merged when the encoder finishes or is
+dropped, so a snapshot does not include commands in a still-live encoder.
+
 Core handles wrap backend-native objects and add identity and structural
 validation. Native representation remains an associated backend type. Resource
 creation consults support before calling the native constructor; optional

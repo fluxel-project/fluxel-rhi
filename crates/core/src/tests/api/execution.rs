@@ -27,6 +27,27 @@ fn capabilities(id: DeviceId) -> DeviceCapabilities {
     .into();
     caps
 }
+
+#[test]
+fn device_clones_share_stats_and_present_counts_only_after_handoff() {
+    let device = immediate();
+    let clone = device.clone();
+    device.stats.record_draw();
+    assert_eq!(clone.stats().snapshot().draw, 1);
+
+    let stats = Arc::new(RhiStats::new());
+    let mut binding = PresentBinding::<GlLocal>::new(SurfaceImage {
+        device: device.id(),
+        surface: SurfaceId::allocate().unwrap(),
+        generation: 0,
+        native: (),
+        stats: stats.clone(),
+    });
+    assert_eq!(stats.snapshot().presents_accepted, 0);
+    // SAFETY: the unit test backend's native image lease is valid for generation 0.
+    unsafe { binding.try_handoff() }.unwrap();
+    assert_eq!(stats.snapshot().presents_accepted, 1);
+}
 fn plan<B: Backend>(device: &Device<B>, kinds: &[StepKind]) -> SubmissionPlan<B> {
     let id = PlanId {
         device: device.id(),
@@ -374,6 +395,7 @@ fn rejected_present_keeps_lease_for_retry() {
         surface: SurfaceId::allocate().unwrap(),
         generation: 0,
         native: (),
+        stats: Arc::new(RhiStats::new()),
     });
     let rejected = match execution.present(plan.step(1), binding) {
         Err(rejected) => rejected,
@@ -410,6 +432,7 @@ fn clean_present_rejection_is_reported_and_successful_retry_clears_it() {
             surface: SurfaceId::allocate().unwrap(),
             generation: 0,
             native: (),
+            stats: Arc::new(RhiStats::new()),
         });
         let rejected = match execution.present(plan.step(1), foreign) {
             Err(rejected) => rejected,
@@ -423,6 +446,7 @@ fn clean_present_rejection_is_reported_and_successful_retry_clears_it() {
                 surface: SurfaceId::allocate().unwrap(),
                 generation: 0,
                 native: (),
+                stats: Arc::new(RhiStats::new()),
             });
             assert!(execution.present(plan.step(1), local).is_ok());
         }

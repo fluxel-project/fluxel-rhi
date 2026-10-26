@@ -690,6 +690,7 @@ pub(crate) mod type_contract_tests {
             device: device_id,
             surface: SurfaceId::allocate().unwrap(),
             generation: 1,
+            stats: Arc::new(RhiStats::new()),
             native: TestLease {
                 current: current.clone(),
                 handed_off: false,

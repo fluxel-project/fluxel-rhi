@@ -18,6 +18,7 @@ pub struct Surface<B: Backend> {
     pub device: DeviceId,
     pub id: SurfaceId,
     native: B::NativeSurface,
+    stats: Arc<RhiStats>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PresentMode {
@@ -82,8 +83,13 @@ pub struct SurfaceCapabilities {
 }
 impl<B: SurfaceBackend> Surface<B> {
     /// # Safety: caller associates exactly one native surface with this Device.
-    pub unsafe fn from_native(device: DeviceId, id: SurfaceId, native: B::NativeSurface) -> Self {
-        Self { device, id, native }
+    pub unsafe fn from_native(device: &Device<B>, id: SurfaceId, native: B::NativeSurface) -> Self {
+        Self {
+            device: device.id,
+            id,
+            native,
+            stats: device.stats.clone(),
+        }
     }
     pub fn generation(&self) -> u64 {
         B::generation(&self.native)
@@ -102,6 +108,7 @@ impl<B: SurfaceBackend> Surface<B> {
     }
     pub async fn acquire(&mut self) -> Result<SurfaceImage<B>> {
         let native = B::acquire(&mut self.native).await?;
+        self.stats.record_surface_acquire();
         // Read the generation after acquisition: a backend's atomic acquire
         // transaction is the authority for the lease generation it returned.
         // Caching an earlier value would let a resize race mint a stale lease.
@@ -110,6 +117,7 @@ impl<B: SurfaceBackend> Surface<B> {
             surface: self.id,
             generation: self.generation(),
             native,
+            stats: self.stats.clone(),
         })
     }
 }

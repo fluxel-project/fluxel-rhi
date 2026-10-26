@@ -97,7 +97,11 @@ impl<B: Backend> MeshDomain<'_, B> {
         if pass.encoder.device != self.device.id {
             return Err(Error::WrongDevice);
         }
-        pass.call(|e| B::Mesh::dispatch(e, groups))
+        let result = pass.call(|e| B::Mesh::dispatch(e, groups));
+        if result.is_ok() {
+            pass.encoder.stats.record_dispatch();
+        }
+        result
     }
     pub fn dispatch_indirect(
         &self,
@@ -111,6 +115,10 @@ impl<B: Backend> MeshDomain<'_, B> {
         if pass.encoder.device != self.device.id || buffer.device != self.device.id {
             return Err(Error::WrongDevice);
         }
-        pass.call(|e| B::Mesh::dispatch_indirect(e, &buffer.native, offset))
+        let result = pass.call(|e| B::Mesh::dispatch_indirect(e, &buffer.native, offset));
+        if result.is_ok() {
+            pass.encoder.stats.record_dispatch();
+        }
+        result
     }
 }

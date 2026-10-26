@@ -39,6 +39,7 @@ pub struct SecondaryEncoder<B: SecondaryBackend> {
     poisoned: bool,
     push_constants: bool,
     signature: SecondaryRasterDesc,
+    stats: RhiStatsLocal,
 }
 impl<B: SecondaryBackend> SecondaryEncoder<B> {
     fn call(&mut self, f: impl FnOnce(&mut B::NativeSecondaryEncoder) -> Result<()>) -> Result<()> {
@@ -55,7 +56,11 @@ impl<B: SecondaryBackend> SecondaryEncoder<B> {
         if pipeline.device != self.device {
             return Err(Error::WrongDevice);
         }
-        self.call(|encoder| B::secondary_set_pipeline(encoder, &pipeline.native))
+        let result = self.call(|encoder| B::secondary_set_pipeline(encoder, &pipeline.native));
+        if result.is_ok() {
+            self.stats.record_pipeline_bind();
+        }
+        result
     }
     pub fn set_bind_group(
         &mut self,
@@ -66,7 +71,12 @@ impl<B: SecondaryBackend> SecondaryEncoder<B> {
         if group.device != self.device {
             return Err(Error::WrongDevice);
         }
-        self.call(|encoder| B::secondary_set_bind_group(encoder, slot, &group.native, offsets))
+        let result =
+            self.call(|encoder| B::secondary_set_bind_group(encoder, slot, &group.native, offsets));
+        if result.is_ok() {
+            self.stats.record_bind_group_bind();
+        }
+        result
     }
     pub fn set_vertex_buffer(
         &mut self,
@@ -80,7 +90,7 @@ impl<B: SecondaryBackend> SecondaryEncoder<B> {
         if range.start > range.end {
             return Err(Error::InvalidRange);
         }
-        self.call(|encoder| {
+        let result = self.call(|encoder| {
             B::secondary_set_vertex_buffer(
                 encoder,
                 slot,
@@ -88,7 +98,11 @@ impl<B: SecondaryBackend> SecondaryEncoder<B> {
                 range.start,
                 range.end - range.start,
             )
-        })
+        });
+        if result.is_ok() {
+            self.stats.record_vertex_buffer_bind();
+        }
+        result
     }
     pub fn set_index_buffer(
         &mut self,
@@ -102,7 +116,7 @@ impl<B: SecondaryBackend> SecondaryEncoder<B> {
         if range.start > range.end {
             return Err(Error::InvalidRange);
         }
-        self.call(|encoder| {
+        let result = self.call(|encoder| {
             B::secondary_set_index_buffer(
                 encoder,
                 &buffer.native,
@@ -110,25 +124,46 @@ impl<B: SecondaryBackend> SecondaryEncoder<B> {
                 range.end - range.start,
                 format,
             )
-        })
+        });
+        if result.is_ok() {
+            self.stats.record_index_buffer_bind();
+        }
+        result
     }
     pub fn viewport(&mut self, viewport: Viewport) -> Result<()> {
-        self.call(|encoder| B::secondary_viewport(encoder, viewport))
+        let result = self.call(|encoder| B::secondary_viewport(encoder, viewport));
+        if result.is_ok() {
+            self.stats.record_viewport_set();
+        }
+        result
     }
     pub fn scissor(&mut self, rect: Rect) -> Result<()> {
-        self.call(|encoder| B::secondary_scissor(encoder, rect))
+        let result = self.call(|encoder| B::secondary_scissor(encoder, rect));
+        if result.is_ok() {
+            self.stats.record_scissor_set();
+        }
+        result
     }
     pub fn push_constants(&mut self, stages: StageMask, offset: u32, bytes: &[u8]) -> Result<()> {
         if !self.push_constants {
             return Err(Error::Unsupported("push constants"));
         }
-        self.call(|encoder| B::secondary_set_push_constants(encoder, stages, offset, bytes))
+        let result =
+            self.call(|encoder| B::secondary_set_push_constants(encoder, stages, offset, bytes));
+        if result.is_ok() {
+            self.stats.record_push_constant_write();
+        }
+        result
     }
     pub fn draw(&mut self, vertices: Range<u32>, instances: Range<u32>) -> Result<()> {
         if !valid_u32_range(&vertices) || !valid_u32_range(&instances) {
             return Err(Error::InvalidRange);
         }
-        self.call(|encoder| B::secondary_draw(encoder, vertices, instances))
+        let result = self.call(|encoder| B::secondary_draw(encoder, vertices, instances));
+        if result.is_ok() {
+            self.stats.record_draw();
+        }
+        result
     }
     pub fn draw_indexed(
         &mut self,
@@ -139,7 +174,12 @@ impl<B: SecondaryBackend> SecondaryEncoder<B> {
         if !valid_u32_range(&indices) || !valid_u32_range(&instances) {
             return Err(Error::InvalidRange);
         }
-        self.call(|encoder| B::secondary_draw_indexed(encoder, indices, base_vertex, instances))
+        let result = self
+            .call(|encoder| B::secondary_draw_indexed(encoder, indices, base_vertex, instances));
+        if result.is_ok() {
+            self.stats.record_draw_indexed();
+        }
+        result
     }
 }
 pub struct SecondaryRasterWork<B: SecondaryBackend> {
@@ -165,6 +205,7 @@ impl<B: SecondaryBackend> SecondaryDomain<'_, B> {
             poisoned: false,
             push_constants: self.device.caps.push_constants,
             signature: desc.clone(),
+            stats: self.device.stats.local(),
         })
     }
     pub fn finish(&self, encoder: SecondaryEncoder<B>) -> Result<SecondaryRasterWork<B>> {

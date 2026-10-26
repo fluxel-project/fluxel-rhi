@@ -363,7 +363,11 @@ impl<B: Backend> RayDomain<'_, B> {
         if encoder.device != self.device.id || pipeline.device != self.device.id {
             return Err(Error::WrongDevice);
         }
-        encoder.call(|e| B::Ray::set_pipeline(e, &pipeline.native))
+        let result = encoder.call(|e| B::Ray::set_pipeline(e, &pipeline.native));
+        if result.is_ok() {
+            encoder.stats.record_pipeline_bind();
+        }
+        result
     }
     /// Binds resources for the selected ray pipeline using the compute-style binding contract.
     pub fn set_bind_group(
@@ -380,7 +384,11 @@ impl<B: Backend> RayDomain<'_, B> {
         if encoder.device != self.device.id || group.device != self.device.id {
             return Err(Error::WrongDevice);
         }
-        encoder.call(|e| B::Ray::set_bind_group(e, slot, &group.native, offsets))
+        let result = encoder.call(|e| B::Ray::set_bind_group(e, slot, &group.native, offsets));
+        if result.is_ok() {
+            encoder.stats.record_bind_group_bind();
+        }
+        result
     }
     pub fn shader_table_properties(&self) -> Result<ShaderTableProperties> {
         self.require_pipeline()?;
@@ -473,7 +481,11 @@ impl<B: Backend> RayDomain<'_, B> {
         if table.raygen.size != table.raygen.stride {
             return Err(Error::InvalidRange);
         }
-        encoder.call(|e| B::Ray::trace(e, &pipeline.native, table, dims))
+        let result = encoder.call(|e| B::Ray::trace(e, &pipeline.native, table, dims));
+        if result.is_ok() {
+            encoder.stats.record_ray_trace();
+        }
+        result
     }
 
     fn require_pipeline(&self) -> Result<()> {

@@ -185,6 +185,7 @@ pub struct Device<B: Backend> {
     pub(crate) id: DeviceId,
     pub(crate) native: B::NativeDevice,
     pub(crate) caps: DeviceCapabilities,
+    pub(crate) stats: Arc<RhiStats>,
 }
 impl<B: Backend> Clone for Device<B> {
     fn clone(&self) -> Self {
@@ -192,6 +193,7 @@ impl<B: Backend> Clone for Device<B> {
             id: self.id,
             native: self.native.clone(),
             caps: self.caps.clone(),
+            stats: self.stats.clone(),
         }
     }
 }
@@ -226,10 +228,22 @@ impl<B: Backend> Device<B> {
                 || B::Extras::AVAILABLE,
             "raster capability without implementation"
         );
-        Self { id, native, caps }
+        Self {
+            id,
+            native,
+            caps,
+            stats: Arc::new(RhiStats::new()),
+        }
     }
     pub fn id(&self) -> DeviceId {
         self.id
+    }
+    /// Returns this device's shared, cumulative RHI request counters.
+    ///
+    /// The returned object is available in all build profiles. Reading a
+    /// snapshot performs relaxed atomic loads and does not query the GPU.
+    pub fn stats(&self) -> &RhiStats {
+        &self.stats
     }
     /// Backend bridge for cold native constructors such as window surfaces.
     /// # Safety

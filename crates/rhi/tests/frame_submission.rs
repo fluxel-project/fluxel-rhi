@@ -418,7 +418,7 @@ fn external_backend_can_consume_validated_native_signal() {
     assert_eq!(state.retained.load(Ordering::SeqCst), 0);
 }
 
-fn issue(mode: Mode) -> (Arc<State>, utils::FrameSubmission<Mock>) {
+fn issue(mode: Mode) -> (Arc<State>, utils::FrameSubmission<Mock>, Device<Mock>) {
     let state = Arc::new(State {
         mode,
         waits: AtomicUsize::new(0),
@@ -440,12 +440,14 @@ fn issue(mode: Mode) -> (Arc<State>, utils::FrameSubmission<Mock>) {
     };
     let device = unsafe { Device::<Mock>::from_native(id, state.clone(), capabilities) };
     // SAFETY: the mock surface belongs to the same fixture device.
-    let mut surface =
-        unsafe { Surface::<Mock>::from_native(id, SurfaceId::allocate().unwrap(), state.clone()) };
+    let mut surface = unsafe {
+        Surface::<Mock>::from_native(&device, SurfaceId::allocate().unwrap(), state.clone())
+    };
     let image = utils::block_on(surface.acquire()).unwrap();
+    assert_eq!(device.clone().stats().snapshot().surface_acquires, 1);
     let work = device.encoder(lane).unwrap().finish().unwrap();
     let frame = utils::submit_frame(&device, lane, work, image).unwrap();
-    (state, frame)
+    (state, frame, device)
 }
 
 #[test]
@@ -470,8 +472,9 @@ fn common_execution_drains_failure_while_retaining_uncertainty() {
     };
     // SAFETY: these mock native objects belong to the fixture's unique device.
     let device = unsafe { Device::<Mock>::from_native(id, state.clone(), capabilities) };
-    let mut surface =
-        unsafe { Surface::<Mock>::from_native(id, SurfaceId::allocate().unwrap(), state.clone()) };
+    let mut surface = unsafe {
+        Surface::<Mock>::from_native(&device, SurfaceId::allocate().unwrap(), state.clone())
+    };
     let image = utils::block_on(surface.acquire()).unwrap();
     let result = utils::execute_frame(&device, lane, image, CompletionRequest::End, |_, _| Ok(()));
     assert!(matches!(result, Err(Error::DeviceLost)));
@@ -481,17 +484,18 @@ fn common_execution_drains_failure_while_retaining_uncertainty() {
 
 #[test]
 fn clean_rejection_does_not_wait_idle() {
-    let (state, frame) = issue(Mode::Rejected);
+    let (state, frame, device) = issue(Mode::Rejected);
     assert!(matches!(frame.outcome(), SubmitOutcome::Rejected { .. }));
     let complete = utils::block_on(frame.complete());
     assert_eq!(state.waits.load(Ordering::SeqCst), 0);
     assert!(matches!(complete.outcome, SubmitOutcome::Rejected { .. }));
+    assert_eq!(device.stats().snapshot().submits, 0);
 }
 
 #[test]
 fn accepted_malformed_partial_and_uncertain_drain_before_policy() {
     for mode in [Mode::AcceptedMalformed, Mode::Partial, Mode::Indeterminate] {
-        let (state, frame) = issue(mode);
+        let (state, frame, device) = issue(mode);
         assert_eq!(state.waits.load(Ordering::SeqCst), 0);
         let complete = utils::block_on(frame.complete());
         assert_eq!(state.waits.load(Ordering::SeqCst), 1);
@@ -504,16 +508,25 @@ fn accepted_malformed_partial_and_uncertain_drain_before_policy() {
         });
         assert!(complete.into_presented().is_err());
         assert_eq!(state.retained.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            device.stats().snapshot().submits,
+            if matches!(mode, Mode::AcceptedMalformed | Mode::Partial) {
+                1
+            } else {
+                0
+            }
+        );
     }
 }
 
 #[test]
 fn success_requires_a_receipt_for_the_submitted_frame() {
     for mode in [Mode::Accepted, Mode::AcceptedCommandsCoverage] {
-        let (state, frame) = issue(mode);
+        let (state, frame, device) = issue(mode);
         let receipt = utils::block_on(frame.complete()).into_presented().unwrap();
         assert_eq!(state.waits.load(Ordering::SeqCst), 1);
         assert_eq!(receipt.accepted.len(), 2);
+        assert_eq!(device.stats().snapshot().submits, 1);
         assert_eq!(receipt.presents[0].step, Some(receipt.accepted[1]));
         drop(receipt);
         assert_eq!(state.retained.load(Ordering::SeqCst), 0);
@@ -524,12 +537,13 @@ fn success_requires_a_receipt_for_the_submitted_frame() {
         Mode::AcceptedWrongPresent,
         Mode::AcceptedWrongCoverage,
     ] {
-        let (state, frame) = issue(mode);
+        let (state, frame, device) = issue(mode);
         assert!(matches!(
             utils::block_on(frame.complete()).into_presented(),
             Err(Error::InvalidState)
         ));
         assert_eq!(state.waits.load(Ordering::SeqCst), 1);
+        assert_eq!(device.stats().snapshot().submits, 1);
         assert_eq!(state.retained.load(Ordering::SeqCst), 0);
     }
 }
@@ -559,11 +573,11 @@ fn fail_stop_child() {
     }
     match scenario.as_str() {
         "cancel" => {
-            let (_, frame) = issue(Mode::Accepted);
+            let (_, frame, _) = issue(Mode::Accepted);
             drop(frame);
         }
         "idle_failure" => {
-            let (_, frame) = issue(Mode::IdleFailure);
+            let (_, frame, _) = issue(Mode::IdleFailure);
             let _ = utils::block_on(frame.complete());
         }
         _ => panic!("unknown test scenario"),

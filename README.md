@@ -32,6 +32,26 @@ Core defines operation meanings shared by callers and implementations. The
 facade adds no runtime backend dispatcher. Each backend owns native objects,
 shader lowering, state adaptation, and execution lifetimes.
 
+Every `Device` exposes cumulative request counters through
+`device.stats().snapshot()`. Snapshots include successful RHI command and
+binding requests plus surface acquisition and accepted present handoffs. Callers
+can compare two snapshots and divide the present-count delta by their own
+monotonic time interval to estimate RHI present cadence. This is not GPU time,
+display refresh rate, or native state-change reporting. Counters use relaxed
+atomics and remain available in release builds. Commands still being recorded
+in a live encoder appear when that encoder finishes or is dropped.
+
+```rust
+let start = std::time::Instant::now();
+let before = device.stats().snapshot();
+// Encode and submit the interval being measured.
+let elapsed = start.elapsed();
+let delta = device.stats().snapshot().delta_since(before).unwrap();
+let present_hz = delta
+    .present_rate_hz_since(Default::default(), elapsed)
+    .unwrap_or(0.0);
+```
+
 ## Backend routes
 
 | Route | Facade feature | Execution model | Runtime shader route |

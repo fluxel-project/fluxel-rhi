@@ -115,7 +115,7 @@ pub(crate) unsafe fn create_surface(
     // SAFETY: `state` is newly allocated for this same device id and becomes
     // the only native surface payload owned by the returned typed Surface.
     Ok(unsafe {
-        api::Surface::from_native(device.id(), api::SurfaceId::allocate()?, Dx12Surface(state))
+        api::Surface::from_native(device, api::SurfaceId::allocate()?, Dx12Surface(state))
     })
 }
 impl Drop for ImageLease {

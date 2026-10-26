@@ -129,7 +129,11 @@ impl<B: CommandBackend> ComputePass<'_, B> {
         if p.device != self.encoder.device {
             return Err(Error::WrongDevice);
         }
-        self.call(|e| B::Compute::set_pipeline(e, &p.native))
+        let result = self.call(|e| B::Compute::set_pipeline(e, &p.native));
+        if result.is_ok() {
+            self.encoder.stats.record_pipeline_bind();
+        }
+        result
     }
     /// Binds a group and applies dynamic buffer offsets.
     ///
@@ -147,13 +151,25 @@ impl<B: CommandBackend> ComputePass<'_, B> {
         if group.device != self.encoder.device {
             return Err(Error::WrongDevice);
         }
-        self.call(|e| B::Compute::set_bind_group(e, slot, &group.native, offsets))
+        let result = self.call(|e| B::Compute::set_bind_group(e, slot, &group.native, offsets));
+        if result.is_ok() {
+            self.encoder.stats.record_bind_group_bind();
+        }
+        result
     }
     pub fn dispatch(&mut self, groups: [u32; 3]) -> Result<()> {
-        self.call(|e| B::Compute::dispatch(e, groups))
+        let result = self.call(|e| B::Compute::dispatch(e, groups));
+        if result.is_ok() {
+            self.encoder.stats.record_dispatch();
+        }
+        result
     }
     pub fn push_constants(&mut self, offset: u32, bytes: &[u8]) -> Result<()> {
-        self.call(|e| B::Compute::set_push_constants(e, offset, bytes))
+        let result = self.call(|e| B::Compute::set_push_constants(e, offset, bytes));
+        if result.is_ok() {
+            self.encoder.stats.record_push_constant_write();
+        }
+        result
     }
     /// Reads three `u32` workgroup counts from `buffer` at `offset`.
     ///
@@ -163,7 +179,11 @@ impl<B: CommandBackend> ComputePass<'_, B> {
         if buffer.device != self.encoder.device {
             return Err(Error::WrongDevice);
         }
-        self.call(|e| B::Compute::dispatch_indirect(e, &buffer.native, offset))
+        let result = self.call(|e| B::Compute::dispatch_indirect(e, &buffer.native, offset));
+        if result.is_ok() {
+            self.encoder.stats.record_dispatch();
+        }
+        result
     }
     pub fn finish(mut self) -> Result<()> {
         // Clear `in_pass` only after native end succeeds; otherwise a caller
