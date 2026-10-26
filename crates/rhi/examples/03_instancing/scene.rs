@@ -4,6 +4,7 @@ mod resources;
 mod workload;
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 pub use workload::Instancing;
 

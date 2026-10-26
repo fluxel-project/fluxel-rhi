@@ -3,6 +3,7 @@
 #[path = "../examples/utils/mod.rs"]
 mod utils;
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 use std::{
     future::{Ready, ready},
     sync::{Arc, Mutex},

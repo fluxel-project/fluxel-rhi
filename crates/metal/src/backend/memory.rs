@@ -3,7 +3,8 @@
 //! Aliased resources retain the heap; the renderer supplies ordering and
 //! lifetime discipline for overlapping placements. Host mappings share a lock.
 use super::{Metal, MetalBuffer, MetalDevice, MetalTexture};
-use fluxel_rhi_core::api::{self, Error, MemoryBackend, ResourceBackend, Result, Support};
+use fluxel_rhi_core::api::{self, Error, Result, Support};
+use fluxel_rhi_core::backend::{MemoryBackend, ResourceBackend};
 
 /// Placement heaps require a GPU family that exposes explicit heap offsets.
 #[cfg(target_vendor = "apple")]

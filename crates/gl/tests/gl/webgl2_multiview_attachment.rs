@@ -1,6 +1,6 @@
 //! OVR framebuffer attachment and view-index output on a browser GPU.
 use super::{BrowserColorAttachment, BrowserOwner, WebGl2BrowserDiscovery};
-use crate::backend::gl::api::{
+use crate::backend::api::{
     ContextStamp, GlExtent3d, GlFormat, GlTextureDesc, GlTextureDimension, GlTextureUsage,
 };
 use fluxel_rhi_core::api::{ClearColor, DeviceId, LaneId, LoadOp, Rect, StoreOp};
@@ -36,7 +36,7 @@ fn webgl2_multiview_browser_attachment() {
         owner
             .discovery_snapshot()
             .capabilities()
-            .supports(crate::backend::gl::api::GlCapability::Multiview)
+            .supports(crate::backend::api::GlCapability::Multiview)
     );
     assert!(owner.discovery_snapshot().max_multiview_view_count() >= 2);
     let texture = owner

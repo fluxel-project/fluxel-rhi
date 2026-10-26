@@ -5,6 +5,7 @@
 
 use super::gltf;
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 pub const INDEXED_INDIRECT_STRIDE: u32 = 20;
 pub const PLANT_INSTANCES: u32 = 2048;

@@ -3,11 +3,12 @@
 //! left/right halves of the acquired surface.
 //! Scene resources and pass recording live here; the caller owns surface lease
 //! handoff, submission, and lifetime decisions after recording.
-#[path = "../utils/gltf.rs"]
+#[path = "../utils/gltf/mod.rs"]
 mod gltf;
 #[path = "../utils/mod.rs"]
 mod utils;
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 use std::sync::Arc;
 const SCENE_VS: &[u8] = include_bytes!("../assets/15_multiview/scene_vs.dxil");
 const SCENE_PS: &[u8] = include_bytes!("../assets/15_multiview/scene_ps.dxil");

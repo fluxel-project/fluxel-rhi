@@ -30,30 +30,6 @@ pub struct MemoryRequirements {
     /// The resource requires a dedicated native allocation and cannot be placed.
     pub dedicated_only: bool,
 }
-pub trait MemoryBackend: ResourceBackend {
-    fn buffer_requirements(
-        device: &Self::NativeDevice,
-        desc: &BufferDesc,
-    ) -> Result<MemoryRequirements>;
-    fn texture_requirements(
-        device: &Self::NativeDevice,
-        desc: &TextureDesc,
-    ) -> Result<MemoryRequirements>;
-    type NativeHeap: Clone;
-    fn create_heap(device: &Self::NativeDevice, desc: &HeapDesc) -> Result<Self::NativeHeap>;
-    fn place_buffer(
-        device: &Self::NativeDevice,
-        heap: &Self::NativeHeap,
-        offset: u64,
-        desc: &BufferDesc,
-    ) -> Result<Self::NativeBuffer>;
-    fn place_texture(
-        device: &Self::NativeDevice,
-        heap: &Self::NativeHeap,
-        offset: u64,
-        desc: &TextureDesc,
-    ) -> Result<Self::NativeTexture>;
-}
 pub struct MemoryHeap<B: MemoryBackend> {
     device: DeviceId,
     native: B::NativeHeap,

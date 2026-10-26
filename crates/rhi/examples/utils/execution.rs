@@ -5,6 +5,7 @@
 //! browser failures trap because Drop cannot perform an asynchronous drain.
 use super::submission::frame_plan;
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 pub fn execute_frame<B: ExecutionBackend, T>(
     device: &Device<B>,

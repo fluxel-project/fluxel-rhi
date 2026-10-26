@@ -6,6 +6,7 @@
 #[path = "../utils/mod.rs"]
 mod utils;
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 mod data;
 use data::*;
 const VS: &[u8] = include_bytes!("../assets/02_texture/texture.vs.dxil");

@@ -9,6 +9,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 use super::DynamicUniforms;
 

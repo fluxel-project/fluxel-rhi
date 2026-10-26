@@ -5,6 +5,7 @@
 
 use super::{MipmapBackend, MipmapWorkloadBackend, Tunnel};
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 pub struct FrameCommit;
 

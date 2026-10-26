@@ -3,7 +3,7 @@
 //! Surface leases are present-only. This example renders into an ordinary RGBA8
 //! texture, transitions it to a copy source, and maps a readback buffer only
 //! after the caller supplies completion evidence for that encoder.
-#[path = "../utils/gltf.rs"]
+#[path = "../utils/gltf/mod.rs"]
 mod gltf;
 #[cfg(any(
     feature = "native-gl-wgl",
@@ -16,6 +16,7 @@ mod utils;
 mod workload;
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 use std::{fs, path::Path};
 
 pub trait ScreenshotWorkloadBackend:

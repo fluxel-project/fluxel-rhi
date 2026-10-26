@@ -14,40 +14,6 @@ use std::{
     },
 };
 
-/// Explicitly optional modern raster variants. No checks or dynamic lookups per draw.
-pub trait RasterExtrasOps<B: Backend> {
-    const AVAILABLE: bool;
-    fn draw_indirect(
-        encoder: &mut B::NativeEncoder,
-        buffer: &B::NativeBuffer,
-        offset: u64,
-        indexed: bool,
-    ) -> Result<()>;
-    fn multi_draw(
-        encoder: &mut B::NativeEncoder,
-        buffer: &B::NativeBuffer,
-        offset: u64,
-        count: u32,
-        stride: u32,
-        indexed: bool,
-    ) -> Result<()>;
-    fn multi_draw_count(
-        encoder: &mut B::NativeEncoder,
-        args: &B::NativeBuffer,
-        args_offset: u64,
-        count: &B::NativeBuffer,
-        count_offset: u64,
-        max: u32,
-        stride: u32,
-        indexed: bool,
-    ) -> Result<()>;
-    fn set_push_constants(
-        encoder: &mut B::NativeEncoder,
-        stages: StageMask,
-        offset: u32,
-        bytes: &[u8],
-    ) -> Result<()>;
-}
 impl<B: Backend> RasterExtrasOps<B> for Unavailable {
     const AVAILABLE: bool = false;
     fn draw_indirect(_: &mut B::NativeEncoder, _: &B::NativeBuffer, _: u64, _: bool) -> Result<()> {

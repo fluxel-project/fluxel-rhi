@@ -2,7 +2,7 @@
 //!
 //! The workload lives in `instancing/`; this entry owns platform startup and
 //! does not own GPU scheduling, resource retirement, or window lifetime.
-#[path = "../utils/gltf.rs"]
+#[path = "../utils/gltf/mod.rs"]
 mod gltf;
 #[path = "scene.rs"]
 mod instancing;
@@ -10,6 +10,7 @@ mod instancing;
 mod utils;
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 /// Exposes the unchanged workload to native host integrations such as the Android capture runner.
 pub use instancing::Instancing;
 

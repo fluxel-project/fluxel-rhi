@@ -4,7 +4,8 @@
 //! Pipeline creation preserves color attachment slots, including holes, and
 //! command encoding checks the matching render pass signature.
 
-use fluxel_rhi_core::api::{self, PipelineBackend, RasterPipelineDesc};
+use fluxel_rhi_core::api::{self, RasterPipelineDesc};
+use fluxel_rhi_core::backend::PipelineBackend;
 use std::{future::Future, pin::Pin};
 
 use super::{Metal, MetalDevice, binding_abi};
@@ -68,7 +69,8 @@ pub struct MetalComputePipeline {
 }
 
 impl PipelineBackend for Metal {
-    type RasterPipelineFuture<'a> = Pin<Box<dyn Future<Output = api::Result<MetalRasterPipeline>> + 'a>>;
+    type RasterPipelineFuture<'a> =
+        Pin<Box<dyn Future<Output = api::Result<MetalRasterPipeline>> + 'a>>;
 
     fn create_raster_pipeline<'a>(
         device: &'a MetalDevice,
@@ -88,8 +90,7 @@ async fn create_raster_pipeline(
         use objc2_foundation::{NSObjectProtocol as _, NSString};
         use objc2_metal::{
             MTLDepthStencilDescriptor, MTLDevice as _, MTLFunction as _, MTLFunctionType,
-            MTLRenderPipelineDescriptor, MTLStencilDescriptor,
-            MTLVertexDescriptor,
+            MTLRenderPipelineDescriptor, MTLStencilDescriptor, MTLVertexDescriptor,
         };
         if desc.depth_stencil.is_some_and(|depth| {
             matches!(
@@ -122,7 +123,8 @@ async fn create_raster_pipeline(
             layout.clone(),
             desc.vertex_buffers.len(),
             desc.multiview.is_some(),
-        ).await?;
+        )
+        .await?;
         if vertex_function.functionType() != MTLFunctionType::Vertex {
             return Err(api::Error::Shader(
                 "Metal entry is not a vertex function".into(),
@@ -141,7 +143,8 @@ async fn create_raster_pipeline(
                 layout.clone(),
                 0,
                 desc.multiview.is_some(),
-            ).await?;
+            )
+            .await?;
             if function.functionType() != MTLFunctionType::Fragment {
                 return Err(api::Error::Shader(
                     "Metal entry is not a fragment function".into(),
@@ -305,7 +308,11 @@ async fn create_raster_pipeline(
         }
         let archive_lease = if let Some(cache) = &desc.cache {
             // SAFETY: Core verified cache provenance before pipeline creation.
-            Some(unsafe { cache.native_ref() }.prepare_render(&descriptor).await?)
+            Some(
+                unsafe { cache.native_ref() }
+                    .prepare_render(&descriptor)
+                    .await?,
+            )
         } else {
             None
         };
@@ -316,34 +323,43 @@ async fn create_raster_pipeline(
             vertex_function.clone(),
             fragment_function.clone(),
         )));
-        let callback = block2::RcBlock::new(move |
-            state: *mut objc2::runtime::ProtocolObject<dyn objc2_metal::MTLRenderPipelineState>,
-            reflection: *mut objc2_metal::MTLRenderPipelineReflection,
-            error: *mut objc2_foundation::NSError,
-        | {
-            let result = if !error.is_null() {
-                // SAFETY: Metal supplies a valid NSError for failed compilation.
-                Err(api::Error::Backend(format!("Metal raster pipeline: {:?}", unsafe { &*error })))
-            } else {
-                // SAFETY: successful completion lends valid native objects until
-                // this block returns; retain them for the future's consumer.
-                let state = unsafe { objc2::rc::Retained::retain(state) }
-                    .ok_or(api::Error::InvalidState);
-                let reflection = unsafe { objc2::rc::Retained::retain(reflection) }
-                    .ok_or(api::Error::InvalidState);
-                state.and_then(|state| reflection.map(|reflection| (state, reflection)))
-            };
-            completer.finish(result);
-            drop(inputs.borrow_mut().take());
-        });
+        let callback = block2::RcBlock::new(
+            move |state: *mut objc2::runtime::ProtocolObject<
+                dyn objc2_metal::MTLRenderPipelineState,
+            >,
+                  reflection: *mut objc2_metal::MTLRenderPipelineReflection,
+                  error: *mut objc2_foundation::NSError| {
+                let result = if !error.is_null() {
+                    // SAFETY: Metal supplies a valid NSError for failed compilation.
+                    Err(api::Error::Backend(format!(
+                        "Metal raster pipeline: {:?}",
+                        unsafe { &*error }
+                    )))
+                } else {
+                    // SAFETY: successful completion lends valid native objects until
+                    // this block returns; retain them for the future's consumer.
+                    let state = unsafe { objc2::rc::Retained::retain(state) }
+                        .ok_or(api::Error::InvalidState);
+                    let reflection = unsafe { objc2::rc::Retained::retain(reflection) }
+                        .ok_or(api::Error::InvalidState);
+                    state.and_then(|state| reflection.map(|reflection| (state, reflection)))
+                };
+                completer.finish(result);
+                drop(inputs.borrow_mut().take());
+            },
+        );
         // SAFETY: Metal copies the block; `inputs` keeps every descriptor
         // dependency and the cache read lease alive through completion.
         unsafe {
-            device._state._device.newRenderPipelineStateWithDescriptor_options_completionHandler(
-                &descriptor,
-                objc2_metal::MTLPipelineOption::ArgumentInfo | objc2_metal::MTLPipelineOption::BufferTypeInfo,
-                block2::RcBlock::as_ptr(&callback).cast(),
-            );
+            device
+                ._state
+                ._device
+                .newRenderPipelineStateWithDescriptor_options_completionHandler(
+                    &descriptor,
+                    objc2_metal::MTLPipelineOption::ArgumentInfo
+                        | objc2_metal::MTLPipelineOption::BufferTypeInfo,
+                    block2::RcBlock::as_ptr(&callback).cast(),
+                );
         }
         let (state, reflection) = future.await?;
         for stage in &mut stage_bindings {
@@ -716,70 +732,5 @@ fn vertex_format(format: api::VertexFormat) -> api::Result<(objc2_metal::MTLVert
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        full_sample_mask, supported_color_format, supported_depth_state, supported_sample_count,
-    };
-    use fluxel_rhi_core::api::{self, TextureFormat};
-
-    #[test]
-    fn raster_target_rejects_depth_and_nonimplemented_formats() {
-        assert!(supported_color_format(TextureFormat::Rgba8Unorm));
-        assert!(supported_color_format(TextureFormat::Bgra8UnormSrgb));
-        assert!(!supported_color_format(TextureFormat::Depth32Float));
-        assert!(supported_color_format(TextureFormat::Rgba32Float));
-    }
-
-    #[test]
-    fn depth_pipeline_accepts_depth32_and_combined_stencil_semantics() {
-        let face = api::StencilFaceState {
-            compare: api::CompareFunction::Always,
-            fail: api::StencilOperation::Keep,
-            depth_fail: api::StencilOperation::Keep,
-            pass: api::StencilOperation::Keep,
-        };
-        let state = api::DepthStencilState {
-            format: TextureFormat::Depth32Float,
-            depth_write_enabled: true,
-            depth_compare: api::CompareFunction::LessEqual,
-            stencil_front: face,
-            stencil_back: face,
-            stencil_read_mask: 0,
-            stencil_write_mask: 0,
-            depth_bias_constant: 0,
-            depth_bias_slope_scale: 0.0,
-            depth_bias_clamp: 0.0,
-        };
-        assert!(supported_depth_state(state));
-        assert!(!supported_depth_state(api::DepthStencilState {
-            stencil_write_mask: 1,
-            ..state
-        }));
-        assert!(!supported_depth_state(api::DepthStencilState {
-            format: TextureFormat::Rgba8Unorm,
-            ..state
-        }));
-        assert!(supported_depth_state(api::DepthStencilState {
-            format: TextureFormat::Depth32FloatStencil8,
-            stencil_front: api::StencilFaceState {
-                compare: api::CompareFunction::LessEqual,
-                fail: api::StencilOperation::Zero,
-                depth_fail: api::StencilOperation::IncrementWrap,
-                pass: api::StencilOperation::Replace,
-            },
-            stencil_read_mask: 0x0f,
-            stencil_write_mask: 0xf0,
-            ..state
-        }));
-    }
-
-    #[test]
-    fn multisample_subset_accepts_only_native_counts_and_full_masks() {
-        assert!(supported_sample_count(1));
-        assert!(supported_sample_count(4));
-        assert!(!supported_sample_count(3));
-        assert!(full_sample_mask(u64::from(u32::MAX), 4));
-        assert!(full_sample_mask(u64::MAX, 4));
-        assert!(!full_sample_mask(0x0f, 8));
-    }
-}
+#[path = "../tests/backend/pipeline.rs"]
+mod tests;

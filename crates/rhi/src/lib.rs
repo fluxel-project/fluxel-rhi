@@ -11,8 +11,12 @@
 
 #![deny(missing_docs)]
 
-/// The statically dispatched RHI vocabulary and backend contracts.
+/// The statically dispatched renderer-facing RHI vocabulary.
 pub use fluxel_rhi_core::api;
+
+/// Backend implementation contracts, hidden from ordinary renderer docs.
+#[doc(hidden)]
+pub use fluxel_rhi_core::backend;
 
 /// Direct3D 12 is the active native backend on Windows.
 #[cfg(all(feature = "dx12", windows))]

@@ -1,6 +1,7 @@
 //! A completed native prefix followed by an original-plan suffix.
 #![cfg(feature = "hardware-tests")]
 use fluxel_rhi_core::api::*;
+use fluxel_rhi_core::backend::DeferredBackend;
 use fluxel_rhi_vulkan::{Vulkan, VulkanInstance};
 use std::{future::Future, sync::Arc};
 

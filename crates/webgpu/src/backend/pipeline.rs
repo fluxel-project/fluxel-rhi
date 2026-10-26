@@ -27,7 +27,7 @@ fn field(object: &JsValue, name: &str, value: JsValue) -> Result<()> {
     js::set(object, name, &value).map_err(error)
 }
 
-impl api::ShaderBackend for WebGpu {
+impl fluxel_rhi_core::backend::ShaderBackend for WebGpu {
     type DirectFuture<'a> = Ready<Result<JsValue>>;
     type NagaFuture<'a> = Pin<Box<dyn Future<Output = Result<JsValue>> + 'a>>;
 
@@ -113,24 +113,10 @@ fn shader_route(format: api::ShaderFormat, spirv_worker_configured: bool) -> api
 }
 
 #[cfg(test)]
-mod tests {
-    use super::shader_route;
-    use fluxel_rhi_core::api::{ShaderFormat, ShaderRoute};
+#[path = "../tests/backend/pipeline.rs"]
+mod tests;
 
-    #[test]
-    fn spirv_is_not_advertised_without_its_worker_asset() {
-        assert!(matches!(
-            shader_route(ShaderFormat::SpirV, false),
-            ShaderRoute::Unsupported
-        ));
-        assert!(matches!(
-            shader_route(ShaderFormat::SpirV, true),
-            ShaderRoute::Naga(_)
-        ));
-    }
-}
-
-impl api::PipelineBackend for WebGpu {
+impl fluxel_rhi_core::backend::PipelineBackend for WebGpu {
     type RasterPipelineFuture<'a> = Pin<Box<dyn Future<Output = Result<JsValue>> + 'a>>;
 
     fn create_raster_pipeline<'a>(

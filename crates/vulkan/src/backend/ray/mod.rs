@@ -5,6 +5,7 @@ pub(crate) use retention::RecordedTlasBuild;
 
 mod pipeline;
 #[cfg(all(test, windows, feature = "hardware-tests"))]
+#[path = "../../tests/backend/ray/retention_gpu.rs"]
 mod retention_gpu;
 pub(super) use pipeline::restore_after_external_boundary;
 pub(crate) mod probe;
@@ -14,7 +15,7 @@ use fluxel_rhi_core::api::{self, Error, Result};
 pub use pipeline::VulkanRayPipeline;
 
 pub struct VulkanRay;
-impl api::RayOps<Vulkan> for VulkanRay {
+impl fluxel_rhi_core::backend::RayOps<Vulkan> for VulkanRay {
     const AVAILABLE: bool = true;
     type PipelineFuture<'a> = super::cold_worker::ColdFuture<VulkanRayPipeline>;
     fn create_pipeline<'a>(

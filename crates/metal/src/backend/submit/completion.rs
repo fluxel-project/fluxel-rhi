@@ -3,7 +3,8 @@
 #[cfg(target_vendor = "apple")]
 use super::NativeCommandBuffer;
 use super::{Metal, MetalDevice};
-use fluxel_rhi_core::api::{CompletionBackend, CompletionState, Error, Result};
+use fluxel_rhi_core::api::{CompletionState, Error, Result};
+use fluxel_rhi_core::backend::CompletionBackend;
 use std::{
     future::Future,
     pin::Pin,

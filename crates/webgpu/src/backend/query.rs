@@ -45,7 +45,7 @@ fn valid_slots(set: &WebGpuQuerySet, slots: Range<u32>) -> Result<()> {
     Ok(())
 }
 
-impl api::QueryBackend for WebGpu {
+impl fluxel_rhi_core::backend::QueryBackend for WebGpu {
     fn query_supported(device: &WebGpuDevice, kind: api::QueryKind) -> bool {
         match kind {
             api::QueryKind::Occlusion => true,

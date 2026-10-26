@@ -1,0 +1,34 @@
+//! Small, deliberately constrained glTF 2.0 loader for the example assets.
+//!
+//! It accepts JSON `.gltf` files whose buffers are embedded base64 data URIs.
+//! Output vertices have the `vkglTF::Vertex` ABI used by the source examples.
+
+use std::{error::Error, fmt};
+
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use serde_json::Value;
+
+#[path = "accessor.rs"]
+mod accessor;
+#[path = "json.rs"]
+mod json;
+#[path = "loader.rs"]
+mod loader;
+#[path = "math.rs"]
+mod math;
+#[path = "media.rs"]
+mod media;
+#[path = "types.rs"]
+mod types;
+
+pub use loader::{load_embedded_first_mesh, load_embedded_model};
+pub use types::{
+    DrawPrimitive, EmbeddedImage, EmbeddedMaterial, EmbeddedModel, EmbeddedSampler,
+    EmbeddedTexture, GltfError, LoadOptions, VKGLTF_VERTEX_STRIDE,
+};
+
+use accessor::*;
+use json::*;
+use math::*;
+use media::*;
+use types::*;

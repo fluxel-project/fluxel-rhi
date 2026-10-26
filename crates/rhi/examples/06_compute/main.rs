@@ -15,6 +15,7 @@ mod utils;
 
 pub use compute::{Compute, ComputeBackend, FrameInitialization};
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 /// Runs the same source/filter comparison with fragment shaders on WebGL2.
 /// WebGL2 has no compute stage or storage textures, so its capability bits

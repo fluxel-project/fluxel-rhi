@@ -404,7 +404,7 @@ fn gles_core_sampler_border() {
     let native =
         GlInstance::gles_pbuffer([8, 8]).expect("open EGL GLES pbuffer for hardware fixture");
     let d = block_on(open(native));
-    use crate::backend::gl::api::{GlFamilyApi as _, GlFamilyProfile};
+    use crate::backend::api::{GlFamilyApi as _, GlFamilyProfile};
     // SAFETY: the fixture owns the current context for this inspection.
     let native = unsafe { d.native_ref() };
     let available = native.0.with_native("inspect GLES border clamp", |provider| {

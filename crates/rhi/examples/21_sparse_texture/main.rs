@@ -8,6 +8,7 @@ mod setup;
 mod utils;
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 struct Demo<
     B: ResourceBackend

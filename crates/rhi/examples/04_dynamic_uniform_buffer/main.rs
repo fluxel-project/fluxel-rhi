@@ -7,6 +7,7 @@ mod scene;
 #[path = "../utils/mod.rs"]
 mod utils;
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 use scene::{camera_matrix, cube_indices, cube_vertices, model};
 const VS: &[u8] = include_bytes!("../assets/04_dynamic_uniform_buffer/dynamic_uniform.vs.dxil");
 const PS: &[u8] = include_bytes!("../assets/04_dynamic_uniform_buffer/dynamic_uniform.ps.dxil");

@@ -2,7 +2,7 @@
 use super::*;
 
 async fn clear_nonrenderable(d: &Device<Gl>, format: TextureFormat) {
-    use crate::backend::gl::api::{
+    use crate::backend::api::{
         GlFamilyApi as _, GlFamilyProfile, GlFormat, GlFormatResourceKind,
     };
     #[cfg(not(target_arch = "wasm32"))]

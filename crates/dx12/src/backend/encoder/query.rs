@@ -5,7 +5,7 @@ use fluxel_rhi_core::api::{BufferUsage, Error, MemoryClass, QueryKind, Result};
 use std::ops::Range;
 
 #[cfg(all(test, feature = "hardware-tests"))]
-#[path = "query_pending_test.rs"]
+#[path = "../../tests/backend/encoder/query_pending.rs"]
 mod pending_test;
 
 /// Ordered logical effects; recording never changes submitted slot state.

@@ -2,7 +2,7 @@
 use super::*;
 
 pub(super) async fn mixed_surface(d: &Device<Gl>) {
-    use crate::backend::gl::native::NativeContextOwner as _;
+    use crate::backend::native::NativeContextOwner as _;
     // SAFETY: this test owns the current device and context on this thread.
     let native = unsafe { d.native_ref() };
     let observed = native

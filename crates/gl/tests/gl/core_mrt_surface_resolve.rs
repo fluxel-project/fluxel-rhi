@@ -305,7 +305,7 @@ async fn webgl2_core_mrt_surface_resolve() {
 #[test]
 #[ignore = "requires an EGL GLES pbuffer"]
 fn gles_core_mrt_resolve_pbuffer() {
-    use crate::backend::gl::api::{GlDefaultFramebufferTarget, GlFamilyApi as _, GlFormat};
+    use crate::backend::api::{GlDefaultFramebufferTarget, GlFamilyApi as _, GlFormat};
     let d = block_on(open(GlInstance::gles_pbuffer([8, 8]).unwrap()));
     block_on(async {
         let desc = TextureDesc {
@@ -443,7 +443,7 @@ fn gles_core_mrt_resolve_pbuffer() {
                     sample_count: 1,
                     color_format: GlFormat::Rgba8Unorm,
                 };
-                crate::backend::gl::backend::raster::resolve::surface(
+                crate::backend::rhi::raster::resolve::surface(
                     provider, source, default, None,
                 )?;
                 provider.read_default_framebuffer(default)

@@ -4,6 +4,7 @@
 //! recording are owned by the pipeline and workload modules.
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 pub(crate) struct Ktx {
     pub(crate) width: u32,

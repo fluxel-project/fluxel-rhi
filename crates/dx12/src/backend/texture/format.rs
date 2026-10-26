@@ -347,32 +347,43 @@ pub(crate) fn format_has_support(
 }
 
 pub(super) fn supported_sample_counts(dv: &Dx12Device, d: &api::TextureDesc) -> Vec<u32> {
-    let format = dxgi_format(d.format);
     [1, 2, 4, 8, 16, 32]
         .into_iter()
-        .filter(|&count| {
-            if count == 1 {
-                return true;
-            }
-            let mut quality = D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS {
-                Format: format,
-                SampleCount: count,
-                Flags: D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE,
-                NumQualityLevels: 0,
-            };
-            // SAFETY: `quality` is the exact feature struct required by this
-            // query and stays mutable/alive for the synchronous D3D12 call.
-            unsafe {
-                dv.0.native.CheckFeatureSupport(
-                    D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS,
-                    &mut quality as *mut _ as *mut _,
-                    std::mem::size_of::<D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS>() as u32,
-                )
-            }
-            .is_ok()
-                && quality.NumQualityLevels > 0
-        })
+        .filter(|&count| sample_count_supported(dv, d.format, count))
         .collect()
+}
+
+/// Check only the sample count needed by resource creation. The full supported
+/// list is appropriate for capability queries, but asking the driver about
+/// every multisample count for a single-sample texture repeats unrelated work.
+pub(super) fn sample_count_supported(
+    dv: &Dx12Device,
+    format: api::TextureFormat,
+    count: u32,
+) -> bool {
+    if count == 1 {
+        return true;
+    }
+    if ![2, 4, 8, 16, 32].contains(&count) {
+        return false;
+    }
+    let mut quality = D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS {
+        Format: dxgi_format(format),
+        SampleCount: count,
+        Flags: D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE,
+        NumQualityLevels: 0,
+    };
+    // SAFETY: `quality` is the exact feature struct required by this query
+    // and stays mutable/alive for the synchronous D3D12 call.
+    unsafe {
+        dv.0.native.CheckFeatureSupport(
+            D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS,
+            &mut quality as *mut _ as *mut _,
+            std::mem::size_of::<D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS>() as u32,
+        )
+    }
+    .is_ok()
+        && quality.NumQualityLevels > 0
 }
 
 pub(crate) fn is_depth(format: api::TextureFormat) -> bool {

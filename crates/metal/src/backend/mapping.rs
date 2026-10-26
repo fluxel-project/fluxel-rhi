@@ -30,7 +30,7 @@ impl Drop for MetalMap {
     }
 }
 
-impl api::MappingBackend for Metal {
+impl fluxel_rhi_core::backend::MappingBackend for Metal {
     type NativeMap = MetalMap;
     type MapFuture<'a> = Ready<Result<MetalMap>>;
 

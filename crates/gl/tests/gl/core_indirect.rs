@@ -749,7 +749,7 @@ fn gles_core_indirect_gpu_shared_occlusion() {
     }
     let native = GlInstance::gles_pbuffer([1024, 768]).expect("open EGL GLES pbuffer");
     let d = block_on(open(native));
-    crate::backend::gl::native::indirect_count_emulated::set_test_chunk_capacity(1);
+    crate::backend::native::indirect_count_emulated::set_test_chunk_capacity(1);
     block_on(indirect(&d, false, false, true));
-    crate::backend::gl::native::indirect_count_emulated::set_test_chunk_capacity(u32::MAX);
+    crate::backend::native::indirect_count_emulated::set_test_chunk_capacity(u32::MAX);
 }

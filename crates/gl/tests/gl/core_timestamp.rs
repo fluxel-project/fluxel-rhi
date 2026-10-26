@@ -17,7 +17,7 @@ fn wgl_core_timestamp_query_without_query_buffer() {
 
 #[cfg(all(windows, feature = "native-gl-wgl"))]
 fn run_timestamp_query(fallback: bool) {
-    crate::backend::gl::backend::spi::TEST_DISABLE_QUERY_BUFFER.with(|v| v.set(fallback));
+    crate::backend::rhi::spi::TEST_DISABLE_QUERY_BUFFER.with(|v| v.set(fallback));
     use fluxel_host::{Window, WindowConfig};
     use std::{
         future::Future,
@@ -240,7 +240,7 @@ fn run_timestamp_query(fallback: bool) {
             .unwrap()
             .bytes;
         assert_eq!(bytes.as_slice(), &[0xadu8; 32]);
-        crate::backend::gl::backend::spi::TEST_DISABLE_QUERY_BUFFER.with(|v| v.set(false));
+        crate::backend::rhi::spi::TEST_DISABLE_QUERY_BUFFER.with(|v| v.set(false));
         return;
     }
     queries.resolve(encoder, &set, 0..2, &buffer, 8).unwrap();

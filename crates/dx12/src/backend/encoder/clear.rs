@@ -48,7 +48,7 @@ pub(crate) fn texture(
                             mip,
                             slice,
                         )?;
-                        views.push((mip, heap, handle));
+                        views.push((mip, Some(heap), handle));
                     }
                     continue;
                 }
@@ -70,11 +70,14 @@ pub(crate) fn texture(
                             layers: layer..layer + 1,
                         },
                     )?;
-                    views.push((
-                        mip,
-                        view.0.rtv_heap.as_ref().ok_or(Error::InvalidState)?.clone(),
-                        view.0.rtv.ok_or(Error::InvalidState)?,
-                    ));
+                    encoder.view_descriptor_leases.push(
+                        view.0
+                            .rtv_lease
+                            .as_ref()
+                            .ok_or(Error::InvalidState)?
+                            .clone(),
+                    );
+                    views.push((mip, None, view.0.rtv.ok_or(Error::InvalidState)?));
                 }
             }
             for (mip, heap, handle) in views {
@@ -95,7 +98,9 @@ pub(crate) fn texture(
                     rect,
                     bits,
                 )?;
-                encoder.clear_heaps.push(heap);
+                if let Some(heap) = heap {
+                    encoder.clear_heaps.push(heap);
+                }
             }
             super::restore_after_internal_draw(encoder)?;
             encoder.integer_clear_pipelines.push(pipeline);
@@ -150,7 +155,12 @@ pub(crate) fn texture(
                 .0
                 .dsv
                 .ok_or(Error::Unsupported("DX12 clear depth view"))?;
-            let heap = view.0.dsv_heap.as_ref().ok_or(Error::InvalidState)?.clone();
+            let heap = view
+                .0
+                .dsv_lease
+                .as_ref()
+                .ok_or(Error::InvalidState)?
+                .clone();
             let api::TextureClearValue::Depth(clear) = value else {
                 unreachable!()
             };
@@ -161,13 +171,18 @@ pub(crate) fn texture(
                     .list
                     .ClearDepthStencilView(handle, D3D12_CLEAR_FLAG_DEPTH, clear, 0, None);
             }
-            encoder.clear_heaps.push(heap);
+            encoder.view_descriptor_leases.push(heap);
         } else {
             let handle = view
                 .0
                 .rtv
                 .ok_or(Error::Unsupported("DX12 clear color view"))?;
-            let heap = view.0.rtv_heap.as_ref().ok_or(Error::InvalidState)?.clone();
+            let heap = view
+                .0
+                .rtv_lease
+                .as_ref()
+                .ok_or(Error::InvalidState)?
+                .clone();
             let api::TextureClearValue::Color(api::ClearColor::Float(clear)) = value else {
                 unreachable!()
             };
@@ -176,7 +191,7 @@ pub(crate) fn texture(
             unsafe {
                 encoder.list.ClearRenderTargetView(handle, &clear, None);
             }
-            encoder.clear_heaps.push(heap);
+            encoder.view_descriptor_leases.push(heap);
         }
     }
     encoder.textures.push(texture.clone());

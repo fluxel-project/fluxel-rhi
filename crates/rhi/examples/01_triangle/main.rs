@@ -9,6 +9,7 @@
 mod utils;
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 // These checked-in DXIL/SPIR-V artifacts are generated from triangle.wgsl.
 const TRIANGLE_VS: &[u8] = include_bytes!("../assets/01_triangle/triangle_vs.dxil");

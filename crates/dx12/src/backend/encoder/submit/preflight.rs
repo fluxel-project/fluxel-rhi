@@ -7,7 +7,7 @@
 use super::*;
 
 #[cfg(all(test, windows, feature = "hardware-tests"))]
-#[path = "preflight_bench.rs"]
+#[path = "../../../tests/backend/encoder/submit/preflight_bench.rs"]
 mod benchmark;
 
 pub(super) struct PreparedPacket {

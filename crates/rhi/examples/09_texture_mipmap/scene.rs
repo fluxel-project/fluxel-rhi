@@ -7,6 +7,7 @@ mod recording;
 mod resources;
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 pub use pipeline::Tunnel;
 pub use recording::FrameCommit;
 pub use resources::MipChain;

@@ -307,28 +307,5 @@ fn glyph(c: char) -> [u8; 7] {
     }
 }
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn interactions_and_pixels() {
-        let mut p = Panel::default();
-        assert_eq!(p.flags() & 64, 0);
-        p.toggle_visible();
-        assert!(!p.pointer_down(0.0, 0.0));
-        assert!(p.pointer_down(30.0, 70.0));
-        assert!(!p.settings.animate);
-        p.pointer_down(50.0, 160.0);
-        assert_eq!(p.settings.orientation, Orientation::Beam);
-        p.pointer_down(45.0, 350.0);
-        p.pointer_move(162.1875, 350.0);
-        p.pointer_up();
-        assert!((p.settings.emitter[0] + 1.0).abs() < 0.0001);
-        assert_eq!(p.pixels().len(), (WIDTH * HEIGHT * 4) as usize);
-        assert_eq!(p.flags() & 12, 8); // beam
-        p.settings.reorient_primary = true;
-        p.settings.reorient_secondary = false;
-        p.settings.mlab_fragments = 8;
-        p.settings.texture = ParticleTexture::Logo;
-        assert_eq!(p.flags(), 64 | 128 | 1 | 2 | 8 | 48);
-    }
-}
+#[path = "../../src/tests/examples/ray_query_particles_ui.rs"]
+mod tests;

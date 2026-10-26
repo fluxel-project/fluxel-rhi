@@ -644,17 +644,8 @@ pub(super) const fn resolve_scope(layout: api::ImageLayout) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn resolve_layouts_require_conservative_scope() {
-        assert!(resolve_scope(api::ImageLayout::ResolveSrc));
-        assert!(resolve_scope(api::ImageLayout::ResolveDst));
-        assert!(!resolve_scope(api::ImageLayout::ColorAttachment));
-        assert!(!resolve_scope(api::ImageLayout::CopySrc));
-    }
-}
+#[path = "../tests/backend/transition.rs"]
+mod tests;
 
 pub(super) fn stages(mask: api::StageMask) -> Result<vk::PipelineStageFlags> {
     if mask == api::StageMask::ALL_COMMANDS {

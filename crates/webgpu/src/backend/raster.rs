@@ -17,7 +17,7 @@ use super::{
     resource::WebGpuBuffer,
 };
 
-impl api::RasterBackend for WebGpu {
+impl fluxel_rhi_core::backend::RasterBackend for WebGpu {
     fn begin_raster(
         encoder: &mut WebGpuEncoder,
         desc: &api::RasterPassDesc<'_, Self>,
@@ -81,7 +81,9 @@ impl api::RasterBackend for WebGpu {
                 // SAFETY: Core validated the query set against this encoder.
                 let set = unsafe { writes.set.native_ref() }.clone();
                 if let Some(begin) = writes.begin {
-                    <WebGpu as api::QueryBackend>::write_timestamp(encoder, &set, begin)?;
+                    <WebGpu as fluxel_rhi_core::backend::QueryBackend>::write_timestamp(
+                        encoder, &set, begin,
+                    )?;
                 }
                 encoder.partial_timestamp_end = writes.end.map(|end| (set, end));
             }
@@ -598,7 +600,9 @@ impl api::RasterBackend for WebGpu {
             super::partial::finish_resolve(encoder, pending)?;
         }
         if let Some((set, slot)) = encoder.partial_timestamp_end.take() {
-            <WebGpu as api::QueryBackend>::write_timestamp(encoder, &set, slot)?;
+            <WebGpu as fluxel_rhi_core::backend::QueryBackend>::write_timestamp(
+                encoder, &set, slot,
+            )?;
         }
         Ok(())
     }

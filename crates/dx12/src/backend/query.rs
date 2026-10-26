@@ -26,7 +26,7 @@ pub(crate) struct QuerySetState {
     pub(crate) submitted_lanes: std::sync::Mutex<Vec<Option<SlotSubmission>>>,
 }
 
-impl api::QueryBackend for Dx12 {
+impl fluxel_rhi_core::backend::QueryBackend for Dx12 {
     fn query_supported(_: &Dx12Device, kind: api::QueryKind) -> bool {
         matches!(
             kind,

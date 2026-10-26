@@ -2,6 +2,7 @@
 #![cfg(all(windows, feature = "hardware-tests"))]
 
 use fluxel_rhi_core::api::*;
+use fluxel_rhi_core::backend::NativeImageLease;
 use fluxel_rhi_dx12::{Dx12, Dx12Instance};
 use raw_window_handle::{RawWindowHandle, Win32WindowHandle};
 use std::{future::Future, num::NonZeroIsize};

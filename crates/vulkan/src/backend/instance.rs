@@ -139,6 +139,7 @@ impl InstanceBackend for Vulkan {
             };
             let external_memory_handles = has_extension(external_names.0);
             let external_semaphore_handles = has_extension(external_names.1);
+            let memory_budget = has_extension(ash::ext::memory_budget::NAME);
             #[cfg(windows)]
             let semaphore_handle = vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32;
             #[cfg(not(windows))]
@@ -350,6 +351,9 @@ impl InstanceBackend for Vulkan {
             if maintenance5 {
                 extensions.push(ash::khr::maintenance5::NAME.as_ptr());
             }
+            if memory_budget {
+                extensions.push(ash::ext::memory_budget::NAME.as_ptr());
+            }
             if external_memory_handles {
                 extensions.push(external_names.0.as_ptr());
             }
@@ -493,6 +497,19 @@ impl InstanceBackend for Vulkan {
                         .max(4)
                         .next_power_of_two(),
                     readback_pool: super::readback::ReadbackPool::default(),
+                    default_resource_pool: super::memory::DefaultResourcePool::new(
+                        native.clone(),
+                        unsafe {
+                            instance
+                                .0
+                                .instance
+                                .get_physical_device_memory_properties(physical)
+                        },
+                        instance.0.instance.clone(),
+                        physical,
+                        memory_budget,
+                        limits.non_coherent_atom_size,
+                    ),
                     command_pools: super::command_pool::CommandPoolCache::new(&native),
                     descriptor_pools: super::pipeline::descriptor_pool::DescriptorPoolCache::new(
                         &native,

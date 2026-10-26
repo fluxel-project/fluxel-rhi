@@ -6,6 +6,7 @@
 use super::resources::{color_target, decode_material_image, depth_target};
 use super::{Msaa, MsaaBackend, MsaaDeferredBackend};
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 #[derive(Clone, Copy)]
 pub struct FrameCommit {

@@ -131,7 +131,7 @@ impl Drop for ImageLease {
 
 // SAFETY: `SurfaceState` serializes generation changes with handoff and Drop;
 // each image owns exactly one acquired slot and releases it at most once.
-unsafe impl api::NativeImageLease for Dx12SurfaceImage {
+unsafe impl fluxel_rhi_core::backend::NativeImageLease for Dx12SurfaceImage {
     fn try_handoff(&mut self, generation: u64) -> Result<()> {
         if self.0.generation != generation || self.0.handed {
             return Err(Error::SurfaceOutdated);
@@ -166,7 +166,7 @@ unsafe impl api::NativeImageLease for Dx12SurfaceImage {
     }
 }
 
-impl api::SurfaceBackend for Dx12 {
+impl fluxel_rhi_core::backend::SurfaceBackend for Dx12 {
     type ConfigureFuture<'a> = Ready<Result<()>>;
     type AcquireFuture<'a> = Ready<Result<Dx12SurfaceImage>>;
     fn generation(surface: &Dx12Surface) -> u64 {
@@ -244,7 +244,7 @@ impl api::SurfaceBackend for Dx12 {
 
 fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
     if !matches!(
-        <Dx12 as api::SurfaceBackend>::supports_config(s, d),
+        <Dx12 as fluxel_rhi_core::backend::SurfaceBackend>::supports_config(s, d),
         api::Support::Supported(())
     ) {
         return Err(Error::Unsupported("DXGI flip-model surface configuration"));

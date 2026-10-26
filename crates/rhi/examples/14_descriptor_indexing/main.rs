@@ -11,6 +11,7 @@ mod immediate;
 #[path = "../utils/mod.rs"]
 mod utils;
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 const TEXTURES: usize = 32;
 const CUBES: usize = 5;
 const VERTEX_BYTES: u64 = 24;

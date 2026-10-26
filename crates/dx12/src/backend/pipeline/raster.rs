@@ -44,7 +44,7 @@ pub(crate) struct RasterPipelineState {
     pub(in crate::backend) samples: u32,
     pub(in crate::backend) multiview: Option<u32>,
 }
-impl api::PipelineBackend for Dx12 {
+impl fluxel_rhi_core::backend::PipelineBackend for Dx12 {
     type RasterPipelineFuture<'a> = super::worker::ColdFuture<Dx12RasterPipeline>;
     fn create_raster_pipeline<'a>(
         device: &'a Dx12Device,

@@ -13,9 +13,10 @@ use std::{
 };
 
 use fluxel_rhi_core::api::{
-    self, AdapterId, AdapterInfo, Backend, DeviceCapabilities, DeviceId, DeviceLimits,
-    DeviceRequest, Error, InstanceBackend, InstanceId, LaneClass, LaneId, LaneInfo, Result,
+    self, AdapterId, AdapterInfo, DeviceCapabilities, DeviceId, DeviceLimits, DeviceRequest, Error,
+    InstanceId, LaneClass, LaneId, LaneInfo, Result,
 };
+use fluxel_rhi_core::backend::{Backend, InstanceBackend, Unavailable};
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
@@ -153,8 +154,8 @@ impl Backend for WebGpu {
     type NativeSurfaceImage = WebGpuImageLease;
     type NativeUncertainty = ();
     type Compute = WebGpuCompute;
-    type Mesh = api::Unavailable;
-    type Ray = api::Unavailable;
+    type Mesh = Unavailable;
+    type Ray = Unavailable;
     type Extras = WebGpuExtras;
 }
 
@@ -428,16 +429,9 @@ fn limit_u64(limits: &JsValue, name: &str) -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::indirect_capabilities;
+#[path = "../tests/backend/instance.rs"]
+mod tests;
 
-    #[wasm_bindgen_test::wasm_bindgen_test]
-    fn indirect_commands_do_not_depend_on_first_instance_feature() {
-        assert_eq!(indirect_capabilities(false), (true, false, true, true));
-        assert_eq!(indirect_capabilities(true), (true, true, true, true));
-    }
-}
-
-impl fluxel_rhi_core::api::ExecutionBackend for WebGpu {
+impl fluxel_rhi_core::backend::ExecutionBackend for WebGpu {
     type Mode = fluxel_rhi_core::api::DeferredExecution;
 }

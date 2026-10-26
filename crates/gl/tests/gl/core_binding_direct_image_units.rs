@@ -5,7 +5,7 @@ async fn binding_direct_image_units(d: &Device<Gl>, es: bool) {
         eprintln!("SKIP: compute unavailable");
         return;
     };
-    use crate::backend::gl::api::{GlFamilyApi as _, GlFamilyProfile};
+    use crate::backend::api::{GlFamilyApi as _, GlFamilyProfile};
     // SAFETY: fixture owns this current context.
     let native = unsafe { d.native_ref() };
     let partial = native

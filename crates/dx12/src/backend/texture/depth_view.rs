@@ -7,35 +7,22 @@ pub(super) fn create_depth_view(
     v: &api::TextureViewDesc,
     array: bool,
 ) -> Result<Dx12TextureView> {
-    let (heap, dsv, read_depth, read_stencil, read_both) = if v.aspects
+    let (dsv_lease, dsv, read_depth, read_stencil, read_both) = if v.aspects
         == depth_aspects(texture.desc.format)
         && texture
             .desc
             .usage
             .contains(api::TextureUsage::RENDER_ATTACHMENT)
     {
-        // A view owns its private heap. This avoids a global mutable
-        // CPU descriptor allocator and keeps the descriptor alive with the view.
-        // SAFETY: the descriptor heap descriptor is fully initialized.
-        let heap = unsafe {
-            dv.0.native
-                .CreateDescriptorHeap::<ID3D12DescriptorHeap>(&D3D12_DESCRIPTOR_HEAP_DESC {
-                    Type: D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
-                    NumDescriptors: if depth_aspects(texture.desc.format)
-                        == api::TextureAspects::DEPTH
-                    {
-                        2
-                    } else {
-                        4
-                    },
-                    Flags: D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
-                    NodeMask: 0,
-                })
-        }
-        .map_err(err)?;
-        // SAFETY: the newly created heap is non-empty and retained
-        // in the returned view state.
-        let dsv = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
+        let slots = if depth_aspects(texture.desc.format) == api::TextureAspects::DEPTH {
+            2
+        } else {
+            4
+        };
+        let lease =
+            dv.0.cpu_descriptors
+                .allocate(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, slots)?;
+        let dsv = lease.cpu(0);
         let desc = depth_dsv_desc(
             v,
             texture.desc.samples,
@@ -47,15 +34,8 @@ pub(super) fn create_depth_view(
             dv.0.native
                 .CreateDepthStencilView(&texture.resource, Some(&desc), dsv)
         };
-        // SAFETY: the device remains alive for this synchronous query.
-        let stride = unsafe {
-            dv.0.native
-                .GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV)
-        } as usize;
         let create_read_only = |index: usize, flags| {
-            let handle = D3D12_CPU_DESCRIPTOR_HANDLE {
-                ptr: dsv.ptr + index * stride,
-            };
+            let handle = lease.cpu(index as u32);
             let mut readonly = desc;
             readonly.Flags = flags;
             // SAFETY: each index is inside this retained heap; the descriptor
@@ -80,7 +60,7 @@ pub(super) fn create_depth_view(
                 )
             };
         (
-            Some(heap),
+            Some(lease),
             Some(dsv),
             Some(read_depth),
             read_stencil,
@@ -89,25 +69,16 @@ pub(super) fn create_depth_view(
     } else {
         (None, None, None, None, None)
     };
-    let (srv_heap, srv) = if texture
+    let (srv_lease, srv) = if texture
         .desc
         .usage
         .contains(api::TextureUsage::TEXTURE_BINDING)
         && v.aspects != (api::TextureAspects::DEPTH | api::TextureAspects::STENCIL)
     {
-        // SAFETY: the descriptor heap specification is fully initialized.
-        let srv_heap = unsafe {
-            dv.0.native
-                .CreateDescriptorHeap::<ID3D12DescriptorHeap>(&D3D12_DESCRIPTOR_HEAP_DESC {
-                    Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-                    NumDescriptors: 1,
-                    Flags: D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
-                    NodeMask: 0,
-                })
-        }
-        .map_err(err)?;
-        // SAFETY: the heap has one descriptor and is retained by the view.
-        let srv = unsafe { srv_heap.GetCPUDescriptorHandleForHeapStart() };
+        let lease =
+            dv.0.cpu_descriptors
+                .allocate(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1)?;
+        let srv = lease.cpu(0);
         let srv_desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
             Format: match (texture.desc.format, v.aspects) {
                 (api::TextureFormat::Depth16Unorm, _) => DXGI_FORMAT_R16_UNORM,
@@ -189,19 +160,19 @@ pub(super) fn create_depth_view(
             dv.0.native
                 .CreateShaderResourceView(&texture.resource, Some(&srv_desc), srv)
         };
-        (Some(srv_heap), Some(srv))
+        (Some(lease), Some(srv))
     } else {
         (None, None)
     };
     return Ok(Dx12TextureView(Arc::new(TextureViewState {
         texture,
-        srv_heap,
+        srv_lease,
         srv,
-        uav_heap: None,
+        uav_lease: None,
         uav: None,
-        rtv_heap: None,
+        rtv_lease: None,
         rtv: None,
-        dsv_heap: heap,
+        dsv_lease,
         dsv,
         dsv_read_only_depth: read_depth,
         dsv_read_only_stencil: read_stencil,

@@ -177,7 +177,7 @@ pub(super) fn texture_usage(usage: api::TextureUsage) -> Result<u32> {
 mod format;
 pub(super) use format::texture_format;
 
-impl api::ResourceBackend for WebGpu {
+impl fluxel_rhi_core::backend::ResourceBackend for WebGpu {
     fn buffer_support(
         device: &WebGpuDevice,
         desc: &api::BufferDesc,

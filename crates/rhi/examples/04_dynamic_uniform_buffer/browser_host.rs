@@ -9,6 +9,7 @@
 use super::{DynamicUniforms, utils};
 #[cfg(feature = "webgpu")]
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 /// Draws the dynamic uniform cube grid into a host-owned WebGPU canvas.
 #[cfg(feature = "webgpu")]

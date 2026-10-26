@@ -249,49 +249,6 @@ pub struct ShaderTable<B: Backend> {
     pub callable: Option<ShaderTableRegion<B>>,
 }
 
-pub trait RayOps<B: Backend> {
-    const AVAILABLE: bool;
-    type PipelineFuture<'a>: Future<Output = Result<B::NativeRayPipeline>> + 'a
-    where
-        B: 'a;
-    fn create_pipeline<'a>(
-        device: &'a B::NativeDevice,
-        desc: &'a RayPipelineDesc<B>,
-    ) -> Self::PipelineFuture<'a>;
-    fn set_pipeline(encoder: &mut B::NativeEncoder, pipeline: &B::NativeRayPipeline) -> Result<()>;
-    fn set_bind_group(
-        encoder: &mut B::NativeEncoder,
-        slot: u32,
-        group: &B::NativeBindGroup,
-        offsets: &[u32],
-    ) -> Result<()>;
-    fn shader_table_properties(device: &B::NativeDevice) -> Result<ShaderTableProperties>;
-    fn shader_group_identifier(
-        device: &B::NativeDevice,
-        pipeline: &B::NativeRayPipeline,
-        group_index: u32,
-    ) -> Result<Vec<u8>>;
-    fn acceleration_sizes(
-        device: &B::NativeDevice,
-        desc: &AccelerationDesc<B>,
-    ) -> Result<AccelerationSizes>;
-    fn create_acceleration(
-        device: &B::NativeDevice,
-        desc: &AccelerationDesc<B>,
-    ) -> Result<B::NativeAcceleration>;
-    fn build_acceleration(
-        encoder: &mut B::NativeEncoder,
-        dst: &B::NativeAcceleration,
-        scratch: &B::NativeBuffer,
-        input: &AccelerationDesc<B>,
-    ) -> Result<()>;
-    fn trace(
-        encoder: &mut B::NativeEncoder,
-        pipeline: &B::NativeRayPipeline,
-        shader_table: &ShaderTable<B>,
-        dims: [u32; 3],
-    ) -> Result<()>;
-}
 impl<B: Backend> RayOps<B> for Unavailable {
     const AVAILABLE: bool = false;
     type PipelineFuture<'a>
@@ -527,7 +484,3 @@ impl<B: Backend> RayDomain<'_, B> {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "tests/ray_validation.rs"]
-mod tests;

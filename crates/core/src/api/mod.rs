@@ -5,6 +5,10 @@
 //! operations and report native facts.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 
+// API facade implementations use the SPI internally; only `backend` exposes
+// these contracts to backend crates.
+use crate::backend::*;
+
 mod foundation;
 pub use foundation::*;
 mod handles;
@@ -57,4 +61,5 @@ mod interop;
 pub use interop::*;
 
 #[cfg(test)]
+#[path = "../tests/mod.rs"]
 mod tests;

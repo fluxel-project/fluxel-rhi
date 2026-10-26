@@ -6,7 +6,8 @@
 //! used by subsequent RHI commands. This module never submits foreign work.
 
 use super::{Dx12, Dx12Device, encoder::Dx12Encoder};
-use fluxel_rhi_core::api::{Error, NativeInteropBackend, NativeInteropRequest, Result};
+use fluxel_rhi_core::api::{Error, NativeInteropRequest, Result};
+use fluxel_rhi_core::backend::NativeInteropBackend;
 use windows::{Win32::Graphics::Direct3D12::*, core::Interface};
 
 /// Owned COM lease returned by Core's scoped native interoperation API.

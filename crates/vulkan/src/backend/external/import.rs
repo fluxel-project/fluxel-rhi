@@ -199,6 +199,7 @@ pub(super) fn import_buffer(
             size: desc.size,
             usage: desc.usage,
             heap: None,
+            default_allocation: None,
             memory_offset: desc.offset,
             map_state: MappingState::new(allocation_size, flags),
         })))
@@ -325,6 +326,7 @@ pub(super) fn import_texture(
             image,
             memory: Some(memory),
             heap: None,
+            default_allocation: None,
             sparse: None,
             desc: desc.clone(),
         })))

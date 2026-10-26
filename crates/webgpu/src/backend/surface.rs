@@ -74,7 +74,7 @@ impl WebGpu {
 
 // SAFETY: `try_handoff` only succeeds for the matching live generation and
 // clears the sole acquired flag. Drop clears an unhanded lease exactly once.
-unsafe impl api::NativeImageLease for WebGpuImageLease {
+unsafe impl fluxel_rhi_core::backend::NativeImageLease for WebGpuImageLease {
     fn try_handoff(&mut self, generation: u64) -> Result<()> {
         if !self.is_current(generation) {
             return Err(Error::SurfaceOutdated);
@@ -108,7 +108,7 @@ impl Drop for WebGpuImageLease {
     }
 }
 
-impl api::SurfaceBackend for WebGpu {
+impl fluxel_rhi_core::backend::SurfaceBackend for WebGpu {
     type ConfigureFuture<'a> = Ready<Result<()>>;
     type AcquireFuture<'a> = Ready<Result<WebGpuImageLease>>;
 
@@ -197,7 +197,7 @@ impl api::SurfaceBackend for WebGpu {
 
 fn configure(surface: &WebGpuSurface, desc: &api::SurfaceConfig) -> Result<()> {
     if let Support::Unsupported(reason) =
-        <WebGpu as api::SurfaceBackend>::supports_config(surface, desc)
+        <WebGpu as fluxel_rhi_core::backend::SurfaceBackend>::supports_config(surface, desc)
     {
         return Err(Error::Unsupported(reason));
     }

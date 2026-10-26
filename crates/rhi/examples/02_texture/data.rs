@@ -3,6 +3,7 @@
 //! This module owns CPU-side data preparation only; GPU resource creation and
 //! command encoding remain in the scene module.
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 pub(super) fn quad() -> [u8; 128] {
     // Core's framebuffer and sampled-texture Y both point down. The C++

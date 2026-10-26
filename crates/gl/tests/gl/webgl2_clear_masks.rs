@@ -1,224 +1,278 @@
-//! Browser GPU regression for the private WebGL2 framebuffer provider.
-use super::WebGl2BrowserDiscovery;
-use crate::backend::gl::api::*;
-use wasm_bindgen::JsCast;
-use wasm_bindgen_test::*;
-use web_sys::WebGl2RenderingContext as GL;
+//! Core WebGL2 depth-clear and raster-state regression entrypoint.
+//!
+//! `dynamic::depth_stencil_and_dynamic` is the shared dynamic-state fixture.
+//! The regression below separately preserves the historical depth-mask sequence:
+//! a disabled depth-write pipeline precedes an attachment `LoadOp::Clear(0.75)`.
 
-wasm_bindgen_test_configure!(run_in_browser);
+use super::*;
 
-fn pipeline(provider: &mut WebGl2BrowserDiscovery, z: &str, green: bool) -> GlRasterPipeline {
-    let source = |stage, hash, text: String| GlShaderSource {
-        stage,
-        dialect: GlShaderDialect::Embedded { version: 300 },
-        entry_point: "main".into(),
-        source_hash: GlShaderKey([hash; 32]),
-        text,
-        spirv: None,
-        debug_name: None,
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+async fn clear_depth_ignores_old_mask_and_restores_pipeline(device: &Device<Gl>) {
+    let source = |color: &str| {
+        format!("@vertex fn vs(@builtin(vertex_index) i:u32)->@builtin(position) vec4f {{ let p=array<vec2f,3>(vec2f(-1.,-1.),vec2f(3.,-1.),vec2f(-1.,3.)); return vec4f(p[i],0.3,1.); }} @fragment fn fs()->@location(0) vec4f {{ return vec4f({color}); }}").into_bytes()
     };
-    let (program, _) = provider.create_program(&GlProgramDescriptor {
-        kind: GlProgramKind::Raster {
-            vertex: source(GlShaderStage::Vertex, if green { 3 } else { 1 }, format!("#version 300 es\nvoid main(){{vec2 p[3]=vec2[3](vec2(-1.,-1.),vec2(3.,-1.),vec2(-1.,3.));gl_Position=vec4(p[gl_VertexID],{z},1.);}}")),
-            fragment: source(GlShaderStage::Fragment, if green { 4 } else { 2 }, format!("#version 300 es\nprecision highp float; out vec4 color; void main(){{color=vec4({}, {}, 0., 1.);}}", if green { "0." } else { "1." }, if green { "1." } else { "0." })),
-        }, layout: GlPipelineLayout { bindings: vec![] }, debug_name: None,
-    }).unwrap();
-    let vertex_array = provider
-        .create_vertex_array(&GlVertexLayout {
-            buffers: vec![],
-            attributes: vec![],
+    let shader = |bytes: Vec<u8>, name: &str, stage: ShaderStage| ShaderDesc {
+        label: None,
+        format: ShaderFormat::Wgsl,
+        bytes: Arc::from(bytes),
+        entries: vec![ShaderEntryPoint {
+            name: name.into(),
+            stage,
+            workgroup_size: None,
+        }],
+        required_features: vec![],
+    };
+    let make_pipeline = |color: String| async move {
+        let module = device
+            .shader(shader(source(&color), "vs", ShaderStage::Vertex))
+            .await
+            .unwrap();
+        let fragment = device
+            .shader(shader(source(&color), "fs", ShaderStage::Fragment))
+            .await
+            .unwrap();
+        let layout = device
+            .create_pipeline_layout(&PipelineLayoutDesc {
+                label: None,
+                groups: &[],
+                push_constants: &[],
+            })
+            .unwrap();
+        device
+            .raster_pipeline(RasterPipelineDesc {
+                label: None,
+                layout,
+                vertex: PipelineStage {
+                    module,
+                    entry: "vs".into(),
+                    constants: vec![],
+                },
+                fragment: Some(PipelineStage {
+                    module: fragment,
+                    entry: "fs".into(),
+                    constants: vec![],
+                }),
+                vertex_buffers: vec![],
+                color_targets: vec![Some(ColorTargetState {
+                    format: TextureFormat::Rgba8Unorm,
+                    blend: None,
+                    write_mask: 15,
+                })],
+                primitive: PrimitiveState {
+                    topology: PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: FrontFace::Ccw,
+                    cull_mode: CullMode::None,
+                    unclipped_depth: false,
+                    polygon_mode: PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: Some(DepthStencilState {
+                    format: TextureFormat::Depth24PlusStencil8,
+                    depth_write_enabled: false,
+                    depth_compare: CompareFunction::Less,
+                    stencil_front: StencilFaceState {
+                        compare: CompareFunction::Always,
+                        fail: StencilOperation::Keep,
+                        depth_fail: StencilOperation::Keep,
+                        pass: StencilOperation::Keep,
+                    },
+                    stencil_back: StencilFaceState {
+                        compare: CompareFunction::Always,
+                        fail: StencilOperation::Keep,
+                        depth_fail: StencilOperation::Keep,
+                        pass: StencilOperation::Keep,
+                    },
+                    stencil_read_mask: 0,
+                    stencil_write_mask: 0,
+                    depth_bias_constant: 0,
+                    depth_bias_slope_scale: 0.,
+                    depth_bias_clamp: 0.,
+                }),
+                multisample: MultisampleState {
+                    count: 1,
+                    mask: u64::MAX,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview: None,
+                cache: None,
+            })
+            .await
+            .unwrap()
+    };
+    let red = make_pipeline("1.,0.,0.,1.".into()).await;
+    let green = make_pipeline("0.,1.,0.,1.".into()).await;
+    let texture = |format, usage| {
+        device
+            .create_texture(&TextureDesc {
+                label: None,
+                dimension: TextureDimension::D2,
+                extent: [8, 8, 1],
+                array_layers: 1,
+                format,
+                mip_levels: 1,
+                samples: 1,
+                usage,
+                view_formats: vec![],
+            })
+            .unwrap()
+    };
+    let depth = texture(
+        TextureFormat::Depth24PlusStencil8,
+        TextureUsage::RENDER_ATTACHMENT,
+    );
+    let color = texture(
+        TextureFormat::Rgba8Unorm,
+        TextureUsage::RENDER_ATTACHMENT | TextureUsage::COPY_SRC,
+    );
+    let view = |texture, format, aspects| {
+        device
+            .create_view(
+                texture,
+                &TextureViewDesc {
+                    format,
+                    dimension: TextureViewDimension::D2,
+                    aspects,
+                    mips: 0..1,
+                    layers: 0..1,
+                },
+            )
+            .unwrap()
+    };
+    let depth_view = view(
+        &depth,
+        TextureFormat::Depth24PlusStencil8,
+        TextureAspects::DEPTH | TextureAspects::STENCIL,
+    );
+    let color_view = view(&color, TextureFormat::Rgba8Unorm, TextureAspects::COLOR);
+    let outputs: Vec<_> = (0..2)
+        .map(|_| {
+            device
+                .create_buffer(&BufferDesc {
+                    label: None,
+                    size: 256,
+                    usage: BufferUsage::COPY_DST | BufferUsage::COPY_SRC,
+                    memory: MemoryClass::Device,
+                })
+                .unwrap()
         })
-        .unwrap();
-    let stencil = GlStencilFaceState {
-        compare: GlDepthCompareFunction::Always,
-        fail_op: GlStencilOperation::Keep,
-        depth_fail_op: GlStencilOperation::Keep,
-        pass_op: GlStencilOperation::Keep,
-        read_mask: 0,
-        write_mask: 0,
+        .collect();
+    let fixture = common::ImmediateFixture {
+        device,
+        lane: device.lanes()[0].id,
     };
-    GlRasterPipeline {
-        program,
-        vertex_array,
-        state: GlRasterState {
-            rasterization: Default::default(),
-            topology: GlPrimitiveTopology::Triangles,
-            cull_mode: GlCullMode::None,
-            front_face: GlFrontFace::CounterClockwise,
-            depth_stencil: Some(GlDepthStencilState {
-                depth_write_enabled: false,
-                depth_compare: GlDepthCompareFunction::Less,
-                depth_bias: [0; 3],
-                stencil_front: stencil,
-                stencil_back: stencil,
-                stencil_reference: 0,
-            }),
-            color_targets: vec![GlColorTargetState {
-                write_mask: 15,
-                blend: None,
-            }],
-            multisample: GlMultisampleState {
-                sample_count: 1,
-                alpha_to_coverage_enabled: false,
-                sample_mask: u64::MAX,
+    let plan = common::single_commands_plan(&fixture, 93).unwrap();
+    // SAFETY: the fixture retains every referenced object until issued work completes.
+    let mut session =
+        unsafe { common::begin_commands(&fixture, plan, CompletionRequest::End) }.unwrap();
+    let mut run = session
+        .begin_commands()
+        .unwrap_or_else(|_| panic!("begin immediate commands"));
+    let commands = run.commands();
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 8,
+        height: 8,
+    };
+    let depth_attachment = |load| DepthStencilAttachment {
+        view: AttachmentView::Texture(&depth_view),
+        depth: Some((load, StoreOp::Store)),
+        stencil: Some((LoadOp::Clear(0), StoreOp::Store)),
+        depth_read_only: false,
+        stencil_read_only: false,
+    };
+    let colors = [Some(ColorAttachment {
+        view: AttachmentView::Texture(&color_view),
+        resolve_target: None,
+        load: LoadOp::Clear(ClearColor::Float([0., 0., 0., 1.])),
+        store: StoreOp::Store,
+    })];
+    let desc = |colors, depth_stencil| RasterPassDesc {
+        label: None,
+        colors,
+        depth_stencil,
+        render_area: area,
+        multiview_mask: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        secondary_inheritance: None,
+    };
+    let mut disabled = commands
+        .begin_raster(&desc(&colors, Some(depth_attachment(LoadOp::Clear(0.25)))))
+        .unwrap();
+    disabled.set_pipeline(&red).unwrap();
+    // The z=0.3 triangle fails against the initial 0.25 clear, while still
+    // committing the disabled depth-write pipeline state.
+    disabled.draw(0..3, 0..1).unwrap();
+    disabled.finish().unwrap();
+    let mut red_pass = commands
+        .begin_raster(&desc(&colors, Some(depth_attachment(LoadOp::Clear(0.75)))))
+        .unwrap();
+    red_pass.set_pipeline(&red).unwrap();
+    red_pass.draw(0..3, 0..1).unwrap();
+    red_pass.finish().unwrap();
+    commands
+        .texture_to_buffer(
+            TextureRegion {
+                texture: &color,
+                mip: 0,
+                origin: [0, 0, 0],
+                extent: [8, 8, 1],
+                aspect: TextureAspects::COLOR,
             },
-            viewport: GlViewport {
-                x: 0,
-                y: 0,
-                width: 8,
-                height: 8,
-                min_depth: 0f32.to_bits(),
-                max_depth: 1f32.to_bits(),
+            &outputs[0],
+            TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: 32,
+                rows_per_image: 8,
             },
-            scissor: None,
-            blend_constant: [0; 4],
-        },
+        )
+        .unwrap();
+    let first = commands.readback_buffer(&outputs[0], 0..256).unwrap();
+    let mut green_pass = commands
+        .begin_raster(&desc(&colors, Some(depth_attachment(LoadOp::Load))))
+        .unwrap();
+    green_pass.set_pipeline(&green).unwrap();
+    green_pass.draw(0..3, 0..1).unwrap();
+    green_pass.finish().unwrap();
+    commands
+        .texture_to_buffer(
+            TextureRegion {
+                texture: &color,
+                mip: 0,
+                origin: [0, 0, 0],
+                extent: [8, 8, 1],
+                aspect: TextureAspects::COLOR,
+            },
+            &outputs[1],
+            TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: 32,
+                rows_per_image: 8,
+            },
+        )
+        .unwrap();
+    let second = commands.readback_buffer(&outputs[1], 0..256).unwrap();
+    assert!(matches!(run.close(), ImmediateRunOutcome::Issued(_)));
+    let point = match session.finish() {
+        ImmediateFinishOutcome::Issued(prefix) => {
+            prefix.checkpoints.into_iter().next().unwrap().point
+        }
+        _ => panic!("finish immediate commands"),
+    };
+    device.wait_completion(&point).await.unwrap();
+    // Red proves the clear overwrote 0.25 despite the old disabled mask. Green
+    // at the same z proves the clear restored that disabled mask before red drew.
+    for (ticket, expected) in [(first, [255, 0, 0, 255]), (second, [0, 255, 0, 255])] {
+        // SAFETY: `point` covers this readback ticket.
+        let data = unsafe { device.read_after(ticket, &point).await }.unwrap();
+        assert_eq!(&data.bytes[4 * 32 + 4 * 4..4 * 32 + 4 * 4 + 4], expected);
     }
 }
 
-#[wasm_bindgen_test]
-fn clear_depth_ignores_old_mask_and_restores_pipeline() {
-    let document = web_sys::window().unwrap().document().unwrap();
-    let canvas = document
-        .create_element("canvas")
-        .unwrap()
-        .dyn_into::<web_sys::HtmlCanvasElement>()
-        .unwrap();
-    canvas.set_width(8);
-    canvas.set_height(8);
-    let mut provider =
-        WebGl2BrowserDiscovery::open(ContextStamp::allocate().unwrap(), canvas).unwrap();
-    let version = provider
-        .raw
-        .get_parameter(GL::VERSION)
-        .unwrap()
-        .as_string()
-        .unwrap();
-    let renderer = provider
-        .raw
-        .get_parameter(GL::RENDERER)
-        .unwrap()
-        .as_string()
-        .unwrap();
-    let unmasked = super::driver_identity::unmasked_identity(&provider.raw)
-        .map(|(vendor, renderer)| format!("{vendor} / {renderer}"))
-        .unwrap_or_else(|| "unavailable".into());
-    web_sys::console::log_1(
-        &format!(
-            "WEBGL_VERSION={version}; WEBGL_RENDERER={renderer}; WEBGL_UNMASKED_RENDERER={unmasked}"
-        )
-        .into(),
-    );
-    let color = provider
-        .create_render_buffer(GlRenderBufferDesc {
-            format: GlFormat::Rgba8Unorm,
-            width: 8,
-            height: 8,
-            samples: 1,
-        })
-        .unwrap();
-    let depth = provider
-        .create_render_buffer(GlRenderBufferDesc {
-            format: GlFormat::Depth32Float,
-            width: 8,
-            height: 8,
-            samples: 1,
-        })
-        .unwrap();
-    let view = |target, format| GlTextureView {
-        aspect: crate::backend::gl::api::GlTextureAspect::All,
-        target,
-        format,
-        mip_level: 0,
-        array_layer: 0,
-        layer_count: 1,
-        width: 8,
-        height: 8,
-        sample_count: 1,
-    };
-    let color_view = view(
-        GlAttachmentTarget::Renderbuffer(color),
-        GlFormat::Rgba8Unorm,
-    );
-    let depth_view = view(
-        GlAttachmentTarget::Renderbuffer(depth),
-        GlFormat::Depth32Float,
-    );
-    let framebuffer = provider
-        .create_framebuffer(&GlFramebufferDescriptor {
-            color_attachments: vec![Some(color_view)],
-            depth_stencil_attachment: Some(depth_view),
-            draw_buffers: vec![0],
-        })
-        .unwrap();
-    let red = pipeline(&mut provider, "0.", false);
-    let green = pipeline(&mut provider, "0.3", true);
-    let pass = |value: f32| GlRenderPassDescriptor {
-        target: GlRenderTarget::Offscreen(framebuffer),
-        render_area: None,
-        color_attachments: vec![Some(GlColorAttachment {
-            view: GlPassAttachmentView::Allocated(color_view),
-            resolve_target: None,
-            load: GlLoadOp::Clear,
-            store: GlStoreOp::Store,
-            clear: GlColorClearValue::Float([0, 0, 0, 1f32.to_bits()]),
-        })],
-        depth_stencil_attachment: Some(GlDepthStencilAttachment {
-            view: depth_view,
-            depth_load: GlLoadOp::Clear,
-            depth_store: GlStoreOp::Store,
-            stencil_load: GlLoadOp::Load,
-            stencil_store: GlStoreOp::Store,
-            clear: GlDepthStencilClearValue {
-                depth: value.to_bits(),
-                stencil: 0,
-            },
-        }),
-    };
-    provider.begin_render_pass(&pass(0.25)).unwrap();
-    provider.set_raster_pipeline(&red).unwrap();
-    provider.end_render_pass().unwrap();
-    provider.begin_render_pass(&pass(0.75)).unwrap();
-    provider.set_raster_pipeline(&red).unwrap();
-    let draw = GlDrawCommand::NonIndexed(GlNonIndexedDraw {
-        first_vertex: 0,
-        vertex_count: 3,
-        instance_count: 1,
-    });
-    provider.draw_raster(draw).unwrap();
-    let read = |provider: &WebGl2BrowserDiscovery| {
-        let mut pixel = [0; 4];
-        provider
-            .raw
-            .read_pixels_with_opt_u8_array(
-                4,
-                4,
-                1,
-                1,
-                GL::RGBA,
-                GL::UNSIGNED_BYTE,
-                Some(&mut pixel),
-            )
-            .unwrap();
-        pixel
-    };
-    assert_eq!(read(&provider), [255, 0, 0, 255], "depth clear was masked");
-    provider.set_raster_pipeline(&green).unwrap();
-    provider.draw_raster(draw).unwrap();
-    assert_eq!(
-        read(&provider),
-        [0, 255, 0, 255],
-        "pipeline depth mask was not restored"
-    );
-    assert_eq!(provider.raw.get_error(), GL::NO_ERROR);
-    provider.end_render_pass().unwrap();
-    for pipeline in [red, green] {
-        provider
-            .destroy_vertex_array(pipeline.vertex_array)
-            .unwrap();
-        provider.destroy_program(pipeline.program).unwrap();
-    }
-    provider.destroy_framebuffer(framebuffer).unwrap();
-    provider.destroy_render_buffer(depth).unwrap();
-    provider.destroy_render_buffer(color).unwrap();
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+pub(super) async fn run(device: &Device<Gl>) {
+    clear_depth_ignores_old_mask_and_restores_pipeline(device).await;
+    dynamic::depth_stencil_and_dynamic(device).await;
 }

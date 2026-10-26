@@ -14,7 +14,8 @@ use std::{
 };
 
 use ash::vk;
-use fluxel_rhi_core::api::{self, Error, MappingBackend, ReadbackData, Result};
+use fluxel_rhi_core::api::{self, Error, ReadbackData, Result};
+use fluxel_rhi_core::backend::MappingBackend;
 
 use super::{DeviceState, Vulkan, VulkanBuffer, VulkanDevice, VulkanEncoder, mapping, vk_error};
 
@@ -238,7 +239,7 @@ pub struct VulkanReadback {
     range: Range<u64>,
 }
 
-impl api::ReadbackBackend for Vulkan {
+impl fluxel_rhi_core::backend::ReadbackBackend for Vulkan {
     type NativeReadback = VulkanReadback;
     type ReadbackFuture<'a>
         = Ready<Result<ReadbackData>>

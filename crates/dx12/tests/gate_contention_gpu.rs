@@ -7,7 +7,7 @@
 #![cfg(all(windows, feature = "hardware-tests"))]
 
 use fluxel_rhi_core::api::*;
-use fluxel_rhi_dx12::{diagnostics, Dx12, Dx12Instance};
+use fluxel_rhi_dx12::{Dx12, Dx12Instance, diagnostics};
 use std::{
     future::Future,
     sync::{Arc, Barrier},
@@ -130,7 +130,9 @@ fn reports_query_submission_gate_contention_without_queries() {
             );
             println!(
                 "gate-contention workers={workers} records={records_per_submit} submitwall_ns={} gatewait_ns={} gatehold_ns={} completed_and_drained=true",
-                measurement.wall.as_nanos(), measurement.wait_ns, measurement.hold_ns,
+                measurement.wall.as_nanos(),
+                measurement.wait_ns,
+                measurement.hold_ns,
             );
         }
     }

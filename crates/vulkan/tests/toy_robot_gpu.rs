@@ -1,6 +1,10 @@
 //! Headless 18 ToyRobot mesh scene on Vulkan, using Vulkan SPIR-V variants.
 #![cfg(all(windows, feature = "hardware-tests"))]
 use fluxel_rhi_core::api::*;
+use fluxel_rhi_core::backend::{
+    DeferredBackend, PipelineBackend, RasterBackend, ReadbackBackend, ResourceBackend,
+    ShaderBackend,
+};
 use fluxel_rhi_vulkan::VulkanInstance;
 use std::{future::Future, sync::Arc};
 #[path = "../../rhi/examples/18_meshlet_instancing/model.rs"]

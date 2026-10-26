@@ -5,6 +5,7 @@
 
 use super::MsaaBackend;
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 use std::io::Cursor;
 
 pub(super) fn decode_material_image(image: &super::super::gltf::EmbeddedImage) -> Result<Vec<u8>> {

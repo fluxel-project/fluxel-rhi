@@ -14,42 +14,6 @@ use std::{
     },
 };
 
-/// Per-backend fixed static domain implementation. Unavailable is one shared
-/// zero-size implementation, not a fake resource or a dynamic vtable.
-pub trait ComputeOps<B: Backend> {
-    const AVAILABLE: bool;
-    type PipelineFuture<'a>: Future<Output = Result<B::NativeComputePipeline>> + 'a
-    where
-        B: 'a;
-    fn create_pipeline<'a>(
-        device: &'a B::NativeDevice,
-        desc: &'a ComputePipelineDesc<B>,
-    ) -> Self::PipelineFuture<'a>;
-    fn begin(encoder: &mut B::NativeEncoder) -> Result<()>;
-    fn set_pipeline(
-        encoder: &mut B::NativeEncoder,
-        pipeline: &B::NativeComputePipeline,
-    ) -> Result<()>;
-    fn set_bind_group(
-        encoder: &mut B::NativeEncoder,
-        slot: u32,
-        group: &B::NativeBindGroup,
-        offsets: &[u32],
-    ) -> Result<()>;
-    fn dispatch(encoder: &mut B::NativeEncoder, groups: [u32; 3]) -> Result<()>;
-    /// Dispatches group counts from a four-byte-aligned, 12-byte `[u32; 3]`
-    /// record in a buffer with `BufferUsage::INDIRECT`.
-    fn dispatch_indirect(
-        encoder: &mut B::NativeEncoder,
-        args: &B::NativeBuffer,
-        offset: u64,
-    ) -> Result<()>;
-    fn set_push_constants(_: &mut B::NativeEncoder, _: u32, _: &[u8]) -> Result<()> {
-        Err(Error::Unsupported("compute push constants"))
-    }
-    fn end(encoder: &mut B::NativeEncoder) -> Result<()>;
-    fn abort(encoder: &mut B::NativeEncoder);
-}
 impl<B: Backend> ComputeOps<B> for Unavailable {
     const AVAILABLE: bool = false;
     type PipelineFuture<'a>

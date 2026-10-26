@@ -3,7 +3,8 @@
 //! Logical group indices do not reserve native slots. Pipeline creation checks
 //! the combined per-stage resource budget after assigning actual Metal slots.
 use super::{Metal, MetalDevice, binding_abi, bindings, memory, mesh, shader, sparse, texture};
-use fluxel_rhi_core::api::{DeviceCapabilities, DeviceLimits, QueryBackend, QueryKind};
+use fluxel_rhi_core::api::{DeviceCapabilities, DeviceLimits, QueryKind};
+use fluxel_rhi_core::backend::QueryBackend;
 use objc2::runtime::NSObjectProtocol as _;
 use objc2_metal::MTLDevice as _;
 

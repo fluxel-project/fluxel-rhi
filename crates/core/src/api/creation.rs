@@ -15,37 +15,6 @@ use std::{
     },
 };
 
-/// Backend-native constructors and per-device support facts. No hazard tracker.
-pub trait ResourceBackend: Backend {
-    fn buffer_support(device: &Self::NativeDevice, desc: &BufferDesc) -> Support<BufferSupport>;
-    fn texture_support(device: &Self::NativeDevice, desc: &TextureDesc) -> Support<TextureSupport>;
-    fn create_buffer(device: &Self::NativeDevice, desc: &BufferDesc) -> Result<Self::NativeBuffer>;
-    fn create_texture(
-        device: &Self::NativeDevice,
-        desc: &TextureDesc,
-    ) -> Result<Self::NativeTexture>;
-    fn create_view(
-        device: &Self::NativeDevice,
-        texture: &Self::NativeTexture,
-        desc: &TextureViewDesc,
-    ) -> Result<Self::NativeTextureView>;
-    fn create_sampler(
-        device: &Self::NativeDevice,
-        desc: &SamplerDesc,
-    ) -> Result<Self::NativeSampler>;
-    fn create_bind_group_layout(
-        device: &Self::NativeDevice,
-        desc: &BindGroupLayoutDesc,
-    ) -> Result<Self::NativeBindGroupLayout>;
-    fn create_bind_group(
-        device: &Self::NativeDevice,
-        desc: &BindGroupDesc<'_, Self>,
-    ) -> Result<Self::NativeBindGroup>;
-    fn create_pipeline_layout(
-        device: &Self::NativeDevice,
-        desc: &PipelineLayoutDesc<'_, Self>,
-    ) -> Result<Self::NativePipelineLayout>;
-}
 impl<B: ResourceBackend> Device<B> {
     pub fn buffer_support(&self, desc: &BufferDesc) -> Support<BufferSupport> {
         B::buffer_support(&self.native, desc)

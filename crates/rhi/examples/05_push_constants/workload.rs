@@ -33,6 +33,28 @@ impl<B: PushBackend> PushWorkload<B> {
     ) -> Result<Self> {
         let dynamic_uniforms = !d.capabilities().push_constants
             || d.capabilities().limits.max_push_constant_bytes < PUSH_BYTES;
+        Self::new_with_uniform_mode(d, lane, format, extent, dynamic_uniforms).await
+    }
+
+    /// Builds the WGSL equivalent used by the GL and browser example hosts.
+    /// Their shader ABI remains dynamic uniforms even if capabilities gain
+    /// a separate push-constant route.
+    pub async fn new_dynamic_uniforms(
+        d: &Device<B>,
+        lane: LaneId,
+        format: TextureFormat,
+        extent: [u32; 2],
+    ) -> Result<Self> {
+        Self::new_with_uniform_mode(d, lane, format, extent, true).await
+    }
+
+    async fn new_with_uniform_mode(
+        d: &Device<B>,
+        lane: LaneId,
+        format: TextureFormat,
+        extent: [u32; 2],
+        dynamic_uniforms: bool,
+    ) -> Result<Self> {
         let dynamic_uniform_alignment = d.capabilities().limits.uniform_offset_alignment.max(256);
         // Use the C++ sample's glTF sphere instead of a placeholder octahedron.
         let sphere = gltf::load_embedded_first_mesh(SPHERE)
@@ -293,13 +315,14 @@ impl PushWorkload<fluxel_rhi::gl::Gl> {
             encoder.write_buffer(&self.index, 0, &self.source_indices)?;
         }
         encoder.write_buffer(&self.camera, 0, &camera_bytes(extent))?;
-        let draw_data = self.draw_data.as_ref().ok_or(Error::InvalidState)?;
-        for (index, sphere) in sphere_ring().into_iter().enumerate() {
-            let offset = self
-                .dynamic_uniform_alignment
-                .checked_mul(index as u64)
-                .ok_or(Error::InvalidRange)?;
-            encoder.write_buffer(draw_data, offset, &sphere.bytes())?;
+        if let Some(draw_data) = &self.draw_data {
+            for (index, sphere) in sphere_ring().into_iter().enumerate() {
+                let offset = self
+                    .dynamic_uniform_alignment
+                    .checked_mul(index as u64)
+                    .ok_or(Error::InvalidRange)?;
+                encoder.write_buffer(draw_data, offset, &sphere.bytes())?;
+            }
         }
         let colors = [Some(ColorAttachment {
             view: AttachmentView::Surface(image),

@@ -7,9 +7,10 @@
 #[cfg(target_vendor = "apple")]
 use fluxel_rhi_core::api::MemoryClass;
 use fluxel_rhi_core::api::{
-    self, BufferDesc, BufferSupport, BufferUsage, ResourceBackend, SamplerDesc, Support,
-    TextureDesc, TextureSupport, TextureViewDesc,
+    self, BufferDesc, BufferSupport, BufferUsage, SamplerDesc, Support, TextureDesc,
+    TextureSupport, TextureViewDesc,
 };
+use fluxel_rhi_core::backend::ResourceBackend;
 
 use super::{Metal, MetalDevice, sampler, texture};
 
@@ -160,19 +161,5 @@ impl MetalBuffer {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::unsupported_buffer_usage;
-    use fluxel_rhi_core::api::BufferUsage;
-
-    #[test]
-    fn buffer_support_accepts_mapping_and_rejects_shader_tables() {
-        assert!(unsupported_buffer_usage(BufferUsage(0)));
-        assert!(!unsupported_buffer_usage(BufferUsage::MAP_READ));
-        assert!(!unsupported_buffer_usage(BufferUsage::MAP_WRITE));
-        assert!(!unsupported_buffer_usage(BufferUsage::ACCEL_BUILD_INPUT));
-        assert!(!unsupported_buffer_usage(BufferUsage::ACCEL_SCRATCH));
-        assert!(unsupported_buffer_usage(BufferUsage::SHADER_TABLE));
-        assert!(!unsupported_buffer_usage(BufferUsage::COPY_SRC));
-        assert!(!unsupported_buffer_usage(BufferUsage::VERTEX));
-    }
-}
+#[path = "../tests/backend/resource.rs"]
+mod tests;

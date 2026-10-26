@@ -1,7 +1,7 @@
 //! GL execution for the sphere-ring dynamic-uniform fallback.
 //!
-//! GL has no public push constants. The existing WebGPU WGSL and one aligned
-//! uniform record per draw preserve the sixteen-sphere workload. The backend
+//! The existing WebGPU WGSL and one aligned uniform record per draw preserve
+//! the sixteen-sphere workload independently of GL push-constant support. The backend
 //! issues each command on the context owner thread and presents the acquired
 //! lease; it stores no CPU command stream or deferred submission.
 
@@ -9,6 +9,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 use fluxel_rhi::gl::Gl;
 #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
 use fluxel_rhi::gl::GlInstance;
@@ -59,12 +60,9 @@ pub(super) fn run() -> Result<()> {
                 .map(|lane| lane.id)
                 .ok_or(Error::Unsupported("GL graphics lane"))?;
             if workload.borrow().is_none() {
-                *workload.borrow_mut() = Some(utils::block_on(PushWorkload::<Gl>::new(
-                    device,
-                    lane,
-                    config.format,
-                    extent,
-                ))?);
+                *workload.borrow_mut() = Some(utils::block_on(
+                    PushWorkload::<Gl>::new_dynamic_uniforms(device, lane, config.format, extent),
+                )?);
             }
             issue_frame(
                 device,
@@ -124,7 +122,8 @@ pub async fn run_webgl2_push_constants(
         };
         let mut surface = Gl::surface(&device)?;
         surface.configure(&config).await?;
-        let mut workload = PushWorkload::<Gl>::new(&device, lane, config.format, extent).await?;
+        let mut workload =
+            PushWorkload::<Gl>::new_dynamic_uniforms(&device, lane, config.format, extent).await?;
         let scope = utils::GpuScope::new(&device);
         for _ in 0..frames {
             let image = surface.acquire().await?;

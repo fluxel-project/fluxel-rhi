@@ -1,6 +1,7 @@
 //! WGL immediate route for the textured-quad example.
 use super::{TextureExample, TexturePixels, data::load_ktx, utils};
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 use std::{cell::RefCell, rc::Rc};
 const WGSL: &[u8] = include_bytes!("../assets/02_texture/texture.wgsl");
 

@@ -115,3 +115,29 @@ fn placed_buffers_share_mapping_exclusion_and_respect_offsets() {
     let second = block_on(unsafe { device.map_buffer(&b, 13..21, MapMode::Write) }).unwrap();
     assert_eq!(second.bytes(), &[2; 8]);
 }
+
+#[test]
+fn pooled_host_visible_buffers_map_concurrently_at_disjoint_offsets() {
+    let device = block_on(VulkanInstance::new().unwrap().open_default()).unwrap();
+    let desc = BufferDesc {
+        label: None,
+        size: 1024,
+        usage: BufferUsage::COPY_SRC | BufferUsage::MAP_WRITE,
+        memory: MemoryClass::Upload,
+    };
+    let first = device.create_buffer(&desc).unwrap();
+    let second = device.create_buffer(&desc).unwrap();
+
+    // Each pooled suballocation has its own mapping lock and atom-aligned
+    // range; the page remains mapped once while either resource is alive.
+    // SAFETY: these buffers have no submitted GPU use.
+    let mut a = block_on(unsafe { device.map_buffer(&first, 0..32, MapMode::Write) }).unwrap();
+    // SAFETY: the second resource occupies a disjoint aligned suballocation.
+    let mut b = block_on(unsafe { device.map_buffer(&second, 0..32, MapMode::Write) }).unwrap();
+    a.bytes_mut().unwrap().copy_from_slice(&[0x35; 32]);
+    b.bytes_mut().unwrap().copy_from_slice(&[0xA7; 32]);
+    a.flush(0..32).unwrap();
+    b.flush(0..32).unwrap();
+    assert_eq!(a.bytes(), &[0x35; 32]);
+    assert_eq!(b.bytes(), &[0xA7; 32]);
+}

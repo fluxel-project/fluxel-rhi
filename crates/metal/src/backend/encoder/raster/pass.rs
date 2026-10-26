@@ -304,7 +304,7 @@ pub(super) fn begin_raster(
             None
         };
         if let Some(writes) = &desc.timestamp_writes {
-            use fluxel_rhi_core::api::QueryBackend as _;
+            use fluxel_rhi_core::backend::QueryBackend as _;
             // SAFETY: Core validated the query set identity, kind and slots.
             let set = unsafe { writes.set.native_ref() };
             if let Some(begin) = writes.begin {

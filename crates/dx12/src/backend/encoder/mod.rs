@@ -8,9 +8,10 @@
 use std::mem::ManuallyDrop;
 
 use fluxel_rhi_core::api::{
-    self, CompletionCoverage, CompletionPoint, CompletionState, DeferredBackend, Error, LaneId,
-    PresentReceipt, StepPayload, SubmissionReceipt, SubmitOutcome, SubmitPacket,
+    self, CompletionCoverage, CompletionPoint, CompletionState, Error, LaneId, PresentReceipt,
+    StepPayload, SubmissionReceipt, SubmitOutcome, SubmitPacket,
 };
+use fluxel_rhi_core::backend::DeferredBackend;
 use windows::{
     Win32::{
         Foundation::RECT,

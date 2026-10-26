@@ -3,6 +3,7 @@
 mod particle_acceleration;
 #[cfg(windows)]
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 #[cfg(windows)]
 mod camera;
 #[cfg(windows)]

@@ -5,6 +5,7 @@
 
 use super::{ktx::Ktx, scene::INSTANCE_STRIDE_BYTES, workload::IndirectWorkloadBackend};
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 pub(crate) fn buffer<B: IndirectWorkloadBackend>(
     d: &Device<B>,

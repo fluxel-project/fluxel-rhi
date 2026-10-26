@@ -2,6 +2,7 @@
 //! Actual color readback checks both fragment output locations around a hole.
 use crate::{Gl, GlInstance};
 use fluxel_rhi_core::api::*;
+use fluxel_rhi_core::backend::*;
 use std::sync::Arc;
 
 // Keep fixture module paths stable while separating the registration catalog.
@@ -23,7 +24,7 @@ async fn open(native: GlInstance) -> Device<Gl> {
         .unwrap();
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
     {
-        use crate::backend::gl::api::GlFamilyApi as _;
+        use crate::backend::api::GlFamilyApi as _;
         // SAFETY: the fixture owns this device on its context thread.
         let native = unsafe { device.native_ref() };
         native
@@ -308,8 +309,8 @@ async fn webgl2_core_mrt_hole() {
         &format!("WEBGL_VERSION={version:?}; WEBGL_RENDERER={renderer:?}").into(),
     );
     let d = open(native).await;
-    mrt_hole(&d).await;
-    dynamic::depth_stencil_and_dynamic(&d).await;
+    webgl2_raster_features::run(&d).await;
+    webgl2_clear_masks::run(&d).await;
     let gl = canvas
         .get_context("webgl2")
         .unwrap()

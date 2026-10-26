@@ -6,12 +6,13 @@
 //! The native host owns surface lifetime and submission; this module only owns
 //! scene resources and command construction.
 
-#[path = "../utils/gltf.rs"]
+#[path = "../utils/gltf/mod.rs"]
 mod gltf;
 #[path = "../utils/mod.rs"]
 mod utils;
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 pub const SPHERE_COUNT: usize = 16;
 pub const PUSH_BYTES: u32 = 32;
@@ -220,7 +221,8 @@ pub async fn run_webgpu_push_constants(
             maximum_frame_latency: 2,
         };
         surface.configure(&config).await?;
-        let mut workload = PushWorkload::<WebGpu>::new(&device, lane, format, extent).await?;
+        let mut workload =
+            PushWorkload::<WebGpu>::new_dynamic_uniforms(&device, lane, format, extent).await?;
         for _ in 0..frames {
             let image = surface.acquire().await?;
             let work = workload.record(&device, &image, extent)?;

@@ -157,3 +157,34 @@ fn native_resource_variants() {
         }
     }
 }
+
+#[test]
+fn ordinary_resource_pool_survives_buffer_and_image_churn() {
+    let device = block_on(VulkanInstance::new().unwrap().open_default()).unwrap();
+    let buffer_desc = BufferDesc {
+        label: None,
+        size: 4096,
+        usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+        memory: MemoryClass::Device,
+    };
+    let texture_desc = TextureDesc {
+        label: None,
+        dimension: TextureDimension::D2,
+        extent: [32, 32, 1],
+        array_layers: 1,
+        format: TextureFormat::Rgba8Unorm,
+        mip_levels: 1,
+        samples: 1,
+        usage: TextureUsage::TEXTURE_BINDING | TextureUsage::COPY_DST,
+        view_formats: vec![],
+    };
+    for _ in 0..4 {
+        let buffers = (0..256)
+            .map(|_| device.create_buffer(&buffer_desc).unwrap())
+            .collect::<Vec<_>>();
+        let textures = (0..64)
+            .map(|_| device.create_texture(&texture_desc).unwrap())
+            .collect::<Vec<_>>();
+        drop((buffers, textures));
+    }
+}

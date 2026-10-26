@@ -5,6 +5,7 @@ mod resources;
 pub use recording::FrameCommit;
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 use resources::*;
 
 pub trait MsaaBackend:

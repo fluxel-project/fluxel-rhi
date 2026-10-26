@@ -489,12 +489,5 @@ pub(super) fn integer_frequency(period: f32) -> Option<u64> {
     u64::try_from(n / d).ok().filter(|v| *v != 0)
 }
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn exact_frequency_only() {
-        assert_eq!(super::integer_frequency(10.0), Some(100_000_000));
-        assert_eq!(super::integer_frequency(3.0), None);
-        assert_eq!(super::integer_frequency(0.0), None);
-        assert_eq!(super::integer_frequency(f32::MIN_POSITIVE), None);
-    }
-}
+#[path = "../tests/backend/query.rs"]
+mod tests;

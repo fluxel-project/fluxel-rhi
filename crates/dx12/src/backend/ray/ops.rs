@@ -8,7 +8,7 @@ use std::sync::Arc;
 use windows::{Win32::Graphics::Direct3D12::*, core::Interface};
 
 pub struct Ray;
-impl api::RayOps<Dx12> for Ray {
+impl fluxel_rhi_core::backend::RayOps<Dx12> for Ray {
     const AVAILABLE: bool = true;
     type PipelineFuture<'a> = super::super::pipeline::worker::ColdFuture<Dx12RayPipeline>;
     fn create_pipeline<'a>(

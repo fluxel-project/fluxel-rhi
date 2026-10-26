@@ -7,7 +7,7 @@
 //! keep-alives, released only after the submission fence retires the work.
 
 use super::*;
-impl api::CommandBackend for Dx12 {
+impl fluxel_rhi_core::backend::CommandBackend for Dx12 {
     fn resolve(
         encoder: &mut Dx12Encoder,
         src: api::TextureRegion<'_, Self>,

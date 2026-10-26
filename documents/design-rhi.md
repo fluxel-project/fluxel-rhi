@@ -247,11 +247,13 @@ to RHI. Backend lease validation rejects stale use after reconfiguration or loss
 
 ### `crates/core`: common semantics and the trust boundary
 
-[`api`](../crates/core/src/api/mod.rs) contains both caller-facing types and
-backend SPI, divided by concern: creation, shaders, passes, execution,
-synchronization, surfaces, mapping, and optional operation domains. Sharing the
-descriptors and result meanings avoids translation between subtly different
-definitions of the same operation.
+[`api`](../crates/core/src/api/mod.rs) contains caller-facing values, resource
+handles, and facade methods, divided by concern: creation, shaders, passes,
+execution, synchronization, surfaces, mapping, and optional operation domains.
+The separate hidden [`backend` SPI](../crates/core/src/backend/mod.rs) defines
+the contracts implemented by backend crates. Shared descriptors and result
+meanings avoid translation between subtly different definitions of the same
+operation.
 
 Core handles wrap backend-native objects and add identity and structural
 validation. Native representation remains an associated backend type. Resource
@@ -300,7 +302,7 @@ or resource-retirement manager.
 
 ### `crates/dx12`: explicit native command lists and fence ownership
 
-The [DX12 backend](../crates/dx12/src/backend.rs) lowers directly to native
+The [DX12 backend](../crates/dx12/src/backend/mod.rs) lowers directly to native
 resources, descriptors, pipelines, command lists, and a direct queue. Descriptor
 binding namespaces agree with the DXIL shader ABI: bind groups map to register
 spaces and bindings to registers. Keeping that agreement explicit avoids an
@@ -311,7 +313,7 @@ resource-state history. Generic copies consume the caller's copy states;
 convenience uploads have their own narrower state contract. Planning stays in
 the caller while temporary upload resources remain backend-owned.
 
-The [submission path](../crates/dx12/src/backend/encoder/submit.rs) serializes
+The [submission path](../crates/dx12/src/backend/encoder/submit/mod.rs) serializes
 native execute/present/signal operations and retains allocators, referenced
 objects, and uploads through fence completion. A signal failure after execution
 cannot be treated as unissued work. Device removal is also distinct from a
@@ -468,7 +470,7 @@ Browser WebGL2 does not expose a native GL dispatch-table pointer; its native
 interop capability remains disabled. External memory/resource import is a
 separate domain and remains unsupported for the GL family.
 
-The [GL-family implementation](../crates/gl/src/backend/gl/mod.rs) shares one
+The [GL-family implementation](../crates/gl/src/backend/mod.rs) shares one
 typed `Gl` backend across desktop GL, GLES, and WebGL2. Actual version,
 extensions, and callable entry points jointly determine support. Shared
 implementation avoids three public APIs, while profile-specific admission
@@ -785,7 +787,7 @@ host observation are separate requirements.
 
 ### `crates/metal`: direct encoding with a bounded binding ABI
 
-The [Metal backend](../crates/metal/src/backend.rs) uses a native device, command
+The [Metal backend](../crates/metal/src/backend/mod.rs) uses a native device, command
 queue, command buffers, and pass encoders. Native tracked resource ordering
 implements supplied execution intent without introducing a custom command
 spine or graph. Completion handlers settle observations; dropping an observer
@@ -884,6 +886,24 @@ resource identity. A placed attachment first used through
 to a whole-subresource `DiscardResource` before the application initializes it
 with a full clear, copy, or render pass. The same lowering applies to sparse
 attachments; it is a native execution detail, not resource-state inference.
+
+Ordinary DX12 buffer and texture creation uses a private default-resource heap
+pool. Each allocation uses the exact `GetResourceAllocationInfo` size and
+alignment and is retained by the final native resource owner; normal encoder
+and submission retention therefore carries the lease through fence retirement.
+Tier 1 pages remain separated by native heap class, while Tier 2 may use the
+mixed resource heap. Upload and readback buffers use their matching heap types.
+Pages larger than the initial 16 MiB policy and pool/placement OOM fall back to
+committed resources. The cache retains at most four empty 16 MiB pages per class
+(64 MiB maximum idle heap cache per class). This
+backend policy does not alter explicit `MemoryBackend` placement or infer
+aliasing. Before creating a new page, the pool uses an optional `IDXGIAdapter3`
+video-memory budget query to decline pool growth that would exceed the current
+process segment budget and then use committed allocation. Upload/readback uses
+the non-local segment query, falling back to local on unified-memory systems;
+unavailable segment queries leave allocation to the bounded cache/native
+allocator. The query is admission guidance, not per-pool resident accounting or
+a public Stats value.
 
 Resource-less global barriers preserve resource states and texture layouts.
 DX12 uses enhanced global barriers when options 12 and command-list version 7
@@ -1491,6 +1511,26 @@ sharing. Encoder leases keep copied bytes alive until cancellation or submission
 fence retirement, and return pages before releasing their device owner. Idle
 native pages do not retain DeviceState, avoiding a device ownership cycle.
 Texture layout offsets and native copy alignment both apply to suballocations.
+
+Ordinary Vulkan buffers and optimal images use a separate private native-memory
+pool. A page is keyed by the exact Vulkan memory type, device-address allocation
+flag, resource class, and persistent-mapping mode; buffers and optimal images
+never share pages. Requirements marked `requires_dedicated_allocation` or
+`prefers_dedicated_allocation` retain a dedicated allocation. Device-address
+buffer offsets also meet the enabled acceleration-structure scratch and shader
+table base alignments. Host-visible pages align both offsets and allocation
+footprints to `nonCoherentAtomSize`, and MAP-capable pages stay mapped until the
+page is released. A final resource owner returns its range only after the native
+buffer/image is destroyed; recorded work retains those owners through normal
+fence retirement or uncertainty quarantine. Pages larger than 16 MiB and page
+allocation OOM use the committed path. The pool retains at most one empty
+16 MiB page per key. Explicit placement, sparse resources, external imports, and ray
+acceleration-structure backing allocations remain on their existing paths. This
+allocator does not select aliases or report resident-memory statistics. When
+`VK_EXT_memory_budget` is available, the backend checks its process-wide
+per-heap usage/budget estimate before growing the pool; if the query is absent,
+the fixed page and idle-page caps remain in force. Budget values are advisory
+and are not pool-only resident-byte accounting.
 
 The completion observer blocks on job arrival while idle. Active fences are
 grouped by logical device for zero-time wait-any checks; per-fence status calls

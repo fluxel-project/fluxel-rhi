@@ -9,7 +9,7 @@ use super::*;
 
 pub struct RasterExtras;
 
-impl api::RasterExtrasOps<Vulkan> for RasterExtras {
+impl fluxel_rhi_core::backend::RasterExtrasOps<Vulkan> for RasterExtras {
     const AVAILABLE: bool = true;
 
     fn draw_indirect(

@@ -4,6 +4,7 @@
 //! The sibling owns resources, pipeline construction, and draw calls.
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 use super::{Triangle, utils};
 

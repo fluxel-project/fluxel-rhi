@@ -5,7 +5,7 @@ use super::*;
 /// Static ComputeOps implementation for Vulkan.
 pub struct VulkanCompute;
 
-impl api::ComputeOps<Vulkan> for VulkanCompute {
+impl fluxel_rhi_core::backend::ComputeOps<Vulkan> for VulkanCompute {
     const AVAILABLE: bool = true;
     type PipelineFuture<'a>
         = super::cold_worker::ColdFuture<VulkanComputePipeline>

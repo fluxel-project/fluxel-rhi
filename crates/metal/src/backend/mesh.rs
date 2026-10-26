@@ -4,7 +4,8 @@
 //! Threadgroup dimensions come from the corresponding shader entry declarations;
 //! resource hazards and cross-queue synchronization remain the caller's responsibility.
 use super::{Metal, MetalBuffer, MetalCommandEncoder, MetalDevice};
-use fluxel_rhi_core::api::{self, MeshOps};
+use fluxel_rhi_core::api::{self};
+use fluxel_rhi_core::backend::MeshOps;
 use std::{future::Future, pin::Pin};
 
 pub struct MetalMesh;
@@ -30,7 +31,7 @@ impl MeshOps<Metal> for MetalMesh {
     ) -> api::Result<()> {
         #[cfg(target_vendor = "apple")]
         {
-            use api::RasterBackend;
+            use fluxel_rhi_core::backend::RasterBackend;
             use objc2_foundation::NSObjectProtocol as _;
             let render = encoder.render.as_ref().ok_or(api::Error::InvalidState)?;
             if !render.respondsToSelector(objc2::sel!(drawMeshThreadgroups:threadsPerObjectThreadgroup:threadsPerMeshThreadgroup:))
@@ -241,74 +242,8 @@ fn valid_indirect(usage: api::BufferUsage, size: u64, offset: u64) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn triangle_proof_rejects_unprovable_source_forms() {
-        let triangle = "#include <metal_stdlib>\nusing T = metal::mesh<V, P, 3, 1, metal::topology::triangle>; [[mesh]] void main(T out) {}";
-        assert!(proves_triangle_mesh(triangle));
-        assert!(!proves_triangle_mesh(&format!(
-            "{triangle} object_data int* payload;"
-        )));
-        assert!(!proves_triangle_mesh(&format!(
-            "{triangle} threadgroup int* shared;"
-        )));
-        assert!(!proves_triangle_mesh(
-            &triangle.replace("using T", "%:define triangle line\nusing T")
-        ));
-        assert!(!proves_triangle_mesh(
-            "#include <metal_stdlib>\n// metal::mesh<V,P,3,1,metal::topology::triangle>\n[[mesh]] void main(int x) {}"
-        ));
-        assert!(!proves_triangle_mesh(
-            &triangle.replace("metal::topology::triangle", "metal::topology::point")
-        ));
-        assert!(!proves_triangle_mesh(
-            &triangle.replace("topology::triangle", "topology::line")
-        ));
-        assert!(!proves_triangle_mesh(&triangle.replace(
-            "#include <metal_stdlib>",
-            "#define triangle line\n#include <metal_stdlib>"
-        )));
-        assert!(!proves_triangle_mesh(
-            &triangle.replace("metal::mesh", "mesh")
-        ));
-        assert!(!proves_triangle_mesh(&format!(
-            "{triangle} using L = metal::mesh<V, P, 3, 1, metal::topology::line>;"
-        )));
-        assert!(!proves_triangle_mesh(
-            "/*\n#include <metal_stdlib>\n*/ metal::mesh<V,P,3,1,metal::topology::triangle> value;"
-        ));
-        assert!(!proves_triangle_mesh(
-            &triangle.replace("metal::topology::triangle", "Other")
-        ));
-        assert!(!proves_triangle_mesh(
-            &triangle.replace(" 3, 1,", " MAX, 1,")
-        ));
-        assert!(!proves_triangle_mesh(
-            &triangle.replace("using T", "\\\nusing T")
-        ));
-        assert!(!proves_triangle_mesh(
-            &triangle.replace("using T", "/* using T")
-        ));
-    }
-    #[test]
-    fn indirect_arguments_require_usage_alignment_and_complete_record() {
-        let usage = api::BufferUsage::INDIRECT;
-        assert!(valid_indirect(usage, 16, 4));
-        assert!(!valid_indirect(api::BufferUsage::COPY_SRC, 16, 4));
-        assert!(!valid_indirect(usage, 16, 3));
-        assert!(!valid_indirect(usage, 15, 4));
-        assert!(!valid_indirect(usage, u64::MAX, u64::MAX - 3));
-    }
-
-    #[test]
-    fn indirect_mesh_requires_apple9_and_selector() {
-        assert!(indirect_mesh_supported(true, true));
-        assert!(!indirect_mesh_supported(false, true));
-        assert!(!indirect_mesh_supported(true, false));
-        assert!(!indirect_mesh_supported(false, false));
-    }
-}
+#[path = "../tests/backend/mesh.rs"]
+mod tests;
 
 #[cfg(target_vendor = "apple")]
 fn size(v: [u32; 3]) -> objc2_metal::MTLSize {
@@ -375,7 +310,9 @@ async fn mesh_function(
     )
     .await?;
     if function.functionType() != native_type {
-        return Err(api::Error::Shader("Metal mesh function type mismatch".into()));
+        return Err(api::Error::Shader(
+            "Metal mesh function type mismatch".into(),
+        ));
     }
     Ok((function, workgroup.or(declared_workgroup), bindings))
 }
@@ -439,13 +376,25 @@ async fn create(
         // The WGSL route currently admits vertex/fragment/compute only, so
         // there is no parsed mesh topology to validate here. Native MSL and
         // metallib topology remain a caller contract, not reflected metadata.
-        let (mesh_fn, mesh_threads, mesh_bindings) =
-            mesh_function(device, &desc.mesh, &layout, api::ShaderStage::Mesh, MTLFunctionType::Mesh).await?;
+        let (mesh_fn, mesh_threads, mesh_bindings) = mesh_function(
+            device,
+            &desc.mesh,
+            &layout,
+            api::ShaderStage::Mesh,
+            MTLFunctionType::Mesh,
+        )
+        .await?;
         let mesh_threads =
             mesh_threads.ok_or_else(|| api::Error::Shader("Metal mesh threads missing".into()))?;
         let (object_fn, object_threads, object_bindings) = if let Some(stage) = &desc.task {
-            let (function, threads, bindings) =
-                mesh_function(device, stage, &layout, api::ShaderStage::Task, MTLFunctionType::Object).await?;
+            let (function, threads, bindings) = mesh_function(
+                device,
+                stage,
+                &layout,
+                api::ShaderStage::Task,
+                MTLFunctionType::Object,
+            )
+            .await?;
             (
                 Some(function),
                 threads.ok_or_else(|| api::Error::Shader("Metal object threads missing".into()))?,
@@ -455,8 +404,14 @@ async fn create(
             (None, [1, 1, 1], None)
         };
         let (fragment, fragment_bindings) = if let Some(stage) = &desc.fragment {
-            let (function, _, bindings) =
-                mesh_function(device, stage, &layout, api::ShaderStage::Fragment, MTLFunctionType::Fragment).await?;
+            let (function, _, bindings) = mesh_function(
+                device,
+                stage,
+                &layout,
+                api::ShaderStage::Fragment,
+                MTLFunctionType::Fragment,
+            )
+            .await?;
             (Some(function), Some(bindings))
         } else {
             (None, None)
@@ -574,7 +529,11 @@ async fn create(
         }
         let archive_lease = if let Some(cache) = &desc.cache {
             // SAFETY: Core verified cache provenance before pipeline creation.
-            Some(unsafe { cache.native_ref() }.prepare_mesh(&descriptor).await?)
+            Some(
+                unsafe { cache.native_ref() }
+                    .prepare_mesh(&descriptor)
+                    .await?,
+            )
         } else {
             None
         };
@@ -586,26 +545,31 @@ async fn create(
             object_fn.clone(),
             fragment.clone(),
         )));
-        let callback = block2::RcBlock::new(move |
-            state: *mut objc2::runtime::ProtocolObject<dyn objc2_metal::MTLRenderPipelineState>,
-            reflection: *mut objc2_metal::MTLRenderPipelineReflection,
-            error: *mut objc2_foundation::NSError,
-        | {
-            let result = if !error.is_null() {
-                // SAFETY: Metal supplies a valid NSError for failed compilation.
-                Err(api::Error::Backend(format!("Metal mesh pipeline: {:?}", unsafe { &*error })))
-            } else {
-                // SAFETY: callback-owned native values are retained before the
-                // Objective-C block returns.
-                let state = unsafe { objc2::rc::Retained::retain(state) }
-                    .ok_or(api::Error::InvalidState);
-                let reflection = unsafe { objc2::rc::Retained::retain(reflection) }
-                    .ok_or(api::Error::InvalidState);
-                state.and_then(|state| reflection.map(|reflection| (state, reflection)))
-            };
-            completer.finish(result);
-            drop(inputs.borrow_mut().take());
-        });
+        let callback = block2::RcBlock::new(
+            move |state: *mut objc2::runtime::ProtocolObject<
+                dyn objc2_metal::MTLRenderPipelineState,
+            >,
+                  reflection: *mut objc2_metal::MTLRenderPipelineReflection,
+                  error: *mut objc2_foundation::NSError| {
+                let result = if !error.is_null() {
+                    // SAFETY: Metal supplies a valid NSError for failed compilation.
+                    Err(api::Error::Backend(format!(
+                        "Metal mesh pipeline: {:?}",
+                        unsafe { &*error }
+                    )))
+                } else {
+                    // SAFETY: callback-owned native values are retained before the
+                    // Objective-C block returns.
+                    let state = unsafe { objc2::rc::Retained::retain(state) }
+                        .ok_or(api::Error::InvalidState);
+                    let reflection = unsafe { objc2::rc::Retained::retain(reflection) }
+                        .ok_or(api::Error::InvalidState);
+                    state.and_then(|state| reflection.map(|reflection| (state, reflection)))
+                };
+                completer.finish(result);
+                drop(inputs.borrow_mut().take());
+            },
+        );
         // SAFETY: Metal copies the block. Its captures retain the descriptor,
         // all native functions, and the binary-archive read lease.
         unsafe {

@@ -44,8 +44,8 @@ pub(super) fn depth_clear_handles(
             }
             .ok_or(Error::InvalidState)?;
             encoder
-                .clear_heaps
-                .push(v.0.dsv_heap.as_ref().ok_or(Error::InvalidState)?.clone());
+                .view_descriptor_leases
+                .push(v.0.dsv_lease.as_ref().ok_or(Error::InvalidState)?.clone());
             depth_clear_handles.push(handle);
         }
     } else if let Some(handle) = dsv {
@@ -74,8 +74,8 @@ pub(super) fn color_clear_handles(
                 vd.layers = layer..layer + 1;
                 let v = crate::backend::texture::create_view(&encoder.device, &texture, &vd)?;
                 encoder
-                    .clear_heaps
-                    .push(v.0.rtv_heap.as_ref().ok_or(Error::InvalidState)?.clone());
+                    .view_descriptor_leases
+                    .push(v.0.rtv_lease.as_ref().ok_or(Error::InvalidState)?.clone());
                 clears.push((v.0.rtv.ok_or(Error::InvalidState)?, c));
             }
         } else {

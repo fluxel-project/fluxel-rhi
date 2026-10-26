@@ -22,11 +22,11 @@ replace explicit steps, waits, lanes, or completion facts with application APIs.
 | --- | --- |
 | [`fluxel-rhi-core`](crates/core/src/api/mod.rs) | Shared API, resource identity, execution contracts, and backend SPI |
 | [`fluxel-rhi`](crates/rhi/src/lib.rs) | Feature-selected reexports and numbered integration examples |
-| [`fluxel-rhi-dx12`](crates/dx12/src/backend.rs) | Direct3D 12 resources, command lists, descriptors, fences, and presentation |
+| [`fluxel-rhi-dx12`](crates/dx12/src/backend/mod.rs) | Direct3D 12 resources, command lists, descriptors, fences, and presentation |
 | [`fluxel-rhi-vulkan`](crates/vulkan/src/backend/mod.rs) | Vulkan resources, dynamic rendering, command buffers, synchronization, and WSI |
 | [`fluxel-rhi-webgpu`](crates/webgpu/src/backend/mod.rs) | Browser WebGPU encoding, queue promises, and canvas surfaces |
-| [`fluxel-rhi-gl`](crates/gl/src/backend/gl/mod.rs) | Shared GL semantics with desktop GL/WGL, GLES/EGL, and WebGL2 profiles |
-| [`fluxel-rhi-metal`](crates/metal/src/backend.rs) | Metal resources, encoding, completion, and layer surfaces |
+| [`fluxel-rhi-gl`](crates/gl/src/backend/mod.rs) | Shared GL semantics with desktop GL/WGL, GLES/EGL, and WebGL2 profiles |
+| [`fluxel-rhi-metal`](crates/metal/src/backend/mod.rs) | Metal resources, encoding, completion, and layer surfaces |
 
 Core defines operation meanings shared by callers and implementations. The
 facade adds no runtime backend dispatcher. Each backend owns native objects,

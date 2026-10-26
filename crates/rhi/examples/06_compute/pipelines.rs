@@ -1,6 +1,7 @@
 //! Shader module and pipeline construction for the compute-filter example.
 use super::ComputeBackend;
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 use std::sync::Arc;
 
 const EMBOSS: &[u8] = include_bytes!("../assets/06_compute/emboss.dxil");

@@ -10,7 +10,7 @@ use super::{command::WebGpuEncoder, instance::WebGpu, js, resource::WebGpuBuffer
 
 pub struct WebGpuExtras;
 
-impl api::RasterExtrasOps<WebGpu> for WebGpuExtras {
+impl fluxel_rhi_core::backend::RasterExtrasOps<WebGpu> for WebGpuExtras {
     const AVAILABLE: bool = true;
 
     fn draw_indirect(

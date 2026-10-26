@@ -24,7 +24,7 @@ impl VulkanPipelineCache {
         f(self.0.handle)
     }
 }
-impl api::CacheBackend for Vulkan {
+impl fluxel_rhi_core::backend::CacheBackend for Vulkan {
     fn create_cache(device: &VulkanDevice, data: Option<&[u8]>) -> Result<VulkanPipelineCache> {
         if let Some(bytes) = data {
             if bytes.len() < 32 {

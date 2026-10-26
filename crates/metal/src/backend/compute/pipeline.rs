@@ -24,16 +24,18 @@ pub(super) async fn create_pipeline(
             })?;
         // SAFETY: Core checked layout provenance before invoking ComputeOps.
         let layout = unsafe { desc.layout.native_ref().clone() };
-        let (function, mut binding, wgsl_size) = super::super::shader::variant::native_function_async(
-            device,
-            shader,
-            desc.compute.entry.clone(),
-            api::ShaderStage::Compute,
-            desc.compute.constants.clone(),
-            layout.clone(),
-            0,
-            false,
-        ).await?;
+        let (function, mut binding, wgsl_size) =
+            super::super::shader::variant::native_function_async(
+                device,
+                shader,
+                desc.compute.entry.clone(),
+                api::ShaderStage::Compute,
+                desc.compute.constants.clone(),
+                layout.clone(),
+                0,
+                false,
+            )
+            .await?;
         let workgroup_size = wgsl_size
             .or(entry.workgroup_size)
             .ok_or_else(|| api::Error::Shader("Metal compute workgroup size is required".into()))?;
@@ -49,7 +51,11 @@ pub(super) async fn create_pipeline(
         descriptor.setComputeFunction(Some(&function));
         let archive_lease = if let Some(cache) = &desc.cache {
             // SAFETY: Core verified cache provenance before pipeline creation.
-            Some(unsafe { cache.native_ref() }.prepare_compute(&descriptor).await?)
+            Some(
+                unsafe { cache.native_ref() }
+                    .prepare_compute(&descriptor)
+                    .await?,
+            )
         } else {
             None
         };
@@ -61,40 +67,49 @@ pub(super) async fn create_pipeline(
             callback_descriptor,
             callback_function,
         )));
-        let callback = block2::RcBlock::new(move |
-            state: *mut objc2::runtime::ProtocolObject<dyn objc2_metal::MTLComputePipelineState>,
-            reflection: *mut objc2_metal::MTLComputePipelineReflection,
-            error: *mut objc2_foundation::NSError,
-        | {
-            // Metal only lends these callback objects. Retain them before the
-            // block returns; the future may be polled after autorelease pools drain.
-            let result = if !error.is_null() {
-                // SAFETY: Metal supplies a valid NSError for a failed compile.
-                Err(api::Error::Backend(format!("Metal compute pipeline: {:?}", unsafe { &*error })))
-            } else {
-                // SAFETY: successful completion supplies both objects for the
-                // requested reflection option; retain their callback borrows.
-                let state = unsafe { objc2::rc::Retained::retain(state) }
-                    .ok_or(api::Error::InvalidState);
-                let reflection = unsafe { objc2::rc::Retained::retain(reflection) }
-                    .ok_or(api::Error::InvalidState);
-                state.and_then(|state| reflection.map(|reflection| (state, reflection)))
-            };
-            completer.finish(result);
-            // Keep the descriptor, function, and archive read lease alive until
-            // after Metal has completed consuming the native descriptor.
-            // Completion handlers are invoked once. `take` nevertheless keeps
-            // this block safe if a broken implementation invokes it again.
-            drop(retained_inputs.borrow_mut().take());
-        });
+        let callback = block2::RcBlock::new(
+            move |state: *mut objc2::runtime::ProtocolObject<
+                dyn objc2_metal::MTLComputePipelineState,
+            >,
+                  reflection: *mut objc2_metal::MTLComputePipelineReflection,
+                  error: *mut objc2_foundation::NSError| {
+                // Metal only lends these callback objects. Retain them before the
+                // block returns; the future may be polled after autorelease pools drain.
+                let result = if !error.is_null() {
+                    // SAFETY: Metal supplies a valid NSError for a failed compile.
+                    Err(api::Error::Backend(format!(
+                        "Metal compute pipeline: {:?}",
+                        unsafe { &*error }
+                    )))
+                } else {
+                    // SAFETY: successful completion supplies both objects for the
+                    // requested reflection option; retain their callback borrows.
+                    let state = unsafe { objc2::rc::Retained::retain(state) }
+                        .ok_or(api::Error::InvalidState);
+                    let reflection = unsafe { objc2::rc::Retained::retain(reflection) }
+                        .ok_or(api::Error::InvalidState);
+                    state.and_then(|state| reflection.map(|reflection| (state, reflection)))
+                };
+                completer.finish(result);
+                // Keep the descriptor, function, and archive read lease alive until
+                // after Metal has completed consuming the native descriptor.
+                // Completion handlers are invoked once. `take` nevertheless keeps
+                // this block safe if a broken implementation invokes it again.
+                drop(retained_inputs.borrow_mut().take());
+            },
+        );
         // SAFETY: Metal copies the block. The callback retains its output before
         // completing the cold future and keeps all descriptor inputs alive.
         unsafe {
-            device._state._device.newComputePipelineStateWithDescriptor_options_completionHandler(
-                &descriptor,
-                objc2_metal::MTLPipelineOption::ArgumentInfo | objc2_metal::MTLPipelineOption::BufferTypeInfo,
-                block2::RcBlock::as_ptr(&callback).cast(),
-            );
+            device
+                ._state
+                ._device
+                .newComputePipelineStateWithDescriptor_options_completionHandler(
+                    &descriptor,
+                    objc2_metal::MTLPipelineOption::ArgumentInfo
+                        | objc2_metal::MTLPipelineOption::BufferTypeInfo,
+                    block2::RcBlock::as_ptr(&callback).cast(),
+                );
         }
         let (state, reflection) = future.await?;
         use objc2::runtime::NSObjectProtocol as _;

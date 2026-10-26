@@ -1,0 +1,412 @@
+//! Private pages for ordinary Vulkan resources.
+//!
+//! Pages are keyed by the exact memory type, device-address allocation flag,
+//! and resource class. Buffers and optimal images never share a page, avoiding
+//! buffer-image granularity hazards. The pool owns bounded idle pages; resource
+//! owners keep weakly linked range leases until native destruction/retirement.
+
+use super::super::{mapping::MappingState, vk_error};
+use ash::vk;
+use fluxel_rhi_core::api::{Error, Result};
+use std::sync::{Arc, Mutex, Weak};
+
+const PAGE_BYTES: u64 = 16 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResourceClass {
+    Buffer,
+    OptimalImage,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PageKey {
+    memory_type: u32,
+    device_address: bool,
+    class: ResourceClass,
+    persistent_mapping: bool,
+}
+
+pub(crate) struct DefaultResourcePool(Arc<Mutex<PoolState>>);
+
+struct PoolState {
+    device: ash::Device,
+    instance: ash::Instance,
+    physical: vk::PhysicalDevice,
+    memory_properties: vk::PhysicalDeviceMemoryProperties,
+    non_coherent_atom_size: u64,
+    memory_budget: bool,
+    pages: Vec<Page>,
+    next_id: u64,
+    #[cfg(test)]
+    enabled: bool,
+}
+
+struct Page {
+    id: u64,
+    key: PageKey,
+    memory: vk::DeviceMemory,
+    size: u64,
+    mapped: Option<usize>,
+    free: Vec<(u64, u64)>,
+    live: usize,
+    device: ash::Device,
+}
+
+#[allow(dead_code)] // The lease's Arc ownership is its entire purpose.
+pub(crate) struct DefaultAllocationLease(Arc<LeaseInner>);
+struct LeaseInner {
+    pool: Weak<Mutex<PoolState>>,
+    page_id: u64,
+    offset: u64,
+    size: u64,
+}
+
+pub(crate) struct Allocation {
+    pub(crate) memory: vk::DeviceMemory,
+    pub(crate) offset: u64,
+    pub(crate) lease: DefaultAllocationLease,
+}
+
+impl DefaultResourcePool {
+    pub(crate) fn new(
+        device: ash::Device,
+        memory_properties: vk::PhysicalDeviceMemoryProperties,
+        instance: ash::Instance,
+        physical: vk::PhysicalDevice,
+        memory_budget: bool,
+        non_coherent_atom_size: u64,
+    ) -> Self {
+        Self(Arc::new(Mutex::new(PoolState {
+            device,
+            instance,
+            physical,
+            memory_properties,
+            non_coherent_atom_size: non_coherent_atom_size.max(1),
+            memory_budget,
+            pages: Vec::new(),
+            next_id: 1,
+            #[cfg(test)]
+            enabled: true,
+        })))
+    }
+
+    pub(crate) fn allocate(
+        &self,
+        requirements: vk::MemoryRequirements,
+        requested_flags: vk::MemoryPropertyFlags,
+        device_address: bool,
+        device_address_alignment: u64,
+        class: ResourceClass,
+        persistent_mapping: bool,
+    ) -> Result<Option<(Allocation, Option<Arc<MappingState>>)>> {
+        if requirements.size == 0 {
+            return Ok(None);
+        }
+        let mut state = self.0.lock().map_err(|_| Error::InvalidState)?;
+        #[cfg(test)]
+        if !state.enabled {
+            return Ok(None);
+        }
+        let Some(memory_type) = (0..state.memory_properties.memory_type_count).find(|index| {
+            requirements.memory_type_bits & (1 << index) != 0
+                && state.memory_properties.memory_types[*index as usize]
+                    .property_flags
+                    .contains(requested_flags)
+        }) else {
+            return Ok(None);
+        };
+        let flags = state.memory_properties.memory_types[memory_type as usize].property_flags;
+        let key = PageKey {
+            memory_type,
+            device_address,
+            class,
+            persistent_mapping,
+        };
+        let atom = if flags.contains(vk::MemoryPropertyFlags::HOST_VISIBLE) {
+            state.non_coherent_atom_size
+        } else {
+            1
+        };
+        // Padding mapped ranges to a non-coherent atom prevents one resource's
+        // flush/invalidate from touching a neighboring live resource.
+        let range_size = align_up(requirements.size, atom).ok_or(Error::InvalidRange)?;
+        let alignment = requirements.alignment.max(atom).max(if device_address {
+            device_address_alignment.max(1)
+        } else {
+            1
+        });
+        if range_size > PAGE_BYTES {
+            return Ok(None);
+        }
+        if let Some((page, offset)) = state
+            .pages
+            .iter_mut()
+            .filter(|page| page.key == key)
+            .find_map(|page| take_range(&mut page.free, range_size, alignment).map(|o| (page, o)))
+        {
+            page.live += 1;
+            let allocation = make_allocation(&self.0, page, offset, range_size);
+            let mapping = (class == ResourceClass::Buffer)
+                .then(|| MappingState::new_resource(page.size, flags, page.mapped));
+            return Ok(Some((allocation, mapping)));
+        }
+
+        // Budget only gates page growth. Existing pages remain reusable even
+        // when the process has reached its advisory heap budget.
+        if !budget_allows_page(&state, memory_type, PAGE_BYTES) {
+            return Ok(None);
+        }
+        let id = state.next_id;
+        let next_id = id.checked_add(1).ok_or(Error::OutOfMemory)?;
+        let page_size = PAGE_BYTES;
+        let mut address_flags =
+            vk::MemoryAllocateFlagsInfo::default().flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS);
+        let mut info = vk::MemoryAllocateInfo::default()
+            .allocation_size(page_size)
+            .memory_type_index(memory_type);
+        if device_address {
+            info = info.push_next(&mut address_flags);
+        }
+        // SAFETY: memory type and requirement mask were checked against the
+        // retained physical-device properties; the output is initialized.
+        let memory = match unsafe { state.device.allocate_memory(&info, None) } {
+            Ok(memory) => memory,
+            Err(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY | vk::Result::ERROR_OUT_OF_HOST_MEMORY) => {
+                return Ok(None);
+            }
+            Err(error) => return Err(vk_error(error)),
+        };
+        let mapped = if persistent_mapping {
+            // Keep host-visible pages mapped for their entire page lifetime.
+            // Each resource has its own map-state lock, while atom padding
+            // keeps non-coherent cache operations disjoint.
+            match unsafe {
+                state
+                    .device
+                    .map_memory(memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())
+            } {
+                Ok(ptr) if !ptr.is_null() => Some(ptr as usize),
+                Ok(_) => {
+                    unsafe {
+                        state.device.unmap_memory(memory);
+                        state.device.free_memory(memory, None);
+                    }
+                    return Ok(None);
+                }
+                Err(_) => {
+                    unsafe { state.device.free_memory(memory, None) };
+                    return Ok(None);
+                }
+            }
+        } else {
+            None
+        };
+        state.next_id = next_id;
+        let device = state.device.clone();
+        let mut page = Page {
+            id,
+            key,
+            memory,
+            size: page_size,
+            mapped,
+            free: vec![(0, page_size)],
+            live: 0,
+            device,
+        };
+        let offset = take_range(&mut page.free, range_size, alignment).ok_or(Error::OutOfMemory)?;
+        page.live = 1;
+        let allocation = make_allocation(&self.0, &page, offset, range_size);
+        let mapping = (class == ResourceClass::Buffer)
+            .then(|| MappingState::new_resource(page_size, flags, mapped));
+        state.pages.push(page);
+        Ok(Some((allocation, mapping)))
+    }
+
+    pub(crate) fn clear(&self) {
+        if let Ok(mut state) = self.0.lock() {
+            state.pages.clear();
+        }
+    }
+
+    #[cfg(test)]
+    fn budget_enabled(&self) -> bool {
+        self.0
+            .lock()
+            .map(|state| state.memory_budget)
+            .unwrap_or(false)
+    }
+
+    #[cfg(test)]
+    fn budget_snapshot(&self) -> Option<Vec<(u64, u64)>> {
+        let state = self.0.lock().ok()?;
+        let budget = query_budget(&state)?;
+        Some(
+            (0..state.memory_properties.memory_heap_count as usize)
+                .map(|heap| (budget.heap_usage[heap], budget.heap_budget[heap]))
+                .collect(),
+        )
+    }
+
+    #[cfg(test)]
+    fn set_enabled(&self, enabled: bool) {
+        if let Ok(mut state) = self.0.lock() {
+            state.enabled = enabled;
+        }
+    }
+
+    #[cfg(test)]
+    fn page_count(&self) -> usize {
+        self.0.lock().map(|state| state.pages.len()).unwrap_or(0)
+    }
+}
+
+/// The extension reports process-wide, implementation-dependent heap usage.
+/// It only gates adding a cache page; it is not a pool-resident byte counter.
+fn budget_allows_page(state: &PoolState, memory_type: u32, page_size: u64) -> bool {
+    if !state.memory_budget {
+        return true;
+    }
+    let heap = state.memory_properties.memory_types[memory_type as usize].heap_index as usize;
+    let Some(budget) = query_budget(state) else {
+        return true;
+    };
+    within_budget(budget.heap_usage[heap], budget.heap_budget[heap], page_size)
+}
+
+fn query_budget(state: &PoolState) -> Option<vk::PhysicalDeviceMemoryBudgetPropertiesEXT> {
+    if !state.memory_budget {
+        return None;
+    }
+    let mut budget = vk::PhysicalDeviceMemoryBudgetPropertiesEXT::default();
+    let mut properties = vk::PhysicalDeviceMemoryProperties2::default().push_next(&mut budget);
+    // SAFETY: the enabled extension structure and output chain stay valid for
+    // this synchronous query; the physical device is retained with its instance.
+    unsafe {
+        state
+            .instance
+            .get_physical_device_memory_properties2(state.physical, &mut properties)
+    };
+    Some(budget)
+}
+
+fn within_budget(current_usage: u64, budget: u64, additional: u64) -> bool {
+    budget == 0
+        || current_usage
+            .checked_add(additional)
+            .is_some_and(|projected| projected <= budget)
+}
+
+fn make_allocation(
+    pool: &Arc<Mutex<PoolState>>,
+    page: &Page,
+    offset: u64,
+    size: u64,
+) -> Allocation {
+    Allocation {
+        memory: page.memory,
+        offset,
+        lease: DefaultAllocationLease(Arc::new(LeaseInner {
+            pool: Arc::downgrade(pool),
+            page_id: page.id,
+            offset,
+            size,
+        })),
+    }
+}
+
+impl Drop for Page {
+    fn drop(&mut self) {
+        // SAFETY: the pool is the sole owner of page memory; all native
+        // resources dropped their handles before returning the final lease.
+        unsafe {
+            if self.mapped.is_some() {
+                self.device.unmap_memory(self.memory);
+            }
+            self.device.free_memory(self.memory, None);
+        }
+    }
+}
+
+impl Drop for LeaseInner {
+    fn drop(&mut self) {
+        let Some(pool) = self.pool.upgrade() else {
+            return;
+        };
+        let Ok(mut state) = pool.lock() else {
+            return;
+        };
+        let Some(index) = state.pages.iter().position(|page| page.id == self.page_id) else {
+            return;
+        };
+        let (key, is_empty) = {
+            let page = &mut state.pages[index];
+            page.free.push((self.offset, self.size));
+            coalesce(&mut page.free);
+            page.live = page.live.saturating_sub(1);
+            (page.key, page.live == 0)
+        };
+        if is_empty
+            && state
+                .pages
+                .iter()
+                .filter(|p| p.key == key && p.live == 0)
+                .count()
+                > 1
+        {
+            state.pages.swap_remove(index);
+        }
+    }
+}
+
+fn align_up(value: u64, alignment: u64) -> Option<u64> {
+    value
+        .checked_add(alignment - 1)
+        .map(|value| value / alignment * alignment)
+}
+
+fn take_range(free: &mut Vec<(u64, u64)>, size: u64, alignment: u64) -> Option<u64> {
+    for index in 0..free.len() {
+        let (start, length) = free[index];
+        let Some(aligned) = align_up(start, alignment) else {
+            continue;
+        };
+        let Some(end) = aligned.checked_add(size) else {
+            continue;
+        };
+        let Some(free_end) = start.checked_add(length) else {
+            continue;
+        };
+        if end > free_end {
+            continue;
+        }
+        free.swap_remove(index);
+        if aligned > start {
+            free.push((start, aligned - start));
+        }
+        if end < free_end {
+            free.push((end, free_end - end));
+        }
+        return Some(aligned);
+    }
+    None
+}
+
+fn coalesce(ranges: &mut Vec<(u64, u64)>) {
+    ranges.sort_unstable_by_key(|range| range.0);
+    let mut write = 0;
+    for read in 1..ranges.len() {
+        let (start, size) = ranges[read];
+        let end = ranges[write].0 + ranges[write].1;
+        if start <= end {
+            ranges[write].1 = end.max(start + size) - ranges[write].0;
+        } else {
+            write += 1;
+            ranges[write] = (start, size);
+        }
+    }
+    ranges.truncate(if ranges.is_empty() { 0 } else { write + 1 });
+}
+
+#[cfg(test)]
+#[path = "../../tests/backend/memory/default_pool.rs"]
+mod tests;

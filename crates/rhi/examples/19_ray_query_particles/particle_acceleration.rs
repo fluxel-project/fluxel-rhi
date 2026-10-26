@@ -1,6 +1,7 @@
 //! Procedural particle bounds and per-frame TLAS instances.
 use super::particles;
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 pub fn instances<B: Backend>(
     scene: &AccelerationStructure<B>,

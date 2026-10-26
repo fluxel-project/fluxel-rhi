@@ -22,7 +22,7 @@ pub struct Dx12Readback {
     range: Range<u64>,
 }
 
-impl api::ReadbackBackend for Dx12 {
+impl fluxel_rhi_core::backend::ReadbackBackend for Dx12 {
     type NativeReadback = Dx12Readback;
     type ReadbackFuture<'a>
         = Ready<Result<ReadbackData>>
@@ -52,7 +52,7 @@ impl api::ReadbackBackend for Dx12 {
             return Err(Error::InvalidRange);
         }
         // The caller explicitly transitions device-local sources to COPY_SRC.
-        let staging = <Dx12 as api::ResourceBackend>::create_buffer(
+        let staging = <Dx12 as fluxel_rhi_core::backend::ResourceBackend>::create_buffer(
             &encoder.device,
             &api::BufferDesc {
                 label: Some("DX12 readback staging".into()),

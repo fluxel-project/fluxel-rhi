@@ -15,95 +15,9 @@ use std::{
 };
 
 #[cfg(test)]
-mod tests {
-    use super::super::tests::type_contract_tests::NativeShared;
-    use super::*;
-    impl SparseBackend for NativeShared {
-        fn create_sparse_allocation(_: &Arc<()>, _: u64) -> Result<Arc<()>> {
-            Ok(Arc::new(()))
-        }
-    }
-    #[test]
-    fn packed_tail_region_covers_the_whole_reported_tail() {
-        let tail = SparsePackedMipTail {
-            first_mip: 2,
-            mip_count: 7,
-            tile_count: 3,
-        };
-        let region = SparseTile::packed_tail(tail);
-        assert_eq!(region.mip, 2);
-        assert_eq!(region.layer, 0);
-        assert_eq!(region.origin, [0, 0, 0]);
-        assert_eq!(region.count, [3, 1, 1]);
-    }
-    #[test]
-    fn primary_tiling_fields_match_first_aspect_group() {
-        let group = SparseAspectTiling {
-            aspect: TextureAspects::DEPTH | TextureAspects::STENCIL,
-            tile_extent: [64, 32, 1],
-            tile_grid: [3, 4, 1],
-            tile_bytes: 65536,
-            standard_mip_grids: vec![[3, 4, 1]],
-            packed_tail: None,
-            packed_tail_shared_by_layers: false,
-        };
-        let tiling = SparseTextureTiling::from_aspects(vec![group.clone()]).unwrap();
-        assert_eq!(tiling.tile_extent, group.tile_extent);
-        assert_eq!(tiling.standard_mip_grids, group.standard_mip_grids);
-        assert_eq!(
-            tiling.aspects[0].aspect,
-            TextureAspects::DEPTH | TextureAspects::STENCIL
-        );
-        assert!(SparseTextureTiling::from_aspects(vec![]).is_none());
-    }
-    #[test]
-    fn sparse_contract_checks_empty_allocation_and_texture_device() {
-        let id = DeviceId::allocate().unwrap();
-        let other = DeviceId::allocate().unwrap();
-        let caps = DeviceCapabilities {
-            sparse: true,
-            ..DeviceCapabilities::default()
-        };
-        // SAFETY: each mock handle is paired with its unique device identity.
-        let device = unsafe { Device::<NativeShared>::from_native(id, Arc::new(()), caps) };
-        let foreign = unsafe { Texture::<NativeShared>::from_native(other, Arc::new(())) };
-        let sparse = device.sparse().unwrap();
-        assert!(matches!(sparse.allocation(0), Err(Error::InvalidRange)));
-        assert!(matches!(sparse.tiling(&foreign), Err(Error::WrongDevice)));
-    }
-}
+#[path = "../tests/api/sparse.rs"]
+mod tests;
 
-/// Sparse is plan-level work, not a command-buffer operation. A backend may
-/// implement it only where its actual device has the capability.
-pub trait SparseBackend: Backend {
-    /// Creates a sparse texture with no initially mapped tiles.
-    fn create_sparse_texture(
-        _device: &Self::NativeDevice,
-        _desc: &TextureDesc,
-    ) -> Result<Self::NativeTexture> {
-        Err(Error::Unsupported("sparse textures"))
-    }
-    /// Returns the native tile shape for a sparse texture.
-    fn sparse_texture_tiling(
-        _device: &Self::NativeDevice,
-        _texture: &Self::NativeTexture,
-    ) -> Result<SparseTextureTiling> {
-        Err(Error::Unsupported("sparse texture tiling"))
-    }
-    fn create_sparse_allocation(
-        device: &Self::NativeDevice,
-        size: u64,
-    ) -> Result<Self::NativeSparseAllocation>;
-    /// Allocates backing memory compatible with a particular sparse texture.
-    /// APIs whose memory type depends on the image requirements override this.
-    fn create_sparse_allocation_for(
-        device: &Self::NativeDevice,
-        _texture: &Self::NativeTexture,
-        size: u64,
-    ) -> Result<Self::NativeSparseAllocation> {
-        Self::create_sparse_allocation(device, size)
-    }
-}
 /// Tile dimensions, texture grid, and allocation alignment for a sparse texture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SparseTextureTiling {
@@ -214,14 +128,6 @@ impl<B: SparseBackend> SparseDomain<'_, B> {
             )
         })
     }
-}
-pub trait ImmediateSparseBackend: SparseBackend + ImmediateBackend {
-    fn sparse_immediate(
-        device: &Self::NativeDevice,
-        lane: LaneId,
-        waits: &[StepWait],
-        binds: &[SparseBind<Self>],
-    ) -> ImmediateClose<Self>;
 }
 impl<B: ImmediateSparseBackend> SparseDomain<'_, B> {
     pub fn bind_immediate(
@@ -355,19 +261,6 @@ pub enum MultiQueueSubmitOutcome<B: MultiQueueBackend> {
         error: Error,
         uncertain: NativeUncertainty<B>,
     },
-}
-/// Cross-submission GPU synchronization is optional; ordinary Queue::submit
-/// has no signal/wait fields or hidden CPU wait.
-pub trait MultiQueueBackend: DeferredBackend {
-    type NativeGpuSignal;
-    /// # Safety
-    /// Signals are installed before producer acceptance and bind one specific
-    /// consumer execution. Returned metadata must describe that native signal
-    /// truthfully; the backend must not substitute a signal from another run.
-    unsafe fn submit_multi(
-        device: &Self::NativeDevice,
-        packet: MultiQueuePacket<Self>,
-    ) -> MultiQueueSubmitOutcome<Self>;
 }
 pub struct MultiQueueDomain<'a, B: MultiQueueBackend> {
     device: &'a Device<B>,

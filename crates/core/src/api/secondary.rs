@@ -33,66 +33,6 @@ impl PartialEq for SecondaryRasterDesc {
             && self.multiview_mask == other.multiview_mask
     }
 }
-pub trait SecondaryBackend: RasterBackend + DeferredBackend {
-    type NativeSecondaryEncoder;
-    type NativeSecondaryWork;
-    fn begin_secondary(
-        device: &Self::NativeDevice,
-        desc: &SecondaryRasterDesc,
-    ) -> Result<Self::NativeSecondaryEncoder>;
-    fn secondary_set_pipeline(
-        encoder: &mut Self::NativeSecondaryEncoder,
-        pipeline: &Self::NativeRasterPipeline,
-    ) -> Result<()>;
-    fn secondary_set_bind_group(
-        encoder: &mut Self::NativeSecondaryEncoder,
-        slot: u32,
-        group: &Self::NativeBindGroup,
-        offsets: &[u32],
-    ) -> Result<()>;
-    fn secondary_set_vertex_buffer(
-        encoder: &mut Self::NativeSecondaryEncoder,
-        slot: u32,
-        buffer: &Self::NativeBuffer,
-        offset: u64,
-        size: u64,
-    ) -> Result<()>;
-    fn secondary_set_index_buffer(
-        encoder: &mut Self::NativeSecondaryEncoder,
-        buffer: &Self::NativeBuffer,
-        offset: u64,
-        size: u64,
-        format: IndexFormat,
-    ) -> Result<()>;
-    fn secondary_viewport(
-        encoder: &mut Self::NativeSecondaryEncoder,
-        viewport: Viewport,
-    ) -> Result<()>;
-    fn secondary_scissor(encoder: &mut Self::NativeSecondaryEncoder, rect: Rect) -> Result<()>;
-    fn secondary_set_push_constants(
-        encoder: &mut Self::NativeSecondaryEncoder,
-        stages: StageMask,
-        offset: u32,
-        bytes: &[u8],
-    ) -> Result<()>;
-    fn secondary_draw(
-        encoder: &mut Self::NativeSecondaryEncoder,
-        vertices: Range<u32>,
-        instances: Range<u32>,
-    ) -> Result<()>;
-    fn secondary_draw_indexed(
-        encoder: &mut Self::NativeSecondaryEncoder,
-        indices: Range<u32>,
-        base_vertex: i32,
-        instances: Range<u32>,
-    ) -> Result<()>;
-    fn finish_secondary(encoder: Self::NativeSecondaryEncoder)
-    -> Result<Self::NativeSecondaryWork>;
-    fn execute_secondary(
-        encoder: &mut Self::NativeEncoder,
-        work: &Self::NativeSecondaryWork,
-    ) -> Result<()>;
-}
 pub struct SecondaryEncoder<B: SecondaryBackend> {
     device: DeviceId,
     native: Option<B::NativeSecondaryEncoder>,

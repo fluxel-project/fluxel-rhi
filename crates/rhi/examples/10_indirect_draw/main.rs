@@ -3,7 +3,7 @@
 //! Scene resources, KTX parsing, pipelines, and frame recording live in the
 //! sibling modules, leaving this entry point responsible only for platform
 //! startup and not for renderer scheduling or resource retirement.
-#[path = "../utils/gltf.rs"]
+#[path = "../utils/gltf/mod.rs"]
 mod gltf;
 mod ktx;
 mod pipeline;
@@ -13,6 +13,7 @@ mod utils;
 mod workload;
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 pub use workload::{IndirectBackend, Workload};
 
 #[cfg(any(

@@ -8,10 +8,11 @@ use std::future::Future;
 use std::sync::Arc;
 
 use fluxel_rhi::api::{
-    Backend, CompletionPoint, Device, Error, ImmediateBackend, ImmediateFinishOutcome,
-    ImmediateRunOutcome, Result, Shader, ShaderBackend, ShaderDesc, ShaderEntryPoint, ShaderFormat,
-    ShaderRoute, ShaderStage, Surface, SurfaceConfig, SurfaceImage,
+    CompletionPoint, Device, Error, ImmediateFinishOutcome, ImmediateRunOutcome, Result, Shader,
+    ShaderDesc, ShaderEntryPoint, ShaderFormat, ShaderRoute, ShaderStage, Surface, SurfaceConfig,
+    SurfaceImage,
 };
+use fluxel_rhi::backend::{Backend, ImmediateBackend, ShaderBackend};
 
 #[cfg(any(
     all(windows, feature = "native-gl-wgl"),
@@ -197,6 +198,7 @@ pub fn discarded_depth<'a, B: Backend>(
     layers: std::ops::Range<u32>,
 ) -> fluxel_rhi::api::ResourceTransition<'a, B> {
     use fluxel_rhi::api::*;
+    use fluxel_rhi::backend::*;
     ResourceTransition::Texture(TextureBarrier {
         target: Subresources {
             texture,

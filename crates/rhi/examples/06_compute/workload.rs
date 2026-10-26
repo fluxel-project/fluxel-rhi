@@ -1,6 +1,7 @@
 //! Recording and resource ownership for the storage-texture filter workload.
 use super::{ComputeBackend, binding, buffer, ktx, pipelines};
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 pub struct Compute<B: ComputeBackend> {
     lane: LaneId,

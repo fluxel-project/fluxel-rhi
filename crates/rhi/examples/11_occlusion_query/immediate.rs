@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 use fluxel_rhi::gl::Gl;
 
 use super::{OcclusionWorkloadBackend, Workload, utils};

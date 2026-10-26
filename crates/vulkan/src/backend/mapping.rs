@@ -1,8 +1,10 @@
-//! Exclusive host mappings of Vulkan device-memory allocations.
+//! Host mapping and cache maintenance for Vulkan buffer allocations.
 //!
-//! Placed buffers sharing an allocation share its mapping state. A lease maps
-//! the whole allocation so atom-aligned cache operations can cover its edges;
-//! only the requested buffer range is exposed to the caller.
+//! Placed buffers sharing an allocation share one exclusive mapping state. A
+//! lease maps the whole allocation so atom-aligned cache operations can cover
+//! its edges; only the requested buffer range is exposed to the caller.
+//! Ordinary pooled host-visible pages stay mapped for their page lifetime, but
+//! each resource has its own mapping lock and atom-disjoint suballocation.
 use super::{Vulkan, VulkanBuffer, VulkanDevice, vk_error};
 use ash::vk;
 use fluxel_rhi_core::api::{self, Error, Result};
@@ -19,13 +21,22 @@ pub(super) struct MappingState {
     mapped: AtomicBool,
     size: u64,
     flags: vk::MemoryPropertyFlags,
+    persistent_ptr: Option<usize>,
 }
 impl MappingState {
     pub(super) fn new(size: u64, flags: vk::MemoryPropertyFlags) -> Arc<Self> {
+        Self::new_resource(size, flags, None)
+    }
+    pub(super) fn new_resource(
+        size: u64,
+        flags: vk::MemoryPropertyFlags,
+        persistent_ptr: Option<usize>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             mapped: AtomicBool::new(false),
             size,
             flags,
+            persistent_ptr,
         })
     }
 }
@@ -42,13 +53,16 @@ impl Drop for VulkanMap {
     fn drop(&mut self) {
         // SAFETY: this lease owns the only successful mapping of this allocation;
         // the retained buffer keeps the allocation and device alive.
-        unsafe {
-            self.buffer
-                .0
-                .device
-                .device
-                .unmap_memory(self.buffer.0.memory)
-        };
+        if self.buffer.0.map_state.persistent_ptr.is_none() {
+            // SAFETY: this lease owns the only map of this dedicated allocation.
+            unsafe {
+                self.buffer
+                    .0
+                    .device
+                    .device
+                    .unmap_memory(self.buffer.0.memory)
+            };
+        }
         self.buffer
             .0
             .map_state
@@ -56,7 +70,7 @@ impl Drop for VulkanMap {
             .store(false, Ordering::Release);
     }
 }
-impl api::MappingBackend for Vulkan {
+impl fluxel_rhi_core::backend::MappingBackend for Vulkan {
     type NativeMap = VulkanMap;
     type MapFuture<'a> = Ready<Result<VulkanMap>>;
     fn map<'a>(
@@ -128,27 +142,31 @@ pub(super) fn map(
     if state.mapped.swap(true, Ordering::AcqRel) {
         return Err(Error::InvalidState);
     }
-    // SAFETY: HOST_VISIBLE is checked, and the atomic lock owns the allocation's
-    // sole mapping until VulkanMap::drop. Renderer supplies GPU completion.
-    let result = unsafe {
-        device.0.device.map_memory(
-            buffer.0.memory,
-            0,
-            vk::WHOLE_SIZE,
-            vk::MemoryMapFlags::empty(),
-        )
-    };
-    let ptr = match result {
-        Ok(ptr) if !ptr.is_null() => ptr.cast::<u8>(),
-        Ok(_) => {
-            // SAFETY: balances the successful map even if the driver returned null.
-            unsafe { device.0.device.unmap_memory(buffer.0.memory) };
-            state.mapped.store(false, Ordering::Release);
-            return Err(Error::Backend("Vulkan map returned null".into()));
-        }
-        Err(error) => {
-            state.mapped.store(false, Ordering::Release);
-            return Err(vk_error(error));
+    let ptr = if let Some(ptr) = state.persistent_ptr {
+        ptr as *mut u8
+    } else {
+        // SAFETY: HOST_VISIBLE is checked, and the atomic lock owns the
+        // allocation's sole mapping until VulkanMap::drop.
+        let result = unsafe {
+            device.0.device.map_memory(
+                buffer.0.memory,
+                0,
+                vk::WHOLE_SIZE,
+                vk::MemoryMapFlags::empty(),
+            )
+        };
+        match result {
+            Ok(ptr) if !ptr.is_null() => ptr.cast::<u8>(),
+            Ok(_) => {
+                // SAFETY: balances the successful map even if the driver returned null.
+                unsafe { device.0.device.unmap_memory(buffer.0.memory) };
+                state.mapped.store(false, Ordering::Release);
+                return Err(Error::Backend("Vulkan map returned null".into()));
+            }
+            Err(error) => {
+                state.mapped.store(false, Ordering::Release);
+                return Err(vk_error(error));
+            }
         }
     };
     // SAFETY: the physical device belongs to this live instance.
@@ -221,11 +239,5 @@ fn atom_range(start: u64, end: u64, size: u64, atom: u64) -> (u64, u64) {
     (aligned_start, aligned_end - aligned_start)
 }
 #[cfg(test)]
-mod tests {
-    use super::atom_range;
-    #[test]
-    fn noncoherent_ranges_include_whole_atoms_and_allocation_end() {
-        assert_eq!(atom_range(257, 300, 1024, 256), (256, 256));
-        assert_eq!(atom_range(900, 999, 1000, 256), (768, 232));
-    }
-}
+#[path = "../tests/backend/mapping.rs"]
+mod tests;

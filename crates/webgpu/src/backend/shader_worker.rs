@@ -167,11 +167,5 @@ impl Drop for TranslationFuture {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::translate;
-
-    #[test]
-    fn malformed_spirv_is_a_structured_error() {
-        assert!(translate(&[0, 1, 2, 3]).is_err());
-    }
-}
+#[path = "../tests/backend/shader_worker.rs"]
+mod tests;

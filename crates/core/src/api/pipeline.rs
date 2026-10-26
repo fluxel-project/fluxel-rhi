@@ -213,15 +213,6 @@ pub struct ComputePipelineDesc<B: Backend> {
     pub cache: Option<PipelineCache<B>>,
 }
 
-pub trait PipelineBackend: Backend {
-    type RasterPipelineFuture<'a>: Future<Output = Result<Self::NativeRasterPipeline>> + 'a
-    where
-        Self: 'a;
-    fn create_raster_pipeline<'a>(
-        device: &'a Self::NativeDevice,
-        desc: &'a RasterPipelineDesc<Self>,
-    ) -> Self::RasterPipelineFuture<'a>;
-}
 impl<B: PipelineBackend> Device<B> {
     pub async fn raster_pipeline(&self, desc: RasterPipelineDesc<B>) -> Result<RasterPipeline<B>> {
         // Pipeline pieces may be structurally compatible while belonging to
@@ -268,13 +259,6 @@ impl<B: PipelineBackend> Device<B> {
     }
 }
 
-pub trait CacheBackend: Backend {
-    fn create_cache(
-        device: &Self::NativeDevice,
-        data: Option<&[u8]>,
-    ) -> Result<Self::NativePipelineCache>;
-    fn serialize_cache(cache: &Self::NativePipelineCache) -> Result<Vec<u8>>;
-}
 impl<B: CacheBackend> Device<B> {
     pub fn create_pipeline_cache(&self, data: Option<&[u8]>) -> Result<PipelineCache<B>> {
         // SAFETY: the SPI created this cache for this device.

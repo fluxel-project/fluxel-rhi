@@ -295,8 +295,13 @@ impl Future for MetalAcquireFuture<'_> {
         if let Some(result) = result.take() {
             // A backend Surface clone may have reconfigured after the worker
             // published its result. Recheck immediately before minting a lease.
-            if *self.task.surface_generation.lock().unwrap_or_else(|p| p.into_inner())
-                != self.task.generation {
+            if *self
+                .task
+                .surface_generation
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                != self.task.generation
+            {
                 return Poll::Ready(Err(api::Error::SurfaceOutdated));
             }
             return Poll::Ready(result.map(|drawable| MetalSurfaceImage {

@@ -53,7 +53,7 @@ fn copy_to_native(map: &WebGpuMap, range: Range<usize>) {
         .copy_from(&map.bytes[range]);
 }
 
-impl api::MappingBackend for WebGpu {
+impl fluxel_rhi_core::backend::MappingBackend for WebGpu {
     type NativeMap = WebGpuMap;
     type MapFuture<'a> = Pin<Box<dyn Future<Output = Result<WebGpuMap>> + 'a>>;
 

@@ -10,7 +10,8 @@ use super::{
     Dx12, Dx12Buffer, Dx12Device, Dx12Texture, encoder,
     texture::{self, TextureState},
 };
-use fluxel_rhi_core::api::{self, Error, ExternalBackend, ResourceBackend, Result, Support};
+use fluxel_rhi_core::api::{self, Error, Result, Support};
+use fluxel_rhi_core::backend::{ExternalBackend, ResourceBackend};
 use std::{
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     sync::{Arc, atomic::AtomicBool},
@@ -234,6 +235,7 @@ fn import_buffer(
         memory,
         indirect_signatures: device.0.indirect_signatures.clone(),
         backing_heap: None,
+        default_allocation: None,
     })
 }
 
@@ -303,6 +305,7 @@ fn import_texture(
         desc: desc.clone(),
         sparse: None,
         backing_heap: None,
+        default_allocation: None,
     })))
 }
 

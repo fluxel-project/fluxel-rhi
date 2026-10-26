@@ -145,32 +145,6 @@ impl StatisticsPass {
     }
 }
 
-/// Optional pass-boundary statistics SPI. A backend exposes this separately
-/// from the fixed eleven-field pipeline-statistics query contract.
-pub trait PassStatisticsBackend: QueryBackend {
-    fn pass_statistics_fields(device: &Self::NativeDevice) -> StatisticsFields;
-    fn pass_statistics_invalid_value(device: &Self::NativeDevice) -> Option<u64>;
-    fn create_pass_statistics(
-        device: &Self::NativeDevice,
-        pass: StatisticsPass,
-        count: u32,
-    ) -> Result<Self::NativeQuerySet>;
-    /// Attaches the set to the immediately following matching pass begin.
-    fn prepare_pass_statistics(
-        encoder: &mut Self::NativeEncoder,
-        set: &Self::NativeQuerySet,
-        slot: u32,
-        pass: StatisticsPass,
-    ) -> Result<()>;
-    fn resolve_pass_statistics(
-        encoder: &mut Self::NativeEncoder,
-        set: &Self::NativeQuerySet,
-        slots: Range<u32>,
-        destination: &Self::NativeBuffer,
-        offset: u64,
-    ) -> Result<()>;
-}
-
 /// A set of whole-pass counter samples belonging to one device.
 pub struct PassStatisticsSet<B: PassStatisticsBackend> {
     device: DeviceId,
@@ -310,62 +284,6 @@ impl TimestampResultFormat {
             Ok(value)
         }
     }
-}
-pub trait QueryBackend: CommandBackend {
-    fn query_supported(device: &Self::NativeDevice, kind: QueryKind) -> bool;
-    /// Required ordering for this device and query kind.
-    fn query_resolve_mode(_: &Self::NativeDevice, _: QueryKind) -> QueryResolveMode {
-        QueryResolveMode::Ordered
-    }
-    /// Reserved timestamp result value, if the native API reports slot errors.
-    fn timestamp_result_format(_device: &Self::NativeDevice) -> TimestampResultFormat {
-        TimestampResultFormat::default()
-    }
-    /// Ticks per second for the specified queue, if known.
-    fn timestamp_frequency(_device: &Self::NativeDevice, _lane: LaneId) -> Option<u64> {
-        None
-    }
-    /// Timestamp period and valid counter bits for a queue.
-    fn timestamp_clock(device: &Self::NativeDevice, lane: LaneId) -> Option<TimestampClock> {
-        let frequency = Self::timestamp_frequency(device, lane).filter(|f| *f != 0)?;
-        Some(TimestampClock {
-            period_ns: 1_000_000_000.0 / frequency as f64,
-            valid_bits: 64,
-        })
-    }
-    fn create_query_set(
-        device: &Self::NativeDevice,
-        desc: &QueryDesc,
-    ) -> Result<Self::NativeQuerySet>;
-    fn write_timestamp(
-        encoder: &mut Self::NativeEncoder,
-        set: &Self::NativeQuerySet,
-        slot: u32,
-    ) -> Result<()>;
-    fn begin_occlusion(
-        encoder: &mut Self::NativeEncoder,
-        set: &Self::NativeQuerySet,
-        slot: u32,
-    ) -> Result<()>;
-    fn reset_queries(
-        encoder: &mut Self::NativeEncoder,
-        set: &Self::NativeQuerySet,
-        slots: Range<u32>,
-    ) -> Result<()>;
-    fn end_occlusion(encoder: &mut Self::NativeEncoder) -> Result<()>;
-    fn begin_statistics(
-        encoder: &mut Self::NativeEncoder,
-        set: &Self::NativeQuerySet,
-        slot: u32,
-    ) -> Result<()>;
-    fn end_statistics(encoder: &mut Self::NativeEncoder) -> Result<()>;
-    fn resolve_queries(
-        encoder: &mut Self::NativeEncoder,
-        set: &Self::NativeQuerySet,
-        slots: Range<u32>,
-        destination: &Self::NativeBuffer,
-        offset: u64,
-    ) -> Result<()>;
 }
 pub struct QuerySet<B: Backend> {
     pub(crate) device: DeviceId,

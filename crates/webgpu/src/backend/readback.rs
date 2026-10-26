@@ -41,7 +41,7 @@ fn field(object: &JsValue, name: &str, value: JsValue) -> Result<()> {
     js::set(object, name, &value).map_err(error)
 }
 
-impl api::ReadbackBackend for WebGpu {
+impl fluxel_rhi_core::backend::ReadbackBackend for WebGpu {
     type NativeReadback = WebGpuReadback;
     type ReadbackFuture<'a>
         = Pin<Box<dyn Future<Output = Result<ReadbackData>> + 'a>>

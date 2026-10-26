@@ -69,7 +69,7 @@ impl Drop for VulkanSecondaryEncoder {
     }
 }
 
-impl api::SecondaryBackend for Vulkan {
+impl fluxel_rhi_core::backend::SecondaryBackend for Vulkan {
     type NativeSecondaryEncoder = VulkanSecondaryEncoder;
     type NativeSecondaryWork = VulkanSecondaryWork;
 

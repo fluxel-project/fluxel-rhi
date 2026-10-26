@@ -3,6 +3,7 @@ use super::{particles, run, scene};
 #[path = "live_init.rs"]
 mod init;
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 use run::{HEIGHT, WIDTH, block_on, bytes};
 use std::sync::Arc;
 pub struct Live<B: ResourceBackend + PipelineBackend> {

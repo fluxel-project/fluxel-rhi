@@ -5,6 +5,7 @@
 mod utils;
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 use std::{
     future::{Ready, ready},
     sync::{

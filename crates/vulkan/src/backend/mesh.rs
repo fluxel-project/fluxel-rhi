@@ -56,7 +56,7 @@ impl Drop for MeshPipeline {
     }
 }
 pub struct Mesh;
-impl api::MeshOps<Vulkan> for Mesh {
+impl fluxel_rhi_core::backend::MeshOps<Vulkan> for Mesh {
     const AVAILABLE: bool = true;
     type PipelineFuture<'a> = super::cold_worker::ColdFuture<VulkanMeshPipeline>;
     fn create_pipeline<'a>(
@@ -178,20 +178,8 @@ fn topology_matches(topology: api::PrimitiveTopology, output_mode: u32) -> bool 
 }
 
 #[cfg(test)]
-mod topology_tests {
-    use super::*;
-
-    #[test]
-    fn mesh_topology_rejects_descriptor_shader_mismatch_and_strips() {
-        assert!(topology_matches(api::PrimitiveTopology::TriangleList, 5298));
-        assert!(!topology_matches(api::PrimitiveTopology::PointList, 5298));
-        assert!(!topology_matches(
-            api::PrimitiveTopology::TriangleStrip,
-            5298
-        ));
-        assert!(topology_matches(api::PrimitiveTopology::LineList, 5269));
-    }
-}
+#[path = "../tests/backend/mesh/topology_tests.rs"]
+mod topology_tests;
 
 fn create(
     device: &VulkanDevice,

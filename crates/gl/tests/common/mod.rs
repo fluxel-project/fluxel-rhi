@@ -5,6 +5,7 @@
 //! immediate-session contract; they do not create contexts or replay commands.
 
 use fluxel_rhi_core::api::*;
+use fluxel_rhi_core::backend::ImmediateBackend;
 use std::sync::Arc;
 
 /// Borrowed inputs for one immediate commands step.

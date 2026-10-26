@@ -106,18 +106,24 @@ pub(super) fn create(
         )?);
         shaders.push(module);
     }
-    let specialization_infos: Vec<_> = specializations.iter().map(|s| s.info()).collect();
+    let specialization_infos: Vec<_> = specializations
+        .iter()
+        .map(super::super::pipeline::specialization::Specialization::native_info)
+        .collect();
     let stages: Vec<_> = shaders
         .iter()
         .zip(&names)
         .zip(&kinds)
         .zip(&specialization_infos)
         .map(|(((shader, name), &kind), specialization)| {
-            Ok(vk::PipelineShaderStageCreateInfo::default()
+            let mut stage = vk::PipelineShaderStageCreateInfo::default()
                 .stage(stage(kind)?)
                 .module(shader.module())
-                .name(name)
-                .specialization_info(specialization))
+                .name(name);
+            if let Some(specialization) = specialization {
+                stage = stage.specialization_info(specialization);
+            }
+            Ok(stage)
         })
         .collect::<Result<_>>()?;
     let mut groups = Vec::new();

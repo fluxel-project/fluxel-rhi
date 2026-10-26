@@ -4,7 +4,8 @@
 //! earlier draws remain in the first render encoder, the ICB converter runs on
 //! the same command buffer, and subsequent draws use the resumed encoder.
 
-use fluxel_rhi_core::api::{self, RasterBackend as _};
+use fluxel_rhi_core::api::{self};
+use fluxel_rhi_core::backend::RasterBackend as _;
 
 use crate::backend::{Metal, MetalCommandEncoder};
 

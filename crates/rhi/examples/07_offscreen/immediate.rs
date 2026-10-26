@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 use fluxel_rhi::gl::Gl;
 #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
 use fluxel_rhi::gl::GlInstance;

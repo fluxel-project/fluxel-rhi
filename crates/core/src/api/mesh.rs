@@ -26,26 +26,6 @@ pub struct MeshPipelineDesc<B: Backend> {
     pub multisample: MultisampleState,
     pub cache: Option<PipelineCache<B>>,
 }
-pub trait MeshOps<B: Backend> {
-    const AVAILABLE: bool;
-    type PipelineFuture<'a>: Future<Output = Result<B::NativeMeshPipeline>> + 'a
-    where
-        B: 'a;
-    fn create_pipeline<'a>(
-        device: &'a B::NativeDevice,
-        desc: &'a MeshPipelineDesc<B>,
-    ) -> Self::PipelineFuture<'a>;
-    fn bind_pipeline(
-        encoder: &mut B::NativeEncoder,
-        pipeline: &B::NativeMeshPipeline,
-    ) -> Result<()>;
-    fn dispatch(encoder: &mut B::NativeEncoder, groups: [u32; 3]) -> Result<()>;
-    fn dispatch_indirect(
-        encoder: &mut B::NativeEncoder,
-        args: &B::NativeBuffer,
-        offset: u64,
-    ) -> Result<()>;
-}
 impl<B: Backend> MeshOps<B> for Unavailable {
     const AVAILABLE: bool = false;
     type PipelineFuture<'a>

@@ -4,7 +4,7 @@ use fluxel_rhi_core::api::{self, Error, Result};
 use windows::{Win32::Graphics::Direct3D12::*, core::Interface};
 
 pub struct Mesh;
-impl api::MeshOps<Dx12> for Mesh {
+impl fluxel_rhi_core::backend::MeshOps<Dx12> for Mesh {
     const AVAILABLE: bool = true;
     type PipelineFuture<'a> = super::super::pipeline::worker::ColdFuture<Dx12MeshPipeline>;
     fn create_pipeline<'a>(

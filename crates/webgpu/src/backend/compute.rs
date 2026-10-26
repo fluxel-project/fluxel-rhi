@@ -29,7 +29,7 @@ fn object() -> JsValue {
     Object::new().into()
 }
 
-impl api::ComputeOps<WebGpu> for WebGpuCompute {
+impl fluxel_rhi_core::backend::ComputeOps<WebGpu> for WebGpuCompute {
     const AVAILABLE: bool = true;
     type PipelineFuture<'a> = Pin<Box<dyn Future<Output = Result<JsValue>> + 'a>>;
 

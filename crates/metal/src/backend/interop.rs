@@ -5,7 +5,8 @@
 //! dependencies; the guard does not schedule or replay native work.
 
 use super::{Metal, MetalCommandEncoder, MetalDevice};
-use fluxel_rhi_core::api::{Error, NativeInteropBackend, NativeInteropRequest, Result};
+use fluxel_rhi_core::api::{Error, NativeInteropRequest, Result};
+use fluxel_rhi_core::backend::NativeInteropBackend;
 
 pub struct MetalInteropGuard {
     #[cfg(target_vendor = "apple")]

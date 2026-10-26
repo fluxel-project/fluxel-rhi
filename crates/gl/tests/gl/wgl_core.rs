@@ -104,7 +104,7 @@ fn wgl_typed_device_surface_and_empty_immediate_step() {
 /// without making fragment work the dominant source of back pressure.
 fn wgl_clear_ignores_and_restores_pipeline_write_masks_fixture(benchmark_counts: &[u32]) {
     use super::{context::NativeContextOwner, provider::NativeGlProvider, wgl::WglContextSurface};
-    use crate::backend::gl::api::*;
+    use crate::backend::api::*;
     use glow::HasContext as _;
     use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
@@ -187,7 +187,7 @@ fn wgl_clear_ignores_and_restores_pipeline_write_masks_fixture(benchmark_counts:
         })
         .unwrap();
     let view = GlTextureView {
-        aspect: crate::backend::gl::api::GlTextureAspect::All,
+        aspect: crate::backend::api::GlTextureAspect::All,
         target: GlAttachmentTarget::Texture(depth),
         format: GlFormat::Depth24PlusStencil8,
         mip_level: 0,

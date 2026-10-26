@@ -3,11 +3,12 @@
 //! This entry assembles the scene and records its two passes. The host owns
 //! the window and presentation lifetime; the renderer remains responsible for
 //! scheduling and resource retirement outside this standalone example.
-#[path = "../utils/gltf.rs"]
+#[path = "../utils/gltf/mod.rs"]
 mod gltf;
 #[path = "../utils/mod.rs"]
 mod utils;
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 use std::sync::Arc;
 
 const DRAGON: &[u8] = include_bytes!("../assets/models/chinesedragon.gltf");

@@ -402,6 +402,12 @@ mod transition_validation;
 #[path = "core_vertex_formats.rs"]
 mod vertex_formats;
 #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[path = "webgl2_clear_masks.rs"]
+mod webgl2_clear_masks;
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+#[path = "webgl2_raster_features.rs"]
+mod webgl2_raster_features;
+#[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
 #[path = "core_webgl_d16_exhaustive.rs"]
 mod webgl_d16_exhaustive;
 #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]

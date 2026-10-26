@@ -4,6 +4,7 @@
 //! this module neither retires renderer resources nor retries an accepted prefix.
 use super::{block_on, lifecycle::unsettled};
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},

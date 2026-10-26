@@ -2,13 +2,14 @@
 //! The primary uploads shared input, while eight workers create 512 indexed draws.
 //! The workload does not schedule workers outside the secondary-recording
 //! contract, nor does it own the host surface or resource retirement.
-#[path = "../utils/gltf.rs"]
+#[path = "../utils/gltf/mod.rs"]
 mod gltf;
 #[path = "math.rs"]
 mod math;
 #[path = "../utils/mod.rs"]
 mod utils;
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 use math::*;
 
 const UFO: &[u8] = include_bytes!("../assets/models/retroufo_red_lowpoly.gltf");
@@ -422,7 +423,7 @@ fn buffer<B: SecondaryExampleBackend>(
     })
 }
 
-#[path = "sequential.rs"]
+#[path = "sequential/mod.rs"]
 mod sequential;
 pub use sequential::Sequential;
 #[cfg(any(

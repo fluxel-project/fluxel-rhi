@@ -14,6 +14,7 @@ use super::{
     },
 };
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 pub trait IndirectWorkloadBackend:
     Backend + ResourceBackend + ShaderBackend + PipelineBackend + RasterBackend + CommandBackend

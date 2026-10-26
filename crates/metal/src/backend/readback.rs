@@ -21,7 +21,7 @@ pub struct MetalReadback {
     range: Range<u64>,
 }
 
-impl api::ReadbackBackend for Metal {
+impl fluxel_rhi_core::backend::ReadbackBackend for Metal {
     type NativeReadback = MetalReadback;
     type ReadbackFuture<'a> = Ready<Result<ReadbackData>>;
 
@@ -126,16 +126,5 @@ fn map(ticket: MetalReadback) -> Result<ReadbackData> {
 }
 
 #[cfg(test)]
-mod tests {
-    #[cfg(not(target_vendor = "apple"))]
-    use super::{MetalReadback, map};
-
-    #[cfg(not(target_vendor = "apple"))]
-    #[test]
-    fn empty_readback_has_no_row_or_slice_pitch() {
-        let data = map(MetalReadback { range: 0..0 }).unwrap();
-        assert!(data.bytes.is_empty());
-        assert_eq!(data.row_pitch, 0);
-        assert_eq!(data.slice_pitch, 0);
-    }
-}
+#[path = "../tests/backend/readback.rs"]
+mod tests;

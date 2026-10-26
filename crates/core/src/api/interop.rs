@@ -18,20 +18,6 @@ pub enum NativeInteropRequest {
     Device,
     Encoder,
 }
-pub trait NativeInteropBackend: CommandBackend {
-    type NativeInteropGuard;
-    fn acquire_native(
-        device: &Self::NativeDevice,
-        request: NativeInteropRequest,
-    ) -> Result<Self::NativeInteropGuard>;
-    /// Acquire the actual recording encoder. The caller of the public API
-    /// keeps it exclusively borrowed for the lifetime of the returned guard.
-    fn acquire_encoder(encoder: &mut Self::NativeEncoder) -> Result<Self::NativeInteropGuard>;
-    /// # Safety
-    /// The guard must remain alive and the backend must expose the returned
-    /// pointer only under its native thread, lifetime, and synchronization rules.
-    unsafe fn raw_pointer(guard: &Self::NativeInteropGuard) -> *mut std::ffi::c_void;
-}
 pub struct NativeInteropGuard<B: NativeInteropBackend> {
     device: DeviceId,
     native: B::NativeInteropGuard,
@@ -92,7 +78,7 @@ impl<B: NativeInteropBackend> CommandEncoder<B> {
     /// by native commands until their GPU execution has completed.
     ///
     /// ```compile_fail
-    /// use fluxel_rhi_core::api::{CommandEncoder, NativeInteropBackend};
+    /// use fluxel_rhi_core::{api::CommandEncoder, backend::NativeInteropBackend};
     /// unsafe fn cannot_finish<B: NativeInteropBackend>(mut encoder: CommandEncoder<B>) {
     ///     let guard = unsafe { encoder.native_interop().unwrap() };
     ///     let _work = encoder.finish();

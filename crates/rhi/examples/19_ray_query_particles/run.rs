@@ -1,6 +1,7 @@
 //! Headless GPU execution and readback for three deterministic animation times.
 use super::{particles, scene};
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 use std::{future::Future, sync::Arc};
 pub const WIDTH: u32 = 1000;

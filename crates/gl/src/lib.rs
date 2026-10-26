@@ -10,14 +10,16 @@
 /// The portable RHI API shared with the other backends.
 pub use fluxel_rhi_core::api;
 
-mod backend {
-    pub(crate) mod gl;
-}
+mod backend;
+
+#[cfg(test)]
+#[path = "tests/test_support.rs"]
+mod test_support;
 
 /// The statically dispatched GL-family backend.
-pub use backend::gl::backend::Gl;
+pub use backend::rhi::Gl;
 /// A selected, current GL-family context and its adapter discovery entry.
-pub use backend::gl::backend::GlInstance;
+pub use backend::rhi::GlInstance;
 
 /// Native GL dispatch table borrowed through a scoped Core interop guard.
 /// The guard's pointer may be cast only to a shared reference of this type.
@@ -44,8 +46,8 @@ mod core_raster_features;
     feature = "native-gles-egl",
     feature = "webgl2"
 ))]
-fn next_context_stamp() -> api::Result<backend::gl::api::ContextStamp> {
-    backend::gl::api::ContextStamp::allocate().ok_or(api::Error::OutOfMemory)
+fn next_context_stamp() -> api::Result<backend::api::ContextStamp> {
+    backend::api::ContextStamp::allocate().ok_or(api::Error::OutOfMemory)
 }
 
 #[cfg(all(windows, feature = "native-gl-wgl"))]
@@ -61,7 +63,7 @@ impl GlInstance {
     where
         H: raw_window_handle::HasWindowHandle + raw_window_handle::HasDisplayHandle + ?Sized,
     {
-        use backend::gl::native::{NativePlatformContext, wgl::WglContextSurface};
+        use backend::native::{NativePlatformContext, wgl::WglContextSurface};
 
         let window = host
             .window_handle()
@@ -84,7 +86,7 @@ impl GlInstance {
     /// The host keeps the canvas and its DOM lifecycle alive. Context loss is
     /// terminal for this instance; restoration opens a new instance and device.
     pub fn from_webgl2_canvas(canvas: web_sys::HtmlCanvasElement) -> api::Result<Self> {
-        use backend::gl::browser::{BrowserOwner, WebGl2BrowserDiscovery};
+        use backend::browser::{BrowserOwner, WebGl2BrowserDiscovery};
 
         let discovery = WebGl2BrowserDiscovery::open(next_context_stamp()?, canvas)
             .map_err(|error| api::Error::Backend(format!("{error:?}")))?;
@@ -103,8 +105,8 @@ impl GlInstance {
 
 #[cfg(feature = "native-gles-egl")]
 impl GlInstance {
-    fn retry_older_gles_version(error: &backend::gl::native::egl::EglProviderError) -> bool {
-        use backend::gl::native::egl::EglProviderError;
+    fn retry_older_gles_version(error: &backend::native::egl::EglProviderError) -> bool {
+        use backend::native::egl::EglProviderError;
 
         matches!(
             error,
@@ -128,7 +130,7 @@ impl GlInstance {
         display: raw_window_handle::RawDisplayHandle,
         window: raw_window_handle::RawWindowHandle,
     ) -> api::Result<Self> {
-        use backend::gl::native::{
+        use backend::native::{
             NativePlatformContext,
             egl::{EglGlesContext, EglGlesVersion},
         };
@@ -157,7 +159,7 @@ impl GlInstance {
 
     /// Opens an offscreen GLES 3.x EGL pbuffer on the calling thread.
     pub fn gles_pbuffer(extent: [u32; 2]) -> api::Result<Self> {
-        use backend::gl::native::{
+        use backend::native::{
             NativePlatformContext,
             egl::{EglGlesContext, EglGlesVersion, EglPbufferSize},
         };

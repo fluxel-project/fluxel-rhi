@@ -15,3 +15,15 @@ ash = "=0.38.0"
 fluxel-rhi-core = { path = "../core" }
 raw-window-handle = "=0.6.2"
 naga = { version = "=27.0.3", features = ["wgsl-in", "spv-out"] }
+
+[[test]]
+name = "hardware"
+path = "tests/hardware/mod.rs"
+
+[[test]]
+name = "mrt_gpu"
+path = "tests/mrt_gpu/mod.rs"
+
+[[test]]
+name = "readonly_depth_stencil_gpu"
+path = "tests/readonly_depth_stencil_gpu/mod.rs"

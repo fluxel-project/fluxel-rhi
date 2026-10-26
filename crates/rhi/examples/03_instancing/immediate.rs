@@ -4,6 +4,7 @@
 //! as they run; shaders remain the checked-in WebGPU WGSL assets.
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 use super::Instancing;
 

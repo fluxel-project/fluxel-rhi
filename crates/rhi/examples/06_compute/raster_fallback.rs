@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 use fluxel_rhi::gl::{Gl, GlInstance};
 
 use super::{compute, utils};

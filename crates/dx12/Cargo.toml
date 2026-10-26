@@ -36,3 +36,11 @@ windows = { version = "=0.62.2", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Security",
 ] }
+
+[[test]]
+name = "mrt_gpu"
+path = "tests/mrt_gpu/mod.rs"
+
+[[test]]
+name = "readonly_depth_stencil_gpu"
+path = "tests/readonly_depth_stencil_gpu/mod.rs"

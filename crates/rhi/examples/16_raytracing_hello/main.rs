@@ -7,6 +7,7 @@ mod scene;
 mod utils;
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 struct Hello<B: ResourceBackend + ShaderBackend + PipelineBackend + RasterBackend + ReadbackBackend>
 {

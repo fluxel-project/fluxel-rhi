@@ -11,7 +11,7 @@ use fluxel_rhi_core::api::{self, Error, Result};
 
 use super::encoder::{Dx12SecondaryEncoder, Dx12SecondaryWork};
 
-impl api::SecondaryBackend for Dx12 {
+impl fluxel_rhi_core::backend::SecondaryBackend for Dx12 {
     type NativeSecondaryEncoder = Dx12SecondaryEncoder;
     type NativeSecondaryWork = Dx12SecondaryWork;
 

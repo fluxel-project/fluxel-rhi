@@ -15,15 +15,17 @@ use std::{
 
 use ash::{Entry, Instance, vk};
 use fluxel_rhi_core::api::{
-    self, AdapterId, AdapterInfo, Backend, DeviceCapabilities, DeviceId, DeviceLimits,
-    DeviceRequest, Error, InstanceBackend, InstanceId, LaneClass, LaneId, LaneInfo, Result,
+    self, AdapterId, AdapterInfo, DeviceCapabilities, DeviceId, DeviceLimits, DeviceRequest, Error,
+    InstanceId, LaneClass, LaneId, LaneInfo, Result,
 };
+use fluxel_rhi_core::backend::{Backend, InstanceBackend};
 
 /// Vulkan backend selected once by the caller.
 #[derive(Clone)]
 pub struct Vulkan;
 
 #[cfg(all(test, feature = "hardware-tests"))]
+#[path = "../tests/backend/queue_ownership_gpu.rs"]
 mod queue_ownership_gpu;
 
 /// Process-local Vulkan instance used for adapter enumeration and opening.
@@ -93,6 +95,7 @@ struct DeviceState {
     upload_pool: upload::UploadPool,
     upload_copy_offset_alignment: u64,
     readback_pool: readback::ReadbackPool,
+    default_resource_pool: memory::DefaultResourcePool,
     command_pools: command_pool::CommandPoolCache,
     descriptor_pools: pipeline::descriptor_pool::DescriptorPoolCache,
     /// Base features actually enabled on the logical device.
@@ -327,6 +330,7 @@ impl Drop for DeviceState {
         // DeviceState, so no child Vulkan object can outlive this destroy call.
         self.upload_pool.clear();
         self.readback_pool.clear();
+        self.default_resource_pool.clear();
         self.command_pools.clear();
         self.descriptor_pools.clear();
         if let Some(timelines) = self.queue_timelines.take() {
@@ -369,7 +373,7 @@ impl Backend for Vulkan {
     type Extras = raster::RasterExtras;
 }
 
-impl api::ResourceBackend for Vulkan {
+impl fluxel_rhi_core::backend::ResourceBackend for Vulkan {
     fn buffer_support(
         device: &VulkanDevice,
         desc: &api::BufferDesc,
@@ -418,7 +422,7 @@ impl api::ResourceBackend for Vulkan {
     }
 }
 
-impl api::PipelineBackend for Vulkan {
+impl fluxel_rhi_core::backend::PipelineBackend for Vulkan {
     type RasterPipelineFuture<'a> = cold_worker::ColdFuture<VulkanRasterPipeline>;
     fn create_raster_pipeline<'a>(
         device: &'a VulkanDevice,
@@ -430,7 +434,7 @@ impl api::PipelineBackend for Vulkan {
     }
 }
 
-impl api::QueryBackend for Vulkan {
+impl fluxel_rhi_core::backend::QueryBackend for Vulkan {
     fn query_supported(device: &VulkanDevice, kind: api::QueryKind) -> bool {
         match kind {
             api::QueryKind::Occlusion => true,
@@ -504,7 +508,7 @@ impl api::QueryBackend for Vulkan {
     }
 }
 
-impl api::CommandBackend for Vulkan {
+impl fluxel_rhi_core::backend::CommandBackend for Vulkan {
     fn clear_buffer(
         encoder: &mut VulkanEncoder,
         buffer: &VulkanBuffer,
@@ -594,7 +598,7 @@ impl api::CommandBackend for Vulkan {
     }
 }
 
-impl api::ShaderBackend for Vulkan {
+impl fluxel_rhi_core::backend::ShaderBackend for Vulkan {
     type DirectFuture<'a> = cold_worker::ColdFuture<VulkanShader>;
     type NagaFuture<'a> = cold_worker::ColdFuture<VulkanShader>;
     fn shader_route(_: &VulkanDevice, desc: &api::ShaderDesc) -> api::ShaderRoute {
@@ -644,6 +648,6 @@ fn vk_error(error: vk::Result) -> Error {
     }
 }
 
-impl fluxel_rhi_core::api::ExecutionBackend for Vulkan {
+impl fluxel_rhi_core::backend::ExecutionBackend for Vulkan {
     type Mode = fluxel_rhi_core::api::DeferredExecution;
 }

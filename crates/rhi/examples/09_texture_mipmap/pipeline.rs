@@ -5,6 +5,7 @@
 
 use super::{MipChain, MipmapWorkloadBackend};
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 pub struct Tunnel<B: MipmapWorkloadBackend> {
     pub(super) lane: LaneId,
     pub(super) chain: MipChain<B>,

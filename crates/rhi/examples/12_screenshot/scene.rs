@@ -2,6 +2,7 @@
 
 use super::super::{ScreenshotWorkloadBackend, gltf};
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 const DRAGON: &[u8] = include_bytes!("../assets/models/chinesedragon.gltf");
 const VS: &[u8] = include_bytes!("../assets/12_screenshot/screenshot_vs.dxil");

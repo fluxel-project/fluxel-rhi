@@ -3,7 +3,7 @@
 //! The scene renders the original `voyager.gltf` mesh into a multisampled
 //! color/depth pair and resolves the color attachment into the acquired frame.
 //! The native host owns the window and surface lifecycle.
-#[path = "../utils/gltf.rs"]
+#[path = "../utils/gltf/mod.rs"]
 mod gltf;
 #[path = "scene.rs"]
 mod msaa;
@@ -11,6 +11,7 @@ mod msaa;
 mod utils;
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 pub use msaa::{Msaa, MsaaDeferredBackend};
 
 #[cfg(any(

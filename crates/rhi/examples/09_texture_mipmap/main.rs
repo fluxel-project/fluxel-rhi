@@ -1,11 +1,12 @@
 //! Runtime RGBA8 mip-chain generation through native linear blits.
-#[path = "../utils/gltf.rs"]
+#[path = "../utils/gltf/mod.rs"]
 mod gltf;
 mod scene;
 #[path = "../utils/mod.rs"]
 mod utils;
 
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 pub use scene::{MipmapWorkloadBackend, Tunnel};
 
 #[cfg(any(

@@ -1,0 +1,488 @@
+//! Platform-neutral attachment, framebuffer, and render-pass vocabulary.
+//!
+//! This module owns the attachment-view description, the framebuffer and
+//! render-pass descriptors built from it, and the validation both descriptors
+//! run before a provider touches GL state. It does not own object lifetime
+//! (that is the provider) and does not decide whether a context proved a
+//! capability: it states the rule and the structured reason, and the provider
+//! supplies the discovered facts the rule is checked against.
+//!
+//! Two storage classes can back an attachment, and both go through the same
+//! view type, the same rule sequence, and the same multiview gate. A texture
+//! contributes a mip chain and a layer dimension; a renderbuffer is a single
+//! allocation with neither, so its only addressable view is level 0, layer 0,
+//! of exactly one layer -- the rule that would otherwise be misread as a
+//! layered attachment.
+//!
+//! A window-system drawable is a third *pass target* but not a third resource
+//! allocation: [`GlDefaultFramebufferTarget`] carries acquired-frame identity
+//! and immutable facts without pretending that the default framebuffer is a
+//! `TextureId`, a `TextureView`, or `FramebufferId(0)`.  This is necessary for
+//! GL/WebGL presentation, while keeping a frame attachment distinct from an
+//! allocatable resource everywhere else in the RHI.
+
+use super::{FramebufferId, GlError, GlFamilyApi, GlFormat, RenderbufferId, TextureId};
+
+/// Facts for one acquired default framebuffer.  `frame_serial` and `context`
+/// make a stale or foreign acquired frame structurally distinguishable; the
+/// remaining fields let the shared pass validator reject incompatible pipeline
+/// and attachment state before any GL call.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct GlDefaultFramebufferTarget {
+    pub frame_serial: u64,
+    pub context: super::ContextStamp,
+    pub width: u32,
+    pub height: u32,
+    pub sample_count: u32,
+    pub color_format: GlFormat,
+}
+
+/// The storage selected for a render pass.  The default target is deliberately
+/// not representable as an object ID: GL name zero is a binding convention, not
+/// a Fluxel-owned framebuffer allocation.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum GlRenderTarget {
+    Offscreen(FramebufferId),
+    Default(GlDefaultFramebufferTarget),
+}
+
+/// A color attachment either addresses allocated storage or exactly the
+/// default target that owns the pass. Depth/stencil never admits `DefaultColor`.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum GlPassAttachmentView {
+    Allocated(GlTextureView),
+    DefaultColor(GlDefaultFramebufferTarget),
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum GlAttachmentTarget {
+    Texture(TextureId),
+    /// A renderbuffer allocation, which has no mip chain and no layers.
+    Renderbuffer(RenderbufferId),
+}
+
+/// One view of one attachment's storage.
+///
+/// The name stays texture-first because it is the common case, but the fields
+/// are the view of whichever storage class `target` names: `mip_level`,
+/// `array_layer`, and `layer_count` describe a coordinate into the allocation,
+/// and a renderbuffer is the degenerate coordinate (level 0, layer 0, one
+/// layer) that its own validation arm enforces.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct GlTextureView {
+    pub target: GlAttachmentTarget,
+    pub format: GlFormat,
+    /// Plane attached to the framebuffer; All retains the format's planes.
+    pub aspect: super::GlTextureAspect,
+    pub mip_level: u32,
+    pub array_layer: u32,
+    /// Array layers this view serves in one pass; `1` is a plain attachment.
+    ///
+    /// A view with more than one layer is a multiview attachment: the pass then
+    /// renders that many views, and every attachment of the framebuffer must
+    /// agree on the count. The field is view vocabulary, not a context
+    /// property; whether the context can serve the count is decided against the
+    /// discovered view-count limit, so an unsupported count is rejected before
+    /// the first pass rather than at the first draw.
+    pub layer_count: u32,
+    pub width: u32,
+    pub height: u32,
+    pub sample_count: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum GlLoadOp {
+    Load,
+    Clear,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum GlStoreOp {
+    Store,
+    Discard,
+}
+
+/// IEEE values preserved by bit pattern, keeping pass descriptors hashable.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum GlColorClearValue {
+    Float([u32; 4]),
+    Uint([u32; 4]),
+    Sint([i32; 4]),
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct GlDepthStencilClearValue {
+    pub depth: u32,
+    pub stencil: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct GlColorAttachment {
+    pub view: GlPassAttachmentView,
+    pub resolve_target: Option<GlTextureView>,
+    pub load: GlLoadOp,
+    pub store: GlStoreOp,
+    pub clear: GlColorClearValue,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct GlDepthStencilAttachment {
+    pub view: GlTextureView,
+    pub depth_load: GlLoadOp,
+    pub depth_store: GlStoreOp,
+    pub stencil_load: GlLoadOp,
+    pub stencil_store: GlStoreOp,
+    pub clear: GlDepthStencilClearValue,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct GlFramebufferDescriptor {
+    pub color_attachments: Vec<Option<GlTextureView>>,
+    pub depth_stencil_attachment: Option<GlTextureView>,
+    /// Explicit `glDrawBuffers` selection over color-attachment indices.
+    ///
+    /// Empty keeps the driver's default mapping; `u32::MAX` denotes GL_NONE.
+    /// Other indices must name present attachments and be duplicate free.
+    pub draw_buffers: Vec<u32>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct GlRenderPassDescriptor {
+    /// Core render area in upper-left coordinates; None means the full target.
+    pub render_area: Option<super::GlScissorRect>,
+    pub target: GlRenderTarget,
+    pub color_attachments: Vec<Option<GlColorAttachment>>,
+    pub depth_stencil_attachment: Option<GlDepthStencilAttachment>,
+}
+
+/// One source/destination rectangle pair for a framebuffer blit.
+///
+/// Origins are nonnegative so an out-of-framebuffer rectangle is a plain
+/// bounds failure instead of a signed-coordinate edge case.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GlBlitRegion {
+    pub src_offset: [u32; 2],
+    pub src_extent: [u32; 2],
+    pub dst_offset: [u32; 2],
+    pub dst_extent: [u32; 2],
+}
+
+impl GlBlitRegion {
+    pub(crate) fn validate(&self) -> Result<(), GlFramebufferValidationError> {
+        if self.src_extent.contains(&0) || self.dst_extent.contains(&0) {
+            return Err(GlFramebufferValidationError::InvalidBlitRegion);
+        }
+        Ok(())
+    }
+}
+
+/// The planes selected by one blit. At least one plane is required.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GlBlitMask {
+    pub color: bool,
+    pub depth: bool,
+    pub stencil: bool,
+}
+
+impl GlBlitMask {
+    pub(crate) const fn is_empty(self) -> bool {
+        !self.color && !self.depth && !self.stencil
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GlFramebufferValidationError {
+    NoAttachments,
+    TooManyColorAttachments,
+    ForeignContext,
+    DuplicateAttachment,
+    InvalidExtent,
+    InvalidLayerCount,
+    MismatchedExtent,
+    MismatchedLayerCount,
+    MismatchedSampleCount,
+    InvalidColorFormat,
+    InvalidDepthStencilFormat,
+    InvalidResolve,
+    DiscardWithoutResolve,
+    TooManyDrawBuffers,
+    DrawBufferIndexOutOfBounds,
+    DuplicateDrawBuffer,
+    MultiviewNotSupported,
+    MultiviewViewCountExceedsLimit,
+    InvalidBlitRegion,
+    EmptyBlitMask,
+    BlitFilterIncompatible,
+    IdenticalBlitTargets,
+}
+
+impl GlAttachmentTarget {
+    const fn context(self) -> super::ContextStamp {
+        match self {
+            Self::Texture(texture) => texture.context,
+            Self::Renderbuffer(renderbuffer) => renderbuffer.context,
+        }
+    }
+}
+impl GlTextureView {
+    fn is_depth_stencil(self) -> bool {
+        matches!(
+            self.format,
+            GlFormat::Depth16Unorm
+                | GlFormat::Depth24Unorm
+                | GlFormat::Depth24PlusStencil8
+                | GlFormat::Depth32Float
+                | GlFormat::Depth32FloatStencil8
+                | GlFormat::Stencil8
+        )
+    }
+    fn validate_shape(self) -> Result<(), GlFramebufferValidationError> {
+        if self.width == 0 || self.height == 0 || self.sample_count == 0 {
+            return Err(GlFramebufferValidationError::InvalidExtent);
+        }
+        if self.layer_count == 0 {
+            return Err(GlFramebufferValidationError::InvalidLayerCount);
+        }
+        Ok(())
+    }
+}
+
+/// Rejects an attachment view count this context cannot serve.
+///
+/// One view is the count every pass already uses and is always legal. More than
+/// one view is a multiview pass, which needs both the multiview capability and
+/// a view count within the discovered limit; a context that proved neither
+/// rejects here, before any pass state changes, instead of rendering the first
+/// layer and silently dropping the rest.
+fn validate_view_count(
+    view_count: u32,
+    max_views: u32,
+) -> Result<(), GlFramebufferValidationError> {
+    if view_count <= 1 {
+        return Ok(());
+    }
+    if max_views < 2 {
+        return Err(GlFramebufferValidationError::MultiviewNotSupported);
+    }
+    if view_count > max_views {
+        return Err(GlFramebufferValidationError::MultiviewViewCountExceedsLimit);
+    }
+    Ok(())
+}
+
+impl GlFramebufferDescriptor {
+    pub(crate) fn validate(
+        &self,
+        max_colors: u32,
+        max_draw_buffers: u32,
+        current: super::ContextStamp,
+    ) -> Result<(), GlFramebufferValidationError> {
+        if self.color_attachments.iter().all(Option::is_none)
+            && self.depth_stencil_attachment.is_none()
+        {
+            return Err(GlFramebufferValidationError::NoAttachments);
+        }
+        if self.color_attachments.len() > max_colors as usize {
+            return Err(GlFramebufferValidationError::TooManyColorAttachments);
+        }
+        if self.draw_buffers.len() > max_draw_buffers as usize {
+            return Err(GlFramebufferValidationError::TooManyDrawBuffers);
+        }
+        for (position, index) in self.draw_buffers.iter().enumerate() {
+            if *index == u32::MAX {
+                continue;
+            }
+            if *index as usize >= self.color_attachments.len()
+                || self.color_attachments[*index as usize].is_none()
+            {
+                return Err(GlFramebufferValidationError::DrawBufferIndexOutOfBounds);
+            }
+            if self.draw_buffers[..position].contains(index) {
+                return Err(GlFramebufferValidationError::DuplicateDrawBuffer);
+            }
+        }
+        let mut all: Vec<_> = self.color_attachments.iter().flatten().copied().collect();
+        if let Some(depth) = self.depth_stencil_attachment {
+            all.push(depth);
+        }
+        let Some(first) = all.first().copied() else {
+            return Err(GlFramebufferValidationError::NoAttachments);
+        };
+        for view in all {
+            view.validate_shape()?;
+            if view.target.context() != current {
+                return Err(GlFramebufferValidationError::ForeignContext);
+            }
+            // A pass renders one view count: attachments that disagree would
+            // need per-attachment view loops the contract does not define. The
+            // count is a shape fact like the extent, so it is compared with the
+            // other shape rules, before the extent is.
+            if view.layer_count != first.layer_count {
+                return Err(GlFramebufferValidationError::MismatchedLayerCount);
+            }
+            if view.width != first.width || view.height != first.height {
+                return Err(GlFramebufferValidationError::MismatchedExtent);
+            }
+            if view.sample_count != first.sample_count {
+                return Err(GlFramebufferValidationError::MismatchedSampleCount);
+            }
+        }
+        if self
+            .color_attachments
+            .iter()
+            .flatten()
+            .any(|view| view.is_depth_stencil())
+        {
+            return Err(GlFramebufferValidationError::InvalidColorFormat);
+        }
+        if self
+            .depth_stencil_attachment
+            .is_some_and(|view| !view.is_depth_stencil())
+        {
+            return Err(GlFramebufferValidationError::InvalidDepthStencilFormat);
+        }
+        Ok(())
+    }
+
+    /// Returns the view count every attachment of this framebuffer agrees on.
+    ///
+    /// `validate` has already rejected disagreement, so the first attachment's
+    /// count is the whole framebuffer's count; no attachments means no views.
+    pub(crate) fn view_count(&self) -> u32 {
+        self.color_attachments
+            .iter()
+            .flatten()
+            .next()
+            .or(self.depth_stencil_attachment.as_ref())
+            .map_or(0, |view| view.layer_count)
+    }
+
+    /// Rejects a multiview view count this context cannot serve.
+    pub(crate) fn validate_multiview(
+        &self,
+        max_views: u32,
+    ) -> Result<(), GlFramebufferValidationError> {
+        validate_view_count(self.view_count(), max_views)
+    }
+}
+impl GlRenderPassDescriptor {
+    pub(crate) fn validate(
+        &self,
+        framebuffer: Option<&GlFramebufferDescriptor>,
+        max_colors: u32,
+        max_draw_buffers: u32,
+        current: super::ContextStamp,
+    ) -> Result<(), GlFramebufferValidationError> {
+        let target_context = match self.target {
+            GlRenderTarget::Offscreen(framebuffer) => framebuffer.context,
+            GlRenderTarget::Default(target) => target.context,
+        };
+        if target_context != current {
+            return Err(GlFramebufferValidationError::ForeignContext);
+        }
+        if let GlRenderTarget::Default(target) = self.target {
+            if self.depth_stencil_attachment.is_some()
+                || self.color_attachments.len() != 1
+                || !matches!(self.color_attachments[0], Some(GlColorAttachment { view: GlPassAttachmentView::DefaultColor(view), .. }) if view == target)
+                || self.color_attachments[0].is_some_and(|a| a.resolve_target.is_some())
+            {
+                return Err(GlFramebufferValidationError::InvalidResolve);
+            }
+            return Ok(());
+        }
+        let framebuffer = framebuffer.ok_or(GlFramebufferValidationError::NoAttachments)?;
+        framebuffer.validate(max_colors, max_draw_buffers, current)?;
+        if self.depth_stencil_attachment.map(|a| a.view) != framebuffer.depth_stencil_attachment {
+            return Err(GlFramebufferValidationError::DuplicateAttachment);
+        }
+        if self.color_attachments.len() != framebuffer.color_attachments.len() {
+            return Err(GlFramebufferValidationError::TooManyColorAttachments);
+        }
+        for (attachment, view) in self
+            .color_attachments
+            .iter()
+            .zip(&framebuffer.color_attachments)
+        {
+            let (attachment, view) = match (attachment, view) {
+                (None, None) => continue,
+                (Some(attachment), Some(view)) => (attachment, view),
+                _ => return Err(GlFramebufferValidationError::DuplicateAttachment),
+            };
+            if attachment.view != GlPassAttachmentView::Allocated(*view) {
+                return Err(GlFramebufferValidationError::DuplicateAttachment);
+            }
+            if let Some(resolve) = attachment.resolve_target {
+                // A resolve stays a single-layer blit destination: resolving a
+                // multiview attachment is one view per command, never one
+                // command for every view.
+                if resolve.target.context() != current
+                    || resolve.format != view.format
+                    || resolve.width != view.width
+                    || resolve.height != view.height
+                    || resolve.layer_count != 1
+                    || view.sample_count <= 1
+                    || resolve.sample_count != 1
+                {
+                    return Err(GlFramebufferValidationError::InvalidResolve);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns the view count this pass renders, taken from its attachments.
+    pub(crate) fn view_count(&self) -> u32 {
+        self.color_attachments
+            .iter()
+            .flatten()
+            .next()
+            .map(|attachment| match attachment.view {
+                GlPassAttachmentView::Allocated(view) => view.layer_count,
+                GlPassAttachmentView::DefaultColor(_) => 1,
+            })
+            .or_else(|| {
+                self.depth_stencil_attachment
+                    .map(|attachment| attachment.view.layer_count)
+            })
+            .unwrap_or(0)
+    }
+
+    /// Rejects a multiview view count this context cannot serve.
+    ///
+    /// `validate` has already proved every attachment matches its framebuffer
+    /// view, so the pass agrees on one view count by construction.
+    pub(crate) fn validate_multiview(
+        &self,
+        max_views: u32,
+    ) -> Result<(), GlFramebufferValidationError> {
+        validate_view_count(self.view_count(), max_views)
+    }
+}
+
+pub(crate) trait GlFramebufferApi: GlFamilyApi {
+    fn create_framebuffer(
+        &mut self,
+        descriptor: &GlFramebufferDescriptor,
+    ) -> Result<FramebufferId, GlError>;
+    fn destroy_framebuffer(&mut self, framebuffer: FramebufferId) -> Result<(), GlError>;
+    fn begin_render_pass(&mut self, descriptor: &GlRenderPassDescriptor) -> Result<(), GlError>;
+    fn end_render_pass(&mut self) -> Result<(), GlError>;
+    /// Copies selected planes from one framebuffer into another.
+    ///
+    /// This is also the MSAA resolve word: resolving is a blit whose source
+    /// is multisampled, so no separate resolve command exists in this contract.
+    /// Multisampled targets only accept nearest filtering; providers reject
+    /// the clearly incompatible combinations before touching GL state.
+    fn blit_framebuffer(
+        &mut self,
+        source: FramebufferId,
+        destination: FramebufferId,
+        region: GlBlitRegion,
+        filter: super::GlFilterMode,
+        masks: GlBlitMask,
+    ) -> Result<(), GlError>;
+}
+
+#[cfg(test)]
+#[path = "../../tests/backend/api/framebuffer_tests.rs"]
+mod tests;

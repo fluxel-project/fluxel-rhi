@@ -1,5 +1,5 @@
 #![cfg(windows)]
-#[path = "../src/backend/shader_naga.rs"]
+#[path = "../src/backend/shader_naga/mod.rs"]
 mod shader_naga;
 use fluxel_rhi_core::api::{ShaderDesc, ShaderEntryPoint, ShaderFormat, ShaderStage};
 use std::sync::Arc;

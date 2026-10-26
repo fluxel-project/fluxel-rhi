@@ -27,8 +27,8 @@ mod raster;
 mod readback;
 mod resource;
 mod resource_validation;
-mod subgroup;
 mod shader_worker;
+mod subgroup;
 mod submit;
 mod surface;
 mod utility;
@@ -36,6 +36,8 @@ mod utility;
 pub use instance::{WebGpu, WebGpuInstance};
 
 #[cfg(test)]
+#[path = "../tests/backend/conformance/mod.rs"]
 mod conformance;
 #[cfg(test)]
+#[path = "../tests/backend/mod.rs"]
 mod tests;

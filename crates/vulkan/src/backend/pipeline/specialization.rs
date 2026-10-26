@@ -164,37 +164,16 @@ impl Specialization {
             .map_entries(&self.entries)
             .data(&self.data)
     }
+
+    /// Native stages without overrides deliberately omit the optional
+    /// `VkSpecializationInfo`. Aside from matching the absence of public
+    /// overrides, this avoids passing an empty structure through ray-pipeline
+    /// creation, which was observed to crash a native driver.
+    pub(crate) fn native_info(&self) -> Option<vk::SpecializationInfo<'_>> {
+        (!self.entries.is_empty()).then(|| self.info())
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn resolves_grouped_spec_id_without_exposing_group_as_constant() {
-        let words = [
-            0x0723_0203,
-            0x0001_0000,
-            0,
-            10,
-            0,
-            (2 << 16) | 73,
-            3,
-            (4 << 16) | 71,
-            3,
-            1,
-            42,
-            (3 << 16) | 74,
-            3,
-            7,
-            (4 << 16) | 71,
-            8,
-            1,
-            9,
-        ];
-        let ids = specialization_ids(&words).unwrap();
-        assert_eq!(ids.get(&7), Some(&42));
-        assert_eq!(ids.get(&8), Some(&9));
-        assert!(!ids.contains_key(&3));
-    }
-}
+#[path = "../../tests/backend/pipeline/specialization.rs"]
+mod tests;

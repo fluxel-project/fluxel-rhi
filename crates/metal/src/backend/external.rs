@@ -4,7 +4,8 @@
 //! fresh shared event and value 1 is emitted for every release, so values from
 //! unrelated producers cannot accidentally satisfy one another.
 use super::{Metal, MetalBuffer, MetalCommandEncoder, MetalDevice, MetalTexture};
-use fluxel_rhi_core::api::{self, Error, ExternalBackend, Result};
+use fluxel_rhi_core::api::{self, Error, Result};
+use fluxel_rhi_core::backend::ExternalBackend;
 
 /// Native payloads accepted by the Metal external bridge.
 ///

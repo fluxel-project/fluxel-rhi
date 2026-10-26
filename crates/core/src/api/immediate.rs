@@ -71,55 +71,6 @@ pub enum ImmediateFinishOutcome<B: Backend> {
     /// An earlier explicit close/failure already returned its true prefix.
     AlreadyReported,
 }
-/// Immediate-only SPI. Its command methods issue native calls synchronously.
-/// No full CPU command list, replay stream, or owner-thread dispatcher exists.
-/// # Safety
-/// A failed or abandoned close must truthfully report whether work was issued.
-/// Every emergency checkpoint must cover the complete reported prefix; if the
-/// backend cannot prove coverage it must return Indeterminate.
-pub unsafe trait ImmediateBackend: CommandBackend + CompletionBackend {
-    /// Core calls this after validating that every wait names an earlier step
-    /// of this plan and that every plan lane belongs to the device. Backends
-    /// must still implement or reject cross-lane synchronization. A wait does
-    /// not replace the resource visibility transitions supplied by the caller.
-    /// Rejected means no native effect was issued. Any ambiguous native issue
-    /// must return Indeterminate, never a plain error.
-    fn install_waits(
-        device: &Self::NativeDevice,
-        lane: LaneId,
-        waits: &[StepWait],
-    ) -> WaitInstallOutcome<Self>;
-    fn close_immediate(
-        encoder: Self::NativeEncoder,
-        reason: ImmediateCloseReason,
-    ) -> ImmediateClose<Self>;
-    /// Err is a clean native rejection with the still-live lease. Once native
-    /// handoff is possible, return an issued/indeterminate close instead.
-    fn present_immediate(
-        device: &Self::NativeDevice,
-        lane: LaneId,
-        waits: &[StepWait],
-        binding: PresentBinding<Self>,
-    ) -> std::result::Result<ImmediateClose<Self>, (Error, PresentBinding<Self>)>;
-    /// None creates no normal checkpoint. End covers every issued step, with
-    /// multiple lane frontiers if needed. Steps covers the requested positions,
-    /// possibly using later conservative proof. Failure must produce complete
-    /// emergency coverage for the issued prefix or report Indeterminate.
-    fn checkpoints(
-        device: &Self::NativeDevice,
-        plan: &SubmissionPlan<Self>,
-        issued: &[StepId],
-        request: &CompletionRequest,
-    ) -> CheckpointOutcome<Self>;
-    fn emergency_checkpoint(
-        device: &Self::NativeDevice,
-        plan: &SubmissionPlan<Self>,
-        issued: &[StepId],
-    ) -> CheckpointOutcome<Self>;
-    /// An unclosed session is an executor error. Quarantine actual native GL
-    /// issue effects, never silently assume completion or destroy resources.
-    fn abandon_session(device: &Self::NativeDevice, plan: &SubmissionPlan<Self>, issued: &[StepId]);
-}
 pub struct ImmediateSession<B: ImmediateBackend> {
     pub(crate) device: Device<B>,
     plan: SubmissionPlan<B>,

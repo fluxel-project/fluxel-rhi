@@ -1,6 +1,7 @@
 //! Real single-lane execution of a reusable compiled RHI submission plan.
 #![cfg(windows)]
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 use std::{
     future::Future,
     sync::Arc,

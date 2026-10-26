@@ -5,6 +5,7 @@
 
 use super::MsaaBackend;
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 
 pub(super) async fn shader<B: MsaaBackend>(
     device: &Device<B>,

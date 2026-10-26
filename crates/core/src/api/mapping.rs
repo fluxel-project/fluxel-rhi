@@ -23,23 +23,6 @@ pub enum MapMode {
     Read,
     Write,
 }
-pub trait MappingBackend: Backend {
-    type NativeMap;
-    type MapFuture<'a>: Future<Output = Result<Self::NativeMap>> + 'a
-    where
-        Self: 'a;
-    fn map<'a>(
-        device: &'a Self::NativeDevice,
-        buffer: &'a Self::NativeBuffer,
-        range: Range<u64>,
-        mode: MapMode,
-    ) -> Self::MapFuture<'a>;
-    fn bytes(map: &Self::NativeMap) -> &[u8];
-    fn bytes_mut(map: &mut Self::NativeMap) -> &mut [u8];
-    fn flush(map: &mut Self::NativeMap, bytes: Range<u64>) -> Result<()>;
-    fn invalidate(map: &mut Self::NativeMap, bytes: Range<u64>) -> Result<()>;
-    fn unmap(map: Self::NativeMap);
-}
 pub struct MapLease<B: MappingBackend> {
     device: DeviceId,
     mode: MapMode,
@@ -108,23 +91,6 @@ pub struct ReadbackData {
     pub bytes: Vec<u8>,
     pub row_pitch: u64,
     pub slice_pitch: u64,
-}
-/// Readback is staged at an explicitly encoded position. RHI does not scan
-/// resources or choose completion; renderer must await covering checkpoint.
-pub trait ReadbackBackend: CommandBackend + CompletionBackend {
-    type NativeReadback;
-    type ReadbackFuture<'a>: Future<Output = Result<ReadbackData>> + 'a
-    where
-        Self: 'a;
-    fn encode_readback(
-        encoder: &mut Self::NativeEncoder,
-        src: &Self::NativeBuffer,
-        range: Range<u64>,
-    ) -> Result<Self::NativeReadback>;
-    fn map_readback<'a>(
-        device: &'a Self::NativeDevice,
-        ticket: Self::NativeReadback,
-    ) -> Self::ReadbackFuture<'a>;
 }
 pub struct ReadbackTicket<B: ReadbackBackend> {
     device: DeviceId,

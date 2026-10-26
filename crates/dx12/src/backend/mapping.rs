@@ -12,7 +12,7 @@ pub struct Dx12Map {
     range: Range<usize>,
     mode: api::MapMode,
 }
-impl api::MappingBackend for Dx12 {
+impl fluxel_rhi_core::backend::MappingBackend for Dx12 {
     type NativeMap = Dx12Map;
     type MapFuture<'a> = Ready<Result<Dx12Map>>;
     fn map<'a>(

@@ -2,7 +2,7 @@
 //!
 //! A failed idle wait is not completion evidence. Standalone examples stop
 //! execution without unwinding rather than release an unproven in-flight scene.
-use fluxel_rhi::api::{CompletionBackend, Device};
+use fluxel_rhi::{api::Device, backend::CompletionBackend};
 
 pub(super) fn unsettled(reason: &str) -> ! {
     eprintln!("RHI example cannot safely release in-flight resources: {reason}");

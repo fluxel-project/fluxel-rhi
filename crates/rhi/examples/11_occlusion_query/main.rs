@@ -3,11 +3,12 @@
 //! `Workload` owns the scene, query result storage, and command recording.
 //! The platform host owns its surface lease and submission; completion evidence
 //! crosses back into this module only to make the query readback safe.
-#[path = "../utils/gltf.rs"]
+#[path = "../utils/gltf/mod.rs"]
 mod gltf;
 #[path = "../utils/mod.rs"]
 mod utils;
 use fluxel_rhi::api::*;
+use fluxel_rhi::backend::*;
 const PLANE: &[u8] = include_bytes!("../assets/models/plane_z.gltf");
 const TEAPOT: &[u8] = include_bytes!("../assets/models/teapot.gltf");
 const SPHERE: &[u8] = include_bytes!("../assets/models/sphere.gltf");

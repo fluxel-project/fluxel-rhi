@@ -3,9 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use fluxel_host::{HostApplication, HostContext, HostRuntime, WindowConfig, WindowEvent};
-use fluxel_rhi::api::{
-    CompletionBackend, Device, Error, Result, Surface, SurfaceBackend, SurfaceConfig, SurfaceImage,
-};
+use fluxel_rhi::api::{Device, Error, Result, Surface, SurfaceConfig, SurfaceImage};
+use fluxel_rhi::backend::{CompletionBackend, SurfaceBackend};
 #[cfg(feature = "dx12")]
 use fluxel_rhi::dx12::{Dx12, Dx12Instance};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};

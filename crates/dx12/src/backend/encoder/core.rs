@@ -113,6 +113,9 @@ pub struct Dx12Encoder {
     pub(crate) mip_blit_heaps: Vec<ID3D12DescriptorHeap>,
     pub(crate) mip_blit_descriptors: Vec<super::super::descriptor::TemporaryDescriptorPair>,
     pub(crate) clear_heaps: Vec<ID3D12DescriptorHeap>,
+    /// Leases for CPU descriptors recorded as raw handles. `Dx12RecordedWork`
+    /// retains this encoder through the queue fence (or u64::MAX quarantine).
+    pub(crate) view_descriptor_leases: Vec<super::super::descriptor::CpuDescriptorLease>,
     pub(crate) integer_clear_pipelines: Vec<Arc<super::integer_clear::IntegerClearPipeline>>,
     pub(crate) secondary: Vec<super::secondary::Dx12SecondaryWork>,
     pub(crate) queries: Vec<Dx12QuerySet>,
@@ -165,7 +168,7 @@ pub struct Dx12Completion {
 
 pub struct RasterExtras;
 
-impl api::RasterExtrasOps<Dx12> for RasterExtras {
+impl fluxel_rhi_core::backend::RasterExtrasOps<Dx12> for RasterExtras {
     const AVAILABLE: bool = true;
     fn draw_indirect(
         encoder: &mut Dx12Encoder,
@@ -278,6 +281,7 @@ impl Dx12Encoder {
             mip_blit_heaps: Vec::new(),
             mip_blit_descriptors: Vec::new(),
             clear_heaps: Vec::new(),
+            view_descriptor_leases: Vec::new(),
             integer_clear_pipelines: Vec::new(),
             secondary: Vec::new(),
             queries: Vec::new(),

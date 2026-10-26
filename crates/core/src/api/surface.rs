@@ -80,24 +80,6 @@ pub struct SurfaceCapabilities {
     pub min_extent: [u32; 2],
     pub max_extent: [u32; 2],
 }
-pub trait SurfaceBackend: Backend {
-    type ConfigureFuture<'a>: Future<Output = Result<()>> + 'a
-    where
-        Self: 'a;
-    type AcquireFuture<'a>: Future<Output = Result<Self::NativeSurfaceImage>> + 'a
-    where
-        Self: 'a;
-    fn generation(surface: &Self::NativeSurface) -> u64;
-    fn capabilities(surface: &Self::NativeSurface) -> Result<SurfaceCapabilities>;
-    fn supports_config(surface: &Self::NativeSurface, desc: &SurfaceConfig) -> Support<()>;
-    /// Configuration and generation change in one native transaction. Failed or
-    /// cancelled pending configuration must not publish a half-commit.
-    fn configure<'a>(
-        surface: &'a mut Self::NativeSurface,
-        desc: &'a SurfaceConfig,
-    ) -> Self::ConfigureFuture<'a>;
-    fn acquire<'a>(surface: &'a mut Self::NativeSurface) -> Self::AcquireFuture<'a>;
-}
 impl<B: SurfaceBackend> Surface<B> {
     /// # Safety: caller associates exactly one native surface with this Device.
     pub unsafe fn from_native(device: DeviceId, id: SurfaceId, native: B::NativeSurface) -> Self {
