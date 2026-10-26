@@ -97,13 +97,22 @@ pub(super) struct DeviceState {
     pub(super) in_flight: RefCell<Vec<InFlight>>,
     /// Pages leave this arena only after the queue completion that used them.
     pub(super) upload_page_pool: RefCell<UploadPagePool>,
-    pub(super) uncertain_resources: RefCell<Vec<JsValue>>,
+    /// Native objects retained after a queue boundary could have issued but
+    /// could not be observed. Their monotonic sequence lets a later confirmed
+    /// idle release only the entries that precede its own queue promise.
+    pub(super) uncertain_resources: RefCell<Vec<UncertainResource>>,
+    pub(super) next_uncertain_resource: Cell<u64>,
     pub(super) lost: Cell<bool>,
     pub(super) validation_error: RefCell<Option<String>>,
     pub(super) wgsl_language_features: std::collections::BTreeSet<String>,
     pub(super) utility_pipelines: RefCell<std::collections::BTreeMap<&'static str, JsValue>>,
     pub(super) render_utility_pipelines: RefCell<std::collections::BTreeMap<String, JsValue>>,
     validation_listener: RefCell<Option<Closure<dyn FnMut(JsValue)>>>,
+}
+
+pub(super) struct UncertainResource {
+    pub(super) sequence: u64,
+    pub(super) _value: JsValue,
 }
 
 /// WebGPU always exposes indirect draw commands.  The optional feature only
@@ -357,6 +366,7 @@ impl InstanceBackend for WebGpu {
                 in_flight: RefCell::new(Vec::new()),
                 upload_page_pool: RefCell::new(UploadPagePool::new()),
                 uncertain_resources: RefCell::new(Vec::new()),
+                next_uncertain_resource: Cell::new(0),
                 lost: Cell::new(false),
                 validation_error: RefCell::new(None),
                 wgsl_language_features,

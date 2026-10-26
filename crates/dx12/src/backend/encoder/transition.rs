@@ -15,6 +15,26 @@ pub(crate) fn barrier_sub(
     after: D3D12_RESOURCE_STATES,
 ) {
     if before == after {
+        // A state transition is unnecessary, but dependent UAV accesses still
+        // need ordering. Legacy UAV barriers cover the entire resource even
+        // when the caller names only one texture subresource.
+        if before.contains(D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+            let mut barrier = D3D12_RESOURCE_BARRIER {
+                Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
+                Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+                Anonymous: D3D12_RESOURCE_BARRIER_0 {
+                    UAV: ManuallyDrop::new(D3D12_RESOURCE_UAV_BARRIER {
+                        pResource: ManuallyDrop::new(Some(resource.clone())),
+                    }),
+                },
+            };
+            // SAFETY: the descriptor owns a temporary COM reference; D3D12
+            // consumes the borrowed descriptor synchronously while recording.
+            unsafe {
+                list.ResourceBarrier(std::slice::from_ref(&barrier));
+                ManuallyDrop::drop(&mut (*barrier.Anonymous.UAV).pResource);
+            }
+        }
         return;
     }
     let mut b = D3D12_RESOURCE_BARRIER {

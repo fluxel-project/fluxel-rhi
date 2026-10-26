@@ -6,13 +6,27 @@ capabilities. Migration checks covered source fingerprints, hardware readbacks
 and platform limits. They do not add GL deferred recording, native multi-queue
 support, or Metal GPU acceptance.
 
-**Scope:** the DX12, Vulkan, and WebGPU columns summarize examples 01–15.
-DX12/Vulkan examples 16–23 also received focused GPU fixtures and reference
-comparisons; that candidate's source was not frozen during all captures. GL4+,
-GLES3+, and WebGL2 have separate profile evidence in
+**Scope:** the capability rows below describe the portable/basic examples
+01–15. The separately recorded historical smoke coverage of both groups is:
+
+| Backend route | Basic 01–15 | Native-advanced 16–23 |
+| --- | --- | --- |
+| DX12 | Pass | Pass |
+| Vulkan | Pass | Pass |
+| WebGPU | Pass | Unsupported |
+| GL4+ (WGL) | Pass | NotRun |
+| GLES3+ | Pass | NotRun |
+| WebGL2 | Pass | NotRun |
+| Metal | NotRun | NotRun |
+
+These are historical route statuses, not a present-candidate or visual-acceptance
+claim. The source/worktree identity, platform, execution scope, and
+configuration-specific Vulkan failure history are maintained in
+[the testing guide](testing.md#numbered-example-coverage).
+GL4+, GLES3+, and WebGL2 have additional profile evidence in
 `crates/rhi/examples/README.md`. Metal has Apple-target compile checks and
 static review, but no Apple GPU evidence, so it is intentionally not represented
-as a passing matrix column.
+as a passing capability column.
 
 `Pass` means a recorded native run, not successful compilation. `Unsupported` requires an explicit capability or operation result. A successful example proves its exercised path only, not every operation in the backend API.
 

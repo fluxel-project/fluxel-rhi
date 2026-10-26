@@ -45,7 +45,10 @@ async fn gpu_steps_publish_each_requested_queue_boundary() {
             ),
         )
     };
-    let requested = [plan.step(0), plan.step(1), plan.step(2)];
+    // Requests deliberately differ from execution order and repeat the last
+    // boundary. The receipt must preserve this public request order while the
+    // backend emits each native boundary only once.
+    let requested = [plan.step(2), plan.step(0), plan.step(2)];
     // SAFETY: the plan, lane, and all three one-shot records have the same
     // device identity; the fixture consumes every record exactly once.
     let outcome = unsafe {
@@ -53,15 +56,15 @@ async fn gpu_steps_publish_each_requested_queue_boundary() {
             plan: plan.clone(),
             steps: vec![
                 BoundStep {
-                    step: requested[0],
+                    step: plan.step(0),
                     payload: StepPayload::Commands(vec![first.finish().unwrap()]),
                 },
                 BoundStep {
-                    step: requested[1],
+                    step: plan.step(1),
                     payload: StepPayload::Commands(vec![second.finish().unwrap()]),
                 },
                 BoundStep {
-                    step: requested[2],
+                    step: plan.step(2),
                     payload: StepPayload::Commands(vec![third.finish().unwrap()]),
                 },
             ],
@@ -76,7 +79,7 @@ async fn gpu_steps_publish_each_requested_queue_boundary() {
             panic!("WebGPU steps submit failed: {error:?}")
         }
     };
-    assert_eq!(receipt.accepted, requested);
+    assert_eq!(receipt.accepted, [plan.step(0), plan.step(1), plan.step(2)]);
     assert_eq!(receipt.checkpoints.len(), requested.len());
     for (checkpoint, step) in receipt.checkpoints.iter().zip(requested) {
         assert_eq!(checkpoint.covers.lane_frontiers, [(lane, step)]);
@@ -85,7 +88,7 @@ async fn gpu_steps_publish_each_requested_queue_boundary() {
     // SAFETY: the final requested point is a real queue boundary after the
     // third encoder's write and readback copy.
     assert_eq!(
-        unsafe { d.read_after(ticket, &receipt.checkpoints[2].point).await }
+        unsafe { d.read_after(ticket, &receipt.checkpoints[0].point).await }
             .unwrap()
             .bytes,
         [11u32, 22, 33]

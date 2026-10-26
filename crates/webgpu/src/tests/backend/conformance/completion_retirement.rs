@@ -1,8 +1,74 @@
 //! Queue-promise retirement without subsequent RHI operations.
 use super::*;
+use fluxel_rhi_core::backend::CompletionBackend;
 use js_sys::Promise;
 use std::rc::Rc;
+use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
+
+fn retain_uncertain(native: &super::super::instance::WebGpuDevice) {
+    let sequence = native.0.next_uncertain_resource.get();
+    native.0.next_uncertain_resource.set(sequence + 1);
+    native
+        .0
+        .uncertain_resources
+        .borrow_mut()
+        .push(super::super::instance::UncertainResource {
+            sequence,
+            _value: JsValue::UNDEFINED,
+        });
+}
+
+#[wasm_bindgen_test(async)]
+async fn idle_releases_only_uncertain_resources_before_its_queue_boundary() {
+    let d = open().await;
+    // SAFETY: private immutable bookkeeping access for this browser fixture.
+    let native = unsafe { d.native_ref() }.clone();
+    retain_uncertain(&native); // before both idle boundaries
+    let first = <WebGpu as CompletionBackend>::wait_idle(&native);
+    retain_uncertain(&native); // after first, before second boundary
+    let second = <WebGpu as CompletionBackend>::wait_idle(&native);
+    retain_uncertain(&native); // after both boundaries
+
+    first.await.unwrap();
+    assert_eq!(
+        native
+            .0
+            .uncertain_resources
+            .borrow()
+            .iter()
+            .map(|entry| entry.sequence)
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
+    second.await.unwrap();
+    assert_eq!(
+        native
+            .0
+            .uncertain_resources
+            .borrow()
+            .iter()
+            .map(|entry| entry.sequence)
+            .collect::<Vec<_>>(),
+        [2]
+    );
+}
+
+#[wasm_bindgen_test(async)]
+async fn failed_or_dropped_idle_keeps_uncertain_resources() {
+    let d = open().await;
+    // SAFETY: private immutable bookkeeping access for this browser fixture.
+    let native = unsafe { d.native_ref() }.clone();
+    retain_uncertain(&native);
+    let cancelled = <WebGpu as CompletionBackend>::wait_idle(&native);
+    drop(cancelled);
+    assert_eq!(native.0.uncertain_resources.borrow().len(), 1);
+
+    let failed = <WebGpu as CompletionBackend>::wait_idle(&native);
+    *native.0.validation_error.borrow_mut() = Some("injected idle failure".into());
+    assert!(failed.await.is_err());
+    assert_eq!(native.0.uncertain_resources.borrow().len(), 1);
+}
 
 #[wasm_bindgen_test(async)]
 async fn gpu_none_submission_retires_without_followup_rhi_calls() {

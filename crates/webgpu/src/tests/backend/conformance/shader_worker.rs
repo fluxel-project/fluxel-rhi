@@ -9,7 +9,7 @@ use wasm_bindgen::{JsValue, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::wasm_bindgen_test;
 
-const COUNT_COMPUTE: &[u8] = include_bytes!("../../assets/worker_count.spv");
+const COUNT_COMPUTE: &[u8] = include_bytes!("../../../../tests/assets/worker_count.spv");
 
 #[wasm_bindgen(module = "/src/tests/backend/conformance/shader_worker.js")]
 extern "C" {

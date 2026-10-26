@@ -8,7 +8,7 @@
 
 use std::{
     ops::Range,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 
 use fluxel_rhi_core::api::{self, Error, Result};
@@ -44,6 +44,9 @@ pub(crate) use layout::create_bind_group_layout;
 const VIEW_CAPACITY: u32 = 65_536;
 const SAMPLER_CAPACITY: u32 = 2_048;
 const CPU_VIEW_PAGE_CAPACITY: u32 = 1_024;
+/// Keep one empty page of each CPU-only descriptor heap type ready for reuse.
+/// More would make idle RTV/DSV memory depend on historical demand.
+const MAX_EMPTY_CPU_VIEW_PAGES_PER_TYPE: usize = 1;
 const CBV_ALIGNMENT: u64 = 256;
 
 /// The two device-wide shader-visible heaps required by D3D12.  A command list
@@ -114,10 +117,17 @@ impl CpuDescriptorPage {
         handle.ptr += usize::try_from(index.saturating_mul(self.increment)).unwrap_or(0);
         handle
     }
+
+    fn is_empty(&self) -> bool {
+        self.free
+            .lock()
+            .is_ok_and(|free| free.as_slice() == [0..self.capacity])
+    }
 }
 
 struct CpuDescriptorLeaseInner {
     page: Arc<CpuDescriptorPage>,
+    pages: Weak<Mutex<Vec<Arc<CpuDescriptorPage>>>>,
     start: u32,
     count: u32,
 }
@@ -125,6 +135,24 @@ struct CpuDescriptorLeaseInner {
 impl Drop for CpuDescriptorLeaseInner {
     fn drop(&mut self) {
         self.page.release(self.start, self.count);
+        let Some(pages) = self.pages.upgrade() else {
+            return;
+        };
+        let Ok(mut pages) = pages.lock() else {
+            return;
+        };
+        if !self.page.is_empty()
+            || pages
+                .iter()
+                .filter(|page| page.ty == self.page.ty && page.is_empty())
+                .count()
+                <= MAX_EMPTY_CPU_VIEW_PAGES_PER_TYPE
+        {
+            return;
+        }
+        if let Some(index) = pages.iter().position(|page| Arc::ptr_eq(page, &self.page)) {
+            pages.swap_remove(index);
+        }
     }
 }
 
@@ -164,6 +192,7 @@ impl CpuDescriptorPool {
         {
             return Ok(CpuDescriptorLease(Arc::new(CpuDescriptorLeaseInner {
                 page,
+                pages: Arc::downgrade(&self.pages),
                 start,
                 count,
             })));
@@ -194,6 +223,7 @@ impl CpuDescriptorPool {
         pages.push(page.clone());
         Ok(CpuDescriptorLease(Arc::new(CpuDescriptorLeaseInner {
             page,
+            pages: Arc::downgrade(&self.pages),
             start,
             count,
         })))

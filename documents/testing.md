@@ -22,6 +22,39 @@ cargo check --workspace
 cargo build -p fluxel-rhi --features examples,vulkan --examples
 ```
 
+## Numbered-example coverage
+
+The manifest contains two distinct example groups: the portable/basic scenes
+01–15 and the native-advanced scenes 16–23.  The latter deliberately exercise
+native ray tracing, mesh shading, sparse resources, GPU-counted drawing, or
+multi-queue operations; they are not a second spelling of the basic suite.
+
+The table is a historical recorded-smoke index, not a current-candidate
+acceptance matrix. `Pass` means the named historical route completed the
+stated real-GPU execution smoke, which can be limited to recorded process
+completion/readback logs; it does not assert that the present source revision
+was rerun or that the scene passed visual acceptance. `Unsupported`
+means the route returns the documented absence of the required RHI capability.
+`NotRun` means there is no recorded run for that group. `Failure` is reserved
+for a recorded failing route and must not be relabelled as a pass merely
+because another configuration succeeds.
+
+| Backend route | Basic examples 01–15 | Native-advanced examples 16–23 | Historical source, platform, and limit |
+| --- | --- | --- | --- |
+| DX12 | Pass | Pass | Windows, pre-commit `examples-layout-2026-10-26` smoke: 23 entries built and ran two frames. The pre-commit source identity is incomplete; the local evidence index later associated source/binary hashes with `abc2aa6789d4ef7face323cb07a2a26fba239c0d`. It is not a rerun of the present candidate or a visual result. |
+| Vulkan | Pass | Pass | Windows / Radeon 780M, the same pre-commit smoke ran 23 entries for two frames with `VK_LAYER_KHRONOS_validation`; a later no-layer three-frame/readback and inspected-capture run exists for 16. The pre-commit source identity is incomplete, so this is not a current-candidate matrix. |
+| WebGPU | Pass | Unsupported | Chrome with WebGPU enabled, pre-commit browser-target smoke for 01–15. The exact pre-commit source identity is incomplete; a later local evidence index associates it with `abc2aa6789d4ef7face323cb07a2a26fba239c0d`. Examples 16–23 require native-only operations not exposed by this route. |
+| GL4+ (WGL) | Pass | NotRun | Historical Windows WGL coverage for 01–15 is described in [the examples guide](../crates/rhi/examples/README.md#verification-status); no advanced-suite run is recorded. Do not infer current visual acceptance from the smoke result. |
+| GLES3+ | Pass | NotRun | Historical Android-emulator coverage for 01–15 is described in [the examples guide](../crates/rhi/examples/README.md#verification-status); it is not physical-device or current-candidate acceptance. |
+| WebGL2 | Pass | NotRun | Historical Android-browser coverage for 01–15 is described in [the examples guide](../crates/rhi/examples/README.md#verification-status); no advanced-suite run is recorded. |
+| Metal | NotRun | NotRun | Apple-target compile/static review exists, but there is no Apple-GPU execution evidence. |
+
+The table does not erase configuration-specific failures from the evidence
+record. In particular, the initial Vulkan no-layer sweep failed in example 16;
+the later focused fix and no-layer rerun only establish the historical smoke
+entry above. Keep both observations with their commands and hashes when
+updating this table.
+
 Exercise Vulkan ray-pipeline creation with validation layers disabled as well
 as enabled. Cover stages without specialization overrides and stages with
 overrides: layer-enabled success alone can hide a native creation failure.
@@ -78,7 +111,8 @@ cargo test -p fluxel-rhi --features vulkan,native-gl-wgl --test unified_executio
 
 This headless readback/Present smoke does not establish arbitrary cross-lane
 synchronization, browser execution, or visual correctness. The optional common
-entry does not add native multi-queue or Sparse support. All 15 examples now use the common entry. Their deferred path retains native
+entry does not add native multi-queue or Sparse support. All basic examples
+01–15 use the common entry. Their deferred path retains native
 pre-recording, including example 13 secondary work, and binds it without a
 portable command conversion. GL passes encoding closures directly.
 
@@ -141,7 +175,11 @@ Run each numbered `webgpu_*` integration test for its scene. These tests present
 
 Record the commit, platform, adapter, command, validation result, and observed image or readback for each hardware claim. Classify the result as pass, unsupported, skipped, or failure. Keep portable Core unit-test sources in `crates/core/src/tests/`; keep backend unit-test sources in the owning crate's `src/tests/` tree and native integration checks in the owning crate's root `tests/` directory.
 
-Metal validation additionally requires a macOS SDK link, focused real-GPU readback assertions, and all 15 native examples with inspected screenshots before the backend can be marked complete. An Apple-target cross-check from another host proves type correctness only.
+Metal validation additionally requires a macOS SDK link, focused real-GPU
+readback assertions, and inspected screenshots for every example group the
+backend claims to support before it can be marked complete. At present both
+01–15 and 16–23 are `NotRun` for Metal. An Apple-target cross-check from
+another host proves type correctness only.
 
 The conditional Review3 Metal Archive Prepare item has an opt-in Apple GPU
 diagnostic. It compiles the MSL function before sampling, uses a fresh archive

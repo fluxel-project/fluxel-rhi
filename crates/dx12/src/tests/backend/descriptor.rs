@@ -152,7 +152,9 @@ fn cpu_view_descriptor_pool_pages_reclaims_and_retains_leases() -> fluxel_rhi_co
         task::{Context, Poll, Waker},
         thread,
     };
-    use windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    use windows::Win32::Graphics::Direct3D12::{
+        D3D12_DESCRIPTOR_HEAP_TYPE_DSV, D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+    };
 
     use super::{CPU_VIEW_PAGE_CAPACITY, CpuDescriptorPool};
 
@@ -193,12 +195,32 @@ fn cpu_view_descriptor_pool_pages_reclaims_and_retains_leases() -> fluxel_rhi_co
     drop(leases);
     {
         let pages = pool.pages.lock().map_err(|_| Error::DeviceLost)?;
-        assert_eq!(pages.len(), 2);
-        for page in pages.iter() {
+        assert_eq!(pages.len(), 1, "only one idle RTV page is retained");
+        assert_eq!(
+            *pages[0].free.lock().map_err(|_| Error::DeviceLost)?,
+            vec![0..CPU_VIEW_PAGE_CAPACITY],
+            "the retained page must recover its complete descriptor range"
+        );
+    }
+    let dsv_leases: Vec<_> = (0..=CPU_VIEW_PAGE_CAPACITY)
+        .map(|_| pool.allocate(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1))
+        .collect::<fluxel_rhi_core::api::Result<_>>()?;
+    drop(dsv_leases);
+    {
+        let pages = pool.pages.lock().map_err(|_| Error::DeviceLost)?;
+        assert_eq!(
+            pages.len(),
+            2,
+            "one idle page is retained for each heap type"
+        );
+        for ty in [
+            D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+            D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+        ] {
             assert_eq!(
-                *page.free.lock().map_err(|_| Error::DeviceLost)?,
-                vec![0..CPU_VIEW_PAGE_CAPACITY],
-                "dropping all leases must recover each page"
+                pages.iter().filter(|page| page.ty == ty).count(),
+                1,
+                "each CPU descriptor heap type retains at most one idle page"
             );
         }
     }
@@ -228,7 +250,10 @@ fn cpu_view_descriptor_pool_pages_reclaims_and_retains_leases() -> fluxel_rhi_co
     drop(other_page);
     drop(retained);
     let reused = retained_pool.allocate(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1)?;
-    assert!(Arc::ptr_eq(&reused.0.page, &retained_page));
+    assert!(
+        !Arc::ptr_eq(&reused.0.page, &retained_page),
+        "the surplus page must be released after its final lease drops"
+    );
     assert_eq!(reused.0.start, 0, "released slot is reusable");
 
     let concurrent_pool = CpuDescriptorPool::new(&device.0.native);
@@ -258,7 +283,7 @@ fn cpu_view_descriptor_pool_pages_reclaims_and_retains_leases() -> fluxel_rhi_co
         "concurrent lease drops must restore one coalesced range"
     );
     eprintln!(
-        "cpu-view-descriptor-pool diagnostic: pages=2 page_capacity={CPU_VIEW_PAGE_CAPACITY} cloned_lease_retention=true concurrent_drops={} final_ranges=1",
+        "cpu-view-descriptor-pool diagnostic: max_idle_pages_per_type=1 page_capacity={CPU_VIEW_PAGE_CAPACITY} cloned_lease_retention=true concurrent_drops={} final_ranges=1",
         CPU_VIEW_PAGE_CAPACITY
     );
     Ok(())

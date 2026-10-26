@@ -6,7 +6,7 @@
 
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     future::Future,
     pin::Pin,
     rc::Rc,
@@ -179,6 +179,25 @@ fn retire(device: &WebGpuDevice) {
     *device.0.in_flight.borrow_mut() = pending;
 }
 
+/// Retains resources from a queue boundary whose issuing status is unknown.
+/// Sequences are assigned before a later idle promise can be installed, so a
+/// successful idle can release precisely the preceding prefix even if another
+/// task records an unrelated failure while it awaits the browser promise.
+fn quarantine(device: &WebGpuDevice, resources: Vec<JsValue>) {
+    let mut uncertain = device.0.uncertain_resources.borrow_mut();
+    for value in resources {
+        let sequence = device.0.next_uncertain_resource.get();
+        let next = sequence
+            .checked_add(1)
+            .expect("WebGPU uncertain-resource sequence exhausted");
+        device.0.next_uncertain_resource.set(next);
+        uncertain.push(super::instance::UncertainResource {
+            sequence,
+            _value: value,
+        });
+    }
+}
+
 /// Issues one browser queue boundary and retains its native objects until the
 /// queue's promise settles. Once `queue.submit` has been called, every error
 /// is necessarily indeterminate: JavaScript cannot report whether the queue
@@ -191,13 +210,13 @@ fn submit_batch(
     upload_pages: Vec<UploadPage>,
 ) -> Result<Completion> {
     if let Err(error) = js::call1(&device.0.queue, "submit", &commands.into()) {
-        device.0.uncertain_resources.borrow_mut().extend(resources);
+        quarantine(device, resources);
         return Err(Error::Backend(js::message(&error)));
     }
     let point = match queue_completion(device) {
         Ok(point) => point,
         Err(error) => {
-            device.0.uncertain_resources.borrow_mut().extend(resources);
+            quarantine(device, resources);
             return Err(error);
         }
     };
@@ -220,14 +239,12 @@ fn indeterminate(device: &WebGpuDevice, error: Error) -> api::SubmitOutcome<WebG
 
 fn flush_batch(
     device: &WebGpuDevice,
-    frontier: api::StepId,
     commands: &mut Array,
     resources: &mut Vec<JsValue>,
     upload_pages: &mut Vec<UploadPage>,
     pending_presents: &mut Vec<(api::StepId, api::PresentBinding<WebGpu>)>,
     presents: &mut Vec<api::PresentReceipt>,
-    issued_boundaries: &mut Vec<(api::StepId, Completion)>,
-) -> Result<()> {
+) -> Result<Completion> {
     let point = submit_batch(
         device,
         std::mem::replace(commands, Array::new()),
@@ -244,8 +261,7 @@ fn flush_batch(
             accepted: true,
         });
     }
-    issued_boundaries.push((frontier, point));
-    Ok(())
+    Ok(point)
 }
 
 impl fluxel_rhi_core::backend::CompletionBackend for WebGpu {
@@ -280,17 +296,33 @@ impl fluxel_rhi_core::backend::CompletionBackend for WebGpu {
     }
 
     fn wait_idle<'a>(device: &'a WebGpuDevice) -> Self::WaitFuture<'a> {
+        let uncertain_before_idle = device.0.next_uncertain_resource.get();
         let point = queue_completion(device);
+        let point = match point {
+            Ok(point) => point,
+            Err(error) => return Box::pin(async move { Err(error) }),
+        };
         Box::pin(async move {
-            let result = point?.await;
+            let result = point.await;
             retire(device);
+            if let Err(error) = result {
+                return Err(error);
+            }
             if device.0.lost.get() {
                 return Err(Error::DeviceLost);
             }
             if let Some(message) = device.0.validation_error.borrow().clone() {
                 return Err(Error::Backend(message));
             }
-            result
+            // A resolved idle promise proves that every prior submission has
+            // stopped using the prefix before its installation. Later
+            // failures remain retained for their own later queue boundary.
+            device
+                .0
+                .uncertain_resources
+                .borrow_mut()
+                .retain(|entry| entry.sequence >= uncertain_before_idle);
+            Ok(())
         })
     }
 }
@@ -348,9 +380,15 @@ impl fluxel_rhi_core::backend::DeferredBackend for WebGpu {
             steps,
             completion,
         } = packet;
-        let requested = match &completion {
-            api::CompletionRequest::Steps(steps) => steps.to_vec(),
-            _ => Vec::new(),
+        let (requested, requested_steps) = match &completion {
+            api::CompletionRequest::Steps(steps) => {
+                let mut membership = vec![false; plan.steps().len()];
+                for step in steps.iter() {
+                    membership[step.index as usize] = true;
+                }
+                (steps.to_vec(), Some(membership.into_boxed_slice()))
+            }
+            _ => (Vec::new(), None),
         };
         let segmented = matches!(completion, api::CompletionRequest::Steps(_));
         let mut commands = Array::new();
@@ -360,7 +398,12 @@ impl fluxel_rhi_core::backend::DeferredBackend for WebGpu {
         let mut accepted = Vec::new();
         let mut pending_presents: Vec<(api::StepId, api::PresentBinding<WebGpu>)> = Vec::new();
         let mut checkpoints = Vec::new();
-        let mut issued_boundaries = Vec::new();
+        // Store only requested boundaries by plan-local index. The original
+        // request remains separate so duplicate and execution-order-
+        // independent checkpoints retain their public ordering without
+        // linear searches. None and End retain only their final boundary.
+        let mut issued_boundaries = segmented.then(HashMap::new);
+        let mut final_boundary = None;
         for bound in steps {
             let step = bound.step;
             match bound.payload {
@@ -379,18 +422,27 @@ impl fluxel_rhi_core::backend::DeferredBackend for WebGpu {
                 api::StepPayload::SparseBind(_) => unreachable!("prevalidated WebGPU plan"),
             }
             accepted.push(step);
-            if segmented && requested.contains(&step) {
-                if let Err(error) = flush_batch(
+            if segmented
+                && requested_steps
+                    .as_ref()
+                    .is_some_and(|requested| requested[step.index as usize])
+            {
+                match flush_batch(
                     device,
-                    step,
                     &mut commands,
                     &mut resources,
                     &mut upload_pages,
                     &mut pending_presents,
                     &mut presents,
-                    &mut issued_boundaries,
                 ) {
-                    return indeterminate(device, error);
+                    Ok(point) => {
+                        issued_boundaries
+                            .as_mut()
+                            .expect("Steps completion owns boundary map")
+                            .insert(step.index, point.clone());
+                        final_boundary = Some(point);
+                    }
+                    Err(error) => return indeterminate(device, error),
                 }
             }
         }
@@ -398,30 +450,26 @@ impl fluxel_rhi_core::backend::DeferredBackend for WebGpu {
         // emits a tail boundary only when work or a present follows its final
         // requested checkpoint, retaining that tail without exposing a token.
         if !segmented || !resources.is_empty() || !pending_presents.is_empty() {
-            let frontier = accepted.last().copied().unwrap_or(api::StepId {
-                plan: plan.id(),
-                index: 0,
-            });
-            if let Err(error) = flush_batch(
+            match flush_batch(
                 device,
-                frontier,
                 &mut commands,
                 &mut resources,
                 &mut upload_pages,
                 &mut pending_presents,
                 &mut presents,
-                &mut issued_boundaries,
             ) {
-                return indeterminate(device, error);
+                Ok(point) => final_boundary = Some(point),
+                Err(error) => return indeterminate(device, error),
             }
         }
         // A request list may contain duplicates or be deliberately ordered
         // differently from execution. Each requested item refers to the one
         // native boundary emitted immediately after that exact plan step.
         for requested_step in &requested {
-            let (_, point) = issued_boundaries
-                .iter()
-                .find(|(frontier, _)| frontier == requested_step)
+            let point = issued_boundaries
+                .as_ref()
+                .expect("Steps completion owns boundary map")
+                .get(&requested_step.index)
                 .expect("validated requested WebGPU completion boundary");
             checkpoints.push(api::Checkpoint {
                 // SAFETY: this promise was installed after the matching queue
@@ -437,8 +485,8 @@ impl fluxel_rhi_core::backend::DeferredBackend for WebGpu {
         }
         if matches!(completion, api::CompletionRequest::End) {
             if let Some(frontier) = accepted.last().copied() {
-                let (_, point) = issued_boundaries
-                    .last()
+                let point = final_boundary
+                    .as_ref()
                     .expect("one WebGPU batch was issued for accepted work");
                 checkpoints.push(api::Checkpoint {
                     // SAFETY: the final queue promise follows the full packet.
