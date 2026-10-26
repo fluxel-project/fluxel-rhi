@@ -6,14 +6,17 @@
 //! this is neither command replay nor resource-use planning.
 use fluxel_rhi_core::api::{Error, Result};
 use js_sys::Array;
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::JsValue;
 use web_sys::{
     WebGl2RenderingContext as Gl, WebGlBuffer, WebGlProgram, WebGlSampler, WebGlShader,
     WebGlTexture, WebGlTransformFeedback, WebGlVertexArrayObject,
 };
 
 use super::super::super::api::GlFormat;
-use super::super::owner::{BrowserBuffer, BrowserEncoder, BrowserTexture};
+use super::super::owner::{
+    BrowserBuffer, BrowserEncoder, BrowserTexture, NormalizedReadbackCache,
+    NormalizedReadbackProgram, NormalizedReadbackTextureKind,
+};
 
 #[derive(Clone, Copy)]
 enum Encoding {
@@ -42,22 +45,8 @@ impl Encoding {
 
 /// Returns whether the browser's vertex `highp` has enough mantissa bits for
 /// the exact integer reconstruction used by the normalized TF fallback.
-pub(crate) fn supports_format(raw: &Gl, format: GlFormat) -> bool {
-    Encoding::for_format(format).is_some()
-        && raw
-            .get_shader_precision_format(Gl::VERTEX_SHADER, Gl::HIGH_FLOAT)
-            .is_some_and(|value| value.precision() >= 23)
-}
-
-fn object<T: JsCast>(gl: &Gl, parameter: u32) -> Result<Option<T>> {
-    let value = gl
-        .get_parameter(parameter)
-        .map_err(|_| Error::InvalidState)?;
-    if value.is_null() {
-        Ok(None)
-    } else {
-        value.dyn_into().map(Some).map_err(|_| Error::InvalidState)
-    }
+pub(crate) fn supports_format(format: GlFormat, highp_supported: bool) -> bool {
+    Encoding::for_format(format).is_some() && highp_supported
 }
 
 struct State<'a> {
@@ -77,44 +66,25 @@ struct State<'a> {
 }
 
 impl<'a> State<'a> {
-    fn capture(gl: &'a Gl, texture_target: u32, texture_binding: u32) -> Result<Self> {
-        if gl
-            .get_parameter(Gl::TRANSFORM_FEEDBACK_ACTIVE)
-            .map_err(|_| Error::InvalidState)?
-            .as_bool()
-            != Some(false)
-        {
-            return Err(Error::InvalidState);
-        }
-        let mut state = Self {
+    fn capture(gl: &'a Gl, texture_target: u32, _texture_binding: u32) -> Result<Self> {
+        // The direct backend is the sole context owner. Restore a neutral
+        // transfer state instead of asking WebGL to synchronously snapshot
+        // the previous draw bindings on every normalized readback.
+        Ok(Self {
             gl,
-            program: object(gl, Gl::CURRENT_PROGRAM)?,
-            vao: object(gl, Gl::VERTEX_ARRAY_BINDING)?,
-            feedback: object(gl, Gl::TRANSFORM_FEEDBACK_BINDING)?,
-            feedback_buffer: object(gl, Gl::TRANSFORM_FEEDBACK_BUFFER_BINDING)?,
-            copy_read: object(gl, Gl::COPY_READ_BUFFER_BINDING)?,
-            copy_write: object(gl, Gl::COPY_WRITE_BUFFER_BINDING)?,
+            program: None,
+            vao: None,
+            feedback: None,
+            feedback_buffer: None,
+            copy_read: None,
+            copy_write: None,
             texture: None,
             texture_target,
             sampler: None,
-            active: gl
-                .get_parameter(Gl::ACTIVE_TEXTURE)
-                .map_err(|_| Error::InvalidState)?
-                .as_f64()
-                .ok_or(Error::InvalidState)? as u32,
-            discard: gl.is_enabled(Gl::RASTERIZER_DISCARD),
-            captured: false,
-        };
-        // Capture unit zero without changing it. Until both queries succeed,
-        // only ACTIVE_TEXTURE has changed and must be restored on failure.
-        gl.active_texture(Gl::TEXTURE0);
-        let texture = object(gl, texture_binding);
-        let sampler = object(gl, Gl::SAMPLER_BINDING);
-        gl.active_texture(state.active);
-        state.texture = texture?;
-        state.sampler = sampler?;
-        state.captured = true;
-        Ok(state)
+            active: Gl::TEXTURE0,
+            discard: false,
+            captured: true,
+        })
     }
 }
 
@@ -148,8 +118,6 @@ impl Drop for State<'_> {
 
 #[derive(Default)]
 struct Objects {
-    shaders: Vec<WebGlShader>,
-    program: Option<WebGlProgram>,
     buffer: Option<WebGlBuffer>,
     feedback: Option<WebGlTransformFeedback>,
     vao: Option<WebGlVertexArrayObject>,
@@ -161,27 +129,6 @@ struct Scratch<'a> {
     objects: Objects,
 }
 
-impl Scratch<'_> {
-    fn shader(&mut self, kind: u32, source: &str) -> Result<WebGlShader> {
-        let shader = self.gl.create_shader(kind).ok_or(Error::OutOfMemory)?;
-        self.objects.shaders.push(shader.clone());
-        self.gl.shader_source(&shader, source);
-        self.gl.compile_shader(&shader);
-        if self
-            .gl
-            .get_shader_parameter(&shader, Gl::COMPILE_STATUS)
-            .as_bool()
-            != Some(true)
-        {
-            return Err(Error::Backend(format!(
-                "WebGL D16 shader: {}",
-                self.gl.get_shader_info_log(&shader).unwrap_or_default()
-            )));
-        }
-        Ok(shader)
-    }
-}
-
 impl Drop for Scratch<'_> {
     fn drop(&mut self) {
         let gl = self.gl;
@@ -189,50 +136,164 @@ impl Drop for Scratch<'_> {
         gl.delete_vertex_array(self.objects.vao.as_ref());
         gl.delete_transform_feedback(self.objects.feedback.as_ref());
         gl.delete_buffer(self.objects.buffer.as_ref());
-        gl.delete_program(self.objects.program.as_ref());
-        for shader in &self.objects.shaders {
-            gl.delete_shader(Some(shader));
-        }
     }
 }
 
-fn vertex_source(
-    encoding: Encoding,
-    texture_kind: &str,
-    words_per_row: u32,
-    words_per_layer: u32,
-    mip: u32,
-    origin: [u32; 3],
-    extent: [u32; 3],
-) -> String {
-    let (sampler, coordinate, fetch) = match texture_kind {
-        "2D" => (
+fn program<'a>(
+    gl: &Gl,
+    cache: &'a mut NormalizedReadbackCache,
+    key: (GlFormat, NormalizedReadbackTextureKind),
+) -> Result<&'a NormalizedReadbackProgram> {
+    if !cache.programs.contains_key(&key) {
+        let source = vertex_source(key.0, key.1);
+        let make = |kind, text: &str| -> Result<WebGlShader> {
+            let shader = gl.create_shader(kind).ok_or(Error::OutOfMemory)?;
+            gl.shader_source(&shader, text);
+            gl.compile_shader(&shader);
+            if gl
+                .get_shader_parameter(&shader, Gl::COMPILE_STATUS)
+                .as_bool()
+                != Some(true)
+            {
+                let message = gl.get_shader_info_log(&shader).unwrap_or_default();
+                gl.delete_shader(Some(&shader));
+                return Err(Error::Backend(format!(
+                    "WebGL normalized readback shader: {message}"
+                )));
+            }
+            Ok(shader)
+        };
+        let vertex = make(Gl::VERTEX_SHADER, &source)?;
+        let fragment = match make(
+            Gl::FRAGMENT_SHADER,
+            "#version 300 es\nprecision highp float;void main(){}",
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                gl.delete_shader(Some(&vertex));
+                return Err(error);
+            }
+        };
+        let Some(raw) = gl.create_program() else {
+            gl.delete_shader(Some(&vertex));
+            gl.delete_shader(Some(&fragment));
+            return Err(Error::OutOfMemory);
+        };
+        gl.attach_shader(&raw, &vertex);
+        gl.attach_shader(&raw, &fragment);
+        gl.transform_feedback_varyings(
+            &raw,
+            &Array::of1(&JsValue::from_str("normalized_word")),
+            Gl::INTERLEAVED_ATTRIBS,
+        );
+        gl.link_program(&raw);
+        gl.delete_shader(Some(&vertex));
+        gl.delete_shader(Some(&fragment));
+        if gl.get_program_parameter(&raw, Gl::LINK_STATUS).as_bool() != Some(true) {
+            let message = gl.get_program_info_log(&raw).unwrap_or_default();
+            gl.delete_program(Some(&raw));
+            return Err(Error::Backend(format!(
+                "WebGL normalized readback link: {message}"
+            )));
+        };
+        let uniform = |name: &str| {
+            gl.get_uniform_location(&raw, name).ok_or_else(|| {
+                Error::Backend(format!("WebGL normalized readback {name} uniform missing"))
+            })
+        };
+        let image = match uniform("image") {
+            Ok(value) => value,
+            Err(error) => {
+                gl.delete_program(Some(&raw));
+                return Err(error);
+            }
+        };
+        let origin = match uniform("origin") {
+            Ok(value) => value,
+            Err(error) => {
+                gl.delete_program(Some(&raw));
+                return Err(error);
+            }
+        };
+        let mip = match uniform("mip") {
+            Ok(value) => value,
+            Err(error) => {
+                gl.delete_program(Some(&raw));
+                return Err(error);
+            }
+        };
+        let words_per_row = match uniform("words_per_row") {
+            Ok(value) => value,
+            Err(error) => {
+                gl.delete_program(Some(&raw));
+                return Err(error);
+            }
+        };
+        let words_per_layer = if key.1 == NormalizedReadbackTextureKind::D2 {
+            None
+        } else {
+            match uniform("words_per_layer") {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    gl.delete_program(Some(&raw));
+                    return Err(error);
+                }
+            }
+        };
+        let elements_per_row =
+            if matches!(Encoding::for_format(key.0), Some(Encoding::Unorm16 { .. })) {
+                match uniform("elements_per_row") {
+                    Ok(value) => Some(value),
+                    Err(error) => {
+                        gl.delete_program(Some(&raw));
+                        return Err(error);
+                    }
+                }
+            } else {
+                None
+            };
+        cache.programs.insert(
+            key,
+            NormalizedReadbackProgram {
+                raw,
+                image,
+                origin,
+                mip,
+                words_per_row,
+                words_per_layer,
+                elements_per_row,
+            },
+        );
+    }
+    Ok(cache
+        .programs
+        .get(&key)
+        .expect("cached normalized readback helper"))
+}
+
+fn vertex_source(format: GlFormat, texture_kind: NormalizedReadbackTextureKind) -> String {
+    let encoding = Encoding::for_format(format).expect("normalized readback format key");
+    let (sampler, layer, coordinate) = match texture_kind {
+        NormalizedReadbackTextureKind::D2 => (
             "sampler2D",
-            format!("ivec2 q=ivec2(int(x)+{},int(y)+{});", origin[0], origin[1]),
-            format!("texelFetch(image,q,{mip})"),
+            "uint in_layer=v;",
+            "ivec2 q=ivec2(int(x+origin.x),int(y+origin.y));",
         ),
-        "2DArray" => (
+        NormalizedReadbackTextureKind::D2Array => (
             "sampler2DArray",
-            format!(
-                "ivec3 q=ivec3(int(x)+{},int(y)+{},int(layer)+{});",
-                origin[0], origin[1], origin[2]
-            ),
-            format!("texelFetch(image,q,{mip})"),
+            "uint layer=v/words_per_layer, in_layer=v%words_per_layer;",
+            "ivec3 q=ivec3(int(x+origin.x),int(y+origin.y),int(layer+origin.z));",
         ),
-        "3D" => (
+        NormalizedReadbackTextureKind::D3 => (
             "sampler3D",
-            format!(
-                "ivec3 q=ivec3(int(x)+{},int(y)+{},int(layer)+{});",
-                origin[0], origin[1], origin[2]
-            ),
-            format!("texelFetch(image,q,{mip})"),
+            "uint layer=v/words_per_layer, in_layer=v%words_per_layer;",
+            "ivec3 q=ivec3(int(x+origin.x),int(y+origin.y),int(layer+origin.z));",
         ),
-        _ => unreachable!("validated normalized texture kind"),
     };
-    let layer = if texture_kind == "2D" {
-        "uint layer=0u, in_layer=v;".to_owned()
+    let layer_uniform = if texture_kind == NormalizedReadbackTextureKind::D2 {
+        ""
     } else {
-        format!("uint layer=v/{words_per_layer}u, in_layer=v%{words_per_layer}u;")
+        "uniform highp uint words_per_layer;"
     };
     match encoding {
         Encoding::Unorm16 { channels } => format!(
@@ -240,39 +301,42 @@ fn vertex_source(
 precision highp float;
 precision highp int;
 uniform highp {sampler} image;
+uniform highp uvec3 origin;
+uniform highp uint mip, words_per_row, elements_per_row;
+{layer_uniform}
 flat out uint normalized_word;
 void main() {{
   uint v=uint(gl_VertexID); {layer}
-  uint component=(in_layer%{words_per_row}u)*2u, y=in_layer/{words_per_row}u;
+  uint component=(in_layer%words_per_row)*2u, y=in_layer/words_per_row;
   uint x=component/{channels}u, k=component%{channels}u;
   {coordinate}
-  vec4 a_sample={fetch};
+  vec4 a_sample=texelFetch(image,q,int(mip));
   uint a=uint(round(clamp(a_sample[int(k)],0.,1.)*65535.));
   uint b=0u;
-  if(component+1u<{}u) {{
+  if(component+1u<elements_per_row) {{
     uint b_component=component+1u, bx=b_component/{channels}u, bk=b_component%{channels}u;
-    {coordinate_b}
-    vec4 b_sample={fetch_b};
+    q.x=int(bx+origin.x);
+    vec4 b_sample=texelFetch(image,q,int(mip));
     b=uint(round(clamp(b_sample[int(bk)],0.,1.)*65535.));
   }}
   normalized_word=a|(b<<16u);
   gl_Position=vec4(0.);
 }}"#,
-            extent[0] * channels,
-            coordinate_b = coordinate.replace("int(x)", "int(bx)"),
-            fetch_b = fetch,
         ),
         Encoding::Rgb10a2 => format!(
             r#"#version 300 es
 precision highp float;
 precision highp int;
 uniform highp {sampler} image;
+uniform highp uvec3 origin;
+uniform highp uint mip, words_per_row;
+{layer_uniform}
 flat out uint normalized_word;
 void main() {{
   uint v=uint(gl_VertexID); {layer}
-  uint x=in_layer%{words_per_row}u, y=in_layer/{words_per_row}u;
+  uint x=in_layer%words_per_row, y=in_layer/words_per_row;
   {coordinate}
-  vec4 sample_value=clamp({fetch},0.,1.);
+  vec4 sample_value=clamp(texelFetch(image,q,int(mip)),0.,1.);
   uvec4 bits=uvec4(round(sample_value*vec4(1023.,1023.,1023.,3.)));
   normalized_word=bits.x|(bits.y<<10u)|(bits.z<<20u)|(bits.w<<30u);
   gl_Position=vec4(0.);
@@ -300,15 +364,21 @@ impl BrowserEncoder {
             "WebGL normalized transform-feedback format",
         ))?;
         let (texture_target, texture_binding, texture_kind) = match source.desc.dimension {
-            GlTextureDimension::D2 => (Gl::TEXTURE_2D, Gl::TEXTURE_BINDING_2D, "2D"),
+            GlTextureDimension::D2 => (
+                Gl::TEXTURE_2D,
+                Gl::TEXTURE_BINDING_2D,
+                NormalizedReadbackTextureKind::D2,
+            ),
             GlTextureDimension::D2Array => (
                 Gl::TEXTURE_2D_ARRAY,
                 Gl::TEXTURE_BINDING_2D_ARRAY,
-                "2DArray",
+                NormalizedReadbackTextureKind::D2Array,
             ),
-            GlTextureDimension::D3 if source.desc.format != GlFormat::Depth16Unorm => {
-                (Gl::TEXTURE_3D, Gl::TEXTURE_BINDING_3D, "3D")
-            }
+            GlTextureDimension::D3 if source.desc.format != GlFormat::Depth16Unorm => (
+                Gl::TEXTURE_3D,
+                Gl::TEXTURE_BINDING_3D,
+                NormalizedReadbackTextureKind::D3,
+            ),
             _ => {
                 return Err(Error::Unsupported(
                     "WebGL normalized feedback readback dimension",
@@ -331,7 +401,8 @@ impl BrowserEncoder {
             || origin[2]
                 .checked_add(extent[2])
                 .is_none_or(|v| v > bound.depth_or_layers)
-            || (texture_kind == "2D" && (origin[2] != 0 || extent[2] != 1))
+            || (texture_kind == NormalizedReadbackTextureKind::D2
+                && (origin[2] != 0 || extent[2] != 1))
             || u64::from(bytes_per_row) < row_bytes
             || rows_per_image < extent[1]
         {
@@ -369,47 +440,18 @@ impl BrowserEncoder {
         let vertices = i32::try_from(words).map_err(|_| Error::InvalidRange)?;
         let texture = source.texture()?;
         let mut result = Ok(());
-        self.with_context("normalized_transform_feedback", |gl| {
+        self.with_normalized_readback_context("normalized_transform_feedback", |gl, cache| {
             result = (|| {
                 let mut scratch = Scratch {
                     gl,
                     objects: Objects::default(),
                 };
-                if !supports_format(gl, source.desc.format) {
+                if !cache.highp_supported {
                     return Err(Error::Unsupported(
                         "WebGL vertex highp cannot reconstruct normalized texture bits",
                     ));
                 }
-                let vertex_source = vertex_source(
-                    encoding,
-                    texture_kind,
-                    words_per_row,
-                    words_per_layer,
-                    mip,
-                    origin,
-                    extent,
-                );
-                let vs = scratch.shader(Gl::VERTEX_SHADER, &vertex_source)?;
-                let fs = scratch.shader(
-                    Gl::FRAGMENT_SHADER,
-                    "#version 300 es\nprecision highp float; void main(){}",
-                )?;
-                scratch.objects.program = Some(gl.create_program().ok_or(Error::OutOfMemory)?);
-                let program = scratch.objects.program.as_ref().unwrap();
-                gl.attach_shader(program, &vs);
-                gl.attach_shader(program, &fs);
-                gl.transform_feedback_varyings(
-                    program,
-                    &Array::of1(&JsValue::from_str("normalized_word")),
-                    Gl::INTERLEAVED_ATTRIBS,
-                );
-                gl.link_program(program);
-                if gl.get_program_parameter(program, Gl::LINK_STATUS).as_bool() != Some(true) {
-                    return Err(Error::Backend(format!(
-                        "WebGL normalized readback link: {}",
-                        gl.get_program_info_log(program).unwrap_or_default()
-                    )));
-                }
+                let program = program(gl, cache, (source.desc.format, texture_kind))?;
                 scratch.objects.buffer = Some(gl.create_buffer().ok_or(Error::OutOfMemory)?);
                 scratch.objects.feedback =
                     Some(gl.create_transform_feedback().ok_or(Error::OutOfMemory)?);
@@ -440,8 +482,25 @@ impl BrowserEncoder {
                 gl.active_texture(Gl::TEXTURE0);
                 gl.bind_texture(texture_target, Some(texture));
                 gl.bind_sampler(0, Some(sampler));
-                gl.use_program(Some(program));
-                gl.uniform1i(gl.get_uniform_location(program, "image").as_ref(), 0);
+                gl.use_program(Some(&program.raw));
+                gl.uniform1i(Some(&program.image), 0);
+                gl.uniform3ui(Some(&program.origin), origin[0], origin[1], origin[2]);
+                gl.uniform1ui(Some(&program.mip), mip);
+                gl.uniform1ui(Some(&program.words_per_row), words_per_row);
+                if let Some(words_per_layer_location) = &program.words_per_layer {
+                    gl.uniform1ui(Some(words_per_layer_location), words_per_layer);
+                }
+                if let Some(elements_per_row) = &program.elements_per_row {
+                    gl.uniform1ui(
+                        Some(elements_per_row),
+                        extent[0]
+                            .checked_mul(match encoding {
+                                Encoding::Unorm16 { channels } => channels,
+                                Encoding::Rgb10a2 => unreachable!("RGB10A2 has no element uniform"),
+                            })
+                            .ok_or(Error::InvalidRange)?,
+                    );
+                }
                 gl.enable(Gl::RASTERIZER_DISCARD);
                 gl.begin_transform_feedback(Gl::POINTS);
                 gl.draw_arrays(Gl::POINTS, 0, vertices);

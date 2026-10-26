@@ -131,10 +131,7 @@ impl BrowserEncoder {
                 .desc
                 .usage
                 .contains(crate::backend::api::GlTextureUsage::RENDER_ATTACHMENT)
-            || !matches!(
-                color.desc.format,
-                crate::backend::api::GlFormat::Rgba8Unorm
-            )
+            || !matches!(color.desc.format, crate::backend::api::GlFormat::Rgba8Unorm)
         {
             return Err(Error::InvalidRange);
         }
@@ -189,9 +186,7 @@ impl BrowserEncoder {
                     0,
                 );
             }
-            if raw.check_framebuffer_status(Gl::FRAMEBUFFER) != Gl::FRAMEBUFFER_COMPLETE
-                || raw.get_error() != Gl::NO_ERROR
-            {
+            if raw.check_framebuffer_status(Gl::FRAMEBUFFER) != Gl::FRAMEBUFFER_COMPLETE {
                 raw.bind_framebuffer(Gl::FRAMEBUFFER, None);
                 raw.delete_framebuffer(Some(&framebuffer));
                 return Err(Self::allocation_error(
@@ -229,6 +224,7 @@ impl BrowserEncoder {
             state.context.raw.delete_framebuffer(Some(&framebuffer));
             return Err(error);
         }
+        self.raster_scissor = None;
         self.owner.state.borrow_mut().raster_extent = Some(extent);
         self.offscreen_pass = Some(BrowserOffscreenPass {
             framebuffer,
@@ -277,93 +273,95 @@ impl BrowserEncoder {
                     (scratch, intermediate)
                 };
                 let mut conversion = Ok(());
-                let result = self.with_context("resolve_offscreen_color", |raw| {
-                    raw.bind_framebuffer(Gl::FRAMEBUFFER, Some(&scratch));
-                    if let Some(target) = target {
-                        super::attachments::attach(
-                            raw,
-                            Gl::COLOR_ATTACHMENT0,
-                            target,
-                            *mip,
-                            *layer,
-                        );
-                    } else if let Some(texture) = &intermediate {
-                        raw.bind_texture(Gl::TEXTURE_2D, Some(texture));
-                        let internal =
-                            format_map::internal_format(*format).expect("admitted source format");
-                        raw.tex_storage_2d(
-                            Gl::TEXTURE_2D,
-                            1,
-                            internal,
-                            pass.extent[0] as i32,
-                            pass.extent[1] as i32,
-                        );
-                        raw.framebuffer_texture_2d(
-                            Gl::FRAMEBUFFER,
-                            Gl::COLOR_ATTACHMENT0,
-                            Gl::TEXTURE_2D,
-                            Some(texture),
-                            0,
-                        );
-                    }
-                    raw.bind_framebuffer(Gl::READ_FRAMEBUFFER, Some(&pass.framebuffer));
-                    raw.read_buffer(Gl::COLOR_ATTACHMENT0 + *slot);
-                    raw.bind_framebuffer(Gl::DRAW_FRAMEBUFFER, Some(&scratch));
-                    raw.disable(Gl::SCISSOR_TEST);
-                    let r = pass.render_area;
-                    let x0 = r.x as i32;
-                    let x1 = (r.x + r.width) as i32;
-                    let y0 = r.y as i32;
-                    let y1 = (r.y + r.height) as i32;
-                    raw.blit_framebuffer(
-                        x0,
-                        y0,
-                        x1,
-                        y1,
-                        x0,
-                        y0,
-                        x1,
-                        y1,
-                        Gl::COLOR_BUFFER_BIT,
-                        Gl::NEAREST,
-                    );
-                    if intermediate.is_some() {
-                        // Default framebuffer storage can have a different native
-                        // component count; first resolve into an exact format.
-                        raw.bind_framebuffer(Gl::READ_FRAMEBUFFER, Some(&scratch));
-                        raw.read_buffer(Gl::COLOR_ATTACHMENT0);
-                        raw.bind_framebuffer(Gl::DRAW_FRAMEBUFFER, None);
-                        if *format == crate::backend::api::GlFormat::Rgba8Srgb {
-                            conversion = super::surface_color::convert(
+                let result =
+                    self.with_surface_color_context("resolve_offscreen_color", |raw, cache| {
+                        raw.bind_framebuffer(Gl::FRAMEBUFFER, Some(&scratch));
+                        if let Some(target) = target {
+                            super::attachments::attach(
                                 raw,
-                                intermediate.as_ref().expect("surface resolve texture"),
-                                None,
-                                0,
-                                pass.extent,
-                                r,
-                                true,
+                                Gl::COLOR_ATTACHMENT0,
+                                target,
+                                *mip,
+                                *layer,
                             );
-                        } else {
-                            raw.blit_framebuffer(
-                                x0,
-                                y0,
-                                x1,
-                                y1,
-                                x0,
-                                pass.extent[1] as i32 - y0,
-                                x1,
-                                pass.extent[1] as i32 - y1,
-                                Gl::COLOR_BUFFER_BIT,
-                                Gl::NEAREST,
+                        } else if let Some(texture) = &intermediate {
+                            raw.bind_texture(Gl::TEXTURE_2D, Some(texture));
+                            let internal = format_map::internal_format(*format)
+                                .expect("admitted source format");
+                            raw.tex_storage_2d(
+                                Gl::TEXTURE_2D,
+                                1,
+                                internal,
+                                pass.extent[0] as i32,
+                                pass.extent[1] as i32,
+                            );
+                            raw.framebuffer_texture_2d(
+                                Gl::FRAMEBUFFER,
+                                Gl::COLOR_ATTACHMENT0,
+                                Gl::TEXTURE_2D,
+                                Some(texture),
+                                0,
                             );
                         }
-                    }
-                    if let Some(texture) = &intermediate {
-                        raw.delete_texture(Some(texture));
-                    }
-                    raw.delete_framebuffer(Some(&scratch));
-                    raw.bind_framebuffer(Gl::FRAMEBUFFER, Some(&pass.framebuffer));
-                });
+                        raw.bind_framebuffer(Gl::READ_FRAMEBUFFER, Some(&pass.framebuffer));
+                        raw.read_buffer(Gl::COLOR_ATTACHMENT0 + *slot);
+                        raw.bind_framebuffer(Gl::DRAW_FRAMEBUFFER, Some(&scratch));
+                        raw.disable(Gl::SCISSOR_TEST);
+                        let r = pass.render_area;
+                        let x0 = r.x as i32;
+                        let x1 = (r.x + r.width) as i32;
+                        let y0 = r.y as i32;
+                        let y1 = (r.y + r.height) as i32;
+                        raw.blit_framebuffer(
+                            x0,
+                            y0,
+                            x1,
+                            y1,
+                            x0,
+                            y0,
+                            x1,
+                            y1,
+                            Gl::COLOR_BUFFER_BIT,
+                            Gl::NEAREST,
+                        );
+                        if intermediate.is_some() {
+                            // Default framebuffer storage can have a different native
+                            // component count; first resolve into an exact format.
+                            raw.bind_framebuffer(Gl::READ_FRAMEBUFFER, Some(&scratch));
+                            raw.read_buffer(Gl::COLOR_ATTACHMENT0);
+                            raw.bind_framebuffer(Gl::DRAW_FRAMEBUFFER, None);
+                            if *format == crate::backend::api::GlFormat::Rgba8Srgb {
+                                conversion = super::surface_color::convert(
+                                    raw,
+                                    cache,
+                                    intermediate.as_ref().expect("surface resolve texture"),
+                                    None,
+                                    0,
+                                    pass.extent,
+                                    r,
+                                    true,
+                                );
+                            } else {
+                                raw.blit_framebuffer(
+                                    x0,
+                                    y0,
+                                    x1,
+                                    y1,
+                                    x0,
+                                    pass.extent[1] as i32 - y0,
+                                    x1,
+                                    pass.extent[1] as i32 - y1,
+                                    Gl::COLOR_BUFFER_BIT,
+                                    Gl::NEAREST,
+                                );
+                            }
+                        }
+                        if let Some(texture) = &intermediate {
+                            raw.delete_texture(Some(texture));
+                        }
+                        raw.delete_framebuffer(Some(&scratch));
+                        raw.bind_framebuffer(Gl::FRAMEBUFFER, Some(&pass.framebuffer));
+                    });
                 let result = result.and(conversion);
                 if result.is_err() {
                     let state = self.owner.state.borrow();
@@ -376,7 +374,7 @@ impl BrowserEncoder {
             }
             if let Some(slot) = pass.surface_slot {
                 let mut conversion = Ok(());
-                self.with_context("publish_offscreen_surface", |raw| {
+                self.with_surface_color_context("publish_offscreen_surface", |raw, cache| {
                     raw.disable(Gl::SCISSOR_TEST);
                     if pass.surface_srgb {
                         let full = fluxel_rhi_core::api::Rect {
@@ -387,6 +385,7 @@ impl BrowserEncoder {
                         };
                         conversion = super::surface_color::convert(
                             raw,
+                            cache,
                             pass.surface_color.as_ref().expect("surface texture"),
                             None,
                             0,

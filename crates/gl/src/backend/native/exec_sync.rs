@@ -1,15 +1,15 @@
 //! Native fence and explicit memory-visibility execution.
 //!
-//! Fence observations distinguish an unrecognized status from a driver error.
-//! The former stays accepted-unknown so its lease remains live; the latter is
-//! terminal and must reach the completion future instead of becoming an
-//! unbounded `Pending` loop. Query-object execution has its own child module
-//! because its active-query invariant is independent of fence lifetime.
+//! Fence observations distinguish signaled, pending, and unrecognized native
+//! statuses. Driver-error observation is deferred to the presentation boundary
+//! so polling a fence cannot itself become a per-frame synchronization point.
+//! Query-object execution has its own child module because its active-query
+//! invariant is independent of fence lifetime.
 
 use super::provider::NativeGlProvider;
 use crate::backend::api::{
-    GlError, GlFamilyApi as _, GlFenceLease, GlFenceStatus, GlMemoryBarrier, GlSyncApi,
-    GlWaitBound, SyncId,
+    GlContextLifecycle, GlError, GlFamilyApi as _, GlFenceLease, GlFenceStatus, GlMemoryBarrier,
+    GlSyncApi, GlWaitBound, SyncId,
 };
 
 /// `client_waitSync` accepts a 64-bit timeout, but glow 0.18 binds it as
@@ -44,6 +44,7 @@ impl GlSyncApi for NativeGlProvider {
         };
         let id = SyncId::new(self.context_stamp(), slot, 0);
         self.syncs.insert(id, raw);
+        self.commands_pending_submission.set(true);
         match self.fences.issue(id) {
             Ok(lease) => Ok(lease),
             Err(error) => {
@@ -68,7 +69,7 @@ impl GlSyncApi for NativeGlProvider {
         unsafe { self.gl.delete_sync(raw) };
         self.syncs.remove(&fence.fence);
         self.fences.revoke(fence);
-        self.driver_error(OP)
+        self.defer_readonly_error(OP)
     }
 
     fn poll_fence(&mut self, fence: GlFenceLease) -> Result<GlFenceStatus, GlError> {
@@ -77,7 +78,15 @@ impl GlSyncApi for NativeGlProvider {
         self.validate_object_context(OP, fence.fence.context)?;
         self.fences.validate(fence)?;
         let raw = self.sync(OP, fence.fence)?;
-        self.sync_status(OP, raw)
+        let submitted = self.submit_pending_commands(OP);
+        let status = self.sync_status(OP, raw)?;
+        // A headless fence needs one publication boundary. Only that first
+        // submission observes the deferred stream error; later timer-driven
+        // polls remain pure non-blocking status checks.
+        if submitted {
+            self.take_deferred_driver_error(OP)?;
+        }
+        Ok(status)
     }
 
     fn wait_fence(
@@ -91,6 +100,12 @@ impl GlSyncApi for NativeGlProvider {
         self.validate_object_context(OP, fence.fence.context)?;
         self.fences.validate(fence)?;
         let raw = self.sync(OP, fence.fence)?;
+        if bound.nanoseconds == 0 {
+            let submitted = self.submit_pending_commands(OP);
+            if submitted {
+                self.take_deferred_driver_error(OP)?;
+            }
+        }
         // A zero bound is a poll: no flush flag, no wait.
         let flags = if bound.nanoseconds == 0 {
             0
@@ -100,10 +115,18 @@ impl GlSyncApi for NativeGlProvider {
         let timeout = if bound.nanoseconds == 0 {
             0
         } else {
-            u64::try_from(MAX_WAIT_TIMEOUT_NS).unwrap_or(i32::MAX as u64) as i32
+            bound
+                .nanoseconds
+                .min(u64::try_from(MAX_WAIT_TIMEOUT_NS).unwrap_or(i32::MAX as u64))
+                as i32
         };
         // SAFETY: current-context contract; the fence is live.
         let result = unsafe { self.gl.client_wait_sync(raw, flags, timeout) };
+        if bound.nanoseconds != 0 {
+            // The flush flag makes all preceding work, including this fence,
+            // visible to the server as part of the explicit wait.
+            self.commands_pending_submission.set(false);
+        }
         let status = match result {
             glow::ALREADY_SIGNALED | glow::CONDITION_SATISFIED => GlFenceStatus::Complete,
             glow::TIMEOUT_EXPIRED => GlFenceStatus::Pending,
@@ -111,7 +134,13 @@ impl GlSyncApi for NativeGlProvider {
             // keeps its lease until the caller observes a usable status.
             _ => GlFenceStatus::Unknown,
         };
-        self.fence_driver_error(OP)?;
+        if status == GlFenceStatus::Unknown {
+            return self.abnormal_wait_failure(OP);
+        }
+        if bound.nanoseconds != 0 {
+            // An explicit bounded wait is a caller-selected slow boundary.
+            self.take_deferred_driver_error(OP)?;
+        }
         Ok(status)
     }
 
@@ -121,7 +150,9 @@ impl GlSyncApi for NativeGlProvider {
         self.assert_ready(OP)?;
         // SAFETY: current-context contract.
         unsafe { self.gl.flush() };
-        self.driver_error(OP)
+        self.defer_readonly_error(OP)?;
+        self.commands_pending_submission.set(false);
+        self.take_deferred_driver_error(OP)
     }
 
     fn memory_barrier(&mut self, barriers: GlMemoryBarrier) -> Result<(), GlError> {
@@ -135,7 +166,7 @@ impl GlSyncApi for NativeGlProvider {
             self.gl
                 .memory_barrier(super::exec_compute::native_barrier_bits(barriers.0));
         }
-        self.driver_error(OP)
+        self.defer_driver_error(OP)
     }
 
     fn memory_barrier_by_region(&mut self, barriers: GlMemoryBarrier) -> Result<(), GlError> {
@@ -149,7 +180,7 @@ impl GlSyncApi for NativeGlProvider {
             self.gl
                 .memory_barrier_by_region(super::exec_compute::native_barrier_bits(barriers.0));
         }
-        self.driver_error(OP)
+        self.defer_driver_error(OP)
     }
 
     fn texture_barrier(&mut self) -> Result<(), GlError> {
@@ -163,47 +194,42 @@ impl GlSyncApi for NativeGlProvider {
 }
 
 impl NativeGlProvider {
-    /// Reads one fence status, preserving an unknown status separately from a
-    /// GL error raised by the query itself.
+    /// Observes one fence with a zero-timeout client wait.
+    ///
+    /// Zero flags avoid requesting a flush; zero timeout avoids waiting for
+    /// GPU completion. This is still a driver status observation, so callers
+    /// must keep polling bounded rather than treating it as a free CPU read.
     fn sync_status(
         &mut self,
         operation: &'static str,
         raw: glow::NativeFence,
     ) -> Result<GlFenceStatus, GlError> {
         use glow::HasContext as _;
-        // SAFETY: current-context contract; the fence is live.
-        let value = unsafe { self.gl.get_sync_parameter_i32(raw, glow::SYNC_STATUS) };
-        let status = match value as u32 {
-            glow::SIGNALED => GlFenceStatus::Complete,
-            glow::UNSIGNALED => GlFenceStatus::Pending,
+        // SAFETY: current-context contract; the fence is live and the zero
+        // flags/timeout make this a pure, non-blocking poll.
+        let value = unsafe { self.gl.client_wait_sync(raw, 0, 0) };
+        let status = match value {
+            glow::ALREADY_SIGNALED | glow::CONDITION_SATISFIED => GlFenceStatus::Complete,
+            glow::TIMEOUT_EXPIRED => GlFenceStatus::Pending,
             _ => GlFenceStatus::Unknown,
         };
-        self.fence_driver_error(operation)?;
+        if status == GlFenceStatus::Unknown {
+            return self.abnormal_wait_failure(operation);
+        }
         Ok(status)
     }
 
-    /// Turns an error produced while observing a fence into a terminal result.
-    ///
-    /// A context-loss flag invalidates every native name, including the fence
-    /// just queried, so clear provider tables before exposing `ContextLost`.
-    /// Other GL errors are not completion states and must not be relabelled as
-    /// `Unknown`: doing so would make a host future retry forever.
-    fn fence_driver_error(&mut self, operation: &'static str) -> Result<(), GlError> {
-        use glow::HasContext as _;
-        // SAFETY: current-context contract; this reads and clears only the
-        // context error flag after the immediately preceding fence operation.
-        let error = unsafe { self.gl.get_error() };
-        if error == glow::NO_ERROR {
-            return Ok(());
-        }
-        if error == glow::CONTEXT_LOST {
-            self.lifecycle = crate::backend::api::GlContextLifecycle::Lost;
-            self.reset_executable_state();
-            return Err(GlError::ContextLost { operation });
-        }
+    /// Converts an abnormal client-wait result into terminal provider failure.
+    /// This slow diagnostic path is deliberately separate from ordinary
+    /// zero-time pending polls: even a clean error flag cannot make a
+    /// WAIT_FAILED context safe for optimistic caches or existing fences.
+    fn abnormal_wait_failure(&mut self, operation: &'static str) -> Result<GlFenceStatus, GlError> {
+        self.take_deferred_driver_error(operation)?;
+        self.lifecycle = GlContextLifecycle::Lost;
+        self.reset_executable_state();
         Err(GlError::Driver {
             operation,
-            message: format!("GL error 0x{error:04x}"),
+            message: "glClientWaitSync returned WAIT_FAILED or an unknown status".into(),
         })
     }
 

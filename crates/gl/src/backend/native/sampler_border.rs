@@ -180,6 +180,6 @@ impl NativeGlProvider {
         unsafe {
             self.gl.bind_sampler(unit, raw);
         }
-        self.driver_error("bind-sampler")
+        self.defer_driver_error("bind-sampler")
     }
 }

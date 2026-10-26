@@ -74,9 +74,7 @@ impl BrowserEncoder {
                 depth.mip_level,
                 depth.layer,
             );
-            if raw.check_framebuffer_status(Gl::FRAMEBUFFER) != Gl::FRAMEBUFFER_COMPLETE
-                || raw.get_error() != Gl::NO_ERROR
-            {
+            if raw.check_framebuffer_status(Gl::FRAMEBUFFER) != Gl::FRAMEBUFFER_COMPLETE {
                 raw.bind_framebuffer(Gl::FRAMEBUFFER, None);
                 raw.delete_texture(Some(&color));
                 raw.delete_framebuffer(Some(&framebuffer));
@@ -89,13 +87,13 @@ impl BrowserEncoder {
         };
         let srgb = surface_format == crate::backend::api::GlFormat::Rgba8Srgb;
         let mut conversion = Ok(());
-        let result = self.with_context("begin_surface_depth_raster", |raw| {
+        let result = self.with_surface_color_context("begin_surface_depth_raster", |raw, cache| {
             // Preserve both Load and pixels outside a partial pass.
             raw.disable(Gl::SCISSOR_TEST);
             raw.bind_framebuffer(Gl::READ_FRAMEBUFFER, None);
             raw.bind_framebuffer(Gl::DRAW_FRAMEBUFFER, Some(&framebuffer));
             if srgb {
-                conversion = super::surface_color::preload(raw, &framebuffer, 0, extent);
+                conversion = super::surface_color::preload(raw, cache, &framebuffer, 0, extent);
             } else {
                 raw.blit_framebuffer(
                     0,
@@ -149,6 +147,7 @@ impl BrowserEncoder {
             state.context.raw.delete_framebuffer(Some(&framebuffer));
             return Err(error);
         }
+        self.raster_scissor = None;
         self.owner.state.borrow_mut().raster_extent = Some(extent);
         self.surface_depth_pass = Some(BrowserSurfaceDepthPass {
             framebuffer,
@@ -172,7 +171,7 @@ impl BrowserEncoder {
                 raw.bind_framebuffer(Gl::DRAW_FRAMEBUFFER, None);
             })?;
             let mut conversion = Ok(());
-            self.with_context("blit_surface_depth_color", |raw| {
+            self.with_surface_color_context("blit_surface_depth_color", |raw, cache| {
                 raw.disable(Gl::SCISSOR_TEST);
                 if pass.srgb {
                     let full = fluxel_rhi_core::api::Rect {
@@ -183,6 +182,7 @@ impl BrowserEncoder {
                     };
                     conversion = super::surface_color::convert(
                         raw,
+                        cache,
                         &pass.color,
                         None,
                         0,

@@ -205,14 +205,6 @@ impl BrowserEncoder {
                         Error::Unsupported("WebGL2 OVR_multiview2"),
                     ));
                 };
-                let max = raw
-                    .get_parameter(0x9631)
-                    .ok()
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0);
-                if f64::from(count) > max {
-                    return Err(Error::InvalidRange);
-                }
                 Some(extension)
             } else {
                 None
@@ -299,11 +291,9 @@ impl BrowserEncoder {
                 }
             }
             let status = raw.check_framebuffer_status(Gl::FRAMEBUFFER);
-            let error = raw.get_error();
             if attach_failed
                 || (colors.iter().flatten().any(|a| a.texture.is_none()) && surface_color.is_none())
                 || status != Gl::FRAMEBUFFER_COMPLETE
-                || error != Gl::NO_ERROR
             {
                 raw.bind_framebuffer(Gl::FRAMEBUFFER, None);
                 if let Some(color) = &surface_color {
@@ -322,88 +312,90 @@ impl BrowserEncoder {
             .flatten()
             .any(|a| a.texture.is_none() && a.surface_format == Some(GlFormat::Rgba8Srgb));
         let mut conversion = Ok(());
-        let result = self.with_context("begin_offscreen_attachments", |raw| {
-            if let Some(slot) = surface_slot {
-                raw.disable(Gl::SCISSOR_TEST);
-                raw.bind_framebuffer(Gl::READ_FRAMEBUFFER, None);
-                raw.bind_framebuffer(Gl::DRAW_FRAMEBUFFER, Some(&framebuffer));
-                let select: Vec<u32> = (0..colors.len())
-                    .map(|i| {
-                        if i as u32 == slot {
-                            Gl::COLOR_ATTACHMENT0 + slot
-                        } else {
-                            Gl::NONE
-                        }
-                    })
-                    .collect();
-                raw.draw_buffers(&array(&select));
-                if surface_srgb {
-                    conversion = super::surface_color::preload(raw, &framebuffer, slot, extent);
-                } else {
-                    raw.blit_framebuffer(
-                        0,
-                        extent[1] as i32,
-                        extent[0] as i32,
-                        0,
-                        0,
-                        0,
-                        extent[0] as i32,
-                        extent[1] as i32,
-                        Gl::COLOR_BUFFER_BIT,
-                        Gl::NEAREST,
-                    );
+        let result =
+            self.with_surface_color_context("begin_offscreen_attachments", |raw, cache| {
+                if let Some(slot) = surface_slot {
+                    raw.disable(Gl::SCISSOR_TEST);
+                    raw.bind_framebuffer(Gl::READ_FRAMEBUFFER, None);
+                    raw.bind_framebuffer(Gl::DRAW_FRAMEBUFFER, Some(&framebuffer));
+                    let select: Vec<u32> = (0..colors.len())
+                        .map(|i| {
+                            if i as u32 == slot {
+                                Gl::COLOR_ATTACHMENT0 + slot
+                            } else {
+                                Gl::NONE
+                            }
+                        })
+                        .collect();
+                    raw.draw_buffers(&array(&select));
+                    if surface_srgb {
+                        conversion =
+                            super::surface_color::preload(raw, cache, &framebuffer, slot, extent);
+                    } else {
+                        raw.blit_framebuffer(
+                            0,
+                            extent[1] as i32,
+                            extent[0] as i32,
+                            0,
+                            0,
+                            0,
+                            extent[0] as i32,
+                            extent[1] as i32,
+                            Gl::COLOR_BUFFER_BIT,
+                            Gl::NEAREST,
+                        );
+                    }
+                    let buffers: Vec<u32> = colors
+                        .iter()
+                        .enumerate()
+                        .map(|(i, a)| {
+                            if a.is_some() {
+                                Gl::COLOR_ATTACHMENT0 + i as u32
+                            } else {
+                                Gl::NONE
+                            }
+                        })
+                        .collect();
+                    raw.draw_buffers(&array(&buffers));
+                    raw.bind_framebuffer(Gl::FRAMEBUFFER, Some(&framebuffer));
                 }
-                let buffers: Vec<u32> = colors
-                    .iter()
-                    .enumerate()
-                    .map(|(i, a)| {
-                        if a.is_some() {
-                            Gl::COLOR_ATTACHMENT0 + i as u32
-                        } else {
-                            Gl::NONE
+                raw.viewport(0, 0, extent[0] as i32, extent[1] as i32);
+                raw.enable(Gl::SCISSOR_TEST);
+                raw.scissor(
+                    render_area.x as i32,
+                    render_area.y as i32,
+                    render_area.width as i32,
+                    render_area.height as i32,
+                );
+                raw.color_mask(true, true, true, true);
+                raw.depth_mask(true);
+                raw.stencil_mask(u32::MAX);
+                for (i, a) in colors.iter().enumerate() {
+                    if let Some(a) = a {
+                        match a.load {
+                            LoadOp::Clear(ClearColor::Float(v)) => {
+                                raw.clear_bufferfv_with_f32_array(Gl::COLOR, i as i32, &v)
+                            }
+                            LoadOp::Clear(ClearColor::Uint(v)) => {
+                                raw.clear_bufferuiv_with_u32_array(Gl::COLOR, i as i32, &v)
+                            }
+                            LoadOp::Clear(ClearColor::Sint(v)) => {
+                                raw.clear_bufferiv_with_i32_array(Gl::COLOR, i as i32, &v)
+                            }
+                            _ => {}
                         }
-                    })
-                    .collect();
-                raw.draw_buffers(&array(&buffers));
-                raw.bind_framebuffer(Gl::FRAMEBUFFER, Some(&framebuffer));
-            }
-            raw.viewport(0, 0, extent[0] as i32, extent[1] as i32);
-            raw.enable(Gl::SCISSOR_TEST);
-            raw.scissor(
-                render_area.x as i32,
-                render_area.y as i32,
-                render_area.width as i32,
-                render_area.height as i32,
-            );
-            raw.color_mask(true, true, true, true);
-            raw.depth_mask(true);
-            raw.stencil_mask(u32::MAX);
-            for (i, a) in colors.iter().enumerate() {
-                if let Some(a) = a {
-                    match a.load {
-                        LoadOp::Clear(ClearColor::Float(v)) => {
-                            raw.clear_bufferfv_with_f32_array(Gl::COLOR, i as i32, &v)
-                        }
-                        LoadOp::Clear(ClearColor::Uint(v)) => {
-                            raw.clear_bufferuiv_with_u32_array(Gl::COLOR, i as i32, &v)
-                        }
-                        LoadOp::Clear(ClearColor::Sint(v)) => {
-                            raw.clear_bufferiv_with_i32_array(Gl::COLOR, i as i32, &v)
-                        }
-                        _ => {}
                     }
                 }
-            }
-            if let Some(a) = &depth {
-                if let Some((LoadOp::Clear(v), _)) = a.depth {
-                    raw.clear_bufferfv_with_f32_array(Gl::DEPTH, 0, &[v]);
+                if let Some(a) = &depth {
+                    if let Some((LoadOp::Clear(v), _)) = a.depth {
+                        raw.clear_bufferfv_with_f32_array(Gl::DEPTH, 0, &[v]);
+                    }
+                    if let Some((LoadOp::Clear(v), _)) = a.stencil {
+                        raw.clear_bufferiv_with_i32_array(Gl::STENCIL, 0, &[v as i32]);
+                    }
                 }
-                if let Some((LoadOp::Clear(v), _)) = a.stencil {
-                    raw.clear_bufferiv_with_i32_array(Gl::STENCIL, 0, &[v as i32]);
-                }
-            }
-            raw.disable(Gl::SCISSOR_TEST);
-        });
+                raw.disable(Gl::SCISSOR_TEST);
+            });
         if let Err(e) = result.and(conversion) {
             let state = self.owner.state.borrow();
             state.context.raw.bind_framebuffer(Gl::FRAMEBUFFER, None);

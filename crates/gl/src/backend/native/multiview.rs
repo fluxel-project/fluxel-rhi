@@ -78,15 +78,8 @@ pub(super) unsafe fn probe(
 ) -> super::probes::ProbeAnswer {
     use super::probes::ProbeAnswer;
     use glow::HasContext as _;
-    use std::num::NonZeroU32;
     // SAFETY: discovery owns this current context throughout the operation.
     unsafe {
-        let read = NonZeroU32::new(gl.get_parameter_i32(glow::READ_FRAMEBUFFER_BINDING) as u32)
-            .map(glow::NativeFramebuffer);
-        let draw = NonZeroU32::new(gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING) as u32)
-            .map(glow::NativeFramebuffer);
-        let binding = NonZeroU32::new(gl.get_parameter_i32(glow::TEXTURE_BINDING_2D_ARRAY) as u32)
-            .map(glow::NativeTexture);
         let texture = match gl.create_texture() {
             Ok(x) => x,
             Err(_) => {
@@ -116,9 +109,11 @@ pub(super) unsafe fn probe(
         entry.attach(glow::COLOR_ATTACHMENT0, texture, 0, 0, 2);
         let complete = gl.check_framebuffer_status(glow::FRAMEBUFFER) == glow::FRAMEBUFFER_COMPLETE;
         let operation_error = gl.get_error();
-        gl.bind_framebuffer(glow::READ_FRAMEBUFFER, read);
-        gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, draw);
-        gl.bind_texture(glow::TEXTURE_2D_ARRAY, binding);
+        // Discovery owns this context before a provider exposes it, so leave
+        // the probe's private bindings at the canonical empty baseline rather
+        // than synchronously snapshotting and restoring driver state.
+        gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+        gl.bind_texture(glow::TEXTURE_2D_ARRAY, None);
         gl.delete_framebuffer(framebuffer);
         gl.delete_texture(texture);
         let cleanup_error = gl.get_error();

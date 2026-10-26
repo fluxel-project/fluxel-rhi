@@ -4,13 +4,10 @@
 //! before sampling, including writes issued after bind. No CPU command replay is
 //! involved; the owner retains both native objects through the immediate call.
 use super::owner::{BrowserEncoder, BrowserTexture};
-use crate::backend::api::{
-    GlFamilyApi as _, GlFormat, GlFormatResourceKind, GlTextureDimension,
-};
+use crate::backend::api::{GlFamilyApi as _, GlFormat, GlFormatResourceKind, GlTextureDimension};
 use fluxel_rhi_core::api::{Error, Result};
 use std::rc::Rc;
-use wasm_bindgen::JsCast;
-use web_sys::{WebGl2RenderingContext as Gl, WebGlFramebuffer, WebGlTexture};
+use web_sys::WebGl2RenderingContext as Gl;
 
 impl BrowserTexture {
     pub(crate) fn create_cube_mirror(
@@ -52,11 +49,6 @@ impl BrowserTexture {
             ));
         }
         let gl = &state.context.raw;
-        let old = gl
-            .get_parameter(Gl::TEXTURE_BINDING_CUBE_MAP)
-            .map_err(|_| Error::InvalidState)?
-            .dyn_into::<WebGlTexture>()
-            .ok();
         let raw = gl.create_texture().ok_or(Error::OutOfMemory)?;
         gl.bind_texture(Gl::TEXTURE_CUBE_MAP, Some(&raw));
         gl.tex_parameteri(
@@ -72,7 +64,9 @@ impl BrowserTexture {
             (desc.extent.width >> base_mip).max(1) as i32,
             (desc.extent.height >> base_mip).max(1) as i32,
         );
-        gl.bind_texture(Gl::TEXTURE_CUBE_MAP, old.as_ref());
+        // RHI exclusively owns the context; this private allocation leaves
+        // its target neutral rather than synchronously querying a prior bind.
+        gl.bind_texture(Gl::TEXTURE_CUBE_MAP, None);
         if gl.is_context_lost() {
             state.mark_lost();
             return Err(Error::DeviceLost);
@@ -108,6 +102,7 @@ impl BrowserEncoder {
         base_mip: u32,
         mip_count: u32,
         base_layer: u32,
+        texture_unit: u32,
     ) -> Result<()> {
         self.same_owner(&source.owner)?;
         self.same_owner(&mirror.owner)?;
@@ -130,26 +125,28 @@ impl BrowserEncoder {
         }
         let source_raw = source.texture()?.clone();
         let mirror_raw = mirror.texture()?.clone();
+        let active_texture = Gl::TEXTURE0
+            .checked_add(texture_unit)
+            .ok_or(Error::InvalidRange)?;
+        // The reflected binding owns this unit. Use it for the private copy
+        // and leave the mirror rebound there, rather than disturbing whichever
+        // unit happened to be active before the draw.
+        let raster_framebuffer = self
+            .offscreen_pass
+            .as_ref()
+            .map(|pass| pass.framebuffer.clone())
+            .or_else(|| {
+                self.surface_depth_pass
+                    .as_ref()
+                    .map(|pass| pass.framebuffer.clone())
+            });
         let mut inner = Ok(());
         self.with_context("refresh cube mirror", |gl| {
-            let old_fb = match gl.get_parameter(Gl::READ_FRAMEBUFFER_BINDING) {
-                Ok(v) => v.dyn_into::<WebGlFramebuffer>().ok(),
-                Err(_) => {
-                    inner = Err(Error::InvalidState);
-                    return;
-                }
-            };
-            let old_tex = match gl.get_parameter(Gl::TEXTURE_BINDING_CUBE_MAP) {
-                Ok(v) => v.dyn_into::<WebGlTexture>().ok(),
-                Err(_) => {
-                    inner = Err(Error::InvalidState);
-                    return;
-                }
-            };
             let Some(fb) = gl.create_framebuffer() else {
                 inner = Err(Error::OutOfMemory);
                 return;
             };
+            gl.active_texture(active_texture);
             gl.bind_framebuffer(Gl::READ_FRAMEBUFFER, Some(&fb));
             gl.bind_texture(Gl::TEXTURE_CUBE_MAP, Some(&mirror_raw));
             'levels: for mip in 0..mip_count {
@@ -163,11 +160,6 @@ impl BrowserEncoder {
                         (base_mip + mip) as i32,
                         (base_layer + face) as i32,
                     );
-                    if gl.check_framebuffer_status(Gl::READ_FRAMEBUFFER) != Gl::FRAMEBUFFER_COMPLETE
-                    {
-                        inner = Err(Error::Unsupported("WebGL2 cube mirror source framebuffer"));
-                        break 'levels;
-                    }
                     gl.copy_tex_sub_image_2d(
                         Gl::TEXTURE_CUBE_MAP_POSITIVE_X + face,
                         mip as i32,
@@ -178,14 +170,11 @@ impl BrowserEncoder {
                         width,
                         height,
                     );
-                    if gl.get_error() != Gl::NO_ERROR {
-                        inner = Err(Error::Backend("WebGL2 cube mirror copy failed".into()));
-                        break 'levels;
-                    }
                 }
             }
-            gl.bind_texture(Gl::TEXTURE_CUBE_MAP, old_tex.as_ref());
-            gl.bind_framebuffer(Gl::READ_FRAMEBUFFER, old_fb.as_ref());
+            gl.bind_texture(Gl::TEXTURE_CUBE_MAP, Some(&mirror_raw));
+            gl.bind_framebuffer(Gl::READ_FRAMEBUFFER, raster_framebuffer.as_ref());
+            gl.bind_framebuffer(Gl::DRAW_FRAMEBUFFER, raster_framebuffer.as_ref());
             gl.delete_framebuffer(Some(&fb));
         })?;
         inner

@@ -136,14 +136,6 @@ impl NativeGlProvider {
         // SAFETY: the context owns every object, the full mip fits the scratch
         // PBO and all row offsets are checked against the validated ranges.
         unsafe {
-            let pack = self.gl.get_parameter_i32(glow::PIXEL_PACK_BUFFER_BINDING) as u32;
-            let read = self.gl.get_parameter_i32(glow::COPY_READ_BUFFER_BINDING) as u32;
-            let write = self.gl.get_parameter_i32(glow::COPY_WRITE_BUFFER_BINDING) as u32;
-            let binding = self.gl.get_parameter_i32(match target {
-                glow::TEXTURE_2D => glow::TEXTURE_BINDING_2D,
-                glow::TEXTURE_3D => glow::TEXTURE_BINDING_3D,
-                _ => glow::TEXTURE_BINDING_2D_ARRAY,
-            }) as u32;
             let scratch = self
                 .gl
                 .create_buffer()
@@ -178,26 +170,14 @@ impl NativeGlProvider {
                         )?;
                     }
                 }
-                result = self.driver_error(OP);
+                result = self.defer_driver_error(OP);
             }
-            self.gl.bind_texture(
-                target,
-                std::num::NonZeroU32::new(binding).map(glow::NativeTexture),
-            );
-            self.gl.bind_buffer(
-                glow::PIXEL_PACK_BUFFER,
-                std::num::NonZeroU32::new(pack).map(glow::NativeBuffer),
-            );
-            self.gl.bind_buffer(
-                glow::COPY_READ_BUFFER,
-                std::num::NonZeroU32::new(read).map(glow::NativeBuffer),
-            );
-            self.gl.bind_buffer(
-                glow::COPY_WRITE_BUFFER,
-                std::num::NonZeroU32::new(write).map(glow::NativeBuffer),
-            );
+            self.gl.bind_texture(target, None);
+            self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+            self.gl.bind_buffer(glow::COPY_READ_BUFFER, None);
+            self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, None);
             self.gl.delete_buffer(scratch);
-            result.and_then(|()| self.driver_error(OP))
+            result.and_then(|()| self.defer_driver_error(OP))
         }
     }
 }
@@ -311,11 +291,6 @@ impl NativeGlProvider {
         // were validated by the caller, and each temporary object's lifetime spans
         // every recorded copy and read. GL retains deleted in-flight objects.
         unsafe {
-            let old_texture = self.gl.get_parameter_i32(glow::TEXTURE_BINDING_2D) as u32;
-            let old_fbo = self.gl.get_parameter_i32(glow::READ_FRAMEBUFFER_BINDING) as u32;
-            let old_pack = self.gl.get_parameter_i32(glow::PIXEL_PACK_BUFFER_BINDING) as u32;
-            let old_read = self.gl.get_parameter_i32(glow::COPY_READ_BUFFER_BINDING) as u32;
-            let old_write = self.gl.get_parameter_i32(glow::COPY_WRITE_BUFFER_BINDING) as u32;
             let tmp = self
                 .gl
                 .create_texture()
@@ -411,7 +386,7 @@ impl NativeGlProvider {
                         1,
                     );
                 }
-                result = self.driver_error(OP);
+                result = self.defer_driver_error(OP);
                 if result.is_err() {
                     break;
                 }
@@ -441,7 +416,7 @@ impl NativeGlProvider {
                         OP,
                     )?;
                 }
-                result = self.driver_error(OP);
+                result = self.defer_driver_error(OP);
             }
             for (key, value) in [
                 (glow::PACK_ALIGNMENT, i32::from(saved.pack_alignment)),
@@ -451,30 +426,15 @@ impl NativeGlProvider {
             ] {
                 self.gl.pixel_store_i32(key, value);
             }
-            self.gl.bind_texture(
-                glow::TEXTURE_2D,
-                std::num::NonZeroU32::new(old_texture).map(glow::NativeTexture),
-            );
-            self.gl.bind_framebuffer(
-                glow::READ_FRAMEBUFFER,
-                std::num::NonZeroU32::new(old_fbo).map(glow::NativeFramebuffer),
-            );
-            self.gl.bind_buffer(
-                glow::PIXEL_PACK_BUFFER,
-                std::num::NonZeroU32::new(old_pack).map(glow::NativeBuffer),
-            );
-            self.gl.bind_buffer(
-                glow::COPY_READ_BUFFER,
-                std::num::NonZeroU32::new(old_read).map(glow::NativeBuffer),
-            );
-            self.gl.bind_buffer(
-                glow::COPY_WRITE_BUFFER,
-                std::num::NonZeroU32::new(old_write).map(glow::NativeBuffer),
-            );
+            self.gl.bind_texture(glow::TEXTURE_2D, None);
+            self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
+            self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+            self.gl.bind_buffer(glow::COPY_READ_BUFFER, None);
+            self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, None);
             self.gl.delete_buffer(pbo);
             self.gl.delete_framebuffer(fb);
             self.gl.delete_texture(tmp);
-            result.and_then(|()| self.driver_error(OP))
+            result.and_then(|()| self.defer_driver_error(OP))
         }
     }
 }

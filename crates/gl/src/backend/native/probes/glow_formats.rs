@@ -614,7 +614,9 @@ impl GlowProbes<'_> {
             self.gl.use_program(scratch.program);
             self.gl.dispatch_compute(1, 1, 1);
             self.gl.memory_barrier(glow::FRAMEBUFFER_BARRIER_BIT);
-            self.gl.finish();
+            // `read_pixels` below is the probe's required completion point.
+            // Do not add `glFinish`: it would serialize all outstanding work
+            // before the readback has a chance to establish that dependency.
             if self.take_error() {
                 self.gl.bind_texture(glow::TEXTURE_3D, None);
                 return false;

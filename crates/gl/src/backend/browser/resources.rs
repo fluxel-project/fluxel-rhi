@@ -9,14 +9,30 @@ use wasm_bindgen::JsCast;
 use web_sys::{WebGl2RenderingContext as Gl, WebGlBuffer};
 
 use super::owner::{
-    BrowserBuffer, BrowserOwner, BrowserRasterProgram, BrowserSampler, BrowserTexture,
-    BrowserVertexArray,
+    BrowserBuffer, BrowserOwner, BrowserOwnerState, BrowserRasterProgram, BrowserSampler,
+    BrowserTexture, BrowserVertexArray,
 };
 
-/// Saves WebGL's actual client-unpack state around the array/D3 initialization
-/// workaround. Browser encoders can legitimately leave a scoped non-default
-/// unpack state while resource allocation is re-entered, so this must not
-/// assume a global canonical state.
+/// A WebGL error queue is owner-global, not allocation-local. Once an
+/// allocation observes one, prevent every outstanding completion from later
+/// claiming success and wake only after its `RefCell` borrow is released.
+fn fail_driver_stream(state: &mut BrowserOwnerState, error: Error) -> Vec<std::task::Waker> {
+    state.mark_failed(error)
+}
+
+fn wake_all(wakers: Vec<std::task::Waker>) {
+    for waker in wakers {
+        waker.wake();
+    }
+}
+
+/// Preserves external raw-interop unpack state around array/D3 initialization.
+///
+/// This is deliberately a narrow creation-time exception to the no-snapshot
+/// rule. The raw interop guard permits a caller to establish an unpack/PBO
+/// layout that cannot be reconstructed from RHI-owned state; the lazy-slice
+/// workaround must restore that layout before exposing a new resource. Normal
+/// encoder transfer paths use owned neutral state instead.
 struct ScopedUnpackState<'a> {
     gl: &'a Gl,
     buffer: Option<WebGlBuffer>,
@@ -101,7 +117,11 @@ impl BrowserOwner {
             .buffer_data_with_i32(target, size, Gl::DYNAMIC_DRAW);
         if state.context.raw.get_error() != Gl::NO_ERROR {
             state.context.raw.delete_buffer(Some(&raw));
-            return Err(Error::Backend("WebGL2 buffer allocation failed".into()));
+            let error = Error::Backend("WebGL2 buffer allocation failed".into());
+            let wakers = fail_driver_stream(&mut state, error.clone());
+            drop(state);
+            wake_all(wakers);
+            return Err(error);
         }
         Ok(BrowserBuffer {
             owner: self.clone(),
@@ -219,9 +239,11 @@ impl BrowserOwner {
             }
             if state.context.raw.get_error() != Gl::NO_ERROR {
                 state.context.raw.delete_renderbuffer(Some(&raw));
-                return Err(Error::Backend(
-                    "WebGL2 renderbuffer allocation failed".into(),
-                ));
+                let error = Error::Backend("WebGL2 renderbuffer allocation failed".into());
+                let wakers = fail_driver_stream(&mut state, error.clone());
+                drop(state);
+                wake_all(wakers);
+                return Err(error);
             }
             return Ok(BrowserTexture {
                 owner: self.clone(),
@@ -285,9 +307,11 @@ impl BrowserOwner {
         }
         if state.context.raw.get_error() != Gl::NO_ERROR {
             state.context.raw.delete_texture(Some(&raw));
-            return Err(Error::Backend(
-                "WebGL2 texture storage allocation failed".into(),
-            ));
+            let error = Error::Backend("WebGL2 texture storage allocation failed".into());
+            let wakers = fail_driver_stream(&mut state, error.clone());
+            drop(state);
+            wake_all(wakers);
+            return Err(error);
         }
         // Some browser implementations retain lazy per-slice initialization
         // after immutable allocation. An untouched slice can then lose its
@@ -342,8 +366,7 @@ impl BrowserOwner {
                         )
                         .is_err();
                 }
-                // Restore before deleting the failed allocation, preserving
-                // the caller's actual PBO and unpack values on every exit.
+                // Restore raw-interop state before deleting a failed allocation.
                 drop(unpack);
                 if failed {
                     gl.delete_texture(Some(&raw));
@@ -376,9 +399,11 @@ impl BrowserOwner {
         }
         if state.context.raw.get_error() != Gl::NO_ERROR {
             state.context.raw.delete_texture(Some(&raw));
-            return Err(Error::Backend(
-                "WebGL2 RGBA8 texture allocation failed".into(),
-            ));
+            let error = Error::Backend("WebGL2 RGBA8 texture allocation failed".into());
+            let wakers = fail_driver_stream(&mut state, error.clone());
+            drop(state);
+            wake_all(wakers);
+            return Err(error);
         }
         Ok(BrowserTexture {
             owner: self.clone(),
@@ -413,6 +438,12 @@ impl BrowserOwner {
                 owner: self.clone(),
                 id,
                 raw,
+                uniforms: std::rc::Rc::new(std::cell::RefCell::new(
+                    std::collections::BTreeMap::new(),
+                )),
+                uniform_blocks: std::rc::Rc::new(std::cell::RefCell::new(
+                    std::collections::BTreeMap::new(),
+                )),
                 lifetime: std::rc::Rc::new(()),
             },
             reflection,
@@ -453,7 +484,11 @@ impl BrowserOwner {
         super::format_map::configure_sampler(&state.context.raw, &raw, desc);
         if state.context.raw.get_error() != Gl::NO_ERROR {
             state.context.raw.delete_sampler(Some(&raw));
-            return Err(Error::Backend("WebGL2 sampler allocation failed".into()));
+            let error = Error::Backend("WebGL2 sampler allocation failed".into());
+            let wakers = fail_driver_stream(&mut state, error.clone());
+            drop(state);
+            wake_all(wakers);
+            return Err(error);
         }
         Ok(BrowserSampler {
             owner: self.clone(),

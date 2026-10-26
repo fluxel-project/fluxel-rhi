@@ -219,7 +219,10 @@ pub(crate) fn bind_native_group(
                         GlBindingSlot::UniformBuffer { .. },
                         GlExecutableBindingLocation::UniformBlock(point),
                     ) => {
-                        if reflected_resource(group, binding, assignment.element).is_none() && allows_missing_element(entry) && assignment.element.is_some() {
+                        if reflected_resource(group, binding, assignment.element).is_none()
+                            && allows_missing_element(entry)
+                            && assignment.element.is_some()
+                        {
                             provider.bind_dummy_uniform_buffer(program, point)?;
                             continue;
                         }
@@ -238,12 +241,14 @@ pub(crate) fn bind_native_group(
                             });
                         };
                         let offset = offset
-                            .checked_add(u64::from(dynamic_offset(group, binding, offsets).map_err(|_| {
-                                crate::backend::api::GlError::Driver {
-                                    operation: "bind reflected GL group",
-                                    message: "invalid dynamic offset".into(),
-                                }
-                            })?))
+                            .checked_add(u64::from(
+                                dynamic_offset(group, binding, offsets).map_err(|_| {
+                                    crate::backend::api::GlError::Driver {
+                                        operation: "bind reflected GL group",
+                                        message: "invalid dynamic offset".into(),
+                                    }
+                                })?,
+                            ))
                             .ok_or(crate::backend::api::GlError::OutOfMemory {
                                 operation: "bind reflected GL group",
                             })?;
@@ -254,7 +259,8 @@ pub(crate) fn bind_native_group(
                         GlExecutableBindingLocation::StorageBlock(point),
                     ) => {
                         if reflected_resource(group, binding, assignment.element).is_none()
-                            && allows_missing_element(entry) && assignment.element.is_some()
+                            && allows_missing_element(entry)
+                            && assignment.element.is_some()
                         {
                             provider.bind_dummy_storage_buffer(program, point)?;
                             continue;
@@ -300,29 +306,71 @@ pub(crate) fn bind_native_group(
                         )?;
                     }
                     (
-                        GlBindingSlot::SampledTexture { dimension, sample, multisampled },
+                        GlBindingSlot::SampledTexture {
+                            dimension,
+                            sample,
+                            multisampled,
+                        },
                         GlExecutableBindingLocation::TextureUnit(unit),
                     ) => {
                         let resource = reflected_resource(group, binding, assignment.element);
-                        if resource.is_none() && allows_missing_element(entry) && assignment.element.is_some() {
+                        if resource.is_none()
+                            && allows_missing_element(entry)
+                            && assignment.element.is_some()
+                        {
                             let target = match (dimension, multisampled) {
-                                (fluxel_rhi_core::api::TextureViewDimension::D1, false) => GlTextureTarget::D1,
-                                (fluxel_rhi_core::api::TextureViewDimension::D2, false) => GlTextureTarget::D2,
-                                (fluxel_rhi_core::api::TextureViewDimension::D2, true) => GlTextureTarget::D2Multisample,
-                                (fluxel_rhi_core::api::TextureViewDimension::D2Array, false) => GlTextureTarget::D2Array,
-                                (fluxel_rhi_core::api::TextureViewDimension::D2Array, true) => GlTextureTarget::D2MultisampleArray,
-                                (fluxel_rhi_core::api::TextureViewDimension::D3, false) => GlTextureTarget::D3,
-                                (fluxel_rhi_core::api::TextureViewDimension::Cube, false) => GlTextureTarget::Cube,
-                                (fluxel_rhi_core::api::TextureViewDimension::CubeArray, false) => GlTextureTarget::CubeArray,
-                                _ => return Err(crate::backend::api::GlError::Unsupported { operation: "bind reflected GL group", reason: "dummy sampled texture dimension" }),
+                                (fluxel_rhi_core::api::TextureViewDimension::D1, false) => {
+                                    GlTextureTarget::D1
+                                }
+                                (fluxel_rhi_core::api::TextureViewDimension::D2, false) => {
+                                    GlTextureTarget::D2
+                                }
+                                (fluxel_rhi_core::api::TextureViewDimension::D2, true) => {
+                                    GlTextureTarget::D2Multisample
+                                }
+                                (fluxel_rhi_core::api::TextureViewDimension::D2Array, false) => {
+                                    GlTextureTarget::D2Array
+                                }
+                                (fluxel_rhi_core::api::TextureViewDimension::D2Array, true) => {
+                                    GlTextureTarget::D2MultisampleArray
+                                }
+                                (fluxel_rhi_core::api::TextureViewDimension::D3, false) => {
+                                    GlTextureTarget::D3
+                                }
+                                (fluxel_rhi_core::api::TextureViewDimension::Cube, false) => {
+                                    GlTextureTarget::Cube
+                                }
+                                (fluxel_rhi_core::api::TextureViewDimension::CubeArray, false) => {
+                                    GlTextureTarget::CubeArray
+                                }
+                                _ => {
+                                    return Err(crate::backend::api::GlError::Unsupported {
+                                        operation: "bind reflected GL group",
+                                        reason: "dummy sampled texture dimension",
+                                    });
+                                }
                             };
                             provider.bind_dummy_sampled_texture(unit, target, sample)?;
-                            let has_sampler = reflection.assignments.iter().any(|other| other.executable == assignment.executable && layout.native.bindings.iter().any(|logical| logical.location == other.logical && matches!(logical.kind, crate::backend::api::GlShaderResourceKind::Sampler)));
-                            if !has_sampler { provider.bind_sampler(unit, None)?; }
+                            let has_sampler = reflection.assignments.iter().any(|other| {
+                                other.executable == assignment.executable
+                                    && layout.native.bindings.iter().any(|logical| {
+                                        logical.location == other.logical
+                                            && matches!(
+                                                logical.kind,
+                                                crate::backend::api::GlShaderResourceKind::Sampler
+                                            )
+                                    })
+                            });
+                            if !has_sampler {
+                                provider.bind_sampler(unit, None)?;
+                            }
                             continue;
                         }
                         let Some((_, GlBoundResource::Texture(view))) = resource else {
-                            return Err(crate::backend::api::GlError::Driver { operation: "bind reflected GL group", message: "sampled texture is absent".into() });
+                            return Err(crate::backend::api::GlError::Driver {
+                                operation: "bind reflected GL group",
+                                message: "sampled texture is absent".into(),
+                            });
                         };
                         let texture_desc = view.binding_texture().desc;
                         let target = match (texture_desc.dimension, texture_desc.sample_count > 1) {
@@ -359,8 +407,23 @@ pub(crate) fn bind_native_group(
                         };
                         provider.active_texture(unit)?;
                         provider.bind_texture(unit, target, Some(view.binding_texture().id))?;
-                        if matches!(texture_desc.format, crate::backend::api::GlFormat::Depth24PlusStencil8 | crate::backend::api::GlFormat::Depth32FloatStencil8) {
-                            provider.set_depth_stencil_texture_mode(view.binding_texture().id, view.aspects == fluxel_rhi_core::api::TextureAspects::STENCIL)?;
+                        if matches!(
+                            texture_desc.format,
+                            crate::backend::api::GlFormat::Depth24PlusStencil8
+                                | crate::backend::api::GlFormat::Depth32FloatStencil8
+                        ) {
+                            provider.set_depth_stencil_texture_mode(
+                                view.binding_texture().id,
+                                view.aspects == fluxel_rhi_core::api::TextureAspects::STENCIL,
+                            )?;
+                            // Selecting the depth/stencil plane is also used
+                            // by cold view creation, where the provider
+                            // canonical-cleans its temporary texture binding.
+                            // Reinstall the sampled binding after that helper
+                            // invalidates its CPU mirror; otherwise stencil
+                            // mirror replay leaves this unit bound to zero.
+                            provider.active_texture(unit)?;
+                            provider.bind_texture(unit, target, Some(view.binding_texture().id))?;
                         }
                         let has_sampler = reflection.assignments.iter().any(|other| {
                             other.executable == assignment.executable
@@ -378,7 +441,9 @@ pub(crate) fn bind_native_group(
                     }
                     (
                         GlBindingSlot::StorageTexture {
-                            access, dimension, format
+                            access,
+                            dimension,
+                            format,
                         },
                         GlExecutableBindingLocation::ImageUnit(unit),
                     ) => {
@@ -394,19 +459,40 @@ pub(crate) fn bind_native_group(
                             }
                         };
                         let resource = reflected_resource(group, binding, assignment.element);
-                        if resource.is_none() && allows_missing_element(entry) && assignment.element.is_some() {
+                        if resource.is_none()
+                            && allows_missing_element(entry)
+                            && assignment.element.is_some()
+                        {
                             let dimension = match dimension {
-                                fluxel_rhi_core::api::TextureViewDimension::D2 => crate::backend::api::GlTextureDimension::D2,
-                                fluxel_rhi_core::api::TextureViewDimension::D2Array => crate::backend::api::GlTextureDimension::D2Array,
-                                fluxel_rhi_core::api::TextureViewDimension::D3 => crate::backend::api::GlTextureDimension::D3,
-                                _ => return Err(crate::backend::api::GlError::Unsupported { operation: "bind reflected GL group", reason: "dummy storage image dimension" }),
+                                fluxel_rhi_core::api::TextureViewDimension::D2 => {
+                                    crate::backend::api::GlTextureDimension::D2
+                                }
+                                fluxel_rhi_core::api::TextureViewDimension::D2Array => {
+                                    crate::backend::api::GlTextureDimension::D2Array
+                                }
+                                fluxel_rhi_core::api::TextureViewDimension::D3 => {
+                                    crate::backend::api::GlTextureDimension::D3
+                                }
+                                _ => {
+                                    return Err(crate::backend::api::GlError::Unsupported {
+                                        operation: "bind reflected GL group",
+                                        reason: "dummy storage image dimension",
+                                    });
+                                }
                             };
-                            let format = crate::backend::translate::lower_texture_format(format).map_err(|_| crate::backend::api::GlError::Unsupported { operation: "bind reflected GL group", reason: "dummy storage image format" })?;
+                            let format = crate::backend::translate::lower_texture_format(format)
+                                .map_err(|_| crate::backend::api::GlError::Unsupported {
+                                    operation: "bind reflected GL group",
+                                    reason: "dummy storage image format",
+                                })?;
                             provider.bind_dummy_storage_image(unit, dimension, format, access)?;
                             continue;
                         }
                         let Some((_, GlBoundResource::StorageTexture(view))) = resource else {
-                            return Err(crate::backend::api::GlError::Driver { operation: "bind reflected GL group", message: "storage texture is absent".into() });
+                            return Err(crate::backend::api::GlError::Driver {
+                                operation: "bind reflected GL group",
+                                message: "storage texture is absent".into(),
+                            });
                         };
                         provider.bind_storage_image(
                             unit,
@@ -438,12 +524,18 @@ pub(crate) fn bind_native_group(
                         GlExecutableBindingLocation::TextureUnit(unit),
                     ) => {
                         let resource = reflected_resource(group, binding, assignment.element);
-                        if resource.is_none() && allows_missing_element(entry) && assignment.element.is_some() {
+                        if resource.is_none()
+                            && allows_missing_element(entry)
+                            && assignment.element.is_some()
+                        {
                             provider.bind_dummy_sampler(unit, comparison)?;
                             continue;
                         }
                         let Some((_, GlBoundResource::Sampler(sampler))) = resource else {
-                            return Err(crate::backend::api::GlError::Driver { operation: "bind reflected GL group", message: "sampler is absent".into() });
+                            return Err(crate::backend::api::GlError::Driver {
+                                operation: "bind reflected GL group",
+                                message: "sampler is absent".into(),
+                            });
                         };
                         provider.bind_sampler(unit, Some(sampler.id))?;
                     }

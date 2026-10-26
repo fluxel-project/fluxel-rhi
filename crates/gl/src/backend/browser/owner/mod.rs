@@ -22,12 +22,76 @@ use std::{cell::RefCell, collections::BTreeMap, rc::Rc, task::Waker};
 use fluxel_rhi_core::api::{Error, LaneId, Result};
 use web_sys::{
     WebGl2RenderingContext as Gl, WebGlBuffer, WebGlFramebuffer, WebGlProgram, WebGlRenderbuffer,
-    WebGlSampler, WebGlSync, WebGlTexture, WebGlVertexArrayObject,
+    WebGlSampler, WebGlSync, WebGlTexture, WebGlUniformLocation, WebGlVertexArrayObject,
 };
 
-use super::super::api::{GlContextLifecycle, GlDiscoverySnapshot, ProgramId};
+use super::super::api::{GlContextLifecycle, GlDiscoverySnapshot, GlFormat, ProgramId};
 use super::super::profile::GlProfile;
 use super::discovery::WebGl2BrowserDiscovery;
+
+/// Owner-local executable state for the surface sRGB conversion helper.
+///
+/// The programs are keyed by transfer direction and fragment output location;
+/// they remain valid for this WebGL context generation only.
+pub(super) struct SurfaceColorCache {
+    pub(super) programs: BTreeMap<(bool, u32), SurfaceColorProgram>,
+}
+
+pub(super) struct SurfaceColorProgram {
+    pub(super) raw: WebGlProgram,
+    pub(super) vao: WebGlVertexArrayObject,
+    pub(super) image: WebGlUniformLocation,
+    pub(super) height: WebGlUniformLocation,
+}
+
+/// Owner-local stencil transfer executables. Readback feedback geometry is
+/// supplied as uniforms, so one program remains valid for the context.
+pub(super) struct StencilTransferCache {
+    pub(super) write: Option<StencilWriteProgram>,
+    pub(super) read_raster: Option<WebGlProgram>,
+    pub(super) read_feedback: Option<StencilReadFeedbackProgram>,
+}
+
+pub(super) struct StencilWriteProgram {
+    pub(super) raw: WebGlProgram,
+    pub(super) bytes_in: WebGlUniformLocation,
+    pub(super) origin: WebGlUniformLocation,
+    pub(super) bit_index: WebGlUniformLocation,
+}
+
+#[derive(Clone)]
+pub(super) struct StencilReadFeedbackProgram {
+    pub(super) raw: WebGlProgram,
+    pub(super) lo: WebGlUniformLocation,
+    pub(super) hi: WebGlUniformLocation,
+    pub(super) width: WebGlUniformLocation,
+    pub(super) words_per_row: WebGlUniformLocation,
+}
+
+pub(super) struct NormalizedReadbackCache {
+    pub(super) programs:
+        BTreeMap<(GlFormat, NormalizedReadbackTextureKind), NormalizedReadbackProgram>,
+    pub(super) highp_supported: bool,
+}
+
+/// The sampler shape is a program variant; transfer geometry is supplied as
+/// uniforms and never contributes to this owner-local cache key.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) enum NormalizedReadbackTextureKind {
+    D2,
+    D2Array,
+    D3,
+}
+
+pub(super) struct NormalizedReadbackProgram {
+    pub(super) raw: WebGlProgram,
+    pub(super) image: WebGlUniformLocation,
+    pub(super) origin: WebGlUniformLocation,
+    pub(super) mip: WebGlUniformLocation,
+    pub(super) words_per_row: WebGlUniformLocation,
+    pub(super) words_per_layer: Option<WebGlUniformLocation>,
+    pub(super) elements_per_row: Option<WebGlUniformLocation>,
+}
 
 /// Browser-local owner for one WebGL2 context.
 #[derive(Clone)]
@@ -87,6 +151,9 @@ pub(crate) struct BrowserEncoder {
     /// the immediate pass closes.
     pub(super) offscreen_pass: Option<BrowserOffscreenPass>,
     pub(super) stencil_state: Option<super::super::api::GlDepthStencilState>,
+    /// Last public raster scissor. Private mirror transfers may disable the
+    /// test, so they restore this owned fact instead of querying WebGL state.
+    pub(super) raster_scissor: Option<[i32; 4]>,
 }
 
 pub(super) struct BrowserSurfaceDepthPass {
@@ -127,10 +194,19 @@ pub(super) struct BrowserOffscreenPass {
 pub(super) struct BrowserOwnerState {
     pub(super) context: WebGl2BrowserDiscovery,
     pub(super) lost: bool,
+    /// A deferred WebGL stream error observed at publication. WebGL error
+    /// state is global to the context, so it invalidates every outstanding
+    /// completion rather than belonging to whichever fence was polled first.
+    pub(super) failed: Option<Error>,
     pub(super) next_encoder_epoch: u64,
     pub(super) active_encoder: Option<u64>,
     pub(super) next_completion: u64,
     pub(super) next_waiter: u64,
+    /// Commands or a fence have been issued since the last publication to the
+    /// browser GL queue.  A surface handoff normally consumes this at the end
+    /// of the frame; a completion observer consumes it only when progress is
+    /// explicitly requested without a surface.
+    pub(super) pending_flush: bool,
     pub(super) completions: BTreeMap<u64, BrowserFence>,
     /// Fences from issued encoders whose Core session was abandoned before it
     /// could receive evidence. They preserve the native lifetime boundary and
@@ -140,6 +216,11 @@ pub(super) struct BrowserOwnerState {
     pub(super) dummy_textures: BTreeMap<(u32, u32), WebGlTexture>,
     pub(super) dummy_samplers: BTreeMap<bool, WebGlSampler>,
     pub(super) dummy_uniform_buffers: BTreeMap<u32, WebGlBuffer>,
+    pub(super) dual_source_limit: Option<u32>,
+    pub(super) surface_color_cache: SurfaceColorCache,
+    pub(super) stencil_transfer_cache: StencilTransferCache,
+    pub(super) normalized_readback_cache: NormalizedReadbackCache,
+    pub(super) normalized_readback_highp: bool,
 }
 
 pub(super) struct BrowserFence {
@@ -170,36 +251,59 @@ impl BrowserOwner {
     pub(crate) fn dual_source_limit(&self) -> Result<u32> {
         let mut state = self.state.borrow_mut();
         state.ensure_active()?;
+        if let Some(limit) = state.dual_source_limit {
+            return Ok(limit);
+        }
         let raw = &state.context.raw;
         if raw
             .get_extension("WEBGL_blend_func_extended")
             .map_err(|_| Error::Backend("WebGL dual-source extension query failed".into()))?
             .is_none()
         {
+            state.dual_source_limit = Some(0);
             return Ok(0);
         }
         let value = raw
             .get_parameter(0x88FC)
             .map_err(|_| Error::Backend("WebGL dual-source limit query failed".into()))?;
-        Ok(value.as_f64().unwrap_or(0.).max(0.) as u32)
+        let limit = value.as_f64().unwrap_or(0.).max(0.) as u32;
+        state.dual_source_limit = Some(limit);
+        Ok(limit)
     }
     /// Takes ownership of an already-created WebGL2 context on its browser
     /// thread. The `Rc` is the thread-affinity proof: this handle is not Send.
     pub(crate) fn new(context: WebGl2BrowserDiscovery) -> Self {
+        let normalized_readback_highp = context.normalized_readback_highp;
         Self {
             state: Rc::new(RefCell::new(BrowserOwnerState {
                 context,
                 lost: false,
+                failed: None,
                 next_encoder_epoch: 1,
                 active_encoder: None,
                 next_completion: 1,
                 next_waiter: 1,
+                pending_flush: false,
                 completions: BTreeMap::new(),
                 quarantined: Vec::new(),
                 raster_extent: None,
                 dummy_textures: BTreeMap::new(),
                 dummy_samplers: BTreeMap::new(),
                 dummy_uniform_buffers: BTreeMap::new(),
+                dual_source_limit: None,
+                surface_color_cache: SurfaceColorCache {
+                    programs: BTreeMap::new(),
+                },
+                stencil_transfer_cache: StencilTransferCache {
+                    write: None,
+                    read_raster: None,
+                    read_feedback: None,
+                },
+                normalized_readback_cache: NormalizedReadbackCache {
+                    programs: BTreeMap::new(),
+                    highp_supported: false,
+                },
+                normalized_readback_highp,
             })),
             pending_deletes: Rc::new(RefCell::new(Vec::new())),
         }
@@ -248,6 +352,7 @@ impl BrowserOwner {
             surface_depth_pass: None,
             offscreen_pass: None,
             stencil_state: None,
+            raster_scissor: None,
         })
     }
 
@@ -255,6 +360,7 @@ impl BrowserOwner {
     /// deletion call is made because context loss invalidates every JS GL object.
     pub(crate) fn mark_context_lost(&self) {
         self.state.borrow_mut().mark_lost();
+        self.pending_deletes.borrow_mut().clear();
     }
 
     /// Makes passive GL queries follow the same terminal path as host loss
@@ -295,12 +401,7 @@ impl BrowserOwner {
         let mut bytes = vec![0; usize::try_from(size).map_err(|_| Error::OutOfMemory)?];
         let mut state = self.state.borrow_mut();
         state.ensure_active()?;
-        use wasm_bindgen::JsCast;
         let raw = &state.context.raw;
-        let prior = raw
-            .get_parameter(Gl::COPY_READ_BUFFER_BINDING)
-            .ok()
-            .and_then(|value| value.dyn_into::<WebGlBuffer>().ok());
         raw.bind_buffer(Gl::COPY_READ_BUFFER, Some(&source.raw));
         raw.get_buffer_sub_data_with_f64_and_u8_array(
             Gl::COPY_READ_BUFFER,
@@ -309,7 +410,9 @@ impl BrowserOwner {
         );
         let lost = raw.is_context_lost();
         let error = raw.get_error();
-        raw.bind_buffer(Gl::COPY_READ_BUFFER, prior.as_ref());
+        // Readback is explicit and completion-gated, but it must not add a
+        // second synchronous state query just to restore an RHI-owned target.
+        raw.bind_buffer(Gl::COPY_READ_BUFFER, None);
         if lost {
             state.mark_lost();
             return Err(Error::DeviceLost);
@@ -420,13 +523,20 @@ impl BrowserOwner {
         let mut state = self.state.borrow_mut();
         state.ensure_active()?;
         state.context.raw.flush();
+        state.pending_flush = false;
         if state.context.raw.is_context_lost() {
             state.mark_lost();
             Err(Error::DeviceLost)
         } else if state.context.raw.get_error() == Gl::NO_ERROR {
             Ok(())
         } else {
-            Err(Error::Backend("WebGL2 flush failed".into()))
+            let error = Error::Backend("WebGL2 flush failed".into());
+            let wakers = state.mark_failed(error.clone());
+            drop(state);
+            for waker in wakers {
+                waker.wake();
+            }
+            Err(error)
         }
     }
 }
@@ -455,12 +565,34 @@ impl Drop for BrowserOwner {
             for (_, buffer) in std::mem::take(&mut state.dummy_uniform_buffers) {
                 state.context.raw.delete_buffer(Some(&buffer));
             }
+            for (_, helper) in std::mem::take(&mut state.surface_color_cache.programs) {
+                state.context.raw.delete_vertex_array(Some(&helper.vao));
+                state.context.raw.delete_program(Some(&helper.raw));
+            }
+            if let Some(helper) = state.stencil_transfer_cache.write.take() {
+                state.context.raw.delete_program(Some(&helper.raw));
+            }
+            if let Some(program) = state.stencil_transfer_cache.read_raster.take() {
+                state.context.raw.delete_program(Some(&program));
+            }
+            if let Some(helper) = state.stencil_transfer_cache.read_feedback.take() {
+                state.context.raw.delete_program(Some(&helper.raw));
+            }
+            for (_, helper) in std::mem::take(&mut state.normalized_readback_cache.programs) {
+                state.context.raw.delete_program(Some(&helper.raw));
+            }
         }
     }
 }
 
 impl BrowserOwnerState {
+    pub(super) fn normalized_readback_highp(&mut self) -> bool {
+        self.normalized_readback_highp
+    }
     pub(super) fn ensure_active(&mut self) -> Result<()> {
+        if let Some(error) = &self.failed {
+            return Err(error.clone());
+        }
         if self.lost || self.context.raw.is_context_lost() {
             self.mark_lost();
             return Err(Error::DeviceLost);
@@ -518,6 +650,14 @@ impl BrowserOwnerState {
         // shader, query and timer handles without issuing deletes on the lost
         // context, just as the discovery provider does for a loss event.
         self.context.clear_executable_state();
+        self.surface_color_cache.programs.clear();
+        self.stencil_transfer_cache.write = None;
+        self.stencil_transfer_cache.read_raster = None;
+        self.stencil_transfer_cache.read_feedback = None;
+        self.normalized_readback_cache.programs.clear();
+        self.dummy_textures.clear();
+        self.dummy_samplers.clear();
+        self.dummy_uniform_buffers.clear();
         self.active_encoder = None;
         self.raster_extent = None;
         // Context loss invalidates WebGLSync objects. Do not call deleteSync
@@ -529,5 +669,18 @@ impl BrowserOwnerState {
                 waker.wake();
             }
         }
+    }
+
+    pub(super) fn mark_failed(&mut self, error: Error) -> Vec<Waker> {
+        if self.failed.is_some() {
+            return Vec::new();
+        }
+        self.failed = Some(error);
+        self.active_encoder = None;
+        self.raster_extent = None;
+        std::mem::take(&mut self.completions)
+            .into_values()
+            .flat_map(|fence| fence.wakers.into_values())
+            .collect()
     }
 }

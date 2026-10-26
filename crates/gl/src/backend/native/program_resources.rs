@@ -31,7 +31,7 @@ impl StorageBlockEntries {
 }
 impl NativeGlProvider {
     pub(super) fn active_storage_blocks(
-        &self,
+        &mut self,
         op: &'static str,
         program: glow::NativeProgram,
         numeric: bool,

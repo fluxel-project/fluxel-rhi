@@ -16,7 +16,7 @@ impl GlBindingApi for NativeGlProvider {
             .map_err(|error| Self::validation(OP, error.message()))?;
         // SAFETY: current-context contract; the unit was bounds-checked.
         unsafe { self.gl.active_texture(glow::TEXTURE0 + unit) };
-        self.driver_error(OP)
+        self.defer_driver_error(OP)
     }
 
     fn bind_texture(
@@ -41,7 +41,7 @@ impl GlBindingApi for NativeGlProvider {
             self.gl.active_texture(glow::TEXTURE0 + unit);
             self.gl.bind_texture(texture_target(target), raw);
         }
-        self.driver_error(OP)?;
+        self.defer_driver_error(OP)?;
         let class = match texture {
             Some(id) => super::sampler_border::numeric_class(self.texture(OP, id)?.1.format),
             None => super::sampler_border::NumericClass::Float,
@@ -90,7 +90,7 @@ impl GlBindingApi for NativeGlProvider {
             unsafe {
                 self.gl.bind_buffer_base(glow::UNIFORM_BUFFER, index, None);
             }
-            return self.driver_error(OP);
+            return self.defer_driver_error(OP);
         };
         let (name, desc) = {
             let entry = self.buffer(OP, buffer)?;
@@ -114,7 +114,7 @@ impl GlBindingApi for NativeGlProvider {
                 OP,
             )?;
         }
-        self.driver_error(OP)
+        self.defer_driver_error(OP)
     }
 }
 

@@ -8,36 +8,13 @@
 //! The target stencil plane is never attached to a write operation.
 
 use fluxel_rhi_core::api::{Error, Result};
-use js_sys::{Array, Int32Array};
-use wasm_bindgen::JsCast;
+use js_sys::Array;
 use web_sys::{WebGl2RenderingContext as Gl, WebGlBuffer, WebGlFramebuffer, WebGlTexture};
 
 use super::super::owner::{BrowserBuffer, BrowserEncoder, BrowserTexture};
 use crate::backend::api::{
     GlBufferDesc, GlBufferUsage, GlFormat, GlTextureDimension, GlTextureUsage,
 };
-
-fn object<T: JsCast>(gl: &Gl, parameter: u32) -> Result<Option<T>> {
-    let value = gl
-        .get_parameter(parameter)
-        .map_err(|_| Error::InvalidState)?;
-    if value.is_null() {
-        Ok(None)
-    } else {
-        value.dyn_into().map(Some).map_err(|_| Error::InvalidState)
-    }
-}
-
-fn integer(gl: &Gl, parameter: u32) -> Result<i32> {
-    let value = gl
-        .get_parameter(parameter)
-        .map_err(|_| Error::InvalidState)?;
-    value
-        .as_f64()
-        .map(|value| value as i32)
-        .or_else(|| value.as_bool().map(i32::from))
-        .ok_or(Error::InvalidState)
-}
 
 /// The bindings and pixel-store state private to one packed depth transfer.
 struct State<'a> {
@@ -61,29 +38,26 @@ struct State<'a> {
 
 impl<'a> State<'a> {
     fn capture(gl: &'a Gl) -> Result<Self> {
-        let scissor = gl.is_enabled(Gl::SCISSOR_TEST);
-        let box_value = gl
-            .get_parameter(Gl::SCISSOR_BOX)
-            .map_err(|_| Error::InvalidState)?;
-        let box_values = Int32Array::new(&box_value).to_vec();
-        let scissor_box: [i32; 4] = box_values.try_into().map_err(|_| Error::InvalidState)?;
+        // This backend owns the context. Private transfer state is restored
+        // to its specified neutral values, never by synchronously snapshotting
+        // a potentially hot caller state vector.
         Ok(Self {
             gl,
-            texture: object(gl, Gl::TEXTURE_BINDING_2D)?,
-            unpack: object(gl, Gl::PIXEL_UNPACK_BUFFER_BINDING)?,
-            copy_read: object(gl, Gl::COPY_READ_BUFFER_BINDING)?,
-            copy_write: object(gl, Gl::COPY_WRITE_BUFFER_BINDING)?,
-            read_framebuffer: object(gl, Gl::READ_FRAMEBUFFER_BINDING)?,
-            draw_framebuffer: object(gl, Gl::DRAW_FRAMEBUFFER_BINDING)?,
-            alignment: integer(gl, Gl::UNPACK_ALIGNMENT)?,
-            row_length: integer(gl, Gl::UNPACK_ROW_LENGTH)?,
-            image_height: integer(gl, Gl::UNPACK_IMAGE_HEIGHT)?,
-            skip_pixels: integer(gl, Gl::UNPACK_SKIP_PIXELS)?,
-            skip_rows: integer(gl, Gl::UNPACK_SKIP_ROWS)?,
-            skip_images: integer(gl, Gl::UNPACK_SKIP_IMAGES)?,
-            flip_y: integer(gl, Gl::UNPACK_FLIP_Y_WEBGL)?,
-            scissor,
-            scissor_box,
+            texture: None,
+            unpack: None,
+            copy_read: None,
+            copy_write: None,
+            read_framebuffer: None,
+            draw_framebuffer: None,
+            alignment: 4,
+            row_length: 0,
+            image_height: 0,
+            skip_pixels: 0,
+            skip_rows: 0,
+            skip_images: 0,
+            flip_y: 0,
+            scissor: false,
+            scissor_box: [0; 4],
         })
     }
 }
@@ -91,6 +65,7 @@ impl<'a> State<'a> {
 impl Drop for State<'_> {
     fn drop(&mut self) {
         let gl = self.gl;
+        gl.active_texture(Gl::TEXTURE0);
         gl.bind_texture(Gl::TEXTURE_2D, self.texture.as_ref());
         gl.bind_buffer(Gl::PIXEL_UNPACK_BUFFER, self.unpack.as_ref());
         gl.bind_buffer(Gl::COPY_READ_BUFFER, self.copy_read.as_ref());
@@ -379,11 +354,6 @@ impl BrowserEncoder {
                 );
                 gl.draw_buffers(&Array::of1(&Gl::NONE.into()));
                 gl.read_buffer(Gl::NONE);
-                if gl.check_framebuffer_status(Gl::FRAMEBUFFER) != Gl::FRAMEBUFFER_COMPLETE {
-                    return Err(Error::Backend(
-                        "WebGL packed D32FS source framebuffer incomplete".into(),
-                    ));
-                }
                 gl.bind_framebuffer(Gl::FRAMEBUFFER, Some(&scratch.draw));
                 if destination.desc.dimension == GlTextureDimension::D2 {
                     gl.framebuffer_texture_2d(
@@ -404,11 +374,10 @@ impl BrowserEncoder {
                 }
                 gl.draw_buffers(&Array::of1(&Gl::NONE.into()));
                 gl.read_buffer(Gl::NONE);
-                if gl.check_framebuffer_status(Gl::FRAMEBUFFER) != Gl::FRAMEBUFFER_COMPLETE {
-                    return Err(Error::Backend(
-                        "WebGL packed D32FS destination framebuffer incomplete".into(),
-                    ));
-                }
+                // Descriptor and attachment compatibility are established
+                // before encoding. Do not synchronously query private FBO
+                // completeness for each packed upload; deferred diagnostics
+                // report rejected use at the submission boundary.
                 gl.disable(Gl::SCISSOR_TEST);
                 gl.bind_framebuffer(Gl::READ_FRAMEBUFFER, Some(&scratch.read));
                 gl.bind_framebuffer(Gl::DRAW_FRAMEBUFFER, Some(&scratch.draw));
@@ -424,14 +393,8 @@ impl BrowserEncoder {
                     Gl::DEPTH_BUFFER_BIT,
                     Gl::NEAREST,
                 );
-                let error = gl.get_error();
                 drop(scratch);
                 drop(state);
-                if error != Gl::NO_ERROR {
-                    return Err(Error::Backend(format!(
-                        "WebGL packed D32FS depth blit error {error:#x}"
-                    )));
-                }
                 Ok(())
             })();
         });

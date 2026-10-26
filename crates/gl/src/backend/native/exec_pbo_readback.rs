@@ -5,31 +5,32 @@ use crate::backend::api::{
     GlBufferRange, GlBufferUsage, GlError, GlFamilyApi as _, GlFormat, GlFormatResourceKind,
     GlPixelFormat, GlPixelLayout, GlTextureDimension, GlTextureRegion, GlTextureUsage,
 };
+use crate::backend::state::{ScopedRawAccess, StateEvent};
 use glow::HasContext as _;
 
 #[path = "exec_gles_plane_readback.rs"]
-mod gles_plane_readback;
+pub(super) mod gles_plane_readback;
 
 #[cfg(test)]
 impl NativeGlProvider {
+    /// Test-only fixture for externally controlled `CLAMP_READ_COLOR` state.
     pub(crate) fn color_read_clamp_for_test(&mut self, mode: Option<u32>) -> Result<u32, GlError> {
         const OP: &str = "color read clamp fixture";
         self.assert_ready(OP)?;
-        let entry = self.clamp_read_color.ok_or(GlError::Unsupported {
-            operation: OP,
-            reason: "glClampColor unavailable",
-        })?;
-        // SAFETY: the fixture owns this current desktop context; `mode` is
-        // a legal GL boolean or a previously returned clamp enum.
-        let prior = unsafe {
-            let prior = self.gl.get_parameter_i32(glow::CLAMP_READ_COLOR) as u32;
-            if let Some(mode) = mode {
-                entry(glow::CLAMP_READ_COLOR, mode);
-            }
-            prior
-        };
-        self.driver_error(OP)?;
-        Ok(prior)
+        if let Some(mode) = mode {
+            let entry = self.clamp_read_color.ok_or(GlError::Unsupported {
+                operation: OP,
+                reason: "glClampColor unavailable",
+            })?;
+            // SAFETY: fixture owns the current desktop context; accepted modes
+            // are test constants.
+            unsafe { entry(glow::CLAMP_READ_COLOR, mode) };
+            self.defer_driver_error(OP)?;
+        }
+        // This fixture deliberately observes raw caller state. Production
+        // readback uses the same exceptional observation to preserve that
+        // state around a CPU-visible transfer.
+        Ok(unsafe { self.gl.get_parameter_i32(glow::CLAMP_READ_COLOR) as u32 })
     }
 }
 
@@ -213,10 +214,7 @@ impl NativeGlProvider {
                 glow::UNSIGNED_BYTE,
                 GlPixelFormat::Stencil8,
             ),
-            (
-                GlFormat::Depth32FloatStencil8,
-                crate::backend::api::GlTextureAspect::DepthOnly,
-            ) => (
+            (GlFormat::Depth32FloatStencil8, crate::backend::api::GlTextureAspect::DepthOnly) => (
                 glow::DEPTH_COMPONENT,
                 glow::FLOAT,
                 GlPixelFormat::Depth32Float,
@@ -350,8 +348,6 @@ impl NativeGlProvider {
         // row is within the validated buffer range. A temporary read FBO and
         // PACK state are restored even if completeness or a GL call fails.
         unsafe {
-            let prior_fbo = self.gl.get_parameter_i32(glow::READ_FRAMEBUFFER_BINDING) as u32;
-            let prior_buffer = self.gl.get_parameter_i32(glow::PIXEL_PACK_BUFFER_BINDING) as u32;
             let scratch = self
                 .gl
                 .create_framebuffer()
@@ -375,13 +371,16 @@ impl NativeGlProvider {
             } else {
                 None
             };
+            // This GPU-to-PBO fallback temporarily changes the desktop clamp
+            // mode. Preserve the actual external value: raw context users can
+            // set it outside provider-owned state. No CPU pixels are read here.
             let saved_clamp = if unclamped {
-                let prior = self.gl.get_parameter_i32(glow::CLAMP_READ_COLOR);
+                let saved = self.gl.get_parameter_i32(glow::CLAMP_READ_COLOR) as u32;
                 self.clamp_read_color.expect("clamp entry preflight")(
                     glow::CLAMP_READ_COLOR,
                     u32::from(glow::FALSE),
                 );
-                Some(prior as u32)
+                Some(saved)
             } else {
                 None
             };
@@ -517,21 +516,18 @@ impl NativeGlProvider {
                         }
                     }
                 }
-                if let Err(error) = self.driver_error(OP) {
+                if let Err(error) = self.defer_driver_error(OP) {
                     result = Err(error);
                     break;
                 }
             }
-            if let Some(prior) = saved_clamp {
+            if let Some(saved_clamp) = saved_clamp {
                 self.clamp_read_color.expect("clamp entry preflight")(
                     glow::CLAMP_READ_COLOR,
-                    prior,
+                    saved_clamp,
                 );
             }
-            self.gl.bind_buffer(
-                glow::PIXEL_PACK_BUFFER,
-                std::num::NonZeroU32::new(prior_buffer).map(glow::NativeBuffer),
-            );
+            self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
             if let Some(aligned) = aligned {
                 self.gl.delete_buffer(aligned);
             }
@@ -543,11 +539,10 @@ impl NativeGlProvider {
             ] {
                 self.gl.pixel_store_i32(key, value);
             }
-            self.gl.bind_framebuffer(
-                glow::READ_FRAMEBUFFER,
-                std::num::NonZeroU32::new(prior_fbo).map(glow::NativeFramebuffer),
-            );
+            self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
             self.gl.delete_framebuffer(scratch);
+            self.context_state
+                .event(StateEvent::ScopedRawAccess(ScopedRawAccess::all()));
             result
         }
     }

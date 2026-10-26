@@ -103,7 +103,7 @@ impl GlComputeDispatchApi for NativeGlProvider {
             self.gl
                 .dispatch_compute(groups.0[0], groups.0[1], groups.0[2]);
         }
-        self.driver_error(OP)
+        self.defer_driver_error(OP)
     }
 }
 
@@ -158,7 +158,16 @@ impl GlStorageBufferApi for NativeGlProvider {
                 OP,
             )?;
         }
-        self.driver_error(OP)
+        self.storage_bindings.insert(
+            binding,
+            super::provider::NativeStorageBinding {
+                buffer: Some(name),
+                offset: range.offset,
+                size: range.size,
+            },
+        );
+        self.generic_storage_buffer = Some(name);
+        self.defer_driver_error(OP)
     }
 }
 
@@ -238,7 +247,7 @@ impl GlStorageImageApi for NativeGlProvider {
                 format,
             );
         }
-        self.driver_error(OP)
+        self.defer_driver_error(OP)
     }
 }
 
@@ -405,7 +414,7 @@ impl GlDrawIndirectApi for NativeGlProvider {
                 self.gl.delete_buffer(scratch);
             }
         }
-        self.driver_error(OP)
+        self.defer_driver_error(OP)
     }
 }
 
@@ -532,7 +541,7 @@ impl NativeGlProvider {
                 self.gl.delete_buffer(scratch);
             }
         }
-        self.driver_error(OP)
+        self.defer_driver_error(OP)
     }
 }
 
@@ -574,7 +583,7 @@ impl GlDispatchIndirectApi for NativeGlProvider {
                     })?);
             }
         }
-        self.driver_error(OP)
+        self.defer_driver_error(OP)
     }
 }
 

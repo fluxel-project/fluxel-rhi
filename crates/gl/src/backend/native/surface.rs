@@ -86,12 +86,13 @@ impl GlSurfacePresentationApi for NativeGlProvider {
         // SAFETY: current-context contract; the lease was consumed above, and
         // flushing is valid on any live context.
         unsafe { self.gl.flush() };
+        self.commands_pending_submission.set(false);
         // The platform swaps the drawable after this returns (the surface
         // provider owns that call); this flush only guarantees the frame's
         // accepted commands reached the driver before the lease is consumed. It
         // never implies the frame was displayed, and it never implies
         // completion.
-        self.driver_error(OP)
+        self.take_deferred_driver_error(OP)
     }
 
     fn publish_surface_image(
@@ -148,6 +149,7 @@ impl GlSurfacePresentationApi for NativeGlProvider {
                     self.gl.bind_framebuffer(glow::FRAMEBUFFER, None);
                     self.gl.delete_framebuffer(read);
                     self.gl.flush();
+                    self.commands_pending_submission.set(false);
                     Ok(())
                 }
                 Err(message) => Err(GlError::Driver {
@@ -157,7 +159,7 @@ impl GlSurfacePresentationApi for NativeGlProvider {
             }
         };
         published?;
-        self.driver_error(OP)
+        self.take_deferred_driver_error(OP)
     }
 }
 

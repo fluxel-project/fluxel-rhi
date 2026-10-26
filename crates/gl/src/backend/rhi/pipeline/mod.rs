@@ -54,7 +54,12 @@ fn create_raster_pipeline(
                 blend.alpha.dst_factor,
             ]
             .iter()
-            .any(|f| matches!(f, api::BlendFactor::Src1 | api::BlendFactor::OneMinusSrc1))
+            .any(|factor| {
+                matches!(
+                    factor,
+                    api::BlendFactor::Src1 | api::BlendFactor::OneMinusSrc1
+                )
+            })
         });
     let dual_output = if let Some(fragment) = fragment {
         // SAFETY: Core supplies a device-validated pipeline shader.
@@ -95,6 +100,8 @@ fn create_raster_pipeline(
         // SAFETY: Core retains and validates this shader during pipeline creation.
         unsafe { stage.module.native_ref() }.wgsl.is_none()
     });
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    let browser_direct_essl_dual_source_check = uses_src1 && direct_fragment;
     if uses_src1 || dual_output {
         if !dual_output && !direct_fragment {
             return Err(Error::Unsupported(
@@ -422,6 +429,7 @@ fn create_raster_pipeline(
                 layout,
                 browser_program: program,
                 browser_vertex_array: vertex_array,
+                browser_direct_essl_dual_source_check,
                 reflection,
                 vertex_layout: vertex_layout.clone(),
                 raster: crate::backend::api::GlRasterState {

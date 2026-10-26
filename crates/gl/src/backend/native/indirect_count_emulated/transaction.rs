@@ -8,7 +8,10 @@
 
 use std::rc::Rc;
 
-use crate::backend::{api::GlError, native::buffer_abi::NativeBufferFunctions};
+use crate::backend::{
+    api::GlError,
+    native::{buffer_abi::NativeBufferFunctions, provider::NativeStorageBinding},
+};
 use glow::HasContext as _;
 
 use super::scratch::IndirectCountScratchLease;
@@ -33,14 +36,6 @@ pub(super) struct IndirectCountTransaction {
     temporary: Vec<glow::NativeBuffer>,
 }
 
-fn buffer(raw: i32) -> Option<glow::NativeBuffer> {
-    core::num::NonZeroU32::new(raw as u32).map(glow::NativeBuffer)
-}
-
-fn program(raw: i32) -> Option<glow::NativeProgram> {
-    core::num::NonZeroU32::new(raw as u32).map(glow::NativeProgram)
-}
-
 impl IndirectCountTransaction {
     /// # Safety
     ///
@@ -48,16 +43,25 @@ impl IndirectCountTransaction {
     pub(super) unsafe fn capture(
         gl: Rc<glow::Context>,
         wide: Option<NativeBufferFunctions>,
+        storage_bindings: [Option<NativeStorageBinding>; 2],
+        generic_ssbo: Option<glow::NativeBuffer>,
+        program: Option<glow::NativeProgram>,
+        copy_read: Option<glow::NativeBuffer>,
+        copy_write: Option<glow::NativeBuffer>,
+        indirect: Option<glow::NativeBuffer>,
         operation: &'static str,
     ) -> Result<Self, GlError> {
-        let indexed_ssbo = [0, 1].map(|index| IndexedSsbo {
-            buffer: unsafe {
-                buffer(gl.get_parameter_indexed_i32(glow::SHADER_STORAGE_BUFFER_BINDING, index))
+        let indexed_ssbo = storage_bindings.map(|binding| match binding {
+            Some(binding) => IndexedSsbo {
+                buffer: binding.buffer,
+                offset: i64::try_from(binding.offset).unwrap_or(i64::MAX),
+                size: i64::try_from(binding.size).unwrap_or(i64::MAX),
             },
-            offset: unsafe {
-                gl.get_parameter_indexed_i64(glow::SHADER_STORAGE_BUFFER_START, index)
+            None => IndexedSsbo {
+                buffer: None,
+                offset: 0,
+                size: 0,
             },
-            size: unsafe { gl.get_parameter_indexed_i64(glow::SHADER_STORAGE_BUFFER_SIZE, index) },
         });
         for binding in indexed_ssbo {
             if binding.buffer.is_some()
@@ -74,13 +78,15 @@ impl IndirectCountTransaction {
             }
         }
         Ok(Self {
-            generic_ssbo: unsafe {
-                buffer(gl.get_parameter_i32(glow::SHADER_STORAGE_BUFFER_BINDING))
-            },
-            copy_read: unsafe { buffer(gl.get_parameter_i32(glow::COPY_READ_BUFFER_BINDING)) },
-            copy_write: unsafe { buffer(gl.get_parameter_i32(glow::COPY_WRITE_BUFFER_BINDING)) },
-            indirect: unsafe { buffer(gl.get_parameter_i32(glow::DRAW_INDIRECT_BUFFER_BINDING)) },
-            program: unsafe { program(gl.get_parameter_i32(glow::CURRENT_PROGRAM)) },
+            generic_ssbo,
+            // Production lowering supplies the canonical empty baseline for
+            // utility-private copy/indirect slots. Test and interop callers
+            // can instead supply their CPU-known foreign bindings, retaining
+            // exact rollback without a GL state query.
+            copy_read,
+            copy_write,
+            indirect,
+            program,
             gl,
             wide,
             indexed_ssbo,

@@ -10,6 +10,7 @@ use crate::backend::api::{
     GlStorageImageAccess, GlStorageImageApi as _, GlStorageImageBinding, GlTextureDesc,
     GlTextureDimension, GlTextureTarget, GlTextureUsage,
 };
+use crate::backend::state::{ScopedRawAccess, StateEvent};
 use fluxel_rhi_core::api::TextureSampleType;
 use glow::HasContext as _;
 
@@ -28,72 +29,100 @@ impl NativeGlProvider {
                 "storage binding exceeds the discovered count",
             ));
         }
-        let query = self.program_resource.ok_or(GlError::Unsupported {
-            operation: OP,
-            reason: "program resource query entry unavailable",
-        })?;
-        let program = self.program(OP, program)?;
-        let raw = program.raw;
-        let mut names = Vec::new();
-        for assignment in &program.reflection.assignments {
-            if assignment.executable != GlExecutableBindingLocation::StorageBlock(point) {
-                continue;
+        let cached = self
+            .program(OP, program)?
+            .dummy_storage_block_sizes
+            .get(&point)
+            .copied();
+        let size = match cached {
+            Some(Some(size)) => size,
+            Some(None) => {
+                return Err(Self::validation(
+                    OP,
+                    "no active storage block at binding point",
+                ));
             }
-            for binding in &program.descriptor.layout.bindings {
-                if binding.location != assignment.logical {
-                    continue;
-                }
-                if binding.element == assignment.element {
-                    names.extend(binding.names.iter().cloned());
-                } else if binding.element.is_none() && binding.fixed_array {
-                    if let Some(element) = assignment
-                        .element
-                        .filter(|element| *element < binding.array_count)
-                    {
-                        names.extend(
-                            binding
-                                .names
-                                .iter()
-                                .map(|name| format!("{name}[{element}]")),
-                        );
+            None => {
+                // Reflection is immutable for a linked program. Do this cold
+                // once, then retain both successful and absent results.
+                let query = self.program_resource.ok_or(GlError::Unsupported {
+                    operation: OP,
+                    reason: "program resource query entry unavailable",
+                })?;
+                let (raw, names) = {
+                    let program = self.program(OP, program)?;
+                    let mut names = Vec::new();
+                    for assignment in &program.reflection.assignments {
+                        if assignment.executable != GlExecutableBindingLocation::StorageBlock(point)
+                        {
+                            continue;
+                        }
+                        for binding in &program.descriptor.layout.bindings {
+                            if binding.location != assignment.logical {
+                                continue;
+                            }
+                            if binding.element == assignment.element {
+                                names.extend(binding.names.iter().cloned());
+                            } else if binding.element.is_none() && binding.fixed_array {
+                                if let Some(element) = assignment
+                                    .element
+                                    .filter(|element| *element < binding.array_count)
+                                {
+                                    names.extend(
+                                        binding
+                                            .names
+                                            .iter()
+                                            .map(|name| format!("{name}[{element}]")),
+                                    );
+                                }
+                            }
+                        }
                     }
-                }
+                    (program.raw, names)
+                };
+                let size = if names.is_empty() {
+                    None
+                } else {
+                    let mut size = 0i32;
+                    for name in names {
+                        // SAFETY: the program is linked in the current context and the name is owned here.
+                        let index = unsafe { self.gl.get_shader_storage_block_index(raw, &name) }
+                            .ok_or_else(|| {
+                            Self::validation(OP, "linked storage block is missing")
+                        })?;
+                        let mut actual = -1i32;
+                        let mut length = 0;
+                        // SAFETY: the linked block belongs to this context; one property and output slot are valid.
+                        unsafe {
+                            query(
+                                raw.0.get(),
+                                glow::SHADER_STORAGE_BLOCK,
+                                index,
+                                1,
+                                &glow::BUFFER_DATA_SIZE,
+                                1,
+                                &mut length,
+                                &mut actual,
+                            );
+                        }
+                        self.driver_error(OP)?;
+                        if length != 1 || actual < 0 {
+                            return Err(Self::validation(OP, "invalid storage block size"));
+                        }
+                        size = size.max(actual);
+                    }
+                    Some(size.max(4) as u32)
+                };
+                self.programs
+                    .get_mut(&program)
+                    .expect("validated live program")
+                    .dummy_storage_block_sizes
+                    .insert(point, size);
+                size.ok_or_else(|| {
+                    Self::validation(OP, "no active storage block at binding point")
+                })?
             }
-        }
-        if names.is_empty() {
-            return Err(Self::validation(
-                OP,
-                "no active storage block at binding point",
-            ));
-        }
-        let mut size = 0i32;
-        for name in names {
-            // SAFETY: the program is linked in the current context and the name is owned here.
-            let index = unsafe { self.gl.get_shader_storage_block_index(raw, &name) }
-                .ok_or_else(|| Self::validation(OP, "linked storage block is missing"))?;
-            let mut actual = -1i32;
-            let mut length = 0;
-            // SAFETY: the linked block belongs to this context; one property and output slot are valid.
-            unsafe {
-                query(
-                    raw.0.get(),
-                    glow::SHADER_STORAGE_BLOCK,
-                    index,
-                    1,
-                    &glow::BUFFER_DATA_SIZE,
-                    1,
-                    &mut length,
-                    &mut actual,
-                );
-            }
-            self.driver_error(OP)?;
-            if length != 1 || actual < 0 {
-                return Err(Self::validation(OP, "invalid storage block size"));
-            }
-            size = size.max(actual);
-        }
-        // Empty runtime arrays still need a nonempty buffer for bindBufferBase.
-        let size = size.max(4) as u32;
+        };
         let buffer = match self.dummy_storage_buffers.get(&(point, size)).copied() {
             Some(buffer) => buffer,
             None => {
@@ -104,18 +133,13 @@ impl NativeGlProvider {
                         message,
                     })?;
                 unsafe {
-                    let previous =
-                        self.gl.get_parameter_i32(glow::COPY_WRITE_BUFFER_BINDING) as u32;
                     self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(buffer));
                     self.gl.buffer_data_size(
                         glow::COPY_WRITE_BUFFER,
                         size as i32,
                         glow::DYNAMIC_DRAW,
                     );
-                    self.gl.bind_buffer(
-                        glow::COPY_WRITE_BUFFER,
-                        std::num::NonZeroU32::new(previous).map(glow::NativeBuffer),
-                    );
+                    self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, None);
                 }
                 if let Err(error) = self.driver_error(OP) {
                     unsafe { self.gl.delete_buffer(buffer) };
@@ -130,7 +154,7 @@ impl NativeGlProvider {
             self.gl
                 .bind_buffer_base(glow::SHADER_STORAGE_BUFFER, point, Some(buffer));
         }
-        self.driver_error(OP)
+        self.defer_driver_error(OP)
     }
 
     pub(crate) fn bind_dummy_uniform_buffer(
@@ -146,44 +170,62 @@ impl NativeGlProvider {
                 "uniform binding exceeds the discovered count",
             ));
         }
-        let raw = self.program(OP, program)?.raw;
-        // SAFETY: the program was checked against the current context and is linked.
-        let count = unsafe {
-            self.gl
-                .get_program_parameter_i32(raw, glow::ACTIVE_UNIFORM_BLOCKS)
-        };
-        self.driver_error(OP)?;
-        let mut size = 0;
-        for index in 0..u32::try_from(count)
-            .map_err(|_| Self::validation(OP, "invalid active block count"))?
-        {
-            // SAFETY: index is within the active block range of this linked program.
-            let binding = unsafe {
-                self.gl.get_active_uniform_block_parameter_i32(
-                    raw,
-                    index,
-                    glow::UNIFORM_BLOCK_BINDING,
-                )
-            };
-            if binding == point as i32 {
-                let block_size = unsafe {
-                    self.gl.get_active_uniform_block_parameter_i32(
-                        raw,
-                        index,
-                        glow::UNIFORM_BLOCK_DATA_SIZE,
-                    )
-                };
-                size = size.max(block_size);
+        let cached = self
+            .program(OP, program)?
+            .dummy_uniform_block_sizes
+            .get(&point)
+            .copied();
+        let size = match cached {
+            Some(Some(size)) => size,
+            Some(None) => {
+                return Err(Self::validation(
+                    OP,
+                    "no active uniform block at binding point",
+                ));
             }
-        }
-        self.driver_error(OP)?;
-        if size <= 0 {
-            return Err(Self::validation(
-                OP,
-                "no active uniform block at binding point",
-            ));
-        }
-        let size = size as u32;
+            None => {
+                let raw = self.program(OP, program)?.raw;
+                // SAFETY: the program was checked against the current context and is linked.
+                let count = unsafe {
+                    self.gl
+                        .get_program_parameter_i32(raw, glow::ACTIVE_UNIFORM_BLOCKS)
+                };
+                self.driver_error(OP)?;
+                let mut size = 0;
+                for index in 0..u32::try_from(count)
+                    .map_err(|_| Self::validation(OP, "invalid active block count"))?
+                {
+                    // SAFETY: index is within the active block range of this linked program.
+                    let binding = unsafe {
+                        self.gl.get_active_uniform_block_parameter_i32(
+                            raw,
+                            index,
+                            glow::UNIFORM_BLOCK_BINDING,
+                        )
+                    };
+                    if binding == point as i32 {
+                        let block_size = unsafe {
+                            self.gl.get_active_uniform_block_parameter_i32(
+                                raw,
+                                index,
+                                glow::UNIFORM_BLOCK_DATA_SIZE,
+                            )
+                        };
+                        size = size.max(block_size);
+                    }
+                }
+                self.driver_error(OP)?;
+                let size = (size > 0).then_some(size as u32);
+                self.programs
+                    .get_mut(&program)
+                    .expect("validated live program")
+                    .dummy_uniform_block_sizes
+                    .insert(point, size);
+                size.ok_or_else(|| {
+                    Self::validation(OP, "no active uniform block at binding point")
+                })?
+            }
+        };
         let buffer = match self.dummy_uniform_buffers.get(&size).copied() {
             Some(buffer) => buffer,
             None => {
@@ -194,18 +236,13 @@ impl NativeGlProvider {
                         message,
                     })?;
                 unsafe {
-                    let previous =
-                        self.gl.get_parameter_i32(glow::COPY_WRITE_BUFFER_BINDING) as u32;
                     self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(buffer));
                     self.gl.buffer_data_size(
                         glow::COPY_WRITE_BUFFER,
                         size as i32,
                         glow::STATIC_DRAW,
                     );
-                    self.gl.bind_buffer(
-                        glow::COPY_WRITE_BUFFER,
-                        std::num::NonZeroU32::new(previous).map(glow::NativeBuffer),
-                    );
+                    self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, None);
                 }
                 if let Err(error) = self.driver_error(OP) {
                     unsafe { self.gl.delete_buffer(buffer) };
@@ -220,7 +257,7 @@ impl NativeGlProvider {
             self.gl
                 .bind_buffer_base(glow::UNIFORM_BUFFER, point, Some(buffer));
         }
-        self.driver_error(OP)
+        self.defer_driver_error(OP)
     }
 
     pub(crate) fn bind_dummy_storage_image(
@@ -362,8 +399,6 @@ impl NativeGlProvider {
                 unsafe {
                     self.gl.active_texture(glow::TEXTURE0 + unit);
                     self.gl.bind_texture(gl_target, Some(texture));
-                    let unpack =
-                        self.gl.get_parameter_i32(glow::PIXEL_UNPACK_BUFFER_BINDING) as u32;
                     self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
                     match target {
                         GlTextureTarget::D1 => self.gl.tex_image_1d(
@@ -460,11 +495,9 @@ impl NativeGlProvider {
                             glow::NEAREST as i32,
                         );
                     }
-                    self.gl.bind_buffer(
-                        glow::PIXEL_UNPACK_BUFFER,
-                        std::num::NonZeroU32::new(unpack).map(glow::NativeBuffer),
-                    );
                 }
+                self.context_state
+                    .event(StateEvent::ScopedRawAccess(ScopedRawAccess::all()));
                 if let Err(error) = self.driver_error(OP) {
                     unsafe { self.gl.delete_texture(texture) };
                     return Err(error);
@@ -478,7 +511,7 @@ impl NativeGlProvider {
             self.gl.active_texture(glow::TEXTURE0 + unit);
             self.gl.bind_texture(gl_target, Some(texture));
         }
-        self.driver_error(OP)?;
+        self.defer_driver_error(OP)?;
         self.texture_unit_classes.insert(unit, class);
         if let Some(sampler) = self.texture_unit_samplers.get(&unit).copied() {
             self.bind_sampler_variant(unit, Some(sampler), class)?;
@@ -544,7 +577,7 @@ impl NativeGlProvider {
         unsafe {
             self.gl.bind_sampler(unit, Some(sampler));
         }
-        self.driver_error(OP)?;
+        self.defer_driver_error(OP)?;
         self.texture_unit_samplers.remove(&unit);
         Ok(())
     }

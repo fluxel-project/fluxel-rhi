@@ -52,7 +52,7 @@ pub(super) unsafe fn load(
 
 impl NativeGlProvider {
     pub(super) fn clear_nonrenderable_color(
-        &self,
+        &mut self,
         texture: glow::NativeTexture,
         desc: GlTextureDesc,
         mips: std::ops::Range<u32>,
@@ -95,7 +95,7 @@ impl NativeGlProvider {
                     components.as_ptr().cast(),
                 );
             }
-            self.driver_error("clear-texture")?;
+            self.defer_driver_error("clear-texture")?;
         }
         Ok(())
     }

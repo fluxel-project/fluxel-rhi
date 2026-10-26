@@ -8,6 +8,7 @@ use crate::backend::api::{
     GlError, GlFamilyApi as _, GlFormat, GlFormatResourceKind, GlTextureDesc, GlTextureDimension,
     GlTextureUsage, TextureId,
 };
+use crate::backend::state::{ScopedRawAccess, StateEvent};
 use glow::HasContext as _;
 
 impl NativeGlProvider {
@@ -49,10 +50,7 @@ impl NativeGlProvider {
                 reason: "cube mirror source format is not framebuffer renderable",
             });
         }
-        // SAFETY: provider owns the current context; this is a read-only limit query.
-        let cube_limit = unsafe { self.gl.get_parameter_i32(glow::MAX_CUBE_MAP_TEXTURE_SIZE) };
-        self.driver_error(OP)?;
-        if cube_limit <= 0 || desc.extent.width > cube_limit as u32 {
+        if desc.extent.width > self.discovery.limits().max_cube_map_texture_size {
             return Err(GlError::Unsupported {
                 operation: OP,
                 reason: "cube mirror exceeds cube texture size limit",
@@ -67,8 +65,6 @@ impl NativeGlProvider {
         // Mutable storage covers desktop GL 4.0 and GLES 3.0 without requiring
         // immutable texture storage; no upload buffer may be interpreted as data.
         unsafe {
-            let binding = self.gl.get_parameter_i32(glow::TEXTURE_BINDING_CUBE_MAP) as u32;
-            let unpack = self.gl.get_parameter_i32(glow::PIXEL_UNPACK_BUFFER_BINDING) as u32;
             self.gl.bind_texture(glow::TEXTURE_CUBE_MAP, Some(name));
             self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
             for mip in 0..desc.mip_level_count {
@@ -105,15 +101,10 @@ impl NativeGlProvider {
                 glow::TEXTURE_MAG_FILTER,
                 glow::NEAREST as i32,
             );
-            self.gl.bind_buffer(
-                glow::PIXEL_UNPACK_BUFFER,
-                std::num::NonZeroU32::new(unpack).map(glow::NativeBuffer),
-            );
-            self.gl.bind_texture(
-                glow::TEXTURE_CUBE_MAP,
-                std::num::NonZeroU32::new(binding).map(glow::NativeTexture),
-            );
+            self.gl.bind_texture(glow::TEXTURE_CUBE_MAP, None);
         }
+        self.context_state
+            .event(StateEvent::ScopedRawAccess(ScopedRawAccess::all()));
         if let Err(error) = self.driver_error(OP) {
             // SAFETY: name is unpublished and belongs to this current context.
             unsafe { self.gl.delete_texture(name) };
@@ -183,15 +174,14 @@ impl NativeGlProvider {
             }
         }
         // SAFETY: both textures are live in this context and each mip/layer was
-        // range-checked. The scratch read FBO and prior cube binding are restored.
+        // range-checked. The scratch bindings are returned to the provider's
+        // canonical empty baseline; the state mirror is invalidated below.
         unsafe {
             // Shader image writes require framebuffer visibility before the
             // source is read through the temporary framebuffer.
             if image_writes {
                 self.gl.memory_barrier(glow::FRAMEBUFFER_BARRIER_BIT);
             }
-            let read_fbo = self.gl.get_parameter_i32(glow::READ_FRAMEBUFFER_BINDING) as u32;
-            let old_cube = self.gl.get_parameter_i32(glow::TEXTURE_BINDING_CUBE_MAP) as u32;
             let scratch = self
                 .gl
                 .create_framebuffer()
@@ -203,8 +193,7 @@ impl NativeGlProvider {
                 .bind_framebuffer(glow::READ_FRAMEBUFFER, Some(scratch));
             self.gl.read_buffer(glow::COLOR_ATTACHMENT0);
             self.gl.bind_texture(glow::TEXTURE_CUBE_MAP, Some(dst));
-            let mut result = Ok(());
-            'mips: for mip in 0..view.mip_level_count {
+            for mip in 0..view.mip_level_count {
                 let size = view.mip_extent(mip).expect("validated mip");
                 for face in 0..6 {
                     self.gl.framebuffer_texture_layer(
@@ -214,15 +203,6 @@ impl NativeGlProvider {
                         (base_mip + mip) as i32,
                         (base_layer + face) as i32,
                     );
-                    if self.gl.check_framebuffer_status(glow::READ_FRAMEBUFFER)
-                        != glow::FRAMEBUFFER_COMPLETE
-                    {
-                        result = Err(GlError::Unsupported {
-                            operation: OP,
-                            reason: "cube source layer is not framebuffer complete",
-                        });
-                        break 'mips;
-                    }
                     self.gl.copy_tex_sub_image_2d(
                         glow::TEXTURE_CUBE_MAP_POSITIVE_X + face,
                         mip as i32,
@@ -233,22 +213,18 @@ impl NativeGlProvider {
                         size.width as i32,
                         size.height as i32,
                     );
-                    if let Err(error) = self.driver_error(OP) {
-                        result = Err(error);
-                        break 'mips;
-                    }
                 }
             }
-            self.gl.bind_texture(
-                glow::TEXTURE_CUBE_MAP,
-                std::num::NonZeroU32::new(old_cube).map(glow::NativeTexture),
-            );
-            self.gl.bind_framebuffer(
-                glow::READ_FRAMEBUFFER,
-                std::num::NonZeroU32::new(read_fbo).map(glow::NativeFramebuffer),
-            );
+            self.gl.bind_texture(glow::TEXTURE_CUBE_MAP, None);
+            self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
             self.gl.delete_framebuffer(scratch);
-            result.and_then(|()| self.driver_error(OP))
+            self.context_state
+                .event(StateEvent::ScopedRawAccess(ScopedRawAccess::all()));
+            // Source/view shape and attachment compatibility were validated
+            // before entering this recurring mirror path. Do not synchronously
+            // query FBO status for every mip/face; any driver rejection joins
+            // the command stream's publication-boundary diagnostic.
+            self.defer_driver_error(OP)
         }
     }
 }

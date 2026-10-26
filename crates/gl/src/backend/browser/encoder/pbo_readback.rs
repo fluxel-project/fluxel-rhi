@@ -4,8 +4,7 @@
 use super::super::owner::{BrowserBuffer, BrowserEncoder, BrowserTexture};
 use crate::backend::api::{GlFamilyApi as _, GlTextureDimension, GlTextureUsage};
 use fluxel_rhi_core::api::{Error, Result};
-use wasm_bindgen::JsCast;
-use web_sys::{WebGl2RenderingContext as Gl, WebGlBuffer, WebGlFramebuffer, WebGlTexture};
+use web_sys::{WebGl2RenderingContext as Gl, WebGlTexture};
 
 impl BrowserEncoder {
     pub(crate) fn copy_texture_to_buffer(
@@ -30,11 +29,10 @@ impl BrowserEncoder {
                 | crate::backend::api::GlFormat::Rgb10a2Unorm
         );
         let normalized_supported = normalized_format && {
-            let state = self.owner.state.borrow();
-            super::normalized_readback::supports_format(&state.context.raw, source.desc.format)
+            let mut state = self.owner.state.borrow_mut();
+            state.normalized_readback_highp()
         };
-        if normalized_supported
-            || source.desc.format == crate::backend::api::GlFormat::Depth16Unorm
+        if normalized_supported || source.desc.format == crate::backend::api::GlFormat::Depth16Unorm
         {
             return self.copy_normalized_texture_to_buffer(
                 source,
@@ -126,29 +124,6 @@ impl BrowserEncoder {
         let mut inner = Ok(());
         let outer = self.with_context("texture_to_pixel_pack_buffer", |raw| {
             let operation = || -> Result<()> {
-                let previous_framebuffer = raw
-                    .get_parameter(Gl::READ_FRAMEBUFFER_BINDING)
-                    .map_err(|_| Error::InvalidState)?;
-                let previous_buffer = raw
-                    .get_parameter(Gl::PIXEL_PACK_BUFFER_BINDING)
-                    .map_err(|_| Error::InvalidState)?;
-                let previous_copy_read = raw
-                    .get_parameter(Gl::COPY_READ_BUFFER_BINDING)
-                    .map_err(|_| Error::InvalidState)?;
-                let previous_copy_write = raw
-                    .get_parameter(Gl::COPY_WRITE_BUFFER_BINDING)
-                    .map_err(|_| Error::InvalidState)?;
-                let number = |parameter| {
-                    raw.get_parameter(parameter)
-                        .ok()
-                        .and_then(|v| v.as_f64())
-                        .map(|v| v as i32)
-                        .ok_or(Error::InvalidState)
-                };
-                let alignment = number(Gl::PACK_ALIGNMENT)?;
-                let row_length = number(Gl::PACK_ROW_LENGTH)?;
-                let skip_rows = number(Gl::PACK_SKIP_ROWS)?;
-                let skip_pixels = number(Gl::PACK_SKIP_PIXELS)?;
                 // Some ANGLE implementations require whole-texel alignment
                 // even where GL only requires alignment to the pixel type.
                 let scratch_needed = offset % pixel_bytes != 0
@@ -246,27 +221,15 @@ impl BrowserEncoder {
                         break;
                     }
                 }
-                raw.pixel_storei(Gl::PACK_ALIGNMENT, alignment);
-                raw.pixel_storei(Gl::PACK_ROW_LENGTH, row_length);
-                raw.pixel_storei(Gl::PACK_SKIP_ROWS, skip_rows);
-                raw.pixel_storei(Gl::PACK_SKIP_PIXELS, skip_pixels);
-                raw.bind_buffer(
-                    Gl::PIXEL_PACK_BUFFER,
-                    previous_buffer.dyn_ref::<WebGlBuffer>(),
-                );
-                raw.bind_framebuffer(
-                    Gl::READ_FRAMEBUFFER,
-                    previous_framebuffer.dyn_ref::<WebGlFramebuffer>(),
-                );
+                raw.pixel_storei(Gl::PACK_ALIGNMENT, 4);
+                raw.pixel_storei(Gl::PACK_ROW_LENGTH, 0);
+                raw.pixel_storei(Gl::PACK_SKIP_ROWS, 0);
+                raw.pixel_storei(Gl::PACK_SKIP_PIXELS, 0);
+                raw.bind_buffer(Gl::PIXEL_PACK_BUFFER, None);
+                raw.bind_framebuffer(Gl::READ_FRAMEBUFFER, None);
+                raw.bind_buffer(Gl::COPY_READ_BUFFER, None);
+                raw.bind_buffer(Gl::COPY_WRITE_BUFFER, None);
                 if let Some(scratch) = &scratch {
-                    raw.bind_buffer(
-                        Gl::COPY_READ_BUFFER,
-                        previous_copy_read.dyn_ref::<WebGlBuffer>(),
-                    );
-                    raw.bind_buffer(
-                        Gl::COPY_WRITE_BUFFER,
-                        previous_copy_write.dyn_ref::<WebGlBuffer>(),
-                    );
                     raw.delete_buffer(Some(scratch));
                 }
                 raw.delete_framebuffer(Some(&framebuffer));
@@ -301,29 +264,6 @@ impl BrowserEncoder {
         let mut inner = Ok(());
         let outer = self.with_context("texture_to_widened_pixel_pack_buffer", |raw| {
             let operation = || -> Result<()> {
-                let previous_framebuffer = raw
-                    .get_parameter(Gl::READ_FRAMEBUFFER_BINDING)
-                    .map_err(|_| Error::InvalidState)?;
-                let previous_pack = raw
-                    .get_parameter(Gl::PIXEL_PACK_BUFFER_BINDING)
-                    .map_err(|_| Error::InvalidState)?;
-                let previous_copy_read = raw
-                    .get_parameter(Gl::COPY_READ_BUFFER_BINDING)
-                    .map_err(|_| Error::InvalidState)?;
-                let previous_copy_write = raw
-                    .get_parameter(Gl::COPY_WRITE_BUFFER_BINDING)
-                    .map_err(|_| Error::InvalidState)?;
-                let number = |parameter| {
-                    raw.get_parameter(parameter)
-                        .ok()
-                        .and_then(|value| value.as_f64())
-                        .map(|value| value as i32)
-                        .ok_or(Error::InvalidState)
-                };
-                let alignment = number(Gl::PACK_ALIGNMENT)?;
-                let row_length = number(Gl::PACK_ROW_LENGTH)?;
-                let skip_rows = number(Gl::PACK_SKIP_ROWS)?;
-                let skip_pixels = number(Gl::PACK_SKIP_PIXELS)?;
                 let framebuffer = raw.create_framebuffer().ok_or(Error::OutOfMemory)?;
                 let Some(scratch) = raw.create_buffer() else {
                     raw.delete_framebuffer(Some(&framebuffer));
@@ -410,26 +350,14 @@ impl BrowserEncoder {
                         break;
                     }
                 }
-                raw.pixel_storei(Gl::PACK_ALIGNMENT, alignment);
-                raw.pixel_storei(Gl::PACK_ROW_LENGTH, row_length);
-                raw.pixel_storei(Gl::PACK_SKIP_ROWS, skip_rows);
-                raw.pixel_storei(Gl::PACK_SKIP_PIXELS, skip_pixels);
-                raw.bind_buffer(
-                    Gl::PIXEL_PACK_BUFFER,
-                    previous_pack.dyn_ref::<WebGlBuffer>(),
-                );
-                raw.bind_framebuffer(
-                    Gl::READ_FRAMEBUFFER,
-                    previous_framebuffer.dyn_ref::<WebGlFramebuffer>(),
-                );
-                raw.bind_buffer(
-                    Gl::COPY_READ_BUFFER,
-                    previous_copy_read.dyn_ref::<WebGlBuffer>(),
-                );
-                raw.bind_buffer(
-                    Gl::COPY_WRITE_BUFFER,
-                    previous_copy_write.dyn_ref::<WebGlBuffer>(),
-                );
+                raw.pixel_storei(Gl::PACK_ALIGNMENT, 4);
+                raw.pixel_storei(Gl::PACK_ROW_LENGTH, 0);
+                raw.pixel_storei(Gl::PACK_SKIP_ROWS, 0);
+                raw.pixel_storei(Gl::PACK_SKIP_PIXELS, 0);
+                raw.bind_buffer(Gl::PIXEL_PACK_BUFFER, None);
+                raw.bind_framebuffer(Gl::READ_FRAMEBUFFER, None);
+                raw.bind_buffer(Gl::COPY_READ_BUFFER, None);
+                raw.bind_buffer(Gl::COPY_WRITE_BUFFER, None);
                 raw.delete_buffer(Some(&scratch));
                 raw.delete_framebuffer(Some(&framebuffer));
                 result

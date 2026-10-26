@@ -24,18 +24,16 @@ impl BrowserOwner {
             state.mark_lost();
             return Err(Error::DeviceLost);
         };
-        state.context.raw.flush();
         if state.context.raw.is_context_lost() {
             // A lost context invalidates this new sync; only drop its JS handle.
             drop(raw);
             state.mark_lost();
             return Err(Error::DeviceLost);
         }
-        if state.context.raw.get_error() != Gl::NO_ERROR {
-            state.context.raw.delete_sync(Some(&raw));
-            state.mark_lost();
-            return Err(Error::DeviceLost);
-        }
+        // Do not force a queue submit for every checkpoint. Surface handoff
+        // publishes this fence with the frame's one flush; headless callers
+        // get the same progress publication on their first observation.
+        state.pending_flush = true;
         let serial = state.allocate_completion()?;
         state.completions.insert(
             serial,
@@ -62,8 +60,29 @@ impl BrowserOwner {
             return completion.store_terminal(Err(error));
         }
         let mut state = self.state.borrow_mut();
-        if state.ensure_active().is_err() {
-            return completion.store_terminal(Err(Error::DeviceLost));
+        if let Err(error) = state.ensure_active() {
+            return completion.store_terminal(Err(error));
+        }
+        if state.pending_flush {
+            // A headless completion has no present boundary. This is the
+            // explicit progress request exception, and is coalesced for all
+            // fences currently queued on this owner.
+            state.context.raw.flush();
+            state.pending_flush = false;
+            if state.context.raw.is_context_lost() {
+                state.mark_lost();
+                return completion.store_terminal(Err(Error::DeviceLost));
+            }
+            if state.context.raw.get_error() != Gl::NO_ERROR {
+                let error = Error::Backend("WebGL2 progress flush failed".into());
+                let wakers = state.mark_failed(error.clone());
+                drop(state);
+                let status = completion.store_terminal(Err(error));
+                for waker in wakers {
+                    waker.wake();
+                }
+                return status;
+            }
         }
         let serial = completion.serial();
         let Some(fence) = state.completions.get(&serial) else {
@@ -106,24 +125,26 @@ impl BrowserOwner {
                     }
                     return CompletionState::Failed(Error::DeviceLost);
                 }
-                let wakers = if let Some(fence) = state.completions.remove(&serial) {
+                let mut wakers = if let Some(fence) = state.completions.remove(&serial) {
                     state.context.raw.delete_sync(Some(&fence.raw));
-                    fence.wakers
+                    fence.wakers.into_values().collect::<Vec<_>>()
                 } else {
-                    BTreeMap::new()
+                    Vec::new()
                 };
+                // `clientWaitSync` reports a context queue failure rather
+                // than a failure scoped to this one GLsync. Do not permit a
+                // later completion to accept the same failed stream.
+                let error =
+                    Error::Backend("WebGL2 clientWaitSync returned an unknown result".into());
+                wakers.extend(state.mark_failed(error.clone()));
                 // See the signalled branch above: a task wake may poll this
                 // owner immediately, so it cannot run while state is borrowed.
                 drop(state);
-                completion.store_terminal(Err(Error::Backend(
-                    "WebGL2 clientWaitSync returned an unknown result".into(),
-                )));
-                for (_, waker) in wakers {
+                let status = completion.store_terminal(Err(error));
+                for waker in wakers {
                     waker.wake();
                 }
-                CompletionState::Failed(Error::Backend(
-                    "WebGL2 clientWaitSync returned an unknown result".into(),
-                ))
+                status
             }
         }
     }
@@ -213,17 +234,12 @@ impl BrowserOwner {
             state.mark_lost();
             return;
         };
-        state.context.raw.flush();
         if state.context.raw.is_context_lost() {
             drop(raw);
             state.mark_lost();
             return;
         }
-        if state.context.raw.get_error() != Gl::NO_ERROR {
-            state.context.raw.delete_sync(Some(&raw));
-            state.mark_lost();
-            return;
-        }
+        state.pending_flush = true;
         state.quarantined.push(raw);
     }
 
@@ -315,3 +331,7 @@ impl BrowserOwner {
         }
     }
 }
+
+#[cfg(all(test, target_arch = "wasm32", feature = "webgl2"))]
+#[path = "../../../tests/backend/browser/completion__tests.rs"]
+mod tests;

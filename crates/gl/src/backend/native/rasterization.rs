@@ -61,12 +61,16 @@ pub(super) struct NativeRasterization {
     output_interface: Option<unsafe extern "system" fn(u32, u32, u32, *mut i32)>,
     output_resource: Option<super::context::GetProgramResourceFn>,
     frag_data_index: Option<unsafe extern "system" fn(u32, *const i8) -> i32>,
+    /// Queried once while the discovered context is current. Pipeline
+    /// validation must not turn this immutable capability into a hot getter.
+    dual_source_limit: u32,
 }
 
 impl NativeRasterization {
     /// # Safety
     /// The loader resolves procedures belonging to the current context.
     pub(super) unsafe fn load(
+        gl: &glow::Context,
         discovery: &GlDiscoverySnapshot,
         loader: &impl Fn(&str) -> *const core::ffi::c_void,
     ) -> Self {
@@ -119,6 +123,16 @@ impl NativeRasterization {
         };
         // SAFETY: the core and EXT procedures have identical signatures.
         let frag_data_index = (!index.is_null()).then(|| unsafe { core::mem::transmute(index) });
+        let dual_source_available = matches!(discovery.context().profile(), GlFamilyProfile::Desktop { major, minor } if (major, minor) >= (3, 3))
+            || has("GL_ARB_blend_func_extended")
+            || has("GL_EXT_blend_func_extended");
+        // SAFETY: the capability check makes this enum legal for the exact
+        // current context that supplied the discovery snapshot.
+        let dual_source_limit = if dual_source_available {
+            unsafe { gl.get_parameter_i32(0x88FC).max(0) as u32 }
+        } else {
+            0
+        };
         Self {
             polygon_mode,
             point_mode: desktop,
@@ -130,6 +144,7 @@ impl NativeRasterization {
             output_interface,
             output_resource,
             frag_data_index,
+            dual_source_limit,
         }
     }
 
@@ -263,20 +278,7 @@ impl NativeGlProvider {
         Ok(false)
     }
     pub(crate) fn dual_source_limit(&self) -> u32 {
-        let profile = self.discovery.context().profile();
-        let available = matches!(profile, GlFamilyProfile::Desktop { major, minor } if (major, minor) >= (3, 3))
-            || self
-                .discovery
-                .extensions()
-                .raw_reported_names()
-                .any(|name| {
-                    name == "GL_ARB_blend_func_extended" || name == "GL_EXT_blend_func_extended"
-                });
-        if !available {
-            return 0;
-        }
-        // SAFETY: the provider's context is current and the enum is legal after the capability check.
-        unsafe { self.gl.get_parameter_i32(0x88FC).max(0) as u32 }
+        self.rasterization.dual_source_limit
     }
     /// # Safety
     /// The provider context is current. Optional polygon-offset capabilities

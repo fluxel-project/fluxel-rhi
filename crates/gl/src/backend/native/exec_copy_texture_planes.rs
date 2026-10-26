@@ -3,6 +3,7 @@ use super::super::provider::NativeGlProvider;
 use crate::backend::api::{
     GlError, GlFormat, GlTextureAspect, GlTextureDesc, GlTextureDimension, GlTextureRegion,
 };
+use crate::backend::state::{ScopedRawAccess, StateEvent};
 use glow::HasContext as _;
 
 impl NativeGlProvider {
@@ -108,15 +109,11 @@ impl NativeGlProvider {
                     return Err(GlError::OutOfMemory { operation: op });
                 }
             };
-            let old_read = self.gl.get_parameter_i32(glow::READ_FRAMEBUFFER_BINDING) as u32;
-            let old_draw = self.gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING) as u32;
-            let scissor = self.gl.is_enabled(glow::SCISSOR_TEST);
             self.gl.disable(glow::SCISSOR_TEST);
             self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(read));
             self.gl.read_buffer(glow::NONE);
             self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(draw));
             self.gl.draw_buffers(&[glow::NONE]);
-            let mut result = Ok(());
             for layer in 0..layers {
                 for (target, desc, tex, level, z) in [
                     (glow::READ_FRAMEBUFFER, src_desc, src_tex, sl, sz + layer),
@@ -154,38 +151,20 @@ impl NativeGlProvider {
                             z,
                         ),
                     }
-                    if self.gl.check_framebuffer_status(target) != glow::FRAMEBUFFER_COMPLETE {
-                        result = Err(GlError::Unsupported {
-                            operation: op,
-                            reason: "packed plane framebuffer incomplete",
-                        });
-                        break;
-                    }
-                }
-                if result.is_err() {
-                    break;
                 }
                 self.gl
                     .blit_framebuffer(sx, sy, sx2, sy2, dx, dy, dx2, dy2, mask, glow::NEAREST);
-                if let Err(e) = self.driver_error(op) {
-                    result = Err(e);
-                    break;
-                }
             }
-            self.gl.bind_framebuffer(
-                glow::READ_FRAMEBUFFER,
-                std::num::NonZeroU32::new(old_read).map(glow::NativeFramebuffer),
-            );
-            self.gl.bind_framebuffer(
-                glow::DRAW_FRAMEBUFFER,
-                std::num::NonZeroU32::new(old_draw).map(glow::NativeFramebuffer),
-            );
-            if scissor {
-                self.gl.enable(glow::SCISSOR_TEST);
-            }
+            self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
+            self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
+            self.context_state
+                .event(StateEvent::ScopedRawAccess(ScopedRawAccess::all()));
             self.gl.delete_framebuffer(read);
             self.gl.delete_framebuffer(draw);
-            result
+            // The established plane route supplies compatible attachment
+            // formats and ranges. Avoid a synchronous completeness query for
+            // each layer; normal command-stream failures are deferred.
+            self.defer_driver_error(op)
         }
     }
 }

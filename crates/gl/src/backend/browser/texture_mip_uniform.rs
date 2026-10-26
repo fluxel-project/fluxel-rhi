@@ -16,8 +16,9 @@ impl BrowserEncoder {
         if count == 0 {
             return Err(Error::InvalidRange);
         }
+        let location = program.uniform_location(name)?;
         self.with_context("set texture mip count", |raw| {
-            if let Some(location) = raw.get_uniform_location(&program.raw, name) {
+            if let Some(location) = location.as_ref() {
                 raw.uniform1ui(Some(&location), count);
             }
         })

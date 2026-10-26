@@ -5,8 +5,7 @@
 //! payload or FBO survives this call.
 
 use fluxel_rhi_core::api::{Error, Result};
-use wasm_bindgen::JsCast;
-use web_sys::{WebGl2RenderingContext as Gl, WebGlFramebuffer};
+use web_sys::WebGl2RenderingContext as Gl;
 
 use super::super::owner::{BrowserEncoder, BrowserTexture};
 
@@ -157,13 +156,6 @@ impl BrowserEncoder {
         state.ensure_encoder(self.epoch)?;
         state.ensure_active()?;
         let raw = &state.context.raw;
-        let previous_read = raw
-            .get_parameter(Gl::READ_FRAMEBUFFER_BINDING)
-            .map_err(|_| Error::InvalidState)?;
-        let previous_draw = raw
-            .get_parameter(Gl::DRAW_FRAMEBUFFER_BINDING)
-            .map_err(|_| Error::InvalidState)?;
-        let previous_scissor = raw.is_enabled(Gl::SCISSOR_TEST);
         use crate::backend::api::{GlFormat, GlTextureAspect};
         let attachment = match src.format {
             GlFormat::Depth24PlusStencil8 | GlFormat::Depth32FloatStencil8 => {
@@ -189,7 +181,6 @@ impl BrowserEncoder {
             raw.delete_framebuffer(Some(&src_fbo));
             return Err(Error::OutOfMemory);
         };
-        let mut destination_complete = true;
         for layer in 0..layers {
             raw.bind_framebuffer(Gl::FRAMEBUFFER, Some(&src_fbo));
             if standalone_stencil_renderbuffers {
@@ -220,12 +211,6 @@ impl BrowserEncoder {
                 raw.draw_buffers(&js_sys::Array::of1(&Gl::NONE.into()));
                 raw.read_buffer(Gl::NONE);
             }
-            let source_complete =
-                raw.check_framebuffer_status(Gl::FRAMEBUFFER) == Gl::FRAMEBUFFER_COMPLETE;
-            if !source_complete {
-                destination_complete = false;
-                break;
-            }
             raw.bind_framebuffer(Gl::FRAMEBUFFER, Some(&dst_fbo));
             if standalone_stencil_renderbuffers {
                 raw.framebuffer_renderbuffer(
@@ -255,10 +240,9 @@ impl BrowserEncoder {
                 raw.draw_buffers(&js_sys::Array::of1(&Gl::NONE.into()));
                 raw.read_buffer(Gl::NONE);
             }
-            if raw.check_framebuffer_status(Gl::FRAMEBUFFER) != Gl::FRAMEBUFFER_COMPLETE {
-                destination_complete = false;
-                break;
-            }
+            // Texture ranges and attachment compatibility were validated when
+            // the command was recorded. Rechecking this immutable private FBO
+            // for every layer would synchronously observe normal GPU work.
             // A prior immediate raster pass may leave SCISSOR_TEST enabled.
             // GL applies scissor to framebuffer blits, so the private transfer
             // must not inherit that unrelated draw state.
@@ -282,35 +266,14 @@ impl BrowserEncoder {
             );
             self.issued = true;
         }
-        raw.bind_framebuffer(
-            Gl::READ_FRAMEBUFFER,
-            previous_read.dyn_ref::<WebGlFramebuffer>(),
-        );
-        raw.bind_framebuffer(
-            Gl::DRAW_FRAMEBUFFER,
-            previous_draw.dyn_ref::<WebGlFramebuffer>(),
-        );
-        if previous_scissor {
-            raw.enable(Gl::SCISSOR_TEST);
-        } else {
-            raw.disable(Gl::SCISSOR_TEST);
-        }
+        raw.bind_framebuffer(Gl::READ_FRAMEBUFFER, None);
+        raw.bind_framebuffer(Gl::DRAW_FRAMEBUFFER, None);
+        raw.disable(Gl::SCISSOR_TEST);
         raw.delete_framebuffer(Some(&dst_fbo));
         raw.delete_framebuffer(Some(&src_fbo));
         if state.context.raw.is_context_lost() {
             state.mark_lost();
             return Err(Error::DeviceLost);
-        }
-        let error = raw.get_error();
-        if error != Gl::NO_ERROR {
-            return Err(Error::Backend(format!(
-                "WebGL2 texture blit failed with GL error {error}"
-            )));
-        }
-        if !destination_complete {
-            return Err(Error::Backend(
-                "WebGL2 texture blit framebuffer is incomplete".into(),
-            ));
         }
         Ok(())
     }

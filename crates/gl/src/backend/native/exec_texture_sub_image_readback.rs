@@ -175,9 +175,6 @@ impl NativeGlProvider {
         DIRECT_READ_COUNT.with(|count| count.set(count.get() + 1));
         // SAFETY: all objects belong to the current context, destination ranges and GL integer bounds were validated. The scratch PBO handles unaligned byte offsets without CPU readback.
         unsafe {
-            let pack = self.gl.get_parameter_i32(glow::PIXEL_PACK_BUFFER_BINDING) as u32;
-            let read = self.gl.get_parameter_i32(glow::COPY_READ_BUFFER_BINDING) as u32;
-            let write = self.gl.get_parameter_i32(glow::COPY_WRITE_BUFFER_BINDING) as u32;
             let scratch = if scratch_needed {
                 let scratch = self
                     .gl
@@ -241,7 +238,7 @@ impl NativeGlProvider {
                     }
                 }
             }
-            let result = self.driver_error(OP);
+            let result = self.defer_driver_error(OP);
             for (key, value) in [
                 (glow::PACK_ALIGNMENT, saved.pack_alignment as i32),
                 (glow::PACK_ROW_LENGTH, saved.pack_row_length as i32),
@@ -252,18 +249,12 @@ impl NativeGlProvider {
             ] {
                 self.gl.pixel_store_i32(key, value);
             }
-            self.gl.bind_buffer(
-                glow::PIXEL_PACK_BUFFER,
-                std::num::NonZeroU32::new(pack).map(glow::NativeBuffer),
-            );
-            self.gl.bind_buffer(
-                glow::COPY_READ_BUFFER,
-                std::num::NonZeroU32::new(read).map(glow::NativeBuffer),
-            );
-            self.gl.bind_buffer(
-                glow::COPY_WRITE_BUFFER,
-                std::num::NonZeroU32::new(write).map(glow::NativeBuffer),
-            );
+            // Transfer targets are provider-private scratch.  Clearing them
+            // avoids synchronous binding snapshots; later operations install
+            // their complete required state before use.
+            self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+            self.gl.bind_buffer(glow::COPY_READ_BUFFER, None);
+            self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, None);
             if let Some(scratch) = scratch {
                 self.gl.delete_buffer(scratch);
             }
@@ -298,11 +289,11 @@ impl NativeGlProvider {
                 reason: "texture readback format or sample count",
             });
         }
-        let (target, binding) = match desc.dimension {
-            GlTextureDimension::D1 => (glow::TEXTURE_1D, glow::TEXTURE_BINDING_1D),
-            GlTextureDimension::D2 => (glow::TEXTURE_2D, glow::TEXTURE_BINDING_2D),
-            GlTextureDimension::D2Array => (glow::TEXTURE_2D_ARRAY, glow::TEXTURE_BINDING_2D_ARRAY),
-            GlTextureDimension::D3 => (glow::TEXTURE_3D, glow::TEXTURE_BINDING_3D),
+        let target = match desc.dimension {
+            GlTextureDimension::D1 => glow::TEXTURE_1D,
+            GlTextureDimension::D2 => glow::TEXTURE_2D,
+            GlTextureDimension::D2Array => glow::TEXTURE_2D_ARRAY,
+            GlTextureDimension::D3 => glow::TEXTURE_3D,
             _ => {
                 return Err(GlError::Unsupported {
                     operation: OP,
@@ -351,10 +342,6 @@ impl NativeGlProvider {
         LEGACY_READ_COUNT.with(|count| count.set(count.get() + 1));
         // SAFETY: the mip and destination ranges fit the validated GL integer bounds. The temporary PBO receives the complete mip; all selected rows are copied on the GPU.
         unsafe {
-            let prior_texture = self.gl.get_parameter_i32(binding) as u32;
-            let pack = self.gl.get_parameter_i32(glow::PIXEL_PACK_BUFFER_BINDING) as u32;
-            let read = self.gl.get_parameter_i32(glow::COPY_READ_BUFFER_BINDING) as u32;
-            let write = self.gl.get_parameter_i32(glow::COPY_WRITE_BUFFER_BINDING) as u32;
             let scratch = self
                 .gl
                 .create_buffer()
@@ -398,7 +385,7 @@ impl NativeGlProvider {
                         )?;
                     }
                 }
-                result = self.driver_error(OP);
+                result = self.defer_driver_error(OP);
             }
             for (key, value) in [
                 (glow::PACK_ALIGNMENT, saved.pack_alignment as i32),
@@ -410,22 +397,10 @@ impl NativeGlProvider {
             ] {
                 self.gl.pixel_store_i32(key, value);
             }
-            self.gl.bind_texture(
-                target,
-                std::num::NonZeroU32::new(prior_texture).map(glow::NativeTexture),
-            );
-            self.gl.bind_buffer(
-                glow::PIXEL_PACK_BUFFER,
-                std::num::NonZeroU32::new(pack).map(glow::NativeBuffer),
-            );
-            self.gl.bind_buffer(
-                glow::COPY_READ_BUFFER,
-                std::num::NonZeroU32::new(read).map(glow::NativeBuffer),
-            );
-            self.gl.bind_buffer(
-                glow::COPY_WRITE_BUFFER,
-                std::num::NonZeroU32::new(write).map(glow::NativeBuffer),
-            );
+            self.gl.bind_texture(target, None);
+            self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+            self.gl.bind_buffer(glow::COPY_READ_BUFFER, None);
+            self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, None);
             self.gl.delete_buffer(scratch);
             result
         }

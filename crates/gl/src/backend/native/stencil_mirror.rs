@@ -1,6 +1,7 @@
 //! Refresh a private stencil sampling texture from its authoritative source.
 use super::provider::NativeGlProvider;
 use crate::backend::api::{GlError, GlFamilyApi as _, GlTextureDimension, TextureId};
+use crate::backend::state::{ScopedRawAccess, StateEvent};
 use glow::HasContext as _;
 
 impl NativeGlProvider {
@@ -56,9 +57,6 @@ impl NativeGlProvider {
         // SAFETY: the textures belong to the current context and the framebuffer
         // bindings and scissor enable are restored before returning.
         unsafe {
-            let read = self.gl.get_parameter_i32(glow::READ_FRAMEBUFFER_BINDING) as u32;
-            let draw = self.gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING) as u32;
-            let scissor = self.gl.is_enabled(glow::SCISSOR_TEST);
             let a = self
                 .gl
                 .create_framebuffer()
@@ -77,7 +75,6 @@ impl NativeGlProvider {
                 }
             };
             self.gl.disable(glow::SCISSOR_TEST);
-            let mut result = Ok(());
             for mip in 0..view.mip_level_count {
                 let extent = view.mip_extent(mip).expect("validated mip");
                 for layer in 0..view.extent.depth_or_layers {
@@ -100,15 +97,6 @@ impl NativeGlProvider {
                         );
                     }
                     self.gl.read_buffer(glow::NONE);
-                    if self.gl.check_framebuffer_status(glow::READ_FRAMEBUFFER)
-                        != glow::FRAMEBUFFER_COMPLETE
-                    {
-                        result = Err(GlError::Unsupported {
-                            operation: OP,
-                            reason: "stencil source framebuffer incomplete",
-                        });
-                        break;
-                    }
                     self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(b));
                     if view.dimension == GlTextureDimension::D2 {
                         self.gl.framebuffer_texture_2d(
@@ -128,15 +116,6 @@ impl NativeGlProvider {
                         );
                     }
                     self.gl.draw_buffers(&[glow::NONE]);
-                    if self.gl.check_framebuffer_status(glow::DRAW_FRAMEBUFFER)
-                        != glow::FRAMEBUFFER_COMPLETE
-                    {
-                        result = Err(GlError::Unsupported {
-                            operation: OP,
-                            reason: "stencil mirror framebuffer incomplete",
-                        });
-                        break;
-                    }
                     self.gl.blit_framebuffer(
                         0,
                         0,
@@ -149,29 +128,19 @@ impl NativeGlProvider {
                         glow::STENCIL_BUFFER_BIT,
                         glow::NEAREST,
                     );
-                    if let Err(error) = self.driver_error(OP) {
-                        result = Err(error);
-                        break;
-                    }
-                }
-                if result.is_err() {
-                    break;
                 }
             }
-            self.gl.bind_framebuffer(
-                glow::READ_FRAMEBUFFER,
-                std::num::NonZeroU32::new(read).map(glow::NativeFramebuffer),
-            );
-            self.gl.bind_framebuffer(
-                glow::DRAW_FRAMEBUFFER,
-                std::num::NonZeroU32::new(draw).map(glow::NativeFramebuffer),
-            );
-            if scissor {
-                self.gl.enable(glow::SCISSOR_TEST);
-            }
+            self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
+            self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
+            self.context_state
+                .event(StateEvent::ScopedRawAccess(ScopedRawAccess::all()));
             self.gl.delete_framebuffer(a);
             self.gl.delete_framebuffer(b);
-            result.and_then(|()| self.driver_error(OP))
+            // Descriptor/attachment compatibility is established before this
+            // per-draw fallback. Re-querying FBO completeness per mip/layer
+            // would synchronously observe the stream; report rejection at the
+            // deferred publication boundary instead.
+            self.defer_driver_error(OP)
         }
     }
 }

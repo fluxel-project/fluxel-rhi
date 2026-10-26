@@ -281,7 +281,7 @@ impl GlRasterCommandApi for NativeGlProvider {
                 f32::from_bits(viewport.max_depth),
             );
         }
-        self.driver_error("set-viewport")
+        self.defer_driver_error("set-viewport")
     }
 
     fn set_scissor(&mut self, scissor: Option<GlScissorRect>) -> Result<(), GlError> {
@@ -303,7 +303,7 @@ impl GlRasterCommandApi for NativeGlProvider {
                 None => self.gl.disable(glow::SCISSOR_TEST),
             };
         }
-        self.driver_error("set-scissor")
+        self.defer_driver_error("set-scissor")
     }
     fn set_blend_constant(&mut self, value: [f32; 4]) -> Result<(), GlError> {
         use glow::HasContext as _;
@@ -319,7 +319,7 @@ impl GlRasterCommandApi for NativeGlProvider {
             self.gl.blend_color(value[0], value[1], value[2], value[3]);
         }
         self.context_state.pipeline_failed();
-        self.driver_error("set-blend-constant")
+        self.defer_driver_error("set-blend-constant")
     }
 
     fn set_stencil_reference(&mut self, value: u32) -> Result<(), GlError> {
@@ -340,7 +340,7 @@ impl GlRasterCommandApi for NativeGlProvider {
             self.apply_stencil_face(glow::BACK, &state.stencil_back, value);
         }
         self.context_state.pipeline_failed();
-        self.driver_error("set-stencil-reference")
+        self.defer_driver_error("set-stencil-reference")
     }
 }
 
@@ -417,11 +417,12 @@ impl NativeGlProvider {
             }
             Ok(())
         };
-        if let Err(error) = applied.and_then(|()| self.driver_error(OP)) {
-            self.raster = None;
-            return Err(error);
-        }
-        Ok(())
+        applied?;
+        // Every pipeline leaf was validated before lowering. Defer error
+        // observation to the frame boundary so pipeline installation cannot
+        // serialize a dynamic draw stream; boundary failure invalidates all
+        // optimistic state through provider quarantine.
+        self.defer_driver_error(OP)
     }
 
     /// Applies one complete validated raster state in a fixed order.

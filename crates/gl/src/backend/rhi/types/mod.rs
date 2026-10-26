@@ -493,6 +493,11 @@ pub struct GlRasterPipelineInner {
     pub(crate) browser_program: crate::backend::browser::BrowserRasterProgram,
     #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
     pub(crate) browser_vertex_array: crate::backend::browser::BrowserVertexArray,
+    /// WebGL2 has no linked ESSL fragment-output reflection. Direct ESSL
+    /// pipelines using a secondary blend source retain the established narrow
+    /// draw-boundary validation; WGSL pipelines are validated by Naga cold.
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    pub(crate) browser_direct_essl_dual_source_check: bool,
     pub(crate) raster: crate::backend::api::GlRasterState,
 }
 

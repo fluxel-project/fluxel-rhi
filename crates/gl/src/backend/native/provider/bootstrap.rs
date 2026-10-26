@@ -287,6 +287,7 @@ impl NativeGlProvider {
         // SAFETY: the loader belongs to the current native context.
         provider.rasterization = unsafe {
             super::super::rasterization::NativeRasterization::load(
+                &provider.gl,
                 &provider.discovery,
                 &proc_loader,
             )
@@ -479,6 +480,10 @@ impl NativeGlProvider {
             indirect_count: None,
             multi_draw_indirect: None,
             indirect_count_utility: None,
+            indirect_rebase_utility: None,
+            stencil_pack_programs: None,
+            gles_plane_readback_programs: None,
+            stencil_extract_utility: None,
             indirect_count_scratch: Default::default(),
             multiview: None,
             multisample_array: None,
@@ -541,7 +546,12 @@ impl NativeGlProvider {
             bound_vertex_array: None,
             active_query: None,
             active_compute_program: None,
+            storage_bindings: BTreeMap::new(),
+            generic_storage_buffer: None,
+            current_native_program: None,
             pixel_store: GlPixelStoreState::DEFAULT,
+            deferred_error_operation: std::cell::Cell::new(None),
+            commands_pending_submission: std::cell::Cell::new(false),
             context_state: ContextState::new(ExecutionMode::Optimized),
             pipeline_blocks: RasterPipelineBlockInterner::new(),
         }

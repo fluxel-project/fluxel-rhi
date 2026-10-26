@@ -5,6 +5,7 @@
 //! ordering and completion point used before a result is consumed.
 
 use super::super::provider::{NativeGlProvider, QueryTarget};
+use crate::backend::state::{ScopedRawAccess, StateEvent};
 
 const GLES_ANY_SAMPLES_PASSED: u32 = 0x8C2F;
 
@@ -200,14 +201,7 @@ impl NativeGlProvider {
             message,
         })?;
         unsafe { self.gl.end_query(occlusion_query_target(self)) };
-        if let Err(error) = self.driver_error(OP) {
-            self.active_query = None;
-            if let Some(entry) = self.queries.get_mut(&id) {
-                entry.target = None;
-            }
-            unsafe { self.gl.delete_query(next) };
-            return Err(error);
-        }
+        self.defer_driver_error(OP)?;
         Ok(Some(next))
     }
 
@@ -227,14 +221,7 @@ impl NativeGlProvider {
         };
         // SAFETY: the previous segment ended and this fresh query belongs to the current context.
         unsafe { self.gl.begin_query(occlusion_query_target(self), next) };
-        if let Err(error) = self.driver_error(OP) {
-            self.active_query = None;
-            if let Some(entry) = self.queries.get_mut(&id) {
-                entry.target = None;
-            }
-            unsafe { self.gl.delete_query(next) };
-            return Err(error);
-        }
+        self.defer_driver_error(OP)?;
         self.queries
             .get_mut(&id)
             .ok_or_else(|| Self::validation(OP, "logical query disappeared"))?
@@ -319,7 +306,7 @@ impl NativeGlProvider {
             unsafe { self.gl.begin_query(target, raw) };
             self.queries.get_mut(&query).unwrap().target = Some(QueryTarget::Statistics(target));
             self.active_statistics.push((target, query));
-            self.driver_error(OP)?;
+            self.defer_driver_error(OP)?;
         }
         Ok(())
     }
@@ -334,7 +321,7 @@ impl NativeGlProvider {
         while let Some((target, _)) = self.active_statistics.pop() {
             // SAFETY: each target was started on this current context.
             unsafe { self.gl.end_query(target) };
-            self.driver_error(OP)?;
+            self.defer_driver_error(OP)?;
         }
         Ok(())
     }
@@ -344,21 +331,12 @@ impl NativeGlProvider {
         use glow::HasContext as _;
         const OP: &str = "abort-pipeline-statistics";
         self.assert_ready(OP)?;
-        let mut first_error = None;
         for (target, _) in std::mem::take(&mut self.active_statistics) {
             // SAFETY: these targets were begun by this provider on its current context.
             unsafe { self.gl.end_query(target) };
-            if let Err(error) = self.driver_error(OP) {
-                if first_error.is_none() {
-                    first_error = Some(error);
-                }
-            }
+            self.defer_driver_error(OP)?;
         }
-        if let Some(error) = first_error {
-            Err(error)
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
     /// Writes ordered query results directly to a GPU buffer when the desktop
     /// query-buffer contract is present. Returns false without mutation on
@@ -400,7 +378,6 @@ impl NativeGlProvider {
         // query buffer is bound, GL interprets the pointer argument as an
         // offset, and executes each write in command order on the GPU.
         unsafe {
-            let prior = self.gl.get_parameter_i32(glow::QUERY_BUFFER_BINDING) as u32;
             self.gl.bind_buffer(glow::QUERY_BUFFER, Some(buffer));
             for (index, query) in raw.into_iter().enumerate() {
                 self.gl.get_query_parameter_u64_with_offset(
@@ -409,11 +386,10 @@ impl NativeGlProvider {
                     base + index * 8,
                 );
             }
-            let result = self.driver_error(OP);
-            self.gl.bind_buffer(
-                glow::QUERY_BUFFER,
-                std::num::NonZeroU32::new(prior).map(glow::NativeBuffer),
-            );
+            let result = self.defer_driver_error(OP);
+            self.gl.bind_buffer(glow::QUERY_BUFFER, None);
+            self.context_state
+                .event(StateEvent::ScopedRawAccess(ScopedRawAccess::all()));
             result?;
         }
         Ok(true)
@@ -422,9 +398,7 @@ impl NativeGlProvider {
     /// Whether ordered GPU-side query resolution is available on this context.
     pub(crate) fn supports_query_buffer(&self) -> bool {
         #[cfg(test)]
-        if crate::backend::rhi::spi::TEST_DISABLE_QUERY_BUFFER
-            .with(|disabled| disabled.get())
-        {
+        if crate::backend::rhi::spi::TEST_DISABLE_QUERY_BUFFER.with(|disabled| disabled.get()) {
             return false;
         }
         use crate::backend::api::{GlFamilyProfile, GlKnownExtension};
@@ -465,7 +439,7 @@ impl GlOcclusionQueryApi for NativeGlProvider {
         };
         // SAFETY: current-context contract; the query is live and idle.
         unsafe { self.gl.begin_query(occlusion_query_target(self), raw) };
-        self.driver_error(OP)?;
+        self.defer_driver_error(OP)?;
         if let Some(entry) = self.queries.get_mut(&query) {
             entry.target = Some(QueryTarget::SamplesPassed);
         }
@@ -492,7 +466,7 @@ impl GlOcclusionQueryApi for NativeGlProvider {
         }
         // SAFETY: current-context contract.
         unsafe { self.gl.end_query(occlusion_query_target(self)) };
-        self.driver_error(OP)
+        self.defer_driver_error(OP)
     }
 }
 
@@ -526,7 +500,7 @@ impl GlElapsedQueryApi for NativeGlProvider {
         // SAFETY: current-context contract; the query is live and idle, and
         // the timer capability was proved by discovery.
         unsafe { self.gl.begin_query(glow::TIME_ELAPSED, raw) };
-        self.driver_error(OP)?;
+        self.defer_driver_error(OP)?;
         if let Some(entry) = self.queries.get_mut(&query) {
             entry.target = Some(QueryTarget::TimeElapsed);
             entry.disjoint = false;
@@ -555,7 +529,7 @@ impl GlElapsedQueryApi for NativeGlProvider {
         }
         // SAFETY: current-context contract.
         unsafe { self.gl.end_query(glow::TIME_ELAPSED) };
-        self.driver_error(OP)
+        self.defer_driver_error(OP)
     }
 }
 
@@ -585,7 +559,7 @@ impl GlTimestampQueryApi for NativeGlProvider {
                 self.gl.query_counter(raw, glow::TIMESTAMP);
             }
         };
-        self.driver_error(OP)?;
+        self.defer_driver_error(OP)?;
         if let Some(entry) = self.queries.get_mut(&query) {
             entry.target = Some(QueryTarget::Timestamp);
             entry.disjoint = false;

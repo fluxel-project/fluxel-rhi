@@ -154,8 +154,6 @@ impl NativeGlProvider {
                 .gl
                 .create_texture()
                 .map_err(|_| GlError::OutOfMemory { operation: op })?;
-            let old_texture = self.gl.get_parameter_i32(glow::TEXTURE_BINDING_2D) as u32;
-            let old_pbo = self.gl.get_parameter_i32(glow::PIXEL_UNPACK_BUFFER_BINDING) as u32;
             let saved = self.pixel_store;
             self.gl.bind_texture(glow::TEXTURE_2D, Some(tex));
             self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
@@ -216,7 +214,7 @@ impl NativeGlProvider {
             } else {
                 None
             };
-            let mut result = self.driver_error(op);
+            let mut result = Ok(());
             if pack_plane && matches!(source, PackedSource::Buffer(..)) && input.is_none() {
                 result = Err(GlError::OutOfMemory { operation: op });
             }
@@ -337,10 +335,6 @@ impl NativeGlProvider {
                         );
                     }
                 }
-                if let Err(e) = self.driver_error(op) {
-                    result = Err(e);
-                    break;
-                }
                 let mut dest = region;
                 dest.extent.depth_or_layers = 1;
                 if desc.dimension == GlTextureDimension::D3 {
@@ -359,15 +353,9 @@ impl NativeGlProvider {
                     destination,
                 );
             }
-            self.gl.bind_buffer(
-                glow::PIXEL_UNPACK_BUFFER,
-                std::num::NonZeroU32::new(old_pbo).map(glow::NativeBuffer),
-            );
+            self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
             self.restore_pixel_store(UnpackDirection::Unpack, saved);
-            self.gl.bind_texture(
-                glow::TEXTURE_2D,
-                std::num::NonZeroU32::new(old_texture).map(glow::NativeTexture),
-            );
+            self.gl.bind_texture(glow::TEXTURE_2D, None);
             if let Some(input) = input {
                 self.gl.delete_buffer(input);
             }
@@ -375,7 +363,7 @@ impl NativeGlProvider {
                 self.gl.delete_buffer(pbo);
             }
             self.gl.delete_texture(tex);
-            result
+            result.and_then(|()| self.defer_driver_error(op))
         }
     }
 }

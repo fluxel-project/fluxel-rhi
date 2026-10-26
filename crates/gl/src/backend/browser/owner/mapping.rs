@@ -1,12 +1,7 @@
 //! Direct browser staging for asynchronous host buffer maps.
 use super::*;
-use wasm_bindgen::JsCast;
 
 const MAX_EXACT_WEBGL_OFFSET: u64 = (1_u64 << 53) - 1;
-
-fn bound_buffer(raw: &Gl, target: u32) -> Option<web_sys::WebGlBuffer> {
-    raw.get_parameter(target).ok()?.dyn_into().ok()
-}
 
 impl BrowserOwner {
     /// Copies one source range into a ticket-owned staging buffer and fences
@@ -44,8 +39,6 @@ impl BrowserOwner {
                 return Err(Error::InvalidState);
             }
             let raw = &state.context.raw;
-            let prior_read = bound_buffer(raw, Gl::COPY_READ_BUFFER_BINDING);
-            let prior_write = bound_buffer(raw, Gl::COPY_WRITE_BUFFER_BINDING);
             raw.bind_buffer(Gl::COPY_READ_BUFFER, Some(&source.raw));
             raw.bind_buffer(Gl::COPY_WRITE_BUFFER, Some(&staging.raw));
             raw.copy_buffer_sub_data_with_f64_and_f64_and_f64(
@@ -56,15 +49,15 @@ impl BrowserOwner {
                 size as f64,
             );
             let lost = raw.is_context_lost();
-            let error = raw.get_error();
-            raw.bind_buffer(Gl::COPY_READ_BUFFER, prior_read.as_ref());
-            raw.bind_buffer(Gl::COPY_WRITE_BUFFER, prior_write.as_ref());
+            // This context is exclusively owned by the RHI.  Do not query
+            // driver state merely to restore it: later transfer verbs bind
+            // their operands explicitly, so leave these private targets
+            // neutral after the staging copy.
+            raw.bind_buffer(Gl::COPY_READ_BUFFER, None);
+            raw.bind_buffer(Gl::COPY_WRITE_BUFFER, None);
             if lost {
                 state.mark_lost();
                 return Err(Error::DeviceLost);
-            }
-            if error != Gl::NO_ERROR {
-                return Err(Error::Backend("WebGL2 map staging copy failed".into()));
             }
         }
         let completion = self.completion_after_current_commands()?;

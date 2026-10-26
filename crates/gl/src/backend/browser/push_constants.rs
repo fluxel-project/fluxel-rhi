@@ -51,11 +51,12 @@ impl BrowserEncoder {
                 integers[i] = *word as i32;
             }
         }
+        let location = program.uniform_location(name)?;
         self.with_context("upload_push_uniform", |raw| {
-            let Some(location) = raw.get_uniform_location(&program.raw, name) else {
+            let Some(location) = location.as_ref() else {
                 return;
             };
-            let location = Some(&location);
+            let location = Some(location);
             match kind {
                 BrowserPushUniformKind::Float { lanes } => match lanes {
                     1 => raw.uniform1fv_with_f32_array(location, &floats[..1]),

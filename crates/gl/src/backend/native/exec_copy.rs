@@ -15,6 +15,7 @@ use crate::backend::api::{
     validate_texture_copy,
 };
 use crate::backend::native::buffer_abi::pointer_sized;
+use crate::backend::state::{ScopedRawAccess, StateEvent};
 
 impl GlCopyDomainApi for NativeGlProvider {
     fn buffer_to_texture(
@@ -81,7 +82,7 @@ impl GlCopyDomainApi for NativeGlProvider {
                 );
             }
         }
-        self.driver_error(OP)
+        self.defer_driver_error(OP)
     }
 
     fn copy_texture_region(
@@ -241,7 +242,7 @@ impl GlCopyDomainApi for NativeGlProvider {
                     .buffer_sub_data_u8_slice(glow::COPY_WRITE_BUFFER, offset, bytes);
             }
         }
-        self.driver_error(OP)
+        self.defer_driver_error(OP)
     }
 
     fn read_buffer(&mut self, source: GlBufferRange) -> Result<Vec<u8>, GlError> {
@@ -362,9 +363,8 @@ impl GlCopyDomainApi for NativeGlProvider {
 
         let saved = self.pixel_store;
         // SAFETY: current-context contract; the layout was validated and the
-        // exact tracked pixel-store state is restored on every return path.
-        let prior_unpack_buffer =
-            unsafe { self.gl.get_parameter_i32(glow::PIXEL_UNPACK_BUFFER_BINDING) as u32 };
+        // tracked pixel-store state is restored on every return path. The PBO
+        // is returned to the provider's empty baseline without querying it.
         let result = unsafe {
             (|| {
                 self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
@@ -434,18 +434,17 @@ impl GlCopyDomainApi for NativeGlProvider {
                     }
                     _ => unreachable!("upload preflight admitted an unsupported texture dimension"),
                 }
-                self.driver_error(OP)
+                self.defer_driver_error(OP)
             })()
         };
         // SAFETY: current-context contract; exact snapshot restoration.
         unsafe {
-            self.gl.bind_buffer(
-                glow::PIXEL_UNPACK_BUFFER,
-                std::num::NonZeroU32::new(prior_unpack_buffer).map(glow::NativeBuffer),
-            );
+            self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
             self.restore_pixel_store(UnpackDirection::Unpack, saved);
         }
-        result
+        self.context_state
+            .event(StateEvent::ScopedRawAccess(ScopedRawAccess::all()));
+        result.and_then(|()| self.defer_driver_error(OP))
     }
 
     fn read_texture(
@@ -481,8 +480,9 @@ mod readback;
 /// support through the framebuffer route.
 fn readback_encoding(format: crate::backend::api::GlFormat) -> Option<(u32, u32)> {
     match format {
-        crate::backend::api::GlFormat::Rgba8Unorm
-        | crate::backend::api::GlFormat::Rgba8Srgb => Some((glow::RGBA, glow::UNSIGNED_BYTE)),
+        crate::backend::api::GlFormat::Rgba8Unorm | crate::backend::api::GlFormat::Rgba8Srgb => {
+            Some((glow::RGBA, glow::UNSIGNED_BYTE))
+        }
         _ => None,
     }
 }
@@ -709,7 +709,7 @@ mod planes;
 pub(super) mod packed_upload;
 
 #[path = "exec_copy_stencil_pack.rs"]
-mod stencil_pack;
+pub(super) mod stencil_pack;
 
 #[cfg(test)]
 #[path = "../../tests/backend/native/exec_copy_depth_staging_tests.rs"]

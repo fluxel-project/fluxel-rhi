@@ -54,8 +54,29 @@ fn gles_failure_injection_restores_bindings_and_deletes_scratch() {
         );
 
         let (scratch, pooled) = {
-            let mut transaction =
-                IndirectCountTransaction::capture(gl.clone(), None, "failure-injection").unwrap();
+            let mut transaction = IndirectCountTransaction::capture(
+                gl.clone(),
+                None,
+                [
+                    Some(NativeStorageBinding {
+                        buffer: Some(indexed_zero),
+                        offset: 0,
+                        size: 0,
+                    }),
+                    Some(NativeStorageBinding {
+                        buffer: Some(indexed_one),
+                        offset: 0,
+                        size: 0,
+                    }),
+                ],
+                Some(generic),
+                None,
+                Some(copy_read),
+                Some(copy_write),
+                Some(indirect),
+                "failure-injection",
+            )
+            .unwrap();
             let lease = pool
                 .lease(gl.clone(), [64, 60, 4], "failure-injection")
                 .unwrap();

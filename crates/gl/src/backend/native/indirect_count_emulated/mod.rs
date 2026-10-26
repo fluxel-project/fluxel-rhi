@@ -258,8 +258,20 @@ impl NativeGlProvider {
                     utility.indexed.clone(),
                 )
             };
-            let mut transaction =
-                IndirectCountTransaction::capture(self.gl.clone(), self.buffer_functions, OP)?;
+            let mut transaction = IndirectCountTransaction::capture(
+                self.gl.clone(),
+                self.buffer_functions,
+                [
+                    self.storage_bindings.get(&0).copied(),
+                    self.storage_bindings.get(&1).copied(),
+                ],
+                self.generic_storage_buffer,
+                self.current_native_program,
+                None,
+                None,
+                None,
+                OP,
+            )?;
             let scratch_bytes = buffer_bytes
                 .checked_add(buffer_bytes - 4)
                 .and_then(|value| value.checked_add(snapshot_size))
@@ -292,44 +304,40 @@ impl NativeGlProvider {
                 glow::STREAM_DRAW,
                 OP,
             )?;
-            let mut result = self.driver_error(OP);
-            if result.is_ok() {
-                self.gl.memory_barrier(glow::BUFFER_UPDATE_BARRIER_BIT);
-                self.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(counts));
+            self.gl.memory_barrier(glow::BUFFER_UPDATE_BARRIER_BIT);
+            self.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(counts));
+            self.copy_buffer_sub_data_wide(
+                glow::COPY_READ_BUFFER,
+                glow::COPY_WRITE_BUFFER,
+                count_offset,
+                snapshot_data,
+                4,
+                OP,
+            )?;
+            self.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(args));
+            if stride == record {
                 self.copy_buffer_sub_data_wide(
                     glow::COPY_READ_BUFFER,
                     glow::COPY_WRITE_BUFFER,
-                    count_offset,
+                    src_offset,
+                    0,
                     snapshot_data,
-                    4,
                     OP,
                 )?;
-                self.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(args));
-                if stride == record {
+            } else {
+                for i in 0..count.max_draw_count {
                     self.copy_buffer_sub_data_wide(
                         glow::COPY_READ_BUFFER,
                         glow::COPY_WRITE_BUFFER,
-                        src_offset,
-                        0,
-                        snapshot_data,
+                        src_offset + u64::from(i) * stride,
+                        u64::from(i) * record,
+                        record,
                         OP,
                     )?;
-                } else {
-                    for i in 0..count.max_draw_count {
-                        self.copy_buffer_sub_data_wide(
-                            glow::COPY_READ_BUFFER,
-                            glow::COPY_WRITE_BUFFER,
-                            src_offset + u64::from(i) * stride,
-                            u64::from(i) * record,
-                            record,
-                            OP,
-                        )?;
-                    }
                 }
-                result = self.driver_error(OP);
             }
             let mut base = 0u32;
-            while base < count.max_draw_count && result.is_ok() {
+            while base < count.max_draw_count {
                 let draws = (count.max_draw_count - base).min(chunk_capacity);
                 let count_pos = draws * words;
                 self.gl.memory_barrier(
@@ -368,10 +376,6 @@ impl NativeGlProvider {
                     .uniform_1_u32(indexed_uniform.as_ref(), u32::from(index.is_some()));
                 self.gl.dispatch_compute(draws.div_ceil(64), 1, 1);
                 self.gl.memory_barrier(glow::COMMAND_BARRIER_BIT);
-                if let Err(error) = self.driver_error(OP) {
-                    result = Err(error);
-                    break;
-                }
                 // Draw shaders must see their original SSBO bindings, not the
                 // private compute utility's input and output buffers.
                 transaction.restore_draw_state();
@@ -419,13 +423,12 @@ impl NativeGlProvider {
                         }
                     }
                 }
-                result = self.driver_error(OP);
                 base += draws;
             }
             // Normal completion must also observe restoration/deletion errors.
             // Early `?` exits still use the guard's rollback during unwinding.
             drop(transaction);
-            result.and(self.driver_error(OP))
+            self.defer_driver_error(OP)
         }
     }
 }

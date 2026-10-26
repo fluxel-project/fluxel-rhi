@@ -2,12 +2,11 @@
 //!
 //! WebGL2 exposes multisampling only through renderbuffers.  This helper
 //! attaches that source and a caller-owned single-sample texture to temporary
-//! FBOs, issues one nearest framebuffer blit, then restores the prior FBO and
-//! scissor bindings before returning.  No JS object or command is retained.
+//! FBOs, issues one nearest framebuffer blit, then restores the RHI's neutral
+//! framebuffer/scissor state. No JS object or command is retained.
 
 use fluxel_rhi_core::api::{Error, Result, TextureAspects};
-use wasm_bindgen::JsCast;
-use web_sys::{WebGl2RenderingContext as Gl, WebGlFramebuffer, WebGlTexture};
+use web_sys::WebGl2RenderingContext as Gl;
 
 use super::super::owner::{BrowserEncoder, BrowserTexture};
 
@@ -130,16 +129,6 @@ impl BrowserEncoder {
         state.ensure_encoder(self.epoch)?;
         state.ensure_active()?;
         let raw = &state.context.raw;
-        let previous_read = raw
-            .get_parameter(Gl::READ_FRAMEBUFFER_BINDING)
-            .map_err(|_| Error::InvalidState)?;
-        let previous_draw = raw
-            .get_parameter(Gl::DRAW_FRAMEBUFFER_BINDING)
-            .map_err(|_| Error::InvalidState)?;
-        let previous_texture_2d = raw
-            .get_parameter(Gl::TEXTURE_BINDING_2D)
-            .map_err(|_| Error::InvalidState)?;
-        let previous_scissor = raw.is_enabled(Gl::SCISSOR_TEST);
         // WebGL2 inherits ES 3's multisample-blit restriction: source and
         // destination rectangles must have the same coordinates.  Preserve a
         // caller's different destination offset by resolving first into a
@@ -158,23 +147,10 @@ impl BrowserEncoder {
                 source_mip_extent.width as i32,
                 source_mip_extent.height as i32,
             );
-            if raw.get_error() != Gl::NO_ERROR {
-                raw.bind_texture(
-                    Gl::TEXTURE_2D,
-                    previous_texture_2d.dyn_ref::<WebGlTexture>(),
-                );
-                raw.delete_texture(Some(&texture));
-                return Err(Error::Backend(
-                    "WebGL2 resolve scratch allocation failed".into(),
-                ));
-            }
             // Scratch allocation binds the active unit but does not change the
             // active-unit selector. Restore that binding before any later
             // return path so this direct transfer cannot disturb a draw.
-            raw.bind_texture(
-                Gl::TEXTURE_2D,
-                previous_texture_2d.dyn_ref::<WebGlTexture>(),
-            );
+            raw.bind_texture(Gl::TEXTURE_2D, None);
             Some(texture)
         } else {
             None
@@ -208,8 +184,6 @@ impl BrowserEncoder {
             Gl::RENDERBUFFER,
             source_renderbuffer,
         );
-        let source_complete =
-            raw.check_framebuffer_status(Gl::FRAMEBUFFER) == Gl::FRAMEBUFFER_COMPLETE;
         raw.bind_framebuffer(Gl::FRAMEBUFFER, Some(&destination_fbo));
         raw.framebuffer_texture_2d(
             Gl::FRAMEBUFFER,
@@ -218,10 +192,7 @@ impl BrowserEncoder {
             destination_texture,
             destination_mip as i32,
         );
-        let destination_complete =
-            raw.check_framebuffer_status(Gl::FRAMEBUFFER) == Gl::FRAMEBUFFER_COMPLETE;
-        let scratch_complete = if let (Some(scratch), Some(scratch_fbo)) = (&scratch, &scratch_fbo)
-        {
+        if let (Some(scratch), Some(scratch_fbo)) = (&scratch, &scratch_fbo) {
             raw.bind_framebuffer(Gl::FRAMEBUFFER, Some(scratch_fbo));
             raw.framebuffer_texture_2d(
                 Gl::FRAMEBUFFER,
@@ -230,67 +201,56 @@ impl BrowserEncoder {
                 Some(scratch),
                 0,
             );
-            raw.check_framebuffer_status(Gl::FRAMEBUFFER) == Gl::FRAMEBUFFER_COMPLETE
+        }
+        // Source, destination, and optional scratch attachments are created
+        // from already validated immutable descriptors. A completeness query
+        // per resolve is a synchronous observation, so deferred submission
+        // diagnostics own invalid-use reporting instead.
+        // An unrelated raster pass may have left this enabled. A transfer is
+        // defined by the supplied regions, not by that draw state.
+        raw.disable(Gl::SCISSOR_TEST);
+        raw.bind_framebuffer(Gl::READ_FRAMEBUFFER, Some(&source_fbo));
+        raw.bind_framebuffer(
+            Gl::DRAW_FRAMEBUFFER,
+            Some(scratch_fbo.as_ref().unwrap_or(&destination_fbo)),
+        );
+        let (resolve_x0, resolve_y0, resolve_x1, resolve_y1) = if scratch_fbo.is_some() {
+            (src_x0, src_y0, src_x1, src_y1)
         } else {
-            true
+            (dst_x0, dst_y0, dst_x1, dst_y1)
         };
-        if source_complete && destination_complete && scratch_complete {
-            // An unrelated raster pass may have left this enabled.  A transfer
-            // is defined by the supplied regions, not by that draw state.
-            raw.disable(Gl::SCISSOR_TEST);
-            raw.bind_framebuffer(Gl::READ_FRAMEBUFFER, Some(&source_fbo));
-            raw.bind_framebuffer(
-                Gl::DRAW_FRAMEBUFFER,
-                Some(scratch_fbo.as_ref().unwrap_or(&destination_fbo)),
-            );
-            let (resolve_x0, resolve_y0, resolve_x1, resolve_y1) = if scratch_fbo.is_some() {
-                (src_x0, src_y0, src_x1, src_y1)
-            } else {
-                (dst_x0, dst_y0, dst_x1, dst_y1)
-            };
+        raw.blit_framebuffer(
+            src_x0,
+            src_y0,
+            src_x1,
+            src_y1,
+            resolve_x0,
+            resolve_y0,
+            resolve_x1,
+            resolve_y1,
+            Gl::COLOR_BUFFER_BIT,
+            Gl::NEAREST,
+        );
+        if let Some(scratch_fbo) = &scratch_fbo {
+            raw.bind_framebuffer(Gl::READ_FRAMEBUFFER, Some(scratch_fbo));
+            raw.bind_framebuffer(Gl::DRAW_FRAMEBUFFER, Some(&destination_fbo));
             raw.blit_framebuffer(
                 src_x0,
                 src_y0,
                 src_x1,
                 src_y1,
-                resolve_x0,
-                resolve_y0,
-                resolve_x1,
-                resolve_y1,
+                dst_x0,
+                dst_y0,
+                dst_x1,
+                dst_y1,
                 Gl::COLOR_BUFFER_BIT,
                 Gl::NEAREST,
             );
-            if let Some(scratch_fbo) = &scratch_fbo {
-                raw.bind_framebuffer(Gl::READ_FRAMEBUFFER, Some(scratch_fbo));
-                raw.bind_framebuffer(Gl::DRAW_FRAMEBUFFER, Some(&destination_fbo));
-                raw.blit_framebuffer(
-                    src_x0,
-                    src_y0,
-                    src_x1,
-                    src_y1,
-                    dst_x0,
-                    dst_y0,
-                    dst_x1,
-                    dst_y1,
-                    Gl::COLOR_BUFFER_BIT,
-                    Gl::NEAREST,
-                );
-            }
-            self.issued = true;
         }
-        raw.bind_framebuffer(
-            Gl::READ_FRAMEBUFFER,
-            previous_read.dyn_ref::<WebGlFramebuffer>(),
-        );
-        raw.bind_framebuffer(
-            Gl::DRAW_FRAMEBUFFER,
-            previous_draw.dyn_ref::<WebGlFramebuffer>(),
-        );
-        if previous_scissor {
-            raw.enable(Gl::SCISSOR_TEST);
-        } else {
-            raw.disable(Gl::SCISSOR_TEST);
-        }
+        self.issued = true;
+        raw.bind_framebuffer(Gl::READ_FRAMEBUFFER, None);
+        raw.bind_framebuffer(Gl::DRAW_FRAMEBUFFER, None);
+        raw.disable(Gl::SCISSOR_TEST);
         raw.delete_framebuffer(Some(&destination_fbo));
         raw.delete_framebuffer(Some(&source_fbo));
         raw.delete_framebuffer(scratch_fbo.as_ref());
@@ -298,17 +258,6 @@ impl BrowserEncoder {
         if raw.is_context_lost() {
             state.mark_lost();
             return Err(Error::DeviceLost);
-        }
-        let error = raw.get_error();
-        if error != Gl::NO_ERROR {
-            return Err(Error::Backend(format!(
-                "WebGL2 texture resolve failed with GL error {error}"
-            )));
-        }
-        if !source_complete || !destination_complete || !scratch_complete {
-            return Err(Error::Backend(
-                "WebGL2 texture resolve framebuffer is incomplete".into(),
-            ));
         }
         Ok(())
     }

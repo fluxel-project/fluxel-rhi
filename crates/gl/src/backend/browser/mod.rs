@@ -56,11 +56,11 @@ pub(crate) fn supports_texture_storage(format: crate::backend::api::GlFormat) ->
 }
 
 #[cfg(test)]
-#[path = "../../../../tests/gl/webgl2_array_clear_raw.rs"]
+#[path = "../../../tests/gl/webgl2_array_clear_raw.rs"]
 mod webgl2_array_clear_raw;
 
 #[cfg(test)]
-#[path = "../../../../tests/gl/webgl2_multiview_attachment.rs"]
+#[path = "../../../tests/gl/webgl2_multiview_attachment.rs"]
 mod webgl2_multiview_attachment;
 
 mod cube_mirror;

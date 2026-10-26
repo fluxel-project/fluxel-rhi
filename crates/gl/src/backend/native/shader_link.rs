@@ -32,7 +32,7 @@ impl NativeGlProvider {
 
     /// Compiles one already-lowered source, retaining the complete driver log.
     pub(super) fn compile_shader_source(
-        &self,
+        &mut self,
         op: &'static str,
         source: &GlShaderSource,
     ) -> Result<glow::NativeShader, GlError> {
@@ -89,6 +89,7 @@ impl NativeGlProvider {
                 .and_then(|()| self.reflect_and_assign(op, program, descriptor));
             self.gl.use_program(None);
             self.current_program = None;
+            self.current_native_program = None;
             self.context_state.program_unbound();
             match reflection {
                 Ok(reflection) => match self.driver_error(op) {
@@ -110,7 +111,7 @@ impl NativeGlProvider {
     /// `program` is a linked object owned by this current-context provider and
     /// remains current and alive for the complete reflection transaction.
     pub(super) unsafe fn reflect_and_assign(
-        &self,
+        &mut self,
         op: &'static str,
         program: glow::NativeProgram,
         descriptor: &GlProgramDescriptor,

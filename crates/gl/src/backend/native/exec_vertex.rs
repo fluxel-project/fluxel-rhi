@@ -289,17 +289,14 @@ impl GlVertexApi for NativeGlProvider {
                 self.gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, None);
             }
         }
-        let result = self.driver_error(OP);
-        match result {
-            Ok(()) => {
-                if let Some(entry) = self.vertex_arrays.get_mut(&vertex_array) {
-                    entry.index = index;
-                    entry.bindings = buffers.to_vec();
-                }
-                Ok(())
-            }
-            Err(error) => Err(error),
+        // The VAO and all referenced buffers were validated before emission.
+        // Commit this CPU mirror optimistically; a deferred stream error
+        // quarantines the whole provider at its next boundary.
+        if let Some(entry) = self.vertex_arrays.get_mut(&vertex_array) {
+            entry.index = index;
+            entry.bindings = buffers.to_vec();
         }
+        self.defer_driver_error(OP)
     }
 
     fn set_vertex_binding(
@@ -342,7 +339,7 @@ impl GlVertexApi for NativeGlProvider {
             bindings.push(binding);
         }
         self.vertex_arrays.get_mut(&vertex_array).unwrap().bindings = bindings;
-        self.driver_error(OP)
+        self.defer_driver_error(OP)
     }
 
     fn set_index_binding(
@@ -367,7 +364,7 @@ impl GlVertexApi for NativeGlProvider {
         }
         self.bound_vertex_array = Some(vertex_array);
         self.vertex_arrays.get_mut(&vertex_array).unwrap().index = index;
-        self.driver_error(OP)
+        self.defer_driver_error(OP)
     }
 }
 
@@ -404,23 +401,10 @@ impl NativeGlProvider {
                         reason: "zero stride requires vertex attribute binding",
                     });
                 }
-                let max = self.gl.get_parameter_i32(glow::MAX_VERTEX_ATTRIB_BINDINGS);
-                if layout
-                    .attributes
-                    .iter()
-                    .filter(|a| {
-                        layout
-                            .buffers
-                            .iter()
-                            .any(|slot| slot.stride == 0 && slot.slot == a.buffer_slot)
-                    })
-                    .any(|a| a.location >= max as u32)
-                {
-                    return Err(GlError::Unsupported {
-                        operation: "bind-vertex-array",
-                        reason: "zero stride vertex binding limit",
-                    });
-                }
+                // `create_vertex_array` already validated every attribute
+                // location against the discovery-cached limit.  Querying the
+                // same driver state again here would put a GL get on every
+                // dynamic vertex-bind path.
             }
             for slot_layout in &layout.buffers {
                 let Some(binding) = buffers

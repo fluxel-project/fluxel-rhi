@@ -231,6 +231,7 @@ pub(super) fn configure_sampler(raw: &Gl, sampler: &web_sys::WebGlSampler, desc:
 pub(super) fn webgl2_baseline_formats(
     raw: &Gl,
     extensions: &GlExtensionSet,
+    normalized_readback_highp: bool,
 ) -> Result<GlFormatTable, super::super::api::GlError> {
     const RGBA16F: u32 = 0x881A;
     const RGBA32F: u32 = 0x8814;
@@ -449,7 +450,10 @@ pub(super) fn webgl2_baseline_formats(
         .unwrap_or(false);
         if renderable
             && (super::ordinary_format::exact_readback_supported(raw, format)
-                || super::encoder::normalized_readback::supports_format(raw, format))
+                || super::encoder::normalized_readback::supports_format(
+                    format,
+                    normalized_readback_highp,
+                ))
         {
             formats.mark_exact_buffer_readback(format);
         }
@@ -490,7 +494,10 @@ pub(super) fn webgl2_baseline_formats(
             .unwrap_or(false);
             if renderable
                 && (super::ordinary_format::exact_readback_supported(raw, format)
-                    || super::encoder::normalized_readback::supports_format(raw, format))
+                    || super::encoder::normalized_readback::supports_format(
+                        format,
+                        normalized_readback_highp,
+                    ))
             {
                 formats.mark_exact_buffer_readback(format);
             }

@@ -7,6 +7,8 @@ use js_sys::Array;
 use wasm_bindgen::JsValue;
 use web_sys::{WebGl2RenderingContext as Gl, WebGlFramebuffer, WebGlTexture};
 
+use super::super::owner::{SurfaceColorCache, SurfaceColorProgram};
+
 fn shader(raw: &Gl, kind: u32, source: &str) -> Result<web_sys::WebGlShader> {
     let shader = raw.create_shader(kind).ok_or(Error::OutOfMemory)?;
     raw.shader_source(&shader, source);
@@ -29,6 +31,7 @@ fn shader(raw: &Gl, kind: u32, source: &str) -> Result<web_sys::WebGlShader> {
 /// canvas bytes to linear, then the destination sRGB attachment encodes them.
 pub(super) fn convert(
     raw: &Gl,
+    cache: &mut SurfaceColorCache,
     source: &WebGlTexture,
     destination: Option<&WebGlFramebuffer>,
     slot: u32,
@@ -36,58 +39,7 @@ pub(super) fn convert(
     area: Rect,
     encode: bool,
 ) -> Result<()> {
-    let vertex = shader(
-        raw,
-        Gl::VERTEX_SHADER,
-        "#version 300 es\nvoid main(){vec2 p=vec2((gl_VertexID<<1)&2,gl_VertexID&2); gl_Position=vec4(p*2.0-1.0,0.0,1.0);}",
-    )?;
-    let formula = if encode {
-        "mix(12.92*c, 1.055*pow(max(c,vec3(0.0)),vec3(1.0/2.4))-0.055, greaterThan(c,vec3(0.0031308)))"
-    } else {
-        "mix(c/12.92, pow((c+0.055)/1.055,vec3(2.4)), greaterThan(c,vec3(0.04045)))"
-    };
-    let fragment_source = format!(
-        "#version 300 es\nprecision highp float; uniform sampler2D image; layout(location={slot}) out vec4 outColor; void main(){{ivec2 p=ivec2(gl_FragCoord.xy); p.y={} - 1 - p.y; vec4 v=texelFetch(image,p,0); vec3 c=v.rgb; outColor=vec4({formula},v.a);}}",
-        extent[1]
-    );
-    let fragment = match shader(raw, Gl::FRAGMENT_SHADER, &fragment_source) {
-        Ok(v) => v,
-        Err(e) => {
-            raw.delete_shader(Some(&vertex));
-            return Err(e);
-        }
-    };
-    let program = match raw.create_program() {
-        Some(v) => v,
-        None => {
-            raw.delete_shader(Some(&vertex));
-            raw.delete_shader(Some(&fragment));
-            return Err(Error::OutOfMemory);
-        }
-    };
-    raw.attach_shader(&program, &vertex);
-    raw.attach_shader(&program, &fragment);
-    raw.link_program(&program);
-    raw.delete_shader(Some(&vertex));
-    raw.delete_shader(Some(&fragment));
-    if !raw
-        .get_program_parameter(&program, Gl::LINK_STATUS)
-        .as_bool()
-        .unwrap_or(false)
-    {
-        let message = raw.get_program_info_log(&program).unwrap_or_default();
-        raw.delete_program(Some(&program));
-        return Err(Error::Backend(format!(
-            "WebGL2 surface conversion program: {message}"
-        )));
-    }
-    let vao = match raw.create_vertex_array() {
-        Some(v) => v,
-        None => {
-            raw.delete_program(Some(&program));
-            return Err(Error::OutOfMemory);
-        }
-    };
+    let helper = helper(raw, cache, encode, slot)?;
     raw.bind_framebuffer(Gl::DRAW_FRAMEBUFFER, destination);
     if destination.is_some() {
         let buffers = Array::from_iter((0..=slot).map(|i| {
@@ -117,33 +69,114 @@ pub(super) fn convert(
     raw.disable(Gl::STENCIL_TEST);
     raw.disable(Gl::CULL_FACE);
     raw.color_mask(true, true, true, true);
-    raw.use_program(Some(&program));
-    raw.bind_vertex_array(Some(&vao));
+    raw.use_program(Some(&helper.raw));
+    raw.bind_vertex_array(Some(&helper.vao));
     raw.active_texture(Gl::TEXTURE0);
     raw.bind_texture(Gl::TEXTURE_2D, Some(source));
     raw.bind_sampler(0, None);
     raw.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_MIN_FILTER, Gl::NEAREST as i32);
     raw.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_MAG_FILTER, Gl::NEAREST as i32);
-    let uniform = raw.get_uniform_location(&program, "image");
-    raw.uniform1i(uniform.as_ref(), 0);
+    raw.uniform1i(Some(&helper.image), 0);
+    raw.uniform1i(Some(&helper.height), extent[1] as i32);
     raw.draw_arrays(Gl::TRIANGLES, 0, 3);
-    let error = raw.get_error();
     raw.bind_vertex_array(None);
     raw.use_program(None);
     raw.bind_texture(Gl::TEXTURE_2D, None);
     raw.disable(Gl::SCISSOR_TEST);
-    raw.delete_vertex_array(Some(&vao));
-    raw.delete_program(Some(&program));
-    if error != Gl::NO_ERROR {
-        return Err(Error::Backend(format!(
-            "surface conversion draw error {error}"
-        )));
-    }
     Ok(())
+}
+
+fn helper<'a>(
+    raw: &Gl,
+    cache: &'a mut SurfaceColorCache,
+    encode: bool,
+    slot: u32,
+) -> Result<&'a SurfaceColorProgram> {
+    if !cache.programs.contains_key(&(encode, slot)) {
+        let vertex = shader(
+            raw,
+            Gl::VERTEX_SHADER,
+            "#version 300 es\nvoid main(){vec2 p=vec2((gl_VertexID<<1)&2,gl_VertexID&2); gl_Position=vec4(p*2.0-1.0,0.0,1.0);}",
+        )?;
+        let formula = if encode {
+            "mix(12.92*c, 1.055*pow(max(c,vec3(0.0)),vec3(1.0/2.4))-0.055, greaterThan(c,vec3(0.0031308)))"
+        } else {
+            "mix(c/12.92, pow((c+0.055)/1.055,vec3(2.4)), greaterThan(c,vec3(0.04045)))"
+        };
+        let fragment_source = format!(
+            "#version 300 es\nprecision highp float; uniform sampler2D image; uniform int height; layout(location={slot}) out vec4 outColor; void main(){{ivec2 p=ivec2(gl_FragCoord.xy); p.y=height - 1 - p.y; vec4 v=texelFetch(image,p,0); vec3 c=v.rgb; outColor=vec4({formula},v.a);}}"
+        );
+        let fragment = match shader(raw, Gl::FRAGMENT_SHADER, &fragment_source) {
+            Ok(v) => v,
+            Err(e) => {
+                raw.delete_shader(Some(&vertex));
+                return Err(e);
+            }
+        };
+        let program = match raw.create_program() {
+            Some(v) => v,
+            None => {
+                raw.delete_shader(Some(&vertex));
+                raw.delete_shader(Some(&fragment));
+                return Err(Error::OutOfMemory);
+            }
+        };
+        raw.attach_shader(&program, &vertex);
+        raw.attach_shader(&program, &fragment);
+        raw.link_program(&program);
+        raw.delete_shader(Some(&vertex));
+        raw.delete_shader(Some(&fragment));
+        if !raw
+            .get_program_parameter(&program, Gl::LINK_STATUS)
+            .as_bool()
+            .unwrap_or(false)
+        {
+            let message = raw.get_program_info_log(&program).unwrap_or_default();
+            raw.delete_program(Some(&program));
+            return Err(Error::Backend(format!(
+                "WebGL2 surface conversion program: {message}"
+            )));
+        }
+        let vao = match raw.create_vertex_array() {
+            Some(v) => v,
+            None => {
+                raw.delete_program(Some(&program));
+                return Err(Error::OutOfMemory);
+            }
+        };
+        let Some(image) = raw.get_uniform_location(&program, "image") else {
+            raw.delete_vertex_array(Some(&vao));
+            raw.delete_program(Some(&program));
+            return Err(Error::Backend(
+                "WebGL2 surface conversion image uniform missing".into(),
+            ));
+        };
+        let Some(height) = raw.get_uniform_location(&program, "height") else {
+            raw.delete_vertex_array(Some(&vao));
+            raw.delete_program(Some(&program));
+            return Err(Error::Backend(
+                "WebGL2 surface conversion height uniform missing".into(),
+            ));
+        };
+        cache.programs.insert(
+            (encode, slot),
+            SurfaceColorProgram {
+                raw: program,
+                vao,
+                image,
+                height,
+            },
+        );
+    }
+    Ok(cache
+        .programs
+        .get(&(encode, slot))
+        .expect("cached helper inserted"))
 }
 /// Copies the default buffer bytes into an UNORM scratch texture before decode.
 pub(super) fn preload(
     raw: &Gl,
+    cache: &mut SurfaceColorCache,
     target: &WebGlFramebuffer,
     slot: u32,
     extent: [u32; 2],
@@ -168,13 +201,9 @@ pub(super) fn preload(
         extent[0] as i32,
         extent[1] as i32,
     );
-    let err = raw.get_error();
-    if err != Gl::NO_ERROR {
-        raw.delete_texture(Some(&texture));
-        return Err(Error::Backend(format!("surface preload copy error {err}")));
-    }
     let result = convert(
         raw,
+        cache,
         &texture,
         Some(target),
         slot,

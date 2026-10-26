@@ -203,7 +203,6 @@ impl NativeGlProvider {
         let saved = self.pixel_store;
         // SAFETY: context is current; resources, row bounds and coordinates were checked above.
         unsafe {
-            let prior = self.gl.get_parameter_i32(glow::PIXEL_UNPACK_BUFFER_BINDING) as u32;
             // Some GLES implementations require a whole-texel PBO offset even
             // when GL's component alignment would allow a smaller one. GPU
             // copy to offset zero also handles any valid unaligned Core layout.
@@ -375,11 +374,11 @@ impl NativeGlProvider {
                     }
                 }
             }
-            let result = self.driver_error(OP);
-            self.gl.bind_buffer(
-                glow::PIXEL_UNPACK_BUFFER,
-                std::num::NonZeroU32::new(prior).map(glow::NativeBuffer),
-            );
+            let result = self.defer_driver_error(OP);
+            // This target is private transfer scratch; callers never rely on
+            // an ambient binding, so clear it instead of synchronously reading
+            // and restoring a driver value.
+            self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
             if let Some(scratch) = scratch {
                 self.gl.delete_buffer(scratch);
             }
@@ -393,7 +392,7 @@ impl NativeGlProvider {
             ] {
                 self.gl.pixel_store_i32(key, value);
             }
-            result.and_then(|()| self.driver_error(OP))
+            result.and_then(|()| self.defer_driver_error(OP))
         }
     }
 }

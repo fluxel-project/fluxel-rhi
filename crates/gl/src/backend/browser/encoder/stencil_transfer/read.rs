@@ -8,28 +8,19 @@
 
 use fluxel_rhi_core::api::{Error, Result};
 use js_sys::Array;
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::JsValue;
 use web_sys::{
     WebGl2RenderingContext as Gl, WebGlBuffer, WebGlFramebuffer, WebGlProgram, WebGlRenderbuffer,
     WebGlSampler, WebGlShader, WebGlTexture, WebGlTransformFeedback, WebGlVertexArrayObject,
 };
 
-use super::super::super::owner::{BrowserBuffer, BrowserEncoder, BrowserTexture};
+use super::super::super::owner::{
+    BrowserBuffer, BrowserEncoder, BrowserTexture, StencilReadFeedbackProgram, StencilTransferCache,
+};
 use super::write::{State, destination_attachment};
 use crate::backend::api::{GlFormat, GlTextureDimension, GlTextureUsage};
 
-fn check_stage(gl: &Gl, stage: &str) -> Result<()> {
-    let error = gl.get_error();
-    if error == Gl::NO_ERROR {
-        Ok(())
-    } else {
-        Err(Error::Backend(format!(
-            "WebGL stencil read {stage}: GL {error}"
-        )))
-    }
-}
-
-fn shader(gl: &Gl, kind: u32, source: &str, list: &mut Vec<WebGlShader>) -> Result<WebGlShader> {
+fn shader(gl: &Gl, kind: u32, source: &str) -> Result<WebGlShader> {
     let shader = gl.create_shader(kind).ok_or(Error::OutOfMemory)?;
     gl.shader_source(&shader, source);
     gl.compile_shader(&shader);
@@ -42,19 +33,7 @@ fn shader(gl: &Gl, kind: u32, source: &str, list: &mut Vec<WebGlShader>) -> Resu
         gl.delete_shader(Some(&shader));
         return Err(Error::Backend(format!("WebGL stencil read shader: {text}")));
     }
-    list.push(shader.clone());
     Ok(shader)
-}
-
-fn object<T: JsCast>(gl: &Gl, parameter: u32) -> Result<Option<T>> {
-    let value = gl
-        .get_parameter(parameter)
-        .map_err(|_| Error::InvalidState)?;
-    if value.is_null() {
-        Ok(None)
-    } else {
-        value.dyn_into().map(Some).map_err(|_| Error::InvalidState)
-    }
 }
 
 struct Scratch<'a> {
@@ -64,12 +43,9 @@ struct Scratch<'a> {
     plane: Option<WebGlRenderbuffer>,
     colors: [Option<WebGlTexture>; 2],
     sampler: Option<WebGlSampler>,
-    raster_program: Option<WebGlProgram>,
-    tf_program: Option<WebGlProgram>,
     vao: Option<WebGlVertexArrayObject>,
     tf: Option<WebGlTransformFeedback>,
     buffer: Option<WebGlBuffer>,
-    shaders: Vec<WebGlShader>,
 }
 
 impl Drop for Scratch<'_> {
@@ -78,8 +54,6 @@ impl Drop for Scratch<'_> {
         gl.delete_buffer(self.buffer.as_ref());
         gl.delete_transform_feedback(self.tf.as_ref());
         gl.delete_vertex_array(self.vao.as_ref());
-        gl.delete_program(self.tf_program.as_ref());
-        gl.delete_program(self.raster_program.as_ref());
         gl.delete_sampler(self.sampler.as_ref());
         for color in &self.colors {
             gl.delete_texture(color.as_ref());
@@ -87,9 +61,6 @@ impl Drop for Scratch<'_> {
         gl.delete_renderbuffer(self.plane.as_ref());
         gl.delete_framebuffer(self.draw_fbo.as_ref());
         gl.delete_framebuffer(self.read_fbo.as_ref());
-        for shader in &self.shaders {
-            gl.delete_shader(Some(shader));
-        }
     }
 }
 
@@ -123,23 +94,39 @@ fn attach_source(gl: &Gl, source: &BrowserTexture, mip: u32, layer: u32) -> Resu
     Ok(())
 }
 
-fn link_raster(gl: &Gl, scratch: &mut Scratch<'_>) -> Result<WebGlProgram> {
+fn raster_program<'a>(gl: &Gl, cache: &'a mut StencilTransferCache) -> Result<&'a WebGlProgram> {
+    if cache.read_raster.is_some() {
+        return Ok(cache
+            .read_raster
+            .as_ref()
+            .expect("cached stencil raster helper"));
+    }
     let vertex = shader(
         gl,
         Gl::VERTEX_SHADER,
         "#version 300 es\nvoid main(){vec2 p[3]=vec2[3](vec2(-1.,-1.),vec2(3.,-1.),vec2(-1.,3.));gl_Position=vec4(p[gl_VertexID],0.,1.);}",
-        &mut scratch.shaders,
     )?;
-    let fragment = shader(
+    let fragment = match shader(
         gl,
         Gl::FRAGMENT_SHADER,
         "#version 300 es\nprecision highp float;layout(location=0) out vec4 low_bits;layout(location=1) out vec4 high_bits;void main(){low_bits=vec4(1.);high_bits=vec4(1.);}",
-        &mut scratch.shaders,
-    )?;
-    let program = gl.create_program().ok_or(Error::OutOfMemory)?;
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            gl.delete_shader(Some(&vertex));
+            return Err(error);
+        }
+    };
+    let Some(program) = gl.create_program() else {
+        gl.delete_shader(Some(&vertex));
+        gl.delete_shader(Some(&fragment));
+        return Err(Error::OutOfMemory);
+    };
     gl.attach_shader(&program, &vertex);
     gl.attach_shader(&program, &fragment);
     gl.link_program(&program);
+    gl.delete_shader(Some(&vertex));
+    gl.delete_shader(Some(&fragment));
     if gl
         .get_program_parameter(&program, Gl::LINK_STATUS)
         .as_bool()
@@ -151,48 +138,64 @@ fn link_raster(gl: &Gl, scratch: &mut Scratch<'_>) -> Result<WebGlProgram> {
             "WebGL stencil read raster link: {text}"
         )));
     }
-    scratch.raster_program = Some(program.clone());
-    Ok(program)
+    cache.read_raster = Some(program);
+    Ok(cache
+        .read_raster
+        .as_ref()
+        .expect("cached stencil raster helper inserted"))
 }
 
-fn link_tf(
+fn feedback_program<'a>(
     gl: &Gl,
-    scratch: &mut Scratch<'_>,
-    width: u32,
-    words_per_row: u32,
-) -> Result<WebGlProgram> {
-    let vertex_source = format!(
-        r#"#version 300 es
+    cache: &'a mut StencilTransferCache,
+) -> Result<&'a StencilReadFeedbackProgram> {
+    if cache.read_feedback.is_some() {
+        return Ok(cache
+            .read_feedback
+            .as_ref()
+            .expect("cached stencil feedback helper"));
+    }
+    let vertex_source = r#"#version 300 es
 precision highp float;
 precision highp int;
 uniform sampler2D lo;
 uniform sampler2D hi;
+uniform highp uint width;
+uniform highp uint words_per_row;
 flat out uint stencil_word;
-void main() {{
+void main() {
   uint i=uint(gl_VertexID);
-  uint x=(i%{words_per_row}u)*4u, y=i/{words_per_row}u;
+  uint x=(i%words_per_row)*4u, y=i/words_per_row;
   uint v=0u;
-  for(uint n=0u;n<4u;n++) {{
-    if(x+n<{width}u) {{
+  for(uint n=0u;n<4u;n++) {
+    if(x+n<width) {
       vec4 a=texelFetch(lo,ivec2(int(x+n),int(y)),0);
       vec4 b=texelFetch(hi,ivec2(int(x+n),int(y)),0);
       uint q=(a.r>.5?1u:0u)|(a.g>.5?2u:0u)|(a.b>.5?4u:0u)|(a.a>.5?8u:0u)
             |(b.r>.5?16u:0u)|(b.g>.5?32u:0u)|(b.b>.5?64u:0u)|(b.a>.5?128u:0u);
       v|=q<<(8u*n);
-    }}
-  }}
+    }
+  }
   stencil_word=v;
   gl_Position=vec4(0.);
-}}"#
-    );
-    let vertex = shader(gl, Gl::VERTEX_SHADER, &vertex_source, &mut scratch.shaders)?;
-    let fragment = shader(
+}"#;
+    let vertex = shader(gl, Gl::VERTEX_SHADER, vertex_source)?;
+    let fragment = match shader(
         gl,
         Gl::FRAGMENT_SHADER,
         "#version 300 es\nprecision highp float;void main(){}",
-        &mut scratch.shaders,
-    )?;
-    let program = gl.create_program().ok_or(Error::OutOfMemory)?;
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            gl.delete_shader(Some(&vertex));
+            return Err(error);
+        }
+    };
+    let Some(program) = gl.create_program() else {
+        gl.delete_shader(Some(&vertex));
+        gl.delete_shader(Some(&fragment));
+        return Err(Error::OutOfMemory);
+    };
     gl.attach_shader(&program, &vertex);
     gl.attach_shader(&program, &fragment);
     gl.transform_feedback_varyings(
@@ -201,6 +204,8 @@ void main() {{
         Gl::INTERLEAVED_ATTRIBS,
     );
     gl.link_program(&program);
+    gl.delete_shader(Some(&vertex));
+    gl.delete_shader(Some(&fragment));
     if gl
         .get_program_parameter(&program, Gl::LINK_STATUS)
         .as_bool()
@@ -212,8 +217,41 @@ void main() {{
             "WebGL stencil read feedback link: {text}"
         )));
     }
-    scratch.tf_program = Some(program.clone());
-    Ok(program)
+    let Some(lo) = gl.get_uniform_location(&program, "lo") else {
+        gl.delete_program(Some(&program));
+        return Err(Error::Backend(
+            "WebGL stencil read lo uniform missing".into(),
+        ));
+    };
+    let Some(hi) = gl.get_uniform_location(&program, "hi") else {
+        gl.delete_program(Some(&program));
+        return Err(Error::Backend(
+            "WebGL stencil read hi uniform missing".into(),
+        ));
+    };
+    let Some(width) = gl.get_uniform_location(&program, "width") else {
+        gl.delete_program(Some(&program));
+        return Err(Error::Backend(
+            "WebGL stencil read width uniform missing".into(),
+        ));
+    };
+    let Some(words_per_row) = gl.get_uniform_location(&program, "words_per_row") else {
+        gl.delete_program(Some(&program));
+        return Err(Error::Backend(
+            "WebGL stencil read words_per_row uniform missing".into(),
+        ));
+    };
+    cache.read_feedback = Some(StencilReadFeedbackProgram {
+        raw: program,
+        lo,
+        hi,
+        width,
+        words_per_row,
+    });
+    Ok(cache
+        .read_feedback
+        .as_ref()
+        .expect("cached stencil feedback helper inserted"))
 }
 
 impl BrowserEncoder {
@@ -302,7 +340,7 @@ impl BrowserEncoder {
             }
         }
         let mut result = Ok(());
-        let outer = self.with_context("stencil_plane_readback", |gl| {
+        let outer = self.with_stencil_transfer_context("stencil_plane_readback", |gl, cache| {
             result = (|| -> Result<()> {
                 // Capture first: this rejects active transform feedback
                 // before private GL objects or shader programs are created.
@@ -314,12 +352,9 @@ impl BrowserEncoder {
                     plane: None,
                     colors: [None, None],
                     sampler: None,
-                    raster_program: None,
-                    tf_program: None,
                     vao: None,
                     tf: None,
                     buffer: None,
-                    shaders: Vec::new(),
                 };
                 scratch.read_fbo = Some(gl.create_framebuffer().ok_or(Error::OutOfMemory)?);
                 scratch.draw_fbo = Some(gl.create_framebuffer().ok_or(Error::OutOfMemory)?);
@@ -330,17 +365,14 @@ impl BrowserEncoder {
                 scratch.vao = Some(gl.create_vertex_array().ok_or(Error::OutOfMemory)?);
                 scratch.tf = Some(gl.create_transform_feedback().ok_or(Error::OutOfMemory)?);
                 scratch.buffer = Some(gl.create_buffer().ok_or(Error::OutOfMemory)?);
-                let raster = link_raster(gl, &mut scratch)?;
-                let feedback = link_tf(gl, &mut scratch, extent[0], words_per_row)?;
+                let raster = raster_program(gl, cache)?.clone();
+                let feedback = feedback_program(gl, cache)?.clone();
                 let read = scratch.read_fbo.as_ref().unwrap();
                 let draw = scratch.draw_fbo.as_ref().unwrap();
                 let plane = scratch.plane.as_ref().unwrap();
                 gl.bind_framebuffer(Gl::READ_FRAMEBUFFER, Some(read));
                 attach_source(gl, source, mip, origin[2])?;
                 gl.read_buffer(Gl::NONE);
-                if gl.check_framebuffer_status(Gl::READ_FRAMEBUFFER) != Gl::FRAMEBUFFER_COMPLETE {
-                    return Err(Error::Unsupported("WebGL stencil source framebuffer"));
-                }
                 let plane_format = match source.desc.format {
                     GlFormat::Stencil8 => Gl::STENCIL_INDEX8,
                     GlFormat::Depth24PlusStencil8 => Gl::DEPTH24_STENCIL8,
@@ -365,13 +397,6 @@ impl BrowserEncoder {
                 );
                 gl.draw_buffers(&Array::of1(&Gl::NONE.into()));
                 gl.read_buffer(Gl::NONE);
-                check_stage(gl, "stencil staging allocation")?;
-                let status = gl.check_framebuffer_status(Gl::DRAW_FRAMEBUFFER);
-                if status != Gl::FRAMEBUFFER_COMPLETE {
-                    return Err(Error::Backend(format!(
-                        "WebGL stencil staging framebuffer: {status:#x}"
-                    )));
-                }
                 gl.bind_framebuffer(Gl::READ_FRAMEBUFFER, Some(read));
                 gl.blit_framebuffer(
                     origin[0] as i32,
@@ -385,7 +410,6 @@ impl BrowserEncoder {
                     Gl::STENCIL_BUFFER_BIT,
                     Gl::NEAREST,
                 );
-                check_stage(gl, "stencil blit")?;
                 gl.bind_framebuffer(Gl::FRAMEBUFFER, Some(draw));
                 for (index, color) in scratch.colors.iter().enumerate() {
                     let color = color.as_ref().unwrap();
@@ -410,9 +434,10 @@ impl BrowserEncoder {
                     &Gl::COLOR_ATTACHMENT0.into(),
                     &Gl::COLOR_ATTACHMENT1.into(),
                 ));
-                if gl.check_framebuffer_status(Gl::FRAMEBUFFER) != Gl::FRAMEBUFFER_COMPLETE {
-                    return Err(Error::Unsupported("WebGL stencil bit framebuffer"));
-                }
+                // The source, staging, and color attachments are all built
+                // from prevalidated immutable shapes. Per-transfer FBO
+                // completeness checks synchronously observe normal work;
+                // deferred submission diagnostics report rejected use.
                 gl.viewport(0, 0, extent[0] as i32, extent[1] as i32);
                 gl.enable(Gl::SCISSOR_TEST);
                 gl.scissor(0, 0, extent[0] as i32, extent[1] as i32);
@@ -427,7 +452,6 @@ impl BrowserEncoder {
                 gl.color_mask(true, true, true, true);
                 gl.clear_bufferfv_with_f32_array(Gl::COLOR, 0, &[0., 0., 0., 0.]);
                 gl.clear_bufferfv_with_f32_array(Gl::COLOR, 1, &[0., 0., 0., 0.]);
-                check_stage(gl, "bit-plane clear")?;
                 gl.bind_vertex_array(scratch.vao.as_ref());
                 gl.use_program(Some(&raster));
                 for bit in 0..8 {
@@ -452,7 +476,6 @@ impl BrowserEncoder {
                     ));
                     gl.color_mask(channel == 0, channel == 1, channel == 2, channel == 3);
                     gl.draw_arrays(Gl::TRIANGLES, 0, 3);
-                    check_stage(gl, "bit-plane draw")?;
                 }
                 gl.draw_buffers(&Array::of2(
                     &Gl::COLOR_ATTACHMENT0.into(),
@@ -481,14 +504,15 @@ impl BrowserEncoder {
                 gl.bind_framebuffer(Gl::READ_FRAMEBUFFER, None);
                 gl.bind_transform_feedback(Gl::TRANSFORM_FEEDBACK, scratch.tf.as_ref());
                 gl.bind_buffer_base(Gl::TRANSFORM_FEEDBACK_BUFFER, 0, Some(buffer));
-                gl.use_program(Some(&feedback));
-                gl.uniform1i(gl.get_uniform_location(&feedback, "lo").as_ref(), 0);
-                gl.uniform1i(gl.get_uniform_location(&feedback, "hi").as_ref(), 1);
+                gl.use_program(Some(&feedback.raw));
+                gl.uniform1i(Some(&feedback.lo), 0);
+                gl.uniform1i(Some(&feedback.hi), 1);
+                gl.uniform1ui(Some(&feedback.width), extent[0]);
+                gl.uniform1ui(Some(&feedback.words_per_row), words_per_row);
                 gl.enable(Gl::RASTERIZER_DISCARD);
                 gl.begin_transform_feedback(Gl::POINTS);
                 gl.draw_arrays(Gl::POINTS, 0, words_i32);
                 gl.end_transform_feedback();
-                check_stage(gl, "transform feedback")?;
                 gl.bind_transform_feedback(Gl::TRANSFORM_FEEDBACK, None);
                 gl.bind_buffer(Gl::COPY_READ_BUFFER, Some(buffer));
                 gl.bind_buffer(Gl::COPY_WRITE_BUFFER, Some(&destination.raw));
@@ -501,7 +525,6 @@ impl BrowserEncoder {
                         extent[0] as f64,
                     );
                 }
-                check_stage(gl, "output copy")?;
                 drop(state);
                 Ok(())
             })();

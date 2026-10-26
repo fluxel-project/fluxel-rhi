@@ -71,25 +71,17 @@ enum GlCompletionEvidence {
 impl GlCompletion {
     /// Captures completion evidence after direct commands have been issued.
     ///
-    /// The fence precedes `flush`: GL orders all earlier commands before the
-    /// fence, and flush makes both visible to the driver without waiting for
-    /// them. This is synchronous issuing work, not host completion waiting.
+    /// GL orders all earlier commands before the fence. Creating a checkpoint
+    /// does not flush: presentation submits the frame, or the first explicit
+    /// observation submits pending work when no presentation has done so.
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
     pub(crate) fn after_issued(state: Rc<GlDeviceState>) -> Result<Self> {
-        retire_orphans(&state);
+        // Orphan collection polls fences and may publish pending commands.
+        // Keep it at explicit observation, never checkpoint creation, so
+        // dropping an older point cannot turn later checkpoints into flushes.
         let lease = state
             .with_native("create GL completion fence", |provider| {
-                let lease = provider.create_fence()?;
-                if let Err(error) = provider.flush() {
-                    // A flush diagnostic occurs after fence creation and may
-                    // follow commands the driver accepted. Do not delete this
-                    // unobservable fence or treat the issue as a clean
-                    // rejection: the provider retains its lease until the
-                    // whole context is quarantined or destroyed. Core receives
-                    // the error and must preserve the issued-prefix boundary.
-                    return Err(error);
-                }
-                Ok(lease)
+                provider.create_fence()
             })
             .map_err(native_error)?;
         Ok(Self {
@@ -307,9 +299,9 @@ impl CompletionBackend for Gl {
         }
         #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
         {
-            // BrowserOwner creates an actual GLsync after previously issued
-            // calls, flushes it, and reports DeviceLost on either failure.
-            // Waiting then reuses its cancellable owner-thread fence future.
+            // BrowserOwner inserts a GLsync after previously issued calls.
+            // Its cancellable owner-thread wait publishes pending commands
+            // on first observation, then polls without repeated submission.
             return match device.0.owner.completion_after_current_commands() {
                 Ok(completion) => GlWaitFuture::browser(completion.wait()),
                 Err(error) => GlWaitFuture::ready(Err(error)),

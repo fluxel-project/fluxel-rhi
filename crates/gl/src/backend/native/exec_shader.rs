@@ -193,6 +193,9 @@ impl GlShaderApi for NativeGlProvider {
                 descriptor: descriptor.clone(),
                 reflection: reflection.clone(),
                 first_instance_uniform,
+                uniform_locations: Default::default(),
+                dummy_storage_block_sizes: Default::default(),
+                dummy_uniform_block_sizes: Default::default(),
                 first_instance_value: None,
             },
         );

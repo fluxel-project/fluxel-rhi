@@ -114,13 +114,19 @@ pub(crate) trait GlSyncApi: GlFamilyApi {
     fn create_fence(&mut self) -> Result<GlFenceLease, GlError>;
     /// Revokes the lease and destroys its fence; later use must fail locally.
     fn destroy_fence(&mut self, fence: GlFenceLease) -> Result<(), GlError>;
+    /// Observes without waiting for GPU completion. If a fence has not yet
+    /// been submitted by presentation, its first observation may publish the
+    /// pending stream to guarantee headless progress. Repeated observations
+    /// without newly pending work must not repeat that publication.
     fn poll_fence(&mut self, fence: GlFenceLease) -> Result<GlFenceStatus, GlError>;
     fn wait_fence(
         &mut self,
         fence: GlFenceLease,
         bound: GlWaitBound,
     ) -> Result<GlFenceStatus, GlError>;
-    /// Flush submits work but never implies fence completion.
+    /// Explicit submission boundary; never implies fence completion. Ordinary
+    /// checkpoint creation must not call this for every checkpoint: frame
+    /// presentation or on-demand observation coalesces pending submission.
     fn flush(&mut self) -> Result<(), GlError>;
     fn memory_barrier(&mut self, barriers: GlMemoryBarrier) -> Result<(), GlError>;
     fn memory_barrier_by_region(&mut self, barriers: GlMemoryBarrier) -> Result<(), GlError>;

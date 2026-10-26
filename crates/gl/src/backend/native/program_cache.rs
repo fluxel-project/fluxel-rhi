@@ -120,6 +120,7 @@ impl NativeGlProvider {
                     let reflected = self.reflect_and_assign(OP, raw, descriptor);
                     self.gl.use_program(None);
                     self.current_program = None;
+                    self.current_native_program = None;
                     self.context_state.program_unbound();
                     let driver = self.binary_driver_error(OP);
                     let reflection = match driver.and(reflected) {
@@ -154,6 +155,9 @@ impl NativeGlProvider {
                             descriptor: descriptor.clone(),
                             reflection: reflection.clone(),
                             first_instance_uniform,
+                            uniform_locations: Default::default(),
+                            dummy_storage_block_sizes: Default::default(),
+                            dummy_uniform_block_sizes: Default::default(),
                             first_instance_value: None,
                         },
                     );

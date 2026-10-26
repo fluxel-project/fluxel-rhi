@@ -4,7 +4,7 @@ use super::provider::NativeGlProvider;
 use crate::backend::api::{GlError, GlFamilyApi as _, GlShaderSource, GlShaderStage};
 
 pub(super) fn compile_shader_source(
-    provider: &NativeGlProvider,
+    provider: &mut NativeGlProvider,
     op: &'static str,
     source: &GlShaderSource,
 ) -> Result<glow::NativeShader, GlError> {
@@ -95,8 +95,7 @@ pub(super) fn compile_shader_source(
     let mut text = source.text.clone();
     let directive = "#extension GL_EXT_texture_cube_map_array : require\n";
     if text.contains(directive) {
-        if let crate::backend::api::GlFamilyProfile::Embedded { major, minor } =
-            provider.profile()
+        if let crate::backend::api::GlFamilyProfile::Embedded { major, minor } = provider.profile()
         {
             let names = provider.discovery.extensions();
             let has_ext = names

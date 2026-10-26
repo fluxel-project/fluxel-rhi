@@ -6,33 +6,10 @@
 //! complete rectangle.  It is not a CPU readback and does not retain work.
 
 use fluxel_rhi_core::api::{Error, Result};
-use wasm_bindgen::JsCast;
 use web_sys::{WebGl2RenderingContext as Gl, WebGlBuffer, WebGlTexture};
 
 use super::super::super::api::GlFormat;
 use super::super::owner::{BrowserBuffer, BrowserEncoder, BrowserTexture};
-
-fn object<T: JsCast>(gl: &Gl, parameter: u32) -> Result<Option<T>> {
-    let value = gl
-        .get_parameter(parameter)
-        .map_err(|_| Error::InvalidState)?;
-    if value.is_null() {
-        Ok(None)
-    } else {
-        value.dyn_into().map(Some).map_err(|_| Error::InvalidState)
-    }
-}
-
-fn pixel_store(gl: &Gl, parameter: u32) -> Result<i32> {
-    let value = gl
-        .get_parameter(parameter)
-        .map_err(|_| Error::InvalidState)?;
-    value
-        .as_f64()
-        .map(|value| value as i32)
-        .or_else(|| value.as_bool().map(i32::from))
-        .ok_or(Error::InvalidState)
-}
 
 /// Borrowed WebGL state touched by the private PBO transfer.
 ///
@@ -56,21 +33,24 @@ struct State<'a> {
 }
 
 impl<'a> State<'a> {
-    fn capture(gl: &'a Gl, texture_target: u32, texture_binding: u32) -> Result<Self> {
+    fn capture(gl: &'a Gl, texture_target: u32, _texture_binding: u32) -> Result<Self> {
+        // This backend exclusively owns the context. Reset this private
+        // transfer domain to WebGL defaults instead of synchronously reading
+        // state on every depth upload.
         Ok(Self {
             gl,
-            texture: object(gl, texture_binding)?,
+            texture: None,
             texture_target,
-            unpack: object(gl, Gl::PIXEL_UNPACK_BUFFER_BINDING)?,
-            copy_read: object(gl, Gl::COPY_READ_BUFFER_BINDING)?,
-            copy_write: object(gl, Gl::COPY_WRITE_BUFFER_BINDING)?,
-            alignment: pixel_store(gl, Gl::UNPACK_ALIGNMENT)?,
-            row_length: pixel_store(gl, Gl::UNPACK_ROW_LENGTH)?,
-            image_height: pixel_store(gl, Gl::UNPACK_IMAGE_HEIGHT)?,
-            skip_pixels: pixel_store(gl, Gl::UNPACK_SKIP_PIXELS)?,
-            skip_rows: pixel_store(gl, Gl::UNPACK_SKIP_ROWS)?,
-            skip_images: pixel_store(gl, Gl::UNPACK_SKIP_IMAGES)?,
-            flip_y: pixel_store(gl, Gl::UNPACK_FLIP_Y_WEBGL)?,
+            unpack: None,
+            copy_read: None,
+            copy_write: None,
+            alignment: 4,
+            row_length: 0,
+            image_height: 0,
+            skip_pixels: 0,
+            skip_rows: 0,
+            skip_images: 0,
+            flip_y: 0,
         })
     }
 }

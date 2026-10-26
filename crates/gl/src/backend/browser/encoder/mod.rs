@@ -336,6 +336,7 @@ impl BrowserEncoder {
             }
             raw.disable(Gl::SCISSOR_TEST);
         })?;
+        self.raster_scissor = None;
         self.owner.state.borrow_mut().raster_extent = Some(extent);
         Ok(())
     }
@@ -421,7 +422,14 @@ impl BrowserEncoder {
                 rect.width as i32,
                 rect.height as i32,
             );
-        })
+        })?;
+        self.raster_scissor = Some([
+            rect.x as i32,
+            y as i32,
+            rect.width as i32,
+            rect.height as i32,
+        ]);
+        Ok(())
     }
 
     /// Directly issues a non-indexed instanced draw; the caller has already
@@ -551,7 +559,34 @@ impl BrowserEncoder {
     /// retired, including the abort path used when Core discards `finish`.
     pub(crate) fn observe_raster_boundary(&mut self, operation: &'static str) -> Result<()> {
         self.require_raster()?;
-        self.with_context(operation, |_| {})
+        // WebGL errors are observed only when this scope is published: the
+        // surface handoff, or an explicit headless completion progress poll.
+        // A pass boundary may occur many times in one frame, so it is not an
+        // acceptable `getError` boundary.
+        let _ = operation;
+        Ok(())
+    }
+
+    /// Preserves WebGL's established immediate error contract for a direct
+    /// ESSL dual-source draw. WebGL2 cannot reflect linked fragment outputs,
+    /// so this narrow path is the only normal-draw exception to deferred error
+    /// observation. A WebGL error is context-global: fail every completion
+    /// before returning, and wake only after releasing the owner borrow.
+    pub(crate) fn observe_direct_essl_draw(&mut self) -> Result<()> {
+        self.require_raster()?;
+        let mut state = self.owner.state.borrow_mut();
+        state.ensure_encoder(self.epoch)?;
+        state.ensure_active()?;
+        if state.context.raw.get_error() == Gl::NO_ERROR {
+            return Ok(());
+        }
+        let error = Error::Backend("WebGL2 dual-source draw failed".into());
+        let wakers = state.mark_failed(error.clone());
+        drop(state);
+        for waker in wakers {
+            waker.wake();
+        }
+        Err(error)
     }
 
     /// Releases a normally closed immediate scope without inserting hidden
@@ -567,6 +602,9 @@ impl BrowserEncoder {
             return Err(Error::InvalidState);
         }
         state.active_encoder = None;
+        if self.issued {
+            state.pending_flush = true;
+        }
         self.closed = true;
         Ok(())
     }
@@ -620,14 +658,86 @@ impl BrowserEncoder {
             state.mark_lost();
             return Err(Error::DeviceLost);
         }
-        let error = state.context.raw.get_error();
-        if error == Gl::NO_ERROR {
-            Ok(())
-        } else {
-            Err(Error::Backend(format!(
-                "WebGL2 {operation} failed with GL error {error}"
-            )))
+        // `getError` can synchronously flush browser/driver work. The encoder
+        // observes the sticky result once at its pass or scope boundary.
+        let _ = operation;
+        Ok(())
+    }
+
+    /// Runs a surface conversion while the owner state is already borrowed by
+    /// this encoder. This keeps cached helper lookup/allocation out of a
+    /// nested `RefCell` borrow at the publication boundary.
+    pub(super) fn with_surface_color_context(
+        &mut self,
+        operation: &'static str,
+        issue: impl FnOnce(&Gl, &mut super::owner::SurfaceColorCache),
+    ) -> Result<()> {
+        let mut state = self.owner.state.borrow_mut();
+        state.ensure_encoder(self.epoch)?;
+        state.ensure_active()?;
+        let super::owner::BrowserOwnerState {
+            context,
+            surface_color_cache,
+            ..
+        } = &mut *state;
+        issue(&context.raw, surface_color_cache);
+        self.issued = true;
+        if state.context.raw.is_context_lost() {
+            state.mark_lost();
+            return Err(Error::DeviceLost);
         }
+        let _ = operation;
+        Ok(())
+    }
+
+    /// Gives a stencil transfer access to owner-scoped helper executables
+    /// without re-entering the encoder's `RefCell` borrow.
+    pub(super) fn with_stencil_transfer_context(
+        &mut self,
+        operation: &'static str,
+        issue: impl FnOnce(&Gl, &mut super::owner::StencilTransferCache),
+    ) -> Result<()> {
+        let mut state = self.owner.state.borrow_mut();
+        state.ensure_encoder(self.epoch)?;
+        state.ensure_active()?;
+        let super::owner::BrowserOwnerState {
+            context,
+            stencil_transfer_cache,
+            ..
+        } = &mut *state;
+        issue(&context.raw, stencil_transfer_cache);
+        self.issued = true;
+        if state.context.raw.is_context_lost() {
+            state.mark_lost();
+            return Err(Error::DeviceLost);
+        }
+        let _ = operation;
+        Ok(())
+    }
+
+    pub(super) fn with_normalized_readback_context(
+        &mut self,
+        operation: &'static str,
+        issue: impl FnOnce(&Gl, &mut super::owner::NormalizedReadbackCache),
+    ) -> Result<()> {
+        let mut state = self.owner.state.borrow_mut();
+        state.ensure_encoder(self.epoch)?;
+        state.ensure_active()?;
+        let highp_supported = state.normalized_readback_highp();
+        let super::owner::BrowserOwnerState {
+            context,
+            normalized_readback_cache,
+            ..
+        } = &mut *state;
+        normalized_readback_cache.highp_supported = highp_supported;
+        issue(&context.raw, normalized_readback_cache);
+        self.issued = true;
+        if state.context.raw.is_context_lost() {
+            state.mark_lost();
+            return Err(Error::DeviceLost);
+        }
+        let _ = operation;
+        Ok(())
     }
 
     /// Issues a direct draw while retaining the sticky driver error for the

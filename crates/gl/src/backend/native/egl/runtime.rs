@@ -454,7 +454,6 @@ impl EglGlesContext {
                 for _ in 0..draws {
                     gl.draw_arrays(glow::TRIANGLES, 0, 3);
                 }
-                gl.finish();
                 let colour = if read_colour {
                     let mut bytes = vec![0_u8; width as usize * height as usize * 4];
                     gl.read_pixels(

@@ -199,7 +199,7 @@ impl GlFramebufferApi for NativeGlProvider {
             .ok_or_else(|| Self::validation(OP, "framebuffer disappeared"))?;
         // SAFETY: current-context contract; liveness was checked first.
         unsafe { self.gl.delete_framebuffer(entry.raw) };
-        self.driver_error(OP)
+        self.defer_readonly_error(OP)
     }
 
     fn begin_render_pass(&mut self, descriptor: &GlRenderPassDescriptor) -> Result<(), GlError> {
@@ -439,11 +439,7 @@ impl GlFramebufferApi for NativeGlProvider {
                 }
             }
         }
-        if let Err(error) = self.driver_error(OP) {
-            // SAFETY: current-context contract.
-            unsafe { self.gl.bind_framebuffer(glow::FRAMEBUFFER, None) };
-            return Err(error);
-        }
+        self.defer_driver_error(OP)?;
         self.pass = Some(super::provider::ActivePass {
             target: descriptor.target,
             width: shape.0,
@@ -506,16 +502,13 @@ impl GlFramebufferApi for NativeGlProvider {
             } else {
                 self.gl
                     .invalidate_framebuffer(glow::FRAMEBUFFER, &invalidate);
-                self.driver_error(OP)
+                self.defer_driver_error(OP)
             };
             self.gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-            // This is the raster-pass observation boundary. In particular it
-            // observes a sticky error left by a direct draw, whose hot path
-            // intentionally does not issue `glGetError` per draw. Keep the
-            // first operation error, but always sample after restoring the
-            // framebuffer so cleanup failures are drained as well.
-            let boundary = self.driver_error(OP);
-            result.and(boundary)
+            // A raster pass is not a submission boundary: frames can contain
+            // many passes. Preserve diagnostics for presentation/fence
+            // publication rather than reading GL's sticky flag here.
+            result.and_then(|()| self.defer_driver_error(OP))
         }
     }
 
@@ -622,7 +615,7 @@ impl GlFramebufferApi for NativeGlProvider {
                 blit_mask_bits(masks),
                 blit_filter(filter),
             );
-            let result = self.driver_error(OP);
+            let result = self.defer_driver_error(OP);
             self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
             self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
             result
@@ -650,9 +643,7 @@ pub(super) fn supports_framebuffer_invalidate(
 ) -> bool {
     match profile {
         crate::backend::api::GlFamilyProfile::Embedded { .. } => true,
-        crate::backend::api::GlFamilyProfile::Desktop { major, minor } => {
-            major > 4 || minor >= 3
-        }
+        crate::backend::api::GlFamilyProfile::Desktop { major, minor } => major > 4 || minor >= 3,
         crate::backend::api::GlFamilyProfile::WebGl2 => true,
     }
 }

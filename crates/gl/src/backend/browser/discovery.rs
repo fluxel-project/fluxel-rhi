@@ -26,6 +26,9 @@ pub(crate) struct WebGl2BrowserDiscovery {
     pub(super) snapshot: GlDiscoverySnapshot,
     pub(super) owner_thread: OwnerThreadIdentity,
     pub(super) lifecycle: Cell<GlContextLifecycle>,
+    /// Captured once during discovery so normalized readback never needs a
+    /// synchronous precision query on its transfer path.
+    pub(super) normalized_readback_highp: bool,
     /// Linked ESSL programs created through shader reflection before the
     /// resulting native program is transferred into its BrowserOwner wrapper.
     pub(super) programs: BTreeMap<u32, BrowserProgram>,
@@ -138,7 +141,17 @@ impl WebGl2BrowserDiscovery {
         // Float and depth format facts are answered by real framebuffer
         // completeness probes on this exact context (audit P1-6); the probes
         // use scratch objects and leave no state behind.
-        let mut formats = super::format_map::webgl2_baseline_formats(&raw, &extensions)?;
+        let normalized_readback_highp = raw
+            .get_shader_precision_format(
+                WebGl2RenderingContext::VERTEX_SHADER,
+                WebGl2RenderingContext::HIGH_FLOAT,
+            )
+            .is_some_and(|value| value.precision() >= 23);
+        let mut formats = super::format_map::webgl2_baseline_formats(
+            &raw,
+            &extensions,
+            normalized_readback_highp,
+        )?;
         if commands.astc_hdr {
             super::format_map::record_astc_hdr_formats(&mut formats)?;
         }
@@ -200,6 +213,7 @@ impl WebGl2BrowserDiscovery {
             snapshot: builder.build(),
             owner_thread,
             lifecycle: Cell::new(GlContextLifecycle::Active),
+            normalized_readback_highp,
             programs: BTreeMap::new(),
             shaders: BTreeMap::new(),
             queries: BTreeMap::new(),

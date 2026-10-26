@@ -128,16 +128,10 @@ impl NativeGlProvider {
         Ok(bytes)
     }
 
-    fn mapping_driver_error(&self, operation: &'static str) -> Result<(), GlError> {
-        // SAFETY: every caller has established current-context ownership.
-        match unsafe { self.gl.get_error() } {
-            glow::NO_ERROR => Ok(()),
-            glow::CONTEXT_LOST => Err(GlError::ContextLost { operation }),
-            glow::OUT_OF_MEMORY => Err(GlError::OutOfMemory { operation }),
-            error => Err(GlError::Driver {
-                operation,
-                message: format!("GL error 0x{error:04x}"),
-            }),
-        }
+    fn mapping_driver_error(&mut self, operation: &'static str) -> Result<(), GlError> {
+        // Mapping is an explicit result boundary, but GL errors are context-wide.
+        // Preserve deferred command failures instead of consuming their evidence
+        // as a mapping-local error and later reporting a successful completion.
+        self.driver_error(operation)
     }
 }

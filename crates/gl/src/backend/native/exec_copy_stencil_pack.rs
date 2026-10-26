@@ -3,7 +3,154 @@ use super::super::provider::NativeGlProvider;
 use crate::backend::api::{GlCapability, GlError, GlFamilyApi as _, GlFamilyProfile};
 use glow::HasContext as _;
 
+/// Three context-owned compute programs for the fixed packed-stencil layouts.
+///
+/// The pixel count is a uniform, so a transfer's extent never causes shader
+/// compilation or linking.  The context profile is immutable for this cache;
+/// loss drops the names without issuing deletes, while normal device teardown
+/// deletes them through the current context.
+pub(crate) struct StencilPackPrograms {
+    plain: StencilPackProgram,
+    float_depth: StencilPackProgram,
+    depth_input: StencilPackProgram,
+}
+
+struct StencilPackProgram {
+    raw: glow::NativeProgram,
+    count: glow::NativeUniformLocation,
+}
+
+impl StencilPackPrograms {
+    unsafe fn create(gl: &glow::Context, profile: GlFamilyProfile) -> Result<Self, GlError> {
+        const OP: &str = "create stencil PBO packing programs";
+        let version = if matches!(profile, GlFamilyProfile::Embedded { .. }) {
+            "#version 310 es\nprecision highp int;\n"
+        } else {
+            "#version 430 core\n"
+        };
+        // SAFETY: the caller owns the current context. Each error branch below
+        // deletes every already-built private program before returning.
+        unsafe {
+            let plain = StencilPackProgram::compile(
+                gl,
+                version,
+                "uint v=(src[i/4u] >> ((i%4u)*8u)) & 255u; dst[i]=v;",
+                OP,
+            )?;
+            let float_depth = match StencilPackProgram::compile(
+                gl,
+                version,
+                "uint v=(src[i/4u] >> ((i%4u)*8u)) & 255u; dst[i*2u]=0u; dst[i*2u+1u]=v;",
+                OP,
+            ) {
+                Ok(program) => program,
+                Err(error) => {
+                    gl.delete_program(plain.raw);
+                    return Err(error);
+                }
+            };
+            let depth_input = match StencilPackProgram::compile(
+                gl,
+                version,
+                "uint v=src[i]; dst[i*2u]=v; dst[i*2u+1u]=0u;",
+                OP,
+            ) {
+                Ok(program) => program,
+                Err(error) => {
+                    gl.delete_program(plain.raw);
+                    gl.delete_program(float_depth.raw);
+                    return Err(error);
+                }
+            };
+            Ok(Self {
+                plain,
+                float_depth,
+                depth_input,
+            })
+        }
+    }
+
+    fn select(&self, float_depth: bool, depth_input: bool) -> &StencilPackProgram {
+        if depth_input {
+            &self.depth_input
+        } else if float_depth {
+            &self.float_depth
+        } else {
+            &self.plain
+        }
+    }
+
+    pub(crate) unsafe fn destroy(self, gl: &glow::Context) {
+        // SAFETY: normal teardown has made the exact owner context current.
+        unsafe {
+            gl.delete_program(self.plain.raw);
+            gl.delete_program(self.float_depth.raw);
+            gl.delete_program(self.depth_input.raw);
+        }
+    }
+}
+
+impl StencilPackProgram {
+    unsafe fn compile(
+        gl: &glow::Context,
+        version: &str,
+        body: &str,
+        operation: &'static str,
+    ) -> Result<Self, GlError> {
+        let source = format!(
+            "{version}layout(local_size_x=64) in; layout(std430,binding=0) readonly buffer S {{ uint src[]; }}; layout(std430,binding=1) writeonly buffer D {{ uint dst[]; }}; uniform uint u_count; void main() {{ uint i=gl_GlobalInvocationID.x; if(i>=u_count)return; {body} }}"
+        );
+        // SAFETY: current-context ownership is the caller's contract; every
+        // partially created private object is deleted on its error path.
+        let shader = unsafe { gl.create_shader(glow::COMPUTE_SHADER) }
+            .map_err(|_| GlError::OutOfMemory { operation })?;
+        unsafe {
+            gl.shader_source(shader, &source);
+            gl.compile_shader(shader);
+        }
+        if !unsafe { gl.get_shader_compile_status(shader) } {
+            let message = unsafe { gl.get_shader_info_log(shader) };
+            unsafe { gl.delete_shader(shader) };
+            return Err(GlError::Driver { operation, message });
+        }
+        let raw = match unsafe { gl.create_program() } {
+            Ok(raw) => raw,
+            Err(_) => {
+                unsafe { gl.delete_shader(shader) };
+                return Err(GlError::OutOfMemory { operation });
+            }
+        };
+        unsafe {
+            gl.attach_shader(raw, shader);
+            gl.link_program(raw);
+            gl.delete_shader(shader);
+        }
+        if !unsafe { gl.get_program_link_status(raw) } {
+            let message = unsafe { gl.get_program_info_log(raw) };
+            unsafe { gl.delete_program(raw) };
+            return Err(GlError::Driver { operation, message });
+        }
+        let Some(count) = (unsafe { gl.get_uniform_location(raw, "u_count") }) else {
+            unsafe { gl.delete_program(raw) };
+            return Err(GlError::Driver {
+                operation,
+                message: "linked stencil pack program omitted u_count".into(),
+            });
+        };
+        Ok(Self { raw, count })
+    }
+}
+
 impl NativeGlProvider {
+    /// # Safety
+    /// The provider's exact context is current during normal device teardown.
+    pub(crate) unsafe fn clear_stencil_pack_programs(&mut self) {
+        if let Some(programs) = self.stencil_pack_programs.take() {
+            // SAFETY: caller holds the owning context current.
+            unsafe { programs.destroy(&self.gl) };
+        }
+    }
+
     pub(super) fn stencil_pack_preflight(
         &self,
         op: &'static str,
@@ -56,121 +203,59 @@ impl NativeGlProvider {
         depth_input: bool,
     ) -> Result<(), GlError> {
         let count = u32::try_from(count).map_err(|_| Self::validation(op, "pixel count"))?;
-        let body = if depth_input {
-            "uint v=src[i]; dst[i*2u]=v; dst[i*2u+1u]=0u;"
-        } else if float_depth {
-            "uint v=(src[i/4u] >> ((i%4u)*8u)) & 255u; dst[i*2u]=0u; dst[i*2u+1u]=v;"
-        } else {
-            "uint v=(src[i/4u] >> ((i%4u)*8u)) & 255u; dst[i]=v;"
+        if self.stencil_pack_programs.is_none() {
+            // SAFETY: this method owns the current context, and the cache is
+            // retained in this provider until normal teardown or context loss.
+            self.stencil_pack_programs = Some(unsafe {
+                StencilPackPrograms::create(&self.gl, self.discovery.context().profile())?
+            });
+        }
+        let (program, count_location) = {
+            let variant = self
+                .stencil_pack_programs
+                .as_ref()
+                .expect("stencil pack cache was installed")
+                .select(float_depth, depth_input);
+            (variant.raw, variant.count.clone())
         };
-        let version = if matches!(
-            self.discovery.context().profile(),
-            GlFamilyProfile::Embedded { .. }
-        ) {
-            "#version 310 es\nprecision highp int;\n"
-        } else {
-            "#version 430 core\n"
-        };
-        let code = format!(
-            "{version}layout(local_size_x=64) in; layout(std430,binding=0) readonly buffer S {{ uint src[]; }}; layout(std430,binding=1) writeonly buffer D {{ uint dst[]; }}; void main() {{ uint i=gl_GlobalInvocationID.x; if(i>={count}u)return; {body} }}"
-        );
-        // SAFETY: temporary shader/program and SSBOs belong to current context;
+        // SAFETY: the cached program and SSBOs belong to this current context;
         // prior indexed and generic bindings and program are restored.
         unsafe {
-            let shader = self
-                .gl
-                .create_shader(glow::COMPUTE_SHADER)
-                .map_err(|_| GlError::OutOfMemory { operation: op })?;
-            self.gl.shader_source(shader, &code);
-            self.gl.compile_shader(shader);
-            if !self.gl.get_shader_compile_status(shader) {
-                let message = self.gl.get_shader_info_log(shader);
-                self.gl.delete_shader(shader);
-                return Err(GlError::Driver {
-                    operation: op,
-                    message,
-                });
-            }
-            let program = match self.gl.create_program() {
-                Ok(v) => v,
-                Err(_) => {
-                    self.gl.delete_shader(shader);
-                    return Err(GlError::OutOfMemory { operation: op });
-                }
-            };
-            self.gl.attach_shader(program, shader);
-            self.gl.link_program(program);
-            self.gl.delete_shader(shader);
-            if !self.gl.get_program_link_status(program) {
-                let message = self.gl.get_program_info_log(program);
-                self.gl.delete_program(program);
-                return Err(GlError::Driver {
-                    operation: op,
-                    message,
-                });
-            }
-            let handle = |raw: i32| std::num::NonZeroU32::new(raw as u32).map(glow::NativeBuffer);
-            let generic = handle(
-                self.gl
-                    .get_parameter_i32(glow::SHADER_STORAGE_BUFFER_BINDING),
-            );
-            let old = [0, 1].map(|i| {
-                (
-                    handle(
-                        self.gl
-                            .get_parameter_indexed_i32(glow::SHADER_STORAGE_BUFFER_BINDING, i),
-                    ),
-                    self.gl
-                        .get_parameter_indexed_i64(glow::SHADER_STORAGE_BUFFER_START, i),
-                    self.gl
-                        .get_parameter_indexed_i64(glow::SHADER_STORAGE_BUFFER_SIZE, i),
-                )
-            });
-            if old.iter().any(|(buffer, offset, size)| {
-                buffer.is_some()
-                    && (*offset < 0
-                        || *size < 0
-                        || *offset > i32::MAX as i64
-                        || *size > i32::MAX as i64)
-            }) {
-                self.gl.delete_program(program);
-                return Err(GlError::Unsupported {
-                    operation: op,
-                    reason: "existing SSBO binding cannot be restored by glow",
-                });
-            }
-            let previous =
-                std::num::NonZeroU32::new(self.gl.get_parameter_i32(glow::CURRENT_PROGRAM) as u32)
-                    .map(glow::NativeProgram);
+            let generic = self.generic_storage_buffer;
+            let old = [0, 1].map(|i| self.storage_bindings.get(&i).copied());
+            let previous = self.current_native_program;
             self.gl
                 .bind_buffer_base(glow::SHADER_STORAGE_BUFFER, 0, Some(input));
             self.gl
                 .bind_buffer_base(glow::SHADER_STORAGE_BUFFER, 1, Some(output));
             self.gl.use_program(Some(program));
+            self.gl.uniform_1_u32(Some(&count_location), count);
             self.gl.dispatch_compute(count.div_ceil(64), 1, 1);
             self.gl
                 .memory_barrier(glow::PIXEL_BUFFER_BARRIER_BIT | glow::SHADER_STORAGE_BARRIER_BIT);
-            for (i, (buffer, offset, size)) in old.into_iter().enumerate() {
-                if buffer.is_some() && size > 0 {
+            for (i, binding) in old.into_iter().enumerate() {
+                if let Some(binding) =
+                    binding.filter(|binding| binding.buffer.is_some() && binding.size > 0)
+                {
                     self.bind_buffer_range_wide(
                         glow::SHADER_STORAGE_BUFFER,
                         i as u32,
-                        buffer,
-                        u64::try_from(offset)
-                            .map_err(|_| Self::validation(op, "saved SSBO offset is negative"))?,
-                        u64::try_from(size)
-                            .map_err(|_| Self::validation(op, "saved SSBO size is negative"))?,
+                        binding.buffer,
+                        binding.offset,
+                        binding.size,
                         op,
                     )?;
                 } else {
-                    self.gl
-                        .bind_buffer_base(glow::SHADER_STORAGE_BUFFER, i as u32, buffer);
+                    self.gl.bind_buffer_base(
+                        glow::SHADER_STORAGE_BUFFER,
+                        i as u32,
+                        binding.and_then(|binding| binding.buffer),
+                    );
                 }
             }
             self.gl.bind_buffer(glow::SHADER_STORAGE_BUFFER, generic);
             self.gl.use_program(previous);
-            self.gl.delete_program(program);
-            self.driver_error(op)
+            self.defer_driver_error(op)
         }
     }
 }

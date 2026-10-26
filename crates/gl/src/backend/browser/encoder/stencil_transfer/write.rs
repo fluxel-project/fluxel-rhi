@@ -7,66 +7,18 @@
 //! while leaving the packed depth plane untouched.
 
 use fluxel_rhi_core::api::{Error, Result};
-use js_sys::{Array, Int32Array, Uint8Array};
-use wasm_bindgen::JsCast;
+use js_sys::{Array, Uint8Array};
 use web_sys::{
     WebGl2RenderingContext as Gl, WebGlBuffer, WebGlFramebuffer, WebGlProgram, WebGlRenderbuffer,
     WebGlSampler, WebGlShader, WebGlTexture, WebGlTransformFeedback, WebGlVertexArrayObject,
 };
 
-use super::super::super::owner::{BrowserBuffer, BrowserEncoder, BrowserTexture};
+use super::super::super::owner::{
+    BrowserBuffer, BrowserEncoder, BrowserTexture, StencilTransferCache, StencilWriteProgram,
+};
 use crate::backend::api::{GlFormat, GlTextureDimension, GlTextureUsage};
 
 const RED_INTEGER: u32 = 0x8D94;
-const STENCIL_BACK_FAIL: u32 = 0x8801;
-const STENCIL_BACK_PASS_DEPTH_FAIL: u32 = 0x8802;
-const STENCIL_BACK_PASS_DEPTH_PASS: u32 = 0x8803;
-const STENCIL_BACK_VALUE_MASK: u32 = 0x8CA4;
-const STENCIL_BACK_WRITEMASK: u32 = 0x8CA5;
-
-fn object<T: JsCast>(gl: &Gl, parameter: u32) -> Result<Option<T>> {
-    let value = gl
-        .get_parameter(parameter)
-        .map_err(|_| Error::InvalidState)?;
-    if value.is_null() {
-        Ok(None)
-    } else {
-        value.dyn_into().map(Some).map_err(|_| Error::InvalidState)
-    }
-}
-
-fn integer(gl: &Gl, parameter: u32) -> Result<i32> {
-    gl.get_parameter(parameter)
-        .map_err(|_| Error::InvalidState)?
-        .as_f64()
-        .map(|value| value as i32)
-        .ok_or(Error::InvalidState)
-}
-
-fn ints(gl: &Gl, parameter: u32) -> Result<[i32; 4]> {
-    let values = Int32Array::new(
-        &gl.get_parameter(parameter)
-            .map_err(|_| Error::InvalidState)?,
-    )
-    .to_vec();
-    values.try_into().map_err(|_| Error::InvalidState)
-}
-
-fn bools(gl: &Gl, parameter: u32) -> Result<[bool; 4]> {
-    let value = gl
-        .get_parameter(parameter)
-        .map_err(|_| Error::InvalidState)?;
-    let values = Array::from(&value);
-    if values.length() != 4 {
-        return Err(Error::InvalidState);
-    }
-    Ok([
-        values.get(0).as_bool().ok_or(Error::InvalidState)?,
-        values.get(1).as_bool().ok_or(Error::InvalidState)?,
-        values.get(2).as_bool().ok_or(Error::InvalidState)?,
-        values.get(3).as_bool().ok_or(Error::InvalidState)?,
-    ])
-}
 
 #[derive(Clone, Copy)]
 struct Face {
@@ -80,38 +32,6 @@ struct Face {
 }
 
 impl Face {
-    fn read(gl: &Gl, back: bool) -> Result<Self> {
-        let (func, reference, value_mask, write_mask, fail, depth_fail, pass) = if back {
-            (
-                Gl::STENCIL_BACK_FUNC,
-                Gl::STENCIL_BACK_REF,
-                STENCIL_BACK_VALUE_MASK,
-                STENCIL_BACK_WRITEMASK,
-                STENCIL_BACK_FAIL,
-                STENCIL_BACK_PASS_DEPTH_FAIL,
-                STENCIL_BACK_PASS_DEPTH_PASS,
-            )
-        } else {
-            (
-                Gl::STENCIL_FUNC,
-                Gl::STENCIL_REF,
-                Gl::STENCIL_VALUE_MASK,
-                Gl::STENCIL_WRITEMASK,
-                Gl::STENCIL_FAIL,
-                Gl::STENCIL_PASS_DEPTH_FAIL,
-                Gl::STENCIL_PASS_DEPTH_PASS,
-            )
-        };
-        Ok(Self {
-            func: integer(gl, func)?,
-            reference: integer(gl, reference)?,
-            value_mask: integer(gl, value_mask)? as u32,
-            write_mask: integer(gl, write_mask)? as u32,
-            fail: integer(gl, fail)?,
-            depth_fail: integer(gl, depth_fail)?,
-            pass: integer(gl, pass)?,
-        })
-    }
     fn restore(self, gl: &Gl, face: u32) {
         gl.stencil_func_separate(face, self.func as u32, self.reference, self.value_mask);
         gl.stencil_mask_separate(face, self.write_mask);
@@ -173,77 +93,59 @@ pub(super) struct State<'a> {
 
 impl<'a> State<'a> {
     pub(super) fn capture(gl: &'a Gl) -> Result<Self> {
-        let feedback_active = gl
-            .get_parameter(Gl::TRANSFORM_FEEDBACK_ACTIVE)
-            .map_err(|_| Error::InvalidState)?
-            .as_bool()
-            == Some(true);
-        if feedback_active {
-            return Err(Error::InvalidState);
-        }
-        let active_texture = integer(gl, Gl::ACTIVE_TEXTURE)? as u32;
-        let mut state = Self {
+        // RHI exclusively owns this WebGL context. The private stencil pass
+        // leaves a fixed neutral state; querying the full draw state here
+        // would synchronously round-trip on every stencil upload.
+        let neutral_face = Face {
+            func: Gl::ALWAYS as i32,
+            reference: 0,
+            value_mask: u32::MAX,
+            write_mask: u32::MAX,
+            fail: Gl::KEEP as i32,
+            depth_fail: Gl::KEEP as i32,
+            pass: Gl::KEEP as i32,
+        };
+        Ok(Self {
             gl,
-            draw: object(gl, Gl::DRAW_FRAMEBUFFER_BINDING)?,
-            read: object(gl, Gl::READ_FRAMEBUFFER_BINDING)?,
-            program: object(gl, Gl::CURRENT_PROGRAM)?,
-            vao: object(gl, Gl::VERTEX_ARRAY_BINDING)?,
-            renderbuffer: object(gl, Gl::RENDERBUFFER_BINDING)?,
-            unpack: object(gl, Gl::PIXEL_UNPACK_BUFFER_BINDING)?,
-            copy_read: object(gl, Gl::COPY_READ_BUFFER_BINDING)?,
-            copy_write: object(gl, Gl::COPY_WRITE_BUFFER_BINDING)?,
-            feedback_buffer: object(gl, Gl::TRANSFORM_FEEDBACK_BUFFER_BINDING)?,
-            unpack_alignment: integer(gl, Gl::UNPACK_ALIGNMENT)?,
-            unpack_row_length: integer(gl, Gl::UNPACK_ROW_LENGTH)?,
-            unpack_image_height: integer(gl, Gl::UNPACK_IMAGE_HEIGHT)?,
-            unpack_skip_pixels: integer(gl, Gl::UNPACK_SKIP_PIXELS)?,
-            unpack_skip_rows: integer(gl, Gl::UNPACK_SKIP_ROWS)?,
-            unpack_skip_images: integer(gl, Gl::UNPACK_SKIP_IMAGES)?,
-            unpack_flip_y: gl
-                .get_parameter(Gl::UNPACK_FLIP_Y_WEBGL)
-                .map_err(|_| Error::InvalidState)?
-                .as_bool()
-                .ok_or(Error::InvalidState)?,
-            feedback: object(gl, Gl::TRANSFORM_FEEDBACK_BINDING)?,
-            feedback_active,
-            active_texture,
+            draw: None,
+            read: None,
+            program: None,
+            vao: None,
+            renderbuffer: None,
+            unpack: None,
+            copy_read: None,
+            copy_write: None,
+            feedback_buffer: None,
+            unpack_alignment: 4,
+            unpack_row_length: 0,
+            unpack_image_height: 0,
+            unpack_skip_pixels: 0,
+            unpack_skip_rows: 0,
+            unpack_skip_images: 0,
+            unpack_flip_y: false,
+            feedback: None,
+            feedback_active: false,
+            active_texture: Gl::TEXTURE0,
             unit0_texture: None,
             unit0_sampler: None,
             unit1_texture: None,
             unit1_sampler: None,
-            viewport: ints(gl, Gl::VIEWPORT)?,
-            scissor_box: ints(gl, Gl::SCISSOR_BOX)?,
-            scissor: gl.is_enabled(Gl::SCISSOR_TEST),
-            depth: gl.is_enabled(Gl::DEPTH_TEST),
-            depth_write: gl
-                .get_parameter(Gl::DEPTH_WRITEMASK)
-                .map_err(|_| Error::InvalidState)?
-                .as_bool()
-                .ok_or(Error::InvalidState)?,
-            stencil: gl.is_enabled(Gl::STENCIL_TEST),
-            blend: gl.is_enabled(Gl::BLEND),
-            discard: gl.is_enabled(Gl::RASTERIZER_DISCARD),
-            dither: gl.is_enabled(Gl::DITHER),
-            cull: gl.is_enabled(Gl::CULL_FACE),
-            sample_coverage: gl.is_enabled(Gl::SAMPLE_COVERAGE),
-            color_mask: bools(gl, Gl::COLOR_WRITEMASK)?,
-            front: Face::read(gl, false)?,
-            back: Face::read(gl, true)?,
-            captured: false,
-        };
-        gl.active_texture(Gl::TEXTURE0);
-        let texture = object(gl, Gl::TEXTURE_BINDING_2D);
-        let sampler = object(gl, Gl::SAMPLER_BINDING);
-        gl.active_texture(Gl::TEXTURE1);
-        let texture1 = object(gl, Gl::TEXTURE_BINDING_2D);
-        let sampler1 = object(gl, Gl::SAMPLER_BINDING);
-        gl.active_texture(active_texture);
-        state.unit0_texture = texture?;
-        state.unit0_sampler = sampler?;
-        state.unit1_texture = texture1?;
-        state.unit1_sampler = sampler1?;
-        state.captured = true;
-        Ok(state)
+            viewport: [0; 4],
+            scissor_box: [0; 4],
+            scissor: false,
+            depth: false,
+            depth_write: true,
+            stencil: false,
+            blend: false,
+            discard: false,
+            dither: true,
+            cull: false,
+            sample_coverage: false,
+            color_mask: [true; 4],
+            front: neutral_face,
+            back: neutral_face,
+            captured: true,
+        })
     }
 }
 
@@ -323,54 +225,8 @@ struct Scratch<'a> {
     source: Option<WebGlTexture>,
     staging: Option<WebGlBuffer>,
     framebuffer: Option<WebGlFramebuffer>,
-    program: Option<WebGlProgram>,
     vao: Option<WebGlVertexArrayObject>,
     sampler: Option<WebGlSampler>,
-    shaders: Vec<WebGlShader>,
-}
-
-impl Scratch<'_> {
-    fn shader(&mut self, stage: u32, source: &str) -> Result<WebGlShader> {
-        let gl = self.gl;
-        let shader = gl.create_shader(stage).ok_or(Error::OutOfMemory)?;
-        gl.shader_source(&shader, source);
-        gl.compile_shader(&shader);
-        if gl
-            .get_shader_parameter(&shader, Gl::COMPILE_STATUS)
-            .as_bool()
-            != Some(true)
-        {
-            gl.delete_shader(Some(&shader));
-            return Err(Error::Backend(format!(
-                "WebGL stencil transfer shader: {}",
-                gl.get_shader_info_log(&shader).unwrap_or_default()
-            )));
-        }
-        self.shaders.push(shader.clone());
-        Ok(shader)
-    }
-    fn program(&mut self) -> Result<&WebGlProgram> {
-        let gl = self.gl;
-        let vertex = self.shader(Gl::VERTEX_SHADER, "#version 300 es\nvoid main(){vec2 p[3]=vec2[3](vec2(-1.,-1.),vec2(3.,-1.),vec2(-1.,3.));gl_Position=vec4(p[gl_VertexID],0.,1.);}")?;
-        let fragment = self.shader(Gl::FRAGMENT_SHADER, "#version 300 es\nprecision highp usampler2D;uniform usampler2D bytes_in;uniform ivec2 origin;uniform int bit_index;void main(){ivec2 p=ivec2(gl_FragCoord.xy)-origin;uint v=texelFetch(bytes_in,p,0).r;if((v&(1u<<uint(bit_index)))==0u)discard;}")?;
-        let program = gl.create_program().ok_or(Error::OutOfMemory)?;
-        gl.attach_shader(&program, &vertex);
-        gl.attach_shader(&program, &fragment);
-        gl.link_program(&program);
-        if gl
-            .get_program_parameter(&program, Gl::LINK_STATUS)
-            .as_bool()
-            != Some(true)
-        {
-            gl.delete_program(Some(&program));
-            return Err(Error::Backend(format!(
-                "WebGL stencil transfer link: {}",
-                gl.get_program_info_log(&program).unwrap_or_default()
-            )));
-        }
-        self.program = Some(program);
-        Ok(self.program.as_ref().expect("stored program"))
-    }
 }
 
 impl Drop for Scratch<'_> {
@@ -378,14 +234,101 @@ impl Drop for Scratch<'_> {
         let gl = self.gl;
         gl.delete_sampler(self.sampler.as_ref());
         gl.delete_vertex_array(self.vao.as_ref());
-        gl.delete_program(self.program.as_ref());
         gl.delete_framebuffer(self.framebuffer.as_ref());
         gl.delete_buffer(self.staging.as_ref());
         gl.delete_texture(self.source.as_ref());
-        for shader in &self.shaders {
-            gl.delete_shader(Some(shader));
-        }
     }
+}
+
+fn shader(gl: &Gl, stage: u32, source: &str) -> Result<WebGlShader> {
+    let shader = gl.create_shader(stage).ok_or(Error::OutOfMemory)?;
+    gl.shader_source(&shader, source);
+    gl.compile_shader(&shader);
+    if gl
+        .get_shader_parameter(&shader, Gl::COMPILE_STATUS)
+        .as_bool()
+        != Some(true)
+    {
+        let message = gl.get_shader_info_log(&shader).unwrap_or_default();
+        gl.delete_shader(Some(&shader));
+        return Err(Error::Backend(format!(
+            "WebGL stencil transfer shader: {message}"
+        )));
+    }
+    Ok(shader)
+}
+
+fn write_program<'a>(
+    gl: &Gl,
+    cache: &'a mut StencilTransferCache,
+) -> Result<&'a StencilWriteProgram> {
+    if cache.write.is_none() {
+        let vertex = shader(
+            gl,
+            Gl::VERTEX_SHADER,
+            "#version 300 es\nvoid main(){vec2 p[3]=vec2[3](vec2(-1.,-1.),vec2(3.,-1.),vec2(-1.,3.));gl_Position=vec4(p[gl_VertexID],0.,1.);}",
+        )?;
+        let fragment = match shader(
+            gl,
+            Gl::FRAGMENT_SHADER,
+            "#version 300 es\nprecision highp usampler2D;uniform usampler2D bytes_in;uniform ivec2 origin;uniform int bit_index;void main(){ivec2 p=ivec2(gl_FragCoord.xy)-origin;uint v=texelFetch(bytes_in,p,0).r;if((v&(1u<<uint(bit_index)))==0u)discard;}",
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                gl.delete_shader(Some(&vertex));
+                return Err(error);
+            }
+        };
+        let Some(program) = gl.create_program() else {
+            gl.delete_shader(Some(&vertex));
+            gl.delete_shader(Some(&fragment));
+            return Err(Error::OutOfMemory);
+        };
+        gl.attach_shader(&program, &vertex);
+        gl.attach_shader(&program, &fragment);
+        gl.link_program(&program);
+        gl.delete_shader(Some(&vertex));
+        gl.delete_shader(Some(&fragment));
+        if gl
+            .get_program_parameter(&program, Gl::LINK_STATUS)
+            .as_bool()
+            != Some(true)
+        {
+            let message = gl.get_program_info_log(&program).unwrap_or_default();
+            gl.delete_program(Some(&program));
+            return Err(Error::Backend(format!(
+                "WebGL stencil transfer link: {message}"
+            )));
+        }
+        let Some(bytes_in) = gl.get_uniform_location(&program, "bytes_in") else {
+            gl.delete_program(Some(&program));
+            return Err(Error::Backend(
+                "WebGL stencil bytes_in uniform missing".into(),
+            ));
+        };
+        let Some(origin) = gl.get_uniform_location(&program, "origin") else {
+            gl.delete_program(Some(&program));
+            return Err(Error::Backend(
+                "WebGL stencil origin uniform missing".into(),
+            ));
+        };
+        let Some(bit_index) = gl.get_uniform_location(&program, "bit_index") else {
+            gl.delete_program(Some(&program));
+            return Err(Error::Backend(
+                "WebGL stencil bit_index uniform missing".into(),
+            ));
+        };
+        cache.write = Some(StencilWriteProgram {
+            raw: program,
+            bytes_in,
+            origin,
+            bit_index,
+        });
+    }
+    Ok(cache
+        .write
+        .as_ref()
+        .expect("cached stencil write helper inserted"))
 }
 
 enum Input<'a> {
@@ -605,14 +548,14 @@ impl BrowserEncoder {
             }
         }
         let mut result = Ok(());
-        self.with_context("stencil_plane_write", |gl| {
+        self.with_stencil_transfer_context("stencil_plane_write", |gl, cache| {
             result = (|| -> Result<()> {
-                let mut scratch = Scratch { gl, source: None, staging: None, framebuffer: None, program: None, vao: None, sampler: None, shaders: Vec::new() };
+                let mut scratch = Scratch { gl, source: None, staging: None, framebuffer: None, vao: None, sampler: None };
                 let source = gl.create_texture().ok_or(Error::OutOfMemory)?; scratch.source = Some(source.clone());
                 let framebuffer = gl.create_framebuffer().ok_or(Error::OutOfMemory)?; scratch.framebuffer = Some(framebuffer.clone());
                 let vao = gl.create_vertex_array().ok_or(Error::OutOfMemory)?; scratch.vao = Some(vao.clone());
                 let sampler = gl.create_sampler().ok_or(Error::OutOfMemory)?; scratch.sampler = Some(sampler.clone());
-                let program = scratch.program()?.clone();
+                let program = write_program(gl, cache)?;
                 let state = State::capture(gl)?;
                 gl.active_texture(Gl::TEXTURE0); gl.bind_texture(Gl::TEXTURE_2D, Some(&source));
                 gl.tex_storage_2d(Gl::TEXTURE_2D, 1, Gl::R8UI, extent[0] as i32, extent[1] as i32);
@@ -647,19 +590,25 @@ impl BrowserEncoder {
                 }
                 gl.bind_framebuffer(Gl::FRAMEBUFFER, Some(&framebuffer)); attach_destination(gl, destination, mip, origin[2])?;
                 gl.draw_buffers(&Array::of1(&Gl::NONE.into())); gl.read_buffer(Gl::NONE);
-                if gl.check_framebuffer_status(Gl::FRAMEBUFFER) != Gl::FRAMEBUFFER_COMPLETE { return Err(Error::Unsupported("WebGL stencil framebuffer")); }
+                // Attachment dimensions and formats were validated before
+                // encoding. Avoid a synchronous FBO-status observation for
+                // each transfer; deferred submission diagnostics own failure
+                // reporting for rejected use.
                 gl.viewport(origin[0] as i32, origin[1] as i32, extent[0] as i32, extent[1] as i32);
                 gl.enable(Gl::SCISSOR_TEST); gl.scissor(origin[0] as i32, origin[1] as i32, extent[0] as i32, extent[1] as i32);
                 gl.disable(Gl::DEPTH_TEST); gl.disable(Gl::BLEND); gl.disable(Gl::RASTERIZER_DISCARD);
                 gl.disable(Gl::DITHER); gl.disable(Gl::CULL_FACE); gl.disable(Gl::SAMPLE_COVERAGE);
                 gl.depth_mask(false);
                 gl.enable(Gl::STENCIL_TEST); gl.stencil_mask(u32::MAX); gl.clear_bufferiv_with_i32_array(Gl::STENCIL, 0, &[0]);
-                gl.bind_vertex_array(Some(&vao)); gl.bind_sampler(0, Some(&sampler)); gl.use_program(Some(&program));
-                gl.uniform1i(gl.get_uniform_location(&program, "bytes_in").as_ref(), 0);
-                gl.uniform2i(gl.get_uniform_location(&program, "origin").as_ref(), origin[0] as i32, origin[1] as i32);
+                gl.bind_vertex_array(Some(&vao)); gl.bind_sampler(0, Some(&sampler)); gl.use_program(Some(&program.raw));
+                // These names belong to this linked helper program and do not
+                // vary across the eight bit passes. Resolve them once rather
+                // than issuing synchronous metadata lookups in the bit loop.
+                gl.uniform1i(Some(&program.bytes_in), 0);
+                gl.uniform2i(Some(&program.origin), origin[0] as i32, origin[1] as i32);
                 for bit in 0..8 {
                     let mask = 1u32 << bit;
-                    gl.uniform1i(gl.get_uniform_location(&program, "bit_index").as_ref(), bit);
+                    gl.uniform1i(Some(&program.bit_index), bit);
                     gl.stencil_func(Gl::ALWAYS, mask as i32, mask); gl.stencil_mask(mask); gl.stencil_op(Gl::KEEP, Gl::KEEP, Gl::REPLACE);
                     gl.draw_arrays(Gl::TRIANGLES, 0, 3);
                 }

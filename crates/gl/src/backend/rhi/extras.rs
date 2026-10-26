@@ -25,10 +25,14 @@ impl RasterExtrasOps<Gl> for GlExtras {
     ) -> Result<()> {
         let record_size = if indexed { 20_u64 } else { 16_u64 };
         validate(encoder, arguments, offset, 1, record_size as u32, indexed)?;
-        super::raster::cube_mirror::refresh(encoder)?;
+        let refreshed = super::raster::cube_mirror::refresh(encoder)?;
 
         #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
         {
+            if refreshed {
+                let pipeline = encoder.raster_pipeline.clone().ok_or(Error::InvalidState)?;
+                super::raster::restore_after_native_mirror(encoder, &pipeline)?;
+            }
             use crate::backend::api::{
                 GlBufferRange, GlDrawIndirectApi as _, GlIndirectAbi, GlIndirectCommandRange,
             };
@@ -81,9 +85,13 @@ impl RasterExtrasOps<Gl> for GlExtras {
         if count == 0 {
             return Ok(());
         }
-        super::raster::cube_mirror::refresh(encoder)?;
+        let refreshed = super::raster::cube_mirror::refresh(encoder)?;
         #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
         {
+            if refreshed {
+                let pipeline = encoder.raster_pipeline.clone().ok_or(Error::InvalidState)?;
+                super::raster::restore_after_native_mirror(encoder, &pipeline)?;
+            }
             use crate::backend::api::{
                 GlBufferRange, GlIndirectAbi, GlIndirectCommandRange, GlMultiDrawIndirectApi as _,
             };
@@ -149,9 +157,13 @@ impl RasterExtrasOps<Gl> for GlExtras {
         if max == 0 {
             return Ok(());
         }
-        super::raster::cube_mirror::refresh(encoder)?;
+        let refreshed = super::raster::cube_mirror::refresh(encoder)?;
         #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
         {
+            if refreshed {
+                let pipeline = encoder.raster_pipeline.clone().ok_or(Error::InvalidState)?;
+                super::raster::restore_after_native_mirror(encoder, &pipeline)?;
+            }
             use crate::backend::api::{
                 GlBufferRange, GlIndirectAbi, GlIndirectCommandRange, GlIndirectCountRange,
             };

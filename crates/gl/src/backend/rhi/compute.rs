@@ -136,9 +136,16 @@ impl ComputeOps<Gl> for GlCompute {
         if encoder.compute_pipeline.is_none() {
             return Err(Error::InvalidState);
         }
-        super::raster::cube_mirror::refresh(encoder)?;
+        let refreshed = super::raster::cube_mirror::refresh(encoder)?;
         #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
         {
+            if refreshed {
+                let pipeline = encoder
+                    .compute_pipeline
+                    .clone()
+                    .ok_or(Error::InvalidState)?;
+                <GlCompute as ComputeOps<Gl>>::set_pipeline(encoder, &pipeline)?;
+            }
             use crate::backend::api::{GlComputeDispatchApi as _, GlDispatchGroups};
             let result = encoder
                 .state
@@ -178,9 +185,16 @@ impl ComputeOps<Gl> for GlCompute {
         {
             return Err(Error::InvalidRange);
         }
-        super::raster::cube_mirror::refresh(encoder)?;
+        let refreshed = super::raster::cube_mirror::refresh(encoder)?;
         #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
         {
+            if refreshed {
+                let pipeline = encoder
+                    .compute_pipeline
+                    .clone()
+                    .ok_or(Error::InvalidState)?;
+                <GlCompute as ComputeOps<Gl>>::set_pipeline(encoder, &pipeline)?;
+            }
             use crate::backend::api::{
                 GlBufferRange, GlDispatchIndirectApi as _, GlDispatchIndirectCommand,
             };

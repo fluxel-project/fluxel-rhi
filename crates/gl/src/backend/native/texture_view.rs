@@ -4,6 +4,7 @@ use crate::backend::api::{
     GlDiscoverySnapshot, GlError, GlFamilyApi as _, GlFamilyProfile, GlTextureDesc,
     GlTextureDimension, GlVersion, TextureId,
 };
+use crate::backend::state::{ScopedRawAccess, StateEvent};
 use core::ffi::c_void;
 use glow::HasContext as _;
 
@@ -82,19 +83,11 @@ impl NativeGlProvider {
             };
         }
         let (raw, desc) = self.texture(OP, id)?;
-        let (target, binding) = match (desc.dimension, desc.sample_count > 1) {
-            (GlTextureDimension::D2, false) => (glow::TEXTURE_2D, glow::TEXTURE_BINDING_2D),
-            (GlTextureDimension::D2Array, false) => {
-                (glow::TEXTURE_2D_ARRAY, glow::TEXTURE_BINDING_2D_ARRAY)
-            }
-            (GlTextureDimension::D2, true) => (
-                glow::TEXTURE_2D_MULTISAMPLE,
-                glow::TEXTURE_BINDING_2D_MULTISAMPLE,
-            ),
-            (GlTextureDimension::D2Array, true) => (
-                glow::TEXTURE_2D_MULTISAMPLE_ARRAY,
-                glow::TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY,
-            ),
+        let target = match (desc.dimension, desc.sample_count > 1) {
+            (GlTextureDimension::D2, false) => glow::TEXTURE_2D,
+            (GlTextureDimension::D2Array, false) => glow::TEXTURE_2D_ARRAY,
+            (GlTextureDimension::D2, true) => glow::TEXTURE_2D_MULTISAMPLE,
+            (GlTextureDimension::D2Array, true) => glow::TEXTURE_2D_MULTISAMPLE_ARRAY,
             _ => {
                 return Err(GlError::Unsupported {
                     operation: OP,
@@ -102,9 +95,9 @@ impl NativeGlProvider {
                 });
             }
         };
-        // SAFETY: the view belongs to this current context; its prior binding is restored.
+        // SAFETY: the view belongs to this current context; the temporary
+        // binding is returned to the provider's canonical empty baseline.
         unsafe {
-            let previous = self.gl.get_parameter_i32(binding) as u32;
             self.gl.bind_texture(target, Some(raw));
             self.gl.tex_parameter_i32(
                 target,
@@ -115,12 +108,11 @@ impl NativeGlProvider {
                     glow::DEPTH_COMPONENT as i32
                 },
             );
-            self.gl.bind_texture(
-                target,
-                std::num::NonZeroU32::new(previous).map(glow::NativeTexture),
-            );
+            self.gl.bind_texture(target, None);
         }
-        self.driver_error(OP)
+        self.context_state
+            .event(StateEvent::ScopedRawAccess(ScopedRawAccess::all()));
+        self.defer_driver_error(OP)
     }
     pub(crate) fn supports_texture_view_format(
         &self,

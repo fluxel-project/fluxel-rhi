@@ -88,8 +88,7 @@ impl NativeGlProvider {
             } else {
                 self.gl.draw_buffers(&[glow::COLOR_ATTACHMENT0]);
             }
-            let mut result = Ok(());
-            'mips: for mip in mips {
+            for mip in mips {
                 let slices = if desc.dimension == GlTextureDimension::D3 {
                     0..desc.mip_extent(mip).expect("validated mip").depth_or_layers
                 } else {
@@ -126,12 +125,6 @@ impl NativeGlProvider {
                             layer as i32,
                         );
                     }
-                    if self.gl.check_framebuffer_status(glow::FRAMEBUFFER)
-                        != glow::FRAMEBUFFER_COMPLETE
-                    {
-                        result = Err(Self::validation(OP, "clear framebuffer incomplete"));
-                        break 'mips;
-                    }
                     match value {
                         TextureClearValue::Depth(v) => {
                             self.gl.clear_buffer_f32_slice(glow::DEPTH, 0, &[v])
@@ -146,15 +139,14 @@ impl NativeGlProvider {
                             self.gl.clear_buffer_i32_slice(glow::COLOR, 0, &v)
                         }
                     }
-                    if let Err(e) = self.driver_error(OP) {
-                        result = Err(e);
-                        break 'mips;
-                    }
                 }
             }
             self.gl.bind_framebuffer(glow::FRAMEBUFFER, None);
             self.gl.delete_framebuffer(fbo);
-            result.and_then(|()| self.driver_error(OP))
+            // This transfer's shape and attachment route were prevalidated.
+            // Keep the repeated clear path asynchronous: FBO rejection is
+            // attributed by the one deferred stream diagnostic at publication.
+            self.defer_driver_error(OP)
         }
     }
 }

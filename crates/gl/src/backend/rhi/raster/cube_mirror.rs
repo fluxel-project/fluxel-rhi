@@ -24,7 +24,10 @@ fn visit(
     }
 }
 
-pub(crate) fn refresh(encoder: &mut GlEncoder) -> Result<()> {
+/// Returns whether a native/browser utility pass changed GL state.  Native
+/// callers must reapply their CPU-owned pipeline packet before issuing the
+/// following draw or dispatch.
+pub(crate) fn refresh(encoder: &mut GlEncoder) -> Result<bool> {
     let (layout, reflection) = if let Some(pipeline) = &encoder.raster_pipeline {
         (&pipeline.layout, &pipeline.reflection)
     } else if let Some(pipeline) = &encoder.compute_pipeline {
@@ -59,11 +62,16 @@ pub(crate) fn refresh(encoder: &mut GlEncoder) -> Result<()> {
                 assignment.logical.binding,
                 assignment.element,
             ) {
-                active_sampled.push(view.clone());
+                let crate::backend::api::GlExecutableBindingLocation::TextureUnit(unit) =
+                    assignment.executable
+                else {
+                    unreachable!()
+                };
+                active_sampled.push((view.clone(), unit));
             }
         }
     }
-    for (index, view) in active_sampled.iter().enumerate() {
+    for (index, (view, _)) in active_sampled.iter().enumerate() {
         if !matches!(
             view.binding_texture().desc.format,
             crate::backend::api::GlFormat::Depth24PlusStencil8
@@ -76,7 +84,7 @@ pub(crate) fn refresh(encoder: &mut GlEncoder) -> Result<()> {
         if view.stencil_mirror.is_some() {
             continue;
         }
-        if active_sampled[index + 1..].iter().any(|other| {
+        if active_sampled[index + 1..].iter().any(|(other, _)| {
             #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
             if other.stencil_mirror.is_some() {
                 return false;
@@ -89,7 +97,8 @@ pub(crate) fn refresh(encoder: &mut GlEncoder) -> Result<()> {
             ));
         }
     }
-    for view in active_sampled {
+    let mut refreshed = false;
+    for (view, unit) in active_sampled {
         #[cfg(any(
             all(windows, feature = "native-gl-wgl"),
             feature = "native-gles-egl",
@@ -134,6 +143,7 @@ pub(crate) fn refresh(encoder: &mut GlEncoder) -> Result<()> {
                 return Err(error);
             }
             encoder.issued = true;
+            refreshed = true;
         }
         #[cfg(any(
             all(windows, feature = "native-gl-wgl"),
@@ -160,6 +170,7 @@ pub(crate) fn refresh(encoder: &mut GlEncoder) -> Result<()> {
                     view.source_mip,
                     view.mip_count,
                     view.source_layer,
+                    unit,
                 );
             #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
             let result = encoder
@@ -178,7 +189,8 @@ pub(crate) fn refresh(encoder: &mut GlEncoder) -> Result<()> {
                 return Err(error);
             }
             encoder.issued = true;
+            refreshed = true;
         }
     }
-    Ok(())
+    Ok(refreshed)
 }

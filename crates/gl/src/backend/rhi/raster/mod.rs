@@ -48,6 +48,24 @@ use offscreen::begin_browser_offscreen_raster;
 #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 use offscreen::begin_native_offscreen_raster;
 
+/// Re-establish the active raster target and the complete CPU-owned state
+/// packet after a private native mirror pass.  Mirror helpers intentionally
+/// do not snapshot GL state; they invalidate it, and this replay is the one
+/// canonical restoration point before the next immediate draw.
+#[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+pub(crate) fn restore_after_native_mirror(
+    encoder: &mut GlEncoder,
+    pipeline: &GlRasterPipeline,
+) -> Result<()> {
+    encoder
+        .state
+        .with_native("restore GL raster target after mirror", |provider| {
+            provider.restore_active_pass_framebuffer()
+        })
+        .map_err(native_error)?;
+    <Gl as RasterBackend>::set_pipeline(encoder, pipeline)
+}
+
 impl RasterBackend for Gl {
     fn begin_raster(encoder: &mut GlEncoder, desc: &RasterPassDesc<'_, Self>) -> Result<()> {
         if desc.secondary_inheritance.is_some() {
@@ -473,13 +491,12 @@ impl RasterBackend for Gl {
             .end
             .checked_sub(instances.start)
             .ok_or(Error::InvalidRange)?;
-        let draw = crate::backend::api::GlDrawCommand::NonIndexed(
-            crate::backend::api::GlNonIndexedDraw {
+        let draw =
+            crate::backend::api::GlDrawCommand::NonIndexed(crate::backend::api::GlNonIndexedDraw {
                 first_vertex: vertices.start,
                 vertex_count,
                 instance_count,
-            },
-        );
+            });
         issue_draw(encoder, &pipeline, draw, 0, instances.start)
     }
 
@@ -498,13 +515,12 @@ impl RasterBackend for Gl {
             .end
             .checked_sub(instances.start)
             .ok_or(Error::InvalidRange)?;
-        let draw = crate::backend::api::GlDrawCommand::Indexed(
-            crate::backend::api::GlIndexedDraw {
+        let draw =
+            crate::backend::api::GlDrawCommand::Indexed(crate::backend::api::GlIndexedDraw {
                 first_index: indices.start,
                 index_count,
                 instance_count,
-            },
-        );
+            });
         issue_draw(encoder, &pipeline, draw, base_vertex, instances.start)
     }
 
@@ -687,10 +703,7 @@ pub(super) fn render_area(
 
 /// Empty framebuffer slots cannot receive writes. Match their fixed state to a
 /// live slot so holes do not require an indexed-blend extension.
-fn normalize_inactive_color_slots(
-    state: &mut crate::backend::api::GlRasterState,
-    slots: &[bool],
-) {
+fn normalize_inactive_color_slots(state: &mut crate::backend::api::GlRasterState, slots: &[bool]) {
     let first = state
         .color_targets
         .iter()

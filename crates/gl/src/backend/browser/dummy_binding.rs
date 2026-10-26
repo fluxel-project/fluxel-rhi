@@ -145,52 +145,7 @@ impl BrowserEncoder {
     ) -> Result<()> {
         self.same_owner(&program.owner)?;
         self.require_raster()?;
-        let mut found = None;
-        let mut failed = false;
-        self.with_context("query dummy uniform block size", |gl| {
-            let Some(count) = gl
-                .get_program_parameter(&program.raw, Gl::ACTIVE_UNIFORM_BLOCKS)
-                .as_f64()
-            else {
-                failed = true;
-                return;
-            };
-            for index in 0..count as u32 {
-                let binding = gl.get_active_uniform_block_parameter(
-                    &program.raw,
-                    index,
-                    Gl::UNIFORM_BLOCK_BINDING,
-                );
-                let Ok(binding) = binding else {
-                    failed = true;
-                    return;
-                };
-                if binding.as_f64() != Some(f64::from(point)) {
-                    continue;
-                }
-                let size = gl.get_active_uniform_block_parameter(
-                    &program.raw,
-                    index,
-                    Gl::UNIFORM_BLOCK_DATA_SIZE,
-                );
-                let Ok(size) = size else {
-                    failed = true;
-                    return;
-                };
-                found = size.as_f64().and_then(|v| {
-                    if v > 0. && v <= i32::MAX as f64 && v.fract() == 0. {
-                        Some(v as u32)
-                    } else {
-                        None
-                    }
-                });
-                return;
-            }
-        })?;
-        if failed {
-            return Err(Error::Backend("WebGL2 uniform block query failed".into()));
-        }
-        let size = found.ok_or(Error::InvalidState)?;
+        let size = program.uniform_block_size(point)?;
         let existing = self
             .owner
             .state

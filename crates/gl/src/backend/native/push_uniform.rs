@@ -1,7 +1,9 @@
 //! Immediate uploads of reflected push constant leaves to a linked program.
 //!
 //! Matrices arrive tightly packed in column-major order. Optimized-away leaves
-//! have no location and need no upload; no commands or locations are cached.
+//! have no location and need no upload. Locations (including optimized-away
+//! `None`) are cached by linked-program generation; uploads remain immediate
+//! command emission and defer driver diagnostics to publication.
 
 use super::provider::NativeGlProvider;
 use crate::backend::api::{GlError, GlFamilyApi as _, ProgramId};
@@ -19,13 +21,40 @@ pub(crate) enum GlPushUniformValue {
 }
 
 impl NativeGlProvider {
+    fn cached_uniform_location(
+        &mut self,
+        operation: &'static str,
+        program: ProgramId,
+        name: &str,
+    ) -> Result<Option<glow::NativeUniformLocation>, GlError> {
+        if let Some(location) = self
+            .program(operation, program)?
+            .uniform_locations
+            .get(name)
+            .cloned()
+        {
+            return Ok(location);
+        }
+        let raw = self.program(operation, program)?.raw;
+        // SAFETY: program is live and locations remain valid through its link
+        // generation, which owns this cache entry.
+        let location = unsafe { self.gl.get_uniform_location(raw, name) };
+        self.programs
+            .get_mut(&program)
+            .expect("live program resolved before uniform location cache")
+            .uniform_locations
+            .insert(name.to_owned(), location.clone());
+        self.defer_driver_error(operation)?;
+        Ok(location)
+    }
     /// Updates Naga's internal first-instance uniform when its value changes.
     ///
     /// Unlike application push uniforms, this has one fixed scalar type and a
     /// link-time-known name.  Keeping its location and last submitted value in
     /// the program record removes allocation, lookup, upload, and error-query
     /// work from the common `first_instance == 0` draw path.  Changed values
-    /// still retain the normal immediate driver-error boundary.
+    /// still defer diagnostics to the frame boundary, avoiding a `glGetError`
+    /// in the draw path.
     pub(crate) fn set_first_instance_uniform(
         &mut self,
         program: ProgramId,
@@ -47,7 +76,7 @@ impl NativeGlProvider {
         // SAFETY: `location` was resolved from this live program at link time,
         // that program is current, and this generated uniform is a scalar uint.
         unsafe { self.gl.uniform_1_u32(Some(&location), first_instance) };
-        self.driver_error(OP)?;
+        self.defer_driver_error(OP)?;
         self.programs
             .get_mut(&program)
             .expect("live program resolved before uniform upload")
@@ -68,10 +97,7 @@ impl NativeGlProvider {
         if count == 0 || name.is_empty() || name.contains('\0') {
             return Err(Self::validation(OP, "invalid mip count or uniform name"));
         }
-        let raw = self.program(OP, program)?.raw;
-        // SAFETY: this is a live linked program owned by the current context.
-        let location = unsafe { self.gl.get_uniform_location(raw, name) };
-        self.driver_error(OP)?;
+        let location = self.cached_uniform_location(OP, program, name)?;
         let Some(location) = location else {
             return Ok(());
         };
@@ -80,26 +106,14 @@ impl NativeGlProvider {
         unsafe {
             self.gl.uniform_1_u32(Some(&location), count);
         }
-        self.driver_error(OP)
+        self.defer_driver_error(OP)
     }
 
     /// Reports whether the linked program retained a reflected uniform leaf.
-    pub(crate) fn has_uniform(&self, program: ProgramId, name: &str) -> Result<bool, GlError> {
+    pub(crate) fn has_uniform(&mut self, program: ProgramId, name: &str) -> Result<bool, GlError> {
         const OP: &str = "has-push-uniform";
         self.assert_ready(OP)?;
-        let raw = self.program(OP, program)?.raw;
-        // SAFETY: the provider owns the current context and the program is live.
-        let found = unsafe { self.gl.get_uniform_location(raw, name).is_some() };
-        // SAFETY: the provider owns the current context.
-        let error = unsafe { self.gl.get_error() };
-        match error {
-            glow::NO_ERROR => Ok(found),
-            glow::CONTEXT_LOST => Err(GlError::ContextLost { operation: OP }),
-            error => Err(GlError::Driver {
-                operation: OP,
-                message: format!("GL error 0x{error:04x}"),
-            }),
-        }
+        Ok(self.cached_uniform_location(OP, program, name)?.is_some())
     }
 
     pub(crate) fn set_push_uniforms(
@@ -109,7 +123,6 @@ impl NativeGlProvider {
     ) -> Result<(), GlError> {
         const OP: &str = "set-push-uniforms";
         self.assert_ready(OP)?;
-        let raw = self.program(OP, program)?.raw;
         for (_, value) in values {
             let valid = match value {
                 GlPushUniformValue::Float(v) => (1..=4).contains(&v.len()),
@@ -134,7 +147,7 @@ impl NativeGlProvider {
         // lengths of all input slices were checked before issuing any calls.
         unsafe {
             for (name, value) in values {
-                let location = self.gl.get_uniform_location(raw, name);
+                let location = self.cached_uniform_location(OP, program, name)?;
                 let Some(location) = location.as_ref() else {
                     continue;
                 };
@@ -191,17 +204,6 @@ impl NativeGlProvider {
                 }
             }
         }
-        // Distinguish a lost context from ordinary driver errors even when a
-        // location lookup returned None during loss.
-        // SAFETY: the provider owns the current context.
-        let error = unsafe { self.gl.get_error() };
-        match error {
-            glow::NO_ERROR => Ok(()),
-            glow::CONTEXT_LOST => Err(GlError::ContextLost { operation: OP }),
-            error => Err(GlError::Driver {
-                operation: OP,
-                message: format!("GL error 0x{error:04x}"),
-            }),
-        }
+        self.defer_driver_error(OP)
     }
 }

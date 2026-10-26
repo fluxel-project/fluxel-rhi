@@ -21,6 +21,10 @@ impl Drop for GlDeviceState {
                 let provider = self.provider.get_mut();
                 provider.clear_indirect_count_utility();
                 provider.clear_indirect_count_scratch();
+                provider.clear_indirect_rebase_utility();
+                provider.clear_stencil_pack_programs();
+                provider.clear_gles_plane_readback_programs();
+                provider.clear_stencil_extract_utility();
             };
         }
     }
@@ -39,12 +43,13 @@ impl GlDeviceState {
         ) -> Result<T, crate::backend::api::GlError>,
     ) -> Result<T, crate::backend::api::GlError> {
         self.check_native_lease(operation)?;
-        let mut context = self.context.try_borrow_mut().map_err(|_| {
-            crate::backend::api::GlError::Driver {
-                operation,
-                message: "GL platform context is already in use".into(),
-            }
-        })?;
+        let mut context =
+            self.context
+                .try_borrow_mut()
+                .map_err(|_| crate::backend::api::GlError::Driver {
+                    operation,
+                    message: "GL platform context is already in use".into(),
+                })?;
         f(&mut context)
     }
 
@@ -94,19 +99,21 @@ impl GlDeviceState {
     ) -> Result<T, crate::backend::api::GlError> {
         use crate::backend::native::NativeContextOwner as _;
 
-        let mut context = self.context.try_borrow_mut().map_err(|_| {
-            crate::backend::api::GlError::Driver {
-                operation,
-                message: "GL context is already issuing a command".into(),
-            }
-        })?;
+        let mut context =
+            self.context
+                .try_borrow_mut()
+                .map_err(|_| crate::backend::api::GlError::Driver {
+                    operation,
+                    message: "GL context is already issuing a command".into(),
+                })?;
         context.make_current(operation)?;
-        let mut provider = self.provider.try_borrow_mut().map_err(|_| {
-            crate::backend::api::GlError::Driver {
-                operation,
-                message: "GL provider is already issuing a command".into(),
-            }
-        })?;
+        let mut provider =
+            self.provider
+                .try_borrow_mut()
+                .map_err(|_| crate::backend::api::GlError::Driver {
+                    operation,
+                    message: "GL provider is already issuing a command".into(),
+                })?;
         f(&mut provider)
     }
 

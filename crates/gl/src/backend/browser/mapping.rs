@@ -4,7 +4,6 @@
 use super::owner::{BrowserBuffer, BrowserOwner};
 use fluxel_rhi_core::api::{Error, Result};
 use std::rc::Rc;
-use wasm_bindgen::JsCast;
 use web_sys::WebGl2RenderingContext as Gl;
 
 impl BrowserOwner {
@@ -28,24 +27,19 @@ impl BrowserOwner {
         let mut state = self.state.borrow_mut();
         state.ensure_active()?;
         let raw = &state.context.raw;
-        let previous = raw
-            .get_parameter(Gl::COPY_WRITE_BUFFER_BINDING)
-            .ok()
-            .and_then(|v| v.dyn_into::<web_sys::WebGlBuffer>().ok());
         raw.bind_buffer(Gl::COPY_WRITE_BUFFER, Some(&destination.raw));
         raw.buffer_sub_data_with_f64_and_u8_array(Gl::COPY_WRITE_BUFFER, offset as f64, bytes);
-        raw.bind_buffer(Gl::COPY_WRITE_BUFFER, previous.as_ref());
+        // Mapping leases are commonly flushed once per frame. The RHI owns
+        // this context and every later copy binds its destination explicitly,
+        // so neutralize the target instead of a synchronous getParameter.
+        raw.bind_buffer(Gl::COPY_WRITE_BUFFER, None);
         if raw.is_context_lost() {
             state.mark_lost();
             return Err(Error::DeviceLost);
         }
-        let error = raw.get_error();
-        match error {
-            Gl::NO_ERROR => Ok(()),
-            Gl::OUT_OF_MEMORY => Err(Error::OutOfMemory),
-            _ => Err(Error::Backend(format!(
-                "WebGL2 mapping flush failed with GL error {error}"
-            ))),
-        }
+        // The publication boundary consumes the sticky error once for the
+        // whole frame; checking here would turn every mapped-buffer update
+        // into a synchronous round trip.
+        Ok(())
     }
 }

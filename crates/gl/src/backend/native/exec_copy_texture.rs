@@ -119,7 +119,7 @@ impl NativeGlProvider {
                 );
             }
         }
-        self.driver_error(op)
+        self.defer_driver_error(op)
     }
 
     /// Framebuffer route for desktop cores before 4.3, mirroring the browser
@@ -227,14 +227,11 @@ impl NativeGlProvider {
                         height,
                     );
                 }
-                if let Err(error) = self.driver_error(op) {
-                    result = Err(error);
-                    break;
-                }
             }
             self.gl.bind_framebuffer(glow::FRAMEBUFFER, None);
             self.gl.delete_framebuffer(scratch);
-            let _ = self.gl.get_error();
+            // Leave teardown diagnostics for the single presentation-boundary
+            // observation instead of synchronously clearing them here.
             result
         }
     }
@@ -302,7 +299,7 @@ impl NativeGlProvider {
                 bytes,
             );
         }
-        self.driver_error(op)
+        self.defer_driver_error(op)
     }
 
     /// Applies the tight staging layout before `texSubImage2D`.
@@ -480,11 +477,10 @@ pub(in crate::backend::native) fn upload_encoding(
         crate::backend::api::GlFormat::Rg8Uint => Some((glow::RG_INTEGER, glow::UNSIGNED_BYTE)),
         crate::backend::api::GlFormat::Rg8Sint => Some((glow::RG_INTEGER, glow::BYTE)),
         crate::backend::api::GlFormat::Rgba8Snorm => Some((glow::RGBA, glow::BYTE)),
-        crate::backend::api::GlFormat::Rgba8Unorm
-        | crate::backend::api::GlFormat::Rgba8Srgb => Some((glow::RGBA, glow::UNSIGNED_BYTE)),
-        crate::backend::api::GlFormat::Rgba8Uint => {
-            Some((glow::RGBA_INTEGER, glow::UNSIGNED_BYTE))
+        crate::backend::api::GlFormat::Rgba8Unorm | crate::backend::api::GlFormat::Rgba8Srgb => {
+            Some((glow::RGBA, glow::UNSIGNED_BYTE))
         }
+        crate::backend::api::GlFormat::Rgba8Uint => Some((glow::RGBA_INTEGER, glow::UNSIGNED_BYTE)),
         crate::backend::api::GlFormat::Rgba8Sint => Some((glow::RGBA_INTEGER, glow::BYTE)),
         _ => None,
     }

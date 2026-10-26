@@ -6,17 +6,24 @@
 //! records and never participate in identity comparisons.
 
 mod bootstrap;
+mod publication;
+mod records;
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
+
+pub(super) use records::{
+    ActivePass, ActiveRaster, GlesTimerFunctions, NativeFramebuffer, NativeProgram, NativeQuery,
+    NativeStorageBinding, NativeVertexArray, QueryTarget,
+};
 
 use super::discovery::{NativeDiscoveryError, discover_current_glow};
 use crate::backend::api::GlFamilyApi as _;
 use crate::backend::api::{
     BufferId, ContextStamp, FramebufferId, GlBufferDesc, GlContextLifecycle, GlDiscoverySnapshot,
-    GlError, GlFenceLeaseBook, GlIndexBinding, GlPixelStoreState, GlPrimitiveTopology,
-    GlProgramDescriptor, GlRenderBufferDesc, GlSurfaceLeaseBook, GlSurfaceSize, GlTextureDesc,
-    GlVertexLayout, OwnerThreadIdentity, ProgramId, QueryId, RenderbufferId, SamplerId, ShaderId,
-    SyncId, TextureId, VertexArrayId,
+    GlError, GlFenceLeaseBook, GlPixelStoreState, GlRenderBufferDesc, GlRenderTarget,
+    GlSurfaceLeaseBook, GlSurfaceSize, GlTextureDesc, OwnerThreadIdentity, ProgramId, QueryId,
+    RenderbufferId, SamplerId, ShaderId, SyncId, TextureId, VertexArrayId,
 };
 use crate::backend::state::{
     CanonicalBlockId, ContextState, ExecutionMode, GlObjectKey, RasterPipelineBlockInterner,
@@ -47,6 +54,11 @@ pub(crate) struct NativeGlProvider {
     pub(crate) indirect_count_scratch:
         super::indirect_count_emulated::scratch::IndirectCountScratchPool,
     pub(super) indirect_count_utility: Option<super::indirect_count_emulated::IndirectCountUtility>,
+    pub(super) indirect_rebase_utility: Option<super::indirect_rebase::IndirectRebaseUtility>,
+    pub(super) stencil_pack_programs: Option<super::exec_copy::stencil_pack::StencilPackPrograms>,
+    pub(super) gles_plane_readback_programs:
+        Option<super::exec_pbo_readback::gles_plane_readback::GlesPlaneReadbackPrograms>,
+    pub(super) stencil_extract_utility: Option<super::stencil_extract::StencilExtractUtility>,
     pub(super) multiview: Option<super::multiview::NativeMultiview>,
     pub(super) multisample_array: Option<super::multisample_array::StorageFn>,
     pub(super) storage_3d_nonzero_mip: bool,
@@ -177,7 +189,27 @@ pub(crate) struct NativeGlProvider {
     /// record and re-asserts it through [`Self::ensure_program`], which is why
     /// the two are separate fields rather than one.
     pub(super) active_compute_program: Option<ProgramId>,
+    /// Raw state shadow for the native SSBO namespace. Internal utility passes
+    /// restore this exact state without `glGet*`; normal binding lowering is
+    /// its sole writer.
+    pub(super) storage_bindings: BTreeMap<u32, NativeStorageBinding>,
+    pub(super) generic_storage_buffer: Option<glow::NativeBuffer>,
+    /// Raw counterpart of `current_program`, for private utility transactions
+    /// that must restore raster state before an immediate draw.
+    pub(super) current_native_program: Option<glow::NativeProgram>,
     pub(super) pixel_store: GlPixelStoreState,
+    /// The first operation since the last presentation boundary that asked for
+    /// driver-error observation.  GL error queries may force the driver to
+    /// drain queued work, so ordinary command lowering records provenance here
+    /// and performs the single observation at presentation instead of turning
+    /// every draw/bind/copy into a synchronization point.
+    pub(super) deferred_error_operation: Cell<Option<&'static str>>,
+    /// Whether this context has emitted work since the last command-stream
+    /// submission.  Fence creation is ordered in that same stream, so a
+    /// completion observation flushes only when there is new work to expose.
+    /// This avoids a checkpoint-time flush for every submission while keeping
+    /// an explicitly observed fence live and progressable.
+    pub(super) commands_pending_submission: Cell<bool>,
     /// The sole skip-decision authority for mutable GL state. The native
     /// fields above remain execution facts and must not make fixed-state
     /// elision decisions independently.
@@ -187,6 +219,26 @@ pub(crate) struct NativeGlProvider {
 }
 
 impl NativeGlProvider {
+    /// Rebinds the target of the still-active raster pass after a private
+    /// utility pass.  Utility work never reads this from GL: the pass record
+    /// is the authoritative CPU shadow, and callers reapply pipeline and
+    /// binding state immediately afterwards.
+    pub(crate) fn restore_active_pass_framebuffer(&mut self) -> Result<(), GlError> {
+        use glow::HasContext as _;
+        const OP: &str = "restore active raster target";
+        let Some(pass) = &self.pass else {
+            return Err(Self::validation(OP, "no active render pass"));
+        };
+        let raw = match pass.target {
+            GlRenderTarget::Default(_) => None,
+            GlRenderTarget::Offscreen(framebuffer) => Some(self.framebuffer(OP, framebuffer)?.raw),
+        };
+        // SAFETY: the active pass owns this live framebuffer; default target
+        // is represented by GL name zero.
+        unsafe { self.gl.bind_framebuffer(glow::FRAMEBUFFER, raw) };
+        self.defer_driver_error(OP)
+    }
+
     /// Whether this exact context supplied the complete pointer-width buffer
     /// command family.  Capability reporting must use this fact rather than
     /// infer availability from the GL version string.
@@ -219,100 +271,6 @@ impl NativeGlProvider {
     }
 }
 
-/// A linked raster or compute program record with its validated descriptor.
-pub(super) struct NativeProgram {
-    pub(super) generation: u32,
-    pub(super) raw: glow::NativeProgram,
-    pub(super) descriptor: GlProgramDescriptor,
-    /// Link-time logical-to-native assignments.  Binding flushes must consult
-    /// this instead of treating a RHI slot as a GL binding point.
-    pub(super) reflection: crate::backend::api::GlProgramReflection,
-    /// The compiler-generated first-instance uniform is immutable in shape for
-    /// a linked program. Resolve it once so ordinary raster draws do not turn
-    /// a fixed internal name into a driver lookup on every call.
-    pub(super) first_instance_uniform: Option<glow::NativeUniformLocation>,
-    /// The value last successfully submitted to `first_instance_uniform`.
-    /// A missing location is deliberately distinct from a zero value: shaders
-    /// may optimize this generated uniform away.
-    pub(super) first_instance_value: Option<u32>,
-}
-
-/// A created VAO with its structural layout and last recorded index binding.
-pub(super) struct NativeVertexArray {
-    pub(super) generation: u32,
-    pub(super) raw: glow::NativeVertexArray,
-    pub(super) layout: GlVertexLayout,
-    pub(super) index: Option<GlIndexBinding>,
-    pub(super) bindings: Vec<crate::backend::api::GlVertexBufferBinding>,
-}
-
-/// A created framebuffer with its validated descriptor.
-pub(super) struct NativeFramebuffer {
-    pub(super) generation: u32,
-    pub(super) raw: glow::NativeFramebuffer,
-    pub(super) descriptor: crate::backend::api::GlFramebufferDescriptor,
-    pub(super) multiview: bool,
-}
-
-/// The target a query object last recorded a measurement for.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum QueryTarget {
-    SamplesPassed,
-    TimeElapsed,
-    Timestamp,
-    Statistics(u32),
-}
-
-pub(super) struct NativeQuery {
-    pub(super) generation: u32,
-    pub(super) raw: glow::NativeQuery,
-    pub(super) segments: Vec<glow::NativeQuery>,
-    pub(super) invalidated: bool,
-    pub(super) target: Option<QueryTarget>,
-    pub(super) disjoint: bool,
-}
-
-/// EXT entry points are loaded from the same current EGL context as glow.
-pub(super) struct GlesTimerFunctions {
-    pub(super) query_counter: unsafe extern "system" fn(u32, u32),
-    pub(super) query_result: unsafe extern "system" fn(u32, u32, *mut u64),
-    pub(super) bits: u32,
-    pub(super) elapsed_bits: u32,
-}
-
-/// Facts of the render pass currently recording on this context.
-pub(super) struct ActivePass {
-    pub(super) target: crate::backend::api::GlRenderTarget,
-    pub(super) width: u32,
-    pub(super) height: u32,
-    pub(super) samples: u32,
-    /// Per color attachment; `true` when `end_render_pass` must invalidate.
-    pub(super) discard_color: Vec<bool>,
-    /// `(depth, stencil)` discard decisions. The planes stay independent: a
-    /// depth-stencil view may retain one plane while making the other undefined.
-    pub(super) discard_depth_stencil: Option<(bool, bool)>,
-}
-
-/// The raster pipeline installed for the active pass.
-pub(super) struct ActiveRaster {
-    /// The program this pipeline installed.
-    ///
-    /// Recorded rather than assumed: a compute install or a link can leave
-    /// another program current, so a draw has to be able to re-assert this one
-    /// through [`NativeGlProvider::ensure_program`].
-    pub(super) program: ProgramId,
-    /// The topology this pipeline installed.
-    ///
-    /// The vertex array is deliberately *not* recorded here even though the
-    /// install names one.  GL's vertex-array binding is a single slot that the
-    /// input domain also writes, and the slot's owner is
-    /// [`NativeGlProvider::bound_vertex_array`]; a copy kept per pipeline would
-    /// go stale the moment the geometry domain reconciled inputs, which under the
-    /// uncached execution mode is on every single request.
-    pub(super) topology: GlPrimitiveTopology,
-    pub(super) depth_stencil: Option<crate::backend::api::GlDepthStencilState>,
-}
-
 #[cfg(any(feature = "native-gl-wgl", feature = "native-gles-egl"))]
 impl NativeGlProvider {
     pub(crate) fn set_indexed_blend(
@@ -340,21 +298,6 @@ impl NativeGlProvider {
         GlError::Validation {
             operation,
             message: message.into(),
-        }
-    }
-
-    pub(super) fn driver_error(&self, operation: &'static str) -> Result<(), GlError> {
-        use glow::HasContext as _;
-        // SAFETY: upheld by NativeGlProvider::from_current.
-        let error = unsafe { self.gl.get_error() };
-        match error {
-            glow::NO_ERROR => Ok(()),
-            glow::CONTEXT_LOST => Err(GlError::ContextLost { operation }),
-            glow::OUT_OF_MEMORY => Err(GlError::OutOfMemory { operation }),
-            error => Err(GlError::Driver {
-                operation,
-                message: format!("GL error 0x{error:04x}"),
-            }),
         }
     }
 
@@ -450,8 +393,8 @@ impl NativeGlProvider {
     /// selection when it ends), a raster pipeline install, and a compute program
     /// install.  [`Self::current_program`] records which one the driver holds,
     /// and this is the only function that writes both it and the driver, which is
-    /// what makes "the driver holds this program" a fact rather than an
-    /// assumption.
+    /// what makes "the driver holds this program" an optimistic fact until
+    /// the next boundary error observation quarantines the context.
     ///
     /// It is called by every verb that *uses* a program rather than by every verb
     /// that selects one, because the two selections are not additive: a compute
@@ -486,18 +429,15 @@ impl NativeGlProvider {
         unsafe {
             self.gl.use_program(Some(raw));
         }
-        match self.driver_error(operation) {
-            Ok(()) => {
-                self.current_program = Some(program);
-                Ok(())
-            }
-            Err(error) => {
-                // A failed useProgram may have reached the driver. Never let
-                // the preceding native fact become a later skip.
-                self.current_program = None;
-                Err(error)
-            }
-        }
+        // Program selection is on the draw/dispatch path. Validation has
+        // already proved the program belongs to this context; recording the
+        // selected program optimistically avoids a pipeline-draining
+        // `glGetError` here. Any deferred failure quarantines this provider at
+        // the next completion/presentation boundary, invalidating the cache.
+        self.defer_driver_error(operation)?;
+        self.current_program = Some(program);
+        self.current_native_program = Some(raw);
+        Ok(())
     }
 
     /// Builds the immutable state packet for one raster pipeline. Raster
@@ -601,6 +541,8 @@ impl NativeGlProvider {
     /// name invalid; only Fluxel-owned state is reset, and no driver call is
     /// made against a possibly-dead object.
     pub(super) fn reset_executable_state(&mut self) {
+        self.deferred_error_operation.set(None);
+        self.commands_pending_submission.set(false);
         self.buffers.clear();
         self.textures.clear();
         self.renderbuffers.clear();
@@ -615,10 +557,17 @@ impl NativeGlProvider {
         self.pass = None;
         self.raster = None;
         self.current_program = None;
+        self.current_native_program = None;
+        self.storage_bindings.clear();
+        self.generic_storage_buffer = None;
         self.bound_vertex_array = None;
         self.active_query = None;
         self.active_statistics.clear();
         self.active_compute_program = None;
+        self.indirect_rebase_utility.take();
+        self.stencil_pack_programs.take();
+        self.gles_plane_readback_programs.take();
+        self.stencil_extract_utility.take();
         self.context_state.event(StateEvent::ContextLost);
         let _ = self.surface.invalidate_generation();
         // The recorded extent dies with the context generation it was observed
@@ -656,6 +605,10 @@ impl crate::backend::api::GlFamilyApi for NativeGlProvider {
         // Lost-context names must never be deleted through a restored or
         // different context. The native context owns their final reclamation.
         self.indirect_count_utility.take();
+        self.indirect_rebase_utility.take();
+        self.stencil_pack_programs.take();
+        self.gles_plane_readback_programs.take();
+        self.stencil_extract_utility.take();
         self.indirect_count_scratch.discard_lost();
         self.reset_executable_state();
         Ok(())

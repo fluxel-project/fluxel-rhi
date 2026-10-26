@@ -454,6 +454,80 @@ These exclusions are deliberate support boundaries, not pending GL feature work.
 Completion of the GL backend is judged against its supported domains and their
 documented device, format, extension, and profile limits.
 
+#### Query ownership and publication boundaries
+
+Normal draw, dispatch, binding, and transfer execution must not query driver
+state merely to reconstruct state already owned by the backend. Maintain the
+necessary CPU records or explicitly rebind after a helper. Context identity and
+generation govern those records and every cached native object. Query immutable
+capabilities at initialization and cache program metadata for its link lifetime.
+Cold construction, explicit CPU reads, and native interop retain the queries
+required by their contracts; a getter's name alone does not establish a GPU wait.
+
+A checkpoint inserts a fence without forcing immediate publication. Presentation
+coalesces normal submission; headless work or explicit completion observation
+must publish pending work when needed for progress. Later polls without newly
+pending work must not flush again. A zero-timeout fence observation is still a
+driver call and must remain bounded. Multiple caller-requested waits interleaved
+with new work are separate progress boundaries: RHI cannot enforce an application
+frame-wide flush cap that would prevent them from completing.
+
+Normal GL command errors are observed at publication rather than after every
+command or raster pass. CPU validation still rejects known invalid requests
+before issuing native work. Deferred driver diagnostics describe a command
+interval, and a failed stream invalidates optimistic state and its completions.
+Cold operations observing the shared error flag must preserve that failure
+ownership. The WebGL direct-ESSL dual-source path retains its synchronous draw
+error check because linked secondary-output reflection is unavailable; WGSL uses
+its parsed output facts and does not need that extra per-draw observation.
+
+Do not use `glFinish`. Do not replace removed getters with blocking map/result
+reads, unavailable-query waits, or implicit queue-idle waits. Explicit readback
+and waits retain their required synchronization. GPU-to-buffer transfers are
+GPU commands even when a helper is named "readback"; CPU consumption is a
+separate boundary. Fresh scratch-object validation and external-state restoration
+must be distinguished from redundant checks on already established state.
+
+These ownership and asynchronous-progress principles also apply to other
+backends; each backend's completion primitives retain their own native semantics.
+The [OpenGL specification](https://registry.khronos.org/OpenGL/specs/gl/glspec45.core.pdf)
+and [WebGL 2 specification](https://registry.khronos.org/webgl/specs/latest/2.0/)
+distinguish command submission, completion observation, and result retrieval.
+
+#### Retained queries and their required boundaries
+
+A blanket deletion of `glGet*` is not a maintenance objective. Retain the
+following categories for the stated reasons; do not copy their exceptions into
+ordinary draw, bind, or dispatch loops. The table describes call-site semantics,
+not a guarantee that a driver query is free or always blocks the GPU.
+
+| Retained category | Owner and boundary | Reason and constraint |
+| --- | --- | --- |
+| Version, extensions, limits, shader precision and format probes (`glGetString*`, `glGet*`, WebGL `getParameter`) | Context/device discovery and restoration; native `discovery/`, `probes/`, browser `discovery*` | The implementation is the source of these facts. Cache them per context generation; do not rediscover them while drawing. |
+| Compile/link status, logs, program binaries, uniform locations and block/resource reflection | Program creation/link or first metadata use; `shader_link.rs`, `program_cache.rs`, `push_uniform.rs`, browser `exec_shader.rs` and `owner/resources.rs` | They establish a valid executable and its native binding interface. Reuse successful and absent-location cache entries for the linked program lifetime. First-use work is reported separately from warm execution. |
+| Cold allocation and scratch-object error checks; fresh FBO completeness | Resource creation and validated transfer setup | A newly allocated native object or changed attachment configuration is not an already validated stable FBO. Preserve required construction/rollback checks. Scratch allocation can occur during a frame and its checks must be counted; it is not a reason to check again after each payload copy or cleanup. |
+| Context-global `glGetError` / WebGL `getError` | Publication; necessary cold transactional checks; exceptional failure diagnostics | Ordinary commands accumulate one interval diagnostic. Cold checks cannot consume a preceding stream failure and allow its completions to succeed. An error terminates the normal success path; do not drain error flags in normal draw loops. |
+| Direct ESSL secondary-output validation in WebGL | Only a pipeline using secondary-source blend factors with a direct ESSL fragment shader; `observe_direct_essl_draw` | The existing draw contract rejects a missing secondary output immediately, and WebGL does not expose the required linked-output reflection. Keep the narrow post-draw error check. WGSL already has parsed output facts. Do not replace this with GLSL substring matching, or extend it to every draw. |
+| Query availability/results and timer-disjoint state | Explicit query resolution/observation; native `exec_query.rs`, browser `exec_timer.rs` | The CPU cannot invent GPU results. Check readiness or use ordered GPU query-buffer writes; avoid fetching unavailable CPU results on the normal issuing path. A `glGetQueryObject*` with a query buffer bound writes a GPU destination, not CPU data. |
+| Texture extraction into a bound PBO (`glGetTextureSubImage`, `glGetTexImage`, compressed equivalents) | GPU texture-to-buffer transfer helpers | These getters perform the requested GPU copy. They are not state snapshots and are not replaced merely to eliminate the `Get` prefix. CPU consumption remains a separate operation. |
+| Explicit CPU buffer/pixel reads, map status, and required restoration snapshots | `exec_readback.rs`, `exec_mapping.rs`, host mapping/readback requests | The caller requests CPU data or a mapping. Keep lifetime/range/mapping checks and required state restoration. This path has its own synchronization cost and is excluded from ordinary raster query counts. |
+| Actual external binding/pixel-store state at cold boundaries | Native texture/view construction and scoped interop; browser array/3D texture initialization | External state changes cannot be reconstructed from backend CPU records. Retain bounded snapshots where existing restoration semantics require them. Do not introduce per-draw snapshots of backend-owned state. |
+| Desktop `GL_CLAMP_READ_COLOR` in the legacy PBO fallback | `exec_pbo_readback.rs` | Preserve the actual externally selected clamp mode while temporarily changing it for the transfer. This is a GPU-to-buffer path, not a CPU read. The narrow state query remains and must be counted if that fallback executes. |
+
+Fence completion is also a necessary driver observation even though the current
+path uses zero-time `glClientWaitSync` / WebGL `clientWaitSync` rather than a
+`glGetSync*` call. Neither a different function name nor a pending result makes
+busy polling acceptable. Publication and completion have separate responsibilities.
+
+Removing a retained query requires evidence that its information is already
+owned, its failure/interop semantics are preserved, and the affected GPU output
+and progress paths still work. A zero-query simple-raster test is not evidence
+for every special transfer, allocation, raw-context interaction, or explicit
+readback. Keep those costs separately visible instead of hiding them in the
+warm-frame count. Future optimization of an exceptional path needs its own
+concrete consumer and measured cost; it is not an unfinished obligation to
+remove every getter in this table.
+
 #### Supported execution model
 
 Native desktop GL and EGL/GLES contexts expose Core's scoped native interop
@@ -2096,12 +2170,14 @@ not. The exception changes neither capabilities nor the GPU-count algorithm.
 A 20,000-call native diagnostic measured currentness-guard, raw MakeCurrent and
 empty error-query costs; these are driver-call diagnostics, not frame-rate data.
 
-Ordinary direct-draw driver errors stay sticky until the raster-pass boundary.
-Pass end and abort observe them and preserve indeterminate issued-work facts;
-resource, binding and other native checks retain their own boundaries. WebGL
-pipelines using secondary-source blend factors keep an immediate post-draw check
-to preserve the existing missing-secondary-output error contract. No driver
-error is discarded to improve the hot path.
+Ordinary direct-draw driver errors stay sticky until publication. Pass end
+and abort preserve indeterminate issued-work facts without sampling the driver
+error flag for each pass. Cold result-bearing checks retain their required
+boundaries and shared error ownership. Only direct ESSL WebGL pipelines using
+secondary-source blend factors keep an immediate post-draw check to preserve
+the existing missing-secondary-output error contract. The retained-query table
+in the GL chapter records the exceptions; no driver error is discarded to
+improve the hot path.
 
 WebGL array/3D initialization retains the demonstrated ANGLE first-clear
 workaround. One maximum-sized zero column is converted to a typed source and

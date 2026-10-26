@@ -104,6 +104,6 @@ impl crate::backend::api::GlMultiDrawIndirectApi for NativeGlProvider {
                 );
             }
         }
-        self.driver_error(OP)
+        self.defer_driver_error(OP)
     }
 }

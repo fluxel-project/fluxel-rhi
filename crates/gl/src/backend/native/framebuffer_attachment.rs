@@ -110,7 +110,7 @@ impl NativeGlProvider {
                 glow::COLOR_BUFFER_BIT,
                 glow::NEAREST,
             );
-            let result = self.driver_error(OP);
+            let result = self.defer_driver_error(OP);
             if mapping.is_empty() {
                 self.gl.draw_buffers(&[glow::COLOR_ATTACHMENT0]);
             } else {
@@ -118,7 +118,7 @@ impl NativeGlProvider {
             }
             self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
             self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
-            result.and_then(|()| self.driver_error(OP))
+            result.and_then(|()| self.defer_driver_error(OP))
         }
     }
 
@@ -217,11 +217,11 @@ impl NativeGlProvider {
                 glow::COLOR_BUFFER_BIT,
                 glow::NEAREST,
             );
-            let result = self.driver_error(OP);
+            let result = self.defer_driver_error(OP);
             self.gl.read_buffer(first);
             self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
             self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
-            result.and_then(|()| self.driver_error(OP))
+            result.and_then(|()| self.defer_driver_error(OP))
         }
     }
 
@@ -245,9 +245,7 @@ impl NativeGlProvider {
             if let Some(view) = descriptor.depth_stencil_attachment {
                 let point = match view.aspect {
                     crate::backend::api::GlTextureAspect::DepthOnly => glow::DEPTH_ATTACHMENT,
-                    crate::backend::api::GlTextureAspect::StencilOnly => {
-                        glow::STENCIL_ATTACHMENT
-                    }
+                    crate::backend::api::GlTextureAspect::StencilOnly => glow::STENCIL_ATTACHMENT,
                     crate::backend::api::GlTextureAspect::All => {
                         depth_attachment_point(view.format).ok_or_else(|| {
                             Self::validation(op, "depth attachment format has no attachment point")

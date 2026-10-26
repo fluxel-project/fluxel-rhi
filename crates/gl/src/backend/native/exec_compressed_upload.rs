@@ -170,9 +170,6 @@ impl NativeGlProvider {
         // buffer bounds were checked above. GPU copies precede each upload in
         // the same context; the scratch buffer is deleted only after recording.
         unsafe {
-            let unpack = self.gl.get_parameter_i32(glow::PIXEL_UNPACK_BUFFER_BINDING) as u32;
-            let read = self.gl.get_parameter_i32(glow::COPY_READ_BUFFER_BINDING) as u32;
-            let write = self.gl.get_parameter_i32(glow::COPY_WRITE_BUFFER_BINDING) as u32;
             let scratch = if let CompressedSource::Buffer(buffer, _) = source {
                 let scratch = self.gl.create_buffer().map_err(|_| {
                     Self::validation(OP, "compressed staging buffer allocation failed")
@@ -256,19 +253,10 @@ impl NativeGlProvider {
                     );
                 }
             }
-            let result = self.driver_error(OP);
-            self.gl.bind_buffer(
-                glow::PIXEL_UNPACK_BUFFER,
-                std::num::NonZeroU32::new(unpack).map(glow::NativeBuffer),
-            );
-            self.gl.bind_buffer(
-                glow::COPY_READ_BUFFER,
-                std::num::NonZeroU32::new(read).map(glow::NativeBuffer),
-            );
-            self.gl.bind_buffer(
-                glow::COPY_WRITE_BUFFER,
-                std::num::NonZeroU32::new(write).map(glow::NativeBuffer),
-            );
+            let result = self.defer_driver_error(OP);
+            self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
+            self.gl.bind_buffer(glow::COPY_READ_BUFFER, None);
+            self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, None);
             if let Some(scratch) = scratch {
                 self.gl.delete_buffer(scratch);
             }
@@ -282,7 +270,7 @@ impl NativeGlProvider {
             ] {
                 self.gl.pixel_store_i32(key, value);
             }
-            result.and_then(|()| self.driver_error(OP))
+            result.and_then(|()| self.defer_driver_error(OP))
         }
     }
 }
