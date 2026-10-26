@@ -810,6 +810,8 @@ platform acceptance: real Apple GPU execution and example visual review remain
 unverified. Other backends' evidence cannot close that gap.
 
 TODO — Complete Metal runtime acceptance when a macOS Apple GPU is available:
+macOS is currently unavailable for this work, so keep runtime acceptance open
+until a Mac is available.
 run the applicable Metal conformance and Surface presentation checks, capture
 and review representative example output, and record the exact commit, device,
 OS, driver/runtime, example, inputs, expected and actual results, and diagnostics
