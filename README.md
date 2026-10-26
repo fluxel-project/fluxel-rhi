@@ -113,8 +113,10 @@ For a custom page, build `fluxel-rhi-webgpu` as Wasm, run `wasm-bindgen --target
 web --out-name fluxel_shader_worker`, deploy the generated JavaScript, Wasm and
 snippets together, and call
 `WebGpuInstance::configure_spirv_worker(worker_glue_url)` before creating
-SPIR-V shaders. The worker URL is a backend deployment setting and does not
-enter Core resource or command contracts.
+SPIR-V shaders. Until a worker URL is configured, the WebGPU backend reports
+SPIR-V as unsupported instead of advertising a route that cannot run. The
+worker URL is a backend deployment setting and does not enter Core resource or
+command contracts.
 
 Native GL/GLES completion waits remain on the context owner thread, with
 1–8 ms timer backoff. GLES counted draws reuse bounded context-local scratch

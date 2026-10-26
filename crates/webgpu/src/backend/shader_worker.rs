@@ -33,6 +33,13 @@ extern "C" {
     #[wasm_bindgen(catch, js_name = configureSpirvWorker)]
     fn configure_spirv_worker(url: &str) -> std::result::Result<(), JsValue>;
 
+    #[wasm_bindgen(js_name = hasSpirvWorker)]
+    fn has_spirv_worker() -> bool;
+
+    #[cfg(test)]
+    #[wasm_bindgen(js_name = resetSpirvWorkerConfigurationForTests)]
+    fn reset_spirv_worker_configuration_for_tests();
+
     #[cfg(test)]
     #[wasm_bindgen(js_name = holdNextTranslation)]
     fn hold_next_translation();
@@ -51,6 +58,18 @@ pub(crate) fn configure(url: &str) -> Result<()> {
     }
     configure_spirv_worker(url)
         .map_err(|error| Error::Backend(error.as_string().unwrap_or_else(|| format!("{error:?}"))))
+}
+
+/// Whether this browser execution context currently has a translator module
+/// configured.  The shader route uses this fact so `SpirV` is only advertised
+/// when its required worker deployment asset is available to the backend.
+pub(crate) fn is_configured() -> bool {
+    has_spirv_worker()
+}
+
+#[cfg(test)]
+pub(crate) fn reset_configuration_for_tests() {
+    reset_spirv_worker_configuration_for_tests();
 }
 
 /// JS bundle bootstrap counterpart of `WebGpuInstance::configure_spirv_worker`.

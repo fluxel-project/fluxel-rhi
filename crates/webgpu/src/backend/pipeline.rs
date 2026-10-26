@@ -32,19 +32,7 @@ impl api::ShaderBackend for WebGpu {
     type NagaFuture<'a> = Pin<Box<dyn Future<Output = Result<JsValue>> + 'a>>;
 
     fn shader_route(_: &WebGpuDevice, desc: &api::ShaderDesc) -> api::ShaderRoute {
-        match desc.format {
-            api::ShaderFormat::Wgsl => api::ShaderRoute::Direct(api::ShaderTarget {
-                format: api::ShaderFormat::Wgsl,
-                environment: "browser-webgpu".into(),
-                abi_key: "wgsl-group-binding".into(),
-            }),
-            api::ShaderFormat::SpirV => api::ShaderRoute::Naga(api::ShaderTarget {
-                format: api::ShaderFormat::Wgsl,
-                environment: "browser-webgpu".into(),
-                abi_key: "spirv-to-wgsl-group-binding".into(),
-            }),
-            _ => api::ShaderRoute::Unsupported,
-        }
+        shader_route(desc.format, super::shader_worker::is_configured())
     }
 
     fn compile_direct<'a>(
@@ -103,6 +91,42 @@ impl api::ShaderBackend for WebGpu {
             super::subgroup::remember(&module, &source);
             Ok(module)
         })
+    }
+}
+
+fn shader_route(format: api::ShaderFormat, spirv_worker_configured: bool) -> api::ShaderRoute {
+    match format {
+        api::ShaderFormat::Wgsl => api::ShaderRoute::Direct(api::ShaderTarget {
+            format: api::ShaderFormat::Wgsl,
+            environment: "browser-webgpu".into(),
+            abi_key: "wgsl-group-binding".into(),
+        }),
+        api::ShaderFormat::SpirV if spirv_worker_configured => {
+            api::ShaderRoute::Naga(api::ShaderTarget {
+                format: api::ShaderFormat::Wgsl,
+                environment: "browser-webgpu".into(),
+                abi_key: "spirv-to-wgsl-group-binding".into(),
+            })
+        }
+        _ => api::ShaderRoute::Unsupported,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shader_route;
+    use fluxel_rhi_core::api::{ShaderFormat, ShaderRoute};
+
+    #[test]
+    fn spirv_is_not_advertised_without_its_worker_asset() {
+        assert!(matches!(
+            shader_route(ShaderFormat::SpirV, false),
+            ShaderRoute::Unsupported
+        ));
+        assert!(matches!(
+            shader_route(ShaderFormat::SpirV, true),
+            ShaderRoute::Naga(_)
+        ));
     }
 }
 

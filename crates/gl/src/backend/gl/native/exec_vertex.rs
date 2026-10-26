@@ -98,6 +98,57 @@ impl NativeGlProvider {
             | crate::backend::gl::api::GlFamilyProfile::WebGl2 => false,
         }
     }
+
+    /// Validates the mutable bindings of the VAO that the driver currently
+    /// holds, without cloning its immutable layout/bindings or constructing a
+    /// per-draw metadata vector.
+    ///
+    /// `create_vertex_array` validates the structural layout before publishing
+    /// it. Bindings and allocation lifetimes remain mutable, so this keeps the
+    /// draw-time context, liveness, role, offset, stride-zero and index checks
+    /// that prevent a native draw from reading beyond an allocation.
+    pub(super) fn validate_current_vertex_array_bindings(
+        &self,
+        operation: &'static str,
+    ) -> Result<Option<GlIndexBinding>, GlError> {
+        let bound = self
+            .bound_vertex_array
+            .ok_or_else(|| Self::validation(operation, "no vertex array is bound"))?;
+        let vertex_array = self.vertex_array(operation, bound)?;
+        let index = vertex_array.index;
+
+        // Preserve the native provider's liveness/context checks before the
+        // layout validator uses allocation facts. This has no allocation and
+        // keeps stale resource rejection from becoming a generic missing-facts
+        // validation error.
+        for binding in &vertex_array.bindings {
+            self.buffer(operation, binding.buffer)?;
+        }
+        if let Some(index) = index {
+            self.buffer(operation, index.buffer)?;
+        }
+
+        vertex_array
+            .layout
+            .validate_bound_bindings_with(
+                &vertex_array.bindings,
+                index,
+                self.context_stamp(),
+                |buffer| {
+                    self.buffers
+                        .get(&buffer)
+                        .map(|(_, desc)| GlVertexBufferMetadata {
+                            buffer,
+                            byte_length: desc.size,
+                            usage: desc.usage,
+                        })
+                },
+            )
+            .map_err(|_| {
+                Self::validation(operation, "vertex bindings are incomplete or invalid")
+            })?;
+        Ok(index)
+    }
 }
 
 impl GlVertexApi for NativeGlProvider {

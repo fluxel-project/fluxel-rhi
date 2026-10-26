@@ -269,42 +269,11 @@ impl NativeGlProvider {
         &self,
         operation: &'static str,
     ) -> Result<(), GlError> {
-        use crate::backend::gl::api::GlVertexBufferMetadata;
         if self.pass.is_none() {
             return Err(Self::validation(operation, "no active render pass"));
         }
-        let bound = self
-            .bound_vertex_array
-            .ok_or_else(|| Self::validation(operation, "no vertex array is bound"))?;
-        let vertex_array = self.vertex_array(operation, bound)?;
-        let mut metadata = Vec::with_capacity(
-            vertex_array.bindings.len() + usize::from(vertex_array.index.is_some()),
-        );
-        for binding in &vertex_array.bindings {
-            let (_, desc) = self.buffer(operation, binding.buffer)?;
-            metadata.push(GlVertexBufferMetadata {
-                buffer: binding.buffer,
-                byte_length: desc.size,
-                usage: desc.usage,
-            });
-        }
-        if let Some(index) = vertex_array.index {
-            let (_, desc) = self.buffer(operation, index.buffer)?;
-            metadata.push(GlVertexBufferMetadata {
-                buffer: index.buffer,
-                byte_length: desc.size,
-                usage: desc.usage,
-            });
-        }
-        vertex_array
-            .layout
-            .validate_bindings(
-                &vertex_array.bindings,
-                vertex_array.index,
-                &metadata,
-                self.context_stamp(),
-            )
-            .map_err(|_| Self::validation(operation, "vertex bindings are incomplete or invalid"))
+        self.validate_current_vertex_array_bindings(operation)?;
+        Ok(())
     }
 
     /// Resolves the live indirect command buffer one indirect range names.
@@ -360,13 +329,7 @@ impl GlDrawIndirectApi for NativeGlProvider {
             (raster.program, raster.topology)
         };
         self.validate_indirect_driver(OP, program)?;
-        self.set_push_uniforms(
-            program,
-            &[(
-                naga::back::glsl::FIRST_INSTANCE_BINDING.to_owned(),
-                super::push_uniform::GlPushUniformValue::Uint(vec![0]),
-            )],
-        )?;
+        self.set_first_instance_uniform(program, 0)?;
         // This is a raster verb that lives beside the compute ones, so the
         // program the compute path may have selected since the pipeline was
         // installed is re-asserted here exactly as `draw_raster` does it.
@@ -510,13 +473,7 @@ impl NativeGlProvider {
             (raster.program, raster.topology)
         };
         self.validate_indirect_driver(OP, program)?;
-        self.set_push_uniforms(
-            program,
-            &[(
-                naga::back::glsl::FIRST_INSTANCE_BINDING.to_owned(),
-                super::push_uniform::GlPushUniformValue::Uint(vec![0]),
-            )],
-        )?;
+        self.set_first_instance_uniform(program, 0)?;
         let bound = self
             .bound_vertex_array
             .ok_or_else(|| Self::validation(OP, "no vertex array is bound"))?;

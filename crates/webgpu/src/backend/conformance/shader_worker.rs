@@ -9,8 +9,7 @@ use wasm_bindgen::{JsValue, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::wasm_bindgen_test;
 
-const COUNT_COMPUTE: &[u8] =
-    include_bytes!("../../../tests/assets/worker_count.spv");
+const COUNT_COMPUTE: &[u8] = include_bytes!("../../../tests/assets/worker_count.spv");
 
 #[wasm_bindgen(module = "/src/backend/conformance/shader_worker.js")]
 extern "C" {
@@ -39,6 +38,24 @@ fn configure_worker() {
         .unwrap()
         .configure_spirv_worker(url)
         .unwrap();
+}
+
+#[wasm_bindgen_test(async)]
+async fn spirv_is_unsupported_when_worker_is_not_configured() {
+    // The full browser suite also tests configured-worker paths in this JS
+    // realm, so restore the unconfigured deployment state explicitly.
+    super::super::shader_worker::reset_configuration_for_tests();
+    let instance = WebGpuInstance::new().unwrap();
+    let device = instance.open_default().await.unwrap();
+    let desc = shader_desc(COUNT_COMPUTE);
+    assert!(matches!(
+        device.shader_route(&desc),
+        ShaderRoute::Unsupported
+    ));
+    assert!(matches!(
+        device.shader(desc).await,
+        Err(Error::Unsupported("shader format/profile/ABI"))
+    ));
 }
 
 #[wasm_bindgen_test(async)]

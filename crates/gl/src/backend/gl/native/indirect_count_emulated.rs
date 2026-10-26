@@ -227,13 +227,7 @@ impl NativeGlProvider {
                 operation: OP,
                 reason: "indirect snapshot exceeds native GL buffer limit",
             })?;
-        self.set_push_uniforms(
-            program,
-            &[(
-                naga::back::glsl::FIRST_INSTANCE_BINDING.to_owned(),
-                super::push_uniform::GlPushUniformValue::Uint(vec![0]),
-            )],
-        )?;
+        self.set_first_instance_uniform(program, 0)?;
         self.ensure_program(OP, program)?;
         // SAFETY: all offsets and sizes are validated against live GL allocations;
         // transient objects and every affected binding/program are restored below.

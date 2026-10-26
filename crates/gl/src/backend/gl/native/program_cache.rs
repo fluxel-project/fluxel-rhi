@@ -137,6 +137,15 @@ impl NativeGlProvider {
                         }
                     };
                     let id = ProgramId::new(self.context_stamp(), slot, 0);
+                    // Keep the same generated-uniform cache as source-linked
+                    // programs: a restored binary is a complete linked program.
+                    let first_instance_uniform = self
+                        .gl
+                        .get_uniform_location(raw, naga::back::glsl::FIRST_INSTANCE_BINDING);
+                    if let Err(error) = self.binary_driver_error(OP) {
+                        self.gl.delete_program(raw);
+                        return Err(error);
+                    }
                     self.programs.insert(
                         id,
                         NativeProgram {
@@ -144,6 +153,8 @@ impl NativeGlProvider {
                             raw,
                             descriptor: descriptor.clone(),
                             reflection: reflection.clone(),
+                            first_instance_uniform,
+                            first_instance_value: None,
                         },
                     );
                     return Ok((id, reflection, None, true));

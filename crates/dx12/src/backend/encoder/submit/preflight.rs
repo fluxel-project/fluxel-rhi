@@ -6,6 +6,10 @@
 
 use super::*;
 
+#[cfg(all(test, windows, feature = "hardware-tests"))]
+#[path = "preflight_bench.rs"]
+mod benchmark;
+
 pub(super) struct PreparedPacket {
     pub(super) coverage: Vec<[Option<usize>; 2]>,
     pub(super) external_waits: Vec<Vec<(ID3D12Fence, u64)>>,

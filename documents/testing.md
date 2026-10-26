@@ -88,11 +88,33 @@ cargo test -p fluxel-rhi-webgpu --target wasm32-unknown-unknown -- --nocapture
 cargo test -p fluxel-rhi --target wasm32-unknown-unknown --features 'webgpu examples' --test webgpu_triangle -- --nocapture
 ```
 
+The opt-in Review3 WebGPU upload diagnostic emits browser-side recording and
+completion time plus staging-page allocations for 1/10/100 encoders and
+1/100/1000 small writes. It is intentionally outside ordinary conformance:
+
+```powershell
+cargo test -p fluxel-rhi-webgpu --target wasm32-unknown-unknown --features review3-upload-benchmark review3_upload_arena_timing_matrix -- --nocapture
+```
+
+Use the same Chrome/WebDriver environment as the preceding WebGPU command.
+
 Run each numbered `webgpu_*` integration test for its scene. These tests present three frames through a real browser GPU device. Keep the corresponding browser screenshot and compare it with local C++ reference captures while excluding the C++ HUD. Examples 05, 13, 14, and 15 have explicit browser visual fallbacks; their tests do not prove the unavailable push-constant, secondary-command, runtime-descriptor-array, or multiview capabilities.
 
 Record the commit, platform, adapter, command, validation result, and observed image or readback for each hardware claim. Classify the result as pass, unsupported, skipped, or failure. Keep portable API tests in `crates/core/src/api/tests.rs`; put native checks beside the backend they exercise.
 
 Metal validation additionally requires a macOS SDK link, focused real-GPU readback assertions, and all 15 native examples with inspected screenshots before the backend can be marked complete. An Apple-target cross-check from another host proves type correctness only.
+
+The conditional Review3 Metal Archive Prepare item has an opt-in Apple GPU
+diagnostic. It compiles the MSL function before sampling, uses a fresh archive
+for each sample, and times only compute archive Prepare/lease setup; it prints
+P50/P95/P99 across 51 samples. Run it on a Mac with Metal binary archive
+support:
+
+```sh
+cargo test -p fluxel-rhi-metal --features hardware-tests --lib metal_archive_prepare_latency_percentiles -- --ignored --nocapture
+```
+
+This measures Archive Prepare, not native PSO compilation or GPU execution.
 
 ## Android emulator example checks
 

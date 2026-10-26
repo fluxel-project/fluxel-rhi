@@ -30,6 +30,7 @@ mod stencil_copy;
 pub(super) mod unaligned;
 #[path = "command/upload.rs"]
 mod upload;
+pub(super) use upload::{UploadPage, UploadPagePool};
 
 use super::{
     instance::{WebGpu, WebGpuDevice},

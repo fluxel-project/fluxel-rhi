@@ -5,6 +5,7 @@
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
+    collections::HashMap,
     future::Future,
     marker::PhantomData,
     ops::Range,
@@ -129,7 +130,13 @@ pub struct ImmediateSession<B: ImmediateBackend> {
     failed: bool,
     terminal: Option<ImmediateRunOutcome<B>>,
     failure_effect: Option<StepEffect>,
-    step_checkpoints: Vec<(StepId, Vec<Checkpoint<B>>)>,
+    /// Membership is indexed by the plan-local `StepId::index`. It is built
+    /// after request validation, so execution does not rescan a possibly long
+    /// completion request for every closed step.
+    requested_steps: Option<Box<[bool]>>,
+    /// Keep only the checkpoints actually requested. The key is plan-local
+    /// because a session owns exactly one validated plan.
+    step_checkpoints: HashMap<u32, Vec<Checkpoint<B>>>,
     closed: bool,
 }
 impl<B: ImmediateBackend> Device<B> {
@@ -146,6 +153,16 @@ impl<B: ImmediateBackend> Device<B> {
         // explicit transitions supplied by the renderer.
         plan.validate_for_execution(self)?;
         completion.validate(&plan)?;
+        let requested_steps = match &completion {
+            CompletionRequest::Steps(requested) => {
+                let mut membership = vec![false; plan.steps.len()];
+                for step in requested.iter() {
+                    membership[step.index as usize] = true;
+                }
+                Some(membership.into_boxed_slice())
+            }
+            _ => None,
+        };
         Ok(ImmediateSession {
             device: self.clone(),
             plan,
@@ -156,24 +173,25 @@ impl<B: ImmediateBackend> Device<B> {
             failed: false,
             terminal: None,
             failure_effect: None,
-            step_checkpoints: Vec::new(),
+            requested_steps,
+            step_checkpoints: HashMap::new(),
             closed: false,
         })
     }
 }
 impl<B: ImmediateBackend> ImmediateSession<B> {
     fn requested_step_checkpoint(&mut self, step: StepId) -> Option<ImmediateRunOutcome<B>> {
-        let CompletionRequest::Steps(requested) = &self.completion else {
+        let Some(requested) = self.requested_steps.as_deref() else {
             return None;
         };
-        if !requested.contains(&step) {
+        if !requested.get(step.index as usize).copied().unwrap_or(false) {
             return None;
         }
         let request = CompletionRequest::Steps(Arc::from([step]));
         let issued = self.prefix(self.issued_count);
         match B::checkpoints(&self.device.native, &self.plan, &issued, &request) {
             CheckpointOutcome::Covered(checkpoints) => {
-                self.step_checkpoints.push((step, checkpoints));
+                self.step_checkpoints.insert(step.index, checkpoints);
                 None
             }
             CheckpointOutcome::Indeterminate(uncertain) => {
@@ -353,10 +371,10 @@ impl<B: ImmediateBackend> ImmediateSession<B> {
             CompletionRequest::Steps(requested) => {
                 let mut checkpoints = Vec::new();
                 for step in requested.iter() {
-                    let Some((_, checkpoints_for_step)) = self
+                    let Some(checkpoints_for_step) = self
                         .step_checkpoints
-                        .iter()
-                        .find(|(recorded, points)| recorded == step && !points.is_empty())
+                        .get(&step.index)
+                        .filter(|points| !points.is_empty())
                     else {
                         // Preserve the established conservative Steps path for
                         // backends that returned no close-time point.

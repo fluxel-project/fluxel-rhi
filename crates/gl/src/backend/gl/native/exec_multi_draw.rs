@@ -47,13 +47,7 @@ impl crate::backend::gl::api::GlMultiDrawIndirectApi for NativeGlProvider {
             (raster.program, raster.topology)
         };
         self.validate_indirect_driver(OP, program)?;
-        self.set_push_uniforms(
-            program,
-            &[(
-                naga::back::glsl::FIRST_INSTANCE_BINDING.to_owned(),
-                super::push_uniform::GlPushUniformValue::Uint(vec![0]),
-            )],
-        )?;
+        self.set_first_instance_uniform(program, 0)?;
         self.ensure_program(OP, program)?;
         let bound = self
             .bound_vertex_array

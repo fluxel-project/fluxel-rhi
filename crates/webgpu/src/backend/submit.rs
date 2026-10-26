@@ -19,7 +19,7 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 
 use super::{
-    command::WebGpuEncoder,
+    command::{UploadPage, WebGpuEncoder},
     instance::{WebGpu, WebGpuDevice},
     js,
 };
@@ -27,6 +27,7 @@ use super::{
 pub struct RecordedWork {
     command_buffer: JsValue,
     keep_alive: Vec<JsValue>,
+    upload_pages: Vec<UploadPage>,
 }
 
 pub struct Completion(Rc<RefCell<CompletionInner>>, Option<u64>);
@@ -55,6 +56,7 @@ struct CompletionInner {
 pub(super) struct InFlight {
     pub(super) completion: Completion,
     _resources: Vec<JsValue>,
+    upload_pages: Vec<UploadPage>,
 }
 
 impl Completion {
@@ -161,11 +163,20 @@ fn queue_completion(device: &WebGpuDevice) -> Result<Completion> {
 }
 
 fn retire(device: &WebGpuDevice) {
-    device
-        .0
-        .in_flight
-        .borrow_mut()
-        .retain(|flight| !flight.completion.0.borrow().native_settled);
+    let flights = std::mem::take(&mut *device.0.in_flight.borrow_mut());
+    let mut pending = Vec::with_capacity(flights.len());
+    let mut pool = device.0.upload_page_pool.borrow_mut();
+    for flight in flights {
+        if flight.completion.0.borrow().native_settled {
+            for page in flight.upload_pages {
+                pool.recycle(page);
+            }
+        } else {
+            pending.push(flight);
+        }
+    }
+    drop(pool);
+    *device.0.in_flight.borrow_mut() = pending;
 }
 
 /// Issues one browser queue boundary and retains its native objects until the
@@ -177,6 +188,7 @@ fn submit_batch(
     device: &WebGpuDevice,
     commands: Array,
     resources: Vec<JsValue>,
+    upload_pages: Vec<UploadPage>,
 ) -> Result<Completion> {
     if let Err(error) = js::call1(&device.0.queue, "submit", &commands.into()) {
         device.0.uncertain_resources.borrow_mut().extend(resources);
@@ -192,6 +204,7 @@ fn submit_batch(
     device.0.in_flight.borrow_mut().push(InFlight {
         completion: point.clone(),
         _resources: resources,
+        upload_pages,
     });
     Ok(point)
 }
@@ -210,6 +223,7 @@ fn flush_batch(
     frontier: api::StepId,
     commands: &mut Array,
     resources: &mut Vec<JsValue>,
+    upload_pages: &mut Vec<UploadPage>,
     pending_presents: &mut Vec<(api::StepId, api::PresentBinding<WebGpu>)>,
     presents: &mut Vec<api::PresentReceipt>,
     issued_boundaries: &mut Vec<(api::StepId, Completion)>,
@@ -218,6 +232,7 @@ fn flush_batch(
         device,
         std::mem::replace(commands, Array::new()),
         std::mem::take(resources),
+        std::mem::take(upload_pages),
     )?;
     for (step, mut binding) in pending_presents.drain(..) {
         // SAFETY: queue submission for this batch succeeded first; a failed
@@ -292,6 +307,7 @@ impl api::DeferredBackend for WebGpu {
         Ok(RecordedWork {
             command_buffer,
             keep_alive: encoder.keep_alive,
+            upload_pages: encoder.upload_pages,
         })
     }
 
@@ -339,6 +355,7 @@ impl api::DeferredBackend for WebGpu {
         let segmented = matches!(completion, api::CompletionRequest::Steps(_));
         let mut commands = Array::new();
         let mut resources = Vec::new();
+        let mut upload_pages = Vec::new();
         let mut presents = Vec::new();
         let mut accepted = Vec::new();
         let mut pending_presents: Vec<(api::StepId, api::PresentBinding<WebGpu>)> = Vec::new();
@@ -355,6 +372,7 @@ impl api::DeferredBackend for WebGpu {
                         commands.push(&native.command_buffer);
                         resources.push(native.command_buffer);
                         resources.extend(native.keep_alive);
+                        upload_pages.extend(native.upload_pages);
                     }
                 }
                 api::StepPayload::Present(binding) => pending_presents.push((step, binding)),
@@ -367,6 +385,7 @@ impl api::DeferredBackend for WebGpu {
                     step,
                     &mut commands,
                     &mut resources,
+                    &mut upload_pages,
                     &mut pending_presents,
                     &mut presents,
                     &mut issued_boundaries,
@@ -388,6 +407,7 @@ impl api::DeferredBackend for WebGpu {
                 frontier,
                 &mut commands,
                 &mut resources,
+                &mut upload_pages,
                 &mut pending_presents,
                 &mut presents,
                 &mut issued_boundaries,

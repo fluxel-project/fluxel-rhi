@@ -14,6 +14,7 @@ use crate::backend::gl::api::{
     GlTextureTarget, ProgramId, SamplerId, ShaderId, TextureId, validate_texture_unit,
     validate_uniform_buffer_binding, validate_uniform_range,
 };
+use glow::HasContext as _;
 
 /// The sampler uniform types this backend can bind and reflect. The closed
 /// list matches the shared contract; integer and cube-shadow sampler types
@@ -167,6 +168,21 @@ impl GlShaderApi for NativeGlProvider {
         // Shaders may be deleted once attached; the program owns its binaries.
         self.delete_shaders(&compiled);
         let (raw, reflection) = linked?;
+        // Resolve the generated instance-base uniform while linking is already
+        // a cold operation.  This name is owned by the Naga GL lowering, not
+        // by application push-constant reflection.
+        // SAFETY: `raw` is the successfully linked program for this current
+        // context and get_uniform_location does not require it to be current.
+        let first_instance_uniform = unsafe {
+            self.gl
+                .get_uniform_location(raw, naga::back::glsl::FIRST_INSTANCE_BINDING)
+        };
+        if let Err(error) = self.driver_error(OP) {
+            // SAFETY: `raw` belongs to this current context and has not been
+            // placed in the executable table on this failure path.
+            unsafe { self.gl.delete_program(raw) };
+            return Err(error);
+        }
         let slot = self.slot(OP)?;
         let id = ProgramId::new(self.context_stamp(), slot, 0);
         self.programs.insert(
@@ -176,6 +192,8 @@ impl GlShaderApi for NativeGlProvider {
                 raw,
                 descriptor: descriptor.clone(),
                 reflection: reflection.clone(),
+                first_instance_uniform,
+                first_instance_value: None,
             },
         );
         Ok((id, reflection))

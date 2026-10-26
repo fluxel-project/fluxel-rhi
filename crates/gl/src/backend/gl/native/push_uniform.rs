@@ -19,6 +19,42 @@ pub(crate) enum GlPushUniformValue {
 }
 
 impl NativeGlProvider {
+    /// Updates Naga's internal first-instance uniform when its value changes.
+    ///
+    /// Unlike application push uniforms, this has one fixed scalar type and a
+    /// link-time-known name.  Keeping its location and last submitted value in
+    /// the program record removes allocation, lookup, upload, and error-query
+    /// work from the common `first_instance == 0` draw path.  Changed values
+    /// still retain the normal immediate driver-error boundary.
+    pub(crate) fn set_first_instance_uniform(
+        &mut self,
+        program: ProgramId,
+        first_instance: u32,
+    ) -> Result<(), GlError> {
+        const OP: &str = "set-first-instance-uniform";
+        self.assert_ready(OP)?;
+        let (location, previous) = {
+            let record = self.program(OP, program)?;
+            (record.first_instance_uniform, record.first_instance_value)
+        };
+        let Some(location) = location else {
+            return Ok(());
+        };
+        if previous == Some(first_instance) {
+            return Ok(());
+        }
+        self.ensure_program(OP, program)?;
+        // SAFETY: `location` was resolved from this live program at link time,
+        // that program is current, and this generated uniform is a scalar uint.
+        unsafe { self.gl.uniform_1_u32(Some(&location), first_instance) };
+        self.driver_error(OP)?;
+        self.programs
+            .get_mut(&program)
+            .expect("live program resolved before uniform upload")
+            .first_instance_value = Some(first_instance);
+        Ok(())
+    }
+
     /// Uploads the mip count associated with a texture-size lowering uniform.
     /// An optimized-away uniform has no location and requires no upload.
     pub(crate) fn set_texture_mip_count(

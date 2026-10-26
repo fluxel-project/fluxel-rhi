@@ -44,7 +44,8 @@ pub(crate) struct NativeGlProvider {
     pub(super) indexed_blend: super::indexed_blend::IndexedBlendExtensions,
     pub(super) indirect_count: Option<super::indirect_count::IndirectCountFns>,
     pub(super) multi_draw_indirect: Option<super::multi_draw_indirect::MultiDrawIndirectFns>,
-    pub(crate) indirect_count_scratch: super::indirect_count_emulated::scratch::IndirectCountScratchPool,
+    pub(crate) indirect_count_scratch:
+        super::indirect_count_emulated::scratch::IndirectCountScratchPool,
     pub(super) indirect_count_utility: Option<super::indirect_count_emulated::IndirectCountUtility>,
     pub(super) multiview: Option<super::multiview::NativeMultiview>,
     pub(super) multisample_array: Option<super::multisample_array::StorageFn>,
@@ -226,6 +227,14 @@ pub(super) struct NativeProgram {
     /// Link-time logical-to-native assignments.  Binding flushes must consult
     /// this instead of treating a RHI slot as a GL binding point.
     pub(super) reflection: crate::backend::gl::api::GlProgramReflection,
+    /// The compiler-generated first-instance uniform is immutable in shape for
+    /// a linked program. Resolve it once so ordinary raster draws do not turn
+    /// a fixed internal name into a driver lookup on every call.
+    pub(super) first_instance_uniform: Option<glow::NativeUniformLocation>,
+    /// The value last successfully submitted to `first_instance_uniform`.
+    /// A missing location is deliberately distinct from a zero value: shaders
+    /// may optimize this generated uniform away.
+    pub(super) first_instance_value: Option<u32>,
 }
 
 /// A created VAO with its structural layout and last recorded index binding.

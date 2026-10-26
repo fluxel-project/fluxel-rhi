@@ -13,6 +13,12 @@ export function configureSpirvWorker(url) {
   const normalized = new URL(url, globalThis.location?.href).href;
   if (configuredUrl !== normalized) { configuredUrl = normalized; configurationEpoch += 1; }
 }
+export function hasSpirvWorker() { return typeof configuredUrl === 'string' && configuredUrl.length > 0; }
+export function resetSpirvWorkerConfigurationForTests() {
+  configuredUrl = null;
+  configurationEpoch += 1;
+  disposeWorker();
+}
 function settle(request, value) { if (!request.settled) { request.settled = true; request.resolve(value); } }
 function fail(request, error) { if (!request.settled) { request.settled = true; request.reject(error instanceof Error ? error : new Error(String(error))); } }
 function disposeWorker() { if (worker) worker.terminate(); worker = null; workerUrl = null; }

@@ -21,7 +21,7 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 
 use super::{
-    command::WebGpuEncoder,
+    command::{UploadPagePool, WebGpuEncoder},
     compute::WebGpuCompute,
     indirect::WebGpuExtras,
     js,
@@ -94,6 +94,8 @@ pub(super) struct DeviceState {
     pub(super) queue: JsValue,
     pub(super) next_submission: Cell<u64>,
     pub(super) in_flight: RefCell<Vec<InFlight>>,
+    /// Pages leave this arena only after the queue completion that used them.
+    pub(super) upload_page_pool: RefCell<UploadPagePool>,
     pub(super) uncertain_resources: RefCell<Vec<JsValue>>,
     pub(super) lost: Cell<bool>,
     pub(super) validation_error: RefCell<Option<String>>,
@@ -352,6 +354,7 @@ impl InstanceBackend for WebGpu {
                 queue,
                 next_submission: Cell::new(1),
                 in_flight: RefCell::new(Vec::new()),
+                upload_page_pool: RefCell::new(UploadPagePool::new()),
                 uncertain_resources: RefCell::new(Vec::new()),
                 lost: Cell::new(false),
                 validation_error: RefCell::new(None),

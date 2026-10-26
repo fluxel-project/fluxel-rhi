@@ -8,8 +8,7 @@ use super::provider::{ActiveRaster, NativeGlProvider};
 use crate::backend::gl::api::{
     GlCullMode, GlDepthStencilState, GlDrawCommand, GlError, GlFamilyApi as _, GlFamilyProfile,
     GlFrontFace, GlMultiDraw, GlMultiDrawApi, GlRasterCommandApi, GlRasterPipeline, GlRasterState,
-    GlRasterValidationInfo, GlScissorRect, GlStencilFaceState, GlVertexBufferMetadata, GlViewport,
-    issue_single_draws,
+    GlRasterValidationInfo, GlScissorRect, GlStencilFaceState, GlViewport, issue_single_draws,
 };
 use crate::backend::gl::state::RasterPipelineDiff;
 #[path = "exec_raster/lowering.rs"]
@@ -45,33 +44,36 @@ impl NativeGlProvider {
             .bound_vertex_array
             .ok_or_else(|| Self::validation(OP, "no vertex array is bound"))?;
         let array = self.vertex_array(OP, bound)?;
-        let original = array.bindings.clone();
         let index = array.index;
-        let mut shifted = original.clone();
-        for binding in &mut shifted {
-            if let Some(layout) = array.layout.buffers.iter().find(|layout| {
-                layout.slot == binding.slot && layout.step_mode == GlVertexStepMode::Instance
-            }) {
-                binding.offset = binding
-                    .offset
-                    .checked_add(u64::from(first_instance) * u64::from(layout.stride))
-                    .ok_or_else(|| Self::validation(OP, "instance offset overflow"))?;
+        let original = if first_instance != 0 {
+            Some(array.bindings.clone())
+        } else {
+            None
+        };
+        let shifted = if let Some(original) = original.as_ref() {
+            let mut shifted = original.clone();
+            for binding in &mut shifted {
+                if let Some(layout) = array.layout.buffers.iter().find(|layout| {
+                    layout.slot == binding.slot && layout.step_mode == GlVertexStepMode::Instance
+                }) {
+                    binding.offset = binding
+                        .offset
+                        .checked_add(u64::from(first_instance) * u64::from(layout.stride))
+                        .ok_or_else(|| Self::validation(OP, "instance offset overflow"))?;
+                }
             }
-        }
-        if first_instance != 0 {
-            self.bind_vertex_array(bound, &shifted, index)?;
+            Some(shifted)
+        } else {
+            None
+        };
+        if let Some(shifted) = shifted.as_ref() {
+            self.bind_vertex_array(bound, shifted, index)?;
         }
         let result = self
-            .set_push_uniforms(
-                program,
-                &[(
-                    naga::back::glsl::FIRST_INSTANCE_BINDING.to_owned(),
-                    super::push_uniform::GlPushUniformValue::Uint(vec![first_instance]),
-                )],
-            )
+            .set_first_instance_uniform(program, first_instance)
             .and_then(|()| self.draw_direct_impl(draw, base_vertex));
-        let restore = if first_instance != 0 {
-            self.bind_vertex_array(bound, &original, index)
+        let restore = if let Some(original) = original.as_ref() {
+            self.bind_vertex_array(bound, original, index)
         } else {
             Ok(())
         };
@@ -103,34 +105,8 @@ impl NativeGlProvider {
         // the install-time identity is a dead object by now.  The provider's
         // record of what the driver holds is the fact this draw needs, and it is
         // also the array whose index binding and layout the draw must read.
-        let bound = self
-            .bound_vertex_array
-            .ok_or_else(|| Self::validation(OP, "no vertex array is bound"))?;
         let mode = topology_mode(topology);
-        let vertex_array = self.vertex_array(OP, bound)?;
-        let index = vertex_array.index;
-        let bindings = vertex_array.bindings.clone();
-        let layout = vertex_array.layout.clone();
-        let mut metadata = Vec::with_capacity(bindings.len() + usize::from(index.is_some()));
-        for binding in &bindings {
-            let entry = self.buffer(OP, binding.buffer)?;
-            metadata.push(GlVertexBufferMetadata {
-                buffer: binding.buffer,
-                byte_length: entry.1.size,
-                usage: entry.1.usage,
-            });
-        }
-        if let Some(index) = index {
-            let entry = self.buffer(OP, index.buffer)?;
-            metadata.push(GlVertexBufferMetadata {
-                buffer: index.buffer,
-                byte_length: entry.1.size,
-                usage: entry.1.usage,
-            });
-        }
-        layout
-            .validate_bindings(&bindings, index, &metadata, self.context_stamp())
-            .map_err(|_| Self::validation(OP, "vertex bindings are incomplete or invalid"))?;
+        let index = self.validate_current_vertex_array_bindings(OP)?;
         // SAFETY: current-context contract; counts, instances, and index spans
         // are checked against the recorded allocations before any draw call.
         unsafe {

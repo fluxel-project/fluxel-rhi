@@ -11,6 +11,7 @@ use std::{
     future::Future,
     sync::Arc,
     task::{Context, Poll, Wake, Waker},
+    time::Instant,
 };
 
 use fluxel_host::{Window, WindowConfig};
@@ -97,10 +98,12 @@ fn wgl_typed_device_surface_and_empty_immediate_step() {
     ));
 }
 
-#[test]
-#[ignore = "requires an explicit WGL hardware-test run"]
-fn wgl_clear_ignores_and_restores_pipeline_write_masks() {
-    use super::{provider::NativeGlProvider, wgl::WglContextSurface};
+/// Runs the existing native-mask fixture and, when requested, samples the
+/// direct-draw hot path after its program and first-instance uniform are warm.
+/// The loop has a one-pixel scissor so it measures CPU issue/driver-call cost
+/// without making fragment work the dominant source of back pressure.
+fn wgl_clear_ignores_and_restores_pipeline_write_masks_fixture(benchmark_counts: &[u32]) {
+    use super::{context::NativeContextOwner, provider::NativeGlProvider, wgl::WglContextSurface};
     use crate::backend::gl::api::*;
     use glow::HasContext as _;
     use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -156,7 +159,12 @@ fn wgl_clear_ignores_and_restores_pipeline_write_masks() {
             .is_some_and(|facts| facts.renderable)
     );
     // SAFETY: the window and context outlive the provider, and the context stays current on this thread.
-    let mut provider = unsafe { NativeGlProvider::from_discovered(gl, discovery, unmap) };
+    let mut provider = unsafe {
+        NativeGlProvider::from_current(gl, stamp, unmap, |name| {
+            NativeContextOwner::gl_proc(&context, name)
+        })
+    }
+    .expect("load native entry points for WGL provider");
     let depth_desc = GlTextureDesc {
         dimension: GlTextureDimension::D2,
         extent: GlExtent3d {
@@ -357,6 +365,44 @@ fn wgl_clear_ignores_and_restores_pipeline_write_masks() {
             instance_count: 1,
         }))
         .unwrap();
+    if !benchmark_counts.is_empty() {
+        let mut benchmark_pipeline = pipeline.clone();
+        benchmark_pipeline.state.scissor = Some(GlScissorRect {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        });
+        provider.set_raster_pipeline(&benchmark_pipeline).unwrap();
+        // Warm the exact pipeline state that the timed loop uses. This makes
+        // the reported call count apply to every measured draw rather than
+        // folding a possible first zero-value uniform upload into the sample.
+        provider
+            .draw_raster(GlDrawCommand::NonIndexed(GlNonIndexedDraw {
+                first_vertex: 0,
+                vertex_count: 3,
+                instance_count: 1,
+            }))
+            .unwrap();
+    }
+    for &count in benchmark_counts {
+        let start = Instant::now();
+        for _ in 0..count {
+            provider
+                .draw_raster(GlDrawCommand::NonIndexed(GlNonIndexedDraw {
+                    first_vertex: 0,
+                    vertex_count: 3,
+                    instance_count: 1,
+                }))
+                .unwrap();
+        }
+        let elapsed = start.elapsed();
+        println!(
+            "REVIEW3_GL_DIRECT_DRAW count={count} elapsed_ns={} ns_per_draw={:.3} expected_hot_calls=draw_arrays:1,get_uniform_location:0,uniform:0,get_error:0",
+            elapsed.as_nanos(),
+            elapsed.as_nanos() as f64 / f64::from(count),
+        );
+    }
     // SAFETY: the same framebuffer remains bound; a draw at depth 0.5 must not replace the clear when the pipeline mask is restored.
     unsafe {
         provider.gl.read_pixels(
@@ -389,4 +435,22 @@ fn wgl_clear_ignores_and_restores_pipeline_write_masks() {
     provider.destroy_framebuffer(framebuffer).unwrap();
     provider.destroy_texture_resource(depth).unwrap();
     provider.destroy_render_buffer(color).unwrap();
+}
+
+#[test]
+#[ignore = "requires an explicit WGL hardware-test run"]
+fn wgl_clear_ignores_and_restores_pipeline_write_masks() {
+    wgl_clear_ignores_and_restores_pipeline_write_masks_fixture(&[]);
+}
+
+/// Review3 diagnostic for the already-warm direct native raster path.
+///
+/// The expected call-count line follows the checked source path: each draw
+/// reaches exactly one `glDrawArrays`; cached zero first-instance skips the
+/// uniform location lookup, uniform upload and immediate error query. The
+/// fixture's final `glGetError` still checks the pass error boundary.
+#[test]
+#[ignore = "requires an explicit WGL hardware-test run"]
+fn wgl_review3_direct_draw_cpu_cost() {
+    wgl_clear_ignores_and_restores_pipeline_write_masks_fixture(&[10_000, 100_000]);
 }

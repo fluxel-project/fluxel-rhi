@@ -13,6 +13,11 @@ repository = "https://github.com/fluxel-project/fluxel-rhi"
 # device or moving any browser GPU object off its owner thread.
 crate-type = ["rlib", "cdylib"]
 
+[features]
+# Opt-in real-browser diagnostic; it is intentionally excluded from ordinary
+# WebGPU conformance because its 100×1000 case is a workload measurement.
+review3-upload-benchmark = []
+
 [dependencies]
 fluxel-rhi-core = { path = "../core" }
 
