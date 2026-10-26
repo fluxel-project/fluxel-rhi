@@ -809,6 +809,14 @@ graphics/compute multi-queue route is described below. The source contains a
 platform acceptance: real Apple GPU execution and example visual review remain
 unverified. Other backends' evidence cannot close that gap.
 
+TODO — Complete Metal runtime acceptance when a macOS Apple GPU is available:
+run the applicable Metal conformance and Surface presentation checks, capture
+and review representative example output, and record the exact commit, device,
+OS, driver/runtime, example, inputs, expected and actual results, and diagnostics
+under `Temp/证据/metal/<commit>/`. Keep the runtime acceptance status open until
+these checks pass; Apple-target compilation and source review alone do not close
+this TODO.
+
 ## Shared observable semantics and their reasons
 
 ### Coordinates belong to the backend adaptation
