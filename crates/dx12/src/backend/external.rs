@@ -361,6 +361,15 @@ fn transition_texture(
             return Err(Error::Unsupported("DX12 compute queue resource state"));
         }
     }
+    // External textures use the same resource-wide ordering as Core textures.
+    if encoder::needs_uav_barrier(
+        before,
+        after,
+        transition.usage.from.accesses,
+        transition.usage.to.accesses,
+    ) {
+        encoder::uav_barrier(&encoder.list, &texture.0.resource);
+    }
     for layer in transition.layers.clone() {
         for mip in transition.mips.clone() {
             for plane in 0..2 {

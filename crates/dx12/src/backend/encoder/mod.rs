@@ -64,7 +64,8 @@ pub(super) use mipmap::{linear_mip_blit, validate_mip_blit};
 pub(super) use raster::barrier;
 pub(crate) use secondary::{Dx12SecondaryEncoder, Dx12SecondaryWork};
 pub(super) use transition::{
-    barrier_sub, buffer_state, copy_location, texture_state, texture_upload_buffer,
+    barrier_sub, buffer_state, copy_location, needs_uav_barrier, texture_state,
+    texture_upload_buffer, uav_barrier,
 };
 
 fn restore_after_internal_draw(encoder: &mut Dx12Encoder) -> Result<(), Error> {

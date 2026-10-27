@@ -91,6 +91,14 @@ impl fluxel_rhi_core::backend::CommandBackend for Dx12 {
                         validate_compute_states(encoder, before, after)?;
                         (before, after)
                     };
+                    if transition::needs_uav_barrier(
+                        before,
+                        after,
+                        barrier_op.usage.from.accesses,
+                        barrier_op.usage.to.accesses,
+                    ) {
+                        transition::uav_barrier(&encoder.list, &buffer.resource);
+                    }
                     barrier(&encoder.list, &buffer.resource, before, after);
                     encoder.buffers.push(buffer.clone());
                 }
@@ -158,6 +166,16 @@ impl fluxel_rhi_core::backend::CommandBackend for Dx12 {
                         return Err(Error::Unsupported(
                             "DX12 attachment discard requires graphics queue",
                         ));
+                    }
+                    // Legacy UAV barriers cover the entire resource. Emit at
+                    // most one, outside the mip/layer/plane transition loop.
+                    if transition::needs_uav_barrier(
+                        before,
+                        after,
+                        barrier_op.usage.from.accesses,
+                        barrier_op.usage.to.accesses,
+                    ) {
+                        transition::uav_barrier(&encoder.list, &texture.0.resource);
                     }
                     for layer in barrier_op.target.layers.clone() {
                         for mip in barrier_op.target.mips.clone() {

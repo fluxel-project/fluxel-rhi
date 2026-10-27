@@ -1,6 +1,55 @@
 use super::*;
 
 #[test]
+fn same_state_uav_ordering_requires_a_write_dependency() {
+    let read = api::AccessMask::SHADER_READ;
+    let write = api::AccessMask::SHADER_WRITE;
+    let uav = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    for (from, to, expected) in [
+        (read, read, false),
+        (write, read, true),
+        (read, write, true),
+        (write, write, true),
+        (read | write, read | write, true),
+        (
+            api::AccessMask::ACCEL_WRITE,
+            api::AccessMask::ACCEL_WRITE,
+            true,
+        ),
+    ] {
+        assert_eq!(needs_uav_barrier(uav, uav, from, to), expected);
+    }
+    assert!(!needs_uav_barrier(
+        uav,
+        D3D12_RESOURCE_STATE_COPY_SOURCE,
+        write,
+        read
+    ));
+    assert!(!needs_uav_barrier(
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        api::AccessMask::COPY_WRITE,
+        api::AccessMask::COPY_WRITE,
+    ));
+}
+
+#[test]
+fn general_layout_read_scopes_do_not_require_uav_ordering() {
+    let uses = api::TextureUses {
+        stages: api::StageMask::COMPUTE,
+        accesses: api::AccessMask::SHADER_READ,
+    };
+    let state = texture_state(api::ImageLayout::General, uses).unwrap();
+    assert_eq!(state, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    assert!(!needs_uav_barrier(
+        state,
+        state,
+        uses.accesses,
+        uses.accesses
+    ));
+}
+
+#[test]
 fn texture_shader_reads_cover_all_requested_shader_stages() {
     for stage in [
         api::StageMask::VERTEX,

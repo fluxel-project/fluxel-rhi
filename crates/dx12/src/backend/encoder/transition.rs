@@ -7,6 +7,42 @@
 //! own fixed states outside this cross-operation contract.
 
 use super::*;
+
+/// Same-state UAV ordering is resource-wide, independent of the selected
+/// subresource range. Read/read scopes do not introduce a write dependency.
+pub(crate) fn needs_uav_barrier(
+    before: D3D12_RESOURCE_STATES,
+    after: D3D12_RESOURCE_STATES,
+    from: api::AccessMask,
+    to: api::AccessMask,
+) -> bool {
+    let writes = api::AccessMask::SHADER_WRITE.union(api::AccessMask::ACCEL_WRITE);
+    before == after
+        && before.contains(D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+        && (from.0 | to.0) & writes.0 != 0
+}
+
+pub(crate) fn uav_barrier(list: &ID3D12GraphicsCommandList, resource: &ID3D12Resource) {
+    let mut barrier = D3D12_RESOURCE_BARRIER {
+        Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
+        Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+        Anonymous: D3D12_RESOURCE_BARRIER_0 {
+            UAV: ManuallyDrop::new(D3D12_RESOURCE_UAV_BARRIER {
+                pResource: ManuallyDrop::new(Some(resource.clone())),
+            }),
+        },
+    };
+    // SAFETY: the descriptor owns a temporary COM reference; D3D12 consumes
+    // the borrowed descriptor synchronously while recording.
+    unsafe {
+        list.ResourceBarrier(std::slice::from_ref(&barrier));
+        ManuallyDrop::drop(&mut (*barrier.Anonymous.UAV).pResource);
+    }
+    crate::diagnostics::record(crate::diagnostics::Operation::UavBarriers, 1);
+}
+
+/// Emits only a native state change. Callers order same-state UAV accesses
+/// separately, once per resource rather than once per subresource.
 pub(crate) fn barrier_sub(
     list: &ID3D12GraphicsCommandList,
     resource: &ID3D12Resource,
@@ -15,26 +51,6 @@ pub(crate) fn barrier_sub(
     after: D3D12_RESOURCE_STATES,
 ) {
     if before == after {
-        // A state transition is unnecessary, but dependent UAV accesses still
-        // need ordering. Legacy UAV barriers cover the entire resource even
-        // when the caller names only one texture subresource.
-        if before.contains(D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
-            let mut barrier = D3D12_RESOURCE_BARRIER {
-                Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
-                Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
-                Anonymous: D3D12_RESOURCE_BARRIER_0 {
-                    UAV: ManuallyDrop::new(D3D12_RESOURCE_UAV_BARRIER {
-                        pResource: ManuallyDrop::new(Some(resource.clone())),
-                    }),
-                },
-            };
-            // SAFETY: the descriptor owns a temporary COM reference; D3D12
-            // consumes the borrowed descriptor synchronously while recording.
-            unsafe {
-                list.ResourceBarrier(std::slice::from_ref(&barrier));
-                ManuallyDrop::drop(&mut (*barrier.Anonymous.UAV).pResource);
-            }
-        }
         return;
     }
     let mut b = D3D12_RESOURCE_BARRIER {

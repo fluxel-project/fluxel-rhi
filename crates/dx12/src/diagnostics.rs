@@ -14,11 +14,12 @@ pub(crate) enum Operation {
     DescriptorHeapSets,
     UploadBytes,
     UploadCapacityBytes,
+    UavBarriers,
 }
 
 #[cfg(feature = "hardware-tests")]
-static COUNTERS: [std::sync::atomic::AtomicU64; 8] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; 8];
+static COUNTERS: [std::sync::atomic::AtomicU64; 9] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 9];
 
 #[cfg(feature = "hardware-tests")]
 static SUBMISSION_GATE_WAIT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -105,6 +106,8 @@ pub struct Snapshot {
     pub upload_bytes: u64,
     /// Sum of resource widths successfully allocated by the buffer upload arena.
     pub upload_capacity_bytes: u64,
+    /// Resource UAV barriers emitted by explicit resource-transition lowering.
+    pub uav_barriers: u64,
     /// Cumulative time submitting threads spent waiting for the query gate.
     pub submission_gate_wait_ns: u64,
     /// Cumulative time holding the query gate during submission.
@@ -124,6 +127,7 @@ pub fn snapshot() -> Snapshot {
         descriptor_heap_sets: load(Operation::DescriptorHeapSets),
         upload_bytes: load(Operation::UploadBytes),
         upload_capacity_bytes: load(Operation::UploadCapacityBytes),
+        uav_barriers: load(Operation::UavBarriers),
         submission_gate_wait_ns: SUBMISSION_GATE_WAIT_NS.load(Relaxed),
         submission_gate_hold_ns: SUBMISSION_GATE_HOLD_NS.load(Relaxed),
     }
