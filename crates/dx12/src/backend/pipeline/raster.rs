@@ -11,18 +11,18 @@ use std::{
     sync::{Arc, Mutex},
 };
 use windows::{
+    core::PCSTR,
     Win32::{
         Foundation::{FALSE, TRUE},
         Graphics::{Direct3D::*, Direct3D12::*, Dxgi::Common::*},
     },
-    core::PCSTR,
 };
 
 use super::super::{Dx12, Dx12Device, Dx12RasterPipeline, Dx12ShaderSource};
 use super::fixed::{
     depth_format, lower_depth, lower_raster, lower_targets, stencil_writes, validate_depth,
 };
-use super::{PipelineLayoutState, create_view_instanced_pso};
+use super::{create_view_instanced_pso, PipelineLayoutState};
 
 pub(crate) struct RasterPipelineState {
     pub(in crate::backend) root: ID3D12RootSignature,
@@ -43,23 +43,29 @@ pub(crate) struct RasterPipelineState {
     pub(in crate::backend) depth_format: Option<api::TextureFormat>,
     pub(in crate::backend) samples: u32,
     pub(in crate::backend) multiview: Option<u32>,
+    pub(in crate::backend) dynamic_depth_bias: bool,
 }
 impl fluxel_rhi_core::backend::PipelineBackend for Dx12 {
     type RasterPipelineFuture<'a> = super::worker::ColdFuture<Dx12RasterPipeline>;
     fn create_raster_pipeline<'a>(
         device: &'a Dx12Device,
         desc: &'a api::RasterPipelineDesc<Self>,
+        dynamic_depth_bias: Option<api::DynamicDepthBias>,
     ) -> Self::RasterPipelineFuture<'a> {
         let device = (*device).clone();
         let desc = (*desc).clone();
-        super::worker::submit(move || create_raster(&device, &desc))
+        super::worker::submit(move || create_raster(&device, &desc, dynamic_depth_bias))
     }
 }
 
 fn create_raster(
     device: &Dx12Device,
     desc: &api::RasterPipelineDesc<Dx12>,
+    dynamic_depth_bias: Option<api::DynamicDepthBias>,
 ) -> Result<Dx12RasterPipeline> {
+    if dynamic_depth_bias.is_some() && !device.0.dynamic_depth_bias_supported {
+        return Err(Error::Unsupported("DX12 dynamic depth bias"));
+    }
     if desc.primitive.strip_index_format.is_some()
         && !matches!(
             desc.primitive.topology,
@@ -159,7 +165,14 @@ fn create_raster(
         .collect();
     let elements = elements?;
     let (formats, blends) = lower_targets(&desc.color_targets)?;
-    let raster = lower_raster(desc.primitive, desc.multisample, depth)?;
+    let mut raster = lower_raster(desc.primitive, desc.multisample, depth)?;
+    if dynamic_depth_bias.is_some() {
+        // D3D12 requires all three static rasterizer depth-bias fields to be
+        // zero when the PSO opts into dynamic depth bias.
+        raster.DepthBias = 0;
+        raster.DepthBiasClamp = 0.0;
+        raster.SlopeScaledDepthBias = 0.0;
+    }
     // SAFETY: Core validated the layout belongs to this device; cloning the
     // Arc retains its root signature after the public descriptor borrow ends.
     let (root, root_bytes, vertex_index_root) = if vertex_index_constants {
@@ -219,14 +232,18 @@ fn create_raster(
         },
         ..Default::default()
     };
+    if dynamic_depth_bias.is_some() {
+        pso.Flags = D3D12_PIPELINE_STATE_FLAG_DYNAMIC_DEPTH_BIAS;
+    }
     let settings = format!(
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
         desc.vertex_buffers,
         desc.color_targets,
         desc.primitive,
         desc.depth_stencil,
         desc.multisample,
-        desc.multiview
+        desc.multiview,
+        dynamic_depth_bias.is_some(),
     );
     let cache = desc.cache.as_ref().map(|c| unsafe { c.native_ref() });
     let key = cache
@@ -317,6 +334,7 @@ fn create_raster(
         depth_format: depth.map(|state| state.format),
         samples: desc.multisample.count,
         multiview: desc.multiview,
+        dynamic_depth_bias: dynamic_depth_bias.is_some(),
     })))
 }
 

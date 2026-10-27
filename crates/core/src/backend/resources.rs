@@ -68,6 +68,7 @@ pub trait PipelineBackend: Backend {
     fn create_raster_pipeline<'a>(
         device: &'a Self::NativeDevice,
         desc: &'a RasterPipelineDesc<Self>,
+        dynamic_depth_bias: Option<DynamicDepthBias>,
     ) -> Self::RasterPipelineFuture<'a>;
 }
 

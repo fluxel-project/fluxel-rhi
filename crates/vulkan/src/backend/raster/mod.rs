@@ -20,6 +20,9 @@ pub use extras::RasterExtras;
 use surface::{surface_attachment, transition_surface_to_color};
 
 impl fluxel_rhi_core::backend::RasterBackend for Vulkan {
+    const DYNAMIC_DEPTH_BIAS_AVAILABLE: bool = true;
+    const RECT_ATTACHMENT_CLEAR_AVAILABLE: bool = true;
+
     fn begin_raster(e: &mut VulkanEncoder, d: &api::RasterPassDesc<'_, Self>) -> Result<()> {
         pass::begin_raster(e, d)
     }
@@ -56,6 +59,7 @@ impl fluxel_rhi_core::backend::RasterBackend for Vulkan {
         e.raster_layout = Some(p.layout());
         e.raster_layout_state = Some(layout_state);
         e.raster_push_constants = Some(p.push_constants());
+        e.raster_dynamic_depth_bias = p.has_dynamic_depth_bias();
         e.pipelines.push(p.clone());
         Ok(())
     }
@@ -225,6 +229,112 @@ impl fluxel_rhi_core::backend::RasterBackend for Vulkan {
         };
         Ok(())
     }
+    fn clear_rect(
+        e: &mut VulkanEncoder,
+        rect: api::Rect,
+        colors: &[api::ColorAttachmentClear],
+        depth: Option<f32>,
+        stencil: Option<u32>,
+    ) -> Result<()> {
+        if !e.raster || e.secondary_signature.is_some() || rect.width == 0 || rect.height == 0 {
+            return Err(Error::InvalidState);
+        }
+        // vkCmdClearAttachments has an explicit array-layer range, while a
+        // dynamic-rendering multiview pass maps views to several layers.  The
+        // public command has no layer selector, so claiming that a one-layer
+        // clear covers all selected views would be wrong.
+        if e.raster_multiview_mask.is_some() {
+            return Err(Error::Unsupported("Vulkan rect clear in multiview pass"));
+        }
+        let mut attachments =
+            Vec::with_capacity(colors.len() + usize::from(depth.is_some() || stencil.is_some()));
+        for color in colors {
+            let format = e
+                .raster_signature
+                .as_ref()
+                .and_then(|(formats, _, _)| formats.get(color.attachment as usize))
+                .copied()
+                .filter(|format| *format != vk::Format::UNDEFINED)
+                .ok_or(Error::InvalidState)?;
+            if !clear_color_matches_format(format, color.value) {
+                return Err(Error::Unsupported("Vulkan rect clear format/value"));
+            }
+            attachments.push(vk::ClearAttachment {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                color_attachment: color.attachment,
+                clear_value: vk::ClearValue {
+                    color: match color.value {
+                        api::ClearColor::Float(value) => vk::ClearColorValue { float32: value },
+                        api::ClearColor::Uint(value) => vk::ClearColorValue { uint32: value },
+                        api::ClearColor::Sint(value) => vk::ClearColorValue { int32: value },
+                    },
+                },
+            });
+        }
+        if depth.is_some() || stencil.is_some() {
+            let mut aspects = vk::ImageAspectFlags::empty();
+            if depth.is_some() {
+                aspects |= vk::ImageAspectFlags::DEPTH;
+            }
+            if stencil.is_some() {
+                aspects |= vk::ImageAspectFlags::STENCIL;
+            }
+            attachments.push(vk::ClearAttachment {
+                aspect_mask: aspects,
+                color_attachment: 0,
+                clear_value: vk::ClearValue {
+                    depth_stencil: vk::ClearDepthStencilValue {
+                        depth: depth.unwrap_or(0.0),
+                        stencil: stencil.unwrap_or(0),
+                    },
+                },
+            });
+        }
+        let rect = vk::ClearRect {
+            rect: vk::Rect2D {
+                offset: vk::Offset2D {
+                    x: rect.x as i32,
+                    y: rect.y as i32,
+                },
+                extent: vk::Extent2D {
+                    width: rect.width,
+                    height: rect.height,
+                },
+            },
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+        // SAFETY: Core validated the writable selected attachments and rect;
+        // this is a live primary dynamic-rendering scope retaining them.
+        unsafe {
+            e.device
+                .device
+                .cmd_clear_attachments(e.command, &attachments, &[rect])
+        };
+        Ok(())
+    }
+    fn depth_bias(e: &mut VulkanEncoder, value: api::DynamicDepthBias) -> Result<()> {
+        if !e.raster || e.secondary_signature.is_some() || !e.raster_dynamic_depth_bias {
+            return Err(Error::InvalidState);
+        }
+        if !value.slope_scale.is_finite() || !value.clamp.is_finite() {
+            return Err(Error::InvalidRange);
+        }
+        if value.clamp != 0.0 && e.device.features.depth_bias_clamp != vk::TRUE {
+            return Err(Error::Unsupported("Vulkan depth bias clamp"));
+        }
+        // SAFETY: the active pipeline was created with DEPTH_BIAS dynamic
+        // state and enabled depth bias; values have been validated above.
+        unsafe {
+            e.device.device.cmd_set_depth_bias(
+                e.command,
+                value.constant as f32,
+                value.clamp,
+                value.slope_scale,
+            )
+        };
+        Ok(())
+    }
     fn draw(e: &mut VulkanEncoder, v: std::ops::Range<u32>, i: std::ops::Range<u32>) -> Result<()> {
         if e.secondary_signature.is_some() {
             return Err(Error::InvalidState);
@@ -298,6 +408,7 @@ impl fluxel_rhi_core::backend::RasterBackend for Vulkan {
         }
         e.raster = false;
         e.raster_index_bound = false;
+        e.raster_dynamic_depth_bias = false;
         e.raster_multiview_mask = None;
         e.raster_bound_groups.clear();
         e.raster_layout = None;
@@ -321,6 +432,7 @@ impl fluxel_rhi_core::backend::RasterBackend for Vulkan {
             super::query::end_pass_timestamps(e);
             e.raster = false;
             e.raster_index_bound = false;
+            e.raster_dynamic_depth_bias = false;
             e.raster_multiview_mask = None;
             e.color_surface_image = None;
             e.raster_bound_groups.clear();
@@ -331,6 +443,66 @@ impl fluxel_rhi_core::backend::RasterBackend for Vulkan {
             e.raster_push_constants = None;
             e.secondary_signature = None;
         }
+    }
+}
+
+/// Vulkan's clear union must use the numeric member matching the attachment.
+/// Non-integer color formats use the float member (including UNORM/SNORM and
+/// SRGB); the supported Core integer formats are enumerated explicitly.
+fn clear_color_matches_format(format: vk::Format, value: api::ClearColor) -> bool {
+    let uint = matches!(
+        format,
+        vk::Format::R8_UINT
+            | vk::Format::R8G8_UINT
+            | vk::Format::R8G8B8A8_UINT
+            | vk::Format::R16_UINT
+            | vk::Format::R16G16_UINT
+            | vk::Format::R16G16B16A16_UINT
+            | vk::Format::R32_UINT
+            | vk::Format::R32G32_UINT
+            | vk::Format::R32G32B32A32_UINT
+            | vk::Format::A2B10G10R10_UINT_PACK32
+            | vk::Format::R64_UINT
+            | vk::Format::R64G64_UINT
+    );
+    let sint = matches!(
+        format,
+        vk::Format::R8_SINT
+            | vk::Format::R8G8_SINT
+            | vk::Format::R8G8B8A8_SINT
+            | vk::Format::R16_SINT
+            | vk::Format::R16G16_SINT
+            | vk::Format::R16G16B16A16_SINT
+            | vk::Format::R32_SINT
+            | vk::Format::R32G32_SINT
+            | vk::Format::R32G32B32A32_SINT
+    );
+    matches!(value, api::ClearColor::Uint(_)) && uint
+        || matches!(value, api::ClearColor::Sint(_)) && sint
+        || matches!(value, api::ClearColor::Float(_)) && !uint && !sint
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rect_clear_color_value_matches_attachment_numeric_kind() {
+        let float = api::ClearColor::Float([0.0; 4]);
+        let uint = api::ClearColor::Uint([0; 4]);
+        let sint = api::ClearColor::Sint([0; 4]);
+        assert!(clear_color_matches_format(
+            vk::Format::R8G8B8A8_UNORM,
+            float
+        ));
+        assert!(clear_color_matches_format(vk::Format::R32_UINT, uint));
+        assert!(clear_color_matches_format(vk::Format::R32_SINT, sint));
+        assert!(!clear_color_matches_format(vk::Format::R32_UINT, float));
+        assert!(!clear_color_matches_format(vk::Format::R32_SINT, uint));
+        assert!(!clear_color_matches_format(
+            vk::Format::R8G8B8A8_UNORM,
+            sint
+        ));
     }
 }
 

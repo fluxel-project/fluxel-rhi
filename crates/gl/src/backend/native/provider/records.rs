@@ -86,6 +86,10 @@ pub(crate) struct ActivePass {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) samples: u32,
+    /// Exact active attachment numeric classes, retained for active-pass
+    /// operations such as `glClearBuffer*` validation.
+    pub(crate) color_formats: Vec<Option<crate::backend::api::GlFormat>>,
+    pub(crate) depth_stencil_format: Option<crate::backend::api::GlFormat>,
     pub(crate) discard_color: Vec<bool>,
     pub(crate) discard_depth_stencil: Option<(bool, bool)>,
 }

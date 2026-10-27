@@ -4,7 +4,7 @@
 //! context. It performs no command recording or resource allocation.
 
 use std::{
-    future::{Ready, ready},
+    future::{ready, Ready},
     sync::Arc,
 };
 
@@ -14,7 +14,7 @@ use fluxel_rhi_core::api::{
 };
 use fluxel_rhi_core::backend::InstanceBackend;
 
-use super::{Gl, GlDevice, GlInstance, spi::native_error, types::GlDeviceState};
+use super::{spi::native_error, types::GlDeviceState, Gl, GlDevice, GlInstance};
 
 pub(super) fn push_limit(state: &std::rc::Rc<GlDeviceState>) -> Result<u32> {
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]

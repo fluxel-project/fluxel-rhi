@@ -9,7 +9,17 @@ use std::{
     future::Future,
     task::{Context, Poll, Waker},
 };
-use windows::Win32::{Foundation::LUID, Graphics::Dxgi::DXGI_ERROR_NOT_FOUND};
+use windows::Win32::{
+    Foundation::LUID,
+    Graphics::{
+        Direct3D12::{
+            D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_FEATURE_D3D12_OPTIONS16,
+            D3D12_FEATURE_DATA_D3D12_OPTIONS16, ID3D12CommandAllocator, ID3D12GraphicsCommandList,
+            ID3D12GraphicsCommandList9,
+        },
+        Dxgi::DXGI_ERROR_NOT_FOUND,
+    },
+};
 
 struct NativeAdapter {
     name: String,
@@ -107,6 +117,67 @@ fn core_adapters_match_dxgi_and_open_on_their_native_luids() -> Result<()> {
 
     if opened == 0 {
         eprintln!("SKIP: no DXGI adapter on this machine supports D3D12");
+    }
+    Ok(())
+}
+
+#[test]
+fn dynamic_depth_bias_capability_matches_options16_and_command_list9() -> Result<()> {
+    let native_instance = Dx12Instance::new()?;
+    let instance = native_instance.instance()?;
+    let Some(adapter) = instance.enumerate()?.into_iter().next() else {
+        eprintln!("SKIP: DXGI reported no adapters");
+        return Ok(());
+    };
+    let request = DeviceRequest {
+        adapter: adapter.id,
+        required_features: Vec::new(),
+    };
+    let Ok((device, caps)) = block_on_ready(<Dx12 as InstanceBackend>::open(
+        &native_instance,
+        DeviceId::allocate()?,
+        &request,
+    )) else {
+        eprintln!("SKIP: selected DXGI adapter does not support D3D12");
+        return Ok(());
+    };
+    let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS16::default();
+    // SAFETY: the live device receives the exact OPTIONS16 structure and the
+    // synchronous query retains neither the output nor caller memory.
+    let options16 = unsafe {
+        device.0.native.CheckFeatureSupport(
+            D3D12_FEATURE_D3D12_OPTIONS16,
+            (&mut options as *mut _) as *mut _,
+            std::mem::size_of_val(&options) as u32,
+        )
+    }
+    .is_ok()
+        && options.DynamicDepthBiasSupported.as_bool();
+    assert_eq!(caps.dynamic_depth_bias, options16);
+    assert_eq!(caps.dynamic_depth_bias_clamp, options16);
+    if options16 {
+        // SAFETY: the returned allocator/list belong to this live device and
+        // are used only to validate the interface required by lowering.
+        let allocator = unsafe {
+            device
+                .0
+                .native
+                .CreateCommandAllocator::<ID3D12CommandAllocator>(D3D12_COMMAND_LIST_TYPE_DIRECT)
+        }
+        .map_err(native_error)?;
+        let list: ID3D12GraphicsCommandList = unsafe {
+            device
+                .0
+                .native
+                .CreateCommandList::<_, _, ID3D12GraphicsCommandList>(
+                    0,
+                    D3D12_COMMAND_LIST_TYPE_DIRECT,
+                    &allocator,
+                    None,
+                )
+        }
+        .map_err(native_error)?;
+        assert!(list.cast::<ID3D12GraphicsCommandList9>().is_ok());
     }
     Ok(())
 }

@@ -224,6 +224,10 @@ impl<B: Backend> Device<B> {
             "memory observation capability without implementation"
         );
         assert!(
+            !caps.dynamic_depth_bias_clamp || caps.dynamic_depth_bias,
+            "dynamic depth bias clamp capability without dynamic depth bias"
+        );
+        assert!(
             !caps.mesh || B::Mesh::AVAILABLE,
             "mesh capability without implementation"
         );
@@ -334,6 +338,12 @@ pub struct DeviceCapabilities {
     pub native_interop: bool,
     /// Explicit allocator/native memory snapshot domain is available.
     pub memory_observation: bool,
+    /// Dynamic raster depth-bias commands are supported.
+    pub dynamic_depth_bias: bool,
+    /// Dynamic depth-bias clamp values are supported.
+    pub dynamic_depth_bias_clamp: bool,
+    /// Clears selected color/depth/stencil attachments inside an active pass.
+    pub rect_attachment_clear: bool,
     pub lanes: Arc<[LaneInfo]>,
     pub limits: DeviceLimits,
 }

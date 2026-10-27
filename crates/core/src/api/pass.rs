@@ -50,6 +50,14 @@ pub enum ClearColor {
     Uint([u32; 4]),
     Sint([i32; 4]),
 }
+/// Clear value for one color slot in an active raster pass.
+#[derive(Clone, Copy, Debug)]
+pub struct ColorAttachmentClear {
+    /// Color attachment slot from [`RasterPassDesc::colors`].
+    pub attachment: u32,
+    /// Value converted according to the target attachment's numeric type.
+    pub value: ClearColor,
+}
 
 /// One native backbuffer lease may be a render attachment only while acquired.
 /// WebGL2 default framebuffer is intentionally not a fake TextureView.

@@ -466,6 +466,22 @@ pub(crate) trait GlFramebufferApi: GlFamilyApi {
     ) -> Result<FramebufferId, GlError>;
     fn destroy_framebuffer(&mut self, framebuffer: FramebufferId) -> Result<(), GlError>;
     fn begin_render_pass(&mut self, descriptor: &GlRenderPassDescriptor) -> Result<(), GlError>;
+    /// Clears a rectangle in the framebuffer currently owned by the active
+    /// raster pass. Implementations which cannot restore their complete
+    /// mutable raster state leave this unavailable.
+    fn clear_active_rect(
+        &mut self,
+        _rect: fluxel_rhi_core::api::Rect,
+        _colors: &[fluxel_rhi_core::api::ColorAttachmentClear],
+        _depth: Option<f32>,
+        _stencil: Option<u32>,
+        _restore: Option<&super::GlRasterPipeline>,
+    ) -> Result<(), GlError> {
+        Err(GlError::Unsupported {
+            operation: "clear-active-rect",
+            reason: "active raster attachment clears unavailable",
+        })
+    }
     fn end_render_pass(&mut self) -> Result<(), GlError>;
     /// Copies selected planes from one framebuffer into another.
     ///

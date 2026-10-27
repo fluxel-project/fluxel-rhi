@@ -63,6 +63,8 @@ pub(super) fn index_format_matches(
 #[path = "../../../tests/backend/encoder/raster.rs"]
 mod topology_tests;
 impl fluxel_rhi_core::backend::RasterBackend for Dx12 {
+    const DYNAMIC_DEPTH_BIAS_AVAILABLE: bool = true;
+    const RECT_ATTACHMENT_CLEAR_AVAILABLE: bool = true;
     fn begin_raster(
         encoder: &mut Dx12Encoder,
         desc: &api::RasterPassDesc<'_, Self>,
@@ -106,6 +108,9 @@ impl fluxel_rhi_core::backend::RasterBackend for Dx12 {
             encoder.list.IASetPrimitiveTopology(pipeline.0.topology);
         }
         encoder.pipeline = Some(pipeline.clone());
+        if !pipeline.0.dynamic_depth_bias {
+            encoder.raster_snapshot.depth_bias = None;
+        }
         encoder.raster_pipelines.push(pipeline.clone());
         encoder.ray_pipeline = None;
         encoder.mesh_pipeline = None;
@@ -360,6 +365,123 @@ impl fluxel_rhi_core::backend::RasterBackend for Dx12 {
         // SAFETY: this records a scalar value into the open graphics list.
         unsafe { encoder.list.OMSetStencilRef(value & 0xff) };
         encoder.raster_snapshot.stencil = Some(value & 0xff);
+        Ok(())
+    }
+    fn clear_rect(
+        encoder: &mut Dx12Encoder,
+        rect: api::Rect,
+        colors: &[api::ColorAttachmentClear],
+        depth: Option<f32>,
+        stencil: Option<u32>,
+    ) -> Result<(), Error> {
+        let rect = validate_scissor(rect)?;
+        let (rtvs, dsv, formats, integer_targets, multiview_mask) = {
+            let state = encoder.raster_state.as_ref().ok_or(Error::InvalidState)?;
+            (
+                state.rtvs.clone(),
+                state.dsv,
+                state.formats.clone(),
+                state.integer_clear_targets.clone(),
+                state.multiview_mask,
+            )
+        };
+        // D3D12's ordinary clear calls do not carry a view-instance mask.
+        // Reject the whole operation rather than clearing only the base RTV
+        // or DSV of a multiview pass.
+        if multiview_mask.is_some() {
+            return Err(Error::Unsupported(
+                "DX12 multiview raster attachment rect clear",
+            ));
+        }
+        // SAFETY: Core checked selected attachment slots and depth/stencil
+        // writability; the state above retains the CPU descriptors for this
+        // open pass. Native clears do not alter graphics pipeline or scissor
+        // state.
+        unsafe {
+            for clear in colors {
+                let slot = clear.attachment as usize;
+                let format = formats
+                    .get(slot)
+                    .and_then(|format| *format)
+                    .ok_or(Error::InvalidState)?;
+                if super::super::texture::integer_color(format) {
+                    let target = integer_targets
+                        .get(slot)
+                        .and_then(Option::as_ref)
+                        .ok_or(Error::InvalidState)?;
+                    let (signed, bits) =
+                        super::super::texture::integer_clear_bits(format, clear.value)
+                            .ok_or(Error::InvalidState)?;
+                    let pipeline = encoder.device.0.integer_clear_cache.get_or_create(
+                        &encoder.device,
+                        target.format,
+                        target.samples,
+                        signed,
+                    )?;
+                    for (heap, rtv) in &target.views {
+                        super::integer_clear::record(
+                            &encoder.list,
+                            &pipeline,
+                            *rtv,
+                            target.extent.0 as u32,
+                            target.extent.1,
+                            rect,
+                            bits,
+                        )?;
+                        if let Some(heap) = heap {
+                            encoder.clear_heaps.push(heap.clone());
+                        }
+                    }
+                    encoder.integer_clear_pipelines.push(pipeline);
+                    super::restore_after_internal_draw(encoder)?;
+                    encoder.list.OMSetRenderTargets(
+                        rtvs.len() as u32,
+                        Some(rtvs.as_ptr()),
+                        false,
+                        dsv.as_ref().map(|handle| handle as *const _),
+                    );
+                    continue;
+                }
+                let api::ClearColor::Float(value) = clear.value else {
+                    return Err(Error::InvalidState);
+                };
+                let rtv = *rtvs.get(slot).ok_or(Error::InvalidState)?;
+                encoder
+                    .list
+                    .ClearRenderTargetView(rtv, &value, Some(&[rect]));
+            }
+            if depth.is_some() || stencil.is_some() {
+                let dsv = dsv.ok_or(Error::InvalidState)?;
+                let mut flags = D3D12_CLEAR_FLAGS(0);
+                if depth.is_some() {
+                    flags |= D3D12_CLEAR_FLAG_DEPTH;
+                }
+                if stencil.is_some() {
+                    flags |= D3D12_CLEAR_FLAG_STENCIL;
+                }
+                encoder.list.ClearDepthStencilView(
+                    dsv,
+                    flags,
+                    depth.unwrap_or(0.0),
+                    stencil.unwrap_or(0) as u8,
+                    Some(&[rect]),
+                );
+            }
+        }
+        Ok(())
+    }
+    fn depth_bias(encoder: &mut Dx12Encoder, value: api::DynamicDepthBias) -> Result<(), Error> {
+        if !value.slope_scale.is_finite() || !value.clamp.is_finite() {
+            return Err(Error::InvalidRange);
+        }
+        let list9 = encoder
+            .list
+            .cast::<windows::Win32::Graphics::Direct3D12::ID3D12GraphicsCommandList9>()
+            .map_err(super::super::native_error)?;
+        // SAFETY: the active PSO was created with DYNAMIC_DEPTH_BIAS and the
+        // call copies finite scalar factors into this open command list.
+        unsafe { list9.RSSetDepthBias(value.constant as f32, value.clamp, value.slope_scale) };
+        encoder.raster_snapshot.depth_bias = Some(value);
         Ok(())
     }
     fn draw(

@@ -132,6 +132,10 @@ pub enum DebugMarkerOp<'a> {
 
 /// Native raster pass lowering contract.
 pub trait RasterBackend: CommandBackend {
+    /// Whether this backend has a native dynamic depth-bias route.
+    const DYNAMIC_DEPTH_BIAS_AVAILABLE: bool = false;
+    /// Whether this backend can clear attachments inside an active raster pass.
+    const RECT_ATTACHMENT_CLEAR_AVAILABLE: bool = false;
     fn begin_raster(
         encoder: &mut Self::NativeEncoder,
         desc: &RasterPassDesc<'_, Self>,
@@ -164,6 +168,20 @@ pub trait RasterBackend: CommandBackend {
     fn scissor(encoder: &mut Self::NativeEncoder, rect: Rect) -> Result<()>;
     fn blend_constant(encoder: &mut Self::NativeEncoder, value: [f32; 4]) -> Result<()>;
     fn stencil_reference(encoder: &mut Self::NativeEncoder, value: u32) -> Result<()>;
+    /// Clears selected active-pass attachments inside `rect`.
+    fn clear_rect(
+        _: &mut Self::NativeEncoder,
+        _: Rect,
+        _: &[ColorAttachmentClear],
+        _: Option<f32>,
+        _: Option<u32>,
+    ) -> Result<()> {
+        Err(Error::Unsupported("raster attachment rect clear"))
+    }
+    /// Applies dynamic depth bias to a currently bound dynamic-bias pipeline.
+    fn depth_bias(_: &mut Self::NativeEncoder, _: DynamicDepthBias) -> Result<()> {
+        Err(Error::Unsupported("dynamic depth bias"))
+    }
     fn draw(
         encoder: &mut Self::NativeEncoder,
         vertices: Range<u32>,

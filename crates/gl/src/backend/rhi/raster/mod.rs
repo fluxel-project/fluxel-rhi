@@ -10,9 +10,9 @@ use fluxel_rhi_core::api::{
 };
 use fluxel_rhi_core::backend::RasterBackend;
 
-use super::Gl;
 use super::spi::native_error;
 use super::types::{GlBuffer, GlEncoder, GlRasterPipeline};
+use super::Gl;
 
 mod attachment;
 pub(crate) mod binding;
@@ -67,6 +67,14 @@ pub(crate) fn restore_after_native_mirror(
 }
 
 impl RasterBackend for Gl {
+    // Native polygon offset lowering exists, but is not advertised until a
+    // typed-RHI WGL readback proves the dynamic route end-to-end.
+    const DYNAMIC_DEPTH_BIAS_AVAILABLE: bool = false;
+    // The native implementation is deliberately dormant until a direct WGL
+    // readback proves its state restoration. WebGL2 has no corresponding
+    // restoration evidence either.
+    const RECT_ATTACHMENT_CLEAR_AVAILABLE: bool = false;
+
     fn begin_raster(encoder: &mut GlEncoder, desc: &RasterPassDesc<'_, Self>) -> Result<()> {
         if desc.secondary_inheritance.is_some() {
             return Err(Error::Unsupported("GL baseline raster-pass feature"));
@@ -479,6 +487,63 @@ impl RasterBackend for Gl {
     }
     fn stencil_reference(encoder: &mut GlEncoder, value: u32) -> Result<()> {
         dynamic::set_stencil_reference(encoder, value)
+    }
+    fn depth_bias(encoder: &mut GlEncoder, value: api::DynamicDepthBias) -> Result<()> {
+        dynamic::set_depth_bias(encoder, value)
+    }
+
+    fn clear_rect(
+        encoder: &mut GlEncoder,
+        rect: Rect,
+        colors: &[api::ColorAttachmentClear],
+        depth: Option<f32>,
+        stencil: Option<u32>,
+    ) -> Result<()> {
+        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+        {
+            let restore = encoder
+                .raster_pipeline
+                .clone()
+                .map(|pipeline| {
+                    let viewport = encoder.raster_viewport.ok_or(Error::InvalidState)?;
+                    Ok(pipeline.native_with_dynamic_state(
+                        viewport,
+                        encoder.raster_scissor,
+                        encoder.raster_blend_constant,
+                        encoder.raster_stencil_reference,
+                    ))
+                })
+                .transpose()?;
+            use crate::backend::api::GlFramebufferApi as _;
+            let result = encoder
+                .state
+                .with_native("clear GL raster attachment rect", |provider| {
+                    provider.clear_active_rect(rect, colors, depth, stencil, restore.as_ref())
+                })
+                .map_err(native_error);
+            if result.is_ok() {
+                encoder.issued = true;
+            } else {
+                encoder.indeterminate = true;
+            }
+            return result;
+        }
+        #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+        {
+            let _ = (encoder, rect, colors, depth, stencil);
+            return Err(Error::Unsupported(
+                "WebGL active raster attachment rect clear",
+            ));
+        }
+        #[cfg(not(any(
+            all(windows, feature = "native-gl-wgl"),
+            feature = "native-gles-egl",
+            all(target_arch = "wasm32", feature = "webgl2")
+        )))]
+        {
+            let _ = (encoder, rect, colors, depth, stencil);
+            Err(Error::Unsupported("GL platform context"))
+        }
     }
 
     fn draw(encoder: &mut GlEncoder, vertices: Range<u32>, instances: Range<u32>) -> Result<()> {

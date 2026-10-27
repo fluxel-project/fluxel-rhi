@@ -40,6 +40,8 @@ pub struct VulkanEncoder {
     pub(super) raster_layout: Option<vk::PipelineLayout>,
     pub(super) raster_bound_groups: std::collections::BTreeMap<u32, (VulkanBindGroup, Vec<u32>)>,
     pub(super) raster_index_bound: bool,
+    /// The currently bound raster pipeline accepts vkCmdSetDepthBias.
+    pub(super) raster_dynamic_depth_bias: bool,
     /// The dynamic-rendering view mask of the active primary pass. Pipelines
     /// carry their own creation-time mask and must match it before binding.
     pub(super) raster_multiview_mask: Option<u32>,
@@ -122,6 +124,7 @@ impl VulkanEncoder {
             raster_layout: None,
             raster_bound_groups: Default::default(),
             raster_index_bound: false,
+            raster_dynamic_depth_bias: false,
             raster_multiview_mask: None,
             raster_signature: None,
             raster_layout_state: None,

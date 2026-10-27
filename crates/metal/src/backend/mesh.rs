@@ -650,9 +650,9 @@ async fn create(
             depth_state,
             writes_depth: desc.depth_stencil.is_some_and(|d| d.depth_write_enabled),
             writes_stencil: desc.depth_stencil.is_some_and(p::stencil_writes),
-            depth_bias: desc.depth_stencil.map_or((0, 0.0, 0.0), |d| {
+            depth_bias: desc.depth_stencil.map_or((0.0, 0.0, 0.0), |d| {
                 (
-                    d.depth_bias_constant,
+                    d.depth_bias_constant as f32,
                     d.depth_bias_slope_scale,
                     d.depth_bias_clamp,
                 )

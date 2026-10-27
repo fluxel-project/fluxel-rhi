@@ -628,6 +628,11 @@ impl InstanceBackend for Vulkan {
                         || has_compute_queue,
                     placed_memory: true,
                     memory_observation: true,
+                    // vkCmdSetDepthBias is core; its clamp factor requires
+                    // the separately enabled depthBiasClamp feature.
+                    dynamic_depth_bias: true,
+                    dynamic_depth_bias_clamp: enabled_features.depth_bias_clamp == vk::TRUE,
+                    rect_attachment_clear: true,
                     native_interop: true,
                     external_memory: external_interop,
                     indirect_draw: true,

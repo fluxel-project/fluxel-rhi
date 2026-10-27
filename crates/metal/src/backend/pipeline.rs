@@ -41,7 +41,9 @@ pub struct MetalRasterPipeline {
         objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDepthStencilState>>,
     >,
     #[cfg(target_vendor = "apple")]
-    pub(crate) depth_bias: (i32, f32, f32),
+    /// The static factors, or the declared initial factors for a dynamic
+    /// pipeline. Binding restores these before Core applies a later override.
+    pub(crate) depth_bias: (f32, f32, f32),
     #[cfg(target_vendor = "apple")]
     pub(crate) writes_depth: bool,
     #[cfg(target_vendor = "apple")]
@@ -75,14 +77,16 @@ impl PipelineBackend for Metal {
     fn create_raster_pipeline<'a>(
         device: &'a MetalDevice,
         desc: &'a RasterPipelineDesc<Self>,
+        dynamic_depth_bias: Option<api::DynamicDepthBias>,
     ) -> Self::RasterPipelineFuture<'a> {
-        Box::pin(create_raster_pipeline(device, desc))
+        Box::pin(create_raster_pipeline(device, desc, dynamic_depth_bias))
     }
 }
 
 async fn create_raster_pipeline(
     device: &MetalDevice,
     desc: &RasterPipelineDesc<Metal>,
+    dynamic_depth_bias: Option<api::DynamicDepthBias>,
 ) -> api::Result<MetalRasterPipeline> {
     validate_desc(desc)?;
     #[cfg(target_vendor = "apple")]
@@ -433,19 +437,24 @@ async fn create_raster_pipeline(
             depth_state,
             writes_depth: desc.depth_stencil.is_some_and(|d| d.depth_write_enabled),
             writes_stencil: desc.depth_stencil.is_some_and(stencil_writes),
-            depth_bias: desc.depth_stencil.map_or((0, 0.0, 0.0), |depth| {
-                (
-                    depth.depth_bias_constant,
-                    depth.depth_bias_slope_scale,
-                    depth.depth_bias_clamp,
-                )
-            }),
+            depth_bias: dynamic_depth_bias.map_or_else(
+                || {
+                    desc.depth_stencil.map_or((0.0, 0.0, 0.0), |depth| {
+                        (
+                            depth.depth_bias_constant as f32,
+                            depth.depth_bias_slope_scale,
+                            depth.depth_bias_clamp,
+                        )
+                    })
+                },
+                |bias| (bias.constant as f32, bias.slope_scale, bias.clamp),
+            ),
             signature: (desc.multisample.count as usize, color_formats, depth_format),
         })
     }
     #[cfg(not(target_vendor = "apple"))]
     {
-        let _ = (device, desc);
+        let _ = (device, desc, dynamic_depth_bias);
         Err(api::Error::Unsupported("Metal requires an Apple target"))
     }
 }

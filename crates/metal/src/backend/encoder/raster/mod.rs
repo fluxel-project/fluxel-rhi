@@ -84,6 +84,8 @@ pub(super) fn for_view_batches(
 }
 
 impl RasterBackend for Metal {
+    const DYNAMIC_DEPTH_BIAS_AVAILABLE: bool = true;
+
     fn begin_raster(
         encoder: &mut MetalCommandEncoder,
         desc: &api::RasterPassDesc<'_, Self>,
@@ -134,7 +136,7 @@ impl RasterBackend for Metal {
             render.setRenderPipelineState(&pipeline.state);
             render.setDepthStencilState(pipeline.depth_state.as_deref());
             render.setDepthBias_slopeScale_clamp(
-                pipeline.depth_bias.0 as f32,
+                pipeline.depth_bias.0,
                 pipeline.depth_bias.1,
                 pipeline.depth_bias.2,
             );
@@ -360,6 +362,33 @@ impl RasterBackend for Metal {
                 .ok_or(api::Error::InvalidState)?
                 .setStencilReferenceValue(value);
             encoder.raster_stencil_reference = value;
+            Ok(())
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            let _ = (encoder, value);
+            Err(api::Error::Unsupported("Metal requires an Apple target"))
+        }
+    }
+    fn depth_bias(
+        encoder: &mut MetalCommandEncoder,
+        value: api::DynamicDepthBias,
+    ) -> api::Result<()> {
+        #[cfg(target_vendor = "apple")]
+        {
+            use objc2_metal::MTLRenderCommandEncoder as _;
+            if !value.slope_scale.is_finite() || !value.clamp.is_finite() {
+                return Err(api::Error::InvalidRange);
+            }
+            encoder
+                .render
+                .as_ref()
+                .ok_or(api::Error::InvalidState)?
+                .setDepthBias_slopeScale_clamp(
+                    value.constant as f32,
+                    value.slope_scale,
+                    value.clamp,
+                );
             Ok(())
         }
         #[cfg(not(target_vendor = "apple"))]

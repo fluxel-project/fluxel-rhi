@@ -38,6 +38,9 @@ pub struct SecondaryEncoder<B: SecondaryBackend> {
     native: Option<B::NativeSecondaryEncoder>,
     poisoned: bool,
     push_constants: bool,
+    dynamic_depth_bias: bool,
+    dynamic_depth_bias_clamp: bool,
+    bound_dynamic_depth_bias: Option<DynamicDepthBias>,
     signature: SecondaryRasterDesc,
     stats: RhiStatsLocal,
 }
@@ -56,11 +59,47 @@ impl<B: SecondaryBackend> SecondaryEncoder<B> {
         if pipeline.device != self.device {
             return Err(Error::WrongDevice);
         }
+        if pipeline.dynamic_depth_bias.is_some()
+            && (!<B as RasterBackend>::DYNAMIC_DEPTH_BIAS_AVAILABLE
+                || !B::SECONDARY_DYNAMIC_DEPTH_BIAS_AVAILABLE)
+        {
+            return Err(Error::Unsupported("secondary dynamic depth bias"));
+        }
         let result = self.call(|encoder| B::secondary_set_pipeline(encoder, &pipeline.native));
+        let result = if result.is_ok() {
+            if let Some(initial) = pipeline.dynamic_depth_bias {
+                self.call(|encoder| B::secondary_depth_bias(encoder, initial))
+            } else {
+                Ok(())
+            }
+        } else {
+            result
+        };
         if result.is_ok() {
+            self.bound_dynamic_depth_bias = pipeline.dynamic_depth_bias;
             self.stats.record_pipeline_bind();
         }
         result
+    }
+    pub fn set_depth_bias(&mut self, value: DynamicDepthBias) -> Result<()> {
+        if !self.dynamic_depth_bias {
+            return Err(Error::Unsupported("dynamic depth bias"));
+        }
+        if !<B as RasterBackend>::DYNAMIC_DEPTH_BIAS_AVAILABLE
+            || !B::SECONDARY_DYNAMIC_DEPTH_BIAS_AVAILABLE
+        {
+            return Err(Error::Unsupported("secondary dynamic depth bias"));
+        }
+        if self.bound_dynamic_depth_bias.is_none() {
+            return Err(Error::InvalidState);
+        }
+        if !value.is_finite() {
+            return Err(Error::InvalidRange);
+        }
+        if value.clamp != 0.0 && !self.dynamic_depth_bias_clamp {
+            return Err(Error::Unsupported("dynamic depth bias clamp"));
+        }
+        self.call(|encoder| B::secondary_depth_bias(encoder, value))
     }
     pub fn set_bind_group(
         &mut self,
@@ -204,6 +243,9 @@ impl<B: SecondaryBackend> SecondaryDomain<'_, B> {
             native: Some(B::begin_secondary(&self.device.native, desc)?),
             poisoned: false,
             push_constants: self.device.caps.push_constants,
+            dynamic_depth_bias: self.device.caps.dynamic_depth_bias,
+            dynamic_depth_bias_clamp: self.device.caps.dynamic_depth_bias_clamp,
+            bound_dynamic_depth_bias: None,
             signature: desc.clone(),
             stats: self.device.stats.local(),
         })

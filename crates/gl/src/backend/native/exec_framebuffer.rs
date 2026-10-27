@@ -13,10 +13,11 @@ use super::provider::{NativeFramebuffer, NativeGlProvider};
 use super::resource::{depth_attachment_point, has_stencil_plane};
 use crate::backend::api::{
     FramebufferId, GlAttachmentTarget, GlBlitMask, GlBlitRegion, GlDepthStencilAttachment, GlError,
-    GlFamilyApi as _, GlFilterMode, GlFramebufferApi, GlFramebufferDescriptor, GlLoadOp,
+    GlFamilyApi as _, GlFilterMode, GlFormat, GlFramebufferApi, GlFramebufferDescriptor, GlLoadOp,
     GlPassAttachmentView, GlRenderPassDescriptor, GlRenderTarget, GlStoreOp, GlTextureDimension,
     GlTextureView,
 };
+use fluxel_rhi_core::api::{ClearColor, ColorAttachmentClear, Rect};
 
 const fn blit_mask_bits(masks: GlBlitMask) -> u32 {
     let mut bits = 0;
@@ -55,6 +56,50 @@ pub(super) fn framebuffer_shape(descriptor: &GlFramebufferDescriptor) -> (u32, u
         .or(descriptor.depth_stencil_attachment)
         .map(|view| (view.width, view.height, view.sample_count))
         .unwrap_or((0, 0, 1))
+}
+
+const fn has_depth_plane(format: GlFormat) -> bool {
+    matches!(
+        format,
+        GlFormat::Depth16Unorm
+            | GlFormat::Depth24Unorm
+            | GlFormat::Depth24PlusStencil8
+            | GlFormat::Depth32Float
+            | GlFormat::Depth32FloatStencil8
+    )
+}
+
+const fn color_clear_matches(format: GlFormat, value: ClearColor) -> bool {
+    match format {
+        GlFormat::R8Sint
+        | GlFormat::Rg8Sint
+        | GlFormat::Rgba8Sint
+        | GlFormat::R16Sint
+        | GlFormat::Rg16Sint
+        | GlFormat::Rgba16Sint
+        | GlFormat::R32Sint
+        | GlFormat::Rg32Sint
+        | GlFormat::Rgba32Sint => matches!(value, ClearColor::Sint(_)),
+        format if format.is_integer_color() => matches!(value, ClearColor::Uint(_)),
+        _ => matches!(value, ClearColor::Float(_)),
+    }
+}
+
+fn clear_native_rect(rect: Rect) -> Result<(i32, i32, i32, i32), GlError> {
+    Ok((
+        i32::try_from(rect.x).map_err(|_| {
+            NativeGlProvider::validation("clear-active-rect", "rectangle x exceeds GLint")
+        })?,
+        i32::try_from(rect.y).map_err(|_| {
+            NativeGlProvider::validation("clear-active-rect", "rectangle y exceeds GLint")
+        })?,
+        i32::try_from(rect.width).map_err(|_| {
+            NativeGlProvider::validation("clear-active-rect", "rectangle width exceeds GLsizei")
+        })?,
+        i32::try_from(rect.height).map_err(|_| {
+            NativeGlProvider::validation("clear-active-rect", "rectangle height exceeds GLsizei")
+        })?,
+    ))
 }
 
 impl NativeGlProvider {
@@ -445,10 +490,133 @@ impl GlFramebufferApi for NativeGlProvider {
             width: shape.0,
             height: shape.1,
             samples: shape.2,
+            color_formats: descriptor
+                .color_attachments
+                .iter()
+                .map(|attachment| {
+                    attachment.map(|attachment| match attachment.view {
+                        GlPassAttachmentView::Allocated(view) => view.format,
+                        GlPassAttachmentView::DefaultColor(target) => target.color_format,
+                    })
+                })
+                .collect(),
+            depth_stencil_format: descriptor
+                .depth_stencil_attachment
+                .map(|attachment| attachment.view.format),
             discard_color,
             discard_depth_stencil,
         });
         Ok(())
+    }
+
+    /// Clears selected active-pass attachments and restores the complete
+    /// pipeline packet, including scissor and write masks, before returning.
+    fn clear_active_rect(
+        &mut self,
+        rect: Rect,
+        colors: &[ColorAttachmentClear],
+        depth: Option<f32>,
+        stencil: Option<u32>,
+        restore: Option<&crate::backend::api::GlRasterPipeline>,
+    ) -> Result<(), GlError> {
+        use crate::backend::api::GlRasterCommandApi as _;
+        use glow::HasContext as _;
+        const OP: &str = "clear-active-rect";
+        self.assert_ready(OP)?;
+        let pass = self
+            .pass
+            .as_ref()
+            .ok_or_else(|| Self::validation(OP, "no active render pass"))?;
+        let right = rect
+            .x
+            .checked_add(rect.width)
+            .ok_or_else(|| Self::validation(OP, "rectangle overflow"))?;
+        let bottom = rect
+            .y
+            .checked_add(rect.height)
+            .ok_or_else(|| Self::validation(OP, "rectangle overflow"))?;
+        if rect.width == 0 || rect.height == 0 || right > pass.width || bottom > pass.height {
+            return Err(Self::validation(OP, "rectangle outside active render pass"));
+        }
+        let color_formats = pass.color_formats.clone();
+        let depth_stencil_format = pass.depth_stencil_format;
+        for clear in colors {
+            let format = color_formats
+                .get(clear.attachment as usize)
+                .and_then(|format| *format)
+                .ok_or_else(|| Self::validation(OP, "missing color attachment"))?;
+            if !color_clear_matches(format, clear.value) {
+                return Err(Self::validation(
+                    OP,
+                    "color clear value does not match attachment",
+                ));
+            }
+        }
+        if (depth.is_some() || stencil.is_some()) && depth_stencil_format.is_none() {
+            return Err(Self::validation(OP, "missing depth/stencil attachment"));
+        }
+        if depth.is_some_and(|_| !has_depth_plane(depth_stencil_format.unwrap())) {
+            return Err(Self::validation(OP, "active attachment has no depth plane"));
+        }
+        if stencil.is_some_and(|_| !has_stencil_plane(depth_stencil_format.unwrap())) {
+            return Err(Self::validation(
+                OP,
+                "active attachment has no stencil plane",
+            ));
+        }
+        let native = clear_native_rect(rect)?;
+        // SAFETY: the active pass keeps the framebuffer bound, native_rect
+        // converted upper-left Core coordinates, and all clear values were
+        // validated against the active attachment formats above.
+        unsafe {
+            self.gl.enable(glow::SCISSOR_TEST);
+            self.gl.scissor(native.0, native.1, native.2, native.3);
+            for clear in colors {
+                self.gl
+                    .color_mask_draw_buffer(clear.attachment, true, true, true, true);
+                match clear.value {
+                    ClearColor::Float(value) => {
+                        self.gl
+                            .clear_buffer_f32_slice(glow::COLOR, clear.attachment, &value)
+                    }
+                    ClearColor::Uint(value) => {
+                        self.gl
+                            .clear_buffer_u32_slice(glow::COLOR, clear.attachment, &value)
+                    }
+                    ClearColor::Sint(value) => {
+                        self.gl
+                            .clear_buffer_i32_slice(glow::COLOR, clear.attachment, &value)
+                    }
+                }
+            }
+            self.gl.depth_mask(true);
+            self.gl.stencil_mask(u32::MAX);
+            match (depth, stencil) {
+                (Some(depth), Some(stencil)) => self.gl.clear_buffer_depth_stencil(
+                    glow::DEPTH_STENCIL,
+                    0,
+                    depth,
+                    stencil as i32,
+                ),
+                (Some(depth), None) => self.gl.clear_buffer_f32_slice(glow::DEPTH, 0, &[depth]),
+                (None, Some(stencil)) => {
+                    self.gl
+                        .clear_buffer_i32_slice(glow::STENCIL, 0, &[stencil as i32])
+                }
+                (None, None) => {}
+            }
+        }
+        let clear_result = self.defer_driver_error(OP);
+        // The clear mutates masks and scissor behind the cached pipeline
+        // packet. Invalidate first, then replay the caller's packet so the
+        // next draw observes exactly its pre-clear state. Without a bound
+        // pipeline there is no RHI-visible mutable packet to restore; the
+        // first later bind will replay its complete state after invalidation.
+        self.context_state.pipeline_failed();
+        match restore {
+            Some(restore) => clear_result.and(self.set_raster_pipeline(restore)),
+            None => clear_result,
+        }
     }
 
     fn end_render_pass(&mut self) -> Result<(), GlError> {
@@ -645,5 +813,45 @@ pub(super) fn supports_framebuffer_invalidate(
         crate::backend::api::GlFamilyProfile::Embedded { .. } => true,
         crate::backend::api::GlFamilyProfile::Desktop { major, minor } => major > 4 || minor >= 3,
         crate::backend::api::GlFamilyProfile::WebGl2 => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rect_clear_selects_the_attachment_numeric_clear_entrypoint() {
+        assert!(color_clear_matches(
+            GlFormat::Rgba8Unorm,
+            ClearColor::Float([0.0; 4])
+        ));
+        assert!(!color_clear_matches(
+            GlFormat::Rgba8Unorm,
+            ClearColor::Uint([0; 4])
+        ));
+        assert!(color_clear_matches(
+            GlFormat::Rgba32Uint,
+            ClearColor::Uint([0; 4])
+        ));
+        assert!(!color_clear_matches(
+            GlFormat::Rgba32Uint,
+            ClearColor::Sint([0; 4])
+        ));
+        assert!(color_clear_matches(
+            GlFormat::Rgba16Sint,
+            ClearColor::Sint([0; 4])
+        ));
+    }
+
+    #[test]
+    fn rect_clear_rejects_coordinates_outside_gl_integer_range() {
+        assert!(clear_native_rect(Rect {
+            x: u32::MAX,
+            y: 0,
+            width: 1,
+            height: 1,
+        })
+        .is_err());
     }
 }

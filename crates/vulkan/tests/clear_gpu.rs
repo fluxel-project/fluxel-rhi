@@ -142,76 +142,79 @@ fn depth_clear_controls_depth_test() {
         depth_fail: StencilOperation::Keep,
         pass: StencilOperation::Keep,
     };
-    let pipeline = block_on(d.raster_pipeline(RasterPipelineDesc {
-        label: None,
-        layout,
-        vertex: PipelineStage {
-            module: vs,
-            entry: "vs_main".into(),
-            constants: vec![],
+    let pipeline = block_on(d.raster_pipeline_with_dynamic_depth_bias(
+        RasterPipelineDesc {
+            label: None,
+            layout,
+            vertex: PipelineStage {
+                module: vs,
+                entry: "vs_main".into(),
+                constants: vec![],
+            },
+            fragment: Some(PipelineStage {
+                module: ps,
+                entry: "ps_main".into(),
+                constants: vec![],
+            }),
+            vertex_buffers: vec![VertexBufferLayout {
+                stride: 24,
+                step_mode: VertexStepMode::Vertex,
+                attributes: vec![
+                    VertexAttribute {
+                        location: 0,
+                        offset: 0,
+                        format: VertexFormat::Float32(3),
+                    },
+                    VertexAttribute {
+                        location: 1,
+                        offset: 12,
+                        format: VertexFormat::Float32(3),
+                    },
+                ],
+            }],
+            color_targets: vec![Some(ColorTargetState {
+                format: TextureFormat::Rgba8Unorm,
+                blend: None,
+                write_mask: 15,
+            })],
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: FrontFace::Ccw,
+                cull_mode: CullMode::None,
+                unclipped_depth: false,
+                polygon_mode: PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(DepthStencilState {
+                format: TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: CompareFunction::Less,
+                stencil_front: face,
+                stencil_back: face,
+                stencil_read_mask: 0,
+                stencil_write_mask: 0,
+                depth_bias_constant: 0,
+                depth_bias_slope_scale: 0.0,
+                depth_bias_clamp: 0.0,
+            }),
+            multisample: MultisampleState {
+                count: 1,
+                mask: u64::from(u32::MAX),
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
         },
-        fragment: Some(PipelineStage {
-            module: ps,
-            entry: "ps_main".into(),
-            constants: vec![],
-        }),
-        vertex_buffers: vec![VertexBufferLayout {
-            stride: 24,
-            step_mode: VertexStepMode::Vertex,
-            attributes: vec![
-                VertexAttribute {
-                    location: 0,
-                    offset: 0,
-                    format: VertexFormat::Float32(3),
-                },
-                VertexAttribute {
-                    location: 1,
-                    offset: 12,
-                    format: VertexFormat::Float32(3),
-                },
-            ],
-        }],
-        color_targets: vec![Some(ColorTargetState {
-            format: TextureFormat::Rgba8Unorm,
-            blend: None,
-            write_mask: 15,
-        })],
-        primitive: PrimitiveState {
-            topology: PrimitiveTopology::TriangleList,
-            strip_index_format: None,
-            front_face: FrontFace::Ccw,
-            cull_mode: CullMode::None,
-            unclipped_depth: false,
-            polygon_mode: PolygonMode::Fill,
-            conservative: false,
-        },
-        depth_stencil: Some(DepthStencilState {
-            format: TextureFormat::Depth32Float,
-            depth_write_enabled: true,
-            depth_compare: CompareFunction::Less,
-            stencil_front: face,
-            stencil_back: face,
-            stencil_read_mask: 0,
-            stencil_write_mask: 0,
-            depth_bias_constant: 0,
-            depth_bias_slope_scale: 0.0,
-            depth_bias_clamp: 0.0,
-        }),
-        multisample: MultisampleState {
-            count: 1,
-            mask: u64::from(u32::MAX),
-            alpha_to_coverage_enabled: false,
-        },
-        multiview: None,
-        cache: None,
-    }))
+        DynamicDepthBias::default(),
+    ))
     .unwrap();
     let color = d
         .create_texture(&TextureDesc {
             label: None,
             dimension: TextureDimension::D2,
             extent: [16, 16, 1],
-            array_layers: 2,
+            array_layers: 3,
             format: TextureFormat::Rgba8Unorm,
             mip_levels: 1,
             samples: 1,
@@ -224,7 +227,7 @@ fn depth_clear_controls_depth_test() {
             label: None,
             dimension: TextureDimension::D2,
             extent: [16, 16, 1],
-            array_layers: 2,
+            array_layers: 3,
             format: TextureFormat::Depth32Float,
             mip_levels: 1,
             samples: 1,
@@ -233,7 +236,7 @@ fn depth_clear_controls_depth_test() {
         })
         .unwrap();
     let views = |texture: &Texture<_>, format, aspect| {
-        (0..2)
+        (0..3)
             .map(|layer| {
                 d.create_view(
                     texture,
@@ -262,7 +265,7 @@ fn depth_clear_controls_depth_test() {
     let dst = d
         .create_buffer(&BufferDesc {
             label: None,
-            size: 8192,
+            size: 12288,
             usage: BufferUsage::COPY_DST.union(BufferUsage::MAP_READ),
             memory: MemoryClass::Readback,
         })
@@ -298,7 +301,7 @@ fn depth_clear_controls_depth_test() {
                 texture: &color,
                 aspects: TextureAspects::COLOR,
                 mips: 0..1,
-                layers: 0..2,
+                layers: 0..3,
             },
             usage: StateTransition { from, to },
             layout: Some(layouts),
@@ -316,7 +319,7 @@ fn depth_clear_controls_depth_test() {
             texture: &depth,
             aspects: TextureAspects::DEPTH,
             mips: 0..1,
-            layers: 0..2,
+            layers: 0..3,
         },
         usage: StateTransition {
             from: empty,
@@ -329,11 +332,9 @@ fn depth_clear_controls_depth_test() {
         ownership: None,
     })])
     .unwrap();
-    e.clear_texture(&depth, 0..1, 0..2, TextureClearValue::Depth(0.0))
+    e.clear_texture(&depth, 0..1, 0..3, TextureClearValue::Depth(1.0))
         .unwrap();
-    e.clear_texture(&depth, 0..1, 1..2, TextureClearValue::Depth(1.0))
-        .unwrap();
-    for layer in 0..2 {
+    for layer in 0..3 {
         let attachments = [Some(ColorAttachment {
             view: AttachmentView::Texture(&colors[layer]),
             resolve_target: None,
@@ -381,6 +382,27 @@ fn depth_clear_controls_depth_test() {
         })
         .unwrap();
         pass.set_pipeline(&pipeline).unwrap();
+        if layer == 1 {
+            // The original z=0.5 triangle passes LESS against depth one. A
+            // large positive factor makes this otherwise identical draw fail.
+            pass.set_depth_bias(DynamicDepthBias {
+                constant: 16_777_216,
+                slope_scale: 0.0,
+                clamp: 0.0,
+            })
+            .unwrap();
+        }
+        if layer == 2 {
+            pass.set_depth_bias(DynamicDepthBias {
+                constant: 16_777_216,
+                slope_scale: 0.0,
+                clamp: 0.0,
+            })
+            .unwrap();
+            // Binding resets dynamic values to the pipeline's initial zero
+            // bias, so this draw must pass again.
+            pass.set_pipeline(&pipeline).unwrap();
+        }
         pass.set_vertex_buffer(0, &vertex, 0..72).unwrap();
         pass.draw(0..3, 0..1).unwrap();
         pass.finish().unwrap();
@@ -391,7 +413,7 @@ fn depth_clear_controls_depth_test() {
         (ImageLayout::ColorAttachment, ImageLayout::CopySrc),
     )])
     .unwrap();
-    for layer in 0..2 {
+    for layer in 0..3 {
         e.texture_to_buffer(
             TextureRegion {
                 texture: &color,
@@ -409,7 +431,7 @@ fn depth_clear_controls_depth_test() {
         )
         .unwrap();
     }
-    let ticket = e.readback_buffer(&dst, 0..8192).unwrap();
+    let ticket = e.readback_buffer(&dst, 0..12288).unwrap();
     let id = PlanId {
         device: d.id(),
         ordinal: 755321,
@@ -445,11 +467,249 @@ fn depth_clear_controls_depth_test() {
     // SAFETY: the awaited completion point covers the readback.
     let bytes = unsafe { block_on(d.read_after(ticket, &point)).unwrap().bytes };
     let center = 8 * 256 + 8 * 4;
-    assert_eq!(&bytes[center..center + 4], &[0, 0, 0, 255]);
     assert!(
-        bytes[4096 + center] > 100,
-        "depth clear to 1 must allow triangle"
+        bytes[center] > 100,
+        "initial zero bias must let the triangle pass"
     );
+    assert_eq!(
+        &bytes[4096 + center..4096 + center + 4],
+        &[0, 0, 0, 255],
+        "positive dynamic depth bias must make the triangle fail"
+    );
+    assert!(
+        bytes[8192 + center] > 100,
+        "rebinding must restore the pipeline's initial zero depth bias"
+    );
+}
+
+#[test]
+fn active_pass_rect_clear_preserves_outside_and_other_attachment() {
+    let d = block_on(VulkanInstance::new().unwrap().open_default()).unwrap();
+    assert!(d.capabilities().rect_attachment_clear);
+    let lane = d
+        .lanes()
+        .iter()
+        .find(|lane| lane.class == LaneClass::Graphics)
+        .unwrap()
+        .id;
+    let texture = || {
+        d.create_texture(&TextureDesc {
+            label: None,
+            dimension: TextureDimension::D2,
+            extent: [8, 8, 1],
+            array_layers: 1,
+            format: TextureFormat::Rgba8Unorm,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER_ATTACHMENT.union(TextureUsage::COPY_SRC),
+            view_formats: vec![],
+        })
+        .unwrap()
+    };
+    let first = texture();
+    let second = texture();
+    let view = |texture: &Texture<_>| {
+        d.create_view(
+            texture,
+            &TextureViewDesc {
+                format: TextureFormat::Rgba8Unorm,
+                dimension: TextureViewDimension::D2,
+                aspects: TextureAspects::COLOR,
+                mips: 0..1,
+                layers: 0..1,
+            },
+        )
+        .unwrap()
+    };
+    let first_view = view(&first);
+    let second_view = view(&second);
+    let dst = d
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: 4096,
+            usage: BufferUsage::COPY_DST.union(BufferUsage::MAP_READ),
+            memory: MemoryClass::Readback,
+        })
+        .unwrap();
+    let queries = d.queries(QueryKind::Occlusion).unwrap();
+    let occlusion = queries
+        .create(&QueryDesc {
+            kind: QueryKind::Occlusion,
+            count: 1,
+        })
+        .unwrap();
+    let empty = TextureUses {
+        stages: StageMask::EMPTY,
+        accesses: AccessMask::EMPTY,
+    };
+    let render = TextureUses {
+        stages: StageMask::COLOR_OUTPUT,
+        accesses: AccessMask::COLOR_WRITE,
+    };
+    let copy = TextureUses {
+        stages: StageMask::COPY,
+        accesses: AccessMask::COPY_READ,
+    };
+    macro_rules! transition {
+        ($texture:expr, $from:expr, $to:expr, $layouts:expr $(,)?) => {
+            ResourceTransition::Texture(TextureBarrier {
+                target: Subresources {
+                    texture: $texture,
+                    aspects: TextureAspects::COLOR,
+                    mips: 0..1,
+                    layers: 0..1,
+                },
+                usage: StateTransition {
+                    from: $from,
+                    to: $to,
+                },
+                layout: Some($layouts),
+                ownership: None,
+            })
+        };
+    }
+    let mut encoder = d.encoder(lane).unwrap();
+    queries.reset(&mut encoder, &occlusion, 0..1).unwrap();
+    encoder
+        .transition_resources(&[
+            transition!(
+                &first,
+                empty,
+                render,
+                (ImageLayout::Undefined, ImageLayout::ColorAttachment),
+            ),
+            transition!(
+                &second,
+                empty,
+                render,
+                (ImageLayout::Undefined, ImageLayout::ColorAttachment),
+            ),
+        ])
+        .unwrap();
+    let colors = [
+        Some(ColorAttachment {
+            view: AttachmentView::Texture(&first_view),
+            resolve_target: None,
+            load: LoadOp::Clear(ClearColor::Float([1.0, 0.0, 0.0, 1.0])),
+            store: StoreOp::Store,
+        }),
+        Some(ColorAttachment {
+            view: AttachmentView::Texture(&second_view),
+            resolve_target: None,
+            load: LoadOp::Clear(ClearColor::Float([0.0, 0.0, 1.0, 1.0])),
+            store: StoreOp::Store,
+        }),
+    ];
+    let mut pass = encoder
+        .begin_raster(&RasterPassDesc {
+            label: None,
+            colors: &colors,
+            depth_stencil: None,
+            render_area: Rect {
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 8,
+            },
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: Some(&occlusion),
+            secondary_inheritance: None,
+        })
+        .unwrap();
+    queries.begin_occlusion(&mut pass, &occlusion, 0).unwrap();
+    pass.clear_rect(
+        Rect {
+            x: 2,
+            y: 2,
+            width: 4,
+            height: 4,
+        },
+        &[ColorAttachmentClear {
+            attachment: 0,
+            value: ClearColor::Float([0.0, 1.0, 0.0, 1.0]),
+        }],
+        None,
+        None,
+    )
+    .unwrap();
+    queries.end_occlusion(&mut pass).unwrap();
+    pass.finish().unwrap();
+    encoder
+        .transition_resources(&[
+            transition!(
+                &first,
+                render,
+                copy,
+                (ImageLayout::ColorAttachment, ImageLayout::CopySrc),
+            ),
+            transition!(
+                &second,
+                render,
+                copy,
+                (ImageLayout::ColorAttachment, ImageLayout::CopySrc),
+            ),
+        ])
+        .unwrap();
+    for (texture, offset) in [(&first, 0), (&second, 2048)] {
+        encoder
+            .texture_to_buffer(
+                TextureRegion {
+                    texture,
+                    mip: 0,
+                    origin: [0, 0, 0],
+                    extent: [8, 8, 1],
+                    aspect: TextureAspects::COLOR,
+                },
+                &dst,
+                TexelCopyBufferLayout {
+                    offset,
+                    bytes_per_row: 256,
+                    rows_per_image: 8,
+                },
+            )
+            .unwrap();
+    }
+    let ticket = encoder.readback_buffer(&dst, 0..4096).unwrap();
+    let plan = unsafe {
+        SubmissionPlan::from_compiled(
+            PlanId {
+                device: d.id(),
+                ordinal: 755322,
+            },
+            Arc::from([StepDesc {
+                lane,
+                kind: StepKind::Commands,
+                waits: vec![],
+            }]),
+        )
+    };
+    let step = plan.step(0);
+    let outcome = unsafe {
+        d.queue().submit(SubmitPacket {
+            plan,
+            steps: vec![BoundStep {
+                step,
+                payload: StepPayload::Commands(vec![encoder.finish().unwrap()]),
+            }],
+            completion: CompletionRequest::End,
+        })
+    };
+    let point = match outcome {
+        SubmitOutcome::Accepted(receipt) => receipt.checkpoints.into_iter().next().unwrap().point,
+        _ => panic!("submission rejected"),
+    };
+    block_on(d.wait_completion(&point)).unwrap();
+    let bytes = unsafe { block_on(d.read_after(ticket, &point)).unwrap().bytes };
+    let pixel = |base: usize, x: usize, y: usize| {
+        let start = base + y * 256 + x * 4;
+        &bytes[start..start + 4]
+    };
+    assert_eq!(pixel(0, 0, 0), &[255, 0, 0, 255]);
+    assert_eq!(pixel(0, 3, 3), &[0, 255, 0, 255]);
+    assert_eq!(pixel(0, 7, 7), &[255, 0, 0, 255]);
+    assert_eq!(pixel(2048, 0, 0), &[0, 0, 255, 255]);
+    assert_eq!(pixel(2048, 3, 3), &[0, 0, 255, 255]);
 }
 
 #[test]

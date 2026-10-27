@@ -98,6 +98,9 @@ struct Dx12DeviceState {
     pub(super) resource_heap_tier2: bool,
     /// Immutable OPTIONS12 fact queried once when the native device opens.
     pub(super) enhanced_barriers_supported: bool,
+    /// Immutable OPTIONS16 fact required by dynamic-depth-bias PSOs and
+    /// `ID3D12GraphicsCommandList9::RSSetDepthBias`.
+    pub(super) dynamic_depth_bias_supported: bool,
     pub(super) sparse_in_flight: Mutex<Vec<(u64, Vec<sparse::SparseRetained>)>>,
     pub(super) queue: ID3D12CommandQueue,
     pub(super) multi_queue: queue::MultiQueueState,

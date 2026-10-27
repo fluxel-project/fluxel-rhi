@@ -17,6 +17,7 @@ pub(crate) struct RasterSnapshot {
     pub scissor: Option<RECT>,
     pub blend: Option<[f32; 4]>,
     pub stencil: Option<u32>,
+    pub depth_bias: Option<api::DynamicDepthBias>,
 }
 impl RasterSnapshot {
     pub fn clear_roots(&mut self) {
@@ -41,6 +42,13 @@ pub(crate) fn restore(encoder: &mut Dx12Encoder) -> Result<(), Error> {
         } else if let Some(p) = &encoder.mesh_pipeline {
             encoder.list.SetGraphicsRootSignature(&p.0.layout.root);
             encoder.list.SetPipelineState(&p.0.state);
+        }
+        if let Some(value) = s.depth_bias {
+            let list9 = encoder
+                .list
+                .cast::<ID3D12GraphicsCommandList9>()
+                .map_err(native_error)?;
+            list9.RSSetDepthBias(value.constant as f32, value.clamp, value.slope_scale);
         }
         for (&root, value) in &s.roots {
             match value {

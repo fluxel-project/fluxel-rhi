@@ -36,6 +36,9 @@ pub struct CommandEncoder<B: CommandBackend> {
     pub(crate) debug_markers_encoder: bool,
     pub(crate) debug_markers_raster_pass: bool,
     pub(crate) debug_markers_compute_pass: bool,
+    pub(crate) dynamic_depth_bias: bool,
+    pub(crate) dynamic_depth_bias_clamp: bool,
+    pub(crate) rect_attachment_clear: bool,
     pub(crate) debug_group_depth: u32,
 }
 impl<B: CommandBackend> CommandEncoder<B> {
@@ -61,6 +64,9 @@ impl<B: CommandBackend> CommandEncoder<B> {
             debug_markers_encoder: device.caps.debug_markers_encoder,
             debug_markers_raster_pass: device.caps.debug_markers_raster_pass,
             debug_markers_compute_pass: device.caps.debug_markers_compute_pass,
+            dynamic_depth_bias: device.caps.dynamic_depth_bias,
+            dynamic_depth_bias_clamp: device.caps.dynamic_depth_bias_clamp,
+            rect_attachment_clear: device.caps.rect_attachment_clear,
             debug_group_depth: 0,
         })
     }
@@ -284,6 +290,11 @@ pub struct RasterPass<'a, B: RasterBackend> {
     pub(crate) encoder: &'a mut CommandEncoder<B>,
     pub(crate) active: bool,
     pub(crate) secondary_inheritance: Option<SecondaryRasterDesc>,
+    bound_dynamic_depth_bias: Option<DynamicDepthBias>,
+    render_area: Rect,
+    color_attachment_slots: Vec<bool>,
+    depth_clearable: bool,
+    stencil_clearable: bool,
     debug_group_depth_at_min: u32,
     debug_label_active: bool,
 }
@@ -379,6 +390,15 @@ impl<B: RasterBackend> CommandEncoder<B> {
             encoder: self,
             active: true,
             secondary_inheritance: desc.secondary_inheritance.clone(),
+            bound_dynamic_depth_bias: None,
+            render_area: desc.render_area,
+            color_attachment_slots: desc.colors.iter().map(Option::is_some).collect(),
+            depth_clearable: desc.depth_stencil.as_ref().is_some_and(|attachment| {
+                attachment.depth.is_some() && !attachment.depth_read_only
+            }),
+            stencil_clearable: desc.depth_stencil.as_ref().is_some_and(|attachment| {
+                attachment.stencil.is_some() && !attachment.stencil_read_only
+            }),
             debug_group_depth_at_min,
             debug_label_active,
         })
@@ -441,8 +461,18 @@ impl<B: RasterBackend> RasterPass<'_, B> {
         if p.device != self.encoder.device {
             return Err(Error::WrongDevice);
         }
-        let result = self.call(|e| B::set_pipeline(e, &p.native));
+        if p.dynamic_depth_bias.is_some() && !B::DYNAMIC_DEPTH_BIAS_AVAILABLE {
+            return Err(Error::Unsupported("dynamic depth bias"));
+        }
+        let result = self.call(|e| {
+            B::set_pipeline(e, &p.native)?;
+            if let Some(initial) = p.dynamic_depth_bias {
+                B::depth_bias(e, initial)?;
+            }
+            Ok(())
+        });
         if result.is_ok() {
+            self.bound_dynamic_depth_bias = p.dynamic_depth_bias;
             self.encoder.stats.record_pipeline_bind();
         }
         result
@@ -543,6 +573,84 @@ impl<B: RasterBackend> RasterPass<'_, B> {
             self.encoder.stats.record_stencil_reference_set();
         }
         result
+    }
+    /// Sets factors for a pipeline created with
+    /// [`Device::raster_pipeline_with_dynamic_depth_bias`]. Binding that
+    /// pipeline again restores its declared initial factors.
+    pub fn set_depth_bias(&mut self, value: DynamicDepthBias) -> Result<()> {
+        if !self.encoder.dynamic_depth_bias || !B::DYNAMIC_DEPTH_BIAS_AVAILABLE {
+            return Err(Error::Unsupported("dynamic depth bias"));
+        }
+        if self.bound_dynamic_depth_bias.is_none() {
+            return Err(Error::InvalidState);
+        }
+        if !value.is_finite() {
+            return Err(Error::InvalidRange);
+        }
+        if value.clamp != 0.0 && !self.encoder.dynamic_depth_bias_clamp {
+            return Err(Error::Unsupported("dynamic depth bias clamp"));
+        }
+        self.call(|e| B::depth_bias(e, value))
+    }
+    /// Clears selected attachments inside this pass without ending or
+    /// splitting it. `rect` uses upper-left framebuffer coordinates and must
+    /// be fully contained by the pass render area.
+    pub fn clear_rect(
+        &mut self,
+        rect: Rect,
+        colors: &[ColorAttachmentClear],
+        depth: Option<f32>,
+        stencil: Option<u32>,
+    ) -> Result<()> {
+        if !self.encoder.rect_attachment_clear || !B::RECT_ATTACHMENT_CLEAR_AVAILABLE {
+            return Err(Error::Unsupported("raster attachment rect clear"));
+        }
+        if rect.width == 0
+            || rect.height == 0
+            || (colors.is_empty() && depth.is_none() && stencil.is_none())
+        {
+            return Err(Error::InvalidRange);
+        }
+        let Some(rect_right) = rect.x.checked_add(rect.width) else {
+            return Err(Error::InvalidRange);
+        };
+        let Some(rect_bottom) = rect.y.checked_add(rect.height) else {
+            return Err(Error::InvalidRange);
+        };
+        let Some(area_right) = self.render_area.x.checked_add(self.render_area.width) else {
+            return Err(Error::InvalidState);
+        };
+        let Some(area_bottom) = self.render_area.y.checked_add(self.render_area.height) else {
+            return Err(Error::InvalidState);
+        };
+        if rect.x < self.render_area.x
+            || rect.y < self.render_area.y
+            || rect_right > area_right
+            || rect_bottom > area_bottom
+        {
+            return Err(Error::InvalidRange);
+        }
+        for (index, clear) in colors.iter().enumerate() {
+            let Some(is_attachment) = self.color_attachment_slots.get(clear.attachment as usize)
+            else {
+                return Err(Error::InvalidRange);
+            };
+            if !is_attachment
+                || colors[..index]
+                    .iter()
+                    .any(|prior| prior.attachment == clear.attachment)
+            {
+                return Err(Error::InvalidRange);
+            }
+        }
+        if depth.is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value)) {
+            return Err(Error::InvalidRange);
+        }
+        if depth.is_some() && !self.depth_clearable || stencil.is_some() && !self.stencil_clearable
+        {
+            return Err(Error::InvalidState);
+        }
+        self.call(|encoder| B::clear_rect(encoder, rect, colors, depth, stencil))
     }
     pub fn draw(&mut self, vertices: Range<u32>, instances: Range<u32>) -> Result<()> {
         if !valid_u32_range(&vertices) || !valid_u32_range(&instances) {

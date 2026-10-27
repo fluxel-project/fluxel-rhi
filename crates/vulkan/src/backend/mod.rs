@@ -441,10 +441,11 @@ impl fluxel_rhi_core::backend::PipelineBackend for Vulkan {
     fn create_raster_pipeline<'a>(
         device: &'a VulkanDevice,
         desc: &'a api::RasterPipelineDesc<Self>,
+        dynamic_depth_bias: Option<api::DynamicDepthBias>,
     ) -> Self::RasterPipelineFuture<'a> {
         let device = device.clone();
         let desc = desc.clone();
-        cold_worker::submit(move || pipeline::create_raster(&device, &desc))
+        cold_worker::submit(move || pipeline::create_raster(&device, &desc, dynamic_depth_bias))
     }
 }
 

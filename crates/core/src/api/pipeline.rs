@@ -163,6 +163,23 @@ pub struct DepthStencilState {
     pub depth_bias_slope_scale: f32,
     pub depth_bias_clamp: f32,
 }
+/// Dynamic depth-bias factors applied by [`RasterPass::set_depth_bias`].
+///
+/// `constant` uses the same integral bias unit as static
+/// [`DepthStencilState::depth_bias_constant`]; the resulting depth change
+/// depends on the depth format. `slope_scale` scales the rasterized depth
+/// slope, and `clamp` limits the resulting bias where supported.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DynamicDepthBias {
+    pub constant: i32,
+    pub slope_scale: f32,
+    pub clamp: f32,
+}
+impl DynamicDepthBias {
+    pub(crate) fn is_finite(self) -> bool {
+        self.slope_scale.is_finite() && self.clamp.is_finite()
+    }
+}
 #[derive(Clone, Copy, Debug)]
 pub struct MultisampleState {
     pub count: u32,
@@ -215,6 +232,36 @@ pub struct ComputePipelineDesc<B: Backend> {
 
 impl<B: PipelineBackend> Device<B> {
     pub async fn raster_pipeline(&self, desc: RasterPipelineDesc<B>) -> Result<RasterPipeline<B>> {
+        self.create_raster_pipeline(desc, None).await
+    }
+
+    /// Creates a raster pipeline whose depth-bias factors can be changed
+    /// during a raster pass. Binding the pipeline restores `initial_bias`.
+    pub async fn raster_pipeline_with_dynamic_depth_bias(
+        &self,
+        desc: RasterPipelineDesc<B>,
+        initial_bias: DynamicDepthBias,
+    ) -> Result<RasterPipeline<B>> {
+        if !self.caps.dynamic_depth_bias {
+            return Err(Error::Unsupported("dynamic depth bias"));
+        }
+        if !initial_bias.is_finite() {
+            return Err(Error::InvalidRange);
+        }
+        if initial_bias.clamp != 0.0 && !self.caps.dynamic_depth_bias_clamp {
+            return Err(Error::Unsupported("dynamic depth bias clamp"));
+        }
+        if desc.depth_stencil.is_none() {
+            return Err(Error::InvalidState);
+        }
+        self.create_raster_pipeline(desc, Some(initial_bias)).await
+    }
+
+    async fn create_raster_pipeline(
+        &self,
+        desc: RasterPipelineDesc<B>,
+        dynamic_depth_bias: Option<DynamicDepthBias>,
+    ) -> Result<RasterPipeline<B>> {
         // Pipeline pieces may be structurally compatible while belonging to
         // different devices. Validate provenance before a backend starts a
         // potentially expensive asynchronous native pipeline compilation.
@@ -251,9 +298,10 @@ impl<B: PipelineBackend> Device<B> {
         }
         // SAFETY: shader and layout provenance were checked against this device.
         Ok(unsafe {
-            RasterPipeline::from_native(
+            RasterPipeline::from_native_with_dynamic_depth_bias(
                 self.id,
-                B::create_raster_pipeline(&self.native, &desc).await?,
+                B::create_raster_pipeline(&self.native, &desc, dynamic_depth_bias).await?,
+                dynamic_depth_bias,
             )
         })
     }

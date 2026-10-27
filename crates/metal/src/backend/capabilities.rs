@@ -46,6 +46,10 @@ pub(super) fn describe(device: &MetalDevice, multi_queue: bool) -> DeviceCapabil
         placed_memory: memory::supported(native),
         external_memory: true,
         native_interop: true,
+        // Metal render encoders expose depth bias as mutable encoder state.
+        // The command accepts a clamp factor on all supported Metal devices.
+        dynamic_depth_bias: true,
+        dynamic_depth_bias_clamp: true,
         limits: DeviceLimits {
             // Logical indices do not allocate native slots. These values are
             // index-space bounds, not a guarantee for every resource mixture;

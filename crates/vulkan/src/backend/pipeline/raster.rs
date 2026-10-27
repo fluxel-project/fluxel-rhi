@@ -57,6 +57,9 @@ impl VulkanRasterPipeline {
     pub(crate) fn compatible_read_only(&self, depth: bool, stencil: bool) -> bool {
         !(depth && self.0.depth_writes || stencil && self.0.stencil_writes)
     }
+    pub(crate) fn has_dynamic_depth_bias(&self) -> bool {
+        self.0.dynamic_depth_bias
+    }
     pub(crate) fn matches_secondary(&self, signature: &api::SecondaryRasterDesc) -> bool {
         self.0.color_formats.as_ref() == signature.color_formats.as_slice()
             && self.0.depth_format == signature.depth_stencil_format
@@ -74,6 +77,7 @@ struct Raster {
     multiview_mask: Option<u32>,
     depth_writes: bool,
     stencil_writes: bool,
+    dynamic_depth_bias: bool,
 }
 impl Drop for Raster {
     fn drop(&mut self) {
@@ -86,7 +90,16 @@ impl Drop for Raster {
 pub(crate) fn create_raster(
     device: &VulkanDevice,
     desc: &api::RasterPipelineDesc<super::super::Vulkan>,
+    dynamic_depth_bias: Option<api::DynamicDepthBias>,
 ) -> Result<VulkanRasterPipeline> {
+    if dynamic_depth_bias.is_some() && desc.depth_stencil.is_none() {
+        return Err(Error::InvalidState);
+    }
+    if dynamic_depth_bias.is_some_and(|bias| bias.clamp != 0.0)
+        && device.0.features.depth_bias_clamp != vk::TRUE
+    {
+        return Err(Error::Unsupported("Vulkan depth bias clamp"));
+    }
     let vertex_name = CString::new(desc.vertex.entry.as_str())
         .map_err(|_| Error::Shader("shader entry contains NUL".into()))?;
     let fragment_name = desc
@@ -277,12 +290,15 @@ pub(crate) fn create_raster(
     let viewport = vk::PipelineViewportStateCreateInfo::default()
         .viewport_count(1)
         .scissor_count(1);
-    let dynamic_states = [
+    let mut dynamic_states = vec![
         vk::DynamicState::VIEWPORT,
         vk::DynamicState::SCISSOR,
         vk::DynamicState::BLEND_CONSTANTS,
         vk::DynamicState::STENCIL_REFERENCE,
     ];
+    if dynamic_depth_bias.is_some() {
+        dynamic_states.push(vk::DynamicState::DEPTH_BIAS);
+    }
     let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
     let cull = match desc.primitive.cull_mode {
         api::CullMode::None => vk::CullModeFlags::NONE,
@@ -303,11 +319,14 @@ pub(crate) fn create_raster(
         .cull_mode(cull)
         .front_face(front)
         .line_width(1.0)
-        .depth_bias_enable(desc.depth_stencil.as_ref().is_some_and(|d| {
-            d.depth_bias_constant != 0
-                || d.depth_bias_slope_scale != 0.0
-                || d.depth_bias_clamp != 0.0
-        }))
+        .depth_bias_enable(
+            dynamic_depth_bias.is_some()
+                || desc.depth_stencil.as_ref().is_some_and(|d| {
+                    d.depth_bias_constant != 0
+                        || d.depth_bias_slope_scale != 0.0
+                        || d.depth_bias_clamp != 0.0
+                }),
+        )
         .depth_bias_constant_factor(
             desc.depth_stencil
                 .as_ref()
@@ -500,6 +519,7 @@ pub(crate) fn create_raster(
             .depth_stencil
             .as_ref()
             .is_some_and(super::fixed::stencil_writes),
+        dynamic_depth_bias: dynamic_depth_bias.is_some(),
     })))
 }
 

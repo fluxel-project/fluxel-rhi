@@ -95,6 +95,8 @@ pub trait NativeInteropBackend: CommandBackend {
 }
 
 pub trait SecondaryBackend: RasterBackend + DeferredBackend {
+    /// Dynamic depth bias is implemented for secondary raster command lists.
+    const SECONDARY_DYNAMIC_DEPTH_BIAS_AVAILABLE: bool = false;
     type NativeSecondaryEncoder;
     type NativeSecondaryWork;
     fn begin_secondary(
@@ -105,6 +107,13 @@ pub trait SecondaryBackend: RasterBackend + DeferredBackend {
         encoder: &mut Self::NativeSecondaryEncoder,
         pipeline: &Self::NativeRasterPipeline,
     ) -> Result<()>;
+    /// Applies factors to a currently bound dynamic-depth-bias pipeline.
+    fn secondary_depth_bias(
+        _: &mut Self::NativeSecondaryEncoder,
+        _: DynamicDepthBias,
+    ) -> Result<()> {
+        Err(Error::Unsupported("secondary dynamic depth bias"))
+    }
     fn secondary_set_bind_group(
         encoder: &mut Self::NativeSecondaryEncoder,
         slot: u32,

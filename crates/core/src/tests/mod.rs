@@ -34,13 +34,15 @@ mod type_contract_lane;
 pub(crate) mod type_contract_tests {
     use super::*;
     use std::{
-        cell::Cell,
+        cell::{Cell, RefCell},
         future::{Ready, ready},
         rc::Rc,
     };
     thread_local! {
         static ABANDONED_STEPS: Cell<usize> = const { Cell::new(0) };
         static DRAW_CALLS: Cell<usize> = const { Cell::new(0) };
+        static CLEAR_RECT_CALLS: Cell<usize> = const { Cell::new(0) };
+        static DEPTH_BIAS_VALUES: RefCell<Vec<DynamicDepthBias>> = const { RefCell::new(Vec::new()) };
         static DEBUG_PUSHES: Cell<usize> = const { Cell::new(0) };
         static DEBUG_POPS: Cell<usize> = const { Cell::new(0) };
         pub(crate) static GL_TRANSITIONS: Cell<usize> = const { Cell::new(0) };
@@ -249,6 +251,8 @@ pub(crate) mod type_contract_tests {
         }
     }
     impl RasterBackend for NativeShared {
+        const DYNAMIC_DEPTH_BIAS_AVAILABLE: bool = true;
+        const RECT_ATTACHMENT_CLEAR_AVAILABLE: bool = true;
         fn begin_raster(_: &mut (), _: &RasterPassDesc<'_, Self>) -> Result<()> {
             Ok(())
         }
@@ -274,6 +278,20 @@ pub(crate) mod type_contract_tests {
             Ok(())
         }
         fn stencil_reference(_: &mut (), _: u32) -> Result<()> {
+            Ok(())
+        }
+        fn depth_bias(_: &mut (), value: DynamicDepthBias) -> Result<()> {
+            DEPTH_BIAS_VALUES.with(|values| values.borrow_mut().push(value));
+            Ok(())
+        }
+        fn clear_rect(
+            _: &mut (),
+            _: Rect,
+            _: &[ColorAttachmentClear],
+            _: Option<f32>,
+            _: Option<u32>,
+        ) -> Result<()> {
+            CLEAR_RECT_CALLS.with(|calls| calls.set(calls.get() + 1));
             Ok(())
         }
         fn draw(_: &mut (), _: Range<u32>, _: Range<u32>) -> Result<()> {
@@ -608,6 +626,281 @@ pub(crate) mod type_contract_tests {
         // SAFETY: this mock capability record has no native GPU operations.
         let device = unsafe { Device::<NativeShared>::from_native(id, Arc::new(()), caps) };
         assert!(!device.capabilities().debug_markers);
+    }
+
+    #[test]
+    fn dynamic_depth_bias_values_are_finite_and_pipeline_clone_preserves_mode() {
+        let initial = DynamicDepthBias {
+            constant: 2,
+            slope_scale: -2.0,
+            clamp: 0.25,
+        };
+        assert!(initial.is_finite());
+        assert!(
+            !DynamicDepthBias {
+                slope_scale: f32::NAN,
+                ..initial
+            }
+            .is_finite()
+        );
+        let id = DeviceId::allocate().unwrap();
+        // SAFETY: this test only checks wrapper metadata and never uses the fake native handle.
+        let pipeline = unsafe {
+            RasterPipeline::<NativeShared>::from_native_with_dynamic_depth_bias(
+                id,
+                Arc::new(()),
+                Some(initial),
+            )
+        };
+        let clone = pipeline.clone();
+        assert_eq!(clone.dynamic_depth_bias, Some(initial));
+    }
+
+    #[test]
+    fn dynamic_depth_bias_requires_dynamic_pipeline_and_rebind_restores_initial_value() {
+        let id = DeviceId::allocate().unwrap();
+        let mut caps = DeviceCapabilities::default();
+        caps.dynamic_depth_bias = true;
+        // SAFETY: this test pairs the mock native value and capabilities with the ID.
+        let device = unsafe { Device::<NativeShared>::from_native(id, Arc::new(()), caps) };
+        let initial = DynamicDepthBias {
+            constant: 1,
+            slope_scale: 0.5,
+            clamp: 0.0,
+        };
+        let changed = DynamicDepthBias {
+            constant: -2,
+            slope_scale: 1.25,
+            clamp: 0.0,
+        };
+        // SAFETY: this mock pipeline is only used with the same test device.
+        let dynamic = unsafe {
+            RasterPipeline::<NativeShared>::from_native_with_dynamic_depth_bias(
+                id,
+                Arc::new(()),
+                Some(initial),
+            )
+        };
+        // SAFETY: this mock static pipeline is only used with the same test device.
+        let static_pipeline =
+            unsafe { RasterPipeline::<NativeShared>::from_native(id, Arc::new(())) };
+        let lane = LaneId {
+            device: id,
+            ordinal: 0,
+        };
+        let mut encoder = CommandEncoder::new(&device, lane).unwrap();
+        let desc = RasterPassDesc {
+            label: None,
+            colors: &[],
+            depth_stencil: None,
+            render_area: Rect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            secondary_inheritance: None,
+        };
+        let mut pass = encoder.begin_raster(&desc).unwrap();
+        DEPTH_BIAS_VALUES.with(|values| values.borrow_mut().clear());
+        assert_eq!(pass.set_depth_bias(changed), Err(Error::InvalidState));
+        pass.set_pipeline(&dynamic).unwrap();
+        pass.set_depth_bias(changed).unwrap();
+        pass.set_pipeline(&dynamic).unwrap();
+        pass.set_pipeline(&static_pipeline).unwrap();
+        assert_eq!(pass.set_depth_bias(changed), Err(Error::InvalidState));
+        DEPTH_BIAS_VALUES.with(|values| {
+            assert_eq!(*values.borrow(), vec![initial, changed, initial]);
+        });
+        pass.finish().unwrap();
+    }
+
+    #[test]
+    fn raster_rect_clear_rejects_empty_overflow_and_outside_ranges_before_spi() {
+        let id = DeviceId::allocate().unwrap();
+        let mut caps = DeviceCapabilities::default();
+        caps.rect_attachment_clear = true;
+        // SAFETY: this fixture pairs the native value and capabilities with its ID.
+        let device = unsafe { Device::<NativeShared>::from_native(id, Arc::new(()), caps) };
+        let lane = LaneId {
+            device: id,
+            ordinal: 0,
+        };
+        let mut encoder = CommandEncoder::new(&device, lane).unwrap();
+        // SAFETY: this wrapper is only a test identity used by the mock pass.
+        let view = unsafe { TextureView::<NativeShared>::from_native(id, Arc::new(())) };
+        let color_attachment = [Some(ColorAttachment {
+            view: AttachmentView::Texture(&view),
+            resolve_target: None,
+            load: LoadOp::Load,
+            store: StoreOp::Store,
+        })];
+        let desc = RasterPassDesc {
+            label: None,
+            colors: &color_attachment,
+            depth_stencil: None,
+            render_area: Rect {
+                x: 10,
+                y: 20,
+                width: 30,
+                height: 40,
+            },
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            secondary_inheritance: None,
+        };
+        let mut pass = encoder.begin_raster(&desc).unwrap();
+        assert_eq!(
+            pass.clear_rect(
+                Rect {
+                    x: 10,
+                    y: 20,
+                    width: 0,
+                    height: 1,
+                },
+                &[],
+                None,
+                None,
+            ),
+            Err(Error::InvalidRange)
+        );
+        let invalid_target = [ColorAttachmentClear {
+            attachment: 1,
+            value: ClearColor::Float([1.0; 4]),
+        }];
+        assert_eq!(
+            pass.clear_rect(
+                Rect {
+                    x: 10,
+                    y: 20,
+                    width: 1,
+                    height: 1,
+                },
+                &invalid_target,
+                None,
+                None,
+            ),
+            Err(Error::InvalidRange)
+        );
+        assert_eq!(
+            pass.clear_rect(
+                Rect {
+                    x: u32::MAX,
+                    y: 20,
+                    width: 2,
+                    height: 1,
+                },
+                &[],
+                Some(0.5),
+                None,
+            ),
+            Err(Error::InvalidRange)
+        );
+        assert_eq!(
+            pass.clear_rect(
+                Rect {
+                    x: 39,
+                    y: 20,
+                    width: 2,
+                    height: 1,
+                },
+                &[],
+                Some(0.5),
+                None,
+            ),
+            Err(Error::InvalidRange)
+        );
+        assert_eq!(
+            pass.clear_rect(
+                Rect {
+                    x: 10,
+                    y: 20,
+                    width: 1,
+                    height: 1,
+                },
+                &[],
+                None,
+                None,
+            ),
+            Err(Error::InvalidRange)
+        );
+        let valid_target = [ColorAttachmentClear {
+            attachment: 0,
+            value: ClearColor::Float([0.25, 0.5, 0.75, 1.0]),
+        }];
+        CLEAR_RECT_CALLS.with(|calls| calls.set(0));
+        pass.clear_rect(
+            Rect {
+                x: 12,
+                y: 23,
+                width: 2,
+                height: 3,
+            },
+            &valid_target,
+            None,
+            None,
+        )
+        .unwrap();
+        CLEAR_RECT_CALLS.with(|calls| assert_eq!(calls.get(), 1));
+        pass.finish().unwrap();
+    }
+
+    #[test]
+    fn raster_rect_clear_rejects_read_only_depth_and_stencil_before_spi() {
+        let id = DeviceId::allocate().unwrap();
+        let mut caps = DeviceCapabilities::default();
+        caps.rect_attachment_clear = true;
+        // SAFETY: this fixture pairs the native value and capabilities with its ID.
+        let device = unsafe { Device::<NativeShared>::from_native(id, Arc::new(()), caps) };
+        let lane = LaneId {
+            device: id,
+            ordinal: 0,
+        };
+        let mut encoder = CommandEncoder::new(&device, lane).unwrap();
+        // SAFETY: the mock pass uses this view only as an attachment identity.
+        let view = unsafe { TextureView::<NativeShared>::from_native(id, Arc::new(())) };
+        let depth_stencil = DepthStencilAttachment {
+            view: AttachmentView::Texture(&view),
+            depth: Some((LoadOp::Load, StoreOp::Store)),
+            stencil: Some((LoadOp::Load, StoreOp::Store)),
+            depth_read_only: true,
+            stencil_read_only: true,
+        };
+        let desc = RasterPassDesc {
+            label: None,
+            colors: &[],
+            depth_stencil: Some(depth_stencil),
+            render_area: Rect {
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 4,
+            },
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            secondary_inheritance: None,
+        };
+        let mut pass = encoder.begin_raster(&desc).unwrap();
+        let rect = Rect {
+            x: 1,
+            y: 1,
+            width: 1,
+            height: 1,
+        };
+        assert_eq!(
+            pass.clear_rect(rect, &[], Some(0.5), None),
+            Err(Error::InvalidState)
+        );
+        assert_eq!(
+            pass.clear_rect(rect, &[], None, Some(1)),
+            Err(Error::InvalidState)
+        );
+        pass.finish().unwrap();
     }
     #[test]
     fn clear_texture_rejects_invalid_shape_before_backend() {

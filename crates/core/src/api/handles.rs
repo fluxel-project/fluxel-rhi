@@ -93,7 +93,52 @@ impl<B: Backend> BindGroupLayout<B> {
 handle!(BindGroup, NativeBindGroup);
 handle!(PipelineLayout, NativePipelineLayout);
 handle!(Shader, NativeShader);
-handle!(RasterPipeline, NativeRasterPipeline);
+pub struct RasterPipeline<B: Backend> {
+    pub(crate) device: DeviceId,
+    pub(crate) native: B::NativeRasterPipeline,
+    pub(crate) dynamic_depth_bias: Option<DynamicDepthBias>,
+}
+impl<B: Backend> Clone for RasterPipeline<B> {
+    fn clone(&self) -> Self {
+        Self {
+            device: self.device,
+            native: self.native.clone(),
+            dynamic_depth_bias: self.dynamic_depth_bias,
+        }
+    }
+}
+impl<B: Backend> RasterPipeline<B> {
+    /// # Safety
+    /// The native handle must belong to this device and object kind.
+    pub unsafe fn from_native(device: DeviceId, native: B::NativeRasterPipeline) -> Self {
+        Self {
+            device,
+            native,
+            dynamic_depth_bias: None,
+        }
+    }
+    pub(crate) unsafe fn from_native_with_dynamic_depth_bias(
+        device: DeviceId,
+        native: B::NativeRasterPipeline,
+        dynamic_depth_bias: Option<DynamicDepthBias>,
+    ) -> Self {
+        Self {
+            device,
+            native,
+            dynamic_depth_bias,
+        }
+    }
+    pub fn device(&self) -> DeviceId {
+        self.device
+    }
+    /// Native lowering bridge only. The caller must not mutate native GPU
+    /// state outside its backend command/ownership contract.
+    /// # Safety: use only on the owning Device and permitted thread.
+    #[doc(hidden)]
+    pub unsafe fn native_ref(&self) -> &B::NativeRasterPipeline {
+        &self.native
+    }
+}
 handle!(ComputePipeline, NativeComputePipeline);
 handle!(MeshPipeline, NativeMeshPipeline);
 handle!(RayPipeline, NativeRayPipeline);

@@ -122,8 +122,12 @@ impl fluxel_rhi_core::backend::PipelineBackend for WebGpu {
     fn create_raster_pipeline<'a>(
         device: &'a WebGpuDevice,
         desc: &'a api::RasterPipelineDesc<Self>,
+        dynamic_depth_bias: Option<api::DynamicDepthBias>,
     ) -> Self::RasterPipelineFuture<'a> {
         Box::pin(async move {
+            if dynamic_depth_bias.is_some() {
+                return Err(Error::Unsupported("WebGPU dynamic depth bias"));
+            }
             let native = raster_descriptor(device, desc)?;
             let promise =
                 js::call1(&device.0.device, "createRenderPipelineAsync", &native).map_err(error)?;

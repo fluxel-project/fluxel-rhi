@@ -3,7 +3,7 @@
 //! These are mutable context state, so this module validates Core values then
 //! applies them directly. It owns neither pass lifetime nor any draw record.
 
-use fluxel_rhi_core::api::{Error, Rect, Result, Viewport};
+use fluxel_rhi_core::api::{DynamicDepthBias, Error, Rect, Result, Viewport};
 
 use crate::backend::rhi::spi::native_error;
 use crate::backend::rhi::types::GlEncoder;
@@ -210,4 +210,110 @@ pub(super) fn set_stencil_reference(encoder: &mut GlEncoder, value: u32) -> Resu
         encoder.indeterminate = true;
     }
     result
+}
+
+/// Changes polygon offset without changing the selected program, bindings or
+/// other Core dynamic state. The Core facade has already checked that the
+/// current pipeline was created for dynamic depth bias.
+pub(super) fn set_depth_bias(encoder: &mut GlEncoder, value: DynamicDepthBias) -> Result<()> {
+    if encoder.raster_extent.is_none() || !value.slope_scale.is_finite() || !value.clamp.is_finite()
+    {
+        return Err(Error::InvalidRange);
+    }
+    let pipeline = encoder.raster_pipeline.clone().ok_or(Error::InvalidState)?;
+    let state = depth_bias_state(pipeline.raster.clone(), value)?;
+    #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+    let result = {
+        let viewport = encoder.raster_viewport.ok_or(Error::InvalidState)?;
+        let mut native = pipeline.native_with_dynamic_state(
+            viewport,
+            encoder.raster_scissor,
+            encoder.raster_blend_constant,
+            encoder.raster_stencil_reference,
+        );
+        native.state.depth_stencil = state.depth_stencil;
+        use crate::backend::api::GlRasterCommandApi as _;
+        encoder
+            .state
+            .with_native("set GL dynamic depth bias", |provider| {
+                provider.set_raster_pipeline(&native)
+            })
+            .map_err(native_error)
+    };
+    #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+    let result = encoder
+        .browser
+        .as_mut()
+        .ok_or(Error::InvalidState)?
+        .set_depth_state(state.depth_stencil);
+    #[cfg(not(any(
+        all(windows, feature = "native-gl-wgl"),
+        feature = "native-gles-egl",
+        all(target_arch = "wasm32", feature = "webgl2")
+    )))]
+    let result: Result<()> = Err(Error::Unsupported("GL platform context"));
+    if result.is_ok() {
+        encoder.issued = true;
+    } else {
+        encoder.indeterminate = true;
+    }
+    result
+}
+
+fn depth_bias_state(
+    mut state: crate::backend::api::GlRasterState,
+    value: DynamicDepthBias,
+) -> Result<crate::backend::api::GlRasterState> {
+    let depth = state.depth_stencil.as_mut().ok_or(Error::InvalidState)?;
+    apply_depth_bias(depth, value);
+    Ok(state)
+}
+
+fn apply_depth_bias(depth: &mut crate::backend::api::GlDepthStencilState, value: DynamicDepthBias) {
+    // GL's factor/units correspond to Core slope/constant respectively.
+    depth.depth_bias = [
+        value.slope_scale.to_bits(),
+        (value.constant as f32).to_bits(),
+        value.clamp.to_bits(),
+    ];
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn depth_bias_uses_gl_factor_units_order() {
+        let mut depth = crate::backend::api::GlDepthStencilState {
+            depth_write_enabled: true,
+            depth_compare: crate::backend::api::GlDepthCompareFunction::Less,
+            depth_bias: [0; 3],
+            stencil_front: stencil_face(),
+            stencil_back: stencil_face(),
+            stencil_reference: 0,
+        };
+        apply_depth_bias(
+            &mut depth,
+            DynamicDepthBias {
+                constant: 3,
+                slope_scale: 2.0,
+                clamp: 1.0,
+            },
+        );
+        assert_eq!(
+            depth.depth_bias,
+            [2.0f32.to_bits(), 3.0f32.to_bits(), 1.0f32.to_bits()]
+        );
+    }
+
+    fn stencil_face() -> crate::backend::api::GlStencilFaceState {
+        crate::backend::api::GlStencilFaceState {
+            compare: crate::backend::api::GlDepthCompareFunction::Always,
+            fail_op: crate::backend::api::GlStencilOperation::Keep,
+            depth_fail_op: crate::backend::api::GlStencilOperation::Keep,
+            pass_op: crate::backend::api::GlStencilOperation::Keep,
+            read_mask: 0,
+            write_mask: 0,
+        }
+    }
 }

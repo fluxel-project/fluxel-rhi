@@ -135,6 +135,19 @@ impl InstanceBackend for Dx12 {
             }
             .is_ok()
                 && options12.EnhancedBarriersSupported.as_bool();
+            let mut options16 =
+                windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS16::default();
+            // SAFETY: the feature structure exactly matches the synchronous
+            // OPTIONS16 query and remains live for its whole call.
+            let dynamic_depth_bias_supported = unsafe {
+                native.CheckFeatureSupport(
+                    windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_D3D12_OPTIONS16,
+                    (&mut options16 as *mut _) as *mut _,
+                    std::mem::size_of_val(&options16) as u32,
+                )
+            }
+            .is_ok()
+                && options16.DynamicDepthBiasSupported.as_bool();
             let mut shader_model =
                 windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_SHADER_MODEL {
                     HighestShaderModel: windows::Win32::Graphics::Direct3D12::D3D_SHADER_MODEL_6_0,
@@ -214,6 +227,7 @@ impl InstanceBackend for Dx12 {
                     sparse_supported,
                     resource_heap_tier2,
                     enhanced_barriers_supported,
+                    dynamic_depth_bias_supported,
                     sparse_in_flight: Mutex::new(Vec::new()),
                     multi_queue: queue::MultiQueueState::new(&native)?,
                     queue,
@@ -292,6 +306,9 @@ impl InstanceBackend for Dx12 {
                     debug_markers_raster_pass: true,
                     debug_markers_compute_pass: true,
                     memory_observation: true,
+                    dynamic_depth_bias: dynamic_depth_bias_supported,
+                    dynamic_depth_bias_clamp: dynamic_depth_bias_supported,
+                    rect_attachment_clear: true,
                     push_constants: true,
                     indirect_draw: true,
                     indirect_first_instance: true,

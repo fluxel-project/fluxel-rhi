@@ -31,15 +31,21 @@ impl PipelineBackend for Gl {
     fn create_raster_pipeline<'a>(
         device: &'a GlDevice,
         desc: &'a RasterPipelineDesc<Self>,
+        dynamic_depth_bias: Option<api::DynamicDepthBias>,
     ) -> Self::RasterPipelineFuture<'a> {
-        ready(create_raster_pipeline(device, desc))
+        ready(create_raster_pipeline(device, desc, dynamic_depth_bias))
     }
 }
 
 fn create_raster_pipeline(
     device: &GlDevice,
     desc: &RasterPipelineDesc<Gl>,
+    dynamic_depth_bias: Option<api::DynamicDepthBias>,
 ) -> Result<GlRasterPipeline> {
+    // Dynamic bias uses the same polygon-offset lowering as the static
+    // descriptor. Core admits this mode only with a depth attachment and
+    // installs its declared initial factors on every pipeline bind.
+    let _ = dynamic_depth_bias;
     let fragment = desc.fragment.as_ref();
     let uses_src1 = desc
         .color_targets

@@ -10,8 +10,8 @@ use clear::{depth_clear_handles, selected};
 pub(super) use finish::end;
 use std::collections::HashSet;
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM,
-    DXGI_FORMAT_R16G16B16A16_FLOAT,
+    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT,
+    DXGI_FORMAT_R8G8B8A8_UNORM,
 };
 
 struct Resolve {
@@ -31,6 +31,14 @@ struct Target {
     mip_levels: u32,
 }
 
+#[derive(Clone)]
+pub(crate) struct IntegerClearTarget {
+    pub(crate) format: api::TextureFormat,
+    pub(crate) samples: u32,
+    pub(crate) extent: (u64, u32),
+    pub(crate) views: Vec<(Option<ID3D12DescriptorHeap>, D3D12_CPU_DESCRIPTOR_HANDLE)>,
+}
+
 pub(crate) struct RasterState {
     targets: Vec<Target>,
     end_timestamp: Option<(super::super::super::Dx12QuerySet, u32)>,
@@ -41,6 +49,11 @@ pub(crate) struct RasterState {
     pub(crate) multiview_mask: Option<u32>,
     pub(crate) depth_read_only: bool,
     pub(crate) stencil_read_only: bool,
+    /// The bound descriptor sequence includes null RTVs for holes, so it can
+    /// be replayed after an internal integer clear draw changes OM state.
+    pub(crate) rtvs: Vec<D3D12_CPU_DESCRIPTOR_HANDLE>,
+    pub(crate) dsv: Option<D3D12_CPU_DESCRIPTOR_HANDLE>,
+    pub(crate) integer_clear_targets: Vec<Option<IntegerClearTarget>>,
 }
 
 pub(super) fn begin(
@@ -81,10 +94,12 @@ pub(super) fn begin(
     let mut samples = None;
     let mut clears = Vec::new();
     let mut integer_clears = Vec::new();
+    let mut integer_clear_targets = Vec::with_capacity(desc.colors.len());
     for color in desc.colors {
         let Some(color) = color else {
             formats.push(None);
             handles.push(None);
+            integer_clear_targets.push(None);
             continue;
         };
         let clear = match color.load {
@@ -171,6 +186,60 @@ pub(super) fn begin(
             return Err(Error::Unsupported("DX12 color attachment format"));
         }
         let native_format = super::super::super::texture::dxgi_format(format);
+        let active_integer_clear = if super::super::super::texture::integer_color(format) {
+            let api::AttachmentView::Texture(view) = color.view else {
+                return Err(Error::Unsupported("DX12 integer surface rect clear"));
+            };
+            // SAFETY: Core validated this view; the encoder retains its descriptor lease.
+            let n = unsafe { view.native_ref() };
+            let texture = Dx12Texture(n.0.texture.clone());
+            let mut views = Vec::new();
+            if n.0.texture.desc.dimension == api::TextureDimension::D3 {
+                for slice in 0..(n.0.texture.desc.extent[2] >> n.0.desc.mips.start).max(1) {
+                    let (heap, handle) = super::super::integer_clear::volume_slice_rtv(
+                        &encoder.device,
+                        &n.0.texture,
+                        n.0.desc.mips.start,
+                        slice,
+                    )?;
+                    views.push((Some(heap), handle));
+                }
+            } else {
+                for layer in n.0.desc.layers.clone() {
+                    if !selected(desc.multiview_mask, layer - n.0.desc.layers.start) {
+                        continue;
+                    }
+                    let mut vd = n.0.desc.clone();
+                    vd.dimension = if n.0.texture.desc.dimension == api::TextureDimension::D1 {
+                        api::TextureViewDimension::D1
+                    } else if n.0.texture.desc.array_layers > 1 {
+                        api::TextureViewDimension::D2Array
+                    } else {
+                        api::TextureViewDimension::D2
+                    };
+                    vd.layers = layer..layer + 1;
+                    let view =
+                        super::super::super::texture::create_view(&encoder.device, &texture, &vd)?;
+                    encoder.view_descriptor_leases.push(
+                        view.0
+                            .rtv_lease
+                            .as_ref()
+                            .ok_or(Error::InvalidState)?
+                            .clone(),
+                    );
+                    views.push((None, view.0.rtv.ok_or(Error::InvalidState)?));
+                }
+            }
+            Some(IntegerClearTarget {
+                format,
+                samples: n.0.texture.desc.samples,
+                extent,
+                views,
+            })
+        } else {
+            None
+        };
+        integer_clear_targets.push(active_integer_clear);
         let float_clear = match clear {
             Some(api::ClearColor::Float(c))
                 if !super::super::super::texture::integer_color(format) =>
@@ -622,5 +691,8 @@ pub(super) fn begin(
             .depth_stencil
             .as_ref()
             .is_some_and(|d| d.stencil_read_only),
+        rtvs: handles,
+        dsv,
+        integer_clear_targets,
     })
 }

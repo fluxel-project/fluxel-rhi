@@ -175,7 +175,11 @@ impl fluxel_rhi_core::backend::RasterExtrasOps<Vulkan> for RasterExtras {
 }
 
 fn indirect_stride(indexed: bool) -> u32 {
-    if indexed { 20 } else { 16 }
+    if indexed {
+        20
+    } else {
+        16
+    }
 }
 
 fn validate_indirect(
