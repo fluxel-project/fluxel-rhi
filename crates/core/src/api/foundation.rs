@@ -331,9 +331,21 @@ pub struct DeviceCapabilities {
     /// indexing examples require both the native descriptor range and its
     /// variable-count validation path.
     pub runtime_sized_binding_arrays: bool,
-    /// Non-uniform indexing of sampled textures and storage buffers.
-    /// Backends must not set this merely because they support binding arrays.
+    /// Compatibility aggregate for non-uniform sampled-texture and
+    /// storage-buffer indexing. New admission uses the descriptor-kind facts
+    /// below. Backends must not set this merely because they support arrays.
     pub nonuniform_sampled_texture_and_storage_buffer_indexing: bool,
+    /// Non-uniform indexing capabilities by descriptor kind. The combined
+    /// field above remains a compatibility summary; admission uses these facts.
+    pub nonuniform_uniform_buffer_indexing: bool,
+    pub nonuniform_storage_buffer_indexing: bool,
+    pub nonuniform_sampled_texture_indexing: bool,
+    /// Non-uniform indexing of storage texture binding arrays. This is
+    /// separate because native APIs expose it independently from sampled
+    /// texture and storage buffer indexing.
+    pub nonuniform_storage_texture_indexing: bool,
+    pub nonuniform_sampler_indexing: bool,
+    pub nonuniform_acceleration_structure_indexing: bool,
     pub timestamp: bool,
     pub occlusion: bool,
     pub pipeline_statistics: bool,

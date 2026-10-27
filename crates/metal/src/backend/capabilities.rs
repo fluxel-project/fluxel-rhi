@@ -40,6 +40,10 @@ pub(super) fn describe(device: &MetalDevice, multi_queue: bool) -> DeviceCapabil
         nonuniform_sampled_texture_and_storage_buffer_indexing: bindings::argument_arrays_supported(
             native,
         ),
+        nonuniform_uniform_buffer_indexing: bindings::argument_arrays_supported(native),
+        nonuniform_storage_buffer_indexing: bindings::argument_arrays_supported(native),
+        nonuniform_sampled_texture_indexing: bindings::argument_arrays_supported(native),
+        nonuniform_sampler_indexing: bindings::argument_arrays_supported(native),
         timestamp: Metal::query_supported(device, QueryKind::Timestamp),
         occlusion: Metal::query_supported(device, QueryKind::Occlusion),
         multiview,

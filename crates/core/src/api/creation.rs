@@ -88,11 +88,18 @@ impl<B: ResourceBackend> Device<B> {
                 }
                 BindingCount::RuntimeSized { .. } => {}
             }
-            if entry.nonuniform_indexing
-                && !self
-                    .caps
-                    .nonuniform_sampled_texture_and_storage_buffer_indexing
-            {
+            let nonuniform_supported = match &entry.ty {
+                BindingType::UniformBuffer { .. } => self.caps.nonuniform_uniform_buffer_indexing,
+                BindingType::StorageBuffer { .. } => self.caps.nonuniform_storage_buffer_indexing,
+                BindingType::SampledTexture { .. } => self.caps.nonuniform_sampled_texture_indexing,
+                BindingType::StorageTexture { .. } => self.caps.nonuniform_storage_texture_indexing,
+                BindingType::Sampler { .. } => self.caps.nonuniform_sampler_indexing,
+                BindingType::AccelerationStructure => {
+                    self.caps.nonuniform_acceleration_structure_indexing
+                }
+                BindingType::ExternalTexture => false,
+            };
+            if entry.nonuniform_indexing && !nonuniform_supported {
                 return Err(Error::Unsupported("nonuniform binding indexing"));
             }
         }

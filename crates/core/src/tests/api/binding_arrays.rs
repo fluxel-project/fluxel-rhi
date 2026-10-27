@@ -43,6 +43,7 @@ fn device(runtime_arrays: bool) -> Device<NativeShared> {
     let id = DeviceId::allocate().unwrap();
     let mut caps = DeviceCapabilities::default();
     caps.runtime_sized_binding_arrays = runtime_arrays;
+    caps.nonuniform_sampler_indexing = true;
     caps.limits.max_bindings_per_group = 4;
     // SAFETY: this fixture supplies a native handle and capabilities for the same mock device.
     unsafe { Device::from_native(id, Arc::new(()), caps) }
@@ -101,6 +102,49 @@ fn runtime_array_layout_validates_capacity_capability_and_position() {
             ]))
             .is_ok()
     );
+    LAYOUT_CALLS.with(|calls| assert_eq!(calls.get(), 1));
+}
+
+#[test]
+fn storage_texture_nonuniform_indexing_uses_its_own_capability() {
+    LAYOUT_CALLS.with(|calls| calls.set(0));
+    let layout = BindGroupLayoutDesc {
+        label: None,
+        entries: vec![BindGroupLayoutEntry {
+            binding: 0,
+            visibility: vec![ShaderStage::Compute],
+            ty: BindingType::StorageTexture {
+                format: TextureFormat::Rgba8Unorm,
+                dimension: TextureViewDimension::D2,
+                access: StorageAccess::Write,
+            },
+            count: BindingCount::Fixed(2),
+            partially_bound: false,
+            nonuniform_indexing: true,
+        }],
+    };
+    let id = DeviceId::allocate().unwrap();
+    let mut caps = DeviceCapabilities::default();
+    caps.binding_arrays = true;
+    // The compatibility aggregate must not admit a storage texture by itself.
+    caps.nonuniform_sampled_texture_and_storage_buffer_indexing = true;
+    caps.limits.max_bindings_per_group = 4;
+    // SAFETY: this fixture supplies matching capabilities for its mock device.
+    let device_without_storage_texture_indexing =
+        unsafe { Device::<NativeShared>::from_native(id, Arc::new(()), caps) };
+    assert!(matches!(
+        device_without_storage_texture_indexing.create_bind_group_layout(&layout),
+        Err(Error::Unsupported("nonuniform binding indexing"))
+    ));
+
+    let id = DeviceId::allocate().unwrap();
+    let mut caps = DeviceCapabilities::default();
+    caps.binding_arrays = true;
+    caps.nonuniform_storage_texture_indexing = true;
+    caps.limits.max_bindings_per_group = 4;
+    // SAFETY: this fixture supplies matching capabilities for its mock device.
+    let device = unsafe { Device::<NativeShared>::from_native(id, Arc::new(()), caps) };
+    assert!(device.create_bind_group_layout(&layout).is_ok());
     LAYOUT_CALLS.with(|calls| assert_eq!(calls.get(), 1));
 }
 

@@ -183,6 +183,10 @@ fn gl_capabilities(
             runtime_sized_binding_arrays: native_binding_arrays,
             nonuniform_sampled_texture_and_storage_buffer_indexing: native_binding_arrays
                 && storage_buffers,
+            nonuniform_uniform_buffer_indexing: native_binding_arrays && storage_buffers,
+            nonuniform_storage_buffer_indexing: native_binding_arrays && storage_buffers,
+            nonuniform_sampled_texture_indexing: native_binding_arrays && storage_buffers,
+            nonuniform_sampler_indexing: native_binding_arrays && storage_buffers,
             storage_textures: storage_images,
             storage_buffers,
             indirect_draw,

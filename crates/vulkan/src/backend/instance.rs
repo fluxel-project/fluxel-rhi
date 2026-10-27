@@ -670,6 +670,21 @@ impl InstanceBackend for Vulkan {
                         .shader_sampled_image_array_non_uniform_indexing
                         == vk::TRUE
                         && enabled12.shader_storage_buffer_array_non_uniform_indexing == vk::TRUE,
+                    nonuniform_uniform_buffer_indexing: enabled12
+                        .shader_uniform_buffer_array_non_uniform_indexing
+                        == vk::TRUE,
+                    nonuniform_storage_buffer_indexing: enabled12
+                        .shader_storage_buffer_array_non_uniform_indexing
+                        == vk::TRUE,
+                    nonuniform_sampled_texture_indexing: enabled12
+                        .shader_sampled_image_array_non_uniform_indexing
+                        == vk::TRUE,
+                    nonuniform_storage_texture_indexing: enabled12
+                        .shader_storage_image_array_non_uniform_indexing
+                        == vk::TRUE,
+                    nonuniform_sampler_indexing: enabled12
+                        .shader_sampled_image_array_non_uniform_indexing
+                        == vk::TRUE,
                     storage_textures: rgba8_features
                         .contains(vk::FormatFeatureFlags::STORAGE_IMAGE),
                     push_constants: limits.max_push_constants_size != 0,

@@ -219,6 +219,7 @@ pub(crate) fn compile_variant(
             let supported = match words[cursor + 1] {
                 5307 => device.0.nonuniform_sampled_image,
                 5308 => device.0.nonuniform_storage_buffer,
+                5309 => device.0.nonuniform_storage_image,
                 _ => true,
             };
             if !supported {
