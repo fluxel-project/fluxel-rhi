@@ -594,7 +594,8 @@ impl<B: RasterBackend> RasterPass<'_, B> {
     }
     /// Clears selected attachments inside this pass without ending or
     /// splitting it. `rect` uses upper-left framebuffer coordinates and must
-    /// be fully contained by the pass render area.
+    /// be fully contained by the pass render area. Stencil clear values must
+    /// fit the eight-bit stencil representation.
     pub fn clear_rect(
         &mut self,
         rect: Rect,
@@ -644,6 +645,9 @@ impl<B: RasterBackend> RasterPass<'_, B> {
             }
         }
         if depth.is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value)) {
+            return Err(Error::InvalidRange);
+        }
+        if stencil.is_some_and(|value| value > u32::from(u8::MAX)) {
             return Err(Error::InvalidRange);
         }
         if depth.is_some() && !self.depth_clearable || stencil.is_some() && !self.stencil_clearable

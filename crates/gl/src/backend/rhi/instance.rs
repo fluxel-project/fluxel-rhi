@@ -4,7 +4,7 @@
 //! context. It performs no command recording or resource allocation.
 
 use std::{
-    future::{ready, Ready},
+    future::{Ready, ready},
     sync::Arc,
 };
 
@@ -14,7 +14,7 @@ use fluxel_rhi_core::api::{
 };
 use fluxel_rhi_core::backend::InstanceBackend;
 
-use super::{spi::native_error, types::GlDeviceState, Gl, GlDevice, GlInstance};
+use super::{Gl, GlDevice, GlInstance, spi::native_error, types::GlDeviceState};
 
 pub(super) fn push_limit(state: &std::rc::Rc<GlDeviceState>) -> Result<u32> {
     #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
@@ -240,6 +240,7 @@ fn gl_capabilities(
                     .unwrap_or([0; 3]),
                 max_push_constant_bytes: limits.push_constant_bytes(compute_storage),
                 max_multiview_views: multiview_views,
+                max_mesh_indirect_count: 0,
                 uniform_offset_alignment: limits.uniform_buffer_offset_alignment,
                 storage_offset_alignment: limits.storage_buffer_offset_alignment,
             },
@@ -298,6 +299,7 @@ fn gl_capabilities(
                     max_compute_workgroup_size: [0; 3],
                     max_push_constant_bytes: limits.push_constant_bytes(false),
                     max_multiview_views: multiview_views,
+                    max_mesh_indirect_count: 0,
                     uniform_offset_alignment: limits.uniform_buffer_offset_alignment,
                     storage_offset_alignment: 0,
                 },

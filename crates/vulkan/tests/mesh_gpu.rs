@@ -2,7 +2,10 @@
 #![cfg(all(windows, feature = "hardware-tests"))]
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_vulkan::{Vulkan, VulkanInstance};
-use std::{future::Future, sync::Arc};
+use std::{
+    future::Future,
+    sync::{Arc, OnceLock},
+};
 
 fn block_on<F: Future>(f: F) -> F::Output {
     let w = std::task::Waker::noop();
@@ -33,6 +36,18 @@ fn mesh_indirect_count_depth_readback() {
     exercise(Dispatch::Count, false);
 }
 #[test]
+fn mesh_indirect_count_below_max_depth_readback() {
+    exercise(Dispatch::CountOne, false);
+}
+#[test]
+fn mesh_indirect_count_zero_depth_readback() {
+    exercise(Dispatch::CountZero, false);
+}
+#[test]
+fn mesh_indirect_count_clamp_depth_readback() {
+    exercise(Dispatch::CountClamped, false);
+}
+#[test]
 fn task_mesh_depth_readback() {
     exercise(Dispatch::Direct, true);
 }
@@ -42,6 +57,26 @@ enum Dispatch {
     Indirect,
     Multi,
     Count,
+    CountOne,
+    CountZero,
+    CountClamped,
+}
+impl Dispatch {
+    fn generated(self) -> bool {
+        matches!(
+            self,
+            Self::Multi | Self::Count | Self::CountOne | Self::CountZero | Self::CountClamped
+        )
+    }
+    fn count_value(self) -> u32 {
+        match self {
+            Self::Count => 2,
+            Self::CountOne => 1,
+            Self::CountZero => 0,
+            Self::CountClamped => 3,
+            _ => unreachable!("only count variants have a GPU count"),
+        }
+    }
 }
 fn exercise(dispatch: Dispatch, task: bool) {
     let d = block_on(VulkanInstance::new().unwrap().open_default()).unwrap();
@@ -74,7 +109,7 @@ fn exercise(dispatch: Dispatch, task: bool) {
         "main",
         ShaderStage::Mesh,
     );
-    let ps = if matches!(dispatch, Dispatch::Multi | Dispatch::Count) {
+    let ps = if dispatch.generated() {
         fractional_pixel_shader(&d)
     } else {
         shader(
@@ -165,7 +200,7 @@ fn exercise(dispatch: Dispatch, task: bool) {
         }),
         targets: vec![Some(ColorTargetState {
             format: TextureFormat::Rgba8Unorm,
-            blend: matches!(dispatch, Dispatch::Multi | Dispatch::Count).then_some(BlendState {
+            blend: dispatch.generated().then_some(BlendState {
                 color: BlendComponent {
                     src_factor: BlendFactor::One,
                     dst_factor: BlendFactor::One,
@@ -193,7 +228,7 @@ fn exercise(dispatch: Dispatch, task: bool) {
             depth_write_enabled: true,
             // The multi/count fixture intentionally draws the same triangle
             // twice, so both records need to survive the depth test.
-            depth_compare: if matches!(dispatch, Dispatch::Multi | Dispatch::Count) {
+            depth_compare: if dispatch.generated() {
                 CompareFunction::Always
             } else {
                 CompareFunction::Less
@@ -262,7 +297,10 @@ fn exercise(dispatch: Dispatch, task: bool) {
     let dst = d
         .create_buffer(&BufferDesc {
             label: None,
-            size: 4096,
+            // The first page holds the color readback. The second holds the
+            // indirect source after the mesh pass, so the fixture can prove
+            // that the unused trailing record is not clobbered.
+            size: 8192,
             usage: BufferUsage::COPY_DST.union(BufferUsage::MAP_READ),
             memory: MemoryClass::Readback,
         })
@@ -271,20 +309,92 @@ fn exercise(dispatch: Dispatch, task: bool) {
         .create_buffer(&BufferDesc {
             label: None,
             // The multi/count variants deliberately begin at a non-zero
-            // record offset and leave a sentinel prefix untouched.
-            size: 40,
-            usage: BufferUsage::INDIRECT.union(BufferUsage::COPY_DST),
+            // record offset, leave a sentinel prefix untouched, and retain a
+            // sentinel word after the two records.
+            size: 44,
+            usage: BufferUsage::INDIRECT
+                .union(BufferUsage::COPY_DST)
+                .union(BufferUsage::COPY_SRC)
+                .union(BufferUsage::STORAGE),
             memory: MemoryClass::Device,
         })
         .unwrap();
-    let count = d
-        .create_buffer(&BufferDesc {
+    let producer = dispatch.generated().then(|| {
+        let group_layout = d
+            .create_bind_group_layout(&BindGroupLayoutDesc {
+                label: None,
+                entries: vec![BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: vec![ShaderStage::Compute],
+                    ty: BindingType::StorageBuffer {
+                        dynamic_offset: false,
+                        min_size: 44,
+                        access: StorageAccess::ReadWrite,
+                    },
+                    count: BindingCount::One,
+                    partially_bound: false,
+                    nonuniform_indexing: false,
+                }],
+            })
+            .unwrap();
+        let group = d
+            .create_bind_group(&BindGroupDesc {
+                label: None,
+                layout: &group_layout,
+                entries: &[BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::StorageBufferView {
+                        buffer: &args,
+                        range: 0..44,
+                        view: StorageBufferView::Raw,
+                    },
+                }],
+            })
+            .unwrap();
+        let layout = d
+            .create_pipeline_layout(&PipelineLayoutDesc {
+                label: None,
+                groups: &[&group_layout],
+                push_constants: &[],
+            })
+            .unwrap();
+        let count = if dispatch == Dispatch::Multi {
+            0
+        } else {
+            dispatch.count_value()
+        };
+        let source = format!(
+            "@group(0) @binding(0) var<storage, read_write> a: array<u32>; \
+             @compute @workgroup_size(1) fn main() {{ \
+             a[1] = {count}u; a[4] = 1u; a[5] = 1u; a[6] = 1u; \
+             a[7] = 1u; a[8] = 1u; a[9] = 1u; }}"
+        );
+        let shader = block_on(d.shader(ShaderDesc {
             label: None,
-            size: 8,
-            usage: BufferUsage::INDIRECT.union(BufferUsage::COPY_DST),
-            memory: MemoryClass::Device,
-        })
+            format: ShaderFormat::Wgsl,
+            bytes: Arc::from(source.into_bytes()),
+            entries: vec![ShaderEntryPoint {
+                name: "main".into(),
+                stage: ShaderStage::Compute,
+                workgroup_size: Some([1, 1, 1]),
+            }],
+            required_features: vec![],
+        }))
         .unwrap();
+        let pipeline = block_on(d.compute().unwrap().create_pipeline(ComputePipelineDesc {
+            label: None,
+            layout,
+            compute: PipelineStage {
+                module: shader,
+                entry: "main".into(),
+                constants: vec![],
+            },
+            cache: None,
+            required_subgroup_size: None,
+        }))
+        .unwrap();
+        (group, pipeline)
+    });
     {
         let mut invalid = d.encoder(lane).unwrap();
         let attachments = [Some(ColorAttachment {
@@ -315,6 +425,111 @@ fn exercise(dispatch: Dispatch, task: bool) {
             Err(Error::InvalidState)
         ));
     }
+    if matches!(dispatch, Dispatch::Multi | Dispatch::Count) {
+        let invalid_usage = d
+            .create_buffer(&BufferDesc {
+                label: None,
+                size: 12,
+                usage: BufferUsage::COPY_DST,
+                memory: MemoryClass::Device,
+            })
+            .unwrap();
+        let mut negative = d.encoder(lane).unwrap();
+        let attachments = [Some(ColorAttachment {
+            view: AttachmentView::Texture(&colors[0]),
+            resolve_target: None,
+            load: LoadOp::Clear(ClearColor::Float([0., 0., 0., 1.])),
+            store: StoreOp::Store,
+        })];
+        let depth_attachment = || DepthStencilAttachment {
+            view: AttachmentView::Texture(&depths[0]),
+            depth: Some((LoadOp::Clear(1.0), StoreOp::Store)),
+            stencil: None,
+            depth_read_only: false,
+            stencil_read_only: false,
+        };
+        let mut pass = negative
+            .begin_raster(&RasterPassDesc {
+                label: None,
+                colors: &attachments,
+                depth_stencil: Some(depth_attachment()),
+                render_area: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 16,
+                    height: 16,
+                },
+                multiview_mask: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                secondary_inheritance: None,
+            })
+            .unwrap();
+        mesh.bind_pipeline(&mut pass, &pipeline).unwrap();
+        pass.set_bind_group(0, &group, &[]).unwrap();
+        assert_eq!(
+            mesh.dispatch_indirect(&mut pass, &invalid_usage, 0),
+            Err(Error::InvalidRange),
+            "the Vulkan native boundary must reject a non-INDIRECT argument buffer"
+        );
+        // A rejected backend command poisons this recording by design; drop
+        // it instead of asserting that a poisoned pass can finish.
+        drop(pass);
+        let mut range_encoder = d.encoder(lane).unwrap();
+        let mut range_pass = range_encoder
+            .begin_raster(&RasterPassDesc {
+                label: None,
+                colors: &attachments,
+                depth_stencil: Some(depth_attachment()),
+                render_area: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 16,
+                    height: 16,
+                },
+                multiview_mask: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                secondary_inheritance: None,
+            })
+            .unwrap();
+        mesh.bind_pipeline(&mut range_pass, &pipeline).unwrap();
+        range_pass.set_bind_group(0, &group, &[]).unwrap();
+        assert_eq!(
+            mesh.dispatch_indirect_multi(&mut range_pass, &args, 36, 1),
+            Err(Error::InvalidRange),
+            "the Vulkan native boundary must reject records extending past the buffer"
+        );
+        drop(range_pass);
+        if dispatch == Dispatch::Count {
+            let mut count_encoder = d.encoder(lane).unwrap();
+            let mut count_pass = count_encoder
+                .begin_raster(&RasterPassDesc {
+                    label: None,
+                    colors: &attachments,
+                    depth_stencil: Some(depth_attachment()),
+                    render_area: Rect {
+                        x: 0,
+                        y: 0,
+                        width: 16,
+                        height: 16,
+                    },
+                    multiview_mask: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    secondary_inheritance: None,
+                })
+                .unwrap();
+            mesh.bind_pipeline(&mut count_pass, &pipeline).unwrap();
+            count_pass.set_bind_group(0, &group, &[]).unwrap();
+            assert_eq!(
+                mesh.dispatch_indirect_count(&mut count_pass, &args, 16, &args, 44, 1),
+                Err(Error::InvalidRange),
+                "the Vulkan native boundary must reject count words extending past the buffer"
+            );
+            drop(count_pass);
+        }
+    }
     let mut e = d.encoder(lane).unwrap();
     let vertices: Vec<u8> = [-1.0f32, -1., 0., 1., 0., 1., 0., 1., 1., -1., 0., 1.]
         .into_iter()
@@ -339,23 +554,55 @@ fn exercise(dispatch: Dispatch, task: bool) {
         ownership: None,
     })])
     .unwrap();
-    let record = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];
-    match dispatch {
-        Dispatch::Direct | Dispatch::Indirect => e.write_buffer(&args, 0, &record).unwrap(),
-        Dispatch::Multi | Dispatch::Count => {
-            e.write_buffer(&args, 16, &record).unwrap();
-            e.write_buffer(&args, 28, &record).unwrap();
-        }
+    const TAIL_SENTINEL: u32 = 0xC0DE_CAFE;
+    let initial_args = [1u32, 1, 1, 0, 0, 0, 0, 0, 0, 0, TAIL_SENTINEL];
+    let initial_args: Vec<u8> = initial_args
+        .into_iter()
+        .flat_map(u32::to_le_bytes)
+        .collect();
+    e.write_buffer(&args, 0, &initial_args).unwrap();
+    if let Some((group, pipeline)) = producer.as_ref() {
+        e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
+            target: BufferSlice {
+                buffer: &args,
+                range: 0..44,
+            },
+            usage: StateTransition {
+                from: BufferUses {
+                    stages: StageMask::COPY,
+                    accesses: AccessMask::COPY_WRITE,
+                },
+                to: BufferUses {
+                    stages: StageMask::COMPUTE,
+                    accesses: AccessMask::SHADER_WRITE,
+                },
+            },
+            ownership: None,
+        })])
+        .unwrap();
+        let mut pass = d.compute().unwrap().begin(&mut e).unwrap();
+        pass.set_pipeline(pipeline).unwrap();
+        pass.set_bind_group(0, group, &[]).unwrap();
+        pass.dispatch([1, 1, 1]).unwrap();
+        pass.finish().unwrap();
     }
     e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
         target: BufferSlice {
             buffer: &args,
-            range: 0..40,
+            range: 0..44,
         },
         usage: StateTransition {
             from: BufferUses {
-                stages: StageMask::COPY,
-                accesses: AccessMask::COPY_WRITE,
+                stages: if dispatch.generated() {
+                    StageMask::COMPUTE
+                } else {
+                    StageMask::COPY
+                },
+                accesses: if dispatch.generated() {
+                    AccessMask::SHADER_WRITE
+                } else {
+                    AccessMask::COPY_WRITE
+                },
             },
             to: BufferUses {
                 stages: StageMask::INDIRECT,
@@ -365,29 +612,9 @@ fn exercise(dispatch: Dispatch, task: bool) {
         ownership: None,
     })])
     .unwrap();
-    if dispatch == Dispatch::Count {
-        // This remains GPU-resident after upload; the mesh command reads the
-        // u32 count through VK_EXT_mesh_shader's count-buffer command.
-        e.write_buffer(&count, 4, &2u32.to_le_bytes()).unwrap();
-        e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
-            target: BufferSlice {
-                buffer: &count,
-                range: 0..8,
-            },
-            usage: StateTransition {
-                from: BufferUses {
-                    stages: StageMask::COPY,
-                    accesses: AccessMask::COPY_WRITE,
-                },
-                to: BufferUses {
-                    stages: StageMask::INDIRECT,
-                    accesses: AccessMask::INDIRECT_READ,
-                },
-            },
-            ownership: None,
-        })])
-        .unwrap();
-    }
+    // The compute bind group is no longer an owner; later drop(args) leaves
+    // submission as the only owner of the compute-to-indirect buffer.
+    drop(producer);
     let empty = TextureUses {
         stages: StageMask::EMPTY,
         accesses: AccessMask::EMPTY,
@@ -496,12 +723,36 @@ fn exercise(dispatch: Dispatch, task: bool) {
             Dispatch::Multi => mesh
                 .dispatch_indirect_multi(&mut pass, &args, 16, 2)
                 .unwrap(),
-            Dispatch::Count => mesh
-                .dispatch_indirect_count(&mut pass, &args, 16, &count, 4, 2)
-                .unwrap(),
+            Dispatch::Count | Dispatch::CountOne | Dispatch::CountZero | Dispatch::CountClamped => {
+                mesh.dispatch_indirect_count(&mut pass, &args, 16, &args, 4, 2)
+                    .unwrap()
+            }
         }
         pass.finish().unwrap();
     }
+    e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
+        target: BufferSlice {
+            buffer: &args,
+            range: 0..44,
+        },
+        usage: StateTransition {
+            from: BufferUses {
+                stages: StageMask::INDIRECT,
+                accesses: AccessMask::INDIRECT_READ,
+            },
+            to: BufferUses {
+                stages: StageMask::COPY,
+                accesses: AccessMask::COPY_READ,
+            },
+        },
+        ownership: None,
+    })])
+    .unwrap();
+    e.copy_buffer(&args, 0, &dst, 4096, 44).unwrap();
+    // No public owner remains before submission. VulkanEncoder must retain the
+    // same buffer through the compute write, mesh indirect read, and sentinel
+    // copy.
+    drop(args);
     e.transition_resources(&[barrier(
         render,
         copy,
@@ -526,7 +777,7 @@ fn exercise(dispatch: Dispatch, task: bool) {
         )
         .unwrap();
     }
-    let ticket = e.readback_buffer(&dst, 0..4096).unwrap();
+    let ticket = e.readback_buffer(&dst, 0..8192).unwrap();
     let id = PlanId {
         device: d.id(),
         ordinal: 755321,
@@ -562,55 +813,77 @@ fn exercise(dispatch: Dispatch, task: bool) {
     // SAFETY: the awaited completion point covers the readback.
     let bytes = unsafe { block_on(d.read_after(ticket, &point)).unwrap().bytes };
     let center = 8 * 256 + 8 * 4;
-    if matches!(dispatch, Dispatch::Multi | Dispatch::Count) {
+    let tail = u32::from_le_bytes(bytes[4096 + 40..4096 + 44].try_into().unwrap());
+    assert_eq!(
+        tail, TAIL_SENTINEL,
+        "the record tail sentinel must survive compute production and mesh indirect execution"
+    );
+    if matches!(
+        dispatch,
+        Dispatch::Multi | Dispatch::Count | Dispatch::CountClamped
+    ) {
         assert!(
             (120..=136).contains(&bytes[center]),
             "two 0.25-red mesh records must add to approximately 0.5, got {}",
             bytes[center]
         );
+    } else if dispatch == Dispatch::CountOne {
+        assert!(
+            (56..=72).contains(&bytes[center]),
+            "one 0.25-red mesh record must produce approximately 0.25, got {}",
+            bytes[center]
+        );
+    } else if dispatch == Dispatch::CountZero {
+        assert_eq!(&bytes[center..center + 4], &[0, 0, 0, 255]);
     } else {
         assert_eq!(&bytes[center..center + 4], &[255, 0, 0, 255]);
     }
 }
 
 fn fractional_pixel_shader(d: &Device<Vulkan>) -> Shader<Vulkan> {
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "fluxel-mesh-indirect-{}-{nonce}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let source = dir.join("mesh_pixel.hlsl");
-    let output = dir.join("mesh_pixel.spv");
-    std::fs::write(
-        &source,
-        "float4 main() : SV_Target { return float4(0.25,0,0,1); }",
-    )
-    .unwrap();
-    let result = std::process::Command::new("dxc")
-        .args([
-            "-spirv",
-            "-fspv-target-env=vulkan1.2",
-            "-T",
-            "ps_6_0",
-            "-E",
-            "main",
-            "-Fo",
-        ])
-        .arg(&output)
-        .arg(&source)
-        .output()
-        .expect("hardware test requires dxc in PATH");
-    assert!(
-        result.status.success(),
-        "dxc: {}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let bytes = std::fs::read(&output).unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
+    static PIXEL_SPIRV: OnceLock<Vec<u8>> = OnceLock::new();
+    let bytes = PIXEL_SPIRV
+        .get_or_init(|| {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!(
+                "fluxel-mesh-indirect-{}-{nonce}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let source = dir.join("mesh_pixel.hlsl");
+            let output = dir.join("mesh_pixel.spv");
+            std::fs::write(
+                &source,
+                "float4 main() : SV_Target { return float4(0.25,0,0,1); }",
+            )
+            .unwrap();
+            let result = std::process::Command::new("dxc")
+                .args([
+                    "-spirv",
+                    "-fspv-target-env=vulkan1.2",
+                    "-T",
+                    "ps_6_0",
+                    "-E",
+                    "main",
+                    "-Fo",
+                ])
+                .arg(&output)
+                .arg(&source)
+                .output()
+                .expect("hardware test requires dxc in PATH");
+            assert!(
+                result.status.success(),
+                "dxc: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let bytes = std::fs::read(&output).unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            bytes
+        })
+        .clone();
     block_on(d.shader(ShaderDesc {
         label: None,
         format: ShaderFormat::SpirV,

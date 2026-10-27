@@ -141,7 +141,8 @@ impl<B: Backend> MeshDomain<'_, B> {
     }
 
     /// Executes a tightly packed batch of `[u32; 3]` mesh dispatch records.
-    /// `offset` is four-byte aligned; every record occupies 12 bytes.
+    /// `offset` is four-byte aligned; every record occupies 12 bytes. The
+    /// caller must transition the argument range to `INDIRECT_READ` first.
     pub fn dispatch_indirect_multi(
         &self,
         pass: &mut RasterPass<'_, B>,
@@ -174,6 +175,7 @@ impl<B: Backend> MeshDomain<'_, B> {
 
     /// Executes up to `max_count` packed mesh dispatch records. The GPU reads
     /// the actual record count from a four-byte count buffer at `count_offset`.
+    /// The caller must transition both buffers to `INDIRECT_READ` first.
     pub fn dispatch_indirect_count(
         &self,
         pass: &mut RasterPass<'_, B>,

@@ -1359,6 +1359,16 @@ additional to this shared integrity check. Invalid input returns the original
 owning packet as a clean rejection; native partial/uncertain acceptance remains
 the backend's responsibility.
 
+## Test source layout
+
+Keep test source in the crate that owns the behavior under test. Unit-test
+modules belong under `crates/<crate>/src/tests/`; integration tests that exercise
+the crate's public API or a real backend belong under `crates/<crate>/tests/`.
+Place test-only assets beneath the owning test tree, such as
+`crates/<crate>/tests/assets/`. Do not put test source inline in production
+modules or under examples. Examples remain runnable demonstrations and are not
+a substitute for either test scope.
+
 ## Example execution acceptance
 
 The native example acceptance policy is separate from compile availability.

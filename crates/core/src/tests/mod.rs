@@ -21,6 +21,8 @@ mod binding_arrays;
 mod ergonomics;
 #[path = "api/execution_contract.rs"]
 mod execution_contract;
+#[path = "api/mesh_validation.rs"]
+mod mesh_validation;
 #[path = "api/multiqueue_validation.rs"]
 mod multiqueue_validation;
 #[path = "api/query_validation.rs"]
@@ -828,6 +830,22 @@ pub(crate) mod type_contract_tests {
             ),
             Err(Error::InvalidRange)
         );
+        CLEAR_RECT_CALLS.with(|calls| calls.set(0));
+        assert_eq!(
+            pass.clear_rect(
+                Rect {
+                    x: 12,
+                    y: 23,
+                    width: 1,
+                    height: 1,
+                },
+                &[],
+                None,
+                Some(0x1ff),
+            ),
+            Err(Error::InvalidRange)
+        );
+        CLEAR_RECT_CALLS.with(|calls| assert_eq!(calls.get(), 0));
         let valid_target = [ColorAttachmentClear {
             attachment: 0,
             value: ClearColor::Float([0.25, 0.5, 0.75, 1.0]),
