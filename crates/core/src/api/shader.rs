@@ -46,6 +46,8 @@ pub const SHADER_FEATURE_RAY_QUERY: &str = "ray-query";
 pub const SHADER_FEATURE_EARLY_DEPTH_TEST: &str = "shader-early-depth-test";
 /// A fragment shader reads the primitive index assigned by rasterization.
 pub const SHADER_FEATURE_PRIMITIVE_INDEX: &str = "primitive-index";
+/// A vertex shader reads the index of its draw within a multi-draw command.
+pub const SHADER_FEATURE_DRAW_INDEX: &str = "draw-index";
 
 #[derive(Clone, Debug)]
 pub struct ShaderDesc {
@@ -86,6 +88,12 @@ impl<B: ShaderBackend> Device<B> {
                             .entries
                             .iter()
                             .any(|entry| entry.stage == ShaderStage::Fragment)))
+                || (feature == SHADER_FEATURE_DRAW_INDEX
+                    && (!self.caps.shader_draw_index
+                        || !desc
+                            .entries
+                            .iter()
+                            .any(|entry| entry.stage == ShaderStage::Vertex)))
         }) {
             return ShaderRoute::Unsupported;
         }

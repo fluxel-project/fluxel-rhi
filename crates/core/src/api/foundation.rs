@@ -311,6 +311,8 @@ pub struct DeviceCapabilities {
     pub shader_early_depth_test: bool,
     /// Fragment shaders may read the rasterizer-assigned primitive index.
     pub shader_primitive_index: bool,
+    /// Vertex shaders may read the draw index for a multi-draw operation.
+    pub shader_draw_index: bool,
     pub multi_queue: bool,
     pub indirect_draw: bool,
     /// Indirect records may contain a nonzero first-instance value, including

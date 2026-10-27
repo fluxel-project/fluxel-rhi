@@ -367,7 +367,8 @@ impl InstanceBackend for Vulkan {
                 )
                 .storage_push_constant16(enabled11.storage_push_constant16 == vk::TRUE)
                 .storage_input_output16(enabled11.storage_input_output16 == vk::TRUE)
-                .multiview(multiview);
+                .multiview(multiview)
+                .shader_draw_parameters(enabled11.shader_draw_parameters == vk::TRUE);
             let mut vulkan13 = vk::PhysicalDeviceVulkan13Features::default()
                 .dynamic_rendering(true)
                 .maintenance4(enabled13.maintenance4 == vk::TRUE)
@@ -537,6 +538,7 @@ impl InstanceBackend for Vulkan {
                         &native,
                     ),
                     features: enabled_features,
+                    shader_draw_index: enabled11.shader_draw_parameters == vk::TRUE,
                     conservative_rasterization,
                     maintenance5,
                     external_memory_handles,
@@ -630,6 +632,7 @@ impl InstanceBackend for Vulkan {
                     // shader requirements still gate use of the WGSL attribute.
                     shader_early_depth_test: true,
                     shader_primitive_index: enabled_features.geometry_shader == vk::TRUE,
+                    shader_draw_index: enabled11.shader_draw_parameters == vk::TRUE,
                     placed_memory: true,
                     memory_observation: true,
                     // vkCmdSetDepthBias is core; its clamp factor requires

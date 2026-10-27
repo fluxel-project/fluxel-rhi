@@ -109,6 +109,10 @@ pub(super) fn create(device: &VulkanDevice, desc: &api::ShaderDesc) -> Result<Vu
             api::SHADER_FEATURE_PRIMITIVE_INDEX => {
                 return Err(Error::Unsupported("Vulkan primitive index"));
             }
+            api::SHADER_FEATURE_DRAW_INDEX if device.0.shader_draw_index => {}
+            api::SHADER_FEATURE_DRAW_INDEX => {
+                return Err(Error::Unsupported("Vulkan draw index"));
+            }
             "shaderClipDistance" if device.0.shader_clip_distance => {}
             "shaderClipDistance" => return Err(Error::Unsupported("Vulkan shaderClipDistance")),
             api::SHADER_FEATURE_RAY_QUERY if device.0.ray_support.query => {}

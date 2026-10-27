@@ -102,6 +102,7 @@ struct DeviceState {
     descriptor_pools: pipeline::descriptor_pool::DescriptorPoolCache,
     /// Base features actually enabled on the logical device.
     features: vk::PhysicalDeviceFeatures,
+    shader_draw_index: bool,
     texture_compression_astc_hdr: bool,
     descriptor_partially_bound: bool,
     nonuniform_uniform_buffer: bool,
@@ -661,13 +662,21 @@ impl fluxel_rhi_core::backend::ShaderBackend for Vulkan {
     type NagaFuture<'a> = cold_worker::ColdFuture<VulkanShader>;
     fn shader_route(device: &VulkanDevice, desc: &api::ShaderDesc) -> api::ShaderRoute {
         if matches!(desc.format, api::ShaderFormat::Wgsl)
-            && desc
-                .required_features
-                .iter()
-                .any(|feature| feature == api::SHADER_FEATURE_PRIMITIVE_INDEX)
+            && desc.required_features.iter().any(|feature| {
+                feature == api::SHADER_FEATURE_PRIMITIVE_INDEX
+                    || feature == api::SHADER_FEATURE_DRAW_INDEX
+            })
         {
             // Naga 27 parses but does not implement WGSL's primitive_index
             // extension. Keep the feature on the direct SPIR-V route only.
+            return api::ShaderRoute::Unsupported;
+        }
+        if desc
+            .required_features
+            .iter()
+            .any(|feature| feature == api::SHADER_FEATURE_DRAW_INDEX)
+            && !device.0.shader_draw_index
+        {
             return api::ShaderRoute::Unsupported;
         }
         if desc

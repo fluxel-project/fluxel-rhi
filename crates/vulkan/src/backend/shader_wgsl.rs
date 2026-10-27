@@ -114,6 +114,9 @@ pub(crate) fn create_wgsl(device: &VulkanDevice, desc: &api::ShaderDesc) -> Resu
             api::SHADER_FEATURE_PRIMITIVE_INDEX => {
                 return Err(Error::Unsupported("Vulkan WGSL primitive index"));
             }
+            api::SHADER_FEATURE_DRAW_INDEX => {
+                return Err(Error::Unsupported("Vulkan WGSL draw index"));
+            }
             "shaderClipDistance" if device.0.shader_clip_distance => {}
             api::SHADER_FEATURE_RAY_QUERY if device.0.ray_support.query => {}
             "subgroups" => super::subgroup::validate_declared(device, desc)?,
