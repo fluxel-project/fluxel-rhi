@@ -150,6 +150,9 @@ pub struct Dx12Encoder {
     pub(crate) raster_depth_format: Option<api::TextureFormat>,
     pub(crate) raster_samples: Option<u32>,
     pub(crate) raster_multiview: Option<u32>,
+    /// Native BeginEvent/EndEvent nesting for the currently open command list.
+    /// External queue boundaries close that list, so a group cannot cross one.
+    pub(crate) debug_group_depth: u32,
     pub(crate) closed: bool,
 }
 
@@ -312,6 +315,7 @@ impl Dx12Encoder {
             raster_depth_format: None,
             raster_samples: None,
             raster_multiview: None,
+            debug_group_depth: 0,
             closed: false,
         })
     }
@@ -322,7 +326,11 @@ impl Dx12Encoder {
     /// retains it for submission, and opens the following list. The operation
     /// records no CPU command stream and never derives a dependency.
     pub(crate) fn split_external_boundary(&mut self, boundary: QueueBoundary) -> Result<(), Error> {
-        if self.closed || self.active_occlusion.is_some() || self.active_statistics.is_some() {
+        if self.closed
+            || self.active_occlusion.is_some()
+            || self.active_statistics.is_some()
+            || self.debug_group_depth != 0
+        {
             return Err(Error::InvalidState);
         }
         let (next_allocator, next_list) = if self.is_compute {

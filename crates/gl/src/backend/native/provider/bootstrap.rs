@@ -20,6 +20,24 @@ impl NativeGlProvider {
         let discovery = unsafe {
             super::super::discovery::discover_current_glow_with_loader(&gl, stamp, &proc_loader)
         }?;
+        // KHR_debug is usable only after both its route and all three marker
+        // entry points have been proven for this exact current context.
+        let debug_entries = unsafe { super::super::NativeEntryPoints::load(&proc_loader) };
+        let profile = discovery.context().profile();
+        let debug_core = profile.has_core(
+            crate::backend::api::GlVersion::new(4, 3),
+            crate::backend::api::GlVersion::new(3, 2),
+        );
+        let debug_extension = discovery
+            .extensions()
+            .provenance(crate::backend::api::GlKnownExtension::KhrDebug)
+            .map(|_| crate::backend::api::GlKnownExtension::KhrDebug);
+        let debug_markers = debug_entries.admits(
+            super::super::NativeEntryPoint::DebugOutput,
+            profile,
+            debug_core,
+            debug_extension,
+        );
         // SAFETY: the context is current and proc_loader resolves its entry points.
         let query_ptr = proc_loader("glGetQueryiv");
         let texture_sub_image_read = proc_loader("glGetTextureSubImage");
@@ -169,6 +187,7 @@ impl NativeGlProvider {
         let multiview =
             unsafe { super::super::multiview::NativeMultiview::load(&discovery, &proc_loader) };
         let mut provider = Self::assemble(gl, discovery, unmap_buffer);
+        provider.debug_markers = debug_markers;
         // SAFETY: these symbols are resolved by the current WGL/EGL context.
         provider.vertex_functions =
             unsafe { super::super::buffer_abi::NativeVertexFunctions::load(&proc_loader) };
@@ -467,6 +486,7 @@ impl NativeGlProvider {
     ) -> Self {
         Self {
             gl: std::rc::Rc::new(gl),
+            debug_markers: false,
             unmap_buffer,
             buffer_functions: None,
             vertex_functions: None,

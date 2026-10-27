@@ -429,7 +429,7 @@ impl<B: DeferredBackend> CommandEncoder<B> {
     pub fn finish(mut self) -> Result<RecordedWork<B>> {
         // Finishing an incomplete pass or a poisoned encoder would turn a
         // failed recording path into apparently reusable native work.
-        if self.poisoned || self.in_pass {
+        if self.poisoned || self.in_pass || self.debug_group_depth != 0 {
             return Err(Error::InvalidState);
         }
         let native = B::finish_encoder(self.native.take().ok_or(Error::InvalidState)?, self.lane)?;

@@ -147,7 +147,10 @@ pub(in crate::backend::encoder) fn end_for_indirect_count(
 pub(in crate::backend::encoder) fn resume_after_indirect_count(
     encoder: &mut MetalCommandEncoder,
 ) -> api::Result<()> {
-    use objc2_metal::{MTLCommandBuffer as _, MTLRenderCommandEncoder as _};
+    use objc2_foundation::NSString;
+    use objc2_metal::{
+        MTLCommandBuffer as _, MTLCommandEncoder as _, MTLRenderCommandEncoder as _,
+    };
     let descriptor = encoder
         .raster_descriptor
         .as_ref()
@@ -157,6 +160,17 @@ pub(in crate::backend::encoder) fn resume_after_indirect_count(
         .renderCommandEncoderWithDescriptor(descriptor)
         .ok_or(api::Error::OutOfMemory)?;
     encoder.render = Some(resumed);
+
+    // The conversion interrupted only Metal's native render encoder. Restore
+    // its annotation hierarchy before later application commands; this does
+    // not replay any application GPU operation.
+    for label in &encoder.debug_groups {
+        encoder
+            .render
+            .as_ref()
+            .expect("resumed render encoder")
+            .pushDebugGroup(&NSString::from_str(label));
+    }
 
     if let Some(slot) = encoder.occlusion_slot {
         encoder

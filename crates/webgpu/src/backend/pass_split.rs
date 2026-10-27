@@ -75,6 +75,13 @@ pub(super) fn suspend(encoder: &mut WebGpuEncoder) -> Result<Suspended> {
         return Err(Error::InvalidState);
     }
     super::query_segments::before_split(encoder)?;
+    // WebGPU requires each native GPURenderPassEncoder to close with a
+    // balanced debug stack. Core keeps the logical groups open across this
+    // internal split, so close the old native segment from innermost to
+    // outermost; `resume` records the same labels on the replacement pass.
+    for _ in encoder.debug_groups.iter().rev() {
+        js::call0(&old, "popDebugGroup").map_err(error)?;
+    }
     js::call0(&old, "end").map_err(error)?;
     encoder.pass = None;
     super::query_segments::flush_pending(encoder)?;
@@ -147,6 +154,7 @@ pub(super) fn resume(
     super::query_segments::prepare_split(encoder, &descriptor)?;
     let new_pass = js::call1(&encoder.raw, "beginRenderPass", &descriptor).map_err(error)?;
     encoder.pass = Some(new_pass.clone());
+    super::command::restore_debug_groups(&encoder.debug_groups, &new_pass)?;
     super::immediate::transfer(&suspended.old, &new_pass);
     put(&new_pass, &state);
     super::query_segments::after_split(encoder)?;

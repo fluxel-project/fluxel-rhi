@@ -14,6 +14,12 @@ pub(super) fn describe(device: &MetalDevice, multi_queue: bool) -> DeviceCapabil
     let multiview = native.respondsToSelector(objc2::sel!(supportsVertexAmplificationCount:))
         && native.supportsVertexAmplificationCount(2);
     DeviceCapabilities {
+        // Metal exposes annotations on native render/compute encoders. It has
+        // no equivalent command-buffer marker in this backend's direct path.
+        debug_markers: true,
+        debug_markers_encoder: false,
+        debug_markers_raster_pass: true,
+        debug_markers_compute_pass: true,
         compute: true,
         sparse: sparse::placement_supported(device),
         mesh: mesh::mesh_supported(device),

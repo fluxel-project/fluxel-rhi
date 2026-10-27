@@ -86,6 +86,18 @@ impl<B: Backend> ComputeDomain<'_, B> {
     {
         self.begin_prepared(encoder, |_| Ok(()))
     }
+    /// Begins a compute pass and, when the backend exposes compute-pass debug
+    /// annotations, records `label` as a native debug group.
+    pub fn begin_labeled<'a>(
+        &self,
+        encoder: &'a mut CommandEncoder<B>,
+        label: &str,
+    ) -> Result<ComputePass<'a, B>>
+    where
+        B: CommandBackend,
+    {
+        self.begin_prepared_labeled(encoder, Some(label), |_| Ok(()))
+    }
     pub(crate) fn begin_prepared<'a>(
         &self,
         encoder: &'a mut CommandEncoder<B>,
@@ -94,8 +106,22 @@ impl<B: Backend> ComputeDomain<'_, B> {
     where
         B: CommandBackend,
     {
+        self.begin_prepared_labeled(encoder, None, prepare)
+    }
+    pub(crate) fn begin_prepared_labeled<'a>(
+        &self,
+        encoder: &'a mut CommandEncoder<B>,
+        label: Option<&str>,
+        prepare: impl FnOnce(&mut B::NativeEncoder) -> Result<()>,
+    ) -> Result<ComputePass<'a, B>>
+    where
+        B: CommandBackend,
+    {
         if encoder.device != self.device.id {
             return Err(Error::WrongDevice);
+        }
+        if encoder.debug_group_depth != 0 {
+            return Err(Error::InvalidState);
         }
         let result = prepare(encoder.ready()?)
             .and_then(|()| B::Compute::begin(encoder.native.as_mut().expect("ready encoder")));
@@ -103,8 +129,23 @@ impl<B: Backend> ComputeDomain<'_, B> {
             encoder.poisoned = true;
             return Err(e);
         }
+        let debug_label_active = label.is_some() && encoder.debug_markers_compute_pass;
+        if let Some(label) = label.filter(|_| debug_label_active) {
+            if let Err(error) = B::debug_marker(
+                encoder.native.as_mut().expect("ready encoder"),
+                DebugMarkerScope::ComputePass,
+                DebugMarkerOp::Push(label),
+            ) {
+                B::Compute::abort(encoder.native.as_mut().expect("active compute encoder"));
+                encoder.poisoned = true;
+                return Err(error);
+            }
+            encoder.debug_group_depth += 1;
+        }
         encoder.in_pass = true;
         Ok(ComputePass {
+            debug_group_depth_at_begin: encoder.debug_group_depth,
+            debug_label_active,
             encoder,
             active: true,
         })
@@ -113,8 +154,49 @@ impl<B: Backend> ComputeDomain<'_, B> {
 pub struct ComputePass<'a, B: CommandBackend> {
     encoder: &'a mut CommandEncoder<B>,
     active: bool,
+    debug_group_depth_at_begin: u32,
+    debug_label_active: bool,
 }
 impl<B: CommandBackend> ComputePass<'_, B> {
+    fn debug_annotation(&mut self, op: DebugMarkerOp<'_>) -> Result<()> {
+        if !self.encoder.debug_markers_compute_pass {
+            return Err(Error::Unsupported("compute-pass debug markers"));
+        }
+        match op {
+            DebugMarkerOp::Push(_) => {
+                self.encoder.debug_group_depth = self
+                    .encoder
+                    .debug_group_depth
+                    .checked_add(1)
+                    .ok_or(Error::InvalidState)?
+            }
+            DebugMarkerOp::Pop
+                if self.encoder.debug_group_depth <= self.debug_group_depth_at_begin =>
+            {
+                return Err(Error::InvalidState);
+            }
+            DebugMarkerOp::Pop => self.encoder.debug_group_depth -= 1,
+            DebugMarkerOp::Insert(_) => {}
+        }
+        let result = self.call(|e| B::debug_marker(e, DebugMarkerScope::ComputePass, op));
+        if result.is_err() {
+            match op {
+                DebugMarkerOp::Push(_) => self.encoder.debug_group_depth -= 1,
+                DebugMarkerOp::Pop => self.encoder.debug_group_depth += 1,
+                _ => {}
+            }
+        }
+        result
+    }
+    pub fn insert_debug_marker(&mut self, label: &str) -> Result<()> {
+        self.debug_annotation(DebugMarkerOp::Insert(label))
+    }
+    pub fn push_debug_group(&mut self, label: &str) -> Result<()> {
+        self.debug_annotation(DebugMarkerOp::Push(label))
+    }
+    pub fn pop_debug_group(&mut self) -> Result<()> {
+        self.debug_annotation(DebugMarkerOp::Pop)
+    }
     fn call(&mut self, f: impl FnOnce(&mut B::NativeEncoder) -> Result<()>) -> Result<()> {
         if self.encoder.poisoned {
             return Err(Error::InvalidState);
@@ -186,8 +268,15 @@ impl<B: CommandBackend> ComputePass<'_, B> {
         result
     }
     pub fn finish(mut self) -> Result<()> {
-        // Clear `in_pass` only after native end succeeds; otherwise a caller
-        // cannot record new work after a potentially half-ended pass.
+        if self.encoder.debug_group_depth != self.debug_group_depth_at_begin {
+            if let Some(native) = self.encoder.native.as_mut() {
+                B::Compute::abort(native);
+            }
+            self.active = false;
+            self.encoder.in_pass = false;
+            self.encoder.poisoned = true;
+            return Err(Error::InvalidState);
+        }
         if self.encoder.poisoned {
             if let Some(native) = self.encoder.native.as_mut() {
                 B::Compute::abort(native);
@@ -196,6 +285,25 @@ impl<B: CommandBackend> ComputePass<'_, B> {
             self.encoder.in_pass = false;
             return Err(Error::InvalidState);
         }
+        if self.debug_label_active {
+            let result = B::debug_marker(
+                self.encoder.native.as_mut().ok_or(Error::InvalidState)?,
+                DebugMarkerScope::ComputePass,
+                DebugMarkerOp::Pop,
+            );
+            if result.is_err() {
+                if let Some(native) = self.encoder.native.as_mut() {
+                    B::Compute::abort(native);
+                }
+                self.active = false;
+                self.encoder.in_pass = false;
+                self.encoder.poisoned = true;
+                return result;
+            }
+            self.encoder.debug_group_depth -= 1;
+        }
+        // Clear `in_pass` only after native end succeeds; otherwise a caller
+        // cannot record new work after a potentially half-ended pass.
         let result = B::Compute::end(self.encoder.native.as_mut().ok_or(Error::InvalidState)?);
         self.active = false;
         self.encoder.in_pass = false;

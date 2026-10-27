@@ -94,6 +94,11 @@ pub struct MetalCommandEncoder {
     pub(crate) raster_statistics: bool,
     #[cfg(target_vendor = "apple")]
     pub(crate) raster_split: bool,
+    /// Logical debug scopes survive a native render-encoder interruption. The
+    /// strings are annotation state only; no application GPU command is kept
+    /// for replay.
+    #[cfg(target_vendor = "apple")]
+    pub(crate) debug_groups: Vec<String>,
     #[cfg(target_vendor = "apple")]
     pub(crate) occlusion_slot: Option<u32>,
     #[cfg(target_vendor = "apple")]
@@ -159,6 +164,57 @@ pub struct MetalCommandEncoder {
 }
 
 impl CommandBackend for Metal {
+    fn debug_marker(
+        encoder: &mut MetalCommandEncoder,
+        scope: fluxel_rhi_core::backend::DebugMarkerScope,
+        op: fluxel_rhi_core::backend::DebugMarkerOp<'_>,
+    ) -> api::Result<()> {
+        #[cfg(target_vendor = "apple")]
+        {
+            use objc2_foundation::NSString;
+            use objc2_metal::MTLCommandEncoder as _;
+
+            // Core only allows these scopes while the matching pass is live.
+            // Do not redirect an encoder annotation to the command buffer:
+            // that changes its nesting and makes capture hierarchy misleading.
+            macro_rules! record {
+                ($native:expr) => {{
+                    let native = $native.ok_or(api::Error::InvalidState)?;
+                    match op {
+                        fluxel_rhi_core::backend::DebugMarkerOp::Insert(label) => {
+                            native.insertDebugSignpost(&NSString::from_str(label));
+                        }
+                        fluxel_rhi_core::backend::DebugMarkerOp::Push(label) => {
+                            native.pushDebugGroup(&NSString::from_str(label));
+                            encoder.debug_groups.push(label.to_owned());
+                        }
+                        fluxel_rhi_core::backend::DebugMarkerOp::Pop => {
+                            native.popDebugGroup();
+                            let _ = encoder.debug_groups.pop();
+                        }
+                    }
+                    Ok(())
+                }};
+            }
+            match scope {
+                fluxel_rhi_core::backend::DebugMarkerScope::RasterPass => {
+                    record!(encoder.render.as_ref())
+                }
+                fluxel_rhi_core::backend::DebugMarkerScope::ComputePass => {
+                    record!(encoder.compute.as_ref())
+                }
+                fluxel_rhi_core::backend::DebugMarkerScope::Encoder => {
+                    Err(api::Error::Unsupported("encoder debug markers"))
+                }
+            }
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            let _ = (encoder, scope, op);
+            Err(api::Error::Unsupported("Metal requires an Apple target"))
+        }
+    }
+
     fn blit(
         encoder: &mut MetalCommandEncoder,
         src: TextureRegion<'_, Metal>,
@@ -240,6 +296,7 @@ impl CommandBackend for Metal {
                 raster_stencil_reference: 0,
                 raster_statistics: false,
                 raster_split: false,
+                debug_groups: Vec::new(),
                 occlusion_slot: None,
                 occlusion_segments: Vec::new(),
                 transition_event: None,

@@ -33,6 +33,7 @@ pub struct Triangle<B: TriangleBackend> {
     index: Buffer<B>,
     pipeline: RasterPipeline<B>,
     lane: LaneId,
+    debug_markers: bool,
 }
 
 impl<B: TriangleBackend> Triangle<B> {
@@ -133,6 +134,8 @@ impl<B: TriangleBackend> Triangle<B> {
             index,
             pipeline,
             lane,
+            debug_markers: device.capabilities().debug_markers
+                && device.capabilities().debug_markers_raster_pass,
         })
     }
 
@@ -186,7 +189,14 @@ impl<B: TriangleBackend> Triangle<B> {
         pass.set_pipeline(&self.pipeline)?;
         pass.set_vertex_buffer(0, &self.vertex, 0..72)?;
         pass.set_index_buffer(&self.index, 0..6, IndexFormat::Uint16)?;
+        if self.debug_markers {
+            pass.push_debug_group("triangle draw")?;
+            pass.insert_debug_marker("indexed triangle")?;
+        }
         pass.draw_indexed(0..3, 0, 0..1)?;
+        if self.debug_markers {
+            pass.pop_debug_group()?;
+        }
         pass.finish()
     }
 

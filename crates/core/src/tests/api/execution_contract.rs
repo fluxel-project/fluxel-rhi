@@ -9,6 +9,7 @@ use std::{
 };
 
 struct Witness;
+struct ComputeMarker;
 impl ExecutionBackend for Witness {
     type Mode = DeferredExecution;
 }
@@ -35,13 +36,57 @@ impl Backend for Witness {
     type NativeSurface = Arc<()>;
     type NativeSurfaceImage = ();
     type NativeUncertainty = Token;
-    type Compute = Unavailable;
+    type Compute = ComputeMarker;
     type Mesh = Unavailable;
     type Ray = Unavailable;
     type Extras = Unavailable;
 }
+impl ComputeOps<Witness> for ComputeMarker {
+    const AVAILABLE: bool = true;
+    type PipelineFuture<'a>
+        = Ready<Result<Arc<()>>>
+    where
+        Witness: 'a;
+
+    fn create_pipeline<'a>(
+        _: &'a Arc<()>,
+        _: &'a ComputePipelineDesc<Witness>,
+    ) -> Self::PipelineFuture<'a> {
+        ready(Ok(Arc::new(())))
+    }
+    fn begin(_: &mut ()) -> Result<()> {
+        Ok(())
+    }
+    fn set_pipeline(_: &mut (), _: &Arc<()>) -> Result<()> {
+        Ok(())
+    }
+    fn set_bind_group(_: &mut (), _: u32, _: &Arc<()>, _: &[u32]) -> Result<()> {
+        Ok(())
+    }
+    fn dispatch(_: &mut (), _: [u32; 3]) -> Result<()> {
+        Ok(())
+    }
+    fn dispatch_indirect(_: &mut (), _: &Arc<()>, _: u64) -> Result<()> {
+        Ok(())
+    }
+    fn end(_: &mut ()) -> Result<()> {
+        Ok(())
+    }
+    fn abort(_: &mut ()) {
+        COMPUTE_ABORTS.with_borrow_mut(|count| *count += 1);
+    }
+}
 impl CommandBackend for Witness {
     fn begin_encoder(_: &Arc<()>, _: LaneId) -> Result<()> {
+        Ok(())
+    }
+    fn debug_marker(_: &mut (), scope: DebugMarkerScope, op: DebugMarkerOp<'_>) -> Result<()> {
+        let label = match op {
+            DebugMarkerOp::Insert(label) => format!("insert:{label}"),
+            DebugMarkerOp::Push(label) => format!("push:{label}"),
+            DebugMarkerOp::Pop => "pop".to_owned(),
+        };
+        DEBUG_MARKERS.with_borrow_mut(|events| events.push((scope, label)));
         Ok(())
     }
     fn transition(_: &mut (), _: &[ResourceTransition<'_, Self>]) -> Result<()> {
@@ -96,6 +141,8 @@ struct Trace {
     waited: usize,
 }
 thread_local! { static TRACE: RefCell<Trace> = RefCell::new(Trace::default()); }
+thread_local! { static DEBUG_MARKERS: RefCell<Vec<(DebugMarkerScope, String)>> = const { RefCell::new(Vec::new()) }; }
+thread_local! { static COMPUTE_ABORTS: RefCell<usize> = const { RefCell::new(0) }; }
 struct Token;
 impl Drop for Token {
     fn drop(&mut self) {
@@ -255,6 +302,100 @@ fn fixture() -> (Device<Witness>, LaneId, SubmissionPlan<Witness>) {
     // SAFETY: fake native device is paired with the freshly allocated ID.
     let device = unsafe { Device::from_native(id, Arc::new(()), DeviceCapabilities::default()) };
     (device, lane, plan)
+}
+
+#[test]
+fn encoder_debug_groups_are_balanced_and_forwarded_in_order() {
+    DEBUG_MARKERS.with_borrow_mut(|events| events.clear());
+    let id = DeviceId::allocate().unwrap();
+    let lane = LaneId {
+        device: id,
+        ordinal: 0,
+    };
+    let mut caps = DeviceCapabilities::default();
+    caps.debug_markers = true;
+    caps.debug_markers_encoder = true;
+    // SAFETY: the witness uses a unit native encoder and does not issue GPU work.
+    let device = unsafe { Device::<Witness>::from_native(id, Arc::new(()), caps) };
+    let mut encoder = device.encoder(lane).unwrap();
+    assert!(matches!(
+        encoder.pop_debug_group(),
+        Err(Error::InvalidState)
+    ));
+    encoder.push_debug_group("outer").unwrap();
+    encoder.insert_debug_marker("draw batch").unwrap();
+    encoder.push_debug_group("inner").unwrap();
+    encoder.pop_debug_group().unwrap();
+    encoder.pop_debug_group().unwrap();
+    encoder.finish().unwrap();
+    DEBUG_MARKERS.with_borrow(|events| {
+        assert_eq!(
+            events,
+            &[
+                (DebugMarkerScope::Encoder, "push:outer".to_owned()),
+                (DebugMarkerScope::Encoder, "insert:draw batch".to_owned()),
+                (DebugMarkerScope::Encoder, "push:inner".to_owned()),
+                (DebugMarkerScope::Encoder, "pop".to_owned()),
+                (DebugMarkerScope::Encoder, "pop".to_owned()),
+            ]
+        )
+    });
+
+    let mut unbalanced = device.encoder(lane).unwrap();
+    unbalanced.push_debug_group("unfinished").unwrap();
+    assert!(matches!(unbalanced.finish(), Err(Error::InvalidState)));
+}
+
+#[test]
+fn compute_labeled_group_is_balanced_and_unclosed_child_aborts() {
+    DEBUG_MARKERS.with_borrow_mut(|events| events.clear());
+    COMPUTE_ABORTS.with_borrow_mut(|count| *count = 0);
+    let id = DeviceId::allocate().unwrap();
+    let lane = LaneId {
+        device: id,
+        ordinal: 0,
+    };
+    let mut caps = DeviceCapabilities::default();
+    caps.compute = true;
+    caps.debug_markers_compute_pass = true;
+    // SAFETY: the witness records only marker and pass lifecycle calls.
+    let device = unsafe { Device::<Witness>::from_native(id, Arc::new(()), caps) };
+    let domain = device.compute().expect("compute witness is available");
+
+    let mut encoder = device.encoder(lane).unwrap();
+    let mut pass = domain.begin_labeled(&mut encoder, "compute pass").unwrap();
+    assert!(matches!(pass.pop_debug_group(), Err(Error::InvalidState)));
+    pass.push_debug_group("nested work").unwrap();
+    pass.insert_debug_marker("dispatch boundary").unwrap();
+    pass.pop_debug_group().unwrap();
+    pass.finish().unwrap();
+    encoder.finish().unwrap();
+    DEBUG_MARKERS.with_borrow(|events| {
+        assert_eq!(
+            events,
+            &[
+                (
+                    DebugMarkerScope::ComputePass,
+                    "push:compute pass".to_owned()
+                ),
+                (DebugMarkerScope::ComputePass, "push:nested work".to_owned()),
+                (
+                    DebugMarkerScope::ComputePass,
+                    "insert:dispatch boundary".to_owned(),
+                ),
+                (DebugMarkerScope::ComputePass, "pop".to_owned()),
+                (DebugMarkerScope::ComputePass, "pop".to_owned()),
+            ]
+        )
+    });
+
+    let mut encoder = device.encoder(lane).unwrap();
+    let mut pass = domain
+        .begin_labeled(&mut encoder, "unbalanced pass")
+        .unwrap();
+    pass.push_debug_group("unclosed child").unwrap();
+    assert!(matches!(pass.finish(), Err(Error::InvalidState)));
+    COMPUTE_ABORTS.with_borrow(|count| assert_eq!(*count, 1));
 }
 
 #[test]

@@ -2196,3 +2196,183 @@ that narrow immediate check then passed both dual-source tests. WebGL PBO and
 all UNPACK state restoration also executed successfully. All three GL profiles
 passed their MSRV 1.87 compilation checks. These are focused available-driver
 results and do not establish all-driver support.
+
+## Future feature scope and deferred work
+
+This section records design decisions as of 2026-10-27. It does not add public
+APIs, enable capabilities, or assign release versions. A native API feature or
+an upstream library enum is not evidence of an implemented Fluxel route.
+Unavailable operations must continue to fail before native effects where the
+existing contract permits clean rejection.
+
+### Candidates for subsequent implementation
+
+The proposed sequence is command-level debug annotations, optional memory
+observation, bounded raster operations, shader/binding capabilities and mesh batching,
+attachment-only allocation intent, and video sampling integration. These are
+implementation candidates, not six independently promised releases. Each
+selected family needs a minimal Core/SPI contract, a caller, backend lowering,
+lifetime and error behavior, and evidence for the exact advertised route.
+
+Existing mechanisms are retained:
+
+- `Device::stats()` counts successful Core requests. It is not a driver memory
+  budget, allocator report, residency measurement, or GPU profiler. Explicit
+  optional memory queries must distinguish allocator-owned bytes from native
+  process/heap usage estimates and budgets; unavailable values remain unknown.
+- `RasterPassDesc::render_area` and attachment load clears already cover
+  pass-start work. A future rect-clear command would address an independent
+  clear during an active pass, restricted to the bound view's subresources,
+  attachment aspects and render area. Dynamic depth bias needs its own native
+  feature and pipeline contract; static PSO variants must not be reported as
+  dynamic state support.
+- Descriptor arrays and single-command mesh indirect execution already exist.
+  Array count, binding kind, non-uniform indexing, shader route and native
+  limits require separate admission facts. Existing native acceleration-array
+  code is not a guarantee of support on every backend.
+- Texture atomics need explicit format, operation, binding, shader-route and
+  synchronization admission. Existing storage read/write vocabulary alone
+  proves neither support nor absence of native execution. Reuse existing usage
+  and access flags when their semantics suffice; an upstream `STORAGE_ATOMIC`
+  name does not by itself justify another Core flag.
+- RenderGraph owns transient lifetimes, reuse, alias selection and retirement.
+  A future attachment-only allocation hint may permit memoryless/lazy native
+  storage, with strict load/store restrictions. Ordinary allocation may satisfy
+  the same discard semantics without claiming a memoryless optimization. This
+  does not imply framebuffer-local reads or automatic pass merging.
+  The current WebGPU specification also defines `TRANSIENT_ATTACHMENT`; a
+  browser route must verify runtime availability and exact descriptor/use
+  restrictions rather than infer support from a native wgpu enum. Ordinary
+  allocation remains the fallback when only the discard semantics are available.
+- The existing `api::ExternalTexture` is an external GPU-resource interop
+  object with explicit acquisition/release. Video sampling still lacks a
+  corresponding binding/source-lifetime closure. It must not repurpose that
+  name without resolving the different contracts. Browser video sources and
+  native decoder resources remain platform-adapter inputs, not Core sessions
+  or decoder objects. Keeping a native/JavaScript reference alive cannot extend
+  an externally imposed video-frame validity interval.
+
+### Planned shader capability work
+
+The following shader families are in the subsequent implementation scope. They
+are no longer deferred as a group pending production renderer consumers.
+Representative library shader fixtures can establish an RHI capability while
+renderer integration remains a separate deliverable. This is a scope decision,
+not a claim that these features are currently implemented on every route.
+
+| Batch | Families | Required contract and validation |
+| --- | --- | --- |
+| Common shader capabilities | Barycentrics, early depth tests, draw index and primitive index | Define interpolation/stage restrictions, early-test interactions with depth/stencil and shader side effects, and index semantics for the admitted direct/indirect/multi-draw paths. Verify GPU outputs and reject unsupported stages and routes. |
+| Advanced atomics and memory semantics | Float32 atomics, Int64 atomic families, coherent and volatile memory decorations | Query exact operations, storage classes, stages and memory scopes. Memory decorations do not replace atomicity or execution barriers. Verify generated artifacts as well as legal synchronized GPU workloads; use defined tolerances or allowed result sets for floating-point operations. |
+| Experimental matrix computation | Cooperative matrices | Use an independent optional experimental domain with explicit input/accumulator/result types, matrix dimensions, layouts, execution scopes and subgroup restrictions where required. Validate a supported native configuration against a numerical reference before widening the supported combinations. |
+
+Every advertised combination requires native device detection, a Core
+capability/limit query, shader admission, a compilation or direct-artifact
+route, synchronization/lifetime validation, and real-GPU evidence. Existing
+native execution should gain precise facts and admission first. DXIL, SPIR-V
+or MSL execution does not establish WGSL/Naga support on the same device;
+unsupported routes must remain explicit rather than silently changing ABI.
+
+Descriptor-indexing alignment, acceleration-array evidence and texture-atomic
+contracts remain part of the same shader/binding work. One successful integer
+texture-atomic route does not complete all three shader batches. Missing
+hardware, compiler or binding support leaves the affected route unverified or
+unavailable; it is not a reason to defer the entire family for lack of a
+production consumer. Cooperative matrices retain experimental status and the
+existing Rust/native integration boundary, without additional C/C++ bridges
+or feature-specific SDK dependencies.
+
+### Planned descriptor and mesh coverage
+
+Storage-texture array non-uniform indexing, acceleration-structure binding
+arrays, and mesh multi-indirect/count are in the subsequent implementation
+scope. The first two close gaps between existing resource/array machinery and
+its advertised guarantees. Mesh batching is a bounded extension of existing
+MeshOps and indirect execution. Library GPU producer/consumer fixtures can
+establish these contracts without waiting for a complete production mesh
+renderer; renderer integration remains a separate claim.
+
+| Family | Planned boundary | Required evidence |
+| --- | --- | --- |
+| Storage-texture array non-uniform indexing | Query actual support by binding kind, stage and shader route. Align Core layout admission with backend descriptor facts and shader validation; the current combined sampled-texture/storage-buffer flag cannot stand in for storage-image support. | Divergent indexing across multiple storage textures with verified reads/writes, plus early rejection for unsupported binding kinds and routes. |
+| Acceleration-structure binding arrays | Reuse existing BindingCount and BindingResource::Array. Distinguish fixed/runtime arrays, non-uniform indexing, partial binding, and ray-query/ray-pipeline routes. Descriptor support must include native AS and referenced TLAS/BLAS lifetime retention. | Traversal selecting multiple AS descriptors, device/shape validation and in-flight ownership tests. DX12/Vulkan are initial targets; an unimplemented Metal array route remains unavailable. |
+| Mesh multi-indirect and GPU-counted execution | Extend MeshOps with separate fixed-count and GPU-count capabilities/limits. Define the existing three-u32 dispatch record ABI, alignment, optional stride, buffer bounds, zero count and max-count semantics before lowering. Ordinary raster multi-draw support does not establish mesh support. | Compute-generated argument/count buffers consumed by mesh work, with distinguishable GPU outputs. Cover zero, below/equal/above maximum count, nonzero offsets, boundary sentinels, invalid usages/ranges and retention after caller handles are dropped. |
+
+DX12 lowering should reuse compatible DISPATCH_MESH command signatures with
+ExecuteIndirect, including the count-buffer variant. Vulkan lowering must
+verify the required mesh, multi-draw and indirect-count facts and limits before
+calling the corresponding native commands. A Metal fixed CPU-known count may
+be lowered by directly recording multiple native indirect calls; that is not
+a single native batch or evidence of GPU-count support. Unsupported routes
+must not read the count on the CPU or introduce a CPU command replay list.
+Explicit argument/count transitions, native in-flight ownership and completion
+evidence retain their existing meaning.
+
+### Deferred families and reconsideration conditions
+
+These families are intentionally outside the immediate implementation scope.
+Deferral describes current ownership, demand or evidence limits; it does not
+assert that the native APIs can never execute them. A renderer alternative is
+not advertised as support for the deferred native operation.
+
+| Family | Reason for deferral | Condition for reconsideration |
+| --- | --- | --- |
+| VRS / fragment shading rate | There is no established renderer consumer. Per-draw rates, rate images, combiners and device tile sizes need distinct semantics rather than a shared boolean. | A renderer supplies an actual rate-image/pass workload and quality/performance comparisons on capable devices; RHI then implements only its required native contracts. |
+| Vulkan dynamic-rendering local read / GLES framebuffer fetch | Attachment-local shader reads and ordering require a RenderGraph pass/dependency design. Memoryless allocation alone supplies neither those reads nor their synchronization. | A tile-local Deferred consumer defines same-pixel access, shader bindings and explicit dependencies with RenderGraph; one native route proves output and any claimed bandwidth benefit. |
+| DX12 sampler feedback | Sparse resources do not require this mechanism, and there is no current virtual-texturing/streaming consumer to define the feedback format and processing lifetime. | Renderer/Assets specify feedback production, resolve/readback or GPU consumption, and retirement. Start with a bounded native extension rather than mandatory support on all backends. |
+| Metal rasterization-rate maps | Their coordinate and sampling behavior is not interchangeable with DX12/Vulkan VRS, and there is no current Apple foveation consumer or runtime evidence. | A real Apple workload defines the mapping and ownership contract and supplies device evidence. |
+| Min/max sampler reduction | No current sampling algorithm fixes the required format/filtering, comparison and anisotropy combinations. Adding a sampler field alone would overstate support. | A concrete shader consumer defines those combinations and at least one backend validates and executes them. This may join the bounded raster work without waiting for VRS. |
+| Naga IR in the public Core API | Core currently accepts shader source/artifact bytes. Exposing `naga::Module` would couple public types to one compiler version while backend routes use different versions. | A Shader/Material owner demonstrates an unmet need. Prefer an optional frontend adapter producing existing shader descriptors; change Core only if that boundary is insufficient. |
+| Portable public GPU error scopes/callbacks | Existing Result, device-loss and partial/indeterminate execution facts must retain their meaning. Browser scope attribution, cancellation and asynchronous errors do not map directly to every backend. | A concrete lost-diagnostic case motivates a separate correlation, delivery and cancellation contract. Preserve existing backend-private error scopes and callbacks in the meantime. |
+| Portable public MemoryBudgetThresholds and automatic device-loss policy | Driver budgets vary by heap/segment/process scope and can change between query and allocation. A portable percentage cannot guarantee allocation success. An internal backend allocation-admission guard is legitimate, but rejecting a new allocation and invalidating a device are different policies. | Expose optional memory facts first. Reconsider public allocation guards only after a caller defines configuration timing, covered allocation/heap classes, requested versus native-reserved bytes and unknown-budget behavior. Automatic device loss requires a separate lifecycle justification and must not abandon in-flight objects. Quality changes and cache eviction remain higher-level policy. |
+| Vulkan display timing | The reference wgpu entry is a Vulkan HAL next-present setter, not a portable timing API or a complete feedback interface. Present IDs, clock domains, delayed observations, native swapchain routes and surface generations need a defined consumer contract. | A host/renderer frame-pacing or latency workload defines desired-time and feedback needs on a measurable platform. Start with a narrow Vulkan extension, including reconfiguration/cancellation/loss semantics. RHI reports presentation facts and executes requests; Renderer chooses pacing. Accepted Present, GPU completion and actual display time remain distinct. |
+| HDR metadata | Output metadata needs display configuration and surface negotiation beyond a texture format or color-space enum. There is no current HDR metadata consumer. | A real HDR workload defines host-to-RHI output color/metadata ownership and supplies evidence from an actual display path. |
+| Geometry/tessellation stages, programmable sample locations and predication | Current consumers have not demonstrated a requirement that justifies the additional shader ABI and raster/query state contracts. Existing compute/vertex/mesh and query/indirect routes remain available without claiming equivalence. | A concrete rendering algorithm establishes the missing native requirement and an independently testable contract. |
+| Unselected video sources and native NV12/P010 routes | There is no established video consumer. Plane formats alone do not define decoder ownership, color conversion, native synchronization or browser expiration. | Select a real source first, then close its adapter/RHI binding and lifetime path. Native multiplanar formats need plane views/copies and producer evidence; browser import requires its own validity contract. |
+
+The full video platform matrix is therefore deferred even if one source is
+selected for implementation. Ordinary plane textures, native multiplanar
+resources and browser imported video are separate routes. A P010 texture format
+must not be treated as proof of P010 external-video sampling support.
+
+### Work owned above RHI
+
+TAA, FSR/DLSS integration, SSAO, SSR, bloom, clustered lighting, Hi-Z construction
+and virtual-texturing algorithms belong to Renderer/Material/RenderGraph or
+Assets. RHI should add a missing GPU primitive only when one of those consumers
+defines its required operation. Host window/decoder ownership, frame pacing,
+cache eviction and quality policy likewise remain with their current owners.
+
+### Evidence and references
+
+The local upstream source comparison used wgpu commit
+`100c1429379a9f1efe91d613c64577552c298a66` (workspace version `30.0.0`). Its
+[`TextureUsages`](https://github.com/gfx-rs/wgpu/blob/100c1429379a9f1efe91d613c64577552c298a66/wgpu-types/src/texture.rs)
+and
+[`Device` APIs](https://github.com/gfx-rs/wgpu/blob/100c1429379a9f1efe91d613c64577552c298a66/wgpu/src/api/device.rs)
+are references for contract design, not a Fluxel backend support matrix. In
+particular, external-video descriptors and ordinary NV12/P010 formats must be
+checked separately, and a public API must be traced through its native path.
+The same checkout exposes mesh batch/count methods on RenderPass, while
+[`Surface::set_next_present_time`](https://github.com/gfx-rs/wgpu/blob/100c1429379a9f1efe91d613c64577552c298a66/wgpu-hal/src/vulkan/mod.rs)
+is Vulkan HAL-specific and explicitly leaves past-presentation timing queries
+to direct ash calls. Its
+[`MemoryBudgetThresholds`](https://github.com/gfx-rs/wgpu/blob/100c1429379a9f1efe91d613c64577552c298a66/wgpu-types/src/instance.rs)
+separates resource-creation rejection from device-loss thresholds; neither is
+equivalent to Fluxel's planned read-only memory observation.
+
+Native constraints relevant to the candidates include
+[DX12 dynamic depth bias](https://microsoft.github.io/DirectX-Specs/d3d/VulkanOn12.html#dynamic-pipeline-state-depth-bias-ib-strip-cut),
+[Vulkan attachment-clear bounds](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdClearAttachments.html),
+[Metal memoryless storage](https://developer.apple.com/documentation/metal/mtlstoragemode/memoryless),
+[Vulkan framebuffer-local dependencies](https://docs.vulkan.org/features/latest/features/proposals/VK_KHR_dynamic_rendering_local_read.html),
+and the current
+[WebGPU transient-texture rules](https://www.w3.org/TR/webgpu/#texture-usage).
+These define constraints, not measured performance improvements.
+
+An implementation must validate the exact selected shader route, device,
+native interface and ownership boundary. Cross-compilation, mock tests,
+presentation acceptance and clean validation logs do not replace real-GPU
+output or visible-image evidence. A platform with compilation/source review
+only remains unverified at runtime; unavailable hardware narrows the claim
+rather than enabling a capability by assumption.

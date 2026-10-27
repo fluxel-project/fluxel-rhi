@@ -138,6 +138,7 @@ fn gl_capabilities(
             storage_images,
             native_binding_arrays,
             wide_buffer_abi,
+            debug_markers,
         ) = state
             .with_native("read GL device limits", |provider| {
                 let discovery = provider.discovery();
@@ -154,6 +155,7 @@ fn gl_capabilities(
                     capabilities.supports(GlCapability::StorageImage),
                     matches!(provider.profile(), crate::backend::api::GlFamilyProfile::Desktop { major, .. } if major >= 4) || matches!(provider.profile(), crate::backend::api::GlFamilyProfile::Embedded { major, .. } if major >= 3),
                     provider.supports_wide_buffer_abi(),
+                    provider.debug_markers_supported(),
                 ))
             })
             .map_err(native_error)?;
@@ -163,6 +165,10 @@ fn gl_capabilities(
         }).map_err(native_error)?;
         let multiview_views = multiview_limit(state)?;
         return Ok(DeviceCapabilities {
+            debug_markers,
+            debug_markers_encoder: debug_markers,
+            debug_markers_raster_pass: debug_markers,
+            debug_markers_compute_pass: debug_markers,
             lanes: Arc::from([LaneInfo {
                 id: LaneId { device, ordinal: 0 },
                 class: LaneClass::Graphics,

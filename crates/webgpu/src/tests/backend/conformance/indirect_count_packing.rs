@@ -196,7 +196,7 @@ async fn gpu_padded_indirect_count_packs_one_source_window_and_masks_count() {
     })];
     let mut pass = encoder
         .begin_raster(&RasterPassDesc {
-            label: None,
+            label: Some("indirect count pass"),
             colors: &colors,
             depth_stencil: None,
             render_area: Rect {
@@ -212,12 +212,17 @@ async fn gpu_padded_indirect_count_packs_one_source_window_and_masks_count() {
         })
         .unwrap();
     pass.set_pipeline(&pipeline).unwrap();
+    pass.push_debug_group("count expansion")
+        .expect("raster-pass debug groups are supported");
+    pass.insert_debug_marker("before indirect count")
+        .expect("raster-pass debug markers are supported");
     // Two test-only chunks prove that the second dispatch uses `base=1`.
     super::super::indirect_count::set_test_chunk_capacity(Some(1));
     d.raster_extras()
         .unwrap()
         .multi_draw_count(&mut pass, &args, 4, &count, 4, 2, 24, false)
         .unwrap();
+    pass.pop_debug_group().unwrap();
     pass.finish().unwrap();
     super::super::indirect_count::set_test_chunk_capacity(None);
     encoder

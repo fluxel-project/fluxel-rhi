@@ -41,6 +41,8 @@ pub(crate) mod type_contract_tests {
     thread_local! {
         static ABANDONED_STEPS: Cell<usize> = const { Cell::new(0) };
         static DRAW_CALLS: Cell<usize> = const { Cell::new(0) };
+        static DEBUG_PUSHES: Cell<usize> = const { Cell::new(0) };
+        static DEBUG_POPS: Cell<usize> = const { Cell::new(0) };
         pub(crate) static GL_TRANSITIONS: Cell<usize> = const { Cell::new(0) };
         pub(crate) static GL_CHECKPOINTS: Cell<usize> = const { Cell::new(0) };
         pub(crate) static GL_EMPTY_STEP_CHECKPOINTS: Cell<bool> = const { Cell::new(false) };
@@ -140,6 +142,14 @@ pub(crate) mod type_contract_tests {
     impl SharedBackend for NativeShared {}
     impl CommandBackend for NativeShared {
         fn begin_encoder(_: &Arc<()>, _: LaneId) -> Result<()> {
+            Ok(())
+        }
+        fn debug_marker(_: &mut (), _: DebugMarkerScope, op: DebugMarkerOp<'_>) -> Result<()> {
+            match op {
+                DebugMarkerOp::Push(_) => DEBUG_PUSHES.with(|count| count.set(count.get() + 1)),
+                DebugMarkerOp::Pop => DEBUG_POPS.with(|count| count.set(count.get() + 1)),
+                DebugMarkerOp::Insert(_) => {}
+            }
             Ok(())
         }
         fn transition(_: &mut (), _: &[ResourceTransition<'_, Self>]) -> Result<()> {
@@ -517,6 +527,83 @@ pub(crate) mod type_contract_tests {
         pass.draw(0..3, 0..1).unwrap();
         DRAW_CALLS.with(|calls| assert_eq!(calls.get(), 1));
         pass.finish().unwrap();
+    }
+    #[test]
+    fn raster_pass_label_is_recorded_as_balanced_native_group() {
+        DEBUG_PUSHES.with(|count| count.set(0));
+        DEBUG_POPS.with(|count| count.set(0));
+        let id = DeviceId::allocate().unwrap();
+        let mut caps = DeviceCapabilities::default();
+        caps.debug_markers = true;
+        caps.debug_markers_raster_pass = true;
+        // SAFETY: the mock backend does not issue GPU work or retain resources.
+        let device = unsafe { Device::<NativeShared>::from_native(id, Arc::new(()), caps) };
+        let lane = LaneId {
+            device: id,
+            ordinal: 0,
+        };
+        let mut encoder = CommandEncoder::new(&device, lane).unwrap();
+        let colors = [];
+        let pass = encoder
+            .begin_raster(&RasterPassDesc {
+                label: Some("opaque forward pass"),
+                colors: &colors,
+                depth_stencil: None,
+                render_area: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                },
+                multiview_mask: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                secondary_inheritance: None,
+            })
+            .unwrap();
+        pass.finish().unwrap();
+        DEBUG_PUSHES.with(|count| assert_eq!(count.get(), 1));
+        DEBUG_POPS.with(|count| assert_eq!(count.get(), 1));
+
+        let mut encoder = CommandEncoder::new(&device, lane).unwrap();
+        let mut pass = encoder
+            .begin_raster(&RasterPassDesc {
+                label: None,
+                colors: &colors,
+                depth_stencil: None,
+                render_area: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                },
+                multiview_mask: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                secondary_inheritance: None,
+            })
+            .unwrap();
+        assert!(matches!(pass.pop_debug_group(), Err(Error::InvalidState)));
+        pass.push_debug_group("unfinished child").unwrap();
+        assert!(matches!(pass.finish(), Err(Error::InvalidState)));
+        DEBUG_PUSHES.with(|count| assert_eq!(count.get(), 2));
+        DEBUG_POPS.with(|count| assert_eq!(count.get(), 1));
+    }
+    #[test]
+    fn aggregate_debug_marker_capability_is_derived_from_scopes() {
+        let id = DeviceId::allocate().unwrap();
+        let mut caps = DeviceCapabilities::default();
+        caps.debug_markers_raster_pass = true;
+        // SAFETY: this mock capability record has no native GPU operations.
+        let device = unsafe { Device::<NativeShared>::from_native(id, Arc::new(()), caps) };
+        assert!(device.capabilities().debug_markers);
+
+        let id = DeviceId::allocate().unwrap();
+        let mut caps = DeviceCapabilities::default();
+        caps.debug_markers = true;
+        // SAFETY: this mock capability record has no native GPU operations.
+        let device = unsafe { Device::<NativeShared>::from_native(id, Arc::new(()), caps) };
+        assert!(!device.capabilities().debug_markers);
     }
     #[test]
     fn clear_texture_rejects_invalid_shape_before_backend() {

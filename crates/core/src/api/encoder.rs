@@ -33,6 +33,10 @@ pub struct CommandEncoder<B: CommandBackend> {
     pub(crate) multiview: bool,
     pub(crate) max_multiview_views: u32,
     pub(crate) stats: RhiStatsLocal,
+    pub(crate) debug_markers_encoder: bool,
+    pub(crate) debug_markers_raster_pass: bool,
+    pub(crate) debug_markers_compute_pass: bool,
+    pub(crate) debug_group_depth: u32,
 }
 impl<B: CommandBackend> CommandEncoder<B> {
     pub(crate) fn new(device: &Device<B>, lane: LaneId) -> Result<Self> {
@@ -54,6 +58,10 @@ impl<B: CommandBackend> CommandEncoder<B> {
             multiview: device.caps.multiview,
             max_multiview_views: device.caps.limits.max_multiview_views,
             stats: device.stats.local(),
+            debug_markers_encoder: device.caps.debug_markers_encoder,
+            debug_markers_raster_pass: device.caps.debug_markers_raster_pass,
+            debug_markers_compute_pass: device.caps.debug_markers_compute_pass,
+            debug_group_depth: 0,
         })
     }
     pub(crate) fn ready(&mut self) -> Result<&mut B::NativeEncoder> {
@@ -85,6 +93,40 @@ impl<B: CommandBackend> CommandEncoder<B> {
             return Err(Error::WrongDevice);
         }
         self.call(|e| B::transition(e, ops))
+    }
+    fn debug_annotation(&mut self, scope: DebugMarkerScope, op: DebugMarkerOp<'_>) -> Result<()> {
+        if !self.debug_markers_encoder {
+            return Err(Error::Unsupported("encoder debug markers"));
+        }
+        match op {
+            DebugMarkerOp::Push(_) => {
+                self.debug_group_depth = self
+                    .debug_group_depth
+                    .checked_add(1)
+                    .ok_or(Error::InvalidState)?
+            }
+            DebugMarkerOp::Pop if self.debug_group_depth == 0 => return Err(Error::InvalidState),
+            DebugMarkerOp::Pop => self.debug_group_depth -= 1,
+            DebugMarkerOp::Insert(_) => {}
+        }
+        let result = self.call(|e| B::debug_marker(e, scope, op));
+        if result.is_err() {
+            match op {
+                DebugMarkerOp::Push(_) => self.debug_group_depth -= 1,
+                DebugMarkerOp::Pop => self.debug_group_depth += 1,
+                _ => {}
+            }
+        }
+        result
+    }
+    pub fn insert_debug_marker(&mut self, label: &str) -> Result<()> {
+        self.debug_annotation(DebugMarkerScope::Encoder, DebugMarkerOp::Insert(label))
+    }
+    pub fn push_debug_group(&mut self, label: &str) -> Result<()> {
+        self.debug_annotation(DebugMarkerScope::Encoder, DebugMarkerOp::Push(label))
+    }
+    pub fn pop_debug_group(&mut self) -> Result<()> {
+        self.debug_annotation(DebugMarkerScope::Encoder, DebugMarkerOp::Pop)
     }
     pub fn copy_buffer(
         &mut self,
@@ -242,6 +284,8 @@ pub struct RasterPass<'a, B: RasterBackend> {
     pub(crate) encoder: &'a mut CommandEncoder<B>,
     pub(crate) active: bool,
     pub(crate) secondary_inheritance: Option<SecondaryRasterDesc>,
+    debug_group_depth_at_min: u32,
+    debug_label_active: bool,
 }
 impl<B: RasterBackend> CommandEncoder<B> {
     pub fn begin_raster<'a>(
@@ -255,6 +299,9 @@ impl<B: RasterBackend> CommandEncoder<B> {
         desc: &RasterPassDesc<'_, B>,
         prepare: impl FnOnce(&mut B::NativeEncoder) -> Result<()>,
     ) -> Result<RasterPass<'a, B>> {
+        if self.debug_group_depth != 0 {
+            return Err(Error::InvalidState);
+        }
         if let Some(mask) = desc.multiview_mask {
             if !self.multiview {
                 return Err(Error::Unsupported("multiview"));
@@ -313,15 +360,70 @@ impl<B: RasterBackend> CommandEncoder<B> {
             self.poisoned = true;
             return Err(e);
         }
+        let debug_label_active = desc.label.is_some() && self.debug_markers_raster_pass;
+        if let Some(label) = desc.label.filter(|_| debug_label_active) {
+            if let Err(error) = B::debug_marker(
+                self.native.as_mut().expect("ready encoder"),
+                DebugMarkerScope::RasterPass,
+                DebugMarkerOp::Push(label),
+            ) {
+                B::abort_raster(self.native.as_mut().expect("active raster encoder"));
+                self.poisoned = true;
+                return Err(error);
+            }
+            self.debug_group_depth += 1;
+        }
         self.in_pass = true;
+        let debug_group_depth_at_min = self.debug_group_depth;
         Ok(RasterPass {
             encoder: self,
             active: true,
             secondary_inheritance: desc.secondary_inheritance.clone(),
+            debug_group_depth_at_min,
+            debug_label_active,
         })
     }
 }
 impl<B: RasterBackend> RasterPass<'_, B> {
+    fn debug_annotation(&mut self, op: DebugMarkerOp<'_>) -> Result<()> {
+        if !self.encoder.debug_markers_raster_pass {
+            return Err(Error::Unsupported("raster-pass debug markers"));
+        }
+        match op {
+            DebugMarkerOp::Push(_) => {
+                self.encoder.debug_group_depth = self
+                    .encoder
+                    .debug_group_depth
+                    .checked_add(1)
+                    .ok_or(Error::InvalidState)?
+            }
+            DebugMarkerOp::Pop
+                if self.encoder.debug_group_depth <= self.debug_group_depth_at_min =>
+            {
+                return Err(Error::InvalidState);
+            }
+            DebugMarkerOp::Pop => self.encoder.debug_group_depth -= 1,
+            DebugMarkerOp::Insert(_) => {}
+        }
+        let result = self.call(|native| B::debug_marker(native, DebugMarkerScope::RasterPass, op));
+        if result.is_err() {
+            match op {
+                DebugMarkerOp::Push(_) => self.encoder.debug_group_depth -= 1,
+                DebugMarkerOp::Pop => self.encoder.debug_group_depth += 1,
+                _ => {}
+            }
+        }
+        result
+    }
+    pub fn insert_debug_marker(&mut self, label: &str) -> Result<()> {
+        self.debug_annotation(DebugMarkerOp::Insert(label))
+    }
+    pub fn push_debug_group(&mut self, label: &str) -> Result<()> {
+        self.debug_annotation(DebugMarkerOp::Push(label))
+    }
+    pub fn pop_debug_group(&mut self) -> Result<()> {
+        self.debug_annotation(DebugMarkerOp::Pop)
+    }
     pub(crate) fn call(
         &mut self,
         f: impl FnOnce(&mut B::NativeEncoder) -> Result<()>,
@@ -468,6 +570,15 @@ impl<B: RasterBackend> RasterPass<'_, B> {
         result
     }
     pub fn finish(mut self) -> Result<()> {
+        if self.encoder.debug_group_depth != self.debug_group_depth_at_min {
+            if let Some(native) = self.encoder.native.as_mut() {
+                B::abort_raster(native);
+            }
+            self.active = false;
+            self.encoder.in_pass = false;
+            self.encoder.poisoned = true;
+            return Err(Error::InvalidState);
+        }
         if self.encoder.poisoned {
             if let Some(native) = self.encoder.native.as_mut() {
                 B::abort_raster(native);
@@ -475,6 +586,23 @@ impl<B: RasterBackend> RasterPass<'_, B> {
             self.active = false;
             self.encoder.in_pass = false;
             return Err(Error::InvalidState);
+        }
+        if self.debug_label_active {
+            let result = B::debug_marker(
+                self.encoder.native.as_mut().ok_or(Error::InvalidState)?,
+                DebugMarkerScope::RasterPass,
+                DebugMarkerOp::Pop,
+            );
+            if result.is_err() {
+                if let Some(native) = self.encoder.native.as_mut() {
+                    B::abort_raster(native);
+                }
+                self.active = false;
+                self.encoder.in_pass = false;
+                self.encoder.poisoned = true;
+                return result;
+            }
+            self.encoder.debug_group_depth -= 1;
         }
         let result = B::end_raster(self.encoder.native.as_mut().ok_or(Error::InvalidState)?);
         self.active = false;

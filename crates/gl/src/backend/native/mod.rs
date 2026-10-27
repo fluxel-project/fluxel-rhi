@@ -16,6 +16,8 @@ mod buffer_mapping;
 mod clear_texture_direct;
 mod clear_texture_upload;
 mod context;
+#[cfg(any(feature = "native-gl-wgl", feature = "native-gles-egl"))]
+mod debug;
 mod discovery;
 pub(crate) mod draw_abi;
 #[cfg(feature = "native-gles-egl")]

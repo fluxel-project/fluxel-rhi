@@ -17,6 +17,8 @@ mod completion_steps;
 mod multisample;
 #[path = "operations.rs"]
 mod operations;
+#[path = "pass_split.rs"]
+mod pass_split;
 #[path = "queries.rs"]
 mod queries;
 #[path = "query_capacity.rs"]

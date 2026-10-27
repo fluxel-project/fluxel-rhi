@@ -42,6 +42,9 @@ pub struct WebGpuEncoder {
     pub(super) device: WebGpuDevice,
     pub(super) raw: JsValue,
     pub(super) pass: Option<JsValue>,
+    /// Annotation-only scopes are replayed when an internal pass split creates
+    /// a new native GPURenderPassEncoder. No application commands are retained.
+    pub(super) debug_groups: Vec<String>,
     pub(super) render_area: Option<api::Rect>,
     pub(super) partial_resolves: Vec<super::partial::PartialResolve>,
     pub(super) partial_timestamp_end: Option<(super::query::WebGpuQuerySet, u32)>,
@@ -89,7 +92,46 @@ use texture_ops::{
     validate_texture_region,
 };
 
+pub(super) fn restore_debug_groups(labels: &[String], receiver: &JsValue) -> Result<()> {
+    for label in labels {
+        js::call1(receiver, "pushDebugGroup", &JsValue::from_str(label)).map_err(error)?;
+    }
+    Ok(())
+}
+
 impl fluxel_rhi_core::backend::CommandBackend for WebGpu {
+    fn debug_marker(
+        encoder: &mut WebGpuEncoder,
+        scope: fluxel_rhi_core::backend::DebugMarkerScope,
+        op: fluxel_rhi_core::backend::DebugMarkerOp<'_>,
+    ) -> Result<()> {
+        let receiver = match scope {
+            fluxel_rhi_core::backend::DebugMarkerScope::Encoder => {
+                if encoder.pass.is_some() {
+                    return Err(Error::InvalidState);
+                }
+                encoder.raw.clone()
+            }
+            fluxel_rhi_core::backend::DebugMarkerScope::RasterPass
+            | fluxel_rhi_core::backend::DebugMarkerScope::ComputePass => pass(encoder)?.clone(),
+        };
+        match op {
+            fluxel_rhi_core::backend::DebugMarkerOp::Insert(label) => {
+                js::call1(&receiver, "insertDebugMarker", &JsValue::from_str(label))
+                    .map_err(error)?;
+            }
+            fluxel_rhi_core::backend::DebugMarkerOp::Push(label) => {
+                js::call1(&receiver, "pushDebugGroup", &JsValue::from_str(label)).map_err(error)?;
+                encoder.debug_groups.push(label.to_owned());
+            }
+            fluxel_rhi_core::backend::DebugMarkerOp::Pop => {
+                js::call0(&receiver, "popDebugGroup").map_err(error)?;
+                encoder.debug_groups.pop().ok_or(Error::InvalidState)?;
+            }
+        }
+        Ok(())
+    }
+
     fn begin_encoder(device: &WebGpuDevice, lane: api::LaneId) -> Result<WebGpuEncoder> {
         if device.0.lost.get() {
             return Err(Error::DeviceLost);
@@ -105,6 +147,7 @@ impl fluxel_rhi_core::backend::CommandBackend for WebGpu {
             device: device.clone(),
             raw,
             pass: None,
+            debug_groups: Vec::new(),
             render_area: None,
             partial_resolves: Vec::new(),
             partial_timestamp_end: None,

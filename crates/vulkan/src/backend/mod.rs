@@ -35,6 +35,8 @@ pub struct VulkanInstance(Arc<InstanceState>);
 struct InstanceState {
     entry: Entry,
     instance: Instance,
+    /// `VK_EXT_debug_utils` was enabled when this instance was created.
+    debug_utils_enabled: bool,
     #[cfg(all(unix, not(target_os = "android")))]
     surface_extensions: [bool; 3],
 }
@@ -162,6 +164,8 @@ struct DeviceState {
     max_multiview_views: u32,
     multiview_mesh_shader: bool,
     max_draw_indirect_count: u32,
+    /// Loaded only after all command-label entry points were verified.
+    debug_utils: Option<ash::ext::debug_utils::Device>,
     /// Serializes Vulkan queue submission and fence allocation only. It is
     /// not a graph scheduler and must never span host completion waits.
     queue_gate: Mutex<()>,
@@ -242,6 +246,14 @@ impl VulkanInstance {
         }) {
             extensions.push(ash::ext::swapchain_colorspace::NAME.as_ptr());
         }
+        let debug_utils_enabled = available.iter().any(|extension| {
+            // SAFETY: Vulkan guarantees NUL termination of extension names.
+            (unsafe { std::ffi::CStr::from_ptr(extension.extension_name.as_ptr()) })
+                == ash::ext::debug_utils::NAME
+        });
+        if debug_utils_enabled {
+            extensions.push(ash::ext::debug_utils::NAME.as_ptr());
+        }
         #[cfg(all(unix, not(target_os = "android")))]
         let surface_extensions = [
             ash::khr::xlib_surface::NAME,
@@ -267,6 +279,7 @@ impl VulkanInstance {
         Ok(Self(Arc::new(InstanceState {
             entry,
             instance,
+            debug_utils_enabled,
             #[cfg(all(unix, not(target_os = "android")))]
             surface_extensions,
         })))
@@ -509,6 +522,49 @@ impl fluxel_rhi_core::backend::QueryBackend for Vulkan {
 }
 
 impl fluxel_rhi_core::backend::CommandBackend for Vulkan {
+    fn debug_marker(
+        encoder: &mut VulkanEncoder,
+        _: fluxel_rhi_core::backend::DebugMarkerScope,
+        op: fluxel_rhi_core::backend::DebugMarkerOp<'_>,
+    ) -> Result<()> {
+        use std::ffi::CString;
+
+        let debug_utils = encoder
+            .device
+            .debug_utils
+            .as_ref()
+            .ok_or(Error::Unsupported("VK_EXT_debug_utils labels"))?;
+        match op {
+            fluxel_rhi_core::backend::DebugMarkerOp::Insert(text) => {
+                let text = CString::new(text).map_err(|_| Error::InvalidRange)?;
+                let label = vk::DebugUtilsLabelEXT::default().label_name(&text);
+                // SAFETY: `debug_utils` was constructed only after all label
+                // commands were resolved; command recording is exclusive and
+                // `text`/`label` remain live for this synchronous call.
+                unsafe { debug_utils.cmd_insert_debug_utils_label(encoder.command, &label) };
+            }
+            fluxel_rhi_core::backend::DebugMarkerOp::Push(text) => {
+                let text = CString::new(text).map_err(|_| Error::InvalidRange)?;
+                let label = vk::DebugUtilsLabelEXT::default().label_name(&text);
+                // SAFETY: as above for insert.
+                unsafe { debug_utils.cmd_begin_debug_utils_label(encoder.command, &label) };
+                encoder.debug_group_depth = encoder
+                    .debug_group_depth
+                    .checked_add(1)
+                    .ok_or(Error::InvalidState)?;
+            }
+            fluxel_rhi_core::backend::DebugMarkerOp::Pop => {
+                if encoder.debug_group_depth == 0 {
+                    return Err(Error::InvalidState);
+                }
+                // SAFETY: as above for insert; native depth was checked.
+                unsafe { debug_utils.cmd_end_debug_utils_label(encoder.command) };
+                encoder.debug_group_depth -= 1;
+            }
+        }
+        Ok(())
+    }
+
     fn clear_buffer(
         encoder: &mut VulkanEncoder,
         buffer: &VulkanBuffer,

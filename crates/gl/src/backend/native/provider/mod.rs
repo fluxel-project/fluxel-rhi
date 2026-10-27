@@ -38,6 +38,10 @@ pub(crate) struct NativeGlProvider {
     /// avoids a self-reference between the thread-affine native owner and its
     /// object tables.
     pub(super) gl: std::rc::Rc<glow::Context>,
+    /// The exact current context proved KHR_debug/core marker entry points
+    /// callable during bootstrap.  This is kept separate from diagnostic
+    /// output setup: command annotations require push, pop, and insert.
+    pub(super) debug_markers: bool,
     pub(super) unmap_buffer: super::context::UnmapBufferFn,
     pub(super) buffer_functions: Option<super::buffer_abi::NativeBufferFunctions>,
     pub(super) vertex_functions: Option<super::buffer_abi::NativeVertexFunctions>,

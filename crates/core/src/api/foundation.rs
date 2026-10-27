@@ -203,8 +203,15 @@ impl<B: Backend> Device<B> {
     pub unsafe fn from_native(
         id: DeviceId,
         native: B::NativeDevice,
-        caps: DeviceCapabilities,
+        mut caps: DeviceCapabilities,
     ) -> Self {
+        // The aggregate bit is a convenience summary. Keep it derived from
+        // the independently supported recording scopes so inconsistent
+        // backend initialization cannot hide an available scope or advertise
+        // a marker route that has no lowering.
+        caps.debug_markers = caps.debug_markers_encoder
+            || caps.debug_markers_raster_pass
+            || caps.debug_markers_compute_pass;
         // Capability bits are observable API facts. Checking their static
         // lowering domain here prevents a backend from publishing an optional
         // route which can only fail after renderer work has been recorded.
@@ -278,6 +285,13 @@ impl<B: Backend> Device<B> {
 /// requires these flags to match the implemented optional backend domains.
 #[derive(Clone, Default)]
 pub struct DeviceCapabilities {
+    /// Aggregate summary: true exactly when at least one scope-specific debug
+    /// marker capability below is true. Core derives this bit when opening the
+    /// device; backend initialization should set the scope facts.
+    pub debug_markers: bool,
+    pub debug_markers_encoder: bool,
+    pub debug_markers_raster_pass: bool,
+    pub debug_markers_compute_pass: bool,
     pub compute: bool,
     pub sparse: bool,
     pub mesh: bool,

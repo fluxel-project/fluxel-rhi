@@ -14,6 +14,16 @@ pub trait CommandBackend: Backend {
     /// A failed begin leaves no newly issued GPU work. Backend-private
     /// allocation/state setup is rolled back before Err is returned.
     fn begin_encoder(device: &Self::NativeDevice, lane: LaneId) -> Result<Self::NativeEncoder>;
+    /// Adds a native debug annotation. `scope` identifies the currently active
+    /// command/pass receiver; backends must return Unsupported when that exact
+    /// scope cannot represent the operation.
+    fn debug_marker(
+        _: &mut Self::NativeEncoder,
+        _: DebugMarkerScope,
+        _: DebugMarkerOp<'_>,
+    ) -> Result<()> {
+        Err(Error::Unsupported("debug markers"))
+    }
     fn transition(
         encoder: &mut Self::NativeEncoder,
         ops: &[ResourceTransition<'_, Self>],
@@ -104,6 +114,20 @@ pub trait CommandBackend: Backend {
     ) -> Result<()> {
         Err(Error::Unsupported("clear_texture"))
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DebugMarkerScope {
+    Encoder,
+    RasterPass,
+    ComputePass,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DebugMarkerOp<'a> {
+    Insert(&'a str),
+    Push(&'a str),
+    Pop,
 }
 
 /// Native raster pass lowering contract.

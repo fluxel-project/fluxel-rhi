@@ -319,6 +319,10 @@ impl InstanceBackend for WebGpu {
             let (indirect_draw, indirect_first_instance, multi_draw, multi_draw_count) =
                 indirect_capabilities(js::has_feature(&device, "indirect-first-instance"));
             let caps = DeviceCapabilities {
+                debug_markers: true,
+                debug_markers_encoder: true,
+                debug_markers_raster_pass: true,
+                debug_markers_compute_pass: true,
                 compute: true,
                 storage_buffers: true,
                 storage_textures: true,

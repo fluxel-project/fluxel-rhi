@@ -6,7 +6,7 @@
 use fluxel_rhi_core::api::{
     self, Error, LaneId, ResourceTransition, Result, TexelCopyBufferLayout, TextureRegion,
 };
-use fluxel_rhi_core::backend::CommandBackend;
+use fluxel_rhi_core::backend::{CommandBackend, DebugMarkerOp, DebugMarkerScope};
 
 #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
 use super::spi::native_error;
@@ -18,6 +18,36 @@ mod transfer;
 mod transition;
 
 impl CommandBackend for Gl {
+    fn debug_marker(
+        encoder: &mut GlEncoder,
+        _scope: DebugMarkerScope,
+        op: DebugMarkerOp<'_>,
+    ) -> Result<()> {
+        #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
+        {
+            encoder
+                .state
+                .with_native("emit GL debug marker", |provider| provider.debug_marker(op))
+                .map_err(super::spi::native_error)?;
+            encoder.issued = true;
+            return Ok(());
+        }
+        #[cfg(all(target_arch = "wasm32", feature = "webgl2"))]
+        {
+            let _ = (encoder, op);
+            return Err(Error::Unsupported("WebGL2 debug markers"));
+        }
+        #[cfg(not(any(
+            all(windows, feature = "native-gl-wgl"),
+            feature = "native-gles-egl",
+            all(target_arch = "wasm32", feature = "webgl2")
+        )))]
+        {
+            let _ = (encoder, op);
+            Err(Error::Unsupported("GL debug markers"))
+        }
+    }
+
     fn clear_texture(
         encoder: &mut GlEncoder,
         destination: &GlTexture,

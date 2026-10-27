@@ -76,6 +76,8 @@ pub struct VulkanEncoder {
     pub(super) pass_timestamp_end: Option<(super::VulkanQuerySet, u32, bool)>,
     pub(super) query_ops: Vec<super::query::QueryOp>,
     pub(super) secondary: Vec<super::VulkanSecondaryWork>,
+    /// Native Debug Utils label nesting for the active command buffer.
+    pub(super) debug_group_depth: u32,
 }
 
 pub(super) enum ExternalBoundary {
@@ -151,6 +153,7 @@ impl VulkanEncoder {
             pass_timestamp_end: None,
             query_ops: Vec::new(),
             secondary: Vec::new(),
+            debug_group_depth: 0,
         })
     }
 }
@@ -163,6 +166,7 @@ impl VulkanEncoder {
             || self.compute
             || self.active_occlusion.is_some()
             || self.active_statistics.is_some()
+            || self.debug_group_depth != 0
         {
             return Err(Error::InvalidState);
         }

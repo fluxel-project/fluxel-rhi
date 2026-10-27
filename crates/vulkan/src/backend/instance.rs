@@ -447,6 +447,28 @@ impl InstanceBackend for Vulkan {
             // this stack for the call; `physical` belongs to the instance.
             let native = unsafe { instance.0.instance.create_device(physical, &create, None) }
                 .map_err(|error| Error::Backend(format!("Vulkan create_device: {error:?}")))?;
+            let debug_utils = if instance.0.debug_utils_enabled
+                && [
+                    c"vkCmdBeginDebugUtilsLabelEXT",
+                    c"vkCmdEndDebugUtilsLabelEXT",
+                    c"vkCmdInsertDebugUtilsLabelEXT",
+                ]
+                .into_iter()
+                .all(|name| unsafe {
+                    instance
+                        .0
+                        .instance
+                        .get_device_proc_addr(native.handle(), name.as_ptr())
+                        .is_some()
+                }) {
+                Some(ash::ext::debug_utils::Device::new(
+                    &instance.0.instance,
+                    &native,
+                ))
+            } else {
+                None
+            };
+            let debug_markers = debug_utils.is_some();
             // SAFETY: device creation requested queue 0 from this family.
             let mesh = mesh_available.then(|| {
                 super::mesh::MeshDevice::new(
@@ -597,6 +619,7 @@ impl InstanceBackend for Vulkan {
                     max_multiview_views,
                     multiview_mesh_shader: mesh_multiview_available && multiview,
                     max_draw_indirect_count: limits.max_draw_indirect_count,
+                    debug_utils,
                     queue_gate: Mutex::new(()),
                     submit_gate: Mutex::new(()),
                 })),
@@ -617,6 +640,10 @@ impl InstanceBackend for Vulkan {
                     occlusion: true,
                     storage_buffers: true,
                     pipeline_statistics,
+                    debug_markers,
+                    debug_markers_encoder: debug_markers,
+                    debug_markers_raster_pass: debug_markers,
+                    debug_markers_compute_pass: debug_markers,
                     multiview,
                     multi_queue: has_compute_queue,
                     sparse: sparse_image && timeline_semaphore,

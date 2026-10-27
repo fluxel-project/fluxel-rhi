@@ -8,7 +8,11 @@ pub(super) fn requirement(feature: F) -> Option<Requirement> {
             desktop_core: GL43,
             gles_core: GLES32,
             extensions: &[E::KhrDebug],
-            functions: &[Fn::PushDebugGroup, Fn::PopDebugGroup, Fn::ObjectLabel],
+            functions: &[
+                Fn::PushDebugGroup,
+                Fn::PopDebugGroup,
+                Fn::DebugMessageInsert,
+            ],
         },
         _ => return None,
     })
