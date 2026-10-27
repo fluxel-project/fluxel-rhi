@@ -116,3 +116,44 @@ fn early_depth_test_requirement_is_fragment_only_and_checked_before_backend() {
     ));
     ROUTES.with(|v| assert_eq!(v.get(), 1));
 }
+
+#[test]
+fn primitive_index_requirement_is_fragment_only_and_checked_before_backend() {
+    ROUTES.with(|v| v.set(0));
+    let device = |supported| unsafe {
+        Device::<Mock>::from_native(
+            DeviceId::allocate().unwrap(),
+            (),
+            DeviceCapabilities {
+                shader_primitive_index: supported,
+                ..Default::default()
+            },
+        )
+    };
+    let desc = |stage| ShaderDesc {
+        label: None,
+        format: ShaderFormat::Wgsl,
+        bytes: Arc::from(b"@fragment fn fs() {}".as_slice()),
+        entries: vec![ShaderEntryPoint {
+            name: "main".into(),
+            stage,
+            workgroup_size: None,
+        }],
+        required_features: vec![SHADER_FEATURE_PRIMITIVE_INDEX.into()],
+    };
+    let unavailable = device(false);
+    assert!(matches!(
+        unavailable.shader_route(&desc(ShaderStage::Fragment)),
+        ShaderRoute::Unsupported
+    ));
+    let supported = device(true);
+    assert!(matches!(
+        supported.shader_route(&desc(ShaderStage::Vertex)),
+        ShaderRoute::Unsupported
+    ));
+    assert!(matches!(
+        supported.shader_route(&desc(ShaderStage::Fragment)),
+        ShaderRoute::Direct(_)
+    ));
+    ROUTES.with(|v| assert_eq!(v.get(), 1));
+}

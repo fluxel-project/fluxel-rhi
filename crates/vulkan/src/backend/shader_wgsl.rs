@@ -66,9 +66,6 @@ fn parsed(
     if features.shader_storage_image_extended_formats == vk::TRUE {
         caps |= C::STORAGE_TEXTURE_16BIT_NORM_FORMATS;
     }
-    if features.geometry_shader == vk::TRUE {
-        caps |= C::PRIMITIVE_INDEX;
-    }
     if desc
         .required_features
         .iter()
@@ -114,6 +111,9 @@ pub(crate) fn create_wgsl(device: &VulkanDevice, desc: &api::ShaderDesc) -> Resu
     for feature in &desc.required_features {
         match feature.as_str() {
             api::SHADER_FEATURE_EARLY_DEPTH_TEST => {}
+            api::SHADER_FEATURE_PRIMITIVE_INDEX => {
+                return Err(Error::Unsupported("Vulkan WGSL primitive index"));
+            }
             "shaderClipDistance" if device.0.shader_clip_distance => {}
             api::SHADER_FEATURE_RAY_QUERY if device.0.ray_support.query => {}
             "subgroups" => super::subgroup::validate_declared(device, desc)?,

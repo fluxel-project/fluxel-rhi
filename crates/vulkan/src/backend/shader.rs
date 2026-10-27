@@ -105,6 +105,10 @@ pub(super) fn create(device: &VulkanDevice, desc: &api::ShaderDesc) -> Result<Vu
     for feature in &desc.required_features {
         match feature.as_str() {
             api::SHADER_FEATURE_EARLY_DEPTH_TEST => {}
+            api::SHADER_FEATURE_PRIMITIVE_INDEX if device.0.features.geometry_shader == vk::TRUE => {}
+            api::SHADER_FEATURE_PRIMITIVE_INDEX => {
+                return Err(Error::Unsupported("Vulkan primitive index"));
+            }
             "shaderClipDistance" if device.0.shader_clip_distance => {}
             "shaderClipDistance" => return Err(Error::Unsupported("Vulkan shaderClipDistance")),
             api::SHADER_FEATURE_RAY_QUERY if device.0.ray_support.query => {}

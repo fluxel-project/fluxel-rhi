@@ -629,6 +629,7 @@ impl InstanceBackend for Vulkan {
                     // Vulkan's core fragment execution mode is always valid;
                     // shader requirements still gate use of the WGSL attribute.
                     shader_early_depth_test: true,
+                    shader_primitive_index: enabled_features.geometry_shader == vk::TRUE,
                     placed_memory: true,
                     memory_observation: true,
                     // vkCmdSetDepthBias is core; its clamp factor requires

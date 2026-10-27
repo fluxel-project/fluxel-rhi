@@ -309,6 +309,8 @@ pub struct DeviceCapabilities {
     pub ray_query: bool,
     /// WGSL/native fragment shaders may request early depth-test semantics.
     pub shader_early_depth_test: bool,
+    /// Fragment shaders may read the rasterizer-assigned primitive index.
+    pub shader_primitive_index: bool,
     pub multi_queue: bool,
     pub indirect_draw: bool,
     /// Indirect records may contain a nonzero first-instance value, including

@@ -659,7 +659,25 @@ impl fluxel_rhi_core::backend::CommandBackend for Vulkan {
 impl fluxel_rhi_core::backend::ShaderBackend for Vulkan {
     type DirectFuture<'a> = cold_worker::ColdFuture<VulkanShader>;
     type NagaFuture<'a> = cold_worker::ColdFuture<VulkanShader>;
-    fn shader_route(_: &VulkanDevice, desc: &api::ShaderDesc) -> api::ShaderRoute {
+    fn shader_route(device: &VulkanDevice, desc: &api::ShaderDesc) -> api::ShaderRoute {
+        if matches!(desc.format, api::ShaderFormat::Wgsl)
+            && desc
+                .required_features
+                .iter()
+                .any(|feature| feature == api::SHADER_FEATURE_PRIMITIVE_INDEX)
+        {
+            // Naga 27 parses but does not implement WGSL's primitive_index
+            // extension. Keep the feature on the direct SPIR-V route only.
+            return api::ShaderRoute::Unsupported;
+        }
+        if desc
+            .required_features
+            .iter()
+            .any(|feature| feature == api::SHADER_FEATURE_PRIMITIVE_INDEX)
+            && device.0.features.geometry_shader != vk::TRUE
+        {
+            return api::ShaderRoute::Unsupported;
+        }
         match desc.format {
             api::ShaderFormat::SpirV => api::ShaderRoute::Direct(api::ShaderTarget {
                 format: api::ShaderFormat::SpirV,

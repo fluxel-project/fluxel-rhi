@@ -44,6 +44,8 @@ pub const SHADER_FEATURE_RAY_QUERY: &str = "ray-query";
 /// This requirement is checked against `DeviceCapabilities::shader_early_depth_test`;
 /// shaders that use the WGSL `@early_depth_test` attribute must declare it.
 pub const SHADER_FEATURE_EARLY_DEPTH_TEST: &str = "shader-early-depth-test";
+/// A fragment shader reads the primitive index assigned by rasterization.
+pub const SHADER_FEATURE_PRIMITIVE_INDEX: &str = "primitive-index";
 
 #[derive(Clone, Debug)]
 pub struct ShaderDesc {
@@ -74,6 +76,12 @@ impl<B: ShaderBackend> Device<B> {
             (feature == SHADER_FEATURE_RAY_QUERY && !self.caps.ray_query)
                 || (feature == SHADER_FEATURE_EARLY_DEPTH_TEST
                     && (!self.caps.shader_early_depth_test
+                        || !desc
+                            .entries
+                            .iter()
+                            .any(|entry| entry.stage == ShaderStage::Fragment)))
+                || (feature == SHADER_FEATURE_PRIMITIVE_INDEX
+                    && (!self.caps.shader_primitive_index
                         || !desc
                             .entries
                             .iter()
