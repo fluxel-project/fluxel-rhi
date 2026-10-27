@@ -88,6 +88,12 @@ impl<B: ResourceBackend> Device<B> {
                 }
                 BindingCount::RuntimeSized { .. } => {}
             }
+            if matches!(entry.ty, BindingType::AccelerationStructure)
+                && entry.count != BindingCount::One
+                && !self.caps.acceleration_structure_binding_arrays
+            {
+                return Err(Error::Unsupported("acceleration structure binding arrays"));
+            }
             let nonuniform_supported = match &entry.ty {
                 BindingType::UniformBuffer { .. } => self.caps.nonuniform_uniform_buffer_indexing,
                 BindingType::StorageBuffer { .. } => self.caps.nonuniform_storage_buffer_indexing,

@@ -295,6 +295,7 @@ impl InstanceBackend for Dx12 {
                     sparse: sparse_supported,
                     ray: ray_supported,
                     acceleration_structure: ray_supported,
+                    acceleration_structure_binding_arrays: ray_supported && descriptor_indexing,
                     ray_query: ray_query_supported,
                     storage_textures: true,
                     storage_buffers: true,
@@ -321,6 +322,8 @@ impl InstanceBackend for Dx12 {
                     nonuniform_storage_buffer_indexing: descriptor_indexing,
                     nonuniform_sampled_texture_indexing: descriptor_indexing,
                     nonuniform_sampler_indexing: descriptor_indexing,
+                    nonuniform_acceleration_structure_indexing: ray_supported
+                        && descriptor_indexing,
                     secondary_commands: true,
                     native_interop: true,
                     external_memory: true,

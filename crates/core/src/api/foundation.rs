@@ -305,6 +305,8 @@ pub struct DeviceCapabilities {
     pub mesh: bool,
     /// Acceleration structure sizing, creation, and build operations.
     pub acceleration_structure: bool,
+    /// Binding arrays whose elements are acceleration structures.
+    pub acceleration_structure_binding_arrays: bool,
     pub ray: bool,
     pub ray_query: bool,
     /// WGSL/native fragment shaders may request early depth-test semantics.

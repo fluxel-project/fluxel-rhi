@@ -149,6 +149,33 @@ fn storage_texture_nonuniform_indexing_uses_its_own_capability() {
 }
 
 #[test]
+fn acceleration_structure_arrays_require_their_own_capability() {
+    LAYOUT_CALLS.with(|calls| calls.set(0));
+    let layout = BindGroupLayoutDesc {
+        label: None,
+        entries: vec![BindGroupLayoutEntry {
+            binding: 0,
+            visibility: vec![ShaderStage::Compute],
+            ty: BindingType::AccelerationStructure,
+            count: BindingCount::Fixed(2),
+            partially_bound: false,
+            nonuniform_indexing: false,
+        }],
+    };
+    let id = DeviceId::allocate().unwrap();
+    let mut caps = DeviceCapabilities::default();
+    caps.binding_arrays = true;
+    caps.limits.max_bindings_per_group = 4;
+    // SAFETY: this fixture represents a device without the optional ray domain.
+    let device = unsafe { Device::<NativeShared>::from_native(id, Arc::new(()), caps) };
+    assert!(matches!(
+        device.create_bind_group_layout(&layout),
+        Err(Error::Unsupported("acceleration structure binding arrays"))
+    ));
+    LAYOUT_CALLS.with(|calls| assert_eq!(calls.get(), 0));
+}
+
+#[test]
 fn runtime_array_group_validates_actual_length_and_holes_before_backend() {
     GROUP_CALLS.with(|calls| calls.set(0));
     let device = device(true);
