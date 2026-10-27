@@ -34,6 +34,35 @@ fn run_query(array: bool) {
     if array && !device.capabilities().binding_arrays {
         return;
     }
+    if array {
+        assert!(device.capabilities().acceleration_structure_binding_arrays);
+        let layout = |count, partially_bound| BindGroupLayoutDesc {
+            label: None,
+            entries: vec![BindGroupLayoutEntry {
+                binding: 0,
+                visibility: vec![ShaderStage::Compute],
+                ty: BindingType::AccelerationStructure,
+                count,
+                partially_bound,
+                nonuniform_indexing: false,
+            }],
+        };
+        assert!(matches!(
+            device.create_bind_group_layout(&layout(
+                BindingCount::RuntimeSized { max_count: 2 },
+                false,
+            )),
+            Err(Error::Unsupported(
+                "runtime-sized acceleration structure arrays"
+            ))
+        ));
+        assert!(matches!(
+            device.create_bind_group_layout(&layout(BindingCount::Fixed(2), true)),
+            Err(Error::Unsupported(
+                "partially-bound acceleration structure arrays"
+            ))
+        ));
+    }
     let lane = device
         .lanes()
         .iter()

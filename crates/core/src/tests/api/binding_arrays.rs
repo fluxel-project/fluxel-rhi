@@ -173,6 +173,23 @@ fn acceleration_structure_arrays_require_their_own_capability() {
         Err(Error::Unsupported("acceleration structure binding arrays"))
     ));
     LAYOUT_CALLS.with(|calls| assert_eq!(calls.get(), 0));
+
+    let mut runtime_layout = layout.clone();
+    runtime_layout.entries[0].count = BindingCount::RuntimeSized { max_count: 2 };
+    let id = DeviceId::allocate().unwrap();
+    let mut caps = DeviceCapabilities::default();
+    caps.binding_arrays = true;
+    caps.runtime_sized_binding_arrays = true;
+    caps.limits.max_bindings_per_group = 4;
+    // SAFETY: this mock has generic runtime arrays but no acceleration-array route.
+    let device = unsafe { Device::<NativeShared>::from_native(id, Arc::new(()), caps) };
+    assert!(matches!(
+        device.create_bind_group_layout(&runtime_layout),
+        Err(Error::Unsupported(
+            "runtime-sized acceleration structure arrays"
+        ))
+    ));
+    LAYOUT_CALLS.with(|calls| assert_eq!(calls.get(), 0));
 }
 
 #[test]

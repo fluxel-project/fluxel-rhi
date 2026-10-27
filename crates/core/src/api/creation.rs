@@ -88,11 +88,32 @@ impl<B: ResourceBackend> Device<B> {
                 }
                 BindingCount::RuntimeSized { .. } => {}
             }
-            if matches!(entry.ty, BindingType::AccelerationStructure)
-                && entry.count != BindingCount::One
-                && !self.caps.acceleration_structure_binding_arrays
-            {
-                return Err(Error::Unsupported("acceleration structure binding arrays"));
+            if matches!(&entry.ty, BindingType::AccelerationStructure) {
+                match entry.count {
+                    BindingCount::One => {}
+                    BindingCount::Fixed(_) if !self.caps.acceleration_structure_binding_arrays => {
+                        return Err(Error::Unsupported("acceleration structure binding arrays"));
+                    }
+                    BindingCount::RuntimeSized { .. }
+                        if !self
+                            .caps
+                            .runtime_sized_acceleration_structure_binding_arrays =>
+                    {
+                        return Err(Error::Unsupported(
+                            "runtime-sized acceleration structure arrays",
+                        ));
+                    }
+                    _ => {}
+                }
+                if entry.partially_bound
+                    && !self
+                        .caps
+                        .partially_bound_acceleration_structure_binding_arrays
+                {
+                    return Err(Error::Unsupported(
+                        "partially-bound acceleration structure arrays",
+                    ));
+                }
             }
             let nonuniform_supported = match &entry.ty {
                 BindingType::UniformBuffer { .. } => self.caps.nonuniform_uniform_buffer_indexing,

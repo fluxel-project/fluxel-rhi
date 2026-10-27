@@ -236,6 +236,22 @@ impl<B: Backend> Device<B> {
             "ray capability without implementation"
         );
         assert!(
+            !caps.acceleration_structure_binding_arrays
+                || (caps.acceleration_structure && caps.binding_arrays),
+            "acceleration structure array capability without base array support"
+        );
+        assert!(
+            !caps.runtime_sized_acceleration_structure_binding_arrays
+                || (caps.acceleration_structure_binding_arrays
+                    && caps.runtime_sized_binding_arrays),
+            "runtime acceleration structure arrays without fixed/runtime array support"
+        );
+        assert!(
+            !caps.partially_bound_acceleration_structure_binding_arrays
+                || caps.acceleration_structure_binding_arrays,
+            "partially-bound acceleration structure arrays without fixed array support"
+        );
+        assert!(
             !(caps.indirect_draw
                 || caps.multi_draw
                 || caps.multi_draw_count
@@ -305,8 +321,12 @@ pub struct DeviceCapabilities {
     pub mesh: bool,
     /// Acceleration structure sizing, creation, and build operations.
     pub acceleration_structure: bool,
-    /// Binding arrays whose elements are acceleration structures.
+    /// Fully bound, fixed-count binding arrays whose elements are
+    /// acceleration structures. Runtime-sized and partially-bound arrays are
+    /// separate capability domains.
     pub acceleration_structure_binding_arrays: bool,
+    pub runtime_sized_acceleration_structure_binding_arrays: bool,
+    pub partially_bound_acceleration_structure_binding_arrays: bool,
     pub ray: bool,
     pub ray_query: bool,
     /// WGSL/native fragment shaders may request early depth-test semantics.
