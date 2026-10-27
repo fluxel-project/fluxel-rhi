@@ -220,6 +220,10 @@ impl<B: Backend> Device<B> {
             "compute capability without implementation"
         );
         assert!(
+            !caps.memory_observation || B::MemoryObservation::AVAILABLE,
+            "memory observation capability without implementation"
+        );
+        assert!(
             !caps.mesh || B::Mesh::AVAILABLE,
             "mesh capability without implementation"
         );
@@ -328,6 +332,8 @@ pub struct DeviceCapabilities {
     pub external_memory: bool,
     pub secondary_commands: bool,
     pub native_interop: bool,
+    /// Explicit allocator/native memory snapshot domain is available.
+    pub memory_observation: bool,
     pub lanes: Arc<[LaneInfo]>,
     pub limits: DeviceLimits,
 }

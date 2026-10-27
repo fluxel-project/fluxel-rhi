@@ -211,6 +211,7 @@ impl Backend for Metal {
     type Mesh = mesh::MetalMesh;
     type Ray = ray::MetalRay;
     type Extras = encoder::indirect_count::RasterExtras;
+    type MemoryObservation = fluxel_rhi_core::backend::Unavailable;
 }
 
 impl InstanceBackend for Metal {

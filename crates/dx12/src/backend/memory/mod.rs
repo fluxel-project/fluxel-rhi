@@ -9,8 +9,8 @@ mod default_pool;
 pub(super) use default_pool::{DefaultAllocationLease, DefaultResourcePool};
 
 use super::{Dx12, Dx12Buffer, Dx12Device, Dx12DeviceState, Dx12Texture, texture};
-use fluxel_rhi_core::api::{self, Error, Result, Support};
-use fluxel_rhi_core::backend::{MemoryBackend, ResourceBackend};
+use fluxel_rhi_core::api::{self, Error, MemorySnapshot, Result, Support};
+use fluxel_rhi_core::backend::{MemoryBackend, MemoryObservationOps, ResourceBackend};
 use std::sync::{Arc, atomic::AtomicBool};
 use windows::Win32::Graphics::{
     Direct3D12::*,
@@ -23,6 +23,17 @@ const READBACK_CLASS: u32 = 2;
 const DEFAULT_BUFFER_CLASS: u32 = 3;
 const DEFAULT_NON_RT_DS_TEXTURE_CLASS: u32 = 4;
 const DEFAULT_RT_DS_TEXTURE_CLASS: u32 = 5;
+
+/// Cold-path pool and DXGI process-segment observation.
+pub struct MemoryObservation;
+
+impl MemoryObservationOps<Dx12> for MemoryObservation {
+    const AVAILABLE: bool = true;
+
+    fn snapshot(device: &Dx12Device) -> Result<MemorySnapshot> {
+        device.0.default_resources.snapshot()
+    }
+}
 
 /// Native heap retained by explicitly placed DX12 resources.
 #[derive(Clone)]

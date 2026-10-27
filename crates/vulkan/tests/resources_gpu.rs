@@ -188,3 +188,66 @@ fn ordinary_resource_pool_survives_buffer_and_image_churn() {
         drop((buffers, textures));
     }
 }
+
+#[test]
+fn memory_observation_tracks_default_pool_buffer_lifetime() {
+    let device = block_on(VulkanInstance::new().unwrap().open_default()).unwrap();
+    let observation = device
+        .memory_observation()
+        .expect("Vulkan exposes memory observation");
+    let before = observation.snapshot().unwrap();
+    let before_pool = before.allocator.expect("Vulkan default resource pool");
+    assert_eq!(
+        before_pool.source,
+        AllocatorMemorySource::VulkanDefaultResourcePool
+    );
+    assert_eq!(
+        before_pool.reserved_bytes,
+        before_pool.live_range_bytes + before_pool.free_bytes
+    );
+    assert!(!before.native_reports.is_empty());
+    for report in &before.native_reports {
+        assert_eq!(report.source, MemoryReportSource::VulkanProcessHeapEstimate);
+        let MemoryReportScope::VulkanHeap {
+            heap_index,
+            heap_size_bytes,
+            ..
+        } = report.scope
+        else {
+            panic!("Vulkan report must name a physical heap");
+        };
+        assert!(heap_size_bytes > 0, "heap {heap_index} has a nonzero size");
+        // `None` represents an unavailable extension result. If available,
+        // usage and budget stay driver estimates and are deliberately not
+        // ordered against each other here.
+        if report.usage_bytes.is_none() {
+            assert!(report.budget_bytes.is_none());
+        }
+    }
+
+    let buffer = device
+        .create_buffer(&BufferDesc {
+            label: Some("Vulkan memory observation buffer".into()),
+            size: 4096,
+            usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            memory: MemoryClass::Device,
+        })
+        .unwrap();
+    let during_pool = observation.snapshot().unwrap().allocator.unwrap();
+    assert!(during_pool.live_range_bytes > before_pool.live_range_bytes);
+    assert!(during_pool.live_allocation_count > before_pool.live_allocation_count);
+    assert_eq!(
+        during_pool.reserved_bytes,
+        during_pool.live_range_bytes + during_pool.free_bytes
+    );
+
+    drop(buffer);
+    let after_pool = observation.snapshot().unwrap().allocator.unwrap();
+    assert_eq!(after_pool.live_range_bytes, before_pool.live_range_bytes);
+    assert_eq!(
+        after_pool.live_allocation_count,
+        before_pool.live_allocation_count
+    );
+    assert!(after_pool.free_bytes >= before_pool.free_bytes);
+    assert!(after_pool.peak_live_range_bytes >= during_pool.live_range_bytes);
+}

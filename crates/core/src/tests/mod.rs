@@ -110,6 +110,7 @@ pub(crate) mod type_contract_tests {
         type Mesh = Unavailable;
         type Ray = Unavailable;
         type Extras = Unavailable;
+        type MemoryObservation = Unavailable;
     }
     impl Backend for GlLocal {
         type NativeDevice = Rc<()>;
@@ -138,6 +139,7 @@ pub(crate) mod type_contract_tests {
         type Mesh = Unavailable;
         type Ray = Unavailable;
         type Extras = Unavailable;
+        type MemoryObservation = Unavailable;
     }
     impl SharedBackend for NativeShared {}
     impl CommandBackend for NativeShared {
@@ -476,6 +478,8 @@ pub(crate) mod type_contract_tests {
         let local = unsafe {
             Device::<GlLocal>::from_native(id, Rc::new(()), DeviceCapabilities::default())
         };
+        assert!(native.memory_observation().is_none());
+        assert!(local.memory_observation().is_none());
         let lane = LaneId {
             device: id,
             ordinal: 0,

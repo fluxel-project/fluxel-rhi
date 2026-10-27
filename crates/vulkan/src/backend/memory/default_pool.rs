@@ -7,7 +7,10 @@
 
 use super::super::{mapping::MappingState, vk_error};
 use ash::vk;
-use fluxel_rhi_core::api::{Error, Result};
+use fluxel_rhi_core::api::{
+    AllocatorMemorySnapshot, AllocatorMemorySource, Error, MemoryReportScope, MemoryReportSource,
+    MemorySnapshot, NativeMemoryReport, Result,
+};
 use std::sync::{Arc, Mutex, Weak};
 
 const PAGE_BYTES: u64 = 16 * 1024 * 1024;
@@ -37,6 +40,8 @@ struct PoolState {
     memory_budget: bool,
     pages: Vec<Page>,
     next_id: u64,
+    peak_reserved_bytes: u64,
+    peak_live_range_bytes: u64,
     #[cfg(test)]
     enabled: bool,
 }
@@ -85,6 +90,8 @@ impl DefaultResourcePool {
             memory_budget,
             pages: Vec::new(),
             next_id: 1,
+            peak_reserved_bytes: 0,
+            peak_live_range_bytes: 0,
             #[cfg(test)]
             enabled: true,
         })))
@@ -148,6 +155,7 @@ impl DefaultResourcePool {
             let allocation = make_allocation(&self.0, page, offset, range_size);
             let mapping = (class == ResourceClass::Buffer)
                 .then(|| MappingState::new_resource(page.size, flags, page.mapped));
+            update_peaks(&mut state);
             return Ok(Some((allocation, mapping)));
         }
 
@@ -219,6 +227,7 @@ impl DefaultResourcePool {
         let mapping = (class == ResourceClass::Buffer)
             .then(|| MappingState::new_resource(page_size, flags, mapped));
         state.pages.push(page);
+        update_peaks(&mut state);
         Ok(Some((allocation, mapping)))
     }
 
@@ -226,6 +235,57 @@ impl DefaultResourcePool {
         if let Ok(mut state) = self.0.lock() {
             state.pages.clear();
         }
+    }
+
+    /// Returns exact facts for retained default-pool pages plus the optional
+    /// `VK_EXT_memory_budget` estimates for every physical heap. The latter
+    /// are deliberately kept separate: they describe implementation-defined
+    /// process usage, not this pool's allocations or residency.
+    pub(crate) fn snapshot(&self) -> Result<MemorySnapshot> {
+        let state = self.0.lock().map_err(|_| Error::InvalidState)?;
+        let (reserved_bytes, live_range_bytes, free_bytes, idle_page_count, live_allocation_count) =
+            current_totals(&state);
+        let budget = query_budget(&state);
+        let native_reports = (0..state.memory_properties.memory_heap_count as usize)
+            .map(|heap_index| {
+                let heap = state.memory_properties.memory_heaps[heap_index];
+                let (usage_bytes, budget_bytes) = budget
+                    .as_ref()
+                    .map(|values| {
+                        let budget = values.heap_budget[heap_index];
+                        if budget == 0 {
+                            (None, None)
+                        } else {
+                            (Some(values.heap_usage[heap_index]), Some(budget))
+                        }
+                    })
+                    .unwrap_or((None, None));
+                NativeMemoryReport {
+                    source: MemoryReportSource::VulkanProcessHeapEstimate,
+                    scope: MemoryReportScope::VulkanHeap {
+                        heap_index: heap_index as u32,
+                        heap_size_bytes: heap.size,
+                        device_local: heap.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL),
+                    },
+                    usage_bytes,
+                    budget_bytes,
+                }
+            })
+            .collect();
+        Ok(MemorySnapshot {
+            allocator: Some(AllocatorMemorySnapshot {
+                source: AllocatorMemorySource::VulkanDefaultResourcePool,
+                reserved_bytes,
+                live_range_bytes,
+                free_bytes,
+                peak_reserved_bytes: state.peak_reserved_bytes,
+                peak_live_range_bytes: state.peak_live_range_bytes,
+                page_count: u32::try_from(state.pages.len()).unwrap_or(u32::MAX),
+                idle_page_count,
+                live_allocation_count,
+            }),
+            native_reports,
+        })
     }
 
     #[cfg(test)]
@@ -260,6 +320,60 @@ impl DefaultResourcePool {
     }
 }
 
+fn current_totals(state: &PoolState) -> (u64, u64, u64, u32, u32) {
+    let pages = state
+        .pages
+        .iter()
+        .map(|page| {
+            (
+                page.size,
+                page.free
+                    .iter()
+                    .fold(0u64, |total, (_, bytes)| total.saturating_add(*bytes)),
+                page.live,
+            )
+        })
+        .collect::<Vec<_>>();
+    aggregate_totals(&pages)
+}
+
+fn aggregate_totals(pages: &[(u64, u64, usize)]) -> (u64, u64, u64, u32, u32) {
+    let mut reserved = 0u64;
+    let mut free = 0u64;
+    let mut idle = 0u32;
+    let mut allocations = 0u32;
+    for &(size, page_free, live) in pages {
+        reserved = reserved.saturating_add(size);
+        free = free.saturating_add(page_free);
+        if live == 0 {
+            idle = idle.saturating_add(1);
+        }
+        allocations = allocations.saturating_add(u32::try_from(live).unwrap_or(u32::MAX));
+    }
+    (
+        reserved,
+        reserved.saturating_sub(free),
+        free,
+        idle,
+        allocations,
+    )
+}
+
+fn update_peaks(state: &mut PoolState) {
+    let (reserved, live, _, _, _) = current_totals(state);
+    apply_peaks(
+        &mut state.peak_reserved_bytes,
+        &mut state.peak_live_range_bytes,
+        reserved,
+        live,
+    );
+}
+
+fn apply_peaks(peak_reserved: &mut u64, peak_live: &mut u64, reserved: u64, live: u64) {
+    *peak_reserved = (*peak_reserved).max(reserved);
+    *peak_live = (*peak_live).max(live);
+}
+
 /// The extension reports process-wide, implementation-dependent heap usage.
 /// It only gates adding a cache page; it is not a pool-resident byte counter.
 fn budget_allows_page(state: &PoolState, memory_type: u32, page_size: u64) -> bool {
@@ -273,7 +387,7 @@ fn budget_allows_page(state: &PoolState, memory_type: u32, page_size: u64) -> bo
     within_budget(budget.heap_usage[heap], budget.heap_budget[heap], page_size)
 }
 
-fn query_budget(state: &PoolState) -> Option<vk::PhysicalDeviceMemoryBudgetPropertiesEXT> {
+fn query_budget(state: &PoolState) -> Option<vk::PhysicalDeviceMemoryBudgetPropertiesEXT<'_>> {
     if !state.memory_budget {
         return None;
     }

@@ -42,6 +42,7 @@ impl Backend for Gl {
     type Mesh = Unavailable;
     type Ray = Unavailable;
     type Extras = super::extras::GlExtras;
+    type MemoryObservation = fluxel_rhi_core::backend::Unavailable;
 }
 
 impl fluxel_rhi_core::backend::QueryBackend for Gl {

@@ -283,6 +283,7 @@ impl Backend for Dx12 {
     type Mesh = mesh::Mesh;
     type Ray = ray::Ray;
     type Extras = encoder::RasterExtras;
+    type MemoryObservation = memory::MemoryObservation;
 }
 
 impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {

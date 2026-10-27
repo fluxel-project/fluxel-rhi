@@ -4,7 +4,7 @@
 //! intentionally separate from the renderer-facing values in `crate::api`.
 
 use crate::api::{AdapterInfo, DeviceCapabilities, DeviceId, DeviceRequest, InstanceId, Result};
-use crate::backend::{ComputeOps, MeshOps, RasterExtrasOps, RayOps};
+use crate::backend::{ComputeOps, MemoryObservationOps, MeshOps, RasterExtrasOps, RayOps};
 use std::future::Future;
 
 /// Every resource and hot-path encoder has a native type fixed by B. No Any,
@@ -40,6 +40,7 @@ pub trait Backend: Sized + 'static {
     type Mesh: MeshOps<Self>;
     type Ray: RayOps<Self>;
     type Extras: RasterExtrasOps<Self>;
+    type MemoryObservation: MemoryObservationOps<Self>;
 }
 
 /// No backend implements missing optional domain methods merely to return errors.

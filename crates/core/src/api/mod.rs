@@ -55,6 +55,8 @@ mod memory;
 pub use memory::*;
 mod stats;
 pub use stats::*;
+mod memory_observation;
+pub use memory_observation::*;
 mod external;
 pub use external::*;
 mod secondary;

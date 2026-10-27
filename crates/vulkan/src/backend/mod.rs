@@ -384,6 +384,7 @@ impl Backend for Vulkan {
     type Mesh = mesh::Mesh;
     type Ray = ray::VulkanRay;
     type Extras = raster::RasterExtras;
+    type MemoryObservation = memory::MemoryObservation;
 }
 
 impl fluxel_rhi_core::backend::ResourceBackend for Vulkan {

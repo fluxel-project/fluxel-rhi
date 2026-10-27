@@ -38,6 +38,86 @@ fn budget_gate_accepts_exact_fit_and_rejects_overflow_or_excess() {
 
 #[cfg(all(windows, feature = "hardware-tests"))]
 #[test]
+fn direct_rhi_memory_snapshot_tracks_pool_ranges_and_dxgi_scopes() {
+    use crate::backend::Dx12Instance;
+    use fluxel_rhi_core::api::{
+        AllocatorMemorySource, BufferDesc, BufferUsage, MemoryClass, MemoryReportScope,
+        MemoryReportSource,
+    };
+    use std::future::Future;
+
+    fn block<F: Future>(future: F) -> F::Output {
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        let mut future = std::pin::pin!(future);
+        loop {
+            match future.as_mut().poll(&mut context) {
+                std::task::Poll::Ready(value) => return value,
+                std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
+            }
+        }
+    }
+
+    let device = block(Dx12Instance::new().unwrap().open_default()).unwrap();
+    let observation = device
+        .memory_observation()
+        .expect("DX12 observation capability");
+    let initial = observation.snapshot().unwrap();
+    let initial_pool = initial.allocator.expect("DX12 default pool summary");
+    assert_eq!(
+        initial_pool.source,
+        AllocatorMemorySource::Dx12DefaultResourcePool
+    );
+    assert_eq!(
+        initial_pool.reserved_bytes,
+        initial_pool.live_range_bytes + initial_pool.free_bytes
+    );
+    assert_eq!(initial.native_reports.len(), 2);
+    assert!(initial.native_reports.iter().all(|report| {
+        report.source == MemoryReportSource::DxgiProcessSegment
+            && matches!(
+                report.scope,
+                MemoryReportScope::DxgiLocalSegment | MemoryReportScope::DxgiNonLocalSegment
+            )
+            && match (report.usage_bytes, report.budget_bytes) {
+                (Some(_), Some(budget)) => budget > 0,
+                (None, None) => true,
+                _ => false,
+            }
+    }));
+
+    let desc = BufferDesc {
+        label: None,
+        size: 8 * 1024 * 1024,
+        usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+        memory: MemoryClass::Device,
+    };
+    let buffers = (0..3)
+        .map(|_| device.create_buffer(&desc).unwrap())
+        .collect::<Vec<_>>();
+    let live = observation.snapshot().unwrap().allocator.unwrap();
+    assert!(live.live_allocation_count >= initial_pool.live_allocation_count + 3);
+    assert!(live.live_range_bytes > initial_pool.live_range_bytes);
+    assert!(live.page_count >= 1);
+    assert_eq!(live.reserved_bytes, live.live_range_bytes + live.free_bytes);
+    assert!(live.peak_reserved_bytes >= live.reserved_bytes);
+    assert!(live.peak_live_range_bytes >= live.live_range_bytes);
+
+    drop(buffers);
+    let released = observation.snapshot().unwrap().allocator.unwrap();
+    assert_eq!(
+        released.live_allocation_count,
+        initial_pool.live_allocation_count
+    );
+    assert_eq!(released.live_range_bytes, initial_pool.live_range_bytes);
+    assert_eq!(
+        released.reserved_bytes,
+        released.live_range_bytes + released.free_bytes
+    );
+    assert!(released.peak_live_range_bytes >= live.live_range_bytes);
+}
+
+#[cfg(all(windows, feature = "hardware-tests"))]
+#[test]
 #[ignore = "CPU stage diagnostic; run explicitly on a real DX12 adapter"]
 fn profile_default_resource_creation_stages() {
     use crate::backend::{Dx12, Dx12Instance, memory};

@@ -192,6 +192,19 @@ pub trait ComputeOps<B: Backend> {
     fn abort(encoder: &mut B::NativeEncoder);
 }
 
+/// Explicit, cold-path memory observation for allocator and native reports.
+pub trait MemoryObservationOps<B: Backend> {
+    const AVAILABLE: bool;
+    fn snapshot(device: &B::NativeDevice) -> Result<MemorySnapshot>;
+}
+
+impl<B: Backend> MemoryObservationOps<B> for Unavailable {
+    const AVAILABLE: bool = false;
+    fn snapshot(_: &B::NativeDevice) -> Result<MemorySnapshot> {
+        Err(Error::Unsupported("memory observation"))
+    }
+}
+
 pub trait MeshOps<B: Backend> {
     const AVAILABLE: bool;
     type PipelineFuture<'a>: Future<Output = Result<B::NativeMeshPipeline>> + 'a

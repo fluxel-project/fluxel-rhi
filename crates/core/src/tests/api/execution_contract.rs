@@ -40,6 +40,7 @@ impl Backend for Witness {
     type Mesh = Unavailable;
     type Ray = Unavailable;
     type Extras = Unavailable;
+    type MemoryObservation = Unavailable;
 }
 impl ComputeOps<Witness> for ComputeMarker {
     const AVAILABLE: bool = true;

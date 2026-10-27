@@ -12,6 +12,21 @@ use std::sync::Arc;
 mod default_pool;
 pub(super) use default_pool::{DefaultAllocationLease, DefaultResourcePool, ResourceClass};
 
+/// Cold-path memory observation for the Vulkan default-resource pool.
+///
+/// Pool accounting is exact for its retained pages; native heap figures, when
+/// the enabled `VK_EXT_memory_budget` extension supplies them, remain
+/// implementation-defined process estimates.
+pub struct MemoryObservation;
+
+impl fluxel_rhi_core::backend::MemoryObservationOps<Vulkan> for MemoryObservation {
+    const AVAILABLE: bool = true;
+
+    fn snapshot(device: &VulkanDevice) -> Result<api::MemorySnapshot> {
+        device.0.default_resource_pool.snapshot()
+    }
+}
+
 #[derive(Clone)]
 pub struct VulkanHeap(Arc<HeapState>);
 struct HeapState {

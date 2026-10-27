@@ -6,6 +6,10 @@
 //! lease so a range returns only after the native resource field is dropped.
 
 use super::*;
+use fluxel_rhi_core::api::{
+    AllocatorMemorySnapshot, AllocatorMemorySource, MemoryReportScope, MemoryReportSource,
+    MemorySnapshot, NativeMemoryReport,
+};
 use std::sync::{Mutex, Weak};
 use windows::Win32::{
     Foundation::E_OUTOFMEMORY,
@@ -33,12 +37,15 @@ struct PoolState {
     pages: Vec<Page>,
     next_id: u64,
     page_bytes: u64,
+    peak_reserved_bytes: u64,
+    peak_live_range_bytes: u64,
 }
 
 struct Page {
     id: u64,
     class: u32,
     heap: ID3D12Heap,
+    size: u64,
     free: Vec<(u64, u64)>,
     live: usize,
 }
@@ -69,6 +76,8 @@ impl DefaultResourcePool {
                 pages: Vec::new(),
                 next_id: 1,
                 page_bytes: PAGE_BYTES,
+                peak_reserved_bytes: 0,
+                peak_live_range_bytes: 0,
             })),
         }
     }
@@ -86,15 +95,26 @@ impl DefaultResourcePool {
         if size > state.page_bytes {
             return Ok(None);
         }
-        for page in state.pages.iter_mut().filter(|page| page.class == class) {
-            if let Some(offset) = take_range(&mut page.free, size, alignment) {
-                page.live += 1;
+        for index in 0..state.pages.len() {
+            let allocation = {
+                let page = &mut state.pages[index];
+                if page.class != class {
+                    None
+                } else if let Some(offset) = take_range(&mut page.free, size, alignment) {
+                    page.live += 1;
+                    Some((page.heap.clone(), page.id, offset))
+                } else {
+                    None
+                }
+            };
+            if let Some((heap, page_id, offset)) = allocation {
+                record_peaks(&mut state);
                 return Ok(Some(DefaultAllocation {
-                    heap: page.heap.clone(),
+                    heap,
                     offset,
                     lease: DefaultAllocationLease(Arc::new(LeaseInner {
                         pool: Arc::downgrade(&self.inner),
-                        page_id: page.id,
+                        page_id,
                         offset,
                         size,
                     })),
@@ -134,6 +154,7 @@ impl DefaultResourcePool {
             id,
             class,
             heap,
+            size: page_size,
             free: vec![(0, page_size)],
             live: 0,
         };
@@ -150,8 +171,104 @@ impl DefaultResourcePool {
             })),
         };
         state.pages.push(page);
+        record_peaks(&mut state);
         Ok(Some(allocation))
     }
+
+    /// Returns exact suballocation facts for this pool and advisory DXGI
+    /// process segment reports. It intentionally excludes every resource that
+    /// is not backed by a retained default-pool page.
+    pub(crate) fn snapshot(&self) -> Result<MemorySnapshot> {
+        let mut state = self.inner.lock().map_err(|_| Error::InvalidState)?;
+        let (
+            reserved_bytes,
+            live_range_bytes,
+            free_bytes,
+            page_count,
+            idle_page_count,
+            live_allocation_count,
+        ) = pool_totals(&state);
+        state.peak_reserved_bytes = state.peak_reserved_bytes.max(reserved_bytes);
+        state.peak_live_range_bytes = state.peak_live_range_bytes.max(live_range_bytes);
+        let allocator = AllocatorMemorySnapshot {
+            source: AllocatorMemorySource::Dx12DefaultResourcePool,
+            reserved_bytes,
+            live_range_bytes,
+            free_bytes,
+            peak_reserved_bytes: state.peak_reserved_bytes,
+            peak_live_range_bytes: state.peak_live_range_bytes,
+            page_count,
+            idle_page_count,
+            live_allocation_count,
+        };
+        let native_reports = dxgi_reports(&state);
+        Ok(MemorySnapshot {
+            allocator: Some(allocator),
+            native_reports,
+        })
+    }
+}
+
+fn pool_totals(state: &PoolState) -> (u64, u64, u64, u32, u32, u32) {
+    let reserved_bytes = state
+        .pages
+        .iter()
+        .fold(0u64, |total, page| total.saturating_add(page.size));
+    let free_bytes = state
+        .pages
+        .iter()
+        .flat_map(|page| page.free.iter().map(|(_, size)| *size))
+        .fold(0u64, u64::saturating_add);
+    let live_range_bytes = reserved_bytes.saturating_sub(free_bytes);
+    let page_count = u32::try_from(state.pages.len()).unwrap_or(u32::MAX);
+    let idle_page_count =
+        u32::try_from(state.pages.iter().filter(|page| page.live == 0).count()).unwrap_or(u32::MAX);
+    let live_allocation_count =
+        u32::try_from(state.pages.iter().map(|page| page.live).sum::<usize>()).unwrap_or(u32::MAX);
+    (
+        reserved_bytes,
+        live_range_bytes,
+        free_bytes,
+        page_count,
+        idle_page_count,
+        live_allocation_count,
+    )
+}
+
+fn record_peaks(state: &mut PoolState) {
+    let (reserved_bytes, live_range_bytes, ..) = pool_totals(state);
+    state.peak_reserved_bytes = state.peak_reserved_bytes.max(reserved_bytes);
+    state.peak_live_range_bytes = state.peak_live_range_bytes.max(live_range_bytes);
+}
+
+fn dxgi_reports(state: &PoolState) -> Vec<NativeMemoryReport> {
+    [
+        (
+            DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
+            MemoryReportScope::DxgiLocalSegment,
+        ),
+        (
+            DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL,
+            MemoryReportScope::DxgiNonLocalSegment,
+        ),
+    ]
+    .into_iter()
+    .map(|(segment, scope)| {
+        let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+        let available = state.budget_adapter.as_ref().is_some_and(|adapter| {
+            // SAFETY: the adapter is retained by the pool and the initialized
+            // output structure remains valid for this synchronous DXGI query.
+            unsafe { adapter.QueryVideoMemoryInfo(0, segment, &mut info) }.is_ok()
+                && info.Budget > 0
+        });
+        NativeMemoryReport {
+            source: MemoryReportSource::DxgiProcessSegment,
+            scope,
+            usage_bytes: available.then_some(info.CurrentUsage),
+            budget_bytes: available.then_some(info.Budget),
+        }
+    })
+    .collect()
 }
 
 /// A budget query is advisory: if the optional DXGI interface/query is

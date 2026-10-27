@@ -627,6 +627,7 @@ impl InstanceBackend for Vulkan {
                     compute: family_info.queue_flags.contains(vk::QueueFlags::COMPUTE)
                         || has_compute_queue,
                     placed_memory: true,
+                    memory_observation: true,
                     native_interop: true,
                     external_memory: external_interop,
                     indirect_draw: true,

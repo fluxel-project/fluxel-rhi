@@ -129,6 +129,7 @@ impl Backend for Mock {
     type Mesh = Unavailable;
     type Ray = MockRay;
     type Extras = Unavailable;
+    type MemoryObservation = Unavailable;
 }
 impl RayOps<Mock> for MockRay {
     const AVAILABLE: bool = true;

@@ -166,6 +166,7 @@ impl Backend for WebGpu {
     type Mesh = Unavailable;
     type Ray = Unavailable;
     type Extras = WebGpuExtras;
+    type MemoryObservation = fluxel_rhi_core::backend::Unavailable;
 }
 
 impl InstanceBackend for WebGpu {

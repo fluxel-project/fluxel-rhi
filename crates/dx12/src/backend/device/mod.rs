@@ -291,6 +291,7 @@ impl InstanceBackend for Dx12 {
                     debug_markers_encoder: true,
                     debug_markers_raster_pass: true,
                     debug_markers_compute_pass: true,
+                    memory_observation: true,
                     push_constants: true,
                     indirect_draw: true,
                     indirect_first_instance: true,

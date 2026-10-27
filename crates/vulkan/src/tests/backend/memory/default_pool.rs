@@ -2,7 +2,26 @@
 
 //! Range, budget, resource-churn, and real-adapter mapping checks.
 
-use super::{coalesce, take_range};
+use super::{aggregate_totals, apply_peaks, coalesce, take_range};
+
+#[test]
+fn snapshot_totals_cover_multiple_pages_idle_cache_and_peaks() {
+    // The first page holds two padded live ranges. The second remains as the
+    // pool's one retained idle cache page for its key.
+    let pages = [(16 * 1024, 4 * 1024, 2usize), (16 * 1024, 16 * 1024, 0)];
+    assert_eq!(
+        aggregate_totals(&pages),
+        (32 * 1024, 12 * 1024, 20 * 1024, 1, 2)
+    );
+
+    let mut peak_reserved = 0;
+    let mut peak_live = 0;
+    apply_peaks(&mut peak_reserved, &mut peak_live, 32 * 1024, 12 * 1024);
+    // Releasing the two ranges lowers the current total but never rewrites
+    // the device-lifetime high-water facts.
+    apply_peaks(&mut peak_reserved, &mut peak_live, 32 * 1024, 0);
+    assert_eq!((peak_reserved, peak_live), (32 * 1024, 12 * 1024));
+}
 
 #[test]
 fn aligned_ranges_split_coalesce_and_reuse() {
