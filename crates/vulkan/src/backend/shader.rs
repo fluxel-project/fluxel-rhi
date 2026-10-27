@@ -104,6 +104,7 @@ mod topology_tests;
 pub(super) fn create(device: &VulkanDevice, desc: &api::ShaderDesc) -> Result<VulkanShader> {
     for feature in &desc.required_features {
         match feature.as_str() {
+            api::SHADER_FEATURE_EARLY_DEPTH_TEST => {}
             "shaderClipDistance" if device.0.shader_clip_distance => {}
             "shaderClipDistance" => return Err(Error::Unsupported("Vulkan shaderClipDistance")),
             api::SHADER_FEATURE_RAY_QUERY if device.0.ray_support.query => {}

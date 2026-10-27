@@ -19,7 +19,14 @@ fn parsed(
     let module = naga::front::wgsl::parse_str(source)
         .map_err(|e| Error::Shader(e.emit_to_string(source)))?;
     use naga::valid::Capabilities as C;
-    let mut caps = C::PUSH_CONSTANT | C::EARLY_DEPTH_TEST | C::SHADER_FLOAT16_IN_FLOAT32;
+    let mut caps = C::PUSH_CONSTANT | C::SHADER_FLOAT16_IN_FLOAT32;
+    if desc
+        .required_features
+        .iter()
+        .any(|feature| feature == api::SHADER_FEATURE_EARLY_DEPTH_TEST)
+    {
+        caps |= C::EARLY_DEPTH_TEST;
+    }
     let features = &device.0.features;
     if device.0.nonuniform_sampled_image {
         caps |= C::SAMPLER_NON_UNIFORM_INDEXING;
@@ -106,6 +113,7 @@ fn parsed(
 pub(crate) fn create_wgsl(device: &VulkanDevice, desc: &api::ShaderDesc) -> Result<VulkanShader> {
     for feature in &desc.required_features {
         match feature.as_str() {
+            api::SHADER_FEATURE_EARLY_DEPTH_TEST => {}
             "shaderClipDistance" if device.0.shader_clip_distance => {}
             api::SHADER_FEATURE_RAY_QUERY if device.0.ray_support.query => {}
             "subgroups" => super::subgroup::validate_declared(device, desc)?,

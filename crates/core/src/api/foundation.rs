@@ -307,6 +307,8 @@ pub struct DeviceCapabilities {
     pub acceleration_structure: bool,
     pub ray: bool,
     pub ray_query: bool,
+    /// WGSL/native fragment shaders may request early depth-test semantics.
+    pub shader_early_depth_test: bool,
     pub multi_queue: bool,
     pub indirect_draw: bool,
     /// Indirect records may contain a nonzero first-instance value, including

@@ -39,6 +39,11 @@ pub struct ShaderEntryPoint {
 /// `ray_query` capability. The caller must declare features used by opaque shader
 /// artifacts; Core does not inspect native bytecode.
 pub const SHADER_FEATURE_RAY_QUERY: &str = "ray-query";
+/// A fragment shader requires the API's early depth-test semantics.
+///
+/// This requirement is checked against `DeviceCapabilities::shader_early_depth_test`;
+/// shaders that use the WGSL `@early_depth_test` attribute must declare it.
+pub const SHADER_FEATURE_EARLY_DEPTH_TEST: &str = "shader-early-depth-test";
 
 #[derive(Clone, Debug)]
 pub struct ShaderDesc {
@@ -65,12 +70,15 @@ pub enum ShaderRoute {
 
 impl<B: ShaderBackend> Device<B> {
     pub fn shader_route(&self, desc: &ShaderDesc) -> ShaderRoute {
-        if !self.caps.ray_query
-            && desc
-                .required_features
-                .iter()
-                .any(|feature| feature == SHADER_FEATURE_RAY_QUERY)
-        {
+        if desc.required_features.iter().any(|feature| {
+            (feature == SHADER_FEATURE_RAY_QUERY && !self.caps.ray_query)
+                || (feature == SHADER_FEATURE_EARLY_DEPTH_TEST
+                    && (!self.caps.shader_early_depth_test
+                        || !desc
+                            .entries
+                            .iter()
+                            .any(|entry| entry.stage == ShaderStage::Fragment)))
+        }) {
             return ShaderRoute::Unsupported;
         }
         B::shader_route(&self.native, desc)

@@ -626,6 +626,9 @@ impl InstanceBackend for Vulkan {
                 DeviceCapabilities {
                     compute: family_info.queue_flags.contains(vk::QueueFlags::COMPUTE)
                         || has_compute_queue,
+                    // Vulkan's core fragment execution mode is always valid;
+                    // shader requirements still gate use of the WGSL attribute.
+                    shader_early_depth_test: true,
                     placed_memory: true,
                     memory_observation: true,
                     // vkCmdSetDepthBias is core; its clamp factor requires
