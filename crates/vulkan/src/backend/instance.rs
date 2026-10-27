@@ -648,6 +648,11 @@ impl InstanceBackend for Vulkan {
                     multi_draw: multi_draw_indirect,
                     multi_draw_count: draw_indirect_count,
                     mesh: mesh_available,
+                    mesh_multi_indirect: mesh_available && multi_draw_indirect,
+                    mesh_indirect_count: mesh_available
+                        && multi_draw_indirect
+                        && draw_indirect_count
+                        && limits.max_draw_indirect_count != 0,
                     timestamp: family_info.timestamp_valid_bits != 0
                         || (has_compute_queue && compute_info.timestamp_valid_bits != 0),
                     occlusion: true,
@@ -726,6 +731,11 @@ impl InstanceBackend for Vulkan {
                         max_vertex_attributes: limits.max_vertex_input_attributes,
                         max_push_constant_bytes: limits.max_push_constants_size,
                         max_multiview_views,
+                        max_mesh_indirect_count: if mesh_available && multi_draw_indirect {
+                            limits.max_draw_indirect_count
+                        } else {
+                            0
+                        },
                         uniform_offset_alignment: limits.min_uniform_buffer_offset_alignment,
                         storage_offset_alignment: limits.min_storage_buffer_offset_alignment,
                         ..Default::default()

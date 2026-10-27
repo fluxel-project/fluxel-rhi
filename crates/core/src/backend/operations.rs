@@ -233,6 +233,23 @@ pub trait MeshOps<B: Backend> {
         args: &B::NativeBuffer,
         offset: u64,
     ) -> Result<()>;
+    /// Executes `count` tightly packed 12-byte `[u32; 3]` indirect records.
+    fn dispatch_indirect_multi(
+        encoder: &mut B::NativeEncoder,
+        args: &B::NativeBuffer,
+        offset: u64,
+        count: u32,
+    ) -> Result<()>;
+    /// Executes at most `max_count` tightly packed 12-byte records, with the
+    /// actual count read from a four-byte indirect count buffer.
+    fn dispatch_indirect_count(
+        encoder: &mut B::NativeEncoder,
+        args: &B::NativeBuffer,
+        offset: u64,
+        count_buffer: &B::NativeBuffer,
+        count_offset: u64,
+        max_count: u32,
+    ) -> Result<()>;
 }
 
 pub trait RayOps<B: Backend> {

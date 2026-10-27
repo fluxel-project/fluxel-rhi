@@ -111,6 +111,24 @@ impl MeshOps<Metal> for MetalMesh {
             Err(api::Error::Unsupported("Metal requires an Apple target"))
         }
     }
+    fn dispatch_indirect_multi(
+        _: &mut MetalCommandEncoder,
+        _: &MetalBuffer,
+        _: u64,
+        _: u32,
+    ) -> api::Result<()> {
+        Err(api::Error::Unsupported("Metal mesh multi-indirect"))
+    }
+    fn dispatch_indirect_count(
+        _: &mut MetalCommandEncoder,
+        _: &MetalBuffer,
+        _: u64,
+        _: &MetalBuffer,
+        _: u64,
+        _: u32,
+    ) -> api::Result<()> {
+        Err(api::Error::Unsupported("Metal mesh indirect count"))
+    }
 }
 // Apple lists indirect mesh arguments for Apple9, with no Mac-family equivalent.
 fn indirect_mesh_supported(apple9: bool, selector: bool) -> bool {

@@ -1,7 +1,7 @@
 //! Focused Vulkan GPU checks for mesh dispatch and its raster bindings.
 #![cfg(all(windows, feature = "hardware-tests"))]
 use fluxel_rhi_core::api::*;
-use fluxel_rhi_vulkan::VulkanInstance;
+use fluxel_rhi_vulkan::{Vulkan, VulkanInstance};
 use std::{future::Future, sync::Arc};
 
 fn block_on<F: Future>(f: F) -> F::Output {
@@ -18,17 +18,32 @@ fn block_on<F: Future>(f: F) -> F::Output {
 
 #[test]
 fn mesh_direct_depth_readback() {
-    exercise(false, false);
+    exercise(Dispatch::Direct, false);
 }
 #[test]
 fn mesh_indirect_depth_readback() {
-    exercise(true, false);
+    exercise(Dispatch::Indirect, false);
+}
+#[test]
+fn mesh_multi_indirect_depth_readback() {
+    exercise(Dispatch::Multi, false);
+}
+#[test]
+fn mesh_indirect_count_depth_readback() {
+    exercise(Dispatch::Count, false);
 }
 #[test]
 fn task_mesh_depth_readback() {
-    exercise(false, true);
+    exercise(Dispatch::Direct, true);
 }
-fn exercise(indirect: bool, task: bool) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Dispatch {
+    Direct,
+    Indirect,
+    Multi,
+    Count,
+}
+fn exercise(dispatch: Dispatch, task: bool) {
     let d = block_on(VulkanInstance::new().unwrap().open_default()).unwrap();
     if !d.capabilities().mesh {
         eprintln!("SKIP: mesh shader tier unavailable");
@@ -59,11 +74,15 @@ fn exercise(indirect: bool, task: bool) {
         "main",
         ShaderStage::Mesh,
     );
-    let ps = shader(
-        include_bytes!("assets/mesh/pixel.spv"),
-        "main",
-        ShaderStage::Fragment,
-    );
+    let ps = if matches!(dispatch, Dispatch::Multi | Dispatch::Count) {
+        fractional_pixel_shader(&d)
+    } else {
+        shader(
+            include_bytes!("assets/mesh/pixel.spv"),
+            "main",
+            ShaderStage::Fragment,
+        )
+    };
     let task_shader = task.then(|| {
         shader(
             include_bytes!("assets/mesh/task.spv"),
@@ -146,7 +165,18 @@ fn exercise(indirect: bool, task: bool) {
         }),
         targets: vec![Some(ColorTargetState {
             format: TextureFormat::Rgba8Unorm,
-            blend: None,
+            blend: matches!(dispatch, Dispatch::Multi | Dispatch::Count).then_some(BlendState {
+                color: BlendComponent {
+                    src_factor: BlendFactor::One,
+                    dst_factor: BlendFactor::One,
+                    operation: BlendOperation::Add,
+                },
+                alpha: BlendComponent {
+                    src_factor: BlendFactor::One,
+                    dst_factor: BlendFactor::Zero,
+                    operation: BlendOperation::Add,
+                },
+            }),
             write_mask: 15,
         })],
         primitive: PrimitiveState {
@@ -161,7 +191,13 @@ fn exercise(indirect: bool, task: bool) {
         depth_stencil: Some(DepthStencilState {
             format: TextureFormat::Depth32Float,
             depth_write_enabled: true,
-            depth_compare: CompareFunction::Less,
+            // The multi/count fixture intentionally draws the same triangle
+            // twice, so both records need to survive the depth test.
+            depth_compare: if matches!(dispatch, Dispatch::Multi | Dispatch::Count) {
+                CompareFunction::Always
+            } else {
+                CompareFunction::Less
+            },
             stencil_front: face,
             stencil_back: face,
             stencil_read_mask: 0,
@@ -234,7 +270,17 @@ fn exercise(indirect: bool, task: bool) {
     let args = d
         .create_buffer(&BufferDesc {
             label: None,
-            size: 12,
+            // The multi/count variants deliberately begin at a non-zero
+            // record offset and leave a sentinel prefix untouched.
+            size: 40,
+            usage: BufferUsage::INDIRECT.union(BufferUsage::COPY_DST),
+            memory: MemoryClass::Device,
+        })
+        .unwrap();
+    let count = d
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: 8,
             usage: BufferUsage::INDIRECT.union(BufferUsage::COPY_DST),
             memory: MemoryClass::Device,
         })
@@ -293,12 +339,18 @@ fn exercise(indirect: bool, task: bool) {
         ownership: None,
     })])
     .unwrap();
-    e.write_buffer(&args, 0, &[1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0])
-        .unwrap();
+    let record = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];
+    match dispatch {
+        Dispatch::Direct | Dispatch::Indirect => e.write_buffer(&args, 0, &record).unwrap(),
+        Dispatch::Multi | Dispatch::Count => {
+            e.write_buffer(&args, 16, &record).unwrap();
+            e.write_buffer(&args, 28, &record).unwrap();
+        }
+    }
     e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
         target: BufferSlice {
             buffer: &args,
-            range: 0..12,
+            range: 0..40,
         },
         usage: StateTransition {
             from: BufferUses {
@@ -313,6 +365,29 @@ fn exercise(indirect: bool, task: bool) {
         ownership: None,
     })])
     .unwrap();
+    if dispatch == Dispatch::Count {
+        // This remains GPU-resident after upload; the mesh command reads the
+        // u32 count through VK_EXT_mesh_shader's count-buffer command.
+        e.write_buffer(&count, 4, &2u32.to_le_bytes()).unwrap();
+        e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
+            target: BufferSlice {
+                buffer: &count,
+                range: 0..8,
+            },
+            usage: StateTransition {
+                from: BufferUses {
+                    stages: StageMask::COPY,
+                    accesses: AccessMask::COPY_WRITE,
+                },
+                to: BufferUses {
+                    stages: StageMask::INDIRECT,
+                    accesses: AccessMask::INDIRECT_READ,
+                },
+            },
+            ownership: None,
+        })])
+        .unwrap();
+    }
     let empty = TextureUses {
         stages: StageMask::EMPTY,
         accesses: AccessMask::EMPTY,
@@ -415,10 +490,15 @@ fn exercise(indirect: bool, task: bool) {
             .unwrap()
             .push_constants(&mut pass, StageMask::MESH, 0, &1.0f32.to_le_bytes())
             .unwrap();
-        if indirect {
-            mesh.dispatch_indirect(&mut pass, &args, 0).unwrap();
-        } else {
-            mesh.dispatch(&mut pass, [1, 1, 1]).unwrap();
+        match dispatch {
+            Dispatch::Direct => mesh.dispatch(&mut pass, [1, 1, 1]).unwrap(),
+            Dispatch::Indirect => mesh.dispatch_indirect(&mut pass, &args, 0).unwrap(),
+            Dispatch::Multi => mesh
+                .dispatch_indirect_multi(&mut pass, &args, 16, 2)
+                .unwrap(),
+            Dispatch::Count => mesh
+                .dispatch_indirect_count(&mut pass, &args, 16, &count, 4, 2)
+                .unwrap(),
         }
         pass.finish().unwrap();
     }
@@ -482,5 +562,65 @@ fn exercise(indirect: bool, task: bool) {
     // SAFETY: the awaited completion point covers the readback.
     let bytes = unsafe { block_on(d.read_after(ticket, &point)).unwrap().bytes };
     let center = 8 * 256 + 8 * 4;
-    assert_eq!(&bytes[center..center + 4], &[255, 0, 0, 255]);
+    if matches!(dispatch, Dispatch::Multi | Dispatch::Count) {
+        assert!(
+            (120..=136).contains(&bytes[center]),
+            "two 0.25-red mesh records must add to approximately 0.5, got {}",
+            bytes[center]
+        );
+    } else {
+        assert_eq!(&bytes[center..center + 4], &[255, 0, 0, 255]);
+    }
+}
+
+fn fractional_pixel_shader(d: &Device<Vulkan>) -> Shader<Vulkan> {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "fluxel-mesh-indirect-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("mesh_pixel.hlsl");
+    let output = dir.join("mesh_pixel.spv");
+    std::fs::write(
+        &source,
+        "float4 main() : SV_Target { return float4(0.25,0,0,1); }",
+    )
+    .unwrap();
+    let result = std::process::Command::new("dxc")
+        .args([
+            "-spirv",
+            "-fspv-target-env=vulkan1.2",
+            "-T",
+            "ps_6_0",
+            "-E",
+            "main",
+            "-Fo",
+        ])
+        .arg(&output)
+        .arg(&source)
+        .output()
+        .expect("hardware test requires dxc in PATH");
+    assert!(
+        result.status.success(),
+        "dxc: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let bytes = std::fs::read(&output).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    block_on(d.shader(ShaderDesc {
+        label: None,
+        format: ShaderFormat::SpirV,
+        bytes: Arc::from(bytes),
+        entries: vec![ShaderEntryPoint {
+            name: "main".into(),
+            stage: ShaderStage::Fragment,
+            workgroup_size: None,
+        }],
+        required_features: vec![],
+    }))
+    .unwrap()
 }

@@ -47,6 +47,24 @@ impl<B: Backend> MeshOps<B> for Unavailable {
     fn dispatch_indirect(_: &mut B::NativeEncoder, _: &B::NativeBuffer, _: u64) -> Result<()> {
         Err(Error::Unsupported("mesh"))
     }
+    fn dispatch_indirect_multi(
+        _: &mut B::NativeEncoder,
+        _: &B::NativeBuffer,
+        _: u64,
+        _: u32,
+    ) -> Result<()> {
+        Err(Error::Unsupported("mesh multi-indirect"))
+    }
+    fn dispatch_indirect_count(
+        _: &mut B::NativeEncoder,
+        _: &B::NativeBuffer,
+        _: u64,
+        _: &B::NativeBuffer,
+        _: u64,
+        _: u32,
+    ) -> Result<()> {
+        Err(Error::Unsupported("mesh indirect count"))
+    }
 }
 pub struct MeshDomain<'a, B: Backend> {
     device: &'a Device<B>,
@@ -116,6 +134,86 @@ impl<B: Backend> MeshDomain<'_, B> {
             return Err(Error::WrongDevice);
         }
         let result = pass.call(|e| B::Mesh::dispatch_indirect(e, &buffer.native, offset));
+        if result.is_ok() {
+            pass.encoder.stats.record_dispatch();
+        }
+        result
+    }
+
+    /// Executes a tightly packed batch of `[u32; 3]` mesh dispatch records.
+    /// `offset` is four-byte aligned; every record occupies 12 bytes.
+    pub fn dispatch_indirect_multi(
+        &self,
+        pass: &mut RasterPass<'_, B>,
+        buffer: &Buffer<B>,
+        offset: u64,
+        count: u32,
+    ) -> Result<()>
+    where
+        B: RasterBackend,
+    {
+        if pass.encoder.device != self.device.id || buffer.device != self.device.id {
+            return Err(Error::WrongDevice);
+        }
+        if !self.device.caps.mesh_multi_indirect {
+            return Err(Error::Unsupported("mesh multi-indirect"));
+        }
+        if count == 0 {
+            return Ok(());
+        }
+        if count > self.device.caps.limits.max_mesh_indirect_count || offset % 4 != 0 {
+            return Err(Error::InvalidRange);
+        }
+        let result =
+            pass.call(|e| B::Mesh::dispatch_indirect_multi(e, &buffer.native, offset, count));
+        if result.is_ok() {
+            pass.encoder.stats.record_dispatch();
+        }
+        result
+    }
+
+    /// Executes up to `max_count` packed mesh dispatch records. The GPU reads
+    /// the actual record count from a four-byte count buffer at `count_offset`.
+    pub fn dispatch_indirect_count(
+        &self,
+        pass: &mut RasterPass<'_, B>,
+        buffer: &Buffer<B>,
+        offset: u64,
+        count_buffer: &Buffer<B>,
+        count_offset: u64,
+        max_count: u32,
+    ) -> Result<()>
+    where
+        B: RasterBackend,
+    {
+        if pass.encoder.device != self.device.id
+            || buffer.device != self.device.id
+            || count_buffer.device != self.device.id
+        {
+            return Err(Error::WrongDevice);
+        }
+        if !self.device.caps.mesh_indirect_count {
+            return Err(Error::Unsupported("mesh indirect count"));
+        }
+        if max_count == 0 {
+            return Ok(());
+        }
+        if max_count > self.device.caps.limits.max_mesh_indirect_count
+            || offset % 4 != 0
+            || count_offset % 4 != 0
+        {
+            return Err(Error::InvalidRange);
+        }
+        let result = pass.call(|e| {
+            B::Mesh::dispatch_indirect_count(
+                e,
+                &buffer.native,
+                offset,
+                &count_buffer.native,
+                count_offset,
+                max_count,
+            )
+        });
         if result.is_ok() {
             pass.encoder.stats.record_dispatch();
         }

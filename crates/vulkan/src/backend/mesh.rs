@@ -167,6 +167,89 @@ impl fluxel_rhi_core::backend::MeshOps<Vulkan> for Mesh {
         e.buffers.push(b.clone());
         Ok(())
     }
+    fn dispatch_indirect_multi(
+        e: &mut VulkanEncoder,
+        b: &VulkanBuffer,
+        offset: u64,
+        count: u32,
+    ) -> Result<()> {
+        if e.mesh_active.is_none() || !e.device.multi_draw_indirect {
+            return Err(Error::Unsupported("Vulkan mesh multi-indirect"));
+        }
+        validate_indirect_records(b, offset, count)?;
+        let m = e
+            .device
+            .mesh
+            .as_ref()
+            .ok_or(Error::Unsupported("Vulkan mesh shader"))?;
+        // SAFETY: mesh and multi-draw-indirect features are enabled; the
+        // checked records use the fixed 12-byte VkDrawMeshTasksIndirectCommandEXT ABI.
+        unsafe {
+            m.loader
+                .cmd_draw_mesh_tasks_indirect(e.command, b.0.buffer, offset, count, 12);
+        }
+        e.buffers.push(b.clone());
+        Ok(())
+    }
+    fn dispatch_indirect_count(
+        e: &mut VulkanEncoder,
+        b: &VulkanBuffer,
+        offset: u64,
+        count_buffer: &VulkanBuffer,
+        count_offset: u64,
+        max_count: u32,
+    ) -> Result<()> {
+        if e.mesh_active.is_none() || !e.device.draw_indirect_count {
+            return Err(Error::Unsupported("Vulkan mesh indirect count"));
+        }
+        let m = e
+            .device
+            .mesh
+            .as_ref()
+            .ok_or(Error::Unsupported("Vulkan mesh shader"))?;
+        if max_count > e.device.max_draw_indirect_count
+            || !count_buffer.0.usage.contains(api::BufferUsage::INDIRECT)
+            || count_offset % 4 != 0
+            || count_offset
+                .checked_add(4)
+                .is_none_or(|end| end > count_buffer.0.size)
+        {
+            return Err(Error::InvalidRange);
+        }
+        validate_indirect_records(b, offset, max_count)?;
+        // SAFETY: mesh/draw-indirect-count features are enabled, all source
+        // ranges are checked, and Vulkan clamps GPU count to `max_count`.
+        unsafe {
+            m.loader.cmd_draw_mesh_tasks_indirect_count(
+                e.command,
+                b.0.buffer,
+                offset,
+                count_buffer.0.buffer,
+                count_offset,
+                max_count,
+                12,
+            );
+        }
+        e.buffers.push(b.clone());
+        e.buffers.push(count_buffer.clone());
+        Ok(())
+    }
+}
+
+fn validate_indirect_records(b: &VulkanBuffer, offset: u64, count: u32) -> Result<()> {
+    if !b.0.usage.contains(api::BufferUsage::INDIRECT)
+        || offset % 4 != 0
+        || offset
+            .checked_add(
+                u64::from(count)
+                    .checked_mul(12)
+                    .ok_or(Error::InvalidRange)?,
+            )
+            .is_none_or(|end| end > b.0.size)
+    {
+        return Err(Error::InvalidRange);
+    }
+    Ok(())
 }
 fn topology_matches(topology: api::PrimitiveTopology, output_mode: u32) -> bool {
     matches!(

@@ -735,6 +735,442 @@ fn mesh_depth_controls_readback() {
 }
 
 #[test]
+fn mesh_multi_indirect_and_count_readback() {
+    let d = block_on(Dx12Instance::new().unwrap().open_default()).unwrap();
+    if !(d.capabilities().mesh_multi_indirect && d.capabilities().mesh_indirect_count) {
+        eprintln!("SKIP: mesh indirect batch/count unavailable");
+        return;
+    }
+    let lane = d
+        .lanes()
+        .iter()
+        .find(|l| l.class == LaneClass::Graphics)
+        .unwrap()
+        .id;
+    let mesh_shader = block_on(d.shader(ShaderDesc {
+        label: None,
+        format: ShaderFormat::Dxil,
+        bytes: Arc::from(include_bytes!("assets/mesh/mesh.dxil").as_slice()),
+        entries: vec![ShaderEntryPoint {
+            name: "main".into(),
+            stage: ShaderStage::Mesh,
+            workgroup_size: None,
+        }],
+        required_features: vec![],
+    }))
+    .unwrap();
+    let pixel = fractional_pixel_shader(&d);
+    let layout = d
+        .create_pipeline_layout(&PipelineLayoutDesc {
+            label: None,
+            groups: &[],
+            push_constants: &[],
+        })
+        .unwrap();
+    let pipeline = block_on(d.mesh().unwrap().create_pipeline(MeshPipelineDesc {
+        layout,
+        task: None,
+        mesh: PipelineStage {
+            module: mesh_shader,
+            entry: "main".into(),
+            constants: vec![],
+        },
+        fragment: Some(PipelineStage {
+            module: pixel,
+            entry: "main".into(),
+            constants: vec![],
+        }),
+        targets: vec![Some(ColorTargetState {
+            format: TextureFormat::Rgba8Unorm,
+            blend: Some(BlendState {
+                color: BlendComponent {
+                    src_factor: BlendFactor::One,
+                    dst_factor: BlendFactor::One,
+                    operation: BlendOperation::Add,
+                },
+                alpha: BlendComponent {
+                    src_factor: BlendFactor::One,
+                    dst_factor: BlendFactor::Zero,
+                    operation: BlendOperation::Add,
+                },
+            }),
+            write_mask: 15,
+        })],
+        primitive: PrimitiveState {
+            topology: PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: FrontFace::Ccw,
+            cull_mode: CullMode::None,
+            unclipped_depth: false,
+            polygon_mode: PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: Some(DepthStencilState {
+            format: TextureFormat::Depth32Float,
+            depth_write_enabled: false,
+            depth_compare: CompareFunction::Always,
+            stencil_front: StencilFaceState {
+                compare: CompareFunction::Always,
+                fail: StencilOperation::Keep,
+                depth_fail: StencilOperation::Keep,
+                pass: StencilOperation::Keep,
+            },
+            stencil_back: StencilFaceState {
+                compare: CompareFunction::Always,
+                fail: StencilOperation::Keep,
+                depth_fail: StencilOperation::Keep,
+                pass: StencilOperation::Keep,
+            },
+            stencil_read_mask: 0,
+            stencil_write_mask: 0,
+            depth_bias_constant: 0,
+            depth_bias_slope_scale: 0.0,
+            depth_bias_clamp: 0.0,
+        }),
+        multisample: MultisampleState {
+            count: 1,
+            mask: u64::from(u32::MAX),
+            alpha_to_coverage_enabled: false,
+        },
+        cache: None,
+    }))
+    .unwrap();
+    let color = d
+        .create_texture(&TextureDesc {
+            label: None,
+            dimension: TextureDimension::D2,
+            extent: [16, 16, 1],
+            array_layers: 2,
+            format: TextureFormat::Rgba8Unorm,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER_ATTACHMENT.union(TextureUsage::COPY_SRC),
+            view_formats: vec![],
+        })
+        .unwrap();
+    let depth = d
+        .create_texture(&TextureDesc {
+            label: None,
+            dimension: TextureDimension::D2,
+            extent: [16, 16, 1],
+            array_layers: 2,
+            format: TextureFormat::Depth32Float,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER_ATTACHMENT,
+            view_formats: vec![],
+        })
+        .unwrap();
+    let view = |texture: &Texture<_>, format, aspect, layer| {
+        d.create_view(
+            texture,
+            &TextureViewDesc {
+                format,
+                dimension: TextureViewDimension::D2Array,
+                aspects: aspect,
+                mips: 0..1,
+                layers: layer..layer + 1,
+            },
+        )
+        .unwrap()
+    };
+    let colors = [
+        view(&color, TextureFormat::Rgba8Unorm, TextureAspects::COLOR, 0),
+        view(&color, TextureFormat::Rgba8Unorm, TextureAspects::COLOR, 1),
+    ];
+    let depths = [
+        view(
+            &depth,
+            TextureFormat::Depth32Float,
+            TextureAspects::DEPTH,
+            0,
+        ),
+        view(
+            &depth,
+            TextureFormat::Depth32Float,
+            TextureAspects::DEPTH,
+            1,
+        ),
+    ];
+    let args = d
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: 40,
+            usage: BufferUsage::INDIRECT.union(BufferUsage::COPY_DST),
+            memory: MemoryClass::Device,
+        })
+        .unwrap();
+    let count = d
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: 8,
+            usage: BufferUsage::INDIRECT.union(BufferUsage::COPY_DST),
+            memory: MemoryClass::Device,
+        })
+        .unwrap();
+    let dst = d
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: 8192,
+            usage: BufferUsage::COPY_DST.union(BufferUsage::MAP_READ),
+            memory: MemoryClass::Readback,
+        })
+        .unwrap();
+    let mut e = d.encoder(lane).unwrap();
+    let record = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];
+    e.write_buffer(&args, 16, &record).unwrap();
+    e.write_buffer(&args, 28, &record).unwrap();
+    e.write_buffer(&count, 4, &2u32.to_le_bytes()).unwrap();
+    let copy_write = BufferUses {
+        stages: StageMask::COPY,
+        accesses: AccessMask::COPY_WRITE,
+    };
+    let indirect = BufferUses {
+        stages: StageMask::INDIRECT,
+        accesses: AccessMask::INDIRECT_READ,
+    };
+    e.transition_resources(&[
+        ResourceTransition::Buffer(BufferBarrier {
+            target: BufferSlice {
+                buffer: &args,
+                range: 0..40,
+            },
+            usage: StateTransition {
+                from: copy_write,
+                to: indirect,
+            },
+            ownership: None,
+        }),
+        ResourceTransition::Buffer(BufferBarrier {
+            target: BufferSlice {
+                buffer: &count,
+                range: 0..8,
+            },
+            usage: StateTransition {
+                from: copy_write,
+                to: indirect,
+            },
+            ownership: None,
+        }),
+        ResourceTransition::Texture(TextureBarrier {
+            target: Subresources {
+                texture: &color,
+                aspects: TextureAspects::COLOR,
+                mips: 0..1,
+                layers: 0..2,
+            },
+            usage: StateTransition {
+                from: TextureUses {
+                    stages: StageMask::EMPTY,
+                    accesses: AccessMask::EMPTY,
+                },
+                to: TextureUses {
+                    stages: StageMask::COLOR_OUTPUT,
+                    accesses: AccessMask::COLOR_WRITE,
+                },
+            },
+            layout: Some((ImageLayout::Common, ImageLayout::ColorAttachment)),
+            ownership: None,
+        }),
+        ResourceTransition::Texture(TextureBarrier {
+            target: Subresources {
+                texture: &depth,
+                aspects: TextureAspects::DEPTH,
+                mips: 0..1,
+                layers: 0..2,
+            },
+            usage: StateTransition {
+                from: TextureUses {
+                    stages: StageMask::EMPTY,
+                    accesses: AccessMask::EMPTY,
+                },
+                to: TextureUses {
+                    stages: StageMask::FRAGMENT,
+                    accesses: AccessMask::DEPTH_WRITE,
+                },
+            },
+            layout: Some((ImageLayout::Common, ImageLayout::DepthStencilAttachment)),
+            ownership: None,
+        }),
+    ])
+    .unwrap();
+    for layer in 0..2 {
+        let attachments = [Some(ColorAttachment {
+            view: AttachmentView::Texture(&colors[layer]),
+            resolve_target: None,
+            load: LoadOp::Clear(ClearColor::Float([0.0, 0.0, 0.0, 1.0])),
+            store: StoreOp::Store,
+        })];
+        let mut pass = e
+            .begin_raster(&RasterPassDesc {
+                label: None,
+                colors: &attachments,
+                depth_stencil: Some(DepthStencilAttachment {
+                    view: AttachmentView::Texture(&depths[layer]),
+                    depth: Some((LoadOp::Clear(1.0), StoreOp::Store)),
+                    stencil: None,
+                    depth_read_only: false,
+                    stencil_read_only: false,
+                }),
+                render_area: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 16,
+                    height: 16,
+                },
+                multiview_mask: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                secondary_inheritance: None,
+            })
+            .unwrap();
+        pass.viewport(Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: 16.0,
+            height: 16.0,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        })
+        .unwrap();
+        pass.scissor(Rect {
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 16,
+        })
+        .unwrap();
+        let mesh = d.mesh().unwrap();
+        mesh.bind_pipeline(&mut pass, &pipeline).unwrap();
+        if layer == 0 {
+            mesh.dispatch_indirect_multi(&mut pass, &args, 16, 2)
+                .unwrap();
+        } else {
+            mesh.dispatch_indirect_count(&mut pass, &args, 16, &count, 4, 2)
+                .unwrap();
+        }
+        pass.finish().unwrap();
+    }
+    let render = TextureUses {
+        stages: StageMask::COLOR_OUTPUT,
+        accesses: AccessMask::COLOR_WRITE,
+    };
+    let copy = TextureUses {
+        stages: StageMask::COPY,
+        accesses: AccessMask::COPY_READ,
+    };
+    e.transition_resources(&[ResourceTransition::Texture(TextureBarrier {
+        target: Subresources {
+            texture: &color,
+            aspects: TextureAspects::COLOR,
+            mips: 0..1,
+            layers: 0..2,
+        },
+        usage: StateTransition {
+            from: render,
+            to: copy,
+        },
+        layout: Some((ImageLayout::ColorAttachment, ImageLayout::CopySrc)),
+        ownership: None,
+    })])
+    .unwrap();
+    for layer in 0..2 {
+        e.texture_to_buffer(
+            TextureRegion {
+                texture: &color,
+                mip: 0,
+                origin: [0, 0, layer],
+                extent: [16, 16, 1],
+                aspect: TextureAspects::COLOR,
+            },
+            &dst,
+            TexelCopyBufferLayout {
+                offset: u64::from(layer) * 4096,
+                bytes_per_row: 256,
+                rows_per_image: 16,
+            },
+        )
+        .unwrap();
+    }
+    let ticket = e.readback_buffer(&dst, 0..8192).unwrap();
+    let plan = unsafe {
+        SubmissionPlan::from_compiled(
+            PlanId {
+                device: d.id(),
+                ordinal: 7_553_222,
+            },
+            Arc::from([StepDesc {
+                lane,
+                kind: StepKind::Commands,
+                waits: vec![],
+            }]),
+        )
+    };
+    let step = plan.step(0);
+    let point = match unsafe {
+        d.queue().submit(SubmitPacket {
+            plan,
+            steps: vec![BoundStep {
+                step,
+                payload: StepPayload::Commands(vec![e.finish().unwrap()]),
+            }],
+            completion: CompletionRequest::End,
+        })
+    } {
+        SubmitOutcome::Accepted(r) => r.checkpoints.into_iter().next().unwrap().point,
+        _ => panic!("submission rejected"),
+    };
+    block_on(d.wait_completion(&point)).unwrap();
+    let bytes = unsafe { block_on(d.read_after(ticket, &point)).unwrap().bytes };
+    let center = 8 * 256 + 8 * 4;
+    for layer in 0..2 {
+        assert!(
+            (120..=136).contains(&bytes[layer * 4096 + center]),
+            "layer {layer} must contain two 0.25-red records, got {}",
+            bytes[layer * 4096 + center]
+        );
+    }
+}
+
+fn fractional_pixel_shader(d: &Device<fluxel_rhi_dx12::Dx12>) -> Shader<fluxel_rhi_dx12::Dx12> {
+    let dir =
+        std::env::temp_dir().join(format!("fluxel-dx12-mesh-indirect-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("mesh_pixel.hlsl");
+    let output = dir.join("mesh_pixel.dxil");
+    std::fs::write(
+        &source,
+        "float4 main() : SV_Target { return float4(0.25,0,0,1); }",
+    )
+    .unwrap();
+    let result = std::process::Command::new("dxc")
+        .args(["-T", "ps_6_5", "-E", "main", "-Fo"])
+        .arg(&output)
+        .arg(&source)
+        .output()
+        .expect("hardware test requires dxc in PATH");
+    assert!(
+        result.status.success(),
+        "dxc: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let bytes = std::fs::read(&output).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    block_on(d.shader(ShaderDesc {
+        label: None,
+        format: ShaderFormat::Dxil,
+        bytes: Arc::from(bytes),
+        entries: vec![ShaderEntryPoint {
+            name: "main".into(),
+            stage: ShaderStage::Fragment,
+            workgroup_size: None,
+        }],
+        required_features: vec![],
+    }))
+    .unwrap()
+}
+
+#[test]
 fn failed_storage_views_release_descriptor_reservations() {
     let d = block_on(Dx12Instance::new().unwrap().open_default()).unwrap();
     let buffer = d

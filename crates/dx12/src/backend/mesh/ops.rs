@@ -84,28 +84,7 @@ impl fluxel_rhi_core::backend::MeshOps<Dx12> for Mesh {
         {
             return Err(Error::InvalidRange);
         }
-        let argument = D3D12_INDIRECT_ARGUMENT_DESC {
-            Type: D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH,
-            Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0::default(),
-        };
-        let descriptor = D3D12_COMMAND_SIGNATURE_DESC {
-            ByteStride: 12,
-            NumArgumentDescs: 1,
-            pArgumentDescs: &argument,
-            NodeMask: 0,
-        };
-        let mut signature = None;
-        // SAFETY: descriptor and argument live through synchronous creation;
-        // no root signature is needed for this single dispatch operation.
-        unsafe {
-            encoder.device.0.native.CreateCommandSignature(
-                &descriptor,
-                None::<&ID3D12RootSignature>,
-                &mut signature,
-            )
-        }
-        .map_err(super::super::native_error)?;
-        let signature: ID3D12CommandSignature = signature.ok_or(Error::OutOfMemory)?;
+        let signature = indirect_signature(&encoder.device)?;
         // SAFETY: caller supplies the resource transition, and both signature
         // and buffer remain owned by the encoder until completion.
         unsafe {
@@ -122,4 +101,128 @@ impl fluxel_rhi_core::backend::MeshOps<Dx12> for Mesh {
         encoder.buffers.push(args.clone());
         Ok(())
     }
+
+    fn dispatch_indirect_multi(
+        encoder: &mut Dx12Encoder,
+        args: &Dx12Buffer,
+        offset: u64,
+        count: u32,
+    ) -> Result<()> {
+        if encoder.mesh_pipeline.is_none() {
+            return Err(Error::InvalidState);
+        }
+        if count == 0 {
+            return Ok(());
+        }
+        validate_records(args, offset, count)?;
+        let signature = indirect_signature(&encoder.device)?;
+        // SAFETY: count/range were checked, the command signature uses the
+        // 12-byte DISPATCH_MESH ABI, and the encoder retains both objects.
+        unsafe {
+            encoder.list.ExecuteIndirect(
+                &signature,
+                count,
+                &args.resource,
+                offset,
+                None::<&ID3D12Resource>,
+                0,
+            )
+        };
+        encoder.indirect_signatures.push(signature);
+        encoder.buffers.push(args.clone());
+        Ok(())
+    }
+
+    fn dispatch_indirect_count(
+        encoder: &mut Dx12Encoder,
+        args: &Dx12Buffer,
+        offset: u64,
+        count_buffer: &Dx12Buffer,
+        count_offset: u64,
+        max_count: u32,
+    ) -> Result<()> {
+        if encoder.mesh_pipeline.is_none() {
+            return Err(Error::InvalidState);
+        }
+        if max_count == 0 {
+            return Ok(());
+        }
+        validate_records(args, offset, max_count)?;
+        if !count_buffer.usage.contains(api::BufferUsage::INDIRECT)
+            || count_offset % 4 != 0
+            || count_offset
+                .checked_add(4)
+                .is_none_or(|end| end > count_buffer.size)
+        {
+            return Err(Error::InvalidRange);
+        }
+        let signature = indirect_signature(&encoder.device)?;
+        // SAFETY: argument/count ranges are checked. D3D12 clamps execution to
+        // max_count using the GPU count value; resources remain retained.
+        unsafe {
+            encoder.list.ExecuteIndirect(
+                &signature,
+                max_count,
+                &args.resource,
+                offset,
+                Some(&count_buffer.resource),
+                count_offset,
+            )
+        };
+        encoder.indirect_signatures.push(signature);
+        encoder.buffers.push(args.clone());
+        encoder.buffers.push(count_buffer.clone());
+        Ok(())
+    }
+}
+
+fn validate_records(args: &Dx12Buffer, offset: u64, count: u32) -> Result<()> {
+    if !args.usage.contains(api::BufferUsage::INDIRECT)
+        || offset % 4 != 0
+        || offset
+            .checked_add(
+                u64::from(count)
+                    .checked_mul(12)
+                    .ok_or(Error::InvalidRange)?,
+            )
+            .is_none_or(|end| end > args.size)
+    {
+        return Err(Error::InvalidRange);
+    }
+    Ok(())
+}
+
+fn indirect_signature(device: &Dx12Device) -> Result<ID3D12CommandSignature> {
+    let mut cache = device
+        .0
+        .mesh_indirect_signature
+        .lock()
+        .map_err(|_| Error::Backend("DX12 mesh indirect signature cache poisoned".into()))?;
+    if let Some(signature) = cache.as_ref() {
+        return Ok(signature.clone());
+    }
+    let argument = D3D12_INDIRECT_ARGUMENT_DESC {
+        Type: D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH,
+        Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0::default(),
+    };
+    let descriptor = D3D12_COMMAND_SIGNATURE_DESC {
+        ByteStride: 12,
+        NumArgumentDescs: 1,
+        pArgumentDescs: &argument,
+        NodeMask: 0,
+    };
+    let mut output = None;
+    // SAFETY: the immutable descriptor is live through creation; no root
+    // signature is required for a DISPATCH_MESH indirect argument.
+    unsafe {
+        device.0.native.CreateCommandSignature(
+            &descriptor,
+            None::<&ID3D12RootSignature>,
+            &mut output,
+        )
+    }
+    .map_err(super::super::native_error)?;
+    let signature: ID3D12CommandSignature = output.ok_or(Error::OutOfMemory)?;
+    *cache = Some(signature.clone());
+    Ok(signature)
 }

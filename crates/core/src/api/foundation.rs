@@ -232,6 +232,19 @@ impl<B: Backend> Device<B> {
             "mesh capability without implementation"
         );
         assert!(
+            !(caps.mesh_multi_indirect || caps.mesh_indirect_count) || caps.mesh,
+            "mesh indirect capability without mesh support"
+        );
+        assert!(
+            !caps.mesh_indirect_count
+                || (caps.mesh_multi_indirect && caps.limits.max_mesh_indirect_count != 0),
+            "mesh indirect-count capability without multi-indirect limit"
+        );
+        assert!(
+            caps.mesh_multi_indirect || caps.limits.max_mesh_indirect_count == 0,
+            "mesh indirect limit without multi-indirect capability"
+        );
+        assert!(
             !(caps.acceleration_structure || caps.ray || caps.ray_query) || B::Ray::AVAILABLE,
             "ray capability without implementation"
         );
@@ -344,6 +357,10 @@ pub struct DeviceCapabilities {
     pub indirect_first_instance: bool,
     pub multi_draw: bool,
     pub multi_draw_count: bool,
+    /// Native batching of multiple mesh indirect records.
+    pub mesh_multi_indirect: bool,
+    /// Native GPU count-buffer execution for mesh indirect records.
+    pub mesh_indirect_count: bool,
     pub push_constants: bool,
     pub storage_buffers: bool,
     pub storage_textures: bool,
@@ -402,6 +419,9 @@ pub struct DeviceLimits {
     pub max_compute_workgroup_size: [u32; 3],
     pub max_push_constant_bytes: u32,
     pub max_multiview_views: u32,
+    /// Maximum number of mesh indirect records consumed by one multi/count call.
+    /// Zero means mesh multi-indirect execution is unavailable.
+    pub max_mesh_indirect_count: u32,
     pub uniform_offset_alignment: u64,
     pub storage_offset_alignment: u64,
 }
