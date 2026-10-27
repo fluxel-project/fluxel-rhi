@@ -14,7 +14,6 @@ impl NativeGlProvider {
     pub(crate) fn driver_error(&mut self, operation: &'static str) -> Result<(), GlError> {
         if self.deferred_error_operation.get().is_some() {
             self.take_deferred_driver_error(operation)?;
-            return Ok(());
         }
         use glow::HasContext as _;
         // SAFETY: upheld by NativeGlProvider::from_current.

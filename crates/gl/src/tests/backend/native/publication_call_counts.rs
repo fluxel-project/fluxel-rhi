@@ -13,7 +13,12 @@ use crate::backend::{
 };
 use fluxel_host::{Window, WindowConfig};
 use raw_window_handle::{HasDisplayHandle as _, HasWindowHandle as _};
-use std::{cell::Cell, ffi::c_void, mem::transmute};
+use std::{
+    cell::{Cell, RefCell},
+    collections::VecDeque,
+    ffi::c_void,
+    mem::transmute,
+};
 
 thread_local! {
     static REAL_FLUSH: Cell<*const c_void> = const { Cell::new(core::ptr::null()) };
@@ -30,7 +35,7 @@ thread_local! {
     static GET_UNIFORM_LOCATION_CALLS: Cell<u32> = const { Cell::new(0) };
     static CHECK_FRAMEBUFFER_STATUS_CALLS: Cell<u32> = const { Cell::new(0) };
     static FINISH_CALLS: Cell<u32> = const { Cell::new(0) };
-    static FORCED_GET_ERROR: Cell<u32> = const { Cell::new(glow::NO_ERROR) };
+    static FORCED_GET_ERRORS: RefCell<VecDeque<u32>> = const { RefCell::new(VecDeque::new()) };
 }
 
 /// Preserves the GL `void glFlush(void)` ABI while observing the real dispatch.
@@ -57,16 +62,15 @@ unsafe extern "system" fn counted_get_error() -> u32 {
     // SAFETY: the loader saved the exact current WGL context's core entry
     // point and the GL ABI for `glGetError` is `GLenum(void)`.
     let real = unsafe { transmute::<*const c_void, unsafe extern "system" fn() -> u32>(raw)() };
-    let forced = FORCED_GET_ERROR.with(|error| error.replace(glow::NO_ERROR));
-    if forced == glow::NO_ERROR {
-        real
-    } else {
-        forced
-    }
+    FORCED_GET_ERRORS.with(|errors| errors.borrow_mut().pop_front().unwrap_or(real))
 }
 
 fn inject_next_get_error(error: u32) {
-    FORCED_GET_ERROR.with(|next| next.set(error));
+    FORCED_GET_ERRORS.with(|errors| errors.borrow_mut().push_back(error));
+}
+
+fn inject_get_errors(errors: &[u32]) {
+    FORCED_GET_ERRORS.with(|pending| pending.borrow_mut().extend(errors.iter().copied()));
 }
 
 /// Counts the general state getter used by glow while preserving its GL ABI.
@@ -147,6 +151,7 @@ fn reset_counts() {
     GET_UNIFORM_LOCATION_CALLS.with(|calls| calls.set(0));
     CHECK_FRAMEBUFFER_STATUS_CALLS.with(|calls| calls.set(0));
     FINISH_CALLS.with(|calls| calls.set(0));
+    FORCED_GET_ERRORS.with(|errors| errors.borrow_mut().clear());
 }
 
 fn counts() -> (u32, u32) {
@@ -274,6 +279,54 @@ fn wgl_checkpoints_publish_once_at_first_observation() {
         counts(),
         (1, 1),
         "later zero-time polls without new work must not reflush or read errors"
+    );
+}
+
+#[test]
+#[ignore = "requires an explicit WGL hardware-test run"]
+fn wgl_cold_operation_checks_its_error_after_clearing_deferred_provenance() {
+    let window =
+        Window::new(WindowConfig::new("GL cold diagnostic ordering", 8, 8).unwrap()).unwrap();
+    let stamp = ContextStamp::allocate().unwrap();
+    let mut context = WglContextSurface::open(
+        stamp,
+        window.window_handle().unwrap(),
+        window.display_handle().unwrap(),
+        [8, 8],
+    )
+    .unwrap();
+    context
+        .make_current("construct counted GL diagnostic dispatch")
+        .unwrap();
+    let unmap = context.load_unmap_buffer().unwrap();
+    let glow = counted_glow(&context);
+    // SAFETY: the owned current context stays alive until provider drop.
+    let mut provider =
+        unsafe { NativeGlProvider::from_current(glow, stamp, unmap, |name| context.gl_proc(name)) }
+            .unwrap();
+
+    reset_counts();
+    provider
+        .defer_readonly_error("earlier-deferred-command")
+        .unwrap();
+    // The first read clears earlier provenance without a driver error; the
+    // second read must still observe the cold operation's own failure.
+    inject_get_errors(&[glow::NO_ERROR, glow::INVALID_OPERATION]);
+    let result = provider.driver_error("cold-resource-creation");
+    assert!(
+        matches!(
+            result,
+            Err(GlError::Driver {
+                operation: "cold-resource-creation",
+                ..
+            })
+        ),
+        "cold operation error was lost or attributed to earlier work: {result:?}"
+    );
+    assert_eq!(
+        GET_ERROR_CALLS.with(Cell::get),
+        2,
+        "one read consumes deferred provenance and another checks the cold operation"
     );
 }
 
