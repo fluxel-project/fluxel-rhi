@@ -16,6 +16,8 @@ pub trait Backend: Sized + 'static {
     type NativeBuffer: Clone + 'static;
     type NativeTexture: Clone + 'static;
     type NativeTextureView: Clone + 'static;
+    /// Backend-owned imported external video-frame binding object.
+    type NativeVideoFrame: 'static;
     type NativeSampler: Clone + 'static;
     type NativeBindGroupLayout: Clone + 'static;
     type NativeBindGroup: Clone + 'static;
@@ -85,6 +87,7 @@ where
     Self::NativeBuffer: Send + Sync,
     Self::NativeTexture: Send + Sync,
     Self::NativeTextureView: Send + Sync,
+    Self::NativeVideoFrame: Send + Sync,
     Self::NativeSampler: Send + Sync,
     Self::NativeBindGroupLayout: Send + Sync,
     Self::NativePipelineLayout: Send + Sync,

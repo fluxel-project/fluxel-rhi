@@ -32,8 +32,10 @@ mod subgroup;
 mod submit;
 mod surface;
 mod utility;
+mod video;
 
 pub use instance::{WebGpu, WebGpuInstance};
+pub use video::WebGpuVideoSource;
 
 #[cfg(test)]
 #[path = "../tests/backend/conformance/mod.rs"]

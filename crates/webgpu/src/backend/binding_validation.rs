@@ -81,6 +81,7 @@ pub(super) fn validate(
             // SAFETY: Core checked the sampler device before this backend call.
             validate_sampler(unsafe { sampler.native_ref() }, *filtering, *comparison)
         }
+        (api::BindingType::VideoFrame, api::BindingResource::VideoFrame(_)) => Ok(()),
         _ => Err(Error::InvalidState),
     }
 }

@@ -18,6 +18,7 @@ impl Backend for Witness {
     type NativeBuffer = Arc<()>;
     type NativeTexture = Arc<()>;
     type NativeTextureView = Arc<()>;
+    type NativeVideoFrame = ();
     type NativeSampler = Arc<()>;
     type NativeBindGroupLayout = Arc<()>;
     type NativePipelineLayout = Arc<()>;

@@ -103,7 +103,7 @@ impl fluxel_rhi_core::backend::ComputeOps<WebGpu> for WebGpuCompute {
     fn set_bind_group(
         encoder: &mut WebGpuEncoder,
         slot: u32,
-        group: &JsValue,
+        group: &super::resource::WebGpuBindGroup,
         offsets: &[u32],
     ) -> Result<()> {
         let pass = encoder.pass.as_ref().ok_or(Error::InvalidState)?;
@@ -116,12 +116,15 @@ impl fluxel_rhi_core::backend::ComputeOps<WebGpu> for WebGpuCompute {
             "setBindGroup",
             &[
                 JsValue::from_f64(slot as f64),
-                group.clone(),
+                group.raw.clone(),
                 dynamic.into(),
             ],
         )
         .map_err(error)?;
-        encoder.keep_alive.push(group.clone());
+        encoder.keep_alive.push(group.raw.clone());
+        encoder
+            .keep_alive
+            .extend(group.video_sources.iter().cloned());
         Ok(())
     }
 

@@ -374,7 +374,7 @@ impl fluxel_rhi_core::backend::RasterBackend for WebGpu {
     fn set_bind_group(
         encoder: &mut WebGpuEncoder,
         slot: u32,
-        group: &JsValue,
+        group: &super::resource::WebGpuBindGroup,
         offsets: &[u32],
     ) -> Result<()> {
         let dynamic = Array::new();
@@ -384,15 +384,18 @@ impl fluxel_rhi_core::backend::RasterBackend for WebGpu {
         js::call(
             pass(encoder)?,
             "setBindGroup",
-            &[number(slot), group.clone(), dynamic.clone().into()],
+            &[number(slot), group.raw.clone(), dynamic.clone().into()],
         )
         .map_err(error)?;
-        encoder.keep_alive.push(group.clone());
+        encoder.keep_alive.push(group.raw.clone());
+        encoder
+            .keep_alive
+            .extend(group.video_sources.iter().cloned());
         super::pass_split::record(
             pass(encoder)?,
             &format!("group:{slot}"),
             "setBindGroup",
-            &[number(slot), group.clone(), dynamic.into()],
+            &[number(slot), group.raw.clone(), dynamic.into()],
         )?;
         Ok(())
     }

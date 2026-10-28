@@ -210,7 +210,7 @@ fn create_layout_binding(
             api::BindingType::SampledTexture { .. }
             | api::BindingType::Sampler { .. }
             | api::BindingType::AccelerationStructure => device.0.nonuniform_sampled_image,
-            api::BindingType::ExternalTexture => false,
+            api::BindingType::VideoFrame => false,
         };
         if !enabled {
             return Err(Error::Unsupported("Vulkan nonuniform descriptor indexing"));

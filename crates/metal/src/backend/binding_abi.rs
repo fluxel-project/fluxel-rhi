@@ -81,7 +81,7 @@ pub(crate) fn stage_map(
                     api::BindingType::SampledTexture { .. }
                     | api::BindingType::StorageTexture { .. } => SlotKind::Texture,
                     api::BindingType::Sampler { .. } => SlotKind::Sampler,
-                    api::BindingType::ExternalTexture => {
+                    api::BindingType::VideoFrame => {
                         return Err(api::Error::Unsupported("Metal external texture binding"));
                     }
                 }

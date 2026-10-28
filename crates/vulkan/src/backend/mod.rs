@@ -397,6 +397,7 @@ impl Backend for Vulkan {
     type NativeBuffer = VulkanBuffer;
     type NativeTexture = VulkanTexture;
     type NativeTextureView = VulkanTextureView;
+    type NativeVideoFrame = ();
     type NativeSampler = VulkanSampler;
     type NativeBindGroupLayout = VulkanBindGroupLayout;
     type NativeBindGroup = VulkanBindGroup;

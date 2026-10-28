@@ -90,7 +90,7 @@ pub(crate) fn validate_array_limits(
             | BindingType::AccelerationStructure => 0,
             BindingType::SampledTexture { .. } | BindingType::StorageTexture { .. } => 1,
             BindingType::Sampler { .. } => 2,
-            BindingType::ExternalTexture => return Err(api::Error::InvalidState),
+            BindingType::VideoFrame => return Err(api::Error::Unsupported("video frame binding")),
         };
         counts[index] = counts[index]
             .checked_add(u64::from(count))
@@ -185,7 +185,7 @@ pub(crate) fn argument_elements(
         }
         BindingType::Sampler { .. } => Ok(A::Sampler(None)),
         BindingType::AccelerationStructure => Ok(A::Acceleration(None)),
-        BindingType::ExternalTexture => Err(api::Error::InvalidState),
+        BindingType::VideoFrame => Err(api::Error::Unsupported("video frame binding")),
     };
     let mut result = Vec::new();
     result
@@ -504,7 +504,7 @@ pub(super) fn create_pipeline_layout(
 
 fn supported_type(ty: &BindingType) -> bool {
     match ty {
-        BindingType::ExternalTexture => false,
+        BindingType::VideoFrame => false,
         _ => true,
     }
 }

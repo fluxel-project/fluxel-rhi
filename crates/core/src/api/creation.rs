@@ -96,6 +96,14 @@ impl<B: ResourceBackend> Device<B> {
                 return Err(Error::InvalidState);
             }
             last = Some(entry.binding);
+            if matches!(entry.ty, BindingType::VideoFrame)
+                && (entry.count != BindingCount::One
+                    || entry.partially_bound
+                    || entry.nonuniform_indexing
+                    || entry.visibility.as_slice() != [ShaderStage::Fragment])
+            {
+                return Err(Error::InvalidState);
+            }
             match entry.count {
                 BindingCount::One => {}
                 BindingCount::Fixed(0) => return Err(Error::InvalidRange),
@@ -215,7 +223,7 @@ impl<B: ResourceBackend> Device<B> {
                 BindingType::AccelerationStructure => {
                     self.caps.nonuniform_acceleration_structure_indexing
                 }
-                BindingType::ExternalTexture => false,
+                BindingType::VideoFrame => false,
             };
             if entry.nonuniform_indexing && !nonuniform_supported {
                 return Err(Error::Unsupported("nonuniform binding indexing"));
@@ -306,6 +314,7 @@ fn binding_resource_transient<B: Backend>(resource: &BindingResource<'_, B>) -> 
             .texture_desc
             .as_ref()
             .is_some_and(|d| d.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT)),
+        BindingResource::VideoFrame(_) => false,
         BindingResource::Array(values) => values.iter().flatten().any(binding_resource_transient),
         _ => false,
     }

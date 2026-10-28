@@ -107,6 +107,7 @@ impl Backend for Mock {
     type NativeBuffer = ();
     type NativeTexture = ();
     type NativeTextureView = ();
+    type NativeVideoFrame = ();
     type NativeSampler = ();
     type NativeBindGroupLayout = ();
     type NativePipelineLayout = ();

@@ -59,6 +59,8 @@ mod memory_observation;
 pub use memory_observation::*;
 mod external;
 pub use external::*;
+mod video;
+pub use video::*;
 mod secondary;
 pub use secondary::*;
 mod interop;

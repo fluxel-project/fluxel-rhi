@@ -266,6 +266,7 @@ impl Backend for Dx12 {
     type NativeBuffer = Dx12Buffer;
     type NativeTexture = Dx12Texture;
     type NativeTextureView = Dx12TextureView;
+    type NativeVideoFrame = ();
     type NativeSampler = Dx12Sampler;
     type NativeBindGroupLayout = Dx12BindGroupLayout;
     type NativeBindGroup = Dx12BindGroup;

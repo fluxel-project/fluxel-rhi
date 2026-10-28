@@ -189,6 +189,7 @@ impl Backend for Metal {
     type NativeBuffer = MetalBuffer;
     type NativeTexture = MetalTexture;
     type NativeTextureView = MetalTextureView;
+    type NativeVideoFrame = ();
     type NativeSampler = MetalSampler;
     type NativeBindGroupLayout = MetalBindGroupLayout;
     type NativeBindGroup = MetalBindGroup;

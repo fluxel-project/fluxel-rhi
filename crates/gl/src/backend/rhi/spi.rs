@@ -20,6 +20,7 @@ impl Backend for Gl {
     type NativeBuffer = GlBuffer;
     type NativeTexture = GlTexture;
     type NativeTextureView = GlTextureView;
+    type NativeVideoFrame = ();
     type NativeSampler = GlSampler;
     type NativeBindGroupLayout = GlBindGroupLayout;
     type NativeBindGroup = GlBindGroup;

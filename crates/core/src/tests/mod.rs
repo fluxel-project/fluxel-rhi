@@ -92,6 +92,7 @@ pub(crate) mod type_contract_tests {
         type NativeBuffer = Arc<()>;
         type NativeTexture = Arc<()>;
         type NativeTextureView = Arc<()>;
+        type NativeVideoFrame = ();
         type NativeSampler = Arc<()>;
         type NativeBindGroupLayout = Arc<()>;
         type NativePipelineLayout = Arc<()>;
@@ -121,6 +122,7 @@ pub(crate) mod type_contract_tests {
         type NativeBuffer = Rc<()>;
         type NativeTexture = Rc<()>;
         type NativeTextureView = Rc<()>;
+        type NativeVideoFrame = ();
         type NativeSampler = Rc<()>;
         type NativeBindGroupLayout = Rc<()>;
         type NativePipelineLayout = Rc<()>;

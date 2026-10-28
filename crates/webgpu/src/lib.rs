@@ -8,4 +8,4 @@
 mod backend;
 
 #[cfg(target_arch = "wasm32")]
-pub use backend::{WebGpu, WebGpuInstance};
+pub use backend::{WebGpu, WebGpuInstance, WebGpuVideoSource};

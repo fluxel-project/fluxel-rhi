@@ -51,6 +51,14 @@ pub struct WebGpuBindGroupLayout {
     pub(super) entries: Vec<api::BindGroupLayoutEntry>,
 }
 
+#[derive(Clone)]
+pub struct WebGpuBindGroup {
+    pub(super) raw: JsValue,
+    /// Sources stay live with a bind group and, after binding, in encoder
+    /// submission retention through queue completion.
+    pub(super) video_sources: Vec<JsValue>,
+}
+
 fn backend_error(error: JsValue) -> Error {
     Error::Backend(js::message(&error))
 }
@@ -589,13 +597,14 @@ impl fluxel_rhi_core::backend::ResourceBackend for WebGpu {
     fn create_bind_group(
         device: &WebGpuDevice,
         desc: &api::BindGroupDesc<'_, WebGpu>,
-    ) -> Result<JsValue> {
+    ) -> Result<WebGpuBindGroup> {
         let object = descriptor();
         // SAFETY: `Device::create_bind_group` checks `desc.layout.device` and
         // every entry's device against this device before this SPI call.
         let layout = unsafe { desc.layout.native_ref() };
         field(&object, "layout", layout.raw.clone())?;
         let entries = Array::new();
+        let mut video_sources = Vec::new();
         for entry in desc.entries {
             let layout_entry = layout
                 .entries
@@ -631,6 +640,13 @@ impl fluxel_rhi_core::backend::ResourceBackend for WebGpu {
                     // DeviceId before entering the backend SPI.
                     unsafe { view.native_ref() }.raw.clone()
                 }
+                api::BindingResource::VideoFrame(frame) => {
+                    // SAFETY: Core validated this frame's DeviceId before
+                    // entering the backend SPI.
+                    let frame = unsafe { frame.native_ref() };
+                    video_sources.push(frame.source_root().clone());
+                    frame.raw.clone()
+                }
                 api::BindingResource::Sampler(sampler) => {
                     // SAFETY: `Device::create_bind_group` checked this sampler's
                     // DeviceId before entering the backend SPI.
@@ -645,7 +661,10 @@ impl fluxel_rhi_core::backend::ResourceBackend for WebGpu {
         if let Some(label) = desc.label {
             field(&object, "label", JsValue::from_str(label))?;
         }
-        js::call1(&device.0.device, "createBindGroup", &object).map_err(backend_error)
+        Ok(WebGpuBindGroup {
+            raw: js::call1(&device.0.device, "createBindGroup", &object).map_err(backend_error)?,
+            video_sources,
+        })
     }
 
     fn create_pipeline_layout(

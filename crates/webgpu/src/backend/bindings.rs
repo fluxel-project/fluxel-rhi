@@ -147,6 +147,10 @@ pub(super) fn binding_layout_entry(
             )?;
             field(&native, "storageTexture", storage)?;
         }
+        api::BindingType::VideoFrame => {
+            let external_texture = descriptor();
+            field(&native, "externalTexture", external_texture)?;
+        }
         _ => return Err(Error::Unsupported("WebGPU binding layout entry")),
     }
     Ok(native)

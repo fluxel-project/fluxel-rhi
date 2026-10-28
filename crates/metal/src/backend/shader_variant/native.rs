@@ -72,7 +72,7 @@ pub(crate) fn apply_reflected_alignment(
             }
             api::BindingType::Sampler { .. } => E::Sampler,
             api::BindingType::AccelerationStructure => E::AccelerationStructure,
-            api::BindingType::ExternalTexture => return Err(Error::InvalidState),
+            api::BindingType::VideoFrame => return Err(Error::InvalidState),
         };
         if !inspect_slot(
             stage.function.as_ref().ok_or(Error::InvalidState)?,

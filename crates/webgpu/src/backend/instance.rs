@@ -28,7 +28,8 @@ use super::{
     js,
     query::WebGpuQuerySet,
     resource::{
-        WebGpuBindGroupLayout, WebGpuBuffer, WebGpuSampler, WebGpuTexture, WebGpuTextureView,
+        WebGpuBindGroup, WebGpuBindGroupLayout, WebGpuBuffer, WebGpuSampler, WebGpuTexture,
+        WebGpuTextureView,
     },
     submit::{Completion, InFlight},
     surface::{WebGpuImageLease, WebGpuSurface},
@@ -146,9 +147,10 @@ impl Backend for WebGpu {
     type NativeBuffer = WebGpuBuffer;
     type NativeTexture = WebGpuTexture;
     type NativeTextureView = WebGpuTextureView;
+    type NativeVideoFrame = super::video::WebGpuVideoFrame;
     type NativeSampler = WebGpuSampler;
     type NativeBindGroupLayout = WebGpuBindGroupLayout;
-    type NativeBindGroup = JsValue;
+    type NativeBindGroup = WebGpuBindGroup;
     type NativePipelineLayout = JsValue;
     type NativeShader = JsValue;
     type NativeRasterPipeline = JsValue;

@@ -79,6 +79,21 @@ pub trait ExternalBackend: CommandBackend {
     ) -> Result<Self::NativeExternalSync>;
 }
 
+/// Imports an adapter-owned video frame for one external-texture binding.
+///
+/// The native source type remains chosen by the backend; Core never inspects
+/// decoder state, planes, or color metadata.
+pub trait VideoBackend: Backend {
+    type NativeVideoSource: 'static;
+
+    /// Imports one immutable source snapshot. The backend retains the source
+    /// for as long as the native imported frame requires it.
+    fn import_video_frame(
+        device: &Self::NativeDevice,
+        source: Self::NativeVideoSource,
+    ) -> Result<Self::NativeVideoFrame>;
+}
+
 pub trait NativeInteropBackend: CommandBackend {
     type NativeInteropGuard;
     fn acquire_native(
