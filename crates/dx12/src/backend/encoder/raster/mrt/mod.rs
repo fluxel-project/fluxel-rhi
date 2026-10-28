@@ -10,8 +10,8 @@ use clear::{depth_clear_handles, selected};
 pub(super) use finish::end;
 use std::collections::HashSet;
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT,
-    DXGI_FORMAT_R8G8B8A8_UNORM,
+    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM,
+    DXGI_FORMAT_R16G16B16A16_FLOAT,
 };
 
 struct Resolve {

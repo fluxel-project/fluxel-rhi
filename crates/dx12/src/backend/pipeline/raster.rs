@@ -11,18 +11,18 @@ use std::{
     sync::{Arc, Mutex},
 };
 use windows::{
-    core::PCSTR,
     Win32::{
         Foundation::{FALSE, TRUE},
         Graphics::{Direct3D::*, Direct3D12::*, Dxgi::Common::*},
     },
+    core::PCSTR,
 };
 
 use super::super::{Dx12, Dx12Device, Dx12RasterPipeline, Dx12ShaderSource};
 use super::fixed::{
     depth_format, lower_depth, lower_raster, lower_targets, stencil_writes, validate_depth,
 };
-use super::{create_view_instanced_pso, PipelineLayoutState};
+use super::{PipelineLayoutState, create_view_instanced_pso};
 
 pub(crate) struct RasterPipelineState {
     pub(in crate::backend) root: ID3D12RootSignature,

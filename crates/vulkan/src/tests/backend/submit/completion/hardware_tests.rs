@@ -107,11 +107,9 @@ fn held_timeline_fence_does_not_head_of_line_block_another_device() {
         // SAFETY: the queue gate serializes this test submission; the
         // timeline wait prevents `held` from signalling until below.
         unsafe {
-            held_state.device.queue_submit(
-                held_state.graphics_queue,
-                &[held_submit],
-                held.fence(),
-            )
+            held_state
+                .device
+                .queue_submit(held_state.graphics_queue, &[held_submit], held.fence())
         }
         .unwrap();
     }
