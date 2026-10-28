@@ -36,9 +36,7 @@ impl BrowserSurfaceImage {
     /// Describes this live canvas default framebuffer for raster validation.
     /// WebGL exposes framebuffer zero rather than an allocatable texture, so
     /// this returns immutable frame identity instead of a GL object handle.
-    pub(crate) fn default_target(
-        &self,
-    ) -> Result<crate::backend::api::GlDefaultFramebufferTarget> {
+    pub(crate) fn default_target(&self) -> Result<crate::backend::api::GlDefaultFramebufferTarget> {
         if !self.is_current_for(self.generation) {
             return Err(api::Error::SurfaceOutdated);
         }

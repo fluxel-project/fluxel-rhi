@@ -13,8 +13,12 @@ mod validation;
 mod wave_size;
 use binding::{validate_binding_type, wgsl_binding_shape};
 use fluxel_rhi_core::api::{self, Error, Result};
-use validation::validation_capabilities;
+use validation::{texture_atomic_only, validation_capabilities};
 pub(crate) use wave_size::{inject_direct_hlsl, wave_ops_supported};
+
+#[cfg(test)]
+#[path = "../../tests/shader_naga/sampled_texture_nonuniform.rs"]
+mod sampled_texture_nonuniform_tests;
 
 pub(crate) fn shader_model_supported(
     device: &windows::Win32::Graphics::Direct3D12::ID3D12Device,
@@ -239,10 +243,19 @@ fn compile_inner(
     require_layout: bool,
 ) -> Result<CompiledShader> {
     if desc.format != api::ShaderFormat::Wgsl
-        || desc
-            .required_features
-            .iter()
-            .any(|x| x != api::SHADER_FEATURE_RAY_QUERY && x != "shaderClipDistance")
+        || desc.required_features.iter().any(|x| {
+            x != api::SHADER_FEATURE_RAY_QUERY
+                && x != "shaderClipDistance"
+                && x != api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_ADD
+                && x != api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_ADD
+                && x != api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_MIN
+                && x != api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_MAX
+                && x != api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_MIN
+                && x != api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_MAX
+                && x != api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_XOR
+                && x != api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_AND
+                && x != api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_OR
+        })
     {
         return Err(Error::Unsupported("DX12 WGSL feature requirement"));
     }
@@ -253,6 +266,59 @@ fn compile_inner(
         std::str::from_utf8(&desc.bytes).map_err(|_| Error::Shader("WGSL is not UTF-8".into()))?;
     let original = naga::front::wgsl::parse_str(source)
         .map_err(|e| Error::Shader(e.emit_to_string(source)))?;
+    let texture_atomic_route = match desc
+        .required_features
+        .iter()
+        .filter_map(|feature| match feature.as_str() {
+            api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_ADD => {
+                Some((naga::AtomicFunction::Add, naga::StorageFormat::R32Uint))
+            }
+            api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_ADD => {
+                Some((naga::AtomicFunction::Add, naga::StorageFormat::R32Sint))
+            }
+            api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_MIN => {
+                Some((naga::AtomicFunction::Min, naga::StorageFormat::R32Sint))
+            }
+            api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_MAX => {
+                Some((naga::AtomicFunction::Max, naga::StorageFormat::R32Sint))
+            }
+            api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_MIN => {
+                Some((naga::AtomicFunction::Min, naga::StorageFormat::R32Uint))
+            }
+            api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_MAX => {
+                Some((naga::AtomicFunction::Max, naga::StorageFormat::R32Uint))
+            }
+            api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_XOR => Some((
+                naga::AtomicFunction::ExclusiveOr,
+                naga::StorageFormat::R32Uint,
+            )),
+            api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_AND => {
+                Some((naga::AtomicFunction::And, naga::StorageFormat::R32Uint))
+            }
+            api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_OR => Some((
+                naga::AtomicFunction::InclusiveOr,
+                naga::StorageFormat::R32Uint,
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        [] => None,
+        [operation] => Some(*operation),
+        _ => {
+            return Err(Error::Unsupported(
+                "DX12 shader declares conflicting texture-atomic features",
+            ));
+        }
+    };
+    if let Some((operation, format)) = texture_atomic_route {
+        if !texture_atomic_only(&original, operation, format) {
+            return Err(Error::Unsupported(
+                "DX12 WGSL texture atomic operation or storage format is outside its declared capability",
+            ));
+        }
+    }
     if constants.is_none() && !original.overrides.is_empty() {
         return Err(Error::Unsupported("DX12 WGSL overrides"));
     }

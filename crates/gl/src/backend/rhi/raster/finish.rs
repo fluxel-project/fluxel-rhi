@@ -6,8 +6,8 @@
 
 use fluxel_rhi_core::backend::RasterBackend;
 
-use super::super::types::GlEncoder;
 use super::super::Gl;
+use super::super::types::GlEncoder;
 
 pub(super) fn abort(encoder: &mut GlEncoder) {
     encoder.pass_timestamp_end = None;

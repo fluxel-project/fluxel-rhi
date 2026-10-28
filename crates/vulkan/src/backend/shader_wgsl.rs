@@ -117,6 +117,33 @@ pub(crate) fn create_wgsl(device: &VulkanDevice, desc: &api::ShaderDesc) -> Resu
             api::SHADER_FEATURE_DRAW_INDEX => {
                 return Err(Error::Unsupported("Vulkan WGSL draw index"));
             }
+            api::SHADER_FEATURE_BARYCENTRICS => {
+                return Err(Error::Unsupported("Vulkan WGSL barycentrics"));
+            }
+            api::SHADER_FEATURE_BARYCENTRICS_AMD => {
+                return Err(Error::Unsupported("Vulkan WGSL AMD barycentrics"));
+            }
+            api::SHADER_FEATURE_FLOAT32_ATOMIC_BUFFER_ADD => {
+                return Err(Error::Unsupported("Vulkan WGSL Float32 atomic add"));
+            }
+            api::SHADER_FEATURE_FLOAT32_ATOMIC_BUFFER_MIN => {
+                return Err(Error::Unsupported("Vulkan WGSL Float32 atomic min"));
+            }
+            api::SHADER_FEATURE_FLOAT32_ATOMIC_BUFFER_MAX => {
+                return Err(Error::Unsupported("Vulkan WGSL Float32 atomic max"));
+            }
+            api::SHADER_FEATURE_INT64_ATOMIC_BUFFER_ADD => {
+                return Err(Error::Unsupported("Vulkan WGSL Int64 atomic add"));
+            }
+            api::SHADER_FEATURE_INT64_ATOMIC_BUFFER_MIN => {
+                return Err(Error::Unsupported("Vulkan WGSL Int64 atomic min"));
+            }
+            api::SHADER_FEATURE_INT64_ATOMIC_BUFFER_MAX => {
+                return Err(Error::Unsupported("Vulkan WGSL Int64 atomic max"));
+            }
+            api::SHADER_FEATURE_EXPERIMENTAL_COOPERATIVE_MATRIX => {
+                return Err(Error::Unsupported("Vulkan WGSL cooperative matrix"));
+            }
             "shaderClipDistance" if device.0.shader_clip_distance => {}
             api::SHADER_FEATURE_RAY_QUERY if device.0.ray_support.query => {}
             "subgroups" => super::subgroup::validate_declared(device, desc)?,
@@ -217,6 +244,7 @@ pub(crate) fn compile_variant(
         }
         if words[cursor] & 0xffff == 17 && len >= 2 {
             let supported = match words[cursor + 1] {
+                5306 => device.0.nonuniform_uniform_buffer,
                 5307 => device.0.nonuniform_sampled_image,
                 5308 => device.0.nonuniform_storage_buffer,
                 5309 => device.0.nonuniform_storage_image,
@@ -232,12 +260,22 @@ pub(crate) fn compile_variant(
     }
     let mut variant = desc.clone();
     variant.format = api::ShaderFormat::SpirV;
+    // Naga emitted only the selected pipeline entry point above. Keep the
+    // temporary SPIR-V descriptor aligned with that artifact so validators
+    // don't require sibling WGSL entries that are absent from this module.
+    variant
+        .entries
+        .retain(|declared| declared.stage == shader_stage && declared.name == entry);
     variant.bytes = Arc::from(
         words
             .into_iter()
             .flat_map(u32::to_le_bytes)
             .collect::<Vec<_>>(),
     );
-    let shader = super::push::relocate(device, super::create(device, &variant)?, push_base)?;
+    let shader = super::push::relocate(
+        device,
+        super::create_wgsl_variant(device, &variant)?,
+        push_base,
+    )?;
     Ok((super::sampler::remap(device, shader, layout)?, true))
 }

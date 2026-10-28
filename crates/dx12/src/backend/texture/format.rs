@@ -346,6 +346,111 @@ pub(crate) fn format_has_support(
         && support.Support1.contains(flag)
 }
 
+pub(crate) fn format_supports_texture_atomic_add_native(
+    device: &windows::Win32::Graphics::Direct3D12::ID3D12Device,
+    format: api::TextureFormat,
+) -> bool {
+    let mut support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
+        Format: dxgi_format(format),
+        ..Default::default()
+    };
+    // SAFETY: the feature query writes into the matching initialized struct.
+    unsafe {
+        device.CheckFeatureSupport(
+            D3D12_FEATURE_FORMAT_SUPPORT,
+            &mut support as *mut _ as *mut _,
+            std::mem::size_of_val(&support) as u32,
+        )
+    }
+    .is_ok()
+        && support
+            .Support1
+            .contains(D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW)
+        && support
+            .Support2
+            .contains(D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_ADD | D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)
+}
+
+pub(crate) fn format_supports_texture_atomic_unsigned_min_native(
+    device: &windows::Win32::Graphics::Direct3D12::ID3D12Device,
+    format: api::TextureFormat,
+) -> bool {
+    let mut support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
+        Format: dxgi_format(format),
+        ..Default::default()
+    };
+    // SAFETY: the initialized structure has the exact type and size requested
+    // by this synchronous format-support query.
+    unsafe {
+        device.CheckFeatureSupport(
+            D3D12_FEATURE_FORMAT_SUPPORT,
+            &mut support as *mut _ as *mut _,
+            std::mem::size_of_val(&support) as u32,
+        )
+    }
+    .is_ok()
+        && support
+            .Support1
+            .contains(D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW)
+        && support.Support2.contains(
+            D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_UNSIGNED_MIN_OR_MAX
+                | D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE,
+        )
+}
+
+pub(crate) fn format_supports_texture_atomic_signed_min_native(
+    device: &windows::Win32::Graphics::Direct3D12::ID3D12Device,
+    format: api::TextureFormat,
+) -> bool {
+    let mut support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
+        Format: dxgi_format(format),
+        ..Default::default()
+    };
+    // SAFETY: the initialized structure has the exact type and size requested
+    // by this synchronous format-support query.
+    unsafe {
+        device.CheckFeatureSupport(
+            D3D12_FEATURE_FORMAT_SUPPORT,
+            &mut support as *mut _ as *mut _,
+            std::mem::size_of_val(&support) as u32,
+        )
+    }
+    .is_ok()
+        && support
+            .Support1
+            .contains(D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW)
+        && support.Support2.contains(
+            D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_SIGNED_MIN_OR_MAX
+                | D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE,
+        )
+}
+
+pub(crate) fn format_supports_texture_atomic_bitwise_native(
+    device: &windows::Win32::Graphics::Direct3D12::ID3D12Device,
+    format: api::TextureFormat,
+) -> bool {
+    let mut support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
+        Format: dxgi_format(format),
+        ..Default::default()
+    };
+    // SAFETY: the initialized structure has the exact type and size requested
+    // by this synchronous format-support query.
+    unsafe {
+        device.CheckFeatureSupport(
+            D3D12_FEATURE_FORMAT_SUPPORT,
+            &mut support as *mut _ as *mut _,
+            std::mem::size_of_val(&support) as u32,
+        )
+    }
+    .is_ok()
+        && support
+            .Support1
+            .contains(D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW)
+        && support.Support2.contains(
+            D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS | D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE,
+        )
+}
+
 pub(super) fn supported_sample_counts(dv: &Dx12Device, d: &api::TextureDesc) -> Vec<u32> {
     [1, 2, 4, 8, 16, 32]
         .into_iter()

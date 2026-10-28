@@ -114,6 +114,9 @@ pub(super) fn binding_layout_entry(
             format,
             dimension,
         } => {
+            if matches!(access, api::StorageAccess::Atomic) {
+                return Err(Error::Unsupported("WebGPU texture atomic binding"));
+            }
             if !matches!(access, api::StorageAccess::Write)
                 && !features.contains("readonly_and_readwrite_storage_textures")
             {
@@ -129,6 +132,7 @@ pub(super) fn binding_layout_entry(
                     api::StorageAccess::Read => "read-only",
                     api::StorageAccess::Write => "write-only",
                     api::StorageAccess::ReadWrite => "read-write",
+                    api::StorageAccess::Atomic => unreachable!("atomic texture access rejected"),
                 }),
             )?;
             field(

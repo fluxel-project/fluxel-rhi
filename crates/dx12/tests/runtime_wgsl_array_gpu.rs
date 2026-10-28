@@ -87,9 +87,8 @@ fn sampled_view(device: &Device<Dx12>, texture: &Texture<Dx12>) -> TextureView<D
 fn runtime_texture_sampler_arrays_select_nonzero_dynamic_element() {
     let device = block(Dx12Instance::new().unwrap().open_default()).unwrap();
     if !device.capabilities().runtime_sized_binding_arrays
-        || !device
-            .capabilities()
-            .nonuniform_sampled_texture_and_storage_buffer_indexing
+        || !device.capabilities().nonuniform_sampled_texture_indexing
+        || !device.capabilities().nonuniform_sampler_indexing
     {
         return;
     }

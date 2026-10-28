@@ -12,9 +12,7 @@ pub(super) fn texture_support_from_discovery(
     desc: crate::backend::api::GlTextureDesc,
     browser: bool,
 ) -> Support<TextureSupport> {
-    use crate::backend::api::{
-        GlFormat, GlFormatResourceKind, GlTextureDimension, GlTextureUsage,
-    };
+    use crate::backend::api::{GlFormat, GlFormatResourceKind, GlTextureDimension, GlTextureUsage};
     let desktop_1d = desc.dimension == GlTextureDimension::D1
         && matches!(
             discovery.context().profile(),

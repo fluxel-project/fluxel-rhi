@@ -101,8 +101,7 @@ impl ResourceBackend for Gl {
                         if facts.compatible_view_formats.contains(&candidate) {
                             continue;
                         }
-                        let Ok(format) =
-                            crate::backend::translate::lower_texture_format(candidate)
+                        let Ok(format) = crate::backend::translate::lower_texture_format(candidate)
                         else {
                             continue;
                         };

@@ -297,11 +297,7 @@ pub(crate) fn lower_shader_source(
         .validate_for(profile)
         .map_err(|_| api::Error::InvalidState)?;
     if let Some(spirv) = &source.spirv {
-        crate::backend::rhi::shader::spirv::validate_entry(
-            &spirv.words,
-            &entry.name,
-            entry.stage,
-        )?;
+        crate::backend::rhi::shader::spirv::validate_entry(&spirv.words, &entry.name, entry.stage)?;
     }
     Ok((key, source))
 }

@@ -604,9 +604,7 @@ pub(super) fn run_operation_probes(
                         let attachment = match format {
                             crate::backend::api::GlFormat::Depth16Unorm
                             | crate::backend::api::GlFormat::Depth24Unorm
-                            | crate::backend::api::GlFormat::Depth32Float => {
-                                glow::DEPTH_ATTACHMENT
-                            }
+                            | crate::backend::api::GlFormat::Depth32Float => glow::DEPTH_ATTACHMENT,
                             crate::backend::api::GlFormat::Depth24PlusStencil8
                             | crate::backend::api::GlFormat::Depth32FloatStencil8 => {
                                 glow::DEPTH_STENCIL_ATTACHMENT

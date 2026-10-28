@@ -346,6 +346,9 @@ impl ComputeOps<Metal> for Compute {
                                 api::StorageAccess::ReadWrite => {
                                     MTLResourceUsage::Read | MTLResourceUsage::Write
                                 }
+                                api::StorageAccess::Atomic => {
+                                    MTLResourceUsage::Read | MTLResourceUsage::Write
+                                }
                             },
                             _ => MTLResourceUsage::Read,
                         };

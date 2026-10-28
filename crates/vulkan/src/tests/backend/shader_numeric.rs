@@ -43,7 +43,16 @@ fn maps_each_capability_to_its_enabled_logical_feature() {
     ];
     for (index, capability) in capabilities.iter().enumerate() {
         assert!(!capabilities[..index].contains(capability));
-        validate_capability(enabled(), enabled_base(), *capability).unwrap();
+        validate_capability(
+            false,
+            false,
+            false,
+            false,
+            enabled(),
+            enabled_base(),
+            *capability,
+        )
+        .unwrap();
     }
 }
 
@@ -52,7 +61,15 @@ fn rejects_float16_when_the_logical_device_did_not_enable_it() {
     let mut features = enabled();
     features.float16 = false;
     assert!(matches!(
-        validate_capability(features, enabled_base(), FLOAT16),
+        validate_capability(
+            false,
+            false,
+            false,
+            false,
+            features,
+            enabled_base(),
+            FLOAT16
+        ),
         Err(Error::Unsupported("Vulkan shaderFloat16"))
     ));
 }
@@ -65,8 +82,103 @@ fn rejects_unenabled_base_numeric_capabilities() {
         (INT16, "Vulkan shaderInt16"),
     ] {
         assert!(matches!(
-            validate_capability(enabled(), vk::PhysicalDeviceFeatures::default(), capability),
+            validate_capability(
+                false,
+                false,
+                false,
+                false,
+                enabled(),
+                vk::PhysicalDeviceFeatures::default(),
+                capability
+            ),
             Err(Error::Unsupported(reason)) if reason == expected
         ));
     }
+}
+
+#[test]
+fn gates_float32_atomic_add_capability_on_any_enabled_route() {
+    assert!(matches!(
+        validate_capability(
+            false,
+            false,
+            false,
+            false,
+            enabled(),
+            enabled_base(),
+            ATOMIC_FLOAT32_ADD_EXT
+        ),
+        Err(Error::Unsupported("Vulkan Float32 atomic add"))
+    ));
+    validate_capability(
+        true,
+        false,
+        false,
+        false,
+        enabled(),
+        enabled_base(),
+        ATOMIC_FLOAT32_ADD_EXT,
+    )
+    .unwrap();
+}
+
+#[test]
+fn gates_float32_atomic_minmax_capability_on_device_enablement() {
+    assert!(matches!(
+        validate_capability(false, false, false, false, enabled(), enabled_base(), 5612,),
+        Err(Error::Unsupported("Vulkan Float32 buffer atomic min/max"))
+    ));
+    validate_capability(false, true, false, false, enabled(), enabled_base(), 5612).unwrap();
+}
+
+#[test]
+fn gates_int64_atomics_capability_on_any_enabled_route() {
+    assert!(matches!(
+        validate_capability(
+            false,
+            false,
+            false,
+            false,
+            enabled(),
+            enabled_base(),
+            INT64_ATOMICS
+        ),
+        Err(Error::Unsupported("Vulkan Int64 atomics"))
+    ));
+    validate_capability(
+        false,
+        false,
+        true,
+        false,
+        enabled(),
+        enabled_base(),
+        INT64_ATOMICS,
+    )
+    .unwrap();
+}
+
+#[test]
+fn gates_int64_image_capability_on_the_enabled_image_route() {
+    assert!(matches!(
+        validate_capability(
+            false,
+            false,
+            true,
+            false,
+            enabled(),
+            enabled_base(),
+            INT64_IMAGE_EXT
+        ),
+        Err(Error::Unsupported("Vulkan Int64 image atomics"))
+    ));
+    validate_capability(
+        false,
+        false,
+        true,
+        true,
+        enabled(),
+        enabled_base(),
+        INT64_IMAGE_EXT,
+    )
+    .unwrap();
 }

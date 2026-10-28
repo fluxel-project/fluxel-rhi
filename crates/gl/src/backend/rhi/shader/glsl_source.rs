@@ -61,9 +61,7 @@ pub(super) fn apply_public_clip_depth_abi(
 /// do not. Naga leaves source-level precision choices open, so native GLES and
 /// browser WebGL apply the same backend policy before compiling the source.
 /// Explicit author precision statements remain authoritative.
-pub(super) fn apply_embedded_precision_defaults(
-    source: &mut crate::backend::api::GlShaderSource,
-) {
+pub(super) fn apply_embedded_precision_defaults(source: &mut crate::backend::api::GlShaderSource) {
     if !matches!(
         source.dialect,
         crate::backend::api::GlShaderDialect::Embedded { .. }

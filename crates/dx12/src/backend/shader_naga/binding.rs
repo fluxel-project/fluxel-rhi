@@ -99,6 +99,12 @@ fn storage_access(actual: naga::StorageAccess, expected: api::StorageAccess) -> 
         api::StorageAccess::Read => read && !write,
         api::StorageAccess::Write => !read && write,
         api::StorageAccess::ReadWrite => read && write,
+        api::StorageAccess::Atomic => {
+            actual
+                == (naga::StorageAccess::ATOMIC
+                    | naga::StorageAccess::LOAD
+                    | naga::StorageAccess::STORE)
+        }
     }
 }
 fn dimension_matches(

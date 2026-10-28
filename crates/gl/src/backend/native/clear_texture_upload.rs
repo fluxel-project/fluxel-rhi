@@ -15,17 +15,18 @@ impl NativeGlProvider {
         layers: std::ops::Range<u32>,
         color: ClearColor,
     ) -> Result<(), GlError> {
-        let texel = crate::backend::clear_texel::encode(desc.format, color).map_err(
-            |error| match error {
-                fluxel_rhi_core::api::Error::OutOfMemory => GlError::OutOfMemory {
-                    operation: "clear-texture",
+        let texel =
+            crate::backend::clear_texel::encode(desc.format, color).map_err(
+                |error| match error {
+                    fluxel_rhi_core::api::Error::OutOfMemory => GlError::OutOfMemory {
+                        operation: "clear-texture",
+                    },
+                    _ => GlError::Unsupported {
+                        operation: "clear-texture",
+                        reason: "color clear has no native upload encoding",
+                    },
                 },
-                _ => GlError::Unsupported {
-                    operation: "clear-texture",
-                    reason: "color clear has no native upload encoding",
-                },
-            },
-        )?;
+            )?;
         for mip in mips {
             let extent = desc
                 .mip_extent(mip)

@@ -47,10 +47,7 @@ pub(super) fn create_view(
             return Err(Error::InvalidRange);
         }
         #[cfg(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl"))]
-        if !crate::backend::native::texture_view::compatible_formats(
-            allocated.format,
-            requested,
-        ) {
+        if !crate::backend::native::texture_view::compatible_formats(allocated.format, requested) {
             return Err(Error::Unsupported("incompatible GL texture view formats"));
         }
         #[cfg(not(any(all(windows, feature = "native-gl-wgl"), feature = "native-gles-egl")))]

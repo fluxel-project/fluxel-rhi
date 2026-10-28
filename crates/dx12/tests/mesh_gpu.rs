@@ -972,6 +972,56 @@ fn mesh_multi_indirect_and_count_readback() {
         // dropping it is the intended abort path rather than a second test
         // of pass finish.
     }
+    for (count_buffer, count_offset, message) in [
+        (
+            &invalid_usage,
+            0,
+            "DX12 must reject a count buffer without INDIRECT usage",
+        ),
+        (
+            &args,
+            48,
+            "DX12 must reject a count word extending beyond the buffer",
+        ),
+    ] {
+        let mut invalid = d.encoder(lane).unwrap();
+        let attachments = [Some(ColorAttachment {
+            view: AttachmentView::Texture(&colors[0]),
+            resolve_target: None,
+            load: LoadOp::Clear(ClearColor::Float([0.0, 0.0, 0.0, 1.0])),
+            store: StoreOp::Store,
+        })];
+        let mut pass = invalid
+            .begin_raster(&RasterPassDesc {
+                label: None,
+                colors: &attachments,
+                depth_stencil: Some(DepthStencilAttachment {
+                    view: AttachmentView::Texture(&depths[0]),
+                    depth: Some((LoadOp::Clear(1.0), StoreOp::Store)),
+                    stencil: None,
+                    depth_read_only: false,
+                    stencil_read_only: false,
+                }),
+                render_area: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 16,
+                    height: 16,
+                },
+                multiview_mask: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                secondary_inheritance: None,
+            })
+            .unwrap();
+        let mesh = d.mesh().unwrap();
+        mesh.bind_pipeline(&mut pass, &pipeline).unwrap();
+        assert_eq!(
+            mesh.dispatch_indirect_count(&mut pass, &args, 16, count_buffer, count_offset, 1),
+            Err(Error::InvalidRange),
+            "{message}"
+        );
+    }
     let producer_layout = d
         .create_bind_group_layout(&BindGroupLayoutDesc {
             label: None,

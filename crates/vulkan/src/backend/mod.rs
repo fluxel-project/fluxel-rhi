@@ -65,6 +65,7 @@ mod readback;
 mod resource;
 mod secondary;
 mod shader;
+mod shader_memory_decorations;
 mod sparse;
 mod submit;
 mod surface;
@@ -103,6 +104,39 @@ struct DeviceState {
     /// Base features actually enabled on the logical device.
     features: vk::PhysicalDeviceFeatures,
     shader_draw_index: bool,
+    shader_barycentrics_khr: bool,
+    shader_barycentrics_nv: bool,
+    shader_barycentrics_amd: bool,
+    shader_float32_atomic_buffer_add: bool,
+    shader_float32_atomic_workgroup_add: bool,
+    shader_float32_atomic_workgroup_min: bool,
+    shader_float32_atomic_workgroup_max: bool,
+    shader_float32_atomic_buffer_min: bool,
+    shader_float32_atomic_buffer_max: bool,
+    shader_int64_atomic_buffer_add: bool,
+    shader_int64_atomic_buffer_min: bool,
+    shader_int64_atomic_buffer_max: bool,
+    shader_int64_atomic_buffer_umin: bool,
+    shader_int64_atomic_buffer_umax: bool,
+    shader_int64_atomic_buffer_xor: bool,
+    shader_int64_atomic_buffer_compare_exchange: bool,
+    shader_int64_atomic_buffer_exchange: bool,
+    shader_int64_atomic_buffer_and: bool,
+    shader_int64_atomic_buffer_or: bool,
+    shader_int64_atomic_workgroup_add: bool,
+    shader_int64_atomic_workgroup_min: bool,
+    shader_int64_atomic_workgroup_max: bool,
+    shader_int64_atomic_workgroup_xor: bool,
+    shader_int64_atomic_workgroup_and: bool,
+    shader_int64_atomic_workgroup_or: bool,
+    shader_int64_atomic_workgroup_umin: bool,
+    shader_int64_atomic_workgroup_umax: bool,
+    shader_int64_atomic_workgroup_exchange: bool,
+    shader_int64_atomic_workgroup_compare_exchange: bool,
+    shader_int64_atomic_image_r64uint_add: bool,
+    shader_int64_atomic_image_r64uint_umin: bool,
+    shader_int64_atomic_image_r64uint_umax: bool,
+    cooperative_matrix_configurations: Vec<api::CooperativeMatrixConfiguration>,
     texture_compression_astc_hdr: bool,
     descriptor_partially_bound: bool,
     nonuniform_uniform_buffer: bool,
@@ -665,6 +699,35 @@ impl fluxel_rhi_core::backend::ShaderBackend for Vulkan {
             && desc.required_features.iter().any(|feature| {
                 feature == api::SHADER_FEATURE_PRIMITIVE_INDEX
                     || feature == api::SHADER_FEATURE_DRAW_INDEX
+                    || feature == api::SHADER_FEATURE_BARYCENTRICS
+                    || feature == api::SHADER_FEATURE_BARYCENTRICS_AMD
+                    || feature == api::SHADER_FEATURE_FLOAT32_ATOMIC_BUFFER_ADD
+                    || feature == api::SHADER_FEATURE_FLOAT32_ATOMIC_WORKGROUP_ADD
+                    || feature == api::SHADER_FEATURE_FLOAT32_ATOMIC_WORKGROUP_MIN
+                    || feature == api::SHADER_FEATURE_FLOAT32_ATOMIC_WORKGROUP_MAX
+                    || feature == api::SHADER_FEATURE_FLOAT32_ATOMIC_BUFFER_MIN
+                    || feature == api::SHADER_FEATURE_FLOAT32_ATOMIC_BUFFER_MAX
+                    || feature == api::SHADER_FEATURE_INT64_ATOMIC_BUFFER_ADD
+                    || feature == api::SHADER_FEATURE_INT64_ATOMIC_BUFFER_MIN
+                    || feature == api::SHADER_FEATURE_INT64_ATOMIC_BUFFER_MAX
+                    || feature == api::SHADER_FEATURE_INT64_ATOMIC_BUFFER_XOR
+                    || feature == api::SHADER_FEATURE_INT64_ATOMIC_BUFFER_COMPARE_EXCHANGE
+                    || feature == api::SHADER_FEATURE_INT64_ATOMIC_BUFFER_EXCHANGE
+                    || feature == api::SHADER_FEATURE_INT64_ATOMIC_BUFFER_AND
+                    || feature == api::SHADER_FEATURE_INT64_ATOMIC_BUFFER_OR
+                    || feature == api::SHADER_FEATURE_INT64_ATOMIC_BUFFER_UMIN
+                    || feature == api::SHADER_FEATURE_INT64_ATOMIC_BUFFER_UMAX
+                    || feature == api::SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_ADD
+                    || feature == api::SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_MIN
+                    || feature == api::SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_MAX
+                    || feature == api::SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_XOR
+                    || feature == api::SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_AND
+                    || feature == api::SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_OR
+                    || feature == api::SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_UMIN
+                    || feature == api::SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_UMAX
+                    || feature == api::SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_EXCHANGE
+                    || feature == api::SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_COMPARE_EXCHANGE
+                    || feature == api::SHADER_FEATURE_EXPERIMENTAL_COOPERATIVE_MATRIX
             })
         {
             // Naga 27 parses but does not implement WGSL's primitive_index

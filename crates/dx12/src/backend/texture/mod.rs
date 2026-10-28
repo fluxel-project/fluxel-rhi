@@ -13,7 +13,10 @@ mod format;
 mod validate;
 pub(super) use format::{
     bc_block_bytes, color_texel_bytes, depth_aspects, dxgi_format, format_has_support,
-    integer_clear_bits, integer_color, is_depth,
+    format_supports_texture_atomic_add_native, format_supports_texture_atomic_bitwise_native,
+    format_supports_texture_atomic_signed_min_native,
+    format_supports_texture_atomic_unsigned_min_native, integer_clear_bits, integer_color,
+    is_depth,
 };
 use format::{format_available, sample_count_supported, supported_sample_counts};
 use validate::{max_mips, valid};

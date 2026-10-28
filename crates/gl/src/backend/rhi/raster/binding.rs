@@ -457,6 +457,9 @@ pub(crate) fn bind_native_group(
                             fluxel_rhi_core::api::StorageAccess::ReadWrite => {
                                 crate::backend::api::GlStorageImageAccess::ReadWrite
                             }
+                            fluxel_rhi_core::api::StorageAccess::Atomic => {
+                                crate::backend::api::GlStorageImageAccess::ReadWrite
+                            }
                         };
                         let resource = reflected_resource(group, binding, assignment.element);
                         if resource.is_none()

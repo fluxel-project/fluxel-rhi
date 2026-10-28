@@ -1,0 +1,68 @@
+; SPIR-V
+; Version: 1.6
+; Generator: Khronos Glslang Reference Front End; 11
+; Bound: 39
+; Schema: 0
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %gl_FragCoord %_ %color
+               OpExecutionMode %main OriginUpperLeft
+               OpExecutionMode %main EarlyFragmentTests
+               OpSource GLSL 450
+               OpName %main "main"
+               OpName %pixel "pixel"
+               OpName %gl_FragCoord "gl_FragCoord"
+               OpName %SideEffects "SideEffects"
+               OpMemberName %SideEffects 0 "side_effects"
+               OpName %_ ""
+               OpName %color "color"
+               OpDecorate %gl_FragCoord BuiltIn FragCoord
+               OpDecorate %_runtimearr_uint ArrayStride 4
+               OpDecorate %SideEffects Block
+               OpMemberDecorate %SideEffects 0 Offset 0
+               OpDecorate %_ Binding 0
+               OpDecorate %_ DescriptorSet 0
+               OpDecorate %color Location 0
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+%_ptr_Function_uint = OpTypePointer Function %uint
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+%_ptr_Input_v4float = OpTypePointer Input %v4float
+%gl_FragCoord = OpVariable %_ptr_Input_v4float Input
+     %uint_1 = OpConstant %uint 1
+%_ptr_Input_float = OpTypePointer Input %float
+     %uint_8 = OpConstant %uint 8
+     %uint_0 = OpConstant %uint 0
+%_runtimearr_uint = OpTypeRuntimeArray %uint
+%SideEffects = OpTypeStruct %_runtimearr_uint
+%_ptr_StorageBuffer_SideEffects = OpTypePointer StorageBuffer %SideEffects
+          %_ = OpVariable %_ptr_StorageBuffer_SideEffects StorageBuffer
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+%_ptr_StorageBuffer_uint = OpTypePointer StorageBuffer %uint
+%_ptr_Output_v4float = OpTypePointer Output %v4float
+      %color = OpVariable %_ptr_Output_v4float Output
+    %float_0 = OpConstant %float 0
+    %float_1 = OpConstant %float 1
+         %38 = OpConstantComposite %v4float %float_0 %float_1 %float_0 %float_1
+       %main = OpFunction %void None %3
+          %5 = OpLabel
+      %pixel = OpVariable %_ptr_Function_uint Function
+         %15 = OpAccessChain %_ptr_Input_float %gl_FragCoord %uint_1
+         %16 = OpLoad %float %15
+         %17 = OpConvertFToU %uint %16
+         %19 = OpIMul %uint %17 %uint_8
+         %21 = OpAccessChain %_ptr_Input_float %gl_FragCoord %uint_0
+         %22 = OpLoad %float %21
+         %23 = OpConvertFToU %uint %22
+         %24 = OpIAdd %uint %19 %23
+               OpStore %pixel %24
+         %31 = OpLoad %uint %pixel
+         %33 = OpAccessChain %_ptr_StorageBuffer_uint %_ %int_0 %31
+               OpStore %33 %uint_1
+               OpStore %color %38
+               OpReturn
+               OpFunctionEnd

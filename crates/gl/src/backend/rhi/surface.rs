@@ -166,9 +166,7 @@ impl GlSurfaceImage {
         }
     }
 
-    pub(crate) fn default_target(
-        &self,
-    ) -> Result<crate::backend::api::GlDefaultFramebufferTarget> {
+    pub(crate) fn default_target(&self) -> Result<crate::backend::api::GlDefaultFramebufferTarget> {
         use fluxel_rhi_core::backend::NativeImageLease as _;
 
         if !self.is_current(self.generation) {

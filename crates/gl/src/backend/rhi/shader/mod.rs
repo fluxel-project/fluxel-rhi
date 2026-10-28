@@ -80,10 +80,8 @@ impl ShaderBackend for Gl {
             api::ShaderFormat::Glsl(version) => api::ShaderFormat::Glsl(version),
             api::ShaderFormat::GlslEs(version) => api::ShaderFormat::GlslEs(version),
             api::ShaderFormat::SpirV
-                if matches!(
-                    profile,
-                    crate::backend::profile::GlProfile::Desktop { .. }
-                ) && spirv_supported(device) =>
+                if matches!(profile, crate::backend::profile::GlProfile::Desktop { .. })
+                    && spirv_supported(device) =>
             {
                 api::ShaderFormat::SpirV
             }
@@ -171,10 +169,7 @@ fn shader_profile(device: &GlDevice) -> Option<crate::backend::profile::GlProfil
     }
 }
 
-fn naga_environment(
-    profile: crate::backend::profile::GlProfile,
-    compute: bool,
-) -> &'static str {
+fn naga_environment(profile: crate::backend::profile::GlProfile, compute: bool) -> &'static str {
     match (profile, compute) {
         (crate::backend::profile::GlProfile::Desktop { .. }, true) => "glsl-430",
         (crate::backend::profile::GlProfile::Desktop { .. }, false) => "glsl-400",
@@ -539,8 +534,7 @@ pub(super) fn draw_parameters(device: &GlDevice) -> Result<DrawParameters> {
             .0
             .with_native("query GL shader draw parameters", |provider| {
                 let profile = provider.profile();
-                if let crate::backend::api::GlFamilyProfile::Desktop { major, minor } = profile
-                {
+                if let crate::backend::api::GlFamilyProfile::Desktop { major, minor } = profile {
                     if major > 4 || major == 4 && minor >= 6 {
                         return Ok(DrawParameters::Core);
                     }

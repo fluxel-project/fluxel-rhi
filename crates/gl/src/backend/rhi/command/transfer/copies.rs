@@ -225,12 +225,10 @@ pub(crate) fn blit(
                 .format
                 .blit_compatible(destination_desc.format, source_region.subresource.aspect)
             || (separate_float_class
-                && source_region.subresource.aspect
-                    == crate::backend::api::GlTextureAspect::Color
+                && source_region.subresource.aspect == crate::backend::api::GlTextureAspect::Color
                 && source_desc.format.is_float_color() != destination_desc.format.is_float_color())
             || (fixed_source_requires_fixed
-                && source_region.subresource.aspect
-                    == crate::backend::api::GlTextureAspect::Color
+                && source_region.subresource.aspect == crate::backend::api::GlTextureAspect::Color
                 && !source_desc.format.is_integer_color()
                 && !source_desc.format.is_float_color()
                 && destination_desc.format.is_float_color())
@@ -244,12 +242,11 @@ pub(crate) fn blit(
                 "GL texture blit format, aspect, filter, shape or usage",
             ));
         }
-        let source_layer =
-            if source_desc.dimension == crate::backend::api::GlTextureDimension::D3 {
-                source_region.origin[2]
-            } else {
-                source_region.subresource.base_layer
-            };
+        let source_layer = if source_desc.dimension == crate::backend::api::GlTextureDimension::D3 {
+            source_region.origin[2]
+        } else {
+            source_region.subresource.base_layer
+        };
         let destination_layer =
             if destination_desc.dimension == crate::backend::api::GlTextureDimension::D3 {
                 destination_region.origin[2]
@@ -292,8 +289,7 @@ pub(crate) fn blit(
             target: crate::backend::api::GlAttachmentTarget::Texture(source.id),
             format: source_desc.format,
             mip_level: source_region.subresource.mip_level,
-            array_layer: if source_desc.dimension == crate::backend::api::GlTextureDimension::D3
-            {
+            array_layer: if source_desc.dimension == crate::backend::api::GlTextureDimension::D3 {
                 source_region.origin[2]
             } else {
                 source_region.subresource.base_layer

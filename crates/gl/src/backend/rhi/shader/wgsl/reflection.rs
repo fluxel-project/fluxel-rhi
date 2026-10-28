@@ -146,7 +146,9 @@ fn naga_resource_type(
                     let format = naga_storage_format(format)?;
                     let read = access.contains(naga::StorageAccess::LOAD);
                     let write = access.contains(naga::StorageAccess::STORE);
+                    let atomic = access.contains(naga::StorageAccess::ATOMIC);
                     let access = match (read, write) {
+                        _ if atomic => api::StorageAccess::Atomic,
                         (true, true) => api::StorageAccess::ReadWrite,
                         (true, false) => api::StorageAccess::Read,
                         (false, true) => api::StorageAccess::Write,

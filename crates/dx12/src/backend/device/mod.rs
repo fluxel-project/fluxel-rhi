@@ -115,6 +115,37 @@ impl InstanceBackend for Dx12 {
             let ray_supported = ray_device.is_some();
             let ray_query_supported = ray::probe_inline(&native);
             let mesh_supported = mesh::probe(&native);
+            let texture_atomic_r32uint_compute = texture::format_supports_texture_atomic_add_native(
+                &native,
+                api::TextureFormat::R32Uint,
+            );
+            let texture_atomic_r32sint_compute = texture::format_supports_texture_atomic_add_native(
+                &native,
+                api::TextureFormat::R32Sint,
+            );
+            let texture_atomic_r32sint_min_compute =
+                texture::format_supports_texture_atomic_signed_min_native(
+                    &native,
+                    api::TextureFormat::R32Sint,
+                );
+            let texture_atomic_r32sint_max_compute = texture_atomic_r32sint_min_compute;
+            let texture_atomic_r32uint_min_compute =
+                texture::format_supports_texture_atomic_unsigned_min_native(
+                    &native,
+                    api::TextureFormat::R32Uint,
+                );
+            // D3D12 exposes one format-support bit for unsigned texture min
+            // and max; keep the public operation capabilities separate while
+            // deriving both from that native fact.
+            let texture_atomic_r32uint_max_compute = texture_atomic_r32uint_min_compute;
+            let texture_atomic_r32uint_bitwise_compute =
+                texture::format_supports_texture_atomic_bitwise_native(
+                    &native,
+                    api::TextureFormat::R32Uint,
+                );
+            let texture_atomic_r32uint_xor_compute = texture_atomic_r32uint_bitwise_compute;
+            let texture_atomic_r32uint_and_compute = texture_atomic_r32uint_bitwise_compute;
+            let texture_atomic_r32uint_or_compute = texture_atomic_r32uint_bitwise_compute;
             let mut options =
                 windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS::default();
             // SAFETY: this structure matches the feature query selector.
@@ -302,6 +333,15 @@ impl InstanceBackend for Dx12 {
                     acceleration_structure_binding_arrays: ray_supported && descriptor_indexing,
                     ray_query: ray_query_supported,
                     storage_textures: true,
+                    texture_atomic_r32uint_compute,
+                    texture_atomic_r32sint_compute,
+                    texture_atomic_r32sint_min_compute,
+                    texture_atomic_r32sint_max_compute,
+                    texture_atomic_r32uint_min_compute,
+                    texture_atomic_r32uint_max_compute,
+                    texture_atomic_r32uint_xor_compute,
+                    texture_atomic_r32uint_and_compute,
+                    texture_atomic_r32uint_or_compute,
                     storage_buffers: true,
                     timestamp: true,
                     occlusion: true,
@@ -321,10 +361,18 @@ impl InstanceBackend for Dx12 {
                     multi_draw_count: true,
                     binding_arrays: descriptor_indexing,
                     runtime_sized_binding_arrays: descriptor_indexing,
-                    nonuniform_sampled_texture_and_storage_buffer_indexing: descriptor_indexing,
-                    nonuniform_uniform_buffer_indexing: descriptor_indexing,
-                    nonuniform_storage_buffer_indexing: descriptor_indexing,
+                    // Naga 27's HLSL writer panics on a fixed storage-buffer
+                    // descriptor array value access; keep the compatibility
+                    // aggregate closed until the storage-buffer route executes
+                    // end to end.
+                    nonuniform_sampled_texture_and_storage_buffer_indexing: false,
+                    // D3D12 device descriptor-indexing facts do not prove the
+                    // current WGSL/HLSL uniform-buffer array route. Keep this
+                    // kind closed until it has a matching GPU readback path.
+                    nonuniform_uniform_buffer_indexing: false,
+                    nonuniform_storage_buffer_indexing: false,
                     nonuniform_sampled_texture_indexing: descriptor_indexing,
+                    nonuniform_storage_texture_indexing: descriptor_indexing,
                     nonuniform_sampler_indexing: descriptor_indexing,
                     nonuniform_acceleration_structure_indexing: ray_supported
                         && descriptor_indexing,

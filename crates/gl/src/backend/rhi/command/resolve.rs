@@ -62,11 +62,8 @@ fn native(
 
     let source_region =
         crate::backend::translate::lower_texture_region(source.id, source.desc, &src)?;
-    let destination_region = crate::backend::translate::lower_texture_region(
-        destination.id,
-        destination.desc,
-        &dst,
-    )?;
+    let destination_region =
+        crate::backend::translate::lower_texture_region(destination.id, destination.desc, &dst)?;
     // GL's multisample blit is only the Core color resolve contract.  Keep
     // depth/stencil out rather than promising backend-specific resolve rules.
     if source.desc.sample_count <= 1

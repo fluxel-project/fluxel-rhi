@@ -318,10 +318,52 @@ impl<B: Backend> Device<B> {
     }
 }
 
+/// Scalar component type used by a native cooperative-matrix configuration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CooperativeMatrixComponentType {
+    Float16,
+    Float32,
+    Float64,
+    Sint8,
+    Sint16,
+    Sint32,
+    Sint64,
+    Uint8,
+    Uint16,
+    Uint32,
+    Uint64,
+    BFloat16,
+}
+
+/// Execution scope supported by a cooperative-matrix configuration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CooperativeMatrixScope {
+    Subgroup,
+    Workgroup,
+    Device,
+    QueueFamily,
+}
+
+/// One exact cooperative-matrix multiply-add configuration reported by a device.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CooperativeMatrixConfiguration {
+    pub m: u32,
+    pub n: u32,
+    pub k: u32,
+    pub a_type: CooperativeMatrixComponentType,
+    pub b_type: CooperativeMatrixComponentType,
+    pub c_type: CooperativeMatrixComponentType,
+    pub result_type: CooperativeMatrixComponentType,
+    pub saturating_accumulation: bool,
+    pub scope: CooperativeMatrixScope,
+}
+
 /// Immutable facts negotiated at device open. Unsafe Device::from_native
 /// requires these flags to match the implemented optional backend domains.
 #[derive(Clone, Default)]
 pub struct DeviceCapabilities {
+    /// Exact cooperative-matrix tuples accepted by the backend's native API.
+    pub cooperative_matrix_configurations: Vec<CooperativeMatrixConfiguration>,
     /// Aggregate summary: true exactly when at least one scope-specific debug
     /// marker capability below is true. Core derives this bit when opening the
     /// device; backend initialization should set the scope facts.
@@ -348,6 +390,89 @@ pub struct DeviceCapabilities {
     pub shader_primitive_index: bool,
     /// Vertex shaders may read the draw index for a multi-draw operation.
     pub shader_draw_index: bool,
+    /// A direct shader route may read standard perspective and linear
+    /// barycentric coordinates (the Vulkan KHR/NV variants share this meaning).
+    pub shader_barycentrics: bool,
+    /// Standard barycentric SPIR-V route using `VK_KHR_fragment_shader_barycentric`.
+    pub shader_barycentrics_khr: bool,
+    /// Standard barycentric SPIR-V route using `VK_NV_fragment_shader_barycentric`.
+    pub shader_barycentrics_nv: bool,
+    /// A direct shader route may use the AMD explicit-vertex-parameter
+    /// barycentric built-ins, whose center/centroid/sample modes are distinct.
+    pub shader_barycentrics_amd: bool,
+    /// Direct SPIR-V compute shaders may use `OpAtomicFAddEXT` on storage-buffer
+    /// Float32 values. Other float atomic operations and address spaces are separate.
+    pub shader_float32_atomic_buffer_add: bool,
+    /// Direct SPIR-V compute `OpAtomicFAddEXT` on Float32 workgroup/shared memory.
+    pub shader_float32_atomic_workgroup_add: bool,
+    /// Direct SPIR-V compute `OpAtomicFMinEXT` on Float32 workgroup/shared memory.
+    pub shader_float32_atomic_workgroup_min: bool,
+    /// Direct SPIR-V compute `OpAtomicFMaxEXT` on Float32 workgroup/shared memory.
+    pub shader_float32_atomic_workgroup_max: bool,
+    /// Direct SPIR-V compute `OpAtomicFMinEXT` on Float32 storage-buffer memory.
+    pub shader_float32_atomic_buffer_min: bool,
+    /// Direct SPIR-V compute `OpAtomicFMaxEXT` on Float32 storage-buffer memory.
+    pub shader_float32_atomic_buffer_max: bool,
+    /// Direct SPIR-V compute shaders may use signed or unsigned Int64
+    /// `OpAtomicIAdd` on storage-buffer memory. Other operations are separate.
+    pub shader_int64_atomic_buffer_add: bool,
+    /// Direct SPIR-V compute `OpAtomicSMin` on Int64 storage-buffer memory.
+    pub shader_int64_atomic_buffer_min: bool,
+    /// Direct SPIR-V compute `OpAtomicSMax` on Int64 storage-buffer memory.
+    pub shader_int64_atomic_buffer_max: bool,
+    /// Direct SPIR-V compute `OpAtomicUMin` on Int64 storage-buffer memory.
+    pub shader_int64_atomic_buffer_umin: bool,
+    /// Direct SPIR-V compute `OpAtomicUMax` on Int64 storage-buffer memory.
+    pub shader_int64_atomic_buffer_umax: bool,
+    /// Direct SPIR-V compute `OpAtomicXor` on Int64 storage-buffer memory.
+    pub shader_int64_atomic_buffer_xor: bool,
+    /// Direct SPIR-V compute `OpAtomicCompareExchange` on Int64 storage-buffer memory.
+    pub shader_int64_atomic_buffer_compare_exchange: bool,
+    /// Direct SPIR-V compute `OpAtomicExchange` on Int64 storage-buffer memory.
+    pub shader_int64_atomic_buffer_exchange: bool,
+    /// Direct SPIR-V compute `OpAtomicAnd` on Int64 storage-buffer memory.
+    pub shader_int64_atomic_buffer_and: bool,
+    /// Direct SPIR-V compute `OpAtomicOr` on Int64 storage-buffer memory.
+    pub shader_int64_atomic_buffer_or: bool,
+    /// Direct SPIR-V compute `OpAtomicIAdd` on Int64 workgroup/shared memory.
+    pub shader_int64_atomic_workgroup_add: bool,
+    /// Direct SPIR-V compute `OpAtomicSMin` on Int64 workgroup/shared memory.
+    pub shader_int64_atomic_workgroup_min: bool,
+    /// Direct SPIR-V compute `OpAtomicSMax` on Int64 workgroup/shared memory.
+    pub shader_int64_atomic_workgroup_max: bool,
+    /// Direct SPIR-V compute `OpAtomicXor` on Int64 workgroup/shared memory.
+    pub shader_int64_atomic_workgroup_xor: bool,
+    /// Direct SPIR-V compute `OpAtomicAnd` on Int64 workgroup/shared memory.
+    pub shader_int64_atomic_workgroup_and: bool,
+    /// Direct SPIR-V compute `OpAtomicOr` on Int64 workgroup/shared memory.
+    pub shader_int64_atomic_workgroup_or: bool,
+    /// Direct SPIR-V compute `OpAtomicUMin` on Int64 workgroup/shared memory.
+    pub shader_int64_atomic_workgroup_umin: bool,
+    /// Direct SPIR-V compute `OpAtomicUMax` on Int64 workgroup/shared memory.
+    pub shader_int64_atomic_workgroup_umax: bool,
+    /// Direct SPIR-V compute `OpAtomicExchange` on Int64 workgroup/shared memory.
+    pub shader_int64_atomic_workgroup_exchange: bool,
+    /// Direct SPIR-V compute `OpAtomicCompareExchange` on Int64 workgroup/shared memory.
+    pub shader_int64_atomic_workgroup_compare_exchange: bool,
+    /// Direct SPIR-V compute shaders may use `OpAtomicIAdd` on non-array,
+    /// single-sample 2D R64Uint storage images.
+    pub shader_int64_atomic_image_r64uint_add: bool,
+    /// Direct SPIR-V compute shaders may use unsigned `OpAtomicUMin` on
+    /// non-array, single-sample 2D R64Uint storage images.
+    pub shader_int64_atomic_image_r64uint_umin: bool,
+    /// Direct SPIR-V compute shaders may use unsigned `OpAtomicUMax` on
+    /// non-array, single-sample 2D R64Uint storage images.
+    pub shader_int64_atomic_image_r64uint_umax: bool,
+    /// The backend has validated the direct-SPIR-V GLSL450 `StorageBuffer`
+    /// `Coherent` decoration route for compute shaders. This is route
+    /// admission, not a query of a native GPU feature or a synchronization
+    /// guarantee; callers still provide the required synchronization.
+    pub shader_memory_coherent_spirv: bool,
+    /// The backend has validated the direct-SPIR-V GLSL450 `StorageBuffer`
+    /// `Volatile` decoration route for compute shaders. This is route
+    /// admission, not a query of a native GPU feature or a synchronization
+    /// guarantee; callers still provide the required synchronization.
+    pub shader_memory_volatile_spirv: bool,
     pub multi_queue: bool,
     pub indirect_draw: bool,
     /// Indirect records may contain a nonzero first-instance value, including
@@ -364,6 +489,24 @@ pub struct DeviceCapabilities {
     pub push_constants: bool,
     pub storage_buffers: bool,
     pub storage_textures: bool,
+    /// WGSL compute textureAtomicAdd on R32Uint storage textures.
+    pub texture_atomic_r32uint_compute: bool,
+    /// WGSL compute textureAtomicAdd on R32Sint storage textures.
+    pub texture_atomic_r32sint_compute: bool,
+    /// WGSL compute textureAtomicMin on R32Sint storage textures.
+    pub texture_atomic_r32sint_min_compute: bool,
+    /// WGSL compute textureAtomicMax on R32Sint storage textures.
+    pub texture_atomic_r32sint_max_compute: bool,
+    /// WGSL compute textureAtomicMin on R32Uint storage textures.
+    pub texture_atomic_r32uint_min_compute: bool,
+    /// WGSL compute textureAtomicMax on R32Uint storage textures.
+    pub texture_atomic_r32uint_max_compute: bool,
+    /// WGSL compute textureAtomicXor on R32Uint storage textures.
+    pub texture_atomic_r32uint_xor_compute: bool,
+    /// WGSL compute textureAtomicAnd on R32Uint storage textures.
+    pub texture_atomic_r32uint_and_compute: bool,
+    /// WGSL compute textureAtomicOr on R32Uint storage textures.
+    pub texture_atomic_r32uint_or_compute: bool,
     pub binding_arrays: bool,
     /// A binding array whose count is chosen at bind-group creation time.
     /// This is deliberately separate from fixed-size binding arrays: shader

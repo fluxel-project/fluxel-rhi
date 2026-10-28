@@ -23,6 +23,10 @@ const STORAGE_INPUT_OUTPUT16: u32 = 4436;
 const STORAGE_BUFFER8: u32 = 4448;
 const UNIFORM_AND_STORAGE_BUFFER8: u32 = 4449;
 const STORAGE_PUSH_CONSTANT8: u32 = 4450;
+const ATOMIC_FLOAT32_ADD_EXT: u32 = 6033;
+const ATOMIC_FLOAT32_MIN_MAX_EXT: u32 = 5612;
+const INT64_ATOMICS: u32 = 12;
+const INT64_IMAGE_EXT: u32 = 5016;
 
 pub(super) fn validate_spirv(device: &VulkanDevice, words: &[u32]) -> Result<()> {
     if words.len() < 5 {
@@ -41,7 +45,43 @@ pub(super) fn validate_spirv(device: &VulkanDevice, words: &[u32]) -> Result<()>
             return Err(Error::Shader("invalid SPIR-V instruction".into()));
         }
         if header & 0xffff == OP_CAPABILITY && count >= 2 {
-            validate_capability(features, device.0.features, words[cursor + 1])?;
+            validate_capability(
+                device.0.shader_float32_atomic_buffer_add
+                    || device.0.shader_float32_atomic_workgroup_add,
+                device.0.shader_float32_atomic_buffer_min
+                    || device.0.shader_float32_atomic_buffer_max
+                    || device.0.shader_float32_atomic_workgroup_min
+                    || device.0.shader_float32_atomic_workgroup_max,
+                device.0.shader_int64_atomic_workgroup_add
+                    || device.0.shader_int64_atomic_workgroup_min
+                    || device.0.shader_int64_atomic_workgroup_max
+                    || device.0.shader_int64_atomic_workgroup_xor
+                    || device.0.shader_int64_atomic_workgroup_and
+                    || device.0.shader_int64_atomic_workgroup_or
+                    || device.0.shader_int64_atomic_workgroup_umin
+                    || device.0.shader_int64_atomic_workgroup_umax
+                    || device.0.shader_int64_atomic_workgroup_exchange
+                    || device.0.shader_int64_atomic_workgroup_compare_exchange
+                    || device.0.shader_int64_atomic_buffer_add
+                    || device.0.shader_int64_atomic_buffer_min
+                    || device.0.shader_int64_atomic_buffer_max
+                    || device.0.shader_int64_atomic_buffer_umin
+                    || device.0.shader_int64_atomic_buffer_umax
+                    || device.0.shader_int64_atomic_buffer_xor
+                    || device.0.shader_int64_atomic_buffer_compare_exchange
+                    || device.0.shader_int64_atomic_buffer_exchange
+                    || device.0.shader_int64_atomic_buffer_and
+                    || device.0.shader_int64_atomic_buffer_or
+                    || device.0.shader_int64_atomic_image_r64uint_add
+                    || device.0.shader_int64_atomic_image_r64uint_umin
+                    || device.0.shader_int64_atomic_image_r64uint_umax,
+                device.0.shader_int64_atomic_image_r64uint_add
+                    || device.0.shader_int64_atomic_image_r64uint_umin
+                    || device.0.shader_int64_atomic_image_r64uint_umax,
+                features,
+                device.0.features,
+                words[cursor + 1],
+            )?;
         }
         cursor += count;
     }
@@ -49,11 +89,25 @@ pub(super) fn validate_spirv(device: &VulkanDevice, words: &[u32]) -> Result<()>
 }
 
 fn validate_capability(
+    float32_atomic_add_enabled: bool,
+    float32_atomic_min_max_enabled: bool,
+    int64_atomic_enabled: bool,
+    int64_image_atomic_enabled: bool,
     features: ShaderPrecisionFeatures,
     base: vk::PhysicalDeviceFeatures,
     capability: u32,
 ) -> Result<()> {
     match capability {
+        ATOMIC_FLOAT32_ADD_EXT if !float32_atomic_add_enabled => {
+            Err(Error::Unsupported("Vulkan Float32 atomic add"))
+        }
+        ATOMIC_FLOAT32_MIN_MAX_EXT if !float32_atomic_min_max_enabled => {
+            Err(Error::Unsupported("Vulkan Float32 buffer atomic min/max"))
+        }
+        INT64_ATOMICS if !int64_atomic_enabled => Err(Error::Unsupported("Vulkan Int64 atomics")),
+        INT64_IMAGE_EXT if !int64_image_atomic_enabled => {
+            Err(Error::Unsupported("Vulkan Int64 image atomics"))
+        }
         FLOAT16 if !features.float16 => Err(Error::Unsupported("Vulkan shaderFloat16")),
         FLOAT64 if base.shader_float64 != vk::TRUE => {
             Err(Error::Unsupported("Vulkan shaderFloat64"))

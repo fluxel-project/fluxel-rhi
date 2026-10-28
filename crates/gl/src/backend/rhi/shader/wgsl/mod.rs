@@ -536,10 +536,8 @@ pub(super) fn lower_wgsl_with_limits(
     };
     apply_embedded_precision_defaults(&mut lowered);
     apply_naga_clip_depth_abi(&mut lowered)?;
-    lowered.source_hash = crate::backend::api::GlShaderKey(source_key(
-        lowered.text.as_bytes(),
-        &lowered.entry_point,
-    ));
+    lowered.source_hash =
+        crate::backend::api::GlShaderKey(source_key(lowered.text.as_bytes(), &lowered.entry_point));
     lowered
         .validate_for(profile)
         .map_err(|_| Error::Shader("Naga emitted an incompatible GL shader".into()))?;

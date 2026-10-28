@@ -47,15 +47,20 @@ struct FragmentOutput {
 
 @fragment
 @early_depth_test(force)
-fn fs_force() -> FragmentOutput {
+fn fs_force(@builtin(position) position: vec4<f32>) -> FragmentOutput {
+    let pixel = u32(position.y) * 8u + u32(position.x);
+    side_effects[pixel] = 1u;
     return FragmentOutput(vec4<f32>(1.0, 0.0, 0.0, 1.0), 0.25);
 }
 
 @fragment
 @early_depth_test(less_equal)
-fn fs_conservative() -> FragmentOutput {
+fn fs_conservative(@builtin(position) position: vec4<f32>) -> FragmentOutput {
+    let pixel = u32(position.y) * 8u + u32(position.x);
+    side_effects[pixel] = 1u;
     return FragmentOutput(vec4<f32>(0.0, 1.0, 0.0, 1.0), 0.25);
 }
+@group(0) @binding(0) var<storage, read_write> side_effects: array<u32>;
 "#;
     let vertex = block_on(device.shader(ShaderDesc {
         label: Some("early-depth-test vertex".into()),
@@ -95,20 +100,69 @@ fn fs_conservative() -> FragmentOutput {
         block_on(device.shader(fragment_desc(vec![SHADER_FEATURE_EARLY_DEPTH_TEST.into()])))
             .unwrap();
 
+    let side_effect_layout = device
+        .create_bind_group_layout(&BindGroupLayoutDesc {
+            label: Some("early-depth side-effect layout".into()),
+            entries: vec![BindGroupLayoutEntry {
+                binding: 0,
+                visibility: vec![ShaderStage::Fragment],
+                ty: BindingType::StorageBuffer {
+                    dynamic_offset: false,
+                    min_size: 8 * 8 * 4,
+                    access: StorageAccess::ReadWrite,
+                },
+                count: BindingCount::One,
+                partially_bound: false,
+                nonuniform_indexing: false,
+            }],
+        })
+        .unwrap();
+    let side_effects = device
+        .create_buffer(&BufferDesc {
+            label: Some("early-depth side effects".into()),
+            size: 8 * 8 * 4,
+            usage: BufferUsage::STORAGE
+                .union(BufferUsage::COPY_DST)
+                .union(BufferUsage::COPY_SRC),
+            memory: MemoryClass::Device,
+        })
+        .unwrap();
+    let side_effect_readback = device
+        .create_buffer(&BufferDesc {
+            label: Some("early-depth side-effect readback".into()),
+            size: 8 * 8 * 4,
+            usage: BufferUsage::COPY_DST.union(BufferUsage::MAP_READ),
+            memory: MemoryClass::Readback,
+        })
+        .unwrap();
+    let side_effect_group = device
+        .create_bind_group(&BindGroupDesc {
+            label: Some("early-depth side effects".into()),
+            layout: &side_effect_layout,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: BindingResource::StorageBufferView {
+                    buffer: &side_effects,
+                    range: 0..8 * 8 * 4,
+                    view: StorageBufferView::Raw,
+                },
+            }],
+        })
+        .unwrap();
     let layout = device
         .create_pipeline_layout(&PipelineLayoutDesc {
             label: None,
-            groups: &[],
+            groups: &[&side_effect_layout],
             push_constants: &[],
         })
         .unwrap();
-    let face = StencilFaceState {
-        compare: CompareFunction::Always,
-        fail: StencilOperation::Keep,
-        depth_fail: StencilOperation::Keep,
-        pass: StencilOperation::Keep,
-    };
-    let pipeline = |entry: &str| {
+    let pipeline = |entry: &str, depth_compare, stencil_compare| {
+        let face = StencilFaceState {
+            compare: stencil_compare,
+            fail: StencilOperation::Keep,
+            depth_fail: StencilOperation::Keep,
+            pass: StencilOperation::Keep,
+        };
         block_on(device.raster_pipeline(RasterPipelineDesc {
             label: Some(format!("early-depth-test {entry} pipeline")),
             layout: layout.clone(),
@@ -138,13 +192,13 @@ fn fs_conservative() -> FragmentOutput {
                 conservative: false,
             },
             depth_stencil: Some(DepthStencilState {
-                format: TextureFormat::Depth32Float,
+                format: TextureFormat::Depth24PlusStencil8,
                 depth_write_enabled: true,
-                depth_compare: CompareFunction::Less,
+                depth_compare,
                 stencil_front: face,
                 stencil_back: face,
-                stencil_read_mask: 0,
-                stencil_write_mask: 0,
+                stencil_read_mask: u32::MAX,
+                stencil_write_mask: u32::MAX,
                 depth_bias_constant: 0,
                 depth_bias_slope_scale: 0.0,
                 depth_bias_clamp: 0.0,
@@ -159,8 +213,14 @@ fn fs_conservative() -> FragmentOutput {
         }))
         .unwrap()
     };
-    let force_pipeline = pipeline("fs_force");
-    let conservative_pipeline = pipeline("fs_conservative");
+    let force_depth_pipeline = pipeline("fs_force", CompareFunction::Less, CompareFunction::Always);
+    let force_stencil_pipeline =
+        pipeline("fs_force", CompareFunction::Always, CompareFunction::Equal);
+    let conservative_pipeline = pipeline(
+        "fs_conservative",
+        CompareFunction::LessEqual,
+        CompareFunction::Always,
+    );
 
     let color = device
         .create_texture(&TextureDesc {
@@ -181,7 +241,7 @@ fn fs_conservative() -> FragmentOutput {
             dimension: TextureDimension::D2,
             extent: [8, 8, 1],
             array_layers: 1,
-            format: TextureFormat::Depth32Float,
+            format: TextureFormat::Depth24PlusStencil8,
             mip_levels: 1,
             samples: 1,
             usage: TextureUsage::RENDER_ATTACHMENT,
@@ -204,9 +264,9 @@ fn fs_conservative() -> FragmentOutput {
         .create_view(
             &depth,
             &TextureViewDesc {
-                format: TextureFormat::Depth32Float,
+                format: TextureFormat::Depth24PlusStencil8,
                 dimension: TextureViewDimension::D2,
-                aspects: TextureAspects::DEPTH,
+                aspects: TextureAspects::DEPTH | TextureAspects::STENCIL,
                 mips: 0..1,
                 layers: 0..1,
             },
@@ -225,6 +285,9 @@ fn fs_conservative() -> FragmentOutput {
         accesses: AccessMask::EMPTY,
     };
     let mut encoder = device.encoder(lane).unwrap();
+    encoder
+        .write_buffer(&side_effects, 0, &[0u8; 8 * 8 * 4])
+        .unwrap();
     encoder
         .transition_resources(&[
             ResourceTransition::Texture(TextureBarrier {
@@ -247,7 +310,7 @@ fn fs_conservative() -> FragmentOutput {
             ResourceTransition::Texture(TextureBarrier {
                 target: Subresources {
                     texture: &depth,
-                    aspects: TextureAspects::DEPTH,
+                    aspects: TextureAspects::DEPTH | TextureAspects::STENCIL,
                     mips: 0..1,
                     layers: 0..1,
                 },
@@ -255,10 +318,30 @@ fn fs_conservative() -> FragmentOutput {
                     from: empty,
                     to: TextureUses {
                         stages: StageMask::FRAGMENT,
-                        accesses: AccessMask::DEPTH_WRITE,
+                        accesses: AccessMask::DEPTH_READ
+                            | AccessMask::DEPTH_WRITE
+                            | AccessMask::STENCIL_READ
+                            | AccessMask::STENCIL_WRITE,
                     },
                 },
                 layout: Some((ImageLayout::Undefined, ImageLayout::DepthStencilAttachment)),
+                ownership: None,
+            }),
+            ResourceTransition::Buffer(BufferBarrier {
+                target: BufferSlice {
+                    buffer: &side_effects,
+                    range: 0..8 * 8 * 4,
+                },
+                usage: StateTransition {
+                    from: BufferUses {
+                        stages: StageMask::COPY,
+                        accesses: AccessMask::COPY_WRITE,
+                    },
+                    to: BufferUses {
+                        stages: StageMask::FRAGMENT,
+                        accesses: AccessMask::SHADER_READ | AccessMask::SHADER_WRITE,
+                    },
+                },
                 ownership: None,
             }),
         ])
@@ -276,7 +359,7 @@ fn fs_conservative() -> FragmentOutput {
             depth_stencil: Some(DepthStencilAttachment {
                 view: AttachmentView::Texture(&depth_view),
                 depth: Some((LoadOp::Clear(0.5), StoreOp::Store)),
-                stencil: None,
+                stencil: Some((LoadOp::Clear(0), StoreOp::Store)),
                 depth_read_only: false,
                 stencil_read_only: false,
             }),
@@ -304,11 +387,23 @@ fn fs_conservative() -> FragmentOutput {
     pass.scissor(Rect {
         x: 0,
         y: 0,
-        width: 4,
+        width: 2,
         height: 8,
     })
     .unwrap();
-    pass.set_pipeline(&force_pipeline).unwrap();
+    pass.set_pipeline(&force_depth_pipeline).unwrap();
+    pass.set_bind_group(0, &side_effect_group, &[]).unwrap();
+    pass.draw(0..3, 0..1).unwrap();
+    pass.scissor(Rect {
+        x: 2,
+        y: 0,
+        width: 2,
+        height: 8,
+    })
+    .unwrap();
+    pass.set_pipeline(&force_stencil_pipeline).unwrap();
+    pass.stencil_reference(1).unwrap();
+    pass.set_bind_group(0, &side_effect_group, &[]).unwrap();
     pass.draw(0..3, 0..1).unwrap();
     pass.scissor(Rect {
         x: 4,
@@ -318,30 +413,57 @@ fn fs_conservative() -> FragmentOutput {
     })
     .unwrap();
     pass.set_pipeline(&conservative_pipeline).unwrap();
+    pass.stencil_reference(0).unwrap();
+    pass.set_bind_group(0, &side_effect_group, &[]).unwrap();
     pass.draw(0..3, 0..1).unwrap();
     pass.finish().unwrap();
 
     encoder
-        .transition_resources(&[ResourceTransition::Texture(TextureBarrier {
-            target: Subresources {
-                texture: &color,
-                aspects: TextureAspects::COLOR,
-                mips: 0..1,
-                layers: 0..1,
-            },
-            usage: StateTransition {
-                from: TextureUses {
-                    stages: StageMask::COLOR_OUTPUT,
-                    accesses: AccessMask::COLOR_WRITE,
+        .transition_resources(&[
+            ResourceTransition::Texture(TextureBarrier {
+                target: Subresources {
+                    texture: &color,
+                    aspects: TextureAspects::COLOR,
+                    mips: 0..1,
+                    layers: 0..1,
                 },
-                to: TextureUses {
-                    stages: StageMask::COPY,
-                    accesses: AccessMask::COPY_READ,
+                usage: StateTransition {
+                    from: TextureUses {
+                        stages: StageMask::COLOR_OUTPUT,
+                        accesses: AccessMask::COLOR_WRITE,
+                    },
+                    to: TextureUses {
+                        stages: StageMask::COPY,
+                        accesses: AccessMask::COPY_READ,
+                    },
                 },
-            },
-            layout: Some((ImageLayout::ColorAttachment, ImageLayout::CopySrc)),
-            ownership: None,
-        })])
+                layout: Some((ImageLayout::ColorAttachment, ImageLayout::CopySrc)),
+                ownership: None,
+            }),
+            ResourceTransition::Buffer(BufferBarrier {
+                target: BufferSlice {
+                    buffer: &side_effects,
+                    range: 0..8 * 8 * 4,
+                },
+                usage: StateTransition {
+                    from: BufferUses {
+                        stages: StageMask::FRAGMENT,
+                        accesses: AccessMask::SHADER_READ | AccessMask::SHADER_WRITE,
+                    },
+                    to: BufferUses {
+                        stages: StageMask::COPY,
+                        accesses: AccessMask::COPY_READ,
+                    },
+                },
+                ownership: None,
+            }),
+        ])
+        .unwrap();
+    encoder
+        .copy_buffer(&side_effects, 0, &side_effect_readback, 0, 8 * 8 * 4)
+        .unwrap();
+    let side_effect_ticket = encoder
+        .readback_buffer(&side_effect_readback, 0..8 * 8 * 4)
         .unwrap();
     let region = TextureRegion {
         texture: &color,
@@ -392,11 +514,22 @@ fn fs_conservative() -> FragmentOutput {
     };
     block_on(device.wait_completion(&point)).unwrap();
     let bytes = unsafe { block_on(device.read_after(ticket, &point)).unwrap().bytes };
-    let center = 4 * 256 + 2 * 4;
+    let side_effect_bytes = unsafe {
+        block_on(device.read_after(side_effect_ticket, &point))
+            .unwrap()
+            .bytes
+    };
+    let center = 4 * 256 + 1 * 4;
     assert_eq!(
         &bytes[center..center + 4],
         &[0, 0, 255, 255],
-        "the forced early test rejects incoming z=0.75 before the shader writes z=0.25"
+        "the forced early depth test rejects incoming z=0.75 before the shader writes z=0.25"
+    );
+    let stencil_failed = 4 * 256 + 3 * 4;
+    assert_eq!(
+        &bytes[stencil_failed..stencil_failed + 4],
+        &[0, 0, 255, 255],
+        "the forced early stencil test rejects a mismatched stencil reference"
     );
     let conservative_center = 4 * 256 + 6 * 4;
     assert_eq!(
@@ -404,4 +537,16 @@ fn fs_conservative() -> FragmentOutput {
         &[0, 255, 0, 255],
         "less_equal conservative depth preserves the valid transition from z=0.75 to z=0.25"
     );
+    for y in 0..8 {
+        for x in 0..8 {
+            let offset = (y * 8 + x) * 4;
+            let actual =
+                u32::from_le_bytes(side_effect_bytes[offset..offset + 4].try_into().unwrap());
+            let expected = if x >= 4 { 1 } else { 0 };
+            assert_eq!(
+                actual, expected,
+                "early-depth side effect at pixel ({x}, {y})"
+            );
+        }
+    }
 }

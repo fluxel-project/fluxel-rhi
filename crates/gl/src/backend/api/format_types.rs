@@ -166,10 +166,7 @@ impl GlFormat {
         )
     }
 
-    pub(crate) fn supports_blit_aspect(
-        self,
-        aspect: crate::backend::api::GlTextureAspect,
-    ) -> bool {
+    pub(crate) fn supports_blit_aspect(self, aspect: crate::backend::api::GlTextureAspect) -> bool {
         use crate::backend::api::GlTextureAspect;
         match aspect {
             GlTextureAspect::All => false,

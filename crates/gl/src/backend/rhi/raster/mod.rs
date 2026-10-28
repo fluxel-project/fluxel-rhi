@@ -10,9 +10,9 @@ use fluxel_rhi_core::api::{
 };
 use fluxel_rhi_core::backend::RasterBackend;
 
+use super::Gl;
 use super::spi::native_error;
 use super::types::{GlBuffer, GlEncoder, GlRasterPipeline};
-use super::Gl;
 
 mod attachment;
 pub(crate) mod binding;

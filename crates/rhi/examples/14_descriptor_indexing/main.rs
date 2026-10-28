@@ -44,7 +44,7 @@ pub fn require_descriptor_indexing<B: Backend>(d: &Device<B>) -> Result<()> {
     if !c.runtime_sized_binding_arrays {
         return Err(Error::Unsupported("runtime-sized binding arrays"));
     }
-    if !c.nonuniform_sampled_texture_and_storage_buffer_indexing {
+    if !c.nonuniform_sampled_texture_indexing {
         return Err(Error::Unsupported("non-uniform sampled-texture indexing"));
     }
     Ok(())

@@ -23,8 +23,7 @@ fn desc() -> TextureDesc {
 #[test]
 fn texture_copy_region_accepts_valid_mip_and_array_slice() {
     assert!(
-        validate_region_fields(&desc(), 2, [3, 2, 1], [8, 4, 1], TextureAspects::COLOR,)
-            .is_ok()
+        validate_region_fields(&desc(), 2, [3, 2, 1], [8, 4, 1], TextureAspects::COLOR,).is_ok()
     );
 }
 
@@ -32,8 +31,7 @@ fn texture_copy_region_accepts_valid_mip_and_array_slice() {
 fn texture_copy_region_rejects_out_of_bounds_and_wrong_aspect() {
     let desc = desc();
     assert!(
-        validate_region_fields(&desc, 0, [63, 0, 0], [2, 1, 1], TextureAspects::COLOR,)
-            .is_err()
+        validate_region_fields(&desc, 0, [63, 0, 0], [2, 1, 1], TextureAspects::COLOR,).is_err()
     );
     assert!(
         validate_region_fields(&desc, 0, [0, 0, 2], [1, 1, 1], TextureAspects::COLOR,).is_err()
@@ -70,12 +68,10 @@ fn validates_compressed_blocks_and_multilayer_footprints() {
     let mut texture = desc();
     texture.format = TextureFormat::Bc1RgbaUnorm;
     assert!(
-        validate_region_fields(&texture, 0, [4, 4, 0], [8, 8, 2], TextureAspects::COLOR)
-            .is_ok()
+        validate_region_fields(&texture, 0, [4, 4, 0], [8, 8, 2], TextureAspects::COLOR).is_ok()
     );
     assert!(
-        validate_region_fields(&texture, 0, [1, 0, 0], [4, 4, 1], TextureAspects::COLOR)
-            .is_err()
+        validate_region_fields(&texture, 0, [1, 0, 0], [4, 4, 1], TextureAspects::COLOR).is_err()
     );
     let layout = api_layout(0, 16, 3);
     assert!(super::validate_copy_images(layout, 16, 2, 2, 80).is_ok());
@@ -84,12 +80,10 @@ fn validates_compressed_blocks_and_multilayer_footprints() {
     texture.extent[2] = 8;
     texture.array_layers = 1;
     assert!(
-        validate_region_fields(&texture, 1, [0, 0, 1], [4, 4, 3], TextureAspects::COLOR)
-            .is_ok()
+        validate_region_fields(&texture, 1, [0, 0, 1], [4, 4, 3], TextureAspects::COLOR).is_ok()
     );
     assert!(
-        validate_region_fields(&texture, 1, [0, 0, 2], [4, 4, 3], TextureAspects::COLOR)
-            .is_err()
+        validate_region_fields(&texture, 1, [0, 0, 2], [4, 4, 3], TextureAspects::COLOR).is_err()
     );
 }
 

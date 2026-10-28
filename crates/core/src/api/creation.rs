@@ -115,6 +115,73 @@ impl<B: ResourceBackend> Device<B> {
                     ));
                 }
             }
+            match &entry.ty {
+                BindingType::StorageBuffer {
+                    access: StorageAccess::Atomic,
+                    ..
+                } => return Err(Error::InvalidState),
+                BindingType::StorageTexture {
+                    format,
+                    access: StorageAccess::Atomic,
+                    ..
+                } if *format == TextureFormat::R32Uint
+                    && (!self.caps.texture_atomic_r32uint_compute
+                        && !self.caps.texture_atomic_r32uint_min_compute
+                        && !self.caps.texture_atomic_r32uint_max_compute
+                        && !self.caps.texture_atomic_r32uint_xor_compute
+                        && !self.caps.texture_atomic_r32uint_and_compute
+                        && !self.caps.texture_atomic_r32uint_or_compute
+                        || entry.visibility.as_slice() != [ShaderStage::Compute]) =>
+                {
+                    return Err(Error::Unsupported("R32Uint compute texture atomic binding"));
+                }
+                BindingType::StorageTexture {
+                    format: TextureFormat::R32Uint,
+                    access: StorageAccess::Atomic,
+                    ..
+                } => {}
+                BindingType::StorageTexture {
+                    format,
+                    access: StorageAccess::Atomic,
+                    ..
+                } if *format == TextureFormat::R32Sint
+                    && (!self.caps.texture_atomic_r32sint_compute
+                        && !self.caps.texture_atomic_r32sint_min_compute
+                        && !self.caps.texture_atomic_r32sint_max_compute
+                        || entry.visibility.as_slice() != [ShaderStage::Compute]) =>
+                {
+                    return Err(Error::Unsupported("R32Sint compute texture atomic binding"));
+                }
+                BindingType::StorageTexture {
+                    format: TextureFormat::R32Sint,
+                    access: StorageAccess::Atomic,
+                    ..
+                } => {}
+                BindingType::StorageTexture {
+                    format: TextureFormat::R64Uint,
+                    dimension,
+                    access: StorageAccess::Atomic,
+                    ..
+                } if !self.caps.shader_int64_atomic_image_r64uint_add
+                    && !self.caps.shader_int64_atomic_image_r64uint_umin
+                    && !self.caps.shader_int64_atomic_image_r64uint_umax
+                    || *dimension != TextureViewDimension::D2
+                    || entry.visibility.as_slice() != [ShaderStage::Compute] =>
+                {
+                    return Err(Error::Unsupported("R64Uint compute image atomic binding"));
+                }
+                BindingType::StorageTexture {
+                    format: TextureFormat::R64Uint,
+                    dimension: TextureViewDimension::D2,
+                    access: StorageAccess::Atomic,
+                    ..
+                } => {}
+                BindingType::StorageTexture {
+                    access: StorageAccess::Atomic,
+                    ..
+                } => return Err(Error::Unsupported("texture atomic binding")),
+                _ => {}
+            }
             let nonuniform_supported = match &entry.ty {
                 BindingType::UniformBuffer { .. } => self.caps.nonuniform_uniform_buffer_indexing,
                 BindingType::StorageBuffer { .. } => self.caps.nonuniform_storage_buffer_indexing,

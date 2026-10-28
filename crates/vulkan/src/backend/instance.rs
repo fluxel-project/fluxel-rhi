@@ -8,6 +8,14 @@
 use super::*;
 use fluxel_rhi_core::api::WaitRoute;
 
+fn shader_atomic_float_extension_required(routes: [bool; 6]) -> bool {
+    routes.into_iter().any(|enabled| enabled)
+}
+
+#[cfg(test)]
+#[path = "../tests/backend/atomic_float_extension.rs"]
+mod atomic_float_extension_tests;
+
 impl InstanceBackend for Vulkan {
     type NativeInstance = VulkanInstance;
     type OpenFuture<'a> = Ready<Result<(VulkanDevice, DeviceCapabilities)>>;
@@ -140,6 +148,107 @@ impl InstanceBackend for Vulkan {
             let external_memory_handles = has_extension(external_names.0);
             let external_semaphore_handles = has_extension(external_names.1);
             let memory_budget = has_extension(ash::ext::memory_budget::NAME);
+            let shader_barycentrics_khr =
+                has_extension(ash::khr::fragment_shader_barycentric::NAME);
+            let shader_barycentrics_nv = has_extension(ash::nv::fragment_shader_barycentric::NAME);
+            let shader_barycentrics_amd =
+                has_extension(ash::amd::shader_explicit_vertex_parameter::NAME);
+            let shader_atomic_float = has_extension(ash::ext::shader_atomic_float::NAME);
+            let shader_atomic_float2 = has_extension(ash::ext::shader_atomic_float2::NAME);
+            let shader_image_atomic_int64 =
+                has_extension(ash::ext::shader_image_atomic_int64::NAME);
+            let mut available_image_atomic_int64 =
+                vk::PhysicalDeviceShaderImageAtomicInt64FeaturesEXT::default();
+            if shader_image_atomic_int64 {
+                let mut features = vk::PhysicalDeviceFeatures2::default()
+                    .push_next(&mut available_image_atomic_int64);
+                // SAFETY: the extension feature node lives for this synchronous query.
+                unsafe {
+                    instance
+                        .0
+                        .instance
+                        .get_physical_device_features2(physical, &mut features)
+                };
+            }
+            let image_r64uint_atomic_format = unsafe {
+                instance
+                    .0
+                    .instance
+                    .get_physical_device_format_properties(physical, vk::Format::R64_UINT)
+            }
+            .optimal_tiling_features
+            .contains(
+                vk::FormatFeatureFlags::STORAGE_IMAGE
+                    | vk::FormatFeatureFlags::STORAGE_IMAGE_ATOMIC,
+            );
+            let cooperative_matrix_extension = has_extension(ash::khr::cooperative_matrix::NAME);
+            let mut available_atomic_float =
+                vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default();
+            let mut available_atomic_float2 =
+                vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT::default();
+            if shader_atomic_float || shader_atomic_float2 {
+                let mut features = vk::PhysicalDeviceFeatures2::default();
+                if shader_atomic_float {
+                    features = features.push_next(&mut available_atomic_float);
+                }
+                if shader_atomic_float2 {
+                    features = features.push_next(&mut available_atomic_float2);
+                }
+                // SAFETY: the optional atomic-float feature node remains live
+                // during this synchronous query for the selected physical device.
+                unsafe {
+                    instance
+                        .0
+                        .instance
+                        .get_physical_device_features2(physical, &mut features)
+                };
+            }
+            let shader_float32_atomic_buffer_add = shader_atomic_float
+                && available_atomic_float.shader_buffer_float32_atomic_add == vk::TRUE;
+            let shader_float32_atomic_workgroup_add = shader_atomic_float
+                && available_atomic_float.shader_shared_float32_atomic_add == vk::TRUE;
+            let shader_float32_atomic_buffer_min = shader_atomic_float2
+                && available_atomic_float2.shader_buffer_float32_atomic_min_max == vk::TRUE;
+            let shader_float32_atomic_buffer_max = shader_float32_atomic_buffer_min;
+            let shader_float32_atomic_workgroup_min = shader_atomic_float2
+                && available_atomic_float2.shader_shared_float32_atomic_min_max == vk::TRUE;
+            let shader_float32_atomic_workgroup_max = shader_float32_atomic_workgroup_min;
+            let mut available_cooperative_matrix =
+                vk::PhysicalDeviceCooperativeMatrixFeaturesKHR::default();
+            if cooperative_matrix_extension {
+                let mut features = vk::PhysicalDeviceFeatures2::default()
+                    .push_next(&mut available_cooperative_matrix);
+                // SAFETY: the optional feature node lives through this query.
+                unsafe {
+                    instance
+                        .0
+                        .instance
+                        .get_physical_device_features2(physical, &mut features)
+                };
+            }
+            let cooperative_matrix_enabled = cooperative_matrix_extension
+                && available_cooperative_matrix.cooperative_matrix == vk::TRUE;
+            let cooperative_matrix_configurations = if cooperative_matrix_enabled {
+                query_cooperative_matrix_configurations(instance, physical)?
+            } else {
+                Vec::new()
+            };
+            let mut available_barycentric_features =
+                vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR::default();
+            if shader_barycentrics_khr || shader_barycentrics_nv {
+                let mut features = vk::PhysicalDeviceFeatures2::default()
+                    .push_next(&mut available_barycentric_features);
+                // SAFETY: the aliased KHR/NV feature node remains live for
+                // this synchronous query on the selected physical device.
+                unsafe {
+                    instance
+                        .0
+                        .instance
+                        .get_physical_device_features2(physical, &mut features)
+                };
+            }
+            let enabled_barycentric_feature =
+                available_barycentric_features.fragment_shader_barycentric == vk::TRUE;
             #[cfg(windows)]
             let semaphore_handle = vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32;
             #[cfg(not(windows))]
@@ -274,6 +383,34 @@ impl InstanceBackend for Vulkan {
             // Enable the supported base feature set so resource and shader
             // admission checks reflect the actual logical-device capabilities.
             let enabled_features = supported.features;
+            let shader_int64_atomic_buffer_add = enabled_features.shader_int64 == vk::TRUE
+                && enabled12.shader_buffer_int64_atomics == vk::TRUE;
+            let shader_int64_atomic_image_r64uint_add = shader_image_atomic_int64
+                && available_image_atomic_int64.shader_image_int64_atomics == vk::TRUE
+                && enabled_features.shader_int64 == vk::TRUE
+                && image_r64uint_atomic_format;
+            let shader_int64_atomic_image_r64uint_umin = shader_int64_atomic_image_r64uint_add;
+            let shader_int64_atomic_image_r64uint_umax = shader_int64_atomic_image_r64uint_add;
+            let shader_int64_atomic_buffer_min = shader_int64_atomic_buffer_add;
+            let shader_int64_atomic_buffer_max = shader_int64_atomic_buffer_add;
+            let shader_int64_atomic_buffer_umin = shader_int64_atomic_buffer_add;
+            let shader_int64_atomic_buffer_umax = shader_int64_atomic_buffer_add;
+            let shader_int64_atomic_buffer_xor = shader_int64_atomic_buffer_add;
+            let shader_int64_atomic_buffer_compare_exchange = shader_int64_atomic_buffer_add;
+            let shader_int64_atomic_buffer_exchange = shader_int64_atomic_buffer_add;
+            let shader_int64_atomic_buffer_and = shader_int64_atomic_buffer_add;
+            let shader_int64_atomic_buffer_or = shader_int64_atomic_buffer_add;
+            let shader_int64_atomic_workgroup_add = enabled_features.shader_int64 == vk::TRUE
+                && enabled12.shader_shared_int64_atomics == vk::TRUE;
+            let shader_int64_atomic_workgroup_min = shader_int64_atomic_workgroup_add;
+            let shader_int64_atomic_workgroup_max = shader_int64_atomic_workgroup_add;
+            let shader_int64_atomic_workgroup_xor = shader_int64_atomic_workgroup_add;
+            let shader_int64_atomic_workgroup_and = shader_int64_atomic_workgroup_add;
+            let shader_int64_atomic_workgroup_or = shader_int64_atomic_workgroup_add;
+            let shader_int64_atomic_workgroup_umin = shader_int64_atomic_workgroup_add;
+            let shader_int64_atomic_workgroup_umax = shader_int64_atomic_workgroup_add;
+            let shader_int64_atomic_workgroup_exchange = shader_int64_atomic_workgroup_add;
+            let shader_int64_atomic_workgroup_compare_exchange = shader_int64_atomic_workgroup_add;
             let mut subgroup = vk::PhysicalDeviceSubgroupSizeControlProperties::default();
             let mut maintenance4_properties = vk::PhysicalDeviceMaintenance4Properties::default();
             let mut core11_properties = vk::PhysicalDeviceVulkan11Properties::default();
@@ -354,6 +491,41 @@ impl InstanceBackend for Vulkan {
             if memory_budget {
                 extensions.push(ash::ext::memory_budget::NAME.as_ptr());
             }
+            if enabled_barycentric_feature && shader_barycentrics_khr {
+                extensions.push(ash::khr::fragment_shader_barycentric::NAME.as_ptr());
+            }
+            if enabled_barycentric_feature && shader_barycentrics_nv {
+                extensions.push(ash::nv::fragment_shader_barycentric::NAME.as_ptr());
+            }
+            if shader_barycentrics_amd {
+                extensions.push(ash::amd::shader_explicit_vertex_parameter::NAME.as_ptr());
+            }
+            if shader_atomic_float_extension_required([
+                shader_float32_atomic_buffer_add,
+                shader_float32_atomic_workgroup_add,
+                shader_float32_atomic_buffer_min,
+                shader_float32_atomic_buffer_max,
+                shader_float32_atomic_workgroup_min,
+                shader_float32_atomic_workgroup_max,
+            ]) {
+                extensions.push(ash::ext::shader_atomic_float::NAME.as_ptr());
+            }
+            if shader_float32_atomic_buffer_min
+                || shader_float32_atomic_buffer_max
+                || shader_float32_atomic_workgroup_min
+                || shader_float32_atomic_workgroup_max
+            {
+                extensions.push(ash::ext::shader_atomic_float2::NAME.as_ptr());
+            }
+            if shader_int64_atomic_image_r64uint_add
+                || shader_int64_atomic_image_r64uint_umin
+                || shader_int64_atomic_image_r64uint_umax
+            {
+                extensions.push(ash::ext::shader_image_atomic_int64::NAME.as_ptr());
+            }
+            if cooperative_matrix_enabled {
+                extensions.push(ash::khr::cooperative_matrix::NAME.as_ptr());
+            }
             if external_memory_handles {
                 extensions.push(external_names.0.as_ptr());
             }
@@ -383,6 +555,30 @@ impl InstanceBackend for Vulkan {
                 .storage_push_constant8(enabled12.storage_push_constant8 == vk::TRUE)
                 .shader_float16(enabled12.shader_float16 == vk::TRUE)
                 .shader_int8(enabled12.shader_int8 == vk::TRUE)
+                .shader_buffer_int64_atomics(
+                    shader_int64_atomic_buffer_add
+                        || shader_int64_atomic_buffer_min
+                        || shader_int64_atomic_buffer_max
+                        || shader_int64_atomic_buffer_umin
+                        || shader_int64_atomic_buffer_umax
+                        || shader_int64_atomic_buffer_xor
+                        || shader_int64_atomic_buffer_compare_exchange
+                        || shader_int64_atomic_buffer_exchange
+                        || shader_int64_atomic_buffer_and
+                        || shader_int64_atomic_buffer_or,
+                )
+                .shader_shared_int64_atomics(
+                    shader_int64_atomic_workgroup_add
+                        || shader_int64_atomic_workgroup_min
+                        || shader_int64_atomic_workgroup_max
+                        || shader_int64_atomic_workgroup_xor
+                        || shader_int64_atomic_workgroup_and
+                        || shader_int64_atomic_workgroup_or
+                        || shader_int64_atomic_workgroup_umin
+                        || shader_int64_atomic_workgroup_umax
+                        || shader_int64_atomic_workgroup_exchange
+                        || shader_int64_atomic_workgroup_compare_exchange,
+                )
                 .runtime_descriptor_array(enabled12.runtime_descriptor_array == vk::TRUE)
                 .descriptor_binding_variable_descriptor_count(
                     enabled12.descriptor_binding_variable_descriptor_count == vk::TRUE,
@@ -410,6 +606,10 @@ impl InstanceBackend for Vulkan {
                 )
                 .draw_indirect_count(draw_indirect_count)
                 .timeline_semaphore(timeline_semaphore)
+                .vulkan_memory_model(enabled12.vulkan_memory_model == vk::TRUE)
+                .vulkan_memory_model_device_scope(
+                    enabled12.vulkan_memory_model_device_scope == vk::TRUE,
+                )
                 .buffer_device_address(ray_support.acceleration);
             let mut mesh_enable = vk::PhysicalDeviceMeshShaderFeaturesEXT::default()
                 .mesh_shader(mesh_available)
@@ -422,6 +622,30 @@ impl InstanceBackend for Vulkan {
                     .ray_tracing_pipeline(ray_support.pipeline);
             let mut ray_query_enable =
                 vk::PhysicalDeviceRayQueryFeaturesKHR::default().ray_query(ray_support.query);
+            let mut barycentric_enable =
+                vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR::default()
+                    .fragment_shader_barycentric(enabled_barycentric_feature);
+            let mut atomic_float_enable = vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default()
+                .shader_buffer_float32_atomic_add(shader_float32_atomic_buffer_add)
+                .shader_shared_float32_atomic_add(shader_float32_atomic_workgroup_add);
+            let mut atomic_float2_enable =
+                vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT::default()
+                    .shader_buffer_float32_atomic_min_max(
+                        shader_float32_atomic_buffer_min || shader_float32_atomic_buffer_max,
+                    )
+                    .shader_shared_float32_atomic_min_max(
+                        shader_float32_atomic_workgroup_min || shader_float32_atomic_workgroup_max,
+                    );
+            let mut image_atomic_int64_enable =
+                vk::PhysicalDeviceShaderImageAtomicInt64FeaturesEXT::default()
+                    .shader_image_int64_atomics(
+                        shader_int64_atomic_image_r64uint_add
+                            || shader_int64_atomic_image_r64uint_umin
+                            || shader_int64_atomic_image_r64uint_umax,
+                    );
+            let mut cooperative_matrix_enable =
+                vk::PhysicalDeviceCooperativeMatrixFeaturesKHR::default()
+                    .cooperative_matrix(cooperative_matrix_enabled);
             let mut create = vk::DeviceCreateInfo::default()
                 .queue_create_infos(&queues)
                 .enabled_extension_names(&extensions)
@@ -443,6 +667,34 @@ impl InstanceBackend for Vulkan {
             }
             if ray_support.query {
                 create = create.push_next(&mut ray_query_enable);
+            }
+            if (shader_barycentrics_khr || shader_barycentrics_nv) && enabled_barycentric_feature {
+                create = create.push_next(&mut barycentric_enable);
+            }
+            if shader_float32_atomic_buffer_add
+                || shader_float32_atomic_workgroup_add
+                || shader_float32_atomic_buffer_min
+                || shader_float32_atomic_buffer_max
+                || shader_float32_atomic_workgroup_min
+                || shader_float32_atomic_workgroup_max
+            {
+                create = create.push_next(&mut atomic_float_enable);
+            }
+            if shader_float32_atomic_buffer_min
+                || shader_float32_atomic_buffer_max
+                || shader_float32_atomic_workgroup_min
+                || shader_float32_atomic_workgroup_max
+            {
+                create = create.push_next(&mut atomic_float2_enable);
+            }
+            if shader_int64_atomic_image_r64uint_add
+                || shader_int64_atomic_image_r64uint_umin
+                || shader_int64_atomic_image_r64uint_umax
+            {
+                create = create.push_next(&mut image_atomic_int64_enable);
+            }
+            if cooperative_matrix_enabled {
+                create = create.push_next(&mut cooperative_matrix_enable);
             }
             // SAFETY: every pNext node and pointer in `create` is retained on
             // this stack for the call; `physical` belongs to the instance.
@@ -539,6 +791,39 @@ impl InstanceBackend for Vulkan {
                     ),
                     features: enabled_features,
                     shader_draw_index: enabled11.shader_draw_parameters == vk::TRUE,
+                    shader_barycentrics_khr: shader_barycentrics_khr && enabled_barycentric_feature,
+                    shader_barycentrics_nv: shader_barycentrics_nv && enabled_barycentric_feature,
+                    shader_barycentrics_amd,
+                    shader_float32_atomic_buffer_add,
+                    shader_float32_atomic_workgroup_add,
+                    shader_float32_atomic_workgroup_min,
+                    shader_float32_atomic_workgroup_max,
+                    shader_float32_atomic_buffer_min,
+                    shader_float32_atomic_buffer_max,
+                    shader_int64_atomic_buffer_add,
+                    shader_int64_atomic_buffer_min,
+                    shader_int64_atomic_buffer_max,
+                    shader_int64_atomic_buffer_umin,
+                    shader_int64_atomic_buffer_umax,
+                    shader_int64_atomic_buffer_xor,
+                    shader_int64_atomic_buffer_compare_exchange,
+                    shader_int64_atomic_buffer_exchange,
+                    shader_int64_atomic_buffer_and,
+                    shader_int64_atomic_buffer_or,
+                    shader_int64_atomic_workgroup_add,
+                    shader_int64_atomic_workgroup_min,
+                    shader_int64_atomic_workgroup_max,
+                    shader_int64_atomic_workgroup_xor,
+                    shader_int64_atomic_workgroup_and,
+                    shader_int64_atomic_workgroup_or,
+                    shader_int64_atomic_workgroup_umin,
+                    shader_int64_atomic_workgroup_umax,
+                    shader_int64_atomic_workgroup_exchange,
+                    shader_int64_atomic_workgroup_compare_exchange,
+                    shader_int64_atomic_image_r64uint_add,
+                    shader_int64_atomic_image_r64uint_umin,
+                    shader_int64_atomic_image_r64uint_umax,
+                    cooperative_matrix_configurations: cooperative_matrix_configurations.clone(),
                     conservative_rasterization,
                     maintenance5,
                     external_memory_handles,
@@ -633,6 +918,47 @@ impl InstanceBackend for Vulkan {
                     shader_early_depth_test: true,
                     shader_primitive_index: enabled_features.geometry_shader == vk::TRUE,
                     shader_draw_index: enabled11.shader_draw_parameters == vk::TRUE,
+                    shader_barycentrics: enabled_barycentric_feature
+                        && (shader_barycentrics_khr || shader_barycentrics_nv),
+                    shader_barycentrics_khr: shader_barycentrics_khr && enabled_barycentric_feature,
+                    shader_barycentrics_nv: shader_barycentrics_nv && enabled_barycentric_feature,
+                    shader_barycentrics_amd,
+                    shader_float32_atomic_buffer_add,
+                    shader_float32_atomic_workgroup_add,
+                    shader_float32_atomic_workgroup_min,
+                    shader_float32_atomic_workgroup_max,
+                    shader_float32_atomic_buffer_min,
+                    shader_float32_atomic_buffer_max,
+                    shader_int64_atomic_buffer_add,
+                    shader_int64_atomic_buffer_min,
+                    shader_int64_atomic_buffer_max,
+                    shader_int64_atomic_buffer_umin,
+                    shader_int64_atomic_buffer_umax,
+                    shader_int64_atomic_buffer_xor,
+                    shader_int64_atomic_buffer_compare_exchange,
+                    shader_int64_atomic_buffer_exchange,
+                    shader_int64_atomic_buffer_and,
+                    shader_int64_atomic_buffer_or,
+                    shader_int64_atomic_workgroup_add,
+                    shader_int64_atomic_workgroup_min,
+                    shader_int64_atomic_workgroup_max,
+                    shader_int64_atomic_workgroup_xor,
+                    shader_int64_atomic_workgroup_and,
+                    shader_int64_atomic_workgroup_or,
+                    shader_int64_atomic_workgroup_umin,
+                    shader_int64_atomic_workgroup_umax,
+                    shader_int64_atomic_workgroup_exchange,
+                    shader_int64_atomic_workgroup_compare_exchange,
+                    shader_int64_atomic_image_r64uint_add,
+                    shader_int64_atomic_image_r64uint_umin,
+                    shader_int64_atomic_image_r64uint_umax,
+                    // Route capabilities describe the Vulkan SPIR-V
+                    // GLSL450 StorageBuffer contract, not optional device
+                    // feature queries. The shader module validator enforces
+                    // the exact memory model and target decorations.
+                    shader_memory_coherent_spirv: true,
+                    shader_memory_volatile_spirv: true,
+                    cooperative_matrix_configurations,
                     placed_memory: true,
                     memory_observation: true,
                     // vkCmdSetDepthBias is core; its clamp factor requires
@@ -745,4 +1071,95 @@ impl InstanceBackend for Vulkan {
             ))
         })())
     }
+}
+
+fn query_cooperative_matrix_configurations(
+    instance: &VulkanInstance,
+    physical: vk::PhysicalDevice,
+) -> Result<Vec<api::CooperativeMatrixConfiguration>> {
+    let extension =
+        ash::khr::cooperative_matrix::Instance::new(&instance.0.entry, &instance.0.instance);
+    let mut supported_stages = vk::PhysicalDeviceCooperativeMatrixPropertiesKHR::default();
+    let mut properties = vk::PhysicalDeviceProperties2::default().push_next(&mut supported_stages);
+    // SAFETY: `physical` belongs to the retained instance and the output chain
+    // remains live for this synchronous properties query.
+    unsafe {
+        instance
+            .0
+            .instance
+            .get_physical_device_properties2(physical, &mut properties)
+    };
+    if !supported_stages
+        .cooperative_matrix_supported_stages
+        .contains(vk::ShaderStageFlags::COMPUTE)
+    {
+        return Ok(Vec::new());
+    }
+
+    let query = extension
+        .fp()
+        .get_physical_device_cooperative_matrix_properties_khr;
+    let mut count = 0;
+    // SAFETY: null properties is the Vulkan count-query form; both handles are
+    // owned by the live Vulkan instance/device selection.
+    let result = unsafe { query(physical, &mut count, std::ptr::null_mut()) };
+    if result != vk::Result::SUCCESS {
+        return Err(super::vk_error(result));
+    }
+    let mut raw = vec![vk::CooperativeMatrixPropertiesKHR::default(); count as usize];
+    if count != 0 {
+        // SAFETY: `raw` contains `count` initialized writable property structs.
+        let result = unsafe { query(physical, &mut count, raw.as_mut_ptr()) };
+        if result != vk::Result::SUCCESS && result != vk::Result::INCOMPLETE {
+            return Err(super::vk_error(result));
+        }
+        raw.truncate(count as usize);
+    }
+    Ok(raw
+        .into_iter()
+        .filter_map(|property| {
+            Some(api::CooperativeMatrixConfiguration {
+                m: property.m_size,
+                n: property.n_size,
+                k: property.k_size,
+                a_type: cooperative_matrix_component_type(property.a_type)?,
+                b_type: cooperative_matrix_component_type(property.b_type)?,
+                c_type: cooperative_matrix_component_type(property.c_type)?,
+                result_type: cooperative_matrix_component_type(property.result_type)?,
+                saturating_accumulation: property.saturating_accumulation == vk::TRUE,
+                scope: cooperative_matrix_scope(property.scope)?,
+            })
+        })
+        .collect())
+}
+
+fn cooperative_matrix_component_type(
+    ty: vk::ComponentTypeKHR,
+) -> Option<api::CooperativeMatrixComponentType> {
+    use api::CooperativeMatrixComponentType as C;
+    Some(match ty {
+        vk::ComponentTypeKHR::FLOAT16 => C::Float16,
+        vk::ComponentTypeKHR::FLOAT32 => C::Float32,
+        vk::ComponentTypeKHR::FLOAT64 => C::Float64,
+        vk::ComponentTypeKHR::SINT8 => C::Sint8,
+        vk::ComponentTypeKHR::SINT16 => C::Sint16,
+        vk::ComponentTypeKHR::SINT32 => C::Sint32,
+        vk::ComponentTypeKHR::SINT64 => C::Sint64,
+        vk::ComponentTypeKHR::UINT8 => C::Uint8,
+        vk::ComponentTypeKHR::UINT16 => C::Uint16,
+        vk::ComponentTypeKHR::UINT32 => C::Uint32,
+        vk::ComponentTypeKHR::UINT64 => C::Uint64,
+        _ => return None,
+    })
+}
+
+fn cooperative_matrix_scope(scope: vk::ScopeKHR) -> Option<api::CooperativeMatrixScope> {
+    use api::CooperativeMatrixScope as S;
+    Some(match scope {
+        vk::ScopeKHR::SUBGROUP => S::Subgroup,
+        vk::ScopeKHR::WORKGROUP => S::Workgroup,
+        vk::ScopeKHR::DEVICE => S::Device,
+        vk::ScopeKHR::QUEUE_FAMILY => S::QueueFamily,
+        _ => return None,
+    })
 }

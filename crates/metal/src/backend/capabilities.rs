@@ -72,6 +72,7 @@ pub(super) fn describe(device: &MetalDevice, multi_queue: bool) -> DeviceCapabil
                 threads.height as u32,
                 threads.depth as u32,
             ],
+            max_mesh_indirect_count: 0,
             max_push_constant_bytes: (native.maxBufferLength().min(u32::MAX as usize) as u32) & !3,
             // Native amplification batches remap sparse masks across 32 views.
             max_multiview_views: if multiview { 32 } else { 0 },

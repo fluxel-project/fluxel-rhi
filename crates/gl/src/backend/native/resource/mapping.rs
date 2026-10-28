@@ -18,9 +18,7 @@ pub(crate) use crate::backend::api::sampler_min_filter as native_min;
 /// Only formats with a settled mapping are listed; every other format fails
 /// closed at its domain's evidence gate even if it maps here.
 #[cfg(any(feature = "native-gl-wgl", feature = "native-gles-egl"))]
-pub(crate) const fn native_texture_format(
-    format: crate::backend::api::GlFormat,
-) -> Option<u32> {
+pub(crate) const fn native_texture_format(format: crate::backend::api::GlFormat) -> Option<u32> {
     match format {
         crate::backend::api::GlFormat::R8Unorm => Some(glow::R8),
         crate::backend::api::GlFormat::R8Snorm => Some(glow::R8_SNORM),
@@ -131,9 +129,7 @@ pub(crate) const fn native_texture_format(
 /// facts. This predicate lets the Core support query avoid advertising a
 /// discovery row that a native allocation cannot spell.
 #[cfg(any(feature = "native-gl-wgl", feature = "native-gles-egl"))]
-pub(crate) const fn native_texture_format_supported(
-    format: crate::backend::api::GlFormat,
-) -> bool {
+pub(crate) const fn native_texture_format_supported(format: crate::backend::api::GlFormat) -> bool {
     native_texture_format(format).is_some()
 }
 

@@ -11,12 +11,12 @@
 //! when every native function required by that route was loaded as well.
 
 pub(crate) mod api;
-pub(crate) mod rhi;
 pub(crate) mod capabilities;
 pub(crate) mod clear_texel;
 pub(crate) mod facts;
 pub(crate) mod features;
 pub(crate) mod profile;
+pub(crate) mod rhi;
 pub(crate) mod state;
 pub(crate) mod translate;
 pub(crate) mod translate_raster;

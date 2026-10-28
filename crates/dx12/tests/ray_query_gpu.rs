@@ -234,9 +234,9 @@ fn run_query(array: bool) {
     let compute = device.compute().unwrap();
     let pipeline = block_on(compute.create_pipeline(ComputePipelineDesc {
         label: None,
-        layout: pipeline_layout,
+        layout: pipeline_layout.clone(),
         compute: PipelineStage {
-            module: shader,
+            module: shader.clone(),
             entry: "main".into(),
             constants: vec![],
         },
@@ -417,6 +417,24 @@ fn run_query(array: bool) {
         .unwrap();
     let ticket = encoder.readback_buffer(&readback, 0..256).unwrap();
     let work = encoder.finish().unwrap();
+    if array {
+        // The recorded work and bind group must retain both distinct TLAS
+        // values plus the BLAS/build inputs after caller handles are released.
+        drop(group);
+        drop(pipeline);
+        drop(shader);
+        drop(pipeline_layout);
+        drop(layout);
+        drop(view);
+        drop(texture);
+        drop(tlas);
+        drop(tlas2);
+        drop(blas);
+        drop(bscratch);
+        drop(tscratch);
+        drop(t2scratch);
+        drop(vertices);
+    }
     // SAFETY: one submitted command step matches the recording device and lane.
     let plan = unsafe {
         SubmissionPlan::from_compiled(

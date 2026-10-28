@@ -199,6 +199,9 @@ pub(super) fn set_bind_group(
                             api::StorageAccess::ReadWrite => {
                                 MTLResourceUsage::Read | MTLResourceUsage::Write
                             }
+                            api::StorageAccess::Atomic => {
+                                MTLResourceUsage::Read | MTLResourceUsage::Write
+                            }
                         },
                         _ => MTLResourceUsage::Read,
                     };

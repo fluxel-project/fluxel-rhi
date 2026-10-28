@@ -130,37 +130,38 @@ pub(crate) fn create_query_set(device: &GlDevice, desc: &api::QueryDesc) -> Resu
         queries
             .try_reserve_exact(capacity)
             .map_err(|_| Error::OutOfMemory)?;
-        let result = device.0.with_native("create GL query set", |provider| {
-            for _ in 0..desc.count {
-                match provider.create_query() {
-                    Ok(query) => queries.push(query),
-                    Err(error) => {
-                        for query in queries.drain(..) {
-                            let _ = provider.destroy_query(query);
-                        }
-                        return Err(error);
-                    }
-                }
-            }
-            if desc.kind == api::QueryKind::PipelineStatistics {
-                for _ in 0..capacity.checked_mul(7).ok_or(
-                    crate::backend::api::GlError::OutOfMemory {
-                        operation: "create-statistics",
-                    },
-                )? {
+        let result =
+            device.0.with_native("create GL query set", |provider| {
+                for _ in 0..desc.count {
                     match provider.create_query() {
-                        Ok(query) => statistics_queries.push(query),
+                        Ok(query) => queries.push(query),
                         Err(error) => {
-                            for query in queries.drain(..).chain(statistics_queries.drain(..)) {
+                            for query in queries.drain(..) {
                                 let _ = provider.destroy_query(query);
                             }
                             return Err(error);
                         }
                     }
                 }
-            }
-            Ok(())
-        });
+                if desc.kind == api::QueryKind::PipelineStatistics {
+                    for _ in 0..capacity.checked_mul(7).ok_or(
+                        crate::backend::api::GlError::OutOfMemory {
+                            operation: "create-statistics",
+                        },
+                    )? {
+                        match provider.create_query() {
+                            Ok(query) => statistics_queries.push(query),
+                            Err(error) => {
+                                for query in queries.drain(..).chain(statistics_queries.drain(..)) {
+                                    let _ = provider.destroy_query(query);
+                                }
+                                return Err(error);
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            });
         result.map_err(native_error)?;
         return Ok(GlQuerySet::from_inner(GlQuerySetInner {
             state: device.0.clone(),

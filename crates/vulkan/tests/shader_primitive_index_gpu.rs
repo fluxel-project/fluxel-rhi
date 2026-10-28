@@ -18,8 +18,21 @@ fn block_on<F: Future>(future: F) -> F::Output {
 }
 
 #[test]
-fn primitive_index_distinguishes_two_primitives_in_direct_draw() {
-    let device = block_on(VulkanInstance::new().unwrap().open_default()).unwrap();
+fn primitive_index_distinguishes_two_primitives_in_direct_and_single_indirect_draws() {
+    let native = VulkanInstance::new().unwrap();
+    let instance = native.instance().unwrap();
+    let adapter = instance
+        .enumerate()
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("a graphics-capable Vulkan adapter");
+    eprintln!("Vulkan primitive-index adapter: {}", adapter.name);
+    let device = block_on(instance.open(DeviceRequest {
+        adapter: adapter.id,
+        required_features: vec![],
+    }))
+    .unwrap();
     assert!(device.capabilities().shader_primitive_index);
     let lane = device
         .lanes()
@@ -148,28 +161,60 @@ fn primitive_index_distinguishes_two_primitives_in_direct_draw() {
             memory: MemoryClass::Readback,
         })
         .unwrap();
+    let indirect_args = device
+        .create_buffer(&BufferDesc {
+            label: Some("primitive-index single indirect arguments".into()),
+            size: 16,
+            usage: BufferUsage::INDIRECT.union(BufferUsage::COPY_DST),
+            memory: MemoryClass::Device,
+        })
+        .unwrap();
     let mut encoder = device.encoder(lane).unwrap();
+    let args = [6u32, 1, 0, 0]
+        .into_iter()
+        .flat_map(u32::to_ne_bytes)
+        .collect::<Vec<_>>();
+    encoder.write_buffer(&indirect_args, 0, &args).unwrap();
     encoder
-        .transition_resources(&[ResourceTransition::Texture(TextureBarrier {
-            target: Subresources {
-                texture: &color,
-                aspects: TextureAspects::COLOR,
-                mips: 0..1,
-                layers: 0..1,
-            },
-            usage: StateTransition {
-                from: TextureUses {
-                    stages: StageMask::EMPTY,
-                    accesses: AccessMask::EMPTY,
+        .transition_resources(&[
+            ResourceTransition::Texture(TextureBarrier {
+                target: Subresources {
+                    texture: &color,
+                    aspects: TextureAspects::COLOR,
+                    mips: 0..1,
+                    layers: 0..1,
                 },
-                to: TextureUses {
-                    stages: StageMask::COLOR_OUTPUT,
-                    accesses: AccessMask::COLOR_WRITE,
+                usage: StateTransition {
+                    from: TextureUses {
+                        stages: StageMask::EMPTY,
+                        accesses: AccessMask::EMPTY,
+                    },
+                    to: TextureUses {
+                        stages: StageMask::COLOR_OUTPUT,
+                        accesses: AccessMask::COLOR_WRITE,
+                    },
                 },
-            },
-            layout: Some((ImageLayout::Undefined, ImageLayout::ColorAttachment)),
-            ownership: None,
-        })])
+                layout: Some((ImageLayout::Undefined, ImageLayout::ColorAttachment)),
+                ownership: None,
+            }),
+            ResourceTransition::Buffer(BufferBarrier {
+                target: BufferSlice {
+                    buffer: &indirect_args,
+                    range: 0..16,
+                },
+                usage: StateTransition {
+                    from: BufferUses {
+                        stages: StageMask::COPY,
+                        accesses: AccessMask::COPY_WRITE,
+                    },
+                    to: BufferUses {
+                        stages: StageMask::INDIRECT,
+                        accesses: AccessMask::INDIRECT_READ,
+                    },
+                },
+                ownership: None,
+            }),
+        ])
         .unwrap();
     let colors = [Some(ColorAttachment {
         view: AttachmentView::Texture(&view),
@@ -211,7 +256,26 @@ fn primitive_index_distinguishes_two_primitives_in_direct_draw() {
     })
     .unwrap();
     pass.set_pipeline(&pipeline).unwrap();
+    pass.scissor(Rect {
+        x: 0,
+        y: 0,
+        width: 4,
+        height: 4,
+    })
+    .unwrap();
     pass.draw(0..6, 0..1).unwrap();
+    pass.scissor(Rect {
+        x: 4,
+        y: 0,
+        width: 4,
+        height: 4,
+    })
+    .unwrap();
+    device
+        .raster_extras()
+        .unwrap()
+        .draw_indirect(&mut pass, &indirect_args, 0, false)
+        .unwrap();
     pass.finish().unwrap();
     encoder
         .transition_resources(&[ResourceTransition::Texture(TextureBarrier {
@@ -286,4 +350,5 @@ fn primitive_index_distinguishes_two_primitives_in_direct_draw() {
     let y = 2 * 256;
     assert_eq!(&bytes[y + 1 * 4..y + 1 * 4 + 4], &[255, 0, 0, 255]);
     assert_eq!(&bytes[y + 6 * 4..y + 6 * 4 + 4], &[0, 255, 0, 255]);
+    eprintln!("primitive index colors match direct and single-indirect draws");
 }

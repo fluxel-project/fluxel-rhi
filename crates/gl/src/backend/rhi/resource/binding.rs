@@ -175,6 +175,9 @@ pub(crate) fn lower_program_bindings(
                         api::StorageAccess::Write | api::StorageAccess::ReadWrite => {
                             crate::backend::api::GlStorageBufferUsage::ReadWrite
                         }
+                        api::StorageAccess::Atomic => {
+                            crate::backend::api::GlStorageBufferUsage::ReadWrite
+                        }
                     }),
                     None,
                     vec![name(entry.binding)],
@@ -194,6 +197,9 @@ pub(crate) fn lower_program_bindings(
                             crate::backend::api::GlStorageImageAccess::WriteOnly
                         }
                         api::StorageAccess::ReadWrite => {
+                            crate::backend::api::GlStorageImageAccess::ReadWrite
+                        }
+                        api::StorageAccess::Atomic => {
                             crate::backend::api::GlStorageImageAccess::ReadWrite
                         }
                     }),

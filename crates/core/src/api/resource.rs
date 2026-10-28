@@ -280,6 +280,9 @@ pub enum StorageAccess {
     Read,
     Write,
     ReadWrite,
+    /// Atomic image access. This is admitted only for explicitly supported
+    /// texture format, shader stage, operation and route combinations.
+    Atomic,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TextureSampleType {

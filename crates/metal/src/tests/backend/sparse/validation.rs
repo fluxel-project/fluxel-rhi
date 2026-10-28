@@ -43,9 +43,7 @@ fn rejects_overlap_and_partial_tail_and_checks_unmap_offset() {
     let overlap = [tile(0, [0, 0, 0], [2, 1, 1]), tile(0, [1, 0, 0], [1, 1, 1])];
     assert!(validate_regions(&tiling(), 1, &overlap, None, 0).is_err());
     assert!(validate_regions(&tiling(), 1, &[tile(1, [0, 0, 0], [1, 1, 1])], None, 0).is_err());
-    assert!(
-        validate_regions(&tiling(), 1, &[tile(0, [0, 0, 0], [1, 1, 1])], None, 65536).is_err()
-    );
+    assert!(validate_regions(&tiling(), 1, &[tile(0, [0, 0, 0], [1, 1, 1])], None, 65536).is_err());
 }
 
 #[test]
@@ -63,8 +61,7 @@ fn layers_and_depth_tiles_have_independent_ownership() {
     assert_eq!(bind[1].heap_tile_offset, 1);
     state.replace(&bind, Some(&a));
     drop(a);
-    let unmap =
-        validate_regions(&geometry, 2, &[tile(0, [0, 0, 0], [1, 1, 1])], None, 0).unwrap();
+    let unmap = validate_regions(&geometry, 2, &[tile(0, [0, 0, 0], [1, 1, 1])], None, 0).unwrap();
     drop(state.replace(&unmap, None));
     assert!(weak.upgrade().is_some());
     let mut second = tile(0, [0, 0, 1], [1, 1, 1]);
