@@ -87,6 +87,7 @@ fn typed_texture_and_sampler_mismatches_are_rejected() {
                     ),
                 ],
                 &[],
+                &[],
                 None,
             )
         };

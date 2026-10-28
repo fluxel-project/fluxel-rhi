@@ -7,6 +7,7 @@
 mod binding;
 #[path = "dxc.rs"]
 mod dxc;
+mod storage_array;
 #[path = "validation.rs"]
 mod validation;
 #[path = "wave_size.rs"]
@@ -19,6 +20,10 @@ pub(crate) use wave_size::{inject_direct_hlsl, wave_ops_supported};
 #[cfg(test)]
 #[path = "../../tests/shader_naga/sampled_texture_nonuniform.rs"]
 mod sampled_texture_nonuniform_tests;
+
+#[cfg(test)]
+#[path = "../../tests/shader_naga/storage_buffer_nonuniform.rs"]
+mod storage_buffer_nonuniform_tests;
 
 pub(crate) fn shader_model_supported(
     device: &windows::Win32::Graphics::Direct3D12::ID3D12Device,
@@ -113,6 +118,7 @@ pub(crate) fn validate_source(desc: &api::ShaderDesc) -> Result<()> {
         std::str::from_utf8(&desc.bytes).map_err(|_| Error::Shader("WGSL is not UTF-8".into()))?;
     let module = naga::front::wgsl::parse_str(source)
         .map_err(|e| Error::Shader(e.emit_to_string(source)))?;
+    storage_array::validate(&module, &desc.entries)?;
     naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
         validation_capabilities(desc),
@@ -156,7 +162,7 @@ pub struct CompiledShader {
 }
 
 pub fn compile(desc: &api::ShaderDesc) -> Result<CompiledShader> {
-    compile_inner(desc, None, &[], None, None, None, false)
+    compile_inner(desc, None, &[], None, None, &[], None, false)
 }
 
 /// Compile one pipeline variant. The caller must include the entry, stage,
@@ -166,7 +172,7 @@ pub fn compile_variant(
     entry: &api::ShaderEntryPoint,
     constants: &[(String, api::SpecializationValue)],
 ) -> Result<CompiledEntry> {
-    compile_variant_impl(desc, entry, constants, &[], None, None, None, false)
+    compile_variant_impl(desc, entry, constants, &[], None, None, &[], None, false)
 }
 
 pub fn compile_variant_with_typed_map(
@@ -176,6 +182,7 @@ pub fn compile_variant_with_typed_map(
     register_map: &[(u32, u32, u32, u8, u32)],
     binding_types: &[(u32, u32, api::BindingType)],
     runtime_binding_capacities: &[(u32, u32, u32)],
+    storage_entries: &[(u32, api::BindGroupLayoutEntry)],
     required_wave_size: Option<u32>,
 ) -> Result<CompiledEntry> {
     compile_variant_impl(
@@ -185,6 +192,7 @@ pub fn compile_variant_with_typed_map(
         register_map,
         Some(binding_types),
         Some(runtime_binding_capacities),
+        storage_entries,
         required_wave_size,
         true,
     )
@@ -197,7 +205,17 @@ pub fn compile_variant_with_map(
     constants: &[(String, api::SpecializationValue)],
     register_map: &[(u32, u32, u32, u8, u32)],
 ) -> Result<CompiledEntry> {
-    compile_variant_impl(desc, entry, constants, register_map, None, None, None, true)
+    compile_variant_impl(
+        desc,
+        entry,
+        constants,
+        register_map,
+        None,
+        None,
+        &[],
+        None,
+        true,
+    )
 }
 
 fn compile_variant_impl(
@@ -207,6 +225,7 @@ fn compile_variant_impl(
     register_map: &[(u32, u32, u32, u8, u32)],
     binding_types: Option<&[(u32, u32, api::BindingType)]>,
     runtime_binding_capacities: Option<&[(u32, u32, u32)]>,
+    storage_entries: &[(u32, api::BindGroupLayoutEntry)],
     required_wave_size: Option<u32>,
     require_layout: bool,
 ) -> Result<CompiledEntry> {
@@ -227,6 +246,7 @@ fn compile_variant_impl(
         register_map,
         binding_types,
         runtime_binding_capacities,
+        storage_entries,
         required_wave_size,
         require_layout,
     )?;
@@ -239,6 +259,7 @@ fn compile_inner(
     register_map: &[(u32, u32, u32, u8, u32)],
     binding_types: Option<&[(u32, u32, api::BindingType)]>,
     runtime_binding_capacities: Option<&[(u32, u32, u32)]>,
+    storage_entries: &[(u32, api::BindGroupLayoutEntry)],
     required_wave_size: Option<u32>,
     require_layout: bool,
 ) -> Result<CompiledShader> {
@@ -266,6 +287,10 @@ fn compile_inner(
         std::str::from_utf8(&desc.bytes).map_err(|_| Error::Shader("WGSL is not UTF-8".into()))?;
     let original = naga::front::wgsl::parse_str(source)
         .map_err(|e| Error::Shader(e.emit_to_string(source)))?;
+    storage_array::validate(&original, &desc.entries)?;
+    if require_layout {
+        storage_array::validate_bindings(&original, storage_entries)?;
+    }
     let texture_atomic_route = match desc
         .required_features
         .iter()

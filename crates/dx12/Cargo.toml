@@ -16,7 +16,9 @@ hardware-tests = []
 [dependencies]
 fluxel-rhi-core = { path = "../core" }
 raw-window-handle = "=0.6.2"
-naga = { version = "=27.0.3", features = ["wgsl-in", "hlsl-out"] }
+# The checked-in HLSL patch handles storage descriptor arrays. Other backends
+# retain their existing registry dependency and compiler route.
+naga = { path = "../../vendor/naga", version = "=27.0.3", features = ["wgsl-in", "hlsl-out"] }
 
 [dev-dependencies]
 fluxel-host = { git = "https://github.com/fluxel-project/fluxel-host", rev = "b310f3fac4b8319343ef13341cd284344343c2ac", features = ["winit-runtime"] }

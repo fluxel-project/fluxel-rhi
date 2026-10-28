@@ -158,6 +158,7 @@ fn runtime_binding_arrays_specialize_to_the_layout_capacity() {
         &map,
         &types,
         &[(0, 0, 3), (0, 1, 3)],
+        &[],
         None,
     )
     .unwrap();
@@ -175,6 +176,7 @@ fn runtime_binding_arrays_specialize_to_the_layout_capacity() {
             &[],
             &map,
             &types,
+            &[],
             &[],
             None,
         ),
@@ -198,6 +200,7 @@ fn required_wave_size_is_baked_into_wgsl_derived_dxil() {
     let compiled = shader_naga::compile_variant_with_typed_map(
         &desc,
         &desc.entries[0],
+        &[],
         &[],
         &[],
         &[],

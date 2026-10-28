@@ -34,6 +34,9 @@ mod group;
 #[path = "layout.rs"]
 mod layout;
 #[cfg(test)]
+#[path = "../../tests/backend/storage_array_layout.rs"]
+mod storage_array_tests;
+#[cfg(test)]
 #[path = "../../tests/backend/descriptor.rs"]
 mod tests;
 #[path = "write.rs"]
@@ -473,6 +476,7 @@ impl DynamicViewTable {
 
 pub(crate) struct BindGroupLayoutState {
     pub(crate) slots: Vec<BindingSlot>,
+    pub(crate) storage_entries: Vec<api::BindGroupLayoutEntry>,
 }
 
 pub(crate) struct BindGroupState {

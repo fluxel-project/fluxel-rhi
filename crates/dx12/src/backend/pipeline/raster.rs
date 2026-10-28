@@ -365,6 +365,7 @@ fn stage(
                 &layout.register_map,
                 &layout.binding_types,
                 &layout.runtime_binding_capacities,
+                &layout.storage_entries,
                 None,
             )?;
             Ok((
