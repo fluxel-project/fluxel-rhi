@@ -2329,6 +2329,11 @@ comments, test output or a local plan.
 
 #### Stage 4 scope and closure boundary (2026-10-28)
 
+The candidate and uncommitted-worktree wording below describes the historical
+Stage 4 audit. That implementation was subsequently committed as `f22bce8`,
+followed by formatting commit `968decc`; Stage 5 is `9650d24` and the Stage 6
+wrapper is `c2f1ac4`. Current recovery work follows the Stage 7 plan below.
+
 Stage 4 has a finite selected route set. The verified routes described below
 are local evidence, not a declaration that the stage or final candidate is
 complete. Remaining backend/format/operation/array-shape/tuple combinations
@@ -2382,6 +2387,80 @@ Stop repeated attempts, record the outcomes and preserve a reproducible
 fixture/evidence path, revert unsupported capability claims, and continue
 independent stage work. Reopen only when new evidence, a concrete fix or a
 relevant target-device/driver change is available.
+
+#### Stage 7 bounded recovery plan (2026-10-28)
+
+Planning baseline: `c2f1ac40cec5ba021768a5635dc226c30aee78a8`.
+This plan covers exactly four deferred routes. The two DX12 routes are separate
+subitems of P4-INDEX-ROUTES; omitting them from the Stage 7 inventory would leave
+known failures unaccounted for. Planning does not reopen their capability gates.
+The Stage 6 real-source video tests remain deferred to fluxel-host integration
+under P6-VIDEO-SAMPLING and are outside this recovery pass.
+
+| Order / ledger item | Existing evidence and uncertainty | Selected next step and reopening gate | Acceptance |
+| --- | --- | --- | --- |
+| 1. P4-INDEX-ROUTES: DX12 storage-buffer non-uniform indexing | Three WGSL access forms reach the Naga 27.0.3 HLSL writer panic before native pipeline creation. The storage pointer access-chain code has no BindingArray branch; confirm the failing IR type before treating this as the root cause. | First isolate the compiler path without a GPU, preserving the real binding/register map. Prefer a narrow, reproducibly pinned Naga 27.0.3 HLSL fix that selects the descriptor before computing member byte offsets. Do not edit the Cargo registry cache or upgrade all Naga users. Reopen GPU acceptance only after valid HLSL/DXIL and non-uniform descriptor selection are demonstrated. | Typed-RHI divergent reads from two distinct descriptors return [11, 22]; a nonzero member offset distinguishes descriptor selection from intra-buffer addressing. Preserve pre-native admission and ownership through completion. Correctly reject unsupported compiler shapes without panicking. |
+| 2. P4-INDEX-ROUTES: DX12 uniform-buffer non-uniform indexing | The ledger records rejected WGSL cbuffer-array output and Direct-DXIL [22, 0] instead of [11, 22]. The original failed source/artifact/log bundle has not been located. The available static b0+b1 test returning 42 is not non-uniform evidence. | Recover the failed bundle from history first; label any replacement as a reconstructed diagnostic. Compare shader reflection/register space, root-table ranges and offsets, CBV addresses/sizes, and descriptor writes. A concrete ABI/lowering mismatch and its correction, or a relevant compiler/device change, is required before rerunning GPU acceptance. | Two divergent descriptor selections return [11, 22], with a shader ABI matching the actual layout; retain resources after caller-handle release and preserve wrong-device/missing-element rejection. WGSL lowering and admission must be correct before opening the generic descriptor-kind capability. |
+| 3. P4-AS-ARRAY-VK: Vulkan fixed AS array | Single-AS evidence and a valid two-element SPIR-V artifact do not explain the failed distinct-TLAS result. The duplicate-TLAS control only passed when the second build was omitted. No driver root cause is established. | Audit both build inputs, scratch reuse/dependencies, AS build-to-query dependencies, descriptor count/AS pNext payload, static shader indices, and retained BLAS dependencies. Reopen only with a concrete descriptor/build/lifetime correction or relevant device/driver change. A newly copied fixture alone is not a reopening condition. | Two distinct TLAS objects are each tested with a hit and a miss, so a wrong or aliased element cannot pass. Require missing-element/wrong-device rejection and caller-handle release before submission through completion. Keep runtime/partial/non-uniform AS arrays outside the selected scope. |
+| 4. P4-MESH-BATCH: Vulkan enhanced batch/count fixture | Historical positive routes passed; the added count rejection/sentinel fixture hung. Parallel/serial execution and a different target directory did not establish different causal explanations. The offset-zero sentinel bug was corrected, but the remaining hang is unexplained. | First reconstruct the command/byte-range/dependency map for count at byte 4, records at bytes 16/28, and the prefix/tail sentinels. After a concrete defect/correction or relevant runtime/device change, isolate at most three causal paths: producer plus readback, producer plus ordinary mesh indirect, and uploaded count plus mesh indirect-count without the producer. | The updated full fixture completes and checks count 0, below/equal/above max, nonzero offsets, untouched prefix/tail, count usage/range rejection and resource lifetime. An isolated diagnostic success does not close the full fixture. Preserve historical support only within its recorded evidence scope. |
+
+DX12 currently chooses WGSL/Naga and Direct-DXIL routes independently of the
+descriptor-kind capability. Core layout admission is kind-specific, not
+shader-format-specific (`crates/core/src/api/creation.rs` and
+`crates/dx12/src/backend/mod.rs`). A Direct-DXIL-only success therefore cannot
+justify enabling a capability that also admits the known failing WGSL path.
+Use Direct DXIL only to isolate ABI/native execution until that path is safe.
+Adding route-specific public API is outside this plan. For both DX12 items,
+audit the existing fixed/runtime/partial/read-write forms admitted by the same
+gate; reject unproven forms explicitly rather than generalizing one fixture.
+If that boundary cannot be expressed with the current contract, leave the
+capability disabled and record the required contract decision before expanding.
+
+A compiler patch must have a checked-in reproducible source/patch and lockfile
+provenance, or an immutable dependency revision. Record the exact affected
+dependency graph. Shared Naga consumers receive focused compile/translation
+regressions; the plan does not authorize a wholesale dependency migration.
+
+Execution and stop rules:
+
+1. Keep code/evidence investigation independent across the DX12 and Vulkan
+   owners; run GPU diagnostics serially on this machine. Perform each bounded
+   static investigation in the order above. If its reopening gate remains
+   unmet afterward, skip its GPU revalidation, record the deferral, and move on.
+2. Give each initial static investigation 30 minutes. Record its source/evidence
+   paths, a concrete causal hypothesis and a discriminating expected result.
+   If it yields no new evidence or bounded correction, defer that item and move
+   on. Missing historical artifacts are an evidence gap, not a new reproduction.
+3. Do not reset a failed route's attempt budget by entering Stage 7. A justified
+   reopening permits at most three materially different failed targeted
+   validations for the whole item, not three per parameter/fixture/target.
+   Repeated failure at the same boundary ends that branch immediately. A large
+   compiler/contract redesign ends this pass and requires a new scoped plan.
+4. Compile separately from execution. Use a fresh diagnostic process with a
+   60-second wall-clock limit for any potentially hanging GPU run, preserving
+   progress markers and diagnostics. On timeout, stop that process and that
+   GPU investigation; resume only after device health and new evidence justify
+   doing so. A timeout or forced termination is never a successful completion.
+5. Close a supported route only with matching artifact/admission checks,
+   typed-RHI GPU output, required retention evidence and independent review.
+   Run only affected regressions; bind the evidence to the exact candidate and
+   preserve raw artifacts under `Temp/证据/<backend>/<commit>/` locally.
+6. Distinguish functional completion from disposition of the recovery pass.
+   Unresolved functions stay open in this ledger with the missing evidence and
+   reopening condition. A completed recovery pass may report these deferrals,
+   but must not mark them implemented. Commit/push completed changes without a
+   per-stage version bump or release tag.
+
+Evidence starting points: DX12 storage-buffer attempt logs and SHA256 values in
+`Temp/当前验证/dx12/stage4-nonuniform-storage-buffer/verification.md`;
+Core descriptor-kind admission and DX12 capability gates in
+`crates/core/src/api/creation.rs` and `crates/dx12/src/backend/device/mod.rs`;
+Vulkan build-dependency retention in `crates/vulkan/src/backend/ray/retention.rs`;
+the scalar AS control in `crates/vulkan/tests/ray_query_gpu.rs`; the enhanced Mesh
+fixture and native checks in `crates/vulkan/tests/mesh_gpu.rs` and
+`crates/vulkan/src/backend/mesh.rs`. The earlier
+`Temp/当前验证/vulkan/frozen/mesh-final.json` covers older direct/indirect/task
+tests and is not evidence that the enhanced count/sentinel fixture passed.
 
 ### Deferred families and reconsideration conditions
 
