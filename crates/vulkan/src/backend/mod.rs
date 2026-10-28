@@ -441,6 +441,9 @@ impl fluxel_rhi_core::backend::ResourceBackend for Vulkan {
     fn create_texture(device: &VulkanDevice, desc: &api::TextureDesc) -> Result<VulkanTexture> {
         resource::create_texture(device, desc)
     }
+    fn texture_uses_native_transient_attachment(texture: &VulkanTexture) -> bool {
+        texture.0.lazy_allocated
+    }
     fn create_view(
         device: &VulkanDevice,
         texture: &VulkanTexture,

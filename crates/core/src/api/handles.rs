@@ -47,9 +47,89 @@ macro_rules! handle {
         }
     };
 }
+pub struct Texture<B: Backend> {
+    pub(crate) device: DeviceId,
+    pub(crate) native: B::NativeTexture,
+    pub(crate) desc: Option<TextureDesc>,
+    pub(crate) native_transient_usage: bool,
+}
+impl<B: Backend> Clone for Texture<B> {
+    fn clone(&self) -> Self {
+        Self {
+            device: self.device,
+            native: self.native.clone(),
+            desc: self.desc.clone(),
+            native_transient_usage: self.native_transient_usage,
+        }
+    }
+}
+impl<B: Backend> Texture<B> {
+    /// Wraps a native texture whose full RHI descriptor is unavailable.
+    ///
+    /// # Safety
+    /// The native handle must belong to this device and object kind, and its
+    /// producer must ensure it was not created with transient attachment
+    /// intent. This constructor leaves descriptor provenance unknown and thus
+    /// cannot enforce transient-only use restrictions.
+    pub unsafe fn from_native(device: DeviceId, native: B::NativeTexture) -> Self {
+        Self {
+            device,
+            native,
+            desc: None,
+            native_transient_usage: false,
+        }
+    }
+    pub fn device(&self) -> DeviceId {
+        self.device
+    }
+    #[doc(hidden)]
+    pub unsafe fn native_ref(&self) -> &B::NativeTexture {
+        &self.native
+    }
+    /// Whether this exact transient attachment was created through the
+    /// backend's native transient mode (such as lazy allocation or a native
+    /// transient usage flag). This does not prove physical tile-memory use.
+    pub fn uses_native_transient_attachment(&self) -> bool {
+        self.native_transient_usage
+    }
+}
+pub struct TextureView<B: Backend> {
+    pub(crate) device: DeviceId,
+    pub(crate) native: B::NativeTextureView,
+    pub(crate) texture_desc: Option<TextureDesc>,
+}
+impl<B: Backend> Clone for TextureView<B> {
+    fn clone(&self) -> Self {
+        Self {
+            device: self.device,
+            native: self.native.clone(),
+            texture_desc: self.texture_desc.clone(),
+        }
+    }
+}
+impl<B: Backend> TextureView<B> {
+    /// Wraps a native view whose source texture descriptor is unavailable.
+    ///
+    /// # Safety
+    /// The native handle must belong to this device and object kind. The
+    /// producer must ensure its source is not a transient attachment; this
+    /// constructor cannot establish that provenance for Core validation.
+    pub unsafe fn from_native(device: DeviceId, native: B::NativeTextureView) -> Self {
+        Self {
+            device,
+            native,
+            texture_desc: None,
+        }
+    }
+    pub fn device(&self) -> DeviceId {
+        self.device
+    }
+    #[doc(hidden)]
+    pub unsafe fn native_ref(&self) -> &B::NativeTextureView {
+        &self.native
+    }
+}
 handle!(Buffer, NativeBuffer);
-handle!(Texture, NativeTexture);
-handle!(TextureView, NativeTextureView);
 handle!(Sampler, NativeSampler);
 pub struct BindGroupLayout<B: Backend> {
     pub(crate) device: DeviceId,

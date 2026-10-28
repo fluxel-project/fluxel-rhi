@@ -104,6 +104,8 @@ pub(super) struct DeviceState {
     pub(super) next_uncertain_resource: Cell<u64>,
     pub(super) lost: Cell<bool>,
     pub(super) validation_error: RefCell<Option<String>>,
+    /// Device-open validation-scope probe for native TRANSIENT_ATTACHMENT usage.
+    pub(super) transient_attachment_usage: bool,
     pub(super) wgsl_language_features: std::collections::BTreeSet<String>,
     pub(super) utility_pipelines: RefCell<std::collections::BTreeMap<&'static str, JsValue>>,
     pub(super) render_utility_pipelines: RefCell<std::collections::BTreeMap<String, JsValue>>,
@@ -301,6 +303,8 @@ impl InstanceBackend for WebGpu {
             let device = JsFuture::from(device_promise)
                 .await
                 .map_err(|error| Error::Backend(js::message(&error)))?;
+            let transient_attachment_usage =
+                super::resource::probe_transient_attachment_usage(&device).await;
             let queue = js::queue(&device).map_err(|error| Error::Backend(js::message(&error)))?;
             let lost = js::lost(&device).map_err(|error| Error::Backend(js::message(&error)))?;
             let lane = LaneId {
@@ -374,6 +378,7 @@ impl InstanceBackend for WebGpu {
                 next_uncertain_resource: Cell::new(0),
                 lost: Cell::new(false),
                 validation_error: RefCell::new(None),
+                transient_attachment_usage,
                 wgsl_language_features,
                 utility_pipelines: RefCell::new(std::collections::BTreeMap::new()),
                 render_utility_pipelines: RefCell::new(std::collections::BTreeMap::new()),

@@ -329,6 +329,7 @@ pub(super) fn import_texture(
             default_allocation: None,
             sparse: None,
             desc: desc.clone(),
+            lazy_allocated: false,
         })))
     })();
     if result.is_err() {

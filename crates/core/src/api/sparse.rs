@@ -83,6 +83,10 @@ impl<B: SparseBackend> Device<B> {
 impl<B: SparseBackend> SparseDomain<'_, B> {
     /// Creates a sparse texture; newly created tiles are unmapped.
     pub fn texture(&self, desc: &TextureDesc) -> Result<Texture<B>> {
+        validate_transient_texture_desc(desc)?;
+        if desc.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT) {
+            return Err(Error::InvalidState);
+        }
         // SAFETY: the backend creates this native object for this device.
         Ok(unsafe {
             Texture::from_native(

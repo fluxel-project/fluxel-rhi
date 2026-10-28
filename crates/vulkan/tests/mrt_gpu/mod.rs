@@ -2,6 +2,8 @@
 #![cfg(all(windows, feature = "hardware-tests"))]
 #[path = "resolve.rs"]
 mod resolve;
+#[path = "transient.rs"]
+mod transient;
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_vulkan::VulkanInstance;
 use std::{future::Future, sync::Arc};

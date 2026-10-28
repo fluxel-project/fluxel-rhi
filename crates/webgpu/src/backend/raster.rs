@@ -17,6 +17,20 @@ use super::{
     resource::WebGpuBuffer,
 };
 
+fn transient_intent(view: &api::AttachmentView<'_, WebGpu>) -> bool {
+    match view {
+        api::AttachmentView::Texture(view) => {
+            // SAFETY: Core admitted this view's device before raster lowering.
+            unsafe { view.native_ref() }
+                ._texture
+                .desc
+                .usage
+                .contains(api::TextureUsage::TRANSIENT_ATTACHMENT)
+        }
+        api::AttachmentView::Surface(_) => false,
+    }
+}
+
 impl fluxel_rhi_core::backend::RasterBackend for WebGpu {
     fn begin_raster(
         encoder: &mut WebGpuEncoder,
@@ -75,6 +89,16 @@ impl fluxel_rhi_core::backend::RasterBackend for WebGpu {
                 return Err(Error::InvalidRange);
             }
             partial |= area.x != 0 || area.y != 0 || right != extent[0] || bottom != extent[1];
+        }
+        let transient = desc.colors.iter().flatten().any(|color| {
+            transient_intent(&color.view)
+                || color.resolve_target.as_ref().is_some_and(transient_intent)
+        }) || desc
+            .depth_stencil
+            .as_ref()
+            .is_some_and(|depth| transient_intent(&depth.view));
+        if partial && transient {
+            return Err(Error::Unsupported("partial transient attachment pass"));
         }
         if partial {
             if let Some(writes) = &desc.timestamp_writes {
@@ -165,7 +189,14 @@ impl fluxel_rhi_core::backend::RasterBackend for WebGpu {
                 }
                 field(&attachment, "clearValue", value)?;
             }
-            field(&attachment, "storeOp", JsValue::from_str("store"))?;
+            field(
+                &attachment,
+                "storeOp",
+                JsValue::from_str(match color.store {
+                    api::StoreOp::Store => "store",
+                    api::StoreOp::Discard => "discard",
+                }),
+            )?;
             colors.push(&attachment);
         }
         field(&native, "colorAttachments", colors.into())?;
@@ -240,7 +271,14 @@ impl fluxel_rhi_core::backend::RasterBackend for WebGpu {
                         }
                         api::LoadOp::Load => {}
                     }
-                    field(&attachment, "depthStoreOp", JsValue::from_str("store"))?;
+                    field(
+                        &attachment,
+                        "depthStoreOp",
+                        JsValue::from_str(match store {
+                            api::StoreOp::Store => "store",
+                            api::StoreOp::Discard => "discard",
+                        }),
+                    )?;
                 }
             }
             if depth.depth.is_none() {
@@ -274,7 +312,14 @@ impl fluxel_rhi_core::backend::RasterBackend for WebGpu {
                         }
                         api::LoadOp::Load => {}
                     }
-                    field(&attachment, "stencilStoreOp", JsValue::from_str("store"))?;
+                    field(
+                        &attachment,
+                        "stencilStoreOp",
+                        JsValue::from_str(match store {
+                            api::StoreOp::Store => "store",
+                            api::StoreOp::Discard => "discard",
+                        }),
+                    )?;
                 }
             }
             if depth.stencil.is_none() {

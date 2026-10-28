@@ -35,7 +35,8 @@ const SUPPORTED_USAGE: TextureUsage = TextureUsage(
         | TextureUsage::COPY_DST.0
         | TextureUsage::TEXTURE_BINDING.0
         | TextureUsage::STORAGE_BINDING.0
-        | TextureUsage::RENDER_ATTACHMENT.0,
+        | TextureUsage::RENDER_ATTACHMENT.0
+        | TextureUsage::TRANSIENT_ATTACHMENT.0,
 );
 
 #[derive(Clone)]

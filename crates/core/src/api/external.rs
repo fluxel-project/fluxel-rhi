@@ -149,6 +149,10 @@ impl<B: ExternalBackend> ExternalDomain<'_, B> {
         handle: B::NativeExternalHandle,
         desc: &TextureDesc,
     ) -> Result<ExternalTexture<B>> {
+        validate_transient_texture_desc(desc)?;
+        if desc.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT) {
+            return Err(Error::InvalidState);
+        }
         Ok(ExternalTexture {
             device: self.device.id,
             // SAFETY: the caller guarantees texture metadata and external ownership invariants.

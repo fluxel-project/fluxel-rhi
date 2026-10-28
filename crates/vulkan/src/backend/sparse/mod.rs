@@ -316,6 +316,7 @@ impl fluxel_rhi_core::backend::SparseBackend for Vulkan {
             default_allocation: None,
             sparse: Some(state),
             desc: desc.clone(),
+            lazy_allocated: false,
         }));
         texture
             .0

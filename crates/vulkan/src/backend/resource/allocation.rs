@@ -89,6 +89,26 @@ pub(super) fn memory_flags(memory: api::MemoryClass) -> vk::MemoryPropertyFlags 
     }
 }
 
+pub(in crate::backend) fn has_compatible_lazy_memory_type(
+    device: &VulkanDevice,
+    requirements: vk::MemoryRequirements,
+) -> bool {
+    // SAFETY: the retained physical device owns this immutable memory table.
+    let properties = unsafe {
+        device
+            .0
+            .instance
+            .instance
+            .get_physical_device_memory_properties(device.0.physical)
+    };
+    (0..properties.memory_type_count).any(|index| {
+        (requirements.memory_type_bits & (1 << index)) != 0
+            && properties.memory_types[index as usize]
+                .property_flags
+                .contains(vk::MemoryPropertyFlags::LAZILY_ALLOCATED)
+    })
+}
+
 pub(in crate::backend) fn buffer_usage(usage: api::BufferUsage) -> Result<vk::BufferUsageFlags> {
     if usage.0 & !SUPPORTED_BUFFER_USAGE != 0 {
         return Err(Error::Unsupported("Vulkan buffer usage"));
@@ -153,13 +173,18 @@ pub(in crate::backend) fn image_usage(
         out |= vk::ImageUsageFlags::SAMPLED;
     }
     if usage.contains(api::TextureUsage::RENDER_ATTACHMENT) {
-        // Explicit resolve operations require transfer usage on both images.
-        out |= vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST;
+        if !usage.contains(api::TextureUsage::TRANSIENT_ATTACHMENT) {
+            // Persistent RHI resolve/copy operations require transfer usage.
+            out |= vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST;
+        }
         out |= if depth {
             vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
         } else {
             vk::ImageUsageFlags::COLOR_ATTACHMENT
         };
+    }
+    if usage.contains(api::TextureUsage::TRANSIENT_ATTACHMENT) {
+        out |= vk::ImageUsageFlags::TRANSIENT_ATTACHMENT;
     }
     if usage.contains(api::TextureUsage::STORAGE_BINDING) {
         out |= vk::ImageUsageFlags::STORAGE;
@@ -370,4 +395,5 @@ pub(super) const SUPPORTED_TEXTURE_USAGE: u64 = api::TextureUsage::COPY_SRC.0
     | api::TextureUsage::COPY_DST.0
     | api::TextureUsage::TEXTURE_BINDING.0
     | api::TextureUsage::STORAGE_BINDING.0
-    | api::TextureUsage::RENDER_ATTACHMENT.0;
+    | api::TextureUsage::RENDER_ATTACHMENT.0
+    | api::TextureUsage::TRANSIENT_ATTACHMENT.0;

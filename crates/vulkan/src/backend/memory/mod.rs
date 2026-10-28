@@ -283,6 +283,7 @@ impl fluxel_rhi_core::backend::MemoryBackend for Vulkan {
                 default_allocation: None,
                 sparse: None,
                 desc: desc.clone(),
+                lazy_allocated: false,
             })))
         })();
         if result.is_err() {

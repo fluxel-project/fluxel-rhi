@@ -16,6 +16,12 @@ pub trait ResourceBackend: Backend {
         device: &Self::NativeDevice,
         desc: &TextureDesc,
     ) -> Result<Self::NativeTexture>;
+    /// Reports whether this exact texture uses the backend's native transient
+    /// mode. This is not a guarantee of physical memorylessness. Defaults to
+    /// ordinary storage.
+    fn texture_uses_native_transient_attachment(_texture: &Self::NativeTexture) -> bool {
+        false
+    }
     fn create_view(
         device: &Self::NativeDevice,
         texture: &Self::NativeTexture,

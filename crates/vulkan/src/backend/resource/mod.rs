@@ -15,6 +15,7 @@ pub(super) mod allocation;
 mod support;
 pub(super) use allocation::allocate_with_address;
 pub(super) use allocation::format;
+pub(super) use allocation::has_compatible_lazy_memory_type;
 use allocation::*;
 pub(super) use support::{buffer_support, texture_support};
 
@@ -95,6 +96,7 @@ pub(super) struct TextureState {
     pub(super) default_allocation: Option<super::memory::DefaultAllocationLease>,
     pub(super) sparse: Option<super::sparse::SparseTextureState>,
     pub(super) desc: api::TextureDesc,
+    pub(super) lazy_allocated: bool,
 }
 impl Drop for TextureState {
     fn drop(&mut self) {
@@ -386,7 +388,9 @@ pub(super) fn create_texture(
     let dedicated_image = (dedicated.requires_dedicated_allocation == vk::TRUE
         || dedicated.prefers_dedicated_allocation == vk::TRUE)
         .then_some((vk::Buffer::null(), image));
-    let pooled = if dedicated_image.is_none() {
+    let transient = desc.usage.contains(api::TextureUsage::TRANSIENT_ATTACHMENT);
+    let lazy_compatible = transient && has_compatible_lazy_memory_type(device, requirements);
+    let pooled = if dedicated_image.is_none() && !lazy_compatible {
         match device.0.default_resource_pool.allocate(
             requirements,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
@@ -404,7 +408,7 @@ pub(super) fn create_texture(
     } else {
         None
     };
-    let (memory, lease) = if let Some((allocation, _mapping)) = pooled {
+    let (memory, lease, lazy_allocated) = if let Some((allocation, _mapping)) = pooled {
         // SAFETY: optimal images use a disjoint pool class, and this page range
         // satisfies the native memory type, size, and alignment requirements.
         if let Err(error) = unsafe {
@@ -416,15 +420,39 @@ pub(super) fn create_texture(
             unsafe { device.0.device.destroy_image(image, None) };
             return Err(vk_error(error));
         }
-        (None, Some(allocation.lease))
+        (None, Some(allocation.lease), false)
     } else {
-        let (memory, _) = match allocate_resource(
-            device,
-            requirements,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            false,
-            dedicated_image,
-        ) {
+        let mut lazy_allocated = lazy_compatible;
+        let allocation = if lazy_compatible {
+            match allocate_resource(
+                device,
+                requirements,
+                vk::MemoryPropertyFlags::LAZILY_ALLOCATED,
+                false,
+                dedicated_image,
+            ) {
+                Ok(allocation) => Ok(allocation),
+                Err(_) => {
+                    lazy_allocated = false;
+                    allocate_resource(
+                        device,
+                        requirements,
+                        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                        false,
+                        dedicated_image,
+                    )
+                }
+            }
+        } else {
+            allocate_resource(
+                device,
+                requirements,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                false,
+                dedicated_image,
+            )
+        };
+        let (memory, _) = match allocation {
             Ok(allocated) => allocated,
             Err(error) => {
                 unsafe { device.0.device.destroy_image(image, None) };
@@ -440,7 +468,7 @@ pub(super) fn create_texture(
             }
             return Err(vk_error(error));
         }
-        (Some(memory), None)
+        (Some(memory), None, lazy_allocated)
     };
     Ok(VulkanTexture(Arc::new(TextureState {
         device: device.0.clone(),
@@ -450,6 +478,7 @@ pub(super) fn create_texture(
         default_allocation: lease,
         sparse: None,
         desc: desc.clone(),
+        lazy_allocated,
     })))
 }
 

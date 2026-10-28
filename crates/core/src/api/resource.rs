@@ -48,6 +48,8 @@ impl TextureUsage {
     pub const TEXTURE_BINDING: Self = Self(1 << 2);
     pub const STORAGE_BINDING: Self = Self(1 << 3);
     pub const RENDER_ATTACHMENT: Self = Self(1 << 4);
+    /// Attachment-only image whose contents are discarded at the end of each pass.
+    pub const TRANSIENT_ATTACHMENT: Self = Self(1 << 5);
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
@@ -239,6 +241,20 @@ pub struct TextureDesc {
     pub samples: u32,
     pub usage: TextureUsage,
     pub view_formats: Vec<TextureFormat>,
+}
+
+pub(crate) fn validate_transient_texture_desc(desc: &TextureDesc) -> Result<()> {
+    if desc.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT)
+        && (desc.usage.0
+            != (TextureUsage::TRANSIENT_ATTACHMENT.0 | TextureUsage::RENDER_ATTACHMENT.0)
+            || desc.dimension != TextureDimension::D2
+            || desc.mip_levels != 1
+            || desc.array_layers != 1
+            || !desc.view_formats.is_empty())
+    {
+        return Err(Error::InvalidState);
+    }
+    Ok(())
 }
 #[derive(Clone, Debug)]
 pub struct TextureViewDesc {

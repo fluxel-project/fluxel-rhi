@@ -29,6 +29,7 @@ pub struct WebGpuBuffer {
 pub struct WebGpuTexture {
     pub(super) raw: JsValue,
     pub(super) desc: api::TextureDesc,
+    pub(super) native_transient_usage: bool,
 }
 
 #[derive(Clone)]
@@ -158,6 +159,7 @@ pub(super) fn texture_usage(usage: api::TextureUsage) -> Result<u32> {
         (api::TextureUsage::TEXTURE_BINDING, 4),
         (api::TextureUsage::STORAGE_BINDING, 8),
         (api::TextureUsage::RENDER_ATTACHMENT, 16),
+        (api::TextureUsage::TRANSIENT_ATTACHMENT, 32),
     ];
     let mut native = 0;
     let mut mask = 0;
@@ -171,6 +173,43 @@ pub(super) fn texture_usage(usage: api::TextureUsage) -> Result<u32> {
         return Err(Error::Unsupported("WebGPU texture usage"));
     }
     Ok(native)
+}
+
+pub(super) async fn probe_transient_attachment_usage(device: &JsValue) -> bool {
+    use js_sys::Promise;
+    use wasm_bindgen_futures::JsFuture;
+
+    if js::call1(device, "pushErrorScope", &JsValue::from_str("validation")).is_err() {
+        return false;
+    }
+    let created = (|| -> Result<JsValue> {
+        let texture = descriptor();
+        let size = descriptor();
+        field(&size, "width", JsValue::from_f64(1.0))?;
+        field(&size, "height", JsValue::from_f64(1.0))?;
+        field(&size, "depthOrArrayLayers", JsValue::from_f64(1.0))?;
+        field(&texture, "size", size)?;
+        field(&texture, "dimension", JsValue::from_str("2d"))?;
+        field(&texture, "format", JsValue::from_str("rgba8unorm"))?;
+        field(&texture, "mipLevelCount", JsValue::from_f64(1.0))?;
+        field(&texture, "sampleCount", JsValue::from_f64(1.0))?;
+        field(&texture, "usage", JsValue::from_f64(0x30 as f64))?;
+        js::call1(device, "createTexture", &texture).map_err(backend_error)
+    })();
+    let scope = js::call0(device, "popErrorScope")
+        .map(Promise::from)
+        .map_err(backend_error);
+    let scope = match scope {
+        Ok(promise) => JsFuture::from(promise).await.map_err(backend_error),
+        Err(error) => Err(error),
+    };
+    let native_usage = created.ok().and_then(|texture| {
+        let usage = js::property(&texture, "usage").ok()?.as_f64()? as u32;
+        let _ = js::call0(&texture, "destroy");
+        Some(usage)
+    });
+    matches!(scope, Ok(error) if error.is_null() || error.is_undefined())
+        && native_usage.is_some_and(|usage| usage & 0x20 != 0)
 }
 
 #[path = "resource_format.rs"]
@@ -303,6 +342,11 @@ impl fluxel_rhi_core::backend::ResourceBackend for WebGpu {
             JsValue::from_str(texture_format(desc.format)?),
         )?;
         let mut native_usage = texture_usage(desc.usage)?;
+        if desc.usage.contains(api::TextureUsage::TRANSIENT_ATTACHMENT)
+            && !device.0.transient_attachment_usage
+        {
+            native_usage &= !0x20;
+        }
         let format_name = texture_format(desc.format)?;
         if format_name.starts_with("depth") {
             if desc.usage.contains(api::TextureUsage::COPY_SRC) {
@@ -340,10 +384,20 @@ impl fluxel_rhi_core::backend::ResourceBackend for WebGpu {
             field(&object, "viewFormats", formats.into())?;
         }
         let raw = js::call1(&device.0.device, "createTexture", &object).map_err(backend_error)?;
+        let native_transient_usage = desc.usage.contains(api::TextureUsage::TRANSIENT_ATTACHMENT)
+            && js::property(&raw, "usage")
+                .ok()
+                .and_then(|usage| usage.as_f64())
+                .is_some_and(|usage| (usage as u32) & 0x20 != 0);
         Ok(WebGpuTexture {
             raw,
             desc: desc.clone(),
+            native_transient_usage,
         })
+    }
+
+    fn texture_uses_native_transient_attachment(texture: &WebGpuTexture) -> bool {
+        texture.native_transient_usage
     }
 
     fn create_view(

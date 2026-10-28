@@ -83,6 +83,9 @@ impl<B: MemoryBackend> MemoryDomain<'_, B> {
         if heap.device != self.device.id {
             return Err(Error::WrongDevice);
         }
+        if desc.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT) {
+            return Err(Error::InvalidState);
+        }
         // SAFETY: the backing allocation was checked to belong to this device.
         Ok(unsafe {
             Texture::from_native(

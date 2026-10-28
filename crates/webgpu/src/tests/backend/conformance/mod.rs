@@ -35,6 +35,8 @@ mod storage_view;
 mod surface;
 #[path = "textures.rs"]
 mod textures;
+#[path = "transient.rs"]
+mod transient;
 #[path = "utility_cache.rs"]
 mod utility_cache;
 

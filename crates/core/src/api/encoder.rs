@@ -160,6 +160,19 @@ impl<B: CommandBackend> CommandEncoder<B> {
         if src.texture.device != self.device || dst.texture.device != self.device {
             return Err(Error::WrongDevice);
         }
+        if src
+            .texture
+            .desc
+            .as_ref()
+            .is_some_and(|d| d.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT))
+            || dst
+                .texture
+                .desc
+                .as_ref()
+                .is_some_and(|d| d.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT))
+        {
+            return Err(Error::InvalidState);
+        }
         let result = self.call(|e| B::copy_texture(e, src, dst));
         if result.is_ok() {
             self.stats.record_copy();
@@ -169,6 +182,19 @@ impl<B: CommandBackend> CommandEncoder<B> {
     pub fn resolve(&mut self, src: TextureRegion<'_, B>, dst: TextureRegion<'_, B>) -> Result<()> {
         if src.texture.device != self.device || dst.texture.device != self.device {
             return Err(Error::WrongDevice);
+        }
+        if src
+            .texture
+            .desc
+            .as_ref()
+            .is_some_and(|d| d.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT))
+            || dst
+                .texture
+                .desc
+                .as_ref()
+                .is_some_and(|d| d.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT))
+        {
+            return Err(Error::InvalidState);
         }
         let result = self.call(|e| B::resolve(e, src, dst));
         if result.is_ok() {
@@ -184,6 +210,19 @@ impl<B: CommandBackend> CommandEncoder<B> {
     ) -> Result<()> {
         if src.texture.device != self.device || dst.texture.device != self.device {
             return Err(Error::WrongDevice);
+        }
+        if src
+            .texture
+            .desc
+            .as_ref()
+            .is_some_and(|d| d.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT))
+            || dst
+                .texture
+                .desc
+                .as_ref()
+                .is_some_and(|d| d.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT))
+        {
+            return Err(Error::InvalidState);
         }
         let result = self.call(|e| B::blit(e, src, dst, filter));
         if result.is_ok() {
@@ -215,6 +254,13 @@ impl<B: CommandBackend> CommandEncoder<B> {
         if dst.device != self.device {
             return Err(Error::WrongDevice);
         }
+        if dst
+            .desc
+            .as_ref()
+            .is_some_and(|d| d.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT))
+        {
+            return Err(Error::InvalidState);
+        }
         if mips.start >= mips.end || layers.start >= layers.end {
             return Err(Error::InvalidRange);
         }
@@ -238,6 +284,14 @@ impl<B: CommandBackend> CommandEncoder<B> {
         if src.device != self.device || dst.texture.device != self.device {
             return Err(Error::WrongDevice);
         }
+        if dst
+            .texture
+            .desc
+            .as_ref()
+            .is_some_and(|d| d.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT))
+        {
+            return Err(Error::InvalidState);
+        }
         let result = self.call(|e| B::buffer_to_texture(e, &src.native, layout, dst));
         if result.is_ok() {
             self.stats.record_copy();
@@ -252,6 +306,14 @@ impl<B: CommandBackend> CommandEncoder<B> {
     ) -> Result<()> {
         if src.texture.device != self.device || dst.device != self.device {
             return Err(Error::WrongDevice);
+        }
+        if src
+            .texture
+            .desc
+            .as_ref()
+            .is_some_and(|d| d.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT))
+        {
+            return Err(Error::InvalidState);
         }
         let result = self.call(|e| B::texture_to_buffer(e, src, &dst.native, layout));
         if result.is_ok() {
@@ -364,6 +426,45 @@ impl<B: RasterBackend> CommandEncoder<B> {
             .is_some_and(|a| !a.view.is_current())
         {
             return Err(Error::SurfaceOutdated);
+        }
+        let transient_view = |view: &AttachmentView<'_, B>| match view {
+            AttachmentView::Texture(view) => view
+                .texture_desc
+                .as_ref()
+                .is_some_and(|d| d.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT)),
+            AttachmentView::Surface(_) => false,
+        };
+        for attachment in desc.colors.iter().flatten() {
+            if attachment
+                .resolve_target
+                .as_ref()
+                .is_some_and(transient_view)
+            {
+                return Err(Error::InvalidState);
+            }
+            if transient_view(&attachment.view) {
+                if !matches!(attachment.load, LoadOp::Clear(_) | LoadOp::Discard)
+                    || !matches!(attachment.store, StoreOp::Discard)
+                {
+                    return Err(Error::InvalidState);
+                }
+            }
+        }
+        if let Some(attachment) = &desc.depth_stencil {
+            if transient_view(&attachment.view) {
+                if attachment.depth.is_some_and(|(load, store)| {
+                    !matches!(load, LoadOp::Clear(_) | LoadOp::Discard)
+                        || !matches!(store, StoreOp::Discard)
+                }) || attachment.stencil.is_some_and(|(load, store)| {
+                    !matches!(load, LoadOp::Clear(_) | LoadOp::Discard)
+                        || !matches!(store, StoreOp::Discard)
+                }) || attachment.depth.is_none() && attachment.stencil.is_none()
+                    || attachment.depth_read_only
+                    || attachment.stencil_read_only
+                {
+                    return Err(Error::InvalidState);
+                }
+            }
         }
         let result = prepare(self.ready()?)
             .and_then(|()| B::begin_raster(self.native.as_mut().expect("ready encoder"), desc));

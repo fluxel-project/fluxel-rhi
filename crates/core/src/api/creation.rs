@@ -20,6 +20,9 @@ impl<B: ResourceBackend> Device<B> {
         B::buffer_support(&self.native, desc)
     }
     pub fn texture_support(&self, desc: &TextureDesc) -> Support<TextureSupport> {
+        if validate_transient_texture_desc(desc).is_err() {
+            return Support::Unsupported("invalid transient attachment descriptor");
+        }
         B::texture_support(&self.native, desc)
     }
     pub fn create_buffer(&self, desc: &BufferDesc) -> Result<Buffer<B>> {
@@ -30,11 +33,17 @@ impl<B: ResourceBackend> Device<B> {
         Ok(unsafe { Buffer::from_native(self.id, B::create_buffer(&self.native, desc)?) })
     }
     pub fn create_texture(&self, desc: &TextureDesc) -> Result<Texture<B>> {
+        validate_transient_texture_desc(desc)?;
         if let Support::Unsupported(reason) = B::texture_support(&self.native, desc) {
             return Err(Error::Unsupported(reason));
         }
         // SAFETY: the SPI created the texture for this device after support validation.
-        Ok(unsafe { Texture::from_native(self.id, B::create_texture(&self.native, desc)?) })
+        let mut texture =
+            unsafe { Texture::from_native(self.id, B::create_texture(&self.native, desc)?) };
+        texture.desc = Some(desc.clone());
+        texture.native_transient_usage =
+            B::texture_uses_native_transient_attachment(&texture.native);
+        Ok(texture)
     }
     pub fn create_view(
         &self,
@@ -44,13 +53,28 @@ impl<B: ResourceBackend> Device<B> {
         if texture.device != self.id {
             return Err(Error::WrongDevice);
         }
+        if let Some(texture_desc) = texture
+            .desc
+            .as_ref()
+            .filter(|texture| texture.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT))
+        {
+            if desc.dimension != TextureViewDimension::D2
+                || desc.format != texture_desc.format
+                || desc.mips != (0..1)
+                || desc.layers != (0..1)
+            {
+                return Err(Error::InvalidState);
+            }
+        }
         // SAFETY: `texture` was checked to belong to this device and SPI creates its view.
-        Ok(unsafe {
+        let mut view = unsafe {
             TextureView::from_native(
                 self.id,
                 B::create_view(&self.native, &texture.native, desc)?,
             )
-        })
+        };
+        view.texture_desc = texture.desc.clone();
+        Ok(view)
     }
     pub fn create_sampler(&self, desc: &SamplerDesc) -> Result<Sampler<B>> {
         // SAFETY: the SPI created the sampler for this device.
@@ -222,6 +246,9 @@ impl<B: ResourceBackend> Device<B> {
             if !binding_resource_device(&entry.resource, self.id) {
                 return Err(Error::WrongDevice);
             }
+            if binding_resource_transient(&entry.resource) {
+                return Err(Error::InvalidState);
+            }
             let array = match &entry.resource {
                 BindingResource::Array(values) => Some(values),
                 _ => None,
@@ -270,5 +297,16 @@ impl<B: ResourceBackend> Device<B> {
         Ok(unsafe {
             PipelineLayout::from_native(self.id, B::create_pipeline_layout(&self.native, desc)?)
         })
+    }
+}
+
+fn binding_resource_transient<B: Backend>(resource: &BindingResource<'_, B>) -> bool {
+    match resource {
+        BindingResource::TextureView(view) => view
+            .texture_desc
+            .as_ref()
+            .is_some_and(|d| d.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT)),
+        BindingResource::Array(values) => values.iter().flatten().any(binding_resource_transient),
+        _ => false,
     }
 }
