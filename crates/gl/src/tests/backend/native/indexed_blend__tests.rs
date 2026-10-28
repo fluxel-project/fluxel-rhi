@@ -1,4 +1,3 @@
-
 use super::IndexedBlendFns;
 
 #[test]

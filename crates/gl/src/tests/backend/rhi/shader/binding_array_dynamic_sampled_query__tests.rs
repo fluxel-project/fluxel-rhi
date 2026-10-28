@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn verify(source: &str, needle: &str, with_consumers: bool) {

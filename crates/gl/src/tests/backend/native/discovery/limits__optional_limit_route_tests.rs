@@ -1,4 +1,3 @@
-
 use super::{NativeGlQuery, ProbeReport, glow_const, limits, optional_limit_routes};
 use crate::backend::api::{GlExtensionSet, GlFamilyProfile};
 use std::cell::RefCell;

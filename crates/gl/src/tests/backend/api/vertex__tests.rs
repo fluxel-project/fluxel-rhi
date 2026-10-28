@@ -1,4 +1,3 @@
-
 use super::*;
 #[test]
 fn attribute_is_hashable_structural_state() {

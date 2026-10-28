@@ -1,4 +1,3 @@
-
 use super::*;
 #[test]
 fn shared_selector_uses_only_diagonal_pairs() {

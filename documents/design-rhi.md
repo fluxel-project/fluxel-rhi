@@ -2497,6 +2497,33 @@ fixture and native checks in `crates/vulkan/tests/mesh_gpu.rs` and
 `Temp/当前验证/vulkan/frozen/mesh-final.json` covers older direct/indirect/task
 tests and is not evidence that the enhanced count/sentinel fixture passed.
 
+#### Test-suite consolidation
+
+The owned test suite is being audited against baseline `3a4b099`: redundant
+fixtures and tests may be removed only when another retained case covers their
+backend, inputs, boundaries, error/side-effect behavior, lifetime and observable
+result. Public GPU integration does not replace private lowering or admission
+checks merely because both name the same feature. Upstream vendored Naga tests
+remain part of the unmodified upstream source organization.
+
+GL consolidation is complete for the first batch: owned test sources decreased
+from 81,439 to 68,162 lines (283 to 273 Rust files). The 24 unused recorder
+self-tests and an unused evidence-container constructor test were removed;
+a raw GLES driver reproduction was retired from crate regression targets.
+PBO/UNORM/compressed-format cases retain their platform/format and aligned plus
+unaligned snapshot oracles in shared fixtures. Private tests now reside under
+`crates/gl/src/tests`, grouped by boundary; see its README for retained coverage.
+WGL checks and five focused GPU cases pass; five selected Chrome/ANGLE GPU cases
+pass, and WebGL/GLES configurations compile. Review TEST-GL-01 closed after the
+unaligned snapshot oracle was restored. Other crates remain in progress.
+
+This work is in progress across all owned crates: preserve an explicit
+retained-case mapping for deletions, move test-only code into its owning test
+hierarchy, group files by behavior, update Cargo/module/asset/tool references,
+and verify the affected target/feature rows. Completion requires a full inventory
+and independent review of removed coverage; a smaller line count alone does not
+close this item. No backend capability changes are part of this consolidation.
+
 ### Deferred families and reconsideration conditions
 
 These families are intentionally outside the immediate implementation scope.

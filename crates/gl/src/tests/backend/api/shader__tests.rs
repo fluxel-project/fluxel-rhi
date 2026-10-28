@@ -1,4 +1,3 @@
-
 use super::*;
 #[test]
 fn raster_stages_cannot_mix_native_artifact_formats() {

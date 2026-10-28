@@ -1,4 +1,3 @@
-
 use super::*;
 fn verify(source: &str, needle: &str) {
     let mut module = naga::front::wgsl::parse_str(source).unwrap();

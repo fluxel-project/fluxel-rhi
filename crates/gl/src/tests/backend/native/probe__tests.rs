@@ -1,4 +1,3 @@
-
 use super::{NativeProfileError, parse_native_profile};
 use crate::backend::api::GlFamilyProfile;
 

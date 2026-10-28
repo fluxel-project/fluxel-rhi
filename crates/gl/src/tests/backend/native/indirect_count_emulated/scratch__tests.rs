@@ -1,4 +1,3 @@
-
 #[cfg(feature = "native-gles-egl")]
 #[test]
 #[ignore = "requires a GLES 3.1 hardware context"]

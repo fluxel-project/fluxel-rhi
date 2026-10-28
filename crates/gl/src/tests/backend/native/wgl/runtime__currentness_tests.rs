@@ -1,4 +1,3 @@
-
 use super::*;
 use fluxel_host::{Window, WindowConfig};
 use glow::HasContext as _;

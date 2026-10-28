@@ -1,4 +1,3 @@
-
 use super::{
     NativeBufferFunctions, advertised_native_max_buffer_bytes, native_max_buffer_bytes,
     pointer_sized,

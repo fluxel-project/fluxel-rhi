@@ -44,9 +44,6 @@ pub(crate) mod indexed_blend;
 mod indirect_count;
 pub(crate) mod indirect_count_emulated;
 mod indirect_rebase;
-#[cfg(test)]
-#[path = "../../tests/backend/native/indirect_repro.rs"]
-mod indirect_repro;
 pub(crate) mod interop;
 mod multi_draw_indirect;
 mod multisample_array;
@@ -82,7 +79,7 @@ pub(crate) use probe::{NativeProfileError, parse_native_profile};
 // through the common workload.  It must not turn WGL construction into a
 // portable public API merely to make an integration test convenient.
 #[cfg(all(test, windows, feature = "native-gl-wgl"))]
-#[path = "../../../tests/gl/wgl_core.rs"]
+#[path = "../../tests/backend/native/wgl_context.rs"]
 mod wgl_core_conformance;
 
 mod shader_bindings;

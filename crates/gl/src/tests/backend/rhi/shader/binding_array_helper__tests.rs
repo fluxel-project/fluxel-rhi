@@ -1,4 +1,3 @@
-
 use super::*;
 #[test]
 fn nested_two_resources() {

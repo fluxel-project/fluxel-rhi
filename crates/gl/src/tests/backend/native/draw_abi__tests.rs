@@ -1,4 +1,3 @@
-
 use super::NativeDrawFunctions;
 use core::ffi::c_void;
 

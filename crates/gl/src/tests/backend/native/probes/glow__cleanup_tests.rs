@@ -1,4 +1,3 @@
-
 use super::indirect_cleanup_support;
 
 #[test]

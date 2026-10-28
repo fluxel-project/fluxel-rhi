@@ -20,9 +20,6 @@ mod framebuffer;
 mod indirect;
 mod limits;
 mod lowering;
-#[cfg(test)]
-#[path = "../../tests/backend/api/mock/mod.rs"]
-mod mock;
 mod multi_draw;
 mod object;
 mod presentation;
@@ -47,8 +44,6 @@ pub(crate) use framebuffer::*;
 pub(crate) use indirect::*;
 pub(crate) use limits::*;
 pub(crate) use lowering::*;
-#[cfg(test)]
-pub(crate) use mock::{MockCall, MockComputeStorageApi, MockGlFamilyApi};
 pub(crate) use multi_draw::*;
 pub(crate) use object::*;
 pub(crate) use presentation::*;

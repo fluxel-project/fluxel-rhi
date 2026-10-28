@@ -1,4 +1,3 @@
-
 use super::*;
 #[test]
 fn indexed_draw_keeps_base_and_instance_offsets() {

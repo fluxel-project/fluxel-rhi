@@ -12,10 +12,6 @@ pub use fluxel_rhi_core::api;
 
 mod backend;
 
-#[cfg(test)]
-#[path = "tests/test_support.rs"]
-mod test_support;
-
 /// The statically dispatched GL-family backend.
 pub use backend::rhi::Gl;
 /// A selected, current GL-family context and its adapter discovery entry.
@@ -38,8 +34,8 @@ pub use glow::HasContext as NativeGlApi;
         all(target_arch = "wasm32", feature = "webgl2")
     )
 ))]
-#[path = "../tests/gl/core_raster_features.rs"]
-mod core_raster_features;
+#[path = "tests/gpu/mod.rs"]
+mod gpu;
 
 #[cfg(any(
     feature = "native-gl-wgl",

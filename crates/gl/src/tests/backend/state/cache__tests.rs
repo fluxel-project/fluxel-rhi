@@ -1,4 +1,3 @@
-
 use super::*;
 fn texture() -> ResourceRef {
     use crate::backend::api::{ContextEpoch, ContextStamp, DeviceIdentity, TextureId};

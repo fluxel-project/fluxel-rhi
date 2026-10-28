@@ -1,4 +1,3 @@
-
 use super::*;
 #[test]
 fn linked_sampler_type_must_match_binding_shape_and_comparison() {

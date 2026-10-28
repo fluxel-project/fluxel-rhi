@@ -1,4 +1,3 @@
-
 use super::*;
 fn validate(module: &naga::Module) -> naga::valid::ModuleInfo {
     naga::valid::Validator::new(

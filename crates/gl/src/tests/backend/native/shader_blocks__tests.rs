@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::backend::api::{GlBindingLocation, GlShaderResourceKind};
 fn binding(binding: u32, count: u32) -> GlLogicalBinding {

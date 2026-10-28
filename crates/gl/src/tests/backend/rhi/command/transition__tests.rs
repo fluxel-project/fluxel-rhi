@@ -1,4 +1,3 @@
-
 use super::*;
 #[test]
 fn masks_validate_and_all_is_the_supported_resource_domain() {

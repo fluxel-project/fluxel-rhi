@@ -1,4 +1,3 @@
-
 use super::*;
 #[test]
 fn core_and_extension_evidence_is_format_specific() {

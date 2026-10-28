@@ -1,4 +1,3 @@
-
 use super::{EglGlesVersion, parse_gles_version};
 
 #[test]

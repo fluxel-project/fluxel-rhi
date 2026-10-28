@@ -1,4 +1,3 @@
-
 use super::*;
 #[test]
 fn packed_float_and_srgb_clear_encoding() {

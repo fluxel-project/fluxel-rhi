@@ -1,4 +1,3 @@
-
 use super::GlFormat as F;
 use crate::backend::api::GlTextureAspect as A;
 

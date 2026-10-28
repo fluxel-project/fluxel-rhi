@@ -1,4 +1,3 @@
-
 use super::{
     GlDrawCommand, GlIndexedDraw, GlMultiDraw, GlMultiDrawValidationError, GlNonIndexedDraw,
 };

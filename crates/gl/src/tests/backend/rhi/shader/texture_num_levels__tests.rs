@@ -1,4 +1,3 @@
-
 use super::*;
 fn run(source: &str, dynamic: bool) {
     let mut module = naga::front::wgsl::parse_str(source).unwrap();

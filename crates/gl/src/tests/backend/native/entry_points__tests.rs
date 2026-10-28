@@ -1,4 +1,3 @@
-
 use super::{NativeEntryPoint, NativeEntryPoints};
 use crate::backend::api::{GlFamilyProfile, GlKnownExtension};
 use core::ffi::c_void;

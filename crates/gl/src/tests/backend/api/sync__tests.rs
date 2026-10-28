@@ -1,4 +1,3 @@
-
 use super::{GlFenceLeaseBook, GlMemoryBarrier};
 use crate::backend::api::{ContextEpoch, ContextStamp, DeviceIdentity, SyncId};
 #[test]

@@ -1,4 +1,3 @@
-
 use super::{
     GlBindingLimits, GlBindingValidationError, validate_texture_unit,
     validate_uniform_buffer_binding, validate_uniform_range,
