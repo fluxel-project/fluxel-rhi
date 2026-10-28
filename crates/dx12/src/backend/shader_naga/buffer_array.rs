@@ -1,27 +1,30 @@
-//! Bounds the patched HLSL storage-array route before lowering or specialization.
+//! Bounds the patched HLSL buffer-array route before lowering or specialization.
 //!
-//! Resource-array selection is distinct from raw-buffer byte addressing. Only
+//! Resource-array selection is distinct from buffer member addressing. Only
 //! fixed compute arrays are admitted by this route; the existing specialization
 //! of runtime arrays must not silently extend that promise.
 
 use fluxel_rhi_core::api::{self, Error, Result};
 
 pub(super) fn validate(module: &naga::Module, entries: &[api::ShaderEntryPoint]) -> Result<()> {
-    let mut has_storage_array = false;
+    let mut has_buffer_array = false;
     for (_, global) in module.global_variables.iter() {
-        if !matches!(global.space, naga::AddressSpace::Storage { .. }) {
+        if !matches!(
+            global.space,
+            naga::AddressSpace::Storage { .. } | naga::AddressSpace::Uniform
+        ) {
             continue;
         }
         if let naga::TypeInner::BindingArray { size, .. } = module.types[global.ty].inner {
-            has_storage_array = true;
+            has_buffer_array = true;
             if !matches!(size, naga::ArraySize::Constant(_)) {
                 return Err(Error::Unsupported(
-                    "DX12 WGSL runtime storage-buffer arrays",
+                    "DX12 WGSL runtime buffer binding arrays",
                 ));
             }
         }
     }
-    if !has_storage_array {
+    if !has_buffer_array {
         return Ok(());
     }
     if entries
@@ -29,7 +32,7 @@ pub(super) fn validate(module: &naga::Module, entries: &[api::ShaderEntryPoint])
         .any(|entry| entry.stage != api::ShaderStage::Compute)
     {
         return Err(Error::Unsupported(
-            "DX12 WGSL storage-buffer arrays require compute",
+            "DX12 WGSL buffer binding arrays require compute",
         ));
     }
     // Naga's buffer-length helper is keyed by global, not descriptor element.
@@ -44,7 +47,7 @@ pub(super) fn validate(module: &naga::Module, entries: &[api::ShaderEntryPoint])
             .any(|entry| uses_array_length(&entry.function))
     {
         return Err(Error::Unsupported(
-            "DX12 WGSL storage-buffer array length queries",
+            "DX12 WGSL buffer binding array length queries",
         ));
     }
     Ok(())
@@ -64,7 +67,10 @@ pub(super) fn validate_bindings(
     entries: &[(u32, api::BindGroupLayoutEntry)],
 ) -> Result<()> {
     for (_, global) in module.global_variables.iter() {
-        if !matches!(global.space, naga::AddressSpace::Storage { .. }) {
+        if !matches!(
+            global.space,
+            naga::AddressSpace::Storage { .. } | naga::AddressSpace::Uniform
+        ) {
             continue;
         }
         let naga::TypeInner::BindingArray {
@@ -79,9 +85,7 @@ pub(super) fn validate_bindings(
             .iter()
             .find(|(group, entry)| *group == binding.group && entry.binding == binding.binding)
             .map(|(_, entry)| entry)
-            .ok_or(Error::Unsupported(
-                "DX12 WGSL storage array layout metadata",
-            ))?;
+            .ok_or(Error::Unsupported("DX12 WGSL buffer array layout metadata"))?;
         if entry.count != api::BindingCount::Fixed(size.get())
             || !entry.nonuniform_indexing
             || entry.partially_bound
@@ -95,11 +99,14 @@ pub(super) fn validate_bindings(
                 api::BindingType::StorageBuffer {
                     dynamic_offset: false,
                     ..
+                } | api::BindingType::UniformBuffer {
+                    dynamic_offset: false,
+                    ..
                 }
             )
         {
             return Err(Error::Unsupported(
-                "DX12 WGSL storage array requires matching fixed fully-bound compute layout",
+                "DX12 WGSL buffer array requires matching fixed fully-bound compute layout",
             ));
         }
     }

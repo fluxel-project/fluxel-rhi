@@ -476,7 +476,7 @@ impl DynamicViewTable {
 
 pub(crate) struct BindGroupLayoutState {
     pub(crate) slots: Vec<BindingSlot>,
-    pub(crate) storage_entries: Vec<api::BindGroupLayoutEntry>,
+    pub(crate) buffer_entries: Vec<api::BindGroupLayoutEntry>,
 }
 
 pub(crate) struct BindGroupState {

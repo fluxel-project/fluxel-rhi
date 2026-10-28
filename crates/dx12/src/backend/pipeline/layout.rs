@@ -32,7 +32,7 @@ pub(crate) struct PipelineLayoutState {
     pub(crate) register_map: Vec<(u32, u32, u32, u8, u32)>,
     pub(crate) binding_types: Vec<(u32, u32, api::BindingType)>,
     /// Preserve exact array admission metadata through WGSL pipeline lowering.
-    pub(crate) storage_entries: Vec<(u32, api::BindGroupLayoutEntry)>,
+    pub(crate) buffer_entries: Vec<(u32, api::BindGroupLayoutEntry)>,
     /// Explicit capacities for public runtime-sized arrays.  This stays
     /// separate from `register_map`: a fixed array can reserve the same number
     /// of descriptors, but WGSL's dynamic binding-array syntax must not be
@@ -106,7 +106,7 @@ pub(crate) fn create_pipeline_layout(
     let mut groups = Vec::with_capacity(desc.groups.len());
     let mut register_map = Vec::new();
     let mut binding_types = Vec::new();
-    let mut storage_entries = Vec::new();
+    let mut buffer_entries = Vec::new();
     let mut runtime_binding_capacities = Vec::new();
     let mut native_abi_compatible = true;
     for (group, layout) in desc.groups.iter().enumerate() {
@@ -115,9 +115,9 @@ pub(crate) fn create_pipeline_layout(
         let native = unsafe { layout.native_ref() };
         groups.push(native.0.clone());
         let state = &native.0;
-        storage_entries.extend(
+        buffer_entries.extend(
             state
-                .storage_entries
+                .buffer_entries
                 .iter()
                 .cloned()
                 .map(|entry| (group as u32, entry)),
@@ -391,7 +391,7 @@ pub(crate) fn create_pipeline_layout(
         num_workgroups_root,
         register_map,
         binding_types,
-        storage_entries,
+        buffer_entries,
         runtime_binding_capacities,
         native_abi_compatible,
         groups,

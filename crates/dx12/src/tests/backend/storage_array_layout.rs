@@ -1,6 +1,6 @@
 //! Admission boundaries for the fixed compute storage-array capability.
 
-use super::{api, layout::validate_nonuniform_storage_array};
+use super::{api, layout::validate_nonuniform_buffer_array};
 
 #[test]
 fn nonuniform_storage_array_layout_rejects_unproven_combinations() {
@@ -16,7 +16,7 @@ fn nonuniform_storage_array_layout_rejects_unproven_combinations() {
         partially_bound: false,
         nonuniform_indexing: true,
     };
-    validate_nonuniform_storage_array(&base).unwrap();
+    validate_nonuniform_buffer_array(&base).unwrap();
     for entry in [
         api::BindGroupLayoutEntry {
             count: api::BindingCount::RuntimeSized { max_count: 2 },
@@ -36,7 +36,7 @@ fn nonuniform_storage_array_layout_rejects_unproven_combinations() {
         },
     ] {
         assert!(matches!(
-            validate_nonuniform_storage_array(&entry),
+            validate_nonuniform_buffer_array(&entry),
             Err(api::Error::Unsupported(_))
         ));
     }
@@ -48,5 +48,5 @@ fn nonuniform_storage_array_layout_rejects_unproven_combinations() {
         count: api::BindingCount::RuntimeSized { max_count: 2 },
         ..base
     };
-    validate_nonuniform_storage_array(&native_uniform).unwrap();
+    validate_nonuniform_buffer_array(&native_uniform).unwrap();
 }

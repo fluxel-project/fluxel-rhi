@@ -10,7 +10,7 @@ pub(crate) fn create_bind_group_layout(
     let mut slots = Vec::with_capacity(desc.entries.len());
     let mut previous = None;
     for entry in &desc.entries {
-        validate_nonuniform_storage_array(entry)?;
+        validate_nonuniform_buffer_array(entry)?;
         if previous.is_some_and(|value| value >= entry.binding) {
             return Err(Error::InvalidState);
         }
@@ -147,24 +147,35 @@ pub(crate) fn create_bind_group_layout(
     }
     Ok(Dx12BindGroupLayout(Arc::new(BindGroupLayoutState {
         slots,
-        storage_entries: desc
+        buffer_entries: desc
             .entries
             .iter()
-            .filter(|entry| matches!(entry.ty, api::BindingType::StorageBuffer { .. }))
+            .filter(|entry| {
+                matches!(
+                    entry.ty,
+                    api::BindingType::StorageBuffer { .. } | api::BindingType::UniformBuffer { .. }
+                )
+            })
             .cloned()
             .collect(),
     })))
 }
 
-/// The tested non-uniform raw-buffer route is fixed, fully bound and compute.
+/// The tested non-uniform buffer route is fixed, fully bound and compute.
 /// Keep existing uniform/native array contracts separate from this capability.
-pub(super) fn validate_nonuniform_storage_array(entry: &api::BindGroupLayoutEntry) -> Result<()> {
+pub(super) fn validate_nonuniform_buffer_array(entry: &api::BindGroupLayoutEntry) -> Result<()> {
     if entry.nonuniform_indexing
-        && matches!(entry.ty, api::BindingType::StorageBuffer { .. })
+        && matches!(
+            entry.ty,
+            api::BindingType::StorageBuffer { .. } | api::BindingType::UniformBuffer { .. }
+        )
         && (!matches!(entry.count, api::BindingCount::Fixed(_))
             || matches!(
                 entry.ty,
                 api::BindingType::StorageBuffer {
+                    dynamic_offset: true,
+                    ..
+                } | api::BindingType::UniformBuffer {
                     dynamic_offset: true,
                     ..
                 }
@@ -177,7 +188,7 @@ pub(super) fn validate_nonuniform_storage_array(entry: &api::BindGroupLayoutEntr
                 .any(|stage| *stage != api::ShaderStage::Compute))
     {
         return Err(Error::Unsupported(
-            "DX12 nonuniform storage-buffer arrays require fixed fully-bound compute bindings",
+            "DX12 nonuniform buffer arrays require fixed fully-bound compute bindings",
         ));
     }
     Ok(())

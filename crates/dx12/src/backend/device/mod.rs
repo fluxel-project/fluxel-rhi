@@ -365,10 +365,10 @@ impl InstanceBackend for Dx12 {
                     // from raw-buffer addressing. Layout/shader admission bounds
                     // storage arrays to fixed, fully-bound compute bindings.
                     nonuniform_sampled_texture_and_storage_buffer_indexing: descriptor_indexing,
-                    // D3D12 device descriptor-indexing facts do not prove the
-                    // current WGSL/HLSL uniform-buffer array route. Keep this
-                    // kind closed until it has a matching GPU readback path.
-                    nonuniform_uniform_buffer_indexing: false,
+                    // Fixed CBV arrays use ConstantBuffer<T> declarations and
+                    // explicit non-uniform selectors. Shared buffer-array
+                    // admission enforces the same fully-bound compute scope.
+                    nonuniform_uniform_buffer_indexing: descriptor_indexing,
                     nonuniform_storage_buffer_indexing: descriptor_indexing,
                     nonuniform_sampled_texture_indexing: descriptor_indexing,
                     nonuniform_storage_texture_indexing: descriptor_indexing,

@@ -17,8 +17,11 @@ Relative to the upstream 27.0.3 release, Fluxel changes only:
 
 The patch makes fixed storage-buffer binding arrays select their
 `ByteAddressBuffer` descriptor separately from the byte offset within that
-buffer. It covers HLSL load, store, and atomic emission. Unsupported dynamic,
-nested, and non-storage binding-array access returns an HLSL writer error.
+buffer. It covers HLSL load, store, and atomic emission. It also emits fixed
+uniform struct binding arrays as typed `ConstantBuffer<Struct>` descriptor
+arrays rather than invalid arrays of `cbuffer` declarations. Unsupported
+dynamic/nested buffer binding arrays and non-struct uniform element types
+return an HLSL writer error.
 
 ## Integration
 
@@ -27,13 +30,14 @@ Vulkan, GL, and other crates continue to use their registry Naga dependency.
 
 ## Limits and removal
 
-The patch supports fixed storage-buffer descriptor selection. Fluxel limits
+The patch supports fixed storage and uniform descriptor selection. Fluxel limits
 its WGSL route to matching fixed, fully-bound compute layouts with explicit
 non-uniform admission and no buffer-length queries. It
 does not add runtime-sized or partially bound arrays, dynamic offsets for
-arrays, nested binding arrays, or uniform-buffer array lowering.
+arrays, nested binding arrays, or non-struct uniform-buffer array lowering.
 
 Remove this fork when the selected upstream Naga release provides equivalent
-fixed storage-buffer binding-array HLSL lowering, including descriptor
-selection distinct from byte offsets, and Fluxel's DX12 HLSL-output and GPU
-readback regressions pass unchanged against that release.
+fixed storage-buffer and uniform binding-array HLSL lowering, including
+descriptor selection distinct from byte offsets where applicable, and Fluxel's
+DX12 HLSL-output and GPU readback regressions pass unchanged against that
+release.

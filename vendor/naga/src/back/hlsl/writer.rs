@@ -954,6 +954,15 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
             return self.write_global_sampler(module, handle, global);
         }
 
+        if global.space == crate::AddressSpace::Uniform
+            && matches!(
+                module.types[global.ty].inner,
+                TypeInner::BindingArray { .. }
+            )
+        {
+            return self.write_global_uniform_binding_array(module, handle, global);
+        }
+
         // https://docs.microsoft.com/en-us/windows/win32/direct3dhlsl/dx-graphics-hlsl-variable-register
         let register_ty = match global.space {
             crate::AddressSpace::Function => unreachable!("Function address space"),
@@ -1096,6 +1105,53 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
             writeln!(self.out, ";")?;
         }
 
+        Ok(())
+    }
+
+    /// Emit a fixed array of typed constant buffers.
+    ///
+    /// A `cbuffer` declaration cannot itself be an array in HLSL. Binding
+    /// arrays of uniform structs must instead use an array of
+    /// `ConstantBuffer<Struct>` objects, so that an Access expression selects
+    /// a descriptor rather than a member of one cbuffer.
+    fn write_global_uniform_binding_array(
+        &mut self,
+        module: &Module,
+        handle: Handle<crate::GlobalVariable>,
+        global: &crate::GlobalVariable,
+    ) -> BackendResult {
+        let TypeInner::BindingArray {
+            base,
+            size: crate::ArraySize::Constant(size),
+        } = module.types[global.ty].inner
+        else {
+            return Err(Error::Unimplemented(
+                "runtime-sized uniform binding arrays".into(),
+            ));
+        };
+        if !matches!(module.types[base].inner, TypeInner::Struct { .. }) {
+            return Err(Error::Unimplemented(
+                "uniform binding-array elements must be structs".into(),
+            ));
+        }
+        let binding = global.binding.as_ref().ok_or_else(|| {
+            Error::Unimplemented("uniform binding arrays require resource bindings".into())
+        })?;
+        let target = self.options.resolve_resource_binding(binding).unwrap();
+        write!(self.out, "ConstantBuffer<")?;
+        self.write_global_type(module, base)?;
+        let name = &self.names[&NameKey::GlobalVariable(handle)];
+        write!(self.out, "> {name}")?;
+        if let Some(overridden_size) = target.binding_array_size {
+            write!(self.out, "[{overridden_size}]")?;
+        } else {
+            self.write_array_size(module, base, crate::ArraySize::Constant(size))?;
+        }
+        write!(self.out, " : register(b{}", target.register)?;
+        if target.space != 0 {
+            write!(self.out, ", space{}", target.space)?;
+        }
+        writeln!(self.out, ");")?;
         Ok(())
     }
 
@@ -3051,13 +3107,25 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
 
                     let resolved = func_ctx.resolve_type(base, &module.types);
 
-                    let (indexing_binding_array, non_uniform_qualifier) = match *resolved {
-                        TypeInner::BindingArray { .. } => {
-                            let uniformity = &func_ctx.info[index].uniformity;
+                    let binding_array = match *resolved {
+                        // Handle-space image and sampler arrays already use
+                        // the bare type; preserve their existing qualification.
+                        TypeInner::BindingArray { .. } => true,
+                        TypeInner::Pointer { base, .. } => matches!(
+                            module.types[base].inner,
+                            TypeInner::BindingArray {
+                                base: element,
+                                size: crate::ArraySize::Constant(_),
+                            } if matches!(module.types[element].inner, TypeInner::Struct { .. })
+                        ),
+                        _ => false,
+                    };
+                    let (indexing_binding_array, non_uniform_qualifier) = if binding_array {
+                        let uniformity = &func_ctx.info[index].uniformity;
 
-                            (true, uniformity.non_uniform_result.is_some())
-                        }
-                        _ => (false, false),
+                        (true, uniformity.non_uniform_result.is_some())
+                    } else {
+                        (false, false)
                     };
 
                     self.write_expr(module, base, func_ctx)?;

@@ -392,7 +392,7 @@ fn create_pipeline(
                 &layout.register_map,
                 &layout.binding_types,
                 &layout.runtime_binding_capacities,
-                &layout.storage_entries,
+                &layout.buffer_entries,
                 desc.required_subgroup_size,
             )?;
             (
