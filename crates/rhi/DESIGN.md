@@ -5,7 +5,7 @@ the `fluxel-rhi` crates. It focuses on what each crate provides, why its
 boundaries exist, and how the main pieces work together. API details belong in
 the source-level API documentation. Test procedures, hardware evidence rules,
 and backend coverage matrices belong in the
-[`verification guide`](../verification.md).
+[verification guide](../../documents/verification.md).
 
 ## System boundary
 
@@ -51,8 +51,8 @@ facts because adapters and enabled features differ.
 
 The facade in `crates/rhi` reexports the Core API and conditionally exposes
 backend modules for supported targets and Cargo features. It does not define a
-second resource model or runtime dispatcher. See [`core.md`](core.md) for the
-shared contract.
+second resource model or runtime dispatcher. See the [Core design](../core/DESIGN.md)
+for the shared contract.
 
 ## Execution models
 
@@ -75,13 +75,13 @@ retirement decision.
 
 ## Crate design pages
 
-- [Core contract and trust boundary](core.md)
-- [Direct3D 12 backend](dx12.md)
-- [Vulkan backend](vulkan.md)
-- [WebGPU backend](webgpu.md)
-- [GL, GLES, and WebGL2 backend](gl.md)
-- [Metal backend](metal.md)
-- [Open design TODOs and deferred work](todo.md)
+- [Core contract and trust boundary](../core/DESIGN.md)
+- [Direct3D 12 backend](../dx12/DESIGN.md)
+- [Vulkan backend](../vulkan/DESIGN.md)
+- [WebGPU backend](../webgpu/DESIGN.md)
+- [GL, GLES, and WebGL2 backend](../gl/DESIGN.md)
+- [Metal backend](../metal/DESIGN.md)
+- [Open design TODOs and deferred work](../../TODO.md)
 
 ## Shared design rules
 
@@ -113,4 +113,4 @@ The `crates/core/src/api/` modules define the public contract, and
 `crates/core/src/backend/` defines the backend SPI. Per-backend implementation
 and device capability code determine which parts of that contract are
 available. Current unfinished work and its reopening conditions are tracked in
-[`todo.md`](todo.md). Historical design notes and review logs are not normative.
+[`TODO.md`](../../TODO.md). Historical design notes and review logs are not normative.

@@ -215,6 +215,7 @@ those advanced examples; this does not change the WGSL baseline for 01–15.
     DX12 and Vulkan compute and graphics queues with a GPU wait.
     `FLUXEL_NBODY_READBACK` saves the first frame as an RGB PPM.
 
-Follow the public coordinate contract in `documents/design/README.md#shared-design-rules` when
-interpreting a vertical flip or front-face difference. A backend must adapt
-its native viewport and winding rather than changing shared scene data.
+Follow the public coordinate contract in [the workspace architecture
+document](../DESIGN.md#shared-design-rules) when interpreting a vertical flip
+or front-face difference. A backend must adapt its native viewport and winding
+rather than changing shared scene data.

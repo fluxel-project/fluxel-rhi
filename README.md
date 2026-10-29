@@ -32,8 +32,9 @@ the selected device and requested operation.
 - **Browser WebGL2** — `webgl2`.
 - **Metal** — `metal` on Apple targets.
 
-See the [backend design pages](documents/design/README.md#crate-design-pages)
-for each route's architecture, support limits, and open work.
+See the backend READMEs for setup and the separate `DESIGN.md` files for each
+route's architecture and support limits. Cross-backend unfinished work is
+tracked in [`TODO.md`](TODO.md).
 
 ## Build and test
 
@@ -73,12 +74,17 @@ are in the [examples asset guide](crates/rhi/examples/assets/README.md).
 
 ## Documentation
 
-- [Design overview](documents/design/README.md) — crate responsibilities and
-  shared architecture.
-- [Core design](documents/design/core.md) — public contract and backend SPI.
-- [Backend design pages](documents/design/README.md#crate-design-pages) —
-  DX12, Vulkan, WebGPU, GL-family, and Metal.
+- [RHI architecture overview](crates/rhi/DESIGN.md) — ownership and shared
+  architecture.
+- [Core package](crates/core/README.md) and [Core design](crates/core/DESIGN.md)
+  — public contract and backend SPI.
+- Backend packages: [DX12](crates/dx12/README.md), [Vulkan](crates/vulkan/README.md),
+  [WebGPU](crates/webgpu/README.md), [GL](crates/gl/README.md), and
+  [Metal](crates/metal/README.md).
+- [Open RHI TODOs](TODO.md) — cross-backend follow-up and evidence gates.
 - [Verification guide](documents/verification.md) — tests, examples, hardware
   coverage, and evidence limits.
 - [Architecture decision records](documents/adr/README.md) — decision history,
   rationale, and status.
+- [Publishing guide](PUBLISHING.md) — package order, packaging checks, and
+  known registry blockers.

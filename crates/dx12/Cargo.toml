@@ -6,6 +6,14 @@ rust-version = "1.87"
 license = "MIT OR Apache-2.0"
 description = "Direct3D 12 backend for Fluxel RHI"
 repository = "https://github.com/fluxel-project/fluxel-rhi"
+readme = "README.md"
+documentation = "https://docs.rs/fluxel-rhi-dx12"
+keywords = ["gpu", "graphics", "direct3d12", "rhi", "backend"]
+categories = ["graphics"]
+
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = []
 
 [features]
 # Real-device conformance requires a functioning DXGI/D3D12 driver. Keep the
@@ -14,7 +22,7 @@ repository = "https://github.com/fluxel-project/fluxel-rhi"
 hardware-tests = []
 
 [dependencies]
-fluxel-rhi-core = { path = "../core" }
+fluxel-rhi-core = { path = "../core", version = "0.16.0" }
 raw-window-handle = "=0.6.2"
 # The checked-in HLSL patch handles storage descriptor arrays. Other backends
 # retain their existing registry dependency and compiler route.

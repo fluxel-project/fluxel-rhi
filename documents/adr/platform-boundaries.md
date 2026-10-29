@@ -35,7 +35,7 @@ RenderGraph can state portable contracts without inheriting HAL safety rules.
 0.1.0 established the boundary; 0.1.1 resource leasing and 0.1.2–0.1.4 native
 execution validated it. 0.2.8 preserves it while splitting the private module.
 
-See the [RHI design overview](../design/README.md#system-boundary) for the current native boundary.
+See the [workspace architecture](../../crates/rhi/DESIGN.md#system-boundary) for the current native boundary.
 
 ## ADR-0011: Build the GL family through three private layers
 
@@ -76,7 +76,7 @@ provider route and belongs in conformance results, not this ADR.
 
 ## ADR-0012: Keep RHI limited to portable execution
 
-**Status:** Superseded by the current [RHI design](../design/README.md).
+**Status:** Superseded by the current [RHI architecture](../../crates/rhi/DESIGN.md).
 
 The `command::ResourceUse` collection and backend hazard derivation described
 below are historical. RenderGraph plans hazards and resource states; the RHI

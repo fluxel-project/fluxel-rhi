@@ -6,6 +6,10 @@ rust-version = "1.87"
 license = "MIT OR Apache-2.0"
 description = "Portable API and backend contract for Fluxel RHI"
 repository = "https://github.com/fluxel-project/fluxel-rhi"
+readme = "README.md"
+documentation = "https://docs.rs/fluxel-rhi-core"
+keywords = ["gpu", "graphics", "rhi", "rendering"]
+categories = ["graphics"]
 
 [features]
 default = []

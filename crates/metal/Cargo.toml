@@ -6,12 +6,20 @@ rust-version = "1.87"
 license = "MIT OR Apache-2.0"
 description = "Metal backend for Fluxel RHI"
 repository = "https://github.com/fluxel-project/fluxel-rhi"
+readme = "README.md"
+documentation = "https://docs.rs/fluxel-rhi-metal"
+keywords = ["gpu", "graphics", "metal", "apple", "rhi"]
+categories = ["graphics"]
+
+[package.metadata.docs.rs]
+default-target = "aarch64-apple-darwin"
+targets = []
 
 [features]
 hardware-tests = []
 
 [dependencies]
-fluxel-rhi-core = { path = "../core" }
+fluxel-rhi-core = { path = "../core", version = "0.16.0" }
 naga = { version = "=30.0.1", features = ["msl-out", "wgsl-in"] }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]

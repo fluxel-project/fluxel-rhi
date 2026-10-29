@@ -91,5 +91,5 @@ format mapping and are unsupported by this route.
 
 DX12 does not implement RenderGraph scheduling, global resource-state tracking,
 CPU command replay, generic device-loss notification policy, arbitrary shader
-format conversion, or a DXR state-object cache. See [`todo.md`](todo.md) for
+format conversion, or a DXR state-object cache. See [`TODO.md`](../../TODO.md) for
 the open cross-backend work ledger.

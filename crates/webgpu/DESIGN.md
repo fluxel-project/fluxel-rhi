@@ -43,7 +43,7 @@ opaque source and keeps the JavaScript source root alive through queue
 completion. The backend does not decode video, expose plane formats, convert
 color, schedule frames, or own source creation and closure. Other backends do
 not claim this route. Real browser-source integration remains open under
-[`todo.md`](todo.md).
+[`TODO.md`](../../TODO.md).
 
 ## Public feature coverage
 

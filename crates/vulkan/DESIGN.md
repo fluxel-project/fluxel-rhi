@@ -74,7 +74,7 @@ supporting device for GPU validation.
 
 Two Vulkan routes remain open: fixed acceleration-structure descriptor arrays
 and the enhanced mesh batch/count fixture. Their current status, evidence, and
-reopening conditions are in [`todo.md`](todo.md). The supported cooperative
+reopening conditions are in [`TODO.md`](../../TODO.md). The supported cooperative
 matrix path remains deliberately narrow: selected row-major layout, stride,
 pointer provenance, and tuple combinations only; other layouts and tuples are
 not implied.

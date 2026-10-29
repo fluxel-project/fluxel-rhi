@@ -6,6 +6,14 @@ rust-version = "1.87"
 license = "MIT OR Apache-2.0"
 description = "Browser WebGPU backend for Fluxel RHI"
 repository = "https://github.com/fluxel-project/fluxel-rhi"
+readme = "README.md"
+documentation = "https://docs.rs/fluxel-rhi-webgpu"
+keywords = ["gpu", "graphics", "webgpu", "wasm", "browser"]
+categories = ["graphics"]
+
+[package.metadata.docs.rs]
+default-target = "wasm32-unknown-unknown"
+targets = []
 
 [lib]
 # The rlib serves Rust consumers.  The cdylib is the deliberately narrow
@@ -14,7 +22,7 @@ repository = "https://github.com/fluxel-project/fluxel-rhi"
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
-fluxel-rhi-core = { path = "../core" }
+fluxel-rhi-core = { path = "../core", version = "0.16.0" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"

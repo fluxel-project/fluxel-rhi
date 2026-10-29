@@ -6,6 +6,15 @@ rust-version = "1.87"
 license = "MIT OR Apache-2.0"
 description = "OpenGL, OpenGL ES, and WebGL2 backend for Fluxel RHI"
 repository = "https://github.com/fluxel-project/fluxel-rhi"
+readme = "README.md"
+documentation = "https://docs.rs/fluxel-rhi-gl"
+keywords = ["gpu", "graphics", "opengl", "gles", "webgl"]
+categories = ["graphics"]
+
+[package.metadata.docs.rs]
+default-target = "wasm32-unknown-unknown"
+features = ["webgl2"]
+targets = []
 
 [features]
 default = []
@@ -15,7 +24,7 @@ webgl2 = ["dep:glow", "dep:js-sys", "dep:wasm-bindgen", "dep:web-sys"]
 test-support = []
 
 [dependencies]
-fluxel-rhi-core = { path = "../core" }
+fluxel-rhi-core = { path = "../core", version = "0.16.0" }
 naga = { version = "=27.0.3", features = ["wgsl-in", "glsl-out"] }
 glow = { version = "=0.18.0", optional = true }
 raw-window-handle = { version = "=0.6.2", optional = true }

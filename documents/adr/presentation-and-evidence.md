@@ -91,7 +91,7 @@ warnings under Linux all-features Clippy and added Windows workspace and
 no-backend gates. The no-backend gate verifies the structured
 `BackendDisabled` result for both native backend requests.
 
-See the [RHI design overview](../design/README.md#system-boundary) for the current platform policy.
+See the [workspace architecture](../../crates/rhi/DESIGN.md#system-boundary) for the current platform policy.
 
 ## ADR-0017: Keep presentation frames separate from textures and completion
 

@@ -6,6 +6,13 @@ rust-version = "1.87"
 license = "MIT OR Apache-2.0"
 description = "Fluxel's statically dispatched RHI facade"
 repository = "https://github.com/fluxel-project/fluxel-rhi"
+readme = "README.md"
+documentation = "https://docs.rs/fluxel-rhi"
+keywords = ["gpu", "graphics", "rendering", "rhi", "backend"]
+categories = ["graphics"]
+
+[package.metadata.docs.rs]
+features = ["vulkan"]
 
 [features]
 # Cargo cannot select a default feature by target. Browser callers explicitly
@@ -21,15 +28,17 @@ webgl2 = ["dep:fluxel-rhi-gl", "fluxel-rhi-gl/webgl2"]
 examples = []
 
 [dependencies]
-fluxel-rhi-core = { path = "../core", default-features = false }
+fluxel-rhi-core = { path = "../core", version = "0.16.0", default-features = false }
+fluxel-rhi-vulkan = { path = "../vulkan", version = "0.16.0", optional = true }
+fluxel-rhi-gl = { path = "../gl", version = "0.16.0", optional = true }
+
+[dev-dependencies]
 base64 = "0.22"
 serde_json = "1"
 png = "0.17"
-fluxel-rhi-vulkan = { path = "../vulkan", optional = true }
-fluxel-rhi-gl = { path = "../gl", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-fluxel-rhi-webgpu = { path = "../webgpu", optional = true }
+fluxel-rhi-webgpu = { path = "../webgpu", version = "0.16.0", optional = true }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["HtmlCanvasElement", "Window", "Performance"] }
@@ -38,7 +47,7 @@ web-sys = { version = "0.3", features = ["HtmlCanvasElement", "Window", "Perform
 wasm-bindgen-test = "0.3"
 
 [target.'cfg(windows)'.dependencies]
-fluxel-rhi-dx12 = { path = "../dx12", optional = true }
+fluxel-rhi-dx12 = { path = "../dx12", version = "0.16.0", optional = true }
 fluxel-host = { git = "https://github.com/fluxel-project/fluxel-host", rev = "b310f3fac4b8319343ef13341cd284344343c2ac", features = ["winit-runtime"] }
 raw-window-handle = "=0.6.2"
 
@@ -47,7 +56,7 @@ fluxel-host = { git = "https://github.com/fluxel-project/fluxel-host", rev = "b3
 raw-window-handle = "=0.6.2"
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
-fluxel-rhi-metal = { path = "../metal", optional = true }
+fluxel-rhi-metal = { path = "../metal", version = "0.16.0", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 fluxel-host = { git = "https://github.com/fluxel-project/fluxel-host", rev = "b310f3fac4b8319343ef13341cd284344343c2ac", features = ["winit-runtime"] }
