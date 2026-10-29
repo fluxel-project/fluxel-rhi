@@ -447,6 +447,9 @@ fn bind_one(
                 view: Some(*view),
             }
         }
+        api::BindingResource::VideoFrame(_) => {
+            return Err(api::Error::Unsupported("video frame binding"));
+        }
         api::BindingResource::Array(_) => return Err(api::Error::InvalidState),
     };
     Ok(resource)
