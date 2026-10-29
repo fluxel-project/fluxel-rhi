@@ -151,7 +151,7 @@ with ES 3.2 core or ES 3.1 EXT/OES CopyImage. LDPlayer Android 14 passes the 2D
 4x sample-pattern copy/resolve check, but its MSAA-array attachment is incomplete;
 earlier WSL Mesa/D3D12 native failures also remain unresolved. The feature stays
 disabled until complete acceptance, as explained in the
-[design boundary](documents/design-rhi.md#gl-family-multisample-copy-boundary).
+[design boundary](documents/design/gl.md#profile-specific-constraints).
 Single-sample GLES copies, standalone MSAA resolves and desktop GL MSAA copy
 remain available under their existing capability checks.
 
@@ -269,7 +269,7 @@ other plane; D24 depth has no portable byte encoding. PBO stencil packing needs
 GL4.3 compute. Desktop OVR multiview supports contiguous view intervals, with
 texture-view aliases required for nonzero attachment bases. Arbitrary masks,
 multiview timer queries, and compressed color clears have no supported native
-route; see the [desktop GL contract](documents/design-rhi.md#desktop-gl4--wgl).
+route; see the [GL profile contract](documents/design/gl.md#profile-specific-constraints).
 
 GLES runtime binding arrays use the same bounded specialization, and nonuniform
 indexing requires storage-buffer support. ES3.1 depth/stencil buffer copies use
@@ -287,7 +287,7 @@ The GL family explicitly does not support secondary command recording,
 independent queues, sparse/placed memory, external resources,
 mesh shaders, ray pipelines, or ray queries. These domains are outside
 its implementation scope, including driver-specific extension variants; see the
-[GL support decisions](documents/design-rhi.md#unsupported-gl-family-domains).
+[GL support decisions](documents/design/gl.md#explicitly-unavailable-domains).
 Native desktop GL and EGL/GLES support scoped Core native interop with a borrowed
 shared `NativeGlContext` dispatch table, exclusive owner-thread access, and state
 invalidation on guard exit. WebGL2 exposes no native dispatch-table pointer.
@@ -304,7 +304,7 @@ share acceptance and completion evidence while retaining model-specific recovery
 ownership. Failed-step facts distinguish no effect, partial issue, and unknown
 effect; completion evidence does not turn a failed step into success.
 Existing recording, submission, and immediate-session APIs remain
-available for advanced execution. See the [execution contract](documents/design-rhi.md#common-execution-entry).
+available for advanced execution. See the [execution contract](documents/design/core.md#execution-and-completion).
 
 Support queries describe implemented native routes. An example may select an
 explicit visual fallback for an unavailable feature; that does not enable the
@@ -336,5 +336,5 @@ Some examples require [model and texture assets](crates/rhi/examples/assets/READ
 from the maintained WGSL sources. Generated DXIL and SPIR-V do not imply runtime
 WGSL support in those backends.
 
-The [architecture and design rationale](documents/design-rhi.md) explains the
+The [architecture and design rationale](documents/design/README.md) explains the
 shared contracts, each crate's role, and the choices specific to each backend.

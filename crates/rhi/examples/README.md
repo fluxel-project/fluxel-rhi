@@ -168,6 +168,6 @@ those advanced examples; this does not change the WGSL baseline for 01–15.
 | 22 clear texture | Clears a texture before rendering and verifies its GPU readback on DX12 and Vulkan. |
 | 23 multi queue | Simulates and draws 10,000 particles on separate DX12 and Vulkan compute and graphics queues with a GPU wait; `FLUXEL_NBODY_READBACK` saves the first frame as an RGB PPM. |
 
-Follow the public coordinate contract in `documents/design-rhi.md` when
+Follow the public coordinate contract in `documents/design/README.md#shared-design-rules` when
 interpreting a vertical flip or front-face difference. A backend must adapt
 its native viewport and winding rather than changing shared scene data.

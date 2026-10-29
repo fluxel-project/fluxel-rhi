@@ -5,7 +5,7 @@ This file groups related decision records to keep the index compact. Original AD
 ## ADR-0003: Keep execution lowering serial until evidence justifies more
 
 **Status:** Historical baseline. The current execution contract is in
-[`design-rhi.md`](../design-rhi.md) and `crates/core/src/api/submission.rs`.
+[`design/core.md`](../design/core.md) and `crates/core/src/api/submission.rs`.
 
 ## Context
 
@@ -37,14 +37,14 @@ C03 in 0.1.2 exercised same-state overlapping writes; 0.1.3 added the shared
 queue lock; 0.1.4 proved Raster→Compute→Copy in one submission. No release has
 claimed multi-queue or parallel-recording support.
 
-See the [RHI design](../design-rhi.md) for the current execution contract.
+See the [Core design](../design/core.md#execution-and-completion) for the current execution contract.
 RenderGraph architecture remains in the
 [fluxel-rendering repository](https://github.com/fluxel-project/fluxel-rendering/tree/main/documents).
 
 ## ADR-0004: Quarantine accepted-unknown GPU work
 
 **Status:** Superseded by the normative [RHI API v1 submission acceptance
-contract](../design-rhi.md)
+contract](../design/core.md)
 for 0.16.
 
 **Supersession note.** This ADR preserves the evidence and safety concern from
@@ -93,14 +93,14 @@ after acceptance poisons an affected generation when its state is unknown.
 0.2.1–0.2.7 snapshot fault fixtures exercised partial acceptance, failure,
 drop, and subsequent reuse behavior.
 
-See the [RHI design](../design-rhi.md) for the current lifecycle contract.
+See the [Core design](../design/core.md#surface-and-resource-lifecycle) for the current lifecycle contract.
 Renderer design remains in the
 [fluxel-rendering repository](https://github.com/fluxel-project/fluxel-rendering/tree/main/documents).
 
 ## ADR-0009: Keep the resource floor closed and reuse stateful
 
 **Status:** Historical (0.12–0.15). Superseded for all RHI semantics by
-[Fluxel RHI architecture](../design-rhi.md).
+[Fluxel RHI architecture](../design/README.md).
 
 ## Context
 
@@ -146,7 +146,7 @@ safe retirement.
 
 This ADR no longer defines a resource floor, acceptance state, completion, or
 loss protocol. Those are defined by the public RHI API and its
-[architecture guide](../design-rhi.md).
+[architecture guide](../design/core.md).
 The old fixed floor and accepted-unknown quarantine are historical evidence,
 not APIs that implementations may continue to expose.
 
@@ -232,7 +232,7 @@ real externally completed event.
 **Status:** Accepted lifecycle principle; historical protocol target, not a
 completed cross-backend Core contract.
 
-The current authority is [the RHI design](../design-rhi.md) and
+The current authority is [the Core design](../design/core.md) and
 [`core::api`](../../crates/core/src/api/mod.rs). Core uses `DeviceId` and does
 not expose generic `status()` or `loss_info()` methods. The protocol below
 records the original target, not APIs or uniform wake-up guarantees already

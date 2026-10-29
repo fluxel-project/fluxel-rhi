@@ -49,7 +49,7 @@ unavailable or fails.
 0.1.2 C01–C03, 0.1.3 K01–K02, and 0.1.4 R01/R02/X01 established the pattern.
 0.2.0–0.2.7 extended it through U01–U08 and exact-SHA release reruns.
 
-See the [RHI design](../design-rhi.md) for the current test-evidence boundary.
+See the [testing guide](../testing.md) for the current test-evidence boundary.
 
 ## ADR-0008: Execute platform-specific test paths natively
 
@@ -91,7 +91,7 @@ warnings under Linux all-features Clippy and added Windows workspace and
 no-backend gates. The no-backend gate verifies the structured
 `BackendDisabled` result for both native backend requests.
 
-See the [RHI design](../design-rhi.md) for the current platform policy.
+See the [RHI design overview](../design/README.md#system-boundary) for the current platform policy.
 
 ## ADR-0017: Keep presentation frames separate from textures and completion
 

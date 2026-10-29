@@ -1,6 +1,6 @@
 # Fluxel RHI Architecture Decision Records
 
-Related decisions are grouped by topic to keep the index concise. Original ADR numbers, statuses, and evidence notes remain in the records. Current normative behavior is defined by [the RHI design](../design-rhi.md) and [the testing guide](../testing.md).
+Related decisions are grouped by topic to keep the index concise. Original ADR numbers, statuses, and evidence notes remain in the records. Current normative behavior is defined by the [RHI design overview](../design/README.md), its [open TODO ledger](../design/todo.md), and [the testing guide](../testing.md).
 
 ## Backend and platform boundaries
 
