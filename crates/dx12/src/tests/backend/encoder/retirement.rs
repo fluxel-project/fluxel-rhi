@@ -1,12 +1,17 @@
+//! Native owner retirement, default-pool leases, and failure quarantine tests.
+
 use crate::backend::Dx12Instance;
 use fluxel_rhi_core::api::*;
 use std::{
-    future::Future,
     sync::Arc,
     thread,
     time::{Duration, Instant},
 };
 use windows::Win32::Graphics::Direct3D12::{D3D12_FENCE_FLAG_NONE, ID3D12Fence};
+
+#[path = "../support.rs"]
+mod support;
+use support::block;
 
 /// Releases the private native gate even while an assertion unwinds, so a
 /// failed retention assertion cannot strand either queue in this process.
@@ -56,17 +61,6 @@ fn hold_native_queues(device: &Device<crate::backend::Dx12>, compute: bool) -> G
         unsafe { native.0.multi_queue.queue.Wait(&fence, 1) }.expect("hold compute queue");
     }
     GateRelease::new(fence)
-}
-
-fn block<F: Future>(future: F) -> F::Output {
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut future = std::pin::pin!(future);
-    loop {
-        match future.as_mut().poll(&mut context) {
-            std::task::Poll::Ready(value) => return value,
-            std::task::Poll::Pending => thread::sleep(Duration::from_millis(1)),
-        }
-    }
 }
 
 #[test]

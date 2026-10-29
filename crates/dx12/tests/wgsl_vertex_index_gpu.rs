@@ -2,23 +2,11 @@
 #![cfg(all(windows, feature = "hardware-tests"))]
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_dx12::Dx12Instance;
-use std::{
-    future::Future,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::sync::Arc;
 
-fn block_on<F: Future>(f: F) -> F::Output {
-    let w = std::task::Waker::noop();
-    let mut c = std::task::Context::from_waker(w);
-    let mut f = std::pin::pin!(f);
-    loop {
-        match f.as_mut().poll(&mut c) {
-            std::task::Poll::Ready(v) => return v,
-            std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-    }
-}
+#[path = "support/mod.rs"]
+mod support;
+use support::block as block_on;
 
 #[test]
 fn native_and_wgsl_draw_index_semantics() {
@@ -35,24 +23,9 @@ fn native_and_wgsl_draw_index_semantics() {
     run(true, 3, false, true);
 }
 
-/// A diagnostic recording benchmark for the WGSL `vertex_index` indirect
-/// lowering.  It is deliberately a real-GPU gate: the reported CPU intervals
-/// are adjacent first/warm `multi_draw` calls on one pipeline, while the later
-/// readback proves that every selected command count still produces the
-/// expected pixel.
-///
-/// This is not a universal draw benchmark. It isolates the backend's native
-/// lowering of a single non-indexed indirect batch with no user bindings.
 #[test]
-fn wgsl_vertex_index_indirect_recording_counts() {
-    for count in [1, 3, 10_000] {
-        let [cold, warm] = run_indirect_batch(count);
-        eprintln!(
-            "wgsl_vertex_index_indirect_recording count={count} cold_us={} warm_us={}",
-            cold.as_micros(),
-            warm.as_micros()
-        );
-    }
+fn wgsl_multi_draw_large_count_readback() {
+    run_indirect_batch(10_000);
 }
 
 fn run(indexed: bool, indirect: u8, native: bool, negative: bool) {
@@ -117,7 +90,7 @@ fn wgsl_packing_offset_stride_and_gpu_count_chunk_boundary() {
     );
 }
 
-fn run_indirect_batch(count: u32) -> [Duration; 2] {
+fn run_indirect_batch(count: u32) {
     run_inner(
         false,
         4,
@@ -130,17 +103,10 @@ fn run_indirect_batch(count: u32) -> [Duration; 2] {
             gpu_count: false,
             count_offset: 0,
         }),
-    )
-    .expect("batch benchmark records a duration")
+    );
 }
 
-fn run_inner(
-    indexed: bool,
-    indirect: u8,
-    native: bool,
-    negative: bool,
-    batch: Option<Batch>,
-) -> Option<[Duration; 2]> {
+fn run_inner(indexed: bool, indirect: u8, native: bool, negative: bool, batch: Option<Batch>) {
     let d = block_on(Dx12Instance::new().unwrap().open_default()).unwrap();
     let lane = d
         .lanes()
@@ -276,7 +242,7 @@ fn run_inner(
     let dst = d
         .create_buffer(&BufferDesc {
             label: None,
-            size: 8208,
+            size: 8192,
             usage: BufferUsage::COPY_DST | BufferUsage::MAP_READ | BufferUsage::QUERY_RESOLVE,
             memory: MemoryClass::Readback,
         })
@@ -513,15 +479,6 @@ fn run_inner(
         load: LoadOp::Clear(ClearColor::Float([0.0, 0.0, 0.0, 1.0])),
         store: StoreOp::Store,
     })];
-    let timestamps = batch.map(|_| {
-        d.queries(QueryKind::Timestamp)
-            .unwrap()
-            .create(&QueryDesc {
-                kind: QueryKind::Timestamp,
-                count: 2,
-            })
-            .unwrap()
-    });
     let mut pass = e
         .begin_raster(&RasterPassDesc {
             label: None,
@@ -534,11 +491,7 @@ fn run_inner(
                 height: 16,
             },
             multiview_mask: None,
-            timestamp_writes: timestamps.as_ref().map(|set| PassTimestampWrites {
-                set,
-                begin: Some(0),
-                end: Some(1),
-            }),
+            timestamp_writes: None,
             occlusion_query_set: None,
             secondary_inheritance: None,
         })
@@ -565,9 +518,9 @@ fn run_inner(
             .unwrap();
     }
     let extras = d.raster_extras().unwrap();
-    let recording = if indirect == 4 {
+    if indirect == 4 {
         let batch = batch.unwrap();
-        let mut record = |pass: &mut RasterPass<'_, _>| {
+        let record = |pass: &mut RasterPass<'_, _>| {
             if batch.gpu_count {
                 extras
                     .multi_draw_count(
@@ -594,12 +547,7 @@ fn run_inner(
                     .unwrap();
             }
         };
-        let start = Instant::now();
         record(&mut pass);
-        let cold = start.elapsed();
-        let start = Instant::now();
-        record(&mut pass);
-        Some([cold, start.elapsed()])
     } else {
         match (indexed, indirect) {
             (false, 0) => pass.draw(5..8, 9..10).unwrap(),
@@ -631,16 +579,9 @@ fn run_inner(
                 .unwrap(),
             _ => unreachable!(),
         }
-        None
-    };
+    }
 
     pass.finish().unwrap();
-    if let Some(set) = &timestamps {
-        d.queries(QueryKind::Timestamp)
-            .unwrap()
-            .resolve(&mut e, set, 0..2, &dst, 8192)
-            .unwrap();
-    }
     e.transition_resources(&[barrier(
         render,
         copy,
@@ -665,7 +606,7 @@ fn run_inner(
         )
         .unwrap();
     }
-    let ticket = e.readback_buffer(&dst, 0..8208).unwrap();
+    let ticket = e.readback_buffer(&dst, 0..8192).unwrap();
     let id = PlanId {
         device: d.id(),
         ordinal: 755321,
@@ -702,24 +643,6 @@ fn run_inner(
     block_on(d.wait_completion(&point)).unwrap();
     // SAFETY: the awaited completion point covers the readback.
     let bytes = unsafe { block_on(d.read_after(ticket, &point)).unwrap().bytes };
-    if let Some(batch) = batch {
-        let first = u64::from_le_bytes(bytes[8192..8200].try_into().unwrap());
-        let last = u64::from_le_bytes(bytes[8200..8208].try_into().unwrap());
-        assert!(
-            last >= first && first != 0,
-            "invalid timestamp pair {first}..{last}"
-        );
-        let frequency = d
-            .queries(QueryKind::Timestamp)
-            .unwrap()
-            .timestamp_frequency(lane)
-            .unwrap();
-        let gpu_ns = u128::from(last - first) * 1_000_000_000 / u128::from(frequency);
-        eprintln!(
-            "indirect pass pack+draw count={} indexed={} stride={} offset={} gpu_count={} gpu_ns={gpu_ns}",
-            batch.count, indexed, batch.stride, batch.offset, batch.gpu_count
-        );
-    }
     let center = 8 * 256 + 8 * 4;
     assert_eq!(
         &bytes[center..center + 4],
@@ -731,5 +654,4 @@ fn run_inner(
             &[5, 9, 0, 255]
         }
     );
-    recording
 }

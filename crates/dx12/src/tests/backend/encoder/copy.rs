@@ -1,10 +1,7 @@
 //! Real-GPU conformance checks for explicit copy commands.
-use std::{
-    future::Future,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
 };
 
 use fluxel_rhi_core::api::{
@@ -17,19 +14,11 @@ use fluxel_rhi_core::api::{
 
 use crate::backend::{Dx12, Dx12Instance};
 
-static NEXT_PLAN: AtomicU64 = AtomicU64::new(1);
+#[path = "../support.rs"]
+mod support;
+use support::block as block_on;
 
-fn block_on<F: Future>(future: F) -> F::Output {
-    let waker = std::task::Waker::noop();
-    let mut context = std::task::Context::from_waker(waker);
-    let mut future = std::pin::pin!(future);
-    loop {
-        match future.as_mut().poll(&mut context) {
-            std::task::Poll::Ready(value) => return value,
-            std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-    }
-}
+static NEXT_PLAN: AtomicU64 = AtomicU64::new(1);
 
 fn copy_uses(read: bool) -> fluxel_rhi_core::api::BufferUses {
     fluxel_rhi_core::api::BufferUses {

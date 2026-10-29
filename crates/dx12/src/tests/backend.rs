@@ -1,3 +1,5 @@
+//! DX12 backend feature admission and address-space limit regressions.
+
 use super::*;
 #[test]
 fn validates_ray_query_and_known_legacy_feature() {

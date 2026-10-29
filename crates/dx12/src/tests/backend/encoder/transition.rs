@@ -1,3 +1,5 @@
+//! Resource-state and UAV-ordering lowering admission regressions.
+
 use super::*;
 
 #[test]

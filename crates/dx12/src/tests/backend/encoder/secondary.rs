@@ -1,3 +1,5 @@
+//! Secondary raster-pass inheritance and attachment signature validation.
+
 use super::*;
 
 fn signature(depth: Option<api::TextureFormat>) -> api::SecondaryRasterDesc {

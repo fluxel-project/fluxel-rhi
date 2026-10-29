@@ -2,22 +2,14 @@
 #![cfg(all(windows, feature = "hardware-tests"))]
 #[path = "resolve.rs"]
 mod resolve;
+#[path = "../support/mod.rs"]
+mod support;
 #[path = "transient.rs"]
 mod transient;
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_vulkan::VulkanInstance;
-use std::{future::Future, sync::Arc};
-fn block_on<F: Future>(f: F) -> F::Output {
-    let w = std::task::Waker::noop();
-    let mut c = std::task::Context::from_waker(w);
-    let mut f = std::pin::pin!(f);
-    loop {
-        match f.as_mut().poll(&mut c) {
-            std::task::Poll::Ready(v) => return v,
-            std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-    }
-}
+use std::sync::Arc;
+use support::block_on;
 
 #[test]
 fn two_color_targets_receive_distinct_outputs() {

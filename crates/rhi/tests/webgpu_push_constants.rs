@@ -5,7 +5,9 @@
 #[path = "../examples/05_push_constants/main.rs"]
 mod push_constants;
 
-use wasm_bindgen::JsCast;
+#[path = "support/webgpu.rs"]
+mod support;
+
 use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
@@ -14,16 +16,8 @@ wasm_bindgen_test_configure!(run_in_browser);
 /// render the exact sixteen-draw sphere workload through dynamic uniforms.
 #[wasm_bindgen_test(async)]
 async fn push_constant_sphere_ring_draws_with_dynamic_uniforms() {
-    let document = web_sys::window().unwrap().document().unwrap();
-    let canvas = document
-        .create_element("canvas")
-        .unwrap()
-        .dyn_into::<web_sys::HtmlCanvasElement>()
-        .unwrap();
-    canvas.set_width(640);
-    canvas.set_height(480);
-    document.body().unwrap().append_child(&canvas).unwrap();
+    let canvas = support::canvas(640, 480);
     let result = push_constants::run_webgpu_push_constants(canvas.clone(), 3).await;
-    canvas.remove();
+    support::remove_canvas(&canvas);
     result.expect("05 must draw and present three WebGPU frames");
 }

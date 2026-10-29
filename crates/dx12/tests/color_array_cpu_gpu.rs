@@ -2,17 +2,10 @@
 #![cfg(all(windows, feature = "hardware-tests"))]
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_dx12::Dx12Instance;
-use std::{future::Future, sync::Arc};
-fn block<F: Future>(f: F) -> F::Output {
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut f = std::pin::pin!(f);
-    loop {
-        match f.as_mut().poll(&mut cx) {
-            std::task::Poll::Ready(v) => return v,
-            std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-    }
-}
+use std::sync::Arc;
+#[path = "support/mod.rs"]
+mod support;
+use support::block;
 #[test]
 fn color_array_cpu_and_texture_roundtrip() {
     check(TextureFormat::Rgba8Unorm, TextureAspects::COLOR, 0);

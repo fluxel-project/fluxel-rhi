@@ -1,23 +1,17 @@
-//! Depth attachment clear and shader sampling readback.
+//! Depth format sampling readback across distinct native depth formats.
 #![cfg(all(windows, feature = "hardware-tests"))]
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_dx12::Dx12Instance;
-use std::{future::Future, sync::Arc};
-fn block<F: Future>(f: F) -> F::Output {
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut f = std::pin::pin!(f);
-    loop {
-        match f.as_mut().poll(&mut cx) {
-            std::task::Poll::Ready(v) => return v,
-            std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-    }
-}
-#[test]
-fn depth_sample_readback() {
-    let format = TextureFormat::Depth32Float;
-    let expected = [0.25, 0.0, 0.0, 1.0];
-    let index = 0u64;
+use std::sync::Arc;
+#[path = "support/mod.rs"]
+mod support;
+use support::block;
+fn run_depth_sample_readback(
+    format: TextureFormat,
+    clear_depth: f32,
+    expected: [f32; 4],
+    ordinal: u64,
+) {
     let d = block(Dx12Instance::new().unwrap().open_default()).unwrap();
     let lane = d
         .lanes()
@@ -39,7 +33,7 @@ fn depth_sample_readback() {
         })
         .unwrap();
     let mut e = d.encoder(lane).unwrap();
-    e.clear_texture(&tex, 0..1, 0..1, TextureClearValue::Depth(0.25))
+    e.clear_texture(&tex, 0..1, 0..1, TextureClearValue::Depth(clear_depth))
         .unwrap();
     let view = d
         .create_view(
@@ -225,7 +219,7 @@ fn depth_sample_readback() {
         SubmissionPlan::from_compiled(
             PlanId {
                 device: d.id(),
-                ordinal: 99530 + index as u64,
+                ordinal,
             },
             Arc::from([StepDesc {
                 lane,
@@ -258,5 +252,55 @@ fn depth_sample_readback() {
             .collect::<Vec<_>>(),
         expected,
         "{format:?}"
+    );
+}
+
+#[test]
+fn depth32_float_sample_readback() {
+    run_depth_sample_readback(
+        TextureFormat::Depth32Float,
+        0.25,
+        [0.25, 0.0, 0.0, 1.0],
+        99530,
+    );
+}
+
+#[test]
+fn depth16_unorm_sample_readback() {
+    run_depth_sample_readback(
+        TextureFormat::Depth16Unorm,
+        1.0,
+        [1.0, 0.0, 0.0, 1.0],
+        99531,
+    );
+}
+
+#[test]
+fn depth24_plus_sample_readback() {
+    run_depth_sample_readback(
+        TextureFormat::Depth24Plus,
+        0.25,
+        [0.25, 0.0, 0.0, 1.0],
+        99532,
+    );
+}
+
+#[test]
+fn depth24_plus_stencil8_sample_readback() {
+    run_depth_sample_readback(
+        TextureFormat::Depth24PlusStencil8,
+        0.25,
+        [0.25, 0.0, 0.0, 1.0],
+        99533,
+    );
+}
+
+#[test]
+fn depth32_float_stencil8_sample_readback() {
+    run_depth_sample_readback(
+        TextureFormat::Depth32FloatStencil8,
+        0.25,
+        [0.25, 0.0, 0.0, 1.0],
+        99534,
     );
 }

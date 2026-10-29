@@ -9,22 +9,14 @@
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_dx12::{Dx12, Dx12Instance, diagnostics};
 use std::{
-    future::Future,
     sync::{Arc, Barrier},
     thread,
     time::{Duration, Instant},
 };
 
-fn block<F: Future>(future: F) -> F::Output {
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut future = std::pin::pin!(future);
-    loop {
-        match future.as_mut().poll(&mut context) {
-            std::task::Poll::Ready(value) => return value,
-            std::task::Poll::Pending => thread::sleep(Duration::from_millis(1)),
-        }
-    }
-}
+#[path = "support/mod.rs"]
+mod support;
+use support::block;
 
 #[derive(Clone, Copy)]
 struct Measurement {

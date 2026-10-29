@@ -1,3 +1,5 @@
+//! Upload-page addressability limit validation.
+
 use super::*;
 
 #[test]

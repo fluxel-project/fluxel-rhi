@@ -1,3 +1,5 @@
+//! Indirect dispatch record packing across wide resource-offset windows.
+
 use super::*;
 
 #[test]

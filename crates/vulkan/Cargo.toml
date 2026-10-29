@@ -27,3 +27,31 @@ path = "tests/mrt_gpu/mod.rs"
 [[test]]
 name = "readonly_depth_stencil_gpu"
 path = "tests/readonly_depth_stencil_gpu/mod.rs"
+
+[[test]]
+name = "sampler_clamp_zero_gpu"
+path = "tests/sampler_gpu/clamp_zero.rs"
+
+[[test]]
+name = "mesh_gpu"
+path = "tests/mesh_gpu/mod.rs"
+
+[[test]]
+name = "clear_gpu"
+path = "tests/clear_gpu/mod.rs"
+
+[[test]]
+name = "int64_atomic_add_gpu"
+path = "tests/int64_atomic_gpu/mod.rs"
+
+[[test]]
+name = "sampler_layout_switch_gpu"
+path = "tests/sampler_gpu/layout_switch.rs"
+
+[[test]]
+name = "sampler_runtime_mixed_gpu"
+path = "tests/sampler_gpu/runtime_mixed.rs"
+
+[[test]]
+name = "wgsl_sampler_array_gpu"
+path = "tests/sampler_gpu/wgsl_array.rs"

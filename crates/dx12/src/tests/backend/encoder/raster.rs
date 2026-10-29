@@ -1,3 +1,5 @@
+//! Raster index-strip restart compatibility validation.
+
 use super::*;
 #[test]
 fn strip_restart_requires_matching_index_width() {

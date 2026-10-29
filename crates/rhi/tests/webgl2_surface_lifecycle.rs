@@ -2,7 +2,7 @@
 #![cfg(all(target_arch = "wasm32", feature = "webgl2"))]
 
 #[allow(dead_code)]
-#[path = "webgl2_support.rs"]
+#[path = "support/webgl2.rs"]
 mod support;
 
 use fluxel_rhi::{

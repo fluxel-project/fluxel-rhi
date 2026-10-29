@@ -1,6 +1,6 @@
 //! Browser evidence for the immediate WebGL2 offscreen mirror path.
 #![cfg(all(target_arch = "wasm32", feature = "webgl2"))]
-#[path = "webgl2_support.rs"]
+#[path = "support/webgl2.rs"]
 mod support;
 
 #[path = "../examples/07_offscreen/main.rs"]

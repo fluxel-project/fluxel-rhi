@@ -1,20 +1,12 @@
 //! Real-device proof for the Vulkan R64Uint image Int64 atomic-add route.
 #![cfg(all(windows, feature = "hardware-tests"))]
 
+#[path = "support/mod.rs"]
+mod support;
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_vulkan::VulkanInstance;
-use std::{future::Future, sync::Arc};
-
-fn block_on<F: Future>(future: F) -> F::Output {
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut future = std::pin::pin!(future);
-    loop {
-        match future.as_mut().poll(&mut context) {
-            std::task::Poll::Ready(value) => return value,
-            std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-    }
-}
+use std::sync::Arc;
+use support::block_on;
 
 fn mutate_spirv_operand(bytes: &[u8], opcode: u32, operand: usize, from: u32, to: u32) -> Vec<u8> {
     let mut words = bytes

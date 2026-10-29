@@ -3,22 +3,15 @@
 
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_dx12::Dx12Instance;
-use std::{future::Future, sync::Arc};
+use std::sync::Arc;
 use windows::{
     Win32::Graphics::{Direct3D12::*, Dxgi::Common::*},
     core::Interface,
 };
 
-fn block<F: Future>(future: F) -> F::Output {
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut future = std::pin::pin!(future);
-    loop {
-        if let std::task::Poll::Ready(value) = future.as_mut().poll(&mut cx) {
-            return value;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-}
+#[path = "support/mod.rs"]
+mod support;
+use support::block;
 
 #[test]
 fn scoped_native_copy_on_both_recording_lanes() {

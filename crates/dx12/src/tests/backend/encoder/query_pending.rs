@@ -2,18 +2,11 @@
 use super::*;
 use crate::backend::Dx12Instance;
 use fluxel_rhi_core::api::*;
-use std::{future::Future, sync::Arc};
+use std::sync::Arc;
 
-fn block<F: Future>(f: F) -> F::Output {
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut f = std::pin::pin!(f);
-    loop {
-        if let std::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-            return v;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-}
+#[path = "../support.rs"]
+mod support;
+use support::block;
 
 struct Release(ID3D12Fence);
 impl Drop for Release {

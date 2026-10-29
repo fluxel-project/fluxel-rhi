@@ -40,44 +40,6 @@ mod transient;
 #[path = "utility_cache.rs"]
 mod utility_cache;
 
-#[wasm_bindgen_test(async)]
-async fn browser_gpu_environment_records_adapter_and_features() {
-    let gpu = super::js::browser_gpu().unwrap();
-    let adapter =
-        wasm_bindgen_futures::JsFuture::from(super::js::request_adapter(&gpu, None).unwrap())
-            .await
-            .unwrap();
-    let info = super::js::property(&adapter, "info").unwrap();
-    let output: wasm_bindgen::JsValue = js_sys::Object::new().into();
-    for key in [
-        "vendor",
-        "architecture",
-        "device",
-        "description",
-        "isFallbackAdapter",
-    ] {
-        if let Ok(value) = super::js::property(&info, key) {
-            super::js::set(&output, key, &value).unwrap();
-        }
-    }
-    let features = super::js::property(&adapter, "features").unwrap();
-    super::js::set(&output, "features", &js_sys::Array::from(&features).into()).unwrap();
-    let navigator = super::js::property(&js_sys::global().into(), "navigator").unwrap();
-    super::js::set(
-        &output,
-        "userAgent",
-        &super::js::property(&navigator, "userAgent").unwrap(),
-    )
-    .unwrap();
-    console_log!(
-        "WEBGPU_ENV {}",
-        js_sys::JSON::stringify(&output)
-            .unwrap()
-            .as_string()
-            .unwrap()
-    );
-}
-
 async fn open() -> Device<WebGpu> {
     let instance = WebGpuInstance::new().unwrap();
     if let Some(url) = option_env!("FLUXEL_WEBGPU_TEST_SHADER_WORKER_URL") {

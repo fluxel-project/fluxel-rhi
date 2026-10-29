@@ -3,20 +3,25 @@ use super::*;
 
 #[test]
 fn two_multisample_targets_resolve_to_distinct_textures() {
-    resolve_targets(false, false);
+    resolve_targets(false, false, None);
 }
 
 #[test]
 fn multisample_array_resolves_selected_layer() {
-    resolve_targets(true, false);
+    resolve_targets(true, false, None);
 }
 
 #[test]
 fn multiview_resolves_both_array_layers() {
-    resolve_targets(true, true);
+    resolve_targets(true, true, Some(3));
 }
 
-fn resolve_targets(array: bool, multiview: bool) {
+#[test]
+fn sparse_multiview_resolve_preserves_masked_layer() {
+    resolve_targets(true, true, Some(2));
+}
+
+fn resolve_targets(array: bool, multiview: bool, multiview_mask: Option<u32>) {
     let d = block_on(Dx12Instance::new().unwrap().open_default()).unwrap();
     let lane = d
         .lanes()
@@ -117,7 +122,43 @@ fn resolve_targets(array: bool, multiview: bool) {
             ownership: None,
         })
     };
-    if array && !multiview {
+    let sparse_multiview = multiview && multiview_mask != Some(3);
+    if sparse_multiview {
+        for destination in &destinations {
+            let all_layers = |from, to, layouts| {
+                ResourceTransition::Texture(TextureBarrier {
+                    target: Subresources {
+                        texture: destination,
+                        aspects: TextureAspects::COLOR,
+                        mips: 0..1,
+                        layers: 0..2,
+                    },
+                    usage: StateTransition { from, to },
+                    layout: Some(layouts),
+                    ownership: None,
+                })
+            };
+            e.transition_resources(&[all_layers(
+                empty,
+                write,
+                (ImageLayout::Common, ImageLayout::ColorAttachment),
+            )])
+            .unwrap();
+            e.clear_texture(
+                destination,
+                0..1,
+                0..2,
+                TextureClearValue::Color(ClearColor::Float([0.0, 0.0, 1.0, 1.0])),
+            )
+            .unwrap();
+            e.transition_resources(&[all_layers(
+                write,
+                write,
+                (ImageLayout::ColorAttachment, ImageLayout::ResolveDst),
+            )])
+            .unwrap();
+        }
+    } else if array && !multiview {
         for destination in &destinations {
             let layer_zero = |from, to, layouts| {
                 ResourceTransition::Texture(TextureBarrier {
@@ -162,14 +203,16 @@ fn resolve_targets(array: bool, multiview: bool) {
         )])
         .unwrap();
     }
-    for destination in &destinations {
-        e.transition_resources(&[barrier(
-            destination,
-            empty,
-            write,
-            (ImageLayout::Common, ImageLayout::ResolveDst),
-        )])
-        .unwrap();
+    if !sparse_multiview {
+        for destination in &destinations {
+            e.transition_resources(&[barrier(
+                destination,
+                empty,
+                write,
+                (ImageLayout::Common, ImageLayout::ResolveDst),
+            )])
+            .unwrap();
+        }
     }
     let attachments = [
         Some(ColorAttachment {
@@ -195,7 +238,7 @@ fn resolve_targets(array: bool, multiview: bool) {
             width: 16,
             height: 16,
         },
-        multiview_mask: if multiview { Some(3) } else { None },
+        multiview_mask: if multiview { multiview_mask } else { None },
         timestamp_writes: None,
         occlusion_query_set: None,
         secondary_inheritance: None,
@@ -291,12 +334,16 @@ fn resolve_targets(array: bool, multiview: bool) {
             assert_eq!(&bytes[offset..offset + 4], &[255, 0, 0, 255]);
             assert_eq!(&bytes[4096 + offset..4096 + offset + 4], &[0, 255, 0, 255]);
             if array {
-                let expected0 = if multiview {
+                let expected0 = if sparse_multiview {
+                    [0, 0, 255, 255]
+                } else if multiview {
                     [255, 0, 0, 255]
                 } else {
                     [0, 0, 255, 255]
                 };
-                let expected1 = if multiview {
+                let expected1 = if sparse_multiview {
+                    [0, 0, 255, 255]
+                } else if multiview {
                     [0, 255, 0, 255]
                 } else {
                     [0, 0, 255, 255]

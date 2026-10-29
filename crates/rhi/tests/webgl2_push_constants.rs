@@ -1,6 +1,6 @@
 //! Browser evidence for the immediate WebGL2 push-constant fallback.
 #![cfg(all(target_arch = "wasm32", feature = "webgl2"))]
-#[path = "webgl2_support.rs"]
+#[path = "support/webgl2.rs"]
 mod support;
 
 #[path = "../examples/05_push_constants/main.rs"]

@@ -1,22 +1,16 @@
 //! Real GPU validation of dynamic sampler-array indexing.
 #![cfg(all(windows, feature = "hardware-tests"))]
 use std::sync::Arc;
+
+#[path = "support/mod.rs"]
+mod support;
+use support::block;
+
 #[cfg(feature = "hardware-tests")]
 #[test]
 fn sampler_array_dynamic_index_gpu() {
     use fluxel_rhi_core::api::*;
     use fluxel_rhi_dx12::Dx12Instance;
-    use std::future::Future;
-    fn block<F: Future>(f: F) -> F::Output {
-        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-        let mut f = std::pin::pin!(f);
-        loop {
-            if let std::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-                return v;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-    }
     let source = b"@group(0) @binding(1) var samp: binding_array<sampler, 2>; @group(0) @binding(2) var scalar_samp: sampler; @group(1) @binding(4) var image: texture_2d<f32>; @group(1) @binding(5) var<storage, read_write> data: array<u32>; @group(1) @binding(6) var output_image: texture_storage_2d<rgba8unorm, write>; @compute @workgroup_size(2) fn main(@builtin(local_invocation_index) i: u32) { data[i] = u32(round(textureSampleLevel(image, samp[i], vec2<f32>(1.25, 0.5), 0.0).x * 255.0)) + u32(round(textureSampleLevel(image, scalar_samp, vec2<f32>(1.25, 0.5), 0.0).x * 255.0)); if i == 0u { textureStore(output_image, vec2<i32>(0), vec4<f32>(1.0, 0.0, 0.0, 1.0)); } }";
     let desc = ShaderDesc {
         label: None,

@@ -1,3 +1,5 @@
+//! Fence completion, wakeup, cancellation, and device-loss regressions.
+
 use super::{Dx12FenceFuture, fence_progress};
 use fluxel_rhi_core::api::Error;
 

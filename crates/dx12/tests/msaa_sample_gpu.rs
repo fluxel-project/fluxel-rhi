@@ -1,23 +1,20 @@
-//! Depth attachment clear and shader sampling readback.
+//! Multisample texture sampling across D2, D2Array, and WGSL routes.
 #![cfg(all(windows, feature = "hardware-tests"))]
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_dx12::Dx12Instance;
-use std::{future::Future, sync::Arc};
-fn block<F: Future>(f: F) -> F::Output {
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut f = std::pin::pin!(f);
-    loop {
-        match f.as_mut().poll(&mut cx) {
-            std::task::Poll::Ready(v) => return v,
-            std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-    }
-}
-#[test]
-fn multisample_view_readback() {
+use std::sync::Arc;
+#[path = "support/mod.rs"]
+mod support;
+use support::block;
+fn run_multisample_view_readback(
+    view_dimension: TextureViewDimension,
+    array_layers: u32,
+    shader_format: ShaderFormat,
+    shader_bytes: Arc<[u8]>,
+    ordinal: u64,
+) {
     let format = TextureFormat::Rgba8Unorm;
 
-    let index = 0u64;
     let d = block(Dx12Instance::new().unwrap().open_default()).unwrap();
     let lane = d
         .lanes()
@@ -30,7 +27,7 @@ fn multisample_view_readback() {
             label: None,
             dimension: TextureDimension::D2,
             extent: [8, 8, 1],
-            array_layers: 1,
+            array_layers,
             format,
             mip_levels: 1,
             samples: 4,
@@ -44,7 +41,7 @@ fn multisample_view_readback() {
             texture: &tex,
             aspects: TextureAspects::COLOR,
             mips: 0..1,
-            layers: 0..1,
+            layers: 0..array_layers,
         },
         usage: StateTransition {
             from: TextureUses {
@@ -63,7 +60,7 @@ fn multisample_view_readback() {
     e.clear_texture(
         &tex,
         0..1,
-        0..1,
+        0..array_layers,
         TextureClearValue::Color(ClearColor::Float([0.5, 0.0, 0.0, 1.0])),
     )
     .unwrap();
@@ -72,10 +69,10 @@ fn multisample_view_readback() {
             &tex,
             &TextureViewDesc {
                 format,
-                dimension: TextureViewDimension::D2,
+                dimension: view_dimension,
                 aspects: TextureAspects::COLOR,
                 mips: 0..1,
-                layers: 0..1,
+                layers: 0..array_layers,
             },
         )
         .unwrap();
@@ -104,7 +101,7 @@ fn multisample_view_readback() {
                     visibility: vec![ShaderStage::Compute],
                     ty: BindingType::SampledTexture {
                         sample: TextureSampleType::Float,
-                        dimension: TextureViewDimension::D2,
+                        dimension: view_dimension,
                         multisampled: true,
                     },
                     count: BindingCount::One,
@@ -155,8 +152,8 @@ fn multisample_view_readback() {
         .unwrap();
     let shader = block(d.shader(ShaderDesc {
         label: None,
-        format: ShaderFormat::Dxil,
-        bytes: Arc::from(include_bytes!("assets/msaa_sample.dxil").as_slice()),
+        format: shader_format,
+        bytes: shader_bytes,
         entries: vec![ShaderEntryPoint {
             name: "main".into(),
             stage: ShaderStage::Compute,
@@ -183,7 +180,7 @@ fn multisample_view_readback() {
                 texture: &tex,
                 aspects: TextureAspects::COLOR,
                 mips: 0..1,
-                layers: 0..1,
+                layers: 0..array_layers,
             },
             usage: StateTransition {
                 from: TextureUses {
@@ -248,7 +245,7 @@ fn multisample_view_readback() {
         SubmissionPlan::from_compiled(
             PlanId {
                 device: d.id(),
-                ordinal: 99530 + index as u64,
+                ordinal,
             },
             Arc::from([StepDesc {
                 lane,
@@ -276,4 +273,48 @@ fn multisample_view_readback() {
     let sample = unsafe { block(d.read_after(sample_ticket, &point)).unwrap().bytes };
     let value = f32::from_ne_bytes(sample[0..4].try_into().unwrap());
     assert!((value - 0.50196).abs() < 0.003, "multisample value {value}");
+}
+
+#[test]
+fn multisample_2d_dxil_view_readback() {
+    run_multisample_view_readback(
+        TextureViewDimension::D2,
+        1,
+        ShaderFormat::Dxil,
+        Arc::from(include_bytes!("assets/msaa_sample.dxil").as_slice()),
+        99530,
+    );
+}
+
+#[test]
+fn multisample_array_single_layer_dxil_readback() {
+    run_multisample_view_readback(
+        TextureViewDimension::D2Array,
+        1,
+        ShaderFormat::Dxil,
+        Arc::from(include_bytes!("assets/msaa_array_single.dxil").as_slice()),
+        99531,
+    );
+}
+
+#[test]
+fn multisample_array_layers_dxil_readback() {
+    run_multisample_view_readback(
+        TextureViewDimension::D2Array,
+        2,
+        ShaderFormat::Dxil,
+        Arc::from(include_bytes!("assets/msaa_array_sample.dxil").as_slice()),
+        99532,
+    );
+}
+
+#[test]
+fn multisample_2d_wgsl_readback() {
+    run_multisample_view_readback(
+        TextureViewDimension::D2,
+        1,
+        ShaderFormat::Wgsl,
+        Arc::from(&b"@group(0) @binding(0) var image: texture_multisampled_2d<f32>; @group(0) @binding(1) var<storage, read_write> result: array<vec4<u32>>; @compute @workgroup_size(1) fn main() { result[0] = bitcast<vec4<u32>>(textureLoad(image, vec2<i32>(1, 1), 1)); }"[..]),
+        99533,
+    );
 }

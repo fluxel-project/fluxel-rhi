@@ -507,5 +507,5 @@ impl<B: ShaderBackend> Device<B> {
 }
 
 #[cfg(test)]
-#[path = "../tests/api/shader.rs"]
+#[path = "../tests/api/shader/mod.rs"]
 mod tests;

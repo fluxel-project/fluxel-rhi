@@ -18,6 +18,18 @@ use validation::{texture_atomic_only, validation_capabilities};
 pub(crate) use wave_size::{inject_direct_hlsl, wave_ops_supported};
 
 #[cfg(test)]
+#[path = "../../tests/shader_naga/compiler.rs"]
+mod compiler_tests;
+
+#[cfg(test)]
+#[path = "../../tests/shader_naga/contracts.rs"]
+mod contract_tests;
+
+#[cfg(all(test, feature = "hardware-tests"))]
+#[path = "../../tests/shader_naga/hardware.rs"]
+mod hardware_tests;
+
+#[cfg(test)]
 #[path = "../../tests/shader_naga/sampled_texture_nonuniform.rs"]
 mod sampled_texture_nonuniform_tests;
 

@@ -1,3 +1,5 @@
+//! Direct-HLSL wave-size annotation placement and source-token regressions.
+
 use super::*;
 
 #[test]

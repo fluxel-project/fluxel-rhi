@@ -7,7 +7,7 @@
 
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_dx12::Dx12Instance;
-use std::{future::Future, sync::Arc};
+use std::sync::Arc;
 const VALUE_BYTES: u64 = 32;
 const OUTPUT_BYTES: u64 = 8;
 const COMPUTE_READ: BufferUses = BufferUses {
@@ -31,16 +31,9 @@ type Dx12Buffer = Buffer<fluxel_rhi_dx12::Dx12>;
 type Dx12Shader = Shader<fluxel_rhi_dx12::Dx12>;
 type Dx12Work = RecordedWork<fluxel_rhi_dx12::Dx12>;
 type Dx12Completion = CompletionPoint<fluxel_rhi_dx12::Dx12>;
-fn block_on<F: Future>(future: F) -> F::Output {
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut future = std::pin::pin!(future);
-    loop {
-        match future.as_mut().poll(&mut context) {
-            std::task::Poll::Ready(value) => return value,
-            std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-    }
-}
+#[path = "support/mod.rs"]
+mod support;
+use support::block as block_on;
 fn graphics_lane(device: &Dx12Device) -> LaneId {
     device
         .lanes()
@@ -58,7 +51,10 @@ fn hardware_device() -> (
     let adapters = instance.enumerate().unwrap();
     eprintln!(
         "DXGI adapters: {:?}",
-        adapters.iter().map(|adapter| adapter.name.as_str()).collect::<Vec<_>>()
+        adapters
+            .iter()
+            .map(|adapter| adapter.name.as_str())
+            .collect::<Vec<_>>()
     );
     let adapter = adapters
         .into_iter()
@@ -72,7 +68,10 @@ fn hardware_device() -> (
     .unwrap();
     (instance, adapter, device)
 }
-fn storage_layout(device: &Dx12Device, access: StorageAccess) -> BindGroupLayout<fluxel_rhi_dx12::Dx12> {
+fn storage_layout(
+    device: &Dx12Device,
+    access: StorageAccess,
+) -> BindGroupLayout<fluxel_rhi_dx12::Dx12> {
     device
         .create_bind_group_layout(&BindGroupLayoutDesc {
             label: Some("nonuniform storage-buffer array layout".into()),
@@ -122,7 +121,10 @@ fn buffer_transition(
     to: BufferUses,
 ) -> ResourceTransition<'_, fluxel_rhi_dx12::Dx12> {
     ResourceTransition::Buffer(BufferBarrier {
-        target: BufferSlice { buffer, range: 0..size },
+        target: BufferSlice {
+            buffer,
+            range: 0..size,
+        },
         usage: StateTransition { from, to },
         ownership: None,
     })
@@ -336,21 +338,28 @@ fn divergent_storage_buffer_array_reads_distinct_values() {
         "nonuniform storage read",
         include_bytes!("assets/storage_buffer_nonuniform_read.wgsl"),
     );
-    let pipeline = block_on(device.compute().unwrap().create_pipeline(ComputePipelineDesc {
-        label: Some("nonuniform storage read pipeline".into()),
-        layout: pipeline_layout,
-        compute: PipelineStage {
-            module,
-            entry: "main".into(),
-            constants: vec![],
-        },
-        cache: None,
-        required_subgroup_size: None,
-    }))
+    let pipeline = block_on(
+        device
+            .compute()
+            .unwrap()
+            .create_pipeline(ComputePipelineDesc {
+                label: Some("nonuniform storage read pipeline".into()),
+                layout: pipeline_layout,
+                compute: PipelineStage {
+                    module,
+                    entry: "main".into(),
+                    constants: vec![],
+                },
+                cache: None,
+                required_subgroup_size: None,
+            }),
+    )
     .unwrap();
     let mut encoder = device.encoder(lane).unwrap();
     for (input, value) in inputs.iter().zip([11u32, 22]) {
-        encoder.write_buffer(input, 16, &value.to_le_bytes()).unwrap();
+        encoder
+            .write_buffer(input, 16, &value.to_le_bytes())
+            .unwrap();
     }
     encoder
         .transition_resources(&[
@@ -391,9 +400,16 @@ fn divergent_storage_buffer_array_reads_distinct_values() {
         pass.finish().unwrap();
     }
     encoder
-        .transition_resources(&[buffer_transition(&output, OUTPUT_BYTES, COMPUTE_WRITE, COPY_READ)])
+        .transition_resources(&[buffer_transition(
+            &output,
+            OUTPUT_BYTES,
+            COMPUTE_WRITE,
+            COPY_READ,
+        )])
         .unwrap();
-    encoder.copy_buffer(&output, 0, &readback, 0, OUTPUT_BYTES).unwrap();
+    encoder
+        .copy_buffer(&output, 0, &readback, 0, OUTPUT_BYTES)
+        .unwrap();
     let ticket = encoder.readback_buffer(&readback, 0..OUTPUT_BYTES).unwrap();
     let work = encoder.finish().unwrap();
     drop((group, pipeline, inputs, output));
@@ -469,17 +485,22 @@ fn divergent_storage_buffer_array_writes_selected_elements() {
         "nonuniform storage write",
         include_bytes!("assets/storage_buffer_nonuniform_write.wgsl"),
     );
-    let pipeline = block_on(device.compute().unwrap().create_pipeline(ComputePipelineDesc {
-        label: Some("nonuniform storage write pipeline".into()),
-        layout: pipeline_layout,
-        compute: PipelineStage {
-            module,
-            entry: "main".into(),
-            constants: vec![],
-        },
-        cache: None,
-        required_subgroup_size: None,
-    }))
+    let pipeline = block_on(
+        device
+            .compute()
+            .unwrap()
+            .create_pipeline(ComputePipelineDesc {
+                label: Some("nonuniform storage write pipeline".into()),
+                layout: pipeline_layout,
+                compute: PipelineStage {
+                    module,
+                    entry: "main".into(),
+                    constants: vec![],
+                },
+                cache: None,
+                required_subgroup_size: None,
+            }),
+    )
     .unwrap();
     let mut encoder = device.encoder(lane).unwrap();
     for (input, value) in inputs.iter().zip([11u32, 22]) {
@@ -528,7 +549,12 @@ fn divergent_storage_buffer_array_writes_selected_elements() {
         pass.dispatch([1, 1, 1]).unwrap();
         pass.finish().unwrap();
     }
-    let mut copies = vec![buffer_transition(&output, OUTPUT_BYTES, COMPUTE_WRITE, COPY_READ)];
+    let mut copies = vec![buffer_transition(
+        &output,
+        OUTPUT_BYTES,
+        COMPUTE_WRITE,
+        COPY_READ,
+    )];
     copies.extend(
         inputs
             .iter()
@@ -539,9 +565,13 @@ fn divergent_storage_buffer_array_writes_selected_elements() {
         .copy_buffer(&output, 0, &output_readback, 0, OUTPUT_BYTES)
         .unwrap();
     for (input, readback) in inputs.iter().zip(&input_readbacks) {
-        encoder.copy_buffer(input, 0, readback, 0, VALUE_BYTES).unwrap();
+        encoder
+            .copy_buffer(input, 0, readback, 0, VALUE_BYTES)
+            .unwrap();
     }
-    let output_ticket = encoder.readback_buffer(&output_readback, 0..OUTPUT_BYTES).unwrap();
+    let output_ticket = encoder
+        .readback_buffer(&output_readback, 0..OUTPUT_BYTES)
+        .unwrap();
     let input_tickets: Vec<_> = input_readbacks
         .iter()
         .map(|readback| encoder.readback_buffer(readback, 0..VALUE_BYTES).unwrap())
@@ -551,8 +581,15 @@ fn divergent_storage_buffer_array_writes_selected_elements() {
     let point = submit(&device, lane, 0x5353_424f_0002, work);
     block_on(device.wait_completion(&point)).unwrap();
     // SAFETY: this completion point covers all three tickets from the one encoder.
-    let output_bytes = unsafe { block_on(device.read_after(output_ticket, &point)).unwrap().bytes };
-    assert_eq!([read_u32(&output_bytes, 0), read_u32(&output_bytes, 4)], [11, 22]);
+    let output_bytes = unsafe {
+        block_on(device.read_after(output_ticket, &point))
+            .unwrap()
+            .bytes
+    };
+    assert_eq!(
+        [read_u32(&output_bytes, 0), read_u32(&output_bytes, 4)],
+        [11, 22]
+    );
     for (index, ticket) in input_tickets.into_iter().enumerate() {
         // SAFETY: this ticket was recorded before the completed submission.
         let bytes = unsafe { block_on(device.read_after(ticket, &point)).unwrap().bytes };

@@ -1,3 +1,5 @@
+//! Ray-tracing geometry GPU-address, stride, and range validation.
+
 use super::validate_address;
 #[test]
 fn rejects_misaligned_gpu_addresses_strides_and_ranges() {

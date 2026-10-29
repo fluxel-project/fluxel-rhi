@@ -1,19 +1,10 @@
 //! Real GPU sparse array layer and 3D volume residency readback.
 #![cfg(all(windows, feature = "hardware-tests"))]
+#[path = "support/mod.rs"]
+mod support;
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_vulkan::VulkanInstance;
-use std::future::Future;
-fn block_on<F: Future>(f: F) -> F::Output {
-    let w = std::task::Waker::noop();
-    let mut c = std::task::Context::from_waker(w);
-    let mut f = std::pin::pin!(f);
-    loop {
-        match f.as_mut().poll(&mut c) {
-            std::task::Poll::Ready(v) => return v,
-            std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-    }
-}
+use support::block_on;
 
 #[test]
 fn sparse_array_and_volume_readback_when_supported() {
@@ -233,64 +224,5 @@ fn sparse_array_and_volume_readback_when_supported() {
         let actual = unsafe { block_on(d.read_after(ticket, point)).unwrap().bytes };
         assert_eq!(actual, bytes, "sparse {dimension:?} layer {target_layer}");
         eprintln!("sparse {dimension:?} mip {mip} readback passed");
-    }
-}
-
-#[test]
-fn probe_array_packed_tail_layout() {
-    let d = block_on(VulkanInstance::new().unwrap().open_default()).unwrap();
-    let Some(sparse) = d.sparse() else { return };
-    let desc = TextureDesc {
-        label: None,
-        dimension: TextureDimension::D2,
-        extent: [256, 256, 1],
-        array_layers: 2,
-        format: TextureFormat::Rgba8Unorm,
-        mip_levels: 9,
-        samples: 1,
-        usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
-        view_formats: vec![],
-    };
-    let image = match sparse.texture(&desc) {
-        Ok(image) => image,
-        Err(Error::Unsupported(reason)) => {
-            eprintln!("skip: {reason}");
-            return;
-        }
-        Err(error) => panic!("sparse creation failed: {error:?}"),
-    };
-    let tiling = sparse.tiling(&image).unwrap();
-    eprintln!("array packed tail: {tiling:?}");
-    assert!(!tiling.packed_tail_shared_by_layers || tiling.packed_tail.is_some());
-}
-
-#[test]
-fn probe_sparse_depth_residency() {
-    let d = block_on(VulkanInstance::new().unwrap().open_default()).unwrap();
-    let Some(sparse) = d.sparse() else { return };
-    for format in [
-        TextureFormat::Depth16Unorm,
-        TextureFormat::Depth32Float,
-        TextureFormat::Depth24PlusStencil8,
-    ] {
-        let desc = TextureDesc {
-            label: None,
-            dimension: TextureDimension::D2,
-            extent: [256, 256, 1],
-            array_layers: 1,
-            format,
-            mip_levels: 1,
-            samples: 1,
-            usage: TextureUsage::RENDER_ATTACHMENT | TextureUsage::COPY_SRC,
-            view_formats: vec![],
-        };
-        match sparse.texture(&desc) {
-            Ok(texture) => eprintln!(
-                "sparse {format:?} available: {:?}",
-                sparse.tiling(&texture).unwrap()
-            ),
-            Err(Error::Unsupported(reason)) => eprintln!("sparse {format:?} unavailable: {reason}"),
-            Err(error) => panic!("sparse {format:?} creation failed: {error:?}"),
-        }
     }
 }

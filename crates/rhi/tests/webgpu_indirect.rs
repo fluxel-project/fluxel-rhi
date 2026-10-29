@@ -7,23 +7,17 @@
 #[path = "../examples/10_indirect_draw/main.rs"]
 mod example;
 
-use wasm_bindgen::JsCast;
+#[path = "support/webgpu.rs"]
+mod support;
+
 use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
 #[wasm_bindgen_test(async)]
 async fn indirect_draws_three_webgpu_frames() {
-    let document = web_sys::window().unwrap().document().unwrap();
-    let canvas = document
-        .create_element("canvas")
-        .unwrap()
-        .dyn_into::<web_sys::HtmlCanvasElement>()
-        .unwrap();
-    canvas.set_width(1280);
-    canvas.set_height(720);
-    document.body().unwrap().append_child(&canvas).unwrap();
+    let canvas = support::canvas(1280, 720);
     let result = example::run_webgpu_indirect(canvas.clone(), 3).await;
-    canvas.remove();
+    support::remove_canvas(&canvas);
     result.expect("10 indirect draw must render three WebGPU frames");
 }

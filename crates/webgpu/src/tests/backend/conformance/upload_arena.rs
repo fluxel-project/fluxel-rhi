@@ -3,45 +3,6 @@
 use super::*;
 use crate::backend::command;
 
-#[cfg(feature = "review3-upload-benchmark")]
-fn monotonic_millis() -> f64 {
-    let global: wasm_bindgen::JsValue = js_sys::global().into();
-    let performance =
-        super::super::js::property(&global, "performance").expect("browser performance clock");
-    super::super::js::call0(&performance, "now")
-        .expect("performance.now call")
-        .as_f64()
-        .expect("performance.now number")
-}
-
-#[cfg(feature = "review3-upload-benchmark")]
-async fn record_and_complete_upload_workload(
-    d: &Device<WebGpu>,
-    target: &Buffer<WebGpu>,
-    encoders: usize,
-    writes_per_encoder: usize,
-) -> (f64, f64) {
-    let start = monotonic_millis();
-    let mut recordings = Vec::with_capacity(encoders);
-    for encoder_index in 0..encoders {
-        let mut encoder = d.encoder(d.lanes()[0].id).unwrap();
-        for write in 0..writes_per_encoder {
-            let offset = ((write % 1024) * 4) as u64;
-            encoder
-                .write_buffer(&target, offset, &(encoder_index as u32).to_le_bytes())
-                .unwrap();
-        }
-        recordings.push(encoder);
-    }
-    let record_ms = monotonic_millis() - start;
-    for encoder in recordings {
-        // `submit` awaits the corresponding queue completion. A subsequent
-        // workload may therefore take only pages with real retirement evidence.
-        submit(d, encoder).await;
-    }
-    (record_ms, monotonic_millis() - start)
-}
-
 #[wasm_bindgen_test(async)]
 async fn gpu_upload_arena_many_small_writes_and_nonzero_clear_round_trip() {
     command::reset_upload_page_creates();
@@ -136,39 +97,4 @@ async fn gpu_upload_arena_reuses_pages_only_after_queue_completion() {
         "a completed encoder should reuse its staging page"
     );
     submit(&d, second).await;
-}
-
-/// Local-only Review3 allocation and browser-time diagnostic.
-///
-/// Each case first records all encoders before submitting any, making its cold
-/// allocation count visible. It then repeats only after every prior submission
-/// has completed, so the second count reports the bounded pool's safe reuse.
-/// This is intentionally opt-in because the 100×1000 workload is not a normal
-/// conformance assertion.
-#[cfg(feature = "review3-upload-benchmark")]
-#[wasm_bindgen_test(async)]
-async fn review3_upload_arena_timing_matrix() {
-    for encoders in [1_usize, 10, 100] {
-        for writes_per_encoder in [1_usize, 100, 1000] {
-            let d = open().await;
-            let target = buffer(&d, 4096, BufferUsage::COPY_DST, MemoryClass::Device);
-            command::reset_upload_page_creates();
-            let (cold_record_ms, cold_complete_ms) =
-                record_and_complete_upload_workload(&d, &target, encoders, writes_per_encoder)
-                    .await;
-            let cold_page_creates = command::upload_page_creates();
-            let (reused_record_ms, reused_complete_ms) =
-                record_and_complete_upload_workload(&d, &target, encoders, writes_per_encoder)
-                    .await;
-            let total_page_creates = command::upload_page_creates();
-            let reused_page_creates = total_page_creates - cold_page_creates;
-            assert!(
-                reused_page_creates <= cold_page_creates,
-                "completion-protected reuse must not allocate more than the cold workload"
-            );
-            console_log!(
-                "REVIEW3_WEBGPU_UPLOAD encoders={encoders} writes_per_encoder={writes_per_encoder} cold_page_creates={cold_page_creates} reused_page_creates={reused_page_creates} cold_record_ms={cold_record_ms:.3} cold_complete_ms={cold_complete_ms:.3} reused_record_ms={reused_record_ms:.3} reused_complete_ms={reused_complete_ms:.3}"
-            );
-        }
-    }
 }

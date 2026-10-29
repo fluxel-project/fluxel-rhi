@@ -19,10 +19,6 @@ pub struct MetalPipelineCache {
     access: std::sync::Arc<ArchiveAccess>,
 }
 
-#[cfg(all(test, target_vendor = "apple", feature = "hardware-tests"))]
-#[path = "../tests/backend/cache/archive_prepare_benchmark.rs"]
-mod archive_prepare_benchmark;
-
 /// Keeps a binary archive (and its backing input URL) alive after descriptor
 /// setup has released the write lease.
 ///

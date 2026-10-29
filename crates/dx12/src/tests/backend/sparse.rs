@@ -1,3 +1,5 @@
+//! Sparse-texture packed-tail metadata construction and rejection coverage.
+
 use super::*;
 
 fn standard(start: u32) -> D3D12_SUBRESOURCE_TILING {

@@ -5,9 +5,10 @@
 #[path = "../examples/01_triangle/main.rs"]
 mod triangle;
 
-use wasm_bindgen::JsCast;
+#[path = "support/webgpu.rs"]
+mod support;
+
 use wasm_bindgen_test::*;
-use web_sys::HtmlCanvasElement;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -15,22 +16,9 @@ wasm_bindgen_test_configure!(run_in_browser);
 /// and present three browser WebGPU frames without a JavaScript-side renderer.
 #[wasm_bindgen_test(async)]
 async fn triangle_draws_and_presents_three_webgpu_frames() {
-    let window = web_sys::window().expect("browser window");
-    let document = window.document().expect("browser document");
-    let canvas = document
-        .create_element("canvas")
-        .expect("canvas element")
-        .dyn_into::<HtmlCanvasElement>()
-        .expect("HTML canvas");
-    canvas.set_width(640);
-    canvas.set_height(480);
-    document
-        .body()
-        .expect("document body")
-        .append_child(&canvas)
-        .expect("attach canvas");
+    let canvas = support::canvas(640, 480);
 
     let result = triangle::run_webgpu_triangle(canvas.clone(), 3).await;
-    canvas.remove();
+    support::remove_canvas(&canvas);
     result.expect("01_triangle must draw and present three WebGPU frames");
 }

@@ -2134,15 +2134,13 @@ serialization remains an explicitly synchronous operation. Idle upload caching
 retains standard pages of at most 4 MiB within a 32 MiB byte budget; larger peak
 allocations are released after completion.
 
-TODO — Review3 Metal Archive Prepare runtime evidence: run the ignored
-`metal_archive_prepare_latency_percentiles` diagnostic on an Apple GPU with
-Binary Archive support and record the device, OS, and P50/P95/P99. The current
-diagnostic measures compute Prepare only; add render and mesh samples on
-devices that support those archive routes. Compare archive Prepare with native
-pipeline creation. If Prepare materially stalls the executor, design a
-thread-affine archive owner that preserves FIFO writer admission and the
-existing read lease through native compilation. Do not claim this conditional
-performance item is closed from cross-compilation or source review alone.
+TODO — Metal Archive Prepare latency remains unmeasured. The ignored timing-only
+test was removed during test-suite cleanup because it had no regression oracle
+and covered compute Prepare only. Reopen performance work when a representative
+workload and controlled benchmark plan are available; compare Prepare with
+native pipeline creation on supported Apple devices. If Prepare materially
+stalls the executor, design a thread-affine archive owner that preserves FIFO
+writer admission and the existing read lease through native compilation.
 
 Drawable acquisition retains only a narrow layer/drawable transfer boundary.
 Each worker job has an autorelease pool, observes cancellation and checks the
@@ -2492,7 +2490,7 @@ Core descriptor-kind admission and DX12 capability gates in
 `crates/core/src/api/creation.rs` and `crates/dx12/src/backend/device/mod.rs`;
 Vulkan build-dependency retention in `crates/vulkan/src/backend/ray/retention.rs`;
 the scalar AS control in `crates/vulkan/tests/ray_query_gpu.rs`; the enhanced Mesh
-fixture and native checks in `crates/vulkan/tests/mesh_gpu.rs` and
+fixture and native checks in `crates/vulkan/tests/mesh_gpu/scenario.rs` and
 `crates/vulkan/src/backend/mesh.rs`. The earlier
 `Temp/当前验证/vulkan/frozen/mesh-final.json` covers older direct/indirect/task
 tests and is not evidence that the enhanced count/sentinel fixture passed.
@@ -2515,14 +2513,83 @@ unaligned snapshot oracles in shared fixtures. Private tests now reside under
 `crates/gl/src/tests`, grouped by boundary; see its README for retained coverage.
 WGL checks and five focused GPU cases pass; five selected Chrome/ANGLE GPU cases
 pass, and WebGL/GLES configurations compile. Review TEST-GL-01 closed after the
-unaligned snapshot oracle was restored. Other crates remain in progress.
+unaligned snapshot oracle was restored. First-pass test cleanup and independent
+review are complete across all RHI crates; the final cross-crate reference and
+inventory audit found no remaining stale paths or mismatches.
 
-This work is in progress across all owned crates: preserve an explicit
-retained-case mapping for deletions, move test-only code into its owning test
-hierarchy, group files by behavior, update Cargo/module/asset/tool references,
-and verify the affected target/feature rows. Completion requires a full inventory
-and independent review of removed coverage; a smaller line count alone does not
-close this item. No backend capability changes are part of this consolidation.
+DX12 first-pass consolidation is complete: its current test sources decreased
+from 193 Rust sources / 55,361 physical lines to 188 files / 49,590 physical
+lines. Duplicate shader
+integration targets that each recompiled and reran the same 18 private unit
+tests were removed after moving their 15 unique compiler, contract and opt-in
+GPU cases into the owning test hierarchy. Repeated texture setup was factored
+while retaining 17 individually selectable format/dimension cases and their
+readback oracles. Pure timing/stress diagnostics without regression assertions
+and one uncalled WGSL ray-query branch were removed; completed queue reuse was
+removed only where a retained cross-queue completion/readback case already
+covered it. Mesh, clear and sparse suites were split by behavior, and common
+polling helpers were centralized without combining integration targets that
+need process isolation. Hardware-target compilation, formatting and diff checks
+pass; focused DX12 GPU cases and the independent review are recorded in the
+local test-consolidation inventory. This does not claim a full DX12 runtime
+matrix.
+
+The first-pass audit covers Vulkan, Core, Metal, WebGPU and RHI. Each crate has
+a local retained/deleted-case inventory, and test-only code stays in its owning
+test hierarchy. Cargo/module/asset/tool references were updated and affected
+target/feature rows were checked. The remaining closeout is one cross-crate
+reference and inventory consistency review. No backend capability changes are
+part of this consolidation.
+
+Vulkan's first cleanup pass has removed three probe/stress cases that had no
+observable regression oracle: ordinary resource-pool churn, packed-tail layout
+logging, and sparse depth-residency support logging. Sparse submission and
+readback coverage remains. Four distinct sampler tests are grouped under
+`crates/vulkan/tests/sampler_gpu/`; explicit Cargo targets preserve their
+individual names and process boundaries. Vulkan hardware-test targets compile
+with `hardware-tests`; the retained tests have not been claimed as a complete
+GPU runtime matrix. An ignored pooled-versus-committed timing diagnostic and
+its benchmark command were also removed; deterministic allocator algorithm
+tests and device-level memory observation assertions remain. The Vulkan
+coverage audit found no private test fully replaced by a GPU case. Forty-one identical no-op-Waker polling
+helpers now share `crates/vulkan/tests/support/mod.rs`; custom thread-Waker and
+`park` helpers remain local to preserve their wake behavior. No private unit
+test was found to be fully covered by a GPU integration test. Large Vulkan test
+targets for clear, mesh dispatch and Int64 atomics are split by behavior while
+retaining their Cargo target names, process boundaries and all 32 test names.
+The updated hardware targets compile and the moved target names are listed.
+Independent final review found no P0/P1/P2 issues and confirmed no stale target
+or asset paths. This remains compile/list evidence, not a complete Vulkan GPU
+runtime matrix.
+
+Core's first pass removed two duplicate positive checks from one texture-atomic
+layout contract, preserving the other identical signed min/max cases and
+adjusting the SPI-call oracle. Binding-array tests, 39 shader-admission tests,
+and 14 type-contract tests were reorganized into behavior modules without
+changing their names or replacing private admission checks with GPU results.
+The Core lib suite passes 125/125, and independent review found no P0/P1/P2
+issues or stale paths.
+
+Metal's first pass removed an ignored Archive Prepare percentile reporter with
+no correctness oracle and centralized the async polling helper used by its
+three independent hardware targets. All seven functional GPU integration cases
+remain. Archive latency remains explicitly unmeasured; reopen it only with a
+representative controlled benchmark plan. Per repository instruction, Metal
+tests and Apple-target test compilation were not run; Cargo metadata confirms
+only the three intended integration targets.
+
+WebGPU's first pass removed an opt-in timing matrix and adapter metadata-only
+reporter while retaining upload/readback, completion-gated reuse, browser
+ownership, worker and surface assertions. The device-open timing test is now a
+single readiness assertion for all four fixed utility pipelines. The wasm test
+target compiles with `--no-run`; no browser or GPU execution is claimed.
+
+RHI's first pass retained all facade lifecycle tests and numbered example
+presentation targets. A WebGL2 support module moved under `tests/support/` so
+Cargo no longer discovers it as an empty integration target; WebGPU example
+targets share canvas setup while preserving their original dimensions and
+process boundaries. The wasm integration targets compile with `--no-run`; no
+browser or GPU execution is claimed.
 
 ### Deferred families and reconsideration conditions
 

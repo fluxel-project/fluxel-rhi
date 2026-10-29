@@ -2,19 +2,10 @@
 #![cfg(all(windows, feature = "hardware-tests"))]
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_dx12::Dx12Instance;
-use std::future::Future;
 
-fn block_on<F: Future>(f: F) -> F::Output {
-    let w = std::task::Waker::noop();
-    let mut c = std::task::Context::from_waker(w);
-    let mut f = std::pin::pin!(f);
-    loop {
-        match f.as_mut().poll(&mut c) {
-            std::task::Poll::Ready(v) => return v,
-            std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-    }
-}
+#[path = "support/mod.rs"]
+mod support;
+use support::block as block_on;
 
 #[test]
 fn switch_standard_mips_and_packed_tail() {

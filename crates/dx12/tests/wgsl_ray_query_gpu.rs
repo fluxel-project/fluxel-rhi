@@ -2,36 +2,21 @@
 #![cfg(all(windows, feature = "hardware-tests"))]
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_dx12::Dx12Instance;
-use std::{future::Future, sync::Arc};
+use std::sync::Arc;
 
-fn block_on<F: Future>(f: F) -> F::Output {
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut f = std::pin::pin!(f);
-    loop {
-        match f.as_mut().poll(&mut cx) {
-            std::task::Poll::Ready(v) => return v,
-            std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-    }
-}
+#[path = "support/mod.rs"]
+mod support;
+use support::block as block_on;
 
 #[test]
 fn inline_ray_query_hits_and_misses() {
-    run_query(false);
+    run_query();
 }
 
-#[allow(dead_code)]
-fn inline_ray_query_consumes_acceleration_array() {
-    run_query(true);
-}
-
-fn run_query(array: bool) {
+fn run_query() {
     let device = block_on(Dx12Instance::new().unwrap().open_default()).unwrap();
     if !device.capabilities().ray_query {
         eprintln!("SKIP: DXR 1.1 and shader model 6.5 unavailable");
-        return;
-    }
-    if array && !device.capabilities().binding_arrays {
         return;
     }
     let lane = device
@@ -81,25 +66,10 @@ fn run_query(array: bool) {
         allow_update: false,
     };
     let tlas = ray.create_acceleration(&tlas_desc).unwrap();
-    let tlas2_desc = AccelerationDesc {
-        input: AccelerationInput::Tlas(vec![AccelerationInstance {
-            blas: blas.clone(),
-            transform: [[1., 0., 0., 4.], [0., 1., 0., 0.], [0., 0., 1., 0.]],
-            mask: 255,
-            custom_index: 0,
-            shader_table_offset: 0,
-            flags: AccelerationInstanceFlags::TRIANGLE_CULL_DISABLE,
-        }]),
-        fast_trace: true,
-        allow_update: false,
-    };
-    let tlas2 = ray.create_acceleration(&tlas2_desc).unwrap();
     let bs = ray.sizes(&blas_desc).unwrap();
     let ts = ray.sizes(&tlas_desc).unwrap();
     let bscratch = buffer(bs.scratch_bytes, BufferUsage::ACCEL_SCRATCH);
     let tscratch = buffer(ts.scratch_bytes, BufferUsage::ACCEL_SCRATCH);
-    let t2sizes = ray.sizes(&tlas2_desc).unwrap();
-    let t2scratch = buffer(t2sizes.scratch_bytes, BufferUsage::ACCEL_SCRATCH);
     let texture = device
         .create_texture(&TextureDesc {
             label: None,
@@ -133,13 +103,9 @@ fn run_query(array: bool) {
                     binding: 0,
                     visibility: vec![ShaderStage::Compute],
                     ty: BindingType::AccelerationStructure,
-                    count: if array {
-                        BindingCount::Fixed(2)
-                    } else {
-                        BindingCount::One
-                    },
+                    count: BindingCount::One,
                     partially_bound: false,
-                    nonuniform_indexing: array,
+                    nonuniform_indexing: false,
                 },
                 BindGroupLayoutEntry {
                     binding: 1,
@@ -163,14 +129,7 @@ fn run_query(array: bool) {
             entries: &[
                 BindGroupEntry {
                     binding: 0,
-                    resource: if array {
-                        BindingResource::Array(vec![
-                            Some(BindingResource::Acceleration(&tlas)),
-                            Some(BindingResource::Acceleration(&tlas2)),
-                        ])
-                    } else {
-                        BindingResource::Acceleration(&tlas)
-                    },
+                    resource: BindingResource::Acceleration(&tlas),
                 },
                 BindGroupEntry {
                     binding: 1,
@@ -265,14 +224,6 @@ fn run_query(array: bool) {
                     accesses: AccessMask::ACCEL_WRITE,
                 },
             ),
-            barrier(
-                &t2scratch,
-                t2sizes.scratch_bytes,
-                BufferUses {
-                    stages: StageMask::ACCELERATION,
-                    accesses: AccessMask::ACCEL_WRITE,
-                },
-            ),
         ])
         .unwrap();
     ray.build(&mut encoder, &blas, &bscratch, &blas_desc)
@@ -292,24 +243,9 @@ fn run_query(array: bool) {
         .unwrap();
     ray.build(&mut encoder, &tlas, &tscratch, &tlas_desc)
         .unwrap();
-    ray.build(&mut encoder, &tlas2, &t2scratch, &tlas2_desc)
-        .unwrap();
     encoder
         .transition_resources(&[ResourceTransition::Acceleration {
             target: &tlas,
-            before: AccessScope {
-                stages: StageMask::ACCELERATION,
-                accesses: AccessMask::ACCEL_WRITE,
-            },
-            after: AccessScope {
-                stages: StageMask::COMPUTE,
-                accesses: AccessMask::ACCEL_READ,
-            },
-        }])
-        .unwrap();
-    encoder
-        .transition_resources(&[ResourceTransition::Acceleration {
-            target: &tlas2,
             before: AccessScope {
                 stages: StageMask::ACCELERATION,
                 accesses: AccessMask::ACCEL_WRITE,

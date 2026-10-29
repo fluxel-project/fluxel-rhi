@@ -2,17 +2,10 @@
 #![cfg(all(windows, feature = "hardware-tests"))]
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_dx12::Dx12Instance;
-use std::{future::Future, sync::Arc};
-fn block<F: Future>(f: F) -> F::Output {
-    let mut c = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut f = std::pin::pin!(f);
-    loop {
-        if let std::task::Poll::Ready(v) = f.as_mut().poll(&mut c) {
-            return v;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-}
+use std::sync::Arc;
+#[path = "support/mod.rs"]
+mod support;
+use support::block;
 #[test]
 fn array_layers_and_srgb_blits_preserve_outside_pixels() {
     run(LaneClass::Graphics);

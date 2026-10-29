@@ -1,3 +1,5 @@
+//! DXGI adapter enumeration ordering and requested-adapter rejection tests.
+
 use super::*;
 use std::{
     future::Future,

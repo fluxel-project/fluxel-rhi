@@ -1,5 +1,3 @@
-//! Unit tests for the corresponding implementation module.
-
 //! Real-driver regression for independent-device fence observation.
 //!
 //! The first queue waits on an unsignaled timeline value, so its marker

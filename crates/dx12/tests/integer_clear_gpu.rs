@@ -1,30 +1,71 @@
-//! Exact integer render-target clear and readback.
+//! Exact integer render-target clears across D1, D2, and D3 views.
 #![cfg(all(windows, feature = "hardware-tests"))]
+
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_dx12::Dx12Instance;
-use std::{future::Future, sync::Arc};
-fn block<F: Future>(f: F) -> F::Output {
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut f = std::pin::pin!(f);
-    loop {
-        match f.as_mut().poll(&mut cx) {
-            std::task::Poll::Ready(v) => return v,
-            std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-    }
+use std::sync::Arc;
+
+#[path = "support/mod.rs"]
+mod support;
+use support::block;
+
+#[derive(Clone, Copy)]
+struct DimensionCase {
+    dimension: TextureDimension,
+    extent: [u32; 3],
+    view_dimension: TextureViewDimension,
+    readback_size: u64,
+    rows_per_image: u32,
+    readback_rows: u32,
 }
+
 #[test]
 fn integer_render_target_clear_readback() {
-    let d = block(Dx12Instance::new().unwrap().open_default()).unwrap();
-    let lane = d
+    run(DimensionCase {
+        dimension: TextureDimension::D2,
+        extent: [4, 4, 1],
+        view_dimension: TextureViewDimension::D2,
+        readback_size: 1024,
+        rows_per_image: 4,
+        readback_rows: 4,
+    });
+}
+
+#[test]
+fn integer_d1_render_target_clear_readback() {
+    run(DimensionCase {
+        dimension: TextureDimension::D1,
+        extent: [4, 1, 1],
+        view_dimension: TextureViewDimension::D1,
+        readback_size: 1024,
+        rows_per_image: 1,
+        readback_rows: 1,
+    });
+}
+
+#[test]
+fn integer_d3_render_target_clear_readback() {
+    run(DimensionCase {
+        dimension: TextureDimension::D3,
+        extent: [4, 4, 2],
+        view_dimension: TextureViewDimension::D3,
+        readback_size: 2048,
+        rows_per_image: 4,
+        readback_rows: 8,
+    });
+}
+
+fn run(case: DimensionCase) {
+    let device = block(Dx12Instance::new().unwrap().open_default()).unwrap();
+    let lane = device
         .lanes()
         .iter()
-        .find(|v| v.class == LaneClass::Graphics)
+        .find(|lane| lane.class == LaneClass::Graphics)
         .unwrap()
         .id;
     let unsigned = [0xffff_fffeu32, 0x8000_0001, 0x0100_0001, 0xdead_beef];
     let signed = [i32::MIN + 1, i32::MAX, -16_777_217, 0x1234_5678];
-    let cases = [
+    let formats = [
         (
             TextureFormat::Rgba32Uint,
             ClearColor::Uint(unsigned),
@@ -42,13 +83,14 @@ fn integer_render_target_clear_readback() {
                 .collect::<Vec<_>>(),
         ),
     ];
-    for (format, value, expected) in cases {
+
+    for (format, value, expected) in formats {
         for pass_clear in [false, true] {
-            let tex = d
+            let texture = device
                 .create_texture(&TextureDesc {
                     label: None,
-                    dimension: TextureDimension::D2,
-                    extent: [4, 4, 1],
+                    dimension: case.dimension,
+                    extent: case.extent,
                     array_layers: 1,
                     format,
                     mip_levels: 1,
@@ -57,19 +99,19 @@ fn integer_render_target_clear_readback() {
                     view_formats: vec![],
                 })
                 .unwrap();
-            let dst = d
+            let readback = device
                 .create_buffer(&BufferDesc {
                     label: None,
-                    size: 1024,
+                    size: case.readback_size,
                     usage: BufferUsage::COPY_DST | BufferUsage::MAP_READ,
                     memory: MemoryClass::Readback,
                 })
                 .unwrap();
-            let mut e = d.encoder(lane).unwrap();
-            let barrier = |from, to, before, after| {
+            let mut encoder = device.encoder(lane).unwrap();
+            let transition = |from, to, before, after| {
                 ResourceTransition::Texture(TextureBarrier {
                     target: Subresources {
-                        texture: &tex,
+                        texture: &texture,
                         aspects: TextureAspects::COLOR,
                         mips: 0..1,
                         layers: 0..1,
@@ -83,28 +125,29 @@ fn integer_render_target_clear_readback() {
                 stages: StageMask::EMPTY,
                 accesses: AccessMask::EMPTY,
             };
-            let rt = TextureUses {
+            let attachment_write = TextureUses {
                 stages: StageMask::COLOR_OUTPUT,
                 accesses: AccessMask::COLOR_WRITE,
             };
-            let copy = TextureUses {
+            let copy_read = TextureUses {
                 stages: StageMask::COPY,
                 accesses: AccessMask::COPY_READ,
             };
-            e.transition_resources(&[barrier(
-                empty,
-                rt,
-                ImageLayout::Common,
-                ImageLayout::ColorAttachment,
-            )])
-            .unwrap();
+            encoder
+                .transition_resources(&[transition(
+                    empty,
+                    attachment_write,
+                    ImageLayout::Common,
+                    ImageLayout::ColorAttachment,
+                )])
+                .unwrap();
             if pass_clear {
-                let view = d
+                let view = device
                     .create_view(
-                        &tex,
+                        &texture,
                         &TextureViewDesc {
                             format,
-                            dimension: TextureViewDimension::D2,
+                            dimension: case.view_dimension,
                             aspects: TextureAspects::COLOR,
                             mips: 0..1,
                             layers: 0..1,
@@ -117,56 +160,62 @@ fn integer_render_target_clear_readback() {
                     load: LoadOp::Clear(value),
                     store: StoreOp::Store,
                 })];
-                e.begin_raster(&RasterPassDesc {
-                    label: None,
-                    colors: &colors,
-                    depth_stencil: None,
-                    render_area: Rect {
-                        x: 0,
-                        y: 0,
-                        width: 4,
-                        height: 4,
-                    },
-                    multiview_mask: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    secondary_inheritance: None,
-                })
-                .unwrap()
-                .finish()
-                .unwrap();
+                encoder
+                    .begin_raster(&RasterPassDesc {
+                        label: None,
+                        colors: &colors,
+                        depth_stencil: None,
+                        render_area: Rect {
+                            x: 0,
+                            y: 0,
+                            width: case.extent[0],
+                            height: case.extent[1],
+                        },
+                        multiview_mask: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        secondary_inheritance: None,
+                    })
+                    .unwrap()
+                    .finish()
+                    .unwrap();
             } else {
-                e.clear_texture(&tex, 0..1, 0..1, TextureClearValue::Color(value))
+                encoder
+                    .clear_texture(&texture, 0..1, 0..1, TextureClearValue::Color(value))
                     .unwrap();
             }
-            e.transition_resources(&[barrier(
-                rt,
-                copy,
-                ImageLayout::ColorAttachment,
-                ImageLayout::CopySrc,
-            )])
-            .unwrap();
-            e.texture_to_buffer(
-                TextureRegion {
-                    texture: &tex,
-                    mip: 0,
-                    origin: [0, 0, 0],
-                    extent: [4, 4, 1],
-                    aspect: TextureAspects::COLOR,
-                },
-                &dst,
-                TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: 256,
-                    rows_per_image: 4,
-                },
-            )
-            .unwrap();
-            let ticket = e.readback_buffer(&dst, 0..1024).unwrap();
+            encoder
+                .transition_resources(&[transition(
+                    attachment_write,
+                    copy_read,
+                    ImageLayout::ColorAttachment,
+                    ImageLayout::CopySrc,
+                )])
+                .unwrap();
+            encoder
+                .texture_to_buffer(
+                    TextureRegion {
+                        texture: &texture,
+                        mip: 0,
+                        origin: [0, 0, 0],
+                        extent: case.extent,
+                        aspect: TextureAspects::COLOR,
+                    },
+                    &readback,
+                    TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: 256,
+                        rows_per_image: case.rows_per_image,
+                    },
+                )
+                .unwrap();
+            let ticket = encoder
+                .readback_buffer(&readback, 0..case.readback_size)
+                .unwrap();
             let plan = unsafe {
                 SubmissionPlan::from_compiled(
                     PlanId {
-                        device: d.id(),
+                        device: device.id(),
                         ordinal: 99802,
                     },
                     Arc::from([StepDesc {
@@ -178,22 +227,25 @@ fn integer_render_target_clear_readback() {
             };
             let step = plan.step(0);
             let outcome = unsafe {
-                d.queue().submit(SubmitPacket {
+                device.queue().submit(SubmitPacket {
                     plan,
                     steps: vec![BoundStep {
                         step,
-                        payload: StepPayload::Commands(vec![e.finish().unwrap()]),
+                        payload: StepPayload::Commands(vec![encoder.finish().unwrap()]),
                     }],
                     completion: CompletionRequest::End,
                 })
             };
             let point = match outcome {
-                SubmitOutcome::Accepted(r) => r.checkpoints.into_iter().next().unwrap().point,
+                SubmitOutcome::Accepted(receipt) => {
+                    receipt.checkpoints.into_iter().next().unwrap().point
+                }
                 _ => panic!("submission rejected"),
             };
-            block(d.wait_completion(&point)).unwrap();
-            let bytes = unsafe { block(d.read_after(ticket, &point)).unwrap().bytes };
-            for y in 0..4 {
+            block(device.wait_completion(&point)).unwrap();
+            // SAFETY: this completion point covers the one recorded ticket.
+            let bytes = unsafe { block(device.read_after(ticket, &point)).unwrap().bytes };
+            for y in 0..case.readback_rows as usize {
                 for x in 0..4 {
                     assert_eq!(
                         &bytes[y * 256 + x * expected.len()..y * 256 + (x + 1) * expected.len()],

@@ -1,3 +1,5 @@
+//! Viewport and scissor validation before native command-list lowering.
+
 use super::*;
 
 fn valid_viewport() -> api::Viewport {

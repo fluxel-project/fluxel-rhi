@@ -1,21 +1,12 @@
 //! Real-device validation for Direct-SPIR-V `EarlyFragmentTests` admission.
 #![cfg(all(windows, feature = "hardware-tests"))]
 
+#[path = "support/mod.rs"]
+mod support;
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_vulkan::VulkanInstance;
-use std::{future::Future, sync::Arc};
-
-fn block_on<F: Future>(future: F) -> F::Output {
-    let waker = std::task::Waker::noop();
-    let mut context = std::task::Context::from_waker(waker);
-    let mut future = std::pin::pin!(future);
-    loop {
-        match future.as_mut().poll(&mut context) {
-            std::task::Poll::Ready(value) => return value,
-            std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-    }
-}
+use std::sync::Arc;
+use support::block_on;
 
 #[test]
 fn direct_spirv_early_fragment_tests_suppress_depth_failed_side_effects() {

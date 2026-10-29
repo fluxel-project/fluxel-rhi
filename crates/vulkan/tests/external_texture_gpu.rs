@@ -2,8 +2,11 @@
 #![cfg(all(windows, feature = "hardware-tests"))]
 #![allow(dead_code)]
 
+#[path = "support/mod.rs"]
+mod support;
 use ash::{Entry, vk};
 use std::os::windows::io::{FromRawHandle, OwnedHandle};
+use support::block;
 
 const SIZE: u64 = 256;
 const PATTERN: u32 = 0x4c58_5248;
@@ -342,17 +345,7 @@ impl Drop for Producer {
 fn win32_external_texture_import_and_readback() {
     use fluxel_rhi_core::api::*;
     use fluxel_rhi_vulkan::{VulkanExternalHandle, VulkanExternalMemoryHandle, VulkanInstance};
-    use std::{future::Future, sync::Arc};
-    fn block<F: Future>(f: F) -> F::Output {
-        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-        let mut f = std::pin::pin!(f);
-        loop {
-            if let std::task::Poll::Ready(value) = f.as_mut().poll(&mut cx) {
-                return value;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-    }
+    use std::sync::Arc;
     let Some((producer, memory_handle, semaphore_handle)) = Producer::start() else {
         eprintln!("external image or semaphore handles unavailable; skipped");
         return;

@@ -27,7 +27,7 @@ use windows::Win32::{
 use super::{Dx12Device, native_error, submit::retire};
 
 #[cfg(test)]
-#[path = "../../tests/backend/encoder/retirement_support.rs"]
+#[path = "../../tests/backend/encoder/retirement_test_hooks.rs"]
 mod test_support;
 #[cfg(all(test, feature = "hardware-tests"))]
 use test_support::inject_failure;

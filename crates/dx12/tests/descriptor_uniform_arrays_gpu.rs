@@ -6,20 +6,13 @@
 
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_dx12::Dx12Instance;
-use std::{future::Future, sync::Arc};
+use std::sync::Arc;
 
 type Dx12Device = Device<fluxel_rhi_dx12::Dx12>;
 
-fn block<F: Future>(future: F) -> F::Output {
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut future = std::pin::pin!(future);
-    loop {
-        match future.as_mut().poll(&mut context) {
-            std::task::Poll::Ready(value) => return value,
-            std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-    }
-}
+#[path = "support/mod.rs"]
+mod support;
+use support::block;
 
 fn graphics_lane(device: &Dx12Device) -> LaneId {
     device
@@ -37,7 +30,10 @@ fn transition(
     to: BufferUses,
 ) -> ResourceTransition<'_, fluxel_rhi_dx12::Dx12> {
     ResourceTransition::Buffer(BufferBarrier {
-        target: BufferSlice { buffer, range: 0..size },
+        target: BufferSlice {
+            buffer,
+            range: 0..size,
+        },
         usage: StateTransition { from, to },
         ownership: None,
     })
@@ -105,7 +101,10 @@ fn check(device: Dx12Device, nonuniform: bool) {
         })
         .unwrap();
     if nonuniform {
-        let uniform_view = |buffer| BindingResource::Buffer { buffer, range: 0..256 };
+        let uniform_view = |buffer| BindingResource::Buffer {
+            buffer,
+            range: 0..256,
+        };
         let output_view = || BindingResource::StorageBufferView {
             buffer: &output,
             range: 0..output_size,
@@ -165,7 +164,12 @@ fn check(device: Dx12Device, nonuniform: bool) {
                     resource: BindingResource::Array(
                         values
                             .iter()
-                            .map(|buffer| Some(BindingResource::Buffer { buffer, range: 0..256 }))
+                            .map(|buffer| {
+                                Some(BindingResource::Buffer {
+                                    buffer,
+                                    range: 0..256,
+                                })
+                            })
                             .collect(),
                     ),
                 },
@@ -207,17 +211,22 @@ fn check(device: Dx12Device, nonuniform: bool) {
         required_features: vec![],
     }))
     .unwrap();
-    let pipeline = block(device.compute().unwrap().create_pipeline(ComputePipelineDesc {
-        label: Some("uniform array pipeline".into()),
-        layout: pipeline_layout,
-        compute: PipelineStage {
-            module: shader,
-            entry: "main".into(),
-            constants: vec![],
-        },
-        cache: None,
-        required_subgroup_size: None,
-    }))
+    let pipeline = block(
+        device
+            .compute()
+            .unwrap()
+            .create_pipeline(ComputePipelineDesc {
+                label: Some("uniform array pipeline".into()),
+                layout: pipeline_layout,
+                compute: PipelineStage {
+                    module: shader,
+                    entry: "main".into(),
+                    constants: vec![],
+                },
+                cache: None,
+                required_subgroup_size: None,
+            }),
+    )
     .unwrap();
     let mut encoder = device.encoder(lane).unwrap();
     if nonuniform {
@@ -227,8 +236,12 @@ fn check(device: Dx12Device, nonuniform: bool) {
             encoder.write_buffer(value, 0, &bytes).unwrap();
         }
     } else {
-        encoder.write_buffer(&values[0], 0, &12u32.to_le_bytes()).unwrap();
-        encoder.write_buffer(&values[1], 0, &30u32.to_le_bytes()).unwrap();
+        encoder
+            .write_buffer(&values[0], 0, &12u32.to_le_bytes())
+            .unwrap();
+        encoder
+            .write_buffer(&values[1], 0, &30u32.to_le_bytes())
+            .unwrap();
     }
     let copy_write = BufferUses {
         stages: StageMask::COPY,
@@ -271,7 +284,9 @@ fn check(device: Dx12Device, nonuniform: bool) {
     encoder
         .transition_resources(&[transition(&output, output_size, shader_write, copy_read)])
         .unwrap();
-    encoder.copy_buffer(&output, 0, &readback, 0, output_size).unwrap();
+    encoder
+        .copy_buffer(&output, 0, &readback, 0, output_size)
+        .unwrap();
     let ticket = encoder.readback_buffer(&readback, 0..output_size).unwrap();
     let work = encoder.finish().unwrap();
     drop((group, pipeline, values, output));
@@ -280,7 +295,11 @@ fn check(device: Dx12Device, nonuniform: bool) {
         SubmissionPlan::from_compiled(
             PlanId {
                 device: device.id(),
-                ordinal: if nonuniform { 0x5542_4f00_0002 } else { 0x5542_4f00_0001 },
+                ordinal: if nonuniform {
+                    0x5542_4f00_0002
+                } else {
+                    0x5542_4f00_0001
+                },
             },
             Arc::from([StepDesc {
                 lane,
@@ -308,9 +327,15 @@ fn check(device: Dx12Device, nonuniform: bool) {
     block(device.wait_completion(&point)).unwrap();
     // SAFETY: the completion point covers this encoder's readback ticket.
     let bytes = unsafe { block(device.read_after(ticket, &point)).unwrap().bytes };
-    assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), expected[0]);
+    assert_eq!(
+        u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+        expected[0]
+    );
     if nonuniform {
-        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), expected[1]);
+        assert_eq!(
+            u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+            expected[1]
+        );
     }
 }
 
@@ -328,7 +353,10 @@ fn reconstructed_stage7_nonuniform_uniform_array_reads_distinct_values() {
     let adapters = instance.enumerate().unwrap();
     eprintln!(
         "DXGI adapters: {:?}",
-        adapters.iter().map(|adapter| adapter.name.as_str()).collect::<Vec<_>>()
+        adapters
+            .iter()
+            .map(|adapter| adapter.name.as_str())
+            .collect::<Vec<_>>()
     );
     let adapter = adapters
         .into_iter()

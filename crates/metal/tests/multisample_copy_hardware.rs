@@ -1,6 +1,10 @@
 //! Real Apple GPU regression for per-sample combined depth/stencil copies.
 #![cfg(all(target_vendor = "apple", feature = "hardware-tests"))]
 
+#[path = "support/mod.rs"]
+mod support;
+use support::block_on;
+
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_metal::{MetalExternalHandle, MetalInstance};
 use objc2::runtime::ProtocolObject;
@@ -13,31 +17,7 @@ use objc2_metal::{
     MTLStencilDescriptor, MTLStencilOperation, MTLStorageMode, MTLStoreAction, MTLTexture,
     MTLTextureDescriptor, MTLTextureType, MTLTextureUsage,
 };
-use std::{
-    future::Future,
-    ptr::NonNull,
-    sync::Arc,
-    task::{Context, Poll, Wake, Waker},
-};
-
-struct WakeThread(std::thread::Thread);
-impl Wake for WakeThread {
-    fn wake(self: Arc<Self>) {
-        self.0.unpark();
-    }
-}
-fn block_on<F: Future>(f: F) -> F::Output {
-    let w = Waker::from(Arc::new(WakeThread(std::thread::current())));
-    let mut cx = Context::from_waker(&w);
-    let mut f = std::pin::pin!(f);
-    loop {
-        match f.as_mut().poll(&mut cx) {
-            Poll::Ready(v) => return v,
-            Poll::Pending => std::thread::park(),
-        }
-    }
-}
-
+use std::ptr::NonNull;
 const MSL: &str = r#"
 #include <metal_stdlib>
 using namespace metal;

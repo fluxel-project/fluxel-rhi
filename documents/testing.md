@@ -131,45 +131,12 @@ cargo run -p fluxel-rhi --features examples,dx12 --example 15_multiview -- --bac
 
 Some examples need the pinned local assets installed by `tools/examples/fetch-assets.ps1`. The example command proves only the selected route. A successful compile does not prove native execution, and an empty validation log does not prove visual correctness; compare GPU captures with the corresponding C++ reference when accepting scene output.
 
-The DX12 default-resource pool has an opt-in real-adapter churn diagnostic. It
-compares 1,024 small buffers and 256 small textures over 4–64 MiB pool pages
-against committed allocation. It measures CPU create/drop latency and native
-heap-page counts, not GPU frame time or pool-only resident memory. Where DXGI
-exposes a segment budget, the diagnostic also prints process-wide usage/budget:
-
-```powershell
-cargo +1.87.0 test -p fluxel-rhi-dx12 --features hardware-tests --lib compare_pooled_and_committed_buffer_churn -- --ignored --nocapture
-```
-
-The Vulkan default-resource pool has a matching opt-in real-adapter diagnostic.
-It compares the full ordinary-resource create/drop path for 1,024 device buffers
-and 256 optimal images, reports the retained native pool-page count, and prints
-the adapter and driver identifiers. It measures CPU create/drop latency only;
-it does not compare against wgpu or measure GPU frame time. When available, it
-prints `VK_EXT_memory_budget` process-wide per-heap estimates; these do not
-report pool-only resident memory. A device-level pool benchmark is not evidence
-of renderer performance:
-
-```powershell
-cargo +1.87.0 test -p fluxel-rhi-vulkan --features hardware-tests --lib compare_pooled_and_committed_buffer_texture_churn -- --ignored --nocapture
-```
-
 Browser WebGPU and WebGL2 integration tests use Chrome, ChromeDriver, and `wasm-bindgen-test-runner`. Set `WASM_BINDGEN_USE_BROWSER=1` so the runner uses a browser instead of its default Node.js environment. Also set `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner`, `CHROMEDRIVER`, and `WASM_BINDGEN_TEST_WEBDRIVER_JSON` (with Chrome's `--enable-unsafe-webgpu` argument for WebGPU tests); keep these variables in the same PowerShell session as the test command. See the [wasm-bindgen browser testing guide](https://rustwasm.github.io/docs/wasm-bindgen/wasm-bindgen-test/browsers.html).
 
 ```powershell
 cargo test -p fluxel-rhi-webgpu --target wasm32-unknown-unknown -- --nocapture
 cargo test -p fluxel-rhi --target wasm32-unknown-unknown --features 'webgpu examples' --test webgpu_triangle -- --nocapture
 ```
-
-The opt-in Review3 WebGPU upload diagnostic emits browser-side recording and
-completion time plus staging-page allocations for 1/10/100 encoders and
-1/100/1000 small writes. It is intentionally outside ordinary conformance:
-
-```powershell
-cargo test -p fluxel-rhi-webgpu --target wasm32-unknown-unknown --features review3-upload-benchmark review3_upload_arena_timing_matrix -- --nocapture
-```
-
-Use the same Chrome/WebDriver environment as the preceding WebGPU command.
 
 Run each numbered `webgpu_*` integration test for its scene. These tests present three frames through a real browser GPU device. Keep the corresponding browser screenshot and compare it with local C++ reference captures while excluding the C++ HUD. Examples 05, 13, 14, and 15 have explicit browser visual fallbacks; their tests do not prove the unavailable push-constant, secondary-command, runtime-descriptor-array, or multiview capabilities.
 
@@ -180,18 +147,6 @@ readback assertions, and inspected screenshots for every example group the
 backend claims to support before it can be marked complete. At present both
 01–15 and 16–23 are `NotRun` for Metal. An Apple-target cross-check from
 another host proves type correctness only.
-
-The conditional Review3 Metal Archive Prepare item has an opt-in Apple GPU
-diagnostic. It compiles the MSL function before sampling, uses a fresh archive
-for each sample, and times only compute archive Prepare/lease setup; it prints
-P50/P95/P99 across 51 samples. Run it on a Mac with Metal binary archive
-support:
-
-```sh
-cargo test -p fluxel-rhi-metal --features hardware-tests --lib metal_archive_prepare_latency_percentiles -- --ignored --nocapture
-```
-
-This measures Archive Prepare, not native PSO compilation or GPU execution.
 
 ## Android emulator example checks
 

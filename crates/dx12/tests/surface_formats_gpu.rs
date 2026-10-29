@@ -5,7 +5,7 @@ use fluxel_rhi_core::api::*;
 use fluxel_rhi_core::backend::ExecutionOutcome;
 use fluxel_rhi_dx12::{Dx12, Dx12Instance};
 use raw_window_handle::{RawWindowHandle, Win32WindowHandle};
-use std::{future::Future, num::NonZeroIsize, sync::Arc};
+use std::{num::NonZeroIsize, sync::Arc};
 use windows::{
     Win32::{
         Foundation::HWND,
@@ -16,16 +16,9 @@ use windows::{
     core::w,
 };
 
-fn block<F: Future>(future: F) -> F::Output {
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut future = std::pin::pin!(future);
-    loop {
-        if let std::task::Poll::Ready(value) = future.as_mut().poll(&mut context) {
-            return value;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-}
+#[path = "support/mod.rs"]
+mod support;
+use support::block;
 
 struct Window(HWND);
 impl Drop for Window {

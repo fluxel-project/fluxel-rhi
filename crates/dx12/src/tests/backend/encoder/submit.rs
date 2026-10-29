@@ -1,3 +1,5 @@
+//! Submission owner retention when the native device is removed.
+
 use super::retain_after;
 
 #[test]

@@ -42,8 +42,6 @@ struct PoolState {
     next_id: u64,
     peak_reserved_bytes: u64,
     peak_live_range_bytes: u64,
-    #[cfg(test)]
-    enabled: bool,
 }
 
 struct Page {
@@ -92,8 +90,6 @@ impl DefaultResourcePool {
             next_id: 1,
             peak_reserved_bytes: 0,
             peak_live_range_bytes: 0,
-            #[cfg(test)]
-            enabled: true,
         })))
     }
 
@@ -110,10 +106,6 @@ impl DefaultResourcePool {
             return Ok(None);
         }
         let mut state = self.0.lock().map_err(|_| Error::InvalidState)?;
-        #[cfg(test)]
-        if !state.enabled {
-            return Ok(None);
-        }
         let Some(memory_type) = (0..state.memory_properties.memory_type_count).find(|index| {
             requirements.memory_type_bits & (1 << index) != 0
                 && state.memory_properties.memory_types[*index as usize]
@@ -286,37 +278,6 @@ impl DefaultResourcePool {
             }),
             native_reports,
         })
-    }
-
-    #[cfg(test)]
-    fn budget_enabled(&self) -> bool {
-        self.0
-            .lock()
-            .map(|state| state.memory_budget)
-            .unwrap_or(false)
-    }
-
-    #[cfg(test)]
-    fn budget_snapshot(&self) -> Option<Vec<(u64, u64)>> {
-        let state = self.0.lock().ok()?;
-        let budget = query_budget(&state)?;
-        Some(
-            (0..state.memory_properties.memory_heap_count as usize)
-                .map(|heap| (budget.heap_usage[heap], budget.heap_budget[heap]))
-                .collect(),
-        )
-    }
-
-    #[cfg(test)]
-    fn set_enabled(&self, enabled: bool) {
-        if let Ok(mut state) = self.0.lock() {
-            state.enabled = enabled;
-        }
-    }
-
-    #[cfg(test)]
-    fn page_count(&self) -> usize {
-        self.0.lock().map(|state| state.pages.len()).unwrap_or(0)
     }
 }
 

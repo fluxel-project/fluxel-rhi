@@ -1,20 +1,12 @@
 //! A completed native prefix followed by an original-plan suffix.
 #![cfg(feature = "hardware-tests")]
+#[path = "support/mod.rs"]
+mod support;
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_core::backend::DeferredBackend;
 use fluxel_rhi_vulkan::{Vulkan, VulkanInstance};
-use std::{future::Future, sync::Arc};
-
-fn block<F: Future>(future: F) -> F::Output {
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut future = std::pin::pin!(future);
-    loop {
-        match future.as_mut().poll(&mut cx) {
-            std::task::Poll::Ready(value) => return value,
-            std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-    }
-}
+use std::sync::Arc;
+use support::block;
 
 fn exercise_resume(request_steps: bool) {
     let device = block(VulkanInstance::new().unwrap().open_default()).unwrap();

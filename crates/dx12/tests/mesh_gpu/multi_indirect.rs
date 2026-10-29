@@ -1,0 +1,665 @@
+//! Mesh multi-indirect and GPU count execution regression.
+
+use super::*;
+
+#[test]
+fn mesh_multi_indirect_and_count_readback() {
+    let d = block_on(Dx12Instance::new().unwrap().open_default()).unwrap();
+    if !(d.capabilities().mesh_multi_indirect && d.capabilities().mesh_indirect_count) {
+        eprintln!("SKIP: mesh indirect batch/count unavailable");
+        return;
+    }
+    let lane = d
+        .lanes()
+        .iter()
+        .find(|l| l.class == LaneClass::Graphics)
+        .unwrap()
+        .id;
+    let mesh_shader = block_on(d.shader(ShaderDesc {
+        label: None,
+        format: ShaderFormat::Dxil,
+        bytes: Arc::from(include_bytes!("../assets/mesh/mesh.dxil").as_slice()),
+        entries: vec![ShaderEntryPoint {
+            name: "main".into(),
+            stage: ShaderStage::Mesh,
+            workgroup_size: None,
+        }],
+        required_features: vec![],
+    }))
+    .unwrap();
+    let pixel = fractional_pixel_shader(&d);
+    let layout = d
+        .create_pipeline_layout(&PipelineLayoutDesc {
+            label: None,
+            groups: &[],
+            push_constants: &[],
+        })
+        .unwrap();
+    let pipeline = block_on(d.mesh().unwrap().create_pipeline(MeshPipelineDesc {
+        layout,
+        task: None,
+        mesh: PipelineStage {
+            module: mesh_shader,
+            entry: "main".into(),
+            constants: vec![],
+        },
+        fragment: Some(PipelineStage {
+            module: pixel,
+            entry: "main".into(),
+            constants: vec![],
+        }),
+        targets: vec![Some(ColorTargetState {
+            format: TextureFormat::Rgba8Unorm,
+            blend: Some(BlendState {
+                color: BlendComponent {
+                    src_factor: BlendFactor::One,
+                    dst_factor: BlendFactor::One,
+                    operation: BlendOperation::Add,
+                },
+                alpha: BlendComponent {
+                    src_factor: BlendFactor::One,
+                    dst_factor: BlendFactor::Zero,
+                    operation: BlendOperation::Add,
+                },
+            }),
+            write_mask: 15,
+        })],
+        primitive: PrimitiveState {
+            topology: PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: FrontFace::Ccw,
+            cull_mode: CullMode::None,
+            unclipped_depth: false,
+            polygon_mode: PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: Some(DepthStencilState {
+            format: TextureFormat::Depth32Float,
+            depth_write_enabled: false,
+            depth_compare: CompareFunction::Always,
+            stencil_front: StencilFaceState {
+                compare: CompareFunction::Always,
+                fail: StencilOperation::Keep,
+                depth_fail: StencilOperation::Keep,
+                pass: StencilOperation::Keep,
+            },
+            stencil_back: StencilFaceState {
+                compare: CompareFunction::Always,
+                fail: StencilOperation::Keep,
+                depth_fail: StencilOperation::Keep,
+                pass: StencilOperation::Keep,
+            },
+            stencil_read_mask: 0,
+            stencil_write_mask: 0,
+            depth_bias_constant: 0,
+            depth_bias_slope_scale: 0.0,
+            depth_bias_clamp: 0.0,
+        }),
+        multisample: MultisampleState {
+            count: 1,
+            mask: u64::from(u32::MAX),
+            alpha_to_coverage_enabled: false,
+        },
+        cache: None,
+    }))
+    .unwrap();
+    let color = d
+        .create_texture(&TextureDesc {
+            label: None,
+            dimension: TextureDimension::D2,
+            extent: [16, 16, 1],
+            array_layers: 5,
+            format: TextureFormat::Rgba8Unorm,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER_ATTACHMENT.union(TextureUsage::COPY_SRC),
+            view_formats: vec![],
+        })
+        .unwrap();
+    let depth = d
+        .create_texture(&TextureDesc {
+            label: None,
+            dimension: TextureDimension::D2,
+            extent: [16, 16, 1],
+            array_layers: 5,
+            format: TextureFormat::Depth32Float,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER_ATTACHMENT,
+            view_formats: vec![],
+        })
+        .unwrap();
+    let view = |texture: &Texture<_>, format, aspect, layer| {
+        d.create_view(
+            texture,
+            &TextureViewDesc {
+                format,
+                dimension: TextureViewDimension::D2Array,
+                aspects: aspect,
+                mips: 0..1,
+                layers: layer..layer + 1,
+            },
+        )
+        .unwrap()
+    };
+    let colors = (0..5)
+        .map(|layer| {
+            view(
+                &color,
+                TextureFormat::Rgba8Unorm,
+                TextureAspects::COLOR,
+                layer,
+            )
+        })
+        .collect::<Vec<_>>();
+    let depths = (0..5)
+        .map(|layer| {
+            view(
+                &depth,
+                TextureFormat::Depth32Float,
+                TextureAspects::DEPTH,
+                layer,
+            )
+        })
+        .collect::<Vec<_>>();
+    let args = d
+        .create_buffer(&BufferDesc {
+            label: None,
+            // Four count words, two 12-byte dispatch records, then an
+            // untouched eight-byte tail sentinel. The readback below proves
+            // ExecuteIndirect consumes only the requested records.
+            size: 48,
+            usage: BufferUsage::INDIRECT
+                .union(BufferUsage::STORAGE)
+                .union(BufferUsage::COPY_SRC),
+            memory: MemoryClass::Device,
+        })
+        .unwrap();
+    // Core can check alignment and the advertised count limit, while the
+    // native boundary owns usage and physical-range validation. Exercise both
+    // native rejections from a valid mesh pass before recording the positive
+    // GPU workload.
+    let invalid_usage = d
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: 48,
+            usage: BufferUsage::STORAGE,
+            memory: MemoryClass::Device,
+        })
+        .unwrap();
+    for (buffer, offset, message) in [
+        (
+            &args,
+            40,
+            "DX12 must reject a record that extends beyond the argument buffer",
+        ),
+        (
+            &invalid_usage,
+            16,
+            "DX12 must reject an indirect argument buffer without INDIRECT usage",
+        ),
+    ] {
+        let mut invalid = d.encoder(lane).unwrap();
+        let attachments = [Some(ColorAttachment {
+            view: AttachmentView::Texture(&colors[0]),
+            resolve_target: None,
+            load: LoadOp::Clear(ClearColor::Float([0.0, 0.0, 0.0, 1.0])),
+            store: StoreOp::Store,
+        })];
+        let mut pass = invalid
+            .begin_raster(&RasterPassDesc {
+                label: None,
+                colors: &attachments,
+                depth_stencil: Some(DepthStencilAttachment {
+                    view: AttachmentView::Texture(&depths[0]),
+                    depth: Some((LoadOp::Clear(1.0), StoreOp::Store)),
+                    stencil: None,
+                    depth_read_only: false,
+                    stencil_read_only: false,
+                }),
+                render_area: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 16,
+                    height: 16,
+                },
+                multiview_mask: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                secondary_inheritance: None,
+            })
+            .unwrap();
+        let mesh = d.mesh().unwrap();
+        mesh.bind_pipeline(&mut pass, &pipeline).unwrap();
+        assert_eq!(
+            mesh.dispatch_indirect_multi(&mut pass, buffer, offset, 1),
+            Err(Error::InvalidRange),
+            "{message}"
+        );
+        // A rejected native operation poisons this disposable recording, so
+        // dropping it is the intended abort path rather than a second test
+        // of pass finish.
+    }
+    for (count_buffer, count_offset, message) in [
+        (
+            &invalid_usage,
+            0,
+            "DX12 must reject a count buffer without INDIRECT usage",
+        ),
+        (
+            &args,
+            48,
+            "DX12 must reject a count word extending beyond the buffer",
+        ),
+    ] {
+        let mut invalid = d.encoder(lane).unwrap();
+        let attachments = [Some(ColorAttachment {
+            view: AttachmentView::Texture(&colors[0]),
+            resolve_target: None,
+            load: LoadOp::Clear(ClearColor::Float([0.0, 0.0, 0.0, 1.0])),
+            store: StoreOp::Store,
+        })];
+        let mut pass = invalid
+            .begin_raster(&RasterPassDesc {
+                label: None,
+                colors: &attachments,
+                depth_stencil: Some(DepthStencilAttachment {
+                    view: AttachmentView::Texture(&depths[0]),
+                    depth: Some((LoadOp::Clear(1.0), StoreOp::Store)),
+                    stencil: None,
+                    depth_read_only: false,
+                    stencil_read_only: false,
+                }),
+                render_area: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 16,
+                    height: 16,
+                },
+                multiview_mask: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                secondary_inheritance: None,
+            })
+            .unwrap();
+        let mesh = d.mesh().unwrap();
+        mesh.bind_pipeline(&mut pass, &pipeline).unwrap();
+        assert_eq!(
+            mesh.dispatch_indirect_count(&mut pass, &args, 16, count_buffer, count_offset, 1),
+            Err(Error::InvalidRange),
+            "{message}"
+        );
+    }
+    let producer_layout = d
+        .create_bind_group_layout(&BindGroupLayoutDesc {
+            label: None,
+            entries: vec![BindGroupLayoutEntry {
+                binding: 0,
+                visibility: vec![ShaderStage::Compute],
+                ty: BindingType::StorageBuffer {
+                    dynamic_offset: false,
+                    min_size: 48,
+                    access: StorageAccess::ReadWrite,
+                },
+                count: BindingCount::One,
+                partially_bound: false,
+                nonuniform_indexing: false,
+            }],
+        })
+        .unwrap();
+    let producer_group = d
+        .create_bind_group(&BindGroupDesc {
+            label: None,
+            layout: &producer_layout,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: BindingResource::StorageBufferView {
+                    buffer: &args,
+                    range: 0..48,
+                    view: StorageBufferView::Raw,
+                },
+            }],
+        })
+        .unwrap();
+    let producer_shader = block_on(d.shader(ShaderDesc {
+        label: None,
+        format: ShaderFormat::Wgsl,
+        bytes: Arc::from(&b"@group(0) @binding(0) var<storage, read_write> words: array<u32>; @compute @workgroup_size(1) fn main() { words[0] = 0u; words[1] = 2u; words[2] = 3u; words[3] = 1u; words[4] = 1u; words[5] = 1u; words[6] = 1u; words[7] = 1u; words[8] = 1u; words[9] = 1u; words[10] = 0xdecafbad; words[11] = 0x8badf00d; }"[..]),
+        entries: vec![ShaderEntryPoint { name: "main".into(), stage: ShaderStage::Compute, workgroup_size: Some([1, 1, 1]) }],
+        required_features: vec![],
+    })).unwrap();
+    let producer_pipeline = block_on(
+        d.compute().unwrap().create_pipeline(ComputePipelineDesc {
+            label: None,
+            layout: d
+                .create_pipeline_layout(&PipelineLayoutDesc {
+                    label: None,
+                    groups: &[&producer_layout],
+                    push_constants: &[],
+                })
+                .unwrap(),
+            compute: PipelineStage {
+                module: producer_shader,
+                entry: "main".into(),
+                constants: vec![],
+            },
+            required_subgroup_size: None,
+            cache: None,
+        }),
+    )
+    .unwrap();
+    let dst = d
+        .create_buffer(&BufferDesc {
+            label: None,
+            size: 20_528,
+            usage: BufferUsage::COPY_DST.union(BufferUsage::MAP_READ),
+            memory: MemoryClass::Readback,
+        })
+        .unwrap();
+    let mut e = d.encoder(lane).unwrap();
+    let shader_write = BufferUses {
+        stages: StageMask::COMPUTE,
+        accesses: AccessMask::SHADER_WRITE,
+    };
+    let indirect = BufferUses {
+        stages: StageMask::INDIRECT,
+        accesses: AccessMask::INDIRECT_READ,
+    };
+    e.transition_resources(&[
+        ResourceTransition::Buffer(BufferBarrier {
+            target: BufferSlice {
+                buffer: &args,
+                range: 0..48,
+            },
+            usage: StateTransition {
+                from: BufferUses {
+                    stages: StageMask::EMPTY,
+                    accesses: AccessMask::EMPTY,
+                },
+                to: shader_write,
+            },
+            ownership: None,
+        }),
+        ResourceTransition::Texture(TextureBarrier {
+            target: Subresources {
+                texture: &color,
+                aspects: TextureAspects::COLOR,
+                mips: 0..1,
+                layers: 0..5,
+            },
+            usage: StateTransition {
+                from: TextureUses {
+                    stages: StageMask::EMPTY,
+                    accesses: AccessMask::EMPTY,
+                },
+                to: TextureUses {
+                    stages: StageMask::COLOR_OUTPUT,
+                    accesses: AccessMask::COLOR_WRITE,
+                },
+            },
+            layout: Some((ImageLayout::Common, ImageLayout::ColorAttachment)),
+            ownership: None,
+        }),
+        ResourceTransition::Texture(TextureBarrier {
+            target: Subresources {
+                texture: &depth,
+                aspects: TextureAspects::DEPTH,
+                mips: 0..1,
+                layers: 0..5,
+            },
+            usage: StateTransition {
+                from: TextureUses {
+                    stages: StageMask::EMPTY,
+                    accesses: AccessMask::EMPTY,
+                },
+                to: TextureUses {
+                    stages: StageMask::FRAGMENT,
+                    accesses: AccessMask::DEPTH_WRITE,
+                },
+            },
+            layout: Some((ImageLayout::Common, ImageLayout::DepthStencilAttachment)),
+            ownership: None,
+        }),
+    ])
+    .unwrap();
+    {
+        let mut pass = d.compute().unwrap().begin(&mut e).unwrap();
+        pass.set_pipeline(&producer_pipeline).unwrap();
+        pass.set_bind_group(0, &producer_group, &[]).unwrap();
+        pass.dispatch([1, 1, 1]).unwrap();
+        pass.finish().unwrap();
+    }
+    e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
+        target: BufferSlice {
+            buffer: &args,
+            range: 0..48,
+        },
+        usage: StateTransition {
+            from: shader_write,
+            to: indirect,
+        },
+        ownership: None,
+    })])
+    .unwrap();
+    for layer in 0..5 {
+        let attachments = [Some(ColorAttachment {
+            view: AttachmentView::Texture(&colors[layer]),
+            resolve_target: None,
+            load: LoadOp::Clear(ClearColor::Float([0.0, 0.0, 0.0, 1.0])),
+            store: StoreOp::Store,
+        })];
+        let mut pass = e
+            .begin_raster(&RasterPassDesc {
+                label: None,
+                colors: &attachments,
+                depth_stencil: Some(DepthStencilAttachment {
+                    view: AttachmentView::Texture(&depths[layer]),
+                    depth: Some((LoadOp::Clear(1.0), StoreOp::Store)),
+                    stencil: None,
+                    depth_read_only: false,
+                    stencil_read_only: false,
+                }),
+                render_area: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 16,
+                    height: 16,
+                },
+                multiview_mask: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                secondary_inheritance: None,
+            })
+            .unwrap();
+        pass.viewport(Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: 16.0,
+            height: 16.0,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        })
+        .unwrap();
+        pass.scissor(Rect {
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 16,
+        })
+        .unwrap();
+        let mesh = d.mesh().unwrap();
+        mesh.bind_pipeline(&mut pass, &pipeline).unwrap();
+        match layer {
+            0 => mesh
+                .dispatch_indirect_multi(&mut pass, &args, 16, 2)
+                .unwrap(),
+            1 => mesh
+                .dispatch_indirect_count(&mut pass, &args, 16, &args, 4, 2)
+                .unwrap(),
+            2 => mesh
+                .dispatch_indirect_count(&mut pass, &args, 16, &args, 0, 2)
+                .unwrap(),
+            3 => mesh
+                .dispatch_indirect_count(&mut pass, &args, 16, &args, 8, 2)
+                .unwrap(),
+            4 => mesh
+                .dispatch_indirect_count(&mut pass, &args, 16, &args, 12, 2)
+                .unwrap(),
+            _ => unreachable!(),
+        }
+        pass.finish().unwrap();
+    }
+    let render = TextureUses {
+        stages: StageMask::COLOR_OUTPUT,
+        accesses: AccessMask::COLOR_WRITE,
+    };
+    let copy = TextureUses {
+        stages: StageMask::COPY,
+        accesses: AccessMask::COPY_READ,
+    };
+    e.transition_resources(&[ResourceTransition::Texture(TextureBarrier {
+        target: Subresources {
+            texture: &color,
+            aspects: TextureAspects::COLOR,
+            mips: 0..1,
+            layers: 0..5,
+        },
+        usage: StateTransition {
+            from: render,
+            to: copy,
+        },
+        layout: Some((ImageLayout::ColorAttachment, ImageLayout::CopySrc)),
+        ownership: None,
+    })])
+    .unwrap();
+    for layer in 0..5 {
+        e.texture_to_buffer(
+            TextureRegion {
+                texture: &color,
+                mip: 0,
+                origin: [0, 0, layer],
+                extent: [16, 16, 1],
+                aspect: TextureAspects::COLOR,
+            },
+            &dst,
+            TexelCopyBufferLayout {
+                offset: u64::from(layer) * 4096,
+                bytes_per_row: 256,
+                rows_per_image: 16,
+            },
+        )
+        .unwrap();
+    }
+    e.transition_resources(&[ResourceTransition::Buffer(BufferBarrier {
+        target: BufferSlice {
+            buffer: &args,
+            range: 0..48,
+        },
+        usage: StateTransition {
+            from: indirect,
+            to: BufferUses {
+                stages: StageMask::COPY,
+                accesses: AccessMask::COPY_READ,
+            },
+        },
+        ownership: None,
+    })])
+    .unwrap();
+    e.copy_buffer(&args, 0, &dst, 20_480, 48).unwrap();
+    let ticket = e.readback_buffer(&dst, 0..20_528).unwrap();
+    let work = e.finish().unwrap();
+    // The command encoder must retain the indirect resource through this
+    // submission even after the public buffer and its producer group vanish.
+    drop(args);
+    drop(producer_group);
+    let plan = unsafe {
+        SubmissionPlan::from_compiled(
+            PlanId {
+                device: d.id(),
+                ordinal: 7_553_222,
+            },
+            Arc::from([StepDesc {
+                lane,
+                kind: StepKind::Commands,
+                waits: vec![],
+            }]),
+        )
+    };
+    let step = plan.step(0);
+    let point = match unsafe {
+        d.queue().submit(SubmitPacket {
+            plan,
+            steps: vec![BoundStep {
+                step,
+                payload: StepPayload::Commands(vec![work]),
+            }],
+            completion: CompletionRequest::End,
+        })
+    } {
+        SubmitOutcome::Accepted(r) => r.checkpoints.into_iter().next().unwrap().point,
+        _ => panic!("submission rejected"),
+    };
+    block_on(d.wait_completion(&point)).unwrap();
+    let bytes = unsafe { block_on(d.read_after(ticket, &point)).unwrap().bytes };
+    let center = 8 * 256 + 8 * 4;
+    for layer in [0, 1, 3] {
+        assert!(
+            (120..=136).contains(&bytes[layer * 4096 + center]),
+            "layer {layer} must contain two 0.25-red records, got {}",
+            bytes[layer * 4096 + center]
+        );
+    }
+    assert_eq!(
+        bytes[2 * 4096 + center],
+        0,
+        "GPU count zero must execute no mesh records"
+    );
+    assert!(
+        (56..=72).contains(&bytes[4 * 4096 + center]),
+        "GPU count below max must execute one 0.25-red record, got {}",
+        bytes[4 * 4096 + center]
+    );
+    assert_eq!(
+        &bytes[20_520..20_528],
+        &[0xad, 0xfb, 0xca, 0xde, 0x0d, 0xf0, 0xad, 0x8b],
+        "indirect execution must leave the argument buffer tail sentinel intact"
+    );
+}
+
+fn fractional_pixel_shader(d: &Device<fluxel_rhi_dx12::Dx12>) -> Shader<fluxel_rhi_dx12::Dx12> {
+    let dir =
+        std::env::temp_dir().join(format!("fluxel-dx12-mesh-indirect-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("mesh_pixel.hlsl");
+    let output = dir.join("mesh_pixel.dxil");
+    std::fs::write(
+        &source,
+        "float4 main() : SV_Target { return float4(0.25,0,0,1); }",
+    )
+    .unwrap();
+    let result = std::process::Command::new("dxc")
+        .args(["-T", "ps_6_5", "-E", "main", "-Fo"])
+        .arg(&output)
+        .arg(&source)
+        .output()
+        .expect("hardware test requires dxc in PATH");
+    assert!(
+        result.status.success(),
+        "dxc: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let bytes = std::fs::read(&output).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    block_on(d.shader(ShaderDesc {
+        label: None,
+        format: ShaderFormat::Dxil,
+        bytes: Arc::from(bytes),
+        entries: vec![ShaderEntryPoint {
+            name: "main".into(),
+            stage: ShaderStage::Fragment,
+            workgroup_size: None,
+        }],
+        required_features: vec![],
+    }))
+    .unwrap()
+}

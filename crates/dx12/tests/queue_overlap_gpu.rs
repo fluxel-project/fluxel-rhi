@@ -8,7 +8,6 @@
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_dx12::{Dx12ExternalHandle, Dx12Instance};
 use std::{
-    future::Future,
     os::windows::io::{FromRawHandle, OwnedHandle},
     sync::{Arc, mpsc},
     thread,
@@ -22,18 +21,9 @@ use windows::{
     core::{Interface, PCWSTR},
 };
 
-fn block<F: Future>(future: F) -> F::Output {
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut future = std::pin::pin!(future);
-    loop {
-        match future.as_mut().poll(&mut context) {
-            std::task::Poll::Ready(value) => return value,
-            // This is test-only completion observation. DX12's future itself
-            // uses a fence event; this loop never drives GPU execution.
-            std::task::Poll::Pending => thread::sleep(Duration::from_millis(1)),
-        }
-    }
-}
+#[path = "support/mod.rs"]
+mod support;
+use support::block;
 
 fn native_device(device: &Device<fluxel_rhi_dx12::Dx12>) -> ID3D12Device {
     let domain = device.native_interop().expect("DX12 native interop");

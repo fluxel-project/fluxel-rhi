@@ -1,3 +1,5 @@
+//! Compute dispatch descriptor and indirect-record validation regressions.
+
 use super::*;
 
 #[test]

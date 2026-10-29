@@ -1,3 +1,5 @@
+//! Serialized pipeline-cache integrity and duplicate-key regressions.
+
 use super::*;
 #[test]
 fn serialized_entries_round_trip_and_reject_corruption() {

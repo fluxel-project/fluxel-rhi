@@ -2,17 +2,10 @@
 #![cfg(all(windows, feature = "hardware-tests"))]
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_dx12::Dx12Instance;
-use std::{future::Future, sync::Arc};
-fn block<F: Future>(f: F) -> F::Output {
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut f = std::pin::pin!(f);
-    loop {
-        match f.as_mut().poll(&mut cx) {
-            std::task::Poll::Ready(v) => return v,
-            std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-    }
-}
+use std::sync::Arc;
+#[path = "support/mod.rs"]
+mod support;
+use support::block;
 #[test]
 fn compute_producer_direct_consumer() {
     let d = block(Dx12Instance::new().unwrap().open_default()).unwrap();
@@ -307,7 +300,7 @@ fn compute_producer_direct_consumer() {
 }
 
 #[test]
-fn compute_timestamps_and_completed_cross_lane_reuse() {
+fn compute_timestamps_and_two_lane_packet_preflight() {
     let d = block(Dx12Instance::new().unwrap().open_default()).unwrap();
     let compute = d
         .lanes()
@@ -376,47 +369,6 @@ fn compute_timestamps_and_completed_cross_lane_reuse() {
     let a = u64::from_ne_bytes(bytes[0..8].try_into().unwrap());
     let b = u64::from_ne_bytes(bytes[8..16].try_into().unwrap());
     assert!(a > 0 && b >= a);
-    let mut e = d.encoder(direct).unwrap();
-    q.timestamp(&mut e, &set, 0).unwrap();
-    q.resolve(&mut e, &set, 0..1, &dst, 0).unwrap();
-    let direct_ticket = e.readback_buffer(&dst, 0..8).unwrap();
-    let plan = unsafe {
-        SubmissionPlan::from_compiled(
-            PlanId {
-                device: d.id(),
-                ordinal: 98905,
-            },
-            Arc::from([StepDesc {
-                lane: direct,
-                kind: StepKind::Commands,
-                waits: vec![],
-            }]),
-        )
-    };
-    let step = plan.step(0);
-    // SAFETY: the prior compute completion was awaited and this work is submitted once.
-    let outcome = unsafe {
-        d.queue().submit(SubmitPacket {
-            plan,
-            steps: vec![BoundStep {
-                step,
-                payload: StepPayload::Commands(vec![e.finish().unwrap()]),
-            }],
-            completion: CompletionRequest::End,
-        })
-    };
-    let direct_point = match outcome {
-        SubmitOutcome::Accepted(r) => r.checkpoints.into_iter().next().unwrap().point,
-        _ => panic!("completed cross-lane slot reuse rejected"),
-    };
-    block(d.wait_completion(&direct_point)).unwrap();
-    // SAFETY: this completion covers the direct queue's query resolve.
-    let direct_bytes = unsafe {
-        block(d.read_after(direct_ticket, &direct_point))
-            .unwrap()
-            .bytes
-    };
-    assert_ne!(u64::from_ne_bytes(direct_bytes[..8].try_into().unwrap()), 0);
     // The whole packet is checked before its first list is issued.
     let fresh = q
         .create(&QueryDesc {

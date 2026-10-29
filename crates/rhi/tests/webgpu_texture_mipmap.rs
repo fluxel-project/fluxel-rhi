@@ -5,7 +5,9 @@
 #[path = "../examples/09_texture_mipmap/main.rs"]
 mod texture_mipmap;
 
-use wasm_bindgen::JsCast;
+#[path = "support/webgpu.rs"]
+mod support;
+
 use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
@@ -14,16 +16,8 @@ wasm_bindgen_test_configure!(run_in_browser);
 /// present three browser WebGPU frames without a JavaScript-side renderer.
 #[wasm_bindgen_test(async)]
 async fn texture_mipmap_draws_and_presents_three_webgpu_frames() {
-    let document = web_sys::window().unwrap().document().unwrap();
-    let canvas = document
-        .create_element("canvas")
-        .unwrap()
-        .dyn_into::<web_sys::HtmlCanvasElement>()
-        .unwrap();
-    canvas.set_width(640);
-    canvas.set_height(480);
-    document.body().unwrap().append_child(&canvas).unwrap();
+    let canvas = support::canvas(640, 480);
     let result = texture_mipmap::run_webgpu_texture_mipmap(canvas.clone(), 3).await;
-    canvas.remove();
+    support::remove_canvas(&canvas);
     result.expect("09 must draw and present three WebGPU frames");
 }

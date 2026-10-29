@@ -1,3 +1,5 @@
+//! Global barrier scope and access-mask lowering regressions.
+
 use super::*;
 #[test]
 fn enhanced_scope_maps_copy_and_shader_caches() {

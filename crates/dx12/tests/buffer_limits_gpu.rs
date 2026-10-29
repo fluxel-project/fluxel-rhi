@@ -3,18 +3,10 @@
 
 use fluxel_rhi_core::api::{BufferDesc, BufferUsage, MemoryClass, Support};
 use fluxel_rhi_dx12::Dx12Instance;
-use std::future::Future;
 
-fn block<F: Future>(future: F) -> F::Output {
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut future = std::pin::pin!(future);
-    loop {
-        if let std::task::Poll::Ready(value) = future.as_mut().poll(&mut context) {
-            return value;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-}
+#[path = "support/mod.rs"]
+mod support;
+use support::block;
 
 #[test]
 fn device_reports_native_buffer_limit_above_old_one_gib_cap() {

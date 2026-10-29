@@ -1,23 +1,21 @@
-//! BC texture uploads and readback preserve encoded blocks.
+//! Cube and cube-array sampling preserve the selected layer contents.
 #![cfg(all(windows, feature = "hardware-tests"))]
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_dx12::Dx12Instance;
-use std::{future::Future, sync::Arc};
-fn block<F: Future>(f: F) -> F::Output {
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut f = std::pin::pin!(f);
-    loop {
-        match f.as_mut().poll(&mut cx) {
-            std::task::Poll::Ready(v) => return v,
-            std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-    }
-}
-#[test]
-fn cube_sample_readback() {
+use std::{ops::Range, sync::Arc};
+#[path = "support/mod.rs"]
+mod support;
+use support::block;
+fn run_cube_sample_readback(
+    array_layers: u32,
+    view_dimension: TextureViewDimension,
+    view_layers: Range<u32>,
+    upload_layer: u32,
+    shader_bytes: Arc<[u8]>,
+    ordinal: u64,
+) {
     let format = TextureFormat::Rgba8Unorm;
     let expected = [1.0, 0.0, 0.0, 1.0];
-    let index = 0u64;
     let d = block(Dx12Instance::new().unwrap().open_default()).unwrap();
     let lane = d
         .lanes()
@@ -30,7 +28,7 @@ fn cube_sample_readback() {
             label: None,
             dimension: TextureDimension::D2,
             extent: [8, 8, 1],
-            array_layers: 6,
+            array_layers,
             format,
             mip_levels: 1,
             samples: 1,
@@ -51,7 +49,7 @@ fn cube_sample_readback() {
     let region = || TextureRegion {
         texture: &tex,
         mip: 0,
-        origin: [0, 0, 0],
+        origin: [0, 0, upload_layer],
         extent: [8, 8, 1],
         aspect: TextureAspects::COLOR,
     };
@@ -71,10 +69,10 @@ fn cube_sample_readback() {
             &tex,
             &TextureViewDesc {
                 format,
-                dimension: TextureViewDimension::Cube,
+                dimension: view_dimension,
                 aspects: TextureAspects::COLOR,
                 mips: 0..1,
-                layers: 0..6,
+                layers: view_layers.clone(),
             },
         )
         .unwrap();
@@ -103,7 +101,7 @@ fn cube_sample_readback() {
                     visibility: vec![ShaderStage::Compute],
                     ty: BindingType::SampledTexture {
                         sample: TextureSampleType::Float,
-                        dimension: TextureViewDimension::Cube,
+                        dimension: view_dimension,
                         multisampled: false,
                     },
                     count: BindingCount::One,
@@ -183,7 +181,7 @@ fn cube_sample_readback() {
     let shader = block(d.shader(ShaderDesc {
         label: None,
         format: ShaderFormat::Dxil,
-        bytes: Arc::from(include_bytes!("assets/cube_sample.dxil").as_slice()),
+        bytes: shader_bytes,
         entries: vec![ShaderEntryPoint {
             name: "main".into(),
             stage: ShaderStage::Compute,
@@ -210,7 +208,7 @@ fn cube_sample_readback() {
                 texture: &tex,
                 aspects: TextureAspects::COLOR,
                 mips: 0..1,
-                layers: 0..6,
+                layers: view_layers.clone(),
             },
             usage: StateTransition {
                 from: TextureUses {
@@ -276,7 +274,7 @@ fn cube_sample_readback() {
             texture: &tex,
             aspects: TextureAspects::COLOR,
             mips: 0..1,
-            layers: 0..1,
+            layers: view_layers.start..view_layers.start + 1,
         },
         usage: StateTransition {
             from: TextureUses {
@@ -307,7 +305,7 @@ fn cube_sample_readback() {
         SubmissionPlan::from_compiled(
             PlanId {
                 device: d.id(),
-                ordinal: 99510 + index as u64,
+                ordinal,
             },
             Arc::from([StepDesc {
                 lane,
@@ -348,4 +346,28 @@ fn cube_sample_readback() {
             &data[y * row..y * row + row]
         );
     }
+}
+
+#[test]
+fn cube_sample_readback() {
+    run_cube_sample_readback(
+        6,
+        TextureViewDimension::Cube,
+        0..6,
+        0,
+        Arc::from(include_bytes!("assets/cube_sample.dxil").as_slice()),
+        99510,
+    );
+}
+
+#[test]
+fn cube_array_sample_readback() {
+    run_cube_sample_readback(
+        12,
+        TextureViewDimension::CubeArray,
+        6..12,
+        6,
+        Arc::from(include_bytes!("assets/cube_array_sample.dxil").as_slice()),
+        99511,
+    );
 }

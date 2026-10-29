@@ -1,19 +1,11 @@
 //! Hardware evidence for compute indirect, dynamic storage offsets and cache.
 #![cfg(feature = "hardware-tests")]
+#[path = "support/mod.rs"]
+mod support;
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_vulkan::VulkanInstance;
-use std::{future::Future, sync::Arc};
-fn block<F: Future>(f: F) -> F::Output {
-    let w = std::task::Waker::noop();
-    let mut c = std::task::Context::from_waker(w);
-    let mut f = std::pin::pin!(f);
-    loop {
-        match f.as_mut().poll(&mut c) {
-            std::task::Poll::Ready(v) => return v,
-            std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-    }
-}
+use std::sync::Arc;
+use support::block;
 #[test]
 fn indirect_dynamic_storage_specialization_and_cache() {
     run(false, 0);

@@ -1,23 +1,23 @@
-//! Upload and read back defined depth/stencil plane byte representations.
+//! Upload color texture arrays and read back packed texel rows.
 #![cfg(all(windows, feature = "hardware-tests"))]
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_dx12::Dx12Instance;
-use std::{future::Future, sync::Arc};
-fn block<F: Future>(f: F) -> F::Output {
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut f = std::pin::pin!(f);
-    loop {
-        match f.as_mut().poll(&mut cx) {
-            std::task::Poll::Ready(v) => return v,
-            std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-    }
-}
+use std::sync::Arc;
+#[path = "support/mod.rs"]
+mod support;
+use support::block;
 #[test]
 fn color_array_buffer_roundtrip() {
-    check(TextureFormat::Rgba8Unorm, TextureAspects::COLOR, 0);
+    check(TextureDimension::D2, 3, 99530);
 }
-fn check(format: TextureFormat, aspect: TextureAspects, index: u64) {
+#[test]
+fn d1_array_buffer_roundtrip() {
+    check(TextureDimension::D1, 1, 99531);
+}
+
+fn check(dimension: TextureDimension, rows: usize, ordinal: u64) {
+    let format = TextureFormat::Rgba8Unorm;
+    let aspect = TextureAspects::COLOR;
     let d = block(Dx12Instance::new().unwrap().open_default()).unwrap();
     let lane = d
         .lanes()
@@ -28,8 +28,8 @@ fn check(format: TextureFormat, aspect: TextureAspects, index: u64) {
     let tex = d
         .create_texture(&TextureDesc {
             label: None,
-            dimension: TextureDimension::D2,
-            extent: [8, 3, 1],
+            dimension,
+            extent: [8, rows as u32, 1],
             array_layers: 3,
             format,
             mip_levels: 1,
@@ -48,7 +48,7 @@ fn check(format: TextureFormat, aspect: TextureAspects, index: u64) {
         })
         .unwrap();
     let mut data = vec![0u8; 2304];
-    for y in 0..3 {
+    for y in 0..rows {
         for x in 0..8 {
             if aspect == TextureAspects::STENCIL {
                 data[y * 256 + x] = (x + y * 8 + 1) as u8;
@@ -62,7 +62,7 @@ fn check(format: TextureFormat, aspect: TextureAspects, index: u64) {
     rest[..768].copy_from_slice(first);
     rest[768..].copy_from_slice(first);
     for layer in 0..3 {
-        for row in 0..3 {
+        for row in 0..rows {
             data[layer * 768 + row * 256] ^= layer as u8 * 31;
         }
     }
@@ -118,7 +118,7 @@ fn check(format: TextureFormat, aspect: TextureAspects, index: u64) {
             texture: &tex,
             mip: 0,
             origin: [0, 0, 0],
-            extent: [8, 3, 3],
+            extent: [8, rows as u32, 3],
             aspect,
         },
     )
@@ -157,7 +157,7 @@ fn check(format: TextureFormat, aspect: TextureAspects, index: u64) {
             texture: &tex,
             mip: 0,
             origin: [0, 0, 0],
-            extent: [8, 3, 3],
+            extent: [8, rows as u32, 3],
             aspect,
         },
         &output,
@@ -173,7 +173,7 @@ fn check(format: TextureFormat, aspect: TextureAspects, index: u64) {
         SubmissionPlan::from_compiled(
             PlanId {
                 device: d.id(),
-                ordinal: 99530 + index as u64,
+                ordinal,
             },
             Arc::from([StepDesc {
                 lane,
@@ -205,7 +205,7 @@ fn check(format: TextureFormat, aspect: TextureAspects, index: u64) {
         32
     };
     for layer in 0..3 {
-        for row in 0..3 {
+        for row in 0..rows {
             let offset = layer * 768 + row * 256;
             assert_eq!(
                 &sample[offset..offset + row_bytes],

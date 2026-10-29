@@ -1,6 +1,6 @@
 //! Browser evidence for the WebGL2 sequential primary-pass fallback.
 #![cfg(all(target_arch = "wasm32", feature = "webgl2"))]
-#[path = "webgl2_support.rs"]
+#[path = "support/webgl2.rs"]
 mod support;
 
 #[path = "../examples/13_multithreaded_recording/main.rs"]

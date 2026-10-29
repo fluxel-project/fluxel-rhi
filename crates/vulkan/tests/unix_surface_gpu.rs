@@ -1,5 +1,7 @@
 //! Linux Xlib presentation smoke; the X11 display and window outlive the surface.
 #![cfg(all(target_os = "linux", feature = "hardware-tests"))]
+#[path = "support/mod.rs"]
+mod support;
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_vulkan::{Vulkan, VulkanInstance};
 use raw_window_handle::{
@@ -8,11 +10,11 @@ use raw_window_handle::{
 };
 use std::{
     ffi::{c_char, c_int, c_ulong, c_void},
-    future::Future,
     num::NonZeroU32,
     ptr::NonNull,
     sync::Arc,
 };
+use support::block;
 
 #[link(name = "libX11.so.6", kind = "dylib", modifiers = "+verbatim")]
 unsafe extern "C" {
@@ -38,16 +40,6 @@ unsafe extern "C" {
 #[link(name = "libX11-xcb.so.1", kind = "dylib", modifiers = "+verbatim")]
 unsafe extern "C" {
     fn XGetXCBConnection(display: *mut c_void) -> *mut c_void;
-}
-fn block<F: Future>(future: F) -> F::Output {
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut future = std::pin::pin!(future);
-    loop {
-        match future.as_mut().poll(&mut cx) {
-            std::task::Poll::Ready(value) => return value,
-            std::task::Poll::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-    }
 }
 #[test]
 fn xlib_and_xcb_present() {

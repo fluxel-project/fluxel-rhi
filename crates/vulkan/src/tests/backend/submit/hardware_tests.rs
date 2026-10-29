@@ -1,5 +1,3 @@
-//! Unit tests for the corresponding implementation module.
-
 //! Real-driver proof that graphics-only work stays on the single queue path.
 
 use super::multi_queue;

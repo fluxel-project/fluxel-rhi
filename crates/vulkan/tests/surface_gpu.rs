@@ -1,11 +1,14 @@
 //! Real WSI presentation modes and multiple presents in one packet.
 #![cfg(all(windows, feature = "hardware-tests"))]
+#[path = "support/mod.rs"]
+mod support;
 use fluxel_rhi_core::api::*;
 use fluxel_rhi_vulkan::{Vulkan, VulkanInstance};
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle,
 };
-use std::{future::Future, num::NonZeroIsize, sync::Arc};
+use std::{num::NonZeroIsize, sync::Arc};
+use support::block;
 
 #[repr(C)]
 struct RectNative {
@@ -63,16 +66,6 @@ fn window() -> Window {
     };
     assert_ne!(handle, 0);
     Window(handle)
-}
-fn block<F: Future>(f: F) -> F::Output {
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut f = std::pin::pin!(f);
-    loop {
-        if let std::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-            return v;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
 }
 #[test]
 fn runtime_modes_and_multiple_present_steps() {

@@ -84,6 +84,7 @@ impl Backend for Mock {
     type NativeSurface = Arc<State>;
     type NativeSurfaceImage = Token;
     type NativeUncertainty = Token;
+    type MemoryObservation = Unavailable;
     type Compute = Unavailable;
     type Mesh = Unavailable;
     type Ray = Unavailable;
