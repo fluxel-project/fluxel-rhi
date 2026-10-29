@@ -1,4 +1,4 @@
-# RHI testing
+# RHI verification
 
 The workspace contains Core, DX12, Vulkan, WebGPU, the GL family, an in-progress Metal backend, and the typed facade. Metal source compilation is not a substitute for macOS SDK linking or Apple GPU execution.
 
@@ -39,15 +39,66 @@ means the route returns the documented absence of the required RHI capability.
 for a recorded failing route and must not be relabelled as a pass merely
 because another configuration succeeds.
 
-| Backend route | Basic examples 01–15 | Native-advanced examples 16–23 | Historical source, platform, and limit |
-| --- | --- | --- | --- |
-| DX12 | Pass | Pass | Windows, pre-commit `examples-layout-2026-10-26` smoke: 23 entries built and ran two frames. The pre-commit source identity is incomplete; the local evidence index later associated source/binary hashes with `abc2aa6789d4ef7face323cb07a2a26fba239c0d`. It is not a rerun of the present candidate or a visual result. |
-| Vulkan | Pass | Pass | Windows / Radeon 780M, the same pre-commit smoke ran 23 entries for two frames with `VK_LAYER_KHRONOS_validation`; a later no-layer three-frame/readback and inspected-capture run exists for 16. The pre-commit source identity is incomplete, so this is not a current-candidate matrix. |
-| WebGPU | Pass | Unsupported | Chrome with WebGPU enabled, pre-commit browser-target smoke for 01–15. The exact pre-commit source identity is incomplete; a later local evidence index associates it with `abc2aa6789d4ef7face323cb07a2a26fba239c0d`. Examples 16–23 require native-only operations not exposed by this route. |
-| GL4+ (WGL) | Pass | NotRun | Historical Windows WGL coverage for 01–15 is described in [the examples guide](../crates/rhi/examples/README.md#verification-status); no advanced-suite run is recorded. Do not infer current visual acceptance from the smoke result. |
-| GLES3+ | Pass | NotRun | Historical Android-emulator coverage for 01–15 is described in [the examples guide](../crates/rhi/examples/README.md#verification-status); it is not physical-device or current-candidate acceptance. |
-| WebGL2 | Pass | NotRun | Historical Android-browser coverage for 01–15 is described in [the examples guide](../crates/rhi/examples/README.md#verification-status); no advanced-suite run is recorded. |
-| Metal | NotRun | NotRun | Apple-target compile/static review exists, but there is no Apple-GPU execution evidence. |
+### DX12
+
+**Coverage:** Basic 01–15 — Pass; native-advanced 16–23 — Pass.
+
+**Evidence and limits:** Windows pre-commit `examples-layout-2026-10-26`
+smoke built and ran 23 entries for two frames. Its source identity is
+incomplete; a local evidence index later associated source/binary hashes with
+`abc2aa6789d4ef7face323cb07a2a26fba239c0d`. This is neither a rerun of the
+present candidate nor a visual result.
+
+### Vulkan
+
+**Coverage:** Basic 01–15 — Pass; native-advanced 16–23 — Pass.
+
+**Evidence and limits:** The same Windows pre-commit smoke ran 23 entries for
+two frames on Radeon 780M with `VK_LAYER_KHRONOS_validation`. A later no-layer
+three-frame/readback and inspected-capture run exists for example 16. The
+pre-commit source identity is incomplete, so this is not a current-candidate
+matrix.
+
+### WebGPU
+
+**Coverage:** Basic 01–15 — Pass; native-advanced 16–23 — Unsupported.
+
+**Evidence and limits:** Chrome with WebGPU enabled ran a pre-commit browser
+smoke for examples 01–15. The exact source identity is incomplete; a later
+local evidence index associates it with
+`abc2aa6789d4ef7face323cb07a2a26fba239c0d`. Examples 16–23 require
+native-only operations unavailable on this route.
+
+### GL4+ (WGL)
+
+**Coverage:** Basic 01–15 — Pass; native-advanced 16–23 — NotRun.
+
+Historical Windows WGL coverage for 01–15 is described in [the examples
+guide](../crates/rhi/examples/README.md#verification-status). No advanced-suite
+run is recorded. Do not infer current visual acceptance from the smoke result.
+
+### GLES3+
+
+**Coverage:** Basic 01–15 — Pass; native-advanced 16–23 — NotRun.
+
+Historical Android-emulator coverage for 01–15 is described in [the examples
+guide](../crates/rhi/examples/README.md#verification-status). This is not
+physical-device or current-candidate acceptance.
+
+### WebGL2
+
+**Coverage:** Basic 01–15 — Pass; native-advanced 16–23 — NotRun.
+
+Historical Android-browser coverage for 01–15 is described in [the examples
+guide](../crates/rhi/examples/README.md#verification-status). No advanced-suite
+run is recorded.
+
+### Metal
+
+**Coverage:** Basic 01–15 — NotRun; native-advanced 16–23 — NotRun.
+
+Apple-target compile/static review exists, but there is no Apple-GPU execution
+evidence.
 
 The table does not erase configuration-specific failures from the evidence
 record. In particular, the initial Vulkan no-layer sweep failed in example 16;
@@ -159,3 +210,118 @@ local Temp archive and are not part of the GitHub source tree. Use the native
 `tools/examples/android/browser/run_capture.py` helper for one route at a time.
 The browser export stops after three frames for capture; WebGL2 example 13 is
 sequential drawing, despite its historical multithreaded-recording filename.
+
+## Capability-specific example coverage
+
+The optional common execution entry is verified separately from native feature
+capabilities. Migration checks covered source fingerprints, hardware readbacks
+and platform limits. They do not add GL deferred recording, native multi-queue
+support, or Metal GPU acceptance.
+
+This matrix covers the portable/basic examples 01–15. The separately recorded
+historical smoke coverage for both example groups is in [Numbered-example
+coverage](#numbered-example-coverage).
+
+**Typed Core/facade integration.** DX12 and Vulkan: workspace check and all
+examples build. WebGPU: WASM check and browser backend tests.
+
+**Surface acquire, graphics submit, present.** DX12: numbered Windows
+examples. Vulkan: examples 01–15, two frames each with validation enabled.
+WebGPU: numbered three-frame browser tests.
+
+**Texture upload, views, samplers, depth.** Examples 02–09 on DX12, Vulkan,
+and WebGPU.
+
+**Compute dispatch.** Example 06 on DX12 and Vulkan; example 06 uses a native
+compute pass on WebGPU.
+
+**Texture array and indirect draw.** DX12: example 10. Vulkan: example 10,
+including multi-draw. WebGPU: example 10 with a texture array and
+`drawIndexedIndirect`; separate fixtures cover GPU-count lowering.
+
+**Occlusion query and readback.** DX12: example 11. Vulkan: example 11,
+observed teapot 246604 and sphere 2878 samples. WebGPU: example 11 with native
+query resolve and staging readback.
+
+**Image readback.** DX12: example 12. Vulkan: example 12, with PPM and GPU
+capture pixel-identical. WebGPU: example 12 with texture-to-buffer copy and
+async map.
+
+**Secondary raster work.** DX12: example 13. Vulkan: example 13 with native
+secondary command buffers. WebGPU: unsupported; example 13 preserves the scene
+using sequential primary recording.
+
+**Runtime descriptor indexing.** DX12: example 14. Vulkan: example 14 with
+variable descriptor count and nonuniform image indexing. WebGPU: unsupported;
+example 14 uses a fixed 32-layer texture for the same scene.
+
+**Two-view multiview.** DX12: example 15. Vulkan: example 15 with native view
+mask `0b11` and `ViewIndex`. WebGPU: unsupported; example 15 renders each eye
+in a separate pass.
+
+The DX12 column identifies implemented example paths, not a fresh hardware pass for every row. Vulkan and WebGPU screenshot comparisons use the local C++ reference captures, excluding the C++ HUD. The current Vulkan candidate ran all 15 examples for two frames on AMD Radeon 780M (driver `25.10.28.02`) with `VK_LAYER_KHRONOS_validation`; every example exited successfully with zero validation diagnostics. Visual review found matching scenes across all 15. Example 09's requested anisotropic sampler is now enabled when supported by the device. Example 14 declares the texture upload, shader-read, and return-to-common transitions explicitly. Example 13's presentation was visually checked from swapchain GPU readback because desktop capture was occluded. Example 07 retains the source demo's intentional 7×7 reflection blur. The 14 shared-example transition change was rerun on DX12 with the debug layer and no diagnostics. WebGPU ran all 15 browser tests for three frames each in Chrome 155.0.8059.40 on an AMD RDNA 3 adapter (`isFallbackAdapter = false`) and produced fresh 1280×720 captures for visual comparison. Its 05/13/14/15 fallback scenes prove visible output only; they do not prove the unavailable native capabilities in their row.
+
+## Core-interface gap review
+
+This review is separate from the historical example matrix above. Surface and
+new visual acceptance were not repeated while the desktop could be locked.
+Raw diagnostics and screenshots remain local.
+
+### DX12
+
+**Result:** Explicit memory, native/external execution, resolve/clear, shader
+routes, and runtime arrays completed.
+
+**Limit:** 276 focused/headless checks; the tier-4 sparse-tail path is
+unavailable on this GPU.
+
+### Vulkan
+
+**Result:** Exact external boundaries, resolve usages/layout, subgroup, and
+enabled precision/storage features completed.
+
+**Limit:** 90 checks with Khronos synchronization validation after targeted
+fixes; sparse depth formats are unavailable.
+
+### WebGPU
+
+**Result:** Standalone regional resolve, storage-buffer views, and independent
+indirect feature reporting completed.
+
+**Limit:** 36 effective headless browser checks on an AMD hardware adapter.
+
+### Metal
+
+**Result:** Word clear and filtered color blit added; upload and resolve usage
+contracts corrected.
+
+**Limit:** Apple-target compile/static review only; no Metal tests, as
+requested.
+
+### GL4+
+
+**Result:** Native same-sample color image copy added, including nonzero
+multisample-array layers.
+
+**Limit:** Two hardware output fixtures plus ordinary unit tests.
+
+### GLES3+
+
+**Result:** Same-sample MSAA copy explicitly Unsupported; single-sample image
+copy and standalone MSAA resolve retained.
+
+**Limit:** LDPlayer passes 2D 4x copy but rejects MSAA-array attachments. Prior
+WSL native failures remain unresolved, so complete MSAA-copy support is
+disabled pending acceptance.
+
+### WebGL2
+
+**Result:** Existing standalone resolve remains the native MSAA transfer route.
+
+**Limit:** Focused AMD/ANGLE hardware test passes resolve and
+MSAA-copy-destination rejection; same-sample image copy has no matching
+standard API.
+
+## Updating this matrix
+
+Add a row only after recording a reproducible command and result. Keep source compilation, validation-layer execution, and visual comparison separate. Do not infer unexercised backend capabilities from these examples.

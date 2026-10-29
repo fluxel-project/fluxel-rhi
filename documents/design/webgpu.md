@@ -45,6 +45,23 @@ color, schedule frames, or own source creation and closure. Other backends do
 not claim this route. Real browser-source integration remains open under
 [`todo.md`](todo.md).
 
+## Public feature coverage
+
+The public route includes graphics and compute, MRT, depth/stencil, dynamic
+offsets, indirect draw/dispatch, multi-draw including GPU-count lowering,
+standalone clears, copies/blits/resolves, buffer mapping/readback, occlusion,
+and optional timestamp queries.
+
+Adapter features and limits gate compressed formats, immediates, subgroups,
+dual-source blending, and unclipped depth. Ray/mesh, sparse resources, native
+multiple queues, multiview, complete pipeline statistics, native heap
+placement, and serialized pipeline caches have no matching standard browser
+route.
+
+Compressed formats are optional adapter features. The current AMD browser
+evidence covers BC1; ETC2/EAC and ASTC GPU validation remains pending. ASTC
+HDR has no mapping in this route.
+
 Standard WebGPU does not provide routes for every Core domain. In particular,
 ray pipelines, mesh shaders, sparse binding, independent native queues,
 placement heaps, native secondary recording, full pipeline statistics, and

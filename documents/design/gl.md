@@ -63,6 +63,55 @@ dispatch-table pointer.
   loss is terminal for the current generation and restoration is owned by the
   host.
 
+## Public feature coverage
+
+### Desktop GL4+
+
+Immediate graphics, MRT, depth/stencil transfers, standalone resolves,
+matching-sample MSAA color texture copies, 1D sampled textures, Float64 vertex
+attributes, direct shader constants, bounded runtime binding arrays,
+GPU-staged readback, compute, and supported indirect commands are available.
+Native limits gate nonuniform indexing, persistent coherent mapping,
+GPU-count drawing, queries/statistics, program binary caches, conservative
+rasterization, and contiguous OVR multiview.
+
+### GLES3+
+
+Immediate graphics, MRT, bounded runtime arrays, depth/stencil uploads and
+copies, standalone MSAA resolves, GPU-staged readback, and supported compute,
+nonuniform indexing, and indirect commands are available. Same-sample MSAA
+texture copy remains unsupported pending complete runtime acceptance. ES 3.1
+and extensions gate GPU-count lowering, sampled depth/stencil readback,
+coherent persistent mapping, exact color readback, queries, program caches, and
+contiguous OVR multiview.
+
+### WebGL2
+
+Immediate graphics, MRT, bounded runtime binding arrays, depth/stencil plane
+transfers, copies/resolves, GPU-staged readback, asynchronous snapshot mapping,
+and occlusion are available. Native limits bound array specialization and
+exact format readback; combined nonuniform texture/SSBO support remains
+unavailable. Extensions gate compressed textures and other optional
+operations. Standard WebGL2 has no compute or compressed-block readback.
+
+### Compressed textures
+
+- **BC1–BC7:** Desktop and GLES use core/extension-gated upload and sampling;
+  `COPY_SRC` depends on format and transfer route. WebGL2 requires an extension
+  and has no compressed `COPY_SRC`.
+- **ETC2/EAC:** GLES and WebGL2 upload/sampling depend on profile support;
+  `COPY_SRC` depends on native copy and readback paths. WebGL2 has no
+  compressed `COPY_SRC`.
+- **ASTC:** GLES LDR/HDR routes and WebGL2 profile/extension routes gate upload
+  and sampling. `COPY_SRC` depends on the exact format and transfer route;
+  WebGL2 has no compressed `COPY_SRC`.
+
+For the exact compressed format, dimension, and usage, query
+`texture_support`. GLES additionally probes the actual compressed-to-integer
+block copy per format; an exposed image-copy extension does not prove that
+reinterpretation works. Ordinary texture-to-texture copies retain independent
+support.
+
 The same-sample multisample texture copy is explicitly unsupported on GLES,
 even where an API extension exists, until a complete attachment/readback
 route is proven. This does not remove supported desktop routes, single-sample

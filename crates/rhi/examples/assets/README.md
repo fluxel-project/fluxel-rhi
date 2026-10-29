@@ -44,20 +44,24 @@ its Vulkan scene models and derived work specifically require permission for
 use or distribution. `tools/examples/fetch-assets.ps1` obtains the exact local bytes needed
 to build the examples, but it does not grant a license to redistribute them.
 
-| Example | Resources |
-| --- | --- |
-| `02_texture` | `textures/metalplate01_rgba.ktx` |
-| `03_instancing` | `models/rock01.gltf`, `models/lavaplanet.gltf`, `textures/lavaplanet_rgba.ktx`, `textures/texturearray_rocks_rgba.ktx` |
-| `05_push_constants` | `models/sphere.gltf` |
-| `06_compute` | `textures/vulkan_11_rgba.ktx` |
-| `07_offscreen` | `models/plane.gltf`, `models/chinesedragon.gltf` |
-| `08_msaa` | `models/voyager.gltf` |
-| `09_texture_mipmap` | `models/tunnel_cylinder.gltf`, `textures/metalplate_nomips_rgba.ktx` |
-| `10_indirect_draw` | `models/plants.gltf`, `models/plane_circle.gltf`, `models/sphere.gltf`, `textures/texturearray_plants_rgba.ktx`, `textures/ground_dry_rgba.ktx` |
-| `11_occlusion_query` | `models/plane_z.gltf`, `models/teapot.gltf`, `models/sphere.gltf` |
-| `12_screenshot` | `models/chinesedragon.gltf` |
-| `13_multithreaded_recording` | `models/retroufo_red_lowpoly.gltf`, `models/sphere.gltf` |
-| `15_multiview` | `models/sampleroom.gltf` |
+- **`02_texture`:** `textures/metalplate01_rgba.ktx`
+- **`03_instancing`:** `models/rock01.gltf`, `models/lavaplanet.gltf`,
+  `textures/lavaplanet_rgba.ktx`, `textures/texturearray_rocks_rgba.ktx`
+- **`05_push_constants`:** `models/sphere.gltf`
+- **`06_compute`:** `textures/vulkan_11_rgba.ktx`
+- **`07_offscreen`:** `models/plane.gltf`, `models/chinesedragon.gltf`
+- **`08_msaa`:** `models/voyager.gltf`
+- **`09_texture_mipmap`:** `models/tunnel_cylinder.gltf`,
+  `textures/metalplate_nomips_rgba.ktx`
+- **`10_indirect_draw`:** `models/plants.gltf`, `models/plane_circle.gltf`,
+  `models/sphere.gltf`, `textures/texturearray_plants_rgba.ktx`,
+  `textures/ground_dry_rgba.ktx`
+- **`11_occlusion_query`:** `models/plane_z.gltf`, `models/teapot.gltf`,
+  `models/sphere.gltf`
+- **`12_screenshot`:** `models/chinesedragon.gltf`
+- **`13_multithreaded_recording`:** `models/retroufo_red_lowpoly.gltf`,
+  `models/sphere.gltf`
+- **`15_multiview`:** `models/sampleroom.gltf`
 
 `04_dynamic_uniform_buffer` and `14_descriptor_indexing` create their
 geometry and texture data at runtime, as do the remaining selected examples

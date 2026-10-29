@@ -57,6 +57,21 @@ features that were not selected at device creation. Runtime descriptor-array
 capacity is a caller-selected operational bound, not a claim about a driver
 maximum.
 
+## Public feature coverage
+
+The public route includes graphics and compute, multiple render targets,
+indirect drawing and dispatch, queries, secondary recording, clears/resolves,
+pipeline caches, mapping, placed memory, and native interop. Descriptor
+indexing, subgroup operations and size control, native 8/16-bit shader/storage
+types, multiview, ray/mesh, sparse textures, graphics/compute queues,
+GPU-count multi-draw, and external resources depend on enabled features,
+extensions, formats, and queue support.
+
+The Core BC, ETC2/EAC, and ASTC format families have device-checked public
+routes. GPU validation remains format- and device-dependent; the current
+Vulkan GPU fixture covers BC1 block copies. ETC2/EAC and ASTC require a
+supporting device for GPU validation.
+
 Two Vulkan routes remain open: fixed acceleration-structure descriptor arrays
 and the enhanced mesh batch/count fixture. Their current status, evidence, and
 reopening conditions are in [`todo.md`](todo.md). The supported cooperative

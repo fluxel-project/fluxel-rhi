@@ -54,33 +54,35 @@ let present_hz = delta
 
 ## Backend routes
 
-| Route | Facade feature | Execution model | Runtime shader route |
-| --- | --- | --- | --- |
-| Direct3D 12 / Windows | `dx12` (default) | Deferred native command lists | DXIL, or WGSL lowered through Naga and DXC |
-| Vulkan | `vulkan` | Deferred native command buffers | SPIR-V, or WGSL lowered through Naga |
-| Browser WebGPU | `webgpu` | Deferred native command buffers | WGSL |
-| Desktop GL / WGL | `native-gl-wgl` | Immediate context-thread execution | WGSL lowered to GLSL, direct GLSL, or device-gated OpenGL SPIR-V |
-| GLES / EGL | `native-gles-egl` | Immediate context-thread execution | WGSL lowered to profile-specific GLSL |
-| Browser WebGL2 | `webgl2` | Immediate browser-thread execution | WGSL lowered to GLSL ES |
-| Metal / Apple targets | `metal` | Deferred native command buffers | WGSL lowered to MSL, or Metal source |
+Each backend is selected through its facade feature. Execution and shader
+routes are:
+
+- **Direct3D 12 / Windows** — `dx12` (default); deferred native command lists;
+  DXIL or WGSL lowered through Naga and DXC.
+- **Vulkan** — `vulkan`; deferred native command buffers; SPIR-V or WGSL
+  lowered through Naga.
+- **Browser WebGPU** — `webgpu`; deferred native command buffers; WGSL.
+- **Desktop GL / WGL** — `native-gl-wgl`; immediate context-thread execution;
+  WGSL lowered to GLSL, direct GLSL, or device-gated OpenGL SPIR-V.
+- **GLES / EGL** — `native-gles-egl`; immediate context-thread execution; WGSL
+  lowered to profile-specific GLSL.
+- **Browser WebGL2** — `webgl2`; immediate browser-thread execution; WGSL
+  lowered to GLSL ES.
+- **Metal / Apple targets** — `metal`; deferred native command buffers; WGSL
+  lowered to MSL or Metal source.
 
 ## GPU feature support
 
-The table describes the current **public RHI route**, not every feature of the
-underlying graphics API. `Device::capabilities()`, `Device::queries()`, and
-descriptor support checks decide whether an operation is available on a
-particular device. A listed route can still reject unsupported formats,
-topologies, shader stages, queue plans, or device tiers.
+The design pages describe each backend's implemented routes, device gates, and
+unsupported operations. `Device::capabilities()`, `Device::queries()`, and
+descriptor checks report availability for the selected device; support in the
+underlying graphics API alone does not imply an RHI route.
 
-| Backend | Main implemented GPU features | Advanced feature limits |
-| --- | --- | --- |
-| DX12 | Graphics and compute, multiple render targets, indirect drawing and dispatch, queries, secondary recording, standalone clears/resolves, placed memory, native/external interop, and pipeline caches | Device-gated descriptor indexing, bounded runtime arrays, source wave-size selection, up to four multiview views, ray pipelines and inline ray queries, mesh shaders, sparse textures, graphics/compute queues, and GPU-count multi-draw |
-| Vulkan | Graphics and compute, multiple render targets, indirect drawing and dispatch, queries, secondary recording, clears/resolves, pipeline caches, mapping, placed memory, and native interop | Descriptor indexing, subgroup operations/size control, native 8/16-bit shader/storage types, multiview, ray/mesh, sparse textures, graphics/compute queues, GPU-count multi-draw, and external resources depend on device features, extensions, formats and queue support. |
-| Metal | Graphics and compute, up to eight render targets, depth/stencil, dynamic uniform/storage offsets, indirect draw and dispatch, standalone word/texture clears, copies/resolves, filtered color blits, mapping, placement heaps, binary archives, and native interop | Device-gated argument arrays/indexing, mesh/object shaders, acceleration structures and ray queries, multiview, timestamp/occlusion and separate pass counters, cross-packet graphics/compute synchronization, GPU-count multi-draw, placement sparse textures, and external resources. No Metal tests or GPU acceptance were run in this phase, as requested. |
-| Browser WebGPU | Graphics and compute, MRT, depth/stencil, dynamic offsets, indirect draw/dispatch, multi-draw including GPU-count lowering, standalone clears, copies/blits/resolves, buffer mapping and readback, occlusion and optional timestamp queries | Optional native features and limits gate compressed formats, immediates, subgroups, dual-source blending and unclipped depth. Ray/mesh, sparse resources, native multiple queues, multiview, complete pipeline statistics, native heap placement and serialized pipeline caches have no matching standard browser route. |
-| Desktop GL4+ | Immediate graphics, MRT, depth/stencil transfers, standalone resolves, matching-sample MSAA color texture copies, 1D sampled textures, Float64 vertex attributes, direct shader constants, bounded runtime binding arrays, GPU-staged readback, compute and indirect commands where supported | Native limits gate nonuniform indexing, persistent coherent mapping, GPU-count drawing, queries/statistics, program binary caches, conservative rasterization and contiguous OVR multiview. |
-| GLES3+ | Immediate graphics, MRT, bounded runtime arrays, depth/stencil uploads and copies, standalone MSAA resolves, GPU-staged readback; compute, nonuniform indexing and indirect commands where supported | Same-sample MSAA texture copy is Unsupported pending complete runtime acceptance. ES3.1 and extensions gate GPU-count lowering, sampled depth/stencil readback, coherent persistent mapping, exact color readback, queries, program caches and contiguous OVR multiview. |
-| Browser WebGL2 | Immediate graphics, MRT, bounded runtime binding arrays, depth/stencil plane transfers, copies/resolves, GPU-staged readback, asynchronous snapshot mapping, and occlusion | Native limits bound array specialization and exact format readback; the combined nonuniform texture/SSBO feature remains unavailable. Extensions gate compressed textures and other optional operations. Standard WebGL2 has no compute or compressed-block readback. |
+- [DX12](documents/design/dx12.md#public-feature-coverage)
+- [Vulkan](documents/design/vulkan.md#public-feature-coverage)
+- [WebGPU](documents/design/webgpu.md#public-feature-coverage)
+- [GL, GLES, and WebGL2](documents/design/gl.md#public-feature-coverage)
+- [Metal](documents/design/metal.md#public-feature-coverage)
 
 Metal's separate pass-boundary sample API exposes up to eight native counter
 fields with a device availability mask and an error sentinel. It returns raw
@@ -165,18 +167,8 @@ Direct3D 12 exposes [cached PSO blobs](https://learn.microsoft.com/en-us/windows
 
 ### DX12 graphics and shader route
 
-The following summarizes implemented public paths. Format, shader-model, tier,
-and resource descriptor checks still apply to each device; a capability does
-not imply that every combination is supported.
-
-| Area | DX12 public route and limits |
-| --- | --- |
-| Raster | Up to eight color attachments, per-target blend and write masks, depth/stencil, read-only depth/stencil views, and attachment clears and resolves. Supported sample counts and formats remain device-dependent. |
-| Compute and indirect | Compute dispatch, indirect dispatch, indirect draw, and GPU-count multi-draw. Dynamic uniform and bounded raw/structured storage offsets are validated and retained through completion. |
-| Resources | Buffer memory classes, heap placement and explicit alias barriers, texture upload/copy/readback, sampling/storage views, standalone buffer/texture clears and partial array resolves. Native COM interop and shared-resource/fence imports preserve explicit command boundaries. Query format support for the actual resource and usage. |
-| Bindings | Descriptor arrays and indexing are gated by device capabilities and descriptor restrictions. Push constants have stage-specific visibility; dynamic offsets apply to the full bound range. |
-| Secondary and multiview | Secondary bundles preserve primary graphics state; supported view instancing tiers expose up to four views with view masks. |
-| Advanced | Acceleration structures, ray pipelines, ray queries, mesh shaders, sparse resources, queries, and multiple queues require the corresponding reported capability and supported descriptor. |
+For the DX12 public operation summary and device limits, see the
+[DX12 design page](documents/design/dx12.md#public-feature-coverage).
 
 DX12 accepts native DXIL, plus WGSL and direct HLSL vertex, fragment, and compute
 entries. `Hlsl(60)` means shader model 6.0, `Hlsl(66)` means 6.6; models 60–69
@@ -215,11 +207,12 @@ families subject to the device compression features and per-format image usage
 checks. The current Vulkan GPU fixture covers BC1 block copies; ETC2/EAC and
 ASTC require a supporting device for GPU validation.
 
-| Compressed family | DX12 | Vulkan | Metal | WebGPU | GL / GLES | WebGL2 |
-| --- | --- | --- | --- | --- | --- | --- |
-| BC1–BC7 | Device-checked public route | Device-checked public route; GPU validation is format/device dependent | Device-checked public route; not GPU tested | Optional standard feature; BC1 copy GPU checked | Core/extension-gated upload and sampling; `COPY_SRC` depends on the format and transfer route | Extension-gated upload and sampling; no compressed `COPY_SRC` |
-| ETC2 / EAC | No DXGI mapping | Device-checked public route; GPU validation is format/device dependent | Apple-family public route; not GPU tested | Optional standard feature; GPU validation pending | Core/extension-gated upload and sampling; `COPY_SRC` depends on the format and transfer route | Extension-gated upload and sampling; no compressed `COPY_SRC` |
-| ASTC | No DXGI mapping | Device-checked public route; GPU validation is format/device dependent | Apple-family LDR/HDR routes; not GPU tested | Optional LDR feature; GPU validation pending; no HDR mapping | Core/extension-gated LDR/HDR upload and sampling; `COPY_SRC` depends on the format and transfer route | Extension/profile-gated LDR/HDR upload and sampling; no compressed `COPY_SRC` |
+Compressed texture routes and their limits are documented with the owning
+backend: [DX12](documents/design/dx12.md#public-feature-coverage),
+[Vulkan](documents/design/vulkan.md#public-feature-coverage),
+[WebGPU](documents/design/webgpu.md#public-feature-coverage),
+[GL-family profiles](documents/design/gl.md#public-feature-coverage), and
+[Metal](documents/design/metal.md#public-feature-coverage).
 
 For GL-family compressed textures, query `texture_support` for the exact
 format, dimension, and usage. Compressed `COPY_SRC` depends on native image-copy
@@ -309,8 +302,7 @@ available for advanced execution. See the [execution contract](documents/design/
 Support queries describe implemented native routes. An example may select an
 explicit visual fallback for an unavailable feature; that does not enable the
 feature in the backend. Metal has no completed Apple GPU or visual acceptance.
-See the [conformance matrix](documents/conformance-matrix.md) and
-[testing guide](documents/testing.md) for verification scope. A tested device
+See the [verification guide](documents/verification.md) for verification scope. A tested device
 does not establish support for every device using that API.
 
 ## Build and run

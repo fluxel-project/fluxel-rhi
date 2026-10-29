@@ -3,9 +3,9 @@
 This directory describes the goals, ownership, and high-level architecture of
 the `fluxel-rhi` crates. It focuses on what each crate provides, why its
 boundaries exist, and how the main pieces work together. API details belong in
-the source-level API documentation; test procedures belong in
-[`../testing.md`](../testing.md), and the executable coverage matrix belongs in
-[`../conformance-matrix.md`](../conformance-matrix.md).
+the source-level API documentation. Test procedures, hardware evidence rules,
+and backend coverage matrices belong in the
+[`verification guide`](../verification.md).
 
 ## System boundary
 

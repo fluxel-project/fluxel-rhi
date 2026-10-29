@@ -41,15 +41,23 @@ Compilation alone is not evidence of native or browser GPU correctness.
 
 ## Consolidated and removed coverage
 
-| Previous fixture | Retained regression |
-| --- | --- |
-| `core_webgl_pbo_readback` | `gpu/textures/readback/pbo_readback.rs`, retaining D2/D3 and RGBA8/sRGB cases |
-| GLES and WebGL UNORM readback helpers | `gpu/textures/readback/unorm_readback.rs`, retaining each platform's format set and whole-buffer padding oracle |
-| ETC2 and BC1 PBO fixtures | `gpu/textures/compressed/pbo.rs`, with distinct profiles, blocks, decoder oracles and platform entries |
-| Separate buffer-ticket snapshot helper | `gpu/execution/buffer_clear_readback.rs`, retaining aligned `8..24` and indexed unaligned `7..39` snapshots for both buffer usage modes |
-| Unused evidence structs and constructor test | Removed: only tested a test-only data container; no product test consumed it |
-| Legacy recorder/mock implementation and its 24 self-tests | Removed: no product test used the recorder; it only tested its own simulated trace, not a production backend |
-| Ignored raw GLES indirect driver reproduction | Removed from crate regression targets: it bypassed RHI; public indirect workloads retain the product behavior checks |
+- **`core_webgl_pbo_readback`:** Retained in
+  `gpu/textures/readback/pbo_readback.rs`, including D2/D3 and RGBA8/sRGB cases.
+- **GLES and WebGL UNORM readback helpers:** Retained in
+  `gpu/textures/readback/unorm_readback.rs`, preserving each platform's format
+  set and whole-buffer padding oracle.
+- **ETC2 and BC1 PBO fixtures:** Retained in `gpu/textures/compressed/pbo.rs`
+  with distinct profiles, blocks, decoder oracles, and platform entries.
+- **Separate buffer-ticket snapshot helper:** Retained in
+  `gpu/execution/buffer_clear_readback.rs`, covering aligned `8..24` and
+  indexed unaligned `7..39` snapshots for both buffer usage modes.
+- **Unused evidence structs and constructor test:** Removed; they only tested
+  a test-only data container and no product test consumed it.
+- **Legacy recorder/mock implementation and its 24 self-tests:** Removed; no
+  product test used the recorder, which only tested its own simulated trace.
+- **Ignored raw GLES indirect driver reproduction:** Removed from crate
+  regression targets because it bypassed RHI. Public indirect workloads retain
+  the product behavior checks.
 
 Private FFI offset/size checks, real native dispatch counters, state-restoration
 checks and pure lowering/admission tests remain independent of GPU readbacks.

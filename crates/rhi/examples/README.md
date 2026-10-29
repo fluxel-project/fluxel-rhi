@@ -52,17 +52,27 @@ failure policy, not RHI scheduling, device recovery, or renderer retirement.
 The common execution migration was verified on a worktree based on `efc4dbb`.
 Compilation alone does not establish runtime or visual conformance.
 
-| Route | Migration regression | Limit |
-| --- | --- | --- |
-| Windows DX12 / Vulkan / WGL | All 15 examples per route completed three frames; shared execution GPU fixtures checked exact buffer readback | New desktop visual captures were blocked by the Windows lock screen; invalid lock-screen images are not acceptance evidence |
-| Desktop browser WebGPU / WebGL2 | All 15 examples per route completed three frames with inspected screenshots on the AMD hardware adapter | Capability fallbacks remain explicit |
-| WSL GLES | All 15 completed three frames with inspected framebuffer captures on Mesa D3D12 / AMD Radeon 780M | This is the tested GLES driver route, not every EGL implementation |
-| Android emulator Vulkan / GLES | All 15 per route completed two frames with inspected screenshots; example 12 completed GPU readback | Emulator-reported Adreno 750 is not physical-device acceptance |
-| Android browser WebGL2 | All 15 completed three frames with nonempty drawing-buffer readback and inspected screenshots | WebView 146 has no available WebGPU adapter |
-| Metal | Backend selects deferred execution; source integration is maintained | Apple GPU and visual acceptance remain unavailable |
+- **Windows DX12 / Vulkan / WGL:** All 15 examples per route completed three
+  frames; shared execution GPU fixtures checked exact buffer readback. New
+  desktop visual captures were blocked by the Windows lock screen; invalid
+  lock-screen images are not acceptance evidence.
+- **Desktop browser WebGPU / WebGL2:** All 15 examples per route completed
+  three frames with inspected screenshots on the AMD hardware adapter.
+  Capability fallbacks remain explicit.
+- **WSL GLES:** All 15 completed three frames with inspected framebuffer
+  captures on Mesa D3D12 / AMD Radeon 780M. This is the tested GLES driver
+  route, not every EGL implementation.
+- **Android emulator Vulkan / GLES:** All 15 per route completed two frames
+  with inspected screenshots; example 12 completed GPU readback. The
+  emulator-reported Adreno 750 is not physical-device acceptance.
+- **Android browser WebGL2:** All 15 completed three frames with nonempty
+  drawing-buffer readback and inspected screenshots. WebView 146 has no
+  available WebGPU adapter.
+- **Metal:** Backend selects deferred execution and source integration is
+  maintained. Apple GPU and visual acceptance remain unavailable.
 
 Earlier visual baselines and platform-specific capability checks are
-summarized in [the testing guide](../../../documents/testing.md). Historical
+summarized in [the verification guide](../../../documents/verification.md). Historical
 results are not relabeled as migration-candidate visual verification.
 These historical results cover examples 01–15. Examples 16–23 have separate
 DX12 and Vulkan real-GPU evidence for the current development worktree;
@@ -142,31 +152,68 @@ features absent from standard WGSL, including ray tracing and mesh shaders.
 Their maintained native shader sources and generated artifacts are scoped to
 those advanced examples; this does not change the WGSL baseline for 01–15.
 
-| Example | What it demonstrates |
-| --- | --- |
-| 01 triangle | Draws an indexed triangle and presents it to the surface. |
-| 02 texture | Lights a textured quad using a uniform buffer, a sampled texture, and a sampler. |
-| 03 instancing | Renders a planet, a field of instanced rocks, and stars with depth testing. |
-| 04 dynamic uniform buffer | Draws a grid of cubes, selecting a different dynamic uniform-buffer range for each draw. |
-| 05 push constants | Changes per-draw transforms through push constants where the backend supports them, with a uniform-buffer fallback elsewhere. |
-| 06 compute | Runs emboss, edge-detection, and sharpening compute filters, then displays the source and filtered images side by side. |
-| 07 offscreen | Renders a dragon and reflective floor into an offscreen target, then samples that image while drawing the final scene. |
-| 08 msaa | Renders the Voyager model with multisample anti-aliasing (MSAA) and resolves the result for presentation. |
-| 09 texture mipmap | Generates texture mip levels and shows how filtered sampling changes across a moving tunnel. |
-| 10 indirect draw | Renders a field of plants using GPU-generated indirect draw commands on capable backends. |
-| 11 occlusion query | Uses occlusion queries to determine whether scene objects are visible and reads back the query results. |
-| 12 screenshot | Renders a dragon into a texture, copies the rendered image to a readback buffer, and saves a screenshot. |
-| 13 multithreaded recording | Compares secondary or parallel command recording where available and uses sequential primary recording as the documented fallback. |
-| 14 descriptor indexing | Selects textures through runtime descriptor indexing where available and uses a fixed texture array as the visual fallback. |
-| 15 multiview | Renders a stereo scene with native multiview where available and renders each eye in a separate pass as the fallback. |
-| 16 raytracing hello | Builds acceleration structures and traces Microsoft's screen-space triangle on DX12 and Vulkan. `FLUXEL_RAY_READBACK` saves an RGB PPM. |
-| 17 GPU queries | Times and counts the vertices and primitives of Microsoft's HelloTriangle scene on DX12 and Vulkan; `FLUXEL_QUERY_READBACK` saves an RGB PPM. |
-| 18 meshlet instancing | Renders Microsoft's ToyRobot meshlet scene with mesh shaders on DX12 and Vulkan; `FLUXEL_MESH_READBACK` saves an RGB PPM. |
-| 19 ray query particles | Adapts NVIDIA Donut Samples' `rt_particles` scene for inline ray queries on DX12 and Vulkan. A live animation uses elapsed frame time and reusable GPU resources; fixed-step readbacks can be compared with the instrumented original. The ray intersections and shading remain approximations. |
-| 20 GPU draw count | Uses compute culling and a GPU-generated count to draw the fixed 180th frame of Microsoft's ExecuteIndirect scene on DX12 and Vulkan; `FLUXEL_DRAW_COUNT_READBACK` saves an RGB PPM. |
-| 21 sparse texture | Cycles all nine checkerboard mips from Microsoft's ReservedResources sample using separate standard-mip heaps and a shared packed tail on DX12 and Vulkan; `FLUXEL_SPARSE_MIP` fixes the selected mip and `FLUXEL_SPARSE_READBACK` saves an RGB PPM. |
-| 22 clear texture | Clears a texture before rendering and verifies its GPU readback on DX12 and Vulkan. |
-| 23 multi queue | Simulates and draws 10,000 particles on separate DX12 and Vulkan compute and graphics queues with a GPU wait; `FLUXEL_NBODY_READBACK` saves the first frame as an RGB PPM. |
+### Basic examples (01–15)
+
+1. **01 triangle** — Draws an indexed triangle and presents it to the surface.
+2. **02 texture** — Lights a textured quad using a uniform buffer, a sampled
+   texture, and a sampler.
+3. **03 instancing** — Renders a planet, a field of instanced rocks, and stars
+   with depth testing.
+4. **04 dynamic uniform buffer** — Draws a grid of cubes, selecting a different
+   dynamic uniform-buffer range for each draw.
+5. **05 push constants** — Changes per-draw transforms through push constants
+   where supported, with a uniform-buffer fallback elsewhere.
+6. **06 compute** — Runs emboss, edge-detection, and sharpening compute filters,
+   then displays the source and filtered images side by side.
+7. **07 offscreen** — Renders a dragon and reflective floor into an offscreen
+   target, then samples that image while drawing the final scene.
+8. **08 msaa** — Renders the Voyager model with multisample anti-aliasing
+   (MSAA) and resolves the result for presentation.
+9. **09 texture mipmap** — Generates texture mip levels and shows how filtered
+   sampling changes across a moving tunnel.
+10. **10 indirect draw** — Renders a field of plants using GPU-generated
+    indirect draw commands on capable backends.
+11. **11 occlusion query** — Uses occlusion queries to determine whether scene
+    objects are visible and reads back the results.
+12. **12 screenshot** — Renders a dragon into a texture, copies the image to a
+    readback buffer, and saves a screenshot.
+13. **13 multithreaded recording** — Compares secondary or parallel recording
+    where available and uses sequential primary recording as the documented
+    fallback.
+14. **14 descriptor indexing** — Selects textures through runtime descriptor
+    indexing where available and uses a fixed texture array as the visual
+    fallback.
+15. **15 multiview** — Renders a stereo scene with native multiview where
+    available and renders each eye in a separate pass as the fallback.
+
+### Native-advanced examples (16–23)
+
+16. **16 raytracing hello** — Builds acceleration structures and traces
+    Microsoft's screen-space triangle on DX12 and Vulkan.
+    `FLUXEL_RAY_READBACK` saves an RGB PPM.
+17. **17 GPU queries** — Times and counts vertices and primitives in
+    Microsoft's HelloTriangle scene on DX12 and Vulkan.
+    `FLUXEL_QUERY_READBACK` saves an RGB PPM.
+18. **18 meshlet instancing** — Renders Microsoft's ToyRobot meshlet scene
+    with mesh shaders on DX12 and Vulkan. `FLUXEL_MESH_READBACK` saves an RGB
+    PPM.
+19. **19 ray query particles** — Adapts NVIDIA Donut Samples' `rt_particles`
+    scene for inline ray queries on DX12 and Vulkan. Live animation uses
+    elapsed frame time and reusable GPU resources; fixed-step readbacks can be
+    compared with the instrumented original. Ray intersections and shading
+    remain approximations.
+20. **20 GPU draw count** — Uses compute culling and a GPU-generated count to
+    draw the fixed 180th frame of Microsoft's ExecuteIndirect scene on DX12 and
+    Vulkan. `FLUXEL_DRAW_COUNT_READBACK` saves an RGB PPM.
+21. **21 sparse texture** — Cycles all nine checkerboard mips from Microsoft's
+    ReservedResources sample using separate standard-mip heaps and a shared
+    packed tail on DX12 and Vulkan. `FLUXEL_SPARSE_MIP` fixes the selected mip;
+    `FLUXEL_SPARSE_READBACK` saves an RGB PPM.
+22. **22 clear texture** — Clears a texture before rendering and verifies GPU
+    readback on DX12 and Vulkan.
+23. **23 multi queue** — Simulates and draws 10,000 particles on separate
+    DX12 and Vulkan compute and graphics queues with a GPU wait.
+    `FLUXEL_NBODY_READBACK` saves the first frame as an RGB PPM.
 
 Follow the public coordinate contract in `documents/design/README.md#shared-design-rules` when
 interpreting a vertical flip or front-face difference. A backend must adapt

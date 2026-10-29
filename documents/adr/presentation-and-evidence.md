@@ -1,11 +1,11 @@
 # Presentation and conformance evidence
 
-This file groups related decision records to keep the index compact. Original ADR identifiers and status labels are retained; current normative contracts live in the linked design and testing documents.
+This file groups related decision records to keep the index compact. Original ADR identifiers and status labels are retained; current normative contracts live in the linked design and verification documents.
 
 ## ADR-0005: Require GPU conformance evidence for native correctness claims
 
 **Status:** Superseded by [ADR-0022](presentation-and-evidence.md#adr-0022-separate-portable-tests-from-hardware-conformance-evidence)
-and the current [testing guide](../testing.md). This record describes an older
+and the current [verification guide](../verification.md). This record describes an older
 `ExecutionPlan` and release-artifact workflow; it does not require a GitHub
 Release or attachments for the current repository.
 
@@ -49,12 +49,12 @@ unavailable or fails.
 0.1.2 C01–C03, 0.1.3 K01–K02, and 0.1.4 R01/R02/X01 established the pattern.
 0.2.0–0.2.7 extended it through U01–U08 and exact-SHA release reruns.
 
-See the [testing guide](../testing.md) for the current test-evidence boundary.
+See the [verification guide](../verification.md) for the current test-evidence boundary.
 
 ## ADR-0008: Execute platform-specific test paths natively
 
 **Status:** Historical platform baseline. Current gates are described in the
-[testing guide](../testing.md); the stub and feature combinations below refer
+[verification guide](../verification.md); the stub and feature combinations below refer
 to the older repository layout.
 
 ## Context

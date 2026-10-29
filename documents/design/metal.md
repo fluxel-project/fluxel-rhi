@@ -57,3 +57,20 @@ Apple-target GPU and Surface acceptance when a capability claim requires it.
 The old archive-prepare timing reporter had no correctness oracle; its latency
 remains unmeasured and should only be revisited with a representative
 benchmark workload.
+
+## Public feature coverage
+
+The public route includes graphics and compute, up to eight render targets,
+depth/stencil, dynamic uniform/storage offsets, indirect draw and dispatch,
+standalone word/texture clears, copies/resolves, filtered color blits, mapping,
+placement heaps, binary archives, and native interop.
+
+Device-gated or unavailable routes include argument arrays/indexing,
+mesh/object shaders, acceleration structures and ray queries, multiview,
+timestamp/occlusion and separate pass counters, cross-packet graphics/compute
+synchronization, GPU-count multi-draw, placement sparse textures, and external
+resources.
+
+BC1–BC7, ETC2/EAC, and ASTC have Apple-family public format routes subject to
+device and usage support. ASTC includes LDR/HDR paths. These formats have not
+been GPU tested in this repository.
