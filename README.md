@@ -1,332 +1,84 @@
 # Fluxel RHI
 
-Fluxel RHI is the GPU execution layer consumed by Fluxel's RenderGraph. It creates native resources,
-executes caller-planned work, presents surface images, and reports completion.
-RenderGraph and Renderer own scheduling, hazard analysis, frame policy, and
-resource retirement; RHI supplies the native mechanisms and observable results
-that those decisions require.
+Fluxel RHI is Fluxel's GPU execution layer. It creates native resources,
+executes caller-ordered GPU work, manages presentation leases, and reports
+submission and completion facts.
 
-Renderer integrations select a concrete backend at initialization. `Device<B>`, resources,
-encoders, and recorded work retain that type. Device identity checks catch
-cross-device use even when two devices use the same backend. Capabilities remain
-specific to the actual device and requested descriptor.
-
-The integration criterion is whether a compiled RenderGraph plan maps directly
-to RHI execution without rebuilding dependencies or transferring scheduling and
-retirement policy into RHI. Examples are conformance workloads, not a reason to
-replace explicit steps, waits, lanes, or completion facts with application APIs.
+RenderGraph and Renderer own dependency planning, hazard analysis, frame policy,
+and resource retirement. RHI executes the plan and supplies native mechanisms;
+it does not rebuild the graph or choose resource lifetimes.
 
 ## Workspace
 
-| Crate | Responsibility |
-| --- | --- |
-| [`fluxel-rhi-core`](crates/core/src/api/mod.rs) | Shared API, resource identity, execution contracts, and backend SPI |
-| [`fluxel-rhi`](crates/rhi/src/lib.rs) | Feature-selected reexports and numbered integration examples |
-| [`fluxel-rhi-dx12`](crates/dx12/src/backend/mod.rs) | Direct3D 12 resources, command lists, descriptors, fences, and presentation |
-| [`fluxel-rhi-vulkan`](crates/vulkan/src/backend/mod.rs) | Vulkan resources, dynamic rendering, command buffers, synchronization, and WSI |
-| [`fluxel-rhi-webgpu`](crates/webgpu/src/backend/mod.rs) | Browser WebGPU encoding, queue promises, and canvas surfaces |
-| [`fluxel-rhi-gl`](crates/gl/src/backend/mod.rs) | Shared GL semantics with desktop GL/WGL, GLES/EGL, and WebGL2 profiles |
-| [`fluxel-rhi-metal`](crates/metal/src/backend/mod.rs) | Metal resources, encoding, completion, and layer surfaces |
+- **`fluxel-rhi-core`** — portable public API, resource identity, capability
+  contracts, and backend SPI.
+- **`fluxel-rhi`** — facade that reexports Core and feature-selected backends;
+  also owns the numbered integration examples.
+- **Backend crates** — `fluxel-rhi-dx12`, `fluxel-rhi-vulkan`,
+  `fluxel-rhi-webgpu`, `fluxel-rhi-gl`, and `fluxel-rhi-metal` implement native
+  resource management, command lowering, synchronization, and presentation.
 
-Core defines operation meanings shared by callers and implementations. The
-facade adds no runtime backend dispatcher. Each backend owns native objects,
-shader lowering, state adaptation, and execution lifetimes.
+Backends are selected through Cargo features at the integration boundary.
+Their API types remain statically dispatched; capabilities are reported for
+the selected device and requested operation.
 
-Every `Device` exposes cumulative request counters through
-`device.stats().snapshot()`. Snapshots include successful RHI command and
-binding requests plus surface acquisition and accepted present handoffs. Callers
-can compare two snapshots and divide the present-count delta by their own
-monotonic time interval to estimate RHI present cadence. This is not GPU time,
-display refresh rate, or native state-change reporting. Counters use relaxed
-atomics and remain available in release builds. Commands still being recorded
-in a live encoder appear when that encoder finishes or is dropped.
+## Backend selection
 
-```rust
-let start = std::time::Instant::now();
-let before = device.stats().snapshot();
-// Encode and submit the interval being measured.
-let elapsed = start.elapsed();
-let delta = device.stats().snapshot().delta_since(before).unwrap();
-let present_hz = delta
-    .present_rate_hz_since(Default::default(), elapsed)
-    .unwrap_or(0.0);
-```
+- **DX12** — `dx12` (facade default; Windows target only).
+- **Vulkan** — `vulkan`.
+- **Browser WebGPU** — `webgpu` on `wasm32`.
+- **Desktop GL / WGL** — `native-gl-wgl`.
+- **GLES / EGL** — `native-gles-egl`.
+- **Browser WebGL2** — `webgl2`.
+- **Metal** — `metal` on Apple targets.
 
-## Backend routes
+See the [backend design pages](documents/design/README.md#crate-design-pages)
+for each route's architecture, support limits, and open work.
 
-Each backend is selected through its facade feature. Execution and shader
-routes are:
+## Build and test
 
-- **Direct3D 12 / Windows** — `dx12` (default); deferred native command lists;
-  DXIL or WGSL lowered through Naga and DXC.
-- **Vulkan** — `vulkan`; deferred native command buffers; SPIR-V or WGSL
-  lowered through Naga.
-- **Browser WebGPU** — `webgpu`; deferred native command buffers; WGSL.
-- **Desktop GL / WGL** — `native-gl-wgl`; immediate context-thread execution;
-  WGSL lowered to GLSL, direct GLSL, or device-gated OpenGL SPIR-V.
-- **GLES / EGL** — `native-gles-egl`; immediate context-thread execution; WGSL
-  lowered to profile-specific GLSL.
-- **Browser WebGL2** — `webgl2`; immediate browser-thread execution; WGSL
-  lowered to GLSL ES.
-- **Metal / Apple targets** — `metal`; deferred native command buffers; WGSL
-  lowered to MSL or Metal source.
-
-## GPU feature support
-
-The design pages describe each backend's implemented routes, device gates, and
-unsupported operations. `Device::capabilities()`, `Device::queries()`, and
-descriptor checks report availability for the selected device; support in the
-underlying graphics API alone does not imply an RHI route.
-
-- [DX12](documents/design/dx12.md#public-feature-coverage)
-- [Vulkan](documents/design/vulkan.md#public-feature-coverage)
-- [WebGPU](documents/design/webgpu.md#public-feature-coverage)
-- [GL, GLES, and WebGL2](documents/design/gl.md#public-feature-coverage)
-- [Metal](documents/design/metal.md#public-feature-coverage)
-
-Metal's separate pass-boundary sample API exposes up to eight native counter
-fields with a device availability mask and an error sentinel. It returns raw
-stage samples, which cannot be assumed subtractable or equivalent to complete
-pipeline statistics. The existing eleven-field `PipelineStatistics` query
-remains unsupported on Metal. This path has not run on an Apple GPU.
-
-Vulkan exposes the separate eleven-field pipeline-statistics query when the
-device supports it. It does not expose the separate pass-boundary statistics
-sampling domain.
-
-Vulkan external interop imports opaque Win32 handles on Windows and opaque file
-descriptors on Unix, with binary semaphore synchronization and explicit queue
-ownership transfers. The producer must supply matching resource and allocation
-metadata, and device extensions and per-resource import support are required.
-Native command-buffer segments preserve each acquire/release position;
-binary waits precede its following work and release signals follow its
-preceding work, with plan timeline synchronization retained at the outer edges.
-The Windows fixtures do not establish Unix GPU coverage.
-
-Metal's GPU-count draw route probes the native conversion shader and both ICB
-command types on the actual device before advertising support. It keeps the count and argument buffers on the GPU and uses the
-active pipeline topology. The runtime probe does not establish visual or synchronization
-correctness; no Apple GPU result is recorded yet.
-
-Metal TLAS dependencies can be consumed while the build and dispatch are
-recorded in one encoder. Another encoder can bind that TLAS only after the
-build's completion succeeds; recording that consumer early returns
-`InvalidState`. Dropping an unsubmitted build releases its dependencies and
-allows a new recording. A failed submitted build cannot be reused.
-
-WebGPU lowers GPU-count drawing into GPU-generated indirect arguments and
-native pass segments, without reading the count on the CPU. Standard indirect
-commands do not require `indirect-first-instance`; that optional feature only
-permits nonzero first-instance arguments. Standalone color resolve preserves
-its multisampled source and supports source/destination rectangles through a
-native full-mip scratch resolve and exact copy or scissored attachment transfer.
-Explicit storage-buffer views use native buffer bindings with their declared
-range. Push constants use
-native immediate data only when the browser exposes the required feature and
-limit. Compressed formats remain optional adapter features; the current AMD
-browser evidence covers BC1, not ETC2/EAC or ASTC. Browser examples may select
-their existing explicit fallbacks for
-descriptor indexing and multiview; those scenes do not establish backend support
-for either feature.
-
-WebGPU SPIR-V translation runs in a dedicated CPU worker; WGSL needs no worker
-asset. The supplied browser bundle tools build and configure the worker module.
-For a custom page, build `fluxel-rhi-webgpu` as Wasm, run `wasm-bindgen --target
-web --out-name fluxel_shader_worker`, deploy the generated JavaScript, Wasm and
-snippets together, and call
-`WebGpuInstance::configure_spirv_worker(worker_glue_url)` before creating
-SPIR-V shaders. Until a worker URL is configured, the WebGPU backend reports
-SPIR-V as unsupported instead of advertising a route that cannot run. The
-worker URL is a backend deployment setting and does not enter Core resource or
-command contracts.
-
-Native GL/GLES completion waits remain on the context owner thread, with
-1–8 ms timer backoff. GLES counted draws reuse bounded context-local scratch
-buffers. WGL/EGL skip redundant binds only after checking actual native
-currentness, with a narrow ATI WGL indirect-count compatibility rebind. Ordinary
-draw errors are observed at pass boundaries; WebGL dual-source draws retain
-immediate error reporting. Array/3D initialization preserves PBO and UNPACK
-state while reusing one zero source across mips.
-
-GLES same-sample MSAA texture copy is explicitly Unsupported, including contexts
-with ES 3.2 core or ES 3.1 EXT/OES CopyImage. LDPlayer Android 14 passes the 2D
-4x sample-pattern copy/resolve check, but its MSAA-array attachment is incomplete;
-earlier WSL Mesa/D3D12 native failures also remain unresolved. The feature stays
-disabled until complete acceptance, as explained in the
-[design boundary](documents/design/gl.md#profile-specific-constraints).
-Single-sample GLES copies, standalone MSAA resolves and desktop GL MSAA copy
-remain available under their existing capability checks.
-
-### DX12 pipeline cache
-
-DX12 pipeline caches persist native cached PSO blobs for raster, compute, and
-mesh pipelines. The cache verifies its serialized data and retries PSO creation
-without a cached blob when the adapter or driver is incompatible. DX12 ray
-pipelines use state objects rather than PSOs and reject a supplied cache;
-Direct3D 12 exposes [cached PSO blobs](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_cached_pipeline_state); ray tracing instead uses [state objects](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12graphicscommandlist4-setpipelinestate1).
-
-### DX12 graphics and shader route
-
-For the DX12 public operation summary and device limits, see the
-[DX12 design page](documents/design/dx12.md#public-feature-coverage).
-
-DX12 accepts native DXIL, plus WGSL and direct HLSL vertex, fragment, and compute
-entries. `Hlsl(60)` means shader model 6.0, `Hlsl(66)` means 6.6; models 60–69
-are admitted only when the runtime reports support. HLSL uses the native DXIL
-register/space and coordinate ABI, with checked finite pipeline constants
-supplied as `-D` macros at PSO compilation. Selected compute wave sizes require
-shader model 6.6 and a supported native wave size. DXC preprocesses HLSL macros
-and conditionals in memory before annotating its active compute entry; includes
-have no resolver in the bytes-only shader contract. WGSL is
-validated and lowered to HLSL by Naga, then compiled with the DXC runtime; DXC
-and the required shader model must be available. Shader resources, overrides,
-stages, and binding forms are subject to the supported lowering subset. Selected
-WGSL compute inline ray queries are supported when the device exposes the required
-ray-query capability; ray pipeline and mesh shader stages use native DXIL. WGSL support does not imply
-that every WGSL feature or shader is accepted.
-
-DX12 also supports device-checked float and 10-bit SDR surface formats and
-selected compute/graphics blits across D1, D3 and array layers, including sRGB,
-integer and BC source paths. WGSL resource lowering covers selected D3, storage,
-multisampled textures and ray queries with binding type validation. Query slots can transfer across lanes with an explicit GPU wait, including a
-pending producer in a different packet. The raw-buffer blit fallback has targeted
-GPU coverage for 43 ordinary color formats. These are selected paths; cross-numeric
-and mixed-dimension blit semantics are not defined by this coverage.
-
-The DX12 candidate passed its complete hardware suite and final affected tests.
-Corrected validation diagnostics, performance screening and visual scope were
-reviewed; the raw run logs and captures are retained locally.
-
-### Compressed texture formats
-
-DX12 exposes the Core BC1–BC7 formats through device-checked texture creation,
-block-aligned upload/copy, and sampling paths. Individual formats, dimensions,
-and usages remain subject to `texture_support`. ETC2/EAC and ASTC have no DXGI
-format mapping and are unsupported by the DX12 route. Vulkan maps these Core
-families subject to the device compression features and per-format image usage
-checks. The current Vulkan GPU fixture covers BC1 block copies; ETC2/EAC and
-ASTC require a supporting device for GPU validation.
-
-Compressed texture routes and their limits are documented with the owning
-backend: [DX12](documents/design/dx12.md#public-feature-coverage),
-[Vulkan](documents/design/vulkan.md#public-feature-coverage),
-[WebGPU](documents/design/webgpu.md#public-feature-coverage),
-[GL-family profiles](documents/design/gl.md#public-feature-coverage), and
-[Metal](documents/design/metal.md#public-feature-coverage).
-
-For GL-family compressed textures, query `texture_support` for the exact
-format, dimension, and usage. Compressed `COPY_SRC` depends on native image-copy
-and readback entry points; GLES also requires a compatible copy-image route and
-a probed integer attachment/readback path. GLES additionally probes the actual
-compressed-to-integer block copy per format; a driver may expose image-copy
-extensions while rejecting that particular reinterpretation. Ordinary
-texture-to-texture copies retain their independent support. WebGL2 has no standard raw compressed
-block readback. The WGL AMD fixture checked raw blocks for 11 representative
-formats, and the GLES ES 3.2 run used Mesa llvmpipe. ASTC HDR was skipped on
-those devices. Windows ANGLE ES 3.1 skips compressed readback when the required
-copy-image extension is absent.
-
-Desktop GL also supports BC6H/BC7 3D textures as independently compressed
-2D slices, including CPU/PBO uploads, image copies, sampling, and raw block
-readback. The WGL AMD fixture covers all four BPTC formats with two mip
-levels and both immutable and mutable allocation. Desktop ASTC 3D additionally
-requires the acquired KHR HDR extension, or KHR LDR plus sliced-3D support for
-LDR/sRGB formats; these routes have no positive local GPU validation. S3TC,
-RGTC, and ETC2/EAC 3D targets are rejected according to the desktop GL contract.
-
-Desktop GL buffer readback also covers renderable normalized and floating-point
-color formats in their native transfer encoding. A WGL fixture checks 19 formats
-with finite representative values, subregions, mip/array selection, unaligned
-offsets, row padding, and restoration of incoming read-color clamping.
-Non-renderable RGB9E5 uses compatible GPU image copies through R32UI for
-buffer readback, gated by image-copy/view compatibility and exact integer
-readback support. Its WGL fixture includes equivalent shared-exponent encodings.
-Ordinary desktop color formats also have framebuffer-independent native PBO
-readback: GL4.5 subimage reads, or whole-mip `GetTexImage` followed by GPU region
-copies on older contexts. Forty formats and 1D/array/3D subregions have focused
-GPU coverage. The legacy entry was exercised on the current GL4.6 driver;
-this does not establish coverage of a separate older driver.
-
-Desktop GL4+ supports bounded runtime binding arrays through layout-capacity
-specialization. Nonuniform sampled-texture and storage-buffer indexing requires
-storage-buffer support. Native slot limits and texture/sampler pair expansion
-still bound each pipeline; divergent implicit samples can increase sampling
-cost. Public Core GPU fixtures cover UBOs, SSBO atomics, storage images, sampled
-textures/samplers, short prefixes, and permitted holes.
-
-GL4.4 or `ARB_buffer_storage` provides persistent coherent mapping for mappable
-buffers. Buffer readback uses GPU staging; legacy query resolve checks
-availability after explicit completion without waiting. Desktop depth/stencil
-transfers include D16/D32/S8 and selected combined-format planes, preserving the
-other plane; D24 depth has no portable byte encoding. PBO stencil packing needs
-GL4.3 compute. Desktop OVR multiview supports contiguous view intervals, with
-texture-view aliases required for nonzero attachment bases. Arbitrary masks,
-multiview timer queries, and compressed color clears have no supported native
-route; see the [GL profile contract](documents/design/gl.md#profile-specific-constraints).
-
-GLES runtime binding arrays use the same bounded specialization, and nonuniform
-indexing requires storage-buffer support. ES3.1 depth/stencil buffer copies use
-GPU texture fetches and byte packing; standalone stencil textures require ES3.2
-or `OES_texture_stencil8`. Exact ordinary-color readback uses validated native
-format/type pairs or compatible integer image copies with the required
-extensions. Focused GPU checks include SNORM endpoint encodings and floating
-negative zero, NaN payloads and subnormals. `EXT_buffer_storage` provides coherent
-persistent mappings on contexts that expose its actual entry point. The local
-GLES matrix includes two existing ANGLE runtimes on the Radeon 780M; capabilities
-and coverage differ between their D3D11 and Vulkan renderers.
-
-GL implements `ImmediateBackend`; it does not expose deferred queue submission.
-The GL family explicitly does not support secondary command recording,
-independent queues, sparse/placed memory, external resources,
-mesh shaders, ray pipelines, or ray queries. These domains are outside
-its implementation scope, including driver-specific extension variants; see the
-[GL support decisions](documents/design/gl.md#explicitly-unavailable-domains).
-Native desktop GL and EGL/GLES support scoped Core native interop with a borrowed
-shared `NativeGlContext` dispatch table, exclusive owner-thread access, and state
-invalidation on guard exit. WebGL2 exposes no native dispatch-table pointer.
-WebGL2 does not provide native multithreaded command recording. WebGPU records
-native commands even though browser objects belong to one thread. Separate
-traits represent these different execution contracts.
-
-For ordered Commands/Present plans, the optional statically dispatched
-`Device::begin_execution` interface shares `commands`, `present`, and `finish`
-across these models. GL calls native APIs inside `commands`; deferred backends
-record native work and submit it at `finish`. No CPU command stream, replay,
-per-step fence, or implicit idle wait is added. Borrowed `facts()` observations
-share acceptance and completion evidence while retaining model-specific recovery
-ownership. Failed-step facts distinguish no effect, partial issue, and unknown
-effect; completion evidence does not turn a failed step into success.
-Existing recording, submission, and immediate-session APIs remain
-available for advanced execution. See the [execution contract](documents/design/core.md#execution-and-completion).
-
-Support queries describe implemented native routes. An example may select an
-explicit visual fallback for an unavailable feature; that does not enable the
-feature in the backend. Metal has no completed Apple GPU or visual acceptance.
-See the [verification guide](documents/verification.md) for verification scope. A tested device
-does not establish support for every device using that API.
-
-## Build and run
-
-On Windows with the Rust MSVC toolchain:
+Run from the workspace root with Rust 1.87 or newer and the toolchain for your
+target platform. On Windows, use the MSVC toolchain.
 
 ```powershell
-cargo check --workspace --all-targets
-cargo test -p fluxel-rhi-core --lib
+cargo check --workspace
+cargo test -p fluxel-rhi-core
+```
+
+The Core command runs portable Core tests. Backend, browser, and hardware test
+commands require their matching target, features, drivers, or browser setup; use
+the [verification guide](documents/verification.md) for those commands and for
+the evidence each result supports.
+
+## Run examples
+
+Examples use a finite frame count so native smoke runs exit predictably. On
+Windows, run DX12 or Vulkan from the workspace root:
+
+```powershell
+cargo run -p fluxel-rhi --features examples,dx12 --example 01_triangle -- --frames 2
 cargo run -p fluxel-rhi --no-default-features --features examples,vulkan --example 01_triangle -- --backend vulkan --frames 2
 ```
 
-The 23 [numbered examples](crates/rhi/examples/README.md) exercise scene
-workloads through the public API. Examples 01–15 share the WGSL baseline;
-16–23 exercise native advanced paths on DX12 and Vulkan. Their instructions
-cover native backend
-selection, browser entries, Android execution, and explicit feature fallbacks.
-`--frames 2` ends the native run after two frames. Browser capture entries may
-also intentionally stop after exporting a finite set of frames.
+Some scenes need local model and texture assets. Fetch them before running
+those examples:
 
-Some examples require [model and texture assets](crates/rhi/examples/assets/README.md).
-[Example tools](tools/examples) fetch assets and generate native shader artifacts
-from the maintained WGSL sources. Generated DXIL and SPIR-V do not imply runtime
-WGSL support in those backends.
+```powershell
+.\tools\examples\fetch-assets.ps1
+```
 
-The [architecture and design rationale](documents/design/README.md) explains the
-shared contracts, each crate's role, and the choices specific to each backend.
+The [examples guide](crates/rhi/examples/README.md) lists all 23 workloads and
+covers native, browser, and Android routes. Asset locations and licensing notes
+are in the [examples asset guide](crates/rhi/examples/assets/README.md).
+
+## Documentation
+
+- [Design overview](documents/design/README.md) — crate responsibilities and
+  shared architecture.
+- [Core design](documents/design/core.md) — public contract and backend SPI.
+- [Backend design pages](documents/design/README.md#crate-design-pages) —
+  DX12, Vulkan, WebGPU, GL-family, and Metal.
+- [Verification guide](documents/verification.md) — tests, examples, hardware
+  coverage, and evidence limits.
+- [Architecture decision records](documents/adr/README.md) — decision history,
+  rationale, and status.
