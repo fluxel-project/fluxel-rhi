@@ -6,6 +6,12 @@ capability queries, execution plans, synchronization, and the implementation
 SPI used by backend crates. It does not create a GPU device or include a native
 backend.
 
+The contract is designed first for RenderGraph and rendering-pipeline
+implementations: it keeps execution thin and low-cost, preserves backend-native
+capabilities, and exposes execution facts needed for graph planning.
+Application-level developer convenience is secondary to predictable execution
+of already planned work.
+
 ## Add the dependency
 
 ```toml

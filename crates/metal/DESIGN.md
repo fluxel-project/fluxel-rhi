@@ -6,6 +6,11 @@ completion facts, and `CAMetalLayer` presentation. It is intentionally not a
 renderer: the caller supplies pass order, hazards, resource transitions, frame
 pacing, and retirement policy; this crate validates and executes that plan.
 
+The shared contract is designed first for RenderGraph and rendering-pipeline
+implementations. This backend keeps execution thin and low-cost by preserving
+native Metal command-buffer, queue, storage, and completion characteristics for
+graph planning; application-level developer convenience is secondary.
+
 The public surface is deliberately small: `Metal` is the backend type,
 `MetalInstance` discovers devices, and `MetalSurface` binds a host-owned
 `CAMetalLayer`. All Objective-C and Metal objects remain private to this crate.

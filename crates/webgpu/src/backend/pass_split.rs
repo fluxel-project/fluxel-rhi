@@ -74,6 +74,7 @@ pub(super) fn suspend(encoder: &mut WebGpuEncoder) -> Result<Suspended> {
     if state.is_undefined() {
         return Err(Error::InvalidState);
     }
+    validate_split_stores(&state)?;
     super::query_segments::before_split(encoder)?;
     // WebGPU requires each native GPURenderPassEncoder to close with a
     // balanced debug stack. Core keeps the logical groups open across this
@@ -86,6 +87,44 @@ pub(super) fn suspend(encoder: &mut WebGpuEncoder) -> Result<Suspended> {
     encoder.pass = None;
     super::query_segments::flush_pending(encoder)?;
     Ok(Suspended { old, state })
+}
+
+pub(crate) fn validate_split_stores(state: &JsValue) -> Result<()> {
+    let descriptor = js::property(state, "descriptor").map_err(error)?;
+    let colors = Array::from(&js::property(&descriptor, "colorAttachments").map_err(error)?);
+    for attachment in colors.iter() {
+        if attachment.is_null() || attachment.is_undefined() {
+            continue;
+        }
+        let store = js::property(&attachment, "storeOp").map_err(error)?;
+        if store.as_string().as_deref() == Some("discard") {
+            return Err(Error::Unsupported(
+                "WebGPU internal pass split with discarded attachments",
+            ));
+        }
+    }
+
+    let depth =
+        Reflect::get(&descriptor, &JsValue::from_str("depthStencilAttachment")).map_err(error)?;
+    if depth.is_null() || depth.is_undefined() {
+        return Ok(());
+    }
+    for (store_name, read_only_name) in [
+        ("depthStoreOp", "depthReadOnly"),
+        ("stencilStoreOp", "stencilReadOnly"),
+    ] {
+        let read_only = js::property(&depth, read_only_name).map_err(error)?;
+        if read_only.as_bool().unwrap_or(false) {
+            continue;
+        }
+        let store = js::property(&depth, store_name).map_err(error)?;
+        if store.as_string().as_deref() == Some("discard") {
+            return Err(Error::Unsupported(
+                "WebGPU internal pass split with discarded attachments",
+            ));
+        }
+    }
+    Ok(())
 }
 pub(super) fn resume(
     encoder: &mut WebGpuEncoder,

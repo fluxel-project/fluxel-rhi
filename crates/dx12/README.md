@@ -4,6 +4,11 @@
 the shared Core contract to D3D12 resources, command lists, descriptors,
 fences, and DXGI presentation.
 
+Fluxel RHI is designed first for RenderGraph and rendering-pipeline
+implementations. This backend keeps that contract thin and low-cost by
+preserving direct D3D12 capabilities and reporting execution facts needed for
+graph planning; application-level convenience is secondary.
+
 ## Platform and requirements
 
 - Windows only, using the MSVC toolchain and a Direct3D 12 capable adapter.

@@ -4,6 +4,11 @@
 Vulkan instance/device selection, native resources, command buffers, memory,
 presentation, and completion tracking while preserving the shared Core API.
 
+Fluxel RHI is designed first for RenderGraph and rendering-pipeline
+implementations. This backend keeps execution thin and low-cost by preserving
+native Vulkan capabilities and reporting execution facts needed for graph
+planning; application-level convenience is secondary.
+
 ## Platform and requirements
 
 The crate loads the Vulkan loader at runtime and requests Vulkan 1.3. A

@@ -4,6 +4,11 @@
 OpenGL, OpenGL ES, and browser WebGL2. Its profile and capabilities depend on
 the selected Cargo feature and the actual context.
 
+Fluxel RHI is designed first for RenderGraph and rendering-pipeline
+implementations. This backend keeps its immediate execution route thin and
+low-cost, preserves profile-native capabilities, and reports execution facts
+needed for graph planning; application-level convenience is secondary.
+
 ## Select a profile
 
 - `native-gl-wgl` — Windows desktop GL through WGL.

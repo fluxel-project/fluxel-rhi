@@ -2,6 +2,10 @@
 
 `fluxel-naga` is a Fluxel-maintained build of Naga 27.0.3 with narrowly scoped HLSL fixes for fixed storage-buffer and uniform-buffer binding arrays. It preserves the upstream Rust library name `naga`; DX12 consumes it as a drop-in compiler dependency.
 
+This package exists only to preserve a correct native shader-lowering route for
+Fluxel RHI's RenderGraph- and rendering-pipeline-oriented execution model. It
+does not define a convenience graphics API or a second RHI abstraction.
+
 Repository: https://github.com/fluxel-project/fluxel-rhi
 
 ## Why this fork exists

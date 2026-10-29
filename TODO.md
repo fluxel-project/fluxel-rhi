@@ -6,6 +6,73 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 ## Active items
 
+### P7-WEBGPU-SPLIT-STORE — preserve discarded attachment semantics
+
+**Status:** The unconditional split path has been guarded: internal WebGPU pass
+splits reject any writable color, depth, or stencil attachment whose store op is
+`discard`. This includes transient attachment routes and discarded MSAA sources
+with resolve targets. The call fails before the native pass is ended. Targeted
+Chrome 156 browser tests pass: the split-store validator rejects discarded
+color/depth/stencil and allows stored/read-only cases; the GPU-count fixture
+rejects a discarded color attachment and still reads back the expected pixels,
+query result, and indexed-draw output on the stored-attachment path. The test
+does not expose the physical adapter or driver selected by Chrome, so this is
+browser WebGPU evidence, not identified hardware acceptance.
+
+**Acceptance:** Compile the WebGPU conformance tests; run the browser GPU
+regression proving a discarded attachment is rejected while the existing
+stored-attachment GPU-count path still renders and reads back the expected
+pixels. Cover depth and stencil discard in the split-store validator. Preserve
+the conservative rejection unless a graph-visible split/store contract is
+implemented. Record the physical GPU/driver when the browser exposes it; do not
+claim hardware-specific acceptance from the default browser adapter alone.
+
+### P7-LOWERING-PROFILE — expose cost-bearing lowering facts to RenderGraph
+
+**Status:** The Core capability model reports operation support but does not
+describe important execution differences such as native GPU-count draw,
+backend GPU preprocessing, internal pass split, temporary allocation, or CPU
+iteration. WebGPU `multi_draw_count` is currently reported as supported even
+though it preprocesses GPU arguments, may allocate temporary buffers, splits
+the pass, and emits repeated native draw calls. The P7 store-op guard prevents
+one incorrect combination but does not give graph compilation these cost facts.
+
+**Reopen/selection:** Keep scope limited to capabilities where a backend
+lowering changes graph correctness, resource planning, synchronization, or
+material CPU/GPU cost. Do not add a general-purpose cost model for all API
+operations.
+
+**Acceptance:** Define an immutable per-device lowering descriptor for the
+selected cost-bearing operation(s), classify every implemented backend route
+from source, and expose facts needed before graph compilation without adding
+per-draw queries or allocation. Demonstrate that a caller can distinguish
+native execution from GPU preprocessing, pass splitting, temporary resources,
+and CPU iteration, then verify descriptors against backend route tests.
+
+### P7-WEBGPU-SPLIT-STATE-COST — bound ordinary pass-state tracking overhead
+
+**Status:** `pass_split::record` creates JavaScript objects/arrays and linearly
+searches retained state for ordinary pipeline and binding updates, even when
+the pass is never split. This is a concrete extra operation on the common path;
+no profile currently proves its frame-time impact.
+
+**Acceptance:** Add focused call/allocation counters or a representative CPU
+profile that separates ordinary raster recording from split recovery. Only
+then choose direct-indexed state or an explicit split-eligible pass contract;
+verify unchanged state restoration after multiple splits.
+
+### P7-RG-FRAMES-IN-FLIGHT — exercise cached plans with multiple live frames
+
+**Status:** The example frame helper constructs a small plan per invocation and
+waits for device idle after each frame. It is a smoke path and does not measure
+cached-plan reuse, completion-frontier retirement, or overlapping frames.
+
+**Acceptance:** Add one bounded RG-like execution workload that reuses a
+compiled plan, submits 2–3 frames before waiting, keeps distinct completion
+points, retires a recycled resource only after its covering completion, and
+records CPU submit and GPU timings. Do not migrate all numbered examples to
+this harness.
+
 ### P4-AS-ARRAY-VK — Vulkan fixed acceleration-structure arrays
 
 **Status:** Unavailable; the bounded reconstruction failed and temporary

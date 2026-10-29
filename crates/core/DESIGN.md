@@ -4,6 +4,12 @@
 
 It is not a portable GPU implementation. DX12, Vulkan, GL, WebGPU, and Metal keep their native objects, API calls, threading rules, and feature limits in their own crates. Core makes those differences visible as capabilities and structured errors rather than flattening them into a false common denominator.
 
+Core is designed first for RenderGraph and rendering-pipeline implementations.
+It keeps the shared execution contract thin and low-cost, preserving native
+capabilities and exposing execution facts needed for graph planning.
+Application-level developer convenience is secondary to predictable execution
+of already planned work.
+
 ## Position in the RHI
 
 ```text

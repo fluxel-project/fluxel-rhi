@@ -7,6 +7,11 @@ render-graph planning, resource-use ordering, frame pacing, and retirement
 policy. This crate owns the native objects that execute that already planned
 work and reports facts about its completion.
 
+The shared contract is designed first for RenderGraph and rendering-pipeline
+implementations. This backend keeps execution thin and low-cost by preserving
+direct D3D12 capabilities and exposing their execution facts to graph planning;
+application-level developer convenience is secondary.
+
 The public entry points are `Dx12Instance`, `Dx12`, and the typed
 `Device<Dx12>`. Native D3D12 and DXGI types remain private to this crate.
 Callers work through the Core API, so a DX12 object cannot be confused with an

@@ -7,6 +7,15 @@ the source-level API documentation. Test procedures, hardware evidence rules,
 and backend coverage matrices belong in the
 [verification guide](../../documents/verification.md).
 
+## Design intent
+
+Fluxel RHI is designed first for RenderGraph and rendering-pipeline
+implementations. It provides a thin, low-cost execution layer that unifies GPU
+operation semantics while preserving backend-native capabilities and exposing
+execution facts that affect graph planning. It deliberately prioritizes
+predictable execution of already planned work over an application-level
+convenience API.
+
 ## System boundary
 
 RHI executes GPU work that an upper layer has already planned. It owns typed
@@ -110,11 +119,11 @@ Host event / frame policy
   execution with profile-specific admission.
 - **`fluxel-rhi-metal`:** Apple Metal device/resource/command mapping,
   presentation, and completion; Apple targets only.
-- **`fluxel-rhi`:** convenience facade and examples; it reexports Core and
+- **`fluxel-rhi`:** feature-selected facade and examples; it reexports Core and
   selected backends, rather than implementing another backend layer.
 Each crate's `DESIGN.md` follows its responsibilities from public adapter down
 to native execution and explains backend-specific limits. Package `README.md`
-files are for users integrating that individual crate.
+files explain the crate's role in an RG-oriented renderer or platform adapter.
 ## Execution models
 
 DX12, Vulkan, WebGPU, and Metal use deferred native recording: RHI operations
@@ -133,6 +142,33 @@ presentation, and completion. A submitted or issued prefix can outlive a
 failure. Backends retain native dependencies until completion or a terminal
 failure establishes their disposition. Completion evidence is not a renderer
 retirement decision.
+
+## RenderGraph-to-RHI execution contract
+
+RenderGraph compiles resource use, ordering, transitions, queue dependencies,
+and lifetimes before execution. RHI validates and executes that contract; it
+does not infer missing hazards, choose aliases, or repair an incomplete plan.
+This keeps graph decisions in the graph while allowing RHI to preserve native
+queues, barriers, resource binding, and completion mechanisms.
+
+For each operation, the graph needs four kinds of facts:
+
+- **Input preconditions:** required usage, ownership, resource state, lane, and
+  lifetime facts that must already be established by the compiled plan.
+- **Execution route:** whether the backend issues a native operation, several
+  native operations, or a backend lowering, and whether the route is supported
+  by this opened device.
+- **Extra work:** any hidden GPU preprocessing, temporary allocation, internal
+  synchronization, CPU iteration, or pass split that can affect graph cost or
+  attachment correctness. Such differences must be queryable before execution
+  when they affect graph planning; they must not be disguised as native support.
+- **Completion evidence:** whether work was rejected, partially accepted, or
+  left indeterminate, and which completion point proves native progress. The
+  renderer uses this evidence to decide resource retirement.
+
+The current capability model reports support, but it does not yet expose a
+general lowering profile for cost-bearing routes such as WebGPU GPU-count
+draws. See the open design TODO for that gap and its acceptance conditions.
 
 ## Crate design pages
 

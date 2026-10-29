@@ -4,6 +4,12 @@ Fluxel RHI is Fluxel's GPU execution layer. It creates native resources,
 executes caller-ordered GPU work, manages presentation leases, and reports
 submission and completion facts.
 
+It is designed first for RenderGraph and rendering-pipeline implementations:
+a thin, low-cost execution layer that unifies operation semantics while
+preserving native GPU capabilities and exposing execution facts that affect
+graph planning. Application-level developer convenience is secondary to
+predictable execution of already planned work.
+
 RenderGraph and Renderer own dependency planning, hazard analysis, frame policy,
 and resource retirement. RHI executes the plan and supplies native mechanisms;
 it does not rebuild the graph or choose resource lifetimes.

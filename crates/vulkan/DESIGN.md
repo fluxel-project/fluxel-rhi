@@ -6,6 +6,11 @@ buffers, submits the resulting native work, and reports completion facts. It
 does not build a render graph, derive barriers, schedule application work, or
 decide when a renderer may retire a resource.
 
+The shared contract is designed first for RenderGraph and rendering-pipeline
+implementations. This backend keeps execution thin and low-cost by preserving
+native Vulkan capabilities and exposing their execution facts to graph
+planning; application-level developer convenience is secondary.
+
 The crate supports the native Vulkan surface routes available on the target
 platform: Win32 on Windows, Android NDK on Android, and Xlib, XCB, or Wayland
 when the matching Unix instance extension is available. A caller owns the

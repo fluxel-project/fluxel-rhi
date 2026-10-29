@@ -4,6 +4,11 @@
 Core operations to native Metal resources and one-shot command buffers, and
 reports native completion and presentation facts.
 
+Fluxel RHI is designed first for RenderGraph and rendering-pipeline
+implementations. This backend keeps execution thin and low-cost by preserving
+native Metal capabilities and reporting execution facts needed for graph
+planning; application-level convenience is secondary.
+
 ## Platform and requirements
 
 The native backend is available only on Apple targets and requires the Apple

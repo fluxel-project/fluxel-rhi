@@ -326,6 +326,44 @@ async fn gpu_multi_draw_count_keeps_attachment_queries_and_render_state() {
         })
         .unwrap();
     let mut e = d.encoder(d.lanes()[0].id).unwrap();
+    let discard_colors = [Some(ColorAttachment {
+        view: AttachmentView::Texture(&view),
+        resolve_target: None,
+        load: LoadOp::Clear(ClearColor::Float([0., 0., 0., 1.])),
+        store: StoreOp::Discard,
+    })];
+    let mut discard_pass = e
+        .begin_raster(&RasterPassDesc {
+            label: None,
+            colors: &discard_colors,
+            depth_stencil: None,
+            render_area: Rect {
+                x: 0,
+                y: 0,
+                width: 9,
+                height: 6,
+            },
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            secondary_inheritance: None,
+        })
+        .unwrap();
+    discard_pass.set_pipeline(&pipeline).unwrap();
+    let extras = d.raster_extras().unwrap();
+    assert!(matches!(
+        extras.multi_draw_count(&mut discard_pass, &args, 0, &counts, 0, 2, 16, false),
+        Err(Error::Unsupported(
+            "WebGPU internal pass split with discarded attachments"
+        ))
+    ));
+    // A backend operation error poisons and aborts its logical pass by Core
+    // contract. Drop this probe encoder, then use a fresh encoder for the
+    // successful stored-attachment GPU output path below.
+    drop(discard_pass);
+    drop(e);
+
+    let mut e = d.encoder(d.lanes()[0].id).unwrap();
     e.write_buffer(
         &args,
         0,
@@ -344,6 +382,7 @@ async fn gpu_multi_draw_count_keeps_attachment_queries_and_render_state() {
             .collect::<Vec<_>>(),
     )
     .unwrap();
+
     let colors = [Some(ColorAttachment {
         view: AttachmentView::Texture(&view),
         resolve_target: None,
@@ -369,7 +408,6 @@ async fn gpu_multi_draw_count_keeps_attachment_queries_and_render_state() {
         .unwrap();
     pass.set_pipeline(&pipeline).unwrap();
     queries.begin_occlusion(&mut pass, &set, 0).unwrap();
-    let extras = d.raster_extras().unwrap();
     extras
         .multi_draw_count(&mut pass, &args, 0, &counts, 0, 2, 16, false)
         .unwrap();

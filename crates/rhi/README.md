@@ -1,9 +1,15 @@
 # `fluxel-rhi`
 
-`fluxel-rhi` is the application-facing facade for Fluxel's statically typed GPU
-execution API. It reexports Core and exposes selected backend crates through
-Cargo features. It does not choose a runtime backend enum: select a concrete
-backend when constructing the device.
+`fluxel-rhi` is the feature-selected crate facade for Fluxel's statically typed
+GPU execution API. It reexports Core and selected backend crates through Cargo
+features. It does not choose a runtime backend enum: select a concrete backend
+when constructing the device.
+
+Fluxel RHI is designed first for RenderGraph and rendering-pipeline
+implementations. The facade exposes a thin, low-cost execution contract that
+unifies operation semantics while preserving native GPU capabilities and the
+execution facts that affect graph planning. Application-level convenience is
+secondary to predictable execution of already planned work.
 
 ## Choose a backend
 

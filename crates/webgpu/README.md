@@ -4,6 +4,13 @@
 uses browser-owned GPU objects, encodes directly into native WebGPU command
 encoders, and reports queue completion through the shared Core API.
 
+Fluxel RHI is designed first for RenderGraph and rendering-pipeline
+implementations. This backend keeps execution thin where WebGPU permits it and
+reports supported capabilities; application-level convenience is secondary
+to predictable execution of already planned work. Cost-bearing lowering facts
+such as GPU preprocessing, temporary buffers, and pass splitting are not yet
+fully represented in Core capabilities; see the design TODO.
+
 ## Platform and requirements
 
 This crate exposes its backend only on `wasm32` and requires a browser with

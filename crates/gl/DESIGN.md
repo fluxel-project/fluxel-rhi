@@ -7,6 +7,11 @@ creation, native calls, capabilities, and browser lifetime are selected by
 profile-specific providers. This gives callers one typed Core contract without
 pretending the three APIs have identical feature sets.
 
+The shared contract is designed first for RenderGraph and rendering-pipeline
+implementations. This backend keeps immediate GL execution thin and low-cost,
+preserves profile-native capabilities, and exposes execution facts needed for
+graph planning; application-level developer convenience is secondary.
+
 ## Architecture and layers
 
 ```text

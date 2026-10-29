@@ -117,8 +117,11 @@ Core's execution fixtures consume hand-authored compiled plans; they do not
 build a RenderGraph. They check unchanged step/wait/payload delivery, plan reuse
 with different completion requests, invalid packet/tail/frontier rejection,
 partial-tail resume, and uncertainty ownership. Multi-queue fixtures check static
-signal metadata and token ownership only: no native backend currently implements
-that optional SPI, and `StepId` does not identify an execution instance.
+signal metadata and token ownership only; they do not establish native
+multi-queue conformance. DX12, Vulkan, and Metal have native multi-queue routes,
+but each route still needs backend-specific device and workload evidence.
+`StepId` also does not identify an execution instance, so the caller must retain
+the producer/consumer relationship when reusing a compiled plan.
 
 The example host has separate fault-injection tests. On Windows, ignored GPU
 fixtures execute a four-command plan four times with independent resources,

@@ -5,6 +5,14 @@
 its owner thread. Core receives typed resources and execution facts, not DOM,
 `GPUDevice`, canvas, or JavaScript session objects.
 
+The shared contract is designed first for RenderGraph and rendering-pipeline
+implementations. This backend preserves native WebGPU execution where possible.
+Its current Core capabilities report whether an operation is available, but do
+not yet describe every cost-bearing lowering. A route that requires GPU
+preprocessing, temporary resources, CPU iteration, or an internal pass split
+must be made visible to graph planning; this gap is tracked in the root
+[design TODO](../../TODO.md#p7-lowering-profile).
+
 The backend has one browser-selected adapter and one ordered queue per opened
 device. It does not turn browser WebGPU into a desktop-style multi-queue API,
 a portable command recording format, or an owner of DOM and application
