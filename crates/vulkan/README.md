@@ -15,7 +15,7 @@ corresponding platform surface extensions.
 
 ```toml
 [dependencies]
-fluxel-rhi = { version = "0.16.0", default-features = false, features = ["vulkan"] }
+fluxel-rhi = { version = "0.1.0", default-features = false, features = ["vulkan"] }
 ```
 
 In an async application setup routine:
@@ -42,3 +42,5 @@ for current hardware evidence.
 The `hardware-tests` feature enables opt-in real-device fixtures. It is not
 required by library users. Requires Rust 1.87 or newer; licensed under
 `MIT OR Apache-2.0`.
+
+Repository: https://github.com/fluxel-project/fluxel-rhi

@@ -9,7 +9,7 @@ backend when constructing the device.
 
 ```toml
 [dependencies]
-fluxel-rhi = { version = "0.16.0", default-features = false, features = ["vulkan"] }
+fluxel-rhi = { version = "0.1.0", default-features = false, features = ["vulkan"] }
 ```
 
 Available backend features are `dx12` (Windows), `vulkan`, `webgpu` (`wasm32`),
@@ -43,3 +43,5 @@ The [workspace design overview](DESIGN.md) explains ownership boundaries. The
 covers tests, hardware evidence, and platform-specific setup.
 
 Requires Rust 1.87 or newer; licensed under `MIT OR Apache-2.0`.
+
+Repository: https://github.com/fluxel-project/fluxel-rhi

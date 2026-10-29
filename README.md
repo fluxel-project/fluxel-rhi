@@ -61,6 +61,8 @@ cargo run -p fluxel-rhi --features examples,dx12 --example 01_triangle -- --fram
 cargo run -p fluxel-rhi --no-default-features --features examples,vulkan --example 01_triangle -- --backend vulkan --frames 2
 ```
 
+Native examples and GPU fixtures use the separate [`fluxel-host` package](https://github.com/fluxel-project/fluxel-host) for window and lifecycle events; the RHI crates do not depend on it at runtime.
+
 Some scenes need local model and texture assets. Fetch them before running
 those examples:
 

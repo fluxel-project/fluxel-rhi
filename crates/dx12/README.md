@@ -16,7 +16,7 @@ fences, and DXGI presentation.
 
 ```toml
 [target.'cfg(windows)'.dependencies]
-fluxel-rhi = { version = "0.16.0", default-features = false, features = ["dx12"] }
+fluxel-rhi = { version = "0.1.0", default-features = false, features = ["dx12"] }
 ```
 
 In an async application setup routine:
@@ -43,3 +43,5 @@ The `hardware-tests` feature enables opt-in real-device fixtures. It is intended
 for backend development and is not needed by library consumers.
 
 Requires Rust 1.87 or newer. Licensed under `MIT OR Apache-2.0`.
+
+Repository: https://github.com/fluxel-project/fluxel-rhi

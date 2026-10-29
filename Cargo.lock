@@ -391,8 +391,8 @@ dependencies = [
 
 [[package]]
 name = "fluxel-host"
-version = "0.2.0"
-source = "git+https://github.com/fluxel-project/fluxel-host?rev=b310f3fac4b8319343ef13341cd284344343c2ac#b310f3fac4b8319343ef13341cd284344343c2ac"
+version = "0.1.0"
+source = "git+https://github.com/fluxel-project/fluxel-host?rev=33a6bbb3fa15500e928b4192ca8f280b735034d9#33a6bbb3fa15500e928b4192ca8f280b735034d9"
 dependencies = [
  "raw-window-handle",
  "windows",
@@ -400,8 +400,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "fluxel-naga"
+version = "0.1.0"
+dependencies = [
+ "arrayvec",
+ "bit-set 0.8.0",
+ "bitflags 2.13.2",
+ "cfg-if",
+ "cfg_aliases",
+ "codespan-reporting 0.12.0",
+ "half",
+ "hashbrown 0.16.1",
+ "hexf-parse",
+ "indexmap",
+ "libm",
+ "log",
+ "num-traits",
+ "once_cell",
+ "rustc-hash",
+ "thiserror 2.0.21",
+ "unicode-ident",
+]
+
+[[package]]
 name = "fluxel-rhi"
-version = "0.16.0"
+version = "0.1.0"
 dependencies = [
  "base64",
  "fluxel-host",
@@ -425,22 +448,22 @@ dependencies = [
 
 [[package]]
 name = "fluxel-rhi-core"
-version = "0.16.0"
+version = "0.1.0"
 
 [[package]]
 name = "fluxel-rhi-dx12"
-version = "0.16.0"
+version = "0.1.0"
 dependencies = [
  "fluxel-host",
+ "fluxel-naga",
  "fluxel-rhi-core",
- "naga 27.0.3",
  "raw-window-handle",
  "windows",
 ]
 
 [[package]]
 name = "fluxel-rhi-gl"
-version = "0.16.0"
+version = "0.1.0"
 dependencies = [
  "fluxel-host",
  "fluxel-rhi-core",
@@ -449,7 +472,7 @@ dependencies = [
  "glutin_wgl_sys",
  "js-sys",
  "khronos-egl",
- "naga 27.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "naga 27.0.3",
  "raw-window-handle",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -459,7 +482,7 @@ dependencies = [
 
 [[package]]
 name = "fluxel-rhi-metal"
-version = "0.16.0"
+version = "0.1.0"
 dependencies = [
  "block2 0.6.2",
  "dispatch2",
@@ -475,17 +498,17 @@ dependencies = [
 
 [[package]]
 name = "fluxel-rhi-vulkan"
-version = "0.16.0"
+version = "0.1.0"
 dependencies = [
  "ash",
  "fluxel-rhi-core",
- "naga 27.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "naga 27.0.3",
  "raw-window-handle",
 ]
 
 [[package]]
 name = "fluxel-rhi-webgpu"
-version = "0.16.0"
+version = "0.1.0"
 dependencies = [
  "fluxel-rhi-core",
  "js-sys",
@@ -866,29 +889,6 @@ checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
 dependencies = [
  "adler2",
  "simd-adler32",
-]
-
-[[package]]
-name = "naga"
-version = "27.0.3"
-dependencies = [
- "arrayvec",
- "bit-set 0.8.0",
- "bitflags 2.13.2",
- "cfg-if",
- "cfg_aliases",
- "codespan-reporting 0.12.0",
- "half",
- "hashbrown 0.16.1",
- "hexf-parse",
- "indexmap",
- "libm",
- "log",
- "num-traits",
- "once_cell",
- "rustc-hash",
- "thiserror 2.0.21",
- "unicode-ident",
 ]
 
 [[package]]

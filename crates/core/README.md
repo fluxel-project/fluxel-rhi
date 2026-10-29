@@ -10,7 +10,7 @@ backend.
 
 ```toml
 [dependencies]
-fluxel-rhi-core = "0.16.0"
+fluxel-rhi-core = "0.1.0"
 ```
 
 Application code will usually use the [`fluxel-rhi` facade](../rhi/README.md),
@@ -36,3 +36,5 @@ explicit capability or validation errors.
 The crate requires Rust 1.87 or newer and uses the `MIT OR Apache-2.0` license.
 See the repository [verification guide](https://github.com/fluxel-project/fluxel-rhi/blob/main/documents/verification.md)
 for backend conformance scope.
+
+Repository: https://github.com/fluxel-project/fluxel-rhi

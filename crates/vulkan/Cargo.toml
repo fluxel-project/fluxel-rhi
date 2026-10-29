@@ -16,7 +16,7 @@ hardware-tests = []
 
 [dependencies]
 ash = "=0.38.0"
-fluxel-rhi-core = { path = "../core", version = "0.16.0" }
+fluxel-rhi-core = { path = "../core", version = "0.1.0" }
 raw-window-handle = "=0.6.2"
 naga = { version = "=27.0.3", features = ["wgsl-in", "spv-out"] }
 

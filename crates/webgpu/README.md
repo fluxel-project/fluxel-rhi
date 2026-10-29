@@ -15,7 +15,7 @@ owns the canvas and its lifecycle.
 
 ```toml
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-fluxel-rhi = { version = "0.16.0", default-features = false, features = ["webgpu"] }
+fluxel-rhi = { version = "0.1.0", default-features = false, features = ["webgpu"] }
 ```
 
 In an async browser entry point:
@@ -40,3 +40,5 @@ and the [verification guide](https://github.com/fluxel-project/fluxel-rhi/blob/m
 for architecture, integration setup, and evidence limits.
 
 Requires Rust 1.87 or newer; licensed under `MIT OR Apache-2.0`.
+
+Repository: https://github.com/fluxel-project/fluxel-rhi

@@ -15,7 +15,7 @@ lifecycle.
 
 ```toml
 [target.'cfg(target_vendor = "apple")'.dependencies]
-fluxel-rhi = { version = "0.16.0", default-features = false, features = ["metal"] }
+fluxel-rhi = { version = "0.1.0", default-features = false, features = ["metal"] }
 ```
 
 In an async application setup routine:
@@ -37,3 +37,5 @@ does not currently claim Apple GPU or Surface acceptance; compile and source
 review are not runtime evidence. See the [verification guide](https://github.com/fluxel-project/fluxel-rhi/blob/main/documents/verification.md).
 
 Requires Rust 1.87 or newer; licensed under `MIT OR Apache-2.0`.
+
+Repository: https://github.com/fluxel-project/fluxel-rhi
