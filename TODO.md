@@ -6,34 +6,6 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 ## Active items
 
-### P7-WEBGPU-SPLIT-STORE — preserve discarded attachment semantics
-
-**Status:** The unconditional split path has been guarded: internal WebGPU pass
-splits reject any writable color, depth, or stencil attachment whose store op is
-`discard`. This includes transient attachment routes and discarded MSAA sources
-with resolve targets. The call fails before the native pass is ended. Targeted
-Chrome 156 browser tests pass: the split-store validator rejects discarded
-color/depth/stencil and allows stored/read-only cases; the GPU-count fixture
-rejects a discarded color attachment and still reads back the expected pixels,
-query result, and indexed-draw output on the stored-attachment path. The test
-does not expose the physical adapter or driver selected by Chrome, so this is
-browser WebGPU evidence, not identified hardware acceptance. The registry's
-`fluxel-rhi-webgpu` 0.1.0 archive predates this source fix; the backend is being
-released as 0.1.1 because crates.io versions cannot be replaced. A backend-
-owned dummy depth attachment is separately exempted from the discard guard and
-cleared when a split resumes; the focused Chrome regression now passes for an
-attachment-free pass switching to a four-sample pipeline.
-
-**Acceptance:** Compile the WebGPU conformance tests; run browser GPU regressions
-proving discarded user attachments are rejected, the stored-attachment GPU-
-count path still renders and reads back expected pixels, and an attachment-free
-pass can split to a four-sample pipeline. Cover depth and stencil discard in
-the split-store validator. Preserve the conservative rejection unless a
-graph-visible split/store contract is implemented. Record physical GPU/driver
-when the browser exposes it; do not claim hardware-specific acceptance from
-the default browser adapter alone. Publish and verify `fluxel-rhi-webgpu`
-0.1.1.
-
 ### P7-LOWERING-PROFILE — expose cost-bearing lowering facts to RenderGraph
 
 **Status:** The Core capability model reports operation support but does not
@@ -138,6 +110,15 @@ requiring GPU or presentation behavior needs real Apple-target evidence.
 
 ## Closed scope decisions
 
+- **P7-WEBGPU-SPLIT-STORE:** User-owned writable attachments with `StoreOp::Discard`
+  are rejected before internal pass termination. The backend-owned dummy depth
+  attachment is exempt and cleared after every split. On commit `5866f9f`, the
+  Chrome 156 browser suite passed the split-store cases (5/5) and the GPU-count
+  readback/query case (1/1). Logs and the adapter-identity limitation are in
+  `Temp/证据/webgpu/5866f9f4bf51af903c1cee4551dc510aa337b4ff/`. The source is
+  published as `fluxel-rhi-webgpu` 0.1.1; 0.1.0 remains immutable and predates
+  this fix. Chrome did not expose physical GPU/driver identity, so closure is
+  browser-route correctness evidence, not hardware-specific acceptance.
 - Stage 4's selected route set and Stage 5 attachment-only allocation intent
   are closed. Closure does not claim every format, backend, array shape, tuple,
   or a physical memory/performance benefit.
