@@ -45,9 +45,10 @@ fn descriptor(colors: &[(bool, &str)], depth: Option<(&str, &str, bool, bool)>) 
     descriptor.into()
 }
 
-fn state(descriptor: JsValue) -> JsValue {
+fn state(descriptor: JsValue, dummy: bool) -> JsValue {
     let state = Object::new();
     set(&state, "descriptor", &descriptor);
+    set(&state, "dummy", &JsValue::from_bool(dummy));
     state.into()
 }
 
@@ -59,7 +60,7 @@ fn raster_split_rejects_discarded_writable_attachments() {
         descriptor(&[], Some(("store", "discard", false, false))),
     ] {
         assert!(matches!(
-            crate::backend::pass_split::validate_split_stores(&state(descriptor)),
+            crate::backend::pass_split::validate_split_stores(&state(descriptor, false)),
             Err(Error::Unsupported(
                 "WebGPU internal pass split with discarded attachments"
             ))
@@ -77,8 +78,129 @@ fn raster_split_allows_stored_attachments_and_read_only_aspects() {
             Some(("store", "store", false, false)),
         ),
     ] {
-        crate::backend::pass_split::validate_split_stores(&state(descriptor)).unwrap();
+        crate::backend::pass_split::validate_split_stores(&state(descriptor, false)).unwrap();
     }
+}
+
+#[wasm_bindgen_test]
+fn raster_split_allows_the_backend_owned_dummy_discard_attachment() {
+    let descriptor = descriptor(&[], Some(("discard", "discard", false, false)));
+    crate::backend::pass_split::validate_split_stores(&state(descriptor, true)).unwrap();
+}
+
+#[wasm_bindgen_test(async)]
+async fn gpu_empty_raster_pass_splits_to_four_sample_pipeline() {
+    let d = open().await;
+    let dummy_desc = TextureDesc {
+        label: None,
+        dimension: TextureDimension::D2,
+        extent: [4, 4, 1],
+        array_layers: 1,
+        format: TextureFormat::Depth32Float,
+        mip_levels: 1,
+        samples: 4,
+        usage: TextureUsage::RENDER_ATTACHMENT,
+        view_formats: vec![],
+    };
+    if !matches!(d.texture_support(&dummy_desc), Support::Supported(_)) {
+        console_log!("SKIP multisampled depth32float dummy attachment");
+        return;
+    }
+
+    let shader_source = "@vertex fn vs(@builtin(vertex_index) i:u32)->@builtin(position) vec4f { let p=array<vec2f,3>(vec2f(-1.,-1.),vec2f(3.,-1.),vec2f(-1.,3.)); return vec4f(p[i],0.5,1.); }";
+    let shader = d
+        .shader(ShaderDesc {
+            label: None,
+            format: ShaderFormat::Wgsl,
+            bytes: Arc::from(shader_source.as_bytes()),
+            entries: vec![ShaderEntryPoint {
+                name: "vs".into(),
+                stage: ShaderStage::Vertex,
+                workgroup_size: None,
+            }],
+            required_features: vec![],
+        })
+        .await
+        .unwrap();
+    let layout = d
+        .create_pipeline_layout(&PipelineLayoutDesc {
+            label: None,
+            groups: &[],
+            push_constants: &[],
+        })
+        .unwrap();
+    let face = StencilFaceState {
+        compare: CompareFunction::Always,
+        fail: StencilOperation::Keep,
+        depth_fail: StencilOperation::Keep,
+        pass: StencilOperation::Keep,
+    };
+    let pipeline = d
+        .raster_pipeline(RasterPipelineDesc {
+            label: None,
+            layout,
+            vertex: PipelineStage {
+                module: shader,
+                entry: "vs".into(),
+                constants: vec![],
+            },
+            fragment: None,
+            vertex_buffers: vec![],
+            color_targets: vec![],
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: FrontFace::Ccw,
+                cull_mode: CullMode::None,
+                unclipped_depth: false,
+                polygon_mode: PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(DepthStencilState {
+                format: TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: CompareFunction::Always,
+                stencil_front: face,
+                stencil_back: face,
+                stencil_read_mask: 0,
+                stencil_write_mask: 0,
+                depth_bias_constant: 0,
+                depth_bias_slope_scale: 0.0,
+                depth_bias_clamp: 0.0,
+            }),
+            multisample: MultisampleState {
+                count: 4,
+                mask: u64::MAX,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        })
+        .await
+        .unwrap();
+
+    let mut encoder = d.encoder(d.lanes()[0].id).unwrap();
+    let mut pass = encoder
+        .begin_raster(&RasterPassDesc {
+            label: None,
+            colors: &[],
+            depth_stencil: None,
+            render_area: Rect {
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 4,
+            },
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            secondary_inheritance: None,
+        })
+        .unwrap();
+    pass.set_pipeline(&pipeline).unwrap();
+    pass.draw(0..3, 0..1).unwrap();
+    pass.finish().unwrap();
+    submit(&d, encoder).await;
 }
 
 #[wasm_bindgen_test]

@@ -90,6 +90,15 @@ pub(super) fn suspend(encoder: &mut WebGpuEncoder) -> Result<Suspended> {
 }
 
 pub(crate) fn validate_split_stores(state: &JsValue) -> Result<()> {
+    if js::property(state, "dummy")
+        .map_err(error)?
+        .as_bool()
+        .unwrap_or(false)
+    {
+        // The backend-created attachment has no logical resource or contents
+        // that the graph can observe. Reopened dummy passes clear it anew.
+        return Ok(());
+    }
     let descriptor = js::property(state, "descriptor").map_err(error)?;
     let colors = Array::from(&js::property(&descriptor, "colorAttachments").map_err(error)?);
     for attachment in colors.iter() {
@@ -134,6 +143,10 @@ pub(super) fn resume(
 ) -> Result<()> {
     let state = suspended.state;
     let descriptor = js::property(&state, "descriptor").map_err(error)?;
+    let dummy = js::property(&state, "dummy")
+        .map_err(error)?
+        .as_bool()
+        .unwrap_or(false);
     let colors = Array::from(&js::property(&descriptor, "colorAttachments").map_err(error)?);
     for attachment in colors.iter() {
         if !attachment.is_null() && !attachment.is_undefined() {
@@ -143,14 +156,20 @@ pub(super) fn resume(
     let attachment =
         Reflect::get(&descriptor, &JsValue::from_str("depthStencilAttachment")).map_err(error)?;
     if !attachment.is_undefined() && !attachment.is_null() {
-        for (load, readonly) in [
-            ("depthLoadOp", "depthReadOnly"),
-            ("stencilLoadOp", "stencilReadOnly"),
-        ] {
-            let existing = Reflect::get(&attachment, &JsValue::from_str(load)).map_err(error)?;
-            let ro = Reflect::get(&attachment, &JsValue::from_str(readonly)).map_err(error)?;
-            if !existing.is_undefined() && !ro.as_bool().unwrap_or(false) {
-                field(&attachment, load, JsValue::from_str("load"))?;
+        if dummy {
+            field(&attachment, "depthLoadOp", JsValue::from_str("clear"))?;
+            field(&attachment, "depthClearValue", number(1_f64))?;
+        } else {
+            for (load, readonly) in [
+                ("depthLoadOp", "depthReadOnly"),
+                ("stencilLoadOp", "stencilReadOnly"),
+            ] {
+                let existing =
+                    Reflect::get(&attachment, &JsValue::from_str(load)).map_err(error)?;
+                let ro = Reflect::get(&attachment, &JsValue::from_str(readonly)).map_err(error)?;
+                if !existing.is_undefined() && !ro.as_bool().unwrap_or(false) {
+                    field(&attachment, load, JsValue::from_str("load"))?;
+                }
             }
         }
     }

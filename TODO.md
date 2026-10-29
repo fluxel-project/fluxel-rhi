@@ -18,16 +18,21 @@ rejects a discarded color attachment and still reads back the expected pixels,
 query result, and indexed-draw output on the stored-attachment path. The test
 does not expose the physical adapter or driver selected by Chrome, so this is
 browser WebGPU evidence, not identified hardware acceptance. The registry's
-`fluxel-rhi-webgpu` 0.1.0 archive predates this source fix; publish it in a
-subsequent crate version because crates.io versions cannot be replaced.
+`fluxel-rhi-webgpu` 0.1.0 archive predates this source fix; the backend is being
+released as 0.1.1 because crates.io versions cannot be replaced. A backend-
+owned dummy depth attachment is separately exempted from the discard guard and
+cleared when a split resumes; the focused Chrome regression now passes for an
+attachment-free pass switching to a four-sample pipeline.
 
-**Acceptance:** Compile the WebGPU conformance tests; run the browser GPU
-regression proving a discarded attachment is rejected while the existing
-stored-attachment GPU-count path still renders and reads back the expected
-pixels. Cover depth and stencil discard in the split-store validator. Preserve
-the conservative rejection unless a graph-visible split/store contract is
-implemented. Record the physical GPU/driver when the browser exposes it; do not
-claim hardware-specific acceptance from the default browser adapter alone.
+**Acceptance:** Compile the WebGPU conformance tests; run browser GPU regressions
+proving discarded user attachments are rejected, the stored-attachment GPU-
+count path still renders and reads back expected pixels, and an attachment-free
+pass can split to a four-sample pipeline. Cover depth and stencil discard in
+the split-store validator. Preserve the conservative rejection unless a
+graph-visible split/store contract is implemented. Record physical GPU/driver
+when the browser exposes it; do not claim hardware-specific acceptance from
+the default browser adapter alone. Publish and verify `fluxel-rhi-webgpu`
+0.1.1.
 
 ### P7-LOWERING-PROFILE — expose cost-bearing lowering facts to RenderGraph
 
