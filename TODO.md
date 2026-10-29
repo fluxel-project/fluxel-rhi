@@ -17,7 +17,9 @@ color/depth/stencil and allows stored/read-only cases; the GPU-count fixture
 rejects a discarded color attachment and still reads back the expected pixels,
 query result, and indexed-draw output on the stored-attachment path. The test
 does not expose the physical adapter or driver selected by Chrome, so this is
-browser WebGPU evidence, not identified hardware acceptance.
+browser WebGPU evidence, not identified hardware acceptance. The registry's
+`fluxel-rhi-webgpu` 0.1.0 archive predates this source fix; publish it in a
+subsequent crate version because crates.io versions cannot be replaced.
 
 **Acceptance:** Compile the WebGPU conformance tests; run the browser GPU
 regression proving a discarded attachment is rejected while the existing
