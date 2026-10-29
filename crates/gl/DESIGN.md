@@ -1,68 +1,160 @@
 # GL-Family Backend Design
 
-`crates/gl` is one statically dispatched backend for Desktop OpenGL through
-WGL, GLES through EGL, and browser WebGL2. Shared lowering keeps operation
-meanings consistent while separate providers and capability discovery preserve
-the different limits of each profile.
+`crates/gl` implements the Core backend SPI for three API profiles: desktop
+OpenGL through WGL, OpenGL ES through EGL, and browser WebGL2. They share a
+statically dispatched RHI implementation and operation lowering, while context
+creation, native calls, capabilities, and browser lifetime are selected by
+profile-specific providers. This gives callers one typed Core contract without
+pretending the three APIs have identical feature sets.
 
-## Immediate owner-thread execution
+## Architecture and layers
 
-GL calls execute on the thread where the selected context is current. Encoding
-issues native calls immediately; the backend does not build a deferred command
-stream or replay application work on another thread. Rust ownership and
-thread-affine objects express this constraint directly instead of hiding it
-behind a global mutex or worker queue.
+```text
+Core API (`fluxel_rhi_core::api`)
+        |
+   GlInstance / Gl (backend/rhi)
+        |  Core SPI adapter, typed resources, immediate command encoding
+        +-------------------------------+
+        |                               |
+ shared GL-family operations       profile providers
+ backend/rhi/{command,             native/{wgl,egl,discovery,
+ resource,pipeline,shader,          provider,probes}
+ completion,surface}                    |
+        |                         browser/{owner,encoder}
+        +---------------+---------------+
+                        |
+       context state, GL dispatch, driver / WebGL runtime
+```
 
-The backend uses a context identity plus slot/generation information so reused
-numeric GL object names cannot make stale resources appear valid. Device and
-resource identities are checked before native access.
+- **Public adapter (`backend/rhi`)** implements Core instance/device/resource,
+  encoder, queue, surface, mapping, and completion traits. It validates Core
+  identities and translates typed operations into GL work.
+- **Operation lowering (`backend/rhi/command`, `raster`, `pipeline`,
+  `resource`, `shader`)** handles transfer commands, raster and compute state,
+  bindings, format/view choices, and shader compilation. Shared modules keep
+  operation meaning aligned across profiles; branches are guarded by profile
+  facts and capability admission.
+- **Context and applied-state layer (`backend/state`, `backend/api`)** owns the
+  context stamp, object slot/generation tracking, dispatch access, cached GL
+  state, and the distinction between desired and driver-applied state. The
+  cache avoids redundant calls; it is not a hazard tracker or resource-state
+  model. Unknown state after interop, deletion, or loss is invalidated and
+  rebound as needed.
+- **Native providers (`backend/native`)** open and own WGL or EGL contexts,
+  load entry points for that exact context, discover version/extensions/limits,
+  and implement native drawable presentation. WGL and EGL details stay out of
+  shared command lowering.
+- **Browser provider (`backend/browser`)** owns WebGL2 objects and canvas
+  access. It uses browser bindings rather than exposing a native dispatch
+  pointer and implements browser-specific command encoding and readback.
+- **Profile/feature translation (`backend/profile`, `features.rs`,
+  `translate*.rs`)** maps observed profile facts into Core capabilities and
+  translates raster/shader conventions. A feature is reported only when the
+  selected context satisfies its version, extension, limit, and callable
+  entry-point requirements.
 
-## Layering and state knowledge
+These boundaries are visible in the source tree under
+[`src/backend`](src/backend), with the public construction entry points in
+[`src/lib.rs`](src/lib.rs). The module names above describe responsibilities;
+individual implementation files are split further by operation family.
 
-The shared GL family separates typed operation lowering, Core SPI adaptation,
-native WGL/EGL providers, browser WebGL2 ownership, and context state
-management. Desired state and applied state are tracked separately. The cache
-is an optimization, not a resource-state or hazard graph; uncertainty, raw
-interop, object deletion, or context loss invalidates affected knowledge.
+## Construction and runtime flow
 
-Each capability is derived from the selected profile's version, extensions,
-limits, and callable entry points. Desktop-only support does not leak into
-GLES or WebGL2. WGSL lowers to the admitted GLSL profile with reflected
-bindings and coordinate adaptation. Desktop GL SPIR-V is a separate artifact
-ABI and is not treated as Vulkan SPIR-V execution.
+1. **Select a provider.** The integration layer enables one Cargo profile
+   feature and constructs `GlInstance`: WGL adopts a host window and opens a
+   desktop core context; EGL adopts a host drawable or creates a pbuffer;
+   WebGL2 creates a context for the supplied canvas. Native handles remain
+   borrowed from the host for the lifetime documented by the unsafe
+   constructors.
+2. **Discover the exact context.** With that context current, the provider
+   loads dispatch functions and records its actual API version, profile,
+   extensions, limits, renderer identity, and supported operations. Requested
+   version attributes alone do not establish support.
+3. **Create typed Core objects.** The instance exposes an adapter/device using
+   the discovered capability snapshot. Buffers, textures, views, samplers,
+   pipelines, and bind groups carry the context/device identity and generation
+   used to reject cross-device or stale use before issuing GL calls.
+4. **Encode and execute immediately.** Creating an encoder does not create a
+   portable deferred command buffer. Each accepted command validates its
+   inputs, makes or checks the owner context current, lowers the operation,
+   binds the needed state, and calls GL/WebGL on that thread. Submission
+   publishes ordered-work/completion bookkeeping for work already issued to
+   the driver; it does not replay the commands elsewhere.
+5. **Observe results and present.** Completion polling remains non-blocking
+   and owner-thread-affine. Fence observation, query availability, GPU staging
+   copies, and CPU mapping are distinct steps. Surface presentation swaps the
+   borrowed native drawable or publishes through the browser canvas contract.
+6. **Resize, suspend, or lose the context.** Surface generations invalidate
+   old acquired images. WebGL context loss terminates the current backend
+   generation; after browser restoration the host constructs a new instance,
+   device, and surface. Old resources are not revived by reusing their numeric
+   GL names.
 
-## Queries, mapping, and surfaces
+RenderGraph owns ordering and hazards. GL performs the caller-provided ordered
+operations and validates backend-local identity and state; it does not infer
+resource transitions or schedule independent GPU queues. Immediate execution
+also means callers must obey context-thread affinity for operations and final
+resource drops.
 
-Completion observation is non-blocking and owner-thread-affine. Native fences,
-query publication, GPU staging copies, and CPU result reads are separate
-events. The backend does not use `glFinish`, per-draw error draining, or hidden
-CPU readback as completion shortcuts.
+## What is distinctive about this backend
 
-Desktop and GLES surface providers borrow their host drawable. WebGL2 uses a
-canvas surface and browser-owned context. Surface generations reject stale
-images after resize or context loss. Context restoration creates a new backend
-generation; it does not resurrect old resources.
+- **Immediate, context-thread execution.** Unlike DX12/Vulkan/WebGPU/Metal
+  command encoders, GL command methods reach the driver as they are called.
+  The context is not hidden behind a worker queue or a global lock.
+- **One implementation, three different profiles.** Desktop GL, GLES, and
+  WebGL2 reuse typed operation families, but feature admission is per-context.
+  Desktop extensions cannot silently enable a route on GLES or WebGL2.
+- **Explicit state knowledge.** The cache tracks what the backend believes is
+  applied to the current context. Scoped native interop restores required
+  state and invalidates uncertain cache entries on exit or unwind. WebGL2
+  intentionally has no native dispatch-table pointer.
+- **Names are not identities.** Native GL names can be recycled. Resources
+  are tracked by context identity plus slot/generation so stale handles cannot
+  accidentally refer to a newly allocated object.
+- **No implicit GPU-wide stall.** Completion and mapping use supported fences,
+  queries, and staging paths. `glFinish`, per-draw error draining, and hidden
+  synchronous readback are not used as shortcuts.
+- **Shader routes are profile-aware.** WGSL is reflected and lowered to the
+  selected GLSL profile with binding and coordinate adaptation. Desktop GL
+  SPIR-V is an independent artifact route; Vulkan SPIR-V is not treated as a
+  portable GL shader binary.
 
-Scoped native interop is available on native WGL/EGL contexts under a
-thread-affine guard. The guard borrows the dispatch table, restores required
-state on exit or unwind, and invalidates cached state. It does not export RHI
-object names or provide a raw deferred command recorder. WebGL2 has no native
-dispatch-table pointer.
+## Context and resource lifetime
 
-## Profile-specific constraints
+A native `GlInstance` owns the context and its dispatch/provider state while
+borrowing the host drawable. The context must stay current on its owner thread
+for calls and final native destruction. WebGL2 owns browser context-side
+objects but the host owns canvas lifecycle and must notify context loss. The
+backend keeps native object references behind typed resources; applications
+must not retain raw numeric names as durable identifiers.
 
-- **Desktop GL4+/WGL:** desktop versions and extensions may expose query-buffer,
-  SPIR-V, multiview, and other routes after exact entry-point checks. Multiview
-  is limited to supported contiguous ranges; it does not imply arbitrary view
-  masks.
-- **GLES/EGL:** limits and extensions are queried per context. Persistent
-  mapping, storage-buffer indexing, depth/stencil transfers, and GPU-counted
-  draws require their own extension or version path.
-- **WebGL2:** runtime arrays are specialized to bounded native slots; mapping
-  uses fence-backed staging; texture readback is admitted per format. Context
-  loss is terminal for the current generation and restoration is owned by the
-  host.
+Resize changes drawable extent and surface generation, not device identity.
+Context loss is stronger: the current browser generation becomes terminal,
+leases and pending waiters are invalidated/woken, and restoration requires a
+new backend generation. This distinction prevents old surface images or
+resources from being used against a new context.
 
+Scoped native interop is limited to native WGL/EGL builds. Its guard borrows
+the dispatch table while the context is current, applies the documented
+thread-affinity and unsafe rules, and invalidates backend state knowledge when
+control returns. It does not hand out a command recorder or make external GL
+objects part of the RHI resource identity system.
+
+## Profile-specific behavior
+
+- **Desktop GL4+/WGL:** WGL bootstraps a context, requests descending core
+  versions, checks the actual created profile, then discovers exact function
+  availability. Optional routes include GL SPIR-V and selected multiview,
+  query, persistent mapping, and indirect-count paths when their complete
+  requirements are present.
+- **GLES3+/EGL:** EGL chooses a usable GLES 3.x context and discovers that
+  context's extensions and limits. GLES has separate gates for persistent
+  mapping, storage-buffer indexing, depth/stencil transfers, GPU-counted draws,
+  and exact query/readback operations.
+- **WebGL2:** browser context ownership and WebGL validation rules apply.
+  Runtime binding arrays are specialized to bounded native slots; mapping and
+  readback use fence-backed staging/snapshot flows. Standard WebGL2 has no
+  compute route and does not expose compressed-block readback.
 ## Public feature coverage
 
 ### Desktop GL4+

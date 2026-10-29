@@ -15,15 +15,17 @@ surface-image leases, and facts about accepted work and completion. It does not
 compile a render graph, infer hazards, choose resource aliases, pace frames, or
 decide when renderer resources may be retired.
 
-| Owner | Responsibility |
-|---|---|
-| `fluxel-host` and platform adapters | Window and canvas lifecycle, borrowed native handles, event delivery, resize, foreground/background, and restoration policy |
-| `fluxel-rendering` | RenderGraph, resource-use planning, hazards, ordering, frame policy, and retirement decisions |
-| `fluxel-assets` | Persistent asset identity, typed handles, caching, and CPU/GPU residency |
-| `fluxel-rhi-core` | Shared operation meanings, typed handles, device identity, capability contracts, and backend SPI |
-| RHI backend crates | Native resources, lowering or immediate execution, synchronization, surface leases, and native in-flight ownership |
-| `fluxel-rhi` facade | One import namespace that reexports Core and feature-selected concrete backends |
-
+- **`fluxel-host` and platform adapters:** window/canvas lifecycle, borrowed
+  native handles, event delivery, resize, foreground/background, restoration.
+- **`fluxel-rendering`:** RenderGraph, resource-use planning, hazards, order,
+  frame policy, and renderer retirement decisions.
+- **`fluxel-assets`:** persistent asset identity, typed handles, caching, CPU
+  and GPU residency.
+- **`fluxel-rhi-core`:** shared operation meanings, typed handles, device
+  identity, capability contracts, and backend SPI.
+- **RHI backends:** native resources, lowering or immediate execution,
+  synchronization, surface leases, and native in-flight ownership.
+- **`fluxel-rhi` facade:** one import namespace for Core and selected backends.
 The host does not depend on RHI. A host-to-RHI adapter borrows a native window
 handle and creates a surface; it does not transfer window ownership. Browser
 and Android adapters similarly translate platform lifecycle events without
@@ -54,6 +56,65 @@ backend modules for supported targets and Cargo features. It does not define a
 second resource model or runtime dispatcher. See the [Core design](../core/DESIGN.md)
 for the shared contract.
 
+## Runtime path and ownership flow
+
+A typical frame crosses the workspace in this order:
+
+```text
+Host event / frame policy
+    -> Renderer or caller builds ordered work
+    -> Core Instance selects adapter and Device<B>
+    -> backend creates typed resources and Surface
+    -> encoder records native work (or GL issues it immediately)
+    -> Queue submission reports acceptance and completion token
+    -> Surface presents an acquired generation-bound image
+    -> Renderer observes completion before retiring its resources
+```
+
+1. **Platform setup.** `fluxel-host` owns windows, event pumps, and native
+   handles. A narrow adapter borrows the platform handle to create a backend
+   surface or context; the RHI does not own the window. Browser adapters provide
+   canvas and lifecycle events through their platform route.
+2. **Backend selection.** The application selects a concrete backend at its
+   integration boundary. The facade exposes feature-gated modules, while Core
+   supplies the common API. Backend types stay static in `Device<B>` and
+   related objects; there is no hidden global runtime dispatcher.
+3. **Capability-driven construction.** The selected adapter reports device and
+   operation capabilities from implemented native routes. Resource, pipeline,
+   and surface creation validates those facts and associates objects with a
+   device identity and generation.
+4. **Ordered execution.** Renderer or caller supplies dependency order,
+   resource transitions, and cross-queue waits. Core validates the contract;
+   backend code translates it into API calls and preserves failures at the
+   point they occur. RHI does not infer graph hazards or add missing barriers.
+5. **Presentation and completion.** Surface acquisition returns an exclusive
+   image lease tied to a surface generation. Queue acceptance, GPU completion,
+   and successful presentation are separate facts. Backend-owned in-flight
+   references keep native objects alive until completion or terminal failure.
+6. **Retirement.** Completion evidence returns to Renderer, which decides when
+   its logical resources can be retired. RHI reports what the device finished;
+   it does not decide resource aliasing, frame pacing, or renderer retirement.
+
+## Crate responsibilities
+
+- **`fluxel-rhi-core`:** backend-independent API contracts, typed objects,
+  capability semantics, structured errors, and hidden SPI; it does not choose
+  a GPU API.
+- **`fluxel-rhi-dx12`:** D3D12 device, queues, resources, command recording,
+  presentation, and completion; Windows only.
+- **`fluxel-rhi-vulkan`:** Vulkan instance/device selection, explicit resources
+  and synchronization, command submission, surfaces, and completion.
+- **`fluxel-rhi-webgpu`:** WebGPU device/resource/command mapping plus browser
+  surface and lifecycle integration.
+- **`fluxel-rhi-gl`:** desktop GL, GLES, and WebGL2 immediate context-thread
+  execution with profile-specific admission.
+- **`fluxel-rhi-metal`:** Apple Metal device/resource/command mapping,
+  presentation, and completion; Apple targets only.
+- **`fluxel-rhi`:** convenience facade and examples; it reexports Core and
+  selected backends, rather than implementing another backend layer.
+Each crate's `DESIGN.md` follows its responsibilities from public adapter down
+to native execution and explains backend-specific limits. Package `README.md`
+files are for users integrating that individual crate.
 ## Execution models
 
 DX12, Vulkan, WebGPU, and Metal use deferred native recording: RHI operations
