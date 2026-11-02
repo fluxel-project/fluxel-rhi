@@ -17,16 +17,22 @@ use std::{
 
 impl<B: ResourceBackend> Device<B> {
     pub fn buffer_support(&self, desc: &BufferDesc) -> Support<BufferSupport> {
+        if desc.usage.contains(BufferUsage::STORAGE) && !self.caps.storage_buffers {
+            return Support::Unsupported("storage buffers");
+        }
         B::buffer_support(&self.native, desc)
     }
     pub fn texture_support(&self, desc: &TextureDesc) -> Support<TextureSupport> {
         if validate_transient_texture_desc(desc).is_err() {
             return Support::Unsupported("invalid transient attachment descriptor");
         }
+        if desc.usage.contains(TextureUsage::STORAGE_BINDING) && !self.caps.storage_textures {
+            return Support::Unsupported("storage textures");
+        }
         B::texture_support(&self.native, desc)
     }
     pub fn create_buffer(&self, desc: &BufferDesc) -> Result<Buffer<B>> {
-        if let Support::Unsupported(reason) = B::buffer_support(&self.native, desc) {
+        if let Support::Unsupported(reason) = self.buffer_support(desc) {
             return Err(Error::Unsupported(reason));
         }
         // SAFETY: the SPI created the buffer for this device after support validation.
@@ -34,7 +40,7 @@ impl<B: ResourceBackend> Device<B> {
     }
     pub fn create_texture(&self, desc: &TextureDesc) -> Result<Texture<B>> {
         validate_transient_texture_desc(desc)?;
-        if let Support::Unsupported(reason) = B::texture_support(&self.native, desc) {
+        if let Support::Unsupported(reason) = self.texture_support(desc) {
             return Err(Error::Unsupported(reason));
         }
         // SAFETY: the SPI created the texture for this device after support validation.
@@ -148,6 +154,12 @@ impl<B: ResourceBackend> Device<B> {
                 }
             }
             match &entry.ty {
+                BindingType::StorageBuffer { .. } if !self.caps.storage_buffers => {
+                    return Err(Error::Unsupported("storage buffers"));
+                }
+                BindingType::StorageTexture { .. } if !self.caps.storage_textures => {
+                    return Err(Error::Unsupported("storage textures"));
+                }
                 BindingType::StorageBuffer {
                     access: StorageAccess::Atomic,
                     ..

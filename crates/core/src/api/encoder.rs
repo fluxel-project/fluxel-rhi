@@ -39,6 +39,7 @@ pub struct CommandEncoder<B: CommandBackend> {
     pub(crate) dynamic_depth_bias: bool,
     pub(crate) dynamic_depth_bias_clamp: bool,
     pub(crate) rect_attachment_clear: bool,
+    pub(crate) native_interop: bool,
     pub(crate) debug_group_depth: u32,
 }
 impl<B: CommandBackend> CommandEncoder<B> {
@@ -67,6 +68,7 @@ impl<B: CommandBackend> CommandEncoder<B> {
             dynamic_depth_bias: device.caps.dynamic_depth_bias,
             dynamic_depth_bias_clamp: device.caps.dynamic_depth_bias_clamp,
             rect_attachment_clear: device.caps.rect_attachment_clear,
+            native_interop: device.caps.native_interop,
             debug_group_depth: 0,
         })
     }

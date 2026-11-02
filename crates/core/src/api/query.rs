@@ -171,7 +171,8 @@ pub struct PassStatistics<'a, B: PassStatisticsBackend> {
 }
 impl<B: PassStatisticsBackend> Device<B> {
     pub fn pass_statistics(&self) -> Option<PassStatistics<'_, B>> {
-        (B::pass_statistics_fields(&self.native).0 != 0).then_some(PassStatistics { device: self })
+        (self.caps.pipeline_statistics && B::pass_statistics_fields(&self.native).0 != 0)
+            .then_some(PassStatistics { device: self })
     }
 }
 impl<B: PassStatisticsBackend> PassStatistics<'_, B> {
@@ -336,7 +337,13 @@ pub struct Queries<'a, B: QueryBackend> {
 impl<B: QueryBackend> Device<B> {
     /// Opens a domain for a supported query kind on this device.
     pub fn queries(&self, kind: QueryKind) -> Option<Queries<'_, B>> {
-        B::query_supported(&self.native, kind).then_some(Queries { device: self, kind })
+        let advertised = match kind {
+            QueryKind::Timestamp => self.caps.timestamp,
+            QueryKind::Occlusion => self.caps.occlusion,
+            QueryKind::PipelineStatistics => self.caps.pipeline_statistics,
+        };
+        (advertised && B::query_supported(&self.native, kind))
+            .then_some(Queries { device: self, kind })
     }
 }
 impl<B: QueryBackend> Queries<'_, B> {

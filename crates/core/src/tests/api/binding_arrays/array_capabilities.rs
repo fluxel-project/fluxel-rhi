@@ -67,6 +67,7 @@ fn storage_texture_nonuniform_indexing_uses_its_own_capability() {
     let id = DeviceId::allocate().unwrap();
     let mut caps = DeviceCapabilities::default();
     caps.binding_arrays = true;
+    caps.storage_textures = true;
     // The compatibility aggregate must not admit a storage texture by itself.
     caps.nonuniform_sampled_texture_and_storage_buffer_indexing = true;
     caps.limits.max_bindings_per_group = 4;
@@ -81,6 +82,7 @@ fn storage_texture_nonuniform_indexing_uses_its_own_capability() {
     let id = DeviceId::allocate().unwrap();
     let mut caps = DeviceCapabilities::default();
     caps.binding_arrays = true;
+    caps.storage_textures = true;
     caps.nonuniform_storage_texture_indexing = true;
     caps.limits.max_bindings_per_group = 4;
     // SAFETY: this fixture supplies matching capabilities for its mock device.
@@ -151,6 +153,7 @@ fn storage_buffer_nonuniform_indexing_uses_its_own_capability() {
     let id = DeviceId::allocate().unwrap();
     let mut caps = DeviceCapabilities::default();
     caps.binding_arrays = true;
+    caps.storage_buffers = true;
     caps.nonuniform_sampled_texture_and_storage_buffer_indexing = true;
     caps.limits.max_bindings_per_group = 4;
     // The compatibility aggregate must not admit a storage buffer by itself.
@@ -164,12 +167,67 @@ fn storage_buffer_nonuniform_indexing_uses_its_own_capability() {
     let id = DeviceId::allocate().unwrap();
     let mut caps = DeviceCapabilities::default();
     caps.binding_arrays = true;
+    caps.storage_buffers = true;
     caps.nonuniform_storage_buffer_indexing = true;
     caps.limits.max_bindings_per_group = 4;
     // SAFETY: this mock explicitly reports storage-buffer indexing.
     let with = unsafe { Device::<NativeShared>::from_native(id, Arc::new(()), caps) };
     assert!(with.create_bind_group_layout(&layout).is_ok());
     LAYOUT_CALLS.with(|calls| assert_eq!(calls.get(), 1));
+}
+
+#[test]
+fn ordinary_storage_bindings_require_capabilities_before_backend_layout() {
+    let layouts = [
+        (
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: vec![ShaderStage::Compute],
+                ty: BindingType::StorageBuffer {
+                    dynamic_offset: false,
+                    min_size: 4,
+                    access: StorageAccess::Read,
+                },
+                count: BindingCount::One,
+                partially_bound: false,
+                nonuniform_indexing: false,
+            },
+            "storage buffers",
+        ),
+        (
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: vec![ShaderStage::Compute],
+                ty: BindingType::StorageTexture {
+                    format: TextureFormat::Rgba8Unorm,
+                    dimension: TextureViewDimension::D2,
+                    access: StorageAccess::Write,
+                },
+                count: BindingCount::One,
+                partially_bound: false,
+                nonuniform_indexing: false,
+            },
+            "storage textures",
+        ),
+    ];
+
+    for (entry, message) in layouts {
+        LAYOUT_CALLS.with(|calls| calls.set(0));
+        let id = DeviceId::allocate().unwrap();
+        let mut caps = DeviceCapabilities::default();
+        caps.limits.max_bindings_per_group = 1;
+        let device = unsafe { Device::<NativeShared>::from_native(id, Arc::new(()), caps) };
+        let layout = BindGroupLayoutDesc {
+            label: None,
+            entries: vec![entry],
+        };
+
+        assert!(matches!(
+            device.create_bind_group_layout(&layout),
+            Err(Error::Unsupported(actual)) if actual == message
+        ));
+        LAYOUT_CALLS.with(|calls| assert_eq!(calls.get(), 0));
+    }
 }
 
 #[test]

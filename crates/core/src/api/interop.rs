@@ -86,6 +86,9 @@ impl<B: NativeInteropBackend> CommandEncoder<B> {
     /// }
     /// ```
     pub unsafe fn native_interop(&mut self) -> Result<NativeEncoderInteropGuard<'_, B>> {
+        if !self.native_interop {
+            return Err(Error::Unsupported("native interop"));
+        }
         let native = B::acquire_encoder(self.ready()?)?;
         Ok(NativeEncoderInteropGuard {
             native,

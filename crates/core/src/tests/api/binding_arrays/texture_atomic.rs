@@ -36,6 +36,7 @@ fn texture_atomic_layout_is_format_stage_and_capability_scoped() {
     ));
     let id = DeviceId::allocate().unwrap();
     let mut caps = DeviceCapabilities::default();
+    caps.storage_textures = true;
     caps.texture_atomic_r32uint_compute = true;
     caps.limits.max_bindings_per_group = 4;
     // SAFETY: the fixture supplies an atomic capability for its mock device.
@@ -64,6 +65,7 @@ fn texture_atomic_layout_is_format_stage_and_capability_scoped() {
     ));
     let sint_id = DeviceId::allocate().unwrap();
     let mut sint_caps = DeviceCapabilities::default();
+    sint_caps.storage_textures = true;
     sint_caps.texture_atomic_r32sint_compute = true;
     sint_caps.limits.max_bindings_per_group = 4;
     // SAFETY: the fixture supplies the signed atomic capability for its mock device.
@@ -76,6 +78,7 @@ fn texture_atomic_layout_is_format_stage_and_capability_scoped() {
     }
     let r64_id = DeviceId::allocate().unwrap();
     let mut r64_caps = DeviceCapabilities::default();
+    r64_caps.storage_textures = true;
     r64_caps.shader_int64_atomic_image_r64uint_umin = true;
     r64_caps.limits.max_bindings_per_group = 4;
     // SAFETY: the fixture supplies the R64Uint image atomic capability.
@@ -98,6 +101,7 @@ fn texture_atomic_layout_is_format_stage_and_capability_scoped() {
     ));
     let r64_umax_id = DeviceId::allocate().unwrap();
     let mut r64_umax_caps = DeviceCapabilities::default();
+    r64_umax_caps.storage_textures = true;
     r64_umax_caps.shader_int64_atomic_image_r64uint_umax = true;
     r64_umax_caps.limits.max_bindings_per_group = 4;
     // SAFETY: this fixture exposes only the R64Uint image unsigned-max route.
@@ -117,6 +121,7 @@ fn texture_atomic_layout_is_format_stage_and_capability_scoped() {
     ));
     let min_id = DeviceId::allocate().unwrap();
     let mut min_caps = DeviceCapabilities::default();
+    min_caps.storage_textures = true;
     min_caps.texture_atomic_r32uint_min_compute = true;
     min_caps.limits.max_bindings_per_group = 4;
     // SAFETY: this fixture exposes only the unsigned min atomic route.
@@ -129,6 +134,7 @@ fn texture_atomic_layout_is_format_stage_and_capability_scoped() {
     );
     let max_id = DeviceId::allocate().unwrap();
     let mut max_caps = DeviceCapabilities::default();
+    max_caps.storage_textures = true;
     max_caps.texture_atomic_r32uint_max_compute = true;
     max_caps.limits.max_bindings_per_group = 4;
     // SAFETY: this fixture exposes only the unsigned max atomic route.
@@ -141,6 +147,7 @@ fn texture_atomic_layout_is_format_stage_and_capability_scoped() {
     );
     let sint_min_id = DeviceId::allocate().unwrap();
     let mut sint_min_caps = DeviceCapabilities::default();
+    sint_min_caps.storage_textures = true;
     sint_min_caps.texture_atomic_r32sint_min_compute = true;
     sint_min_caps.limits.max_bindings_per_group = 4;
     // SAFETY: this fixture exposes only the signed min atomic route.
@@ -153,6 +160,7 @@ fn texture_atomic_layout_is_format_stage_and_capability_scoped() {
     );
     let sint_max_id = DeviceId::allocate().unwrap();
     let mut sint_max_caps = DeviceCapabilities::default();
+    sint_max_caps.storage_textures = true;
     sint_max_caps.texture_atomic_r32sint_max_compute = true;
     sint_max_caps.limits.max_bindings_per_group = 4;
     // SAFETY: this fixture exposes only the signed max atomic route.
@@ -165,6 +173,7 @@ fn texture_atomic_layout_is_format_stage_and_capability_scoped() {
     );
     let xor_id = DeviceId::allocate().unwrap();
     let mut xor_caps = DeviceCapabilities::default();
+    xor_caps.storage_textures = true;
     xor_caps.texture_atomic_r32uint_xor_compute = true;
     xor_caps.limits.max_bindings_per_group = 4;
     // SAFETY: this fixture exposes only the unsigned xor atomic route.

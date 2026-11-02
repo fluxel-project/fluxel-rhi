@@ -20,6 +20,8 @@ mod binding_arrays;
 mod ergonomics;
 #[path = "api/execution_contract.rs"]
 mod execution_contract;
+#[path = "api/interop_capabilities.rs"]
+mod interop_capabilities;
 #[path = "api/mesh_validation.rs"]
 mod mesh_validation;
 #[path = "api/multiqueue_validation.rs"]

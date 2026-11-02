@@ -2,7 +2,11 @@
 use super::{type_contract_tests::NativeShared, *};
 use std::cell::Cell;
 
-thread_local! { static CALLS: Cell<u32> = const { Cell::new(0) }; }
+thread_local! {
+    static CALLS: Cell<u32> = const { Cell::new(0) };
+    static QUERY_SUPPORTED_CALLS: Cell<u32> = const { Cell::new(0) };
+    static PASS_STATISTICS_FIELDS_CALLS: Cell<u32> = const { Cell::new(0) };
+}
 fn called() {
     CALLS.with(|c| c.set(c.get() + 1));
 }
@@ -12,6 +16,7 @@ fn calls() -> u32 {
 
 impl QueryBackend for NativeShared {
     fn query_supported(_: &Arc<()>, _: QueryKind) -> bool {
+        QUERY_SUPPORTED_CALLS.with(|calls| calls.set(calls.get() + 1));
         true
     }
     fn create_query_set(_: &Arc<()>, _: &QueryDesc) -> Result<Arc<()>> {
@@ -49,6 +54,7 @@ impl QueryBackend for NativeShared {
 }
 impl PassStatisticsBackend for NativeShared {
     fn pass_statistics_fields(_: &Arc<()>) -> StatisticsFields {
+        PASS_STATISTICS_FIELDS_CALLS.with(|calls| calls.set(calls.get() + 1));
         StatisticsFields::VERTEX_INVOCATIONS
     }
     fn pass_statistics_invalid_value(_: &Arc<()>) -> Option<u64> {
@@ -159,8 +165,36 @@ fn pass_statistics_validate_before_preparing_a_native_pass() {
 }
 fn device() -> Device<NativeShared> {
     let id = DeviceId::allocate().unwrap();
+    let mut caps = DeviceCapabilities::default();
+    caps.timestamp = true;
+    caps.occlusion = true;
+    caps.pipeline_statistics = true;
     // SAFETY: the mock native device belongs to this newly allocated ID.
-    unsafe { Device::from_native(id, Arc::new(()), DeviceCapabilities::default()) }
+    unsafe { Device::from_native(id, Arc::new(()), caps) }
+}
+#[test]
+fn query_domains_require_advertised_capabilities_before_backend_probe() {
+    QUERY_SUPPORTED_CALLS.with(|calls| calls.set(0));
+    PASS_STATISTICS_FIELDS_CALLS.with(|calls| calls.set(0));
+    let id = DeviceId::allocate().unwrap();
+    let unavailable = unsafe {
+        Device::<NativeShared>::from_native(id, Arc::new(()), DeviceCapabilities::default())
+    };
+
+    assert!(unavailable.queries(QueryKind::Timestamp).is_none());
+    assert!(unavailable.queries(QueryKind::Occlusion).is_none());
+    assert!(unavailable.queries(QueryKind::PipelineStatistics).is_none());
+    assert!(unavailable.pass_statistics().is_none());
+    QUERY_SUPPORTED_CALLS.with(|calls| assert_eq!(calls.get(), 0));
+    PASS_STATISTICS_FIELDS_CALLS.with(|calls| assert_eq!(calls.get(), 0));
+
+    let available = device();
+    assert!(available.queries(QueryKind::Timestamp).is_some());
+    assert!(available.queries(QueryKind::Occlusion).is_some());
+    assert!(available.queries(QueryKind::PipelineStatistics).is_some());
+    assert!(available.pass_statistics().is_some());
+    QUERY_SUPPORTED_CALLS.with(|calls| assert_eq!(calls.get(), 3));
+    PASS_STATISTICS_FIELDS_CALLS.with(|calls| assert_eq!(calls.get(), 1));
 }
 fn encoder(device: &Device<NativeShared>) -> CommandEncoder<NativeShared> {
     CommandEncoder::new(

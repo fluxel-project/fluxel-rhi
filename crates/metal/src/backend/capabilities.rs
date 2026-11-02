@@ -4,7 +4,7 @@
 //! the combined per-stage resource budget after assigning actual Metal slots.
 use super::{Metal, MetalDevice, binding_abi, bindings, memory, mesh, shader, sparse, texture};
 use fluxel_rhi_core::api::{DeviceCapabilities, DeviceLimits, QueryKind};
-use fluxel_rhi_core::backend::QueryBackend;
+use fluxel_rhi_core::backend::{PassStatisticsBackend, QueryBackend};
 use objc2::runtime::NSObjectProtocol as _;
 use objc2_metal::MTLDevice as _;
 
@@ -46,6 +46,7 @@ pub(super) fn describe(device: &MetalDevice, multi_queue: bool) -> DeviceCapabil
         nonuniform_sampler_indexing: bindings::argument_arrays_supported(native),
         timestamp: Metal::query_supported(device, QueryKind::Timestamp),
         occlusion: Metal::query_supported(device, QueryKind::Occlusion),
+        pipeline_statistics: Metal::pass_statistics_fields(device).0 != 0,
         multiview,
         placed_memory: memory::supported(native),
         external_memory: true,

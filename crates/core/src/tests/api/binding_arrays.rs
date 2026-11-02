@@ -3,6 +3,9 @@ use super::{type_contract_tests::NativeShared, *};
 use std::cell::Cell;
 
 thread_local! {
+    static BUFFER_SUPPORT_CALLS: Cell<usize> = const { Cell::new(0) };
+    static BUFFER_CREATE_CALLS: Cell<usize> = const { Cell::new(0) };
+    static TEXTURE_SUPPORT_CALLS: Cell<usize> = const { Cell::new(0) };
     static LAYOUT_CALLS: Cell<usize> = const { Cell::new(0) };
     static GROUP_CALLS: Cell<usize> = const { Cell::new(0) };
     static TEXTURE_CALLS: Cell<usize> = const { Cell::new(0) };
@@ -10,9 +13,14 @@ thread_local! {
 
 impl ResourceBackend for NativeShared {
     fn buffer_support(_: &Arc<()>, _: &BufferDesc) -> Support<BufferSupport> {
-        unreachable!()
+        BUFFER_SUPPORT_CALLS.with(|calls| calls.set(calls.get() + 1));
+        Support::Supported(BufferSupport {
+            alignment: 1,
+            max_size: 4096,
+        })
     }
     fn texture_support(_: &Arc<()>, _: &TextureDesc) -> Support<TextureSupport> {
+        TEXTURE_SUPPORT_CALLS.with(|calls| calls.set(calls.get() + 1));
         Support::Supported(TextureSupport {
             max_extent: [4096, 4096, 1],
             max_array_layers: 1,
@@ -25,7 +33,8 @@ impl ResourceBackend for NativeShared {
         })
     }
     fn create_buffer(_: &Arc<()>, _: &BufferDesc) -> Result<Arc<()>> {
-        unreachable!()
+        BUFFER_CREATE_CALLS.with(|calls| calls.set(calls.get() + 1));
+        Ok(Arc::new(()))
     }
     fn create_texture(_: &Arc<()>, _: &TextureDesc) -> Result<Arc<()>> {
         TEXTURE_CALLS.with(|calls| calls.set(calls.get() + 1));
@@ -54,6 +63,8 @@ fn device(runtime_arrays: bool) -> Device<NativeShared> {
     let id = DeviceId::allocate().unwrap();
     let mut caps = DeviceCapabilities::default();
     caps.runtime_sized_binding_arrays = runtime_arrays;
+    caps.storage_buffers = true;
+    caps.storage_textures = true;
     caps.nonuniform_sampler_indexing = true;
     caps.limits.max_bindings_per_group = 4;
     // SAFETY: this fixture supplies a native handle and capabilities for the same mock device.
@@ -80,6 +91,8 @@ mod acceleration_arrays;
 mod array_capabilities;
 #[path = "binding_arrays/array_instances.rs"]
 mod array_instances;
+#[path = "binding_arrays/resource_capabilities.rs"]
+mod resource_capabilities;
 #[path = "binding_arrays/storage_views.rs"]
 mod storage_views;
 #[path = "binding_arrays/texture_atomic.rs"]
