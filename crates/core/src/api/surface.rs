@@ -19,6 +19,18 @@ pub struct Surface<B: Backend> {
     pub id: SurfaceId,
     native: B::NativeSurface,
     stats: Arc<RhiStats>,
+    configured: Option<ConfiguredLeaseFacts>,
+}
+
+/// Facts that Core publishes only after a successful native configuration.
+///
+/// The generation is sampled after `SurfaceBackend::configure` resolves, so
+/// an acquired image can carry the exact configuration that produced it.
+#[derive(Clone, Copy)]
+struct ConfiguredLeaseFacts {
+    generation: u64,
+    format: TextureFormat,
+    extent: [u32; 2],
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PresentMode {
@@ -89,6 +101,7 @@ impl<B: SurfaceBackend> Surface<B> {
             id,
             native,
             stats: device.stats.clone(),
+            configured: None,
         }
     }
     pub fn generation(&self) -> u64 {
@@ -104,18 +117,35 @@ impl<B: SurfaceBackend> Surface<B> {
         if let Support::Unsupported(reason) = B::supports_config(&self.native, desc) {
             return Err(Error::Unsupported(reason));
         }
-        B::configure(&mut self.native, desc).await
+        B::configure(&mut self.native, desc).await?;
+        self.configured = Some(ConfiguredLeaseFacts {
+            generation: self.generation(),
+            format: desc.format,
+            extent: desc.extent,
+        });
+        Ok(())
     }
     pub async fn acquire(&mut self) -> Result<SurfaceImage<B>> {
         let native = B::acquire(&mut self.native).await?;
-        self.stats.record_surface_acquire();
         // Read the generation after acquisition: a backend's atomic acquire
         // transaction is the authority for the lease generation it returned.
         // Caching an earlier value would let a resize race mint a stale lease.
+        let generation = self.generation();
+        let Some(configured) = self.configured else {
+            return Err(Error::InvalidState);
+        };
+        // A backend may observe an out-of-band resize while acquiring. Never
+        // mint a lease with configuration facts from a different generation.
+        if configured.generation != generation {
+            return Err(Error::SurfaceOutdated);
+        }
+        self.stats.record_surface_acquire();
         Ok(SurfaceImage {
             device: self.device,
             surface: self.id,
-            generation: self.generation(),
+            generation,
+            format: configured.format,
+            extent: configured.extent,
             native,
             stats: self.stats.clone(),
         })

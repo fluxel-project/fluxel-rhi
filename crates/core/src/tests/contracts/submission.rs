@@ -131,6 +131,8 @@ fn stale_surface_lease_cannot_enter_plan_present() {
         device: device_id,
         surface: SurfaceId::allocate().unwrap(),
         generation: 1,
+        format: TextureFormat::Rgba8Unorm,
+        extent: [1, 1],
         stats: Arc::new(RhiStats::new()),
         native: TestLease {
             current: current.clone(),

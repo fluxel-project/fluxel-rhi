@@ -105,7 +105,9 @@ For deferred backends, `Execution` stores backend-native recordings and later ha
 
 ## Surface leases
 
-Core models an acquired presentable image as an exclusive native lease. Surface configuration publishes a new generation only after native configuration succeeds. A generation-bound image can be presented or abandoned exactly once; an image from an earlier configuration is rejected rather than being presented to a resized or lost surface.
+Core models an acquired presentable image as an exclusive native lease. Surface configuration publishes a new generation only after native configuration succeeds. At that point Core records the configured format and extent with the generation. A successful `Surface::acquire` rechecks the native generation after it obtains the native lease; only a match publishes a `SurfaceImage`. The image's `format()` and `extent()` are therefore facts from the successful configuration that minted that lease, not independently supplied caller metadata. A failed configure leaves the previously published facts unchanged, while a generation mismatch drops the newly acquired native lease and returns `Error::SurfaceOutdated`.
+
+Those facts allow a consumer to reject an incompatible render-target or viewport plan before native recording. They do not turn `SurfaceImage` into a `Texture` or `TextureView`, establish arbitrary attachment/usage compatibility, or prove a renderer/backend integration path. Backend-specific view creation, permitted surface usage, presentation, completion, and host resize/loss handling remain separate contracts.
 
 `NativeImageLease` is the narrow backend contract for this rule. It combines generation validation, irreversible native handoff, and abandonment without making the host transfer ownership of its window or canvas. The host remains responsible for resize, visibility, foreground/background, and restoration; the platform adapter translates those events into surface operations.
 

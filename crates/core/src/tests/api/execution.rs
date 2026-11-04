@@ -40,6 +40,8 @@ fn device_clones_share_stats_and_present_counts_only_after_handoff() {
         device: device.id(),
         surface: SurfaceId::allocate().unwrap(),
         generation: 0,
+        format: TextureFormat::Rgba8Unorm,
+        extent: [1, 1],
         native: (),
         stats: stats.clone(),
     });
@@ -394,6 +396,8 @@ fn rejected_present_keeps_lease_for_retry() {
         device: device.id(),
         surface: SurfaceId::allocate().unwrap(),
         generation: 0,
+        format: TextureFormat::Rgba8Unorm,
+        extent: [1, 1],
         native: (),
         stats: Arc::new(RhiStats::new()),
     });
@@ -431,6 +435,8 @@ fn clean_present_rejection_is_reported_and_successful_retry_clears_it() {
             device: DeviceId::allocate().unwrap(),
             surface: SurfaceId::allocate().unwrap(),
             generation: 0,
+            format: TextureFormat::Rgba8Unorm,
+            extent: [1, 1],
             native: (),
             stats: Arc::new(RhiStats::new()),
         });
@@ -445,6 +451,8 @@ fn clean_present_rejection_is_reported_and_successful_retry_clears_it() {
                 device: device.id(),
                 surface: SurfaceId::allocate().unwrap(),
                 generation: 0,
+                format: TextureFormat::Rgba8Unorm,
+                extent: [1, 1],
                 native: (),
                 stats: Arc::new(RhiStats::new()),
             });

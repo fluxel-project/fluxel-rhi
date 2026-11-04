@@ -218,6 +218,8 @@ pub struct SurfaceImage<B: Backend> {
     pub(crate) device: DeviceId,
     pub(crate) surface: SurfaceId,
     pub(crate) generation: u64,
+    pub(crate) format: TextureFormat,
+    pub(crate) extent: [u32; 2],
     pub(crate) native: B::NativeSurfaceImage,
     pub(crate) stats: Arc<RhiStats>,
 }
@@ -230,6 +232,16 @@ impl<B: Backend> SurfaceImage<B> {
     }
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+    /// The format committed by the configuration generation that minted this
+    /// exclusive lease. It is a lease fact, not caller-supplied metadata.
+    pub fn format(&self) -> TextureFormat {
+        self.format
+    }
+    /// The extent committed by the configuration generation that minted this
+    /// exclusive lease. It is a lease fact, not caller-supplied metadata.
+    pub fn extent(&self) -> [u32; 2] {
+        self.extent
     }
     pub fn is_current(&self) -> bool {
         self.native.is_current(self.generation)

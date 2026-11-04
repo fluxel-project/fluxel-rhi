@@ -30,6 +30,8 @@ mod multiqueue_validation;
 mod query_validation;
 #[path = "api/ray_validation.rs"]
 pub(crate) mod ray_validation;
+#[path = "api/surface_lease.rs"]
+mod surface_lease;
 #[path = "api/type_contract_lane.rs"]
 mod type_contract_lane;
 

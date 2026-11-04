@@ -111,6 +111,14 @@ lease into a submission plan. A rejected handoff can return the lease; an
 unhanded lease is abandoned through its native drop path. Native present
 acceptance, GPU completion, and present outcome remain separate observations.
 
+After successful configuration, each acquired lease also exposes the
+configuration generation's `format()` and `extent()`. Core records those facts
+only after the backend configuration succeeds and checks the native generation
+again after acquisition; a mismatch abandons the native lease and reports
+`SurfaceOutdated`. These accessors support compatibility checks by a consumer,
+but do not make a surface image interchangeable with a normal texture/view or
+constitute evidence that any renderer integration has completed.
+
 ## Consequences
 
 Backend lowering can normalize attachments privately without leaking a
