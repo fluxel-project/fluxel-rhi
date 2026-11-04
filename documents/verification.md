@@ -328,3 +328,34 @@ standard API.
 ## Updating this matrix
 
 Add a row only after recording a reproducible command and result. Keep source compilation, validation-layer execution, and visual comparison separate. Do not infer unexercised backend capabilities from these examples.
+
+## Configured Surface lease facts (2026-11-04)
+
+Source `b5d569feace548a6ed498901deaf31a5efcaca61` includes configured
+`SurfaceImage` format/extent and stale-generation invalidation. Rust 1.87.0
+focused validation retained the following results:
+
+- `cargo +1.87.0 test -p fluxel-rhi-core --lib --offline --locked surface_lease -- --nocapture`:
+  5 passed. This includes successful configuration facts, ordinary configure
+  failure, configure failure that invalidates native state, generation mismatch
+  after acquire, and stale-lease presentation refusal.
+- `cargo +1.87.0 test -p fluxel-rhi-webgpu --target wasm32-unknown-unknown --offline --locked canvas_resize_rejects_stale_configuration_until_reconfigured -- --nocapture`:
+  1 passed in headless Chrome 156.0.8078.80 with ChromeDriver 156.0.8078.73.
+  The real browser test resizes a canvas, refuses stale configuration, then
+  reconfigures and checks the newly acquired lease format/extent.
+
+The browser command uses `WASM_BINDGEN_USE_BROWSER=1`, the installed
+`wasm-bindgen-test-runner` as the wasm target runner, a matching `CHROMEDRIVER`,
+and the local WebGPU webdriver configuration. An initial ChromeDriver 154
+attempt failed before test execution against Chrome 156; its log remains
+separate from the passing run. Raw logs and hashes are retained in the local
+Surface evidence directory for that exact revision and
+`focused-20261104` attempt (see the local evidence index).
+They are not published as RHI release artifacts.
+
+Rendering's [S5 Forward evidence](https://github.com/fluxel-project/fluxel-rendering/blob/main/documents/s5-forward-closure.md)
+separately pins this RHI revision and exercises configured lease facts through
+actual DX12/WGL presentation and resize. This does not establish native error
+injection on Vulkan, Metal drawable mismatch execution, or Rendering browser
+support. Previous Vulkan host and WebGPU wasm checks and Metal Apple-target
+typechecks are build/source evidence; Metal hardware tests remain unexecuted.

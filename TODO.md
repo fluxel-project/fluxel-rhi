@@ -103,6 +103,15 @@ adapter.
 
 ## Evidence boundary
 
+Configured Surface lease invalidation at `b5d569f` has Core contract tests,
+one real WebGPU canvas-resize refusal/reconfigure test, and Rendering's named
+DX12/WGL presentation/resize evidence. Vulkan replacement-creation failure
+after old-swapchain retirement and Metal out-of-band drawable fact mismatch
+remain source/build evidence only. Reopen those native fault paths when a
+reproducible failure-injection harness or Apple execution target is selected;
+acceptance must show `SurfaceOutdated` and no old-generation lease publication.
+See [the scoped validation record](documents/verification.md#configured-surface-lease-facts-2026-11-04).
+
 Metal currently has no Apple GPU execution or Surface evidence in this
 repository. This is not a claim of runtime acceptance; compile and source
 review results must remain labeled accordingly. A backend capability claim
