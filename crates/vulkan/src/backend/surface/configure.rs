@@ -155,6 +155,14 @@ pub(super) fn configure(state: &SurfaceState, config: &api::SurfaceConfig) -> Re
         }
         inner.swapchain = vk::SwapchainKHR::null();
         inner.images.clear();
+        // Vulkan retires `old_swapchain` once this creation attempt returns,
+        // including when the attempt itself fails. The former configuration is
+        // no longer a native fact, so invalidate its generation before any
+        // fallible publication work below. Core will retain its old facts on
+        // this error, but can never mint a matching lease from this surface.
+        inner.generation = next_generation;
+        inner.abandoned = true;
+        inner.presented = false;
     }
     let chain = created.map_err(vk_error)?;
     // SAFETY: `chain` was just created by this SurfaceState and is not published

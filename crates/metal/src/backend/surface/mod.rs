@@ -25,7 +25,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 #[cfg(target_vendor = "apple")]
-mod acquire;
+pub(crate) mod acquire;
 #[cfg(target_vendor = "apple")]
 use acquire::AcquireWorker;
 #[cfg(target_vendor = "apple")]
@@ -68,14 +68,20 @@ struct MetalSurfaceState {
     #[cfg(target_vendor = "apple")]
     configured: bool,
     #[cfg(target_vendor = "apple")]
+    configured_extent: Option<[u32; 2]>,
+    #[cfg(target_vendor = "apple")]
+    configured_format: Option<api::TextureFormat>,
+    #[cfg(target_vendor = "apple")]
     max_extent: u32,
 }
 
 impl MetalSurface {
     /// Binds a host-owned layer to this device and retains it for Surface use.
     ///
-    /// The host remains responsible for attaching the layer to a live view and
-    /// updating the configured drawable size when the view resizes.
+    /// The host remains responsible for attaching the layer to a live view.
+    /// A resize must be followed by `Surface::configure`; a host-side layer
+    /// size or pixel-format change without reconfiguration is rejected during
+    /// drawable acquisition.
     #[cfg(target_vendor = "apple")]
     pub fn from_layer(
         device: &MetalDevice,
@@ -94,6 +100,10 @@ impl MetalSurface {
                 acquire_worker,
                 #[cfg(target_vendor = "apple")]
                 configured: false,
+                #[cfg(target_vendor = "apple")]
+                configured_extent: None,
+                #[cfg(target_vendor = "apple")]
+                configured_format: None,
                 max_extent: super::texture::max_texture_dimension_2d(&device._state._device),
             })),
         })
@@ -310,6 +320,8 @@ impl SurfaceBackend for Metal {
             state.layer.setFramebufferOnly(true);
             state.layer.setAllowsNextDrawableTimeout(true);
             state.configured = true;
+            state.configured_extent = Some(desc.extent);
+            state.configured_format = Some(desc.format);
             ready(Ok(()))
         }
         #[cfg(not(target_vendor = "apple"))]
@@ -329,13 +341,28 @@ impl SurfaceBackend for Metal {
         {
             let state = surface.state.borrow();
 
-            if !state.configured {
+            let Some(extent) = state
+                .configured
+                .then_some(state.configured_extent)
+                .flatten()
+            else {
                 return acquire::failed(
                     state.acquire_worker.clone(),
                     state.generation.clone(),
                     api::Error::InvalidState,
                 );
-            }
+            };
+            let Some(format) = state
+                .configured
+                .then_some(state.configured_format)
+                .flatten()
+            else {
+                return acquire::failed(
+                    state.acquire_worker.clone(),
+                    state.generation.clone(),
+                    api::Error::InvalidState,
+                );
+            };
             let generation = *state
                 .generation
                 .lock()
@@ -344,6 +371,8 @@ impl SurfaceBackend for Metal {
                 state.acquire_worker.clone(),
                 state.layer.clone(),
                 generation,
+                extent,
+                format,
                 state.generation.clone(),
             )
         }

@@ -169,7 +169,10 @@ surface is bound to one device and has a configuration generation.
    or reconfiguration makes an old lease `SurfaceOutdated`.
 4. Dropping an unhanded lease marks the canvas abandoned. A later configuration
    first unconfigures the browser context, avoiding reuse of a discarded
-   current texture.
+   current texture. Successful unconfiguration advances the native generation
+   and clears its configuration before the replacement call. If that call then
+   fails, acquisition reports `SurfaceOutdated`; prior Core facts do not
+   describe a usable canvas configuration.
 
 Canvas presentation belongs to the browser's canvas lifecycle rather than a
 separate native swapchain call. Resize, page lifecycle, device replacement,

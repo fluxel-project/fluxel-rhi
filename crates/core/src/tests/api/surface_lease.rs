@@ -12,6 +12,7 @@ use std::{
 struct State {
     generation: AtomicU64,
     fail_configure: AtomicBool,
+    invalidate_on_configure_failure: AtomicBool,
     acquires: AtomicU64,
 }
 
@@ -107,6 +108,12 @@ impl SurfaceBackend for SurfaceTest {
         _: &'a SurfaceConfig,
     ) -> Self::ConfigureFuture<'a> {
         if surface.fail_configure.load(Ordering::Acquire) {
+            if surface
+                .invalidate_on_configure_failure
+                .load(Ordering::Acquire)
+            {
+                surface.generation.fetch_add(1, Ordering::AcqRel);
+            }
             return ready(Err(Error::InvalidState));
         }
         surface.generation.fetch_add(1, Ordering::AcqRel);
@@ -126,6 +133,7 @@ fn state() -> Arc<State> {
     Arc::new(State {
         generation: AtomicU64::new(0),
         fail_configure: AtomicBool::new(false),
+        invalidate_on_configure_failure: AtomicBool::new(false),
         acquires: AtomicU64::new(0),
     })
 }
@@ -198,6 +206,29 @@ fn failed_configure_preserves_last_committed_lease_facts() {
     let image = poll_ready(surface.acquire()).unwrap();
     assert_eq!(image.format(), TextureFormat::Rgba8Unorm);
     assert_eq!(image.extent(), [16, 16]);
+}
+
+#[test]
+fn failed_configure_that_invalidates_native_state_cannot_mint_old_facts() {
+    let state = state();
+    let mut surface = surface(state.clone());
+    let config = configuration(TextureFormat::Rgba8Unorm, [16, 16]);
+    poll_ready(surface.configure(&config)).unwrap();
+    state.fail_configure.store(true, Ordering::Release);
+    state
+        .invalidate_on_configure_failure
+        .store(true, Ordering::Release);
+    assert_eq!(
+        poll_ready(surface.configure(&configuration(TextureFormat::Bgra8Unorm, [32, 32])),),
+        Err(Error::InvalidState)
+    );
+
+    // The Core cache intentionally retains the last successful facts, but a
+    // backend generation transition makes them ineligible for a new lease.
+    assert!(matches!(
+        poll_ready(surface.acquire()),
+        Err(Error::SurfaceOutdated)
+    ));
 }
 
 #[test]

@@ -215,7 +215,12 @@ fn configure(surface: &WebGpuSurface, desc: &api::SurfaceConfig) -> Result<()> {
     if state.abandoned {
         js::call0(&state.context, "unconfigure")
             .map_err(|error| Error::Backend(js::message(&error)))?;
+        // `unconfigure` has irrevocably retired the browser's current
+        // configuration. Publish the generation transition before constructing
+        // the replacement object: any later JavaScript failure must not leave
+        // Core's former configuration facts matching an unconfigured canvas.
         state.configured = None;
+        state.generation = generation;
     }
     let object: JsValue = Object::new().into();
     js::set(&object, "device", &state.device.0.device)
@@ -280,10 +285,13 @@ fn acquire(surface: &WebGpuSurface) -> Result<WebGpuImageLease> {
     if state.device.0.lost.get() {
         return Err(Error::DeviceLost);
     }
-    let config = state.configured.as_ref().ok_or(Error::InvalidState)?;
-    if state.acquired || state.abandoned {
+    if state.acquired {
         return Err(Error::InvalidState);
     }
+    if state.abandoned {
+        return Err(Error::SurfaceOutdated);
+    }
+    let config = state.configured.as_ref().ok_or(Error::InvalidState)?;
     if state.canvas.width() != config.extent[0] || state.canvas.height() != config.extent[1] {
         return Err(Error::SurfaceOutdated);
     }

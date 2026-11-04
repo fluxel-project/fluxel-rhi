@@ -17,6 +17,49 @@ fn num(value: u32) -> JsValue {
 }
 
 #[wasm_bindgen_test(async)]
+async fn canvas_resize_rejects_stale_configuration_until_reconfigured() {
+    let device = open().await;
+    let canvas: HtmlCanvasElement = web_sys::window()
+        .unwrap()
+        .document()
+        .unwrap()
+        .create_element("canvas")
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    canvas.set_width(64);
+    canvas.set_height(32);
+    let mut surface = WebGpu::surface_from_canvas(&device, canvas.clone()).unwrap();
+    let format = surface.capabilities().unwrap().formats[0];
+    let config = SurfaceConfig {
+        extent: [64, 32],
+        format,
+        present_mode: PresentMode::Fifo,
+        alpha_mode: CompositeAlphaMode::Opaque,
+        color_space: ColorSpace::Srgb,
+        usage: SurfaceUsage::RENDER_ATTACHMENT,
+        maximum_frame_latency: 2,
+    };
+    surface.configure(&config).await.unwrap();
+
+    canvas.set_width(32);
+    canvas.set_height(16);
+    assert!(matches!(
+        surface.acquire().await,
+        Err(Error::SurfaceOutdated)
+    ));
+
+    let replacement = SurfaceConfig {
+        extent: [32, 16],
+        ..config
+    };
+    surface.configure(&replacement).await.unwrap();
+    let image = surface.acquire().await.unwrap();
+    assert_eq!(image.format(), format);
+    assert_eq!(image.extent(), [32, 16]);
+}
+
+#[wasm_bindgen_test(async)]
 async fn gpu_canvas_configurations_and_native_usage() {
     let device = open().await;
     let canvas: HtmlCanvasElement = web_sys::window()

@@ -119,6 +119,12 @@ again after acquisition; a mismatch abandons the native lease and reports
 but do not make a surface image interchangeable with a normal texture/view or
 constitute evidence that any renderer integration has completed.
 
+A configuration error leaves Core's prior facts intact but does not promise
+that their native configuration survived. If a backend has destructively
+retired its old surface state before reporting that error, it advances its
+native generation and rejects acquisition as `SurfaceOutdated`; Core must not
+mint an image from the retained facts.
+
 ## Consequences
 
 Backend lowering can normalize attachments privately without leaking a

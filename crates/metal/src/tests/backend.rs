@@ -2,6 +2,10 @@
 
 use super::lease_generation_is_current;
 
+#[cfg(target_vendor = "apple")]
+#[path = "backend/surface.rs"]
+mod surface;
+
 #[test]
 fn surface_reconfiguration_invalidates_old_image_leases() {
     assert!(lease_generation_is_current(4, 4, 4, false));

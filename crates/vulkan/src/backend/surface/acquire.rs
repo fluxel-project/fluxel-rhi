@@ -109,11 +109,14 @@ fn acquire_worker(state: Weak<SurfaceState>, requests: mpsc::Receiver<Arc<Acquir
 
 fn acquire_once(state: &Arc<SurfaceState>) -> Result<Option<VulkanSurfaceImage>> {
     let mut inner = state.inner.lock().unwrap_or_else(|e| e.into_inner());
-    if inner.acquired || inner.swapchain == vk::SwapchainKHR::null() {
+    if inner.acquired {
         return Err(Error::InvalidState);
     }
     if inner.abandoned {
         return Err(Error::SurfaceOutdated);
+    }
+    if inner.swapchain == vk::SwapchainKHR::null() {
+        return Err(Error::InvalidState);
     }
     // The surface worker owns this bounded wait. Future::poll only observes
     // the result and can be cancelled without blocking the executor thread.

@@ -163,7 +163,11 @@ An acquired image is an exclusive, generation-bound `CAMetalDrawable` lease.
 Its final handoff checks both Core's generation and the surface's current
 generation under the same lock, then allows presentation once. A stale or
 already handed-off lease returns a structured error. The drawable's texture is
-kept alive through encoding and handoff.
+kept alive through encoding and handoff. Before publishing a lease, acquisition
+also compares the drawable texture's width, height, and pixel format with the
+successful configuration generation. A host-side layer mutation without
+`Surface::configure` is rejected as `SurfaceOutdated`, rather than publishing
+stale Core format or extent facts.
 
 ## Capability scope
 
@@ -184,8 +188,10 @@ provide a DXR-style state-object cache.
 There is no Apple GPU execution or Surface presentation evidence in this
 repository yet. Cross-compilation, static inspection, and unit tests establish
 only source-level behavior; they do not close a real-device capability or
-visual-presentation claim. The remaining cross-backend work and reopening
-conditions are tracked in [`TODO.md`](../../TODO.md).
+visual-presentation claim. In particular, the drawable format/extent guard is
+Apple-target compile evidence, not a live `CAMetalLayer::nextDrawable` result.
+The remaining cross-backend work and reopening conditions are tracked in
+[`TODO.md`](../../TODO.md).
 
 ## Code map
 

@@ -42,8 +42,35 @@ struct WorkerDrawable {
 
 unsafe impl Send for WorkerDrawable {}
 
+pub(crate) fn drawable_matches_configuration(
+    actual_extent: [u32; 2],
+    actual_format: objc2_metal::MTLPixelFormat,
+    expected_extent: [u32; 2],
+    expected_format: api::TextureFormat,
+) -> bool {
+    actual_extent == expected_extent
+        && matches!(
+            (actual_format, expected_format),
+            (
+                objc2_metal::MTLPixelFormat::BGRA8Unorm,
+                api::TextureFormat::Bgra8Unorm
+            ) | (
+                objc2_metal::MTLPixelFormat::BGRA8Unorm_sRGB,
+                api::TextureFormat::Bgra8UnormSrgb
+            ) | (
+                objc2_metal::MTLPixelFormat::RGBA16Float,
+                api::TextureFormat::Rgba16Float
+            ) | (
+                objc2_metal::MTLPixelFormat::RGB10A2Unorm,
+                api::TextureFormat::Rgb10a2Unorm
+            )
+        )
+}
+
 struct AcquireTask {
     generation: u64,
+    expected_extent: [u32; 2],
+    expected_format: api::TextureFormat,
     surface_generation: Arc<Mutex<u64>>,
     cancelled: AtomicBool,
     result: Mutex<Option<api::Result<WorkerDrawable>>>,
@@ -51,9 +78,16 @@ struct AcquireTask {
 }
 
 impl AcquireTask {
-    fn new(generation: u64, surface_generation: Arc<Mutex<u64>>) -> Self {
+    fn new(
+        generation: u64,
+        expected_extent: [u32; 2],
+        expected_format: api::TextureFormat,
+        surface_generation: Arc<Mutex<u64>>,
+    ) -> Self {
         Self {
             generation,
+            expected_extent,
+            expected_format,
             surface_generation,
             cancelled: AtomicBool::new(false),
             result: Mutex::new(None),
@@ -158,6 +192,7 @@ impl AcquireWorker {
                 if job.task.cancelled() {
                     return;
                 }
+                use objc2_metal::MTLTexture as _;
                 use objc2_quartz_core::CAMetalDrawable as _;
                 let result = match job.layer.0.nextDrawable() {
                     Some(drawable) => {
@@ -169,10 +204,17 @@ impl AcquireWorker {
                         if current != job.task.generation {
                             Err(api::Error::SurfaceOutdated)
                         } else {
-                            Ok(WorkerDrawable {
-                                texture: drawable.texture(),
-                                drawable,
-                            })
+                            let texture = drawable.texture();
+                            if !drawable_matches_configuration(
+                                [texture.width() as u32, texture.height() as u32],
+                                texture.pixelFormat(),
+                                job.task.expected_extent,
+                                job.task.expected_format,
+                            ) {
+                                Err(api::Error::SurfaceOutdated)
+                            } else {
+                                Ok(WorkerDrawable { texture, drawable })
+                            }
                         }
                     }
                     None => Err(api::Error::SurfaceOutdated),
@@ -237,9 +279,16 @@ pub(super) fn begin<'a>(
     worker: Arc<AcquireWorker>,
     layer: objc2::rc::Retained<objc2_quartz_core::CAMetalLayer>,
     generation: u64,
+    expected_extent: [u32; 2],
+    expected_format: api::TextureFormat,
     surface_generation: Arc<Mutex<u64>>,
 ) -> MetalAcquireFuture<'a> {
-    let task = Arc::new(AcquireTask::new(generation, surface_generation));
+    let task = Arc::new(AcquireTask::new(
+        generation,
+        expected_extent,
+        expected_format,
+        surface_generation,
+    ));
     let pending_job = Some(AcquireJob {
         layer: WorkerLayer(layer),
         task: task.clone(),
@@ -258,7 +307,12 @@ pub(super) fn failed<'a>(
     surface_generation: Arc<Mutex<u64>>,
     error: api::Error,
 ) -> MetalAcquireFuture<'a> {
-    let task = Arc::new(AcquireTask::new(0, surface_generation));
+    let task = Arc::new(AcquireTask::new(
+        0,
+        [0, 0],
+        api::TextureFormat::Rgba8Unorm,
+        surface_generation,
+    ));
     task.complete(Err(error));
     MetalAcquireFuture {
         worker,

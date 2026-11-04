@@ -143,6 +143,13 @@ the backend does not pretend that it safely released an image. These rules
 reject stale images after resize or replacement and keep present semaphores
 from being reused prematurely.
 
+Creating a replacement can retire the old swapchain even when later native
+creation, image enumeration, or view creation fails. Once retirement has
+occurred, Vulkan advances the generation and marks the surface abandoned before
+returning that error. The previous Core configuration facts are therefore not
+usable after such an error; acquisition reports `SurfaceOutdated` until a
+successful replacement configuration is published.
+
 ## Pipelines, descriptors, and shaders
 
 Pipeline construction is divided into fixed/raster/compute state, layouts,
