@@ -14,6 +14,15 @@ RenderGraph and Renderer own dependency planning, hazard analysis, frame policy,
 and resource retirement. RHI executes the plan and supplies native mechanisms;
 it does not rebuild the graph or choose resource lifetimes.
 
+## Rendering consumer evidence
+
+Rendering's bounded S6 product MVP consumes the unchanged RHI revision
+`b5d569f` through public resource, recording, submission and Surface contracts;
+Rendering owns the Graph-backed execution. The
+audited DX12/WGL consumer evidence is retained in the [S6 closure record](https://github.com/fluxel-project/fluxel-rendering/blob/c163db2362154fbb75289a6a5263312b69350d1e/documents/s6-typed-forward-closure.md).
+It does not extend RHI support claims: browser and Metal evidence limits remain
+as documented by this repository.
+
 ## Workspace
 
 - **`fluxel-rhi-core`** — portable public API, resource identity, capability
