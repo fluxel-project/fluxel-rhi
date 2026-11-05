@@ -27,6 +27,10 @@ measures Renderer CPU/API validation work only and changes no RHI public
 interface. It does not extend RHI support claims: browser, Metal, and other
 backend limits remain as documented by this repository.
 
+The later [Rendering maintenance review](https://github.com/fluxel-project/fluxel-rendering/blob/main/documents/s0-s8-review-follow-up.md)
+corrects private Graph subresource admission and adds CPU gates. It changes no
+RHI public interface or selected RHI pin and supplies no new native evidence.
+
 ## Workspace
 
 - **`fluxel-rhi-core`** — portable public API, resource identity, capability
