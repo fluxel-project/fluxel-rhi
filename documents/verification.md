@@ -359,3 +359,13 @@ actual DX12/WGL presentation and resize. This does not establish native error
 injection on Vulkan, Metal drawable mismatch execution, or Rendering browser
 support. Previous Vulkan host and WebGPU wasm checks and Metal Apple-target
 typechecks are build/source evidence; Metal hardware tests remain unexecuted.
+
+## Rendering consumer status
+
+Rendering's bounded S7/S8 consumer result continues to use RHI `b5d569f`
+unchanged. The [S7 historical closure](https://github.com/fluxel-project/fluxel-rendering/blob/main/documents/s7-deferred-closure.md)
+and [S8 measured closure](https://github.com/fluxel-project/fluxel-rendering/blob/main/documents/s8-measured-closure.md)
+are Renderer evidence, not new RHI backend evidence. S8 measures CPU/API
+validation work on the named Windows DX12 and desktop OpenGL/WGL material-heavy
+workload; it has no GPU timestamp result and does not validate browser routes,
+Metal, or other RHI targets.

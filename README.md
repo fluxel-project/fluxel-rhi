@@ -16,12 +16,16 @@ it does not rebuild the graph or choose resource lifetimes.
 
 ## Rendering consumer evidence
 
-Rendering's bounded S6 product MVP consumes the unchanged RHI revision
-`b5d569f` through public resource, recording, submission and Surface contracts;
-Rendering owns the Graph-backed execution. The
-audited DX12/WGL consumer evidence is retained in the [S6 closure record](https://github.com/fluxel-project/fluxel-rendering/blob/c163db2362154fbb75289a6a5263312b69350d1e/documents/s6-typed-forward-closure.md).
-It does not extend RHI support claims: browser and Metal evidence limits remain
-as documented by this repository.
+Rendering consumes the unchanged public RHI revision `b5d569f` through public
+resource, recording, submission, completion, and Surface contracts. Its bounded
+Windows DX12 and desktop OpenGL/WGL S7/S8 consumer result retains the historical
+[S7 evidence](https://github.com/fluxel-project/fluxel-rendering/blob/main/documents/s7-deferred-closure.md)
+and the [S8 measured closure](https://github.com/fluxel-project/fluxel-rendering/blob/main/documents/s8-measured-closure.md).
+Rendering owns Graph planning, frame policy, residency, and retirement; RHI owns
+resource realization, recording, submission, completion, and presentation. S8
+measures Renderer CPU/API validation work only and changes no RHI public
+interface. It does not extend RHI support claims: browser, Metal, and other
+backend limits remain as documented by this repository.
 
 ## Workspace
 
