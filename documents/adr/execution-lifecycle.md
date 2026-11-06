@@ -183,7 +183,7 @@ is supported.
 
 Historically, this decision reinforced, rather than replaced,
 [ADR-0004](execution-lifecycle.md#adr-0004-quarantine-accepted-unknown-gpu-work) for unknown completion and
-[the historical ADR-0006](https://github.com/fluxel-project/fluxel-rendering/blob/main/documents/adr/0006-no-general-pipeline-yet.md)
+[the historical ADR-0006](https://github.com/fluxel-project/fluxel-rendering/blob/c24f9adf17cfd12ed2bc3035f45cd1f477879afc/documents/adr/0006-no-general-pipeline-yet.md)
 for the closed-artifact boundary.
 
 ## Evidence

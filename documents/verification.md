@@ -353,7 +353,7 @@ Surface evidence directory for that exact revision and
 `focused-20261104` attempt (see the local evidence index).
 They are not published as RHI release artifacts.
 
-Rendering's [S5 Forward evidence](https://github.com/fluxel-project/fluxel-rendering/blob/main/documents/s5-forward-closure.md)
+Rendering's [S5 Forward evidence](https://github.com/fluxel-project/fluxel-rendering/blob/c24f9adf17cfd12ed2bc3035f45cd1f477879afc/documents/s5-forward-closure.md)
 separately pins this RHI revision and exercises configured lease facts through
 actual DX12/WGL presentation and resize. This does not establish native error
 injection on Vulkan, Metal drawable mismatch execution, or Rendering browser
@@ -363,8 +363,8 @@ typechecks are build/source evidence; Metal hardware tests remain unexecuted.
 ## Rendering consumer status
 
 Rendering's bounded S7/S8 consumer result continues to use RHI `b5d569f`
-unchanged. The [S7 historical closure](https://github.com/fluxel-project/fluxel-rendering/blob/main/documents/s7-deferred-closure.md)
-and [S8 measured closure](https://github.com/fluxel-project/fluxel-rendering/blob/main/documents/s8-measured-closure.md)
+unchanged. The [S7 historical closure](https://github.com/fluxel-project/fluxel-rendering/blob/c24f9adf17cfd12ed2bc3035f45cd1f477879afc/documents/s7-deferred-closure.md)
+and [S8 measured closure](https://github.com/fluxel-project/fluxel-rendering/blob/c24f9adf17cfd12ed2bc3035f45cd1f477879afc/documents/s8-measured-closure.md)
 are Renderer evidence, not new RHI backend evidence. S8 measures CPU/API
 validation work on the named Windows DX12 and desktop OpenGL/WGL material-heavy
 workload; it has no GPU timestamp result and does not validate browser routes,

@@ -19,15 +19,15 @@ it does not rebuild the graph or choose resource lifetimes.
 Rendering consumes the unchanged public RHI revision `b5d569f` through public
 resource, recording, submission, completion, and Surface contracts. Its bounded
 Windows DX12 and desktop OpenGL/WGL S7/S8 consumer result retains the historical
-[S7 evidence](https://github.com/fluxel-project/fluxel-rendering/blob/main/documents/s7-deferred-closure.md)
-and the [S8 measured closure](https://github.com/fluxel-project/fluxel-rendering/blob/main/documents/s8-measured-closure.md).
+[S7 evidence](https://github.com/fluxel-project/fluxel-rendering/blob/c24f9adf17cfd12ed2bc3035f45cd1f477879afc/documents/s7-deferred-closure.md)
+and the [S8 measured closure](https://github.com/fluxel-project/fluxel-rendering/blob/c24f9adf17cfd12ed2bc3035f45cd1f477879afc/documents/s8-measured-closure.md).
 Rendering owns Graph planning, frame policy, residency, and retirement; RHI owns
 resource realization, recording, submission, completion, and presentation. S8
 measures Renderer CPU/API validation work only and changes no RHI public
 interface. It does not extend RHI support claims: browser, Metal, and other
 backend limits remain as documented by this repository.
 
-The later [Rendering maintenance review](https://github.com/fluxel-project/fluxel-rendering/blob/main/documents/review-follow-up.md#current-maintenance-review)
+The later [Rendering maintenance review](https://github.com/fluxel-project/fluxel-rendering/blob/c24f9adf17cfd12ed2bc3035f45cd1f477879afc/documents/review-follow-up.md#current-maintenance-review)
 corrects private Graph subresource admission and adds CPU gates. It changes no
 RHI public interface or selected RHI pin and supplies no new native evidence.
 
