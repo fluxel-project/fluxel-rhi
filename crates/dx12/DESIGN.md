@@ -98,6 +98,14 @@ Committed resources and explicitly placed resources retain their independent
 native backing. The default allocator neither aliases resources on behalf of a
 caller nor decides when an aliasing barrier is safe.
 
+Explicit `Undefined` first-use transitions initialize selected complete
+subresources of placed or sparse attachments with a native discard. On a
+graphics encoder this also covers color `CopyDst` targets carrying a private
+native RTV flag for blit lowering: transition to render-target state, discard,
+and restore the caller-selected copy-destination boundary. Existing contents
+are never discarded on a `Common` or other previously defined layout. Compute
+encoders do not acquire graphics-only states through this initialization path.
+
 Descriptor layout, descriptor writing, and bind-group ownership are separate
 from command recording. Device-owned shader-visible heaps provide GPU tables;
 the CPU descriptor pool owns non-shader-visible views. Pipeline layout creation

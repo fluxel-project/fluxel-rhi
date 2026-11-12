@@ -1,7 +1,7 @@
 //! Real-GPU conformance checks for explicit copy commands.
 use std::sync::{
-    Arc,
     atomic::{AtomicU64, Ordering},
+    Arc,
 };
 
 use fluxel_rhi_core::api::{
@@ -354,3 +354,6 @@ fn generic_copy_rejects_missing_usage_and_invalid_range() {
         Err(Error::InvalidRange)
     ));
 }
+
+#[path = "copy/mip_initialization.rs"]
+mod mip_initialization;

@@ -6,6 +6,22 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 ## Active items
 
+### DX12-UNWRITTEN-COMPUTE-TO-BLIT — first-use initialization across queues
+
+**Status:** Graphics `Undefined -> CopyDst` transitions initialize placed/sparse
+color subresources carrying a native render-target flag before internal blit
+draws. A compute-only transition cannot perform that graphics discard. An
+unwritten subresource transferred from compute to a later graphics blit has
+not yet been covered; a state transition alone is not initialization evidence.
+Actual copy writes and compute blits are distinct from this unwritten case.
+
+**Acceptance:** With a real cross-queue consumer, preserve explicit ownership
+and completion ordering and verify first native render-target use with an
+active D3D12 debug layer and independent readback. Any private initialization
+tracking must survive failed or unsubmitted recording without publishing false
+GPU initialization facts. Do not discard partial-blit destination contents or
+make ordinary compute copy transitions require a graphics queue.
+
 ### P7-LOWERING-PROFILE — expose cost-bearing lowering facts to RenderGraph
 
 **Status:** The Core capability model reports operation support but does not
