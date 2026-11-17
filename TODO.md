@@ -123,8 +123,8 @@ requiring GPU or presentation behavior needs real Apple-target evidence.
   are rejected before internal pass termination. The backend-owned dummy depth
   attachment is exempt and cleared after every split. On commit `5866f9f`, the
   Chrome 156 browser suite passed the split-store cases (5/5) and the GPU-count
-  readback/query case (1/1). Logs and the adapter-identity limitation are in
-  `Temp/证据/webgpu/5866f9f4bf51af903c1cee4551dc510aa337b4ff/`. The source is
+  readback/query case (1/1). Supporting logs are retained locally and are not
+  part of the published source tree. The source is
   published as `fluxel-rhi-webgpu` 0.1.1; 0.1.0 remains immutable and predates
   this fix. Chrome did not expose physical GPU/driver identity, so closure is
   browser-route correctness evidence, not hardware-specific acceptance.
