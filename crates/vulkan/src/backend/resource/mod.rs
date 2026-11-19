@@ -199,11 +199,16 @@ impl VulkanSampler {
     pub(super) fn integer_native(&self) -> vk::Sampler {
         self.0.integer_sampler
     }
+    /// Whether the immutable native sampler enables depth comparison.
+    pub(super) fn is_comparison(&self) -> bool {
+        self.0.comparison
+    }
 }
 struct SamplerState {
     device: Arc<DeviceState>,
     pub(super) sampler: vk::Sampler,
     integer_sampler: vk::Sampler,
+    comparison: bool,
 }
 impl Drop for SamplerState {
     fn drop(&mut self) {
@@ -727,6 +732,7 @@ pub(super) fn create_sampler(
         device: device.0.clone(),
         sampler,
         integer_sampler,
+        comparison: desc.compare.is_some(),
     })))
 }
 

@@ -512,10 +512,16 @@ pub(crate) fn create_group(
                     });
                     group._retained.push(Retained::View(native.clone()));
                 }
-                (api::BindingResource::Sampler(sampler), api::BindingType::Sampler { .. }) => {
+                (
+                    api::BindingResource::Sampler(sampler),
+                    api::BindingType::Sampler { comparison, .. },
+                ) => {
                     // SAFETY: Core checked the sampler DeviceId before this call;
                     // Group clones it immediately after updating the private set.
                     let native = unsafe { sampler.native_ref() };
+                    if native.is_comparison() != *comparison {
+                        return Err(Error::InvalidState);
+                    }
                     let info = vk::DescriptorImageInfo::default().sampler(native.native());
                     let write = vk::WriteDescriptorSet::default()
                         .dst_set(set)
