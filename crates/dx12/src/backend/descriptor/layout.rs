@@ -109,10 +109,17 @@ pub(crate) fn create_bind_group_layout(
                     multisampled: false,
                 });
             }
-            api::BindingType::Sampler {
-                filtering: _,
-                comparison: false,
-            } => {
+            api::BindingType::Sampler { comparison, .. } => {
+                // A missing sampler-array element is initialized with the
+                // backend's ordinary null sampler.  Do not admit comparison
+                // arrays until that sparse-element ABI has a comparison-safe
+                // representation.  Scalar comparison samplers need no
+                // fallback descriptor and are fully representable.
+                if comparison && !matches!(entry.count, api::BindingCount::One) {
+                    return Err(Error::Unsupported(
+                        "DX12 comparison sampler arrays are unsupported",
+                    ));
+                }
                 slots.push(BindingSlot {
                     binding_type: entry.ty.clone(),
                     binding: entry.binding,

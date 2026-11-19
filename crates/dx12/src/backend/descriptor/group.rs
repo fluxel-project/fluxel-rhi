@@ -414,6 +414,7 @@ pub(crate) fn create_bind_group(
                     textures.push(native.clone());
                 }
                 (DescriptorClass::Sampler, api::BindingResource::Sampler(sampler)) => {
+                    write::validate_sampler_type(slot, sampler)?;
                     // SAFETY: Core validated sampler device identity; the native
                     // sampler descriptor heap is retained by the cloned sampler.
                     let native = unsafe { sampler.native_ref() };

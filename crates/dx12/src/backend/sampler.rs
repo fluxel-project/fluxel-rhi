@@ -18,6 +18,13 @@ pub(crate) struct SamplerState {
     pub(super) native: D3D12_SAMPLER_DESC,
 }
 
+impl Dx12Sampler {
+    /// Whether this immutable native descriptor is a comparison sampler.
+    pub(super) fn is_comparison(&self) -> bool {
+        self.0.native.ComparisonFunc != D3D12_COMPARISON_FUNC_NONE
+    }
+}
+
 pub(crate) fn create_sampler(device: &Dx12Device, desc: &api::SamplerDesc) -> Result<Dx12Sampler> {
     validate(desc)?;
     let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
