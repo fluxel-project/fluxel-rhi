@@ -29,8 +29,7 @@ pub(in crate::backend) const MULTI_DRAW_COUNT_PROFILE: api::IndirectCountProfile
         }),
     };
 
-fn execute(
-    encoder: &mut Dx12Encoder,
+fn validate_arguments(
     arguments: &Dx12Buffer,
     offset: u64,
     count: u32,
@@ -43,15 +42,25 @@ fn execute(
     {
         return Err(Error::InvalidRange);
     }
-    let bytes = u64::from(count)
-        .checked_mul(u64::from(stride))
-        .ok_or(Error::InvalidRange)?;
+    let bytes = u64::from(count) * u64::from(stride);
     if offset
         .checked_add(bytes)
         .is_none_or(|end| end > arguments.size)
     {
         return Err(Error::InvalidRange);
     }
+    Ok(())
+}
+
+fn execute(
+    encoder: &mut Dx12Encoder,
+    arguments: &Dx12Buffer,
+    offset: u64,
+    count: u32,
+    stride: u32,
+    indexed: bool,
+) -> Result<(), Error> {
+    validate_arguments(arguments, offset, count, stride, indexed)?;
     raster::validate_raw_bindings(
         encoder.pipeline.as_ref().ok_or(Error::InvalidState)?,
         &encoder.raster_bound_groups,
@@ -168,20 +177,7 @@ pub(crate) fn multi_count(
     if encoder.pipeline.is_none() {
         return Err(Error::InvalidState);
     }
-    if !args.usage.contains(api::BufferUsage::INDIRECT)
-        || !count.usage.contains(api::BufferUsage::INDIRECT)
-        || offset % 4 != 0
-        || count_offset % 4 != 0
-        || count_offset
-            .checked_add(4)
-            .is_none_or(|end| end > count.size)
-        || offset
-            .checked_add(u64::from(max) * u64::from(stride))
-            .is_none_or(|end| end > args.size)
-        || (max != 0 && (stride < if indexed { 20 } else { 16 } || stride % 4 != 0))
-    {
-        return Err(Error::InvalidRange);
-    }
+    validate_counted((args, offset), (count, count_offset), max, stride, indexed)?;
     if max == 0 {
         return Ok(());
     }
@@ -219,6 +215,25 @@ pub(crate) fn multi_count(
     }
     encoder.buffers.push(args.clone());
     encoder.buffers.push(count.clone());
+    Ok(())
+}
+
+pub(super) fn validate_counted(
+    (args, offset): (&Dx12Buffer, u64),
+    (count, count_offset): (&Dx12Buffer, u64),
+    maximum: u32,
+    stride: u32,
+    indexed: bool,
+) -> Result<(), Error> {
+    validate_arguments(args, offset, maximum, stride, indexed)?;
+    if !count.usage.contains(api::BufferUsage::INDIRECT)
+        || count_offset % 4 != 0
+        || count_offset
+            .checked_add(4)
+            .is_none_or(|end| end > count.size)
+    {
+        return Err(Error::InvalidRange);
+    }
     Ok(())
 }
 

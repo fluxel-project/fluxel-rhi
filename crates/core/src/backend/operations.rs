@@ -413,6 +413,15 @@ pub trait RasterExtrasOps<B: Backend> {
         stride: u32,
         indexed: bool,
     ) -> Result<()>;
+    fn multi_draw_count_support(
+        _args: (&B::NativeBuffer, u64),
+        _count: (&B::NativeBuffer, u64),
+        _maximum: u32,
+        _stride: u32,
+        _indexed: bool,
+    ) -> Result<()> {
+        Err(Error::Unsupported("multi draw count support query"))
+    }
     fn multi_draw_count(
         encoder: &mut B::NativeEncoder,
         args: &B::NativeBuffer,

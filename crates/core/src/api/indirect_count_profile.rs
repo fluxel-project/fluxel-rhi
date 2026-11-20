@@ -1,6 +1,6 @@
 //! Immutable lowering facts for planning GPU-counted indirect draws.
 
-use super::{Device, Error, RasterBackend, RasterPipeline, Result};
+use super::{Buffer, Device, Error, RasterBackend, RasterExtrasOps, RasterPipeline, Result};
 
 /// GPU work inserted before recording the native draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +60,31 @@ impl IndirectCountProfile {
 }
 
 impl<B: RasterBackend> Device<B> {
+    /// Checks argument and count buffer ranges and reports the selected route.
+    /// Binding state and contents written by the GPU remain execution inputs.
+    pub fn multi_draw_count_support(
+        &self,
+        pipeline: &RasterPipeline<B>,
+        args: (&Buffer<B>, u64),
+        count: (&Buffer<B>, u64),
+        maximum: u32,
+        stride: u32,
+        indexed: bool,
+    ) -> Result<Option<IndirectCountRoute>> {
+        if args.0.device != self.id || count.0.device != self.id {
+            return Err(Error::WrongDevice);
+        }
+        let route = self.multi_draw_count_route(pipeline, maximum)?;
+        B::Extras::multi_draw_count_support(
+            (&args.0.native, args.1),
+            (&count.0.native, count.1),
+            maximum,
+            stride,
+            indexed,
+        )?;
+        Ok(route)
+    }
+
     /// Looks up the lowering of an already-created pipeline without recording
     /// commands, allocating resources, or reading the GPU count.
     pub fn multi_draw_count_route(

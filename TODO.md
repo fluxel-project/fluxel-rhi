@@ -67,6 +67,11 @@ sections, excessive stride, out-of-bounds ranges, and excessive dimensions.
 Verify raygen requires one record and a failed optional section leaves the
 encoder free of new buffer owners. Record and read back a supported dispatch.
 
+**Counted indirect draw support:** Compare the query with DX12 recording
+for indexed and non-indexed argument strides and checked offsets, including
+shared argument/count storage and a zero maximum. Verify the reported direct,
+copy and pack routes on their corresponding pipelines and batch sizes.
+
 ### DX12 structured shader diagnostics
 
 **Status:** WGSL parse and validation errors preserve compiler messages and
