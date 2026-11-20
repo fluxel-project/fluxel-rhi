@@ -3,7 +3,10 @@
 //! These traits describe native object ownership and device opening. They are
 //! intentionally separate from the renderer-facing values in `crate::api`.
 
-use crate::api::{AdapterInfo, DeviceCapabilities, DeviceId, DeviceRequest, InstanceId, Result};
+use crate::api::{
+    AdapterId, AdapterInfo, AdapterPreference, AdapterProperties, DeviceCapabilities, DeviceId,
+    DeviceRequest, Error, InstanceId, Result,
+};
 use crate::backend::{ComputeOps, MemoryObservationOps, MeshOps, RasterExtrasOps, RayOps};
 use std::future::Future;
 
@@ -57,6 +60,25 @@ pub trait InstanceBackend: Backend {
     where
         Self: 'a;
     fn enumerate(instance: &Self::NativeInstance, scope: InstanceId) -> Result<Vec<AdapterInfo>>;
+    fn request_adapter(
+        instance: &Self::NativeInstance,
+        scope: InstanceId,
+        preference: AdapterPreference,
+    ) -> Result<AdapterInfo> {
+        if preference != AdapterPreference::Default {
+            return Err(Error::Unsupported("adapter selection preference"));
+        }
+        Self::enumerate(instance, scope)?
+            .into_iter()
+            .next()
+            .ok_or(Error::Unsupported("an adapter"))
+    }
+    fn adapter_properties(
+        _instance: &Self::NativeInstance,
+        _adapter: AdapterId,
+    ) -> Result<AdapterProperties> {
+        Err(Error::Unsupported("adapter properties"))
+    }
     fn open<'a>(
         instance: &'a Self::NativeInstance,
         device: DeviceId,

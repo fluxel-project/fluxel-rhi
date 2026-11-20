@@ -84,6 +84,32 @@ pub struct AdapterInfo {
     pub id: AdapterId,
     pub name: String,
 }
+
+/// Selection hint used during adapter discovery. Software explicitly requests
+/// a software adapter. The power hints do not authorize a software fallback.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AdapterPreference {
+    #[default]
+    Default,
+    LowPower,
+    HighPerformance,
+    Software,
+}
+
+/// Diagnostic facts available without opening a device. Vendor and device
+/// codes describe a model and must not be used as resource provenance.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdapterProperties {
+    pub backend: &'static str,
+    pub vendor_id: Option<u32>,
+    pub device_id: Option<u32>,
+    pub driver_version: Option<[u16; 4]>,
+    pub is_software: Option<bool>,
+    /// Local memory reported by the adapter, in bytes. This is not a live budget.
+    pub dedicated_video_memory: Option<u64>,
+    pub shared_system_memory: Option<u64>,
+}
+
 pub struct DeviceRequest {
     pub adapter: AdapterId,
     pub required_features: Vec<&'static str>,
@@ -167,6 +193,16 @@ impl<B: InstanceBackend> Instance<B> {
     pub fn enumerate(&self) -> Result<Vec<AdapterInfo>> {
         B::enumerate(&self.native, self.id)
     }
+    /// Selects an adapter in this instance's ID namespace.
+    pub fn request_adapter(&self, preference: AdapterPreference) -> Result<AdapterInfo> {
+        B::request_adapter(&self.native, self.id, preference)
+    }
+    pub fn adapter_properties(&self, adapter: AdapterId) -> Result<AdapterProperties> {
+        if adapter.instance != self.id {
+            return Err(Error::WrongDevice);
+        }
+        B::adapter_properties(&self.native, adapter)
+    }
     pub async fn open(&self, request: DeviceRequest) -> Result<Device<B>> {
         if request.adapter.instance != self.id {
             return Err(Error::WrongDevice);
@@ -174,7 +210,9 @@ impl<B: InstanceBackend> Instance<B> {
         let id = DeviceId::allocate()?;
         let (native, caps) = B::open(&self.native, id, &request).await?;
         // SAFETY: `open` returned the native device and capabilities for allocated `id`.
-        Ok(unsafe { Device::from_native(id, native, caps) })
+        let mut device = unsafe { Device::from_native(id, native, caps) };
+        device.adapter = Some(request.adapter);
+        Ok(device)
     }
 }
 
@@ -183,6 +221,7 @@ impl<B: InstanceBackend> Instance<B> {
 
 pub struct Device<B: Backend> {
     pub(crate) id: DeviceId,
+    adapter: Option<AdapterId>,
     pub(crate) native: B::NativeDevice,
     pub(crate) caps: DeviceCapabilities,
     pub(crate) stats: Arc<RhiStats>,
@@ -191,6 +230,7 @@ impl<B: Backend> Clone for Device<B> {
     fn clone(&self) -> Self {
         Self {
             id: self.id,
+            adapter: self.adapter,
             native: self.native.clone(),
             caps: self.caps.clone(),
             stats: self.stats.clone(),
@@ -274,6 +314,7 @@ impl<B: Backend> Device<B> {
         );
         Self {
             id,
+            adapter: None,
             native,
             caps,
             stats: Arc::new(RhiStats::new()),
@@ -281,6 +322,10 @@ impl<B: Backend> Device<B> {
     }
     pub fn id(&self) -> DeviceId {
         self.id
+    }
+    /// The selected adapter when the device was opened through an Instance.
+    pub fn adapter_id(&self) -> Option<AdapterId> {
+        self.adapter
     }
     /// Returns this device's shared, cumulative RHI request counters.
     ///
@@ -362,6 +407,9 @@ pub struct CooperativeMatrixConfiguration {
 /// requires these flags to match the implemented optional backend domains.
 #[derive(Clone, Default)]
 pub struct DeviceCapabilities {
+    /// Native subgroup width range for this opened device, when exposed.
+    /// This does not imply that every shader stage or operation uses subgroups.
+    pub subgroup_widths: Option<SubgroupWidths>,
     /// Exact cooperative-matrix tuples accepted by the backend's native API.
     pub cooperative_matrix_configurations: Vec<CooperativeMatrixConfiguration>,
     /// Aggregate summary: true exactly when at least one scope-specific debug
@@ -546,6 +594,12 @@ pub struct DeviceCapabilities {
     pub rect_attachment_clear: bool,
     pub lanes: Arc<[LaneInfo]>,
     pub limits: DeviceLimits,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SubgroupWidths {
+    pub min: u32,
+    pub max: u32,
 }
 
 #[derive(Clone, Copy, Default)]

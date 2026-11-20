@@ -86,6 +86,13 @@ route can support it. For example, a D3D12 feature tier alone does not imply
 that every shader format, descriptor shape, texture format, or stage is
 accepted.
 
+Power preferences use DXGI's preferred adapter order and resolve the result by
+LUID into the ordinary instance-scoped ordinal. Software selection explicitly
+requests WARP. DXGI model IDs and available driver version or memory properties
+are diagnostic values. Device opening queries the native subgroup width range
+once, and the required-wave-size pipeline path combines that range with its
+shader model and shader route checks.
+
 The optional debug callback is a diagnostic aid. It does not make driver
 validation output a substitute for completion or visual correctness.
 

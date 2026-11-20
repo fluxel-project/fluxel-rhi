@@ -339,18 +339,11 @@ fn validate_required_wave_size(device: &Dx12Device, size: u32) -> Result<()> {
             "DX12 required subgroup size needs shader model 6.6",
         ));
     }
-    let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS1::default();
-    // SAFETY: `options` is exactly the structure D3D12 fills synchronously.
-    let wave_ops = unsafe {
-        device.0.native.CheckFeatureSupport(
-            D3D12_FEATURE_D3D12_OPTIONS1,
-            (&mut options as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS1).cast(),
-            std::mem::size_of_val(&options) as u32,
-        )
-    }
-    .is_ok()
-        && options.WaveOps.as_bool();
-    if !wave_ops || size < options.WaveLaneCountMin || size > options.WaveLaneCountMax {
+    if !device
+        .0
+        .subgroup_widths
+        .is_some_and(|widths| (widths.min..=widths.max).contains(&size))
+    {
         return Err(Error::Unsupported("DX12 required subgroup size"));
     }
     Ok(())

@@ -76,6 +76,13 @@ The normal creation path is:
 
 Capability values are facts about an opened device, not promises based only on a Cargo feature or backend name. They include native features, shader/artifact routes, binding shapes, and limits. `Error::Unsupported` means the selected route is absent; it is distinct from wrong-device, invalid-state/range, device-lost, and surface-lifecycle errors.
 
+Adapter selection and diagnostic properties use the instance's adapter ID
+namespace. A device opened through that instance retains the selected adapter
+ID for diagnostics; resource provenance still uses its separate device ID.
+Optional vendor, hardware model, driver version, and memory properties describe
+the adapter. Device capabilities, including a reported subgroup width range,
+come from the opened device.
+
 Core cannot prove that a renderer's transition sequence is correct. It checks the declared operation shape and provenance, while the renderer keeps the graph-level resource state and hazard knowledge. This distinction allows a backend to preserve native state models without Core inventing a second one.
 
 ## Execution models and operation flow

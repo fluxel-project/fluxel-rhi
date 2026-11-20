@@ -85,6 +85,7 @@ impl Dx12 {
 pub struct Dx12Device(Arc<Dx12DeviceState>);
 struct Dx12DeviceState {
     pub(super) native: ID3D12Device,
+    pub(super) subgroup_widths: Option<api::SubgroupWidths>,
     /// Committed buffers consume the process GPU virtual-address range.
     pub(super) max_buffer_bytes: u64,
     /// Native interface is retained only on devices that report DXR tier 1.0;
@@ -183,11 +184,7 @@ impl Dx12Instance {
     /// Opens the default DXGI adapter through the static API.
     pub async fn open_default(&self) -> Result<api::Device<Dx12>> {
         let instance = self.instance()?;
-        let adapter = instance
-            .enumerate()?
-            .into_iter()
-            .next()
-            .ok_or(Error::Unsupported("a Direct3D 12 adapter"))?;
+        let adapter = instance.request_adapter(api::AdapterPreference::Default)?;
         instance
             .open(DeviceRequest {
                 adapter: adapter.id,
