@@ -228,6 +228,14 @@ pub struct BufferDesc {
     pub usage: BufferUsage,
     pub memory: MemoryClass,
 }
+/// Immutable properties of a buffer. `size` is the usable byte extent,
+/// excluding backend allocation padding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BufferProperties {
+    pub size: u64,
+    pub usage: BufferUsage,
+    pub memory: MemoryClass,
+}
 #[derive(Clone, Debug)]
 pub struct TextureDesc {
     pub label: Option<String>,

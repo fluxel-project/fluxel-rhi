@@ -87,11 +87,13 @@ impl<B: MemoryBackend> MemoryDomain<'_, B> {
             return Err(Error::InvalidState);
         }
         // SAFETY: the backing allocation was checked to belong to this device.
-        Ok(unsafe {
+        let mut texture = unsafe {
             Texture::from_native(
                 self.device.id,
                 B::place_texture(&self.device.native, &heap.native, offset, desc)?,
             )
-        })
+        };
+        texture.desc = Some(desc.clone());
+        Ok(texture)
     }
 }

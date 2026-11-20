@@ -7,6 +7,14 @@
 use super::*;
 
 impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
+    fn buffer_properties(buffer: &Dx12Buffer) -> Option<api::BufferProperties> {
+        Some(api::BufferProperties {
+            size: buffer.size,
+            usage: buffer.usage,
+            memory: buffer.memory,
+        })
+    }
+
     fn buffer_support(
         device: &Dx12Device,
         desc: &api::BufferDesc,

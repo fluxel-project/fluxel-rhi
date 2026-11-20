@@ -10,6 +10,9 @@ use std::{future::Future, ops::Range};
 /// Backend-native constructors and per-device support facts. No hazard tracker.
 pub trait ResourceBackend: Backend {
     fn buffer_support(device: &Self::NativeDevice, desc: &BufferDesc) -> Support<BufferSupport>;
+    fn buffer_properties(_buffer: &Self::NativeBuffer) -> Option<BufferProperties> {
+        None
+    }
     fn texture_support(device: &Self::NativeDevice, desc: &TextureDesc) -> Support<TextureSupport>;
     fn create_buffer(device: &Self::NativeDevice, desc: &BufferDesc) -> Result<Self::NativeBuffer>;
     fn create_texture(

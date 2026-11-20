@@ -88,12 +88,14 @@ impl<B: SparseBackend> SparseDomain<'_, B> {
             return Err(Error::InvalidState);
         }
         // SAFETY: the backend creates this native object for this device.
-        Ok(unsafe {
+        let mut texture = unsafe {
             Texture::from_native(
                 self.device.id,
                 B::create_sparse_texture(&self.device.native, desc)?,
             )
-        })
+        };
+        texture.desc = Some(desc.clone());
+        Ok(texture)
     }
     /// Reports the physical tile shape for this particular sparse texture.
     pub fn tiling(&self, texture: &Texture<B>) -> Result<SparseTextureTiling> {

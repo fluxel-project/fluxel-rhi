@@ -82,6 +82,10 @@ impl<B: Backend> Texture<B> {
     pub fn device(&self) -> DeviceId {
         self.device
     }
+    /// The texture description recorded at RHI creation, if known.
+    pub fn descriptor(&self) -> Option<&TextureDesc> {
+        self.desc.as_ref()
+    }
     #[doc(hidden)]
     pub unsafe fn native_ref(&self) -> &B::NativeTexture {
         &self.native
@@ -130,6 +134,25 @@ impl<B: Backend> TextureView<B> {
     }
 }
 handle!(Buffer, NativeBuffer);
+
+impl<B: ResourceBackend> Buffer<B> {
+    /// Reports the buffer's usable allocation properties, if the backend
+    /// can establish them without changing resource ownership.
+    pub fn properties(&self) -> Option<BufferProperties> {
+        B::buffer_properties(&self.native)
+    }
+
+    /// Constructs a nonempty slice and checks the buffer extent when known.
+    pub fn slice(&self, range: Range<u64>) -> Result<BufferSlice<'_, B>> {
+        if range.start >= range.end || self.properties().is_some_and(|p| range.end > p.size) {
+            return Err(Error::InvalidRange);
+        }
+        Ok(BufferSlice {
+            buffer: self,
+            range,
+        })
+    }
+}
 handle!(Sampler, NativeSampler);
 pub struct BindGroupLayout<B: Backend> {
     pub(crate) device: DeviceId,
