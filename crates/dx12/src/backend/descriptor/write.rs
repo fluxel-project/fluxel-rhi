@@ -8,7 +8,10 @@
 use fluxel_rhi_core::api::{self, Error, Result};
 
 use super::{BindingSlot, DescriptorClass, Dx12, Dx12Device};
-use windows::Win32::Graphics::{Direct3D12::*, Dxgi::Common::DXGI_FORMAT_R32_TYPELESS};
+use windows::Win32::Graphics::{
+    Direct3D12::*,
+    Dxgi::Common::{DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_UNKNOWN},
+};
 
 /// Initializes an inaccessible array element without retaining a resource.
 /// Null views use a valid raw-buffer description; shaders must not access holes.
@@ -18,6 +21,10 @@ pub(super) fn write_hole(
     view: D3D12_CPU_DESCRIPTOR_HANDLE,
     sampler: u32,
 ) {
+    if matches!(slot.binding_type, api::BindingType::AccelerationStructure) {
+        write_acceleration_view(device, view, 0);
+        return;
+    }
     // SAFETY: the caller reserved these destination heap entries. Null views
     // have a complete valid description and cannot reference a dead resource.
     unsafe {
@@ -97,19 +104,65 @@ pub(super) fn write_hole(
     }
 }
 
+pub(super) fn write_acceleration_view(
+    device: &Dx12Device,
+    destination: D3D12_CPU_DESCRIPTOR_HANDLE,
+    address: u64,
+) {
+    let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
+        Format: DXGI_FORMAT_UNKNOWN,
+        ViewDimension: D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE,
+        Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+        Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+            RaytracingAccelerationStructure: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV {
+                Location: address,
+            },
+        },
+    };
+    // SAFETY: the caller owns the destination descriptor. DXR takes the
+    // retained TLAS address from the view, with zero denoting a null SRV.
+    unsafe {
+        device
+            .0
+            .native
+            .CreateShaderResourceView(None::<&ID3D12Resource>, Some(&desc), destination)
+    };
+}
+
 pub(super) fn validate_sampler_binding(
     slot: &BindingSlot,
     resource: &api::BindingResource<'_, Dx12>,
 ) -> Result<()> {
+    validate_entries(resource, |entry| {
+        let api::BindingResource::Sampler(sampler) = entry else {
+            return Err(Error::InvalidState);
+        };
+        validate_sampler_type(slot, sampler)
+    })
+}
+
+pub(super) fn validate_acceleration_binding(
+    resource: &api::BindingResource<'_, Dx12>,
+) -> Result<()> {
+    validate_entries(resource, |entry| {
+        let api::BindingResource::Acceleration(acceleration) = entry else {
+            return Err(Error::InvalidState);
+        };
+        // SAFETY: Core checked the device; only immutable resource kind is read.
+        if !unsafe { acceleration.native_ref() }.0.is_top_level {
+            return Err(Error::InvalidState);
+        }
+        Ok(())
+    })
+}
+
+fn validate_entries(
+    resource: &api::BindingResource<'_, Dx12>,
+    validate: impl Fn(&api::BindingResource<'_, Dx12>) -> Result<()>,
+) -> Result<()> {
     match resource {
-        api::BindingResource::Sampler(sampler) => validate_sampler_type(slot, sampler),
-        api::BindingResource::Array(entries) => entries.iter().flatten().try_for_each(|entry| {
-            let api::BindingResource::Sampler(sampler) = entry else {
-                return Err(Error::InvalidState);
-            };
-            validate_sampler_type(slot, sampler)
-        }),
-        _ => Err(Error::InvalidState),
+        api::BindingResource::Array(entries) => entries.iter().flatten().try_for_each(validate),
+        resource => validate(resource),
     }
 }
 

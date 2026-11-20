@@ -201,6 +201,9 @@ impl<B: ResourceBackend> Device<B> {
                 BindingCount::RuntimeSized { .. } => {}
             }
             if matches!(&entry.ty, BindingType::AccelerationStructure) {
+                if !self.caps.acceleration_structure {
+                    return Err(Error::Unsupported("acceleration structure binding"));
+                }
                 match entry.count {
                     BindingCount::One => {}
                     BindingCount::Fixed(_) if !self.caps.acceleration_structure_binding_arrays => {

@@ -50,6 +50,9 @@ pub(crate) fn create_bind_group(
                 if slot.view_dimension.is_some() {
                     write::validate_texture_binding(device, slot, &entry.resource)?;
                 }
+                if matches!(slot.binding_type, api::BindingType::AccelerationStructure) {
+                    write::validate_acceleration_binding(&entry.resource)?;
+                }
                 count
                     .checked_add(write::resource_descriptor_count(slot, &entry.resource)?)
                     .ok_or(Error::InvalidRange)
@@ -165,30 +168,10 @@ pub(crate) fn create_bind_group(
                     // SAFETY: Core checked the device identity; the bind group
                     // retains the resource until all recorded uses have retired.
                     let native = unsafe { acceleration.native_ref() };
-                    if !native.0.is_top_level {
-                        return Err(Error::InvalidState);
-                    }
-                    let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-                        Format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN,
-                        ViewDimension: D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE,
-                        Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                        Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                            // SAFETY: the native acceleration resource is retained below.
-                            RaytracingAccelerationStructure:
-                                D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV {
-                                    Location: unsafe { native.0.resource.GetGPUVirtualAddress() },
-                                },
-                        },
-                    };
-                    // SAFETY: DXR acceleration SRVs require a null resource and
-                    // an address in the descriptor; the heap slot is allocated here.
-                    unsafe {
-                        device.0.native.CreateShaderResourceView(
-                            None::<&ID3D12Resource>,
-                            Some(&desc),
-                            view_cpu(view_index),
-                        );
-                    }
+                    // SAFETY: group admission validated the resource kind, and the
+                    // group retains the TLAS that owns its address.
+                    let address = unsafe { native.0.resource.GetGPUVirtualAddress() };
+                    write::write_acceleration_view(device, view_cpu(view_index), address);
                     view_index += 1;
                     accelerations.push(native.clone());
                 }

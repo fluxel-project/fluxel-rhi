@@ -6,6 +6,17 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 ## Active items
 
+### DX12 runtime and partially bound TLAS arrays
+
+**Status:** DXR devices with descriptor indexing support runtime and partially
+bound TLAS descriptor tables. Holes use the native null acceleration view.
+Resource admission rejects bottom-level structures before descriptor writes.
+
+**Acceptance:** Read back distinguishable results from multiple populated TLAS
+slots for fixed and runtime arrays, including nonuniform indexing and holes.
+Verify capacity and shader layout rejection, and TLAS/BLAS retention through
+submission completion. Qualify each supported shader route separately.
+
 ### DX12 secondary-source alpha blending
 
 **Status:** Both secondary-source alpha factors lower to their native DX12

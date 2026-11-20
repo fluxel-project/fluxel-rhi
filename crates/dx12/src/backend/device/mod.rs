@@ -383,6 +383,10 @@ impl Dx12 {
                 acceleration_compaction_size: ray_supported,
                 acceleration_compaction: ray_supported,
                 acceleration_structure_binding_arrays: ray_supported && descriptor_indexing,
+                runtime_sized_acceleration_structure_binding_arrays: ray_supported
+                    && descriptor_indexing,
+                partially_bound_acceleration_structure_binding_arrays: ray_supported
+                    && descriptor_indexing,
                 ray_query: ray_query_supported,
                 storage_textures: true,
                 texture_atomic_r32uint_compute,
