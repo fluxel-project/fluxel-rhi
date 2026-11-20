@@ -361,7 +361,8 @@ pub trait MappingBackend: Backend {
 }
 
 /// Readback is staged at an explicitly encoded position. RHI does not scan
-/// resources or choose completion; renderer must await covering checkpoint.
+/// resources or plan dependencies. A backend may publish completion for its
+/// own private staging copy from the fence enqueued after that copy.
 pub trait ReadbackBackend: CommandBackend + CompletionBackend {
     type NativeReadback;
     type ReadbackFuture<'a>: Future<Output = Result<ReadbackData>> + 'a
@@ -372,6 +373,21 @@ pub trait ReadbackBackend: CommandBackend + CompletionBackend {
         src: &Self::NativeBuffer,
         range: Range<u64>,
     ) -> Result<Self::NativeReadback>;
+    /// Returns completion evidence for a ticket whose storage is exclusive to
+    /// this copy and inaccessible to later GPU writes through public handles.
+    fn private_readback_status(
+        _device: &Self::NativeDevice,
+        _ticket: &Self::NativeReadback,
+    ) -> Result<CompletionState> {
+        Err(Error::Unsupported("completion-bound private readback"))
+    }
+    /// Safely maps private storage after verifying its own covering completion.
+    fn map_private_readback<'a>(
+        _device: &'a Self::NativeDevice,
+        _ticket: Self::NativeReadback,
+    ) -> impl Future<Output = Result<ReadbackData>> + 'a {
+        std::future::ready(Err(Error::Unsupported("completion-bound private readback")))
+    }
     fn map_readback<'a>(
         device: &'a Self::NativeDevice,
         ticket: Self::NativeReadback,

@@ -172,6 +172,11 @@ Clones share a single native mapping lease, including when a readback ticket
 copies bytes into host-owned storage. Callers may explicitly wait on a chosen
 completion before acquiring a lease and remain responsible for ordering later
 GPU work. Reported UMA topology does not change the buffer heap contract.
+Private staging readback publishes the first covering backend fence signal
+from the copy's lane. A ticket owns its byte range and is consumed by `read_private` after
+that signal completes. Discarded recordings and uncertain queue handoffs
+produce failed tickets. Caller-supplied completion and write exclusion are
+still required for direct mapping of shared readback buffers.
 An explicit GPU upload placement uses a committed `GPU_UPLOAD` heap when
 `OPTIONS16.GPUUploadHeapSupported` is true. It shares the host-write and
 GPU-read contract of an upload buffer, including the fixed `GENERIC_READ`

@@ -200,7 +200,8 @@ impl<B: ReadbackBackend> CommandEncoder<B> {
     /// source for mapping after completion. A copied source requires COPY_SRC
     /// usage; the caller establishes COPY/COPY_READ before this operation on
     /// backends with explicit resource states. The copy leaves that state in
-    /// place. The caller still supplies completion covering this ticket.
+    /// place. Use private readback status on a supporting backend, or supply
+    /// covering completion through [`Device::read_after`].
     pub fn readback_buffer(
         &mut self,
         src: &Buffer<B>,
@@ -222,6 +223,24 @@ impl<B: ReadbackBackend> CommandEncoder<B> {
     }
 }
 impl<B: ReadbackBackend> Device<B> {
+    /// Polls the completion of the copy into this ticket's private storage.
+    /// A shared-source ticket requires caller-provided coverage instead.
+    pub fn readback_status(&self, ticket: &ReadbackTicket<B>) -> Result<CompletionState> {
+        if ticket.device != self.id {
+            return Err(Error::WrongDevice);
+        }
+        B::private_readback_status(&self.native, &ticket.native)
+    }
+
+    /// Consumes a private staging ticket once its recorded copy is complete.
+    /// Poll [`Self::readback_status`] first to keep ownership while pending.
+    pub async fn read_private(&self, ticket: ReadbackTicket<B>) -> Result<ReadbackData> {
+        if ticket.device != self.id {
+            return Err(Error::WrongDevice);
+        }
+        B::map_private_readback(&self.native, ticket.native).await
+    }
+
     /// Maps the ticket after checking the supplied point's current status.
     /// A pending point returns `Error::InvalidState` without waiting.
     ///

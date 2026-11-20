@@ -166,14 +166,21 @@ fn seal_pending(
     value: u64,
 ) {
     for index in pending.drain(..) {
-        super::query::seal_ops(&issued[index].encoder.query_ops, lane, fence, value);
+        let encoder = &issued[index].encoder;
+        super::query::seal_ops(&encoder.query_ops, lane, fence, value);
+        for receipt in &encoder.readback_receipts {
+            receipt.seal(fence, value);
+        }
     }
 }
 
-fn retain_indeterminate(device: &Dx12Device, issued: Vec<Dx12RecordedWork>) {
+fn retain_indeterminate(device: &Dx12Device, issued: Vec<Dx12RecordedWork>, error: &Error) {
     if !issued.is_empty() {
         for record in &issued {
             super::query::invalidate_ops(&record.encoder.query_ops);
+            for receipt in &record.encoder.readback_receipts {
+                receipt.fail(error);
+            }
         }
         let mut direct = Vec::new();
         let mut compute = Vec::new();
@@ -311,6 +318,7 @@ fn retain_failed_handoff(
     signaled: &SignaledOwners,
     issued: Vec<Dx12RecordedWork>,
     mut sparse: Vec<super::super::sparse::SparseRetained>,
+    error: &Error,
 ) {
     let mut covered = Vec::new();
     let mut uncertain = Vec::new();
@@ -322,7 +330,7 @@ fn retain_failed_handoff(
         }
     }
     let uncertain_sparse = sparse.split_off(signaled.sparse);
-    retain_indeterminate(device, uncertain);
+    retain_indeterminate(device, uncertain, error);
     retain_sparse(device, u64::MAX, uncertain_sparse);
     let retained_lanes = retain_submitted(device, values, &mut covered);
     let retained_sparse = !sparse.is_empty();
@@ -543,7 +551,7 @@ unsafe fn submit_packet(
     let mut issued = Vec::new();
     let mut sparse_issued = Vec::new();
     let mut values = Vec::<Option<(u32, u64)>>::new();
-    let mut pending_queries = [Vec::<usize>::new(), Vec::<usize>::new()];
+    let mut pending_receipts = [Vec::<usize>::new(), Vec::<usize>::new()];
     // A lane is dirty from its most recent native handoff until a fence is
     // queued after it.  Terminal ownership and checkpoints use that same
     // per-lane fence rather than joining compute into direct.
@@ -556,7 +564,14 @@ unsafe fn submit_packet(
             match $operation {
                 Ok(value) => value,
                 Err(error) => {
-                    retain_failed_handoff(device, lane_values, &signaled, issued, sparse_issued);
+                    retain_failed_handoff(
+                        device,
+                        lane_values,
+                        &signaled,
+                        issued,
+                        sparse_issued,
+                        &error,
+                    );
                     return Outcome::Indeterminate {
                         error,
                         uncertain: unsafe {
@@ -658,8 +673,9 @@ unsafe fn submit_packet(
                 if first != issued.len() {
                     for index in first..issued.len() {
                         super::query::commit_ops(&issued[index].encoder.query_ops, lane.ordinal);
-                        if !issued[index].encoder.query_ops.is_empty() {
-                            pending_queries[lane.ordinal as usize].push(index);
+                        let encoder = &issued[index].encoder;
+                        if !encoder.query_ops.is_empty() || !encoder.readback_receipts.is_empty() {
+                            pending_receipts[lane.ordinal as usize].push(index);
                         }
                     }
                 }
@@ -689,7 +705,7 @@ unsafe fn submit_packet(
             let fence = super::super::queue::fence(device, lane.ordinal).expect("validated lane");
             seal_pending(
                 &issued,
-                &mut pending_queries[lane.ordinal as usize],
+                &mut pending_receipts[lane.ordinal as usize],
                 lane.ordinal,
                 fence,
                 value,
@@ -735,7 +751,7 @@ unsafe fn submit_packet(
             };
             seal_pending(
                 &issued,
-                &mut pending_queries[lane.ordinal as usize],
+                &mut pending_receipts[lane.ordinal as usize],
                 lane.ordinal,
                 super::super::queue::fence(device, lane.ordinal).expect("validated lane"),
                 fence_value,
@@ -752,7 +768,7 @@ unsafe fn submit_packet(
                 let value = handoff!(super::super::queue::signal(device, ordinal as u32));
                 seal_pending(
                     &issued,
-                    &mut pending_queries[ordinal],
+                    &mut pending_receipts[ordinal],
                     ordinal as u32,
                     super::super::queue::fence(device, ordinal as u32).expect("validated lane"),
                     value,

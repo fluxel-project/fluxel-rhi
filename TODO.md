@@ -941,12 +941,14 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   Reject cache and pool requests outside those profiles. In particular, a
   discrete device-local readback heap has no supported native counterpart.
   UMA topology alone does not make a default-heap buffer mappable.
-- **N02, DESIGNING — safe completion-bound mapping.** Prefer private staging
-  plus a consuming readback receipt/ticket tied to a specified range,
-  submission coverage, completion proof, cancellation, and failure outcome.
-  An upper layer may supply explicit coverage evidence for another route. Do
-  not add per-resource global hazard tracking or implicit waits. General
-  buffers whose future GPU hazards cannot be proven retain an explicit route.
+- **N02, VERIFYING — safe completion-bound mapping.** DX12 private staging
+  tickets record the copied range and the first covering backend signal on the
+  issuing lane. Verify pending status before submission and before fence
+  completion, exact readback bytes, discarded recordings, rejected packets,
+  and covered versus uncertain work after a later handoff failure. Confirm
+  that an unrelated completion cannot authorize mapping a pending private
+  ticket. Shared readback buffers retain explicit caller-provided coverage
+  and exclusion from later writes because the ticket cannot own those hazards.
 - **N03, IMPLEMENTING — retryable DX12 partial submission.** Reuse Core's
   existing `DeferredTail`, `RetryableSubmit`, and `Queue::resume()` contract.
   DX12 must distinguish rejection before native handoff, a proven accepted
