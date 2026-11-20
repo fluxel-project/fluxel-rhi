@@ -10,10 +10,9 @@ use std::future::{Ready, ready};
 use std::ops::Range;
 
 use fluxel_rhi_core::api::{self, Error, ReadbackData, Result};
-use windows::Win32::Graphics::Direct3D12::D3D12_RANGE;
 
 use crate::backend::encoder::Dx12Encoder;
-use crate::backend::{Dx12, Dx12Buffer, Dx12Device};
+use crate::backend::{Dx12, Dx12Buffer, Dx12Device, mapping};
 
 /// Native ticket for a raw buffer readback. Texture row layout remains the
 /// caller's `TexelCopyBufferLayout`; a buffer has no intrinsic row geometry.
@@ -85,38 +84,12 @@ impl fluxel_rhi_core::backend::ReadbackBackend for Dx12 {
 
 pub(super) fn map(ticket: Dx12Readback) -> Result<ReadbackData> {
     let size = ticket.range.end - ticket.range.start;
-    let size_usize = usize::try_from(size).map_err(|_| Error::InvalidRange)?;
-    let begin = usize::try_from(ticket.range.start).map_err(|_| Error::InvalidRange)?;
-    let end = begin.checked_add(size_usize).ok_or(Error::InvalidRange)?;
-    let mut pointer = std::ptr::null_mut();
-    // SAFETY: the completion-gated API guarantees the GPU no longer writes this
-    // MAP_READ resource; range conversion and bounds checks above make the
-    // D3D12 read range valid, and `pointer` is writable out storage.
-    unsafe {
-        ticket.buffer.resource.Map(
-            0,
-            Some(&D3D12_RANGE {
-                Begin: begin,
-                End: end,
-            }),
-            Some(&mut pointer),
-        )
-    }
-    .map_err(crate::backend::native_error)?;
-    if pointer.is_null() {
-        return Err(Error::Backend("DX12 readback Map returned null".into()));
-    }
-    // SAFETY: Map returned a non-null pointer to the retained resource, and
-    // the checked [begin, end) range is inside the mapped subresource.
-    let bytes =
-        unsafe { std::slice::from_raw_parts(pointer.cast::<u8>().add(begin), size_usize).to_vec() };
-    // SAFETY: this exactly balances the successful Map above. D3D12 permits
-    // the empty written range because CPU only read the resource.
-    unsafe {
-        ticket
-            .buffer
-            .resource
-            .Unmap(0, Some(&D3D12_RANGE { Begin: 0, End: 0 }))
+    let bytes = if size == 0 {
+        Vec::new()
+    } else {
+        mapping::open(&ticket.buffer, ticket.range, api::MapMode::Read)?
+            .bytes()
+            .to_vec()
     };
     // This SPI maps a buffer. Texture geometry is explicit in the preceding
     // copy layout and is supplied by the workload when it interprets bytes.

@@ -359,6 +359,9 @@ upload-page offset, and reject depth uploads on the compute lane. Verify that a
 pending completion times out and remains positive completion evidence only
 after the native fence reaches it. Read back identity, rearranged, and constant
 sampled components, and reject sampled-only views as storage or attachments.
+Verify that a pending or failed completion prevents readback mapping, and
+that a DX12 readback ticket and a direct read lease cannot map the same
+buffer concurrently.
 On an isolated DX12 device, verify native removal wakes a pending completion
 with `DeviceLost`. Check that new encoders, idle waits, and submissions reject
 the removed device before allocating command objects or issuing queue work.

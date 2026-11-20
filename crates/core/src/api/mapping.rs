@@ -171,8 +171,12 @@ impl<B: ReadbackBackend> CommandEncoder<B> {
     }
 }
 impl<B: ReadbackBackend> Device<B> {
-    /// # Safety: completion must actually cover the recorded readback copy;
-    /// an unrelated CompletionPoint is not sufficient evidence.
+    /// Maps the ticket after checking the supplied point's current status.
+    /// A pending point returns `Error::InvalidState` without waiting.
+    ///
+    /// # Safety
+    /// The completion point must cover the recorded readback and the caller
+    /// must exclude subsequent conflicting writes to the mapped buffer.
     pub async unsafe fn read_after(
         &self,
         ticket: ReadbackTicket<B>,
@@ -180,6 +184,11 @@ impl<B: ReadbackBackend> Device<B> {
     ) -> Result<ReadbackData> {
         if ticket.device != self.id || completed.device != self.id {
             return Err(Error::WrongDevice);
+        }
+        match self.completion_status(completed)? {
+            CompletionState::Complete => {}
+            CompletionState::Pending => return Err(Error::InvalidState),
+            CompletionState::Failed(error) => return Err(error),
         }
         B::map_readback(&self.native, ticket.native).await
     }
