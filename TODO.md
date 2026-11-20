@@ -107,14 +107,17 @@ mapped per mode and verified with depth and storage readback.
 **Status:** The compatibility `var<push_constant>` WGSL route in compute and
 raster uses the existing root-constant ABI for flat 32-bit scalar and vector
 layouts. Pipeline admission checks the full block span against that stage's
-ranges. New portable immediate-address-space work is gated on standardized
-syntax and frontend/layout support.
+ranges. Standard `var<immediate>` is pending frontend and layout support.
+Its store type must be host-shareable and constructible. At shader creation,
+reject direct arrays and structures containing an array at any nesting depth.
 
 **Acceptance:** Verify byte-exact readback for adjacent and padded members,
 partial writes, stages with different ranges, and rejection of missing
-coverage and reserved register overlaps. Admit complex aggregate layouts only
-when their lowering preserves each member offset under DX12 root-constant
-indexing restrictions.
+coverage and reserved register overlaps. For the standard route, cover legal
+matrices and array-free nested structures, plus negative cases for a direct
+fixed-size array, an array member, and an array in a nested member. Evaluate
+array lowering separately for native HLSL/DXIL or compatibility push constants
+only where the root-constant ABI preserves offsets and indexing.
 
 ### DX12 WGSL composite pointer access
 
@@ -699,13 +702,13 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   capability remains separately gated and does not extend WGSL. Reopen only
   after a standardized scalar route, frontend support, exact lowering, and
   boundary-value evidence exist. Do not add private WGSL syntax.
-- **R12, DESIGNING — complex WGSL immediates.** Gate new portable work on
-  the standardized immediate-address-space syntax and its frontend/layout
-  support. Keep the existing `var<push_constant>` route as compatibility only,
-  rather than treating that spelling as portable WGSL. Use flat DWORD lowering
-  for legal arrays, matrices, and nested structures where offsets, indexing,
-  partial writes, and root-signature budget are exact. Reject remaining shapes
-  before native recording.
+- **R12, DESIGNING — standard WGSL immediates.** Validate the source type
+  before DX12 lowering. Standard WGSL excludes arrays, including arrays
+  inside nested structures. For eligible matrices and array-free structures,
+  verify byte offsets, indexing, partial writes, stage ranges and the
+  root-signature budget. Track any array experiment under its native or
+  compatibility input route. See [inline constants](#dx12-wgsl-inline-constants)
+  and the [WGSL variable declaration rules](https://www.w3.org/TR/2026/CRD-WGSL-20261106/#var-decls).
 - **R13, DEFERRED — unrestricted WGSL pointer parameters.** The blocking
   condition is compiler/frontend and lowering support, rather than absence of
   a language extension. Current routes cannot preserve general address-space,
