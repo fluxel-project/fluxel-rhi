@@ -46,6 +46,9 @@ pub(crate) struct RasterPipelineState {
     pub(in crate::backend) dynamic_depth_bias: bool,
 }
 impl fluxel_rhi_core::backend::PipelineBackend for Dx12 {
+    fn vertex_format_support(device: &Dx12Device, format: api::VertexFormat) -> Result<()> {
+        admitted_vertex_format(device, format).map(|_| ())
+    }
     type RasterPipelineFuture<'a> = super::worker::ColdFuture<Dx12RasterPipeline>;
     fn create_raster_pipeline<'a>(
         device: &'a Dx12Device,
@@ -147,7 +150,7 @@ fn create_raster(
             Ok(D3D12_INPUT_ELEMENT_DESC {
                 SemanticName: PCSTR(name.as_ptr()),
                 SemanticIndex: a.location,
-                Format: vertex_format(a.format)?,
+                Format: admitted_vertex_format(device, a.format)?,
                 InputSlot: slot as u32,
                 AlignedByteOffset: u32::try_from(a.offset).map_err(|_| Error::InvalidRange)?,
                 InputSlotClass: match b.step_mode {
@@ -405,6 +408,31 @@ fn bytecode(v: &[u8]) -> D3D12_SHADER_BYTECODE {
         BytecodeLength: v.len(),
     }
 }
+fn admitted_vertex_format(device: &Dx12Device, format: api::VertexFormat) -> Result<DXGI_FORMAT> {
+    let native = vertex_format(format)?;
+    let mut support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
+        Format: native,
+        ..Default::default()
+    };
+    // SAFETY: this initialized format-support structure matches the native
+    // selector and remains writable for the synchronous feature query.
+    unsafe {
+        device.0.native.CheckFeatureSupport(
+            D3D12_FEATURE_FORMAT_SUPPORT,
+            (&mut support as *mut D3D12_FEATURE_DATA_FORMAT_SUPPORT).cast(),
+            std::mem::size_of_val(&support) as u32,
+        )
+    }
+    .map_err(native_error)?;
+    if !support
+        .Support1
+        .contains(D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER)
+    {
+        return Err(Error::Unsupported("DX12 input assembler vertex format"));
+    }
+    Ok(native)
+}
+
 fn vertex_format(v: api::VertexFormat) -> Result<DXGI_FORMAT> {
     match v {
         api::VertexFormat::Float32(1) => Ok(DXGI_FORMAT_R32_FLOAT),
@@ -446,6 +474,8 @@ fn vertex_format(v: api::VertexFormat) -> Result<DXGI_FORMAT> {
         api::VertexFormat::Snorm8(1) => Ok(DXGI_FORMAT_R8_SNORM),
         api::VertexFormat::Snorm8(2) => Ok(DXGI_FORMAT_R8G8_SNORM),
         api::VertexFormat::Snorm8(4) => Ok(DXGI_FORMAT_R8G8B8A8_SNORM),
+        api::VertexFormat::Rgb10a2Unorm => Ok(DXGI_FORMAT_R10G10B10A2_UNORM),
+        api::VertexFormat::Bgra8Unorm => Ok(DXGI_FORMAT_B8G8R8A8_UNORM),
         _ => Err(Error::Unsupported("DX12 vertex format")),
     }
 }

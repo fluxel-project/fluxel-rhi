@@ -48,6 +48,10 @@ pub enum VertexFormat {
     Snorm16(u8),
     Float64(u8),
     Uint64(u8),
+    /// Packed 32-bit normalized RGBA, with red in the least significant bits.
+    Rgb10a2Unorm,
+    /// Four normalized bytes in memory order B, G, R, A.
+    Bgra8Unorm,
 }
 #[derive(Clone, Debug)]
 pub struct VertexAttribute {
@@ -231,6 +235,11 @@ pub struct ComputePipelineDesc<B: Backend> {
 }
 
 impl<B: PipelineBackend> Device<B> {
+    /// Checks whether this device admits the vertex format in its input layout.
+    pub fn vertex_format_support(&self, format: VertexFormat) -> Result<()> {
+        B::vertex_format_support(&self.native, format)
+    }
+
     pub async fn raster_pipeline(&self, desc: RasterPipelineDesc<B>) -> Result<RasterPipeline<B>> {
         self.create_raster_pipeline(desc, None).await
     }

@@ -147,6 +147,11 @@ impl Inputs {
                                 | api::VertexFormat::Sint8(n)
                                 | api::VertexFormat::Unorm8(n)
                                 | api::VertexFormat::Snorm8(n) => (n, 1),
+                                api::VertexFormat::Rgb10a2Unorm | api::VertexFormat::Bgra8Unorm => {
+                                    return Err(Error::Unsupported(
+                                        "Vulkan packed ray vertex format",
+                                    ));
+                                }
                             };
                             let size = u64::from(components) * alignment;
                             // SAFETY: Core checked all geometry resource device identities.

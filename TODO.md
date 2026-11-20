@@ -6,6 +6,16 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 ## Active items
 
+### DX12 vertex input format admission
+
+**Status:** Input layout creation and vertex format queries share the D3D12
+input-assembler format check. Packed RGB10A2 UNORM and BGRA8 UNORM are mapped
+when the device reports support for those vertex formats.
+
+**Acceptance:** Read back normalized and swizzled vertex data from an actual
+raster draw. Check query and pipeline agreement, including early rejection
+for unsupported packed and 64-bit formats.
+
 ### DX12 mesh output topology
 
 **Status:** Mesh pipelines and topology queries share admission for native
