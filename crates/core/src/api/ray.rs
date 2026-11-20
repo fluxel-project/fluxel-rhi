@@ -261,6 +261,12 @@ pub struct AccelerationDesc<B: Backend> {
     pub fast_trace: bool,
     pub allow_update: bool,
 }
+/// Destination for a build's native-endian `u64` byte size. The caller keeps
+/// the buffer in storage-write state until the build and size write finish.
+pub struct AccelerationSizeOutput<'a, B: Backend> {
+    pub buffer: &'a Buffer<B>,
+    pub offset: u64,
+}
 #[derive(Clone)]
 pub struct RayPipelineDesc<B: Backend> {
     pub layout: PipelineLayout<B>,
@@ -521,6 +527,44 @@ impl<B: Backend> RayDomain<'_, B> {
         }
         self.validate_acceleration_input(&desc.input)?;
         encoder.call(|e| B::Ray::build_acceleration(e, &dst.native, &scratch.native, desc))
+    }
+    /// Builds an acceleration structure and writes the resulting storage
+    /// size in bytes. Read the result after a covering completion point.
+    pub fn build_with_size_output(
+        &self,
+        encoder: &mut CommandEncoder<B>,
+        dst: &AccelerationStructure<B>,
+        scratch: &Buffer<B>,
+        desc: &AccelerationDesc<B>,
+        output: AccelerationSizeOutput<'_, B>,
+    ) -> Result<()>
+    where
+        B: CommandBackend,
+    {
+        if !self.device.caps.acceleration_build_size_output {
+            return Err(Error::Unsupported("acceleration build size output"));
+        }
+        if encoder.device != self.device.id
+            || dst.device != self.device.id
+            || scratch.device != self.device.id
+            || output.buffer.device != self.device.id
+        {
+            return Err(Error::WrongDevice);
+        }
+        if output.offset % 8 != 0 || output.offset.checked_add(8).is_none() {
+            return Err(Error::InvalidRange);
+        }
+        self.validate_acceleration_input(&desc.input)?;
+        encoder.call(|e| {
+            B::Ray::build_with_size_output(
+                e,
+                &dst.native,
+                &scratch.native,
+                desc,
+                &output.buffer.native,
+                output.offset,
+            )
+        })
     }
     /// Records an in-place refit. The execution must order a compatible build
     /// with `allow_update` before this command, and make its writes visible.

@@ -232,12 +232,47 @@ fn build(
     scratch: &super::Dx12Buffer,
     desc: &api::AccelerationDesc<Dx12>,
     refit: bool,
+    output: Option<(&super::Dx12Buffer, u64)>,
 ) -> Result<()> {
     let signature = refit::RefitSignature::from_desc(desc);
     if refit && signature.is_none() {
         return Err(Error::Unsupported("DX12 indexed BLAS refit"));
     }
     let geometry = geometry::GeometryInputs::new(desc, encoder.device.0.dxr_1_1)?;
+    let postbuild = output
+        .map(|(buffer, offset)| {
+            if buffer.memory != api::MemoryClass::Device
+                || !buffer.usage.contains(api::BufferUsage::STORAGE)
+            {
+                return Err(Error::Unsupported(
+                    "DX12 acceleration size output requires a device storage buffer",
+                ));
+            }
+            if offset.checked_add(8).is_none_or(|end| end > buffer.size) {
+                return Err(Error::InvalidRange);
+            }
+            if buffer.resource.as_raw() == scratch.resource.as_raw()
+                || geometry
+                    .buffers
+                    .iter()
+                    .any(|input| input.resource.as_raw() == buffer.resource.as_raw())
+            {
+                return Err(Error::InvalidState);
+            }
+            // SAFETY: the retained buffer owns its native address.
+            let base = unsafe { buffer.resource.GetGPUVirtualAddress() };
+            let address = base
+                .checked_add(offset)
+                .filter(|address| address % 8 == 0)
+                .ok_or(Error::InvalidRange)?;
+            Ok(
+                D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC {
+                    DestBuffer: address,
+                    InfoType: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_CURRENT_SIZE,
+                },
+            )
+        })
+        .transpose()?;
     let sizes = prebuild(&encoder.device, &geometry)?;
     let scratch_bytes = if refit {
         if sizes.UpdateScratchDataSizeInBytes == 0 {
@@ -390,9 +425,17 @@ fn build(
         .map_err(super::native_error)?;
     // SAFETY: native geometry pointers are valid for the synchronous command
     // recording call; caller-provided resource states follow Core barriers.
-    unsafe { list.BuildRaytracingAccelerationStructure(&native, None) };
+    unsafe {
+        list.BuildRaytracingAccelerationStructure(
+            &native,
+            postbuild.as_ref().map(std::slice::from_ref),
+        )
+    };
     encoder.buffers.extend(geometry.buffers);
     encoder.buffers.push(scratch.clone());
+    if let Some((buffer, _)) = output {
+        encoder.buffers.push(buffer.clone());
+    }
     encoder.accelerations.push(dst.clone());
     let mut unique = Vec::new();
     extend_unique(&mut unique, referenced_blas);

@@ -322,6 +322,16 @@ pub trait RayOps<B: Backend> {
     ) -> Result<()> {
         Err(Error::Unsupported("acceleration structure update"))
     }
+    fn build_with_size_output(
+        _encoder: &mut B::NativeEncoder,
+        _dst: &B::NativeAcceleration,
+        _scratch: &B::NativeBuffer,
+        _input: &AccelerationDesc<B>,
+        _output: &B::NativeBuffer,
+        _offset: u64,
+    ) -> Result<()> {
+        Err(Error::Unsupported("acceleration build size output"))
+    }
     fn trace(
         encoder: &mut B::NativeEncoder,
         pipeline: &B::NativeRayPipeline,

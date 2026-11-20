@@ -31,6 +31,8 @@ pub struct DeviceCapabilities {
     pub acceleration_structure_update: bool,
     /// Triangle geometry can read a buffer-backed affine transform when built.
     pub acceleration_geometry_transform: bool,
+    /// A build can write the resulting acceleration structure size to a buffer.
+    pub acceleration_build_size_output: bool,
     /// Fully bound, fixed-count binding arrays whose elements are
     /// acceleration structures. Runtime-sized and partially-bound arrays are
     /// separate capability domains.

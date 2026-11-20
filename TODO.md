@@ -47,6 +47,9 @@ under DXR Tier 1.1.
 Verify geometry-to-BLAS transforms by traversal readback, including a refit
 with replacement transform data. Reject misaligned, undersized and foreign
 transform buffers, and refits that change transform presence.
+Verify the native build-size output for BLAS and TLAS after a covering
+completion point. Compare it with the prebuild allocation bound and reject
+invalid offsets, capacity, or conflicting buffer roles.
 
 ### DX12 conservative rasterization
 
