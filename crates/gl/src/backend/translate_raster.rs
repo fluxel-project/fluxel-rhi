@@ -114,5 +114,7 @@ fn lower_blend_factor(value: BlendFactor, alpha: bool) -> api::Result<GlBlendFac
                 GlBlendFactor::OneMinusSrc1
             }
         }
+        BlendFactor::Src1Alpha => GlBlendFactor::Src1Alpha,
+        BlendFactor::OneMinusSrc1Alpha => GlBlendFactor::OneMinusSrc1Alpha,
     })
 }

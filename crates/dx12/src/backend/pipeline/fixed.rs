@@ -74,13 +74,8 @@ pub(crate) fn lower_targets(
                 blend.alpha.src_factor,
                 blend.alpha.dst_factor,
             ]
-            .iter()
-            .any(|factor| {
-                matches!(
-                    factor,
-                    api::BlendFactor::Src1 | api::BlendFactor::OneMinusSrc1
-                )
-            });
+            .into_iter()
+            .any(api::BlendFactor::uses_secondary_source);
             if dual_source && (index != 0 || targets.len() != 1) {
                 return Err(Error::Unsupported(
                     "DX12 dual source blend with multiple targets",
@@ -285,6 +280,8 @@ fn blend_factor(value: api::BlendFactor, alpha: bool) -> Result<D3D12_BLEND> {
                 D3D12_BLEND_INV_SRC1_COLOR
             }
         }
+        api::BlendFactor::Src1Alpha => D3D12_BLEND_SRC1_ALPHA,
+        api::BlendFactor::OneMinusSrc1Alpha => D3D12_BLEND_INV_SRC1_ALPHA,
     })
 }
 

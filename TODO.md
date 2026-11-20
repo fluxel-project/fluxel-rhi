@@ -6,6 +6,14 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 ## Active items
 
+### DX12 secondary-source alpha blending
+
+**Status:** Both secondary-source alpha factors lower to their native DX12
+blend factors and share the single-target dual-source admission check.
+
+**Acceptance:** Read back an RGB result that distinguishes secondary-source
+alpha from secondary-source color. Cover both factors and invalid MRT use.
+
 ### DX12 whole-pass statistics semantics
 
 DX12 exposes a native interval total for pipeline statistics on direct command

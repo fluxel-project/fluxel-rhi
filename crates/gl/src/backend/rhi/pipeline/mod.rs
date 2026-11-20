@@ -59,13 +59,8 @@ fn create_raster_pipeline(
                 blend.alpha.src_factor,
                 blend.alpha.dst_factor,
             ]
-            .iter()
-            .any(|factor| {
-                matches!(
-                    factor,
-                    api::BlendFactor::Src1 | api::BlendFactor::OneMinusSrc1
-                )
-            })
+            .into_iter()
+            .any(api::BlendFactor::uses_secondary_source)
         });
     let dual_output = if let Some(fragment) = fragment {
         // SAFETY: Core supplies a device-validated pipeline shader.

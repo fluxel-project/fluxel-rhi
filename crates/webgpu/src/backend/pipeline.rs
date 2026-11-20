@@ -431,6 +431,8 @@ fn blend_factor(factor: api::BlendFactor) -> Result<&'static str> {
         api::BlendFactor::SrcAlphaSaturated => "src-alpha-saturated",
         api::BlendFactor::Src1 => "src1",
         api::BlendFactor::OneMinusSrc1 => "one-minus-src1",
+        api::BlendFactor::Src1Alpha => "src1-alpha",
+        api::BlendFactor::OneMinusSrc1Alpha => "one-minus-src1-alpha",
     })
 }
 

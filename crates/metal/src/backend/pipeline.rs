@@ -663,6 +663,8 @@ pub(super) fn blend_factor(
                 M::OneMinusSource1Color
             }
         }
+        F::Src1Alpha => M::Source1Alpha,
+        F::OneMinusSrc1Alpha => M::OneMinusSource1Alpha,
     })
 }
 

@@ -105,8 +105,8 @@ pub(crate) fn validate_blends(
                 b.alpha.src_factor,
                 b.alpha.dst_factor,
             ]
-            .iter()
-            .any(|f| matches!(f, api::BlendFactor::Src1 | api::BlendFactor::OneMinusSrc1))
+            .into_iter()
+            .any(api::BlendFactor::uses_secondary_source)
         })
     {
         return Err(Error::Unsupported("Vulkan dualSrcBlend"));
@@ -154,6 +154,8 @@ pub(crate) fn blend_factor(value: api::BlendFactor, alpha: bool) -> Result<vk::B
                 vk::BlendFactor::ONE_MINUS_SRC1_COLOR
             }
         }
+        api::BlendFactor::Src1Alpha => vk::BlendFactor::SRC1_ALPHA,
+        api::BlendFactor::OneMinusSrc1Alpha => vk::BlendFactor::ONE_MINUS_SRC1_ALPHA,
     })
 }
 

@@ -110,6 +110,18 @@ pub enum BlendFactor {
     SrcAlphaSaturated,
     Src1,
     OneMinusSrc1,
+    /// Alpha of the second fragment output, including in the RGB equation.
+    Src1Alpha,
+    OneMinusSrc1Alpha,
+}
+
+impl BlendFactor {
+    pub const fn uses_secondary_source(self) -> bool {
+        matches!(
+            self,
+            Self::Src1 | Self::OneMinusSrc1 | Self::Src1Alpha | Self::OneMinusSrc1Alpha
+        )
+    }
 }
 #[derive(Clone, Copy, Debug)]
 pub enum BlendOperation {
