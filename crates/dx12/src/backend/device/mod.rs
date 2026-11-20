@@ -222,6 +222,21 @@ impl Dx12 {
             }
             .is_ok()
                 && options12.EnhancedBarriersSupported.as_bool();
+            let mut options13 =
+                windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS13::default();
+            // SAFETY: the initialized OPTIONS13 structure remains live for this
+            // synchronous D3D12 feature query.
+            let texel_aligned_color_copies = unsafe {
+                native.CheckFeatureSupport(
+                    windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_D3D12_OPTIONS13,
+                    (&mut options13 as *mut _) as *mut _,
+                    std::mem::size_of_val(&options13) as u32,
+                )
+            }
+            .is_ok()
+                && options13
+                    .UnrestrictedBufferTextureCopyPitchSupported
+                    .as_bool();
             let mut options16 =
                 windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS16::default();
             // SAFETY: the feature structure exactly matches the synchronous
@@ -386,6 +401,7 @@ impl Dx12 {
                 direct_buffer_upload: true,
                 completion_timeout: true,
                 sampled_texture_component_mapping: true,
+                texel_aligned_color_copies,
                 push_constants: true,
                 indirect_draw: true,
                 indirect_first_instance: true,
@@ -454,6 +470,7 @@ impl Dx12 {
                 Dx12Device(Arc::new(Dx12DeviceState {
                     native: native.clone(),
                     descriptor_table_limits,
+                    texel_aligned_color_copies,
                     shader_model,
                     subgroup_widths,
                     max_buffer_bytes,

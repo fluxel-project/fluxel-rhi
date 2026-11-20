@@ -165,6 +165,12 @@ shader-resource descriptor for this view, even when the texture itself also
 allows storage or render-attachment usage. The support query checks the same
 sampled-view format, dimension, and subresource constraints as creation.
 
+Explicit color buffer/texture copies share placement and pitch validation in
+both directions. When `texel_aligned_color_copies` is reported, the offset
+and row pitch may each be aligned to a single texel or compressed block.
+Other DX12 devices use 512-byte offsets and 256-byte row pitches for those
+copies. Depth and stencil use their dedicated copy paths.
+
 ## Recording, submission, and completion
 
 The normal run path is:

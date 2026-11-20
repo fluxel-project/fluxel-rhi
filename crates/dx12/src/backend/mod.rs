@@ -86,6 +86,7 @@ pub struct Dx12Device(Arc<Dx12DeviceState>);
 struct Dx12DeviceState {
     pub(super) native: ID3D12Device,
     pub(super) descriptor_table_limits: api::DescriptorTableLimits,
+    pub(super) texel_aligned_color_copies: bool,
     pub(super) shader_model: u16,
     pub(super) subgroup_widths: Option<api::SubgroupWidths>,
     /// Committed buffers consume the process GPU virtual-address range.

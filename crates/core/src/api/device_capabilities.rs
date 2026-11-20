@@ -203,6 +203,9 @@ pub struct DeviceCapabilities {
     pub completion_timeout: bool,
     /// Sampled color texture views can remap their shader-visible components.
     pub sampled_texture_component_mapping: bool,
+    /// Explicit color buffer/texture copies permit offsets and row pitches
+    /// aligned to one texel or compressed block.
+    pub texel_aligned_color_copies: bool,
     pub lanes: Arc<[LaneInfo]>,
     pub limits: DeviceLimits,
 }

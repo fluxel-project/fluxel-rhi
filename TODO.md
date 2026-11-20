@@ -6,7 +6,7 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 ## Active items
 
-### DX12 upload, completion, and texture view verification
+### DX12 upload, completion, and texture transfer verification
 
 **Status:** Direct staging writes, bounded completion waits, sampled color
 component mapping, and descriptor-specific sample count reporting are wired.
@@ -23,6 +23,9 @@ creation for the same format, dimension, mip count, and usage.
 Compare storage layout admission with actual typed UAV view creation for
 matching formats and dimensions, and verify missing view roles fail before
 descriptor copies.
+Run direct color copies in both directions using texel-aligned offset and
+pitch on a device that reports the feature. Check block alignment, array and
+volume image strides, the exact final row, and rejection on the legacy path.
 
 ### DX12 comparison sampler integration
 

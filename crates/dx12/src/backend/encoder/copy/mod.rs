@@ -92,79 +92,90 @@ pub(super) fn validate_region(
         .ok_or(Error::InvalidRange)
 }
 
-fn copy_footprint(
-    texture: &Dx12Texture,
-    subresource: u32,
+/// A native buffer footprint covering exactly the copied color rows plus the
+/// caller's inter-image padding. Array images occupy consecutive row bands.
+pub(super) struct ColorCopyFootprint {
+    pub(super) placed: D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
+    pub(super) byte_end: u64,
+    pub(super) copy_height: u32,
+    pub(super) array_layer_height: u32,
+}
+
+pub(super) fn color_copy_footprint(
+    format: api::TextureFormat,
+    dimension: api::TextureDimension,
     layout: api::TexelCopyBufferLayout,
     extent: [u32; 3],
-) -> Result<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> {
-    let block = super::super::texture::bc_block_bytes(texture.0.desc.format);
-    let rows = if block.is_some() {
-        extent[1].div_ceil(4)
-    } else {
-        extent[1]
+    texel_aligned: bool,
+) -> Result<ColorCopyFootprint> {
+    use crate::backend::texture::{bc_block_bytes, color_texel_bytes, dxgi_format};
+    use windows::Win32::Graphics::Direct3D12::{
+        D3D12_TEXTURE_DATA_PITCH_ALIGNMENT, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT,
     };
-    let tight = if let Some(block) = block {
-        extent[0].div_ceil(4).checked_mul(block)
+    let block = bc_block_bytes(format);
+    let block_extent = if block.is_some() { 4 } else { 1 };
+    let unit_bytes = block
+        .or_else(|| color_texel_bytes(format))
+        .ok_or(Error::Unsupported("DX12 color texture copy format"))?;
+    let columns = extent[0].div_ceil(block_extent);
+    let rows = extent[1].div_ceil(block_extent);
+    let tight = columns.checked_mul(unit_bytes).ok_or(Error::InvalidRange)?;
+    let (offset_alignment, pitch_alignment) = if texel_aligned {
+        (unit_bytes, unit_bytes)
     } else {
-        extent[0].checked_mul(
-            super::super::texture::color_texel_bytes(texture.0.desc.format)
-                .ok_or(Error::Unsupported("DX12 texture copy format"))?,
+        (
+            D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT,
+            D3D12_TEXTURE_DATA_PITCH_ALIGNMENT,
         )
-    }
-    .ok_or(Error::InvalidRange)?;
-    if layout.offset % 512 != 0
+    };
+    if layout.offset % u64::from(offset_alignment) != 0
         || layout.bytes_per_row < tight
-        || layout.bytes_per_row % 256 != 0
+        || layout.bytes_per_row % pitch_alignment != 0
         || layout.rows_per_image < rows
     {
         return Err(Error::InvalidRange);
     }
-    let format = super::super::texture::dxgi_format(texture.0.desc.format);
-    if subresource >= texture.0.desc.mip_levels * texture.0.desc.array_layers {
-        return Err(Error::Unsupported(
-            "DX12 buffer-texture copies support RGBA8 2D textures",
-        ));
-    }
-    Ok(D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
-        Offset: layout.offset,
-        Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
-            Format: format,
-            Width: if block.is_some() {
-                extent[0].div_ceil(4) * 4
-            } else {
-                extent[0]
-            },
-            Height: if extent[2] > 1 {
-                layout.rows_per_image
-            } else if block.is_some() {
-                extent[1].div_ceil(4) * 4
-            } else {
-                extent[1]
-            },
-            Depth: extent[2],
-            RowPitch: layout.bytes_per_row,
-        },
-    })
-}
-
-fn layout_end(
-    layout: api::TexelCopyBufferLayout,
-    extent: [u32; 3],
-    compressed: bool,
-) -> Result<u64> {
-    u64::from(layout.rows_per_image)
-        .checked_mul(u64::from(extent[2] - 1))
-        .and_then(|n| {
-            n.checked_add(u64::from(if compressed {
-                extent[1].div_ceil(4)
-            } else {
-                extent[1]
-            }))
-        })
+    let preceding_rows = u64::from(layout.rows_per_image) * u64::from(extent[2] - 1);
+    let byte_end = preceding_rows
+        .checked_add(u64::from(rows - 1))
         .and_then(|n| n.checked_mul(u64::from(layout.bytes_per_row)))
+        .and_then(|n| n.checked_add(u64::from(tight)))
         .and_then(|n| n.checked_add(layout.offset))
-        .ok_or(Error::InvalidRange)
+        .ok_or(Error::InvalidRange)?;
+    let is_volume = dimension == api::TextureDimension::D3;
+    let footprint_rows = if !is_volume {
+        u32::try_from(preceding_rows + u64::from(rows)).map_err(|_| Error::InvalidRange)?
+    } else if extent[2] > 1 {
+        layout.rows_per_image
+    } else {
+        rows
+    };
+    let height = footprint_rows
+        .checked_mul(block_extent)
+        .ok_or(Error::InvalidRange)?;
+    let array_layer_height = if !is_volume && extent[2] > 1 {
+        layout
+            .rows_per_image
+            .checked_mul(block_extent)
+            .ok_or(Error::InvalidRange)?
+    } else {
+        0
+    };
+    Ok(ColorCopyFootprint {
+        placed: D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
+            Offset: layout.offset,
+            Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
+                Format: dxgi_format(format),
+                Width: columns * block_extent,
+                Height: height,
+                Depth: if is_volume { extent[2] } else { 1 },
+                RowPitch: layout.bytes_per_row,
+            },
+        },
+        byte_end,
+        copy_height: rows * block_extent,
+        array_layer_height,
+    })
 }
 
 pub(crate) fn buffer(
@@ -362,42 +373,19 @@ pub(crate) fn buffer_to_texture(
     let target = Dx12Texture(target);
     let subresource = validate_region(&target, &dst)?;
     let is_array = target.0.desc.dimension != api::TextureDimension::D3;
-    let mut footprint = copy_footprint(
-        &target,
-        subresource,
-        layout,
-        if is_array {
-            [dst.extent[0], dst.extent[1], 1]
-        } else {
-            dst.extent
-        },
-    )?;
-    if is_array {
-        footprint.Footprint.Height = layout
-            .rows_per_image
-            .checked_mul(dst.extent[2])
-            .and_then(|n| {
-                n.checked_mul(
-                    if super::super::texture::bc_block_bytes(target.0.desc.format).is_some() {
-                        4
-                    } else {
-                        1
-                    },
-                )
-            })
-            .ok_or(Error::InvalidRange)?;
-    }
-    if layout_end(
+    let footprint = color_copy_footprint(
+        target.0.desc.format,
+        target.0.desc.dimension,
         layout,
         dst.extent,
-        super::super::texture::bc_block_bytes(target.0.desc.format).is_some(),
-    )? > src.size
-    {
+        encoder.device.0.texel_aligned_color_copies,
+    )?;
+    if footprint.byte_end > src.size {
         return Err(Error::InvalidRange);
     }
     let layers = if is_array { dst.extent[2] } else { 1 };
     for layer in 0..layers {
-        let mut from = copy_location(&src.resource, footprint, true, 0);
+        let mut from = copy_location(&src.resource, footprint.placed, true, 0);
         let mut to = copy_location(
             &target.0.resource,
             D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default(),
@@ -409,36 +397,10 @@ pub(crate) fn buffer_to_texture(
         unsafe {
             let box_ = D3D12_BOX {
                 left: 0,
-                top: if is_array {
-                    layer
-                        * layout.rows_per_image
-                        * if super::super::texture::bc_block_bytes(target.0.desc.format).is_some() {
-                            4
-                        } else {
-                            1
-                        }
-                } else {
-                    0
-                },
+                top: layer * footprint.array_layer_height,
                 front: 0,
-                right: footprint.Footprint.Width,
-                bottom: (if is_array {
-                    layer
-                        * layout.rows_per_image
-                        * if super::super::texture::bc_block_bytes(target.0.desc.format).is_some() {
-                            4
-                        } else {
-                            1
-                        }
-                } else {
-                    0
-                }) + if super::super::texture::bc_block_bytes(target.0.desc.format)
-                    .is_some()
-                {
-                    dst.extent[1].div_ceil(4) * 4
-                } else {
-                    dst.extent[1]
-                },
+                right: footprint.placed.Footprint.Width,
+                bottom: layer * footprint.array_layer_height + footprint.copy_height,
                 back: if is_array { 1 } else { dst.extent[2] },
             };
             encoder.list.CopyTextureRegion(
