@@ -20,7 +20,7 @@ use windows::{
 
 use super::super::{Dx12, Dx12Device, Dx12RasterPipeline, Dx12ShaderSource};
 use super::fixed::{
-    depth_format, lower_depth, lower_raster, lower_targets, stencil_writes, validate_depth,
+    Attachments, depth_format, lower_attachments, lower_depth, lower_raster, stencil_writes,
 };
 use super::{PipelineLayoutState, create_raster_pso_stream};
 
@@ -54,6 +54,14 @@ impl fluxel_rhi_core::backend::PipelineBackend for Dx12 {
     }
     fn vertex_format_support(device: &Dx12Device, format: api::VertexFormat) -> Result<()> {
         admitted_vertex_format(device, format).map(|_| ())
+    }
+    fn pipeline_attachment_support(
+        device: &Dx12Device,
+        targets: &[Option<api::ColorTargetState>],
+        depth: Option<api::DepthStencilState>,
+        multisample: api::MultisampleState,
+    ) -> Result<()> {
+        lower_attachments(device, targets, depth, multisample).map(drop)
     }
     type RasterPipelineFuture<'a> = super::worker::ColdFuture<Dx12RasterPipeline>;
     fn create_raster_pipeline<'a>(
@@ -99,25 +107,22 @@ fn create_raster(
     {
         return Err(Error::InvalidState);
     }
-    let depth = validate_depth(desc.depth_stencil)?;
-    if !matches!(desc.multisample.count, 1 | 2 | 4 | 8 | 16 | 32) {
-        return Err(Error::Unsupported(
-            "DX12 multisample count (supported: 1, 2, 4, 8, 16, 32)",
-        ));
-    }
-    if desc.multisample.alpha_to_coverage_enabled && desc.multisample.count == 1 {
-        return Err(Error::InvalidState);
-    }
-    if desc.multisample.mask > u64::from(u32::MAX) {
-        return Err(Error::InvalidRange);
-    }
     if desc
         .multiview
         .is_some_and(|views| !(1..=D3D12_MAX_VIEW_INSTANCE_COUNT).contains(&views))
     {
         return Err(Error::Unsupported("DX12 multiview view count"));
     }
-    let (formats, blends) = lower_targets(device, &desc.color_targets)?;
+    let Attachments {
+        depth,
+        formats,
+        blends,
+    } = lower_attachments(
+        device,
+        &desc.color_targets,
+        desc.depth_stencil,
+        desc.multisample,
+    )?;
     // SAFETY: Core validated the layout belongs to this device.
     let layout = unsafe { desc.layout.native_ref() }.0.clone();
     let (vs, mut raw_storage_bindings, vertex_index_constants, vertex_report) = stage(

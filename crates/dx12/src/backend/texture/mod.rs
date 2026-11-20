@@ -16,6 +16,7 @@ pub(super) use color_view::{
     create_sampled_view, create_view, create_view_with_usage, create_volume_attachment_slice,
     volume_attachment_slice_support,
 };
+pub(super) use format::sample_count_supported;
 pub(super) use format::{
     bc_block_bytes, color_texel_bytes, depth_aspects, dxgi_format, format_has_support,
     format_supports_texture_atomic_add_native, format_supports_texture_atomic_bitwise_native,
@@ -23,7 +24,7 @@ pub(super) use format::{
     format_supports_texture_atomic_unsigned_min_native, integer_clear_bits, integer_color,
     is_depth, storage_view_format_available, typed_storage_access,
 };
-use format::{format_available, sample_count_supported, supported_sample_counts};
+use format::{format_available, supported_sample_counts};
 use validate::{max_array_layers, max_extent, max_mips, valid};
 
 use super::{Dx12Device, Dx12Texture, Dx12TextureView};

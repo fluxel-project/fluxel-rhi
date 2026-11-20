@@ -9,9 +9,7 @@ use super::super::{Dx12Device, texture};
 
 const COLOR_SLOTS: usize = D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT as usize;
 
-pub(crate) fn validate_depth(
-    state: Option<api::DepthStencilState>,
-) -> Result<Option<api::DepthStencilState>> {
+fn validate_depth(state: Option<api::DepthStencilState>) -> Result<Option<api::DepthStencilState>> {
     let depth = match state {
         None => None,
         Some(state)
@@ -39,9 +37,48 @@ pub(crate) fn validate_depth(
     Ok(depth)
 }
 
-pub(crate) fn lower_targets(
+pub(crate) struct Attachments {
+    pub(crate) depth: Option<api::DepthStencilState>,
+    pub(crate) formats: [DXGI_FORMAT; COLOR_SLOTS],
+    pub(crate) blends: [D3D12_RENDER_TARGET_BLEND_DESC; COLOR_SLOTS],
+}
+
+pub(crate) fn lower_attachments(
     device: &Dx12Device,
     targets: &[Option<api::ColorTargetState>],
+    depth: Option<api::DepthStencilState>,
+    multisample: api::MultisampleState,
+) -> Result<Attachments> {
+    if !matches!(multisample.count, 1 | 2 | 4 | 8 | 16 | 32) {
+        return Err(Error::Unsupported("DX12 pipeline sample count"));
+    }
+    if multisample.mask > u64::from(u32::MAX) {
+        return Err(Error::InvalidRange);
+    }
+    if multisample.alpha_to_coverage_enabled && multisample.count == 1 {
+        return Err(Error::InvalidState);
+    }
+    let depth = validate_depth(depth)?;
+    if depth.is_some_and(|state| {
+        !texture::format_has_support(device, state.format, D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL)
+            || !texture::sample_count_supported(device, state.format, multisample.count)
+    }) {
+        return Err(Error::Unsupported(
+            "DX12 depth/stencil attachment sample count or format",
+        ));
+    }
+    let (formats, blends) = lower_targets(device, targets, multisample.count)?;
+    Ok(Attachments {
+        depth,
+        formats,
+        blends,
+    })
+}
+
+fn lower_targets(
+    device: &Dx12Device,
+    targets: &[Option<api::ColorTargetState>],
+    samples: u32,
 ) -> Result<(
     [DXGI_FORMAT; COLOR_SLOTS],
     [D3D12_RENDER_TARGET_BLEND_DESC; COLOR_SLOTS],
@@ -66,11 +103,17 @@ pub(crate) fn lower_targets(
         let Some(target) = target else { continue };
         formats[index] = color_format(target.format)?;
         let mut required = D3D12_FORMAT_SUPPORT1_RENDER_TARGET;
+        if samples > 1 {
+            required |= D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RENDERTARGET;
+        }
         if target.blend.is_some() {
             required |= D3D12_FORMAT_SUPPORT1_BLENDABLE;
         }
         if !texture::format_has_support(device, target.format, required) {
             return Err(Error::Unsupported("DX12 color target format or blending"));
+        }
+        if !texture::sample_count_supported(device, target.format, samples) {
+            return Err(Error::Unsupported("DX12 color attachment sample count"));
         }
         if let Some(blend) = target.blend {
             let dual_source = [

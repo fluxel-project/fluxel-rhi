@@ -277,6 +277,21 @@ pub struct ComputePipelineDesc<B: Backend> {
 }
 
 impl<B: PipelineBackend> Device<B> {
+    /// Qualifies color and depth attachment states for a raster or mesh
+    /// pipeline. Shader linkage and pipeline-specific state are checked when
+    /// the pipeline is created.
+    pub fn pipeline_attachment_support(
+        &self,
+        targets: &[Option<ColorTargetState>],
+        depth: Option<DepthStencilState>,
+        multisample: MultisampleState,
+    ) -> Result<()> {
+        if targets.len() > self.caps.limits.max_color_attachments as usize {
+            return Err(Error::InvalidRange);
+        }
+        B::pipeline_attachment_support(&self.native, targets, depth, multisample)
+    }
+
     /// Checks whether this device admits the vertex format in its input layout.
     pub fn vertex_format_support(&self, format: VertexFormat) -> Result<()> {
         B::vertex_format_support(&self.native, format)

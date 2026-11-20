@@ -234,17 +234,19 @@ pub(super) fn create_pipeline(
         return Err(Error::Unsupported("DX12 per-face stencil masks"));
     }
     let topology = topology(device, desc.primitive.topology).map_err(Error::Unsupported)?;
-    if desc.primitive.strip_index_format.is_some()
-        || !matches!(desc.multisample.count, 1 | 2 | 4 | 8 | 16 | 32)
-        || desc.multisample.mask > u64::from(u32::MAX)
-    {
+    if desc.primitive.strip_index_format.is_some() {
         return Err(Error::Unsupported("DX12 mesh pipeline state"));
     }
-    if desc.multisample.alpha_to_coverage_enabled && desc.multisample.count == 1 {
-        return Err(Error::InvalidState);
-    }
-    let depth = super::pipeline::fixed::validate_depth(desc.depth_stencil)?;
-    let (formats, blends) = super::pipeline::fixed::lower_targets(device, &desc.targets)?;
+    let super::pipeline::fixed::Attachments {
+        depth,
+        formats,
+        blends,
+    } = super::pipeline::fixed::lower_attachments(
+        device,
+        &desc.targets,
+        desc.depth_stencil,
+        desc.multisample,
+    )?;
     let raster = super::pipeline::fixed::lower_raster(desc.primitive, desc.multisample, depth)?;
     let depth_state = super::pipeline::fixed::lower_depth(depth);
     let mesh = shader(&desc.mesh, api::ShaderStage::Mesh)?;

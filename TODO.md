@@ -59,6 +59,12 @@ For multisampled color attachments, compare texture and view support with
 creation for the base and reinterpreted formats. Check native multisampled
 render target support and the requested sample count for the view format.
 
+**Pipeline attachment support:** Compare the DX12 query with raster and mesh
+pipeline creation for exact multisample counts across all occupied color slots
+and the depth/stencil target. Include a format that rejects the requested count,
+unsupported blending, an oversized sample mask, and alpha-to-coverage with one
+sample. Use compatible shaders so the comparison isolates attachment admission.
+
 **Index buffer views:** Verify that DX12 support, direct recording and
 bundles agree on INDEX usage, element alignment, byte range, and the native
 32-bit view size. Include an aligned Uint16 range whose start is rejected

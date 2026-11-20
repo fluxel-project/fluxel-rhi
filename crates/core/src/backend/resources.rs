@@ -180,6 +180,14 @@ pub trait PipelineBackend: Backend {
     fn vertex_format_support(_device: &Self::NativeDevice, _format: VertexFormat) -> Result<()> {
         Err(Error::Unsupported("vertex format support query"))
     }
+    fn pipeline_attachment_support(
+        _device: &Self::NativeDevice,
+        _targets: &[Option<ColorTargetState>],
+        _depth: Option<DepthStencilState>,
+        _multisample: MultisampleState,
+    ) -> Result<()> {
+        Err(Error::Unsupported("pipeline attachment support query"))
+    }
     type RasterPipelineFuture<'a>: Future<Output = Result<Self::NativeRasterPipeline>> + 'a
     where
         Self: 'a;

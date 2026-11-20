@@ -520,7 +520,7 @@ pub(super) fn supported_sample_counts(dv: &Dx12Device, d: &api::TextureDesc) -> 
 /// Check only the sample count needed by resource creation. The full supported
 /// list is appropriate for capability queries, but asking the driver about
 /// every multisample count for a single-sample texture repeats unrelated work.
-pub(super) fn sample_count_supported(
+pub(in crate::backend) fn sample_count_supported(
     dv: &Dx12Device,
     format: api::TextureFormat,
     count: u32,
