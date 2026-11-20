@@ -75,6 +75,11 @@ impl<B: Backend> Device<B> {
     }
 }
 impl<B: Backend> MeshDomain<'_, B> {
+    /// Queries the output topology independently of a specific shader.
+    pub fn topology_support(&self, topology: PrimitiveTopology) -> Support<()> {
+        B::Mesh::topology_support(&self.device.native, topology)
+    }
+
     pub async fn create_pipeline(&self, desc: MeshPipelineDesc<B>) -> Result<MeshPipeline<B>> {
         // Task, mesh, fragment, layout, and cache must share one device even
         // when an optional stage is omitted from the executable pipeline.

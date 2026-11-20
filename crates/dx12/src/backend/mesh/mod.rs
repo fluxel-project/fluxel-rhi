@@ -74,18 +74,26 @@ fn bytecode(bytes: &[u8]) -> D3D12_SHADER_BYTECODE {
     }
 }
 
+fn topology(
+    device: &Dx12Device,
+    topology: api::PrimitiveTopology,
+) -> std::result::Result<D3D12_PRIMITIVE_TOPOLOGY_TYPE, &'static str> {
+    if !device.0.mesh_supported {
+        return Err("DX12 mesh shader tier 1");
+    }
+    match topology {
+        api::PrimitiveTopology::LineList => Ok(D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE),
+        api::PrimitiveTopology::TriangleList => Ok(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE),
+        _ => Err("DX12 mesh output topology"),
+    }
+}
+
 pub(super) fn create_pipeline(
     device: &Dx12Device,
     desc: &api::MeshPipelineDesc<Dx12>,
 ) -> Result<Dx12MeshPipeline> {
-    if !device.0.mesh_supported {
-        return Err(Error::Unsupported("DX12 mesh shader tier 1"));
-    }
+    let topology = topology(device, desc.primitive.topology).map_err(Error::Unsupported)?;
     if desc.primitive.strip_index_format.is_some()
-        || !matches!(
-            desc.primitive.topology,
-            api::PrimitiveTopology::TriangleList
-        )
         || !matches!(desc.multisample.count, 1 | 2 | 4 | 8 | 16 | 32)
         || desc.multisample.mask > u64::from(u32::MAX)
     {
@@ -180,7 +188,7 @@ pub(super) fn create_pipeline(
         ),
         topology: sub(
             D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY,
-            D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+            topology,
         ),
         formats: sub(
             D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS,

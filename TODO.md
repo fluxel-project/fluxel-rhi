@@ -6,6 +6,14 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 ## Active items
 
+### DX12 mesh output topology
+
+**Status:** Mesh pipelines and topology queries share admission for native
+line-list and triangle-list output. Point and strip output are unavailable.
+
+**Acceptance:** Verify line and triangle output on a supporting GPU and
+reject unsupported topologies and shader/PSO topology mismatches.
+
 ### DX12 acceleration structure refit
 
 **Status:** TLAS and non-indexed BLAS refit use DXR in-place updates. Ordered

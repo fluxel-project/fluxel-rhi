@@ -7,6 +7,12 @@ pub struct Mesh;
 impl fluxel_rhi_core::backend::MeshOps<Dx12> for Mesh {
     const AVAILABLE: bool = true;
     type PipelineFuture<'a> = super::super::pipeline::worker::ColdFuture<Dx12MeshPipeline>;
+    fn topology_support(device: &Dx12Device, topology: api::PrimitiveTopology) -> api::Support<()> {
+        match super::topology(device, topology) {
+            Ok(_) => api::Support::Supported(()),
+            Err(reason) => api::Support::Unsupported(reason),
+        }
+    }
     fn create_pipeline<'a>(
         device: &'a Dx12Device,
         desc: &'a api::MeshPipelineDesc<Dx12>,

@@ -234,6 +234,9 @@ pub trait MeshOps<B: Backend> {
     type PipelineFuture<'a>: Future<Output = Result<B::NativeMeshPipeline>> + 'a
     where
         B: 'a;
+    fn topology_support(_device: &B::NativeDevice, _topology: PrimitiveTopology) -> Support<()> {
+        Support::Unsupported("mesh topology query")
+    }
     fn create_pipeline<'a>(
         device: &'a B::NativeDevice,
         desc: &'a MeshPipelineDesc<B>,
