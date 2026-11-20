@@ -294,6 +294,11 @@ impl Dx12 {
                 options16_available && options16.DynamicDepthBiasSupported.as_bool();
             let gpu_upload_buffers =
                 options16_available && options16.GPUUploadHeapSupported.as_bool();
+            let cpu_visible_heaps = memory::cpu_visible::CpuVisibleHeapProfiles::for_device(
+                &native,
+                memory_topology,
+                gpu_upload_buffers,
+            );
             let descriptor_indexing = shader_model >= 60;
             let mut options3 =
                 windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS3::default();
@@ -572,6 +577,7 @@ impl Dx12 {
                     enhanced_barriers_supported,
                     dynamic_depth_bias_supported,
                     gpu_upload_buffers,
+                    cpu_visible_heaps,
                     stencil_reference_per_face,
                     sparse_in_flight: Mutex::new(Vec::new()),
                     multi_queue: queue::MultiQueueState::new(&native)?,

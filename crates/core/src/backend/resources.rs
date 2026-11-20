@@ -22,6 +22,22 @@ pub trait ResourceBackend: Backend {
     ) -> Result<Self::NativeBuffer> {
         Err(Error::Unsupported("GPU upload buffers"))
     }
+    fn custom_cpu_visible_buffer_support(
+        _device: &Self::NativeDevice,
+        _memory: MemoryClass,
+        _cache: CpuVisibleBufferCache,
+        _pool: CpuVisibleBufferPool,
+    ) -> Support<()> {
+        Support::Unsupported("custom CPU-visible buffers")
+    }
+    fn create_custom_cpu_visible_buffer(
+        _device: &Self::NativeDevice,
+        _desc: &BufferDesc,
+        _cache: CpuVisibleBufferCache,
+        _pool: CpuVisibleBufferPool,
+    ) -> Result<Self::NativeBuffer> {
+        Err(Error::Unsupported("custom CPU-visible buffers"))
+    }
     fn storage_buffer_view_support(
         _buffer: &Self::NativeBuffer,
         _range: Range<u64>,

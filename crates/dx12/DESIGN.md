@@ -177,6 +177,11 @@ An explicit GPU upload placement uses a committed `GPU_UPLOAD` heap when
 GPU-read contract of an upload buffer, including the fixed `GENERIC_READ`
 state. The placement specifies the allocation route. The runtime controls
 actual residency.
+Explicit custom placement matches the requested cache policy and pool against
+the node's equivalent upload, readback or GPU upload properties. Unified
+memory uses L0 for both pool choices. Discrete device-local upload uses L1
+under the GPU upload capability. Each custom allocation retains the access
+and state contract of its selected profile.
 
 ## Shader and pipeline routes
 

@@ -5,6 +5,7 @@
 //! caller may drop `MemoryHeap` after placement without invalidating queued
 //! command work. Aliasing order remains an explicit Core barrier obligation.
 
+pub(super) mod cpu_visible;
 mod default_pool;
 pub(super) use default_pool::{DefaultAllocationLease, DefaultResourcePool};
 

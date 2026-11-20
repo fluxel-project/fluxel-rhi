@@ -177,6 +177,13 @@ impl<B: ResourceBackend> Device<B> {
                 return Support::Unsupported("GPU upload buffers require write mapping");
             }
         }
+        if let CpuVisibleBufferPlacement::Custom { cache, pool } = placement {
+            if let Support::Unsupported(reason) =
+                B::custom_cpu_visible_buffer_support(&self.native, desc.memory, cache, pool)
+            {
+                return Support::Unsupported(reason);
+            }
+        }
         self.buffer_support(desc)
     }
 
@@ -194,6 +201,9 @@ impl<B: ResourceBackend> Device<B> {
             CpuVisibleBufferPlacement::Standard => B::create_buffer(&self.native, desc)?,
             CpuVisibleBufferPlacement::GpuUpload => {
                 B::create_gpu_upload_buffer(&self.native, desc)?
+            }
+            CpuVisibleBufferPlacement::Custom { cache, pool } => {
+                B::create_custom_cpu_visible_buffer(&self.native, desc, cache, pool)?
             }
         };
         // SAFETY: the SPI allocated the buffer for this exact device and descriptor.

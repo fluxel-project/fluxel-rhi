@@ -199,6 +199,26 @@ pub enum CpuVisibleBufferPlacement {
     /// Uses a GPU upload heap for host writes and GPU reads. This selects an
     /// allocation class and does not guarantee physical residency.
     GpuUpload,
+    /// Requests an exact cache policy and pool for upload or readback access.
+    Custom {
+        cache: CpuVisibleBufferCache,
+        pool: CpuVisibleBufferPool,
+    },
+}
+
+/// CPU page policy required by a custom host-visible allocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CpuVisibleBufferCache {
+    WriteCombined,
+    WriteBack,
+}
+
+/// Memory pool requested for a custom host-visible allocation. Both choices
+/// can refer to the same physical pool on a unified-memory device.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CpuVisibleBufferPool {
+    System,
+    DeviceLocal,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FilterMode {

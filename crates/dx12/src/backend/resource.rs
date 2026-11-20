@@ -6,7 +6,8 @@
 
 use super::*;
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_HEAP_TYPE, D3D12_HEAP_TYPE_GPU_UPLOAD, D3D12_HEAP_TYPE_READBACK, D3D12_HEAP_TYPE_UPLOAD,
+    D3D12_HEAP_TYPE, D3D12_HEAP_TYPE_CUSTOM, D3D12_HEAP_TYPE_GPU_UPLOAD, D3D12_HEAP_TYPE_READBACK,
+    D3D12_HEAP_TYPE_UPLOAD,
 };
 
 impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
@@ -151,7 +152,7 @@ impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
             api::MemoryClass::Upload => D3D12_HEAP_TYPE_UPLOAD,
             api::MemoryClass::Readback => D3D12_HEAP_TYPE_READBACK,
         };
-        allocate_buffer(device, desc, heap_type)
+        allocate_buffer(device, desc, standard_heap_properties(heap_type))
     }
 
     fn create_gpu_upload_buffer(device: &Dx12Device, desc: &api::BufferDesc) -> Result<Dx12Buffer> {
@@ -166,7 +167,40 @@ impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
         if let api::Support::Unsupported(reason) = Self::buffer_support(device, desc) {
             return Err(Error::Unsupported(reason));
         }
-        allocate_buffer(device, desc, D3D12_HEAP_TYPE_GPU_UPLOAD)
+        allocate_buffer(
+            device,
+            desc,
+            standard_heap_properties(D3D12_HEAP_TYPE_GPU_UPLOAD),
+        )
+    }
+
+    fn custom_cpu_visible_buffer_support(
+        device: &Dx12Device,
+        memory: api::MemoryClass,
+        cache: api::CpuVisibleBufferCache,
+        pool: api::CpuVisibleBufferPool,
+    ) -> api::Support<()> {
+        match device.0.cpu_visible_heaps.select(memory, cache, pool) {
+            Ok(_) => api::Support::Supported(()),
+            Err(reason) => api::Support::Unsupported(reason),
+        }
+    }
+
+    fn create_custom_cpu_visible_buffer(
+        device: &Dx12Device,
+        desc: &api::BufferDesc,
+        cache: api::CpuVisibleBufferCache,
+        pool: api::CpuVisibleBufferPool,
+    ) -> Result<Dx12Buffer> {
+        let heap = device
+            .0
+            .cpu_visible_heaps
+            .select(desc.memory, cache, pool)
+            .map_err(Error::Unsupported)?;
+        if let api::Support::Unsupported(reason) = Self::buffer_support(device, desc) {
+            return Err(Error::Unsupported(reason));
+        }
+        allocate_buffer(device, desc, heap)
     }
 
     fn create_texture(device: &Dx12Device, desc: &api::TextureDesc) -> Result<Dx12Texture> {
@@ -272,24 +306,30 @@ impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
     }
 }
 
-fn allocate_buffer(
-    device: &Dx12Device,
-    desc: &api::BufferDesc,
-    heap_type: D3D12_HEAP_TYPE,
-) -> Result<Dx12Buffer> {
-    let (native, allocation_size, initial_state) = memory::buffer_desc(desc)?;
-    if allocation_size > device.0.max_buffer_bytes {
-        return Err(Error::InvalidRange);
-    }
-    let heap = D3D12_HEAP_PROPERTIES {
+fn standard_heap_properties(heap_type: D3D12_HEAP_TYPE) -> D3D12_HEAP_PROPERTIES {
+    D3D12_HEAP_PROPERTIES {
         Type: heap_type,
         CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
         MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
         CreationNodeMask: 1,
         VisibleNodeMask: 1,
-    };
-    let pooled = if heap_type == D3D12_HEAP_TYPE_GPU_UPLOAD {
-        // Keep this allocation distinct from the ordinary upload pool.
+    }
+}
+
+fn allocate_buffer(
+    device: &Dx12Device,
+    desc: &api::BufferDesc,
+    heap: D3D12_HEAP_PROPERTIES,
+) -> Result<Dx12Buffer> {
+    let (native, allocation_size, initial_state) = memory::buffer_desc(desc)?;
+    if allocation_size > device.0.max_buffer_bytes {
+        return Err(Error::InvalidRange);
+    }
+    let pooled = if matches!(
+        heap.Type,
+        D3D12_HEAP_TYPE_GPU_UPLOAD | D3D12_HEAP_TYPE_CUSTOM
+    ) {
+        // Explicit heap placements are distinct from the ordinary pools.
         None
     } else {
         let class_bits = memory::buffer_class_bits(device, desc.memory);
