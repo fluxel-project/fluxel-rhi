@@ -76,6 +76,13 @@ and the depth/stencil target. Include a format that rejects the requested count,
 unsupported blending, an oversized sample mask, and alpha-to-coverage with one
 sample. Use compatible shaders so the comparison isolates attachment admission.
 
+**Raster pipeline support:** Compare descriptor support with ordinary raster
+pipeline creation for same-device inputs, invalid strip state, multiview
+limits, vertex input formats and offsets, and missing or wrong-stage shader
+entries. Verify native register overlap and DXIL specialization reject in the
+shared descriptor path. Confirm signature linkage and specialized shader
+validation still run during creation.
+
 **Compute pipeline support:** Compare the descriptor query and creation for a
 known compute entry, missing or non-compute entries, foreign shader, layout or
 cache objects, invalid declared workgroup sizes, and required subgroup sizes.

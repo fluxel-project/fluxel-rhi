@@ -297,6 +297,13 @@ impl<B: PipelineBackend> Device<B> {
         B::vertex_format_support(&self.native, format)
     }
 
+    /// Checks the ordinary raster pipeline descriptor before shader compilation.
+    /// Specialization, signature linkage and native pipeline creation can still fail.
+    pub fn raster_pipeline_support(&self, desc: &RasterPipelineDesc<B>) -> Result<()> {
+        self.validate_raster_pipeline_desc(desc)?;
+        B::raster_pipeline_support(&self.native, desc)
+    }
+
     pub async fn raster_pipeline(&self, desc: RasterPipelineDesc<B>) -> Result<RasterPipeline<B>> {
         self.create_raster_pipeline(desc, None, None).await
     }
@@ -355,6 +362,28 @@ impl<B: PipelineBackend> Device<B> {
         if stencil_masks.is_some() {
             self.validate_stencil_masks(desc.depth_stencil)?;
         }
+        self.validate_raster_pipeline_desc(&desc)?;
+        let native = match stencil_masks {
+            Some(masks) => {
+                B::create_raster_pipeline_with_stencil_masks(
+                    &self.native,
+                    &desc,
+                    dynamic_depth_bias,
+                    masks,
+                )
+                .await?
+            }
+            None => B::create_raster_pipeline(&self.native, &desc, dynamic_depth_bias).await?,
+        };
+        // SAFETY: shader and layout provenance were checked against this device.
+        let mut pipeline = unsafe {
+            RasterPipeline::from_native_with_dynamic_depth_bias(self.id, native, dynamic_depth_bias)
+        };
+        pipeline.layout = Some(desc.layout);
+        Ok(pipeline)
+    }
+
+    fn validate_raster_pipeline_desc(&self, desc: &RasterPipelineDesc<B>) -> Result<()> {
         // Pipeline pieces may be structurally compatible while belonging to
         // different devices. Validate provenance before a backend starts a
         // potentially expensive asynchronous native pipeline compilation.
@@ -404,24 +433,7 @@ impl<B: PipelineBackend> Device<B> {
                 return Err(Error::InvalidRange);
             }
         }
-        let native = match stencil_masks {
-            Some(masks) => {
-                B::create_raster_pipeline_with_stencil_masks(
-                    &self.native,
-                    &desc,
-                    dynamic_depth_bias,
-                    masks,
-                )
-                .await?
-            }
-            None => B::create_raster_pipeline(&self.native, &desc, dynamic_depth_bias).await?,
-        };
-        // SAFETY: shader and layout provenance were checked against this device.
-        let mut pipeline = unsafe {
-            RasterPipeline::from_native_with_dynamic_depth_bias(self.id, native, dynamic_depth_bias)
-        };
-        pipeline.layout = Some(desc.layout);
-        Ok(pipeline)
+        Ok(())
     }
 }
 

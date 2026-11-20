@@ -10,19 +10,17 @@ use std::{
     mem::ManuallyDrop,
     sync::{Arc, Mutex},
 };
-use windows::{
-    Win32::{
-        Foundation::{FALSE, TRUE},
-        Graphics::{Direct3D::*, Direct3D12::*, Dxgi::Common::*},
-    },
-    core::PCSTR,
+use windows::Win32::{
+    Foundation::{FALSE, TRUE},
+    Graphics::{Direct3D::*, Direct3D12::*, Dxgi::Common::*},
 };
 
 use super::super::{Dx12, Dx12Device, Dx12RasterPipeline, Dx12ShaderSource};
-use super::fixed::{
-    Attachments, depth_format, lower_attachments, lower_depth, lower_raster, stencil_writes,
-};
+use super::fixed::{Attachments, depth_format, lower_attachments, lower_depth, stencil_writes};
 use super::{PipelineLayoutState, create_raster_pso_stream};
+
+mod admission;
+use admission::{AdmittedRaster, AdmittedStage};
 
 pub(crate) struct RasterPipelineState {
     compilation_diagnostics: Vec<api::PipelineShaderDiagnostics>,
@@ -47,6 +45,12 @@ pub(crate) struct RasterPipelineState {
     pub(in crate::backend) dynamic_depth_bias: bool,
 }
 impl fluxel_rhi_core::backend::PipelineBackend for Dx12 {
+    fn raster_pipeline_support(
+        device: &Dx12Device,
+        desc: &api::RasterPipelineDesc<Dx12>,
+    ) -> Result<()> {
+        admission::admit(device, desc).map(drop)
+    }
     fn raster_compilation_diagnostics(
         pipeline: &Dx12RasterPipeline,
     ) -> &[api::PipelineShaderDiagnostics] {
@@ -99,117 +103,30 @@ fn create_raster(
     if dynamic_depth_bias.is_some() && !device.0.dynamic_depth_bias_supported {
         return Err(Error::Unsupported("DX12 dynamic depth bias"));
     }
-    if desc.primitive.strip_index_format.is_some()
-        && !matches!(
-            desc.primitive.topology,
-            api::PrimitiveTopology::LineStrip | api::PrimitiveTopology::TriangleStrip
-        )
-    {
-        return Err(Error::InvalidState);
-    }
-    if desc
-        .multiview
-        .is_some_and(|views| !(1..=D3D12_MAX_VIEW_INSTANCE_COUNT).contains(&views))
-    {
-        return Err(Error::Unsupported("DX12 multiview view count"));
-    }
+    let AdmittedRaster {
+        layout,
+        vertex,
+        fragment,
+        attachments,
+        vertex_strides,
+        elements,
+        mut raster,
+    } = admission::admit(device, desc)?;
     let Attachments {
         depth,
         formats,
         blends,
-    } = lower_attachments(
-        device,
-        &desc.color_targets,
-        desc.depth_stencil,
-        desc.multisample,
-    )?;
-    // SAFETY: Core validated the layout belongs to this device.
-    let layout = unsafe { desc.layout.native_ref() }.0.clone();
-    let (vs, mut raw_storage_bindings, vertex_index_constants, vertex_report) = stage(
-        &desc.vertex,
-        api::ShaderStage::Vertex,
-        &layout,
-        device.0.shader_model,
-    )?;
-    let ps = desc
-        .fragment
-        .as_ref()
-        .map(|s| {
-            stage(
-                s,
-                api::ShaderStage::Fragment,
-                &layout,
-                device.0.shader_model,
-            )
-        })
+    } = attachments;
+    let (vs, mut raw_storage_bindings, vertex_index_constants, vertex_report) =
+        stage(vertex, layout, device.0.shader_model)?;
+    let ps = fragment
+        .map(|stage_desc| stage(stage_desc, layout, device.0.shader_model))
         .transpose()?;
     if let Some((_, bindings, _, _)) = &ps {
         raw_storage_bindings.extend(bindings);
     }
     raw_storage_bindings.sort_unstable();
     raw_storage_bindings.dedup();
-    // The command lowering needs the public strides to construct D3D12 vertex
-    // buffer views.  Keep this validation adjacent to input-layout lowering so
-    // a pipeline can never be created with a stride the command path cannot
-    // represent.
-    let vertex_strides: Result<Vec<u32>> = desc
-        .vertex_buffers
-        .iter()
-        .map(|buffer| u32::try_from(buffer.stride).map_err(|_| Error::InvalidRange))
-        .collect();
-    let vertex_strides = vertex_strides?;
-    // Naga emits LOC<n>; caller-provided DXIL follows the LOCATION<n> ABI.
-    // SAFETY: Core has validated this shader's device identity.
-    let wgsl_vertex = matches!(
-        unsafe { desc.vertex.module.native_ref() }.source,
-        Some(Dx12ShaderSource::Wgsl(_))
-    );
-    let names: Vec<Vec<u8>> = desc
-        .vertex_buffers
-        .iter()
-        .flat_map(|x| x.attributes.iter())
-        .map(|_| {
-            if wgsl_vertex {
-                b"LOC\0".to_vec()
-            } else {
-                b"LOCATION\0".to_vec()
-            }
-        })
-        .collect();
-    let mut n = 0usize;
-    let elements: Result<Vec<_>> = desc
-        .vertex_buffers
-        .iter()
-        .enumerate()
-        .flat_map(|(slot, b)| b.attributes.iter().map(move |a| (slot, b, a)))
-        .map(|(slot, b, a)| {
-            let name = &names[n];
-            n += 1;
-            let offset = u32::try_from(a.offset).map_err(|_| Error::InvalidRange)?;
-            // Core offsets are literal bytes. DX12 reserves this bit pattern
-            // to compute the offset from the preceding input element.
-            if offset == D3D12_APPEND_ALIGNED_ELEMENT {
-                return Err(Error::InvalidRange);
-            }
-            Ok(D3D12_INPUT_ELEMENT_DESC {
-                SemanticName: PCSTR(name.as_ptr()),
-                SemanticIndex: a.location,
-                Format: admitted_vertex_format(device, a.format)?,
-                InputSlot: slot as u32,
-                AlignedByteOffset: offset,
-                InputSlotClass: match b.step_mode {
-                    api::VertexStepMode::Vertex => D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                    api::VertexStepMode::Instance => D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
-                },
-                InstanceDataStepRate: match b.step_mode {
-                    api::VertexStepMode::Vertex => 0,
-                    api::VertexStepMode::Instance => 1,
-                },
-            })
-        })
-        .collect();
-    let elements = elements?;
-    let mut raster = lower_raster(desc.primitive, desc.multisample, depth)?;
     if dynamic_depth_bias.is_some() {
         // D3D12 requires all three static rasterizer depth-bias fields to be
         // zero when the PSO opts into dynamic depth bias.
@@ -365,7 +282,7 @@ fn create_raster(
     Ok(Dx12RasterPipeline(Arc::new(RasterPipelineState {
         compilation_diagnostics,
         root,
-        layout,
+        layout: layout.clone(),
         state,
         topology: native_topology(desc.primitive.topology),
         strip_index_format: desc.primitive.strip_index_format,
@@ -388,8 +305,7 @@ fn create_raster(
 }
 
 fn stage(
-    s: &api::PipelineStage<Dx12>,
-    need: api::ShaderStage,
+    admitted: AdmittedStage<'_>,
     layout: &super::layout::PipelineLayoutState,
     shader_model: u16,
 ) -> Result<(
@@ -398,19 +314,12 @@ fn stage(
     bool,
     Option<api::PipelineShaderDiagnostics>,
 )> {
-    // SAFETY: Core's pipeline descriptor validates device identity. The return
-    // slice borrows the stage, which outlives PSO construction in create_raster.
-    let n = unsafe { s.module.native_ref() };
-    let entry = n
-        .entries
-        .iter()
-        .find(|e| e.name == s.entry && e.stage == need)
-        .ok_or_else(|| {
-            Error::Shader(format!(
-                "DXIL has no requested {:?} entry {}",
-                need, s.entry
-            ))
-        })?;
+    let AdmittedStage {
+        desc: s,
+        shader: n,
+        entry,
+    } = admitted;
+    let need = entry.stage;
     let entry_report = |report| api::PipelineShaderDiagnostics {
         stage: need,
         entry: s.entry.clone(),
@@ -440,9 +349,6 @@ fn stage(
             ))
         }
         Some(Dx12ShaderSource::Hlsl(source)) => {
-            if !layout.native_abi_compatible {
-                return Err(Error::Unsupported("DX12 HLSL descriptor register overlap"));
-            }
             let api::ShaderFormat::Hlsl(model) = source.format else {
                 return Err(Error::InvalidState);
             };
@@ -464,10 +370,6 @@ fn stage(
                 compiled.report.map(entry_report),
             ))
         }
-        None if !layout.native_abi_compatible => {
-            Err(Error::Unsupported("DX12 DXIL descriptor register overlap"))
-        }
-        None if !s.constants.is_empty() => Err(Error::Unsupported("DX12 DXIL specialization")),
         None => Ok((n.bytes.to_vec(), Vec::new(), false, None)),
     }
 }

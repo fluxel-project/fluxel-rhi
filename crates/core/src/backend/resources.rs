@@ -172,6 +172,12 @@ pub trait ShaderBackend: Backend {
 }
 
 pub trait PipelineBackend: Backend {
+    fn raster_pipeline_support(
+        _device: &Self::NativeDevice,
+        _desc: &RasterPipelineDesc<Self>,
+    ) -> Result<()> {
+        Err(Error::Unsupported("raster pipeline support query"))
+    }
     fn raster_compilation_diagnostics(
         _pipeline: &Self::NativeRasterPipeline,
     ) -> &[PipelineShaderDiagnostics] {
