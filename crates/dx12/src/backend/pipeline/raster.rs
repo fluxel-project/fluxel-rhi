@@ -104,12 +104,23 @@ fn create_raster(
     let (formats, blends) = lower_targets(device, &desc.color_targets)?;
     // SAFETY: Core validated the layout belongs to this device.
     let layout = unsafe { desc.layout.native_ref() }.0.clone();
-    let (vs, mut raw_storage_bindings, vertex_index_constants, vertex_report) =
-        stage(&desc.vertex, api::ShaderStage::Vertex, &layout)?;
+    let (vs, mut raw_storage_bindings, vertex_index_constants, vertex_report) = stage(
+        &desc.vertex,
+        api::ShaderStage::Vertex,
+        &layout,
+        device.0.shader_model,
+    )?;
     let ps = desc
         .fragment
         .as_ref()
-        .map(|s| stage(s, api::ShaderStage::Fragment, &layout))
+        .map(|s| {
+            stage(
+                s,
+                api::ShaderStage::Fragment,
+                &layout,
+                device.0.shader_model,
+            )
+        })
         .transpose()?;
     if let Some((_, bindings, _, _)) = &ps {
         raw_storage_bindings.extend(bindings);
@@ -353,6 +364,7 @@ fn stage(
     s: &api::PipelineStage<Dx12>,
     need: api::ShaderStage,
     layout: &super::layout::PipelineLayoutState,
+    shader_model: u16,
 ) -> Result<(
     Vec<u8>,
     Vec<(u32, u32)>,
@@ -379,7 +391,7 @@ fn stage(
     };
     match &n.source {
         Some(Dx12ShaderSource::Wgsl(source)) => {
-            let compiled = super::super::shader_naga::compile_variant_with_typed_map(
+            let compiled = super::super::shader_naga::compile_pipeline_variant(
                 source,
                 entry,
                 &s.constants,
@@ -387,7 +399,10 @@ fn stage(
                 &layout.binding_types,
                 &layout.runtime_binding_capacities,
                 &layout.buffer_entries,
-                None,
+                super::super::shader_naga::WgslTarget {
+                    shader_model,
+                    required_wave_size: None,
+                },
             )?;
             Ok((
                 compiled.bytes,

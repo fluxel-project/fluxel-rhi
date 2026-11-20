@@ -2,6 +2,29 @@
 
 use fluxel_rhi_core::api::{self, Error, Result};
 
+pub(super) fn uses_packed_dot(module: &naga::Module) -> bool {
+    let uses_dot = |arena: &naga::Arena<naga::Expression>| {
+        arena.iter().any(|(_, expr)| {
+            matches!(
+                expr,
+                naga::Expression::Math {
+                    fun: naga::MathFunction::Dot4I8Packed | naga::MathFunction::Dot4U8Packed,
+                    ..
+                }
+            )
+        })
+    };
+    uses_dot(&module.global_expressions)
+        || module
+            .functions
+            .iter()
+            .any(|(_, function)| uses_dot(&function.expressions))
+        || module
+            .entry_points
+            .iter()
+            .any(|entry| uses_dot(&entry.function.expressions))
+}
+
 pub(super) fn validation_capabilities(desc: &api::ShaderDesc) -> naga::valid::Capabilities {
     let mut caps = naga::valid::Capabilities::UNIFORM_BUFFER_ARRAY_NON_UNIFORM_INDEXING
         | naga::valid::Capabilities::SAMPLER_NON_UNIFORM_INDEXING

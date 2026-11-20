@@ -101,6 +101,16 @@ discards, and reject nonfragment requirement declarations. WGSL conservative
 depth remains pending until its depth-output and interpolation rules are
 mapped per mode and verified with depth and storage readback.
 
+### DX12 packed 4×8 integer dot products
+
+**Status:** WGSL raster and compute pipelines select the native intrinsic
+on Shader Model 6.4 devices and preserve the software lowering on older
+Shader Model 6 devices.
+
+**Acceptance:** Compare both compiler routes and GPU results for signed
+and unsigned packed operands, including negative bytes and maximum
+unsigned values.
+
 ### DX12 subgroup shader admission
 
 **Status:** DX12 admits the declared wave route from the device's Shader

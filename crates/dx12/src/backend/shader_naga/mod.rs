@@ -139,7 +139,16 @@ pub struct CompiledShader {
 }
 
 pub fn compile(desc: &api::ShaderDesc) -> Result<CompiledShader> {
-    compile_inner(desc, None, &[], None, None, &[], None, false)
+    compile_inner(
+        desc,
+        None,
+        &[],
+        None,
+        None,
+        &[],
+        WgslTarget::default(),
+        false,
+    )
 }
 
 /// Compile one pipeline variant. The caller must include the entry, stage,
@@ -149,9 +158,26 @@ pub fn compile_variant(
     entry: &api::ShaderEntryPoint,
     constants: &[(String, api::SpecializationValue)],
 ) -> Result<CompiledEntry> {
-    compile_variant_impl(desc, entry, constants, &[], None, None, &[], None, false)
+    compile_variant_impl(
+        desc,
+        entry,
+        constants,
+        &[],
+        None,
+        None,
+        &[],
+        WgslTarget::default(),
+        false,
+    )
 }
 
+#[derive(Clone, Copy, Default)]
+pub(super) struct WgslTarget {
+    pub(super) shader_model: u16,
+    pub(super) required_wave_size: Option<u32>,
+}
+
+#[cfg(test)]
 pub fn compile_variant_with_typed_map(
     desc: &api::ShaderDesc,
     entry: &api::ShaderEntryPoint,
@@ -162,6 +188,31 @@ pub fn compile_variant_with_typed_map(
     buffer_entries: &[(u32, api::BindGroupLayoutEntry)],
     required_wave_size: Option<u32>,
 ) -> Result<CompiledEntry> {
+    compile_pipeline_variant(
+        desc,
+        entry,
+        constants,
+        register_map,
+        binding_types,
+        runtime_binding_capacities,
+        buffer_entries,
+        WgslTarget {
+            required_wave_size,
+            ..Default::default()
+        },
+    )
+}
+
+pub(super) fn compile_pipeline_variant(
+    desc: &api::ShaderDesc,
+    entry: &api::ShaderEntryPoint,
+    constants: &[(String, api::SpecializationValue)],
+    register_map: &[(u32, u32, u32, u8, u32)],
+    binding_types: &[(u32, u32, api::BindingType)],
+    runtime_binding_capacities: &[(u32, u32, u32)],
+    buffer_entries: &[(u32, api::BindGroupLayoutEntry)],
+    target: WgslTarget,
+) -> Result<CompiledEntry> {
     compile_variant_impl(
         desc,
         entry,
@@ -170,7 +221,7 @@ pub fn compile_variant_with_typed_map(
         Some(binding_types),
         Some(runtime_binding_capacities),
         buffer_entries,
-        required_wave_size,
+        target,
         true,
     )
 }
@@ -190,7 +241,7 @@ pub fn compile_variant_with_map(
         None,
         None,
         &[],
-        None,
+        WgslTarget::default(),
         true,
     )
 }
@@ -203,7 +254,7 @@ fn compile_variant_impl(
     binding_types: Option<&[(u32, u32, api::BindingType)]>,
     runtime_binding_capacities: Option<&[(u32, u32, u32)]>,
     buffer_entries: &[(u32, api::BindGroupLayoutEntry)],
-    required_wave_size: Option<u32>,
+    target: WgslTarget,
     require_layout: bool,
 ) -> Result<CompiledEntry> {
     if !desc
@@ -224,7 +275,7 @@ fn compile_variant_impl(
         binding_types,
         runtime_binding_capacities,
         buffer_entries,
-        required_wave_size,
+        target,
         require_layout,
     )?;
     Ok(compiled.entries.remove(0))
@@ -237,7 +288,7 @@ fn compile_inner(
     binding_types: Option<&[(u32, u32, api::BindingType)]>,
     runtime_binding_capacities: Option<&[(u32, u32, u32)]>,
     buffer_entries: &[(u32, api::BindGroupLayoutEntry)],
-    required_wave_size: Option<u32>,
+    target: WgslTarget,
     require_layout: bool,
 ) -> Result<CompiledShader> {
     if desc.format != api::ShaderFormat::Wgsl
@@ -429,8 +480,9 @@ fn compile_inner(
             .map_or(binding.binding, |&(_, _, r, _, _)| r);
         array_samplers.push((binding.group, register, comparison, size, marker));
     }
+    let required_wave_size = target.required_wave_size;
     let mut options = naga::back::hlsl::Options {
-        shader_model: if required_wave_size.is_some() {
+        shader_model: if target.required_wave_size.is_some() {
             naga::back::hlsl::ShaderModel::V6_6
         } else if desc
             .required_features
@@ -438,6 +490,8 @@ fn compile_inner(
             .any(|x| x == api::SHADER_FEATURE_RAY_QUERY)
         {
             naga::back::hlsl::ShaderModel::V6_5
+        } else if target.shader_model >= 64 && validation::uses_packed_dot(&module) {
+            naga::back::hlsl::ShaderModel::V6_4
         } else {
             naga::back::hlsl::ShaderModel::V6_0
         },
@@ -530,47 +584,13 @@ fn compile_inner(
     }
     let mut entries = Vec::new();
     for entry in &desc.entries {
-        let (stage, profile) = match entry.stage {
-            api::ShaderStage::Vertex => (
-                naga::ShaderStage::Vertex,
-                if desc
-                    .required_features
-                    .iter()
-                    .any(|x| x == api::SHADER_FEATURE_RAY_QUERY)
-                {
-                    "vs_6_5"
-                } else {
-                    "vs_6_0"
-                },
-            ),
-            api::ShaderStage::Fragment => (
-                naga::ShaderStage::Fragment,
-                if desc
-                    .required_features
-                    .iter()
-                    .any(|x| x == api::SHADER_FEATURE_RAY_QUERY)
-                {
-                    "ps_6_5"
-                } else {
-                    "ps_6_0"
-                },
-            ),
-            api::ShaderStage::Compute => (
-                naga::ShaderStage::Compute,
-                if required_wave_size.is_some() {
-                    "cs_6_6"
-                } else if desc
-                    .required_features
-                    .iter()
-                    .any(|x| x == api::SHADER_FEATURE_RAY_QUERY)
-                {
-                    "cs_6_5"
-                } else {
-                    "cs_6_0"
-                },
-            ),
+        let stage = match entry.stage {
+            api::ShaderStage::Vertex => naga::ShaderStage::Vertex,
+            api::ShaderStage::Fragment => naga::ShaderStage::Fragment,
+            api::ShaderStage::Compute => naga::ShaderStage::Compute,
             _ => return Err(Error::Unsupported("DX12 WGSL shader stage")),
         };
+        let profile = format!("{}_{}", stage.to_hlsl_str(), options.shader_model.to_str());
         if entries.iter().any(|existing: &CompiledEntry| {
             existing.name == entry.name && existing.stage == entry.stage
         }) {
@@ -708,7 +728,7 @@ fn compile_inner(
         let compiled = dxc::compile_hlsl_with_origin(
             &hlsl,
             &name,
-            profile,
+            &profile,
             &[],
             api::ShaderDiagnosticSource::GeneratedHlsl,
         )?;

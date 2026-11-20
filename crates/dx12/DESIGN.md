@@ -296,6 +296,11 @@ count, and subgroup barriers have no exact lowering on this route.
 Native HLSL and DXIL follow the operation and stage rules of their profiles.
 The explicit fixed-size compute path additionally requires Shader Model 6.6.
 
+For WGSL packed 4×8 integer dot products, DX12 selects the native signed
+or unsigned HLSL intrinsic when the device supports Shader Model 6.4.
+The Shader Model 6.0 route keeps the equivalent integer lowering. Naga and
+DXC use the same selected shader model.
+
 The implemented public route includes graphics and compute, multiple render
 targets, indirect drawing and dispatch, queries, secondary recording,
 standalone clears and resolves, placed memory, scoped native/external interop,

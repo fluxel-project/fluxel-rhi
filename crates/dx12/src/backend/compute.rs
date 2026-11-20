@@ -387,7 +387,7 @@ fn create_pipeline(
             if let Some(size) = desc.required_subgroup_size {
                 validate_required_wave_size(device, size)?;
             }
-            let compiled = super::shader_naga::compile_variant_with_typed_map(
+            let compiled = super::shader_naga::compile_pipeline_variant(
                 source,
                 entry,
                 &desc.compute.constants,
@@ -395,7 +395,10 @@ fn create_pipeline(
                 &layout.binding_types,
                 &layout.runtime_binding_capacities,
                 &layout.buffer_entries,
-                desc.required_subgroup_size,
+                super::shader_naga::WgslTarget {
+                    shader_model: device.0.shader_model,
+                    required_wave_size: desc.required_subgroup_size,
+                },
             )?;
             (
                 Some(compiled.bytes),
