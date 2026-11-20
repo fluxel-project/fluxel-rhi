@@ -12,7 +12,7 @@ mod raster;
 mod stream;
 pub(crate) mod worker;
 
-pub(crate) use layout::{PipelineLayoutState, create_pipeline_layout};
+pub(crate) use layout::{PipelineLayoutState, create_pipeline_layout, pipeline_layout_support};
 pub(crate) use raster::RasterPipelineState;
 pub(crate) use stream::create_view_instanced_pso;
 

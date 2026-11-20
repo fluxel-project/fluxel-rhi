@@ -10,6 +10,10 @@ use std::sync::Arc;
 use windows::Win32::Graphics::Direct3D12::*;
 
 use super::super::{Dx12, Dx12Device, Dx12PipelineLayout, descriptor};
+
+const IMMEDIATE_REGISTER: u32 = 1;
+const IMMEDIATE_SPACE: u32 = 0;
+
 pub(crate) struct DynamicCbvRoot {
     pub(crate) binding: u32,
     pub(crate) root: u32,
@@ -94,10 +98,32 @@ impl PushConstantsRoot {
         self.compute.ok_or(Error::InvalidRange)
     }
 }
-pub(crate) fn create_pipeline_layout(
+struct PreparedLayout {
+    // Holds the backing storage for descriptor-table pointers in both vectors.
+    ranges: Vec<Vec<D3D12_DESCRIPTOR_RANGE>>,
+    parameters: Vec<D3D12_ROOT_PARAMETER>,
+    compute_parameters: Vec<D3D12_ROOT_PARAMETER>,
+    register_map: Vec<(u32, u32, u32, u8, u32)>,
+    binding_types: Vec<(u32, u32, api::BindingType)>,
+    buffer_entries: Vec<(u32, api::BindGroupLayoutEntry)>,
+    runtime_binding_capacities: Vec<(u32, u32, u32)>,
+    native_abi_compatible: bool,
+    groups: Vec<Arc<descriptor::BindGroupLayoutState>>,
+    tables: Vec<GroupTables>,
+    push_constants: Option<PushConstantsRoot>,
+}
+
+pub(crate) fn pipeline_layout_support(
     device: &Dx12Device,
     desc: &api::PipelineLayoutDesc<'_, Dx12>,
-) -> Result<Dx12PipelineLayout> {
+) -> Result<()> {
+    prepare_layout(device, desc).map(drop)
+}
+
+fn prepare_layout(
+    device: &Dx12Device,
+    desc: &api::PipelineLayoutDesc<'_, Dx12>,
+) -> Result<PreparedLayout> {
     let slots = desc.groups.iter().flat_map(|layout| {
         // SAFETY: Core validates every group layout's device before calling
         // the SPI. This read borrows only its immutable descriptor metadata.
@@ -269,6 +295,21 @@ pub(crate) fn create_pipeline_layout(
     let push_constants = if desc.push_constants.is_empty() {
         None
     } else {
+        // A CBV table or root CBV with ALL visibility overlaps the fixed
+        // immediate register even if the constant is used by only one stage.
+        if register_map
+            .iter()
+            .any(|&(group, _, register, class, count)| {
+                group == IMMEDIATE_SPACE
+                    && class == 0
+                    && register <= IMMEDIATE_REGISTER
+                    && IMMEDIATE_REGISTER - register < count
+            })
+        {
+            return Err(Error::Unsupported(
+                "DX12 immediate register overlaps a uniform binding",
+            ));
+        }
         let mut push_ranges = Vec::new();
         for entry in desc.push_constants {
             if entry.range.start >= entry.range.end
@@ -309,8 +350,8 @@ pub(crate) fn create_pipeline_layout(
             ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
             Anonymous: D3D12_ROOT_PARAMETER_0 {
                 Constants: D3D12_ROOT_CONSTANTS {
-                    ShaderRegister: 1,
-                    RegisterSpace: 0,
+                    ShaderRegister: IMMEDIATE_REGISTER,
+                    RegisterSpace: IMMEDIATE_SPACE,
                     Num32BitValues: count,
                 },
             },
@@ -340,6 +381,40 @@ pub(crate) fn create_pipeline_layout(
             ranges: push_ranges,
         })
     };
+    validate_root_cost(&parameters)?;
+    validate_root_cost(&compute_parameters)?;
+    Ok(PreparedLayout {
+        ranges,
+        parameters,
+        compute_parameters,
+        register_map,
+        binding_types,
+        buffer_entries,
+        runtime_binding_capacities,
+        native_abi_compatible,
+        groups,
+        tables,
+        push_constants,
+    })
+}
+
+pub(crate) fn create_pipeline_layout(
+    device: &Dx12Device,
+    desc: &api::PipelineLayoutDesc<'_, Dx12>,
+) -> Result<Dx12PipelineLayout> {
+    let PreparedLayout {
+        ranges: _ranges,
+        mut parameters,
+        mut compute_parameters,
+        register_map,
+        binding_types,
+        buffer_entries,
+        runtime_binding_capacities,
+        native_abi_compatible,
+        groups,
+        tables,
+        push_constants,
+    } = prepare_layout(device, desc)?;
     let (root, root_bytes) = create_root(device, &parameters)?;
     let (compute_root, compute_root_bytes) = if push_constants.is_some() {
         create_root(device, &compute_parameters)?
@@ -405,10 +480,7 @@ pub(crate) fn create_pipeline_layout(
         push_constants,
     })))
 }
-fn create_root(
-    device: &Dx12Device,
-    parameters: &[D3D12_ROOT_PARAMETER],
-) -> Result<(ID3D12RootSignature, Vec<u8>)> {
+fn validate_root_cost(parameters: &[D3D12_ROOT_PARAMETER]) -> Result<()> {
     let mut root_dwords = 0u32;
     for parameter in parameters {
         root_dwords += match parameter.ParameterType {
@@ -423,6 +495,14 @@ fn create_root(
     if root_dwords > D3D12_MAX_ROOT_COST {
         return Err(Error::Unsupported("DX12 root signature DWORD budget"));
     }
+    Ok(())
+}
+
+fn create_root(
+    device: &Dx12Device,
+    parameters: &[D3D12_ROOT_PARAMETER],
+) -> Result<(ID3D12RootSignature, Vec<u8>)> {
+    validate_root_cost(parameters)?;
     let root_desc = D3D12_ROOT_SIGNATURE_DESC {
         NumParameters: parameters.len() as u32,
         pParameters: parameters.as_ptr(),

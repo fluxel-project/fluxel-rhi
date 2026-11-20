@@ -249,4 +249,10 @@ impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
     ) -> Result<Dx12PipelineLayout> {
         pipeline::create_pipeline_layout(device, desc)
     }
+    fn pipeline_layout_support(
+        device: &Dx12Device,
+        desc: &api::PipelineLayoutDesc<'_, Self>,
+    ) -> Result<()> {
+        pipeline::pipeline_layout_support(device, desc)
+    }
 }

@@ -363,10 +363,7 @@ impl<B: ResourceBackend> Device<B> {
         // SAFETY: descriptor validation established one-device provenance before SPI creation.
         Ok(unsafe { BindGroup::from_native(self.id, B::create_bind_group(&self.native, desc)?) })
     }
-    pub fn create_pipeline_layout(
-        &self,
-        desc: &PipelineLayoutDesc<'_, B>,
-    ) -> Result<PipelineLayout<B>> {
+    fn validate_pipeline_layout(&self, desc: &PipelineLayoutDesc<'_, B>) -> Result<()> {
         if desc.groups.len() > self.caps.limits.max_bind_groups as usize {
             return Err(Error::InvalidRange);
         }
@@ -406,6 +403,19 @@ impl<B: ResourceBackend> Device<B> {
         if !desc.push_constants.is_empty() && !self.caps.push_constants {
             return Err(Error::Unsupported("push constants"));
         }
+        Ok(())
+    }
+    /// Checks the pipeline layout's combined binding and constant budgets
+    /// without creating a native pipeline layout.
+    pub fn pipeline_layout_support(&self, desc: &PipelineLayoutDesc<'_, B>) -> Result<()> {
+        self.validate_pipeline_layout(desc)?;
+        B::pipeline_layout_support(&self.native, desc)
+    }
+    pub fn create_pipeline_layout(
+        &self,
+        desc: &PipelineLayoutDesc<'_, B>,
+    ) -> Result<PipelineLayout<B>> {
+        self.validate_pipeline_layout(desc)?;
         // SAFETY: every referenced layout was checked to belong to this device.
         Ok(unsafe {
             PipelineLayout::from_native(self.id, B::create_pipeline_layout(&self.native, desc)?)

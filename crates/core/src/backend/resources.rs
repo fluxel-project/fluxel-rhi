@@ -59,6 +59,12 @@ pub trait ResourceBackend: Backend {
         device: &Self::NativeDevice,
         desc: &PipelineLayoutDesc<'_, Self>,
     ) -> Result<Self::NativePipelineLayout>;
+    fn pipeline_layout_support(
+        _device: &Self::NativeDevice,
+        _desc: &PipelineLayoutDesc<'_, Self>,
+    ) -> Result<()> {
+        Err(Error::Unsupported("pipeline layout support query"))
+    }
 }
 
 /// Cold shader operations: native direct route first, actual Naga frontend/output
