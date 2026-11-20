@@ -7,6 +7,21 @@
 use super::*;
 
 impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
+    fn storage_buffer_view_support(
+        buffer: &super::Dx12Buffer,
+        range: std::ops::Range<u64>,
+        view: api::StorageBufferView,
+        access: api::StorageAccess,
+    ) -> Result<()> {
+        super::descriptor::storage_view_range(
+            buffer,
+            range,
+            view,
+            access != api::StorageAccess::Read,
+        )
+        .map(drop)
+    }
+
     fn buffer_properties(buffer: &Dx12Buffer) -> Option<api::BufferProperties> {
         Some(api::BufferProperties {
             size: buffer.size,

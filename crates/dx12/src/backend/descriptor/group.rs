@@ -185,95 +185,14 @@ pub(crate) fn create_bind_group(
                 ) => {
                     // SAFETY: Core validates device ownership; the clone below retains the buffer.
                     let native = unsafe { buffer.native_ref() };
-                    if class == DescriptorClass::Uav && native.memory == api::MemoryClass::Upload {
-                        return Err(Error::Unsupported(
-                            "DX12 upload storage buffers are read-only",
-                        ));
-                    }
-                    if !native.usage.contains(api::BufferUsage::STORAGE)
-                        || range.end > native.size
-                        || range.start >= range.end
-                        || range.end - range.start < slot.min_size
-                    {
+                    let writable = class == DescriptorClass::Uav;
+                    let storage = storage_view_range(native, range.clone(), *view, writable)?;
+                    if range.end - range.start < slot.min_size {
                         return Err(Error::InvalidRange);
                     }
-                    let (stride, format, raw) = match view {
-                        api::StorageBufferView::Raw => (
-                            4u32,
-                            windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_TYPELESS,
-                            true,
-                        ),
-                        api::StorageBufferView::Structured { stride }
-                            if *stride > 0 && *stride <= 2048 && *stride % 4 == 0 =>
-                        {
-                            (
-                                *stride,
-                                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN,
-                                false,
-                            )
-                        }
-                        _ => return Err(Error::InvalidRange),
-                    };
-                    if range.start % u64::from(stride) != 0
-                        || (range.end - range.start) % u64::from(stride) != 0
-                    {
-                        return Err(Error::InvalidRange);
-                    }
-                    let first = range.start / u64::from(stride);
-                    let count = u32::try_from((range.end - range.start) / u64::from(stride))
-                        .map_err(|_| Error::InvalidRange)?;
-                    let structure = if raw { 0 } else { stride };
-                    // SAFETY: the descriptor range and resource usage were validated;
-                    // the allocated heap slot and resource are retained by the group.
+                    // SAFETY: the group owns the destination slot and retains this buffer.
                     unsafe {
-                        if class == DescriptorClass::Srv {
-                            let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-                                Format: format,
-                                ViewDimension: D3D12_SRV_DIMENSION_BUFFER,
-                                Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                                Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                                    Buffer: D3D12_BUFFER_SRV {
-                                        FirstElement: first,
-                                        NumElements: count,
-                                        StructureByteStride: structure,
-                                        Flags: if raw {
-                                            D3D12_BUFFER_SRV_FLAG_RAW
-                                        } else {
-                                            D3D12_BUFFER_SRV_FLAG_NONE
-                                        },
-                                    },
-                                },
-                            };
-                            device.0.native.CreateShaderResourceView(
-                                &native.resource,
-                                Some(&desc),
-                                view_cpu(view_index),
-                            );
-                        } else {
-                            let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
-                                Format: format,
-                                ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
-                                Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-                                    Buffer: D3D12_BUFFER_UAV {
-                                        FirstElement: first,
-                                        NumElements: count,
-                                        StructureByteStride: structure,
-                                        CounterOffsetInBytes: 0,
-                                        Flags: if raw {
-                                            D3D12_BUFFER_UAV_FLAG_RAW
-                                        } else {
-                                            D3D12_BUFFER_UAV_FLAG_NONE
-                                        },
-                                    },
-                                },
-                            };
-                            device.0.native.CreateUnorderedAccessView(
-                                &native.resource,
-                                None::<&ID3D12Resource>,
-                                Some(&desc),
-                                view_cpu(view_index),
-                            );
-                        }
+                        storage.write(&device.0.native, native, writable, view_cpu(view_index));
                     }
                     if slot.dynamic_offset {
                         dynamic_storage.push(DynamicStorageBinding {

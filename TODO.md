@@ -38,10 +38,12 @@ Verify duplicate shader input locations are rejected across two buffer slots
 and within one slot. Check native signature linkage for the selected artifact
 and cover zero-stride constant input independently of ordinary vertex stride.
 
-**Storage buffer views:** Check the maximum range and alignment separately
-for raw and structured SRV/UAV descriptors, including dynamic offsets.
-Any exposed bound must account for the native element count, element
-stride, base alignment and the backing buffer range.
+**Storage buffer views:** The exact-range support query, initial binding
+and dynamic rebinding share the DX12 descriptor admission path. Verify
+raw offsets at 4 and 16 bytes, a four-byte view length, and structured
+view offsets and lengths at stride boundaries. Cover excessive element
+counts, writable upload views, foreign buffers, and dynamic ranges that
+overflow or extend past the backing buffer.
 
 ### DX12 structured shader diagnostics
 

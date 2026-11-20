@@ -13,16 +13,10 @@ use std::{
 
 use fluxel_rhi_core::api::{self, Error, Result};
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_BUFFER_SRV, D3D12_BUFFER_SRV_FLAG_NONE, D3D12_BUFFER_SRV_FLAG_RAW, D3D12_BUFFER_UAV,
-    D3D12_BUFFER_UAV_FLAG_NONE, D3D12_BUFFER_UAV_FLAG_RAW, D3D12_CONSTANT_BUFFER_VIEW_DESC,
-    D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-    D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
-    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-    D3D12_GPU_DESCRIPTOR_HANDLE, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV,
-    D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0, D3D12_SRV_DIMENSION_BUFFER,
-    D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE, D3D12_UAV_DIMENSION_BUFFER,
-    D3D12_UNORDERED_ACCESS_VIEW_DESC, D3D12_UNORDERED_ACCESS_VIEW_DESC_0, ID3D12DescriptorHeap,
-    ID3D12Device, ID3D12Resource,
+    D3D12_CONSTANT_BUFFER_VIEW_DESC, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_DESC,
+    D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+    D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, D3D12_GPU_DESCRIPTOR_HANDLE, ID3D12DescriptorHeap,
+    ID3D12Device,
 };
 
 use super::{Dx12, Dx12BindGroup, Dx12BindGroupLayout, Dx12Buffer, Dx12Device};
@@ -33,6 +27,8 @@ mod descriptor_array;
 mod group;
 #[path = "layout.rs"]
 mod layout;
+mod storage_view;
+pub(super) use storage_view::storage_view_range;
 #[cfg(test)]
 #[path = "../../tests/backend/storage_array_layout.rs"]
 mod storage_array_tests;
@@ -565,10 +561,6 @@ impl BindGroupState {
             if offsets.iter().filter(|(b, _)| b == binding).count() != 1 {
                 return Err(Error::InvalidRange);
             }
-            let stride = match value.view {
-                api::StorageBufferView::Raw => 4,
-                api::StorageBufferView::Structured { stride } => stride,
-            };
             let start = value
                 .range
                 .start
@@ -579,16 +571,9 @@ impl BindGroupState {
                 .end
                 .checked_add(u64::from(*offset))
                 .ok_or(Error::InvalidRange)?;
-            if start % u64::from(stride) != 0 || end > value.buffer.size {
-                return Err(Error::InvalidRange);
-            }
-            descriptors.push((
-                value,
-                start / u64::from(stride),
-                u32::try_from((end - start) / u64::from(stride))
-                    .map_err(|_| Error::InvalidRange)?,
-                stride,
-            ));
+            let writable = value.class == DescriptorClass::Uav;
+            let view = storage_view_range(&value.buffer, start..end, value.view, writable)?;
+            descriptors.push((value, view, writable));
         }
         let start = self.heaps.views.allocate(self.view_count)?;
         let table = Arc::new(DynamicViewTable {
@@ -608,63 +593,10 @@ impl BindGroupState {
                 D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
             );
         }
-        for (value, first, count, stride) in descriptors {
-            let raw = matches!(value.view, api::StorageBufferView::Raw);
-            let format = if raw {
-                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_TYPELESS
-            } else {
-                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN
-            };
-            let structure = if raw { 0 } else { stride };
+        for (value, view, writable) in descriptors {
             let cpu = self.heaps.views.cpu(start + value.table_index);
-            // SAFETY: range, allocation, descriptor kind, and resource lifetime were validated.
-            unsafe {
-                if value.class == DescriptorClass::Srv {
-                    let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-                        Format: format,
-                        ViewDimension: D3D12_SRV_DIMENSION_BUFFER,
-                        Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                        Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                            Buffer: D3D12_BUFFER_SRV {
-                                FirstElement: first,
-                                NumElements: count,
-                                StructureByteStride: structure,
-                                Flags: if raw {
-                                    D3D12_BUFFER_SRV_FLAG_RAW
-                                } else {
-                                    D3D12_BUFFER_SRV_FLAG_NONE
-                                },
-                            },
-                        },
-                    };
-                    self.device
-                        .CreateShaderResourceView(&value.buffer.resource, Some(&desc), cpu);
-                } else {
-                    let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
-                        Format: format,
-                        ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
-                        Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-                            Buffer: D3D12_BUFFER_UAV {
-                                FirstElement: first,
-                                NumElements: count,
-                                StructureByteStride: structure,
-                                CounterOffsetInBytes: 0,
-                                Flags: if raw {
-                                    D3D12_BUFFER_UAV_FLAG_RAW
-                                } else {
-                                    D3D12_BUFFER_UAV_FLAG_NONE
-                                },
-                            },
-                        },
-                    };
-                    self.device.CreateUnorderedAccessView(
-                        &value.buffer.resource,
-                        None::<&ID3D12Resource>,
-                        Some(&desc),
-                        cpu,
-                    );
-                }
-            }
+            // SAFETY: the snapshot owns the destination slot and the group retains the buffer.
+            unsafe { view.write(&self.device, &value.buffer, writable, cpu) };
         }
         Ok(Some(table))
     }

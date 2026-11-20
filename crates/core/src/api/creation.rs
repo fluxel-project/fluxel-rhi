@@ -113,6 +113,27 @@ impl<B: ResourceBackend + CommandBackend> Device<B> {
 }
 
 impl<B: ResourceBackend> Device<B> {
+    /// Checks whether this buffer can be viewed with the given storage ABI,
+    /// access and byte range before creating or rewriting descriptors.
+    pub fn storage_buffer_view_support(
+        &self,
+        buffer: &Buffer<B>,
+        range: Range<u64>,
+        view: StorageBufferView,
+        access: StorageAccess,
+    ) -> Result<()> {
+        if buffer.device != self.id {
+            return Err(Error::WrongDevice);
+        }
+        if !self.caps.storage_buffers {
+            return Err(Error::Unsupported("storage buffers"));
+        }
+        if access == StorageAccess::Atomic {
+            return Err(Error::InvalidState);
+        }
+        B::storage_buffer_view_support(&buffer.native, range, view, access)
+    }
+
     pub fn buffer_support(&self, desc: &BufferDesc) -> Support<BufferSupport> {
         if desc.usage.contains(BufferUsage::STORAGE) && !self.caps.storage_buffers {
             return Support::Unsupported("storage buffers");

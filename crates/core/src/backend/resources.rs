@@ -10,6 +10,14 @@ use std::{future::Future, ops::Range};
 /// Backend-native constructors and per-device support facts. No hazard tracker.
 pub trait ResourceBackend: Backend {
     fn buffer_support(device: &Self::NativeDevice, desc: &BufferDesc) -> Support<BufferSupport>;
+    fn storage_buffer_view_support(
+        _buffer: &Self::NativeBuffer,
+        _range: Range<u64>,
+        _view: StorageBufferView,
+        _access: StorageAccess,
+    ) -> Result<()> {
+        Err(Error::Unsupported("storage buffer view support query"))
+    }
     fn buffer_properties(_buffer: &Self::NativeBuffer) -> Option<BufferProperties> {
         None
     }
