@@ -8,10 +8,11 @@ use super::*;
 mod shader_model;
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, D3D12_FEATURE_ARCHITECTURE,
-    D3D12_FEATURE_DATA_ARCHITECTURE, D3D12_REQ_MULTI_ELEMENT_STRUCTURE_SIZE_IN_BYTES,
-    D3D12_REQ_TEXTURE1D_U_DIMENSION, D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION,
-    D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION, D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION,
-    D3D12_RESOURCE_BINDING_TIER_3,
+    D3D12_FEATURE_DATA_ARCHITECTURE, D3D12_RAYTRACING_MAX_DECLARABLE_TRACE_RECURSION_DEPTH,
+    D3D12_RAYTRACING_MAX_RAY_GENERATION_SHADER_THREADS,
+    D3D12_REQ_MULTI_ELEMENT_STRUCTURE_SIZE_IN_BYTES, D3D12_REQ_TEXTURE1D_U_DIMENSION,
+    D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION, D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION,
+    D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION, D3D12_RESOURCE_BINDING_TIER_3,
 };
 use windows::Win32::Graphics::Dxgi::{
     DXGI_ADAPTER_DESC1, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_UNSUPPORTED,
@@ -449,6 +450,16 @@ impl Dx12 {
                     max_texture_array_layers: D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION,
                     max_multiview_views: if multiview { 4 } else { 0 },
                     max_mesh_indirect_count: if mesh_supported { u32::MAX } else { 0 },
+                    max_ray_dispatch_count: if ray_supported {
+                        D3D12_RAYTRACING_MAX_RAY_GENERATION_SHADER_THREADS
+                    } else {
+                        0
+                    },
+                    max_ray_recursion_depth: if ray_supported {
+                        D3D12_RAYTRACING_MAX_DECLARABLE_TRACE_RECURSION_DEPTH
+                    } else {
+                        0
+                    },
                     max_buffer_bytes,
                     max_vertex_buffers: 32,
                     max_vertex_attributes: 32,

@@ -654,6 +654,11 @@ pub struct DeviceLimits {
     /// Maximum number of mesh indirect records consumed by one multi/count call.
     /// Zero means mesh multi-indirect execution is unavailable.
     pub max_mesh_indirect_count: u32,
+    /// Maximum total number of ray-generation invocations in one trace.
+    /// Zero means unreported or unavailable.
+    pub max_ray_dispatch_count: u32,
+    /// Maximum declared ray trace recursion depth. Zero means unreported or unavailable.
+    pub max_ray_recursion_depth: u32,
     pub uniform_offset_alignment: u64,
     /// Maximum range length of one uniform buffer binding, in bytes.
     /// Zero leaves this limit to backend descriptor admission.

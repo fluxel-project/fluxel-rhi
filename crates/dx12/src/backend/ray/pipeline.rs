@@ -77,7 +77,7 @@ pub(crate) fn create_pipeline(
     if desc.shaders.is_empty()
         || desc.groups.is_empty()
         || desc.max_recursion == 0
-        || desc.max_recursion > 31
+        || desc.max_recursion > D3D12_RAYTRACING_MAX_DECLARABLE_TRACE_RECURSION_DEPTH
         || desc.hit_attribute_bytes > 32
     {
         return Err(Error::Unsupported("DX12 ray pipeline descriptor"));

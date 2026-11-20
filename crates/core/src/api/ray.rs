@@ -339,6 +339,10 @@ impl<B: Backend> RayDomain<'_, B> {
         {
             return Err(Error::WrongDevice);
         }
+        let max_depth = self.device.caps.limits.max_ray_recursion_depth;
+        if max_depth != 0 && (desc.max_recursion == 0 || desc.max_recursion > max_depth) {
+            return Err(Error::InvalidRange);
+        }
         if desc.groups.iter().any(|group| {
             group
                 .local_constants
@@ -479,6 +483,16 @@ impl<B: Backend> RayDomain<'_, B> {
             }
         }
         if table.raygen.size != table.raygen.stride {
+            return Err(Error::InvalidRange);
+        }
+        let max_count = self.device.caps.limits.max_ray_dispatch_count;
+        if max_count != 0
+            && (dims.contains(&0)
+                || dims
+                    .into_iter()
+                    .try_fold(1u64, |count, axis| count.checked_mul(u64::from(axis)))
+                    .is_none_or(|count| count > u64::from(max_count)))
+        {
             return Err(Error::InvalidRange);
         }
         let result = encoder.call(|e| B::Ray::trace(e, &pipeline.native, table, dims));
