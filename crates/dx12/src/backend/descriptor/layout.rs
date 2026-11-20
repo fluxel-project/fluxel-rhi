@@ -81,6 +81,16 @@ fn layout_state(
                 dimension,
                 multisampled,
             } => {
+                if multisampled
+                    && !matches!(
+                        dimension,
+                        api::TextureViewDimension::D2 | api::TextureViewDimension::D2Array
+                    )
+                {
+                    return Err(Error::Unsupported(
+                        "DX12 multisampled texture binding dimension",
+                    ));
+                }
                 slots.push(BindingSlot {
                     binding_type: entry.ty.clone(),
                     binding: entry.binding,

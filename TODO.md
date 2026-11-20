@@ -58,6 +58,9 @@ mip while rejecting a second mip.
 For multisampled color attachments, compare texture and view support with
 creation for the base and reinterpreted formats. Check native multisampled
 render target support and the requested sample count for the view format.
+For sampled texture layouts, reject multisampled 1D, 3D, cube and cube-array
+bindings in both support and creation. Keep 2D and 2D-array multisampled
+layouts and single-sample cube layouts covered by positive cases.
 
 **Pipeline attachment support:** Compare the DX12 query with raster and mesh
 pipeline creation for exact multisample counts across all occupied color slots
