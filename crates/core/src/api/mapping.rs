@@ -67,6 +67,54 @@ impl<B: MappingBackend> Drop for MapLease<B> {
         }
     }
 }
+
+/// A newly created buffer held exclusively by its initialization mapping.
+/// GPU commands can refer to the buffer once initialization is finished.
+pub struct MappedBuffer<B: MappingBackend> {
+    mapping: MapLease<B>,
+    buffer: Buffer<B>,
+}
+
+impl<B: MappingBackend> MappedBuffer<B> {
+    pub fn bytes_mut(&mut self) -> &mut [u8] {
+        self.mapping
+            .bytes_mut()
+            .expect("mapped buffer has an active write lease")
+    }
+
+    /// Publishes the initialized contents and releases the CPU mapping.
+    pub fn finish(self) -> Result<Buffer<B>> {
+        let Self {
+            mut mapping,
+            buffer,
+        } = self;
+        let size = mapping.bytes_mut()?.len() as u64;
+        mapping.flush(0..size)?;
+        drop(mapping);
+        Ok(buffer)
+    }
+}
+
+impl<B: MappingBackend + ResourceBackend> Device<B> {
+    /// Creates a zero-initialized, CPU-writable mapping over a new buffer.
+    /// The descriptor must include MAP_WRITE and use a memory class the
+    /// backend supports for host writes. No queue operation is issued.
+    pub async fn create_buffer_mapped(&self, desc: &BufferDesc) -> Result<MappedBuffer<B>> {
+        if !desc.usage.contains(BufferUsage::MAP_WRITE) {
+            return Err(Error::Unsupported("mapped buffer requires MAP_WRITE"));
+        }
+        let buffer = self.create_buffer(desc)?;
+        // SAFETY: the new buffer has never been exposed to the caller and
+        // no GPU submission can refer to it before the mapping is released.
+        let mut mapping = unsafe {
+            self.map_buffer(&buffer, 0..desc.size, MapMode::Write)
+                .await?
+        };
+        mapping.bytes_mut()?.fill(0);
+        Ok(MappedBuffer { mapping, buffer })
+    }
+}
+
 impl<B: MappingBackend> Device<B> {
     /// # Safety
     /// Renderer proves host access does not overlap incompatible GPU access.
