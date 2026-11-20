@@ -352,6 +352,23 @@ pub trait RayOps<B: Backend> {
     ) -> Result<()>;
 }
 
+/// Backend-owned compaction evidence for the exact build that wrote it.
+pub trait AccelerationCompactionBackend: CommandBackend {
+    type NativeCompactionTicket;
+    fn record_compactable_build(
+        encoder: &mut Self::NativeEncoder,
+        source: &Self::NativeAcceleration,
+        scratch: &Self::NativeBuffer,
+        desc: &AccelerationDesc<Self>,
+        refit: bool,
+    ) -> Result<Self::NativeCompactionTicket>;
+    fn compacted_size(ticket: &Self::NativeCompactionTicket) -> Result<Option<u64>>;
+    fn compact_acceleration(
+        encoder: &mut Self::NativeEncoder,
+        ticket: &Self::NativeCompactionTicket,
+    ) -> Result<Self::NativeAcceleration>;
+}
+
 /// Explicitly optional modern raster variants. No checks or dynamic lookups per draw.
 pub trait RasterExtrasOps<B: Backend> {
     const AVAILABLE: bool;

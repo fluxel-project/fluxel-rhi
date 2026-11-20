@@ -110,13 +110,13 @@ impl GeometryShape {
 pub(crate) fn validate_sequence<'a>(
     builds: impl IntoIterator<Item = &'a RecordedAccelerationBuild>,
 ) -> Result<()> {
-    let mut pending = HashMap::new();
+    let mut pending: HashMap<_, &RecordedAccelerationBuild> = HashMap::new();
     for build in builds {
         let identity = Arc::as_ptr(&build.target.0);
         if build.refit {
             let required = build.signature.as_ref().ok_or(Error::InvalidState)?;
             let compatible = match pending.get(&identity) {
-                Some(previous) => *previous == Some(required.as_ref()),
+                Some(previous) => previous.signature.as_deref() == Some(required.as_ref()),
                 None => {
                     build
                         .target
@@ -132,7 +132,25 @@ pub(crate) fn validate_sequence<'a>(
                 return Err(Error::InvalidState);
             }
         }
-        pending.insert(identity, build.signature.as_deref());
+        if let Some((source, required)) = &build.required_source {
+            let compatible = match pending.get(&Arc::as_ptr(&source.0)) {
+                Some(previous) => previous
+                    .receipt
+                    .as_ref()
+                    .is_some_and(|receipt| Arc::ptr_eq(&receipt.revision, required)),
+                None => source
+                    .0
+                    .committed_revision
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_ref()
+                    .is_some_and(|actual| Arc::ptr_eq(actual, required)),
+            };
+            if !compatible {
+                return Err(Error::InvalidState);
+            }
+        }
+        pending.insert(identity, build);
     }
     Ok(())
 }

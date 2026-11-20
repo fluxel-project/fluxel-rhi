@@ -35,6 +35,8 @@ pub struct DeviceCapabilities {
     pub acceleration_build_size_output: bool,
     /// Compaction-enabled builds and their compacted size output are supported.
     pub acceleration_compaction_size: bool,
+    /// Exact-sized acceleration compaction using backend-owned completed evidence.
+    pub acceleration_compaction: bool,
     /// Fully bound, fixed-count binding arrays whose elements are
     /// acceleration structures. Runtime-sized and partially-bound arrays are
     /// separate capability domains.

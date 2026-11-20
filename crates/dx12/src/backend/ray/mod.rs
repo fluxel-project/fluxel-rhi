@@ -10,12 +10,13 @@ use windows::{
     core::Interface,
 };
 
+mod compaction;
 mod geometry;
 mod ops;
 pub use ops::Ray;
 pub(crate) mod pipeline;
 mod refit;
-pub(crate) use refit::validate_sequence as validate_refits;
+pub(crate) use refit::validate_sequence as validate_acceleration_builds;
 mod trace;
 
 #[cfg(all(test, feature = "hardware-tests"))]
@@ -36,6 +37,7 @@ pub(crate) struct AccelerationState {
     // cancellation never alter it.
     committed_blas: Mutex<Vec<Dx12Acceleration>>,
     committed_signature: Mutex<Option<Arc<refit::RefitSignature>>>,
+    committed_revision: Mutex<Option<Arc<()>>>,
 }
 
 /// An acceleration build attached to the native list segment that records it.
@@ -46,6 +48,8 @@ pub(crate) struct RecordedAccelerationBuild {
     pub(crate) segment: usize,
     signature: Option<Arc<refit::RefitSignature>>,
     refit: bool,
+    receipt: Option<Arc<compaction::CompactionReceipt>>,
+    required_source: Option<(Dx12Acceleration, Arc<()>)>,
 }
 
 fn extend_unique(
@@ -133,6 +137,30 @@ pub(crate) fn publish_segment(work: &super::encoder::Dx12RecordedWork, segment: 
             .committed_signature
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = build.signature.clone();
+        *build
+            .target
+            .0
+            .committed_revision
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = build
+            .receipt
+            .as_ref()
+            .map(|receipt| receipt.revision.clone());
+    }
+}
+
+pub(crate) fn seal_compaction_receipts(
+    work: &super::encoder::Dx12RecordedWork,
+    fence: &ID3D12Fence,
+    value: u64,
+) {
+    for receipt in work
+        .encoder
+        .ray_builds
+        .iter()
+        .filter_map(|build| build.receipt.as_ref())
+    {
+        receipt.seal(fence, value);
     }
 }
 
@@ -187,6 +215,18 @@ fn create_acceleration(
     compactable: bool,
 ) -> Result<Dx12Acceleration> {
     let size = sizes(device, desc, compactable)?.storage_bytes;
+    allocate_acceleration(
+        device,
+        size,
+        matches!(desc.input, api::AccelerationInput::Tlas(_)),
+    )
+}
+
+fn allocate_acceleration(
+    device: &Dx12Device,
+    size: u64,
+    is_top_level: bool,
+) -> Result<Dx12Acceleration> {
     let heap = D3D12_HEAP_PROPERTIES {
         Type: D3D12_HEAP_TYPE_DEFAULT,
         CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
@@ -226,9 +266,10 @@ fn create_acceleration(
     Ok(Dx12Acceleration(Arc::new(AccelerationState {
         resource: resource.ok_or(Error::OutOfMemory)?,
         size,
-        is_top_level: matches!(desc.input, api::AccelerationInput::Tlas(_)),
+        is_top_level,
         committed_blas: Mutex::new(Vec::new()),
         committed_signature: Mutex::new(None),
+        committed_revision: Mutex::new(None),
     })))
 }
 
@@ -301,7 +342,7 @@ fn build(
     };
     if !scratch.usage.contains(api::BufferUsage::ACCEL_SCRATCH)
         || scratch.size < scratch_bytes
-        || dst.0.size < sizes.ResultDataMaxSizeInBytes
+        || (!refit && dst.0.size < sizes.ResultDataMaxSizeInBytes)
         || dst.0.is_top_level != matches!(desc.input, api::AccelerationInput::Tlas(_))
     {
         return Err(Error::InvalidRange);
@@ -463,6 +504,8 @@ fn build(
         segment: encoder.closed_segments.len(),
         signature,
         refit,
+        receipt: None,
+        required_source: None,
     });
     Ok(())
 }

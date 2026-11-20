@@ -218,6 +218,12 @@ TLAS dependencies through the enclosing fence. Renderer-supplied barriers
 and queue waits remain required. Indexed BLAS refits are deferred pending a
 contract that preserves index contents.
 
+DXR compaction uses a private size output and readback. The ticket observes
+the fence for its submitted lane and carries the identity of the specific
+source build or refit. Submission rechecks that identity before issuing the
+compact copy. A compacted TLAS carries its source's BLAS owners and refit
+signature. Callers still specify barriers and queue ordering for traversal.
+
 ## Surface lifecycle
 
 `Dx12::surface_from_raw_window_handle` accepts only a Win32 handle and carries

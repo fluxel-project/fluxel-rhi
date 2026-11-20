@@ -4,6 +4,9 @@
 //! memory residency decisions remain renderer or backend concerns.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
+
+mod compaction;
+pub use compaction::AccelerationCompactionTicket;
 use std::{
     future::Future,
     marker::PhantomData,

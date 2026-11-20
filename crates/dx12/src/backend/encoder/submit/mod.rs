@@ -234,6 +234,10 @@ fn retain_submitted(
     let mut direct = Vec::new();
     let mut compute = Vec::new();
     for record in issued.drain(..) {
+        let ordinal = record.lane.ordinal;
+        let fence = super::super::queue::fence(device, ordinal).expect("validated lane");
+        let value = values[ordinal as usize].expect("issued work has a terminal lane fence");
+        super::super::ray::seal_compaction_receipts(&record, fence, value);
         match record.lane.ordinal {
             0 => direct.push(record),
             1 => compute.push(record),
@@ -417,16 +421,18 @@ unsafe fn submit_packet(
         {
             return Err(Error::DeviceLost);
         }
-        super::super::ray::validate_refits(packet.work.steps.iter().flat_map(|step| {
-            let work = match &step.payload {
-                StepPayload::Commands(work) => work.as_slice(),
-                _ => &[],
-            };
-            work.iter().flat_map(|record| {
-                // SAFETY: packet preflight and Core checked recorded-work ownership.
-                unsafe { record.native_ref() }.encoder.ray_builds.iter()
-            })
-        }))?;
+        super::super::ray::validate_acceleration_builds(packet.work.steps.iter().flat_map(
+            |step| {
+                let work = match &step.payload {
+                    StepPayload::Commands(work) => work.as_slice(),
+                    _ => &[],
+                };
+                work.iter().flat_map(|record| {
+                    // SAFETY: packet preflight and Core checked recorded-work ownership.
+                    unsafe { record.native_ref() }.encoder.ray_builds.iter()
+                })
+            },
+        ))?;
         super::query::validate_ops(
             packet.work.steps.iter().flat_map(|step| {
                 let index = step.step.index as usize;

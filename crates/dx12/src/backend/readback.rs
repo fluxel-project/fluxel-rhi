@@ -17,6 +17,7 @@ use crate::backend::{Dx12, Dx12Buffer, Dx12Device};
 
 /// Native ticket for a raw buffer readback. Texture row layout remains the
 /// caller's `TexelCopyBufferLayout`; a buffer has no intrinsic row geometry.
+#[derive(Clone)]
 pub struct Dx12Readback {
     buffer: Dx12Buffer,
     range: Range<u64>,
@@ -82,7 +83,7 @@ impl fluxel_rhi_core::backend::ReadbackBackend for Dx12 {
     }
 }
 
-fn map(ticket: Dx12Readback) -> Result<ReadbackData> {
+pub(super) fn map(ticket: Dx12Readback) -> Result<ReadbackData> {
     let size = ticket.range.end - ticket.range.start;
     let size_usize = usize::try_from(size).map_err(|_| Error::InvalidRange)?;
     let begin = usize::try_from(ticket.range.start).map_err(|_| Error::InvalidRange)?;

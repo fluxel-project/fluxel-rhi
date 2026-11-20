@@ -58,7 +58,10 @@ Verify the native build-size output for BLAS and TLAS after a covering
 completion point. Compare it with the prebuild allocation bound and reject
 invalid offsets, capacity, or conflicting buffer roles.
 Verify compaction-enabled prebuild bounds and read back the compacted byte
-size for BLAS and TLAS. The compact copy and retention path remains open.
+size for BLAS and TLAS. Compact into an exact-sized destination and verify
+traversal after dropping the source, including TLAS dependency retention.
+Reject unsubmitted or pending tickets and reject tickets invalidated by a
+rebuild between compact recording and submission.
 Repeat the size query while refitting a compaction-enabled build and verify
 that submission rejects a refit with mismatched original build flags.
 
