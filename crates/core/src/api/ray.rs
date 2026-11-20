@@ -266,6 +266,14 @@ pub struct AccelerationDesc<B: Backend> {
 pub struct AccelerationSizeOutput<'a, B: Backend> {
     pub buffer: &'a Buffer<B>,
     pub offset: u64,
+    pub kind: AccelerationSizeKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AccelerationSizeKind {
+    Current,
+    /// Requests a compaction-enabled build and its compacted byte size.
+    Compacted,
 }
 #[derive(Clone)]
 pub struct RayPipelineDesc<B: Backend> {
@@ -494,6 +502,24 @@ impl<B: Backend> RayDomain<'_, B> {
         self.validate_acceleration_input(&desc.input)?;
         B::Ray::acceleration_sizes(&self.device.native, desc)
     }
+    /// Allocation and scratch bounds for a compaction-enabled build.
+    pub fn compactable_sizes(&self, desc: &AccelerationDesc<B>) -> Result<AccelerationSizes> {
+        self.require_compaction_size()?;
+        self.validate_acceleration_input(&desc.input)?;
+        B::Ray::compactable_sizes(&self.device.native, desc)
+    }
+
+    /// Allocates storage for a build that requests a compacted size output.
+    pub fn create_compactable_acceleration(
+        &self,
+        desc: &AccelerationDesc<B>,
+    ) -> Result<AccelerationStructure<B>> {
+        self.require_compaction_size()?;
+        self.validate_acceleration_input(&desc.input)?;
+        let native = B::Ray::create_compactable_acceleration(&self.device.native, desc)?;
+        // SAFETY: the SPI created this acceleration structure for this exact device.
+        Ok(unsafe { AccelerationStructure::from_native(self.device.id, native) })
+    }
     pub fn triangle_vertex_layout(&self, format: VertexFormat) -> Result<AccelerationVertexLayout> {
         self.require_acceleration()?;
         B::Ray::triangle_vertex_layout(&self.device.native, format)
@@ -528,8 +554,10 @@ impl<B: Backend> RayDomain<'_, B> {
         self.validate_acceleration_input(&desc.input)?;
         encoder.call(|e| B::Ray::build_acceleration(e, &dst.native, &scratch.native, desc))
     }
-    /// Builds an acceleration structure and writes the resulting storage
-    /// size in bytes. Read the result after a covering completion point.
+    /// Builds an acceleration structure and writes its selected size in
+    /// bytes. For `Compacted`, allocate with `create_compactable_acceleration`
+    /// and size scratch with `compactable_sizes`. Read the result after a
+    /// covering completion point.
     pub fn build_with_size_output(
         &self,
         encoder: &mut CommandEncoder<B>,
@@ -543,6 +571,9 @@ impl<B: Backend> RayDomain<'_, B> {
     {
         if !self.device.caps.acceleration_build_size_output {
             return Err(Error::Unsupported("acceleration build size output"));
+        }
+        if output.kind == AccelerationSizeKind::Compacted {
+            self.require_compaction_size()?;
         }
         if encoder.device != self.device.id
             || dst.device != self.device.id
@@ -563,6 +594,7 @@ impl<B: Backend> RayDomain<'_, B> {
                 desc,
                 &output.buffer.native,
                 output.offset,
+                output.kind,
             )
         })
     }
@@ -603,6 +635,12 @@ impl<B: Backend> RayDomain<'_, B> {
         } else {
             Err(Error::Unsupported("acceleration structures"))
         }
+    }
+    fn require_compaction_size(&self) -> Result<()> {
+        if !self.device.caps.acceleration_compaction_size {
+            return Err(Error::Unsupported("acceleration compaction size"));
+        }
+        self.require_acceleration()
     }
     fn validate_acceleration_input(&self, input: &AccelerationInput<B>) -> Result<()> {
         input.validate(self.device.id, &self.device.caps.limits)?;

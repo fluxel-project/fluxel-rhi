@@ -83,7 +83,19 @@ impl fluxel_rhi_core::backend::RayOps<Dx12> for Ray {
         device: &Dx12Device,
         desc: &api::AccelerationDesc<Dx12>,
     ) -> Result<api::AccelerationSizes> {
-        super::sizes(device, desc)
+        super::sizes(device, desc, false)
+    }
+    fn compactable_sizes(
+        device: &Dx12Device,
+        desc: &api::AccelerationDesc<Dx12>,
+    ) -> Result<api::AccelerationSizes> {
+        super::sizes(device, desc, true)
+    }
+    fn create_compactable_acceleration(
+        device: &Dx12Device,
+        desc: &api::AccelerationDesc<Dx12>,
+    ) -> Result<Dx12Acceleration> {
+        super::create_acceleration(device, desc, true)
     }
     fn triangle_vertex_layout(
         device: &Dx12Device,
@@ -96,7 +108,7 @@ impl fluxel_rhi_core::backend::RayOps<Dx12> for Ray {
         device: &Dx12Device,
         desc: &api::AccelerationDesc<Dx12>,
     ) -> Result<Dx12Acceleration> {
-        super::create_acceleration(device, desc)
+        super::create_acceleration(device, desc, false)
     }
     fn build_acceleration(
         encoder: &mut Dx12Encoder,
@@ -121,8 +133,16 @@ impl fluxel_rhi_core::backend::RayOps<Dx12> for Ray {
         desc: &api::AccelerationDesc<Dx12>,
         output: &Dx12Buffer,
         offset: u64,
+        kind: api::AccelerationSizeKind,
     ) -> Result<()> {
-        super::build(encoder, dst, scratch, desc, false, Some((output, offset)))
+        super::build(
+            encoder,
+            dst,
+            scratch,
+            desc,
+            false,
+            Some((output, offset, kind)),
+        )
     }
     fn trace(
         encoder: &mut Dx12Encoder,

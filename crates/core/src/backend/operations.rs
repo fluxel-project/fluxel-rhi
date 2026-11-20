@@ -296,6 +296,18 @@ pub trait RayOps<B: Backend> {
         device: &B::NativeDevice,
         desc: &AccelerationDesc<B>,
     ) -> Result<AccelerationSizes>;
+    fn compactable_sizes(
+        _device: &B::NativeDevice,
+        _desc: &AccelerationDesc<B>,
+    ) -> Result<AccelerationSizes> {
+        Err(Error::Unsupported("acceleration compaction size"))
+    }
+    fn create_compactable_acceleration(
+        _device: &B::NativeDevice,
+        _desc: &AccelerationDesc<B>,
+    ) -> Result<B::NativeAcceleration> {
+        Err(Error::Unsupported("acceleration compaction size"))
+    }
     fn triangle_vertex_layout(
         _device: &B::NativeDevice,
         _format: VertexFormat,
@@ -329,6 +341,7 @@ pub trait RayOps<B: Backend> {
         _input: &AccelerationDesc<B>,
         _output: &B::NativeBuffer,
         _offset: u64,
+        _kind: AccelerationSizeKind,
     ) -> Result<()> {
         Err(Error::Unsupported("acceleration build size output"))
     }

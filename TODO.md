@@ -57,6 +57,8 @@ transform buffers, and refits that change transform presence.
 Verify the native build-size output for BLAS and TLAS after a covering
 completion point. Compare it with the prebuild allocation bound and reject
 invalid offsets, capacity, or conflicting buffer roles.
+Verify compaction-enabled prebuild bounds and read back the compacted byte
+size for BLAS and TLAS. The compact copy and retention path remains open.
 
 ### DX12 conservative rasterization
 

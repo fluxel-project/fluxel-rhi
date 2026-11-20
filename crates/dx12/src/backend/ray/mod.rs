@@ -147,9 +147,10 @@ fn ray_device(device: &Dx12Device) -> Result<&ID3D12Device5> {
 fn sizes(
     device: &Dx12Device,
     desc: &api::AccelerationDesc<Dx12>,
+    compactable: bool,
 ) -> Result<api::AccelerationSizes> {
     let geometry = geometry::GeometryInputs::new(desc, device.0.dxr_1_1)?;
-    let info = prebuild(device, &geometry)?;
+    let info = prebuild(device, &geometry, compactable)?;
     Ok(api::AccelerationSizes {
         storage_bytes: info.ResultDataMaxSizeInBytes,
         scratch_bytes: info
@@ -162,8 +163,12 @@ fn sizes(
 fn prebuild(
     device: &Dx12Device,
     geometry: &geometry::GeometryInputs,
+    compactable: bool,
 ) -> Result<D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO> {
-    let input = geometry.native(0);
+    let mut input = geometry.native(0);
+    if compactable {
+        input.Flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_COMPACTION;
+    }
     let mut info = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO::default();
     // SAFETY: the descriptor and its geometry array remain alive throughout
     // this synchronous native prebuild query; the output is initialized storage.
@@ -179,8 +184,9 @@ fn prebuild(
 fn create_acceleration(
     device: &Dx12Device,
     desc: &api::AccelerationDesc<Dx12>,
+    compactable: bool,
 ) -> Result<Dx12Acceleration> {
-    let size = sizes(device, desc)?.storage_bytes;
+    let size = sizes(device, desc, compactable)?.storage_bytes;
     let heap = D3D12_HEAP_PROPERTIES {
         Type: D3D12_HEAP_TYPE_DEFAULT,
         CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
@@ -232,15 +238,17 @@ fn build(
     scratch: &super::Dx12Buffer,
     desc: &api::AccelerationDesc<Dx12>,
     refit: bool,
-    output: Option<(&super::Dx12Buffer, u64)>,
+    output: Option<(&super::Dx12Buffer, u64, api::AccelerationSizeKind)>,
 ) -> Result<()> {
-    let signature = refit::RefitSignature::from_desc(desc);
+    let compactable =
+        output.is_some_and(|(_, _, kind)| kind == api::AccelerationSizeKind::Compacted);
+    let signature = refit::RefitSignature::from_desc(desc, compactable);
     if refit && signature.is_none() {
         return Err(Error::Unsupported("DX12 indexed BLAS refit"));
     }
     let geometry = geometry::GeometryInputs::new(desc, encoder.device.0.dxr_1_1)?;
     let postbuild = output
-        .map(|(buffer, offset)| {
+        .map(|(buffer, offset, kind)| {
             if buffer.memory != api::MemoryClass::Device
                 || !buffer.usage.contains(api::BufferUsage::STORAGE)
             {
@@ -268,12 +276,19 @@ fn build(
             Ok(
                 D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC {
                     DestBuffer: address,
-                    InfoType: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_CURRENT_SIZE,
+                    InfoType: match kind {
+                        api::AccelerationSizeKind::Current => {
+                            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_CURRENT_SIZE
+                        }
+                        api::AccelerationSizeKind::Compacted => {
+                            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE
+                        }
+                    },
                 },
             )
         })
         .transpose()?;
-    let sizes = prebuild(&encoder.device, &geometry)?;
+    let sizes = prebuild(&encoder.device, &geometry, compactable)?;
     let scratch_bytes = if refit {
         if sizes.UpdateScratchDataSizeInBytes == 0 {
             return Err(Error::Unsupported("DX12 acceleration input refit"));
@@ -410,6 +425,9 @@ fn build(
     // SAFETY: the destination resource is retained through this recording.
     let dst_address = unsafe { dst.0.resource.GetGPUVirtualAddress() };
     let mut inputs = geometry.native(instance_address);
+    if compactable {
+        inputs.Flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_COMPACTION;
+    }
     if refit {
         inputs.Flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
     }
@@ -433,7 +451,7 @@ fn build(
     };
     encoder.buffers.extend(geometry.buffers);
     encoder.buffers.push(scratch.clone());
-    if let Some((buffer, _)) = output {
+    if let Some((buffer, _, _)) = output {
         encoder.buffers.push(buffer.clone());
     }
     encoder.accelerations.push(dst.clone());

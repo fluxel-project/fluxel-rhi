@@ -9,6 +9,7 @@ use super::{Dx12, RecordedAccelerationBuild};
 #[derive(Eq, PartialEq)]
 pub(super) struct RefitSignature {
     fast_trace: bool,
+    compactable: bool,
     shape: Shape,
 }
 
@@ -35,7 +36,10 @@ enum GeometryShape {
 }
 
 impl RefitSignature {
-    pub(super) fn from_desc(desc: &api::AccelerationDesc<Dx12>) -> Option<Arc<Self>> {
+    pub(super) fn from_desc(
+        desc: &api::AccelerationDesc<Dx12>,
+        compactable: bool,
+    ) -> Option<Arc<Self>> {
         if !desc.allow_update {
             return None;
         }
@@ -50,6 +54,7 @@ impl RefitSignature {
         };
         Some(Arc::new(Self {
             fast_trace: desc.fast_trace,
+            compactable,
             shape,
         }))
     }
