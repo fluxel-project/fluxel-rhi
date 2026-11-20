@@ -68,7 +68,7 @@ pub(crate) fn support(dv: &Dx12Device, d: &api::TextureDesc) -> api::Support<api
             api::Support::Supported(api::TextureSupport {
                 max_extent: max_extent(d.dimension),
                 max_array_layers: max_array_layers(d),
-                max_mips: max_mips(d.extent[0], d.extent[1].max(d.extent[2])),
+                max_mips: max_mips(d),
                 sample_counts: if d.dimension != api::TextureDimension::D2 {
                     vec![1]
                 } else {

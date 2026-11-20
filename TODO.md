@@ -51,6 +51,11 @@ the direct lane. Check a foreign lane, slot bounds, offset alignment, wrong
 usage and the last byte of the destination. Producer ordering and active
 query state are verified during command execution.
 
+**Texture mip support:** Match the DX12 reported mip ceiling to creation
+for single-sample and multisampled textures of the same extent. Check a
+non-power-of-two extent and verify multisampling reports and admits one
+mip while rejecting a second mip.
+
 ### DX12 structured shader diagnostics
 
 **Status:** WGSL parse and validation errors preserve compiler messages and

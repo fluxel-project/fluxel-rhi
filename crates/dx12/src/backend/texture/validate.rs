@@ -68,20 +68,24 @@ pub(super) fn valid(d: &api::TextureDesc) -> std::result::Result<(), &'static st
     {
         return Err("DX12 BC texture subset");
     }
-    if d.samples > 1 && (d.mip_levels != 1 || d.usage.contains(api::TextureUsage::STORAGE_BINDING))
-    {
+    if d.samples > 1 && d.usage.contains(api::TextureUsage::STORAGE_BINDING) {
         return Err("DX12 multisample texture usage");
     }
     if depth && d.usage.contains(api::TextureUsage::STORAGE_BINDING) {
         return Err("DX12 depth texture usage");
     }
-    if d.mip_levels == 0 || d.mip_levels > max_mips(d.extent[0], d.extent[1].max(d.extent[2])) {
+    if d.mip_levels == 0 || d.mip_levels > max_mips(d) {
         return Err("DX12 mip count");
     }
     Ok(())
 }
-pub(super) fn max_mips(width: u32, height: u32) -> u32 {
-    1 + width.max(height).ilog2()
+pub(super) fn max_mips(desc: &api::TextureDesc) -> u32 {
+    if desc.samples > 1 {
+        1
+    } else {
+        let [width, height, depth] = desc.extent;
+        1 + width.max(height).max(depth).ilog2()
+    }
 }
 
 pub(super) fn view(
