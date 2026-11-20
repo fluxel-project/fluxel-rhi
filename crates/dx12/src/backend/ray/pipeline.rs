@@ -2,7 +2,7 @@
 //!
 //! All descriptor pointers below are valid only through CreateStateObject;
 //! owned COM state and copied identifiers outlive that synchronous call.
-use super::super::{Dx12, Dx12Device, Dx12RayPipeline, pipeline::PipelineLayoutState};
+use super::super::{Dx12, Dx12Device, Dx12RayPipeline, Dx12Shader, pipeline::PipelineLayoutState};
 use fluxel_rhi_core::api::{self, Error, Result};
 use std::{mem::ManuallyDrop, sync::Arc};
 use windows::{
@@ -16,11 +16,8 @@ pub(crate) struct RayPipelineState {
     identifiers: Vec<Vec<u8>>,
 }
 
-fn wide(value: &str) -> Result<Vec<u16>> {
-    if value.is_empty() || value.contains('\0') {
-        return Err(Error::InvalidRange);
-    }
-    Ok(value.encode_utf16().chain(std::iter::once(0)).collect())
+fn wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 fn ptr(value: &[u16]) -> PCWSTR {
     PCWSTR(value.as_ptr())
@@ -30,9 +27,6 @@ fn local_root(
     device: &Dx12Device,
     constants: api::RayLocalConstants,
 ) -> Result<ID3D12RootSignature> {
-    if constants.size_bytes == 0 || constants.size_bytes % 4 != 0 || constants.size_bytes > 256 {
-        return Err(Error::InvalidRange);
-    }
     let parameter = D3D12_ROOT_PARAMETER {
         ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
         Anonymous: D3D12_ROOT_PARAMETER_0 {
@@ -63,11 +57,20 @@ fn local_root(
     unsafe { device.0.native.CreateRootSignature(0, bytes) }.map_err(super::super::native_error)
 }
 
-pub(crate) fn create_pipeline(
+struct AdmittedRay<'a> {
+    layout: &'a Arc<PipelineLayoutState>,
+    stages: Vec<(&'a Dx12Shader, api::ShaderStage)>,
+}
+
+pub(super) fn pipeline_support(
     device: &Dx12Device,
     desc: &api::RayPipelineDesc<Dx12>,
-) -> Result<Dx12RayPipeline> {
-    let ray_device = super::ray_device(device)?;
+) -> Result<()> {
+    super::ray_device(device)?;
+    admit_pipeline(desc).map(drop)
+}
+
+fn admit_pipeline(desc: &api::RayPipelineDesc<Dx12>) -> Result<AdmittedRay<'_>> {
     if desc.cache.is_some() {
         // The existing cache persists native ID3D12PipelineState blobs. DXR
         // creates ID3D12StateObject instead; ignoring the supplied cache or
@@ -91,6 +94,14 @@ pub(crate) fn create_pipeline(
             }
             // SAFETY: Core validated that all shader modules belong to this device.
             let shader = unsafe { stage.module.native_ref() };
+            if shader.source.is_some() || shader.bytes.is_empty() {
+                return Err(Error::Unsupported(
+                    "DX12 ray pipeline requires DXIL libraries",
+                ));
+            }
+            if stage.entry.is_empty() || stage.entry.contains('\0') {
+                return Err(Error::InvalidRange);
+            }
             let entry = shader
                 .entries
                 .iter()
@@ -108,14 +119,70 @@ pub(crate) fn create_pipeline(
             Ok((shader, entry.stage))
         })
         .collect::<Result<_>>()?;
+    for group in &desc.groups {
+        if group.local_constants.is_some_and(|constants| {
+            constants.size_bytes == 0 || constants.size_bytes % 4 != 0 || constants.size_bytes > 256
+        }) {
+            return Err(Error::InvalidRange);
+        }
+        if let Some(index) = group.general {
+            if group.closest_hit.is_some()
+                || group.any_hit.is_some()
+                || group.intersection.is_some()
+            {
+                return Err(Error::InvalidState);
+            }
+            let stage = stages.get(index as usize).ok_or(Error::InvalidRange)?.1;
+            if !matches!(
+                stage,
+                api::ShaderStage::RayGeneration
+                    | api::ShaderStage::Miss
+                    | api::ShaderStage::Callable
+            ) {
+                return Err(Error::InvalidState);
+            }
+        } else {
+            let imports = [
+                (group.closest_hit, api::ShaderStage::ClosestHit),
+                (group.any_hit, api::ShaderStage::AnyHit),
+                (group.intersection, api::ShaderStage::Intersection),
+            ];
+            if imports.iter().all(|(index, _)| index.is_none()) {
+                return Err(Error::InvalidState);
+            }
+            for (index, expected) in imports {
+                if index.is_some_and(|index| {
+                    stages
+                        .get(index as usize)
+                        .is_none_or(|(_, stage)| *stage != expected)
+                }) {
+                    return Err(Error::InvalidState);
+                }
+            }
+        }
+    }
+    // SAFETY: Core checked that the layout belongs to the pipeline device.
+    let layout = &unsafe { desc.layout.native_ref() }.0;
+    if !layout.native_abi_compatible {
+        return Err(Error::Unsupported("DX12 DXIL descriptor register overlap"));
+    }
+    Ok(AdmittedRay { layout, stages })
+}
+
+pub(crate) fn create_pipeline(
+    device: &Dx12Device,
+    desc: &api::RayPipelineDesc<Dx12>,
+) -> Result<Dx12RayPipeline> {
+    let ray_device = super::ray_device(device)?;
+    let AdmittedRay { layout, stages } = admit_pipeline(desc)?;
     let originals: Vec<_> = desc
         .shaders
         .iter()
         .map(|stage| wide(&stage.entry))
-        .collect::<Result<_>>()?;
+        .collect();
     let aliases: Vec<_> = (0..stages.len())
         .map(|i| wide(&format!("fluxel_shader_{i}")))
-        .collect::<Result<_>>()?;
+        .collect();
     let exports: Vec<_> = aliases
         .iter()
         .zip(&originals)
@@ -139,46 +206,15 @@ pub(crate) fn create_pipeline(
         .collect();
     let names: Vec<_> = (0..desc.groups.len())
         .map(|i| wide(&format!("fluxel_group_{i}")))
-        .collect::<Result<_>>()?;
+        .collect();
     let mut hit_groups = Vec::new();
     let mut group_exports = Vec::with_capacity(desc.groups.len());
-    let stage_index = |index: u32, expected: api::ShaderStage| -> Result<usize> {
-        let i = usize::try_from(index).map_err(|_| Error::InvalidRange)?;
-        if stages.get(i).is_none_or(|(_, stage)| *stage != expected) {
-            return Err(Error::InvalidState);
-        }
-        Ok(i)
-    };
     for (i, group) in desc.groups.iter().enumerate() {
         if let Some(index) = group.general {
-            if group.closest_hit.is_some()
-                || group.any_hit.is_some()
-                || group.intersection.is_some()
-            {
-                return Err(Error::InvalidState);
-            }
-            let stage = stages.get(index as usize).ok_or(Error::InvalidRange)?.1;
-            if !matches!(
-                stage,
-                api::ShaderStage::RayGeneration
-                    | api::ShaderStage::Miss
-                    | api::ShaderStage::Callable
-            ) {
-                return Err(Error::InvalidState);
-            }
             group_exports.push(ptr(&aliases[index as usize]));
         } else {
-            if group.closest_hit.is_none()
-                && group.any_hit.is_none()
-                && group.intersection.is_none()
-            {
-                return Err(Error::InvalidState);
-            }
-            let import = |index: Option<u32>, stage| -> Result<PCWSTR> {
-                Ok(match index {
-                    Some(index) => ptr(&aliases[stage_index(index, stage)?]),
-                    None => PCWSTR::null(),
-                })
+            let import = |index: Option<u32>| {
+                index.map_or(PCWSTR::null(), |index| ptr(&aliases[index as usize]))
             };
             hit_groups.push(D3D12_HIT_GROUP_DESC {
                 HitGroupExport: ptr(&names[i]),
@@ -187,12 +223,9 @@ pub(crate) fn create_pipeline(
                 } else {
                     D3D12_HIT_GROUP_TYPE_TRIANGLES
                 },
-                AnyHitShaderImport: import(group.any_hit, api::ShaderStage::AnyHit)?,
-                ClosestHitShaderImport: import(group.closest_hit, api::ShaderStage::ClosestHit)?,
-                IntersectionShaderImport: import(
-                    group.intersection,
-                    api::ShaderStage::Intersection,
-                )?,
+                AnyHitShaderImport: import(group.any_hit),
+                ClosestHitShaderImport: import(group.closest_hit),
+                IntersectionShaderImport: import(group.intersection),
             });
             group_exports.push(ptr(&names[i]));
         }
@@ -208,11 +241,6 @@ pub(crate) fn create_pipeline(
             pLocalRootSignature: ManuallyDrop::new(root.clone()),
         })
         .collect();
-    // SAFETY: Core validated the pipeline layout's device identity.
-    let layout = unsafe { desc.layout.native_ref() }.0.clone();
-    if !layout.native_abi_compatible {
-        return Err(Error::Unsupported("DX12 DXIL descriptor register overlap"));
-    }
     let global = D3D12_GLOBAL_ROOT_SIGNATURE {
         pGlobalRootSignature: ManuallyDrop::new(Some(layout.compute_root.clone())),
     };
@@ -313,7 +341,7 @@ pub(crate) fn create_pipeline(
     }
     Ok(Dx12RayPipeline(Arc::new(RayPipelineState {
         state,
-        layout,
+        layout: layout.clone(),
         identifiers,
     })))
 }

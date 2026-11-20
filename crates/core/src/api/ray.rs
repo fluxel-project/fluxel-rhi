@@ -412,7 +412,23 @@ impl<B: Backend> Device<B> {
     }
 }
 impl<B: Backend> RayDomain<'_, B> {
+    /// Checks the descriptor and declared shader groups before native pipeline
+    /// creation. The backend validates the linked shader artifacts at creation.
+    pub fn pipeline_support(&self, desc: &RayPipelineDesc<B>) -> Result<()> {
+        self.validate_pipeline_desc(desc)?;
+        B::Ray::pipeline_support(&self.device.native, desc)
+    }
+
     pub async fn create_pipeline(&self, desc: RayPipelineDesc<B>) -> Result<RayPipeline<B>> {
+        self.validate_pipeline_desc(&desc)?;
+        let native = B::Ray::create_pipeline(&self.device.native, &desc).await?;
+        // SAFETY: the SPI created this pipeline for this exact native device.
+        let mut pipeline = unsafe { RayPipeline::from_native(self.device.id, native) };
+        pipeline.layout = Some(desc.layout);
+        Ok(pipeline)
+    }
+
+    fn validate_pipeline_desc(&self, desc: &RayPipelineDesc<B>) -> Result<()> {
         self.require_pipeline()?;
         // Shader tables refer to the executable pipeline's shader identities;
         // accepting a foreign module would defer a deterministic ownership
@@ -440,11 +456,7 @@ impl<B: Backend> RayDomain<'_, B> {
         }) {
             return Err(Error::InvalidRange);
         }
-        let native = B::Ray::create_pipeline(&self.device.native, &desc).await?;
-        // SAFETY: the SPI created this pipeline for this exact native device.
-        let mut pipeline = unsafe { RayPipeline::from_native(self.device.id, native) };
-        pipeline.layout = Some(desc.layout);
-        Ok(pipeline)
+        Ok(())
     }
     /// Selects a ray pipeline on an encoder outside a raster or compute pass.
     pub fn set_pipeline(

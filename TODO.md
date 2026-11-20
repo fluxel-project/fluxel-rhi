@@ -110,6 +110,13 @@ encoder free of new buffer owners. Record and read back a supported dispatch.
 DX12 allows a zero dispatch axis and launches no threads. Verify the table
 and bound-pipeline rules still apply and that the output sentinel survives.
 
+**Ray pipeline support:** Compare the descriptor query with DXR state-object
+creation for declared exports and general, triangle, and procedural hit groups.
+Cover foreign inputs, an acceleration-only device, wrong-stage group imports,
+non-DXIL stages, local constants above the root budget, unsupported cache,
+recursion and attribute limits, and native register overlap. Creation still
+verifies DXIL export and root signature linkage.
+
 **Counted indirect draw support:** Compare the query with DX12 recording
 for indexed and non-indexed argument strides and checked offsets, including
 shared argument/count storage and a zero maximum. Verify the reported direct,

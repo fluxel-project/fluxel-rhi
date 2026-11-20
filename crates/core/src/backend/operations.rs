@@ -304,6 +304,9 @@ pub trait RayOps<B: Backend> {
     const AVAILABLE: bool;
     /// A dispatch with a zero axis executes no threads on this route.
     const EMPTY_DISPATCH: bool = false;
+    fn pipeline_support(_device: &B::NativeDevice, _desc: &RayPipelineDesc<B>) -> Result<()> {
+        Err(Error::Unsupported("ray pipeline support query"))
+    }
     type PipelineFuture<'a>: Future<Output = Result<B::NativeRayPipeline>> + 'a
     where
         B: 'a;
