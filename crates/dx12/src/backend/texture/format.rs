@@ -452,10 +452,23 @@ pub(crate) fn format_supports_texture_atomic_bitwise_native(
 }
 
 pub(super) fn supported_sample_counts(dv: &Dx12Device, d: &api::TextureDesc) -> Vec<u32> {
-    [1, 2, 4, 8, 16, 32]
-        .into_iter()
-        .filter(|&count| sample_count_supported(dv, d.format, count))
-        .collect()
+    let mut candidate = d.clone();
+    let mut counts = Vec::new();
+    candidate.samples = 1;
+    if d.samples == 1 || (super::valid(&candidate).is_ok() && format_available(dv, &candidate)) {
+        counts.push(1);
+    }
+    // The structural and format gates are shared by all multisampled
+    // counts. The native quality-level check then qualifies each count.
+    candidate.samples = 2;
+    if d.samples > 1 || (super::valid(&candidate).is_ok() && format_available(dv, &candidate)) {
+        counts.extend(
+            [2, 4, 8, 16, 32]
+                .into_iter()
+                .filter(|&count| count == d.samples || sample_count_supported(dv, d.format, count)),
+        );
+    }
+    counts
 }
 
 /// Check only the sample count needed by resource creation. The full supported

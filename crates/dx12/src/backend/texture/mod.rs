@@ -57,11 +57,8 @@ pub(crate) struct TextureViewState {
 }
 
 pub(crate) fn support(dv: &Dx12Device, d: &api::TextureDesc) -> api::Support<api::TextureSupport> {
-    match valid(d) {
+    match validate_allocation(dv, d) {
         Ok(()) => {
-            if !format_available(dv, d) {
-                return api::Support::Unsupported("DX12 texture format support");
-            }
             let depth = is_depth(d.format);
             api::Support::Supported(api::TextureSupport {
                 max_extent: max_extent(d.dimension),
@@ -86,6 +83,20 @@ pub(crate) fn support(dv: &Dx12Device, d: &api::TextureDesc) -> api::Support<api
         }
         Err(x) => api::Support::Unsupported(x),
     }
+}
+
+fn validate_allocation(
+    dv: &Dx12Device,
+    d: &api::TextureDesc,
+) -> std::result::Result<(), &'static str> {
+    valid(d)?;
+    if !format_available(dv, d) {
+        return Err("DX12 texture format support");
+    }
+    if !sample_count_supported(dv, d.format, d.samples) {
+        return Err("DX12 texture sample count/format combination");
+    }
+    Ok(())
 }
 
 // Share reinterpretation admission between capability reporting and view creation.
@@ -126,15 +137,7 @@ pub(crate) struct AllocationDesc {
 }
 
 pub(crate) fn allocation_desc(dv: &Dx12Device, d: &api::TextureDesc) -> Result<AllocationDesc> {
-    valid(d).map_err(Error::Unsupported)?;
-    if !format_available(dv, d) {
-        return Err(Error::Unsupported("DX12 texture format support"));
-    }
-    if !sample_count_supported(dv, d.format, d.samples) {
-        return Err(Error::Unsupported(
-            "DX12 texture sample count/format combination",
-        ));
-    }
+    validate_allocation(dv, d).map_err(Error::Unsupported)?;
     let depth = is_depth(d.format);
     let flags = if depth {
         D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
