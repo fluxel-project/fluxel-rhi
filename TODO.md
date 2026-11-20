@@ -160,6 +160,14 @@ unmapping the tail and mapping a Tier 4 array slice affect only the requested
 range. Below Tier 4, verify that an array with a fully packed single-slice
 probe receives a structured unsupported error.
 
+**Rejected for DX12 reserved textures:** `Depth24PlusStencil8` and
+`Depth32FloatStencil8`. The [D3D12 DXGI format tables](https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/hardware-support-for-direct3d-12-1-formats)
+list no tiled resource support for the R24G8 and R32G8X24 depth/stencil
+families. Texture creation rejects these sparse descriptors before native
+format probes. Revisit if a native capability explicitly supports those
+families and specifies how to address their depth and stencil tile mappings.
+In Stage 8, check the rejection with attachment and sampled usages.
+
 ### DX12 structured shader diagnostics
 
 **Status:** WGSL parse and validation errors preserve compiler messages and
