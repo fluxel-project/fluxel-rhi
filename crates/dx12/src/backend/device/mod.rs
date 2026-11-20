@@ -6,10 +6,11 @@
 
 use super::*;
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT,
-    D3D12_REQ_MULTI_ELEMENT_STRUCTURE_SIZE_IN_BYTES, D3D12_REQ_TEXTURE1D_U_DIMENSION,
-    D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION, D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION,
-    D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION, D3D12_RESOURCE_BINDING_TIER_3,
+    D3D12_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, D3D12_FEATURE_ARCHITECTURE,
+    D3D12_FEATURE_DATA_ARCHITECTURE, D3D12_REQ_MULTI_ELEMENT_STRUCTURE_SIZE_IN_BYTES,
+    D3D12_REQ_TEXTURE1D_U_DIMENSION, D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION,
+    D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION, D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION,
+    D3D12_RESOURCE_BINDING_TIER_3,
 };
 use windows::Win32::Graphics::Dxgi::{
     DXGI_ADAPTER_DESC1, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_UNSUPPORTED,
@@ -257,6 +258,26 @@ impl Dx12 {
             )?;
             let native = native
                 .ok_or_else(|| Error::Backend("D3D12CreateDevice returned no device".into()))?;
+            let mut architecture = D3D12_FEATURE_DATA_ARCHITECTURE::default();
+            // SAFETY: the initialized structure requests the architecture of
+            // node zero, used by the ordinary queues and heaps of this device.
+            let memory_topology = unsafe {
+                native.CheckFeatureSupport(
+                    D3D12_FEATURE_ARCHITECTURE,
+                    (&mut architecture as *mut D3D12_FEATURE_DATA_ARCHITECTURE).cast(),
+                    std::mem::size_of_val(&architecture) as u32,
+                )
+            }
+            .ok()
+            .map(|()| {
+                if architecture.UMA.as_bool() {
+                    api::DeviceMemoryTopology::Unified {
+                        cache_coherent: architecture.CacheCoherentUMA.as_bool(),
+                    }
+                } else {
+                    api::DeviceMemoryTopology::Separate
+                }
+            });
             let mut wave =
                 windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS1::default();
             // SAFETY: the native device receives the exact initialized
@@ -403,6 +424,7 @@ impl Dx12 {
             let lane = LaneId { device, ordinal: 0 };
             let compute_lane = LaneId { device, ordinal: 1 };
             let caps = DeviceCapabilities {
+                memory_topology,
                 subgroup_widths,
                 lanes: Arc::from([
                     LaneInfo {

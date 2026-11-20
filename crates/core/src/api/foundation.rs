@@ -416,6 +416,9 @@ pub struct CooperativeMatrixConfiguration {
 /// requires these flags to match the implemented optional backend domains.
 #[derive(Clone, Default)]
 pub struct DeviceCapabilities {
+    /// Memory topology of the native node used by ordinary device work.
+    /// This does not admit any particular buffer mapping or heap type.
+    pub memory_topology: Option<DeviceMemoryTopology>,
     /// Native subgroup width range for this opened device, when exposed.
     /// This does not imply that every shader stage or operation uses subgroups.
     pub subgroup_widths: Option<SubgroupWidths>,
@@ -609,6 +612,12 @@ pub struct DeviceCapabilities {
 pub struct SubgroupWidths {
     pub min: u32,
     pub max: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceMemoryTopology {
+    Separate,
+    Unified { cache_coherent: bool },
 }
 
 #[derive(Clone, Copy, Default)]
