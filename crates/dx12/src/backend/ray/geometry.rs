@@ -34,6 +34,7 @@ pub(super) fn triangle_vertex_layout(
         Snorm8(3 | 4) if dxr_1_1 => (DXGI_FORMAT_R8G8B8A8_SNORM, 3, 1),
         Unorm8(2) if dxr_1_1 => (DXGI_FORMAT_R8G8_UNORM, 2, 1),
         Unorm8(3 | 4) if dxr_1_1 => (DXGI_FORMAT_R8G8B8A8_UNORM, 3, 1),
+        Rgb10a2Unorm if dxr_1_1 => (DXGI_FORMAT_R10G10B10A2_UNORM, 4, 4),
         _ => return Err(Error::Unsupported("DX12 ray triangle vertex format")),
     };
     Ok((
@@ -42,6 +43,7 @@ pub(super) fn triangle_vertex_layout(
             position_bytes,
             offset_alignment: alignment,
             stride_alignment: alignment,
+            required_stride: (format == Rgb10a2Unorm).then_some(4),
         },
     ))
 }
@@ -117,6 +119,12 @@ impl GeometryInputs {
                         } => {
                             let (format, layout) = triangle_vertex_layout(*vertex_format, dxr_1_1)?;
                             if indices.as_ref().map_or(*vertex_count, |i| i.count) % 3 != 0 {
+                                return Err(Error::InvalidRange);
+                            }
+                            if layout
+                                .required_stride
+                                .is_some_and(|required| *stride != u64::from(required))
+                            {
                                 return Err(Error::InvalidRange);
                             }
                             // SAFETY: Core checks resource identity and the

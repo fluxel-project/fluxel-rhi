@@ -26,6 +26,8 @@ pub struct AccelerationVertexLayout {
     pub position_bytes: u32,
     pub offset_alignment: u32,
     pub stride_alignment: u32,
+    /// Exact byte stride when this position encoding has a fixed stride.
+    pub required_stride: Option<u32>,
 }
 #[derive(Clone)]
 pub enum AccelerationGeometry<B: Backend> {

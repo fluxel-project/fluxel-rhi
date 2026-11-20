@@ -42,6 +42,8 @@ refit once its index data can be proven unchanged for the update.
 Verify triangle vertex layout queries and traversal for the added DXR SNORM,
 UNORM and tightly packed three-component formats. Verify Tier 1.0 rejects the
 formats that require Tier 1.1.
+Verify packed RGB10A2 UNORM positions use their required four-byte stride
+under DXR Tier 1.1.
 
 ### DX12 conservative rasterization
 
