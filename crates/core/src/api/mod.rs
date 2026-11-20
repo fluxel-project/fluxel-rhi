@@ -11,6 +11,8 @@ use crate::backend::*;
 
 mod foundation;
 pub use foundation::*;
+mod device_capabilities;
+pub use device_capabilities::*;
 mod device_requirements;
 pub use device_requirements::*;
 mod handles;
