@@ -115,6 +115,10 @@ For deferred backends, `Execution` stores backend-native recordings and later ha
 
 `Execution::finish` is required even after a command error because an earlier prefix may already have native effects. Outcomes distinguish a clean rejection, an accepted/issued prefix, and an indeterminate native effect. Backends retain the native objects required by issued work until completion or a terminal outcome establishes their disposition. A completion observer reports progress; it neither waits implicitly nor authorizes renderer resource retirement.
 
+Backends that report `completion_timeout` support bounding a single explicit
+host wait. An expired wait gives the caller no new completion evidence, and
+the same point remains available for later observation.
+
 ## Surface leases
 
 Core models an acquired presentable image as an exclusive native lease. Surface configuration publishes a new generation only after native configuration succeeds. At that point Core records the configured format and extent with the generation. A successful `Surface::acquire` rechecks the native generation after it obtains the native lease; only a match publishes a `SurfaceImage`. The image's `format()` and `extent()` are therefore facts from the successful configuration that minted that lease, not independently supplied caller metadata.

@@ -191,8 +191,12 @@ pipeline and resource references, query bookkeeping, and other native
 dependencies in an in-flight list keyed by its fence value. `completion_status`
 reads `ID3D12Fence::GetCompletedValue`; only a completed native fence releases
 those owners. CPU waiting uses an event registered with that fence instead of
-busy waiting. A value of `u64::MAX` represents device removal or indeterminate
-accepted work, so it is quarantined rather than treated as a canceled packet.
+busy waiting. Bounded waits use the same Windows thread-pool registration
+with a relative timeout. When the executor observes expiration it checks the
+fence again, giving an observed completion or device loss precedence. The
+event remains owned until the native fence can no longer signal it. A value
+of `u64::MAX` represents device removal or indeterminate accepted work, so
+it is quarantined rather than treated as a canceled packet.
 
 ## Surface lifecycle
 

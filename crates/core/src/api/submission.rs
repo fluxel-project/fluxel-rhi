@@ -13,6 +13,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 #[path = "submission_plan.rs"]
 mod plan;
@@ -58,6 +59,23 @@ impl<B: CompletionBackend> Device<B> {
             return Err(Error::WrongDevice);
         }
         B::wait_completion(&self.native, &point.native).await
+    }
+    /// Observes a completion point for up to `timeout`. A zero timeout checks
+    /// its current status. A pending point at expiration returns `Error::Timeout`
+    /// and can still be used for later observations. Dropping the future ends
+    /// host observation while submitted GPU work continues.
+    pub async fn wait_completion_timeout(
+        &self,
+        point: &CompletionPoint<B>,
+        timeout: Duration,
+    ) -> Result<()> {
+        if point.device != self.id {
+            return Err(Error::WrongDevice);
+        }
+        if !self.caps.completion_timeout {
+            return Err(Error::Unsupported("completion timeout"));
+        }
+        B::wait_completion_timeout(&self.native, &point.native, timeout).await
     }
     pub async fn wait_idle(&self) -> Result<()> {
         B::wait_idle(&self.native).await

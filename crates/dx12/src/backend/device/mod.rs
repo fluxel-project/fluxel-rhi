@@ -384,6 +384,7 @@ impl Dx12 {
                 dynamic_depth_bias_clamp: dynamic_depth_bias_supported,
                 rect_attachment_clear: true,
                 direct_buffer_upload: true,
+                completion_timeout: true,
                 push_constants: true,
                 indirect_draw: true,
                 indirect_first_instance: true,

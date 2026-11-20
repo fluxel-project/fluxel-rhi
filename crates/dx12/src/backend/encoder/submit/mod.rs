@@ -39,6 +39,18 @@ impl fluxel_rhi_core::backend::CompletionBackend for Dx12 {
     ) -> Self::WaitFuture<'a> {
         super::fence_wait::Dx12FenceFuture::new(device.clone(), point.fence.clone(), point.value)
     }
+    fn wait_completion_timeout<'a>(
+        device: &'a Dx12Device,
+        point: &'a Dx12Completion,
+        timeout: std::time::Duration,
+    ) -> impl std::future::Future<Output = Result<(), Error>> + 'a {
+        super::fence_wait::Dx12FenceFuture::with_timeout(
+            device.clone(),
+            point.fence.clone(),
+            point.value,
+            timeout,
+        )
+    }
     fn wait_idle(device: &Dx12Device) -> Self::WaitFuture<'_> {
         // A direct-queue fence after a GPU wait on the compute frontier
         // proves both queues idle without blocking the calling CPU thread.

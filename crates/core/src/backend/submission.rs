@@ -4,10 +4,10 @@
 //! completion values, packets, and queue facade remain in [`crate::api`].
 
 use crate::{
-    api::{CompletionState, DeferredTail, LaneId, Result, SubmitOutcome, SubmitPacket},
+    api::{CompletionState, DeferredTail, Error, LaneId, Result, SubmitOutcome, SubmitPacket},
     backend::{Backend, CommandBackend},
 };
-use std::future::Future;
+use std::{future::Future, time::Duration};
 
 /// Completion observation supplied by one backend implementation.
 pub trait CompletionBackend: Backend {
@@ -22,6 +22,13 @@ pub trait CompletionBackend: Backend {
         device: &'a Self::NativeDevice,
         point: &'a Self::NativeCompletion,
     ) -> Self::WaitFuture<'a>;
+    fn wait_completion_timeout<'a>(
+        _device: &'a Self::NativeDevice,
+        _point: &'a Self::NativeCompletion,
+        _timeout: Duration,
+    ) -> impl Future<Output = Result<()>> + 'a {
+        std::future::ready(Err(Error::Unsupported("completion timeout")))
+    }
     fn wait_idle<'a>(device: &'a Self::NativeDevice) -> Self::WaitFuture<'a>;
 }
 

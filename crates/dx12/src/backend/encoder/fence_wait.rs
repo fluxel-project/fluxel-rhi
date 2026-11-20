@@ -6,14 +6,15 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicU32, Ordering},
     },
     task::{Context, Poll, Waker},
+    time::Duration,
 };
 
 use fluxel_rhi_core::api::Error;
 use windows::Win32::{
-    Foundation::{CloseHandle, HANDLE},
+    Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_TIMEOUT},
     Graphics::Direct3D12::ID3D12Fence,
     System::Threading::{
         CloseThreadpoolWait, CreateEventW, CreateThreadpoolWait,
@@ -33,15 +34,17 @@ pub(super) fn fence_progress(completed: u64, target: u64) -> Result<bool, Error>
 }
 
 struct WakeState {
-    notified: AtomicBool,
+    wait_result: AtomicU32,
     waker: Mutex<Option<Waker>>,
 }
+
+const WAIT_PENDING: u32 = u32::MAX;
 
 unsafe extern "system" fn wake_on_fence(
     callback: PTP_CALLBACK_INSTANCE,
     context: *mut c_void,
     _: PTP_WAIT,
-    _: u32,
+    wait_result: u32,
 ) {
     // The registration owns this Arc reference until callbacks have drained.
     let waker = {
@@ -49,7 +52,7 @@ unsafe extern "system" fn wake_on_fence(
         // pointer and drains every thread-pool callback before recovering it.
         // Therefore this callback observes a live WakeState for its duration.
         let state = unsafe { &*(context.cast::<WakeState>()) };
-        state.notified.store(true, Ordering::Release);
+        state.wait_result.store(wait_result, Ordering::Release);
         state.waker.lock().unwrap_or_else(|p| p.into_inner()).take()
     };
     // Waker::wake may synchronously finish and drop this future. Release the
@@ -222,6 +225,33 @@ impl Dx12FenceFuture {
     }
 
     pub(super) fn new(device: Dx12Device, fence: ID3D12Fence, value: u64) -> Self {
+        Self::register(device, fence, value, None)
+    }
+
+    pub(super) fn with_timeout(
+        device: Dx12Device,
+        fence: ID3D12Fence,
+        value: u64,
+        timeout: Duration,
+    ) -> Self {
+        let Ok(ticks) = i64::try_from(timeout.as_nanos().div_ceil(100)) else {
+            return Self::immediate(device, fence, value, Err(Error::InvalidRange));
+        };
+        // A negative FILETIME specifies a relative interval in 100 ns units.
+        let relative = (-ticks) as u64;
+        let timeout = FILETIME {
+            dwLowDateTime: relative as u32,
+            dwHighDateTime: (relative >> 32) as u32,
+        };
+        Self::register(device, fence, value, Some(timeout))
+    }
+
+    fn register(
+        device: Dx12Device,
+        fence: ID3D12Fence,
+        value: u64,
+        timeout: Option<FILETIME>,
+    ) -> Self {
         // SAFETY: this future owns a cloned fence COM interface; querying it
         // is side-effect free and `fence_progress` handles device removal.
         let completed = unsafe { fence.GetCompletedValue() };
@@ -229,6 +259,9 @@ impl Dx12FenceFuture {
             Err(error) => return Self::immediate(device, fence, value, Err(error)),
             Ok(true) => return Self::immediate(device, fence, value, Ok(())),
             Ok(false) => {}
+        }
+        if timeout.is_some_and(|time| time.dwLowDateTime == 0 && time.dwHighDateTime == 0) {
+            return Self::immediate(device, fence, value, Err(Error::Timeout));
         }
         // SAFETY: no borrowed pointers are supplied; the returned event HANDLE
         // is owned by this future/registration on every success path.
@@ -239,7 +272,7 @@ impl Dx12FenceFuture {
             }
         };
         let state = Arc::new(WakeState {
-            notified: AtomicBool::new(false),
+            wait_result: AtomicU32::new(WAIT_PENDING),
             waker: Mutex::new(None),
         });
         let context = Arc::into_raw(state.clone());
@@ -267,7 +300,8 @@ impl Dx12FenceFuture {
         };
         // SAFETY: Registration owns wait/event and callback context; Windows
         // borrows the event until registration Drop cancels and drains the wait.
-        unsafe { SetThreadpoolWait(wait, Some(event), None) };
+        // The optional timeout is read by the call when it arms the wait.
+        unsafe { SetThreadpoolWait(wait, Some(event), timeout.as_ref().map(std::ptr::from_ref)) };
         // SAFETY: fence is retained by this future and event lifetime is
         // extended by either the registration or abandoned-event device store.
         match unsafe { fence.SetEventOnCompletion(value, event) } {
@@ -328,10 +362,14 @@ impl Future for Dx12FenceFuture {
             .waker
             .lock()
             .unwrap_or_else(|p| p.into_inner()) = Some(context.waker().clone());
-        if registration.state.notified.load(Ordering::Acquire) {
+        let wait_result = registration.state.wait_result.load(Ordering::Acquire);
+        if wait_result != WAIT_PENDING {
             // SAFETY: as above, the future retains the fence for this poll.
             let completed = unsafe { this.fence.GetCompletedValue() };
             if !fence_progress(completed, this.value)? {
+                if wait_result == WAIT_TIMEOUT.0 {
+                    return Poll::Ready(Err(Error::Timeout));
+                }
                 return Poll::Ready(Err(Error::Backend(
                     "DX12 fence event signaled before the target value".into(),
                 )));

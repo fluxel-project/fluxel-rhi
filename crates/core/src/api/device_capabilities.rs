@@ -199,6 +199,8 @@ pub struct DeviceCapabilities {
     pub rect_attachment_clear: bool,
     /// Command encoders can populate backend-owned buffer upload staging directly.
     pub direct_buffer_upload: bool,
+    /// Completion points support an explicit bounded host wait.
+    pub completion_timeout: bool,
     pub lanes: Arc<[LaneInfo]>,
     pub limits: DeviceLimits,
 }
