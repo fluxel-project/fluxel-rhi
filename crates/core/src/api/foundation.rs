@@ -664,6 +664,10 @@ pub struct DeviceLimits {
     pub max_ray_dispatch_count: u32,
     /// Maximum declared ray trace recursion depth. Zero means unreported or unavailable.
     pub max_ray_recursion_depth: u32,
+    /// Acceleration structure build input bounds. Zero means unreported or unavailable.
+    pub max_blas_primitive_count: u32,
+    pub max_blas_geometry_count: u32,
+    pub max_tlas_instance_count: u32,
     pub uniform_offset_alignment: u64,
     /// Maximum range length of one uniform buffer binding, in bytes.
     /// Zero leaves this limit to backend descriptor admission.

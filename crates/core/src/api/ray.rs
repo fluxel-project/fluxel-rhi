@@ -102,7 +102,7 @@ pub enum AccelerationInput<B: Backend> {
     Tlas(Vec<AccelerationInstance<B>>),
 }
 impl<B: Backend> AccelerationInput<B> {
-    fn validate_device(&self, device: DeviceId) -> Result<()> {
+    fn validate(&self, device: DeviceId, limits: &DeviceLimits) -> Result<()> {
         let foreign = match self {
             Self::Blas(geometries) => geometries.iter().any(|geometry| match geometry {
                 AccelerationGeometry::Triangles {
@@ -123,12 +123,42 @@ impl<B: Backend> AccelerationInput<B> {
             return Err(Error::WrongDevice);
         }
         if let Self::Tlas(instances) = self {
+            if limits.max_tlas_instance_count != 0
+                && instances.len() > limits.max_tlas_instance_count as usize
+            {
+                return Err(Error::InvalidRange);
+            }
             if instances.iter().any(|instance| !instance.flags.valid()) {
                 return Err(Error::InvalidState);
             }
         }
         if let Self::Blas(geometries) = self {
+            if limits.max_blas_geometry_count != 0
+                && geometries.len() > limits.max_blas_geometry_count as usize
+            {
+                return Err(Error::InvalidRange);
+            }
+            let mut primitive_count = 0u64;
             for geometry in geometries {
+                if limits.max_blas_primitive_count != 0 {
+                    let count = match geometry {
+                        AccelerationGeometry::Triangles {
+                            vertex_count,
+                            indices,
+                            ..
+                        } => {
+                            indices
+                                .as_ref()
+                                .map_or(*vertex_count, |indices| indices.count)
+                                / 3
+                        }
+                        AccelerationGeometry::Aabbs { count, .. } => *count,
+                    };
+                    primitive_count += u64::from(count);
+                    if primitive_count > u64::from(limits.max_blas_primitive_count) {
+                        return Err(Error::InvalidRange);
+                    }
+                }
                 let valid = match geometry {
                     AccelerationGeometry::Triangles {
                         vertex_offset,
@@ -412,7 +442,8 @@ impl<B: Backend> RayDomain<'_, B> {
     }
     pub fn sizes(&self, desc: &AccelerationDesc<B>) -> Result<AccelerationSizes> {
         self.require_acceleration()?;
-        desc.input.validate_device(self.device.id)?;
+        desc.input
+            .validate(self.device.id, &self.device.caps.limits)?;
         B::Ray::acceleration_sizes(&self.device.native, desc)
     }
     pub fn create_acceleration(
@@ -420,7 +451,8 @@ impl<B: Backend> RayDomain<'_, B> {
         desc: &AccelerationDesc<B>,
     ) -> Result<AccelerationStructure<B>> {
         self.require_acceleration()?;
-        desc.input.validate_device(self.device.id)?;
+        desc.input
+            .validate(self.device.id, &self.device.caps.limits)?;
         let native = B::Ray::create_acceleration(&self.device.native, desc)?;
         // SAFETY: the SPI created this acceleration structure for this device.
         Ok(unsafe { AccelerationStructure::from_native(self.device.id, native) })
@@ -442,7 +474,8 @@ impl<B: Backend> RayDomain<'_, B> {
         {
             return Err(Error::WrongDevice);
         }
-        desc.input.validate_device(self.device.id)?;
+        desc.input
+            .validate(self.device.id, &self.device.caps.limits)?;
         encoder.call(|e| B::Ray::build_acceleration(e, &dst.native, &scratch.native, desc))
     }
     fn require_acceleration(&self) -> Result<()> {

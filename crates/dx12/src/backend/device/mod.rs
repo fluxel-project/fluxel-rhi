@@ -9,6 +9,9 @@ mod shader_model;
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, D3D12_FEATURE_ARCHITECTURE,
     D3D12_FEATURE_DATA_ARCHITECTURE, D3D12_RAYTRACING_MAX_DECLARABLE_TRACE_RECURSION_DEPTH,
+    D3D12_RAYTRACING_MAX_GEOMETRIES_PER_BOTTOM_LEVEL_ACCELERATION_STRUCTURE,
+    D3D12_RAYTRACING_MAX_INSTANCES_PER_TOP_LEVEL_ACCELERATION_STRUCTURE,
+    D3D12_RAYTRACING_MAX_PRIMITIVES_PER_BOTTOM_LEVEL_ACCELERATION_STRUCTURE,
     D3D12_RAYTRACING_MAX_RAY_GENERATION_SHADER_THREADS,
     D3D12_REQ_MULTI_ELEMENT_STRUCTURE_SIZE_IN_BYTES, D3D12_REQ_TEXTURE1D_U_DIMENSION,
     D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION, D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION,
@@ -467,6 +470,21 @@ impl Dx12 {
                     },
                     max_ray_recursion_depth: if ray_supported {
                         D3D12_RAYTRACING_MAX_DECLARABLE_TRACE_RECURSION_DEPTH
+                    } else {
+                        0
+                    },
+                    max_blas_primitive_count: if ray_supported {
+                        D3D12_RAYTRACING_MAX_PRIMITIVES_PER_BOTTOM_LEVEL_ACCELERATION_STRUCTURE
+                    } else {
+                        0
+                    },
+                    max_blas_geometry_count: if ray_supported {
+                        D3D12_RAYTRACING_MAX_GEOMETRIES_PER_BOTTOM_LEVEL_ACCELERATION_STRUCTURE
+                    } else {
+                        0
+                    },
+                    max_tlas_instance_count: if ray_supported {
+                        D3D12_RAYTRACING_MAX_INSTANCES_PER_TOP_LEVEL_ACCELERATION_STRUCTURE
                     } else {
                         0
                     },

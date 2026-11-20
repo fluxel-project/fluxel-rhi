@@ -112,6 +112,9 @@ pub enum DeviceCapacity {
     MeshWorkgroupsPerDimension(u32),
     RayDispatchCount(u32),
     RayRecursionDepth(u32),
+    BlasPrimitiveCount(u32),
+    BlasGeometryCount(u32),
+    TlasInstanceCount(u32),
 }
 
 impl DeviceCapacity {
@@ -157,6 +160,9 @@ impl DeviceCapacity {
             }
             Self::RayDispatchCount(min) => limits.max_ray_dispatch_count >= min,
             Self::RayRecursionDepth(min) => limits.max_ray_recursion_depth >= min,
+            Self::BlasPrimitiveCount(min) => limits.max_blas_primitive_count >= min,
+            Self::BlasGeometryCount(min) => limits.max_blas_geometry_count >= min,
+            Self::TlasInstanceCount(min) => limits.max_tlas_instance_count >= min,
         }
     }
 }
