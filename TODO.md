@@ -104,14 +104,16 @@ mapped per mode and verified with depth and storage readback.
 
 ### DX12 WGSL inline constants
 
-**Status:** Declared WGSL push constant blocks in compute and raster use
-the existing root constant ABI for flat 32-bit scalar and vector layouts.
-Pipeline admission checks the full block span against that stage's ranges.
+**Status:** The compatibility `var<push_constant>` WGSL route in compute and
+raster uses the existing root-constant ABI for flat 32-bit scalar and vector
+layouts. Pipeline admission checks the full block span against that stage's
+ranges. New portable immediate-address-space work is gated on standardized
+syntax and frontend/layout support.
 
 **Acceptance:** Verify byte-exact readback for adjacent and padded members,
 partial writes, stages with different ranges, and rejection of missing
-coverage and reserved register overlaps. Reopen complex aggregate layouts
-when their lowering preserves each member offset under DX12 root constant
+coverage and reserved register overlaps. Admit complex aggregate layouts only
+when their lowering preserves each member offset under DX12 root-constant
 indexing restrictions.
 
 ### DX12 WGSL composite pointer access
@@ -132,46 +134,48 @@ the DX12 native 16-bit probe. WGSL has no matching integer types.
 
 **Acceptance:** Verify signed and unsigned 16-bit arithmetic and packed
 buffer reads and writes, including HLSL reflection with the native type
-option and rejection below Shader Model 6.2. Reopen WGSL once the frontend
-accepts an exact integer type and its memory layout and limits can be tested.
+option and rejection below Shader Model 6.2. Reopen WGSL only when a
+standardized WGSL extension defines the exact integer types, their memory
+layout, validation, and target availability.
 
 ### DX12 native 64-bit integer shaders
 
 **Status:** Core device requests and DX12 HLSL and DXIL declarations
 qualify signed and unsigned 64-bit computation with native Int64ShaderOps.
-Int64 atomics, shader interfaces and WGSL lowering have separate contracts.
+Int64 atomics and shader interfaces have separate contracts. Standard WGSL
+currently has no 64-bit integer scalar route, so WGSL lowering is unavailable.
 
 **Acceptance:** Verify wide signed and unsigned arithmetic and buffer
 readback with values exceeding 32 bits, including device and profile rejection.
-For WGSL, the current HLSL writer does not preserve signed overflow semantics
-for addition, subtraction or multiplication at this width. Enable those
-operations after exact wrapping lowering is in place and checked at the
-signed bounds.
+Do not expose these native operations through WGSL unless a standardized
+64-bit scalar route, frontend support, exact lowering, and boundary-value
+evidence become available.
 
 ### DX12 native double-precision shaders
 
 **Status:** HLSL and DXIL shader declarations and Core device requests use
-native DoublePrecisionFloatShaderOps. WGSL and raster interface forms have
-separate lowering and signature constraints.
+native DoublePrecisionFloatShaderOps. Standard WGSL has no 64-bit scalar
+route. Raster interface forms have separate lowering and signature constraints.
 
 **Acceptance:** Verify feature and shader admission plus double arithmetic
 and raw buffer readback with values that distinguish F64 from F32. Keep
 native vertex formats and texture support independently qualified.
-Before admitting WGSL 64-bit bitcasts, preserve the destination type and
-bit pattern instead of forwarding the source expression unchanged.
-Qualify WGSL buffer layout and stage signatures separately.
+Do not admit WGSL 64-bit bitcasts, buffer layouts, or stage signatures unless
+a standardized scalar route and exact lowering exist.
 
 ### DX12 native half-precision shader values
 
 **Status:** DX12 qualifies native F16 with Shader Model 6.2 and OPTIONS4.
 WGSL and HLSL use the native DXC type option and direct DXIL can declare
-the device requirement. WGSL F16 uniforms and push constants remain deferred.
+the device requirement. WGSL F16 uniform and immediate layouts are a planned
+D4 ABI task. Each shape remains unavailable until standardized source syntax,
+byte layout, and DX12 lowering are verified.
 
 **Acceptance:** Verify WGSL arithmetic, storage, workgroup data and raster
 interfaces with exact half values and readback. Cover finite F16 overrides,
 invalid scalar widths, unsupported devices and insufficient HLSL profiles.
-Reopen uniform and push constants when their HLSL lowering preserves
-two-byte offsets and the declared aggregate layout.
+Admit uniform and immediate layouts only when lowering preserves two-byte
+offsets and the declared aggregate layout.
 
 ### DX12 packed 4×8 integer dot products
 
@@ -188,7 +192,8 @@ unsigned values.
 **Status:** DX12 admits the declared wave route from the device's Shader
 Model 6 and OPTIONS1 wave support. WGSL compute and fragment entries can
 use width, lane index, vote, ballot, arithmetic, shuffle and quad operations.
-WGSL subgroup ID, subgroup count and subgroup barrier remain deferred.
+WGSL subgroup ID, subgroup count and subgroup barrier require verification of
+an exact standardized-language and native mapping before they can be admitted.
 
 **Acceptance:** Verify supported WGSL operations with compute and fragment
 readback, including partial waves and fixed-width compute variants where
@@ -271,17 +276,18 @@ stage, source dialect and device capability rejection.
 
 **Status:** TLAS and non-indexed BLAS refit use DXR in-place updates. Ordered
 submission admission checks the prior build signature and the original
-update opt-in. Indexed BLAS refit remains deferred because the existing index
-buffer contract gives no immutable content guarantee.
+update opt-in. Indexed BLAS refit is a D6 design task. It requires explicit
+immutable input evidence or a backend-owned snapshot retained from the first
+build through every update.
 
 **Acceptance:** Verify changed TLAS transforms and BLAS bounds by traversal
 readback. Cover build and update in one packet, repeated and separately
 submitted updates, a rejected update after an incompatible rebuild, and
-retention of old and replacement TLAS dependencies. Check that indexed
-refit is rejected before native recording while indexed builds remain
-available. Reopen once the index data can be proven unchanged, or a
-backend-owned immutable snapshot is used by the original build and every
-update. Account for the copy, barriers, memory overhead and retention.
+retention of old and replacement TLAS dependencies. Check that indexed refit
+is rejected before native recording while indexed builds remain available until
+its design task is complete. Any snapshot path accounts for its copy, barriers,
+memory overhead, and retention without implicit graph scheduling or
+synchronization.
 Verify triangle vertex layout queries and traversal for the added DXR SNORM,
 UNORM and tightly packed three-component formats. Verify Tier 1.0 rejects the
 formats that require Tier 1.1.
@@ -301,13 +307,14 @@ rebuild between compact recording and submission.
 Repeat the size query while refitting a compaction-enabled build and verify
 that submission rejects a refit with mismatched original build flags.
 
-**Deferred GPU-generated TLAS instances:** The native DXR instance record
+**Planned GPU-generated TLAS instances:** The native DXR instance record
 embeds a BLAS address. Keep native addresses in the backend and retain typed,
-same-device BLAS dependencies through submission and TLAS use. Reopen when
-a consumer supplies a bounded workload and defines a GPU record with
-indices into a typed BLAS table. Specify invalid-index handling and reporting,
-pack and validate native instance records inside the backend, and prove
-producer-to-build ordering, table lifetimes, and update and refit semantics.
+same-device BLAS dependencies through submission and TLAS use. Define explicit
+logical GPU records indexed into a typed BLAS table, invalid-index handling,
+and reporting. The caller or Renderer supplies producer-to-build ordering and
+completion coverage. DX12 packs and validates native records without implicit
+synchronization or lifetime policy. Acceptance proves table lifetime, ordering,
+and update/refit semantics.
 
 ### DX12 conservative rasterization
 
@@ -326,6 +333,9 @@ The HDR routes qualify scRGB and HDR10 against the current output and native
 swapchain. Their real display acceptance is pending.
 The output snapshot includes the system SDR white level when the active
 display paths identify an unambiguous target value.
+HDR10 metadata write and clear are a planned opt-in narrow DXGI path. A
+successful call means DXGI accepted the metadata. It does not establish that
+the display received it.
 
 **Acceptance:** Reconfigure a live HWND between linear and sRGB views and
 observe the format and generation on the acquired images. Exercise matching
@@ -336,6 +346,8 @@ Compare output snapshots across a window move between distinct displays.
 Verify HDR10 and scRGB output on an HDR-active monitor, early rejection of
 incorrect format/color-space pairs and HDR on SDR, and reconfiguration after
 an output move or switch to SDR.
+Verify HDR10 metadata write and clear across output changes and resize, and
+label that evidence as DXGI acceptance rather than display delivery.
 Compare reported SDR reference white and derived headroom with system values.
 Verify DXGI device removal, session loss and stale-output errors arrive as
 the matching Core errors during native surface operations.
@@ -354,6 +366,9 @@ can demonstrate those guarantees with display evidence.
 component mapping, and descriptor-specific sample count reporting are wired.
 The implementation has passed a Windows MSVC workspace development build.
 Focused contract and GPU evidence are pending the implementation-stage report.
+Readback tickets consume explicit submission and completion evidence. They do
+not establish a global per-resource hazard tracker, insert implicit waits, or
+make ordinary default-heap buffers directly mappable.
 
 **Acceptance:** Read back a direct staging write and verify canceled writes
 leave destination bytes and later command recording intact. Verify that a
@@ -555,137 +570,193 @@ requiring GPU or presentation behavior needs real Apple-target evidence.
 
 ## Deferred families, not active commitments
 
-Reconsider these only when an owning consumer defines the required semantics
-and supplies a bounded workload:
+These are outside the current Core + DX12 delivery ledger. Reconsider them
+only when their owner supplies the required semantics and a bounded workload:
 
-- VRS, Metal rasterization-rate maps, sampler feedback, and HDR output metadata.
-- Vulkan local attachment reads or GLES framebuffer fetch; these require a
+- Metal rasterization-rate maps.
+- Graphics debugger capture controls. A RenderDoc capture session is a tool
+  integration. Reconsider an opt-in backend hook only if a debugging workflow
+  cannot use the existing tools or scoped interop.
+- Vulkan local attachment reads or GLES framebuffer fetch. They require a
   RenderGraph tile-local access and ordering contract.
-- Public shader compiler IR, portable error callbacks, allocation thresholds,
-  automatic device-loss policy, and display-timing feedback.
-- Explicit device destruction. Resource and command owners currently retain
-  their native dependencies by ownership and completion evidence. Reopen when
-  a consumer defines how destruction affects cloned devices, open encoders,
-  and issued or indeterminate work, with an acceptance case for each.
-- Host-visible primary buffers on DX12 UMA. The existing device-memory
-  class uses native default heaps, and the topology report alone does not
-  qualify an allocation for host mapping. Reopen with explicit heap and
-  cache guarantees for a consumer's buffer usages, plus coherent and
-  non-coherent device evidence where applicable.
-- Submit-bound safe buffer mapping. A device-scoped completion point can
-  be awaited explicitly, but does not identify matching buffer accesses
-  or prevent later conflicting GPU work. Reopen with a contract for
-  matching the submitted resource range, excluding later GPU access,
-  and canceling registration on rejection or uncertain handoff.
-- Retryable partial DX12 submissions. Preflight can reject a fresh packet,
-  and successful lane signals provide retirement evidence. A failure after
-  a native handoff may still leave the exact issue boundary unknown.
-  Reopen when a bounded failure case proves the accepted prefix and the
-  unwritten tail, including retained ownership and one-shot wait state.
-- DX12 native shader layout inference for bindings that need exact view or
-  immediate metadata, and inference by export from DXIL libraries. The current
-  path covers selected single-entry stages with representable binding metadata.
-  Reopen when a consumer specifies the required explicit binding information
-  or library exports and supplies a pipeline and readback for admission.
-- Geometry/tessellation stages, programmable sample locations, predication,
-  and native video/planar formats or video sources beyond the current WebGPU
-  wrapper.
+- Public shader compiler IR, allocation thresholds, automatic device-loss
+  recovery policy, and actual display-timing feedback. Error correlation and
+  DXGI HDR10 metadata are tracked in the active ledger.
+- A public explicit device-destruction API beyond verified stop-admission and
+  drain. Reopen only for a lifecycle need that existing RAII cannot express.
+- Media decoding, source scheduling, color policy, and source closure beyond
+  the native planar-resource work tracked by R04.
+- A dynamic runtime backend dispatcher. Typed static backend selection remains
+  the Core model.
 
-### Core and DX12 conflict decisions
+### Core and DX12 conflict delivery ledger
 
-The review identifiers R01–R25 preserve its order. N01–N03 record later
-implementation findings. Scoped entries record the unsupported shapes. These
-decisions do not close the acceptance work for supported paths.
+The ledger covers 28 decisions, R01–R25 and N01–N03. R24 has five independent
+workloads under the same parent decision. Design, implementation, verification
+and deferral describe the next work on an item. A completed item must become
+`IMPLEMENTED`, `LIMITED`, `UNSUPPORTED`, or `OUT_OF_SCOPE`, with its evidence
+and exact rejection boundary recorded here. Each active item requires a Core
+contract and ownership review before SPI and DX12 work, then a targeted
+contract test and a GPU, presentation, or native admission test as applicable.
+Work proceeds one feature group at a time, starting with adapter facts in D1.1.
 
-- **R01, design required — pre-device surface filtering.** A Core surface
-  carries an opened device's identity. Reopen with a real Host use case and an
-  Instance-level window probe with defined lifetime and post-open validation.
-- **R02, deferred — portable error callbacks and automatic recovery.** Existing
-  errors and completion report facts. Reopen notifications with an error
-  correlation consumer. Renderer and Host own recovery and reconstruction.
-- **R03, design required — explicit device or resource destruction.** Immediate
-  release could invalidate clones and recorded or issued work. Reopen with
-  shared closing, admission, drain and quarantine semantics.
-- **R04, deferred — NV12/P010 and external media.** Plane sampling, import and
-  synchronization need a consumer and ownership contract. Reopen with defined
-  plane and color semantics plus a bounded readback workload.
-- **R05, rejected — direct MSAA resolve to a 3D slice.** The DX12 native resolve
-  cannot pair these shapes. Evaluate a separately ordered 2D resolve and copy
-  when a workload establishes the required state, retention and cost.
-- **R06, deferred — public Naga IR.** The compiler's private representation
-  would become a public versioning commitment. Reopen with an actual
-  cross-backend consumer and compatibility contract.
-- **R07, scoped — ambiguous HLSL/DXIL binding inference.** Reflection cannot
-  distinguish some typed views, immediates or overlapping register classes.
-  Require explicit layout for those shapes. Reopen automatic inference with
-  caller-supplied disambiguation and stable register identity.
-- **R08, scoped — WGSL subgroup ID, count and barrier.** Invocation position
-  does not determine native wave identity or count, and wave collectives do
-  not supply the required memory ordering. Reopen each on an equivalent route.
-- **R09, scoped — WGSL F16 uniform and immediate layout.** Current lowering
-  cannot preserve two-byte offsets in those address spaces. Reopen privately
-  per layout after exact offsets, updates and readback are proven.
-- **R10, rejected — WGSL I16/U16.** The accepted language lacks these types.
-  Native HLSL/DXIL stays independently gated. Reopen on a supported WGSL
-  extension with defined arithmetic and memory layout.
-- **R11, scoped — additional WGSL 64-bit shapes.** A device ALU fact does not
-  establish bitcast, wraparound, buffer ABI or stage IO. Reopen each shape
-  against its own lowering and output evidence.
-- **R12, scoped — complex WGSL immediates.** HLSL cbuffer arrays cannot map
-  directly to root constants. Flat DWORD storage remains a candidate for more
-  shapes. Reopen with proven offsets, indexing, partial writes and root budget.
-- **R13, rejected — unrestricted WGSL pointer parameters.** The current
-  compiler path cannot preserve general address-space, offset and aliasing
-  semantics. Reopen with frontend, validation and lowering support.
-- **R14, scoped — portable primitive index in a DX12 mesh pipeline.** Native
-  mesh shaders can supply an ID, while the Core contract identifies a
-  rasterizer-assigned value. Reopen with a consumer for a distinct Mesh output.
-- **R15, scoped — WGSL conservative depth.** Forced early testing changes
-  depth, discard and side effects for Allow modes. Reopen each conservative
-  mode when the lowered operation preserves those observations.
-- **R16, rejected — triangle point fill.** A native point list has different
-  topology and coverage. Reopen an independent lowering with a consumer and
-  verified coverage, reuse and cost.
-- **R17, scoped — DX12 pass boundary statistics.** A Direct interval total
-  cannot reconstruct four raster or two compute samples. Keep interval queries
-  available. Reopen on native evidence for each required boundary sample.
-- **R18, design required — indexed BLAS refit.** Buffer identity cannot prove
-  immutable indices. Reopen with immutable input evidence or a retained
-  private snapshot used by original build and updates, with measured cost.
-- **R19, design required — GPU-generated TLAS instances.** Raw native records
-  can embed addresses without provenance. Reopen with logical records, a
-  bounded typed BLAS table, specified invalid-index behavior, private packing
-  and ordered lifetime tests.
-- **R20, rejected — Mesh point output.** The current DX12 mesh shader route
-  admits lines and triangles. Reopen on native support or a distinct use case
-  with explicit alternative semantics.
-- **R21, rejected — FifoRelaxed.** DXGI interval zero can discard queued
-  frames. Reopen only when a path can prove FIFO order and the requested
-  late-frame and tearing policy.
-- **R22, deferred — output HDR metadata and actual display timing.** These
-  require color or pacing consumers and independent data contracts. Present
-  receipts do not establish scanout. Reopen with a clock or metadata source
-  and visible output evidence.
-- **R23, design required — Surface damage rectangles.** Flip discard provides
-  no retained-pixel contract. Reopen with opt-in preserved contents and
-  pixel evidence across buffer rotation, resize and generations.
-- **R24, deferred — VRS, sampler feedback, geometry and tessellation shaders,
-  programmable sample positions, and predication.** Each needs its own
-  workload and capability contract. Reopen independently once a consumer
-  and observable acceptance case exist.
-- **R25, design required — broader interop or runtime selection.** Keep public
-  device identity and the static backend boundary. Reopen a narrow interop
-  extension or upper-layer selection if an actual consumer cannot use the
-  existing typed paths.
-- **N01, design required — direct host mapping of a primary DX12 UMA buffer.**
-  Topology alone does not change the default heap or cache semantics. Reopen
-  with exact host/GPU use and evidence on the relevant UMA configurations.
-- **N02, design required — safe submit-bound mapping.** Current completion
-  does not establish byte-range coverage or exclude subsequent GPU access.
-  Reopen with synchronization, exclusivity, rejection and cancellation rules.
-- **N03, design required — retryable DX12 partial submission.** A failure after
-  handoff can hide the exact accepted prefix, pending waits and retryable
-  work. Reopen with proven effect boundaries and valid tail ownership.
+Compare execution mechanisms primarily against `wgpu-hal` and native D3D12.
+An operation used by `wgpu` or implemented in `wgpu-core` can also reveal a
+missing primitive. For each candidate, identify the explicit operation,
+capability query or observable execution result a caller needs. Check the
+existing Core/SPI contract and DX12 route for an equivalent before opening
+a gap. A present route lacking target evidence needs verification.
+RenderGraph and Renderer choose resource states, dependencies, reuse and
+logical retirement. RHI executes the supplied transitions, waits and signals,
+retains native objects needed for issued work, and reports completion or
+device loss. Frame pacing and recovery belong to Renderer and Host.
 
-Renderer algorithms, frame pacing, host/decoder lifecycle, cache eviction, and
-asset residency remain owned above RHI.
+- **R01, DESIGNING — pre-device surface compatibility probe.** Add an
+  Instance/Adapter probe that borrows a Host handle and reports compatibility
+  before opening a device when a reliable fact is available. Return unknown
+  when enumeration cannot determine compatibility. The caller can then open
+  the device and try creation. `Surface<B>` remains bound to its `DeviceId`.
+  Cover handle lifetime, foreign adapters and post-open revalidation.
+- **R02, DESIGNING — error correlation and terminal device loss.** Add
+  correlation between a failed request, issued work, and completion facts.
+  Automatic renderer reconstruction is `OUT_OF_SCOPE`: Renderer and Host own
+  graph rebuild, window lifecycle, and policy after a terminal device loss.
+- **R03, IMPLEMENTING — shared stop-admission and drain.** First verify that
+  the existing RAII ownership and shared state can stop new work, retain
+  in-flight native objects, report completion, and drain safely. An explicit
+  public close operation remains `OUT_OF_SCOPE` until a consumer demonstrates
+  a lifecycle need that RAII cannot express. Immediate native release is never
+  a valid implementation.
+- **R04, DESIGNING — native planar textures.** Scope Core/DX12 work to NV12 and
+  P010 resource creation, plane views, copy, synchronization, readback, and
+  externally owned native-resource import. Decoder ownership, color-policy,
+  frame scheduling, and media-source lifecycle are `OUT_OF_SCOPE` to Host.
+  Acceptance requires plane-specific positive and rejection cases with GPU
+  readback.
+- **R05, UNSUPPORTED — direct MSAA resolve to a 3D slice.** DX12 resolve cannot
+  represent that pair of shapes. A separately ordered 2D resolve followed by
+  copy or compute may be introduced only with its own states, retention, cost,
+  and GPU evidence.
+- **R06, OUT_OF_SCOPE — public Naga IR.** Compiler IR remains private. It would
+  create a versioned public compiler contract without an RHI consumer. Reopen
+  only for a demonstrated cross-backend compiler-tool contract.
+- **R07, DESIGNING — explicit native binding metadata.** Retain inference
+  only for unambiguous binding shapes. Define explicit register/view/immediate
+  metadata for HLSL/DXIL shapes reflection cannot distinguish, and test source,
+  DXIL, and conflicting-register admission separately.
+- **R08, VERIFYING — WGSL subgroup identity, count, and barrier.** Keep only
+  operations with exact native wave semantics. Invocation index arithmetic and
+  collectives do not derive wave identity/count or memory ordering. Each new
+  operation needs a standardized language route, a matching DX12 operation,
+  and readback evidence.
+- **R09, DESIGNING — WGSL F16 ABI in uniforms and immediates.** Evaluate
+  byte-addressed lowering for legal two-byte offsets and nested layouts. Accept
+  a shape only after offset, update, and readback tests. Root constants retain
+  their DWORD budget and alignment constraints.
+- **R10, UNSUPPORTED — WGSL I16/U16.** Fluxel accepts standard WGSL and
+  standardized WGSL extensions. It will not import a backend-specific shader
+  language extension for these types. Native HLSL/DXIL 16-bit integers remain
+  separately feature-gated. Reopen only after a standardized WGSL extension
+  defines arithmetic, layout, validation, and target availability.
+- **R11, UNSUPPORTED — WGSL 64-bit scalar routes.** Standard WGSL currently
+  supplies no 64-bit integer or floating scalar route. Native HLSL/DXIL
+  capability remains separately gated and does not extend WGSL. Reopen only
+  after a standardized scalar route, frontend support, exact lowering, and
+  boundary-value evidence exist. Do not add private WGSL syntax.
+- **R12, DESIGNING — complex WGSL immediates.** Gate new portable work on
+  the standardized immediate-address-space syntax and its frontend/layout
+  support. Keep the existing `var<push_constant>` route as compatibility only,
+  rather than treating that spelling as portable WGSL. Use flat DWORD lowering
+  for legal arrays, matrices, and nested structures where offsets, indexing,
+  partial writes, and root-signature budget are exact. Reject remaining shapes
+  before native recording.
+- **R13, DEFERRED — unrestricted WGSL pointer parameters.** The blocking
+  condition is compiler/frontend and lowering support, rather than absence of
+  a language extension. Current routes cannot preserve general address-space,
+  aliasing, and offset semantics. Existing supported composite access remains
+  available. Reopen with compiler validation and lowering tests.
+- **R14, VERIFYING — primitive index in mesh pipelines.** Raster primitive index
+  remains supported. Mesh output needs a separately named, mesh-produced
+  semantic if a consumer requires it, because it is not the same value.
+- **R15, VERIFYING — conservative depth.** Expose only modes whose early-depth,
+  discard, depth-write, and side-effect observations are preserved. Force and
+  Allow modes remain separate admission paths.
+- **R16, UNSUPPORTED — triangle point fill.** Point-list topology is not an
+  equivalent rendering mode. Reopen only for an explicitly specified lowering
+  with coverage, reuse, and cost evidence.
+- **R17, VERIFYING — query statistics.** Keep `QueryKind::PipelineStatistics` as
+  the native interval query and preserve the existing pass-statistics contract
+  where its fields are available. Do not advertise a DX12 boundary snapshot
+  derived from interval totals. Acceptance covers query interval/readback and
+  every claimed pass-statistics field.
+- **R18, DESIGNING — indexed BLAS refit.** Define an explicit immutable-input
+  contract or a backend-owned snapshot used by both the initial build and every
+  update. Buffer identity and count alone are insufficient. Caller/Renderer
+  owns scheduling and barriers. Acceptance requires the chosen input-mode
+  checks, lifetime retention, refit output, and measured snapshot cost.
+- **R19, DESIGNING — GPU-generated TLAS instances.** Use logical GPU instance
+  records and a bounded typed BLAS table. DX12 packs private native records and
+  retains all referenced acceleration structures. Define invalid-index behavior.
+  Caller/Renderer supplies producer ordering and completion coverage. Prove
+  typed conversion and retention with GPU tests without implicit synchronization.
+- **R20, UNSUPPORTED — mesh point output.** The DX12 mesh route exposes line
+  and triangle output. Reopen only with native support or a separately defined
+  semantic and observable workload.
+- **R21, UNSUPPORTED — FIFO-relaxed present mode.** DXGI interval zero may drop
+  queued frames and cannot prove FIFO order. Reopen only with a route that
+  proves ordering, late-frame behavior, and the tearing policy.
+- **R22, DESIGNING — opt-in HDR10 metadata.** Add a narrow write/clear path
+  after defining its color-space, output-selection, and resize lifetime
+  contract. Its result means only that DXGI accepted the request. Actual
+  scanout timing is `OUT_OF_SCOPE` until a trustworthy timing source and
+  visible-output evidence exist. Present receipts and metadata acceptance do
+  not prove display delivery.
+- **R23, DESIGNING — damage rectangles.** Explore an opt-in preserved-content
+  surface route. Flip-discard cannot support it. Renderer owns prior-frame
+  history and redraw decisions. The RHI does not insert hidden copies or
+  synchronization. Acceptance requires pixels to remain correct across
+  back-buffer rotation, resize, and surface generation.
+- **R24 — optional DX12 execution mechanisms.** Qualify each of the five
+  shapes below independently. A bounded GPU workload can exercise a native
+  mechanism. A shared Core operation also needs a meaningful caller contract.
+- **R24a, DESIGNING — variable-rate shading.** Define feature tiers, rate
+  sources, combiners, resource identity, and pass compatibility before DX12
+  lowering. Acceptance requires a capability rejection test and distinguishable
+  GPU output or counters.
+- **R24b, DESIGNING — sampler feedback.** Define feedback-map resources,
+  resolve, synchronization, and tier restrictions. Acceptance requires GPU
+  feedback readback. Capability reporting alone is insufficient.
+- **R24c, DESIGNING — geometry and tessellation stages.** Define shader-stage
+  linkage, reflection, pipeline ABI, limits, and DXIL/HLSL/WGSL route facts.
+  Acceptance requires observable geometry and tessellation output.
+- **R24d, DESIGNING — programmable sample positions.** Define tier gate,
+  sample-position descriptors, pipeline/pass compatibility, and lifetime.
+  Acceptance requires known sample-coverage readback.
+- **R24e, DESIGNING — predication.** Define condition-buffer format, command
+  range, queue ordering, and retained ownership. Acceptance requires true and
+  false GPU cases with distinct output.
+- **R25, VERIFYING — native interop.** Complete narrowly typed interop through
+  existing static backend boundaries where a real consumer needs it. A dynamic
+  backend dispatcher is `OUT_OF_SCOPE`: it would weaken typed device identity
+  and introduce runtime dispatch into the public RHI model.
+- **N01, DESIGNING — CPU-visible DX12 buffers.** Introduce an explicit
+  CPU-visible allocation/mapping capability and select Upload, Readback,
+  Custom, or supported GPU-upload heap from exact usage and cache rules. UMA
+  and CacheCoherentUMA never imply that a default-heap buffer is mappable.
+  Acceptance covers supported configurations and early rejection elsewhere.
+- **N02, DESIGNING — safe completion-bound mapping.** Prefer private staging
+  plus a consuming readback receipt/ticket tied to a specified range,
+  submission coverage, completion proof, cancellation, and failure outcome.
+  An upper layer may supply explicit coverage evidence for another route. Do
+  not add per-resource global hazard tracking or implicit waits. General
+  buffers whose future GPU hazards cannot be proven retain an explicit route.
+- **N03, IMPLEMENTING — retryable DX12 partial submission.** Reuse Core's
+  existing `DeferredTail`, `RetryableSubmit`, and `Queue::resume()` contract.
+  DX12 must distinguish rejection before native handoff, a proven accepted
+  prefix with an unwritten tail, and indeterminate native effect. Only the
+  proven-prefix branch may return a resumable tail. The backend reports those
+  facts, and the caller explicitly decides whether to retry. Fault-injection
+  tests cover waits, execute, signal, present, completion, and retention.
+
+Renderer algorithms, frame pacing, host and decoder lifecycle, cache eviction,
+and asset residency remain owned above RHI.
