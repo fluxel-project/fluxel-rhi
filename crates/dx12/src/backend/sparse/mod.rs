@@ -335,15 +335,7 @@ impl fluxel_rhi_core::backend::SparseBackend for Dx12 {
                     D3D12_FORMAT_SUPPORT1_RENDER_TARGET
                 }))
             && (!desc.usage.contains(api::TextureUsage::STORAGE_BINDING)
-                || (support
-                    .Support1
-                    .contains(D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW)
-                    && support
-                        .Support2
-                        .contains(D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD)
-                    && support
-                        .Support2
-                        .contains(D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)))
+                || super::texture::typed_storage_access(&support, None))
             && (!desc.usage.contains(api::TextureUsage::TEXTURE_BINDING)
                 || depth
                 || support

@@ -546,5 +546,7 @@ pub struct TextureSupport {
     pub compatible_view_formats: Vec<TextureFormat>,
     pub filterable: bool,
     pub blendable: bool,
+    /// Storage views may be created. Qualify a specific shader access through
+    /// the binding layout support query.
     pub storage: bool,
 }

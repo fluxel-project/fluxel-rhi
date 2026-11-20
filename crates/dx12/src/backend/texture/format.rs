@@ -265,15 +265,15 @@ fn storage_available(device: &Dx12Device, desc: &api::TextureDesc) -> bool {
         }
         value => value,
     };
-    storage_view_format_available(device, format, desc.dimension)
+    storage_view_format_available(device, format, desc.dimension, None)
 }
 
-/// Core storage texture allocations currently admit both typed reads and
-/// writes. A layout may narrow shader access while using the same view.
+/// Validates an exact layout access, or any typed access at allocation time.
 pub(crate) fn storage_view_format_available(
     device: &Dx12Device,
     format: api::TextureFormat,
     dimension: api::TextureDimension,
+    access: Option<api::StorageAccess>,
 ) -> bool {
     if color_texel_bytes(format).is_none()
         || matches!(
@@ -301,15 +301,33 @@ pub(crate) fn storage_view_format_available(
         )
     }
     .is_ok()
-        && support
-            .Support1
-            .contains(D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW | texture_dimension)
-        && support
-            .Support2
-            .contains(D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)
-        && support
-            .Support2
-            .contains(D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD)
+        && support.Support1.contains(texture_dimension)
+        && typed_storage_access(&support, access)
+}
+
+pub(crate) fn typed_storage_access(
+    support: &D3D12_FEATURE_DATA_FORMAT_SUPPORT,
+    access: Option<api::StorageAccess>,
+) -> bool {
+    if !support
+        .Support1
+        .contains(D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW)
+    {
+        return false;
+    }
+    let load = support
+        .Support2
+        .contains(D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD);
+    let store = support
+        .Support2
+        .contains(D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE);
+    match access {
+        None => load || store,
+        Some(api::StorageAccess::Read) => load,
+        Some(api::StorageAccess::Write) => store,
+        // Atomic operation support is checked separately for the format and stage.
+        Some(api::StorageAccess::ReadWrite | api::StorageAccess::Atomic) => load && store,
+    }
 }
 fn depth_planes_available(
     device: &Dx12Device,

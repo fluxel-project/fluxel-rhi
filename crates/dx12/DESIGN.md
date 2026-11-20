@@ -172,6 +172,12 @@ chain for sampling alongside a single-mip storage or attachment view.
 Combined depth-stencil textures use aspect-specific sampled views and an
 all-aspect attachment view.
 
+Storage texture allocation and view creation require a typed UAV and at
+least one typed access. Bind-group layout support and creation require the
+typed load bit for read, the typed store bit for write, and both bits for
+read-write bindings. WGSL shader declarations are checked against that exact
+layout access. Atomics additionally require operation and stage admission.
+
 Explicit color buffer/texture copies share placement and pitch validation in
 both directions. When `texel_aligned_color_copies` is reported, the offset
 and row pitch may each be aligned to a single texel or compressed block.

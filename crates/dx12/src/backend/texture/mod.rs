@@ -18,7 +18,7 @@ pub(super) use format::{
     format_supports_texture_atomic_add_native, format_supports_texture_atomic_bitwise_native,
     format_supports_texture_atomic_signed_min_native,
     format_supports_texture_atomic_unsigned_min_native, integer_clear_bits, integer_color,
-    is_depth, storage_view_format_available,
+    is_depth, storage_view_format_available, typed_storage_access,
 };
 use format::{format_available, sample_count_supported, supported_sample_counts};
 use validate::{max_array_layers, max_extent, max_mips, valid};
@@ -343,7 +343,7 @@ pub(super) fn view_usage_support(
     }
     validate::view(dv, texture, view, usage)?;
     if usage.contains(U::STORAGE_BINDING)
-        && !storage_view_format_available(dv, view.format, texture.dimension)
+        && !storage_view_format_available(dv, view.format, texture.dimension, None)
     {
         return Err(Error::Unsupported("DX12 storage texture view format"));
     }

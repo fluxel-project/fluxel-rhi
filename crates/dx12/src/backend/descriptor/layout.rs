@@ -98,7 +98,7 @@ fn layout_state(
             api::BindingType::StorageTexture {
                 format,
                 dimension,
-                access: _,
+                access,
             } => {
                 let texture_dimension = match dimension {
                     api::TextureViewDimension::D1 => api::TextureDimension::D1,
@@ -112,8 +112,9 @@ fn layout_state(
                     device,
                     format,
                     texture_dimension,
+                    Some(access),
                 ) {
-                    return Err(Error::Unsupported("DX12 storage texture view format"));
+                    return Err(Error::Unsupported("DX12 storage texture format and access"));
                 }
                 slots.push(BindingSlot {
                     binding_type: entry.ty.clone(),

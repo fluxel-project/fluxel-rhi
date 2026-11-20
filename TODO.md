@@ -281,6 +281,9 @@ creation for the same format, dimension, mip count, and usage.
 Compare storage layout admission with actual typed UAV view creation for
 matching formats and dimensions, and verify missing view roles fail before
 descriptor copies.
+Use the exact format query to cover typed load, store and read-write layouts.
+On a device with store-only formats, verify that the allocation and write
+path succeed and that a read or read-write layout is refused.
 Run direct color copies in both directions using texel-aligned offset and
 pitch on a device that reports the feature. Check block alignment, array and
 volume image strides, the exact final row, and rejection on the legacy path.
