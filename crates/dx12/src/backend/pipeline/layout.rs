@@ -533,5 +533,5 @@ fn create_root(
     Ok((signature, bytes.to_vec()))
 }
 fn native_error(e: windows::core::Error) -> Error {
-    Error::Backend(format!("Direct3D 12: {e}"))
+    crate::backend::native_error(e)
 }

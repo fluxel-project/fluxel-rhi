@@ -137,5 +137,5 @@ fn filter(d: &api::SamplerDesc) -> D3D12_FILTER {
     )
 }
 fn native_error(e: windows::core::Error) -> Error {
-    Error::Backend(format!("Direct3D 12: {e}"))
+    crate::backend::native_error(e)
 }

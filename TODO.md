@@ -91,6 +91,8 @@ Verify HDR10 and scRGB output on an HDR-active monitor, early rejection of
 incorrect format/color-space pairs and HDR on SDR, and reconfiguration after
 an output move or switch to SDR.
 Compare reported SDR reference white and derived headroom with system values.
+Verify DXGI device removal, session loss and stale-output errors arrive as
+the matching Core errors during native surface operations.
 
 ### DX12 upload, completion, and texture transfer verification
 

@@ -522,7 +522,26 @@ fn max_committed_buffer_bytes(process_address_bits: u32) -> Result<u64> {
 mod shader_feature_tests;
 
 fn native_error(error: windows::core::Error) -> Error {
-    Error::Backend(format!("Direct3D 12: {error}"))
+    classify_native_error(error.code())
+        .unwrap_or_else(|| Error::Backend(format!("Direct3D 12: {error}")))
+}
+
+fn classify_native_error(code: windows::core::HRESULT) -> Option<Error> {
+    use windows::Win32::{
+        Foundation::E_OUTOFMEMORY,
+        Graphics::Dxgi::{
+            DXGI_ERROR_DEVICE_HUNG, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
+            DXGI_ERROR_DRIVER_INTERNAL_ERROR,
+        },
+    };
+    match code {
+        DXGI_ERROR_DEVICE_HUNG
+        | DXGI_ERROR_DEVICE_REMOVED
+        | DXGI_ERROR_DEVICE_RESET
+        | DXGI_ERROR_DRIVER_INTERNAL_ERROR => Some(Error::DeviceLost),
+        E_OUTOFMEMORY => Some(Error::OutOfMemory),
+        _ => None,
+    }
 }
 
 impl fluxel_rhi_core::backend::ExecutionBackend for Dx12 {

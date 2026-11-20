@@ -629,7 +629,7 @@ fn dispatch_indirect_with_workgroups(
 }
 
 fn native_error(error: windows::core::Error) -> Error {
-    Error::Backend(format!("Direct3D 12: {error}"))
+    crate::backend::native_error(error)
 }
 
 /// Install a compute-root bind group for both compute and ray pipelines.

@@ -499,5 +499,5 @@ fn native_topology(v: api::PrimitiveTopology) -> D3D_PRIMITIVE_TOPOLOGY {
 }
 
 fn native_error(e: windows::core::Error) -> Error {
-    Error::Backend(format!("Direct3D 12: {e}"))
+    crate::backend::native_error(e)
 }

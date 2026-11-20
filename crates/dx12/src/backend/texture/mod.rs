@@ -426,7 +426,7 @@ fn depth_dsv_desc(
 }
 
 fn err(e: windows::core::Error) -> Error {
-    Error::Backend(format!("Direct3D 12: {e}"))
+    crate::backend::native_error(e)
 }
 
 #[cfg(test)]

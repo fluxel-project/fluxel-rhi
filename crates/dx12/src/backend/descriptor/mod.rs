@@ -725,5 +725,5 @@ impl BindGroupState {
 }
 
 fn native_error(error: windows::core::Error) -> Error {
-    Error::Backend(format!("Direct3D 12: {error}"))
+    crate::backend::native_error(error)
 }

@@ -468,5 +468,13 @@ fn caps(surface: &SurfaceState) -> api::SurfaceCapabilities {
     }
 }
 fn error(e: windows::core::Error) -> Error {
-    Error::Backend(format!("DXGI: {e}"))
+    use windows::Win32::Graphics::Dxgi::{
+        DXGI_ERROR_RESTRICT_TO_OUTPUT_STALE, DXGI_ERROR_SESSION_DISCONNECTED,
+    };
+    match e.code() {
+        DXGI_ERROR_RESTRICT_TO_OUTPUT_STALE => Error::SurfaceOutdated,
+        DXGI_ERROR_SESSION_DISCONNECTED => Error::SurfaceLost,
+        code => super::classify_native_error(code)
+            .unwrap_or_else(|| Error::Backend(format!("DXGI: {e}"))),
+    }
 }
