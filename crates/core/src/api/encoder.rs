@@ -102,6 +102,22 @@ impl<B: CommandBackend> CommandEncoder<B> {
         }
         result
     }
+
+    /// Inserts a queue wait at this recording position. The wait applies to
+    /// following native work on this lane. The caller supplies any further
+    /// cross-lane dependencies and holds the residency reference through use.
+    /// The encoder must be outside a pass and any open debug group.
+    pub fn wait_for_residency(&mut self, point: &ResidencyPoint<B>) -> Result<()> {
+        if point.completion.device != self.device {
+            return Err(Error::WrongDevice);
+        }
+        if self.debug_group_depth != 0 {
+            return Err(Error::InvalidState);
+        }
+        // SAFETY: only the eligible residency enqueue methods can mint this
+        // point, and its device identity matches the recording encoder.
+        self.call(|encoder| unsafe { B::wait_for_residency(encoder, &point.completion.native) })
+    }
     pub fn transition_resources(&mut self, ops: &[ResourceTransition<'_, B>]) -> Result<()> {
         // Core validates provenance and lane endpoints only. It deliberately
         // does not inspect neighboring commands to infer missing transitions.

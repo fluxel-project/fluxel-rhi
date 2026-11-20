@@ -78,6 +78,7 @@ device_features! {
     ExplicitHeapResidency => explicit_heap_residency, "explicit-heap-residency";
     SparseAllocationResidency => sparse_allocation_residency, "sparse-allocation-residency";
     AsyncHeapResidency => async_heap_residency, "async-heap-residency";
+    ResidencyQueueWaits => residency_queue_waits, "residency-queue-waits";
     ExternalMemory => external_memory, "external-memory";
     SecondaryCommands => secondary_commands, "secondary-commands";
     DynamicDepthBias => dynamic_depth_bias, "dynamic-depth-bias";

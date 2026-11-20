@@ -26,6 +26,19 @@ pub enum ResidencyBudget {
     AllowOverBudget,
     DenyOverBudget,
 }
+
+/// Fence evidence for an accepted asynchronous residency operation. The
+/// same point can order multiple queue executions on its device.
+pub struct ResidencyPoint<B: Backend> {
+    pub(crate) completion: CompletionPoint<B>,
+}
+
+impl<B: Backend> ResidencyPoint<B> {
+    /// Borrows the host observation of this operation.
+    pub fn completion(&self) -> &CompletionPoint<B> {
+        &self.completion
+    }
+}
 #[derive(Clone, Copy, Debug)]
 pub struct MemoryRequirements {
     /// Required heap range size, including any backend placement padding.
@@ -102,6 +115,23 @@ impl<B: MemoryBackend> MemoryDomain<'_, B> {
         let native = B::enqueue_heap_residency(&self.device.native, &heap.native, budget)?;
         // SAFETY: SPI returns native completion for this device and operation.
         Ok(unsafe { CompletionPoint::from_native(self.device.id, native) })
+    }
+
+    /// Enqueues one residency reference and returns a point that can be
+    /// used for explicit queue waits or host observation.
+    pub fn enqueue_heap_residency_for_queue(
+        &self,
+        heap: &MemoryHeap<B>,
+        budget: ResidencyBudget,
+    ) -> Result<ResidencyPoint<B>> {
+        if heap.device != self.device.id {
+            return Err(Error::WrongDevice);
+        }
+        if !self.device.caps.residency_queue_waits {
+            return Err(Error::Unsupported("residency queue waits"));
+        }
+        self.enqueue_heap_residency(heap, budget)
+            .map(|completion| ResidencyPoint { completion })
     }
 
     /// Releases one residency reference. The final release permits eviction.

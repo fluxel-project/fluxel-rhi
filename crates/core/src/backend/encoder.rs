@@ -14,6 +14,15 @@ pub trait CommandBackend: Backend {
     /// A failed begin leaves no newly issued GPU work. Backend-private
     /// allocation/state setup is rolled back before Err is returned.
     fn begin_encoder(device: &Self::NativeDevice, lane: LaneId) -> Result<Self::NativeEncoder>;
+    /// Records an explicit queue boundary for an accepted residency operation.
+    /// # Safety
+    /// The point must come from a native residency enqueue on this device.
+    unsafe fn wait_for_residency(
+        _encoder: &mut Self::NativeEncoder,
+        _point: &Self::NativeCompletion,
+    ) -> Result<()> {
+        Err(Error::Unsupported("residency queue waits"))
+    }
     /// Adds a native debug annotation. `scope` identifies the currently active
     /// command/pass receiver; backends must return Unsupported when that exact
     /// scope cannot represent the operation.

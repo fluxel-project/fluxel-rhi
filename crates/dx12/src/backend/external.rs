@@ -453,7 +453,7 @@ impl ExternalBackend for Dx12 {
         sync: Dx12ExternalSync,
     ) -> Result<()> {
         let (fence, value) = sync.fence_value();
-        encoder.split_external_boundary(encoder::external_segment::QueueBoundary::Wait {
+        encoder.split_queue_boundary(encoder::external_segment::QueueBoundary::Wait {
             fence: fence.clone(),
             value,
         })?;
@@ -467,7 +467,7 @@ impl ExternalBackend for Dx12 {
     ) -> Result<Dx12ExternalSync> {
         let sync = exported_fence(&encoder.device)?;
         let (fence, value) = sync.fence_value();
-        encoder.split_external_boundary(encoder::external_segment::QueueBoundary::Signal {
+        encoder.split_queue_boundary(encoder::external_segment::QueueBoundary::Signal {
             fence: fence.clone(),
             value,
         })?;
@@ -482,7 +482,7 @@ impl ExternalBackend for Dx12 {
         transition: &api::ExternalTextureTransition,
     ) -> Result<()> {
         let (fence, value) = sync.fence_value();
-        encoder.split_external_boundary(encoder::external_segment::QueueBoundary::Wait {
+        encoder.split_queue_boundary(encoder::external_segment::QueueBoundary::Wait {
             fence: fence.clone(),
             value,
         })?;
@@ -497,7 +497,7 @@ impl ExternalBackend for Dx12 {
         transition_texture(encoder, texture, transition)?;
         let sync = exported_fence(&encoder.device)?;
         let (fence, value) = sync.fence_value();
-        encoder.split_external_boundary(encoder::external_segment::QueueBoundary::Signal {
+        encoder.split_queue_boundary(encoder::external_segment::QueueBoundary::Signal {
             fence: fence.clone(),
             value,
         })?;

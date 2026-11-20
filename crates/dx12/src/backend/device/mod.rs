@@ -524,6 +524,7 @@ impl Dx12 {
                 sparse_allocation_residency: tiled_resources_tier
                     != D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED,
                 async_heap_residency: residency_device.is_some(),
+                residency_queue_waits: residency_device.is_some(),
                 multiview,
                 mesh_multiview,
                 shader_view_index,

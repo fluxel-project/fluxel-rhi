@@ -336,10 +336,10 @@ impl Dx12Encoder {
 }
 
 impl Dx12Encoder {
-    /// Ends the current native list at an explicit Core external boundary,
+    /// Ends the current native list at an explicit Core queue boundary,
     /// retains it for submission, and opens the following list. The operation
     /// records no CPU command stream and never derives a dependency.
-    pub(crate) fn split_external_boundary(&mut self, boundary: QueueBoundary) -> Result<(), Error> {
+    pub(crate) fn split_queue_boundary(&mut self, boundary: QueueBoundary) -> Result<(), Error> {
         if self.closed
             || self.active_occlusion.is_some()
             || self.active_statistics.is_some()

@@ -155,6 +155,10 @@ tile mappings still change only through explicit sparse operations.
 Asynchronous residency produces host completion. A caller must observe
 success before relying on the new reference for later work. A completion
 point carries no queue-wait authority.
+An explicit queue residency request returns a typed `ResidencyPoint` with
+host observation and an encoder wait operation. Only an accepted residency
+request can mint this point. The renderer places the wait and owns all
+cross-lane dependencies and reference balancing.
 
 `Device::stats()` is deliberately narrow: it counts successful Core requests and handoffs using atomic snapshots. It is neither a driver query nor a memory, residency, presentation, or profiling report.
 

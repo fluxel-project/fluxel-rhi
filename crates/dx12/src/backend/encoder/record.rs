@@ -8,6 +8,19 @@
 
 use super::*;
 impl fluxel_rhi_core::backend::CommandBackend for Dx12 {
+    unsafe fn wait_for_residency(
+        encoder: &mut Dx12Encoder,
+        point: &Dx12Completion,
+    ) -> Result<(), Error> {
+        if encoder.device.0.residency_device.is_none() {
+            return Err(Error::Unsupported("DX12 residency queue waits"));
+        }
+        encoder.device.require_active()?;
+        encoder.split_queue_boundary(super::external_segment::QueueBoundary::Wait {
+            fence: point.fence.clone(),
+            value: point.value,
+        })
+    }
     fn debug_marker(
         encoder: &mut Dx12Encoder,
         _: fluxel_rhi_core::backend::DebugMarkerScope,

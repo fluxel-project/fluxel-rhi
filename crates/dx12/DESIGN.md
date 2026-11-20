@@ -149,6 +149,10 @@ fence. The fence does not advance either command timeline. The backend retains
 the physical heap until native completion, including when the caller drops the
 receipt. A failed observer registration quarantines the owner without changing
 the accepted enqueue or its fence.
+An explicit residency wait reuses native command-list segmentation. The
+target queue waits at the encoder boundary on the private residency fence.
+The recorded work retains the fence through queue completion. The renderer
+orders later sparse mapping steps and other lanes through the compiled plan.
 
 The memory observation domain can report the number and largest size of
 contiguous free ranges across retained default-pool pages. The observation

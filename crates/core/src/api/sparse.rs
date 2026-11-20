@@ -167,6 +167,21 @@ impl<B: SparseBackend> SparseDomain<'_, B> {
         Ok(unsafe { CompletionPoint::from_native(self.device.id, native) })
     }
 
+    /// Enqueues a backing allocation residency reference with an explicit
+    /// queue-wait point. Order tile mapping uses through the selected lane.
+    pub fn enqueue_allocation_residency_for_queue(
+        &self,
+        allocation: &SparseAllocation<B>,
+        budget: ResidencyBudget,
+    ) -> Result<ResidencyPoint<B>> {
+        self.validate_residency_allocation(allocation)?;
+        if !self.device.caps.residency_queue_waits {
+            return Err(Error::Unsupported("residency queue waits"));
+        }
+        self.enqueue_allocation_residency(allocation, budget)
+            .map(|completion| ResidencyPoint { completion })
+    }
+
     /// Releases one residency reference without changing existing tile mappings.
     ///
     /// # Safety

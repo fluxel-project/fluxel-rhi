@@ -184,13 +184,15 @@ for two enqueues, receipt and wait cancellation, registration failure after
 native acceptance, and device loss. Verify that only native residency fence
 completion admits subsequent host-gated work and that neither queue's
 submission completion advances due to residency.
+Cover explicit residency waits on direct and compute, including queue use
+before a host wait, the same point on both lanes, and a direct-lane wait
+followed by sparse mapping. Verify order on both sides of the encoder
+boundary, wrong-device and unsupported devices, and fence retention across
+partial acceptance and cancellation of unsubmitted work.
 
-**Pending native paths.** Queue-side residency dependencies need an explicit
-GPU-wait contract. Host completion cannot authorize a submission-plan wait.
-Resume this path when the plan can carry a residency dependency with its own
-native fence provenance and owner lifetime. CPU-visible heaps require an
-ordering contract for active CPU mappings in addition to GPU completion. Keep
-their residency operations gated until both are covered.
+**Pending native paths.** CPU-visible heaps require an ordering contract for
+active CPU mappings in addition to GPU completion. Keep their residency
+operations gated until both are covered.
 Resolve physical owner identity for committed resources before exposing their
 residency operations. Placed resources use the existing heap operations.
 

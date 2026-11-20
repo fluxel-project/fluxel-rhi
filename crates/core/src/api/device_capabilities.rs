@@ -222,6 +222,8 @@ pub struct DeviceCapabilities {
     pub sparse_allocation_residency: bool,
     /// Native asynchronous residency can report host completion for eligible heaps.
     pub async_heap_residency: bool,
+    /// Command encoders can record waits on accepted residency operations.
+    pub residency_queue_waits: bool,
     pub external_memory: bool,
     pub secondary_commands: bool,
     pub native_interop: bool,
