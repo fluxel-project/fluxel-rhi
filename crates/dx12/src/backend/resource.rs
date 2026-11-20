@@ -5,6 +5,9 @@
 //! resource uses, scheduling commands, or maintaining resource states.
 
 use super::*;
+use windows::Win32::Graphics::Direct3D12::{
+    D3D12_HEAP_TYPE, D3D12_HEAP_TYPE_GPU_UPLOAD, D3D12_HEAP_TYPE_READBACK, D3D12_HEAP_TYPE_UPLOAD,
+};
 
 impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
     fn check_resource_device(device: &Dx12Device) -> Result<()> {
@@ -143,105 +146,29 @@ impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
         {
             return Err(Error::Unsupported(reason));
         }
-        let readback = desc.memory == api::MemoryClass::Readback;
-        let upload = desc.memory == api::MemoryClass::Upload;
-        let (native, allocation_size, initial_state) = memory::buffer_desc(desc)?;
-        if allocation_size > device.0.max_buffer_bytes {
-            return Err(Error::InvalidRange);
-        }
-        let heap = D3D12_HEAP_PROPERTIES {
-            Type: if readback {
-                windows::Win32::Graphics::Direct3D12::D3D12_HEAP_TYPE_READBACK
-            } else if upload {
-                windows::Win32::Graphics::Direct3D12::D3D12_HEAP_TYPE_UPLOAD
-            } else {
-                D3D12_HEAP_TYPE_DEFAULT
-            },
-            CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-            MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
-            CreationNodeMask: 1,
-            VisibleNodeMask: 1,
+        let heap_type = match desc.memory {
+            api::MemoryClass::Device => D3D12_HEAP_TYPE_DEFAULT,
+            api::MemoryClass::Upload => D3D12_HEAP_TYPE_UPLOAD,
+            api::MemoryClass::Readback => D3D12_HEAP_TYPE_READBACK,
         };
-        let class_bits = memory::buffer_class_bits(device, desc.memory);
-        let class = (0..64)
-            .find(|bit| class_bits & (1u64 << bit) != 0)
-            .ok_or(Error::Unsupported("DX12 buffer heap class"))?;
-        let requirements = memory::requirements(device, &native, class_bits)?;
-        let pooled = device.0.default_resources.allocate(
-            class,
-            requirements.size,
-            requirements.alignment,
-        )?;
-        let (resource, default_allocation, backing_heap): (ID3D12Resource, _, _) = if let Some(pool) = pooled {
-            let mut resource = None;
-            // SAFETY: the pool allocation satisfies the native allocation
-            // size/alignment and heap class requirements for this buffer.
-            let placed = unsafe {
-                device.0.native.CreatePlacedResource(
-                    &pool.heap,
-                    pool.offset,
-                    &native,
-                    initial_state,
-                    None,
-                    &mut resource,
-                )
-            };
-            match placed {
-                Ok(()) => (
-                    resource.ok_or(Error::OutOfMemory)?,
-                    Some(pool.lease),
-                    Some(pool.heap),
-                ),
-                Err(error) if memory::is_out_of_memory(&error) => {
-                    drop(pool);
-                    let mut resource = None;
-                    // SAFETY: the original resource descriptor remains valid;
-                    // a committed allocation is the OOM fallback for paging.
-                    unsafe {
-                        device.0.native.CreateCommittedResource(
-                            &heap,
-                            D3D12_HEAP_FLAG_NONE,
-                            &native,
-                            initial_state,
-                            None,
-                            &mut resource,
-                        )
-                    }
-                    .map_err(native_error)?;
-                    (resource.ok_or(Error::OutOfMemory)?, None, None)
-                }
-                Err(error) => return Err(native_error(error)),
-            }
-        } else {
-            let mut resource = None;
-            // SAFETY: heap and buffer descriptors are initialized local values;
-            // D3D12 writes the owned resource COM interface into `resource` only.
-            unsafe {
-                device.0.native.CreateCommittedResource(
-                    &heap,
-                    D3D12_HEAP_FLAG_NONE,
-                    &native,
-                    initial_state,
-                    None,
-                    &mut resource,
-                )
-            }
-            .map_err(native_error)?;
-            (resource.ok_or(Error::OutOfMemory)?, None, None)
-        };
-        set_debug_name(&resource, desc.label.as_deref());
-        Ok(Dx12Buffer {
-            resource,
-            size: desc.size,
-            allocation_size,
-            mapped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            usage: desc.usage,
-            memory: desc.memory,
-            indirect_signatures: device.0.indirect_signatures.clone(),
-            backing_heap,
-            default_allocation,
-        })
+        allocate_buffer(device, desc, heap_type)
     }
+
+    fn create_gpu_upload_buffer(device: &Dx12Device, desc: &api::BufferDesc) -> Result<Dx12Buffer> {
+        if !device.0.gpu_upload_buffers {
+            return Err(Error::Unsupported("DX12 GPU upload heaps"));
+        }
+        if desc.memory != api::MemoryClass::Upload {
+            return Err(Error::Unsupported(
+                "DX12 GPU upload buffers require write mapping",
+            ));
+        }
+        if let api::Support::Unsupported(reason) = Self::buffer_support(device, desc) {
+            return Err(Error::Unsupported(reason));
+        }
+        allocate_buffer(device, desc, D3D12_HEAP_TYPE_GPU_UPLOAD)
+    }
+
     fn create_texture(device: &Dx12Device, desc: &api::TextureDesc) -> Result<Dx12Texture> {
         texture::create(device, desc)
     }
@@ -343,4 +270,106 @@ impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
     ) -> Result<()> {
         pipeline::pipeline_layout_support(device, desc)
     }
+}
+
+fn allocate_buffer(
+    device: &Dx12Device,
+    desc: &api::BufferDesc,
+    heap_type: D3D12_HEAP_TYPE,
+) -> Result<Dx12Buffer> {
+    let (native, allocation_size, initial_state) = memory::buffer_desc(desc)?;
+    if allocation_size > device.0.max_buffer_bytes {
+        return Err(Error::InvalidRange);
+    }
+    let heap = D3D12_HEAP_PROPERTIES {
+        Type: heap_type,
+        CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+        MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
+        CreationNodeMask: 1,
+        VisibleNodeMask: 1,
+    };
+    let pooled = if heap_type == D3D12_HEAP_TYPE_GPU_UPLOAD {
+        // Keep this allocation distinct from the ordinary upload pool.
+        None
+    } else {
+        let class_bits = memory::buffer_class_bits(device, desc.memory);
+        let class = (0..64)
+            .find(|bit| class_bits & (1u64 << bit) != 0)
+            .ok_or(Error::Unsupported("DX12 buffer heap class"))?;
+        let requirements = memory::requirements(device, &native, class_bits)?;
+        device
+            .0
+            .default_resources
+            .allocate(class, requirements.size, requirements.alignment)?
+    };
+    let (resource, default_allocation, backing_heap): (ID3D12Resource, _, _) =
+        if let Some(pool) = pooled {
+            let mut resource = None;
+            // SAFETY: the pool allocation satisfies the native allocation
+            // size/alignment and heap class requirements for this buffer.
+            let placed = unsafe {
+                device.0.native.CreatePlacedResource(
+                    &pool.heap,
+                    pool.offset,
+                    &native,
+                    initial_state,
+                    None,
+                    &mut resource,
+                )
+            };
+            match placed {
+                Ok(()) => (
+                    resource.ok_or(Error::OutOfMemory)?,
+                    Some(pool.lease),
+                    Some(pool.heap),
+                ),
+                Err(error) if memory::is_out_of_memory(&error) => {
+                    drop(pool);
+                    let mut resource = None;
+                    // SAFETY: the original resource descriptor remains valid;
+                    // a committed allocation is the OOM fallback for paging.
+                    unsafe {
+                        device.0.native.CreateCommittedResource(
+                            &heap,
+                            D3D12_HEAP_FLAG_NONE,
+                            &native,
+                            initial_state,
+                            None,
+                            &mut resource,
+                        )
+                    }
+                    .map_err(native_error)?;
+                    (resource.ok_or(Error::OutOfMemory)?, None, None)
+                }
+                Err(error) => return Err(native_error(error)),
+            }
+        } else {
+            let mut resource = None;
+            // SAFETY: heap and buffer descriptors are initialized local values;
+            // D3D12 writes the owned resource COM interface into `resource` only.
+            unsafe {
+                device.0.native.CreateCommittedResource(
+                    &heap,
+                    D3D12_HEAP_FLAG_NONE,
+                    &native,
+                    initial_state,
+                    None,
+                    &mut resource,
+                )
+            }
+            .map_err(native_error)?;
+            (resource.ok_or(Error::OutOfMemory)?, None, None)
+        };
+    set_debug_name(&resource, desc.label.as_deref());
+    Ok(Dx12Buffer {
+        resource,
+        size: desc.size,
+        allocation_size,
+        mapped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        usage: desc.usage,
+        memory: desc.memory,
+        indirect_signatures: device.0.indirect_signatures.clone(),
+        backing_heap,
+        default_allocation,
+    })
 }

@@ -153,6 +153,52 @@ impl<B: ResourceBackend> Device<B> {
         }
         B::buffer_support(&self.native, desc)
     }
+
+    /// Qualifies a host-writable upload or host-readable readback allocation
+    /// for the requested placement.
+    pub fn cpu_visible_buffer_support(
+        &self,
+        desc: &BufferDesc,
+        placement: CpuVisibleBufferPlacement,
+    ) -> Support<BufferSupport> {
+        let read = desc.usage.contains(BufferUsage::MAP_READ);
+        let write = desc.usage.contains(BufferUsage::MAP_WRITE);
+        if !matches!(
+            (desc.memory, read, write),
+            (MemoryClass::Upload, false, true) | (MemoryClass::Readback, true, false)
+        ) {
+            return Support::Unsupported("CPU-visible buffer mapping usage");
+        }
+        if placement == CpuVisibleBufferPlacement::GpuUpload {
+            if !self.caps.gpu_upload_buffers {
+                return Support::Unsupported("GPU upload buffers");
+            }
+            if desc.memory != MemoryClass::Upload {
+                return Support::Unsupported("GPU upload buffers require write mapping");
+            }
+        }
+        self.buffer_support(desc)
+    }
+
+    /// Allocates a buffer through the selected CPU-visible placement.
+    pub fn create_cpu_visible_buffer(
+        &self,
+        desc: &BufferDesc,
+        placement: CpuVisibleBufferPlacement,
+    ) -> Result<Buffer<B>> {
+        B::check_resource_device(&self.native)?;
+        if let Support::Unsupported(reason) = self.cpu_visible_buffer_support(desc, placement) {
+            return Err(Error::Unsupported(reason));
+        }
+        let native = match placement {
+            CpuVisibleBufferPlacement::Standard => B::create_buffer(&self.native, desc)?,
+            CpuVisibleBufferPlacement::GpuUpload => {
+                B::create_gpu_upload_buffer(&self.native, desc)?
+            }
+        };
+        // SAFETY: the SPI allocated the buffer for this exact device and descriptor.
+        Ok(unsafe { Buffer::from_native(self.id, native) })
+    }
     pub fn texture_support(&self, desc: &TextureDesc) -> Support<TextureSupport> {
         if validate_transient_texture_desc(desc).is_err() {
             return Support::Unsupported("invalid transient attachment descriptor");

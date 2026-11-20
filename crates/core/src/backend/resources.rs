@@ -16,6 +16,12 @@ pub trait ResourceBackend: Backend {
     }
 
     fn buffer_support(device: &Self::NativeDevice, desc: &BufferDesc) -> Support<BufferSupport>;
+    fn create_gpu_upload_buffer(
+        _device: &Self::NativeDevice,
+        _desc: &BufferDesc,
+    ) -> Result<Self::NativeBuffer> {
+        Err(Error::Unsupported("GPU upload buffers"))
+    }
     fn storage_buffer_view_support(
         _buffer: &Self::NativeBuffer,
         _range: Range<u64>,

@@ -282,15 +282,18 @@ impl Dx12 {
                 windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS16::default();
             // SAFETY: the feature structure exactly matches the synchronous
             // OPTIONS16 query and remains live for its whole call.
-            let dynamic_depth_bias_supported = unsafe {
+            let options16_available = unsafe {
                 native.CheckFeatureSupport(
                     windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_D3D12_OPTIONS16,
                     (&mut options16 as *mut _) as *mut _,
                     std::mem::size_of_val(&options16) as u32,
                 )
             }
-            .is_ok()
-                && options16.DynamicDepthBiasSupported.as_bool();
+            .is_ok();
+            let dynamic_depth_bias_supported =
+                options16_available && options16.DynamicDepthBiasSupported.as_bool();
+            let gpu_upload_buffers =
+                options16_available && options16.GPUUploadHeapSupported.as_bool();
             let descriptor_indexing = shader_model >= 60;
             let mut options3 =
                 windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS3::default();
@@ -473,6 +476,7 @@ impl Dx12 {
                 rect_attachment_clear: true,
                 conservative_raster: Some(conservative_raster),
                 direct_buffer_upload: true,
+                gpu_upload_buffers,
                 direct_texture_upload: true,
                 completion_timeout: true,
                 sampled_texture_component_mapping: true,
@@ -567,6 +571,7 @@ impl Dx12 {
                     resource_heap_tier2,
                     enhanced_barriers_supported,
                     dynamic_depth_bias_supported,
+                    gpu_upload_buffers,
                     stencil_reference_per_face,
                     sparse_in_flight: Mutex::new(Vec::new()),
                     multi_queue: queue::MultiQueueState::new(&native)?,

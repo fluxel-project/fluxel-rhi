@@ -189,6 +189,17 @@ pub enum MemoryClass {
     Upload,
     Readback,
 }
+
+/// Requested allocation route for a host-visible buffer. The buffer descriptor
+/// still specifies its upload or readback access contract.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CpuVisibleBufferPlacement {
+    /// Uses the backend's ordinary upload or readback allocation.
+    Standard,
+    /// Uses a GPU upload heap for host writes and GPU reads. This selects an
+    /// allocation class and does not guarantee physical residency.
+    GpuUpload,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FilterMode {
     Nearest,

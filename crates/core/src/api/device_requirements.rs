@@ -65,6 +65,7 @@ device_features! {
     MultiDrawCount => multi_draw_count, "multi-draw-count";
     PushConstants => push_constants, "push-constants";
     StorageBuffers => storage_buffers, "storage-buffers";
+    GpuUploadBuffers => gpu_upload_buffers, "gpu-upload-buffers";
     StorageTextures => storage_textures, "storage-textures";
     BindingArrays => binding_arrays, "binding-arrays";
     RuntimeSizedBindingArrays => runtime_sized_binding_arrays, "runtime-sized-binding-arrays";

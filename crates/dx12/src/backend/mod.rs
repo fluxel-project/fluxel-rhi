@@ -106,6 +106,7 @@ impl Dx12Device {
 
 struct Dx12DeviceState {
     pub(super) native: ID3D12Device,
+    pub(super) gpu_upload_buffers: bool,
     pub(super) descriptor_table_limits: api::DescriptorTableLimits,
     pub(super) texel_aligned_color_copies: bool,
     pub(super) shader_model: u16,

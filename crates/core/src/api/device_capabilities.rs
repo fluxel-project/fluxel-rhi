@@ -20,6 +20,8 @@ pub struct DeviceCapabilities {
     /// Memory topology of the native node used by ordinary device work.
     /// This does not admit any particular buffer mapping or heap type.
     pub memory_topology: Option<DeviceMemoryTopology>,
+    /// Supports explicit CPU-write allocations on a GPU upload heap.
+    pub gpu_upload_buffers: bool,
     /// Native subgroup width range for this opened device, when exposed.
     /// This does not imply that every shader stage or operation uses subgroups.
     pub subgroup_widths: Option<SubgroupWidths>,

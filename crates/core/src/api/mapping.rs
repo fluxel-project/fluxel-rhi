@@ -108,12 +108,31 @@ impl<B: MappingBackend + ResourceBackend> Device<B> {
             return Err(Error::Unsupported("mapped buffer requires MAP_WRITE"));
         }
         let buffer = self.create_buffer(desc)?;
+        self.initialize_buffer_mapping(buffer, desc.size).await
+    }
+
+    /// Creates a zero-initialized write lease using an explicit CPU-visible
+    /// allocation route. The buffer becomes available after the lease finishes.
+    pub async fn create_cpu_visible_buffer_mapped(
+        &self,
+        desc: &BufferDesc,
+        placement: CpuVisibleBufferPlacement,
+    ) -> Result<MappedBuffer<B>> {
+        if desc.memory != MemoryClass::Upload {
+            return Err(Error::Unsupported("initial mapping requires upload memory"));
+        }
+        let buffer = self.create_cpu_visible_buffer(desc, placement)?;
+        self.initialize_buffer_mapping(buffer, desc.size).await
+    }
+
+    async fn initialize_buffer_mapping(
+        &self,
+        buffer: Buffer<B>,
+        size: u64,
+    ) -> Result<MappedBuffer<B>> {
         // SAFETY: the new buffer has never been exposed to the caller and
         // no GPU submission can refer to it before the mapping is released.
-        let mut mapping = unsafe {
-            self.map_buffer(&buffer, 0..desc.size, MapMode::Write)
-                .await?
-        };
+        let mut mapping = unsafe { self.map_buffer(&buffer, 0..size, MapMode::Write).await? };
         mapping.bytes_mut()?.fill(0);
         Ok(MappedBuffer { mapping, buffer })
     }

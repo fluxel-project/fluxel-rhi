@@ -172,6 +172,11 @@ Clones share a single native mapping lease, including when a readback ticket
 copies bytes into host-owned storage. Callers may explicitly wait on a chosen
 completion before acquiring a lease and remain responsible for ordering later
 GPU work. Reported UMA topology does not change the buffer heap contract.
+An explicit GPU upload placement uses a committed `GPU_UPLOAD` heap when
+`OPTIONS16.GPUUploadHeapSupported` is true. It shares the host-write and
+GPU-read contract of an upload buffer, including the fixed `GENERIC_READ`
+state. The placement specifies the allocation route. The runtime controls
+actual residency.
 
 ## Shader and pipeline routes
 

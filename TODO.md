@@ -929,11 +929,16 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   existing static backend boundaries where a real consumer needs it. A dynamic
   backend dispatcher is `OUT_OF_SCOPE`: it would weaken typed device identity
   and introduce runtime dispatch into the public RHI model.
-- **N01, DESIGNING — CPU-visible DX12 buffers.** Introduce an explicit
-  CPU-visible allocation/mapping capability and select Upload, Readback,
-  Custom, or supported GPU-upload heap from exact usage and cache rules. UMA
-  and CacheCoherentUMA never imply that a default-heap buffer is mappable.
-  Acceptance covers supported configurations and early rejection elsewhere.
+- **N01, IMPLEMENTING — CPU-visible DX12 buffers.** Explicit standard upload
+  and readback placement and the OPTIONS16-gated GPU upload heap route are
+  implemented. Verify the actual heap type, CPU write lease, direct GPU reads
+  and readback, and early rejection for unsupported devices, GPU write usage,
+  and read mapping. The GPU upload route keeps the native generic-read state.
+  Shared-handle import and export of GPU upload heaps are unsupported because
+  D3D12 prohibits shared flags for this heap type.
+  Add explicit custom placement with exact topology, page policy and pool
+  admission. Verify each admitted combination independently. UMA topology
+  alone does not make a default-heap buffer mappable.
 - **N02, DESIGNING — safe completion-bound mapping.** Prefer private staging
   plus a consuming readback receipt/ticket tied to a specified range,
   submission coverage, completion proof, cancellation, and failure outcome.
