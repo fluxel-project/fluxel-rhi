@@ -6,25 +6,6 @@
 //! replacement through generated HLSL.
 
 use fluxel_rhi_core::api::{Error, Result};
-use windows::Win32::Graphics::Direct3D12::{
-    D3D12_FEATURE_D3D12_OPTIONS1, D3D12_FEATURE_DATA_D3D12_OPTIONS1, ID3D12Device,
-};
-
-/// Wave builtins are usable only where D3D12 reports native WaveOps.
-pub(crate) fn wave_ops_supported(device: &ID3D12Device) -> bool {
-    let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS1::default();
-    // SAFETY: `options` exactly matches the feature selector and is writable
-    // for this synchronous capability query.
-    unsafe {
-        device.CheckFeatureSupport(
-            D3D12_FEATURE_D3D12_OPTIONS1,
-            (&mut options as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS1).cast(),
-            std::mem::size_of_val(&options) as u32,
-        )
-    }
-    .is_ok()
-        && options.WaveOps.as_bool()
-}
 
 pub(crate) fn inject(source: &str, entry: &str, size: u32) -> Result<String> {
     if !size.is_power_of_two() {

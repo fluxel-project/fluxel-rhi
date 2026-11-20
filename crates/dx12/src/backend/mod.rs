@@ -85,6 +85,7 @@ impl Dx12 {
 pub struct Dx12Device(Arc<Dx12DeviceState>);
 struct Dx12DeviceState {
     pub(super) native: ID3D12Device,
+    pub(super) shader_model: u16,
     pub(super) subgroup_widths: Option<api::SubgroupWidths>,
     /// Committed buffers consume the process GPU virtual-address range.
     pub(super) max_buffer_bytes: u64,
@@ -375,7 +376,7 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
         if !shader_features_supported(
             &desc.required_features,
             device.0.ray_query_supported,
-            shader_naga::wave_ops_supported(&device.0.native),
+            device.0.subgroup_widths.is_some(),
         ) {
             return api::ShaderRoute::Unsupported;
         }
@@ -387,7 +388,8 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
             }),
             api::ShaderFormat::Hlsl(model)
                 if direct_hlsl_entries_supported(desc)
-                    && shader_naga::hlsl_shader_model_supported(&device.0.native, model) =>
+                    && (60..=69).contains(&model)
+                    && device.0.shader_model >= model =>
             {
                 api::ShaderRoute::Direct(api::ShaderTarget {
                     format: api::ShaderFormat::Dxil,
@@ -405,7 +407,7 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
                                 | api::ShaderStage::Fragment
                         )
                     })
-                    && shader_naga::shader_model_supported(&device.0.native) =>
+                    && device.0.shader_model >= 60 =>
             {
                 api::ShaderRoute::Naga(api::ShaderTarget {
                     format: api::ShaderFormat::Dxil,

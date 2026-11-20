@@ -343,20 +343,7 @@ fn validate_required_wave_size(device: &Dx12Device, size: u32) -> Result<()> {
     if !size.is_power_of_two() {
         return Err(Error::InvalidRange);
     }
-    let mut model = D3D12_FEATURE_DATA_SHADER_MODEL {
-        HighestShaderModel: D3D_SHADER_MODEL_6_6,
-    };
-    // SAFETY: `model` is exactly the structure D3D12 fills synchronously.
-    let sm66 = unsafe {
-        device.0.native.CheckFeatureSupport(
-            D3D12_FEATURE_SHADER_MODEL,
-            (&mut model as *mut D3D12_FEATURE_DATA_SHADER_MODEL).cast(),
-            std::mem::size_of_val(&model) as u32,
-        )
-    }
-    .is_ok()
-        && model.HighestShaderModel.0 >= D3D_SHADER_MODEL_6_6.0;
-    if !sm66 {
+    if device.0.shader_model < 66 {
         return Err(Error::Unsupported(
             "DX12 required subgroup size needs shader model 6.6",
         ));

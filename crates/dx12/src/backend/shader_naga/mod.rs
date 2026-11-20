@@ -15,7 +15,7 @@ mod wave_size;
 use binding::{validate_binding_type, wgsl_binding_shape};
 use fluxel_rhi_core::api::{self, Error, Result};
 use validation::{texture_atomic_only, validation_capabilities};
-pub(crate) use wave_size::{inject_direct_hlsl, wave_ops_supported};
+pub(crate) use wave_size::inject_direct_hlsl;
 
 #[cfg(test)]
 #[path = "../../tests/shader_naga/compiler.rs"]
@@ -40,64 +40,6 @@ mod storage_buffer_nonuniform_tests;
 #[cfg(test)]
 #[path = "../../tests/shader_naga/uniform_buffer_nonuniform.rs"]
 mod uniform_buffer_nonuniform_tests;
-
-pub(crate) fn shader_model_supported(
-    device: &windows::Win32::Graphics::Direct3D12::ID3D12Device,
-) -> bool {
-    use windows::Win32::Graphics::Direct3D12::*;
-    let mut model = D3D12_FEATURE_DATA_SHADER_MODEL {
-        HighestShaderModel: D3D_SHADER_MODEL_6_0,
-    };
-    // SAFETY: model is valid writable storage for this synchronous query.
-    unsafe {
-        device.CheckFeatureSupport(
-            D3D12_FEATURE_SHADER_MODEL,
-            (&mut model as *mut D3D12_FEATURE_DATA_SHADER_MODEL).cast(),
-            std::mem::size_of_val(&model) as u32,
-        )
-    }
-    .is_ok()
-        && model.HighestShaderModel.0 >= D3D_SHADER_MODEL_6_0.0
-}
-
-/// Checks the explicitly requested native HLSL shader model. `Hlsl(66)` means
-/// shader model 6.6; DXC receives the corresponding `*_6_6` profile.
-pub(crate) fn hlsl_shader_model_supported(
-    device: &windows::Win32::Graphics::Direct3D12::ID3D12Device,
-    model: u16,
-) -> bool {
-    use windows::Win32::Graphics::Direct3D12::*;
-    let Some(requested) = native_shader_model(model) else {
-        return false;
-    };
-    let mut reported = D3D12_FEATURE_DATA_SHADER_MODEL {
-        HighestShaderModel: requested,
-    };
-    // SAFETY: `reported` is valid writable storage for this synchronous query.
-    unsafe {
-        device.CheckFeatureSupport(
-            D3D12_FEATURE_SHADER_MODEL,
-            (&mut reported as *mut D3D12_FEATURE_DATA_SHADER_MODEL).cast(),
-            std::mem::size_of_val(&reported) as u32,
-        )
-    }
-    .is_ok()
-        && reported.HighestShaderModel.0 >= requested.0
-}
-
-fn native_shader_model(
-    model: u16,
-) -> Option<windows::Win32::Graphics::Direct3D12::D3D_SHADER_MODEL> {
-    // D3D12 encodes 6.0 through 6.9 as 0x60 through 0x69. Keeping this
-    // conversion here makes Core's compact `major * 10 + minor` spelling
-    // explicit and rejects future/other-major values until DXC support is
-    // deliberately evaluated.
-    (60..=69)
-        .contains(&model)
-        .then_some(windows::Win32::Graphics::Direct3D12::D3D_SHADER_MODEL(
-            i32::from(0x60 + model - 60),
-        ))
-}
 
 pub(crate) fn hlsl_profile(stage: api::ShaderStage, model: u16) -> Result<String> {
     if !(60..=69).contains(&model) {

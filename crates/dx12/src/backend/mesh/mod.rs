@@ -248,13 +248,13 @@ pub(super) fn create_pipeline(
     })))
 }
 
-pub(super) fn probe(device: &ID3D12Device) -> bool {
+pub(super) fn probe(device: &ID3D12Device, shader_model: u16) -> bool {
+    if shader_model < 65 {
+        return false;
+    }
     let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS7::default();
-    let mut shader = D3D12_FEATURE_DATA_SHADER_MODEL {
-        HighestShaderModel: D3D_SHADER_MODEL_6_5,
-    };
-    // SAFETY: both feature structures match their query selectors and are
-    // valid mutable storage for these synchronous feature queries.
+    // SAFETY: the feature structure matches its query selector and
+    // remains valid throughout this synchronous feature query.
     let tier = unsafe {
         device.CheckFeatureSupport(
             D3D12_FEATURE_D3D12_OPTIONS7,
@@ -264,14 +264,5 @@ pub(super) fn probe(device: &ID3D12Device) -> bool {
     }
     .is_ok()
         && options.MeshShaderTier.0 >= D3D12_MESH_SHADER_TIER_1.0;
-    let shader_model = unsafe {
-        device.CheckFeatureSupport(
-            D3D12_FEATURE_SHADER_MODEL,
-            (&mut shader as *mut D3D12_FEATURE_DATA_SHADER_MODEL).cast(),
-            std::mem::size_of_val(&shader) as u32,
-        )
-    }
-    .is_ok()
-        && shader.HighestShaderModel.0 >= D3D_SHADER_MODEL_6_5.0;
-    tier && shader_model && device.cast::<ID3D12Device2>().is_ok()
+    tier && device.cast::<ID3D12Device2>().is_ok()
 }

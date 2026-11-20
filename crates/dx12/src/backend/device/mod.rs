@@ -5,6 +5,7 @@
 //! infer resource uses or build an execution schedule.
 
 use super::*;
+mod shader_model;
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, D3D12_FEATURE_ARCHITECTURE,
     D3D12_FEATURE_DATA_ARCHITECTURE, D3D12_REQ_MULTI_ELEMENT_STRUCTURE_SIZE_IN_BYTES,
@@ -258,6 +259,7 @@ impl Dx12 {
             )?;
             let native = native
                 .ok_or_else(|| Error::Backend("D3D12CreateDevice returned no device".into()))?;
+            let shader_model = shader_model::highest(&native);
             let mut architecture = D3D12_FEATURE_DATA_ARCHITECTURE::default();
             // SAFETY: the initialized structure requests the architecture of
             // node zero, used by the ordinary queues and heaps of this device.
@@ -314,8 +316,8 @@ impl Dx12 {
                 max_committed_buffer_bytes(gpu_va.MaxGPUVirtualAddressBitsPerProcess)?;
             let ray_device = ray::probe(&native);
             let ray_supported = ray_device.is_some();
-            let ray_query_supported = ray::probe_inline(&native);
-            let mesh_supported = mesh::probe(&native);
+            let ray_query_supported = ray::probe_inline(&native, shader_model);
+            let mesh_supported = mesh::probe(&native, shader_model);
             let texture_atomic_r32uint_compute = texture::format_supports_texture_atomic_add_native(
                 &native,
                 api::TextureFormat::R32Uint,
@@ -388,22 +390,7 @@ impl Dx12 {
             }
             .is_ok()
                 && options16.DynamicDepthBiasSupported.as_bool();
-            let mut shader_model =
-                windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_SHADER_MODEL {
-                    HighestShaderModel: windows::Win32::Graphics::Direct3D12::D3D_SHADER_MODEL_6_0,
-                };
-            // SAFETY: the feature struct is the exact size/type requested and
-            // stays valid for D3D12's synchronous feature query.
-            let descriptor_indexing = unsafe {
-                native.CheckFeatureSupport(
-                    windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_SHADER_MODEL,
-                    (&mut shader_model as *mut _) as *mut _,
-                    std::mem::size_of_val(&shader_model) as u32,
-                )
-            }
-            .is_ok()
-                && shader_model.HighestShaderModel.0
-                    >= windows::Win32::Graphics::Direct3D12::D3D_SHADER_MODEL_6_0.0;
+            let descriptor_indexing = shader_model >= 60;
             let mut options3 =
                 windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS3::default();
             // SAFETY: as above, this query receives the exact initialized
@@ -573,6 +560,7 @@ impl Dx12 {
             Ok((
                 Dx12Device(Arc::new(Dx12DeviceState {
                     native: native.clone(),
+                    shader_model,
                     subgroup_widths,
                     max_buffer_bytes,
                     ray_device,

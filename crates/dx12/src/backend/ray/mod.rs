@@ -379,12 +379,12 @@ pub(super) fn probe(device: &ID3D12Device) -> Option<ID3D12Device5> {
 }
 
 /// Inline ray queries require both DXR 1.1 and shader model 6.5.
-pub(super) fn probe_inline(device: &ID3D12Device) -> bool {
+pub(super) fn probe_inline(device: &ID3D12Device, shader_model: u16) -> bool {
+    if shader_model < 65 {
+        return false;
+    }
     let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS5::default();
-    let mut shader_model = D3D12_FEATURE_DATA_SHADER_MODEL {
-        HighestShaderModel: D3D_SHADER_MODEL_6_5,
-    };
-    // SAFETY: each feature query receives the exact initialized structure and
+    // SAFETY: the feature query receives the exact initialized structure and
     // performs synchronous writes while the borrowed storage remains valid.
     let has_tier = unsafe {
         device.CheckFeatureSupport(
@@ -395,14 +395,5 @@ pub(super) fn probe_inline(device: &ID3D12Device) -> bool {
     }
     .is_ok()
         && options.RaytracingTier.0 >= D3D12_RAYTRACING_TIER_1_1.0;
-    let has_shader_model = unsafe {
-        device.CheckFeatureSupport(
-            D3D12_FEATURE_SHADER_MODEL,
-            (&mut shader_model as *mut D3D12_FEATURE_DATA_SHADER_MODEL).cast(),
-            std::mem::size_of_val(&shader_model) as u32,
-        )
-    }
-    .is_ok()
-        && shader_model.HighestShaderModel.0 >= D3D_SHADER_MODEL_6_5.0;
-    has_tier && has_shader_model && device.cast::<ID3D12Device5>().is_ok()
+    has_tier && device.cast::<ID3D12Device5>().is_ok()
 }
