@@ -49,6 +49,8 @@ pub(crate) fn lower_attachments(
     depth: Option<api::DepthStencilState>,
     multisample: api::MultisampleState,
 ) -> Result<Attachments> {
+    // Keep known device removal distinct from an unsupported attachment format.
+    device.require_active()?;
     if !matches!(multisample.count, 1 | 2 | 4 | 8 | 16 | 32) {
         return Err(Error::Unsupported("DX12 pipeline sample count"));
     }

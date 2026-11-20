@@ -45,6 +45,7 @@ fn admit<'a>(
     device: &Dx12Device,
     desc: &'a api::ComputePipelineDesc<Dx12>,
 ) -> Result<AdmittedPipeline<'a>> {
+    device.require_active()?;
     // SAFETY: Core checks the shader and layout belong to this device before either SPI call.
     let shader = unsafe { desc.compute.module.native_ref() };
     // SAFETY: Core checked layout provenance and `desc` keeps the layout alive.

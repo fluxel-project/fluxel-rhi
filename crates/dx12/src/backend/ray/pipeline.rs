@@ -67,10 +67,14 @@ pub(super) fn pipeline_support(
     desc: &api::RayPipelineDesc<Dx12>,
 ) -> Result<()> {
     super::ray_device(device)?;
-    admit_pipeline(desc).map(drop)
+    admit_pipeline(device, desc).map(drop)
 }
 
-fn admit_pipeline(desc: &api::RayPipelineDesc<Dx12>) -> Result<AdmittedRay<'_>> {
+fn admit_pipeline<'a>(
+    device: &Dx12Device,
+    desc: &'a api::RayPipelineDesc<Dx12>,
+) -> Result<AdmittedRay<'a>> {
+    device.require_active()?;
     if desc.cache.is_some() {
         // The existing cache persists native ID3D12PipelineState blobs. DXR
         // creates ID3D12StateObject instead; ignoring the supplied cache or
@@ -81,7 +85,7 @@ fn admit_pipeline(desc: &api::RayPipelineDesc<Dx12>) -> Result<AdmittedRay<'_>> 
         || desc.groups.is_empty()
         || desc.max_recursion == 0
         || desc.max_recursion > D3D12_RAYTRACING_MAX_DECLARABLE_TRACE_RECURSION_DEPTH
-        || desc.hit_attribute_bytes > 32
+        || desc.hit_attribute_bytes > D3D12_RAYTRACING_MAX_ATTRIBUTE_SIZE_IN_BYTES
     {
         return Err(Error::Unsupported("DX12 ray pipeline descriptor"));
     }
@@ -174,7 +178,7 @@ pub(crate) fn create_pipeline(
     desc: &api::RayPipelineDesc<Dx12>,
 ) -> Result<Dx12RayPipeline> {
     let ray_device = super::ray_device(device)?;
-    let AdmittedRay { layout, stages } = admit_pipeline(desc)?;
+    let AdmittedRay { layout, stages } = admit_pipeline(device, desc)?;
     let originals: Vec<_> = desc
         .shaders
         .iter()

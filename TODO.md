@@ -117,6 +117,12 @@ non-DXIL stages, local constants above the root budget, unsupported cache,
 recursion and attribute limits, and native register overlap. Creation still
 verifies DXIL export and root signature linkage.
 
+**Pipeline admission after device removal:** On an isolated removed DX12
+device, check that valid raster, mesh, compute and ray descriptors return
+`DeviceLost` both through support and creation. Also cover attachment and
+vertex format support. The active-device check precedes feature probes or
+artifact creation and runs once per pipeline admission.
+
 **Counted indirect draw support:** Compare the query with DX12 recording
 for indexed and non-indexed argument strides and checked offsets, including
 shared argument/count storage and a zero maximum. Verify the reported direct,

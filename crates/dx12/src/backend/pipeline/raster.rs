@@ -57,6 +57,7 @@ impl fluxel_rhi_core::backend::PipelineBackend for Dx12 {
         &pipeline.0.compilation_diagnostics
     }
     fn vertex_format_support(device: &Dx12Device, format: api::VertexFormat) -> Result<()> {
+        device.require_active()?;
         admitted_vertex_format(device, format).map(|_| ())
     }
     fn pipeline_attachment_support(
