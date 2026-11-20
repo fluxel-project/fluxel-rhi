@@ -197,10 +197,11 @@ impl fluxel_rhi_core::backend::SurfaceBackend for Dx12 {
                     && matches!(d.present_mode, api::PresentMode::Immediate)))
             || d.usage.0 != api::SurfaceUsage::RENDER_ATTACHMENT.0
             || !matches!(d.alpha_mode, api::CompositeAlphaMode::Opaque)
-            || !matches!(d.color_space, api::ColorSpace::Srgb)
             || !(1..=16).contains(&d.maximum_frame_latency)
         {
             api::Support::Unsupported("DXGI flip-model surface configuration")
+        } else if !output::supports_color_space(&surface.0, d.format, d.color_space) {
+            api::Support::Unsupported("DXGI surface color space for this format and output")
         } else {
             api::Support::Supported(())
         }
@@ -245,11 +246,10 @@ impl fluxel_rhi_core::backend::SurfaceBackend for Dx12 {
 }
 
 fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
-    if !matches!(
-        <Dx12 as fluxel_rhi_core::backend::SurfaceBackend>::supports_config(s, d),
-        api::Support::Supported(())
-    ) {
-        return Err(Error::Unsupported("DXGI flip-model surface configuration"));
+    if let api::Support::Unsupported(reason) =
+        <Dx12 as fluxel_rhi_core::backend::SurfaceBackend>::supports_config(s, d)
+    {
+        return Err(Error::Unsupported(reason));
     }
     let format = swapchain_format(d.format).ok_or(Error::InvalidState)?;
     // Keep the tearing creation flag stable through ResizeBuffers. DXGI
@@ -329,6 +329,13 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
         // SAFETY: latency is a cast of the retained current swapchain and the
         // configured value has already passed the RHI capability validation.
         unsafe { latency.SetMaximumFrameLatency(d.maximum_frame_latency) }.map_err(error)?;
+        if d.color_space != api::ColorSpace::Srgb && !output::hdr_active(&s.0)? {
+            return Err(Error::SurfaceOutdated);
+        }
+        output::set_swapchain_color_space(
+            i.chain.as_ref().ok_or(Error::SurfaceLost)?,
+            d.color_space,
+        )?;
         rebuild_rtvs(&s.0.device, &mut i, d.format)
     })();
     if let Err(error) = post_resize {
@@ -426,6 +433,15 @@ fn surface_format_supported(device: &Dx12Device, format: api::TextureFormat) -> 
 }
 
 fn caps(surface: &SurfaceState) -> api::SurfaceCapabilities {
+    let mut color_spaces = vec![api::ColorSpace::Srgb];
+    if output::hdr_active(surface).unwrap_or(false) {
+        if surface_format_supported(&surface.device, api::TextureFormat::Rgba16Float) {
+            color_spaces.push(api::ColorSpace::ExtendedLinearSrgb);
+        }
+        if surface_format_supported(&surface.device, api::TextureFormat::Rgb10a2Unorm) {
+            color_spaces.push(api::ColorSpace::Hdr10);
+        }
+    }
     api::SurfaceCapabilities {
         formats: [
             api::TextureFormat::Bgra8Unorm,
@@ -444,7 +460,7 @@ fn caps(surface: &SurfaceState) -> api::SurfaceCapabilities {
             vec![api::PresentMode::Fifo]
         },
         alpha_modes: vec![api::CompositeAlphaMode::Opaque],
-        color_spaces: vec![api::ColorSpace::Srgb],
+        color_spaces,
         usages: api::SurfaceUsage::RENDER_ATTACHMENT,
         min_extent: [1, 1],
         max_extent: [16384, 16384],

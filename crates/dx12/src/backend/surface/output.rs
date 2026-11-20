@@ -1,22 +1,92 @@
 //! Resolves the host HWND's current monitor to an active DXGI output.
 
-use fluxel_rhi_core::api::{ColorSpace, Result, SurfaceOutputInfo};
+use fluxel_rhi_core::api::{ColorSpace, Error, Result, SurfaceOutputInfo, TextureFormat};
 use windows::{
     Win32::Graphics::{
         Dxgi::{
             Common::{
                 DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
-                DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020,
+                DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020, DXGI_COLOR_SPACE_TYPE,
             },
             CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_ERROR_NOT_FOUND, DXGI_OUTPUT_DESC1,
-            IDXGIFactory4, IDXGIOutput6,
+            DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT, IDXGIFactory4, IDXGIOutput6,
+            IDXGISwapChain3,
         },
         Gdi::{MONITOR_DEFAULTTONULL, MonitorFromWindow},
     },
     core::Interface,
 };
 
-use super::{SurfaceState, error};
+use super::{SurfaceState, error, swapchain_format};
+
+pub(super) fn hdr_active(surface: &SurfaceState) -> Result<bool> {
+    Ok(current_output(surface)?
+        .is_some_and(|output| output.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020))
+}
+
+pub(super) fn supports_color_space(
+    surface: &SurfaceState,
+    format: TextureFormat,
+    color_space: ColorSpace,
+) -> bool {
+    if color_space == ColorSpace::Srgb {
+        return true;
+    }
+    if !matches!(
+        (format, color_space),
+        (TextureFormat::Rgba16Float, ColorSpace::ExtendedLinearSrgb)
+            | (TextureFormat::Rgb10a2Unorm, ColorSpace::Hdr10)
+    ) || !hdr_active(surface).unwrap_or(false)
+    {
+        return false;
+    }
+    let chain = surface
+        .inner
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .chain
+        .clone();
+    let Some(chain) = chain else { return true };
+    // SAFETY: the cloned chain is live and GetDesc1 queries its descriptor only.
+    let Ok(desc) = (unsafe { chain.GetDesc1() }) else {
+        return false;
+    };
+    // A different prospective format can only be queried after ResizeBuffers.
+    if Some(desc.Format) != swapchain_format(format) {
+        return true;
+    }
+    native_color_space(color_space)
+        .is_some_and(|native| supports_presentation(&chain, native).unwrap_or(false))
+}
+
+pub(super) fn set_swapchain_color_space(
+    chain: &IDXGISwapChain3,
+    color_space: ColorSpace,
+) -> Result<()> {
+    let native =
+        native_color_space(color_space).ok_or(Error::Unsupported("DXGI surface color space"))?;
+    if color_space != ColorSpace::Srgb && !supports_presentation(chain, native)? {
+        return Err(Error::Unsupported("DXGI swapchain HDR presentation"));
+    }
+    // SAFETY: the new/resized chain is retained and no image is acquired
+    // during configuration. `native` is a selected DXGI color space.
+    unsafe { chain.SetColorSpace1(native) }.map_err(error)
+}
+
+fn native_color_space(color_space: ColorSpace) -> Option<DXGI_COLOR_SPACE_TYPE> {
+    Some(match color_space {
+        ColorSpace::Srgb => DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+        ColorSpace::ExtendedLinearSrgb => DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709,
+        ColorSpace::Hdr10 => DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020,
+        ColorSpace::DisplayP3 => return None,
+    })
+}
+
+fn supports_presentation(chain: &IDXGISwapChain3, native: DXGI_COLOR_SPACE_TYPE) -> Result<bool> {
+    // SAFETY: callers retain the chain and the query does not mutate it.
+    let support = unsafe { chain.CheckColorSpaceSupport(native) }.map_err(error)?;
+    Ok(support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT.0 as u32 != 0)
+}
 
 pub(super) fn info(surface: &SurfaceState) -> Result<Option<SurfaceOutputInfo>> {
     Ok(current_output(surface)?.map(|output| SurfaceOutputInfo {

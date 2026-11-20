@@ -6,16 +6,21 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 ## Active items
 
-### DX12 surface attachment formats
+### DX12 surface attachment formats and HDR
 
 **Status:** Configuration and acquisition retain the selected attachment view
 format, including sRGB views of supported UNORM flip buffers.
 DX12 also exposes current monitor color and luminance facts.
+The HDR routes qualify scRGB and HDR10 against the current output and native
+swapchain. Their real display acceptance is pending.
 
 **Acceptance:** Reconfigure a live HWND between linear and sRGB views and
 observe the format and generation on the acquired images. Exercise matching
 raster pipelines and verify sRGB encoding on a real presentation path.
 Compare output snapshots across a window move between distinct displays.
+Verify HDR10 and scRGB output on an HDR-active monitor, early rejection of
+incorrect format/color-space pairs and HDR on SDR, and reconfiguration after
+an output move or switch to SDR.
 
 ### DX12 upload, completion, and texture transfer verification
 

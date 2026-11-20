@@ -228,6 +228,13 @@ BGRA8 configuration uses UNORM flip-model storage and an sRGB render-target
 view. The raster pipeline matches the leased view format. Render-pass resolve
 still requires compatibility with the underlying typed swapchain resource.
 
+HDR configuration admits scRGB with `Rgba16Float` and HDR10 with
+`Rgb10a2Unorm` on a monitor with active HDR. The final swapchain checks
+native presentation support before setting its color space and publishing
+the new generation. The caller can query the current monitor and reconfigure
+after movement or a change to the system HDR setting. Output snapshots report
+current DXGI color and luminance facts separately from the selected configuration.
+
 ## Capability boundaries
 
 The implemented public route includes graphics and compute, multiple render
