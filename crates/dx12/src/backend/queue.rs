@@ -89,8 +89,20 @@ impl ComputeCommandPool {
     }
 }
 
-/// Queue signal and wait are native GPU operations. The caller holds the
-/// submission gate across multi-operation handoff to preserve packet order.
+/// Checks that a lane can receive another signal under the submission gate.
+pub(crate) fn require_signal_capacity(device: &Dx12Device, ordinal: u32) -> Result<()> {
+    let next = match ordinal {
+        0 => &device.0.next_fence,
+        1 => &device.0.multi_queue.next_fence,
+        _ => return Err(Error::WrongLane),
+    };
+    if next.load(std::sync::atomic::Ordering::Relaxed) == u64::MAX {
+        return Err(Error::InvalidRange);
+    }
+    Ok(())
+}
+
+/// Queues a native signal. The caller holds the submission gate across handoff.
 pub(crate) fn signal(device: &Dx12Device, ordinal: u32) -> Result<u64> {
     let (queue, fence, counter, lock) = match ordinal {
         0 => (

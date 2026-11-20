@@ -949,13 +949,15 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   that an unrelated completion cannot authorize mapping a pending private
   ticket. Shared readback buffers retain explicit caller-provided coverage
   and exclusion from later writes because the ticket cannot own those hazards.
-- **N03, IMPLEMENTING — retryable DX12 partial submission.** Reuse Core's
-  existing `DeferredTail`, `RetryableSubmit`, and `Queue::resume()` contract.
-  DX12 must distinguish rejection before native handoff, a proven accepted
-  prefix with an unwritten tail, and indeterminate native effect. Only the
-  proven-prefix branch may return a resumable tail. The backend reports those
-  facts, and the caller explicitly decides whether to retry. Fault-injection
-  tests cover waits, execute, signal, present, completion, and retention.
+- **N03, VERIFYING — retryable DX12 partial submission.** DX12 returns the
+  unissued suffix when a step fails its clean boundary check for a stale
+  present lease or unavailable lane fence values. Check emergency completion
+  on every accepted lane with `CompletionRequest::None`, rejection of missing,
+  wrong-lane, and pending frontier points, and suffix-only resume with
+  cross-lane dependencies on the completed prefix. Check that uncertain native
+  wait, execute, signal and present handoffs never produce a retryable suffix.
+  Verify one-shot external waits remain unconsumed when the step stops before
+  handoff and are returned in the multi-queue diagnostic tail.
 
 Renderer algorithms, frame pacing, host and decoder lifecycle, cache eviction,
 and asset residency remain owned above RHI.

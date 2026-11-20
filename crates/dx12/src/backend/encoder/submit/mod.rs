@@ -11,6 +11,7 @@
 use super::*;
 
 mod preflight;
+mod tail;
 impl fluxel_rhi_core::backend::CompletionBackend for Dx12 {
     type WaitFuture<'a>
         = super::fence_wait::Dx12FenceFuture
@@ -399,53 +400,6 @@ fn execute_segmented(queue: &ID3D12CommandQueue, work: &Dx12RecordedWork) -> Res
     Ok(())
 }
 
-impl DeferredBackend for Dx12 {
-    type NativeRecordedWork = Dx12RecordedWork;
-    fn finish_encoder(mut encoder: Dx12Encoder, lane: LaneId) -> Result<Dx12RecordedWork, Error> {
-        if encoder.active_occlusion.is_some() || encoder.active_statistics.is_some() {
-            return Err(Error::InvalidState);
-        }
-        // SAFETY: `encoder` exclusively owns its still-open list; Core calls
-        // this once before any list can cross the queue boundary.
-        unsafe { encoder.list.Close() }.map_err(native_error)?;
-        encoder.closed = true;
-        Ok(Dx12RecordedWork { lane, encoder })
-    }
-    unsafe fn submit(device: &Dx12Device, packet: SubmitPacket<Self>) -> SubmitOutcome<Self> {
-        // SAFETY: ordinary submission has the same queue ordering requirements.
-        match unsafe {
-            submit_packet(
-                device,
-                api::MultiQueuePacket {
-                    work: packet,
-                    signals: vec![],
-                    waits: vec![],
-                },
-            )
-        } {
-            api::MultiQueueSubmitOutcome::Accepted(r) => SubmitOutcome::Accepted(r.work),
-            api::MultiQueueSubmitOutcome::Rejected { error, packet } => SubmitOutcome::Rejected {
-                error,
-                work: api::RetryableSubmit::Fresh(packet.work),
-            },
-            api::MultiQueueSubmitOutcome::Indeterminate { error, uncertain } => {
-                SubmitOutcome::Indeterminate { error, uncertain }
-            }
-            api::MultiQueueSubmitOutcome::PartiallyAccepted { .. } => {
-                unreachable!("DX12 reports uncertain native handoffs as indeterminate")
-            }
-        }
-    }
-    // SAFETY: this route issues no native work and returns the owning tail
-    // unchanged, so it cannot advance or discard the accepted frontier.
-    unsafe fn resume(_: &Dx12Device, tail: api::DeferredTail<Self>) -> SubmitOutcome<Self> {
-        SubmitOutcome::Rejected {
-            error: Error::Unsupported("DX12 submit resume"),
-            work: api::RetryableSubmit::Tail(tail),
-        }
-    }
-}
-
 /// A GPU signal retains the exact producer fence and value for one token.
 pub struct Dx12GpuSignal {
     fence: ID3D12Fence,
@@ -458,16 +412,17 @@ impl fluxel_rhi_core::backend::MultiQueueBackend for Dx12 {
         packet: api::MultiQueuePacket<Self>,
     ) -> api::MultiQueueSubmitOutcome<Self> {
         // SAFETY: Core has validated packet identity and the caller's execution relation.
-        unsafe { submit_packet(device, packet) }
+        unsafe { submit_packet(device, packet, 0) }
     }
 }
 
 unsafe fn submit_packet(
     device: &Dx12Device,
     packet: api::MultiQueuePacket<Dx12>,
+    first_step: usize,
 ) -> api::MultiQueueSubmitOutcome<Dx12> {
     use api::MultiQueueSubmitOutcome as Outcome;
-    let prepared = match preflight::packet(device, &packet) {
+    let prepared = match preflight::packet(device, &packet, first_step) {
         Ok(prepared) => prepared,
         Err(error) => return Outcome::Rejected { error, packet },
     };
@@ -550,7 +505,7 @@ unsafe fn submit_packet(
     let mut checkpoints = Vec::new();
     let mut issued = Vec::new();
     let mut sparse_issued = Vec::new();
-    let mut values = Vec::<Option<(u32, u64)>>::new();
+    let mut values = vec![None::<(u32, u64)>; first_step];
     let mut pending_receipts = [Vec::<usize>::new(), Vec::<usize>::new()];
     // A lane is dirty from its most recent native handoff until a fence is
     // queued after it.  Terminal ownership and checkpoints use that same
@@ -582,11 +537,38 @@ unsafe fn submit_packet(
             }
         };
     }
-    for step in steps {
+    let mut steps = steps.into_iter();
+    let mut stopped = None;
+    while let Some(step) = steps.next() {
         let id = step.step;
         let desc = &plan.steps()[id.index as usize];
         let lane = desc.lane;
+        // The lease can become stale after Core validates the packet. Check
+        // before any native wait or token consumption for this step, so the
+        // full step and remaining tail can still be returned to the caller.
+        let admission = if matches!(&step.payload, StepPayload::Present(binding) if !binding.image().is_current())
+        {
+            Err(Error::SurfaceOutdated)
+        } else if !lane_dirty[lane.ordinal as usize] {
+            // Admit a new lane prefix only if it can receive a native fence
+            // value. An already-dirty lane has reserved no new values since
+            // this check, under the same submission gate.
+            super::super::queue::require_signal_capacity(device, lane.ordinal)
+        } else {
+            Ok(())
+        };
+        if let Err(error) = admission {
+            stopped = Some((
+                error,
+                std::iter::once(step).chain(steps).collect::<Vec<_>>(),
+            ));
+            break;
+        }
         for dependency in &desc.waits {
+            if (dependency.previous.index as usize) < first_step {
+                // Resume requires actual completion on each accepted lane.
+                continue;
+            }
             let producer_lane = plan.steps()[dependency.previous.index as usize]
                 .lane
                 .ordinal;
@@ -804,9 +786,15 @@ unsafe fn submit_packet(
                 uncertain: unsafe { api::NativeUncertainty::from_native(plan.id().device, ()) },
             };
         }
-        if matches!(completion, api::CompletionRequest::End) {
+        if stopped.is_some() || matches!(completion, api::CompletionRequest::End) {
             for (ordinal, frontier) in frontiers.into_iter().enumerate() {
                 if let Some((lane, step)) = frontier {
+                    if checkpoints
+                        .iter()
+                        .any(|p| p.covers.lane_frontiers.as_slice() == [(lane, step)])
+                    {
+                        continue;
+                    }
                     checkpoints.push(checkpoint(
                         device,
                         plan.id().device,
@@ -819,7 +807,7 @@ unsafe fn submit_packet(
         }
         retire(device);
     }
-    Outcome::Accepted(api::MultiQueueReceipt {
+    let receipt = api::MultiQueueReceipt {
         work: SubmissionReceipt {
             device: plan.id().device,
             index: None,
@@ -828,7 +816,23 @@ unsafe fn submit_packet(
             presents,
         },
         signals: tokens,
-    })
+    };
+    if let Some((error, pending)) = stopped {
+        return tail::stopped(
+            error,
+            receipt,
+            api::MultiQueuePacket {
+                work: SubmitPacket {
+                    plan,
+                    steps: pending,
+                    completion,
+                },
+                signals,
+                waits: waits.into_iter().flatten().collect(),
+            },
+        );
+    }
+    Outcome::Accepted(receipt)
 }
 
 #[cfg(test)]

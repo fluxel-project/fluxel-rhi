@@ -41,6 +41,13 @@ impl<B: Backend> CompletionPoint<B> {
     pub fn device(&self) -> DeviceId {
         self.device
     }
+    /// # Safety
+    /// Backend inspection only. Preserve the point's native fence identity
+    /// and lifetime when checking completion provenance.
+    #[doc(hidden)]
+    pub unsafe fn native_ref(&self) -> &B::NativeCompletion {
+        &self.native
+    }
 }
 pub enum CompletionState {
     Pending,
@@ -501,7 +508,9 @@ impl<B: DeferredBackend> Queue<B> {
         outcome
     }
     /// # Safety
-    /// Caller has observed every checkpoint in the accepted frontier.
+    /// The plan, next step and accepted frontier must come from the same
+    /// partial submission. The caller has observed every frontier checkpoint
+    /// complete. Replacement tail payloads must obey the original plan.
     pub unsafe fn resume(&self, tail: DeferredTail<B>) -> SubmitOutcome<B> {
         // Revalidation guards Core-owned structural facts; the caller's unsafe
         // obligation remains proving completion of the accepted frontier.

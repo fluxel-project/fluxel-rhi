@@ -284,6 +284,15 @@ its lane remains eligible for fence retirement. Work without a covering
 signal stays in quarantine. The packet still reports an indeterminate
 handoff when the failed operation leaves its exact accepted prefix unknown.
 
+Before issuing a step, DX12 checks that its present lease is still current
+and that each newly active lane can receive a fence value. A clean failure
+returns the untouched suffix. When earlier steps issued, DX12 signals their
+dirty lanes and returns a covering checkpoint for every accepted lane.
+Ordinary queue resume verifies those fences and executes only the suffix.
+Multi-queue packets return one-shot waits for untouched steps in their
+diagnostic tail. Native handoffs with uncertain effects retain their owners
+through the existing quarantine path.
+
 New primary and secondary encoders, idle waits, and packet admission check
 the native device removal status before allocating command objects or
 handing work to a queue. A removal observed after admission still follows

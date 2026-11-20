@@ -14,9 +14,17 @@ pub(super) struct PreparedPacket {
 pub(super) fn packet(
     device: &Dx12Device,
     packet: &api::MultiQueuePacket<Dx12>,
+    first: usize,
 ) -> Result<PreparedPacket, Error> {
-    for (index, step) in packet.work.steps.iter().enumerate() {
+    if first.checked_add(packet.work.steps.len()) != Some(packet.work.plan.steps().len()) {
+        return Err(Error::InvalidState);
+    }
+    for (offset, step) in packet.work.steps.iter().enumerate() {
+        let index = first + offset;
         let desc = &packet.work.plan.steps()[index];
+        if step.step != packet.work.plan.step(index) {
+            return Err(Error::InvalidState);
+        }
         if desc.lane.device != packet.work.plan.id().device || desc.lane.ordinal > 1 {
             return Err(Error::WrongLane);
         }
