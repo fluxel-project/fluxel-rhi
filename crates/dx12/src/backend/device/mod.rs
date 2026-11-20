@@ -330,6 +330,7 @@ impl Dx12 {
                     } else {
                         0
                     },
+                    mesh_shader_limits: mesh_supported.then_some(mesh::SHADER_LIMITS),
                     max_ray_dispatch_count: if ray_supported {
                         D3D12_RAYTRACING_MAX_RAY_GENERATION_SHADER_THREADS
                     } else {

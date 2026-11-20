@@ -272,6 +272,8 @@ pub struct DeviceLimits {
     pub max_mesh_workgroup_total_count: u32,
     /// Uniform ceiling for each axis of an outer mesh dispatch. Zero is unreported.
     pub max_mesh_workgroups_per_dimension: u32,
+    /// Shader declaration and payload limits for the mesh/task stages.
+    pub mesh_shader_limits: Option<MeshShaderLimits>,
     /// Maximum total number of ray-generation invocations in one trace.
     /// Zero means unreported or unavailable.
     pub max_ray_dispatch_count: u32,
@@ -286,6 +288,18 @@ pub struct DeviceLimits {
     /// Zero leaves this limit to backend descriptor admission.
     pub max_uniform_buffer_binding_size: u64,
     pub storage_offset_alignment: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MeshShaderLimits {
+    pub max_mesh_workgroup_invocations: u32,
+    pub max_task_workgroup_invocations: u32,
+    pub max_mesh_output_vertices: u32,
+    pub max_mesh_output_primitives: u32,
+    pub max_task_payload_bytes: u32,
+    pub max_mesh_output_bytes: u32,
+    /// Combined payload and output budget when the backend uses a shared limit.
+    pub max_task_payload_and_mesh_output_bytes: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

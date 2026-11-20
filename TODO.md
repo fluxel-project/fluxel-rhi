@@ -10,9 +10,12 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 **Status:** Mesh pipelines and topology queries share admission for native
 line-list and triangle-list output. Point and strip output are unavailable.
+DX12 reports the mesh and task shader limits on mesh-capable devices.
 
 **Acceptance:** Verify line and triangle output on a supporting GPU and
 reject unsupported topologies and shader/PSO topology mismatches.
+Check shader declaration admission against the reported invocation, output,
+and combined task payload limits.
 
 ### DX12 acceleration structure refit
 

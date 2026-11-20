@@ -16,6 +16,15 @@ use windows::{Win32::Graphics::Direct3D12::*, core::Interface};
 pub(super) const MAX_DISPATCH_WORKGROUPS_PER_DIMENSION: u32 =
     D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION;
 pub(super) const MAX_DISPATCH_WORKGROUPS: u32 = 1 << 22;
+pub(super) const SHADER_LIMITS: api::MeshShaderLimits = api::MeshShaderLimits {
+    max_mesh_workgroup_invocations: 128,
+    max_task_workgroup_invocations: 128,
+    max_mesh_output_vertices: 256,
+    max_mesh_output_primitives: 256,
+    max_task_payload_bytes: 16 * 1024,
+    max_mesh_output_bytes: 32 * 1024,
+    max_task_payload_and_mesh_output_bytes: Some(47 * 1024),
+};
 
 pub(crate) struct MeshPipelineState {
     pub(crate) layout: Arc<PipelineLayoutState>,
