@@ -98,6 +98,7 @@ pub enum DeviceCapacity {
     ColorAttachments(u32),
     VertexBuffers(u32),
     VertexAttributes(u32),
+    VertexBufferArrayStride(u32),
     ComputeWorkgroups([u32; 3]),
     ComputeWorkgroupSize([u32; 3]),
     ComputeInvocationsPerWorkgroup(u32),
@@ -119,6 +120,7 @@ impl DeviceCapacity {
             Self::ColorAttachments(min) => limits.max_color_attachments >= min,
             Self::VertexBuffers(min) => limits.max_vertex_buffers >= min,
             Self::VertexAttributes(min) => limits.max_vertex_attributes >= min,
+            Self::VertexBufferArrayStride(min) => limits.max_vertex_buffer_array_stride >= min,
             Self::ComputeWorkgroups(min) => limits
                 .max_compute_workgroups
                 .into_iter()

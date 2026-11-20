@@ -275,8 +275,14 @@ impl<B: PipelineBackend> Device<B> {
         {
             return Err(Error::WrongDevice);
         }
+        let stride_limit = u64::from(self.caps.limits.max_vertex_buffer_array_stride);
         if desc.color_targets.len() > self.caps.limits.max_color_attachments as usize
             || desc.vertex_buffers.len() > self.caps.limits.max_vertex_buffers as usize
+            || (stride_limit != 0
+                && desc
+                    .vertex_buffers
+                    .iter()
+                    .any(|buffer| buffer.stride > stride_limit))
             || desc
                 .vertex_buffers
                 .iter()

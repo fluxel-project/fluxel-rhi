@@ -6,8 +6,9 @@
 
 use super::*;
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_REQ_TEXTURE1D_U_DIMENSION, D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION,
-    D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION, D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION,
+    D3D12_REQ_MULTI_ELEMENT_STRUCTURE_SIZE_IN_BYTES, D3D12_REQ_TEXTURE1D_U_DIMENSION,
+    D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION, D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION,
+    D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION,
 };
 use windows::Win32::Graphics::Dxgi::{
     DXGI_ADAPTER_DESC1, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_UNSUPPORTED,
@@ -433,6 +434,7 @@ impl Dx12 {
                     max_buffer_bytes,
                     max_vertex_buffers: 32,
                     max_vertex_attributes: 32,
+                    max_vertex_buffer_array_stride: D3D12_REQ_MULTI_ELEMENT_STRUCTURE_SIZE_IN_BYTES,
                     max_compute_workgroups: compute::MAX_DISPATCH_GROUPS,
                     max_compute_workgroup_size: compute::MAX_WORKGROUP_SIZE,
                     max_compute_invocations_per_workgroup: compute::MAX_WORKGROUP_INVOCATIONS,

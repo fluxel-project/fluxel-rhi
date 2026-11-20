@@ -627,6 +627,9 @@ pub struct DeviceLimits {
     pub max_buffer_bytes: u64,
     pub max_vertex_buffers: u32,
     pub max_vertex_attributes: u32,
+    /// Maximum byte stride for a vertex buffer. Zero leaves the limit to the
+    /// backend's pipeline admission checks.
+    pub max_vertex_buffer_array_stride: u32,
     pub max_compute_workgroups: [u32; 3],
     pub max_compute_workgroup_size: [u32; 3],
     /// Combined invocation limit across all axes of one compute workgroup.
