@@ -456,6 +456,9 @@ points, retires a recycled resource only after its covering completion, and
 records CPU submit and GPU timings. Do not migrate all numbered examples to
 this harness.
 
+Inject retirement registration failure on one DX12 lane and verify that
+work on the other lane still retires autonomously at its own fence.
+
 ### P4-AS-ARRAY-VK — Vulkan fixed acceleration-structure arrays
 
 **Status:** Unavailable; the bounded reconstruction failed and temporary

@@ -707,6 +707,7 @@ unsafe fn submit_packet(
         // Register only after every owner for that lane has entered its
         // in-flight store, otherwise a fast completion could retire an earlier
         // subset and strand later ownership without another API call.
+        let mut retirement_error = None;
         for ordinal in 0..2 {
             if retained_lanes[ordinal] || (ordinal == 0 && retained_sparse) {
                 if let Err(error) = retirement::register(
@@ -714,17 +715,19 @@ unsafe fn submit_packet(
                     ordinal as u32,
                     lane_values[ordinal].expect("retained lane has a terminal fence"),
                 ) {
-                    // Handoff and query commit have already occurred. The
-                    // in-flight stores retain every owner, so report the
-                    // truthful uncertain boundary rather than Accepted.
-                    return Outcome::Indeterminate {
-                        error,
-                        uncertain: unsafe {
-                            api::NativeUncertainty::from_native(plan.id().device, ())
-                        },
-                    };
+                    // The other lane still needs its own observation even
+                    // when this lane falls back to quarantine.
+                    retirement_error.get_or_insert(error);
                 }
             }
+        }
+        if let Some(error) = retirement_error {
+            // Handoff has happened and in-flight stores retain each owner.
+            return Outcome::Indeterminate {
+                error,
+                // SAFETY: the backend retains work already issued on this device.
+                uncertain: unsafe { api::NativeUncertainty::from_native(plan.id().device, ()) },
+            };
         }
         if matches!(completion, api::CompletionRequest::End) {
             for (ordinal, frontier) in frontiers.into_iter().enumerate() {
