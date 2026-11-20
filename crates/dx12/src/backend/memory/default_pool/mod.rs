@@ -179,7 +179,7 @@ impl DefaultResourcePool {
     /// process segment reports. It intentionally excludes every resource that
     /// is not backed by a retained default-pool page.
     pub(crate) fn snapshot(&self) -> Result<MemorySnapshot> {
-        let mut state = self.inner.lock().map_err(|_| Error::InvalidState)?;
+        let state = self.inner.lock().map_err(|_| Error::InvalidState)?;
         let (
             reserved_bytes,
             live_range_bytes,
@@ -188,8 +188,6 @@ impl DefaultResourcePool {
             idle_page_count,
             live_allocation_count,
         ) = pool_totals(&state);
-        state.peak_reserved_bytes = state.peak_reserved_bytes.max(reserved_bytes);
-        state.peak_live_range_bytes = state.peak_live_range_bytes.max(live_range_bytes);
         let allocator = AllocatorMemorySnapshot {
             source: AllocatorMemorySource::Dx12DefaultResourcePool,
             reserved_bytes,
@@ -201,10 +199,13 @@ impl DefaultResourcePool {
             idle_page_count,
             live_allocation_count,
         };
-        let native_reports = dxgi_reports(&state);
+        // Process usage changes independently of resource leases. Release
+        // the pool lock before entering DXGI so allocations can continue.
+        let budget_adapter = state.budget_adapter.clone();
+        drop(state);
         Ok(MemorySnapshot {
             allocator: Some(allocator),
-            native_reports,
+            native_reports: dxgi_reports(budget_adapter.as_ref()),
         })
     }
 
@@ -258,7 +259,7 @@ fn record_peaks(state: &mut PoolState) {
     state.peak_live_range_bytes = state.peak_live_range_bytes.max(live_range_bytes);
 }
 
-fn dxgi_reports(state: &PoolState) -> Vec<NativeMemoryReport> {
+fn dxgi_reports(adapter: Option<&IDXGIAdapter3>) -> Vec<NativeMemoryReport> {
     [
         (
             DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
@@ -272,8 +273,8 @@ fn dxgi_reports(state: &PoolState) -> Vec<NativeMemoryReport> {
     .into_iter()
     .map(|(segment, scope)| {
         let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
-        let available = state.budget_adapter.as_ref().is_some_and(|adapter| {
-            // SAFETY: the adapter is retained by the pool and the initialized
+        let available = adapter.is_some_and(|adapter| {
+            // SAFETY: the adapter remains retained and the initialized
             // output structure remains valid for this synchronous DXGI query.
             unsafe { adapter.QueryVideoMemoryInfo(0, segment, &mut info) }.is_ok()
                 && info.Budget > 0
