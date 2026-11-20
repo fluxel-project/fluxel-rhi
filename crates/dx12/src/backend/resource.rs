@@ -231,8 +231,11 @@ impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
     ) -> Result<Dx12BindGroupLayout> {
         descriptor::create_bind_group_layout(device, desc)
     }
-    fn bind_group_layout_support(_: &Dx12Device, desc: &api::BindGroupLayoutDesc) -> Result<()> {
-        descriptor::bind_group_layout_support(desc)
+    fn bind_group_layout_support(
+        device: &Dx12Device,
+        desc: &api::BindGroupLayoutDesc,
+    ) -> Result<()> {
+        descriptor::bind_group_layout_support(device, desc)
     }
     fn create_bind_group(
         device: &Dx12Device,

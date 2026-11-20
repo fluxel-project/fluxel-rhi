@@ -98,6 +98,12 @@ pub(crate) fn create_pipeline_layout(
     device: &Dx12Device,
     desc: &api::PipelineLayoutDesc<'_, Dx12>,
 ) -> Result<Dx12PipelineLayout> {
+    let slots = desc.groups.iter().flat_map(|layout| {
+        // SAFETY: Core validates every group layout's device before calling
+        // the SPI. This read borrows only its immutable descriptor metadata.
+        unsafe { layout.native_ref() }.0.slots.iter()
+    });
+    descriptor::validate_table_limits(slots, device.0.descriptor_table_limits)?;
     // Layout group position is the DXIL register space. View and sampler
     // tables are separate; dynamic uniform bindings use root descriptors.
     let mut ranges: Vec<Vec<D3D12_DESCRIPTOR_RANGE>> = Vec::with_capacity(desc.groups.len() * 2);

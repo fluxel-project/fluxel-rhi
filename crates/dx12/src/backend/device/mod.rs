@@ -5,9 +5,15 @@
 //! infer resource uses or build an execution schedule.
 
 mod adapter;
+mod descriptor_limits;
 mod shader_model;
 
 use super::*;
+#[cfg(test)]
+use adapter::REQUESTED_ADAPTER_UNAVAILABLE;
+use adapter::adapter_at;
+#[cfg(all(test, feature = "hardware-tests"))]
+use adapter::adapter_name;
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, D3D12_FEATURE_ARCHITECTURE,
     D3D12_FEATURE_DATA_ARCHITECTURE, D3D12_RAYTRACING_MAX_DECLARABLE_TRACE_RECURSION_DEPTH,
@@ -19,11 +25,6 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION, D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION,
     D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION, D3D12_RESOURCE_BINDING_TIER_3,
 };
-#[cfg(test)]
-use adapter::REQUESTED_ADAPTER_UNAVAILABLE;
-use adapter::adapter_at;
-#[cfg(all(test, feature = "hardware-tests"))]
-use adapter::adapter_name;
 use windows::Win32::Graphics::Dxgi::DXGI_ERROR_UNSUPPORTED;
 
 impl InstanceBackend for Dx12 {
@@ -203,6 +204,8 @@ impl Dx12 {
                 != windows::Win32::Graphics::Direct3D12::D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED;
             let resource_heap_tier2 = options.ResourceHeapTier.0
                 >= windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_HEAP_TIER_2.0;
+            let descriptor_table_limits =
+                descriptor_limits::query(&native, options.ResourceBindingTier);
             let mut options12 =
                 windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS12::default();
             // SAFETY: as above, the feature structure exactly matches the
@@ -272,6 +275,7 @@ impl Dx12 {
                 ]),
                 limits: DeviceLimits {
                     max_bind_groups: 8,
+                    descriptor_table_limits: Some(descriptor_table_limits),
                     max_bindings_per_group: 64,
                     max_dynamic_uniform_buffers_per_pipeline_layout: if options.ResourceBindingTier
                         == D3D12_RESOURCE_BINDING_TIER_3
@@ -434,6 +438,7 @@ impl Dx12 {
             Ok((
                 Dx12Device(Arc::new(Dx12DeviceState {
                     native: native.clone(),
+                    descriptor_table_limits,
                     shader_model,
                     subgroup_widths,
                     max_buffer_bytes,

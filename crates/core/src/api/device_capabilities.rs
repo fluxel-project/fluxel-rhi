@@ -215,6 +215,9 @@ pub enum DeviceMemoryTopology {
 pub struct DeviceLimits {
     pub max_bind_groups: u32,
     pub max_bindings_per_group: u32,
+    /// Shared descriptor-table ceilings for one pipeline layout, when the
+    /// backend exposes this model. Arrays consume their declared capacity.
+    pub descriptor_table_limits: Option<DescriptorTableLimits>,
     /// Upper bound on dynamic uniform buffer slots in one pipeline layout.
     /// Mixed layouts can have tighter limits. Zero means unreported.
     pub max_dynamic_uniform_buffers_per_pipeline_layout: u32,
@@ -264,4 +267,17 @@ pub struct DeviceLimits {
     /// Zero leaves this limit to backend descriptor admission.
     pub max_uniform_buffer_binding_size: u64,
     pub storage_offset_alignment: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DescriptorTableLimits {
+    pub uniform_buffers: u32,
+    /// Sampled textures, read-only storage buffers and acceleration structures.
+    pub read_only_resources: u32,
+    /// Storage textures and writable storage buffers.
+    pub writable_resources: u32,
+    pub samplers: u32,
+    /// The three resource classes share this additional ceiling. Samplers and
+    /// bindings represented by root descriptors are counted separately.
+    pub total_resource_descriptors: u32,
 }

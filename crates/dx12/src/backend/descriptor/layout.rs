@@ -4,17 +4,23 @@ use super::*;
 
 /// Validates descriptor ABI and the DXIL register ranges for a group.
 pub(crate) fn create_bind_group_layout(
-    _: &Dx12Device,
+    device: &Dx12Device,
     desc: &api::BindGroupLayoutDesc,
 ) -> Result<Dx12BindGroupLayout> {
-    Ok(Dx12BindGroupLayout(Arc::new(layout_state(desc)?)))
+    Ok(Dx12BindGroupLayout(Arc::new(layout_state(device, desc)?)))
 }
 
-pub(crate) fn bind_group_layout_support(desc: &api::BindGroupLayoutDesc) -> Result<()> {
-    layout_state(desc).map(drop)
+pub(crate) fn bind_group_layout_support(
+    device: &Dx12Device,
+    desc: &api::BindGroupLayoutDesc,
+) -> Result<()> {
+    layout_state(device, desc).map(drop)
 }
 
-fn layout_state(desc: &api::BindGroupLayoutDesc) -> Result<BindGroupLayoutState> {
+fn layout_state(
+    device: &Dx12Device,
+    desc: &api::BindGroupLayoutDesc,
+) -> Result<BindGroupLayoutState> {
     let mut slots = Vec::with_capacity(desc.entries.len());
     let mut previous = None;
     for entry in &desc.entries {
@@ -160,6 +166,7 @@ fn layout_state(desc: &api::BindGroupLayoutDesc) -> Result<BindGroupLayoutState>
             _ => return Err(Error::Unsupported("DX12 bind-group binding type")),
         }
     }
+    validate_table_limits(slots.iter(), device.0.descriptor_table_limits)?;
     Ok(BindGroupLayoutState {
         slots,
         buffer_entries: desc

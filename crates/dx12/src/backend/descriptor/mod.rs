@@ -44,8 +44,8 @@ mod write;
 pub(crate) use group::create_bind_group;
 pub(crate) use layout::{bind_group_layout_support, create_bind_group_layout};
 
-const VIEW_CAPACITY: u32 = 65_536;
-const SAMPLER_CAPACITY: u32 = 2_048;
+pub(super) const VIEW_CAPACITY: u32 = 65_536;
+pub(super) const SAMPLER_CAPACITY: u32 = 2_048;
 const CPU_VIEW_PAGE_CAPACITY: u32 = 1_024;
 /// Keep one empty page of each CPU-only descriptor heap type ready for reuse.
 /// More would make idle RTV/DSV memory depend on historical demand.
@@ -417,6 +417,38 @@ pub(crate) enum DescriptorClass {
     Srv,
     Uav,
     Sampler,
+}
+
+/// The root signatures use ALL visibility for descriptor tables. Limits
+/// therefore apply to the full set of declared ranges, including ranges that
+/// are only partly populated at bind-group creation.
+pub(super) fn validate_table_limits<'a>(
+    slots: impl Iterator<Item = &'a BindingSlot>,
+    limits: api::DescriptorTableLimits,
+) -> Result<()> {
+    let mut cbv = 0u64;
+    let mut srv = 0u64;
+    let mut uav = 0u64;
+    let mut samplers = 0u64;
+    for slot in slots {
+        let count = u64::from(slot.descriptor_count);
+        match slot.class {
+            DescriptorClass::Cbv if !slot.dynamic_offset => cbv += count,
+            DescriptorClass::Cbv => {}
+            DescriptorClass::Srv => srv += count,
+            DescriptorClass::Uav => uav += count,
+            DescriptorClass::Sampler => samplers += count,
+        }
+    }
+    if cbv > u64::from(limits.uniform_buffers)
+        || srv > u64::from(limits.read_only_resources)
+        || uav > u64::from(limits.writable_resources)
+        || samplers > u64::from(limits.samplers)
+        || cbv + srv + uav > u64::from(limits.total_resource_descriptors)
+    {
+        return Err(Error::Unsupported("DX12 descriptor table capacity"));
+    }
+    Ok(())
 }
 
 #[derive(Clone)]

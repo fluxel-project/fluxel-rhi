@@ -98,6 +98,13 @@ same capability snapshot returned to the caller. DX12 checks these requirements
 after native device probing and before creating queues, fences, or descriptor
 heaps.
 
+Descriptor-table limits combine D3D12 binding-tier ceilings and the
+shader-visible heap capacities used by this backend. A layout reserves the
+declared maximum for each range, including runtime-sized arrays. Root
+descriptors for dynamic uniform buffers use the root signature budget.
+Tables declare visibility to all stages, so pipeline layout admission checks
+the combined ranges before serializing the root signature.
+
 The optional debug callback is a diagnostic aid. It does not make driver
 validation output a substitute for completion or visual correctness.
 
