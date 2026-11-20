@@ -55,6 +55,7 @@ mod retirement;
 pub(crate) mod secondary;
 mod submit;
 pub(super) use submit::retire;
+mod texture_upload;
 mod transition;
 pub(crate) mod upload;
 pub(crate) use blit_compute::BlitComputeCache;
@@ -67,8 +68,7 @@ pub(super) use raster::barrier;
 pub(crate) use raster::multiview_compatible;
 pub(crate) use secondary::{Dx12SecondaryEncoder, Dx12SecondaryWork};
 pub(super) use transition::{
-    barrier_sub, buffer_state, copy_location, needs_uav_barrier, texture_state,
-    texture_upload_buffer, uav_barrier,
+    barrier_sub, buffer_state, copy_location, needs_uav_barrier, texture_state, uav_barrier,
 };
 
 fn restore_after_internal_draw(encoder: &mut Dx12Encoder) -> Result<(), Error> {

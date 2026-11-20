@@ -332,50 +332,6 @@ pub(crate) fn copy_location(
     }
 }
 
-pub(crate) fn texture_upload_buffer(
-    device: &windows::Win32::Graphics::Direct3D12::ID3D12Device,
-    size: u64,
-) -> Result<ID3D12Resource, Error> {
-    let heap = D3D12_HEAP_PROPERTIES {
-        Type: D3D12_HEAP_TYPE_UPLOAD,
-        CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-        MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
-        CreationNodeMask: 1,
-        VisibleNodeMask: 1,
-    };
-    let desc = D3D12_RESOURCE_DESC {
-        Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-        Alignment: 0,
-        Width: size,
-        Height: 1,
-        DepthOrArraySize: 1,
-        MipLevels: 1,
-        Format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN,
-        SampleDesc: windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC {
-            Count: 1,
-            Quality: 0,
-        },
-        Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-        Flags: D3D12_RESOURCE_FLAG_NONE,
-    };
-    let mut output: Option<ID3D12Resource> = None;
-    // SAFETY: the fully initialized heap/resource descriptors are local to the
-    // call and D3D12 writes the returned COM resource into `output` only.
-    unsafe {
-        device.CreateCommittedResource(
-            &heap,
-            D3D12_HEAP_FLAG_NONE,
-            &desc,
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            None,
-            &mut output,
-        )
-    }
-    .map_err(native_error)?;
-    output
-        .ok_or_else(|| Error::Backend("DX12 texture upload allocation returned no resource".into()))
-}
-
 #[cfg(test)]
 #[path = "../../tests/backend/encoder/transition.rs"]
 mod tests;

@@ -143,6 +143,11 @@ buffer and requires the declared copy state. These helpers insert only their
 own required native transitions. They do not infer transitions or hazards for
 ordinary caller-owned resources.
 
+CPU texture writes repack caller rows into encoder-owned upload pages using
+the native row pitch and placement alignment. The same pages serve buffer
+writes, and submitted pages stay checked out until the covering queue fence
+retires the encoder.
+
 ## Shader and pipeline routes
 
 Shader route selection is explicit and precedes pipeline creation:

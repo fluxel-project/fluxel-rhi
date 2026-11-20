@@ -42,7 +42,7 @@ pub(super) fn write_buffer_with(
     } else if let Some(source) =
         encoder
             .upload_arena
-            .write_with(&encoder.device.0.native, size, writer)?
+            .write_with(&encoder.device.0.native, size, ALIGNMENT, writer)?
     {
         record_copy(encoder, dst, offset, len, source);
     }
@@ -215,7 +215,7 @@ impl UploadArena {
         bytes: &[u8],
     ) -> Result<(ID3D12Resource, u64)> {
         let len = u64::try_from(bytes.len()).map_err(|_| Error::InvalidRange)?;
-        let (page, start) = self.reserve(device, len)?;
+        let (page, start) = self.reserve(device, len, ALIGNMENT)?;
         // SAFETY: reserve checked the mapped range and caller memory cannot
         // alias this private arena.
         unsafe {
@@ -224,14 +224,15 @@ impl UploadArena {
         Ok(page.finish_write(start, len))
     }
 
-    fn write_with(
+    pub(super) fn write_with(
         &mut self,
         device: &ID3D12Device,
         size: usize,
+        alignment: u64,
         writer: impl FnOnce(&mut [u8]) -> bool,
     ) -> Result<Option<(ID3D12Resource, u64)>> {
         let len = u64::try_from(size).map_err(|_| Error::InvalidRange)?;
-        let (page, start) = self.reserve(device, len)?;
+        let (page, start) = self.reserve(device, len, alignment)?;
         let ptr = page.ptr(start)?;
         // SAFETY: reserve checked this entire range is exclusively writable.
         // Clear recycled storage before exposing an initialized slice.
@@ -242,14 +243,20 @@ impl UploadArena {
         Ok(written.then(|| page.finish_write(start, len)))
     }
 
-    fn reserve(&mut self, device: &ID3D12Device, len: u64) -> Result<(&mut Page, u64)> {
+    fn reserve(
+        &mut self,
+        device: &ID3D12Device,
+        len: u64,
+        alignment: u64,
+    ) -> Result<(&mut Page, u64)> {
+        debug_assert!(alignment.is_power_of_two());
         if len == 0 {
             return Err(Error::InvalidRange);
         }
         let available = self.pages.last().and_then(|p| {
             p.cursor
-                .checked_add(ALIGNMENT - 1)
-                .map(|n| n & !(ALIGNMENT - 1))
+                .checked_add(alignment - 1)
+                .map(|n| n & !(alignment - 1))
                 .and_then(|start| {
                     start
                         .checked_add(len)
