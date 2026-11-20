@@ -99,6 +99,10 @@ pub(super) fn view(
     }
     let depth = is_depth(desc.format);
     let array = desc.array_layers > 1 || v.dimension == api::TextureViewDimension::D2Array;
+    let cube = matches!(
+        v.dimension,
+        api::TextureViewDimension::Cube | api::TextureViewDimension::CubeArray
+    );
     if !match desc.dimension {
         api::TextureDimension::D1 => v.dimension == api::TextureViewDimension::D1,
         api::TextureDimension::D2 => matches!(
@@ -111,17 +115,15 @@ pub(super) fn view(
         api::TextureDimension::D3 => v.dimension == api::TextureViewDimension::D3,
     } || (v.dimension == api::TextureViewDimension::D2
         && v.layers.start.checked_add(1) != Some(v.layers.end))
-        || (matches!(
-            v.dimension,
-            api::TextureViewDimension::Cube | api::TextureViewDimension::CubeArray
-        ) && (desc.extent[0] != desc.extent[1]
-            || desc.samples != 1
-            || v.layers.start % 6 != 0
-            || (v.layers.end.saturating_sub(v.layers.start)) % 6 != 0
-            || (v.dimension == api::TextureViewDimension::Cube
-                && (v.layers.start != 0 || v.layers.end != 6))
-            || usage.contains(api::TextureUsage::STORAGE_BINDING)
-            || usage.contains(api::TextureUsage::RENDER_ATTACHMENT)))
+        || (cube
+            && (desc.extent[0] != desc.extent[1]
+                || desc.samples != 1
+                || v.layers.start % 6 != 0
+                || (v.layers.end.saturating_sub(v.layers.start)) % 6 != 0
+                || (v.dimension == api::TextureViewDimension::Cube
+                    && (v.layers.start != 0 || v.layers.end != 6))
+                || usage.contains(api::TextureUsage::STORAGE_BINDING)
+                || usage.contains(api::TextureUsage::RENDER_ATTACHMENT)))
         || v.mips.start >= v.mips.end
         || v.mips.end > desc.mip_levels
         || v.layers.start >= v.layers.end
@@ -158,6 +160,21 @@ pub(super) fn view(
     }
     if !view_format_available(dv, desc, v.format, usage) {
         return Err(Error::Unsupported("DX12 texture view format"));
+    }
+    if cube && usage.contains(api::TextureUsage::TEXTURE_BINDING) {
+        if v.aspects == (api::TextureAspects::DEPTH | api::TextureAspects::STENCIL) {
+            return Err(Error::Unsupported(
+                "DX12 sampled cube view needs one aspect",
+            ));
+        }
+        let format = if depth {
+            depth_view::srv_format(desc.format, v.aspects)
+        } else {
+            dxgi_format(v.format)
+        };
+        if !format::native_format_has_support(dv, format, D3D12_FORMAT_SUPPORT1_TEXTURECUBE) {
+            return Err(Error::Unsupported("DX12 sampled cube view format"));
+        }
     }
     Ok(())
 }

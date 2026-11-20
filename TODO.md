@@ -61,6 +61,10 @@ render target support and the requested sample count for the view format.
 For sampled texture layouts, reject multisampled 1D, 3D, cube and cube-array
 bindings in both support and creation. Keep 2D and 2D-array multisampled
 layouts and single-sample cube layouts covered by positive cases.
+For cube views, compare query and creation for the typed SRV format's native
+cube support. Read back samples from selected depth cube faces and from a
+cube-array view with a nonzero first face. Cover the zero-based single cube
+and a depth/stencil view that requests both aspects as a sampled cube.
 
 **Pipeline attachment support:** Compare the DX12 query with raster and mesh
 pipeline creation for exact multisample counts across all occupied color slots

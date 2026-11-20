@@ -148,6 +148,10 @@ maps the validated Core binding layout to D3D12 root parameters and descriptor
 tables. Raster and compute encoders bind those tables only after checking the
 pipeline, group, and dynamic-offset shapes agree.
 
+Sampled cube and cube-array views preserve their native SRV dimensions for
+color and depth/stencil formats. View admission checks cube support on the
+typed SRV format. A sampled depth/stencil cube view selects one aspect.
+
 Upload and readback have dedicated paths. CPU writes are copied from upload
 storage into default resources; texture readback targets a compatible readback
 buffer and requires the declared copy state. These helpers insert only their

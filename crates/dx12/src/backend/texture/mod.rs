@@ -346,6 +346,37 @@ pub(crate) fn view_support(
     validate::view(dv, &t.0.desc, v, t.0.desc.usage)
 }
 
+fn cube_srv(
+    view: &api::TextureViewDesc,
+) -> Option<(D3D12_SRV_DIMENSION, D3D12_SHADER_RESOURCE_VIEW_DESC_0)> {
+    let mip_levels = view.mips.end - view.mips.start;
+    match view.dimension {
+        api::TextureViewDimension::Cube => Some((
+            D3D12_SRV_DIMENSION_TEXTURECUBE,
+            D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                TextureCube: D3D12_TEXCUBE_SRV {
+                    MostDetailedMip: view.mips.start,
+                    MipLevels: mip_levels,
+                    ResourceMinLODClamp: 0.0,
+                },
+            },
+        )),
+        api::TextureViewDimension::CubeArray => Some((
+            D3D12_SRV_DIMENSION_TEXTURECUBEARRAY,
+            D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                TextureCubeArray: D3D12_TEXCUBE_ARRAY_SRV {
+                    MostDetailedMip: view.mips.start,
+                    MipLevels: mip_levels,
+                    First2DArrayFace: view.layers.start,
+                    NumCubes: (view.layers.end - view.layers.start) / 6,
+                    ResourceMinLODClamp: 0.0,
+                },
+            },
+        )),
+        _ => None,
+    }
+}
+
 pub(super) fn view_usage_support(
     dv: &Dx12Device,
     t: &Dx12Texture,

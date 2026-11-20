@@ -1,6 +1,25 @@
 //! Native depth and stencil view descriptors.
 use super::*;
 
+pub(super) fn srv_format(format: api::TextureFormat, aspects: api::TextureAspects) -> DXGI_FORMAT {
+    match (format, aspects) {
+        (api::TextureFormat::Depth16Unorm, _) => DXGI_FORMAT_R16_UNORM,
+        (api::TextureFormat::Depth24PlusStencil8, api::TextureAspects::DEPTH) => {
+            DXGI_FORMAT_R24_UNORM_X8_TYPELESS
+        }
+        (api::TextureFormat::Depth24PlusStencil8, api::TextureAspects::STENCIL) => {
+            DXGI_FORMAT_X24_TYPELESS_G8_UINT
+        }
+        (api::TextureFormat::Depth32FloatStencil8, api::TextureAspects::DEPTH) => {
+            DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS
+        }
+        (api::TextureFormat::Depth32FloatStencil8, api::TextureAspects::STENCIL) => {
+            DXGI_FORMAT_X32_TYPELESS_G8X24_UINT
+        }
+        _ => DXGI_FORMAT_R32_FLOAT,
+    }
+}
+
 pub(super) fn create_depth_view(
     dv: &Dx12Device,
     texture: Arc<TextureState>,
@@ -74,27 +93,15 @@ pub(super) fn create_depth_view(
             dv.0.cpu_descriptors
                 .allocate(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1)?;
         let srv = lease.cpu(0);
+        let cube = cube_srv(v);
         let srv_desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-            Format: match (texture.desc.format, v.aspects) {
-                (api::TextureFormat::Depth16Unorm, _) => DXGI_FORMAT_R16_UNORM,
-                (api::TextureFormat::Depth24PlusStencil8, api::TextureAspects::DEPTH) => {
-                    DXGI_FORMAT_R24_UNORM_X8_TYPELESS
-                }
-                (api::TextureFormat::Depth24PlusStencil8, api::TextureAspects::STENCIL) => {
-                    DXGI_FORMAT_X24_TYPELESS_G8_UINT
-                }
-                (api::TextureFormat::Depth32FloatStencil8, api::TextureAspects::DEPTH) => {
-                    DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS
-                }
-                (api::TextureFormat::Depth32FloatStencil8, api::TextureAspects::STENCIL) => {
-                    DXGI_FORMAT_X32_TYPELESS_G8X24_UINT
-                }
-                _ => DXGI_FORMAT_R32_FLOAT,
-            },
+            Format: srv_format(texture.desc.format, v.aspects),
             ViewDimension: if texture.desc.samples > 1 && array {
                 D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY
             } else if texture.desc.samples > 1 {
                 D3D12_SRV_DIMENSION_TEXTURE2DMS
+            } else if let Some((dimension, _)) = cube {
+                dimension
             } else if texture.desc.dimension == api::TextureDimension::D1 {
                 D3D12_SRV_DIMENSION_TEXTURE1D
             } else if array {
@@ -120,6 +127,8 @@ pub(super) fn create_depth_view(
                         UnusedField_NothingToDefine: 0,
                     },
                 }
+            } else if let Some((_, descriptor)) = cube {
+                descriptor
             } else if texture.desc.dimension == api::TextureDimension::D1 {
                 D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
                     Texture1D: D3D12_TEX1D_SRV {

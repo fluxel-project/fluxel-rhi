@@ -376,8 +376,16 @@ pub(crate) fn format_has_support(
     format: api::TextureFormat,
     flag: D3D12_FORMAT_SUPPORT1,
 ) -> bool {
+    native_format_has_support(device, dxgi_format(format), flag)
+}
+
+pub(super) fn native_format_has_support(
+    device: &Dx12Device,
+    format: DXGI_FORMAT,
+    flag: D3D12_FORMAT_SUPPORT1,
+) -> bool {
     let mut support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
-        Format: dxgi_format(format),
+        Format: format,
         ..Default::default()
     };
     // SAFETY: the feature query writes into the matching initialized struct.

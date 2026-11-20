@@ -1,7 +1,7 @@
 //! Color texture descriptors and the view owners that retain them.
 
 use super::{
-    Dx12Device, Dx12Texture, Dx12TextureView, TextureState, TextureViewState, depth_view,
+    Dx12Device, Dx12Texture, Dx12TextureView, TextureState, TextureViewState, cube_srv, depth_view,
     dxgi_format, is_depth, sampled_view_support, view_support, view_usage_support,
 };
 use fluxel_rhi_core::api::{self, Result};
@@ -130,6 +130,7 @@ fn create_color_view(
             dv.0.cpu_descriptors
                 .allocate(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1)?;
         let srv = lease.cpu(0);
+        let cube = cube_srv(v);
         let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
             Format: dxgi_format(v.format),
             ViewDimension: if texture.desc.samples > 1
@@ -138,10 +139,8 @@ fn create_color_view(
                 D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY
             } else if texture.desc.samples > 1 {
                 D3D12_SRV_DIMENSION_TEXTURE2DMS
-            } else if v.dimension == api::TextureViewDimension::Cube {
-                D3D12_SRV_DIMENSION_TEXTURECUBE
-            } else if v.dimension == api::TextureViewDimension::CubeArray {
-                D3D12_SRV_DIMENSION_TEXTURECUBEARRAY
+            } else if let Some((dimension, _)) = cube {
+                dimension
             } else if v.dimension == api::TextureViewDimension::D1 {
                 D3D12_SRV_DIMENSION_TEXTURE1D
             } else if v.dimension == api::TextureViewDimension::D3 {
@@ -167,24 +166,8 @@ fn create_color_view(
                         UnusedField_NothingToDefine: 0,
                     },
                 }
-            } else if v.dimension == api::TextureViewDimension::Cube {
-                D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                    TextureCube: D3D12_TEXCUBE_SRV {
-                        MostDetailedMip: v.mips.start,
-                        MipLevels: v.mips.end - v.mips.start,
-                        ResourceMinLODClamp: 0.0,
-                    },
-                }
-            } else if v.dimension == api::TextureViewDimension::CubeArray {
-                D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                    TextureCubeArray: D3D12_TEXCUBE_ARRAY_SRV {
-                        MostDetailedMip: v.mips.start,
-                        MipLevels: v.mips.end - v.mips.start,
-                        First2DArrayFace: v.layers.start,
-                        NumCubes: (v.layers.end - v.layers.start) / 6,
-                        ResourceMinLODClamp: 0.0,
-                    },
-                }
+            } else if let Some((_, descriptor)) = cube {
+                descriptor
             } else if v.dimension == api::TextureViewDimension::D1 {
                 D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
                     Texture1D: D3D12_TEX1D_SRV {
