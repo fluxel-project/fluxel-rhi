@@ -302,6 +302,8 @@ pub struct DeviceLimits {
     pub max_compute_invocations_per_workgroup: u32,
     /// Maximum compute workgroup storage in bytes. Zero means unreported.
     pub max_compute_workgroup_storage_size: u32,
+    /// Upper bound on the end offset of a push constant range, in bytes.
+    /// Zero delegates size admission to the backend.
     pub max_push_constant_bytes: u32,
     pub max_multiview_views: u32,
     /// Maximum number of mesh indirect records consumed by one multi/count call.

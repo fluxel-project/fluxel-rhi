@@ -589,6 +589,15 @@ impl<B: ResourceBackend> Device<B> {
         if !desc.push_constants.is_empty() && !self.caps.push_constants {
             return Err(Error::Unsupported("push constants"));
         }
+        let push_constant_limit = self.caps.limits.max_push_constant_bytes;
+        if push_constant_limit != 0
+            && desc
+                .push_constants
+                .iter()
+                .any(|range| range.range.end > push_constant_limit)
+        {
+            return Err(Error::InvalidRange);
+        }
         Ok(())
     }
     /// Checks the pipeline layout's combined binding and constant budgets

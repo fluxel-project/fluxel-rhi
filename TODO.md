@@ -23,6 +23,11 @@ published axis limit before recording. Verify exact-limit and one-past-limit
 counts and confirm that a valid dispatch can follow the rejected call.
 GPU-produced indirect arguments must obey the same native bounds.
 
+**Push constant range:** Match layout support and creation at the published
+byte ceiling and one DWORD beyond it. Include a short range starting near
+the ceiling and a legal byte span that exceeds the combined DX12 root
+signature budget once the descriptor tables and root CBVs are counted.
+
 **Vertex input:** Check slot and input-element limits independently of the
 compiled vertex signature. Microsoft Learn's input-element reference lists
 slots 0 through 15 while the SDK defines 32 IA vertex input slots. Verify
