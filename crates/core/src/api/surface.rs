@@ -104,6 +104,24 @@ pub struct SurfaceOutputInfo {
     pub min_luminance_nits: f32,
     pub max_luminance_nits: f32,
     pub max_full_frame_luminance_nits: f32,
+    /// Current SDR reference white on the output, when the system reports it.
+    pub sdr_white_level_nits: Option<f32>,
+}
+
+impl SurfaceOutputInfo {
+    /// Ratio of peak display luminance to SDR reference white.
+    pub fn hdr_headroom(&self) -> Option<f32> {
+        let white = self.sdr_white_level_nits?;
+        if !white.is_finite()
+            || white <= 0.0
+            || !self.max_luminance_nits.is_finite()
+            || self.max_luminance_nits < white
+        {
+            return None;
+        }
+        let ratio = self.max_luminance_nits / white;
+        ratio.is_finite().then_some(ratio)
+    }
 }
 impl<B: SurfaceBackend> Surface<B> {
     /// # Safety: caller associates exactly one native surface with this Device.

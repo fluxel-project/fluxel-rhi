@@ -21,6 +21,8 @@ format, including sRGB views of supported UNORM flip buffers.
 DX12 also exposes current monitor color and luminance facts.
 The HDR routes qualify scRGB and HDR10 against the current output and native
 swapchain. Their real display acceptance is pending.
+The output snapshot includes the system SDR white level when the active
+display paths identify an unambiguous target value.
 
 **Acceptance:** Reconfigure a live HWND between linear and sRGB views and
 observe the format and generation on the acquired images. Exercise matching
@@ -29,6 +31,7 @@ Compare output snapshots across a window move between distinct displays.
 Verify HDR10 and scRGB output on an HDR-active monitor, early rejection of
 incorrect format/color-space pairs and HDR on SDR, and reconfiguration after
 an output move or switch to SDR.
+Compare reported SDR reference white and derived headroom with system values.
 
 ### DX12 upload, completion, and texture transfer verification
 

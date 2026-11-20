@@ -102,6 +102,9 @@ pub(super) fn info(surface: &SurfaceState) -> Result<Option<SurfaceOutputInfo>> 
         min_luminance_nits: output.MinLuminance,
         max_luminance_nits: output.MaxLuminance,
         max_full_frame_luminance_nits: output.MaxFullFrameLuminance,
+        sdr_white_level_nits: (output.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020)
+            .then(|| super::sdr_white::white_level(&output.DeviceName))
+            .flatten(),
     }))
 }
 

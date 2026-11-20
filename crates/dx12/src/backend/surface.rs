@@ -45,6 +45,7 @@ use windows::{
 use super::{Dx12, Dx12Device, Dx12Surface, Dx12SurfaceImage};
 
 mod output;
+mod sdr_white;
 
 pub(crate) struct SurfaceState {
     device: Dx12Device,
