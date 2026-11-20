@@ -316,6 +316,19 @@ completion coverage. DX12 packs and validates native records without implicit
 synchronization or lifetime policy. Acceptance proves table lifetime, ordering,
 and update/refit semantics.
 
+### DX12 acceleration structure clone
+
+**Status:** The DX12 compaction path already copies a built acceleration
+structure using a size ticket. Direct duplication into independent storage
+has no corresponding Core/SPI command. The pinned wgpu DX12 backend uses
+`CopyRaytracingAccelerationStructure` for both clone and compact.
+
+**Acceptance:** Define an explicit same-device source and destination,
+destination capacity, supported BLAS/TLAS shapes, and required barriers.
+Keep referenced BLAS owners alive through TLAS use. Reject invalid aliasing
+and undersized storage before native recording. Trace the destination after
+releasing the source handle and compare hit/miss results with the original.
+
 ### DX12 conservative rasterization
 
 **Status:** Device capability reporting and graphics/mesh pipeline admission
@@ -359,6 +372,22 @@ another surface has work in flight.
 can interrupt the prior frame and discard queued frames. Reopen once Core
 defines the ordering and tearing rules for late frames and a DXGI route
 can demonstrate those guarantees with display evidence.
+
+**Mailbox mode (open).** Core already names this mode. Fluxel DX12 admits
+FIFO and, when tearing is supported, immediate presentation. The reference
+DX12 backend at wgpu revision `e801fa21` advertises mailbox and uses
+`Present(0, 0)`. Specify the observable replacement and tearing guarantees
+before enabling this mode. Check support, configuration, and presentation
+together on a real window with queued, identifiable frames. Keep mailbox
+closed on routes where those guarantees cannot be demonstrated.
+
+**Bounded surface acquisition (deferred).** Fluxel DX12 obtains the current
+backbuffer immediately and allows one outstanding image lease. Configuring
+maximum frame latency does not provide a caller-visible readiness result.
+Reopen when a Host or Renderer caller needs to poll or wait for a bounded
+interval before acquiring. Qualify zero timeout, expiry without acquiring
+a lease, subsequent success, resize and device loss. The caller chooses
+when to wait.
 
 ### DX12 upload, completion, and texture transfer verification
 
@@ -432,6 +461,13 @@ whose shaders access only initialized entries. Verify mode mismatches are
 rejected before descriptor table writes.
 
 ### P7-LOWERING-PROFILE — expose cost-bearing lowering facts to RenderGraph
+
+**Ordered usage queries (conditional).** The reference DX12 adapter reports
+ordered buffer and texture usages to its tracker. Fluxel already records
+explicit barriers. Consider a read-only device fact if RenderGraph can show
+a concrete same-queue sequence where existing facts cannot justify omitting
+a barrier. Qualify the exact access pair, resource scope and ordering
+preconditions on the target backend. RenderGraph decides when to use it.
 
 **Status:** Core exposes an optional per-device profile for GPU-count draws.
 DX12 publishes its direct native route and its two vertex-index adjustment
