@@ -349,6 +349,29 @@ impl<B: ResourceBackend> Device<B> {
         if desc.groups.iter().any(|v| v.device != self.id) {
             return Err(Error::WrongDevice);
         }
+        let dynamic_uniform_limit = self
+            .caps
+            .limits
+            .max_dynamic_uniform_buffers_per_pipeline_layout;
+        if dynamic_uniform_limit != 0 {
+            let dynamic_uniform_count = desc
+                .groups
+                .iter()
+                .flat_map(|group| group.entries.iter())
+                .filter(|entry| {
+                    matches!(
+                        entry.ty,
+                        BindingType::UniformBuffer {
+                            dynamic_offset: true,
+                            ..
+                        }
+                    )
+                })
+                .count();
+            if dynamic_uniform_count > dynamic_uniform_limit as usize {
+                return Err(Error::InvalidRange);
+            }
+        }
         if !desc.push_constants.is_empty() && !self.caps.push_constants {
             return Err(Error::Unsupported("push constants"));
         }

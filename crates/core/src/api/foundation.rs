@@ -615,6 +615,9 @@ pub struct SubgroupWidths {
 pub struct DeviceLimits {
     pub max_bind_groups: u32,
     pub max_bindings_per_group: u32,
+    /// Upper bound on dynamic uniform buffer slots in one pipeline layout.
+    /// Mixed layouts can have tighter limits. Zero means unreported.
+    pub max_dynamic_uniform_buffers_per_pipeline_layout: u32,
     pub max_color_attachments: u32,
     /// Maximum extent along the active axis of a 1D texture.
     /// A zero value leaves the maximum to the descriptor support query.

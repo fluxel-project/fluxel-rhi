@@ -95,6 +95,7 @@ pub enum DeviceCapacity {
     TextureArrayLayers(u32),
     BindGroups(u32),
     BindingsPerGroup(u32),
+    DynamicUniformBuffersPerPipelineLayout(u32),
     UniformBufferBindingSize(u64),
     ColorAttachments(u32),
     VertexBuffers(u32),
@@ -119,6 +120,9 @@ impl DeviceCapacity {
             Self::TextureArrayLayers(min) => limits.max_texture_array_layers >= min,
             Self::BindGroups(min) => limits.max_bind_groups >= min,
             Self::BindingsPerGroup(min) => limits.max_bindings_per_group >= min,
+            Self::DynamicUniformBuffersPerPipelineLayout(min) => {
+                limits.max_dynamic_uniform_buffers_per_pipeline_layout >= min
+            }
             Self::UniformBufferBindingSize(min) => limits.max_uniform_buffer_binding_size >= min,
             Self::ColorAttachments(min) => limits.max_color_attachments >= min,
             Self::VertexBuffers(min) => limits.max_vertex_buffers >= min,

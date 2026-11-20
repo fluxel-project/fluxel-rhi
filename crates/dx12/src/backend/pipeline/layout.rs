@@ -411,10 +411,10 @@ fn create_root(
             D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS => unsafe {
                 parameter.Anonymous.Constants.Num32BitValues
             },
-            _ => 2,
+            _ => super::ROOT_DESCRIPTOR_DWORDS,
         };
     }
-    if root_dwords > 64 {
+    if root_dwords > D3D12_MAX_ROOT_COST {
         return Err(Error::Unsupported("DX12 root signature DWORD budget"));
     }
     let root_desc = D3D12_ROOT_SIGNATURE_DESC {

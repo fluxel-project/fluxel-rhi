@@ -6,9 +6,10 @@
 
 use super::*;
 use windows::Win32::Graphics::Direct3D12::{
+    D3D12_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT,
     D3D12_REQ_MULTI_ELEMENT_STRUCTURE_SIZE_IN_BYTES, D3D12_REQ_TEXTURE1D_U_DIMENSION,
     D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION, D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION,
-    D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION,
+    D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION, D3D12_RESOURCE_BINDING_TIER_3,
 };
 use windows::Win32::Graphics::Dxgi::{
     DXGI_ADAPTER_DESC1, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_UNSUPPORTED,
@@ -424,6 +425,14 @@ impl Dx12 {
                 limits: DeviceLimits {
                     max_bind_groups: 8,
                     max_bindings_per_group: 64,
+                    max_dynamic_uniform_buffers_per_pipeline_layout: if options.ResourceBindingTier
+                        == D3D12_RESOURCE_BINDING_TIER_3
+                    {
+                        pipeline::MAX_DYNAMIC_UNIFORM_BUFFERS
+                    } else {
+                        pipeline::MAX_DYNAMIC_UNIFORM_BUFFERS
+                            .min(D3D12_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT)
+                    },
                     max_color_attachments: 8,
                     max_texture_dimension_1d: D3D12_REQ_TEXTURE1D_U_DIMENSION,
                     max_texture_dimension_2d: D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION,
