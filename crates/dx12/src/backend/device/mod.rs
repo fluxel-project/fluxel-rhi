@@ -468,6 +468,7 @@ impl Dx12 {
                 rect_attachment_clear: true,
                 conservative_raster: Some(conservative_raster),
                 direct_buffer_upload: true,
+                direct_texture_upload: true,
                 completion_timeout: true,
                 sampled_texture_component_mapping: true,
                 texture_view_usage: true,

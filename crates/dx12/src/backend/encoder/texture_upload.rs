@@ -5,12 +5,77 @@
 
 use super::*;
 
+const PLACEMENT_ALIGNMENT: u64 = D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT as u64;
+
 pub(super) fn write(
     encoder: &mut Dx12Encoder,
     dst: api::TextureRegion<'_, Dx12>,
     layout: api::TexelCopyBufferLayout,
     bytes: &[u8],
 ) -> Result<(), Error> {
+    let upload = prepare(encoder, dst)?;
+    let api::TextureUploadLayout {
+        row_bytes,
+        rows_per_image,
+        image_count,
+        ..
+    } = upload.layout;
+    if (layout.bytes_per_row as usize) < row_bytes
+        || (layout.rows_per_image as usize) < rows_per_image
+    {
+        return Err(Error::InvalidRange);
+    }
+    let input_end = u64::from(layout.rows_per_image)
+        .checked_mul((image_count - 1) as u64)
+        .and_then(|n| n.checked_add((rows_per_image - 1) as u64))
+        .and_then(|n| n.checked_mul(u64::from(layout.bytes_per_row)))
+        .and_then(|n| n.checked_add(row_bytes as u64))
+        .and_then(|n| n.checked_add(layout.offset))
+        .ok_or(Error::InvalidRange)?;
+    if input_end > bytes.len() as u64 {
+        return Err(Error::InvalidRange);
+    }
+    let source_base = usize::try_from(layout.offset).map_err(|_| Error::InvalidRange)?;
+    let source_pitch = layout.bytes_per_row as usize;
+    upload.stage(encoder, |staging, target_layout| {
+        // The checked source end and native allocation length bound every
+        // row of every image, including the final row without caller padding.
+        for slice in 0..image_count {
+            for row in 0..rows_per_image {
+                let source =
+                    source_base + (slice * layout.rows_per_image as usize + row) * source_pitch;
+                let target = slice * target_layout.image_stride + row * target_layout.row_stride;
+                staging[target..target + row_bytes]
+                    .copy_from_slice(&bytes[source..source + row_bytes]);
+            }
+        }
+        true
+    })
+}
+
+pub(super) fn write_with(
+    encoder: &mut Dx12Encoder,
+    dst: api::TextureRegion<'_, Dx12>,
+    writer: impl FnOnce(&mut [u8], api::TextureUploadLayout) -> bool,
+) -> Result<(), Error> {
+    prepare(encoder, dst)?.stage(encoder, writer)
+}
+
+struct Upload<'a> {
+    dst: api::TextureRegion<'a, Dx12>,
+    texture: &'a Dx12Texture,
+    subresource: u32,
+    footprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
+    stable_state: D3D12_RESOURCE_STATES,
+    layer_count: u32,
+    layout: api::TextureUploadLayout,
+    byte_len: usize,
+}
+
+fn prepare<'a>(
+    encoder: &Dx12Encoder,
+    dst: api::TextureRegion<'a, Dx12>,
+) -> Result<Upload<'a>, Error> {
     // SAFETY: Core tied the region to this device; the clone stored below
     // keeps the texture and its COM resource alive through submission.
     let texture = unsafe { dst.texture.native_ref() };
@@ -22,6 +87,9 @@ pub(super) fn write(
     let block = super::super::texture::bc_block_bytes(texture.0.desc.format);
     let texel = super::super::texture::color_texel_bytes(texture.0.desc.format);
     let depth = super::super::texture::is_depth(texture.0.desc.format);
+    if depth && encoder.is_compute {
+        return Err(Error::WrongLane);
+    }
     let plane_bytes = if depth {
         use api::TextureFormat as F;
         match (texture.0.desc.format, dst.aspect) {
@@ -100,19 +168,6 @@ pub(super) fn write(
         dst.extent[0].checked_mul(plane_bytes.or(texel).ok_or(Error::InvalidRange)?)
     }
     .ok_or(Error::InvalidRange)?;
-    if layout.bytes_per_row < tight || layout.rows_per_image < rows_needed {
-        return Err(Error::InvalidRange);
-    }
-    let input_end = u64::from(layout.rows_per_image)
-        .checked_mul(u64::from(dst.extent[2] - 1))
-        .and_then(|n| n.checked_add(u64::from(rows_needed - 1)))
-        .and_then(|n| n.checked_mul(u64::from(layout.bytes_per_row)))
-        .and_then(|n| n.checked_add(u64::from(tight)))
-        .and_then(|n| n.checked_add(layout.offset))
-        .ok_or(Error::InvalidRange)?;
-    if input_end > bytes.len() as u64 {
-        return Err(Error::InvalidRange);
-    }
     // D3D12 enumerates mips consecutively inside each array layer.
     let subresource = if texture.0.desc.dimension == api::TextureDimension::D3 {
         dst.mip
@@ -177,12 +232,11 @@ pub(super) fn write(
     let image_bytes = u64::from(footprint.Footprint.RowPitch)
         .checked_mul(u64::from(rows_needed))
         .ok_or(Error::InvalidRange)?;
-    let alignment = u64::from(D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
     let image_stride = if is_array {
         image_bytes
-            .checked_add(alignment - 1)
+            .checked_add(PLACEMENT_ALIGNMENT - 1)
             .ok_or(Error::InvalidRange)?
-            & !(alignment - 1)
+            & !(PLACEMENT_ALIGNMENT - 1)
     } else {
         image_bytes
     };
@@ -190,82 +244,105 @@ pub(super) fn write(
         .checked_mul(u64::from(dst.extent[2] - 1))
         .and_then(|n| n.checked_add(image_bytes))
         .ok_or(Error::InvalidRange)?;
-    let upload_bytes = usize::try_from(upload_bytes).map_err(|_| Error::InvalidRange)?;
-    let source_base = usize::try_from(layout.offset).map_err(|_| Error::InvalidRange)?;
-    let source_pitch = layout.bytes_per_row as usize;
-    let row_bytes = tight as usize;
-    let target_pitch = footprint.Footprint.RowPitch as usize;
-    let image_stride_bytes = usize::try_from(image_stride).map_err(|_| Error::InvalidRange)?;
-    let (upload, base_offset) = encoder
-        .upload_arena
-        .write_with(device, upload_bytes, alignment, |staging| {
-            // The source end and staging length above bound every row of
-            // every image, including the final row without caller padding.
-            for slice in 0..dst.extent[2] as usize {
-                for row in 0..rows_needed as usize {
-                    let source =
-                        source_base + (slice * layout.rows_per_image as usize + row) * source_pitch;
-                    let target = slice * image_stride_bytes + row * target_pitch;
-                    staging[target..target + row_bytes]
-                        .copy_from_slice(&bytes[source..source + row_bytes]);
-                }
-            }
-            true
-        })?
-        .expect("the texture staging copy commits its reservation");
+    let byte_len = usize::try_from(upload_bytes).map_err(|_| Error::InvalidRange)?;
+    let layout = api::TextureUploadLayout {
+        row_bytes: tight as usize,
+        row_stride: footprint.Footprint.RowPitch as usize,
+        rows_per_image: rows_needed as usize,
+        image_stride: usize::try_from(image_stride).map_err(|_| Error::InvalidRange)?,
+        image_count: dst.extent[2] as usize,
+    };
     let stable_state = if depth {
         D3D12_RESOURCE_STATE_DEPTH_WRITE
     } else {
         D3D12_RESOURCE_STATE_COMMON
     };
-    let layers = if is_array { dst.extent[2] } else { 1 };
-    for layer in 0..layers {
-        let subresource = subresource + layer * texture.0.desc.mip_levels;
-        footprint.Offset = base_offset + u64::from(layer) * image_stride;
-        barrier_sub(
-            &encoder.list,
-            &texture.0.resource,
+    let layer_count = if is_array { dst.extent[2] } else { 1 };
+    Ok(Upload {
+        dst,
+        texture,
+        subresource,
+        footprint,
+        stable_state,
+        layer_count,
+        layout,
+        byte_len,
+    })
+}
+
+impl Upload<'_> {
+    fn stage(
+        self,
+        encoder: &mut Dx12Encoder,
+        writer: impl FnOnce(&mut [u8], api::TextureUploadLayout) -> bool,
+    ) -> Result<(), Error> {
+        let Self {
+            dst,
+            texture,
             subresource,
+            mut footprint,
             stable_state,
-            D3D12_RESOURCE_STATE_COPY_DEST,
-        );
-        let mut source = copy_location(&upload, footprint, true, 0);
-        let mut target = copy_location(
-            &texture.0.resource,
-            D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default(),
-            false,
-            subresource,
-        );
-        // SAFETY: copy locations own cloned COM references; both resources are
-        // retained and are in the explicit COPY states around this call.
-        unsafe {
-            encoder.list.CopyTextureRegion(
-                &target,
-                dst.origin[0],
-                dst.origin[1],
-                if texture.0.desc.dimension == api::TextureDimension::D3 {
-                    dst.origin[2]
-                } else {
-                    0
-                },
-                &source,
-                None,
+            layer_count,
+            layout,
+            byte_len,
+        } = self;
+        let Some((upload, base_offset)) = encoder.upload_arena.write_with(
+            &encoder.device.0.native,
+            byte_len,
+            PLACEMENT_ALIGNMENT,
+            |staging| writer(staging, layout),
+        )?
+        else {
+            return Ok(());
+        };
+        for layer in 0..layer_count {
+            let subresource = subresource + layer * texture.0.desc.mip_levels;
+            footprint.Offset = base_offset + u64::from(layer) * layout.image_stride as u64;
+            barrier_sub(
+                &encoder.list,
+                &texture.0.resource,
+                subresource,
+                stable_state,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+            );
+            let mut source = copy_location(&upload, footprint, true, 0);
+            let mut target = copy_location(
+                &texture.0.resource,
+                D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default(),
+                false,
+                subresource,
+            );
+            // SAFETY: copy locations own cloned COM references; both resources are
+            // retained and are in the explicit COPY states around this call.
+            unsafe {
+                encoder.list.CopyTextureRegion(
+                    &target,
+                    dst.origin[0],
+                    dst.origin[1],
+                    if texture.0.desc.dimension == api::TextureDimension::D3 {
+                        dst.origin[2]
+                    } else {
+                        0
+                    },
+                    &source,
+                    None,
+                );
+            }
+            // SAFETY: destroy exactly the cloned COM references installed in the
+            // FFI unions after D3D12 synchronously consumed the locations.
+            unsafe {
+                ManuallyDrop::drop(&mut source.pResource);
+                ManuallyDrop::drop(&mut target.pResource);
+            }
+            barrier_sub(
+                &encoder.list,
+                &texture.0.resource,
+                subresource,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                stable_state,
             );
         }
-        // SAFETY: destroy exactly the cloned COM references installed in the
-        // FFI unions after D3D12 synchronously consumed the locations.
-        unsafe {
-            ManuallyDrop::drop(&mut source.pResource);
-            ManuallyDrop::drop(&mut target.pResource);
-        }
-        barrier_sub(
-            &encoder.list,
-            &texture.0.resource,
-            subresource,
-            D3D12_RESOURCE_STATE_COPY_DEST,
-            stable_state,
-        );
+        encoder.textures.push(texture.clone());
+        Ok(())
     }
-    encoder.textures.push(texture.clone());
-    Ok(())
 }

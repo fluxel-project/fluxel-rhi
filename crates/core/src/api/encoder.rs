@@ -41,6 +41,7 @@ pub struct CommandEncoder<B: CommandBackend> {
     pub(crate) stencil_reference_per_face: bool,
     pub(crate) rect_attachment_clear: bool,
     pub(crate) direct_buffer_upload: bool,
+    pub(crate) direct_texture_upload: bool,
     pub(crate) native_interop: bool,
     pub(crate) debug_group_depth: u32,
 }
@@ -72,6 +73,7 @@ impl<B: CommandBackend> CommandEncoder<B> {
             stencil_reference_per_face: device.caps.stencil_reference_per_face,
             rect_attachment_clear: device.caps.rect_attachment_clear,
             direct_buffer_upload: device.caps.direct_buffer_upload,
+            direct_texture_upload: device.caps.direct_texture_upload,
             native_interop: device.caps.native_interop,
             debug_group_depth: 0,
         })
@@ -378,6 +380,33 @@ impl<B: CommandBackend> CommandEncoder<B> {
             self.stats.record_write();
         }
         result
+    }
+
+    /// Fills zero-initialized staging for a texture region using the same
+    /// resource-state boundary as [`Self::write_texture`]. The backend chooses
+    /// the row and image strides. An error from the writer cancels the upload
+    /// and leaves the encoder usable.
+    pub fn write_texture_with(
+        &mut self,
+        dst: TextureRegion<'_, B>,
+        writer: impl FnOnce(&mut [u8], TextureUploadLayout) -> Result<()>,
+    ) -> Result<()> {
+        if dst.texture.device != self.device {
+            return Err(Error::WrongDevice);
+        }
+        if !self.direct_texture_upload {
+            return Err(Error::Unsupported("direct texture staging write"));
+        }
+        let mut written = Ok(());
+        self.call(|encoder| {
+            B::write_texture_with(encoder, dst, |bytes, layout| {
+                written = writer(bytes, layout);
+                written.is_ok()
+            })
+        })?;
+        written?;
+        self.stats.record_write();
+        Ok(())
     }
 }
 

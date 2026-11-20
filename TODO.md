@@ -352,6 +352,10 @@ Focused contract and GPU evidence are pending the implementation-stage report.
 
 **Acceptance:** Read back a direct staging write and verify canceled writes
 leave destination bytes and later command recording intact. Verify that a
+direct texture staging writer can fill an array or volume using the reported
+image and row strides, and that cancellation preserves the texture and later
+recording. Cover mixed buffer and texture writes using a nonzero aligned
+upload-page offset, and reject depth uploads on the compute lane. Verify that a
 pending completion times out and remains positive completion evidence only
 after the native fence reaches it. Read back identity, rearranged, and constant
 sampled components, and reject sampled-only views as storage or attachments.

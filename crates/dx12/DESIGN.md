@@ -147,6 +147,10 @@ CPU texture writes repack caller rows into encoder-owned upload pages using
 the native row pitch and placement alignment. The same pages serve buffer
 writes, and submitted pages stay checked out until the covering queue fence
 retires the encoder.
+The direct texture staging writer receives the actual row and image strides
+in initialized storage. A canceled write records no transitions or copy.
+Depth and stencil uploads require the direct lane because the helper
+restores the depth-write state.
 
 ## Shader and pipeline routes
 

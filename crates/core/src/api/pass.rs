@@ -121,6 +121,22 @@ pub struct TexelCopyBufferLayout {
     /// formats. The unit is the same row unit used by `bytes_per_row`.
     pub rows_per_image: u32,
 }
+
+/// Byte layout of a texture upload reservation supplied to a staging writer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TextureUploadLayout {
+    /// Bytes of texel or compressed-block data in each row.
+    pub row_bytes: usize,
+    /// Byte distance between adjacent rows.
+    pub row_stride: usize,
+    /// Number of logical rows in one array layer or volume slice.
+    pub rows_per_image: usize,
+    /// Byte distance between adjacent layers or slices.
+    pub image_stride: usize,
+    /// Number of layers or slices in the upload region.
+    pub image_count: usize,
+}
+
 pub struct TextureRegion<'a, B: Backend> {
     pub texture: &'a Texture<B>,
     pub mip: u32,

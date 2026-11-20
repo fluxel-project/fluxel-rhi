@@ -375,6 +375,13 @@ impl fluxel_rhi_core::backend::CommandBackend for Dx12 {
     ) -> Result<(), Error> {
         super::texture_upload::write(encoder, dst, layout, bytes)
     }
+    fn write_texture_with(
+        encoder: &mut Dx12Encoder,
+        dst: api::TextureRegion<'_, Self>,
+        writer: impl FnOnce(&mut [u8], api::TextureUploadLayout) -> bool,
+    ) -> Result<(), Error> {
+        super::texture_upload::write_with(encoder, dst, writer)
+    }
     fn blit(
         encoder: &mut Dx12Encoder,
         src: api::TextureRegion<'_, Self>,

@@ -234,6 +234,8 @@ pub struct DeviceCapabilities {
     pub conservative_raster: Option<bool>,
     /// Command encoders can populate backend-owned buffer upload staging directly.
     pub direct_buffer_upload: bool,
+    /// Command encoders can populate backend-owned texture upload staging directly.
+    pub direct_texture_upload: bool,
     /// Completion points support an explicit bounded host wait.
     pub completion_timeout: bool,
     /// Sampled color texture views can remap their shader-visible components.

@@ -88,6 +88,15 @@ pub trait CommandBackend: Backend {
         layout: TexelCopyBufferLayout,
         bytes: &[u8],
     ) -> Result<()>;
+    /// Exposes initialized texture staging with its actual strides.
+    /// A false writer result cancels the reservation without recording a copy.
+    fn write_texture_with(
+        _encoder: &mut Self::NativeEncoder,
+        _dst: TextureRegion<'_, Self>,
+        _writer: impl FnOnce(&mut [u8], TextureUploadLayout) -> bool,
+    ) -> Result<()> {
+        Err(Error::Unsupported("direct texture staging write"))
+    }
     // Capability-specific transfer variants have defaults; an unsupported
     // Backend never needs to fake a native blit or independent clear operation.
     fn resolve(
