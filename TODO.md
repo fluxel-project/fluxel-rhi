@@ -60,9 +60,10 @@ alpha from secondary-source color. Cover both factors and invalid MRT use.
 ### DX12 whole-pass statistics semantics
 
 DX12 exposes a native interval total for pipeline statistics on direct command
-lists. Core's whole-pass statistics API requires stage-boundary snapshots,
-which the DX12 interval query cannot provide. Reopen if a native snapshot
-route becomes available or Core defines a distinct pass-total contract.
+lists through `QueryKind::PipelineStatistics`. Core's `PassStatistics`
+requires stage-boundary snapshots. Keep the DX12 boundary domain unavailable
+and verify the direct interval query and compute-lane rejection separately.
+Reopen boundary sampling when a native route can report each required sample.
 
 ### DX12 vertex input format admission
 
@@ -276,8 +277,11 @@ buffer contract gives no immutable content guarantee.
 **Acceptance:** Verify changed TLAS transforms and BLAS bounds by traversal
 readback. Cover build and update in one packet, repeated and separately
 submitted updates, a rejected update after an incompatible rebuild, and
-retention of old and replacement TLAS dependencies. Reopen indexed BLAS
-refit once its index data can be proven unchanged for the update.
+retention of old and replacement TLAS dependencies. Check that indexed
+refit is rejected before native recording while indexed builds remain
+available. Reopen once the index data can be proven unchanged, or a
+backend-owned immutable snapshot is used by the original build and every
+update. Account for the copy, barriers, memory overhead and retention.
 Verify triangle vertex layout queries and traversal for the added DXR SNORM,
 UNORM and tightly packed three-component formats. Verify Tier 1.0 rejects the
 formats that require Tier 1.1.
@@ -301,8 +305,9 @@ that submission rejects a refit with mismatched original build flags.
 embeds a BLAS address. Keep native addresses in the backend and retain typed,
 same-device BLAS dependencies through submission and TLAS use. Reopen when
 a consumer supplies a bounded workload and defines a GPU record with
-indices into a typed BLAS table, including invalid-index behavior, resource
-state, and update and refit semantics.
+indices into a typed BLAS table. Specify invalid-index handling and reporting,
+pack and validate native instance records inside the backend, and prove
+producer-to-build ordering, table lifetimes, and update and refit semantics.
 
 ### DX12 conservative rasterization
 
@@ -585,6 +590,102 @@ and supplies a bounded workload:
 - Geometry/tessellation stages, programmable sample locations, predication,
   and native video/planar formats or video sources beyond the current WebGPU
   wrapper.
+
+### Core and DX12 conflict decisions
+
+The review identifiers R01–R25 preserve its order. N01–N03 record later
+implementation findings. Scoped entries record the unsupported shapes. These
+decisions do not close the acceptance work for supported paths.
+
+- **R01, design required — pre-device surface filtering.** A Core surface
+  carries an opened device's identity. Reopen with a real Host use case and an
+  Instance-level window probe with defined lifetime and post-open validation.
+- **R02, deferred — portable error callbacks and automatic recovery.** Existing
+  errors and completion report facts. Reopen notifications with an error
+  correlation consumer. Renderer and Host own recovery and reconstruction.
+- **R03, design required — explicit device or resource destruction.** Immediate
+  release could invalidate clones and recorded or issued work. Reopen with
+  shared closing, admission, drain and quarantine semantics.
+- **R04, deferred — NV12/P010 and external media.** Plane sampling, import and
+  synchronization need a consumer and ownership contract. Reopen with defined
+  plane and color semantics plus a bounded readback workload.
+- **R05, rejected — direct MSAA resolve to a 3D slice.** The DX12 native resolve
+  cannot pair these shapes. Evaluate a separately ordered 2D resolve and copy
+  when a workload establishes the required state, retention and cost.
+- **R06, deferred — public Naga IR.** The compiler's private representation
+  would become a public versioning commitment. Reopen with an actual
+  cross-backend consumer and compatibility contract.
+- **R07, scoped — ambiguous HLSL/DXIL binding inference.** Reflection cannot
+  distinguish some typed views, immediates or overlapping register classes.
+  Require explicit layout for those shapes. Reopen automatic inference with
+  caller-supplied disambiguation and stable register identity.
+- **R08, scoped — WGSL subgroup ID, count and barrier.** Invocation position
+  does not determine native wave identity or count, and wave collectives do
+  not supply the required memory ordering. Reopen each on an equivalent route.
+- **R09, scoped — WGSL F16 uniform and immediate layout.** Current lowering
+  cannot preserve two-byte offsets in those address spaces. Reopen privately
+  per layout after exact offsets, updates and readback are proven.
+- **R10, rejected — WGSL I16/U16.** The accepted language lacks these types.
+  Native HLSL/DXIL stays independently gated. Reopen on a supported WGSL
+  extension with defined arithmetic and memory layout.
+- **R11, scoped — additional WGSL 64-bit shapes.** A device ALU fact does not
+  establish bitcast, wraparound, buffer ABI or stage IO. Reopen each shape
+  against its own lowering and output evidence.
+- **R12, scoped — complex WGSL immediates.** HLSL cbuffer arrays cannot map
+  directly to root constants. Flat DWORD storage remains a candidate for more
+  shapes. Reopen with proven offsets, indexing, partial writes and root budget.
+- **R13, rejected — unrestricted WGSL pointer parameters.** The current
+  compiler path cannot preserve general address-space, offset and aliasing
+  semantics. Reopen with frontend, validation and lowering support.
+- **R14, scoped — portable primitive index in a DX12 mesh pipeline.** Native
+  mesh shaders can supply an ID, while the Core contract identifies a
+  rasterizer-assigned value. Reopen with a consumer for a distinct Mesh output.
+- **R15, scoped — WGSL conservative depth.** Forced early testing changes
+  depth, discard and side effects for Allow modes. Reopen each conservative
+  mode when the lowered operation preserves those observations.
+- **R16, rejected — triangle point fill.** A native point list has different
+  topology and coverage. Reopen an independent lowering with a consumer and
+  verified coverage, reuse and cost.
+- **R17, scoped — DX12 pass boundary statistics.** A Direct interval total
+  cannot reconstruct four raster or two compute samples. Keep interval queries
+  available. Reopen on native evidence for each required boundary sample.
+- **R18, design required — indexed BLAS refit.** Buffer identity cannot prove
+  immutable indices. Reopen with immutable input evidence or a retained
+  private snapshot used by original build and updates, with measured cost.
+- **R19, design required — GPU-generated TLAS instances.** Raw native records
+  can embed addresses without provenance. Reopen with logical records, a
+  bounded typed BLAS table, specified invalid-index behavior, private packing
+  and ordered lifetime tests.
+- **R20, rejected — Mesh point output.** The current DX12 mesh shader route
+  admits lines and triangles. Reopen on native support or a distinct use case
+  with explicit alternative semantics.
+- **R21, rejected — FifoRelaxed.** DXGI interval zero can discard queued
+  frames. Reopen only when a path can prove FIFO order and the requested
+  late-frame and tearing policy.
+- **R22, deferred — output HDR metadata and actual display timing.** These
+  require color or pacing consumers and independent data contracts. Present
+  receipts do not establish scanout. Reopen with a clock or metadata source
+  and visible output evidence.
+- **R23, design required — Surface damage rectangles.** Flip discard provides
+  no retained-pixel contract. Reopen with opt-in preserved contents and
+  pixel evidence across buffer rotation, resize and generations.
+- **R24, deferred — VRS, sampler feedback, geometry and tessellation shaders,
+  programmable sample positions, and predication.** Each needs its own
+  workload and capability contract. Reopen independently once a consumer
+  and observable acceptance case exist.
+- **R25, design required — broader interop or runtime selection.** Keep public
+  device identity and the static backend boundary. Reopen a narrow interop
+  extension or upper-layer selection if an actual consumer cannot use the
+  existing typed paths.
+- **N01, design required — direct host mapping of a primary DX12 UMA buffer.**
+  Topology alone does not change the default heap or cache semantics. Reopen
+  with exact host/GPU use and evidence on the relevant UMA configurations.
+- **N02, design required — safe submit-bound mapping.** Current completion
+  does not establish byte-range coverage or exclude subsequent GPU access.
+  Reopen with synchronization, exclusivity, rejection and cancellation rules.
+- **N03, design required — retryable DX12 partial submission.** A failure after
+  handoff can hide the exact accepted prefix, pending waits and retryable
+  work. Reopen with proven effect boundaries and valid tail ownership.
 
 Renderer algorithms, frame pacing, host/decoder lifecycle, cache eviction, and
 asset residency remain owned above RHI.
