@@ -6,6 +6,23 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 ## Active items
 
+### DX12 device limit verification
+
+**Status:** Raster and mesh pipelines and raster pass recording use the
+published color attachment slot limit. Empty slots consume indices.
+The DX12 backend uses the D3D12 render target and view instance ceilings
+at native recording and creation boundaries.
+
+**Acceptance:** Check an exactly full sparse color target list and an
+over-limit list in raster and mesh creation and pass recording. For
+multiview, check masks that reach the highest supported view and masks
+with a bit above it. Include the prepared raster path used by queries.
+
+**Storage buffer views:** Check the maximum range and alignment separately
+for raw and structured SRV/UAV descriptors, including dynamic offsets.
+Any exposed bound must account for the native element count, element
+stride, base alignment and the backing buffer range.
+
 ### DX12 structured shader diagnostics
 
 **Status:** WGSL parse and validation errors preserve compiler messages and

@@ -32,6 +32,7 @@ pub struct CommandEncoder<B: CommandBackend> {
     pub(crate) poisoned: bool,
     pub(crate) multiview: bool,
     pub(crate) max_multiview_views: u32,
+    max_color_attachments: u32,
     pub(crate) stats: RhiStatsLocal,
     pub(crate) debug_markers_encoder: bool,
     pub(crate) debug_markers_raster_pass: bool,
@@ -64,6 +65,7 @@ impl<B: CommandBackend> CommandEncoder<B> {
             poisoned: false,
             multiview: device.caps.multiview,
             max_multiview_views: device.caps.limits.max_multiview_views,
+            max_color_attachments: device.caps.limits.max_color_attachments,
             stats: device.stats.local(),
             debug_markers_encoder: device.caps.debug_markers_encoder,
             debug_markers_raster_pass: device.caps.debug_markers_raster_pass,
@@ -436,6 +438,9 @@ impl<B: RasterBackend> CommandEncoder<B> {
     ) -> Result<RasterPass<'a, B>> {
         if self.debug_group_depth != 0 {
             return Err(Error::InvalidState);
+        }
+        if desc.colors.len() > self.max_color_attachments as usize {
+            return Err(Error::InvalidRange);
         }
         if let Some(mask) = desc.multiview_mask {
             if !self.multiview {

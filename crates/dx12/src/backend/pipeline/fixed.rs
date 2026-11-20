@@ -7,6 +7,8 @@ use windows::Win32::{
 
 use super::super::{Dx12Device, texture};
 
+const COLOR_SLOTS: usize = D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT as usize;
+
 pub(crate) fn validate_depth(
     state: Option<api::DepthStencilState>,
 ) -> Result<Option<api::DepthStencilState>> {
@@ -40,11 +42,14 @@ pub(crate) fn validate_depth(
 pub(crate) fn lower_targets(
     device: &Dx12Device,
     targets: &[Option<api::ColorTargetState>],
-) -> Result<([DXGI_FORMAT; 8], [D3D12_RENDER_TARGET_BLEND_DESC; 8])> {
-    if targets.len() > 8 {
+) -> Result<(
+    [DXGI_FORMAT; COLOR_SLOTS],
+    [D3D12_RENDER_TARGET_BLEND_DESC; COLOR_SLOTS],
+)> {
+    if targets.len() > COLOR_SLOTS {
         return Err(Error::InvalidRange);
     }
-    let mut formats = [DXGI_FORMAT_UNKNOWN; 8];
+    let mut formats = [DXGI_FORMAT_UNKNOWN; COLOR_SLOTS];
     let mut blends = [D3D12_RENDER_TARGET_BLEND_DESC {
         BlendEnable: FALSE,
         LogicOpEnable: FALSE,
@@ -56,7 +61,7 @@ pub(crate) fn lower_targets(
         BlendOpAlpha: D3D12_BLEND_OP_ADD,
         LogicOp: D3D12_LOGIC_OP_NOOP,
         RenderTargetWriteMask: 0,
-    }; 8];
+    }; COLOR_SLOTS];
     for (index, target) in targets.iter().enumerate() {
         let Some(target) = target else { continue };
         formats[index] = color_format(target.format)?;

@@ -276,6 +276,8 @@ pub struct DeviceLimits {
     /// Upper bound on dynamic storage buffer slots in one pipeline layout.
     /// Mixed layouts can have tighter limits. Zero means unreported.
     pub max_dynamic_storage_buffers_per_pipeline_layout: u32,
+    /// Maximum number of color slots in a raster pass or pipeline target
+    /// list. Empty slots count toward the limit.
     pub max_color_attachments: u32,
     /// Maximum extent along the active axis of a 1D texture.
     /// A zero value leaves the maximum to the descriptor support query.

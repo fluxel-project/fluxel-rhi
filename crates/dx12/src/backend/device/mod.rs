@@ -29,6 +29,7 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_REQ_MULTI_ELEMENT_STRUCTURE_SIZE_IN_BYTES, D3D12_REQ_TEXTURE1D_U_DIMENSION,
     D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION, D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION,
     D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION, D3D12_RESOURCE_BINDING_TIER_3,
+    D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT,
 };
 use windows::Win32::Graphics::Dxgi::DXGI_ERROR_UNSUPPORTED;
 
@@ -358,7 +359,7 @@ impl Dx12 {
                         pipeline::MAX_DYNAMIC_UNIFORM_BUFFERS
                             .min(D3D12_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT)
                     },
-                    max_color_attachments: 8,
+                    max_color_attachments: D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT,
                     max_texture_dimension_1d: D3D12_REQ_TEXTURE1D_U_DIMENSION,
                     max_texture_dimension_2d: D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION,
                     max_texture_dimension_3d: D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION,

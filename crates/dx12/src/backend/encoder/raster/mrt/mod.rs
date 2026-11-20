@@ -9,6 +9,9 @@ mod finish;
 use clear::{depth_clear_handles, selected};
 pub(super) use finish::end;
 use std::collections::HashSet;
+use windows::Win32::Graphics::Direct3D12::{
+    D3D12_MAX_VIEW_INSTANCE_COUNT, D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT,
+};
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;
 
 struct Resolve {
@@ -57,14 +60,18 @@ pub(super) fn begin(
     encoder: &mut Dx12Encoder,
     desc: &api::RasterPassDesc<'_, Dx12>,
 ) -> Result<RasterState, Error> {
-    if encoder.is_compute || desc.colors.len() > 8 {
+    if encoder.is_compute {
         return Err(Error::Unsupported("DX12 raster attachment configuration"));
     }
-    let multiview = match desc.multiview_mask {
-        None => None,
-        Some(mask) if mask != 0 && mask <= 15 => Some(32 - mask.leading_zeros()),
-        _ => return Err(Error::Unsupported("DX12 multiview mask")),
-    };
+    if desc.colors.len() > D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT as usize {
+        return Err(Error::InvalidRange);
+    }
+    let multiview = desc
+        .multiview_mask
+        .map(|mask| u32::BITS - mask.leading_zeros());
+    if multiview.is_some_and(|views| !(1..=D3D12_MAX_VIEW_INSTANCE_COUNT).contains(&views)) {
+        return Err(Error::InvalidRange);
+    }
     let right = desc
         .render_area
         .x

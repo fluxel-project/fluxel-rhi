@@ -130,6 +130,9 @@ impl<B: Backend> MeshDomain<'_, B> {
         {
             return Err(Error::WrongDevice);
         }
+        if desc.targets.len() > self.device.caps.limits.max_color_attachments as usize {
+            return Err(Error::InvalidRange);
+        }
         if desc.primitive.conservative && self.device.caps.conservative_raster == Some(false) {
             return Err(Error::Unsupported("conservative rasterization"));
         }
