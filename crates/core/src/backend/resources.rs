@@ -243,6 +243,8 @@ pub trait QueryBackend: CommandBackend {
         device: &Self::NativeDevice,
         desc: &QueryDesc,
     ) -> Result<Self::NativeQuerySet>;
+    /// Records at the current command position, including pass scopes
+    /// advertised in the device's timestamp capabilities.
     fn write_timestamp(
         encoder: &mut Self::NativeEncoder,
         set: &Self::NativeQuerySet,

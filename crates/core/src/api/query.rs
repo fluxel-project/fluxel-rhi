@@ -426,13 +426,51 @@ impl<B: QueryBackend> Queries<'_, B> {
         set: &QuerySet<B>,
         slot: u32,
     ) -> Result<()> {
-        if encoder.device != self.device.id || set.device != self.device.id {
+        self.validate_timestamp(encoder.device, set, slot)?;
+        encoder.call(|e| B::write_timestamp(e, &set.native, slot))
+    }
+    /// Records a timestamp between commands in an open raster pass.
+    pub fn raster_timestamp(
+        &self,
+        pass: &mut RasterPass<'_, B>,
+        set: &QuerySet<B>,
+        slot: u32,
+    ) -> Result<()>
+    where
+        B: RasterBackend,
+    {
+        self.validate_timestamp(pass.encoder.device, set, slot)?;
+        if !self.device.caps.timestamp_raster_pass {
+            return Err(Error::Unsupported("raster-pass timestamp"));
+        }
+        pass.call(|encoder| B::write_timestamp(encoder, &set.native, slot))
+    }
+    /// Records a timestamp between commands in an open compute pass.
+    pub fn compute_timestamp(
+        &self,
+        pass: &mut ComputePass<'_, B>,
+        set: &QuerySet<B>,
+        slot: u32,
+    ) -> Result<()> {
+        self.validate_timestamp(pass.encoder.device, set, slot)?;
+        if !self.device.caps.timestamp_compute_pass {
+            return Err(Error::Unsupported("compute-pass timestamp"));
+        }
+        pass.call(|encoder| B::write_timestamp(encoder, &set.native, slot))
+    }
+
+    fn validate_timestamp(
+        &self,
+        device: DeviceId,
+        set: &QuerySet<B>,
+        slot: u32,
+    ) -> Result<()> {
+        if device != self.device.id || set.device != self.device.id {
             return Err(Error::WrongDevice);
         }
         self.require_kind(QueryKind::Timestamp)?;
         self.validate_set(set)?;
-        set.validate_slot(slot)?;
-        encoder.call(|e| B::write_timestamp(e, &set.native, slot))
+        set.validate_slot(slot)
     }
     pub fn begin_occlusion(
         &self,

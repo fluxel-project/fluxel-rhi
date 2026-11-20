@@ -202,6 +202,10 @@ pub struct DeviceCapabilities {
     pub nonuniform_sampler_indexing: bool,
     pub nonuniform_acceleration_structure_indexing: bool,
     pub timestamp: bool,
+    /// Timestamp queries can be written at an explicit point during a raster pass.
+    pub timestamp_raster_pass: bool,
+    /// Timestamp queries can be written at an explicit point during a compute pass.
+    pub timestamp_compute_pass: bool,
     pub occlusion: bool,
     pub pipeline_statistics: bool,
     pub multiview: bool,

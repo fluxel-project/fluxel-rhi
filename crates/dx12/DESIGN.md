@@ -273,6 +273,12 @@ current DXGI color and luminance facts separately from the selected configuratio
 
 ## Capability boundaries
 
+Timestamp queries can be recorded on the graphics or compute queue, between
+encoder commands or at a chosen position in a raster or compute pass. A
+pass-local timestamp measures the position after preceding commands,
+including any already recorded pass setup, and uses the same slot tracking
+and resolve rules as encoder-level timestamps.
+
 WGSL layout inference reflects active globals for selected vertex, fragment
 or compute entries. Core combines compatible declarations before applying the
 ordinary layout admission checks. Runtime arrays require a supplied capacity.

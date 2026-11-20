@@ -154,7 +154,7 @@ impl<B: Backend> ComputeDomain<'_, B> {
     }
 }
 pub struct ComputePass<'a, B: CommandBackend> {
-    encoder: &'a mut CommandEncoder<B>,
+    pub(crate) encoder: &'a mut CommandEncoder<B>,
     active: bool,
     debug_group_depth_at_begin: u32,
     debug_label_active: bool,
@@ -199,7 +199,10 @@ impl<B: CommandBackend> ComputePass<'_, B> {
     pub fn pop_debug_group(&mut self) -> Result<()> {
         self.debug_annotation(DebugMarkerOp::Pop)
     }
-    fn call(&mut self, f: impl FnOnce(&mut B::NativeEncoder) -> Result<()>) -> Result<()> {
+    pub(crate) fn call(
+        &mut self,
+        f: impl FnOnce(&mut B::NativeEncoder) -> Result<()>,
+    ) -> Result<()> {
         if self.encoder.poisoned {
             return Err(Error::InvalidState);
         }

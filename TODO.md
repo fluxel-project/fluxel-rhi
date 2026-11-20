@@ -195,6 +195,16 @@ supported. Verify WGSL stage and unsupported builtin rejection. Reopen
 subgroup ID, count or barrier after an exact native or lowered mapping can
 be verified across different wave configurations.
 
+### DX12 pass-local timestamps
+
+**Status:** Graphics and compute passes can record timestamps at an
+explicit command position. Encoder timestamps, pass-local timestamps and
+resolves share query slot and native lane ordering rules.
+
+**Acceptance:** Write before, between and after pass commands, resolve the
+slots, and confirm their ticks on the producer lane. Cover graphics and
+compute queues, invalid slots and reset and reuse.
+
 ### DX12 WGSL sample-frequency shading
 
 **Status:** WGSL validation admits fragment sample index and sample

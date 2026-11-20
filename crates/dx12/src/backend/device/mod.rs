@@ -452,6 +452,8 @@ impl Dx12 {
                 texture_atomic_r32uint_or_compute,
                 storage_buffers: true,
                 timestamp: true,
+                timestamp_raster_pass: true,
+                timestamp_compute_pass: true,
                 occlusion: true,
                 pipeline_statistics: true,
                 debug_markers: true,
