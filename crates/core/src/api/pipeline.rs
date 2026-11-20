@@ -5,6 +5,7 @@
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
+    collections::HashSet,
     future::Future,
     marker::PhantomData,
     ops::Range,
@@ -55,6 +56,7 @@ pub enum VertexFormat {
 }
 #[derive(Clone, Debug)]
 pub struct VertexAttribute {
+    /// Shader input location, unique across all vertex buffers in a pipeline.
     pub location: u32,
     pub offset: u64,
     pub format: VertexFormat,
@@ -370,6 +372,12 @@ impl<B: PipelineBackend> Device<B> {
                 > self.caps.limits.max_vertex_attributes as usize
         {
             return Err(Error::InvalidRange);
+        }
+        let mut locations = HashSet::new();
+        for attribute in desc.vertex_buffers.iter().flat_map(|slot| &slot.attributes) {
+            if !locations.insert(attribute.location) {
+                return Err(Error::InvalidState);
+            }
         }
         if let Some(views) = desc.multiview {
             // A nonzero count is required because a zero-mask pipeline has no

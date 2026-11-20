@@ -29,6 +29,9 @@ slots 0 through 15 while the SDK defines 32 IA vertex input slots. Verify
 slot 15, slot 16, slot 31 and the first rejected slot on a real DX12 device.
 Use an explicit Core offset equal to `D3D12_APPEND_ALIGNED_ELEMENT` as a
 negative case. It must be rejected before PSO creation.
+Verify duplicate shader input locations are rejected across two buffer slots
+and within one slot. Check native signature linkage for the selected artifact
+and cover zero-stride constant input independently of ordinary vertex stride.
 
 **Storage buffer views:** Check the maximum range and alignment separately
 for raw and structured SRV/UAV descriptors, including dynamic offsets.
