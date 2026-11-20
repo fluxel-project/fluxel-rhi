@@ -266,6 +266,74 @@ fn retain_sparse(
     }
 }
 
+fn register_retirements(
+    device: &Dx12Device,
+    values: [Option<u64>; 2],
+    retained_lanes: [bool; 2],
+    retained_sparse: bool,
+) -> Result<(), Error> {
+    let mut first_error = None;
+    for ordinal in 0..2 {
+        if retained_lanes[ordinal] || (ordinal == 0 && retained_sparse) {
+            if let Err(error) = retirement::register(
+                device,
+                ordinal as u32,
+                values[ordinal].expect("retained lane has a fence"),
+            ) {
+                // A failed registration cannot suppress the other lane's
+                // independent completion observation.
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+/// End indices of the owners covered by each lane's most recent signal.
+#[derive(Default)]
+struct SignaledOwners {
+    commands: [usize; 2],
+    sparse: usize,
+}
+
+impl SignaledOwners {
+    fn record(&mut self, ordinal: usize, commands: usize, sparse: usize) {
+        self.commands[ordinal] = commands;
+        if ordinal == 0 {
+            self.sparse = sparse;
+        }
+    }
+}
+
+fn retain_failed_handoff(
+    device: &Dx12Device,
+    values: [Option<u64>; 2],
+    signaled: &SignaledOwners,
+    issued: Vec<Dx12RecordedWork>,
+    mut sparse: Vec<super::super::sparse::SparseRetained>,
+) {
+    let mut covered = Vec::new();
+    let mut uncertain = Vec::new();
+    for (index, record) in issued.into_iter().enumerate() {
+        if index < signaled.commands[record.lane.ordinal as usize] {
+            covered.push(record);
+        } else {
+            uncertain.push(record);
+        }
+    }
+    let uncertain_sparse = sparse.split_off(signaled.sparse);
+    retain_indeterminate(device, uncertain);
+    retain_sparse(device, u64::MAX, uncertain_sparse);
+    let retained_lanes = retain_submitted(device, values, &mut covered);
+    let retained_sparse = !sparse.is_empty();
+    if retained_sparse {
+        retain_sparse(device, values[0].expect("signaled sparse work has a fence"), sparse);
+    }
+    // Report the original handoff failure. Registration retains its own
+    // fallback owner if observing a valid fence cannot be arranged.
+    let _ = register_retirements(device, values, retained_lanes, retained_sparse);
+}
+
 /// Executes one encoder's native lists in their recorded order. Ordinary work
 /// remains batched by the caller; this slower path is used only when an
 /// explicit external queue boundary split the list.
@@ -481,14 +549,14 @@ unsafe fn submit_packet(
     // per-lane fence rather than joining compute into direct.
     let mut lane_dirty = [false; 2];
     let mut lane_values = [None; 2];
+    let mut signaled = SignaledOwners::default();
     let mut tokens = Vec::new();
     macro_rules! handoff {
         ($operation:expr) => {
             match $operation {
                 Ok(value) => value,
                 Err(error) => {
-                    retain_indeterminate(device, issued);
-                    retain_sparse(device, u64::MAX, sparse_issued);
+                    retain_failed_handoff(device, lane_values, &signaled, issued, sparse_issued);
                     return Outcome::Indeterminate {
                         error,
                         uncertain: unsafe {
@@ -627,6 +695,7 @@ unsafe fn submit_packet(
                 value,
             );
             lane_values[lane.ordinal as usize] = Some(value);
+            signaled.record(lane.ordinal as usize, issued.len(), sparse_issued.len());
             lane_dirty[lane.ordinal as usize] = false;
             Some(value)
         } else {
@@ -672,6 +741,7 @@ unsafe fn submit_packet(
                 fence_value,
             );
             lane_values[lane.ordinal as usize] = Some(fence_value);
+            signaled.record(lane.ordinal as usize, issued.len(), sparse_issued.len());
             lane_dirty[lane.ordinal as usize] = false;
             checkpoints.push(checkpoint(device, plan.id().device, lane, fence_value, id));
         }
@@ -688,6 +758,7 @@ unsafe fn submit_packet(
                     value,
                 );
                 lane_values[ordinal] = Some(value);
+                signaled.record(ordinal, issued.len(), sparse_issued.len());
                 lane_dirty[ordinal] = false;
             }
         }
@@ -707,21 +778,9 @@ unsafe fn submit_packet(
         // Register only after every owner for that lane has entered its
         // in-flight store, otherwise a fast completion could retire an earlier
         // subset and strand later ownership without another API call.
-        let mut retirement_error = None;
-        for ordinal in 0..2 {
-            if retained_lanes[ordinal] || (ordinal == 0 && retained_sparse) {
-                if let Err(error) = retirement::register(
-                    device,
-                    ordinal as u32,
-                    lane_values[ordinal].expect("retained lane has a terminal fence"),
-                ) {
-                    // The other lane still needs its own observation even
-                    // when this lane falls back to quarantine.
-                    retirement_error.get_or_insert(error);
-                }
-            }
-        }
-        if let Some(error) = retirement_error {
+        if let Err(error) =
+            register_retirements(device, lane_values, retained_lanes, retained_sparse)
+        {
             // Handoff has happened and in-flight stores retain each owner.
             return Outcome::Indeterminate {
                 error,

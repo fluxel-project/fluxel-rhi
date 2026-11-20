@@ -254,6 +254,10 @@ fence again, giving an observed completion or device loss precedence. The
 event remains owned until the native fence can no longer signal it. A value
 of `u64::MAX` represents device removal or indeterminate accepted work, so
 it is quarantined rather than treated as a canceled packet.
+If a later native handoff fails, work covered by a signal already issued on
+its lane remains eligible for fence retirement. Work without a covering
+signal stays in quarantine. The packet still reports an indeterminate
+handoff when the failed operation leaves its exact accepted prefix unknown.
 
 New primary and secondary encoders, idle waits, and packet admission check
 the native device removal status before allocating command objects or

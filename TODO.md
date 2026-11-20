@@ -458,6 +458,9 @@ this harness.
 
 Inject retirement registration failure on one DX12 lane and verify that
 work on the other lane still retires autonomously at its own fence.
+Fail a later handoff after a lane signal. Verify earlier owners retire at
+that signal and later unsignaled owners stay quarantined, including sparse
+mapping owners.
 
 ### P4-AS-ARRAY-VK — Vulkan fixed acceleration-structure arrays
 
