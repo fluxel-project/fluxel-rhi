@@ -229,6 +229,11 @@ impl Inputs {
                                     }),
                             );
                         }
+                        api::AccelerationGeometry::TransformedTriangles { .. } => {
+                            return Err(Error::Unsupported(
+                                "Vulkan acceleration geometry transform",
+                            ));
+                        }
                         api::AccelerationGeometry::Aabbs {
                             data,
                             offset,

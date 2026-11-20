@@ -25,6 +25,7 @@ enum GeometryShape {
         vertex_format: api::VertexFormat,
         stride: u64,
         opaque: bool,
+        transformed: bool,
     },
     Aabbs {
         count: u32,
@@ -64,13 +65,26 @@ impl GeometryShape {
                 indices: None,
                 opaque,
                 ..
+            }
+            | api::AccelerationGeometry::TransformedTriangles {
+                vertex_count,
+                vertex_format,
+                stride,
+                indices: None,
+                opaque,
+                ..
             } => Some(Self::Triangles {
                 vertex_count: *vertex_count,
                 vertex_format: *vertex_format,
                 stride: *stride,
                 opaque: *opaque,
+                transformed: matches!(
+                    geometry,
+                    api::AccelerationGeometry::TransformedTriangles { .. }
+                ),
             }),
-            api::AccelerationGeometry::Triangles { .. } => None,
+            api::AccelerationGeometry::Triangles { .. }
+            | api::AccelerationGeometry::TransformedTriangles { .. } => None,
             api::AccelerationGeometry::Aabbs {
                 stride,
                 count,

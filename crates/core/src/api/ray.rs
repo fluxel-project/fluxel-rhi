@@ -40,6 +40,19 @@ pub enum AccelerationGeometry<B: Backend> {
         indices: Option<AccelerationIndices<B>>,
         opaque: bool,
     },
+    /// Triangles with a geometry-to-BLAS transform. At `transform_offset`,
+    /// the build-input buffer stores 12 `f32` values in three row-major rows.
+    TransformedTriangles {
+        vertices: Buffer<B>,
+        vertex_offset: u64,
+        vertex_count: u32,
+        vertex_format: VertexFormat,
+        stride: u64,
+        indices: Option<AccelerationIndices<B>>,
+        opaque: bool,
+        transform: Buffer<B>,
+        transform_offset: u64,
+    },
     Aabbs {
         data: Buffer<B>,
         offset: u64,
@@ -116,11 +129,12 @@ impl<B: Backend> AccelerationInput<B> {
             Self::Blas(geometries) => geometries.iter().any(|geometry| match geometry {
                 AccelerationGeometry::Triangles {
                     vertices, indices, ..
-                } => {
+                } | AccelerationGeometry::TransformedTriangles { vertices, indices, .. } => {
                     vertices.device != device
                         || indices
                             .as_ref()
                             .is_some_and(|indices| indices.buffer.device != device)
+                        || matches!(geometry, AccelerationGeometry::TransformedTriangles { transform, .. } if transform.device != device)
                 }
                 AccelerationGeometry::Aabbs { data, .. } => data.device != device,
             }),
@@ -155,6 +169,11 @@ impl<B: Backend> AccelerationInput<B> {
                             vertex_count,
                             indices,
                             ..
+                        }
+                        | AccelerationGeometry::TransformedTriangles {
+                            vertex_count,
+                            indices,
+                            ..
                         } => {
                             indices
                                 .as_ref()
@@ -170,6 +189,13 @@ impl<B: Backend> AccelerationInput<B> {
                 }
                 let valid = match geometry {
                     AccelerationGeometry::Triangles {
+                        vertex_offset,
+                        vertex_count,
+                        stride,
+                        indices,
+                        ..
+                    }
+                    | AccelerationGeometry::TransformedTriangles {
                         vertex_offset,
                         vertex_count,
                         stride,
@@ -215,6 +241,14 @@ impl<B: Backend> AccelerationInput<B> {
                 };
                 if !valid {
                     return Err(Error::InvalidRange);
+                }
+                if let AccelerationGeometry::TransformedTriangles {
+                    transform_offset, ..
+                } = geometry
+                {
+                    if transform_offset % 16 != 0 || transform_offset.checked_add(48).is_none() {
+                        return Err(Error::InvalidRange);
+                    }
                 }
             }
         }
@@ -451,8 +485,7 @@ impl<B: Backend> RayDomain<'_, B> {
     }
     pub fn sizes(&self, desc: &AccelerationDesc<B>) -> Result<AccelerationSizes> {
         self.require_acceleration()?;
-        desc.input
-            .validate(self.device.id, &self.device.caps.limits)?;
+        self.validate_acceleration_input(&desc.input)?;
         B::Ray::acceleration_sizes(&self.device.native, desc)
     }
     pub fn triangle_vertex_layout(&self, format: VertexFormat) -> Result<AccelerationVertexLayout> {
@@ -464,8 +497,7 @@ impl<B: Backend> RayDomain<'_, B> {
         desc: &AccelerationDesc<B>,
     ) -> Result<AccelerationStructure<B>> {
         self.require_acceleration()?;
-        desc.input
-            .validate(self.device.id, &self.device.caps.limits)?;
+        self.validate_acceleration_input(&desc.input)?;
         let native = B::Ray::create_acceleration(&self.device.native, desc)?;
         // SAFETY: the SPI created this acceleration structure for this device.
         Ok(unsafe { AccelerationStructure::from_native(self.device.id, native) })
@@ -487,8 +519,7 @@ impl<B: Backend> RayDomain<'_, B> {
         {
             return Err(Error::WrongDevice);
         }
-        desc.input
-            .validate(self.device.id, &self.device.caps.limits)?;
+        self.validate_acceleration_input(&desc.input)?;
         encoder.call(|e| B::Ray::build_acceleration(e, &dst.native, &scratch.native, desc))
     }
     /// Records an in-place refit. The execution must order a compatible build
@@ -519,8 +550,7 @@ impl<B: Backend> RayDomain<'_, B> {
         if !desc.allow_update {
             return Err(Error::InvalidState);
         }
-        desc.input
-            .validate(self.device.id, &self.device.caps.limits)?;
+        self.validate_acceleration_input(&desc.input)?;
         encoder.call(|e| B::Ray::update_acceleration(e, &dst.native, &scratch.native, desc))
     }
     fn require_acceleration(&self) -> Result<()> {
@@ -529,6 +559,15 @@ impl<B: Backend> RayDomain<'_, B> {
         } else {
             Err(Error::Unsupported("acceleration structures"))
         }
+    }
+    fn validate_acceleration_input(&self, input: &AccelerationInput<B>) -> Result<()> {
+        input.validate(self.device.id, &self.device.caps.limits)?;
+        if !self.device.caps.acceleration_geometry_transform
+            && matches!(input, AccelerationInput::Blas(geometries) if geometries.iter().any(|g| matches!(g, AccelerationGeometry::TransformedTriangles { .. })))
+        {
+            return Err(Error::Unsupported("acceleration geometry transform"));
+        }
+        Ok(())
     }
     pub fn trace(
         &self,

@@ -116,6 +116,16 @@ impl GeometryInputs {
                             stride,
                             indices,
                             opaque,
+                        }
+                        | api::AccelerationGeometry::TransformedTriangles {
+                            vertices,
+                            vertex_offset,
+                            vertex_count,
+                            vertex_format,
+                            stride,
+                            indices,
+                            opaque,
+                            ..
                         } => {
                             let (format, layout) = triangle_vertex_layout(*vertex_format, dxr_1_1)?;
                             if indices.as_ref().map_or(*vertex_count, |i| i.count) % 3 != 0 {
@@ -160,10 +170,27 @@ impl GeometryInputs {
                                 } else {
                                     (DXGI_FORMAT_UNKNOWN, 0, 0)
                                 };
+                            let transform_address = match item {
+                                api::AccelerationGeometry::TransformedTriangles {
+                                    transform,
+                                    transform_offset,
+                                    ..
+                                } => {
+                                    // SAFETY: Core checked the transform buffer's device identity.
+                                    let buffer = unsafe { transform.native_ref() };
+                                    let alignment =
+                                        u64::from(D3D12_RAYTRACING_TRANSFORM3X4_BYTE_ALIGNMENT);
+                                    let address =
+                                        address(buffer, *transform_offset, 1, 48, 48, alignment)?;
+                                    buffers.push(buffer.clone());
+                                    address
+                                }
+                                _ => 0,
+                            };
                             (
                                 D3D12_RAYTRACING_GEOMETRY_DESC_0 {
                                     Triangles: D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC {
-                                        Transform3x4: 0,
+                                        Transform3x4: transform_address,
                                         IndexFormat: index_format,
                                         VertexFormat: format,
                                         IndexCount: index_count,
@@ -205,7 +232,8 @@ impl GeometryInputs {
                     };
                     geometries.push(D3D12_RAYTRACING_GEOMETRY_DESC {
                         Type: match item {
-                            api::AccelerationGeometry::Triangles { .. } => {
+                            api::AccelerationGeometry::Triangles { .. }
+                            | api::AccelerationGeometry::TransformedTriangles { .. } => {
                                 D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES
                             }
                             _ => D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS,

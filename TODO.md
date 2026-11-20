@@ -44,6 +44,9 @@ UNORM and tightly packed three-component formats. Verify Tier 1.0 rejects the
 formats that require Tier 1.1.
 Verify packed RGB10A2 UNORM positions use their required four-byte stride
 under DXR Tier 1.1.
+Verify geometry-to-BLAS transforms by traversal readback, including a refit
+with replacement transform data. Reject misaligned, undersized and foreign
+transform buffers, and refits that change transform presence.
 
 ### DX12 conservative rasterization
 
