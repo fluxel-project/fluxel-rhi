@@ -18,7 +18,7 @@ pub(super) use format::{
     format_supports_texture_atomic_add_native, format_supports_texture_atomic_bitwise_native,
     format_supports_texture_atomic_signed_min_native,
     format_supports_texture_atomic_unsigned_min_native, integer_clear_bits, integer_color,
-    is_depth,
+    is_depth, storage_view_format_available,
 };
 use format::{format_available, sample_count_supported, supported_sample_counts};
 use validate::{max_array_layers, max_extent, max_mips, valid};

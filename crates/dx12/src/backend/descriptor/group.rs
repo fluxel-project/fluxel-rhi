@@ -45,6 +45,9 @@ pub(crate) fn create_bind_group(
                 {
                     return Ok(count);
                 }
+                if slot.view_dimension.is_some() {
+                    write::validate_texture_binding(device, slot, &entry.resource)?;
+                }
                 count
                     .checked_add(write::resource_descriptor_count(slot, &entry.resource)?)
                     .ok_or(Error::InvalidRange)
@@ -116,9 +119,6 @@ pub(crate) fn create_bind_group(
         let entry = &desc.entries[index];
         if entry.binding != slot.binding {
             return Err(Error::InvalidState);
-        }
-        if slot.view_dimension.is_some() {
-            write::validate_texture_view_dimension(device, slot, &entry.resource)?;
         }
         let resources: Vec<Option<&api::BindingResource<'_, Dx12>>> = match &entry.resource {
             api::BindingResource::Array(values) => {

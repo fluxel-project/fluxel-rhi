@@ -123,7 +123,7 @@ pub(super) fn validate_sampler_type(
     Ok(())
 }
 
-pub(super) fn validate_texture_view_dimension(
+pub(super) fn validate_texture_binding(
     device: &Dx12Device,
     slot: &BindingSlot,
     resource: &api::BindingResource<'_, Dx12>,
@@ -131,22 +131,22 @@ pub(super) fn validate_texture_view_dimension(
     let expected = slot.view_dimension.ok_or(Error::InvalidState)?;
     match resource {
         api::BindingResource::TextureView(view) => {
-            validate_sampled_view(device, slot, view, expected)
+            validate_bound_view(device, slot, view, expected)
         }
         api::BindingResource::Array(views) => {
             for view in views.iter().flatten() {
                 let api::BindingResource::TextureView(view) = view else {
-                    return Err(Error::Unsupported("DX12 sampled texture array resource"));
+                    return Err(Error::Unsupported("DX12 texture view array resource"));
                 };
-                validate_sampled_view(device, slot, view, expected)?;
+                validate_bound_view(device, slot, view, expected)?;
             }
             Ok(())
         }
-        _ => Err(Error::Unsupported("DX12 sampled texture binding resource")),
+        _ => Err(Error::Unsupported("DX12 texture binding resource")),
     }
 }
 
-fn validate_sampled_view(
+fn validate_bound_view(
     device: &Dx12Device,
     slot: &BindingSlot,
     view: &api::TextureView<Dx12>,
@@ -161,6 +161,15 @@ fn validate_sampled_view(
             .is_some_and(|format| format != native.0.desc.format)
     {
         return Err(Error::InvalidState);
+    }
+    match slot.class {
+        DescriptorClass::Srv if native.0.srv.is_none() => {
+            return Err(Error::Unsupported("DX12 sampled texture without SRV"));
+        }
+        DescriptorClass::Uav if native.0.uav.is_none() => {
+            return Err(Error::Unsupported("DX12 storage texture without UAV"));
+        }
+        _ => {}
     }
     if let Some(sample) = slot.texture_sample {
         let format = native.0.desc.format;

@@ -20,6 +20,9 @@ after the native fence reaches it. Read back identity, rearranged, and constant
 sampled components, and reject sampled-only views as storage or attachments.
 Check the requested sample count and the reported alternatives against texture
 creation for the same format, dimension, mip count, and usage.
+Compare storage layout admission with actual typed UAV view creation for
+matching formats and dimensions, and verify missing view roles fail before
+descriptor copies.
 
 ### DX12 comparison sampler integration
 

@@ -265,6 +265,29 @@ fn storage_available(device: &Dx12Device, desc: &api::TextureDesc) -> bool {
         }
         value => value,
     };
+    storage_view_format_available(device, format, desc.dimension)
+}
+
+/// Core storage texture allocations currently admit both typed reads and
+/// writes. A layout may narrow shader access while using the same view.
+pub(crate) fn storage_view_format_available(
+    device: &Dx12Device,
+    format: api::TextureFormat,
+    dimension: api::TextureDimension,
+) -> bool {
+    if color_texel_bytes(format).is_none()
+        || matches!(
+            format,
+            api::TextureFormat::Rgba8UnormSrgb | api::TextureFormat::Bgra8UnormSrgb
+        )
+    {
+        return false;
+    }
+    let texture_dimension = match dimension {
+        api::TextureDimension::D1 => D3D12_FORMAT_SUPPORT1_TEXTURE1D,
+        api::TextureDimension::D2 => D3D12_FORMAT_SUPPORT1_TEXTURE2D,
+        api::TextureDimension::D3 => D3D12_FORMAT_SUPPORT1_TEXTURE3D,
+    };
     let mut support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
         Format: dxgi_format(format),
         ..Default::default()
@@ -280,7 +303,7 @@ fn storage_available(device: &Dx12Device, desc: &api::TextureDesc) -> bool {
     .is_ok()
         && support
             .Support1
-            .contains(D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW)
+            .contains(D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW | texture_dimension)
         && support
             .Support2
             .contains(D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)

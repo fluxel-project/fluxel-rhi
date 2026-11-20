@@ -100,14 +100,20 @@ fn layout_state(
                 dimension,
                 access: _,
             } => {
-                if !matches!(
-                    dimension,
-                    api::TextureViewDimension::D1
-                        | api::TextureViewDimension::D2
-                        | api::TextureViewDimension::D2Array
-                        | api::TextureViewDimension::D3
+                let texture_dimension = match dimension {
+                    api::TextureViewDimension::D1 => api::TextureDimension::D1,
+                    api::TextureViewDimension::D2 | api::TextureViewDimension::D2Array => {
+                        api::TextureDimension::D2
+                    }
+                    api::TextureViewDimension::D3 => api::TextureDimension::D3,
+                    _ => return Err(Error::Unsupported("DX12 storage texture view dimension")),
+                };
+                if !super::super::texture::storage_view_format_available(
+                    device,
+                    format,
+                    texture_dimension,
                 ) {
-                    return Err(Error::Unsupported("DX12 storage texture view dimension"));
+                    return Err(Error::Unsupported("DX12 storage texture view format"));
                 }
                 slots.push(BindingSlot {
                     binding_type: entry.ty.clone(),
