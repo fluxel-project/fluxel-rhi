@@ -55,6 +55,9 @@ query state are verified during command execution.
 for single-sample and multisampled textures of the same extent. Check a
 non-power-of-two extent and verify multisampling reports and admits one
 mip while rejecting a second mip.
+For multisampled color attachments, compare texture and view support with
+creation for the base and reinterpreted formats. Check native multisampled
+render target support and the requested sample count for the view format.
 
 **Index buffer views:** Verify that DX12 support, direct recording and
 bundles agree on INDEX usage, element alignment, byte range, and the native

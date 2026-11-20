@@ -120,7 +120,16 @@ fn view_format_available(
         && (!(desc.samples > 1 && usage.contains(api::TextureUsage::TEXTURE_BINDING))
             || format_has_support(dv, view, D3D12_FORMAT_SUPPORT1_MULTISAMPLE_LOAD))
         && (!usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
-            || format_has_support(dv, view, D3D12_FORMAT_SUPPORT1_RENDER_TARGET))
+            || (format_has_support(
+                dv,
+                view,
+                if desc.samples > 1 {
+                    D3D12_FORMAT_SUPPORT1_RENDER_TARGET
+                        | D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RENDERTARGET
+                } else {
+                    D3D12_FORMAT_SUPPORT1_RENDER_TARGET
+                },
+            ) && sample_count_supported(dv, view, desc.samples)))
 }
 
 fn permitted_view_formats(dv: &Dx12Device, desc: &api::TextureDesc) -> Vec<api::TextureFormat> {

@@ -232,6 +232,11 @@ pub(super) fn format_available(device: &Dx12Device, desc: &api::TextureDesc) -> 
                 .Support1
                 .contains(D3D12_FORMAT_SUPPORT1_RENDER_TARGET))
         && (desc.samples == 1
+            || is_depth(desc.format)
+            || support
+                .Support1
+                .contains(D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RENDERTARGET))
+        && (desc.samples == 1
             || !desc.usage.contains(api::TextureUsage::TEXTURE_BINDING)
             || if is_depth(desc.format) {
                 format_has_support(
