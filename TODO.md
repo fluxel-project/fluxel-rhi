@@ -233,6 +233,11 @@ regions and invalid format, usage, aspect and sample-count pairs. Exercise
 BC edge blocks, array and volume slice selection, depth and MSAA full-copy
 requirements, and same-resource overlap. Qualify buffer copies and their
 footprint rules separately.
+Compare allocation, sampled view creation and bind-group admission for the
+native depth and stencil SRV formats. Include single-sample and multisample
+D16, D24S8, D32 and D32S8, cube depth views, and a combined attachment view.
+Check the typeless allocation's dimension support and confirm that a
+depth/stencil plane does not depend on an unrelated scalar color format.
 
 ### DX12 structured shader diagnostics
 

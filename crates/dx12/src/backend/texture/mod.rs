@@ -25,6 +25,7 @@ pub(super) use format::{
     format_supports_texture_atomic_unsigned_min_native, integer_clear_bits, integer_color,
     is_depth, storage_view_format_available, typed_storage_access,
 };
+pub(super) use format::{native_format_support, sample_load_requirement};
 use validate::valid;
 pub(super) use validate::{max_array_layers, max_extent, max_mips};
 
@@ -154,6 +155,17 @@ fn allocation_format(desc: &api::TextureDesc) -> Result<DXGI_FORMAT> {
     }
 }
 
+pub(super) fn sampled_srv_format(
+    format: api::TextureFormat,
+    aspect: api::TextureAspects,
+) -> DXGI_FORMAT {
+    if is_depth(format) {
+        depth_view::srv_format(format, aspect)
+    } else {
+        dxgi_format(format)
+    }
+}
+
 // Share reinterpretation admission between capability reporting and view creation.
 fn view_format_available(
     dv: &Dx12Device,
@@ -166,9 +178,7 @@ fn view_format_available(
     }
     desc.view_formats.contains(&view)
         && (!usage.contains(api::TextureUsage::TEXTURE_BINDING)
-            || format_has_support(dv, view, D3D12_FORMAT_SUPPORT1_SHADER_LOAD))
-        && (!(desc.samples > 1 && usage.contains(api::TextureUsage::TEXTURE_BINDING))
-            || format_has_support(dv, view, D3D12_FORMAT_SUPPORT1_MULTISAMPLE_LOAD))
+            || format_has_support(dv, view, sample_load_requirement(desc.samples)))
         && (!usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
             || (format_has_support(
                 dv,

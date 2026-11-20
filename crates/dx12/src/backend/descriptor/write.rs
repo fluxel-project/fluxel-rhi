@@ -298,48 +298,22 @@ fn validate_bound_view(
         if !compatible {
             return Err(Error::InvalidState);
         }
-        let mut support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
-            Format: match format {
-                F::Depth16Unorm => windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16_UNORM,
-                F::Depth32Float | F::Depth24Plus => {
-                    windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_FLOAT
-                }
-                F::Depth24PlusStencil8 if depth_plane => {
-                    windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R24_UNORM_X8_TYPELESS
-                }
-                F::Depth24PlusStencil8 => {
-                    windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_X24_TYPELESS_G8_UINT
-                }
-                F::Depth32FloatStencil8 if depth_plane => {
-                    windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS
-                }
-                F::Depth32FloatStencil8 => {
-                    windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_X32_TYPELESS_G8X24_UINT
-                }
-                _ => super::super::texture::dxgi_format(format),
-            },
-            ..Default::default()
-        };
-        // SAFETY: initialized matching feature structure and live device.
-        let ok = unsafe {
-            device.0.native.CheckFeatureSupport(
-                D3D12_FEATURE_FORMAT_SUPPORT,
-                &mut support as *mut _ as *mut _,
-                std::mem::size_of_val(&support) as u32,
-            )
-        }
-        .is_ok();
+        use super::super::texture;
+        let format_facts = texture::native_format_support(
+            device,
+            texture::sampled_srv_format(format, native.0.desc.aspects),
+        );
         let sample_count = native.0.texture.desc.samples;
-        let supported = if sample_count > 1 {
-            support
-                .Support1
-                .contains(D3D12_FORMAT_SUPPORT1_MULTISAMPLE_LOAD)
-        } else if sample == api::TextureSampleType::Float {
-            super::super::texture::filterable_color(format, sample_count, support.Support1)
-        } else {
-            support.Support1.contains(D3D12_FORMAT_SUPPORT1_SHADER_LOAD)
-        };
-        if !ok || !supported {
+        let supported = format_facts.is_some_and(|facts| {
+            if sample_count == 1 && sample == api::TextureSampleType::Float {
+                texture::filterable_color(format, sample_count, facts.Support1)
+            } else {
+                facts
+                    .Support1
+                    .contains(texture::sample_load_requirement(sample_count))
+            }
+        });
+        if !supported {
             return Err(Error::Unsupported("DX12 sampled texture format support"));
         }
     }

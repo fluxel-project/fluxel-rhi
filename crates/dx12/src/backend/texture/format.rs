@@ -184,82 +184,50 @@ pub(super) fn available_format_support(
             return None;
         }
     }
-    let mut support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
-        Format: dxgi_format(desc.format),
-        ..Default::default()
-    };
-    // SAFETY: the feature query receives the matching initialized native structure.
-    let available = unsafe {
-        device.0.native.CheckFeatureSupport(
-            D3D12_FEATURE_FORMAT_SUPPORT,
-            &mut support as *mut _ as *mut _,
-            std::mem::size_of_val(&support) as u32,
-        )
-    }
-    .is_ok()
-        && support
-            .Support1
-            .contains(if desc.dimension == api::TextureDimension::D1 {
-                D3D12_FORMAT_SUPPORT1_TEXTURE1D
-            } else if desc.dimension == api::TextureDimension::D3 {
-                D3D12_FORMAT_SUPPORT1_TEXTURE3D
+    let format = dxgi_format(desc.format);
+    let support = native_format_support(device, format)?.Support1;
+    let dimensions = texture_dimension_support(desc.dimension);
+    let allocation = super::allocation_format(desc).ok()?;
+    let depth = is_depth(desc.format);
+    let sampled = desc.usage.contains(api::TextureUsage::TEXTURE_BINDING);
+    let render = desc.usage.contains(api::TextureUsage::RENDER_ATTACHMENT);
+    let multisampled = desc.samples > 1;
+    let available = support.contains(dimensions)
+        && (allocation == format || native_format_has_support(device, allocation, dimensions))
+        && (!depth || support.contains(D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL))
+        && (!sampled
+            || if depth {
+                depth_planes_available(device, desc.format, desc.samples)
             } else {
-                D3D12_FORMAT_SUPPORT1_TEXTURE2D
+                support.contains(sample_load_requirement(desc.samples))
             })
-        && (!is_depth(desc.format)
-            || support
-                .Support1
-                .contains(D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL))
-        && (!desc.usage.contains(api::TextureUsage::TEXTURE_BINDING)
-            || (matches!(
-                desc.format,
-                api::TextureFormat::Depth32Float
-                    | api::TextureFormat::Depth16Unorm
-                    | api::TextureFormat::Depth24Plus
-                    | api::TextureFormat::Depth24PlusStencil8
-                    | api::TextureFormat::Depth32FloatStencil8
-            ) && format_has_support(
-                device,
-                if desc.format == api::TextureFormat::Depth16Unorm {
-                    api::TextureFormat::R16Unorm
-                } else {
-                    api::TextureFormat::R32Float
-                },
-                D3D12_FORMAT_SUPPORT1_SHADER_LOAD,
-            ) && depth_planes_available(device, desc.format, desc.samples > 1))
-            || (!is_depth(desc.format)
-                && support.Support1.contains(D3D12_FORMAT_SUPPORT1_SHADER_LOAD)))
-        && (!(desc.samples > 1 || desc.usage.contains(api::TextureUsage::RENDER_ATTACHMENT))
-            || is_depth(desc.format)
-            || support
-                .Support1
-                .contains(D3D12_FORMAT_SUPPORT1_RENDER_TARGET))
-        && (desc.samples == 1
-            || is_depth(desc.format)
-            || support
-                .Support1
-                .contains(D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RENDERTARGET))
-        && (desc.samples == 1
-            || !desc.usage.contains(api::TextureUsage::TEXTURE_BINDING)
-            || if is_depth(desc.format) {
-                format_has_support(
-                    device,
-                    if desc.format == api::TextureFormat::Depth16Unorm {
-                        api::TextureFormat::R16Unorm
-                    } else {
-                        api::TextureFormat::R32Float
-                    },
-                    D3D12_FORMAT_SUPPORT1_MULTISAMPLE_LOAD,
-                )
-            } else {
-                support
-                    .Support1
-                    .contains(D3D12_FORMAT_SUPPORT1_MULTISAMPLE_LOAD)
-            })
+        && (!(multisampled || render)
+            || depth
+            || support.contains(D3D12_FORMAT_SUPPORT1_RENDER_TARGET))
+        && (!multisampled
+            || depth
+            || support.contains(D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RENDERTARGET))
         && (!desc.usage.contains(api::TextureUsage::STORAGE_BINDING)
             || storage_available(device, desc));
-    available.then_some(support.Support1)
+    available.then_some(support)
 }
+
+fn texture_dimension_support(dimension: api::TextureDimension) -> D3D12_FORMAT_SUPPORT1 {
+    match dimension {
+        api::TextureDimension::D1 => D3D12_FORMAT_SUPPORT1_TEXTURE1D,
+        api::TextureDimension::D2 => D3D12_FORMAT_SUPPORT1_TEXTURE2D,
+        api::TextureDimension::D3 => D3D12_FORMAT_SUPPORT1_TEXTURE3D,
+    }
+}
+
+pub(in crate::backend) fn sample_load_requirement(samples: u32) -> D3D12_FORMAT_SUPPORT1 {
+    if samples > 1 {
+        D3D12_FORMAT_SUPPORT1_MULTISAMPLE_LOAD
+    } else {
+        D3D12_FORMAT_SUPPORT1_SHADER_LOAD
+    }
+}
+
 fn storage_available(device: &Dx12Device, desc: &api::TextureDesc) -> bool {
     let format = match desc.format {
         api::TextureFormat::Rgba8UnormSrgb
@@ -292,26 +260,12 @@ pub(crate) fn storage_view_format_available(
     {
         return false;
     }
-    let texture_dimension = match dimension {
-        api::TextureDimension::D1 => D3D12_FORMAT_SUPPORT1_TEXTURE1D,
-        api::TextureDimension::D2 => D3D12_FORMAT_SUPPORT1_TEXTURE2D,
-        api::TextureDimension::D3 => D3D12_FORMAT_SUPPORT1_TEXTURE3D,
-    };
-    let mut support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
-        Format: dxgi_format(format),
-        ..Default::default()
-    };
-    // SAFETY: the feature query receives its matching initialized structure.
-    unsafe {
-        device.0.native.CheckFeatureSupport(
-            D3D12_FEATURE_FORMAT_SUPPORT,
-            &mut support as *mut _ as *mut _,
-            std::mem::size_of_val(&support) as u32,
-        )
-    }
-    .is_ok()
-        && support.Support1.contains(texture_dimension)
-        && typed_storage_access(&support, access)
+    native_format_support(device, dxgi_format(format)).is_some_and(|support| {
+        support
+            .Support1
+            .contains(texture_dimension_support(dimension))
+            && typed_storage_access(&support, access)
+    })
 }
 
 pub(crate) fn typed_storage_access(
@@ -338,43 +292,19 @@ pub(crate) fn typed_storage_access(
         Some(api::StorageAccess::ReadWrite | api::StorageAccess::Atomic) => load && store,
     }
 }
-fn depth_planes_available(
-    device: &Dx12Device,
-    format: api::TextureFormat,
-    multisampled: bool,
-) -> bool {
-    let formats: &[DXGI_FORMAT] = match format {
-        api::TextureFormat::Depth24PlusStencil8 => &[
-            DXGI_FORMAT_R24_UNORM_X8_TYPELESS,
-            DXGI_FORMAT_X24_TYPELESS_G8_UINT,
-        ],
-        api::TextureFormat::Depth32FloatStencil8 => &[
-            DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS,
-            DXGI_FORMAT_X32_TYPELESS_G8X24_UINT,
-        ],
-        _ => return true,
-    };
-    formats.iter().all(|&format| {
-        let mut support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
-            Format: format,
-            ..Default::default()
-        };
-        // SAFETY: the query writes to the matching initialized support structure.
-        unsafe {
-            device.0.native.CheckFeatureSupport(
-                D3D12_FEATURE_FORMAT_SUPPORT,
-                &mut support as *mut _ as *mut _,
-                std::mem::size_of_val(&support) as u32,
+fn depth_planes_available(device: &Dx12Device, format: api::TextureFormat, samples: u32) -> bool {
+    [api::TextureAspects::DEPTH, api::TextureAspects::STENCIL]
+        .into_iter()
+        .filter(|aspect| depth_aspects(format).0 & aspect.0 != 0)
+        .all(|aspect| {
+            native_format_has_support(
+                device,
+                super::sampled_srv_format(format, aspect),
+                sample_load_requirement(samples),
             )
-        }
-        .is_ok()
-            && support.Support1.contains(D3D12_FORMAT_SUPPORT1_SHADER_LOAD)
-            && (!multisampled
-                || support
-                    .Support1
-                    .contains(D3D12_FORMAT_SUPPORT1_MULTISAMPLE_LOAD))
-    })
+        })
 }
+
 pub(crate) fn format_has_support(
     device: &Dx12Device,
     format: api::TextureFormat,
@@ -388,6 +318,13 @@ pub(super) fn native_format_has_support(
     format: DXGI_FORMAT,
     flag: D3D12_FORMAT_SUPPORT1,
 ) -> bool {
+    native_format_support(device, format).is_some_and(|facts| facts.Support1.contains(flag))
+}
+
+pub(in crate::backend) fn native_format_support(
+    device: &Dx12Device,
+    format: DXGI_FORMAT,
+) -> Option<D3D12_FEATURE_DATA_FORMAT_SUPPORT> {
     let mut support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
         Format: format,
         ..Default::default()
@@ -401,7 +338,7 @@ pub(super) fn native_format_has_support(
         )
     }
     .is_ok()
-        && support.Support1.contains(flag)
+    .then_some(support)
 }
 
 pub(crate) fn format_supports_texture_atomic_add_native(

@@ -162,19 +162,25 @@ pub(super) fn view(
     if !view_format_available(dv, desc, v.format, usage) {
         return Err(Error::Unsupported("DX12 texture view format"));
     }
-    if cube && usage.contains(api::TextureUsage::TEXTURE_BINDING) {
-        if v.aspects == (api::TextureAspects::DEPTH | api::TextureAspects::STENCIL) {
+    if usage.contains(api::TextureUsage::TEXTURE_BINDING) {
+        if cube && v.aspects == (api::TextureAspects::DEPTH | api::TextureAspects::STENCIL) {
             return Err(Error::Unsupported(
                 "DX12 sampled cube view needs one aspect",
             ));
         }
-        let format = if depth {
-            depth_view::srv_format(desc.format, v.aspects)
-        } else {
-            dxgi_format(v.format)
-        };
-        if !format::native_format_has_support(dv, format, D3D12_FORMAT_SUPPORT1_TEXTURECUBE) {
-            return Err(Error::Unsupported("DX12 sampled cube view format"));
+        // A combined automatic view creates its DSV without an SRV. Any
+        // sampled plane uses the same typed DXGI format as descriptor binding.
+        if cube
+            || (depth && v.aspects != (api::TextureAspects::DEPTH | api::TextureAspects::STENCIL))
+        {
+            let mut required = sample_load_requirement(desc.samples);
+            if cube {
+                required |= D3D12_FORMAT_SUPPORT1_TEXTURECUBE;
+            }
+            let format = sampled_srv_format(v.format, v.aspects);
+            if !format::native_format_has_support(dv, format, required) {
+                return Err(Error::Unsupported("DX12 sampled view format or aspect"));
+            }
         }
     }
     Ok(())
