@@ -79,6 +79,7 @@ pub(super) fn describe(device: &MetalDevice, multi_queue: bool) -> DeviceCapabil
             max_multiview_views: if multiview { 32 } else { 0 },
             uniform_offset_alignment: bindings::uniform_offset_alignment(native),
             storage_offset_alignment: 4,
+            ..Default::default()
         },
         ..DeviceCapabilities::default()
     }

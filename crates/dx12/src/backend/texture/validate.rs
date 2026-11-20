@@ -1,6 +1,31 @@
 //! Structural DX12 texture descriptor validation.
 use super::*;
 
+pub(super) fn max_extent(dimension: api::TextureDimension) -> [u32; 3] {
+    match dimension {
+        api::TextureDimension::D1 => [D3D12_REQ_TEXTURE1D_U_DIMENSION, 1, 1],
+        api::TextureDimension::D2 => [
+            D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION,
+            D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION,
+            1,
+        ],
+        api::TextureDimension::D3 => [D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION; 3],
+    }
+}
+
+pub(super) fn max_array_layers(d: &api::TextureDesc) -> u32 {
+    match d.dimension {
+        api::TextureDimension::D1
+            if d.usage.0 & !(api::TextureUsage::COPY_SRC.0 | api::TextureUsage::COPY_DST.0)
+                == 0 =>
+        {
+            D3D12_REQ_TEXTURE1D_ARRAY_AXIS_DIMENSION
+        }
+        api::TextureDimension::D2 => D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION,
+        _ => 1,
+    }
+}
+
 pub(super) fn valid(d: &api::TextureDesc) -> std::result::Result<(), &'static str> {
     let depth = is_depth(d.format);
     let compressed = bc_block_bytes(d.format).is_some();
@@ -24,32 +49,14 @@ pub(super) fn valid(d: &api::TextureDesc) -> std::result::Result<(), &'static st
                 | api::TextureFormat::Depth24PlusStencil8
                 | api::TextureFormat::Depth32FloatStencil8
         ))
-        || d.extent[0] == 0
-        || d.extent[1] == 0
-        || d.extent[0] > 16_384
-        || d.extent[1] > 16_384
-        || if d3 {
-            d.extent[0] > 2048
-                || d.extent[1] > 2048
-                || d.extent[2] == 0
-                || d.extent[2] > 2048
-                || d.array_layers != 1
-                || depth
-                || compressed
-                || d.samples != 1
-        } else if d1 {
-            d.extent[1] != 1
-                || d.extent[2] != 1
-                || compressed
-                || d.samples != 1
-                || (d.array_layers > 1
-                    && d.usage.0 & !(api::TextureUsage::COPY_SRC.0 | api::TextureUsage::COPY_DST.0)
-                        != 0)
-        } else {
-            d.extent[2] != 1
-        }
+        || d.extent
+            .iter()
+            .zip(max_extent(d.dimension))
+            .any(|(&extent, maximum)| extent == 0 || extent > maximum)
+        || (d3 && depth)
+        || ((d1 || d3) && (compressed || d.samples != 1))
         || d.array_layers == 0
-        || d.array_layers > 2_048
+        || d.array_layers > max_array_layers(d)
         || !matches!(d.samples, 1 | 2 | 4 | 8 | 16 | 32)
     {
         return Err("DX12 RGBA8/Depth32Float D2 texture subset");

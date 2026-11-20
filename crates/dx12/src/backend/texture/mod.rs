@@ -19,7 +19,7 @@ pub(super) use format::{
     is_depth,
 };
 use format::{format_available, sample_count_supported, supported_sample_counts};
-use validate::{max_mips, valid};
+use validate::{max_array_layers, max_extent, max_mips, valid};
 
 use super::{Dx12Device, Dx12Texture, Dx12TextureView};
 use fluxel_rhi_core::api::{self, Error, Result};
@@ -62,23 +62,8 @@ pub(crate) fn support(dv: &Dx12Device, d: &api::TextureDesc) -> api::Support<api
             }
             let depth = is_depth(d.format);
             api::Support::Supported(api::TextureSupport {
-                max_extent: if d.dimension == api::TextureDimension::D1 {
-                    [16384, 1, 1]
-                } else if d.dimension == api::TextureDimension::D3 {
-                    [2048, 2048, 2048]
-                } else {
-                    [16384, 16384, 1]
-                },
-                max_array_layers: if d.dimension == api::TextureDimension::D3
-                    || (d.dimension == api::TextureDimension::D1
-                        && d.usage.0
-                            & !(api::TextureUsage::COPY_SRC.0 | api::TextureUsage::COPY_DST.0)
-                            != 0)
-                {
-                    1
-                } else {
-                    2_048
-                },
+                max_extent: max_extent(d.dimension),
+                max_array_layers: max_array_layers(d),
                 max_mips: max_mips(d.extent[0], d.extent[1].max(d.extent[2])),
                 sample_counts: if d.dimension != api::TextureDimension::D2 {
                     vec![1]

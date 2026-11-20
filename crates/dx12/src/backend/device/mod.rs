@@ -5,6 +5,10 @@
 //! infer resource uses or build an execution schedule.
 
 use super::*;
+use windows::Win32::Graphics::Direct3D12::{
+    D3D12_REQ_TEXTURE1D_U_DIMENSION, D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION,
+    D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION, D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION,
+};
 use windows::Win32::Graphics::Dxgi::{
     DXGI_ADAPTER_DESC1, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_UNSUPPORTED,
     DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_GPU_PREFERENCE_MINIMUM_POWER, IDXGIAdapter1,
@@ -467,8 +471,10 @@ impl InstanceBackend for Dx12 {
                         max_bind_groups: 8,
                         max_bindings_per_group: 64,
                         max_color_attachments: 8,
-                        max_texture_dimension_2d: 16_384,
-                        max_texture_array_layers: 2_048,
+                        max_texture_dimension_1d: D3D12_REQ_TEXTURE1D_U_DIMENSION,
+                        max_texture_dimension_2d: D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION,
+                        max_texture_dimension_3d: D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION,
+                        max_texture_array_layers: D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION,
                         max_multiview_views: if multiview { 4 } else { 0 },
                         max_mesh_indirect_count: if mesh_supported { u32::MAX } else { 0 },
                         max_buffer_bytes,

@@ -29,6 +29,25 @@ impl<B: ResourceBackend> Device<B> {
         if desc.usage.contains(TextureUsage::STORAGE_BINDING) && !self.caps.storage_textures {
             return Support::Unsupported("storage textures");
         }
+        let limits = self.caps.limits;
+        let (dimension_limit, axes) = match desc.dimension {
+            TextureDimension::D1 => (limits.max_texture_dimension_1d, 1),
+            TextureDimension::D2 => (limits.max_texture_dimension_2d, 2),
+            TextureDimension::D3 => (limits.max_texture_dimension_3d, 3),
+        };
+        if dimension_limit != 0
+            && desc.extent[..axes]
+                .iter()
+                .any(|&axis| axis > dimension_limit)
+        {
+            return Support::Unsupported("texture exceeds the device dimension limit");
+        }
+        if desc.dimension != TextureDimension::D3
+            && limits.max_texture_array_layers != 0
+            && desc.array_layers > limits.max_texture_array_layers
+        {
+            return Support::Unsupported("texture exceeds the device array layer limit");
+        }
         B::texture_support(&self.native, desc)
     }
     pub fn create_buffer(&self, desc: &BufferDesc) -> Result<Buffer<B>> {

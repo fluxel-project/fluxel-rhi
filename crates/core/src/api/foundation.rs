@@ -607,7 +607,13 @@ pub struct DeviceLimits {
     pub max_bind_groups: u32,
     pub max_bindings_per_group: u32,
     pub max_color_attachments: u32,
+    /// Maximum extent along the active axis of a 1D texture.
+    /// A zero value leaves the maximum to the descriptor support query.
+    pub max_texture_dimension_1d: u32,
     pub max_texture_dimension_2d: u32,
+    /// Maximum extent along any axis of a 3D texture.
+    /// A zero value leaves the maximum to the descriptor support query.
+    pub max_texture_dimension_3d: u32,
     pub max_texture_array_layers: u32,
     pub max_buffer_bytes: u64,
     pub max_vertex_buffers: u32,

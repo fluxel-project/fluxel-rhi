@@ -243,6 +243,7 @@ fn gl_capabilities(
                 max_mesh_indirect_count: 0,
                 uniform_offset_alignment: limits.uniform_buffer_offset_alignment,
                 storage_offset_alignment: limits.storage_buffer_offset_alignment,
+                ..Default::default()
             },
             ..Default::default()
         });
@@ -302,6 +303,7 @@ fn gl_capabilities(
                     max_mesh_indirect_count: 0,
                     uniform_offset_alignment: limits.uniform_buffer_offset_alignment,
                     storage_offset_alignment: 0,
+                    ..Default::default()
                 },
                 ..Default::default()
             });
