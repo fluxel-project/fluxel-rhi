@@ -38,6 +38,7 @@ pub struct ExternalMemory<B: ExternalBackend> {
 pub struct ExternalTexture<B: ExternalBackend> {
     device: DeviceId,
     native: B::NativeExternalTexture,
+    desc: TextureDesc,
 }
 pub struct ExternalSync<B: ExternalBackend> {
     device: DeviceId,
@@ -80,7 +81,10 @@ impl<B: ExternalBackend> ExternalDomain<'_, B> {
             return Err(Error::WrongDevice);
         }
         // SAFETY: the backend returns a texture from the same checked device.
-        Ok(unsafe { Texture::from_native(self.device.id, B::external_texture(&texture.native)?) })
+        let mut imported =
+            unsafe { Texture::from_native(self.device.id, B::external_texture(&texture.native)?) };
+        imported.desc = Some(texture.desc.clone());
+        Ok(imported)
     }
     pub fn acquire_texture(
         &self,
@@ -157,6 +161,7 @@ impl<B: ExternalBackend> ExternalDomain<'_, B> {
             device: self.device.id,
             // SAFETY: the caller guarantees texture metadata and external ownership invariants.
             native: unsafe { B::import_texture(&self.device.native, handle, desc) }?,
+            desc: desc.clone(),
         })
     }
     pub fn acquire(

@@ -91,7 +91,7 @@ impl<B: Backend> Texture<B> {
     pub fn device(&self) -> DeviceId {
         self.device
     }
-    /// The texture description recorded at RHI creation, if known.
+    /// The texture description recorded at RHI creation or import, if known.
     pub fn descriptor(&self) -> Option<&TextureDesc> {
         self.desc.as_ref()
     }
