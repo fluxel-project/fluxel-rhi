@@ -24,6 +24,8 @@ pub struct SparseTextureTiling {
     /// Native binding groups. The remaining fields mirror the first group;
     /// select a group explicitly with `SparseTile::aspect` when needed.
     pub aspects: Vec<SparseAspectTiling>,
+    /// Standard tile extent in texels. Zero on all axes if the backend has
+    /// no defined standard shape for an entirely packed resource.
     pub tile_extent: [u32; 3],
     /// Standard mip zero grid, or `[0, 0, 0]` when mip zero is packed.
     pub tile_grid: [u32; 3],
@@ -43,6 +45,8 @@ pub struct SparseTextureTiling {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SparseAspectTiling {
     pub aspect: TextureAspects,
+    /// Standard tile extent in texels, or all zeros when undefined for an
+    /// entirely packed binding group.
     pub tile_extent: [u32; 3],
     pub tile_grid: [u32; 3],
     pub tile_bytes: u64,
@@ -362,7 +366,8 @@ impl<B: MultiQueueBackend> MultiQueueDomain<'_, B> {
         let outcome = unsafe { B::submit_multi(&self.device.native, packet) };
         if matches!(
             &outcome,
-            MultiQueueSubmitOutcome::Accepted(_) | MultiQueueSubmitOutcome::PartiallyAccepted { .. }
+            MultiQueueSubmitOutcome::Accepted(_)
+                | MultiQueueSubmitOutcome::PartiallyAccepted { .. }
         ) {
             self.device.stats.record_submit();
         }

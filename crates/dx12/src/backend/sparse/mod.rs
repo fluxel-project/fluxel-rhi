@@ -478,14 +478,23 @@ impl fluxel_rhi_core::backend::SparseBackend for Dx12 {
         let packed_tiles = packed.NumTilesForPackedMips;
         let packed_arrays_allowed =
             desc.array_layers == 1 || array::supports_packed_array_tails(device);
+        let tile_extent = [
+            shape.WidthInTexels,
+            shape.HeightInTexels,
+            shape.DepthInTexels,
+        ];
+        // GetResourceTiling reports a zero shape when every mip is packed.
+        // The packed range is bound linearly and never uses a standard grid.
+        let valid_shape = if standard_count == 0 {
+            tile_extent == [0; 3] && packed.StartTileIndexInOverallResource == 0
+        } else {
+            !tile_extent.contains(&0) && (is_3d || tile_extent[2] == 1)
+        };
         if sub_count != expected_subresources
             || standard_count + packed_mips != desc.mip_levels
             || (!packed_arrays_allowed && desc.array_layers > 1 && packed_mips != 0)
             || count == 0
-            || shape.WidthInTexels == 0
-            || shape.HeightInTexels == 0
-            || shape.DepthInTexels == 0
-            || (!is_3d && shape.DepthInTexels != 1)
+            || !valid_shape
         {
             return Err(api::Error::Unsupported("DX12 sparse tiling metadata"));
         }
@@ -543,11 +552,7 @@ impl fluxel_rhi_core::backend::SparseBackend for Dx12 {
                 api::TextureAspects::COLOR
             },
             packed_tail_shared_by_layers: false,
-            tile_extent: [
-                shape.WidthInTexels,
-                shape.HeightInTexels,
-                shape.DepthInTexels,
-            ],
+            tile_extent,
             tile_grid: grids.first().copied().unwrap_or([0, 0, 0]),
             tile_bytes: 65536,
             standard_mip_grids: grids,

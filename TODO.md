@@ -153,6 +153,13 @@ oversized extents on each axis before allocation. Cover valid 2D arrays and 3D
 textures, the packed array tail restriction below Tier 4, and creation and
 allocation on a removed device.
 
+Exercise an entirely packed sparse texture on hardware that reports a zero
+standard tile shape. Check that the reported grid is empty, mip zero begins
+the packed tail, and a full-tail bind permits a write and readback. Verify that
+unmapping the tail and mapping a Tier 4 array slice affect only the requested
+range. Below Tier 4, verify that an array with a fully packed single-slice
+probe receives a structured unsupported error.
+
 ### DX12 structured shader diagnostics
 
 **Status:** WGSL parse and validation errors preserve compiler messages and

@@ -56,8 +56,10 @@ pub(super) fn validate_array_mips(
             }
             let last = desc.mip_levels - 1;
             if shape.WidthInTexels == 0 || shape.HeightInTexels == 0 {
-                return Err(api::Error::Backend(
-                    "DX12 sparse tile shape unavailable".into(),
+                // A fully packed probe has no standard tile shape. Below
+                // Tier 4 the corresponding array cannot have a packed tail.
+                return Err(api::Error::Unsupported(
+                    "DX12 sparse array packed mip layout",
                 ));
             }
             if (desc.extent[0] >> last).max(1) < shape.WidthInTexels
