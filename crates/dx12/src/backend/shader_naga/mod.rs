@@ -661,6 +661,9 @@ fn compile_inner(
                 .any(|argument| {
                     uses_num_workgroups(&module, argument.ty, argument.binding.as_ref())
                 });
+        if stage == naga::ShaderStage::Compute {
+            super::compute::validate_workgroup_size(module.entry_points[index].workgroup_size)?;
+        }
         if entry
             .workgroup_size
             .is_some_and(|size| size != module.entry_points[index].workgroup_size)

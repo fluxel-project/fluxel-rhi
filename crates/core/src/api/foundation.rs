@@ -620,6 +620,9 @@ pub struct DeviceLimits {
     pub max_vertex_attributes: u32,
     pub max_compute_workgroups: [u32; 3],
     pub max_compute_workgroup_size: [u32; 3],
+    /// Combined invocation limit across all axes of one compute workgroup.
+    /// Zero means the backend has not published a separate limit.
+    pub max_compute_invocations_per_workgroup: u32,
     pub max_push_constant_bytes: u32,
     pub max_multiview_views: u32,
     /// Maximum number of mesh indirect records consumed by one multi/count call.

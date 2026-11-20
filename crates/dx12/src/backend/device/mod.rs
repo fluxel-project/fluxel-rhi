@@ -480,10 +480,9 @@ impl InstanceBackend for Dx12 {
                         max_buffer_bytes,
                         max_vertex_buffers: 32,
                         max_vertex_attributes: 32,
-                        // D3D12 guarantees these dispatch dimensions at feature
-                        // level 11; this path exposes one direct queue.
-                        max_compute_workgroups: [65_535; 3],
-                        max_compute_workgroup_size: [1_024, 1_024, 64],
+                        max_compute_workgroups: compute::MAX_DISPATCH_GROUPS,
+                        max_compute_workgroup_size: compute::MAX_WORKGROUP_SIZE,
+                        max_compute_invocations_per_workgroup: compute::MAX_WORKGROUP_INVOCATIONS,
                         uniform_offset_alignment: 256,
                         max_push_constant_bytes: 128,
                         ..Default::default()

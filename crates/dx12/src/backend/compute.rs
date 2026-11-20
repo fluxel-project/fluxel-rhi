@@ -14,6 +14,27 @@ use windows::{Win32::Graphics::Direct3D12::*, core::Interface};
 
 use super::{Dx12, Dx12ComputePipeline, Dx12Device, Dx12ShaderSource};
 
+pub(super) const MAX_DISPATCH_GROUPS: [u32; 3] =
+    [D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION; 3];
+pub(super) const MAX_WORKGROUP_SIZE: [u32; 3] = [
+    D3D12_CS_THREAD_GROUP_MAX_X,
+    D3D12_CS_THREAD_GROUP_MAX_Y,
+    D3D12_CS_THREAD_GROUP_MAX_Z,
+];
+pub(super) const MAX_WORKGROUP_INVOCATIONS: u32 = D3D12_CS_THREAD_GROUP_MAX_THREADS_PER_GROUP;
+
+pub(super) fn validate_workgroup_size(size: [u32; 3]) -> Result<()> {
+    if size
+        .into_iter()
+        .zip(MAX_WORKGROUP_SIZE)
+        .any(|(axis, limit)| axis == 0 || axis > limit)
+        || size.into_iter().product::<u32>() > MAX_WORKGROUP_INVOCATIONS
+    {
+        return Err(Error::InvalidRange);
+    }
+    Ok(())
+}
+
 pub(crate) struct ComputePipelineState {
     pub(crate) root: ID3D12RootSignature,
     pub(crate) layout: Arc<super::pipeline::PipelineLayoutState>,
@@ -167,7 +188,7 @@ impl fluxel_rhi_core::backend::ComputeOps<Dx12> for Compute {
         if groups.contains(&0)
             || groups
                 .iter()
-                .zip([65_535; 3])
+                .zip(MAX_DISPATCH_GROUPS)
                 .any(|(&value, limit)| value > limit)
         {
             return Err(Error::InvalidRange);
@@ -356,12 +377,13 @@ fn create_pipeline(
     // SAFETY: pipeline descriptors are device-checked by Core; this borrows
     // immutable shader native state during synchronous PSO creation.
     let shader = unsafe { desc.compute.module.native_ref() };
-    if !shader
+    let entry = shader
         .entries
         .iter()
-        .any(|entry| entry.name == desc.compute.entry && entry.stage == api::ShaderStage::Compute)
-    {
-        return Err(Error::Shader("DXIL has no requested compute entry".into()));
+        .find(|entry| entry.name == desc.compute.entry && entry.stage == api::ShaderStage::Compute)
+        .ok_or_else(|| Error::Shader("DX12 shader has no requested compute entry".into()))?;
+    if let Some(size) = entry.workgroup_size {
+        validate_workgroup_size(size)?;
     }
     // SAFETY: same-device layout native state is cloned to retain its root
     // signature independently of the caller's descriptor borrow.
@@ -371,13 +393,6 @@ fn create_pipeline(
             if let Some(size) = desc.required_subgroup_size {
                 validate_required_wave_size(device, size)?;
             }
-            let entry = shader
-                .entries
-                .iter()
-                .find(|entry| {
-                    entry.name == desc.compute.entry && entry.stage == api::ShaderStage::Compute
-                })
-                .ok_or(Error::InvalidState)?;
             let compiled = super::shader_naga::compile_variant_with_typed_map(
                 source,
                 entry,
