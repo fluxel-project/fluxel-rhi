@@ -7,6 +7,7 @@
 mod binding;
 mod buffer_array;
 mod diagnostics;
+mod immediates;
 mod layout_reflection;
 mod native_layout_reflection;
 mod sampler_lowering;
@@ -117,6 +118,7 @@ pub(crate) fn validate_source(desc: &api::ShaderDesc) -> Result<()> {
     .validate(&module)
     .map_err(|e| diagnostics::wgsl_validation(source, e))?;
     validation::validate_f16_bindings(&module)?;
+    immediates::block(&module)?;
     for entry in &desc.entries {
         let stage = match entry.stage {
             api::ShaderStage::Compute => naga::ShaderStage::Compute,
@@ -184,9 +186,10 @@ pub fn compile_variant(
 }
 
 #[derive(Clone, Copy, Default)]
-pub(super) struct WgslTarget {
+pub(super) struct WgslTarget<'a> {
     pub(super) shader_model: u16,
     pub(super) required_wave_size: Option<u32>,
+    pub(super) push_constants: Option<&'a super::pipeline::PushConstantsRoot>,
 }
 
 #[cfg(test)]
@@ -223,7 +226,7 @@ pub(super) fn compile_pipeline_variant(
     binding_types: &[(u32, u32, api::BindingType)],
     runtime_binding_capacities: &[(u32, u32, u32)],
     buffer_entries: &[(u32, api::BindGroupLayoutEntry)],
-    target: WgslTarget,
+    target: WgslTarget<'_>,
 ) -> Result<CompiledEntry> {
     compile_variant_impl(
         desc,
@@ -266,7 +269,7 @@ fn compile_variant_impl(
     binding_types: Option<&[(u32, u32, api::BindingType)]>,
     runtime_binding_capacities: Option<&[(u32, u32, u32)]>,
     buffer_entries: &[(u32, api::BindGroupLayoutEntry)],
-    target: WgslTarget,
+    target: WgslTarget<'_>,
     require_layout: bool,
 ) -> Result<CompiledEntry> {
     if !desc
@@ -300,12 +303,13 @@ fn compile_inner(
     binding_types: Option<&[(u32, u32, api::BindingType)]>,
     runtime_binding_capacities: Option<&[(u32, u32, u32)]>,
     buffer_entries: &[(u32, api::BindGroupLayoutEntry)],
-    target: WgslTarget,
+    target: WgslTarget<'_>,
     require_layout: bool,
 ) -> Result<CompiledShader> {
     if desc.format != api::ShaderFormat::Wgsl
         || desc.required_features.iter().any(|x| {
             x != api::SHADER_FEATURE_RAY_QUERY
+                && x != api::SHADER_FEATURE_PUSH_CONSTANTS
                 && x != api::SHADER_FEATURE_F16
                 && x != api::SHADER_FEATURE_PRIMITIVE_INDEX
                 && x != api::SHADER_FEATURE_EARLY_DEPTH_TEST
@@ -504,6 +508,7 @@ fn compile_inner(
     }
     let required_wave_size = target.required_wave_size;
     let native_f16 = requires_f16(desc);
+    let immediate = immediates::block(&module)?;
     let mut options = naga::back::hlsl::Options {
         shader_model: if target.required_wave_size.is_some() {
             naga::back::hlsl::ShaderModel::V6_6
@@ -521,6 +526,11 @@ fn compile_inner(
             naga::back::hlsl::ShaderModel::V6_0
         },
         fake_missing_bindings: false,
+        push_constants_target: immediate.map(|_| naga::back::hlsl::BindTarget {
+            space: super::pipeline::IMMEDIATE_SPACE,
+            register: super::pipeline::IMMEDIATE_REGISTER,
+            ..Default::default()
+        }),
         ..Default::default()
     };
     let mut samplers = Vec::new();
@@ -586,7 +596,9 @@ fn compile_inner(
                     },
                 );
             }
-            naga::AddressSpace::Private | naga::AddressSpace::WorkGroup => continue,
+            naga::AddressSpace::Private
+            | naga::AddressSpace::WorkGroup
+            | naga::AddressSpace::PushConstant => continue,
             _ => return Err(Error::Unsupported("DX12 WGSL resource or address space")),
         }
         let binding = global
@@ -628,6 +640,11 @@ fn compile_inner(
             .ok_or_else(|| Error::Shader("WGSL entry not found".into()))?;
         validation::validate_entry(&module, &module.entry_points[index])?;
         if require_layout {
+            if let Some((handle, bytes)) = immediate {
+                if !info.get_entry_point(index)[handle].is_empty() {
+                    immediates::validate_range(target.push_constants, entry.stage, bytes)?;
+                }
+            }
             for (handle, global) in module.global_variables.iter() {
                 if info.get_entry_point(index)[handle].is_empty() {
                     continue;

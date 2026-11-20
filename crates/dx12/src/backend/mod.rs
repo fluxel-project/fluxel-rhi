@@ -591,6 +591,7 @@ fn shader_features_supported(
 ) -> bool {
     features.iter().all(|feature| match feature.as_str() {
         api::SHADER_FEATURE_RAY_QUERY => ray_query_supported,
+        api::SHADER_FEATURE_PUSH_CONSTANTS => true,
         api::SHADER_FEATURE_F16 => true,
         api::SHADER_FEATURE_I16 => true,
         api::SHADER_FEATURE_F64 => true,

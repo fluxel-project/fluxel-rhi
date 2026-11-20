@@ -39,6 +39,8 @@ pub struct ShaderEntryPoint {
 /// `ray_query` capability. The caller must declare features used by opaque shader
 /// artifacts; Core does not inspect native bytecode.
 pub const SHADER_FEATURE_RAY_QUERY: &str = "ray-query";
+/// The shader uses layout-declared inline constants.
+pub const SHADER_FEATURE_PUSH_CONSTANTS: &str = "push-constants";
 /// The shader requires native half-precision floating-point types.
 pub const SHADER_FEATURE_F16: &str = "shader-f16";
 /// The shader requires exact native signed or unsigned 16-bit integers.

@@ -393,7 +393,7 @@ impl Dx12 {
                     max_compute_workgroup_storage_size: compute::MAX_WORKGROUP_STORAGE_SIZE,
                     uniform_offset_alignment: descriptor::CBV_ALIGNMENT,
                     max_uniform_buffer_binding_size: descriptor::MAX_UNIFORM_BUFFER_BINDING_SIZE,
-                    max_push_constant_bytes: 128,
+                    max_push_constant_bytes: pipeline::MAX_IMMEDIATE_BYTES,
                     ..Default::default()
                 },
                 compute: true,

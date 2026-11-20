@@ -309,6 +309,14 @@ count, and subgroup barriers have no exact lowering on this route.
 Native HLSL and DXIL follow the operation and stage rules of their profiles.
 The explicit fixed-size compute path additionally requires Shader Model 6.6.
 
+WGSL shaders declaring `push-constants` may use a `var<push_constant>`
+block for vertex, fragment, or compute. A flat structure of 32-bit
+integer or float scalars and vectors lowers to the existing root constant
+register when no member crosses a 16-byte HLSL constant-buffer row. The
+layout ranges for each stage using the block must cover its full byte span.
+Arrays, matrices, nested structures, and narrower member types remain
+outside this layout path.
+
 For WGSL packed 4×8 integer dot products, DX12 selects the native signed
 or unsigned HLSL intrinsic when the device supports Shader Model 6.4.
 The Shader Model 6.0 route keeps the equivalent integer lowering. Naga and

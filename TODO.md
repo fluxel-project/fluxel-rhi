@@ -101,6 +101,18 @@ discards, and reject nonfragment requirement declarations. WGSL conservative
 depth remains pending until its depth-output and interpolation rules are
 mapped per mode and verified with depth and storage readback.
 
+### DX12 WGSL inline constants
+
+**Status:** Declared WGSL push constant blocks in compute and raster use
+the existing root constant ABI for flat 32-bit scalar and vector layouts.
+Pipeline admission checks the full block span against that stage's ranges.
+
+**Acceptance:** Verify byte-exact readback for adjacent and padded members,
+partial writes, stages with different ranges, and rejection of missing
+coverage and reserved register overlaps. Reopen complex aggregate layouts
+when their lowering preserves each member offset under DX12 root constant
+indexing restrictions.
+
 ### DX12 native 16-bit integer shaders
 
 **Status:** HLSL and DXIL use the Core ShaderI16 device requirement and

@@ -398,6 +398,7 @@ fn create_pipeline(
                 super::shader_naga::WgslTarget {
                     shader_model: device.0.shader_model,
                     required_wave_size: desc.required_subgroup_size,
+                    push_constants: layout.push_constants.as_ref(),
                 },
             )?;
             (

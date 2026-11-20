@@ -11,8 +11,9 @@ use windows::Win32::Graphics::Direct3D12::*;
 
 use super::super::{Dx12, Dx12Device, Dx12PipelineLayout, descriptor};
 
-const IMMEDIATE_REGISTER: u32 = 1;
-const IMMEDIATE_SPACE: u32 = 0;
+pub(crate) const IMMEDIATE_REGISTER: u32 = 1;
+pub(crate) const IMMEDIATE_SPACE: u8 = 0;
+pub(crate) const MAX_IMMEDIATE_BYTES: u32 = 128;
 
 pub(crate) struct DynamicCbvRoot {
     pub(crate) binding: u32,
@@ -55,7 +56,7 @@ pub(crate) struct PushConstantsRoot {
     ranges: Vec<(std::ops::Range<u32>, api::StageMask)>,
 }
 impl PushConstantsRoot {
-    fn covers(&self, stage: api::StageMask, start: u32, end: u32) -> bool {
+    pub(crate) fn covers(&self, stage: api::StageMask, start: u32, end: u32) -> bool {
         (start..end).step_by(4).all(|offset| {
             self.ranges.iter().any(|(range, mask)| {
                 mask.0 & stage.0 != 0 && range.start <= offset && offset + 4 <= range.end
@@ -300,7 +301,7 @@ fn prepare_layout(
         if register_map
             .iter()
             .any(|&(group, _, register, class, count)| {
-                group == IMMEDIATE_SPACE
+                group == u32::from(IMMEDIATE_SPACE)
                     && class == 0
                     && register <= IMMEDIATE_REGISTER
                     && IMMEDIATE_REGISTER - register < count
@@ -313,7 +314,7 @@ fn prepare_layout(
         let mut push_ranges = Vec::new();
         for entry in desc.push_constants {
             if entry.range.start >= entry.range.end
-                || entry.range.end > 128
+                || entry.range.end > MAX_IMMEDIATE_BYTES
                 || entry.range.start % 4 != 0
                 || entry.range.end % 4 != 0
             {
@@ -351,7 +352,7 @@ fn prepare_layout(
             Anonymous: D3D12_ROOT_PARAMETER_0 {
                 Constants: D3D12_ROOT_CONSTANTS {
                     ShaderRegister: IMMEDIATE_REGISTER,
-                    RegisterSpace: IMMEDIATE_SPACE,
+                    RegisterSpace: u32::from(IMMEDIATE_SPACE),
                     Num32BitValues: count,
                 },
             },

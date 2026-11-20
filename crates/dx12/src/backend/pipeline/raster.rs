@@ -402,6 +402,7 @@ fn stage(
                 super::super::shader_naga::WgslTarget {
                     shader_model,
                     required_wave_size: None,
+                    push_constants: layout.push_constants.as_ref(),
                 },
             )?;
             Ok((
