@@ -37,6 +37,22 @@ pub trait ResourceBackend: Backend {
     ) -> Result<()> {
         Err(Error::Unsupported("texture view support query"))
     }
+    fn texture_view_usage_support(
+        _device: &Self::NativeDevice,
+        _texture: &Self::NativeTexture,
+        _desc: &TextureViewDesc,
+        _usage: TextureUsage,
+    ) -> Result<()> {
+        Err(Error::Unsupported("explicit texture view usage"))
+    }
+    fn create_texture_view_with_usage(
+        _device: &Self::NativeDevice,
+        _texture: &Self::NativeTexture,
+        _desc: &TextureViewDesc,
+        _usage: TextureUsage,
+    ) -> Result<Self::NativeTextureView> {
+        Err(Error::Unsupported("explicit texture view usage"))
+    }
     fn sampled_texture_view_support(
         _device: &Self::NativeDevice,
         _texture: &Self::NativeTexture,

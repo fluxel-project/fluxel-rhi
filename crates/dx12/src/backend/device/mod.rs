@@ -445,6 +445,7 @@ impl Dx12 {
                 direct_buffer_upload: true,
                 completion_timeout: true,
                 sampled_texture_component_mapping: true,
+                texture_view_usage: true,
                 texel_aligned_color_copies,
                 push_constants: true,
                 indirect_draw: true,

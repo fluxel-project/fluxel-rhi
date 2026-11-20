@@ -272,6 +272,10 @@ leave destination bytes and later command recording intact. Verify that a
 pending completion times out and remains positive completion evidence only
 after the native fence reaches it. Read back identity, rearranged, and constant
 sampled components, and reject sampled-only views as storage or attachments.
+Verify explicit sampled, storage and attachment usage against actual
+descriptor binding and attachment admission. Cover a sampled mip chain
+paired with single-mip storage views, and separate sampled depth/stencil
+aspects paired with a full attachment view.
 Check the requested sample count and the reported alternatives against texture
 creation for the same format, dimension, mip count, and usage.
 Compare storage layout admission with actual typed UAV view creation for

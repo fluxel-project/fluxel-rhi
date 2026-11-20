@@ -6,13 +6,11 @@ pub(super) fn create_depth_view(
     texture: Arc<TextureState>,
     v: &api::TextureViewDesc,
     array: bool,
+    usage: api::TextureUsage,
 ) -> Result<Dx12TextureView> {
     let (dsv_lease, dsv, read_depth, read_stencil, read_both) = if v.aspects
         == depth_aspects(texture.desc.format)
-        && texture
-            .desc
-            .usage
-            .contains(api::TextureUsage::RENDER_ATTACHMENT)
+        && usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
     {
         let slots = if depth_aspects(texture.desc.format) == api::TextureAspects::DEPTH {
             2
@@ -69,10 +67,7 @@ pub(super) fn create_depth_view(
     } else {
         (None, None, None, None, None)
     };
-    let (srv_lease, srv) = if texture
-        .desc
-        .usage
-        .contains(api::TextureUsage::TEXTURE_BINDING)
+    let (srv_lease, srv) = if usage.contains(api::TextureUsage::TEXTURE_BINDING)
         && v.aspects != (api::TextureAspects::DEPTH | api::TextureAspects::STENCIL)
     {
         let lease =

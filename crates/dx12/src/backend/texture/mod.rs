@@ -12,7 +12,7 @@ mod color_view;
 mod depth_view;
 mod format;
 mod validate;
-pub(super) use color_view::{create_sampled_view, create_view};
+pub(super) use color_view::{create_sampled_view, create_view, create_view_with_usage};
 pub(super) use format::{
     bc_block_bytes, color_texel_bytes, depth_aspects, dxgi_format, format_has_support,
     format_supports_texture_atomic_add_native, format_supports_texture_atomic_bitwise_native,
@@ -328,6 +328,39 @@ pub(crate) fn view_support(
     v: &api::TextureViewDesc,
 ) -> Result<()> {
     validate::view(dv, &t.0.desc, v, t.0.desc.usage)
+}
+
+pub(super) fn view_usage_support(
+    dv: &Dx12Device,
+    t: &Dx12Texture,
+    view: &api::TextureViewDesc,
+    usage: api::TextureUsage,
+) -> Result<()> {
+    use api::TextureUsage as U;
+    let texture = &t.0.desc;
+    if !texture.usage.contains(usage) {
+        return Err(Error::InvalidState);
+    }
+    validate::view(dv, texture, view, usage)?;
+    if usage.contains(U::STORAGE_BINDING)
+        && !storage_view_format_available(dv, view.format, texture.dimension)
+    {
+        return Err(Error::Unsupported("DX12 storage texture view format"));
+    }
+    if is_depth(texture.format) {
+        let all_aspects = depth_aspects(texture.format);
+        if usage.contains(U::RENDER_ATTACHMENT) && view.aspects != all_aspects {
+            return Err(Error::Unsupported("DX12 depth attachment view aspects"));
+        }
+        if usage.contains(U::TEXTURE_BINDING)
+            && view.aspects == (api::TextureAspects::DEPTH | api::TextureAspects::STENCIL)
+        {
+            return Err(Error::Unsupported(
+                "DX12 sampled depth-stencil view needs one aspect",
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn sampled_view_support(

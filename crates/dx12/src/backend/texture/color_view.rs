@@ -2,7 +2,7 @@
 
 use super::{
     Dx12Device, Dx12Texture, Dx12TextureView, TextureState, TextureViewState, depth_view,
-    dxgi_format, is_depth, sampled_view_support, view_support,
+    dxgi_format, is_depth, sampled_view_support, view_support, view_usage_support,
 };
 use fluxel_rhi_core::api::{self, Result};
 use std::sync::Arc;
@@ -14,17 +14,36 @@ pub(crate) fn create_view(
     v: &api::TextureViewDesc,
 ) -> Result<Dx12TextureView> {
     view_support(dv, t, v)?;
+    create_native_view(dv, t, v, t.0.desc.usage)
+}
+
+pub(crate) fn create_view_with_usage(
+    dv: &Dx12Device,
+    t: &Dx12Texture,
+    v: &api::TextureViewDesc,
+    usage: api::TextureUsage,
+) -> Result<Dx12TextureView> {
+    view_usage_support(dv, t, v, usage)?;
+    create_native_view(dv, t, v, usage)
+}
+
+fn create_native_view(
+    dv: &Dx12Device,
+    t: &Dx12Texture,
+    v: &api::TextureViewDesc,
+    usage: api::TextureUsage,
+) -> Result<Dx12TextureView> {
     let texture = t.0.clone();
     let depth = is_depth(texture.desc.format);
     let array = texture.desc.array_layers > 1 || v.dimension == api::TextureViewDimension::D2Array;
     if depth {
-        return depth_view::create_depth_view(dv, texture, v, array);
+        return depth_view::create_depth_view(dv, texture, v, array, usage);
     }
     create_color_view(
         dv,
         texture,
         v,
-        t.0.desc.usage,
+        usage,
         D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
     )
 }

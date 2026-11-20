@@ -227,6 +227,22 @@ impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
     ) -> Result<()> {
         texture::view_support(device, texture, desc)
     }
+    fn texture_view_usage_support(
+        device: &Dx12Device,
+        texture: &Dx12Texture,
+        desc: &api::TextureViewDesc,
+        usage: api::TextureUsage,
+    ) -> Result<()> {
+        texture::view_usage_support(device, texture, desc, usage)
+    }
+    fn create_texture_view_with_usage(
+        device: &Dx12Device,
+        texture: &Dx12Texture,
+        desc: &api::TextureViewDesc,
+        usage: api::TextureUsage,
+    ) -> Result<Dx12TextureView> {
+        texture::create_view_with_usage(device, texture, desc, usage)
+    }
     fn sampled_texture_view_support(
         device: &Dx12Device,
         texture: &Dx12Texture,

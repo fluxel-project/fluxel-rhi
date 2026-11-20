@@ -106,6 +106,53 @@ impl<B: ResourceBackend> Device<B> {
         let native = B::create_view(&self.native, &texture.native, desc)?;
         Ok(self.wrap_view(texture, native))
     }
+    /// Checks admission for a view restricted to the selected descriptor usage.
+    pub fn texture_view_usage_support(
+        &self,
+        texture: &Texture<B>,
+        desc: &TextureViewDesc,
+        usage: TextureUsage,
+    ) -> Result<()> {
+        self.validate_explicit_view_usage(texture, desc, usage)?;
+        B::texture_view_usage_support(&self.native, &texture.native, desc, usage)
+    }
+    /// Creates only the selected sampled, storage, or attachment descriptors.
+    pub fn create_texture_view_with_usage(
+        &self,
+        texture: &Texture<B>,
+        desc: &TextureViewDesc,
+        usage: TextureUsage,
+    ) -> Result<TextureView<B>> {
+        self.validate_explicit_view_usage(texture, desc, usage)?;
+        let native = B::create_texture_view_with_usage(&self.native, &texture.native, desc, usage)?;
+        let mut view = self.wrap_view(texture, native);
+        view.usage = Some(usage);
+        Ok(view)
+    }
+    fn validate_explicit_view_usage(
+        &self,
+        texture: &Texture<B>,
+        desc: &TextureViewDesc,
+        usage: TextureUsage,
+    ) -> Result<()> {
+        self.validate_view_request(texture, desc)?;
+        if !self.caps.texture_view_usage {
+            return Err(Error::Unsupported("explicit texture view usage"));
+        }
+        let descriptor_uses = TextureUsage::TEXTURE_BINDING
+            | TextureUsage::STORAGE_BINDING
+            | TextureUsage::RENDER_ATTACHMENT;
+        if usage.0 == 0
+            || !descriptor_uses.contains(usage)
+            || texture
+                .desc
+                .as_ref()
+                .is_some_and(|desc| !desc.usage.contains(usage))
+        {
+            return Err(Error::InvalidState);
+        }
+        Ok(())
+    }
     /// Checks admission for a sampled-only color view with a component mapping.
     pub fn sampled_texture_view_support(
         &self,
@@ -126,7 +173,9 @@ impl<B: ResourceBackend> Device<B> {
     ) -> Result<TextureView<B>> {
         self.validate_sampled_texture_view_request(texture, desc)?;
         let native = B::create_sampled_texture_view(&self.native, &texture.native, desc, mapping)?;
-        Ok(self.wrap_view(texture, native))
+        let mut view = self.wrap_view(texture, native);
+        view.usage = Some(TextureUsage::TEXTURE_BINDING);
+        Ok(view)
     }
     fn validate_sampled_texture_view_request(
         &self,

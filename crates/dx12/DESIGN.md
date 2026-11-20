@@ -165,6 +165,13 @@ shader-resource descriptor for this view, even when the texture itself also
 allows storage or render-attachment usage. The support query checks the same
 sampled-view format, dimension, and subresource constraints as creation.
 
+`create_texture_view_with_usage` selects a nonempty subset of the source
+texture's sampled, storage, and attachment uses. Support and creation share
+admission. Descriptor ownership follows that subset. This permits a mip
+chain for sampling alongside a single-mip storage or attachment view.
+Combined depth-stencil textures use aspect-specific sampled views and an
+all-aspect attachment view.
+
 Explicit color buffer/texture copies share placement and pitch validation in
 both directions. When `texel_aligned_color_copies` is reported, the offset
 and row pitch may each be aligned to a single texel or compressed block.

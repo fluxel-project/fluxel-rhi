@@ -110,6 +110,7 @@ pub struct TextureView<B: Backend> {
     pub(crate) device: DeviceId,
     pub(crate) native: B::NativeTextureView,
     pub(crate) texture_desc: Option<TextureDesc>,
+    pub(crate) usage: Option<TextureUsage>,
 }
 impl<B: Backend> Clone for TextureView<B> {
     fn clone(&self) -> Self {
@@ -117,6 +118,7 @@ impl<B: Backend> Clone for TextureView<B> {
             device: self.device,
             native: self.native.clone(),
             texture_desc: self.texture_desc.clone(),
+            usage: self.usage,
         }
     }
 }
@@ -132,10 +134,15 @@ impl<B: Backend> TextureView<B> {
             device,
             native,
             texture_desc: None,
+            usage: None,
         }
     }
     pub fn device(&self) -> DeviceId {
         self.device
+    }
+    /// Returns the explicitly selected descriptor usage, if any.
+    pub fn usage(&self) -> Option<TextureUsage> {
+        self.usage
     }
     #[doc(hidden)]
     pub unsafe fn native_ref(&self) -> &B::NativeTextureView {
