@@ -45,6 +45,22 @@ pub trait ResourceBackend: Backend {
     ) -> Result<()> {
         Err(Error::Unsupported("explicit texture view usage"))
     }
+    fn texture_3d_attachment_slice_support(
+        _device: &Self::NativeDevice,
+        _texture: &Self::NativeTexture,
+        _desc: &TextureViewDesc,
+        _depth_slice: u32,
+    ) -> Result<()> {
+        Err(Error::Unsupported("3D texture attachment slice"))
+    }
+    fn create_texture_3d_attachment_slice(
+        _device: &Self::NativeDevice,
+        _texture: &Self::NativeTexture,
+        _desc: &TextureViewDesc,
+        _depth_slice: u32,
+    ) -> Result<Self::NativeTextureView> {
+        Err(Error::Unsupported("3D texture attachment slice"))
+    }
     fn create_texture_view_with_usage(
         _device: &Self::NativeDevice,
         _texture: &Self::NativeTexture,

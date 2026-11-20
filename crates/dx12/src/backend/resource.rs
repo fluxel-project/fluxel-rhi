@@ -235,6 +235,22 @@ impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
     ) -> Result<()> {
         texture::view_usage_support(device, texture, desc, usage)
     }
+    fn texture_3d_attachment_slice_support(
+        device: &Dx12Device,
+        texture: &Dx12Texture,
+        desc: &api::TextureViewDesc,
+        depth_slice: u32,
+    ) -> Result<()> {
+        texture::volume_attachment_slice_support(device, texture, desc, depth_slice)
+    }
+    fn create_texture_3d_attachment_slice(
+        device: &Dx12Device,
+        texture: &Dx12Texture,
+        desc: &api::TextureViewDesc,
+        depth_slice: u32,
+    ) -> Result<Dx12TextureView> {
+        texture::create_volume_attachment_slice(device, texture, desc, depth_slice)
+    }
     fn create_texture_view_with_usage(
         device: &Dx12Device,
         texture: &Dx12Texture,

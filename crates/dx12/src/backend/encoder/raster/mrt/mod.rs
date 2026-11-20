@@ -182,7 +182,9 @@ pub(super) fn begin(
             let n = unsafe { view.native_ref() };
             let texture = Dx12Texture(n.0.texture.clone());
             let mut views = Vec::new();
-            if n.0.texture.desc.dimension == api::TextureDimension::D3 {
+            if n.0.attachment_depth_slice.is_some() {
+                views.push((None, rtv));
+            } else if n.0.texture.desc.dimension == api::TextureDimension::D3 {
                 for slice in 0..(n.0.texture.desc.extent[2] >> n.0.desc.mips.start).max(1) {
                     let (heap, handle) = super::super::integer_clear::volume_slice_rtv(
                         &encoder.device,
@@ -227,7 +229,6 @@ pub(super) fn begin(
         } else {
             None
         };
-        integer_clear_targets.push(active_integer_clear);
         let float_clear = match clear {
             Some(api::ClearColor::Float(c))
                 if !super::super::super::texture::integer_color(format) =>
@@ -237,62 +238,19 @@ pub(super) fn begin(
             Some(c) => {
                 let (signed, bits) = super::super::super::texture::integer_clear_bits(format, c)
                     .ok_or(Error::InvalidState)?;
-                let api::AttachmentView::Texture(view) = color.view else {
-                    return Err(Error::InvalidState);
-                };
-                let n = unsafe { view.native_ref() };
+                let target = active_integer_clear.as_ref().ok_or(Error::InvalidState)?;
                 let pipeline = encoder.device.0.integer_clear_cache.get_or_create(
                     &encoder.device,
                     format,
-                    n.0.texture.desc.samples,
+                    target.samples,
                     signed,
                 )?;
-                let texture = Dx12Texture(n.0.texture.clone());
-                let mut views = Vec::new();
-                if n.0.texture.desc.dimension == api::TextureDimension::D3 {
-                    for slice in 0..(n.0.texture.desc.extent[2] >> n.0.desc.mips.start).max(1) {
-                        let (heap, handle) = super::super::integer_clear::volume_slice_rtv(
-                            &encoder.device,
-                            &n.0.texture,
-                            n.0.desc.mips.start,
-                            slice,
-                        )?;
-                        views.push((Some(heap), handle));
-                    }
-                } else {
-                    for layer in n.0.desc.layers.clone() {
-                        if !selected(desc.multiview_mask, layer - n.0.desc.layers.start) {
-                            continue;
-                        }
-                        let mut vd = n.0.desc.clone();
-                        vd.dimension = if n.0.texture.desc.dimension == api::TextureDimension::D1 {
-                            api::TextureViewDimension::D1
-                        } else if n.0.texture.desc.array_layers > 1 {
-                            api::TextureViewDimension::D2Array
-                        } else {
-                            api::TextureViewDimension::D2
-                        };
-                        vd.layers = layer..layer + 1;
-                        let view = super::super::super::texture::create_view(
-                            &encoder.device,
-                            &texture,
-                            &vd,
-                        )?;
-                        encoder.view_descriptor_leases.push(
-                            view.0
-                                .rtv_lease
-                                .as_ref()
-                                .ok_or(Error::InvalidState)?
-                                .clone(),
-                        );
-                        views.push((None, view.0.rtv.ok_or(Error::InvalidState)?));
-                    }
-                }
-                integer_clears.push((pipeline, views, extent, bits));
+                integer_clears.push((pipeline, target.views.clone(), extent, bits));
                 None
             }
             None => None,
         };
+        integer_clear_targets.push(active_integer_clear);
         // SAFETY: immutable descriptor of the retained native resource.
         let native_desc = unsafe { resource.GetDesc() };
         if samples.is_some_and(|s| s != native_desc.SampleDesc.Count) {
@@ -333,7 +291,8 @@ pub(super) fn begin(
                 api::AttachmentView::Texture(view) => {
                     // SAFETY: Core validated the texture view's device identity.
                     let n = unsafe { view.native_ref() };
-                    if n.0.desc.mips.end != n.0.desc.mips.start + 1
+                    if n.0.texture.desc.dimension != api::TextureDimension::D2
+                        || n.0.desc.mips.end != n.0.desc.mips.start + 1
                         || n.0.desc.layers.end <= n.0.desc.layers.start
                         || n.0.rtv.is_none()
                     {

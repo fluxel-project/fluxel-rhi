@@ -16,6 +16,7 @@ use std::{
 };
 
 mod inference;
+mod volume_attachment;
 
 impl<B: ResourceBackend> Device<B> {
     pub fn buffer_support(&self, desc: &BufferDesc) -> Support<BufferSupport> {

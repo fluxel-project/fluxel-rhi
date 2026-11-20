@@ -299,6 +299,10 @@ Verify explicit sampled, storage and attachment usage against actual
 descriptor binding and attachment admission. Cover a sampled mip chain
 paired with single-mip storage views, and separate sampled depth/stencil
 aspects paired with a full attachment view.
+Verify a nonzero 3D attachment slice at a nonzero mip through drawing,
+float clears and integer clears. Read back adjacent slices to check
+isolation. Reject volume resolve destinations. Reopen 2D MSAA resolve to
+a volume slice only with a specified resolve-and-copy path and workload.
 Check the requested sample count and the reported alternatives against texture
 creation for the same format, dimension, mip count, and usage.
 Compare storage layout admission with actual typed UAV view creation for

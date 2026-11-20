@@ -12,7 +12,10 @@ mod color_view;
 mod depth_view;
 mod format;
 mod validate;
-pub(super) use color_view::{create_sampled_view, create_view, create_view_with_usage};
+pub(super) use color_view::{
+    create_sampled_view, create_view, create_view_with_usage, create_volume_attachment_slice,
+    volume_attachment_slice_support,
+};
 pub(super) use format::{
     bc_block_bytes, color_texel_bytes, depth_aspects, dxgi_format, format_has_support,
     format_supports_texture_atomic_add_native, format_supports_texture_atomic_bitwise_native,
@@ -54,6 +57,8 @@ pub(crate) struct TextureViewState {
     pub(super) dsv_read_only_stencil: Option<D3D12_CPU_DESCRIPTOR_HANDLE>,
     pub(super) dsv_read_only_both: Option<D3D12_CPU_DESCRIPTOR_HANDLE>,
     pub(super) desc: api::TextureViewDesc,
+    /// A view-local W slice. Resource transitions still address the full mip.
+    pub(super) attachment_depth_slice: Option<u32>,
 }
 
 pub(crate) fn support(dv: &Dx12Device, d: &api::TextureDesc) -> api::Support<api::TextureSupport> {

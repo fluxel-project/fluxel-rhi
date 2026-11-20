@@ -173,5 +173,6 @@ pub(super) fn create_depth_view(
         dsv_read_only_stencil: read_stencil,
         dsv_read_only_both: read_both,
         desc: v.clone(),
+        attachment_depth_slice: None,
     })));
 }

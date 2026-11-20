@@ -228,6 +228,8 @@ pub struct DeviceCapabilities {
     pub sampled_texture_component_mapping: bool,
     /// Texture views may restrict descriptor usage to a subset of the texture's usage.
     pub texture_view_usage: bool,
+    /// A single depth slice of a 3D color texture can be a render attachment.
+    pub texture_3d_attachment_slice: bool,
     /// Explicit color buffer/texture copies permit offsets and row pitches
     /// aligned to one texel or compressed block.
     pub texel_aligned_color_copies: bool,

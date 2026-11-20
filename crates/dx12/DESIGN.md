@@ -172,6 +172,12 @@ chain for sampling alongside a single-mip storage or attachment view.
 Combined depth-stencil textures use aspect-specific sampled views and an
 all-aspect attachment view.
 
+A 3D color attachment slice selects one W coordinate in a single mip.
+The RTV carries that coordinate while resource transitions and attachment
+alias checks still address the full mip. Pass clears, including integer
+load and rectangular clears, use the selected RTV. MSAA resolves use
+2D resources.
+
 Storage texture allocation and view creation require a typed UAV and at
 least one typed access. Bind-group layout support and creation require the
 typed load bit for read, the typed store bit for write, and both bits for

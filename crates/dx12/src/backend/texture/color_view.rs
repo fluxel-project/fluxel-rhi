@@ -27,6 +27,39 @@ pub(crate) fn create_view_with_usage(
     create_native_view(dv, t, v, usage)
 }
 
+pub(crate) fn volume_attachment_slice_support(
+    dv: &Dx12Device,
+    t: &Dx12Texture,
+    view: &api::TextureViewDesc,
+    depth_slice: u32,
+) -> Result<()> {
+    if t.0.desc.dimension != api::TextureDimension::D3 {
+        return Err(api::Error::Unsupported("DX12 volume color attachment"));
+    }
+    view_usage_support(dv, t, view, api::TextureUsage::RENDER_ATTACHMENT)?;
+    if depth_slice >= (t.0.desc.extent[2] >> view.mips.start).max(1) {
+        return Err(api::Error::InvalidRange);
+    }
+    Ok(())
+}
+
+pub(crate) fn create_volume_attachment_slice(
+    dv: &Dx12Device,
+    t: &Dx12Texture,
+    view: &api::TextureViewDesc,
+    depth_slice: u32,
+) -> Result<Dx12TextureView> {
+    volume_attachment_slice_support(dv, t, view, depth_slice)?;
+    create_color_view(
+        dv,
+        t.0.clone(),
+        view,
+        api::TextureUsage::RENDER_ATTACHMENT,
+        D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+        Some(depth_slice),
+    )
+}
+
 fn create_native_view(
     dv: &Dx12Device,
     t: &Dx12Texture,
@@ -45,6 +78,7 @@ fn create_native_view(
         v,
         usage,
         D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+        None,
     )
 }
 
@@ -61,6 +95,7 @@ pub(crate) fn create_sampled_view(
         v,
         api::TextureUsage::TEXTURE_BINDING,
         component_mapping(mapping),
+        None,
     )
 }
 
@@ -87,6 +122,7 @@ fn create_color_view(
     v: &api::TextureViewDesc,
     usage: api::TextureUsage,
     component_mapping: u32,
+    attachment_depth_slice: Option<u32>,
 ) -> Result<Dx12TextureView> {
     let array = texture.desc.array_layers > 1 || v.dimension == api::TextureViewDimension::D2Array;
     let (srv_lease, srv) = if usage.contains(api::TextureUsage::TEXTURE_BINDING) {
@@ -294,8 +330,9 @@ fn create_color_view(
                 D3D12_RENDER_TARGET_VIEW_DESC_0 {
                     Texture3D: D3D12_TEX3D_RTV {
                         MipSlice: v.mips.start,
-                        FirstWSlice: 0,
-                        WSize: (texture.desc.extent[2] >> v.mips.start).max(1),
+                        FirstWSlice: attachment_depth_slice.unwrap_or(0),
+                        WSize: attachment_depth_slice
+                            .map_or_else(|| (texture.desc.extent[2] >> v.mips.start).max(1), |_| 1),
                     },
                 }
             } else if texture.desc.samples == 1
@@ -358,5 +395,6 @@ fn create_color_view(
         dsv_read_only_stencil: None,
         dsv_read_only_both: None,
         desc: v.clone(),
+        attachment_depth_slice,
     })))
 }
