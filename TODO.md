@@ -114,6 +114,10 @@ DX12 reports the mesh and task shader limits on mesh-capable devices.
 reject unsupported topologies and shader/PSO topology mismatches.
 Check shader declaration admission against the reported invocation, output,
 and combined task payload limits.
+Check the optional Mesh and Task workgroup declarations at exactly 128
+invocations and with zero, excessive or overflowing dimensions. DXIL without
+a declaration still uses native PSO validation. Signature packing, dynamic
+output counts and payload linkage require native artifact validation.
 
 DX12 publishes the shader-written render target array index bound. Tier 1
 mesh devices report eight choices unless OPTIONS9 proves the full 2048

@@ -175,12 +175,23 @@ fn shader<'a>(stage: &'a api::PipelineStage<Dx12>, expected: api::ShaderStage) -
             "DX12 mesh shader cannot supply the rasterizer primitive index",
         ));
     }
-    if !shader
+    let entry = shader
         .entries
         .iter()
-        .any(|entry| entry.name == stage.entry && entry.stage == expected)
-    {
-        return Err(Error::InvalidState);
+        .find(|entry| entry.name == stage.entry && entry.stage == expected)
+        .ok_or(Error::InvalidState)?;
+    let max_invocations = match expected {
+        api::ShaderStage::Mesh => SHADER_LIMITS.max_mesh_workgroup_invocations,
+        api::ShaderStage::Task => SHADER_LIMITS.max_task_workgroup_invocations,
+        _ => return Ok(&shader.bytes),
+    };
+    // This validates the caller's declaration. Native PSO creation validates
+    // the DXIL, including artifacts with no declared workgroup size.
+    if let Some(size) = entry.workgroup_size {
+        let invocations = size.into_iter().try_fold(1u32, u32::checked_mul);
+        if invocations.is_none_or(|count| count == 0 || count > max_invocations) {
+            return Err(Error::InvalidRange);
+        }
     }
     Ok(&shader.bytes)
 }
