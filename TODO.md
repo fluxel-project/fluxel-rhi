@@ -808,9 +808,12 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   retirement registration failure after valid signals.
   Automatic renderer reconstruction is `OUT_OF_SCOPE`: Renderer and Host own
   graph rebuild, window lifecycle, and policy after a terminal device loss.
-- **R03, IMPLEMENTING — shared stop-admission and drain.** First verify that
-  the existing RAII ownership and shared state can stop new work, retain
-  in-flight native objects, report completion, and drain safely. An explicit
+- **R03, VERIFYING — shared stop-admission and drain.** Verify that device
+  clones reject new encoders, submissions, map leases, and readback recording
+  after removal. Pending unsignaled private readbacks must report `DeviceLost`.
+  Verify issued owners remain retained until a valid fence completes or the
+  uncertain work is quarantined. Confirm existing leases release normally and
+  pending waits report a terminal error. An explicit
   public close operation remains `OUT_OF_SCOPE` until a consumer demonstrates
   a lifecycle need that RAII cannot express. Immediate native release is never
   a valid implementation.

@@ -16,12 +16,16 @@ impl fluxel_rhi_core::backend::MappingBackend for Dx12 {
     type NativeMap = Dx12Map;
     type MapFuture<'a> = Ready<Result<Dx12Map>>;
     fn map<'a>(
-        _: &'a Dx12Device,
+        device: &'a Dx12Device,
         buffer: &'a Dx12Buffer,
         range: Range<u64>,
         mode: api::MapMode,
     ) -> Self::MapFuture<'a> {
-        ready(open(buffer, range, mode))
+        ready(
+            device
+                .require_active()
+                .and_then(|()| open(buffer, range, mode)),
+        )
     }
     fn bytes(map: &Dx12Map) -> &[u8] {
         map.bytes()

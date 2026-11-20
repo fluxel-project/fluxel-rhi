@@ -62,6 +62,7 @@ impl fluxel_rhi_core::backend::ReadbackBackend for Dx12 {
         src: &Dx12Buffer,
         range: Range<u64>,
     ) -> Result<Dx12Readback> {
+        encoder.device.require_active()?;
         if range.start > range.end || range.end > src.size {
             return Err(Error::InvalidRange);
         }
@@ -120,7 +121,10 @@ impl fluxel_rhi_core::backend::ReadbackBackend for Dx12 {
             .as_ref()
             .ok_or(Error::Unsupported("DX12 shared readback storage"))?;
         Ok(match completion.get() {
-            None => api::CompletionState::Pending,
+            None => match device.require_active() {
+                Ok(()) => api::CompletionState::Pending,
+                Err(error) => api::CompletionState::Failed(error),
+            },
             Some(Ok(point)) => Self::completion_status(device, point),
             Some(Err(error)) => api::CompletionState::Failed(error.clone()),
         })
@@ -137,7 +141,7 @@ impl fluxel_rhi_core::backend::ReadbackBackend for Dx12 {
         ready(if ticket.completion.is_some() {
             map_private(device, ticket)
         } else {
-            map(ticket)
+            device.require_active().and_then(|()| map(ticket))
         })
     }
 }
@@ -145,7 +149,7 @@ impl fluxel_rhi_core::backend::ReadbackBackend for Dx12 {
 fn map_private(device: &Dx12Device, ticket: Dx12Readback) -> Result<ReadbackData> {
     use fluxel_rhi_core::backend::ReadbackBackend;
     match Dx12::private_readback_status(device, &ticket)? {
-        api::CompletionState::Complete => map(ticket),
+        api::CompletionState::Complete => device.require_active().and_then(|()| map(ticket)),
         api::CompletionState::Pending => Err(Error::InvalidState),
         api::CompletionState::Failed(error) => Err(error),
     }
