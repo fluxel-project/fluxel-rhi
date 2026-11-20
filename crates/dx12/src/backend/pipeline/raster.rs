@@ -427,7 +427,7 @@ fn stage(
                 model,
                 &s.constants,
                 api::ShaderDiagnosticSource::Hlsl,
-                super::super::shader_naga::requires_f16(source),
+                super::super::shader_naga::requires_native_16bit(source),
             )?;
             Ok((
                 compiled.bytes,

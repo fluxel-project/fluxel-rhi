@@ -11,6 +11,8 @@ pub struct DeviceCapabilities {
     pub shader_layout_inference: bool,
     /// Shader routes can use native half-precision floating-point values.
     pub shader_f16: bool,
+    /// Native shaders can use exact signed and unsigned 16-bit integer types.
+    pub shader_i16: bool,
     /// Native shaders can use double-precision floating-point values.
     pub shader_f64: bool,
     /// Native shaders can use 64-bit integers for ordinary computation.

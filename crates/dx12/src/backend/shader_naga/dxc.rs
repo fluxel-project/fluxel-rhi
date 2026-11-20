@@ -104,7 +104,7 @@ pub(super) fn compile_hlsl_with_origin(
     profile: &str,
     constants: &[(String, SpecializationValue)],
     origin: ShaderDiagnosticSource,
-    native_f16: bool,
+    native_16bit: bool,
 ) -> Result<CompiledHlsl> {
     let definitions = definitions(constants)?;
     let mut arguments = vec![
@@ -113,7 +113,7 @@ pub(super) fn compile_hlsl_with_origin(
         "-E".to_owned(),
         entry.to_owned(),
     ];
-    if native_f16 {
+    if native_16bit {
         arguments.push("-enable-16bit-types".into());
     }
     append_definitions(&mut arguments, definitions);

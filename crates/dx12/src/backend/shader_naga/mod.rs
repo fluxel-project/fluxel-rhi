@@ -20,9 +20,17 @@ mod validation;
 mod wave_size;
 use binding::{validate_binding_type, wgsl_binding_shape};
 use fluxel_rhi_core::api::{self, Error, Result};
-pub(super) use validation::requires_f16;
-use validation::{texture_atomic_only, validation_capabilities};
+use validation::{requires_f16, texture_atomic_only, validation_capabilities};
 pub(crate) use wave_size::inject_direct_hlsl;
+
+pub(super) fn requires_native_16bit(desc: &api::ShaderDesc) -> bool {
+    desc.required_features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            api::SHADER_FEATURE_F16 | api::SHADER_FEATURE_I16
+        )
+    })
+}
 
 #[cfg(test)]
 #[path = "../../tests/shader_naga/compiler.rs"]
@@ -78,7 +86,7 @@ pub(crate) fn compile_hlsl_with_report(
     model: u16,
     constants: &[(String, api::SpecializationValue)],
     origin: api::ShaderDiagnosticSource,
-    native_f16: bool,
+    native_16bit: bool,
 ) -> Result<dxc::CompiledHlsl> {
     dxc::compile_hlsl_with_origin(
         source,
@@ -86,7 +94,7 @@ pub(crate) fn compile_hlsl_with_report(
         &hlsl_profile(stage, model)?,
         constants,
         origin,
-        native_f16,
+        native_16bit,
     )
 }
 

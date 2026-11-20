@@ -149,7 +149,7 @@ impl Dx12 {
                 });
             let mut options4 = D3D12_FEATURE_DATA_D3D12_OPTIONS4::default();
             // SAFETY: the output is the exact native type for OPTIONS4.
-            let shader_f16 = shader_model >= 62
+            let native_16bit_shader_ops = shader_model >= 62
                 && unsafe {
                     native.CheckFeatureSupport(
                         D3D12_FEATURE_D3D12_OPTIONS4,
@@ -296,7 +296,8 @@ impl Dx12 {
             let lane = LaneId { device, ordinal: 0 };
             let compute_lane = LaneId { device, ordinal: 1 };
             let caps = DeviceCapabilities {
-                shader_f16,
+                shader_f16: native_16bit_shader_ops,
+                shader_i16: native_16bit_shader_ops,
                 shader_f64,
                 shader_int64,
                 memory_topology,
@@ -515,7 +516,7 @@ impl Dx12 {
                     descriptor_table_limits,
                     texel_aligned_color_copies,
                     shader_model,
-                    shader_f16,
+                    native_16bit_shader_ops,
                     shader_f64,
                     shader_int64,
                     barycentrics_supported,

@@ -321,6 +321,11 @@ Native HLSL and DXIL signed and unsigned 64-bit computation require
 Shader Model 6 and `D3D12_OPTIONS1.Int64ShaderOps`. Atomic operations and
 64-bit resource formats keep separate admission.
 
+Native HLSL and DXIL can declare exact 16-bit integer types with the
+Shader Model 6.2 and OPTIONS4 native 16-bit gate. HLSL requests the
+native DXC type option for `int16_t` and `uint16_t`. WGSL currently
+cannot declare either integer type.
+
 The implemented public route includes graphics and compute, multiple render
 targets, indirect drawing and dispatch, queries, secondary recording,
 standalone clears and resolves, placed memory, scoped native/external interop,

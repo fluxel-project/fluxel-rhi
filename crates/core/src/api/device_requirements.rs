@@ -48,6 +48,7 @@ macro_rules! device_features {
 device_features! {
     Compute => compute, "compute";
     ShaderF16 => shader_f16, "shader-f16";
+    ShaderI16 => shader_i16, "shader-i16";
     ShaderF64 => shader_f64, "shader-f64";
     ShaderInt64 => shader_int64, "shader-int64";
     Sparse => sparse, "sparse";

@@ -41,6 +41,8 @@ pub struct ShaderEntryPoint {
 pub const SHADER_FEATURE_RAY_QUERY: &str = "ray-query";
 /// The shader requires native half-precision floating-point types.
 pub const SHADER_FEATURE_F16: &str = "shader-f16";
+/// The shader requires exact native signed or unsigned 16-bit integers.
+pub const SHADER_FEATURE_I16: &str = "shader-i16";
 /// The shader requires native double-precision floating-point types.
 pub const SHADER_FEATURE_F64: &str = "shader-f64";
 /// The shader requires native signed or unsigned 64-bit integer types.

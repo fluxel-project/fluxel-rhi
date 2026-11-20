@@ -101,6 +101,16 @@ discards, and reject nonfragment requirement declarations. WGSL conservative
 depth remains pending until its depth-output and interpolation rules are
 mapped per mode and verified with depth and storage readback.
 
+### DX12 native 16-bit integer shaders
+
+**Status:** HLSL and DXIL use the Core ShaderI16 device requirement and
+the DX12 native 16-bit probe. WGSL has no matching integer types.
+
+**Acceptance:** Verify signed and unsigned 16-bit arithmetic and packed
+buffer reads and writes, including HLSL reflection with the native type
+option and rejection below Shader Model 6.2. Reopen WGSL once the frontend
+accepts an exact integer type and its memory layout and limits can be tested.
+
 ### DX12 native 64-bit integer shaders
 
 **Status:** Core device requests and DX12 HLSL and DXIL declarations

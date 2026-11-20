@@ -34,7 +34,7 @@ pub(in crate::backend) fn reflect(
                 model,
                 &entry.constants,
                 api::ShaderDiagnosticSource::Hlsl,
-                super::requires_f16(desc),
+                super::requires_native_16bit(desc),
             )?;
             return super::native_layout_reflection::reflect(
                 &compiled.bytes,
