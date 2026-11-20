@@ -264,7 +264,8 @@ pub struct RhiStatsSnapshot {
     pub draw_indexed: u64,
     /// Accepted dispatch requests.
     pub dispatch: u64,
-    /// Accepted pipeline bind requests. Repeated identical binds count again.
+    /// Accepted pipeline bind requests, including mesh pipelines.
+    /// Repeated identical binds count again.
     pub pipeline_binds: u64,
     /// Accepted bind-group requests. Repeated identical binds count again.
     pub bind_group_binds: u64,
@@ -292,7 +293,7 @@ pub struct RhiStatsSnapshot {
     pub clears: u64,
     /// Accepted buffer or texture write requests.
     pub writes: u64,
-    /// Fully or partially accepted deferred submissions.
+    /// Fully or partially accepted deferred submissions through either queue facade.
     pub submits: u64,
 }
 

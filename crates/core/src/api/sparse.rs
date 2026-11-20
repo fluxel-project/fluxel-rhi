@@ -359,6 +359,13 @@ impl<B: MultiQueueBackend> MultiQueueDomain<'_, B> {
             return MultiQueueSubmitOutcome::Rejected { error, packet };
         }
         // SAFETY: packet validation above established this queue's device ownership.
-        unsafe { B::submit_multi(&self.device.native, packet) }
+        let outcome = unsafe { B::submit_multi(&self.device.native, packet) };
+        if matches!(
+            &outcome,
+            MultiQueueSubmitOutcome::Accepted(_) | MultiQueueSubmitOutcome::PartiallyAccepted { .. }
+        ) {
+            self.device.stats.record_submit();
+        }
+        outcome
     }
 }

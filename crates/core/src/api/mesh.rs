@@ -166,7 +166,11 @@ impl<B: Backend> MeshDomain<'_, B> {
         if p.device != self.device.id || pass.encoder.device != self.device.id {
             return Err(Error::WrongDevice);
         }
-        pass.call(|e| B::Mesh::bind_pipeline(e, &p.native))
+        let result = pass.call(|e| B::Mesh::bind_pipeline(e, &p.native));
+        if result.is_ok() {
+            pass.encoder.stats.record_pipeline_bind();
+        }
+        result
     }
     pub fn dispatch(&self, pass: &mut RasterPass<'_, B>, groups: [u32; 3]) -> Result<()>
     where
