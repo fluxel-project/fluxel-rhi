@@ -218,6 +218,11 @@ WGSL with a filtering sampler and an output readback on supported hardware.
 On load-only formats, exercise a nonfiltering layout and reject filtering.
 Check that multisampled float, integer, and depth views require multisample
 load support and do not report filterability.
+Compare `storage_texture_binding_support` with single-entry layout creation
+for read, write, read-write and atomic access. Include typed store-only
+formats, BGRA storage, sRGB view formats, D2Array and unsupported cube storage
+views. Exercise atomic stage restrictions and keep operation-specific checks
+on the shader route.
 
 ### DX12 structured shader diagnostics
 

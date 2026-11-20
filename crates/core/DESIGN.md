@@ -170,6 +170,11 @@ cross-lane dependencies and reference balancing.
 
 `Device::stats()` is deliberately narrow: it counts successful Core requests and handoffs using atomic snapshots. It is neither a driver query nor a memory, residency, presentation, or profiling report.
 
+Storage texture binding support qualifies one typed format, view dimension,
+access and stage set by using the existing bind-group layout admission path.
+Texture allocation support describes the resource from its descriptor. Shader
+admission checks the exact atomic operation used by a particular shader route.
+
 ## Design constraints for new API
 
 Add a shared operation only when it has one meaningful contract across actual consumers. Define its ownership, device identity, capability evidence, error path, and completion effect before adding backend lowering. Prefer Rust types, borrows, and exclusive leases to runtime checks. If an operation has no shared meaning, keep it optional or backend-specific instead of weakening the Core contract.

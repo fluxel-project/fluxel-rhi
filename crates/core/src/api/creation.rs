@@ -558,6 +558,33 @@ impl<B: ResourceBackend> Device<B> {
         }
         Ok(())
     }
+    /// Checks one storage texture binding's format, dimension, access and
+    /// stage visibility with the same rules used to create its layout.
+    /// For atomic bindings, the shader route checks the exact operation later.
+    pub fn storage_texture_binding_support(
+        &self,
+        format: TextureFormat,
+        dimension: TextureViewDimension,
+        access: StorageAccess,
+        visibility: &[ShaderStage],
+    ) -> Result<()> {
+        self.bind_group_layout_support(&BindGroupLayoutDesc {
+            label: None,
+            entries: vec![BindGroupLayoutEntry {
+                binding: 0,
+                visibility: visibility.to_vec(),
+                ty: BindingType::StorageTexture {
+                    format,
+                    dimension,
+                    access,
+                },
+                count: BindingCount::One,
+                partially_bound: false,
+                nonuniform_indexing: false,
+            }],
+        })
+    }
+
     /// Checks layout admission without creating a backend layout object.
     pub fn bind_group_layout_support(&self, desc: &BindGroupLayoutDesc) -> Result<()> {
         self.validate_bind_group_layout(desc)?;
