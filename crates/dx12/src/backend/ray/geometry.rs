@@ -16,6 +16,36 @@ pub(super) struct GeometryInputs {
     flags: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS,
 }
 
+pub(super) fn triangle_vertex_layout(
+    format: api::VertexFormat,
+    dxr_1_1: bool,
+) -> Result<(DXGI_FORMAT, api::AccelerationVertexLayout)> {
+    use api::VertexFormat::*;
+    let (native, position_bytes, alignment) = match format {
+        Float32(2) => (DXGI_FORMAT_R32G32_FLOAT, 8, 4),
+        Float32(3) => (DXGI_FORMAT_R32G32B32_FLOAT, 12, 4),
+        Float16(2) => (DXGI_FORMAT_R16G16_FLOAT, 4, 2),
+        Float16(3 | 4) => (DXGI_FORMAT_R16G16B16A16_FLOAT, 6, 2),
+        Snorm16(2) => (DXGI_FORMAT_R16G16_SNORM, 4, 2),
+        Snorm16(3 | 4) => (DXGI_FORMAT_R16G16B16A16_SNORM, 6, 2),
+        Unorm16(2) if dxr_1_1 => (DXGI_FORMAT_R16G16_UNORM, 4, 2),
+        Unorm16(3 | 4) if dxr_1_1 => (DXGI_FORMAT_R16G16B16A16_UNORM, 6, 2),
+        Snorm8(2) if dxr_1_1 => (DXGI_FORMAT_R8G8_SNORM, 2, 1),
+        Snorm8(3 | 4) if dxr_1_1 => (DXGI_FORMAT_R8G8B8A8_SNORM, 3, 1),
+        Unorm8(2) if dxr_1_1 => (DXGI_FORMAT_R8G8_UNORM, 2, 1),
+        Unorm8(3 | 4) if dxr_1_1 => (DXGI_FORMAT_R8G8B8A8_UNORM, 3, 1),
+        _ => return Err(Error::Unsupported("DX12 ray triangle vertex format")),
+    };
+    Ok((
+        native,
+        api::AccelerationVertexLayout {
+            position_bytes,
+            offset_alignment: alignment,
+            stride_alignment: alignment,
+        },
+    ))
+}
+
 fn validate_address(
     base: u64,
     size: u64,
@@ -65,7 +95,7 @@ fn address(
 }
 
 impl GeometryInputs {
-    pub(super) fn new(desc: &api::AccelerationDesc<Dx12>) -> Result<Self> {
+    pub(super) fn new(desc: &api::AccelerationDesc<Dx12>, dxr_1_1: bool) -> Result<Self> {
         let mut buffers = Vec::new();
         let mut geometries = Vec::new();
         let (kind, count) = match &desc.input {
@@ -85,25 +115,8 @@ impl GeometryInputs {
                             indices,
                             opaque,
                         } => {
-                            let (format, bytes, alignment) = match vertex_format {
-                                api::VertexFormat::Float32(3) => {
-                                    (DXGI_FORMAT_R32G32B32_FLOAT, 12, 4)
-                                }
-                                api::VertexFormat::Float32(2) => (DXGI_FORMAT_R32G32_FLOAT, 8, 4),
-                                api::VertexFormat::Float16(4) => {
-                                    (DXGI_FORMAT_R16G16B16A16_FLOAT, 8, 2)
-                                }
-                                api::VertexFormat::Float16(2) => (DXGI_FORMAT_R16G16_FLOAT, 4, 2),
-                                _ => {
-                                    return Err(Error::Unsupported(
-                                        "DX12 ray triangle vertex format",
-                                    ));
-                                }
-                            };
-                            if vertex_offset % alignment != 0
-                                || stride % alignment != 0
-                                || indices.as_ref().map_or(*vertex_count, |i| i.count) % 3 != 0
-                            {
+                            let (format, layout) = triangle_vertex_layout(*vertex_format, dxr_1_1)?;
+                            if indices.as_ref().map_or(*vertex_count, |i| i.count) % 3 != 0 {
                                 return Err(Error::InvalidRange);
                             }
                             // SAFETY: Core checks resource identity and the
@@ -114,8 +127,8 @@ impl GeometryInputs {
                                 *vertex_offset,
                                 *vertex_count,
                                 *stride,
-                                bytes,
-                                alignment,
+                                u64::from(layout.position_bytes),
+                                u64::from(layout.offset_alignment),
                             )?;
                             buffers.push(vb.clone());
                             let (index_format, index_count, index_address) =

@@ -293,6 +293,14 @@ pub trait RayOps<B: Backend> {
         device: &B::NativeDevice,
         desc: &AccelerationDesc<B>,
     ) -> Result<AccelerationSizes>;
+    fn triangle_vertex_layout(
+        _device: &B::NativeDevice,
+        _format: VertexFormat,
+    ) -> Result<AccelerationVertexLayout> {
+        Err(Error::Unsupported(
+            "acceleration triangle vertex layout query",
+        ))
+    }
     fn create_acceleration(
         device: &B::NativeDevice,
         desc: &AccelerationDesc<B>,

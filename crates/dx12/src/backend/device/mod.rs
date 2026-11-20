@@ -157,9 +157,9 @@ impl Dx12 {
             .map_err(native_error)?;
             let max_buffer_bytes =
                 max_committed_buffer_bytes(gpu_va.MaxGPUVirtualAddressBitsPerProcess)?;
-            let ray_device = ray::probe(&native);
+            let (ray_device, dxr_1_1) = ray::probe(&native);
             let ray_supported = ray_device.is_some();
-            let ray_query_supported = ray::probe_inline(&native, shader_model);
+            let ray_query_supported = dxr_1_1 && shader_model >= 65;
             let mesh_supported = mesh::probe(&native, shader_model);
             let texture_atomic_r32uint_compute = texture::format_supports_texture_atomic_add_native(
                 &native,
@@ -479,6 +479,7 @@ impl Dx12 {
                     subgroup_widths,
                     max_buffer_bytes,
                     ray_device,
+                    dxr_1_1,
                     ray_query_supported,
                     mesh_supported,
                     sparse_supported,

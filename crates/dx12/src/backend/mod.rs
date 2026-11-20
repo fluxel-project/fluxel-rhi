@@ -94,6 +94,7 @@ struct Dx12DeviceState {
     /// Native interface is retained only on devices that report DXR tier 1.0;
     /// the opened device reports that fact through the ray capability.
     pub(super) ray_device: Option<windows::Win32::Graphics::Direct3D12::ID3D12Device5>,
+    pub(super) dxr_1_1: bool,
     pub(super) ray_query_supported: bool,
     pub(super) mesh_supported: bool,
     pub(super) sparse_supported: bool,

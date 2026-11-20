@@ -85,6 +85,13 @@ impl fluxel_rhi_core::backend::RayOps<Dx12> for Ray {
     ) -> Result<api::AccelerationSizes> {
         super::sizes(device, desc)
     }
+    fn triangle_vertex_layout(
+        device: &Dx12Device,
+        format: api::VertexFormat,
+    ) -> Result<api::AccelerationVertexLayout> {
+        super::ray_device(device)?;
+        super::geometry::triangle_vertex_layout(format, device.0.dxr_1_1).map(|(_, layout)| layout)
+    }
     fn create_acceleration(
         device: &Dx12Device,
         desc: &api::AccelerationDesc<Dx12>,

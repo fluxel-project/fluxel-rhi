@@ -20,6 +20,13 @@ pub struct AccelerationSizes {
     pub scratch_bytes: u64,
     pub scratch_alignment: u64,
 }
+/// Buffer layout for triangle positions in an acceleration build.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AccelerationVertexLayout {
+    pub position_bytes: u32,
+    pub offset_alignment: u32,
+    pub stride_alignment: u32,
+}
 #[derive(Clone)]
 pub enum AccelerationGeometry<B: Backend> {
     Triangles {
@@ -445,6 +452,10 @@ impl<B: Backend> RayDomain<'_, B> {
         desc.input
             .validate(self.device.id, &self.device.caps.limits)?;
         B::Ray::acceleration_sizes(&self.device.native, desc)
+    }
+    pub fn triangle_vertex_layout(&self, format: VertexFormat) -> Result<AccelerationVertexLayout> {
+        self.require_acceleration()?;
+        B::Ray::triangle_vertex_layout(&self.device.native, format)
     }
     pub fn create_acceleration(
         &self,

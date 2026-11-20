@@ -18,6 +18,9 @@ readback. Cover build and update in one packet, repeated and separately
 submitted updates, a rejected update after an incompatible rebuild, and
 retention of old and replacement TLAS dependencies. Reopen indexed BLAS
 refit once its index data can be proven unchanged for the update.
+Verify triangle vertex layout queries and traversal for the added DXR SNORM,
+UNORM and tightly packed three-component formats. Verify Tier 1.0 rejects the
+formats that require Tier 1.1.
 
 ### DX12 conservative rasterization
 

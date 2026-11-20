@@ -148,7 +148,7 @@ fn sizes(
     device: &Dx12Device,
     desc: &api::AccelerationDesc<Dx12>,
 ) -> Result<api::AccelerationSizes> {
-    let geometry = geometry::GeometryInputs::new(desc)?;
+    let geometry = geometry::GeometryInputs::new(desc, device.0.dxr_1_1)?;
     let info = prebuild(device, &geometry)?;
     Ok(api::AccelerationSizes {
         storage_bytes: info.ResultDataMaxSizeInBytes,
@@ -237,7 +237,7 @@ fn build(
     if refit && signature.is_none() {
         return Err(Error::Unsupported("DX12 indexed BLAS refit"));
     }
-    let geometry = geometry::GeometryInputs::new(desc)?;
+    let geometry = geometry::GeometryInputs::new(desc, encoder.device.0.dxr_1_1)?;
     let sizes = prebuild(&encoder.device, &geometry)?;
     let scratch_bytes = if refit {
         if sizes.UpdateScratchDataSizeInBytes == 0 {
@@ -406,7 +406,7 @@ fn build(
     Ok(())
 }
 
-pub(super) fn probe(device: &ID3D12Device) -> Option<ID3D12Device5> {
+pub(super) fn probe(device: &ID3D12Device) -> (Option<ID3D12Device5>, bool) {
     let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS5::default();
     // SAFETY: the output structure matches the requested feature and lives
     // throughout the synchronous feature query.
@@ -419,25 +419,7 @@ pub(super) fn probe(device: &ID3D12Device) -> Option<ID3D12Device5> {
     }
     .is_ok()
         && options.RaytracingTier.0 >= D3D12_RAYTRACING_TIER_1_0.0;
-    supported.then(|| device.cast().ok()).flatten()
-}
-
-/// Inline ray queries require both DXR 1.1 and shader model 6.5.
-pub(super) fn probe_inline(device: &ID3D12Device, shader_model: u16) -> bool {
-    if shader_model < 65 {
-        return false;
-    }
-    let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS5::default();
-    // SAFETY: the feature query receives the exact initialized structure and
-    // performs synchronous writes while the borrowed storage remains valid.
-    let has_tier = unsafe {
-        device.CheckFeatureSupport(
-            D3D12_FEATURE_D3D12_OPTIONS5,
-            (&mut options as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS5).cast(),
-            std::mem::size_of_val(&options) as u32,
-        )
-    }
-    .is_ok()
-        && options.RaytracingTier.0 >= D3D12_RAYTRACING_TIER_1_1.0;
-    has_tier && device.cast::<ID3D12Device5>().is_ok()
+    let ray = supported.then(|| device.cast().ok()).flatten();
+    let dxr_1_1 = ray.is_some() && options.RaytracingTier.0 >= D3D12_RAYTRACING_TIER_1_1.0;
+    (ray, dxr_1_1)
 }
