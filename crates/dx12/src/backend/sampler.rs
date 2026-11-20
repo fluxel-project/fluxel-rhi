@@ -53,7 +53,11 @@ pub(crate) fn create_sampler(device: &Dx12Device, desc: &api::SamplerDesc) -> Re
         MipLODBias: 0.0,
         MaxAnisotropy: u32::from(desc.anisotropy),
         ComparisonFunc: compare(desc.compare),
-        BorderColor: border(desc.border),
+        BorderColor: if desc.address.contains(&api::AddressMode::ClampToZero) {
+            [0.0; 4]
+        } else {
+            border(desc.border)
+        },
         MinLOD: desc.lod.start,
         MaxLOD: desc.lod.end,
     };
@@ -62,7 +66,7 @@ pub(crate) fn create_sampler(device: &Dx12Device, desc: &api::SamplerDesc) -> Re
     unsafe { device.0.native.CreateSampler(&native, cpu) };
     Ok(Dx12Sampler(Arc::new(SamplerState { heap, cpu, native })))
 }
-fn validate(d: &api::SamplerDesc) -> Result<()> {
+pub(super) fn validate(d: &api::SamplerDesc) -> Result<()> {
     if !d.lod.start.is_finite() || !d.lod.end.is_finite() || d.lod.start > d.lod.end {
         return Err(Error::InvalidRange);
     }
@@ -76,6 +80,16 @@ fn validate(d: &api::SamplerDesc) -> Result<()> {
     {
         return Err(Error::Unsupported(
             "DX12 anisotropic sampler requires linear min/mag/mip filtering",
+        ));
+    }
+    if d.address.contains(&api::AddressMode::ClampToZero)
+        && d.address.contains(&api::AddressMode::ClampToBorder)
+        && border(d.border) != [0.0; 4]
+    {
+        // Every D3D12 address axis uses the same border color. A zero axis
+        // can coexist with a border axis only when their colors agree.
+        return Err(Error::Unsupported(
+            "DX12 sampler uses one shared border color",
         ));
     }
     Ok(())

@@ -101,6 +101,11 @@ impl<B: ResourceBackend> Device<B> {
         view.texture_desc = texture.desc.clone();
         Ok(view)
     }
+    /// Checks descriptor admission without creating a sampler. Backends may
+    /// support creation even when they do not expose a separate support query.
+    pub fn sampler_support(&self, desc: &SamplerDesc) -> Result<()> {
+        B::sampler_support(&self.native, desc)
+    }
     pub fn create_sampler(&self, desc: &SamplerDesc) -> Result<Sampler<B>> {
         // SAFETY: the SPI created the sampler for this device.
         Ok(unsafe { Sampler::from_native(self.id, B::create_sampler(&self.native, desc)?) })

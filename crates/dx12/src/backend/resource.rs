@@ -212,6 +212,9 @@ impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
     ) -> Result<Dx12TextureView> {
         texture::create_view(device, texture, desc)
     }
+    fn sampler_support(_: &Dx12Device, desc: &api::SamplerDesc) -> Result<()> {
+        sampler::validate(desc)
+    }
     fn create_sampler(device: &Dx12Device, desc: &api::SamplerDesc) -> Result<Dx12Sampler> {
         sampler::create_sampler(device, desc)
     }
