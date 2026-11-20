@@ -195,6 +195,15 @@ supported. Verify WGSL stage and unsupported builtin rejection. Reopen
 subgroup ID, count or barrier after an exact native or lowered mapping can
 be verified across different wave configurations.
 
+### DX12 WGSL sample-frequency shading
+
+**Status:** WGSL validation admits fragment sample index and sample
+interpolation. HLSL uses native sample-frequency semantics.
+
+**Acceptance:** Read distinct per-sample fragment results from a
+multisampled target and verify interpolation at sample positions.
+Cover the sample index and interpolation triggers separately.
+
 ### DX12 native fragment barycentrics
 
 **Status:** The device capability and HLSL and DXIL shader routes admit

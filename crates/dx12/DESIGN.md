@@ -307,6 +307,11 @@ Native fragment barycentrics require shader model 6.1 and a successful
 admitted for HLSL profiles at least 6.1 and for direct DXIL. The WGSL route
 has no barycentric builtin.
 
+WGSL fragment sample index and sample interpolation lower to
+`SV_SampleIndex` and the HLSL `sample` modifier. They select native
+sample-frequency execution. Pipeline and attachment sample counts still
+follow the ordinary multisample format checks.
+
 The `subgroups` shader requirement uses the device's Shader Model 6 wave
 support and its reported minimum and maximum wave widths. WGSL admits
 subgroup lane index, width, vote, ballot, arithmetic, shuffle, and quad

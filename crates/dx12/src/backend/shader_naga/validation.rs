@@ -61,7 +61,8 @@ pub(super) fn uses_packed_dot(module: &naga::Module) -> bool {
 }
 
 pub(super) fn validation_capabilities(desc: &api::ShaderDesc) -> naga::valid::Capabilities {
-    let mut caps = naga::valid::Capabilities::UNIFORM_BUFFER_ARRAY_NON_UNIFORM_INDEXING
+    let mut caps = naga::valid::Capabilities::MULTISAMPLED_SHADING
+        | naga::valid::Capabilities::UNIFORM_BUFFER_ARRAY_NON_UNIFORM_INDEXING
         | naga::valid::Capabilities::SAMPLER_NON_UNIFORM_INDEXING
         | naga::valid::Capabilities::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
         | naga::valid::Capabilities::STORAGE_TEXTURE_ARRAY_NON_UNIFORM_INDEXING;
