@@ -101,6 +101,19 @@ discards, and reject nonfragment requirement declarations. WGSL conservative
 depth remains pending until its depth-output and interpolation rules are
 mapped per mode and verified with depth and storage readback.
 
+### DX12 subgroup shader admission
+
+**Status:** DX12 admits the declared wave route from the device's Shader
+Model 6 and OPTIONS1 wave support. WGSL compute and fragment entries can
+use width, lane index, vote, ballot, arithmetic, shuffle and quad operations.
+WGSL subgroup ID, subgroup count and subgroup barrier remain deferred.
+
+**Acceptance:** Verify supported WGSL operations with compute and fragment
+readback, including partial waves and fixed-width compute variants where
+supported. Verify WGSL stage and unsupported builtin rejection. Reopen
+subgroup ID, count or barrier after an exact native or lowered mapping can
+be verified across different wave configurations.
+
 ### DX12 native fragment barycentrics
 
 **Status:** The device capability and HLSL and DXIL shader routes admit

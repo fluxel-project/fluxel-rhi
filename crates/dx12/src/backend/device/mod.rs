@@ -136,7 +136,8 @@ impl Dx12 {
             }
             .is_ok()
                 && wave.WaveOps.as_bool();
-            let subgroup_widths = (wave_ops
+            let subgroup_widths = (shader_model >= 60
+                && wave_ops
                 && wave.WaveLaneCountMin > 0
                 && wave.WaveLaneCountMin <= wave.WaveLaneCountMax)
                 .then_some(api::SubgroupWidths {

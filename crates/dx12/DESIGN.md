@@ -288,6 +288,14 @@ Native fragment barycentrics require shader model 6.1 and a successful
 admitted for HLSL profiles at least 6.1 and for direct DXIL. The WGSL route
 has no barycentric builtin.
 
+The `subgroups` shader requirement uses the device's Shader Model 6 wave
+support and its reported minimum and maximum wave widths. WGSL admits
+subgroup lane index, width, vote, ballot, arithmetic, shuffle, and quad
+operations in compute and fragment entries. WGSL subgroup ID, subgroup
+count, and subgroup barriers have no exact lowering on this route.
+Native HLSL and DXIL follow the operation and stage rules of their profiles.
+The explicit fixed-size compute path additionally requires Shader Model 6.6.
+
 The implemented public route includes graphics and compute, multiple render
 targets, indirect drawing and dispatch, queries, secondary recording,
 standalone clears and resolves, placed memory, scoped native/external interop,

@@ -264,6 +264,8 @@ pub(crate) enum Dx12ShaderSource {
 #[derive(Clone)]
 pub struct Dx12ComputePipeline(pub(crate) Arc<compute::ComputePipelineState>);
 
+const SUBGROUP_FEATURE: &str = "subgroups";
+
 impl Backend for Dx12 {
     type NativeDevice = Dx12Device;
     type NativeBuffer = Dx12Buffer;
@@ -326,6 +328,21 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
     type DirectFuture<'a> = pipeline::worker::ColdFuture<Dx12Shader>;
     type NagaFuture<'a> = pipeline::worker::ColdFuture<Dx12Shader>;
     fn shader_route(device: &Dx12Device, desc: &api::ShaderDesc) -> api::ShaderRoute {
+        if desc
+            .required_features
+            .iter()
+            .any(|feature| feature == SUBGROUP_FEATURE)
+            && (desc.entries.is_empty()
+                || (desc.format == api::ShaderFormat::Wgsl
+                    && !desc.entries.iter().any(|entry| {
+                        matches!(
+                            entry.stage,
+                            api::ShaderStage::Compute | api::ShaderStage::Fragment
+                        )
+                    })))
+        {
+            return api::ShaderRoute::Unsupported;
+        }
         if desc
             .required_features
             .iter()
@@ -557,7 +574,7 @@ fn shader_features_supported(
         api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_AND => true,
         api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_OR => true,
         "shaderClipDistance" => true,
-        "subgroups" => wave_ops_supported,
+        SUBGROUP_FEATURE => wave_ops_supported,
         _ => false,
     })
 }

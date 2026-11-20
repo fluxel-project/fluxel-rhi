@@ -117,12 +117,7 @@ pub(crate) fn validate_source(desc: &api::ShaderDesc) -> Result<()> {
             .iter()
             .find(|ep| ep.name == entry.name && ep.stage == stage)
             .ok_or_else(|| Error::Shader(format!("missing shader entry {}", entry.name)))?;
-        if matches!(
-            selected.early_depth_test,
-            Some(naga::EarlyDepthTest::Allow { .. })
-        ) {
-            return Err(Error::Unsupported("DX12 WGSL conservative fragment depth"));
-        }
+        validation::validate_entry(&module, selected)?;
     }
     Ok(())
 }
@@ -250,6 +245,7 @@ fn compile_inner(
             x != api::SHADER_FEATURE_RAY_QUERY
                 && x != api::SHADER_FEATURE_PRIMITIVE_INDEX
                 && x != api::SHADER_FEATURE_EARLY_DEPTH_TEST
+                && x != super::SUBGROUP_FEATURE
                 && x != "shaderClipDistance"
                 && x != api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_ADD
                 && x != api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_ADD
@@ -585,6 +581,7 @@ fn compile_inner(
             .iter()
             .position(|e| e.name == entry.name && e.stage == stage)
             .ok_or_else(|| Error::Shader("WGSL entry not found".into()))?;
+        validation::validate_entry(&module, &module.entry_points[index])?;
         if require_layout {
             for (handle, global) in module.global_variables.iter() {
                 if info.get_entry_point(index)[handle].is_empty() {

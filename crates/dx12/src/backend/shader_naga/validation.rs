@@ -1,6 +1,6 @@
 //! Naga capabilities admitted by the DX12 WGSL route.
 
-use fluxel_rhi_core::api;
+use fluxel_rhi_core::api::{self, Error, Result};
 
 pub(super) fn validation_capabilities(desc: &api::ShaderDesc) -> naga::valid::Capabilities {
     let mut caps = naga::valid::Capabilities::UNIFORM_BUFFER_ARRAY_NON_UNIFORM_INDEXING
@@ -35,7 +35,11 @@ pub(super) fn validation_capabilities(desc: &api::ShaderDesc) -> naga::valid::Ca
     {
         caps |= naga::valid::Capabilities::EARLY_DEPTH_TEST;
     }
-    if desc.required_features.iter().any(|x| x == "subgroups") {
+    if desc
+        .required_features
+        .iter()
+        .any(|feature| feature == super::super::SUBGROUP_FEATURE)
+    {
         caps |= naga::valid::Capabilities::SUBGROUP;
     }
     if desc.required_features.iter().any(|x| {
@@ -52,6 +56,47 @@ pub(super) fn validation_capabilities(desc: &api::ShaderDesc) -> naga::valid::Ca
         caps |= naga::valid::Capabilities::TEXTURE_ATOMIC;
     }
     caps
+}
+
+pub(super) fn validate_entry(module: &naga::Module, entry: &naga::EntryPoint) -> Result<()> {
+    if matches!(
+        entry.early_depth_test,
+        Some(naga::EarlyDepthTest::Allow { .. })
+    ) {
+        return Err(Error::Unsupported("DX12 WGSL conservative fragment depth"));
+    }
+    // A compute wave need not contain consecutive local invocation indices.
+    // Naga's formulas based on a contiguous partition cannot identify waves.
+    if entry
+        .function
+        .arguments
+        .iter()
+        .any(|arg| uses_workgroup_subgroup_identity(module, arg.ty, arg.binding.as_ref()))
+    {
+        return Err(Error::Unsupported("DX12 WGSL subgroup ID and count"));
+    }
+    Ok(())
+}
+
+fn uses_workgroup_subgroup_identity(
+    module: &naga::Module,
+    ty: naga::Handle<naga::Type>,
+    binding: Option<&naga::Binding>,
+) -> bool {
+    if matches!(
+        binding,
+        Some(naga::Binding::BuiltIn(
+            naga::BuiltIn::SubgroupId | naga::BuiltIn::NumSubgroups
+        ))
+    ) {
+        return true;
+    }
+    if let naga::TypeInner::Struct { members, .. } = &module.types[ty].inner {
+        return members.iter().any(|member| {
+            uses_workgroup_subgroup_identity(module, member.ty, member.binding.as_ref())
+        });
+    }
+    false
 }
 
 pub(super) fn texture_atomic_only(
