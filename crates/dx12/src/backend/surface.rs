@@ -56,18 +56,38 @@ pub(crate) struct SurfaceState {
 }
 struct Inner {
     chain: Option<IDXGISwapChain3>,
-    rtv_heap: Option<ID3D12DescriptorHeap>,
-    rtvs: Vec<D3D12_CPU_DESCRIPTOR_HANDLE>,
+    views: Option<Arc<SurfaceViews>>,
     generation: u64,
     acquired: bool,
     present_mode: api::PresentMode,
 }
+struct SurfaceViews {
+    _heap: ID3D12DescriptorHeap,
+    handles: Vec<D3D12_CPU_DESCRIPTOR_HANDLE>,
+}
+
+/// Keeps an acquired image's resource and descriptor generation valid until
+/// the command list retaining it is abandoned or retired.
+pub(crate) struct SurfaceAttachment {
+    _resource: ID3D12Resource,
+    _views: Arc<SurfaceViews>,
+}
+
 pub(crate) struct ImageLease {
     pub(crate) resource: ID3D12Resource,
     pub(crate) rtv: D3D12_CPU_DESCRIPTOR_HANDLE,
+    views: Arc<SurfaceViews>,
     state: Arc<SurfaceState>,
     generation: u64,
     handed: bool,
+}
+impl ImageLease {
+    pub(crate) fn retain_attachment(&self) -> SurfaceAttachment {
+        SurfaceAttachment {
+            _resource: self.resource.clone(),
+            _views: self.views.clone(),
+        }
+    }
 }
 
 // SAFETY: the caller supplies a live Win32 window handle and keeps its host
@@ -111,8 +131,7 @@ pub(crate) unsafe fn create_surface(
         tearing_supported,
         inner: Mutex::new(Inner {
             chain: None,
-            rtv_heap: None,
-            rtvs: Vec::new(),
+            views: None,
             generation: 0,
             acquired: false,
             present_mode: api::PresentMode::Fifo,
@@ -230,7 +249,10 @@ impl fluxel_rhi_core::backend::SurfaceBackend for Dx12 {
             Ok(value) => value,
             Err(e) => return ready(Err(error(e))),
         };
-        let Some(rtv) = i.rtvs.get(index as usize).copied() else {
+        let Some(views) = i.views.clone() else {
+            return ready(Err(Error::SurfaceLost));
+        };
+        let Some(rtv) = views.handles.get(index as usize).copied() else {
             return ready(Err(Error::SurfaceLost));
         };
         i.acquired = true;
@@ -239,6 +261,7 @@ impl fluxel_rhi_core::backend::SurfaceBackend for Dx12 {
         ready(Ok(Dx12SurfaceImage(ImageLease {
             resource,
             rtv,
+            views,
             state: surface.0.clone(),
             generation,
             handed: false,
@@ -261,6 +284,16 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
         } else {
             windows::Win32::Graphics::Dxgi::DXGI_SWAP_CHAIN_FLAG(0)
         };
+    // Use the same lock order as native handoff, which takes the submission
+    // gate before touching a surface. Retire completed backbuffer references
+    // before asking DXGI to release the old generation.
+    let _submission =
+        s.0.device
+            .0
+            .query_submission_gate
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+    super::encoder::retire(&s.0.device);
     let mut i = s.0.inner.lock().unwrap_or_else(|p| p.into_inner());
     if i.acquired {
         return Err(Error::InvalidState);
@@ -271,20 +304,15 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
     if completed == u64::MAX {
         return Err(Error::DeviceLost);
     }
-    if s.0
-        .device
-        .0
-        .in_flight
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .iter()
-        .any(|(value, _)| *value == u64::MAX || *value > completed)
+    if i.views
+        .as_ref()
+        .is_some_and(|views| Arc::strong_count(views) != 1)
     {
         return Err(Error::InvalidState);
     }
     let resized = if let Some(chain) = i.chain.as_ref() {
-        // SAFETY: there is no acquired image and all recorded work is proven
-        // complete above, satisfying DXGI's old-backbuffer release requirement.
+        // SAFETY: the current generation has no active leases or recorded
+        // backbuffer owners. Unrelated work may remain in flight.
         unsafe { chain.ResizeBuffers(2, d.extent[0], d.extent[1], format, flags) }
             .map_err(error)?;
         true
@@ -354,8 +382,7 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
 /// Incrementing generation also makes any stale lease fail `is_current` even
 /// when it was held across a native failure boundary.
 fn invalidate(inner: &mut Inner) {
-    inner.rtvs.clear();
-    inner.rtv_heap = None;
+    inner.views = None;
     inner.chain = None;
     inner.acquired = false;
     inner.generation = inner.generation.wrapping_add(1);
@@ -413,8 +440,10 @@ fn rebuild_rtvs(device: &Dx12Device, inner: &mut Inner, format: api::TextureForm
         };
         rtvs.push(handle);
     }
-    inner.rtv_heap = Some(heap);
-    inner.rtvs = rtvs;
+    inner.views = Some(Arc::new(SurfaceViews {
+        _heap: heap,
+        handles: rtvs,
+    }));
     Ok(())
 }
 fn swapchain_format(format: api::TextureFormat) -> Option<DXGI_FORMAT> {

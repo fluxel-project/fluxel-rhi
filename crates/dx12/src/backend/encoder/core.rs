@@ -130,6 +130,7 @@ pub struct Dx12Encoder {
     pub(crate) dynamic_view_tables: Vec<Arc<super::super::descriptor::DynamicViewTable>>,
     pub(crate) buffers: Vec<Dx12Buffer>,
     pub(crate) textures: Vec<Dx12Texture>,
+    pub(crate) surface_attachments: Vec<super::super::surface::SurfaceAttachment>,
     pub(crate) accelerations: Vec<super::super::Dx12Acceleration>,
     /// TLAS builds recorded in each native-list segment. Submission publishes
     /// them only after that segment crossed `ExecuteCommandLists`.
@@ -299,6 +300,7 @@ impl Dx12Encoder {
             textures: Vec::new(),
             accelerations: Vec::new(),
             ray_builds: Vec::new(),
+            surface_attachments: Vec::new(),
             pipeline: None,
             raster_pipelines: Vec::new(),
             compute_pipelines: Vec::new(),

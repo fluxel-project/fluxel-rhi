@@ -54,6 +54,7 @@ mod resolve;
 mod retirement;
 pub(crate) mod secondary;
 mod submit;
+pub(super) use submit::retire;
 mod transition;
 pub(crate) mod upload;
 pub(crate) use blit_compute::BlitComputeCache;

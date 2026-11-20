@@ -79,7 +79,7 @@ impl fluxel_rhi_core::backend::CompletionBackend for Dx12 {
     }
 }
 
-pub(super) fn retire(device: &Dx12Device) {
+pub(in crate::backend) fn retire(device: &Dx12Device) {
     // SAFETY: the device state owns this fence for every in-flight record;
     // querying it is side-effect free and device removal is handled below.
     let completed = unsafe { device.0.fence.GetCompletedValue() };

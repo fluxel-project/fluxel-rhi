@@ -101,6 +101,9 @@ an output move or switch to SDR.
 Compare reported SDR reference white and derived headroom with system values.
 Verify DXGI device removal, session loss and stale-output errors arrive as
 the matching Core errors during native surface operations.
+Verify reconfiguration rejects acquired images and unretired attachment
+or resolve commands, then succeeds after their fence retires even while
+another surface has work in flight.
 
 ### DX12 upload, completion, and texture transfer verification
 

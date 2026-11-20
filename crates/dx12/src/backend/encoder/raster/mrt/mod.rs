@@ -111,6 +111,7 @@ pub(super) fn begin(
                     }
                     // SAFETY: Core validates the lease's device and the clone retains the resource.
                     let n = unsafe { image.native_ref() };
+                    encoder.surface_attachments.push(n.0.retain_attachment());
                     let [width, height] = image.extent();
                     (
                         n.0.rtv,
@@ -315,6 +316,7 @@ pub(super) fn begin(
                 api::AttachmentView::Surface(image) => {
                     // SAFETY: Core validated this same-device surface lease.
                     let n = unsafe { image.native_ref() };
+                    encoder.surface_attachments.push(n.0.retain_attachment());
                     let resource = n.0.resource.clone();
                     let d = unsafe { resource.GetDesc() };
                     (

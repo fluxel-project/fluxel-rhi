@@ -233,6 +233,9 @@ swapchain and increments the surface generation. The surface permits one
 exclusive acquired image at a time; an unpresented lease clears acquisition on
 drop. Resize or reconfiguration makes old-generation images stale, and a
 handoff validates generation before calling `Present`.
+Recorded attachment and resolve commands retain their backbuffer and RTV
+heap until abandonment or native fence retirement. Reconfiguration retires
+completed lists and checks only the current swapchain generation's owners.
 
 The surface supports its declared formats, FIFO presentation, and immediate
 presentation only where DXGI reports tearing support. It owns swapchain state,
