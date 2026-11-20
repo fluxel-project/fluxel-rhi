@@ -7,21 +7,73 @@
 use std::collections::BTreeSet;
 
 use fluxel_rhi_core::api::{
-    Error, Result, ShaderCompilationReport, ShaderDiagnosticSource, SpecializationValue,
+    BindGroupLayoutEntry, Error, Result, ShaderCompilationReport, ShaderDiagnosticSource,
+    SpecializationValue,
 };
 use windows::Win32::Foundation::{FreeLibrary, HMODULE};
 use windows::Win32::Graphics::Direct3D::Dxc::{
-    CLSID_DxcCompiler, DXC_CP_UTF8, DXC_OUT_HLSL, DxcBuffer, IDxcBlob, IDxcCompiler3, IDxcResult,
+    CLSID_DxcCompiler, CLSID_DxcUtils, DXC_CP_ACP, DXC_CP_UTF8, DXC_OUT_HLSL, DxcBuffer, IDxcBlob,
+    IDxcCompiler3, IDxcResult, IDxcUtils,
 };
+use windows::Win32::Graphics::Direct3D12::ID3D12ShaderReflection;
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::core::{GUID, HRESULT, Interface, PCWSTR};
 
 struct Library(HMODULE);
+impl Library {
+    fn load() -> Result<Self> {
+        // SAFETY: LoadLibraryW receives a static nul-terminated DLL name.
+        unsafe { LoadLibraryW(windows::core::w!("dxcompiler.dll")) }
+            .map(Self)
+            .map_err(|_| Error::Unsupported("DXC runtime unavailable"))
+    }
+
+    fn create<T: Interface>(&self, class: &GUID) -> Result<T> {
+        // SAFETY: the export name is static and this owner keeps the module loaded.
+        let proc = unsafe { GetProcAddress(self.0, windows::core::s!("DxcCreateInstance")) }
+            .ok_or(Error::Unsupported("DXC entry point unavailable"))?;
+        type Create = unsafe extern "system" fn(
+            *const GUID,
+            *const GUID,
+            *mut *mut core::ffi::c_void,
+        ) -> HRESULT;
+        // SAFETY: this is the documented signature of the named export.
+        let create: Create = unsafe { std::mem::transmute(proc) };
+        let mut object = std::ptr::null_mut();
+        // SAFETY: the GUIDs and output pointer are live for the call.
+        unsafe { create(class, &T::IID, &mut object).ok() }
+            .map_err(|e| Error::Shader(e.to_string()))?;
+        // SAFETY: success transfers ownership of the object with the requested IID.
+        Ok(unsafe { T::from_raw(object) })
+    }
+}
+
 impl Drop for Library {
     fn drop(&mut self) {
         // SAFETY: all COM objects from this module are dropped before this owner.
         let _ = unsafe { FreeLibrary(self.0) };
     }
+}
+
+pub(super) fn reflect_dxil(
+    bytes: &[u8],
+    read: impl FnOnce(&ID3D12ShaderReflection) -> Result<Vec<(u32, BindGroupLayoutEntry)>>,
+) -> Result<Vec<(u32, BindGroupLayoutEntry)>> {
+    let library = Library::load()?;
+    let utils: IDxcUtils = library.create(&CLSID_DxcUtils)?;
+    let input = DxcBuffer {
+        Ptr: bytes.as_ptr().cast(),
+        Size: bytes.len(),
+        Encoding: DXC_CP_ACP.0,
+    };
+    let mut object = std::ptr::null_mut();
+    // SAFETY: the input, output pointer and IID are live. The resulting COM
+    // object is dropped before the backing bytecode and the DLL.
+    unsafe { utils.CreateReflection(&input, &ID3D12ShaderReflection::IID, &mut object) }
+        .map_err(|error| Error::Shader(format!("DXIL reflection unavailable: {error}")))?;
+    // SAFETY: successful reflection returns an owned pointer of the requested IID.
+    let reflection = unsafe { ID3D12ShaderReflection::from_raw(object) };
+    read(&reflection)
 }
 
 pub(super) fn compile_hlsl(
@@ -104,24 +156,8 @@ fn invoke(
     arguments: &[String],
     origin: ShaderDiagnosticSource,
 ) -> Result<(Library, IDxcResult)> {
-    // SAFETY: LoadLibraryW receives a static nul-terminated DLL name.
-    let library = Library(
-        unsafe { LoadLibraryW(windows::core::w!("dxcompiler.dll")) }
-            .map_err(|_| Error::Unsupported("DXC runtime unavailable"))?,
-    );
-    // SAFETY: the name is static and the module remains loaded through the COM calls.
-    let proc = unsafe { GetProcAddress(library.0, windows::core::s!("DxcCreateInstance")) }
-        .ok_or(Error::Unsupported("DXC entry point unavailable"))?;
-    type Create =
-        unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut core::ffi::c_void) -> HRESULT;
-    // SAFETY: DxcCreateInstance has the documented signature for this named export.
-    let create: Create = unsafe { std::mem::transmute(proc) };
-    let mut object = std::ptr::null_mut();
-    // SAFETY: object is a valid output pointer and both GUIDs name the requested compiler.
-    unsafe { create(&CLSID_DxcCompiler, &IDxcCompiler3::IID, &mut object).ok() }
-        .map_err(|e| Error::Shader(e.to_string()))?;
-    // SAFETY: successful DxcCreateInstance returned a newly owned IDxcCompiler3.
-    let compiler = unsafe { IDxcCompiler3::from_raw(object) };
+    let library = Library::load()?;
+    let compiler: IDxcCompiler3 = library.create(&CLSID_DxcCompiler)?;
     let strings: Vec<Vec<u16>> = arguments
         .iter()
         .map(|s| s.encode_utf16().chain(Some(0)).collect())

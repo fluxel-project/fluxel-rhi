@@ -261,6 +261,16 @@ Inferred arrays allow divergent indexing where supported, and float textures
 sampled with samplers use a filterable default. Callers can specify those
 binding policies directly with explicit layouts.
 
+Direct HLSL uses reflection of the selected entry compiled with its pipeline
+constants. DXIL inference takes a single declared entry and checks the native
+shader stage. Both preserve the binding register and space. Native inference
+covers constant buffers, raw and structured storage buffers without an
+inferred minimum range, samplers, integer sampled textures and acceleration
+structures. Samplers default to filtering. Float and depth sampled textures,
+typed UAVs, counter buffers, and native constants that share the immediate
+register require explicit layouts. Native register overlaps that cannot fit
+the Core binding namespace require distinct shader registers.
+
 The implemented public route includes graphics and compute, multiple render
 targets, indirect drawing and dispatch, queries, secondary recording,
 standalone clears and resolves, placed memory, scoped native/external interop,

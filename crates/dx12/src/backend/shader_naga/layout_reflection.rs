@@ -1,4 +1,4 @@
-//! Reflects portable binding declarations from selected DX12 WGSL entries.
+//! Selects the reflection route and extracts bindings from DX12 WGSL entries.
 
 use fluxel_rhi_core::api::{self, Error, Result};
 
@@ -19,8 +19,29 @@ pub(in crate::backend) fn reflect(
     {
         return Err(Error::Shader("missing selected shader entry".into()));
     }
-    let Some(Dx12ShaderSource::Wgsl(desc)) = &shader.source else {
-        return Err(Error::Unsupported("DX12 layout inference requires WGSL"));
+    let desc = match &shader.source {
+        Some(Dx12ShaderSource::Wgsl(desc)) => desc,
+        Some(Dx12ShaderSource::Hlsl(desc)) => {
+            let api::ShaderFormat::Hlsl(model) = desc.format else {
+                return Err(Error::InvalidState);
+            };
+            let text = std::str::from_utf8(&desc.bytes)
+                .map_err(|_| Error::Shader("HLSL is not UTF-8".into()))?;
+            let bytes =
+                super::compile_direct_hlsl(text, &entry.entry, stage, model, &entry.constants)?;
+            return super::native_layout_reflection::reflect(&bytes, stage, runtime_arrays);
+        }
+        None => {
+            if shader.entries.len() != 1 {
+                return Err(Error::Unsupported(
+                    "DX12 layout inference requires single-entry DXIL",
+                ));
+            }
+            if !entry.constants.is_empty() {
+                return Err(Error::Unsupported("DX12 DXIL specialization"));
+            }
+            return super::native_layout_reflection::reflect(&shader.bytes, stage, runtime_arrays);
+        }
     };
     let source =
         std::str::from_utf8(&desc.bytes).map_err(|_| Error::Shader("WGSL is not UTF-8".into()))?;

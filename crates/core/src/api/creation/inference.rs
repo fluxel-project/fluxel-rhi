@@ -76,11 +76,14 @@ impl<B: ResourceBackend + ShaderBackend> Device<B> {
             .iter()
             .map(|group| self.create_bind_group_layout(group))
             .collect::<Result<Vec<_>>>()?;
-        self.create_pipeline_layout(&PipelineLayoutDesc {
+        let layout = self.create_pipeline_layout(&PipelineLayoutDesc {
             label: None,
             groups: &owned.iter().collect::<Vec<_>>(),
             push_constants,
-        })
+        })?;
+        // SAFETY: the layout and all selected stage modules belong to this device.
+        B::validate_inferred_pipeline_layout(unsafe { layout.native_ref() }, stages)?;
+        Ok(layout)
     }
 }
 

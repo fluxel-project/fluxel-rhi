@@ -98,6 +98,13 @@ pub trait ShaderBackend: Backend {
     ) -> Result<Vec<(u32, BindGroupLayoutEntry)>> {
         Err(Error::Unsupported("shader layout inference"))
     }
+    /// Checks that the inferred layout can preserve the selected shader ABI.
+    fn validate_inferred_pipeline_layout(
+        _layout: &Self::NativePipelineLayout,
+        _stages: &[(ShaderStage, &PipelineStage<Self>)],
+    ) -> Result<()> {
+        Ok(())
+    }
     type DirectFuture<'a>: Future<Output = Result<Self::NativeShader>> + 'a
     where
         Self: 'a;

@@ -325,6 +325,11 @@ and supplies a bounded workload:
   RenderGraph tile-local access and ordering contract.
 - Public shader compiler IR, portable error callbacks, allocation thresholds,
   automatic device-loss policy, and display-timing feedback.
+- DX12 native shader layout inference for bindings that need exact view or
+  immediate metadata, and inference by export from DXIL libraries. The current
+  path covers selected single-entry stages with representable binding metadata.
+  Reopen when a consumer specifies the required explicit binding information
+  or library exports and supplies a pipeline and readback for admission.
 - Geometry/tessellation stages, programmable sample locations, predication,
   and native video/planar formats or video sources beyond the current WebGPU
   wrapper.

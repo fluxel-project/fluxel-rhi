@@ -8,6 +8,7 @@ mod binding;
 mod buffer_array;
 mod diagnostics;
 mod layout_reflection;
+mod native_layout_reflection;
 mod sampler_lowering;
 pub(super) use layout_reflection::reflect;
 use sampler_lowering::{lower_sampler_arrays, lower_scalar_samplers};

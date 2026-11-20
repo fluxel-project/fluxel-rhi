@@ -302,6 +302,25 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
     ) -> Result<Vec<(u32, api::BindGroupLayoutEntry)>> {
         shader_naga::reflect(stage, entry, runtime_arrays)
     }
+    fn validate_inferred_pipeline_layout(
+        layout: &Dx12PipelineLayout,
+        stages: &[(api::ShaderStage, &api::PipelineStage<Self>)],
+    ) -> Result<()> {
+        if !layout.0.native_abi_compatible
+            && stages.iter().any(|(_, entry)| {
+                // SAFETY: Core verified each module's device before inference.
+                !matches!(
+                    unsafe { &entry.module.native_ref().source },
+                    Some(Dx12ShaderSource::Wgsl(_))
+                )
+            })
+        {
+            return Err(Error::Unsupported(
+                "DX12 inferred descriptor register overlap",
+            ));
+        }
+        Ok(())
+    }
     type DirectFuture<'a> = pipeline::worker::ColdFuture<Dx12Shader>;
     type NagaFuture<'a> = pipeline::worker::ColdFuture<Dx12Shader>;
     fn shader_route(device: &Dx12Device, desc: &api::ShaderDesc) -> api::ShaderRoute {
