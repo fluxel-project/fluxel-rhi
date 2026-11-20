@@ -18,6 +18,35 @@ use std::{
 mod inference;
 mod volume_attachment;
 
+impl<B: ResourceBackend + CommandBackend> Device<B> {
+    /// Creates a device buffer and records a full initialization upload at
+    /// the current encoder position. The descriptor must include `COPY_DST`
+    /// and its size must match the data. The caller submits the encoder and
+    /// orders every use of the new buffer after the recorded upload.
+    pub fn create_buffer_initialized(
+        &self,
+        encoder: &mut CommandEncoder<B>,
+        desc: &BufferDesc,
+        bytes: &[u8],
+    ) -> Result<Buffer<B>> {
+        if encoder.device != self.id {
+            return Err(Error::WrongDevice);
+        }
+        if desc.memory != MemoryClass::Device || !desc.usage.contains(BufferUsage::COPY_DST) {
+            return Err(Error::Unsupported(
+                "staged initialization requires a device COPY_DST buffer",
+            ));
+        }
+        if desc.size == 0 || u64::try_from(bytes.len()) != Ok(desc.size) {
+            return Err(Error::InvalidRange);
+        }
+        encoder.ready()?;
+        let buffer = self.create_buffer(desc)?;
+        encoder.write_buffer(&buffer, 0, bytes)?;
+        Ok(buffer)
+    }
+}
+
 impl<B: ResourceBackend> Device<B> {
     pub fn buffer_support(&self, desc: &BufferDesc) -> Support<BufferSupport> {
         if desc.usage.contains(BufferUsage::STORAGE) && !self.caps.storage_buffers {
