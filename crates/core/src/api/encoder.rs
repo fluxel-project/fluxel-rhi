@@ -205,7 +205,11 @@ impl<B: CommandBackend> CommandEncoder<B> {
         }
         result
     }
-    pub fn resolve(&mut self, src: TextureRegion<'_, B>, dst: TextureRegion<'_, B>) -> Result<()> {
+    fn validate_resolve_regions(
+        &self,
+        src: &TextureRegion<'_, B>,
+        dst: &TextureRegion<'_, B>,
+    ) -> Result<()> {
         if src.texture.device != self.device || dst.texture.device != self.device {
             return Err(Error::WrongDevice);
         }
@@ -222,6 +226,24 @@ impl<B: CommandBackend> CommandEncoder<B> {
         {
             return Err(Error::InvalidState);
         }
+        Ok(())
+    }
+    /// Checks a standalone resolve on this encoder without recording it.
+    /// The caller supplies the resource states required by the operation.
+    pub fn resolve_support(
+        &self,
+        src: &TextureRegion<'_, B>,
+        dst: &TextureRegion<'_, B>,
+    ) -> Result<()> {
+        self.validate_resolve_regions(src, dst)?;
+        if self.poisoned || self.in_pass {
+            return Err(Error::InvalidState);
+        }
+        let native = self.native.as_ref().ok_or(Error::InvalidState)?;
+        B::resolve_support(native, src, dst)
+    }
+    pub fn resolve(&mut self, src: TextureRegion<'_, B>, dst: TextureRegion<'_, B>) -> Result<()> {
+        self.validate_resolve_regions(&src, &dst)?;
         let result = self.call(|e| B::resolve(e, src, dst));
         if result.is_ok() {
             self.stats.record_copy();

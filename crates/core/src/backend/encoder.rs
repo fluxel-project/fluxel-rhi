@@ -108,6 +108,13 @@ pub trait CommandBackend: Backend {
     }
     // Capability-specific transfer variants have defaults; an unsupported
     // Backend never needs to fake a native blit or independent clear operation.
+    fn resolve_support(
+        _: &Self::NativeEncoder,
+        _: &TextureRegion<'_, Self>,
+        _: &TextureRegion<'_, Self>,
+    ) -> Result<()> {
+        Err(Error::Unsupported("resolve support query"))
+    }
     fn resolve(
         _: &mut Self::NativeEncoder,
         _: TextureRegion<'_, Self>,

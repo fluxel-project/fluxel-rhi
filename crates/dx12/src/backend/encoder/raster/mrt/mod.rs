@@ -268,6 +268,9 @@ pub(super) fn begin(
             if native_desc.SampleDesc.Count <= 1 || surface {
                 return Err(Error::Unsupported("DX12 MSAA resolve source"));
             }
+            if !super::super::resolve::color_format_supported(&encoder.device, format) {
+                return Err(Error::Unsupported("DX12 color resolve format"));
+            }
             let (
                 resource,
                 subresource,

@@ -223,6 +223,11 @@ for read, write, read-write and atomic access. Include typed store-only
 formats, BGRA storage, sRGB view formats, D2Array and unsupported cube storage
 views. Exercise atomic stage restrictions and keep operation-specific checks
 on the shader route.
+Compare `CommandEncoder::resolve_support` with actual DX12 recording for the
+same source and destination regions. Cover incompatible formats, usage,
+sample count, aspects, lane, extent and subresource, plus full and partial
+color resolves. Check a multisampled attachment whose format lacks the
+native resolve bit and verify rejection before pass commands are recorded.
 
 ### DX12 structured shader diagnostics
 
