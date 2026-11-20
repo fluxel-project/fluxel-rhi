@@ -149,6 +149,9 @@ Making it resident synchronously adds a residency reference. Eviction releases
 one reference and requires the caller to prove completion for all heap users
 and order any later access. The renderer holds those proofs and schedules both
 operations.
+Backends that support explicit residency on CPU-visible heaps must keep map
+leases and native residency changes mutually exclusive for the same physical
+allocation. This constraint applies to every placed buffer on that heap.
 Backends can separately expose the same residency references for a
 `SparseAllocation`. Its references govern the physical backing memory, while
 tile mappings still change only through explicit sparse operations.

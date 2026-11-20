@@ -25,7 +25,7 @@ use windows::Win32::{
 
 use super::{Dx12Device, native_error, submit::retire};
 
-pub(super) fn fence_progress(completed: u64, target: u64) -> Result<bool, Error> {
+pub(in crate::backend) fn fence_progress(completed: u64, target: u64) -> Result<bool, Error> {
     if completed == u64::MAX {
         Err(Error::DeviceLost)
     } else {

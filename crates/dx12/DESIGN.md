@@ -151,6 +151,13 @@ asynchronous residency request on a committed allocation.
 Explicit committed creation bypasses pool selection and retains the usual
 descriptor and allocation checks. Ordinary creation continues to pick its
 existing allocation route.
+Explicit upload and readback heaps share an access state with their placed
+buffers. Map leases keep their physical byte ranges registered until native
+`Unmap`. Residency changes require every map lease to end. Mapping requires
+a held residency reference and completion of any accepted asynchronous
+residency operation. Distinct placed buffers can map disjoint ranges at the
+same time. Pool-backed and ordinary CPU-visible buffers use their existing
+mapping path.
 When the opened device exposes `ID3D12Device3`, asynchronous residency uses
 `EnqueueMakeResident` with the caller's budget flag and a private operation
 fence. The fence does not advance either command timeline. The backend retains

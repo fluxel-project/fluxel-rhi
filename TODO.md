@@ -174,7 +174,7 @@ In Stage 8, check the rejection with attachment and sampled usages.
 explicit default heap, wait for its last uses on all lanes, evict the heap,
 make it resident again, and read the same bytes. Check the initial reference,
 balanced reference operations, wrong-device and removed-device errors, and the
-support result for CPU-visible heaps.
+CPU-visible heap support result.
 For sparse allocation residency, include both heap classes, verify the support
 gate on devices without tiled resources, and evict and restore a heap while
 its completed tile mappings remain installed. Verify data through a mapped
@@ -197,9 +197,18 @@ fail the committed residency query. Verify that explicit committed creation
 bypasses pool allocation for shapes normally served by the default pool and
 rejects CPU-visible buffer classes and transient textures.
 
-**Pending native paths.** CPU-visible heaps require an ordering contract for
-active CPU mappings in addition to GPU completion. Keep their residency
-operations gated until both are covered.
+For explicit upload and readback heaps, hold a map lease on one placed buffer
+and verify that every residency transition rejects before native handoff. Map
+disjoint ranges simultaneously and reject overlapping ranges across different
+buffer handles. Verify that mapping rejects after the last successful eviction
+and during a pending asynchronous page-in, then succeeds after native fence
+completion. Cover failed transitions, cancelled waits, and device loss.
+
+**Deferred CPU-visible committed resources.** GPU upload, custom and ordinary
+committed upload or readback buffers use per-buffer map state independent of
+the residency path. Revisit when their map leases and residency operations
+share one allocation-local exclusion contract. Keep this path separate from
+the explicit upload and readback heap capability.
 
 ### DX12 structured shader diagnostics
 

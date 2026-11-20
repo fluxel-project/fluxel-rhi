@@ -11,6 +11,8 @@ pub struct Dx12Map {
     ptr: *mut u8,
     range: Range<usize>,
     mode: api::MapMode,
+    // Kept through the entire native mapping, including Unmap in Drop.
+    _heap_lease: Option<super::memory::cpu_residency::CpuHeapMapLease>,
 }
 impl fluxel_rhi_core::backend::MappingBackend for Dx12 {
     type NativeMap = Dx12Map;
@@ -94,6 +96,13 @@ pub(super) fn open(buffer: &Dx12Buffer, range: Range<u64>, mode: api::MapMode) -
     if end > isize::MAX as usize {
         return Err(Error::InvalidRange);
     }
+    let heap_lease = if let Some((access, offset)) = &buffer.cpu_heap_access {
+        let start = offset.checked_add(range.start).ok_or(Error::InvalidRange)?;
+        let end = offset.checked_add(range.end).ok_or(Error::InvalidRange)?;
+        Some(access.acquire_map(start..end)?)
+    } else {
+        None
+    };
     if buffer
         .mapped
         .swap(true, std::sync::atomic::Ordering::AcqRel)
@@ -129,6 +138,7 @@ pub(super) fn open(buffer: &Dx12Buffer, range: Range<u64>, mode: api::MapMode) -
         ptr: ptr.cast(),
         range: start..end,
         mode,
+        _heap_lease: heap_lease,
     })
 }
 

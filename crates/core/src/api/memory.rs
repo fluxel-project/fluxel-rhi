@@ -252,6 +252,8 @@ impl<B: MemoryBackend> MemoryDomain<'_, B> {
     /// uses of the heap and resources backed by it must have completed. The
     /// caller must exclude new GPU uses until residency has been reestablished
     /// or another reference guarantees residency through those uses.
+    /// Any native CPU access must also have ended before eviction. Backends
+    /// that admit mapped heaps reject conflicting managed map leases.
     pub unsafe fn evict_heap(&self, heap: &MemoryHeap<B>) -> Result<()> {
         self.heap_residency_support(heap)?;
         // SAFETY: device ownership was checked; the caller supplies ordering.

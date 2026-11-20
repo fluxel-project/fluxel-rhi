@@ -5,6 +5,7 @@
 //! caller may drop `MemoryHeap` after placement without invalidating queued
 //! command work. Aliasing order remains an explicit Core barrier obligation.
 
+pub(super) mod cpu_residency;
 pub(super) mod cpu_visible;
 mod default_pool;
 pub(super) mod residency;
@@ -56,6 +57,7 @@ pub struct Dx12Heap {
     device: Arc<Dx12DeviceState>,
     size: u64,
     class: u32,
+    cpu_access: Option<Arc<cpu_residency::CpuHeapAccess>>,
 }
 
 fn properties(class: u32) -> Result<D3D12_HEAP_PROPERTIES> {
@@ -379,6 +381,8 @@ impl MemoryBackend for Dx12 {
             device: device.0.clone(),
             size: desc.size,
             class: desc.native_memory_class,
+            cpu_access: matches!(desc.native_memory_class, UPLOAD_CLASS | READBACK_CLASS)
+                .then(|| Arc::new(cpu_residency::CpuHeapAccess::new())),
         })
     }
 
@@ -387,22 +391,29 @@ impl MemoryBackend for Dx12 {
         if !Arc::ptr_eq(&device.0, &heap.device) {
             return Err(Error::WrongDevice);
         }
-        if matches!(heap.class, UPLOAD_CLASS | READBACK_CLASS) {
-            return Err(Error::Unsupported("DX12 CPU-visible heap residency"));
-        }
         Ok(())
     }
 
     fn make_heap_resident(device: &Dx12Device, heap: &Dx12Heap) -> Result<()> {
         Self::heap_residency_support(device, heap)?;
-        residency::make_resident(device, &heap.heap)
+        let native = || residency::make_resident(device, &heap.heap);
+        match &heap.cpu_access {
+            Some(access) => access.make_resident(native),
+            None => native(),
+        }
     }
 
     unsafe fn evict_heap(device: &Dx12Device, heap: &Dx12Heap) -> Result<()> {
         Self::heap_residency_support(device, heap)?;
-        // SAFETY: the support check verified heap provenance and eligibility;
-        // the caller guarantees the residency reference and GPU ordering.
-        unsafe { residency::evict(device, &heap.heap) }
+        let native = || {
+            // SAFETY: the support check verified provenance, the access state
+            // excludes Maps, and the caller guarantees GPU ordering.
+            unsafe { residency::evict(device, &heap.heap) }
+        };
+        match &heap.cpu_access {
+            Some(access) => access.evict(native),
+            None => native(),
+        }
     }
 
     fn enqueue_heap_residency(
@@ -411,7 +422,11 @@ impl MemoryBackend for Dx12 {
         budget: api::ResidencyBudget,
     ) -> Result<super::encoder::Dx12Completion> {
         Self::heap_residency_support(device, heap)?;
-        residency::enqueue(device, &heap.heap, budget)
+        let native = || residency::enqueue(device, &heap.heap, budget);
+        match &heap.cpu_access {
+            Some(access) => access.enqueue(native),
+            None => native(),
+        }
     }
 
     fn place_buffer(
@@ -447,6 +462,10 @@ impl MemoryBackend for Dx12 {
             usage: desc.usage,
             memory: desc.memory,
             owns_residency: false,
+            cpu_heap_access: heap
+                .cpu_access
+                .as_ref()
+                .map(|access| (access.clone(), offset)),
             indirect_signatures: device.0.indirect_signatures.clone(),
             backing_heap: Some(heap.heap.clone()),
             default_allocation: None,

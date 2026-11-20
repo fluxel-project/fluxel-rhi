@@ -234,6 +234,7 @@ fn import_buffer(
         usage: desc.usage,
         memory,
         owns_residency: false,
+        cpu_heap_access: None,
         indirect_signatures: device.0.indirect_signatures.clone(),
         backing_heap: None,
         default_allocation: None,

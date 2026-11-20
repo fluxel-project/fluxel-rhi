@@ -218,6 +218,8 @@ pub struct DeviceCapabilities {
     pub placed_memory: bool,
     /// Explicit residency operations are available for eligible memory heaps.
     pub explicit_heap_residency: bool,
+    /// Explicit CPU-visible heaps can exclude CPU maps during residency changes.
+    pub cpu_visible_heap_residency: bool,
     /// Creates committed default resources and can change their residency references.
     pub committed_resource_residency: bool,
     /// Explicit residency operations are available for sparse backing allocations.

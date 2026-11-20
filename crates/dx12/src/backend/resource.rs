@@ -435,6 +435,7 @@ fn allocate_buffer(
         usage: desc.usage,
         memory: desc.memory,
         owns_residency: backing_heap.is_none() && heap.Type == D3D12_HEAP_TYPE_DEFAULT,
+        cpu_heap_access: None,
         indirect_signatures: device.0.indirect_signatures.clone(),
         backing_heap,
         default_allocation,

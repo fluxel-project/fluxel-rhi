@@ -76,6 +76,7 @@ device_features! {
     MeshMultiview => mesh_multiview, "mesh-multiview";
     PlacedMemory => placed_memory, "placed-memory";
     ExplicitHeapResidency => explicit_heap_residency, "explicit-heap-residency";
+    CpuVisibleHeapResidency => cpu_visible_heap_residency, "cpu-visible-heap-residency";
     CommittedResourceResidency => committed_resource_residency, "committed-resource-residency";
     SparseAllocationResidency => sparse_allocation_residency, "sparse-allocation-residency";
     AsyncHeapResidency => async_heap_residency, "async-heap-residency";
