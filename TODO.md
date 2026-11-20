@@ -210,6 +210,15 @@ the residency path. Revisit when their map leases and residency operations
 share one allocation-local exclusion contract. Keep this path separate from
 the explicit upload and readback heap capability.
 
+### DX12 texture format admission
+
+**Acceptance gate.** Compare `texture_support().filterable` with float
+sampled bind-group creation for R32Float, Rg32Float, and Rgba32Float. Check
+WGSL with a filtering sampler and an output readback on supported hardware.
+On load-only formats, exercise a nonfiltering layout and reject filtering.
+Check that multisampled float, integer, and depth views require multisample
+load support and do not report filterability.
+
 ### DX12 structured shader diagnostics
 
 **Status:** WGSL parse and validation errors preserve compiler messages and

@@ -286,11 +286,8 @@ fn validate_bound_view(
         if depth_format && !depth_plane && !stencil_plane {
             return Err(Error::InvalidState);
         }
-        let float32 = matches!(format, F::R32Float | F::Rg32Float | F::Rgba32Float);
         let compatible = match sample {
-            api::TextureSampleType::Float => {
-                !integer_signed && !integer_unsigned && !depth_format && !float32
-            }
+            api::TextureSampleType::Float => !integer_signed && !integer_unsigned && !depth_format,
             api::TextureSampleType::UnfilterableFloat => {
                 !integer_signed && !integer_unsigned && !depth_format
             }
@@ -332,12 +329,17 @@ fn validate_bound_view(
             )
         }
         .is_ok();
-        let required = if sample == api::TextureSampleType::Float {
-            D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE
+        let sample_count = native.0.texture.desc.samples;
+        let supported = if sample_count > 1 {
+            support
+                .Support1
+                .contains(D3D12_FORMAT_SUPPORT1_MULTISAMPLE_LOAD)
+        } else if sample == api::TextureSampleType::Float {
+            super::super::texture::filterable_color(format, sample_count, support.Support1)
         } else {
-            D3D12_FORMAT_SUPPORT1_SHADER_LOAD
+            support.Support1.contains(D3D12_FORMAT_SUPPORT1_SHADER_LOAD)
         };
-        if !ok || !support.Support1.contains(required) {
+        if !ok || !supported {
             return Err(Error::Unsupported("DX12 sampled texture format support"));
         }
     }

@@ -87,7 +87,7 @@ pub(crate) fn support(dv: &Dx12Device, d: &api::TextureDesc) -> api::Support<api
                     supported_sample_counts(dv, d)
                 },
                 compatible_view_formats: permitted_view_formats(dv, d),
-                filterable: !depth && format_support.contains(D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE),
+                filterable: filterable_color(d.format, d.samples, format_support),
                 blendable: !depth
                     && format_support.contains(
                         D3D12_FORMAT_SUPPORT1_RENDER_TARGET | D3D12_FORMAT_SUPPORT1_BLENDABLE,
@@ -97,6 +97,17 @@ pub(crate) fn support(dv: &Dx12Device, d: &api::TextureDesc) -> api::Support<api
         }
         Err(x) => api::Support::Unsupported(x),
     }
+}
+
+pub(super) fn filterable_color(
+    format: api::TextureFormat,
+    samples: u32,
+    support: D3D12_FORMAT_SUPPORT1,
+) -> bool {
+    samples == 1
+        && !is_depth(format)
+        && !integer_color(format)
+        && support.contains(D3D12_FORMAT_SUPPORT1_SHADER_LOAD | D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE)
 }
 
 fn validate_allocation(
