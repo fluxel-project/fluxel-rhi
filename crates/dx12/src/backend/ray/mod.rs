@@ -14,6 +14,8 @@ mod geometry;
 mod ops;
 pub use ops::Ray;
 pub(crate) mod pipeline;
+mod refit;
+pub(crate) use refit::validate_sequence as validate_refits;
 mod trace;
 
 #[cfg(all(test, feature = "hardware-tests"))]
@@ -33,14 +35,17 @@ pub(crate) struct AccelerationState {
     // names only the version that crossed ExecuteCommandLists; recording and
     // cancellation never alter it.
     committed_blas: Mutex<Vec<Dx12Acceleration>>,
+    committed_signature: Mutex<Option<Arc<refit::RefitSignature>>>,
 }
 
-/// A TLAS build attached to the native command-list segment that records it.
+/// An acceleration build attached to the native list segment that records it.
 /// It is metadata for ownership publication, never a replayable GPU command.
-pub(crate) struct RecordedTlasBuild {
+pub(crate) struct RecordedAccelerationBuild {
     pub(crate) target: Dx12Acceleration,
     pub(crate) blas: Vec<Dx12Acceleration>,
     pub(crate) segment: usize,
+    signature: Option<Arc<refit::RefitSignature>>,
+    refit: bool,
 }
 
 fn extend_unique(
@@ -94,6 +99,9 @@ pub(crate) fn pin_batch(work: &mut [super::encoder::Dx12RecordedWork]) {
             }
         }
         for build in &record.encoder.ray_builds {
+            if build.refit && build.target.0.is_top_level {
+                extend_unique(&mut dependencies, committed(&build.target));
+            }
             extend_unique(&mut dependencies, build.blas.clone());
         }
     }
@@ -111,13 +119,20 @@ pub(crate) fn publish_segment(work: &super::encoder::Dx12RecordedWork, segment: 
         .iter()
         .filter(|build| build.segment == segment)
     {
-        let mut committed = build
+        if build.target.0.is_top_level {
+            *build
+                .target
+                .0
+                .committed_blas
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = build.blas.clone();
+        }
+        *build
             .target
             .0
-            .committed_blas
+            .committed_signature
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *committed = build.blas.clone();
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = build.signature.clone();
     }
 }
 
@@ -134,6 +149,20 @@ fn sizes(
     desc: &api::AccelerationDesc<Dx12>,
 ) -> Result<api::AccelerationSizes> {
     let geometry = geometry::GeometryInputs::new(desc)?;
+    let info = prebuild(device, &geometry)?;
+    Ok(api::AccelerationSizes {
+        storage_bytes: info.ResultDataMaxSizeInBytes,
+        scratch_bytes: info
+            .ScratchDataSizeInBytes
+            .max(info.UpdateScratchDataSizeInBytes),
+        scratch_alignment: u64::from(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT),
+    })
+}
+
+fn prebuild(
+    device: &Dx12Device,
+    geometry: &geometry::GeometryInputs,
+) -> Result<D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO> {
     let input = geometry.native(0);
     let mut info = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO::default();
     // SAFETY: the descriptor and its geometry array remain alive throughout
@@ -144,13 +173,7 @@ fn sizes(
     if info.ResultDataMaxSizeInBytes == 0 || info.ScratchDataSizeInBytes == 0 {
         return Err(Error::Unsupported("DX12 acceleration structure input"));
     }
-    Ok(api::AccelerationSizes {
-        storage_bytes: info.ResultDataMaxSizeInBytes,
-        scratch_bytes: info
-            .ScratchDataSizeInBytes
-            .max(info.UpdateScratchDataSizeInBytes),
-        scratch_alignment: u64::from(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT),
-    })
+    Ok(info)
 }
 
 fn create_acceleration(
@@ -199,6 +222,7 @@ fn create_acceleration(
         size,
         is_top_level: matches!(desc.input, api::AccelerationInput::Tlas(_)),
         committed_blas: Mutex::new(Vec::new()),
+        committed_signature: Mutex::new(None),
     })))
 }
 
@@ -207,16 +231,31 @@ fn build(
     dst: &Dx12Acceleration,
     scratch: &super::Dx12Buffer,
     desc: &api::AccelerationDesc<Dx12>,
+    refit: bool,
 ) -> Result<()> {
-    let sizes = sizes(&encoder.device, desc)?;
+    let signature = refit::RefitSignature::from_desc(desc);
+    if refit && signature.is_none() {
+        return Err(Error::Unsupported("DX12 indexed BLAS refit"));
+    }
+    let geometry = geometry::GeometryInputs::new(desc)?;
+    let sizes = prebuild(&encoder.device, &geometry)?;
+    let scratch_bytes = if refit {
+        if sizes.UpdateScratchDataSizeInBytes == 0 {
+            return Err(Error::Unsupported("DX12 acceleration input refit"));
+        }
+        sizes.UpdateScratchDataSizeInBytes
+    } else {
+        sizes
+            .ScratchDataSizeInBytes
+            .max(sizes.UpdateScratchDataSizeInBytes)
+    };
     if !scratch.usage.contains(api::BufferUsage::ACCEL_SCRATCH)
-        || scratch.size < sizes.scratch_bytes
-        || dst.0.size < sizes.storage_bytes
+        || scratch.size < scratch_bytes
+        || dst.0.size < sizes.ResultDataMaxSizeInBytes
         || dst.0.is_top_level != matches!(desc.input, api::AccelerationInput::Tlas(_))
     {
         return Err(Error::InvalidRange);
     }
-    let geometry = geometry::GeometryInputs::new(desc)?;
     let mut instance_address = 0;
     let mut referenced_blas = Vec::new();
     if let api::AccelerationInput::Tlas(instances) = &desc.input {
@@ -330,14 +369,19 @@ fn build(
     }
     // SAFETY: resources are live and kept by the encoder through completion.
     let scratch_address = unsafe { scratch.resource.GetGPUVirtualAddress() };
-    if scratch_address % sizes.scratch_alignment != 0 {
+    if scratch_address % u64::from(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT) != 0 {
         return Err(Error::InvalidRange);
     }
+    // SAFETY: the destination resource is retained through this recording.
+    let dst_address = unsafe { dst.0.resource.GetGPUVirtualAddress() };
+    let mut inputs = geometry.native(instance_address);
+    if refit {
+        inputs.Flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
+    }
     let native = D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC {
-        // SAFETY: the destination resource remains alive in the encoder.
-        DestAccelerationStructureData: unsafe { dst.0.resource.GetGPUVirtualAddress() },
-        Inputs: geometry.native(instance_address),
-        SourceAccelerationStructureData: 0,
+        DestAccelerationStructureData: dst_address,
+        Inputs: inputs,
+        SourceAccelerationStructureData: if refit { dst_address } else { 0 },
         ScratchAccelerationStructureData: scratch_address,
     };
     let list = encoder
@@ -350,15 +394,15 @@ fn build(
     encoder.buffers.extend(geometry.buffers);
     encoder.buffers.push(scratch.clone());
     encoder.accelerations.push(dst.clone());
-    if dst.0.is_top_level {
-        let mut unique = Vec::new();
-        extend_unique(&mut unique, referenced_blas);
-        encoder.ray_builds.push(RecordedTlasBuild {
-            target: dst.clone(),
-            blas: unique,
-            segment: encoder.closed_segments.len(),
-        });
-    }
+    let mut unique = Vec::new();
+    extend_unique(&mut unique, referenced_blas);
+    encoder.ray_builds.push(RecordedAccelerationBuild {
+        target: dst.clone(),
+        blas: unique,
+        segment: encoder.closed_segments.len(),
+        signature,
+        refit,
+    });
     Ok(())
 }
 

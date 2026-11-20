@@ -478,6 +478,38 @@ impl<B: Backend> RayDomain<'_, B> {
             .validate(self.device.id, &self.device.caps.limits)?;
         encoder.call(|e| B::Ray::build_acceleration(e, &dst.native, &scratch.native, desc))
     }
+    /// Records an in-place refit. The execution must order a compatible build
+    /// with `allow_update` before this command, and make its writes visible.
+    /// A backend may check prior builds at submission to include earlier work
+    /// recorded in the same packet. Unsupported geometry returns an error.
+    /// BLAS primitive activity must stay fixed. A changed BLAS requires its
+    /// referencing TLAS to be updated or rebuilt before further traversal.
+    pub fn update(
+        &self,
+        encoder: &mut CommandEncoder<B>,
+        dst: &AccelerationStructure<B>,
+        scratch: &Buffer<B>,
+        desc: &AccelerationDesc<B>,
+    ) -> Result<()>
+    where
+        B: CommandBackend,
+    {
+        if !self.device.caps.acceleration_structure_update {
+            return Err(Error::Unsupported("acceleration structure update"));
+        }
+        if encoder.device != self.device.id
+            || dst.device != self.device.id
+            || scratch.device != self.device.id
+        {
+            return Err(Error::WrongDevice);
+        }
+        if !desc.allow_update {
+            return Err(Error::InvalidState);
+        }
+        desc.input
+            .validate(self.device.id, &self.device.caps.limits)?;
+        encoder.call(|e| B::Ray::update_acceleration(e, &dst.native, &scratch.native, desc))
+    }
     fn require_acceleration(&self) -> Result<()> {
         if self.device.caps.acceleration_structure {
             Ok(())

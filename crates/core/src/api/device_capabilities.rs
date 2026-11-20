@@ -27,6 +27,8 @@ pub struct DeviceCapabilities {
     pub mesh: bool,
     /// Acceleration structure sizing, creation, and build operations.
     pub acceleration_structure: bool,
+    /// In-place updates of previously built acceleration structures.
+    pub acceleration_structure_update: bool,
     /// Fully bound, fixed-count binding arrays whose elements are
     /// acceleration structures. Runtime-sized and partially-bound arrays are
     /// separate capability domains.

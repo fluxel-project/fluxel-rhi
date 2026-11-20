@@ -303,6 +303,14 @@ pub trait RayOps<B: Backend> {
         scratch: &B::NativeBuffer,
         input: &AccelerationDesc<B>,
     ) -> Result<()>;
+    fn update_acceleration(
+        _encoder: &mut B::NativeEncoder,
+        _dst: &B::NativeAcceleration,
+        _scratch: &B::NativeBuffer,
+        _input: &AccelerationDesc<B>,
+    ) -> Result<()> {
+        Err(Error::Unsupported("acceleration structure update"))
+    }
     fn trace(
         encoder: &mut B::NativeEncoder,
         pipeline: &B::NativeRayPipeline,

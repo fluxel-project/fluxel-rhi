@@ -32,7 +32,7 @@ pub enum VertexStepMode {
     Vertex,
     Instance,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VertexFormat {
     Float32(u8),
     Float16(u8),

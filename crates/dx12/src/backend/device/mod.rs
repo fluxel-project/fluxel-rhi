@@ -376,6 +376,7 @@ impl Dx12 {
                 sparse: sparse_supported,
                 ray: ray_supported,
                 acceleration_structure: ray_supported,
+                acceleration_structure_update: ray_supported,
                 acceleration_structure_binding_arrays: ray_supported && descriptor_indexing,
                 ray_query: ray_query_supported,
                 storage_textures: true,

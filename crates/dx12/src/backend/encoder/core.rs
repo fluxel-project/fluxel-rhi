@@ -133,7 +133,7 @@ pub struct Dx12Encoder {
     pub(crate) accelerations: Vec<super::super::Dx12Acceleration>,
     /// TLAS builds recorded in each native-list segment. Submission publishes
     /// them only after that segment crossed `ExecuteCommandLists`.
-    pub(crate) ray_builds: Vec<super::super::ray::RecordedTlasBuild>,
+    pub(crate) ray_builds: Vec<super::super::ray::RecordedAccelerationBuild>,
     pub(crate) pipeline: Option<Dx12RasterPipeline>,
     pub(crate) raster_pipelines: Vec<Dx12RasterPipeline>,
     pub(crate) compute_pipelines: Vec<Dx12ComputePipeline>,

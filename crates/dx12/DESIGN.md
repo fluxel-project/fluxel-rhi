@@ -210,6 +210,14 @@ event remains owned until the native fence can no longer signal it. A value
 of `u64::MAX` represents device removal or indeterminate accepted work, so
 it is quarantined rather than treated as a canceled packet.
 
+DXR in-place refits use the same structure address for source and destination.
+Submission checks the opted-in build signature against earlier native
+handoffs and earlier compatible commands in the current packet. The update
+preserves geometry layout or instance count and retains both prior and new
+TLAS dependencies through the enclosing fence. Renderer-supplied barriers
+and queue waits remain required. Indexed BLAS refits are deferred pending a
+contract that preserves index contents.
+
 ## Surface lifecycle
 
 `Dx12::surface_from_raw_window_handle` accepts only a Win32 handle and carries

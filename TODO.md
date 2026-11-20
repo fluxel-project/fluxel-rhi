@@ -6,6 +6,19 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 ## Active items
 
+### DX12 acceleration structure refit
+
+**Status:** TLAS and non-indexed BLAS refit use DXR in-place updates. Ordered
+submission admission checks the prior build signature and the original
+update opt-in. Indexed BLAS refit remains deferred because the existing index
+buffer contract gives no immutable content guarantee.
+
+**Acceptance:** Verify changed TLAS transforms and BLAS bounds by traversal
+readback. Cover build and update in one packet, repeated and separately
+submitted updates, a rejected update after an incompatible rebuild, and
+retention of old and replacement TLAS dependencies. Reopen indexed BLAS
+refit once its index data can be proven unchanged for the update.
+
 ### DX12 conservative rasterization
 
 **Status:** Device capability reporting and graphics/mesh pipeline admission

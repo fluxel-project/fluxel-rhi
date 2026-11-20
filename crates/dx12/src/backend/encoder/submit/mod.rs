@@ -417,6 +417,16 @@ unsafe fn submit_packet(
         {
             return Err(Error::DeviceLost);
         }
+        super::super::ray::validate_refits(packet.work.steps.iter().flat_map(|step| {
+            let work = match &step.payload {
+                StepPayload::Commands(work) => work.as_slice(),
+                _ => &[],
+            };
+            work.iter().flat_map(|record| {
+                // SAFETY: packet preflight and Core checked recorded-work ownership.
+                unsafe { record.native_ref() }.encoder.ray_builds.iter()
+            })
+        }))?;
         super::query::validate_ops(
             packet.work.steps.iter().flat_map(|step| {
                 let index = step.step.index as usize;
