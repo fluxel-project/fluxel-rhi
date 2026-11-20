@@ -27,6 +27,21 @@ pub(crate) struct QuerySetState {
 }
 
 impl fluxel_rhi_core::backend::QueryBackend for Dx12 {
+    fn query_resolve_support(
+        lane: api::LaneId,
+        set: &Dx12QuerySet,
+        slots: &Range<u32>,
+        dst: &Dx12Buffer,
+        offset: u64,
+    ) -> Result<()> {
+        let is_compute = match lane.ordinal {
+            0 => false,
+            1 => true,
+            _ => return Err(Error::WrongLane),
+        };
+        super::encoder::query::validate_resolve_destination(is_compute, set, slots, dst, offset)
+    }
+
     fn query_supported(_: &Dx12Device, kind: api::QueryKind) -> bool {
         matches!(
             kind,

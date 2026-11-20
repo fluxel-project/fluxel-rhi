@@ -551,6 +551,30 @@ impl<B: QueryBackend> Queries<'_, B> {
         self.require_kind(QueryKind::PipelineStatistics)?;
         encoder.call(B::end_statistics)
     }
+    /// Checks the lane, slot range and destination for a resolve before recording.
+    /// The caller still orders the producing commands and supplies required completion.
+    pub fn resolve_support(
+        &self,
+        lane: LaneId,
+        set: &QuerySet<B>,
+        slots: Range<u32>,
+        dst: &Buffer<B>,
+        offset: u64,
+    ) -> Result<()> {
+        self.validate_set(set)?;
+        if dst.device != self.device.id {
+            return Err(Error::WrongDevice);
+        }
+        let lanes = self.device.lanes();
+        if lane.device != self.device.id
+            || (!lanes.is_empty() && !lanes.iter().any(|info| info.id == lane))
+        {
+            return Err(Error::WrongLane);
+        }
+        set.validate_range(&slots)?;
+        B::query_resolve_support(lane, &set.native, &slots, &dst.native, offset)
+    }
+
     /// Resolves a nonempty slot range of this domain kind into a device-local buffer.
     /// Each resolved slot must have been written in submission order after its
     /// most recent reset. Backends may validate this when the work is submitted.

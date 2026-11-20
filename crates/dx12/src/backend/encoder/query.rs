@@ -299,22 +299,17 @@ pub(crate) fn end_occlusion(encoder: &mut Dx12Encoder) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn resolve(
-    encoder: &mut Dx12Encoder,
+pub(crate) fn validate_resolve_destination(
+    is_compute: bool,
     set: &Dx12QuerySet,
-    slots: Range<u32>,
+    slots: &Range<u32>,
     dst: &Dx12Buffer,
     offset: u64,
 ) -> Result<()> {
-    if encoder.is_compute && set.0.kind != QueryKind::Timestamp {
+    if is_compute && set.0.kind != QueryKind::Timestamp {
         return Err(Error::Unsupported("DX12 compute queue query kind"));
     }
-    if encoder.active_occlusion.is_some()
-        || encoder.active_statistics.is_some()
-        || slots.start >= slots.end
-        || slots.end > set.0.count
-        || offset % 8 != 0
-    {
+    if slots.start >= slots.end || slots.end > set.0.count || offset % 8 != 0 {
         return Err(Error::InvalidRange);
     }
     let bytes = u64::from(slots.end - slots.start)
@@ -328,6 +323,20 @@ pub(crate) fn resolve(
             && !dst.usage.contains(BufferUsage::MAP_READ))
     {
         return Err(Error::Unsupported("DX12 query resolve destination usage"));
+    }
+    Ok(())
+}
+
+pub(crate) fn resolve(
+    encoder: &mut Dx12Encoder,
+    set: &Dx12QuerySet,
+    slots: Range<u32>,
+    dst: &Dx12Buffer,
+    offset: u64,
+) -> Result<()> {
+    validate_resolve_destination(encoder.is_compute, set, &slots, dst, offset)?;
+    if encoder.active_occlusion.is_some() || encoder.active_statistics.is_some() {
+        return Err(Error::InvalidRange);
     }
     if !matches!(dst.memory, MemoryClass::Readback) {
         barrier(

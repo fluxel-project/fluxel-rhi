@@ -45,6 +45,12 @@ view offsets and lengths at stride boundaries. Cover excessive element
 counts, writable upload views, foreign buffers, and dynamic ranges that
 overflow or extend past the backing buffer.
 
+**Query resolve support:** Match the DX12 support query with recording for
+timestamps on direct and compute lanes and for occlusion and statistics on
+the direct lane. Check a foreign lane, slot bounds, offset alignment, wrong
+usage and the last byte of the destination. Producer ordering and active
+query state are verified during command execution.
+
 ### DX12 structured shader diagnostics
 
 **Status:** WGSL parse and validation errors preserve compiler messages and

@@ -227,6 +227,15 @@ pub trait PassStatisticsBackend: QueryBackend {
 
 pub trait QueryBackend: CommandBackend {
     fn query_supported(device: &Self::NativeDevice, kind: QueryKind) -> bool;
+    fn query_resolve_support(
+        _lane: LaneId,
+        _set: &Self::NativeQuerySet,
+        _slots: &Range<u32>,
+        _destination: &Self::NativeBuffer,
+        _offset: u64,
+    ) -> Result<()> {
+        Err(Error::Unsupported("query resolve support query"))
+    }
     /// Required ordering for this device and query kind.
     fn query_resolve_mode(_: &Self::NativeDevice, _: QueryKind) -> QueryResolveMode {
         QueryResolveMode::Ordered
