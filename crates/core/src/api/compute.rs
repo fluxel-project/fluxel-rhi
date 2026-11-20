@@ -63,10 +63,26 @@ impl<B: Backend> Device<B> {
     }
 }
 impl<B: Backend> ComputeDomain<'_, B> {
+    /// Checks descriptor admission against the selected device and shader entry.
+    /// Compilation, specialization and native pipeline creation can still fail.
+    pub fn pipeline_support(&self, desc: &ComputePipelineDesc<B>) -> Result<()> {
+        self.validate_pipeline_device(desc)?;
+        B::Compute::pipeline_support(&self.device.native, desc)
+    }
+
     pub async fn create_pipeline(
         &self,
         desc: ComputePipelineDesc<B>,
     ) -> Result<ComputePipeline<B>> {
+        self.validate_pipeline_device(&desc)?;
+        let native = B::Compute::create_pipeline(&self.device.native, &desc).await?;
+        // SAFETY: the SPI created this pipeline for this exact native device.
+        let mut pipeline = unsafe { ComputePipeline::from_native(self.device.id, native) };
+        pipeline.layout = Some(desc.layout);
+        Ok(pipeline)
+    }
+
+    fn validate_pipeline_device(&self, desc: &ComputePipelineDesc<B>) -> Result<()> {
         if desc.layout.device != self.device.id
             || desc.compute.module.device != self.device.id
             || desc
@@ -76,11 +92,7 @@ impl<B: Backend> ComputeDomain<'_, B> {
         {
             return Err(Error::WrongDevice);
         }
-        let native = B::Compute::create_pipeline(&self.device.native, &desc).await?;
-        // SAFETY: the SPI created this pipeline for this exact native device.
-        let mut pipeline = unsafe { ComputePipeline::from_native(self.device.id, native) };
-        pipeline.layout = Some(desc.layout);
-        Ok(pipeline)
+        Ok(())
     }
     pub fn begin<'a>(&self, encoder: &'a mut CommandEncoder<B>) -> Result<ComputePass<'a, B>>
     where

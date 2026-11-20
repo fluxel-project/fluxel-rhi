@@ -188,6 +188,9 @@ pub trait ComputeOps<B: Backend> {
         &[]
     }
     const AVAILABLE: bool;
+    fn pipeline_support(_device: &B::NativeDevice, _desc: &ComputePipelineDesc<B>) -> Result<()> {
+        Err(Error::Unsupported("compute pipeline support query"))
+    }
     type PipelineFuture<'a>: Future<Output = Result<B::NativeComputePipeline>> + 'a
     where
         B: 'a;

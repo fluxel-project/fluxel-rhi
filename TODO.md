@@ -65,6 +65,13 @@ and the depth/stencil target. Include a format that rejects the requested count,
 unsupported blending, an oversized sample mask, and alpha-to-coverage with one
 sample. Use compatible shaders so the comparison isolates attachment admission.
 
+**Compute pipeline support:** Compare the descriptor query and creation for a
+known compute entry, missing or non-compute entries, foreign shader, layout or
+cache objects, invalid declared workgroup sizes, and required subgroup sizes.
+Exercise native register overlap and DXIL specialization rejection. Verify that
+the query uses existing shader metadata and leaves specialization, compilation,
+and cache or PSO creation to the full pipeline path.
+
 **Index buffer views:** Verify that DX12 support, direct recording and
 bundles agree on INDEX usage, element alignment, byte range, and the native
 32-bit view size. Include an aligned Uint16 range whose start is rejected
