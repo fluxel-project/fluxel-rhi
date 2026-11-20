@@ -54,6 +54,13 @@ pub trait CommandBackend: Backend {
         src: TextureRegion<'_, Self>,
         dst: TextureRegion<'_, Self>,
     ) -> Result<()>;
+    fn copy_texture_support(
+        _: &Self::NativeEncoder,
+        _: &TextureRegion<'_, Self>,
+        _: &TextureRegion<'_, Self>,
+    ) -> Result<()> {
+        Err(Error::Unsupported("texture copy support query"))
+    }
     /// Copies from a CopySrc buffer into a CopyDst texture region.
     fn buffer_to_texture(
         encoder: &mut Self::NativeEncoder,

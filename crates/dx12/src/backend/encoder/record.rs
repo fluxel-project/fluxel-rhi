@@ -348,6 +348,14 @@ impl fluxel_rhi_core::backend::CommandBackend for Dx12 {
     ) -> Result<(), Error> {
         super::copy::buffer(encoder, src, src_offset, dst, dst_offset, bytes)
     }
+    fn copy_texture_support(
+        encoder: &Dx12Encoder,
+        src: &api::TextureRegion<'_, Self>,
+        dst: &api::TextureRegion<'_, Self>,
+    ) -> Result<(), Error> {
+        super::copy::texture_support(encoder, src, dst)
+    }
+
     fn copy_texture(
         encoder: &mut Dx12Encoder,
         src: api::TextureRegion<'_, Self>,

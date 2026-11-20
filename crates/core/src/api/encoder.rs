@@ -183,29 +183,29 @@ impl<B: CommandBackend> CommandEncoder<B> {
         src: TextureRegion<'_, B>,
         dst: TextureRegion<'_, B>,
     ) -> Result<()> {
-        if src.texture.device != self.device || dst.texture.device != self.device {
-            return Err(Error::WrongDevice);
-        }
-        if src
-            .texture
-            .desc
-            .as_ref()
-            .is_some_and(|d| d.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT))
-            || dst
-                .texture
-                .desc
-                .as_ref()
-                .is_some_and(|d| d.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT))
-        {
-            return Err(Error::InvalidState);
-        }
+        self.validate_texture_transfer_regions(&src, &dst)?;
         let result = self.call(|e| B::copy_texture(e, src, dst));
         if result.is_ok() {
             self.stats.record_copy();
         }
         result
     }
-    fn validate_resolve_regions(
+    /// Checks whether the two regions can be copied on this encoder.
+    /// The caller supplies the resource states required by the operation.
+    pub fn copy_texture_support(
+        &self,
+        src: &TextureRegion<'_, B>,
+        dst: &TextureRegion<'_, B>,
+    ) -> Result<()> {
+        self.validate_texture_transfer_regions(src, dst)?;
+        if self.poisoned || self.in_pass {
+            return Err(Error::InvalidState);
+        }
+        let native = self.native.as_ref().ok_or(Error::InvalidState)?;
+        B::copy_texture_support(native, src, dst)
+    }
+
+    fn validate_texture_transfer_regions(
         &self,
         src: &TextureRegion<'_, B>,
         dst: &TextureRegion<'_, B>,
@@ -235,7 +235,7 @@ impl<B: CommandBackend> CommandEncoder<B> {
         src: &TextureRegion<'_, B>,
         dst: &TextureRegion<'_, B>,
     ) -> Result<()> {
-        self.validate_resolve_regions(src, dst)?;
+        self.validate_texture_transfer_regions(src, dst)?;
         if self.poisoned || self.in_pass {
             return Err(Error::InvalidState);
         }
@@ -243,7 +243,7 @@ impl<B: CommandBackend> CommandEncoder<B> {
         B::resolve_support(native, src, dst)
     }
     pub fn resolve(&mut self, src: TextureRegion<'_, B>, dst: TextureRegion<'_, B>) -> Result<()> {
-        self.validate_resolve_regions(&src, &dst)?;
+        self.validate_texture_transfer_regions(&src, &dst)?;
         let result = self.call(|e| B::resolve(e, src, dst));
         if result.is_ok() {
             self.stats.record_copy();

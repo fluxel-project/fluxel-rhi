@@ -228,6 +228,11 @@ same source and destination regions. Cover incompatible formats, usage,
 sample count, aspects, lane, extent and subresource, plus full and partial
 color resolves. Check a multisampled attachment whose format lacks the
 native resolve bit and verify rejection before pass commands are recorded.
+Compare `CommandEncoder::copy_texture_support` with recording for matching
+regions and invalid format, usage, aspect and sample-count pairs. Exercise
+BC edge blocks, array and volume slice selection, depth and MSAA full-copy
+requirements, and same-resource overlap. Qualify buffer copies and their
+footprint rules separately.
 
 ### DX12 structured shader diagnostics
 

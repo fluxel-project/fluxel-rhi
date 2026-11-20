@@ -219,15 +219,26 @@ pub(crate) fn buffer(
     Ok(())
 }
 
-pub(crate) fn texture(
-    encoder: &mut Dx12Encoder,
-    src: api::TextureRegion<'_, crate::backend::Dx12>,
-    dst: api::TextureRegion<'_, crate::backend::Dx12>,
-) -> Result<()> {
-    // SAFETY: Core tied both regions to this device; cloning extends native
-    // texture lifetime through the recorded copy and submission fence.
-    let source = unsafe { src.texture.native_ref() }.0.clone();
-    let target = unsafe { dst.texture.native_ref() }.0.clone();
+struct TextureCopy<'a> {
+    source: &'a Dx12Texture,
+    target: &'a Dx12Texture,
+    source_subresource: u32,
+    target_subresource: u32,
+    full_copy: bool,
+    layers: u32,
+}
+
+fn validate_texture_copy<'a>(
+    encoder: &Dx12Encoder,
+    src: &api::TextureRegion<'a, crate::backend::Dx12>,
+    dst: &api::TextureRegion<'a, crate::backend::Dx12>,
+) -> Result<TextureCopy<'a>> {
+    encoder.device.require_active()?;
+    // SAFETY: Core validated both regions' device identity.
+    let source_texture = unsafe { src.texture.native_ref() };
+    let target_texture = unsafe { dst.texture.native_ref() };
+    let source = &source_texture.0;
+    let target = &target_texture.0;
     if !source.desc.usage.contains(api::TextureUsage::COPY_SRC)
         || !target.desc.usage.contains(api::TextureUsage::COPY_DST)
     {
@@ -243,8 +254,8 @@ pub(crate) fn texture(
     {
         return Err(Error::Unsupported("DX12 texture copy format or extent"));
     }
-    let source_subresource = validate_region(&Dx12Texture(source.clone()), &src)?;
-    let target_subresource = validate_region(&Dx12Texture(target.clone()), &dst)?;
+    let source_subresource = validate_region(source_texture, src)?;
+    let target_subresource = validate_region(target_texture, dst)?;
     let full_copy = source.desc.samples > 1 || super::super::texture::is_depth(source.desc.format);
     if full_copy {
         let full = |texture: &Dx12Texture,
@@ -254,7 +265,7 @@ pub(crate) fn texture(
                 && region.extent[0] == (texture.0.desc.extent[0] >> region.mip).max(1)
                 && region.extent[1] == (texture.0.desc.extent[1] >> region.mip).max(1)
         };
-        if !full(&Dx12Texture(source.clone()), &src) || !full(&Dx12Texture(target.clone()), &dst) {
+        if !full(source_texture, src) || !full(target_texture, dst) {
             return Err(Error::Unsupported(
                 "DX12 depth and MSAA texture copies require full subresources",
             ));
@@ -274,18 +285,44 @@ pub(crate) fn texture(
             "DX12 overlapping subresource texture copy",
         ));
     }
-    for layer in 0..layers {
+    Ok(TextureCopy {
+        source: source_texture,
+        target: target_texture,
+        source_subresource,
+        target_subresource,
+        full_copy,
+        layers,
+    })
+}
+
+pub(super) fn texture_support(
+    encoder: &Dx12Encoder,
+    src: &api::TextureRegion<'_, crate::backend::Dx12>,
+    dst: &api::TextureRegion<'_, crate::backend::Dx12>,
+) -> Result<()> {
+    validate_texture_copy(encoder, src, dst).map(drop)
+}
+
+pub(crate) fn texture(
+    encoder: &mut Dx12Encoder,
+    src: api::TextureRegion<'_, crate::backend::Dx12>,
+    dst: api::TextureRegion<'_, crate::backend::Dx12>,
+) -> Result<()> {
+    let copy = validate_texture_copy(encoder, &src, &dst)?;
+    let source = &copy.source.0;
+    let target = &copy.target.0;
+    for layer in 0..copy.layers {
         let mut from = copy_location(
             &source.resource,
             D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default(),
             false,
-            source_subresource + layer * source.desc.mip_levels,
+            copy.source_subresource + layer * source.desc.mip_levels,
         );
         let mut to = copy_location(
             &target.resource,
             D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default(),
             false,
-            target_subresource + layer * target.desc.mip_levels,
+            copy.target_subresource + layer * target.desc.mip_levels,
         );
         // SAFETY: source/target subresources and box were validated above; copy
         // locations own cloned COM references which are released after this call.
@@ -300,7 +337,7 @@ pub(crate) fn texture(
                     0
                 },
                 &from,
-                if full_copy {
+                if copy.full_copy {
                     None
                 } else {
                     Some(&D3D12_BOX {
@@ -337,8 +374,8 @@ pub(crate) fn texture(
             ManuallyDrop::drop(&mut to.pResource);
         }
     }
-    encoder.textures.push(Dx12Texture(source));
-    encoder.textures.push(Dx12Texture(target));
+    encoder.textures.push(copy.source.clone());
+    encoder.textures.push(copy.target.clone());
     Ok(())
 }
 
