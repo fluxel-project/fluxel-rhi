@@ -41,6 +41,7 @@ mod compute;
 mod descriptor;
 mod device;
 mod encoder;
+pub use encoder::{Dx12SubmissionFailure, Dx12SubmissionOperation};
 mod external;
 mod interop;
 mod mapping;
@@ -318,7 +319,7 @@ impl Backend for Dx12 {
     type NativeCompletion = encoder::Dx12Completion;
     type NativeSurface = Dx12Surface;
     type NativeSurfaceImage = Dx12SurfaceImage;
-    type NativeUncertainty = ();
+    type NativeUncertainty = Dx12SubmissionFailure;
     type Compute = compute::Compute;
     type Mesh = mesh::Mesh;
     type Ray = ray::Ray;

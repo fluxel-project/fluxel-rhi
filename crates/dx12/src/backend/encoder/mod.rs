@@ -56,6 +56,7 @@ mod retirement;
 pub(crate) mod secondary;
 mod submit;
 pub(super) use submit::retire;
+pub use submit::{Dx12SubmissionFailure, Dx12SubmissionOperation};
 mod texture_upload;
 mod transition;
 pub(crate) mod upload;

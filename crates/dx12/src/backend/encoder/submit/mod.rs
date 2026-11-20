@@ -10,8 +10,15 @@
 
 use super::*;
 
+mod failure;
+mod owners;
 mod preflight;
 mod tail;
+use failure::checkpoint;
+pub use failure::{Dx12SubmissionFailure, Dx12SubmissionOperation};
+use owners::{
+    SignaledOwners, register_retirements, retain_failed_handoff, retain_sparse, retain_submitted,
+};
 impl fluxel_rhi_core::backend::CompletionBackend for Dx12 {
     type WaitFuture<'a>
         = super::fence_wait::Dx12FenceFuture
@@ -129,36 +136,6 @@ fn retain_after(completed: u64, value: u64) -> bool {
     completed == u64::MAX || value == u64::MAX || value > completed
 }
 
-fn checkpoint(
-    device: &Dx12Device,
-    device_id: api::DeviceId,
-    lane: LaneId,
-    value: u64,
-    frontier: api::StepId,
-) -> api::Checkpoint<Dx12> {
-    api::Checkpoint {
-        // SAFETY: this completion point carries only a cloned device-owned
-        // fence and the monotonically allocated value serialized above.
-        point: unsafe {
-            CompletionPoint::from_native(
-                device_id,
-                Dx12Completion {
-                    fence: super::super::queue::fence(device, lane.ordinal)
-                        .expect("validated lane")
-                        .clone(),
-                    value,
-                },
-            )
-        },
-        covers: CompletionCoverage {
-            // A queue fence proves only its own ordered prefix. Dependencies
-            // that make another lane observable are represented by the plan's
-            // explicit native queue waits, never by an implicit terminal join.
-            lane_frontiers: vec![(lane, frontier)],
-        },
-    }
-}
-
 fn seal_pending(
     issued: &[Dx12RecordedWork],
     pending: &mut Vec<usize>,
@@ -173,174 +150,6 @@ fn seal_pending(
             receipt.seal(fence, value);
         }
     }
-}
-
-fn retain_indeterminate(device: &Dx12Device, issued: Vec<Dx12RecordedWork>, error: &Error) {
-    if !issued.is_empty() {
-        for record in &issued {
-            super::query::invalidate_ops(&record.encoder.query_ops);
-            for receipt in &record.encoder.readback_receipts {
-                receipt.fail(error);
-            }
-        }
-        let mut direct = Vec::new();
-        let mut compute = Vec::new();
-        for record in issued {
-            match record.lane.ordinal {
-                0 => direct.push(record),
-                1 => compute.push(record),
-                _ => unreachable!("submission preflight validates DX12 lanes"),
-            }
-        }
-        if !direct.is_empty() {
-            device
-                .0
-                .in_flight
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push((u64::MAX, direct));
-        }
-        if !compute.is_empty() {
-            device
-                .0
-                .multi_queue
-                .in_flight
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push((u64::MAX, compute));
-        }
-    }
-}
-
-fn retain_submitted(
-    device: &Dx12Device,
-    values: [Option<u64>; 2],
-    issued: &mut Vec<Dx12RecordedWork>,
-) -> [bool; 2] {
-    let mut direct = Vec::new();
-    let mut compute = Vec::new();
-    for record in issued.drain(..) {
-        let ordinal = record.lane.ordinal;
-        let fence = super::super::queue::fence(device, ordinal).expect("validated lane");
-        let value = values[ordinal as usize].expect("issued work has a terminal lane fence");
-        super::super::ray::seal_compaction_receipts(&record, fence, value);
-        match record.lane.ordinal {
-            0 => direct.push(record),
-            1 => compute.push(record),
-            _ => unreachable!("submission preflight validates DX12 lanes"),
-        }
-    }
-    let retained = [!direct.is_empty(), !compute.is_empty()];
-    if retained[0] {
-        let value = values[0].expect("direct work has a terminal direct fence");
-        device
-            .0
-            .in_flight
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push((value, direct));
-    }
-    if retained[1] {
-        let value = values[1].expect("compute work has a terminal compute fence");
-        device
-            .0
-            .multi_queue
-            .in_flight
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push((value, compute));
-    }
-    retained
-}
-
-fn retain_sparse(
-    device: &Dx12Device,
-    value: u64,
-    retained: Vec<super::super::sparse::SparseRetained>,
-) {
-    if !retained.is_empty() {
-        device
-            .0
-            .sparse_in_flight
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push((value, retained));
-        if value == u64::MAX {
-            // Sparse mapping owners have no encoder to retain the Device.
-            // Without a completion fence they need a separate owner in
-            // quarantine even if the caller drops every public handle.
-            super::fence_wait::retain_quarantined_owner(device, device.0.fence.clone(), value, None);
-        }
-    }
-}
-
-fn register_retirements(
-    device: &Dx12Device,
-    values: [Option<u64>; 2],
-    retained_lanes: [bool; 2],
-    retained_sparse: bool,
-) -> Result<(), Error> {
-    let mut first_error = None;
-    for ordinal in 0..2 {
-        if retained_lanes[ordinal] || (ordinal == 0 && retained_sparse) {
-            if let Err(error) = retirement::register(
-                device,
-                ordinal as u32,
-                values[ordinal].expect("retained lane has a fence"),
-            ) {
-                // A failed registration cannot suppress the other lane's
-                // independent completion observation.
-                first_error.get_or_insert(error);
-            }
-        }
-    }
-    first_error.map_or(Ok(()), Err)
-}
-
-/// End indices of the owners covered by each lane's most recent signal.
-#[derive(Default)]
-struct SignaledOwners {
-    commands: [usize; 2],
-    sparse: usize,
-}
-
-impl SignaledOwners {
-    fn record(&mut self, ordinal: usize, commands: usize, sparse: usize) {
-        self.commands[ordinal] = commands;
-        if ordinal == 0 {
-            self.sparse = sparse;
-        }
-    }
-}
-
-fn retain_failed_handoff(
-    device: &Dx12Device,
-    values: [Option<u64>; 2],
-    signaled: &SignaledOwners,
-    issued: Vec<Dx12RecordedWork>,
-    mut sparse: Vec<super::super::sparse::SparseRetained>,
-    error: &Error,
-) {
-    let mut covered = Vec::new();
-    let mut uncertain = Vec::new();
-    for (index, record) in issued.into_iter().enumerate() {
-        if index < signaled.commands[record.lane.ordinal as usize] {
-            covered.push(record);
-        } else {
-            uncertain.push(record);
-        }
-    }
-    let uncertain_sparse = sparse.split_off(signaled.sparse);
-    retain_indeterminate(device, uncertain, error);
-    retain_sparse(device, u64::MAX, uncertain_sparse);
-    let retained_lanes = retain_submitted(device, values, &mut covered);
-    let retained_sparse = !sparse.is_empty();
-    if retained_sparse {
-        retain_sparse(device, values[0].expect("signaled sparse work has a fence"), sparse);
-    }
-    // Report the original handoff failure. Registration retains its own
-    // fallback owner if observing a valid fence cannot be arranged.
-    let _ = register_retirements(device, values, retained_lanes, retained_sparse);
 }
 
 /// Executes one encoder's native lists in their recorded order. Ordinary work
@@ -515,7 +324,7 @@ unsafe fn submit_packet(
     let mut signaled = SignaledOwners::default();
     let mut tokens = Vec::new();
     macro_rules! handoff {
-        ($operation:expr) => {
+        ($kind:ident, $step:expr, $lane:expr, $operation:expr) => {
             match $operation {
                 Ok(value) => value,
                 Err(error) => {
@@ -529,9 +338,15 @@ unsafe fn submit_packet(
                     );
                     return Outcome::Indeterminate {
                         error,
-                        uncertain: unsafe {
-                            api::NativeUncertainty::from_native(plan.id().device, ())
-                        },
+                        uncertain: failure::uncertain(
+                            device,
+                            plan.id(),
+                            Dx12SubmissionOperation::$kind,
+                            $step,
+                            $lane,
+                            accepted,
+                            &signaled,
+                        ),
                     };
                 }
             }
@@ -575,12 +390,17 @@ unsafe fn submit_packet(
             if producer_lane != lane.ordinal {
                 let (_, value) = values[dependency.previous.index as usize]
                     .expect("cross-lane producer signaled");
-                handoff!(super::super::queue::wait(
-                    device,
-                    lane.ordinal,
-                    super::super::queue::fence(device, producer_lane).expect("validated lane"),
-                    value
-                ));
+                handoff!(
+                    QueueWait,
+                    Some(id),
+                    lane,
+                    super::super::queue::wait(
+                        device,
+                        lane.ordinal,
+                        super::super::queue::fence(device, producer_lane).expect("validated lane"),
+                        value
+                    )
+                );
             }
         }
         for entry in &mut waits {
@@ -591,12 +411,12 @@ unsafe fn submit_packet(
                 let wait = entry.take().expect("present wait");
                 // SAFETY: each token is consumed exactly once at its designated step.
                 let signal = unsafe { wait.signal.into_native() };
-                handoff!(super::super::queue::wait(
-                    device,
-                    lane.ordinal,
-                    &signal.fence,
-                    signal.value
-                ));
+                handoff!(
+                    QueueWait,
+                    Some(id),
+                    lane,
+                    super::super::queue::wait(device, lane.ordinal, &signal.fence, signal.value)
+                );
             }
         }
         let first = issued.len();
@@ -621,7 +441,12 @@ unsafe fn submit_packet(
                 super::super::ray::pin_batch(&mut issued[first..]);
                 if segmented {
                     for native in &issued[first..] {
-                        handoff!(execute_segmented(queue, native));
+                        handoff!(
+                            CommandListHandoff,
+                            Some(id),
+                            lane,
+                            execute_segmented(queue, native)
+                        );
                     }
                 } else {
                     let lists: Vec<_> = issued[first..]
@@ -674,16 +499,23 @@ unsafe fn submit_packet(
             }
             StepPayload::Present(mut binding) => {
                 // SAFETY: exclusive current image lease is handed to DXGI once.
-                handoff!(unsafe { binding.try_handoff() });
+                handoff!(Present, Some(id), lane, unsafe { binding.try_handoff() });
                 presents.push(PresentReceipt {
                     step: Some(id),
                     accepted: true,
                 });
             }
         }
+        accepted.push(id);
+        frontiers[lane.ordinal as usize] = Some((lane, id));
         lane_dirty[lane.ordinal as usize] = true;
         let value = if needs_signal[id.index as usize] {
-            let value = handoff!(super::super::queue::signal(device, lane.ordinal));
+            let value = handoff!(
+                QueueSignal,
+                Some(id),
+                lane,
+                super::super::queue::signal(device, lane.ordinal)
+            );
             let fence = super::super::queue::fence(device, lane.ordinal).expect("validated lane");
             seal_pending(
                 &issued,
@@ -693,15 +525,13 @@ unsafe fn submit_packet(
                 value,
             );
             lane_values[lane.ordinal as usize] = Some(value);
-            signaled.record(lane.ordinal as usize, issued.len(), sparse_issued.len());
+            signaled.record(lane, id, value, issued.len(), sparse_issued.len());
             lane_dirty[lane.ordinal as usize] = false;
             Some(value)
         } else {
             None
         };
         values.push(value.map(|v| (lane.ordinal, v)));
-        accepted.push(id);
-        frontiers[lane.ordinal as usize] = Some((lane, id));
         for request in signals.iter().filter(|s| s.producer == id) {
             let native = Dx12GpuSignal {
                 fence: super::super::queue::fence(device, lane.ordinal)
@@ -726,7 +556,12 @@ unsafe fn submit_packet(
             // Do not add a direct<-compute wait here: cross-lane visibility is
             // already represented by the plan dependency processed above.
             let fence_value = if lane_dirty[lane.ordinal as usize] {
-                handoff!(super::super::queue::signal(device, lane.ordinal))
+                handoff!(
+                    QueueSignal,
+                    Some(id),
+                    lane,
+                    super::super::queue::signal(device, lane.ordinal)
+                )
             } else {
                 lane_values[lane.ordinal as usize]
                     .expect("accepted lane has a previously signaled frontier")
@@ -739,7 +574,7 @@ unsafe fn submit_packet(
                 fence_value,
             );
             lane_values[lane.ordinal as usize] = Some(fence_value);
-            signaled.record(lane.ordinal as usize, issued.len(), sparse_issued.len());
+            signaled.record(lane, id, fence_value, issued.len(), sparse_issued.len());
             lane_dirty[lane.ordinal as usize] = false;
             checkpoints.push(checkpoint(device, plan.id().device, lane, fence_value, id));
         }
@@ -747,7 +582,13 @@ unsafe fn submit_packet(
     if !accepted.is_empty() {
         for ordinal in 0..2 {
             if lane_dirty[ordinal] {
-                let value = handoff!(super::super::queue::signal(device, ordinal as u32));
+                let (lane, step) = frontiers[ordinal].expect("dirty lane has an issued step");
+                let value = handoff!(
+                    QueueSignal,
+                    None,
+                    lane,
+                    super::super::queue::signal(device, lane.ordinal)
+                );
                 seal_pending(
                     &issued,
                     &mut pending_receipts[ordinal],
@@ -756,7 +597,7 @@ unsafe fn submit_packet(
                     value,
                 );
                 lane_values[ordinal] = Some(value);
-                signaled.record(ordinal, issued.len(), sparse_issued.len());
+                signaled.record(lane, step, value, issued.len(), sparse_issued.len());
                 lane_dirty[ordinal] = false;
             }
         }
@@ -776,14 +617,23 @@ unsafe fn submit_packet(
         // Register only after every owner for that lane has entered its
         // in-flight store, otherwise a fast completion could retire an earlier
         // subset and strand later ownership without another API call.
-        if let Err(error) =
+        if let Err((ordinal, error)) =
             register_retirements(device, lane_values, retained_lanes, retained_sparse)
         {
             // Handoff has happened and in-flight stores retain each owner.
             return Outcome::Indeterminate {
                 error,
-                // SAFETY: the backend retains work already issued on this device.
-                uncertain: unsafe { api::NativeUncertainty::from_native(plan.id().device, ()) },
+                uncertain: failure::uncertain(
+                    device,
+                    plan.id(),
+                    Dx12SubmissionOperation::RetirementRegistration,
+                    None,
+                    frontiers[ordinal as usize]
+                        .expect("retirement lane has issued work")
+                        .0,
+                    accepted,
+                    &signaled,
+                ),
             };
         }
         if stopped.is_some() || matches!(completion, api::CompletionRequest::End) {

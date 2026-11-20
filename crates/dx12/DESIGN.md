@@ -293,6 +293,11 @@ Multi-queue packets return one-shot waits for untouched steps in their
 diagnostic tail. Native handoffs with uncertain effects retain their owners
 through the existing quarantine path.
 
+An indeterminate submit produces a DX12 failure report with the failing
+operation, lane, and step when applicable. It reports already-issued step
+payloads and the exact checkpoints of successfully signaled lane prefixes.
+These checkpoints can be observed independently of the failed operation.
+
 New primary and secondary encoders, idle waits, and packet admission check
 the native device removal status before allocating command objects or
 handing work to a queue. A removal observed after admission still follows

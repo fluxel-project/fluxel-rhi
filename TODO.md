@@ -801,8 +801,11 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   during device-bound surface creation and configuration. Verify missing or
   changed output, invalid and foreign inputs, hybrid adapters, and post-open
   revalidation.
-- **R02, DESIGNING — error correlation and terminal device loss.** Add
-  correlation between a failed request, issued work, and completion facts.
+- **R02, VERIFYING — error correlation and terminal device loss.** Verify
+  DX12 failure reports identify the plan, operation, step and lane where
+  applicable, payloads already handed off, and exact checkpoints for the
+  successfully signaled lane prefixes. Cover an unsealed suffix and a
+  retirement registration failure after valid signals.
   Automatic renderer reconstruction is `OUT_OF_SCOPE`: Renderer and Host own
   graph rebuild, window lifecycle, and policy after a terminal device loss.
 - **R03, IMPLEMENTING — shared stop-admission and drain.** First verify that
