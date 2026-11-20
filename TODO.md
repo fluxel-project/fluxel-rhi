@@ -18,6 +18,11 @@ over-limit list in raster and mesh creation and pass recording. For
 multiview, check masks that reach the highest supported view and masks
 with a bit above it. Include the prepared raster path used by queries.
 
+**Compute dispatch:** Core checks each direct dispatch count against the
+published axis limit before recording. Verify exact-limit and one-past-limit
+counts and confirm that a valid dispatch can follow the rejected call.
+GPU-produced indirect arguments must obey the same native bounds.
+
 **Storage buffer views:** Check the maximum range and alignment separately
 for raw and structured SRV/UAV descriptors, including dynamic offsets.
 Any exposed bound must account for the native element count, element

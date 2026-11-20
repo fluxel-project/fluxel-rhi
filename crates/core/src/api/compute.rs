@@ -148,6 +148,7 @@ impl<B: Backend> ComputeDomain<'_, B> {
         Ok(ComputePass {
             debug_group_depth_at_begin: encoder.debug_group_depth,
             debug_label_active,
+            max_workgroups: self.device.caps.limits.max_compute_workgroups,
             encoder,
             active: true,
         })
@@ -155,6 +156,7 @@ impl<B: Backend> ComputeDomain<'_, B> {
 }
 pub struct ComputePass<'a, B: CommandBackend> {
     pub(crate) encoder: &'a mut CommandEncoder<B>,
+    max_workgroups: [u32; 3],
     active: bool,
     debug_group_depth_at_begin: u32,
     debug_label_active: bool,
@@ -245,6 +247,13 @@ impl<B: CommandBackend> ComputePass<'_, B> {
         result
     }
     pub fn dispatch(&mut self, groups: [u32; 3]) -> Result<()> {
+        if groups
+            .into_iter()
+            .zip(self.max_workgroups)
+            .any(|(count, limit)| limit != 0 && count > limit)
+        {
+            return Err(Error::InvalidRange);
+        }
         let result = self.call(|e| B::Compute::dispatch(e, groups));
         if result.is_ok() {
             self.encoder.stats.record_dispatch();
@@ -262,6 +271,7 @@ impl<B: CommandBackend> ComputePass<'_, B> {
     ///
     /// The offset must be four-byte aligned, the complete 12-byte record must
     /// fit the buffer, and the buffer must include `BufferUsage::INDIRECT`.
+    /// The caller must ensure that GPU-produced counts fit the device limits.
     pub fn dispatch_indirect(&mut self, buffer: &Buffer<B>, offset: u64) -> Result<()> {
         if buffer.device != self.encoder.device {
             return Err(Error::WrongDevice);
