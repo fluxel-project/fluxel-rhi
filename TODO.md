@@ -368,6 +368,10 @@ does not open a lease, and remap after explicit release.
 Verify a fully initialized device buffer through an encoder upload and a
 covering readback. Reject a mismatched encoder, missing copy usage, or data
 that does not cover the whole buffer before allocating it.
+Verify complete staged texture initialization across multiple mips, including
+all array layers and a volume with shrinking depth. Check that malformed
+input cannot yield a submittable partially initialized texture. Verify that
+an imported texture retains its descriptor when exposed as a Core texture.
 On an isolated DX12 device, verify native removal wakes a pending completion
 with `DeviceLost`. Check that new encoders, idle waits, and submissions reject
 the removed device before allocating command objects or issuing queue work.

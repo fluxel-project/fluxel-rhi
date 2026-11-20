@@ -123,6 +123,11 @@ and heap rules allow it; their allocation lease stays alive with the resource.
 Committed resources and explicitly placed resources retain their independent
 native backing. The default allocator neither aliases resources on behalf of a
 caller nor decides when an aliasing barrier is safe.
+After an aliasing handoff, the renderer orders initialization of the new
+identity before reading it. Placed render-target and depth-stencil textures
+also require native initialization. A full clear or full subresource copy
+establishes contents. Native discard can establish the resource metadata
+needed for later writes, with the texel contents left undefined.
 
 The memory observation domain can report the number and largest size of
 contiguous free ranges across retained default-pool pages. The observation

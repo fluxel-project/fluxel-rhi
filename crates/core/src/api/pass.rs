@@ -35,13 +35,19 @@ pub struct Rect {
 }
 #[derive(Clone, Copy, Debug)]
 pub enum LoadOp<T> {
+    /// Preserves existing attachment contents. The caller must have
+    /// initialized any contents the pass reads.
     Load,
+    /// Initializes the attachment to the supplied value.
     Clear(T),
+    /// Starts without preserving prior contents.
     Discard,
 }
 #[derive(Clone, Copy, Debug)]
 pub enum StoreOp {
+    /// Preserves the pass results for subsequent ordered use.
     Store,
+    /// Relinquishes the contents. Later use must initialize any region it reads.
     Discard,
 }
 #[derive(Clone, Copy, Debug)]

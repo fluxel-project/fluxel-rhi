@@ -88,6 +88,13 @@ the device's reported limits. Feature requirements describe device-wide facts.
 Resource descriptors, shader stages, layouts, and individual commands still
 have their own admission checks.
 
+Plain creation does not guarantee initial readable bytes or texels. Staged
+initialization records writes in the caller's encoder and takes effect in
+GPU execution order. Partial writes initialize only the written regions.
+Renderers initialize data before reading it, including after an attachment
+discard or a change of aliased resource identity. Resource owners keep native
+dependencies alive through recorded and submitted work.
+
 Core cannot prove that a renderer's transition sequence is correct. It checks the declared operation shape and provenance, while the renderer keeps the graph-level resource state and hazard knowledge. This distinction allows a backend to preserve native state models without Core inventing a second one.
 
 ## Execution models and operation flow

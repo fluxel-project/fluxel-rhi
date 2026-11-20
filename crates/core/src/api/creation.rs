@@ -18,6 +18,13 @@ use std::{
 mod inference;
 mod volume_attachment;
 
+/// Data for one complete texture mip and aspect, including each layer or
+/// volume slice in that mip.
+pub struct TextureInitData<'a> {
+    pub layout: TexelCopyBufferLayout,
+    pub bytes: &'a [u8],
+}
+
 impl<B: ResourceBackend + CommandBackend> Device<B> {
     /// Creates a device buffer and records a full initialization upload at
     /// the current encoder position. The descriptor must include `COPY_DST`
@@ -44,6 +51,64 @@ impl<B: ResourceBackend + CommandBackend> Device<B> {
         let buffer = self.create_buffer(desc)?;
         encoder.write_buffer(&buffer, 0, bytes)?;
         Ok(buffer)
+    }
+
+    /// Creates a texture and records initialization for every mip and aspect.
+    /// Data is ordered by increasing mip, with depth before stencil for a
+    /// combined format. Each item includes all array layers or volume slices.
+    /// The descriptor must include `COPY_DST` and use one sample. The selected
+    /// backend must support CPU uploads for the texture and each supplied aspect.
+    /// Submit and order texture access after the recorded uploads.
+    pub fn create_texture_initialized(
+        &self,
+        encoder: &mut CommandEncoder<B>,
+        desc: &TextureDesc,
+        initial_data: &[TextureInitData<'_>],
+    ) -> Result<Texture<B>> {
+        if encoder.device != self.id {
+            return Err(Error::WrongDevice);
+        }
+        if desc.samples != 1 || !desc.usage.contains(TextureUsage::COPY_DST) {
+            return Err(Error::Unsupported(
+                "staged initialization requires a single-sample COPY_DST texture",
+            ));
+        }
+        use TextureAspects as A;
+        use TextureFormat as F;
+        let aspects: &[TextureAspects] = match desc.format {
+            F::Depth16Unorm | F::Depth24Plus | F::Depth32Float => &[A::DEPTH],
+            F::Depth24PlusStencil8 | F::Depth32FloatStencil8 => &[A::DEPTH, A::STENCIL],
+            F::Stencil8 => &[A::STENCIL],
+            _ => &[A::COLOR],
+        };
+        let expected = (desc.mip_levels as usize).checked_mul(aspects.len());
+        if desc.mip_levels == 0 || expected != Some(initial_data.len()) {
+            return Err(Error::InvalidRange);
+        }
+        encoder.ready()?;
+        let texture = self.create_texture(desc)?;
+        for (mip, mip_data) in (0..desc.mip_levels).zip(initial_data.chunks_exact(aspects.len())) {
+            let mip_extent = |axis: usize| desc.extent[axis].checked_shr(mip).unwrap_or(0).max(1);
+            let depth_or_layers = if desc.dimension == TextureDimension::D3 {
+                mip_extent(2)
+            } else {
+                desc.array_layers
+            };
+            for (&aspect, data) in aspects.iter().zip(mip_data) {
+                encoder.write_texture(
+                    TextureRegion {
+                        texture: &texture,
+                        mip,
+                        origin: [0; 3],
+                        extent: [mip_extent(0), mip_extent(1), depth_or_layers],
+                        aspect,
+                    },
+                    data.layout,
+                    data.bytes,
+                )?;
+            }
+        }
+        Ok(texture)
     }
 }
 
