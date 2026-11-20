@@ -457,9 +457,14 @@ impl<B: ResourceBackend> Device<B> {
     ) -> Result<PipelineLayout<B>> {
         self.validate_pipeline_layout(desc)?;
         // SAFETY: every referenced layout was checked to belong to this device.
-        Ok(unsafe {
+        let mut layout = unsafe {
             PipelineLayout::from_native(self.id, B::create_pipeline_layout(&self.native, desc)?)
-        })
+        };
+        layout.description = Some(Arc::new(PipelineLayoutDescription {
+            groups: desc.groups.iter().map(|&group| group.clone()).collect(),
+            push_constants: desc.push_constants.to_vec(),
+        }));
+        Ok(layout)
     }
 }
 

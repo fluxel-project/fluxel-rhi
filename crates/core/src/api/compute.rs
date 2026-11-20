@@ -78,7 +78,9 @@ impl<B: Backend> ComputeDomain<'_, B> {
         }
         let native = B::Compute::create_pipeline(&self.device.native, &desc).await?;
         // SAFETY: the SPI created this pipeline for this exact native device.
-        Ok(unsafe { ComputePipeline::from_native(self.device.id, native) })
+        let mut pipeline = unsafe { ComputePipeline::from_native(self.device.id, native) };
+        pipeline.layout = Some(desc.layout);
+        Ok(pipeline)
     }
     pub fn begin<'a>(&self, encoder: &'a mut CommandEncoder<B>) -> Result<ComputePass<'a, B>>
     where

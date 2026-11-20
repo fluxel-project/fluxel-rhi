@@ -442,7 +442,9 @@ impl<B: Backend> RayDomain<'_, B> {
         }
         let native = B::Ray::create_pipeline(&self.device.native, &desc).await?;
         // SAFETY: the SPI created this pipeline for this exact native device.
-        Ok(unsafe { RayPipeline::from_native(self.device.id, native) })
+        let mut pipeline = unsafe { RayPipeline::from_native(self.device.id, native) };
+        pipeline.layout = Some(desc.layout);
+        Ok(pipeline)
     }
     /// Selects a ray pipeline on an encoder outside a raster or compute pass.
     pub fn set_pipeline(

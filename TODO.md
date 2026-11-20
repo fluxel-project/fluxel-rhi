@@ -6,6 +6,16 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 ## Active items
 
+### Core pipeline layout inspection
+
+**Status:** Core-created raster, compute, mesh and ray pipelines retain the
+portable pipeline layout. Layout metadata exposes the original bind groups,
+entries and push-constant ranges.
+
+**Acceptance:** Query cloned pipelines and reconstruct compatible bind groups
+from the returned metadata. Check that native imports omit unavailable
+metadata and absent indices return no bind-group layout.
+
 ### DX12 runtime and partially bound TLAS arrays
 
 **Status:** DXR devices with descriptor indexing support runtime and partially

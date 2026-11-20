@@ -105,7 +105,9 @@ impl<B: Backend> MeshDomain<'_, B> {
         }
         let native = B::Mesh::create_pipeline(&self.device.native, &desc).await?;
         // SAFETY: the SPI created this pipeline for this exact native device.
-        Ok(unsafe { MeshPipeline::from_native(self.device.id, native) })
+        let mut pipeline = unsafe { MeshPipeline::from_native(self.device.id, native) };
+        pipeline.layout = Some(desc.layout);
+        Ok(pipeline)
     }
     pub fn bind_pipeline(&self, pass: &mut RasterPass<'_, B>, p: &MeshPipeline<B>) -> Result<()>
     where

@@ -327,13 +327,15 @@ impl<B: PipelineBackend> Device<B> {
             }
         }
         // SAFETY: shader and layout provenance were checked against this device.
-        Ok(unsafe {
+        let mut pipeline = unsafe {
             RasterPipeline::from_native_with_dynamic_depth_bias(
                 self.id,
                 B::create_raster_pipeline(&self.native, &desc, dynamic_depth_bias).await?,
                 dynamic_depth_bias,
             )
-        })
+        };
+        pipeline.layout = Some(desc.layout);
+        Ok(pipeline)
     }
 }
 

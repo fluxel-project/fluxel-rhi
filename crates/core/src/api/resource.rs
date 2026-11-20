@@ -455,6 +455,12 @@ pub struct PipelineLayoutDesc<'a, B: Backend> {
     pub push_constants: &'a [PushConstantRange],
 }
 
+/// Portable layout metadata retained by successful Core creation.
+pub struct PipelineLayoutDescription<B: Backend> {
+    pub groups: Vec<BindGroupLayout<B>>,
+    pub push_constants: Vec<PushConstantRange>,
+}
+
 pub(crate) fn binding_resource_device<B: Backend>(
     v: &BindingResource<'_, B>,
     device: DeviceId,

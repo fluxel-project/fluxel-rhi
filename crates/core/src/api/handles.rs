@@ -15,16 +15,18 @@ use std::{
 };
 
 macro_rules! handle {
-    ($name:ident, $native:ident) => {
+    ($name:ident, $native:ident $(, $metadata:ident: $metadata_ty:ty)?) => {
         pub struct $name<B: Backend> {
             pub(crate) device: DeviceId,
             pub(crate) native: B::$native,
+            $(pub(crate) $metadata: Option<$metadata_ty>,)?
         }
         impl<B: Backend> Clone for $name<B> {
             fn clone(&self) -> Self {
                 Self {
                     device: self.device,
                     native: self.native.clone(),
+                    $($metadata: self.$metadata.clone(),)?
                 }
             }
         }
@@ -32,11 +34,18 @@ macro_rules! handle {
             /// # Safety
             /// The native handle must belong to this device and object kind.
             pub unsafe fn from_native(device: DeviceId, native: B::$native) -> Self {
-                Self { device, native }
+                Self { device, native, $($metadata: None,)? }
             }
             pub fn device(&self) -> DeviceId {
                 self.device
             }
+            $(
+                /// Portable metadata captured by Core creation. Native imports
+                /// may omit metadata unavailable to Core.
+                pub fn $metadata(&self) -> Option<&$metadata_ty> {
+                    self.$metadata.as_ref()
+                }
+            )?
             /// Native lowering bridge only. The caller must not mutate native
             /// GPU state outside its backend command/ownership contract.
             /// # Safety: use only on the owning Device and permitted thread.
@@ -185,6 +194,10 @@ impl<B: Backend> BindGroupLayout<B> {
     pub fn device(&self) -> DeviceId {
         self.device
     }
+    /// Binding entries in the order declared at creation.
+    pub fn entries(&self) -> &[BindGroupLayoutEntry] {
+        &self.entries
+    }
     /// # Safety
     /// Use only in the owning backend on a permitted thread; the returned
     /// reference must not outlive this layout or mutate native state directly.
@@ -194,12 +207,19 @@ impl<B: Backend> BindGroupLayout<B> {
     }
 }
 handle!(BindGroup, NativeBindGroup);
-handle!(PipelineLayout, NativePipelineLayout);
+handle!(PipelineLayout, NativePipelineLayout, description: Arc<PipelineLayoutDescription<B>>);
+impl<B: Backend> PipelineLayout<B> {
+    /// Returns the bind group layout for a declared index.
+    pub fn bind_group_layout(&self, index: u32) -> Option<&BindGroupLayout<B>> {
+        self.description.as_ref()?.groups.get(index as usize)
+    }
+}
 handle!(Shader, NativeShader);
 pub struct RasterPipeline<B: Backend> {
     pub(crate) device: DeviceId,
     pub(crate) native: B::NativeRasterPipeline,
     pub(crate) dynamic_depth_bias: Option<DynamicDepthBias>,
+    pub(crate) layout: Option<PipelineLayout<B>>,
 }
 impl<B: Backend> Clone for RasterPipeline<B> {
     fn clone(&self) -> Self {
@@ -207,6 +227,7 @@ impl<B: Backend> Clone for RasterPipeline<B> {
             device: self.device,
             native: self.native.clone(),
             dynamic_depth_bias: self.dynamic_depth_bias,
+            layout: self.layout.clone(),
         }
     }
 }
@@ -218,6 +239,7 @@ impl<B: Backend> RasterPipeline<B> {
             device,
             native,
             dynamic_depth_bias: None,
+            layout: None,
         }
     }
     pub(crate) unsafe fn from_native_with_dynamic_depth_bias(
@@ -229,10 +251,15 @@ impl<B: Backend> RasterPipeline<B> {
             device,
             native,
             dynamic_depth_bias,
+            layout: None,
         }
     }
     pub fn device(&self) -> DeviceId {
         self.device
+    }
+    /// Layout captured by Core creation, when available.
+    pub fn layout(&self) -> Option<&PipelineLayout<B>> {
+        self.layout.as_ref()
     }
     /// Native lowering bridge only. The caller must not mutate native GPU
     /// state outside its backend command/ownership contract.
@@ -242,9 +269,9 @@ impl<B: Backend> RasterPipeline<B> {
         &self.native
     }
 }
-handle!(ComputePipeline, NativeComputePipeline);
-handle!(MeshPipeline, NativeMeshPipeline);
-handle!(RayPipeline, NativeRayPipeline);
+handle!(ComputePipeline, NativeComputePipeline, layout: PipelineLayout<B>);
+handle!(MeshPipeline, NativeMeshPipeline, layout: PipelineLayout<B>);
+handle!(RayPipeline, NativeRayPipeline, layout: PipelineLayout<B>);
 handle!(PipelineCache, NativePipelineCache);
 handle!(AccelerationStructure, NativeAcceleration);
 handle!(SparseAllocation, NativeSparseAllocation);
