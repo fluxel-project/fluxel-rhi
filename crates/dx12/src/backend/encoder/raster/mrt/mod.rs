@@ -9,10 +9,7 @@ mod finish;
 use clear::{depth_clear_handles, selected};
 pub(super) use finish::end;
 use std::collections::HashSet;
-use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM,
-    DXGI_FORMAT_R16G16B16A16_FLOAT,
-};
+use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;
 
 struct Resolve {
     resource: ID3D12Resource,
@@ -114,24 +111,14 @@ pub(super) fn begin(
                     }
                     // SAFETY: Core validates the lease's device and the clone retains the resource.
                     let n = unsafe { image.native_ref() };
-                    let resource = n.0.resource.clone();
-                    let format = match unsafe { resource.GetDesc() }.Format {
-                        DXGI_FORMAT_R8G8B8A8_UNORM => api::TextureFormat::Rgba8Unorm,
-                        DXGI_FORMAT_B8G8R8A8_UNORM => api::TextureFormat::Bgra8Unorm,
-                        DXGI_FORMAT_R10G10B10A2_UNORM => api::TextureFormat::Rgb10a2Unorm,
-                        DXGI_FORMAT_R16G16B16A16_FLOAT => api::TextureFormat::Rgba16Float,
-                        _ => return Err(Error::Unsupported("DX12 surface format")),
-                    };
+                    let [width, height] = image.extent();
                     (
                         n.0.rtv,
-                        resource.clone(),
+                        n.0.resource.clone(),
                         true,
-                        format,
+                        image.format(),
                         0,
-                        {
-                            let d = unsafe { resource.GetDesc() };
-                            (d.Width, d.Height)
-                        },
+                        (u64::from(width), height),
                         1,
                         1,
                     )

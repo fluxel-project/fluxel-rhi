@@ -6,6 +6,15 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 ## Active items
 
+### DX12 surface attachment formats
+
+**Status:** Configuration and acquisition retain the selected attachment view
+format, including sRGB views of supported UNORM flip buffers.
+
+**Acceptance:** Reconfigure a live HWND between linear and sRGB views and
+observe the format and generation on the acquired images. Exercise matching
+raster pipelines and verify sRGB encoding on a real presentation path.
+
 ### DX12 upload, completion, and texture transfer verification
 
 **Status:** Direct staging writes, bounded completion waits, sampled color

@@ -223,6 +223,10 @@ handoff validates generation before calling `Present`.
 The surface supports its declared formats, FIFO presentation, and immediate
 presentation only where DXGI reports tearing support. It owns swapchain state,
 not an application frame loop, fullscreen policy, or host event processing.
+The configured format describes the render-target view. An sRGB RGBA8 or
+BGRA8 configuration uses UNORM flip-model storage and an sRGB render-target
+view. The raster pipeline matches the leased view format. Render-pass resolve
+still requires compatibility with the underlying typed swapchain resource.
 
 ## Capability boundaries
 

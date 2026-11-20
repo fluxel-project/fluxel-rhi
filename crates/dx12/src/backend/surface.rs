@@ -20,11 +20,14 @@ use windows::{
             Direct3D12::{
                 D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_DESC,
                 D3D12_DESCRIPTOR_HEAP_FLAG_NONE, D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+                D3D12_FORMAT_SUPPORT1_RENDER_TARGET, D3D12_RENDER_TARGET_VIEW_DESC,
+                D3D12_RENDER_TARGET_VIEW_DESC_0, D3D12_RTV_DIMENSION_TEXTURE2D, D3D12_TEX2D_RTV,
                 ID3D12DescriptorHeap, ID3D12Resource,
             },
             Dxgi::Common::{
-                DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM,
-                DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_SAMPLE_DESC,
+                DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM,
+                DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM,
+                DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_SAMPLE_DESC,
             },
             Dxgi::{
                 CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_FEATURE_PRESENT_ALLOW_TEARING,
@@ -178,18 +181,12 @@ impl fluxel_rhi_core::backend::SurfaceBackend for Dx12 {
             .generation
     }
     fn capabilities(surface: &Dx12Surface) -> Result<api::SurfaceCapabilities> {
-        Ok(caps(surface.0.tearing_supported))
+        Ok(caps(&surface.0))
     }
     fn supports_config(surface: &Dx12Surface, d: &api::SurfaceConfig) -> api::Support<()> {
         if d.extent.contains(&0)
             || d.extent.iter().any(|v| *v > 16384)
-            || !matches!(
-                d.format,
-                api::TextureFormat::Bgra8Unorm
-                    | api::TextureFormat::Rgba8Unorm
-                    | api::TextureFormat::Rgb10a2Unorm
-                    | api::TextureFormat::Rgba16Float
-            )
+            || !surface_format_supported(&surface.0.device, d.format)
             || !(matches!(d.present_mode, api::PresentMode::Fifo)
                 || (surface.0.tearing_supported
                     && matches!(d.present_mode, api::PresentMode::Immediate)))
@@ -249,13 +246,7 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
     ) {
         return Err(Error::Unsupported("DXGI flip-model surface configuration"));
     }
-    let format = match d.format {
-        api::TextureFormat::Bgra8Unorm => DXGI_FORMAT_B8G8R8A8_UNORM,
-        api::TextureFormat::Rgba8Unorm => DXGI_FORMAT_R8G8B8A8_UNORM,
-        api::TextureFormat::Rgb10a2Unorm => DXGI_FORMAT_R10G10B10A2_UNORM,
-        api::TextureFormat::Rgba16Float => DXGI_FORMAT_R16G16B16A16_FLOAT,
-        _ => return Err(Error::InvalidState),
-    };
+    let format = swapchain_format(d.format).ok_or(Error::InvalidState)?;
     // Keep the tearing creation flag stable through ResizeBuffers. DXGI
     // requires this flag before a zero-interval Present can request tearing.
     let flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT
@@ -333,7 +324,7 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
         // SAFETY: latency is a cast of the retained current swapchain and the
         // configured value has already passed the RHI capability validation.
         unsafe { latency.SetMaximumFrameLatency(d.maximum_frame_latency) }.map_err(error)?;
-        rebuild_rtvs(&s.0.device, &mut i)
+        rebuild_rtvs(&s.0.device, &mut i, d.format)
     })();
     if let Err(error) = post_resize {
         if resized || i.chain.is_some() {
@@ -356,7 +347,7 @@ fn invalidate(inner: &mut Inner) {
     inner.acquired = false;
     inner.generation = inner.generation.wrapping_add(1);
 }
-fn rebuild_rtvs(device: &Dx12Device, inner: &mut Inner) -> Result<()> {
+fn rebuild_rtvs(device: &Dx12Device, inner: &mut Inner, format: api::TextureFormat) -> Result<()> {
     // SAFETY: the initialized two-entry RTV heap descriptor is local and the
     // returned COM heap remains in `inner` for this swapchain generation.
     let heap = unsafe {
@@ -381,6 +372,16 @@ fn rebuild_rtvs(device: &Dx12Device, inner: &mut Inner) -> Result<()> {
     // SAFETY: the newly created heap is non-empty and remains alive in `inner`.
     let start = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
     let chain = inner.chain.as_ref().ok_or(Error::SurfaceLost)?;
+    let view = D3D12_RENDER_TARGET_VIEW_DESC {
+        Format: super::texture::dxgi_format(format),
+        ViewDimension: D3D12_RTV_DIMENSION_TEXTURE2D,
+        Anonymous: D3D12_RENDER_TARGET_VIEW_DESC_0 {
+            Texture2D: D3D12_TEX2D_RTV {
+                MipSlice: 0,
+                PlaneSlice: 0,
+            },
+        },
+    };
     let mut rtvs = Vec::with_capacity(2);
     for index in 0..2 {
         let handle = D3D12_CPU_DESCRIPTOR_HANDLE {
@@ -395,7 +396,7 @@ fn rebuild_rtvs(device: &Dx12Device, inner: &mut Inner) -> Result<()> {
             device
                 .0
                 .native
-                .CreateRenderTargetView(&resource, None, handle)
+                .CreateRenderTargetView(&resource, Some(&view), handle)
         };
         rtvs.push(handle);
     }
@@ -403,15 +404,36 @@ fn rebuild_rtvs(device: &Dx12Device, inner: &mut Inner) -> Result<()> {
     inner.rtvs = rtvs;
     Ok(())
 }
-fn caps(tearing_supported: bool) -> api::SurfaceCapabilities {
+fn swapchain_format(format: api::TextureFormat) -> Option<DXGI_FORMAT> {
+    use api::TextureFormat::*;
+    Some(match format {
+        Bgra8Unorm | Bgra8UnormSrgb => DXGI_FORMAT_B8G8R8A8_UNORM,
+        Rgba8Unorm | Rgba8UnormSrgb => DXGI_FORMAT_R8G8B8A8_UNORM,
+        Rgb10a2Unorm => DXGI_FORMAT_R10G10B10A2_UNORM,
+        Rgba16Float => DXGI_FORMAT_R16G16B16A16_FLOAT,
+        _ => return None,
+    })
+}
+
+fn surface_format_supported(device: &Dx12Device, format: api::TextureFormat) -> bool {
+    swapchain_format(format).is_some()
+        && super::texture::format_has_support(device, format, D3D12_FORMAT_SUPPORT1_RENDER_TARGET)
+}
+
+fn caps(surface: &SurfaceState) -> api::SurfaceCapabilities {
     api::SurfaceCapabilities {
-        formats: vec![
+        formats: [
             api::TextureFormat::Bgra8Unorm,
+            api::TextureFormat::Bgra8UnormSrgb,
             api::TextureFormat::Rgba8Unorm,
+            api::TextureFormat::Rgba8UnormSrgb,
             api::TextureFormat::Rgb10a2Unorm,
             api::TextureFormat::Rgba16Float,
-        ],
-        present_modes: if tearing_supported {
+        ]
+        .into_iter()
+        .filter(|&format| surface_format_supported(&surface.device, format))
+        .collect(),
+        present_modes: if surface.tearing_supported {
             vec![api::PresentMode::Fifo, api::PresentMode::Immediate]
         } else {
             vec![api::PresentMode::Fifo]
