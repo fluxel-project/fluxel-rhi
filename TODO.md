@@ -572,6 +572,11 @@ and supplies a bounded workload:
   or prevent later conflicting GPU work. Reopen with a contract for
   matching the submitted resource range, excluding later GPU access,
   and canceling registration on rejection or uncertain handoff.
+- Retryable partial DX12 submissions. Preflight can reject a fresh packet,
+  and successful lane signals provide retirement evidence. A failure after
+  a native handoff may still leave the exact issue boundary unknown.
+  Reopen when a bounded failure case proves the accepted prefix and the
+  unwritten tail, including retained ownership and one-shot wait state.
 - DX12 native shader layout inference for bindings that need exact view or
   immediate metadata, and inference by export from DXIL libraries. The current
   path covers selected single-entry stages with representable binding metadata.
