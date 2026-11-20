@@ -113,6 +113,19 @@ impl<B: ResourceBackend + CommandBackend> Device<B> {
 }
 
 impl<B: ResourceBackend> Device<B> {
+    /// Checks the index format and byte range of a device-owned buffer view.
+    pub fn index_buffer_view_support(
+        &self,
+        buffer: &Buffer<B>,
+        range: Range<u64>,
+        format: IndexFormat,
+    ) -> Result<()> {
+        if buffer.device != self.id {
+            return Err(Error::WrongDevice);
+        }
+        B::index_buffer_view_support(&buffer.native, range, format)
+    }
+
     /// Checks whether this buffer can be viewed with the given storage ABI,
     /// access and byte range before creating or rewriting descriptors.
     pub fn storage_buffer_view_support(

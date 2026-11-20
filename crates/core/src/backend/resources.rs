@@ -18,6 +18,13 @@ pub trait ResourceBackend: Backend {
     ) -> Result<()> {
         Err(Error::Unsupported("storage buffer view support query"))
     }
+    fn index_buffer_view_support(
+        _buffer: &Self::NativeBuffer,
+        _range: Range<u64>,
+        _format: IndexFormat,
+    ) -> Result<()> {
+        Err(Error::Unsupported("index buffer view support query"))
+    }
     fn buffer_properties(_buffer: &Self::NativeBuffer) -> Option<BufferProperties> {
         None
     }

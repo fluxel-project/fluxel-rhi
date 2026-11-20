@@ -7,6 +7,18 @@
 use super::*;
 
 impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
+    fn index_buffer_view_support(
+        buffer: &Dx12Buffer,
+        range: std::ops::Range<u64>,
+        format: api::IndexFormat,
+    ) -> Result<()> {
+        let size = range
+            .end
+            .checked_sub(range.start)
+            .ok_or(Error::InvalidRange)?;
+        super::encoder::index_view::validate(buffer, range.start, size, format).map(drop)
+    }
+
     fn storage_buffer_view_support(
         buffer: &super::Dx12Buffer,
         range: std::ops::Range<u64>,

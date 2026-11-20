@@ -39,6 +39,7 @@ pub(crate) mod external_segment;
 pub(super) mod fence_wait;
 mod global_barrier;
 mod heaps;
+pub(super) mod index_view;
 mod indirect;
 pub(super) use indirect::MULTI_DRAW_COUNT_PROFILE;
 pub(crate) mod indirect_pack;

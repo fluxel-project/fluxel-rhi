@@ -56,6 +56,11 @@ for single-sample and multisampled textures of the same extent. Check a
 non-power-of-two extent and verify multisampling reports and admits one
 mip while rejecting a second mip.
 
+**Index buffer views:** Verify that DX12 support, direct recording and
+bundles agree on INDEX usage, element alignment, byte range, and the native
+32-bit view size. Include an aligned Uint16 range whose start is rejected
+for Uint32 and a valid range ending at the buffer boundary.
+
 ### DX12 structured shader diagnostics
 
 **Status:** WGSL parse and validation errors preserve compiler messages and

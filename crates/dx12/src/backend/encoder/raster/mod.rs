@@ -308,27 +308,8 @@ impl fluxel_rhi_core::backend::RasterBackend for Dx12 {
         size: u64,
         format: api::IndexFormat,
     ) -> Result<(), Error> {
-        if offset.checked_add(size).ok_or(Error::InvalidRange)? > buffer.size
-            || size > u64::from(u32::MAX)
-        {
-            return Err(Error::InvalidRange);
-        }
+        let view = index_view::make(buffer, offset, size, format)?;
         encoder.raster_index_format = Some(format);
-        let format = match format {
-            api::IndexFormat::Uint16 => {
-                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16_UINT
-            }
-            api::IndexFormat::Uint32 => {
-                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_UINT
-            }
-        };
-        let view = D3D12_INDEX_BUFFER_VIEW {
-            // SAFETY: as for the vertex buffer, the retained resource exposes
-            // a stable GPU address for the checked index range.
-            BufferLocation: unsafe { buffer.resource.GetGPUVirtualAddress() } + offset,
-            SizeInBytes: size as u32,
-            Format: format,
-        };
         // SAFETY: the index view is fully initialized from a retained resource.
         unsafe {
             encoder.list.IASetIndexBuffer(Some(&view));
