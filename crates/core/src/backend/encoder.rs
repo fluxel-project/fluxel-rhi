@@ -184,6 +184,13 @@ pub trait RasterBackend: CommandBackend {
     fn scissor(encoder: &mut Self::NativeEncoder, rect: Rect) -> Result<()>;
     fn blend_constant(encoder: &mut Self::NativeEncoder, value: [f32; 4]) -> Result<()>;
     fn stencil_reference(encoder: &mut Self::NativeEncoder, value: u32) -> Result<()>;
+    fn stencil_reference_faces(
+        _encoder: &mut Self::NativeEncoder,
+        _front: u32,
+        _back: u32,
+    ) -> Result<()> {
+        Err(Error::Unsupported("per-face stencil reference"))
+    }
     /// Clears selected active-pass attachments inside `rect`.
     fn clear_rect(
         _: &mut Self::NativeEncoder,

@@ -16,7 +16,7 @@ pub(crate) struct RasterSnapshot {
     pub viewport: Option<D3D12_VIEWPORT>,
     pub scissor: Option<RECT>,
     pub blend: Option<[f32; 4]>,
-    pub stencil: Option<u32>,
+    pub stencil: [u32; 2],
     pub depth_bias: Option<api::DynamicDepthBias>,
 }
 impl RasterSnapshot {
@@ -93,7 +93,23 @@ pub(crate) fn restore(encoder: &mut Dx12Encoder) -> Result<(), Error> {
         encoder
             .list
             .OMSetBlendFactor(Some(&s.blend.unwrap_or([1.0; 4])));
-        encoder.list.OMSetStencilRef(s.stencil.unwrap_or(0));
+    }
+    write_stencil_references(&encoder.list, s.stencil)
+}
+
+pub(super) fn write_stencil_references(
+    list: &ID3D12GraphicsCommandList,
+    [front, back]: [u32; 2],
+) -> Result<(), Error> {
+    if front == back {
+        // SAFETY: the list is a live graphics list and the command records one reference.
+        unsafe { list.OMSetStencilRef(front) };
+    } else {
+        let list = list
+            .cast::<ID3D12GraphicsCommandList8>()
+            .map_err(|_| Error::Unsupported("DX12 per-face stencil reference entry point"))?;
+        // SAFETY: the per-face feature was checked before this state was recorded.
+        unsafe { list.OMSetFrontAndBackStencilRef(front, back) };
     }
     Ok(())
 }

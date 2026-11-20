@@ -365,9 +365,22 @@ impl fluxel_rhi_core::backend::RasterBackend for Dx12 {
         Ok(())
     }
     fn stencil_reference(encoder: &mut Dx12Encoder, value: u32) -> Result<(), Error> {
-        // SAFETY: this records a scalar value into the open graphics list.
-        unsafe { encoder.list.OMSetStencilRef(value & 0xff) };
-        encoder.raster_snapshot.stencil = Some(value & 0xff);
+        let refs = [value & 0xff; 2];
+        super::raster_snapshot::write_stencil_references(&encoder.list, refs)?;
+        encoder.raster_snapshot.stencil = refs;
+        Ok(())
+    }
+    fn stencil_reference_faces(
+        encoder: &mut Dx12Encoder,
+        front: u32,
+        back: u32,
+    ) -> Result<(), Error> {
+        if !encoder.device.0.stencil_reference_per_face {
+            return Err(Error::Unsupported("DX12 per-face stencil reference"));
+        }
+        let refs = [front & 0xff, back & 0xff];
+        super::raster_snapshot::write_stencil_references(&encoder.list, refs)?;
+        encoder.raster_snapshot.stencil = refs;
         Ok(())
     }
     fn clear_rect(

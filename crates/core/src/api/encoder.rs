@@ -38,6 +38,7 @@ pub struct CommandEncoder<B: CommandBackend> {
     pub(crate) debug_markers_compute_pass: bool,
     pub(crate) dynamic_depth_bias: bool,
     pub(crate) dynamic_depth_bias_clamp: bool,
+    pub(crate) stencil_reference_per_face: bool,
     pub(crate) rect_attachment_clear: bool,
     pub(crate) direct_buffer_upload: bool,
     pub(crate) native_interop: bool,
@@ -68,6 +69,7 @@ impl<B: CommandBackend> CommandEncoder<B> {
             debug_markers_compute_pass: device.caps.debug_markers_compute_pass,
             dynamic_depth_bias: device.caps.dynamic_depth_bias,
             dynamic_depth_bias_clamp: device.caps.dynamic_depth_bias_clamp,
+            stencil_reference_per_face: device.caps.stencil_reference_per_face,
             rect_attachment_clear: device.caps.rect_attachment_clear,
             direct_buffer_upload: device.caps.direct_buffer_upload,
             native_interop: device.caps.native_interop,
@@ -701,6 +703,17 @@ impl<B: RasterBackend> RasterPass<'_, B> {
     }
     pub fn stencil_reference(&mut self, v: u32) -> Result<()> {
         let result = self.call(|e| B::stencil_reference(e, v));
+        if result.is_ok() {
+            self.encoder.stats.record_stencil_reference_set();
+        }
+        result
+    }
+    /// Sets the front and back stencil references, each using its low eight bits.
+    pub fn stencil_reference_faces(&mut self, front: u32, back: u32) -> Result<()> {
+        if !self.encoder.stencil_reference_per_face {
+            return Err(Error::Unsupported("per-face stencil reference"));
+        }
+        let result = self.call(|encoder| B::stencil_reference_faces(encoder, front, back));
         if result.is_ok() {
             self.encoder.stats.record_stencil_reference_set();
         }

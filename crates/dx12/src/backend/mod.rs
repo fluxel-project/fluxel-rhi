@@ -110,6 +110,7 @@ struct Dx12DeviceState {
     /// Immutable OPTIONS16 fact required by dynamic-depth-bias PSOs and
     /// `ID3D12GraphicsCommandList9::RSSetDepthBias`.
     pub(super) dynamic_depth_bias_supported: bool,
+    pub(super) stencil_reference_per_face: bool,
     pub(super) sparse_in_flight: Mutex<Vec<(u64, Vec<sparse::SparseRetained>)>>,
     pub(super) queue: ID3D12CommandQueue,
     pub(super) multi_queue: queue::MultiQueueState,

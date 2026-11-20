@@ -258,6 +258,21 @@ impl Dx12 {
                 && options13
                     .UnrestrictedBufferTextureCopyPitchSupported
                     .as_bool();
+            let mut options14 =
+                windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS14::default();
+            // SAFETY: the initialized OPTIONS14 structure matches the query
+            // and is exclusively borrowed for this call.
+            let stencil_reference_per_face = unsafe {
+                native.CheckFeatureSupport(
+                    windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_D3D12_OPTIONS14,
+                    (&mut options14 as *mut _) as *mut _,
+                    std::mem::size_of_val(&options14) as u32,
+                )
+            }
+            .is_ok()
+                && options14
+                    .IndependentFrontAndBackStencilRefMaskSupported
+                    .as_bool();
             let mut options16 =
                 windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS16::default();
             // SAFETY: the feature structure exactly matches the synchronous
@@ -440,6 +455,7 @@ impl Dx12 {
                 memory_observation: true,
                 dynamic_depth_bias: dynamic_depth_bias_supported,
                 dynamic_depth_bias_clamp: dynamic_depth_bias_supported,
+                stencil_reference_per_face,
                 rect_attachment_clear: true,
                 conservative_raster: Some(conservative_raster),
                 direct_buffer_upload: true,
@@ -532,6 +548,7 @@ impl Dx12 {
                     resource_heap_tier2,
                     enhanced_barriers_supported,
                     dynamic_depth_bias_supported,
+                    stencil_reference_per_face,
                     sparse_in_flight: Mutex::new(Vec::new()),
                     multi_queue: queue::MultiQueueState::new(&native)?,
                     queue,

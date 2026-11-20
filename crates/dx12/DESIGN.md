@@ -312,6 +312,10 @@ WGSL fragment sample index and sample interpolation lower to
 sample-frequency execution. Pipeline and attachment sample counts still
 follow the ordinary multisample format checks.
 
+Per-face dynamic stencil references require the DX12 OPTIONS14 feature
+and the graphics command list 8 entry point. Raster state restoration
+replays the front and back references after internal draws or bundles.
+
 The `subgroups` shader requirement uses the device's Shader Model 6 wave
 support and its reported minimum and maximum wave widths. WGSL admits
 subgroup lane index, width, vote, ballot, arithmetic, shuffle, and quad

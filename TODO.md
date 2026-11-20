@@ -204,6 +204,17 @@ interpolation. HLSL uses native sample-frequency semantics.
 multisampled target and verify interpolation at sample positions.
 Cover the sample index and interpolation triggers separately.
 
+### DX12 per-face stencil references
+
+**Status:** Core raster passes can set independent dynamic front and
+back stencil references on devices that report the DX12 OPTIONS14
+feature. Graphics state restoration retains both values.
+
+**Acceptance:** Render opposite-facing primitives against distinct
+references. Verify state restoration after internal draws and bundles,
+setting a shared value after a split value, and unsupported-device
+rejection. Independent static masks require separate PSO admission.
+
 ### DX12 native fragment barycentrics
 
 **Status:** The device capability and HLSL and DXIL shader routes admit
