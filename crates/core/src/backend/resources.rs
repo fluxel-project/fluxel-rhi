@@ -37,6 +37,22 @@ pub trait ResourceBackend: Backend {
     ) -> Result<()> {
         Err(Error::Unsupported("texture view support query"))
     }
+    fn sampled_texture_view_support(
+        _device: &Self::NativeDevice,
+        _texture: &Self::NativeTexture,
+        _desc: &TextureViewDesc,
+        _mapping: TextureComponentMapping,
+    ) -> Result<()> {
+        Err(Error::Unsupported("sampled texture component mapping"))
+    }
+    fn create_sampled_texture_view(
+        _device: &Self::NativeDevice,
+        _texture: &Self::NativeTexture,
+        _desc: &TextureViewDesc,
+        _mapping: TextureComponentMapping,
+    ) -> Result<Self::NativeTextureView> {
+        Err(Error::Unsupported("sampled texture component mapping"))
+    }
     fn sampler_support(_device: &Self::NativeDevice, _desc: &SamplerDesc) -> Result<()> {
         Err(Error::Unsupported("sampler support query"))
     }

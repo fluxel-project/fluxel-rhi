@@ -8,9 +8,11 @@
 //! cross-operation layout transitions to `encoder::transition` and makes no
 //! render-graph lifetime or aliasing decisions.
 
+mod color_view;
 mod depth_view;
 mod format;
 mod validate;
+pub(super) use color_view::{create_sampled_view, create_view};
 pub(super) use format::{
     bc_block_bytes, color_texel_bytes, depth_aspects, dxgi_format, format_has_support,
     format_supports_texture_atomic_add_native, format_supports_texture_atomic_bitwise_native,
@@ -91,23 +93,24 @@ fn view_format_available(
     dv: &Dx12Device,
     desc: &api::TextureDesc,
     view: api::TextureFormat,
+    usage: api::TextureUsage,
 ) -> bool {
     if view == desc.format {
         return true;
     }
     desc.view_formats.contains(&view)
-        && (!desc.usage.contains(api::TextureUsage::TEXTURE_BINDING)
+        && (!usage.contains(api::TextureUsage::TEXTURE_BINDING)
             || format_has_support(dv, view, D3D12_FORMAT_SUPPORT1_SHADER_LOAD))
-        && (!(desc.samples > 1 && desc.usage.contains(api::TextureUsage::TEXTURE_BINDING))
+        && (!(desc.samples > 1 && usage.contains(api::TextureUsage::TEXTURE_BINDING))
             || format_has_support(dv, view, D3D12_FORMAT_SUPPORT1_MULTISAMPLE_LOAD))
-        && (!desc.usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
+        && (!usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
             || format_has_support(dv, view, D3D12_FORMAT_SUPPORT1_RENDER_TARGET))
 }
 
 fn permitted_view_formats(dv: &Dx12Device, desc: &api::TextureDesc) -> Vec<api::TextureFormat> {
     let mut formats = vec![desc.format];
     for &view in &desc.view_formats {
-        if !formats.contains(&view) && view_format_available(dv, desc, view) {
+        if !formats.contains(&view) && view_format_available(dv, desc, view, desc.usage) {
             formats.push(view);
         }
     }
@@ -321,302 +324,19 @@ pub(crate) fn view_support(
     t: &Dx12Texture,
     v: &api::TextureViewDesc,
 ) -> Result<()> {
-    validate::view(dv, &t.0.desc, v)
+    validate::view(dv, &t.0.desc, v, t.0.desc.usage)
 }
 
-pub(crate) fn create_view(
+pub(super) fn sampled_view_support(
     dv: &Dx12Device,
     t: &Dx12Texture,
     v: &api::TextureViewDesc,
-) -> Result<Dx12TextureView> {
-    let texture = t.0.clone();
-    view_support(dv, t, v)?;
-    let depth = is_depth(texture.desc.format);
-    let array = texture.desc.array_layers > 1 || v.dimension == api::TextureViewDimension::D2Array;
-    if depth {
-        return depth_view::create_depth_view(dv, texture, v, array);
+) -> Result<()> {
+    let usage = api::TextureUsage::TEXTURE_BINDING;
+    if !t.0.desc.usage.contains(usage) || is_depth(t.0.desc.format) {
+        return Err(Error::Unsupported("DX12 sampled color texture view"));
     }
-    let (srv_lease, srv) = if texture
-        .desc
-        .usage
-        .contains(api::TextureUsage::TEXTURE_BINDING)
-    {
-        let lease =
-            dv.0.cpu_descriptors
-                .allocate(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1)?;
-        let srv = lease.cpu(0);
-        let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-            Format: dxgi_format(v.format),
-            ViewDimension: if texture.desc.samples > 1
-                && v.dimension == api::TextureViewDimension::D2Array
-            {
-                D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY
-            } else if texture.desc.samples > 1 {
-                D3D12_SRV_DIMENSION_TEXTURE2DMS
-            } else if v.dimension == api::TextureViewDimension::Cube {
-                D3D12_SRV_DIMENSION_TEXTURECUBE
-            } else if v.dimension == api::TextureViewDimension::CubeArray {
-                D3D12_SRV_DIMENSION_TEXTURECUBEARRAY
-            } else if v.dimension == api::TextureViewDimension::D1 {
-                D3D12_SRV_DIMENSION_TEXTURE1D
-            } else if v.dimension == api::TextureViewDimension::D3 {
-                D3D12_SRV_DIMENSION_TEXTURE3D
-            } else if v.dimension == api::TextureViewDimension::D2Array {
-                D3D12_SRV_DIMENSION_TEXTURE2DARRAY
-            } else {
-                D3D12_SRV_DIMENSION_TEXTURE2D
-            },
-            Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-            Anonymous: if texture.desc.samples > 1
-                && v.dimension == api::TextureViewDimension::D2Array
-            {
-                D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                    Texture2DMSArray: D3D12_TEX2DMS_ARRAY_SRV {
-                        FirstArraySlice: v.layers.start,
-                        ArraySize: v.layers.end - v.layers.start,
-                    },
-                }
-            } else if texture.desc.samples > 1 {
-                D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                    Texture2DMS: D3D12_TEX2DMS_SRV {
-                        UnusedField_NothingToDefine: 0,
-                    },
-                }
-            } else if v.dimension == api::TextureViewDimension::Cube {
-                D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                    TextureCube: D3D12_TEXCUBE_SRV {
-                        MostDetailedMip: v.mips.start,
-                        MipLevels: v.mips.end - v.mips.start,
-                        ResourceMinLODClamp: 0.0,
-                    },
-                }
-            } else if v.dimension == api::TextureViewDimension::CubeArray {
-                D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                    TextureCubeArray: D3D12_TEXCUBE_ARRAY_SRV {
-                        MostDetailedMip: v.mips.start,
-                        MipLevels: v.mips.end - v.mips.start,
-                        First2DArrayFace: v.layers.start,
-                        NumCubes: (v.layers.end - v.layers.start) / 6,
-                        ResourceMinLODClamp: 0.0,
-                    },
-                }
-            } else if v.dimension == api::TextureViewDimension::D1 {
-                D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                    Texture1D: D3D12_TEX1D_SRV {
-                        MostDetailedMip: v.mips.start,
-                        MipLevels: v.mips.end - v.mips.start,
-                        ResourceMinLODClamp: 0.0,
-                    },
-                }
-            } else if v.dimension == api::TextureViewDimension::D3 {
-                D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                    Texture3D: D3D12_TEX3D_SRV {
-                        MostDetailedMip: v.mips.start,
-                        MipLevels: v.mips.end - v.mips.start,
-                        ResourceMinLODClamp: 0.0,
-                    },
-                }
-            } else if v.dimension == api::TextureViewDimension::D2Array {
-                D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                    Texture2DArray: D3D12_TEX2D_ARRAY_SRV {
-                        MostDetailedMip: v.mips.start,
-                        MipLevels: v.mips.end - v.mips.start,
-                        FirstArraySlice: v.layers.start,
-                        ArraySize: v.layers.end - v.layers.start,
-                        PlaneSlice: 0,
-                        ResourceMinLODClamp: 0.0,
-                    },
-                }
-            } else {
-                D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                    Texture2D: D3D12_TEX2D_SRV {
-                        MostDetailedMip: v.mips.start,
-                        MipLevels: v.mips.end - v.mips.start,
-                        PlaneSlice: 0,
-                        ResourceMinLODClamp: 0.0,
-                    },
-                }
-            },
-        };
-        // SAFETY: the validated SRV range belongs to retained texture storage
-        // and the destination CPU handle belongs to the retained heap.
-        unsafe {
-            dv.0.native
-                .CreateShaderResourceView(&texture.resource, Some(&desc), srv)
-        };
-        (Some(lease), Some(srv))
-    } else {
-        (None, None)
-    };
-    let (uav_lease, uav) = if !matches!(
-        v.format,
-        api::TextureFormat::Rgba8UnormSrgb | api::TextureFormat::Bgra8UnormSrgb
-    ) && texture
-        .desc
-        .usage
-        .contains(api::TextureUsage::STORAGE_BINDING)
-    {
-        let lease =
-            dv.0.cpu_descriptors
-                .allocate(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1)?;
-        let uav = lease.cpu(0);
-        let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
-            Format: dxgi_format(v.format),
-            ViewDimension: if texture.desc.dimension == api::TextureDimension::D1 {
-                D3D12_UAV_DIMENSION_TEXTURE1D
-            } else if texture.desc.dimension == api::TextureDimension::D3 {
-                D3D12_UAV_DIMENSION_TEXTURE3D
-            } else if array {
-                D3D12_UAV_DIMENSION_TEXTURE2DARRAY
-            } else {
-                D3D12_UAV_DIMENSION_TEXTURE2D
-            },
-            Anonymous: if texture.desc.dimension == api::TextureDimension::D1 {
-                D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-                    Texture1D: D3D12_TEX1D_UAV {
-                        MipSlice: v.mips.start,
-                    },
-                }
-            } else if texture.desc.dimension == api::TextureDimension::D3 {
-                D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-                    Texture3D: D3D12_TEX3D_UAV {
-                        MipSlice: v.mips.start,
-                        FirstWSlice: 0,
-                        WSize: (texture.desc.extent[2] >> v.mips.start).max(1),
-                    },
-                }
-            } else if array {
-                D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-                    Texture2DArray: D3D12_TEX2D_ARRAY_UAV {
-                        MipSlice: v.mips.start,
-                        FirstArraySlice: v.layers.start,
-                        ArraySize: v.layers.end - v.layers.start,
-                        PlaneSlice: 0,
-                    },
-                }
-            } else {
-                D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-                    Texture2D: D3D12_TEX2D_UAV {
-                        MipSlice: v.mips.start,
-                        PlaneSlice: 0,
-                    },
-                }
-            },
-        };
-        // SAFETY: validated UAV format/mip and retained resource/heap make
-        // this descriptor write independent of caller lifetimes.
-        unsafe {
-            dv.0.native
-                .CreateUnorderedAccessView(&texture.resource, None, Some(&desc), uav)
-        };
-        (Some(lease), Some(uav))
-    } else {
-        (None, None)
-    };
-    let (rtv_lease, rtv) = if texture
-        .desc
-        .usage
-        .contains(api::TextureUsage::RENDER_ATTACHMENT)
-    {
-        let lease =
-            dv.0.cpu_descriptors
-                .allocate(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1)?;
-        let rtv = lease.cpu(0);
-        let desc = D3D12_RENDER_TARGET_VIEW_DESC {
-            Format: dxgi_format(v.format),
-            ViewDimension: if texture.desc.dimension == api::TextureDimension::D1 {
-                D3D12_RTV_DIMENSION_TEXTURE1D
-            } else if texture.desc.dimension == api::TextureDimension::D3 {
-                D3D12_RTV_DIMENSION_TEXTURE3D
-            } else if texture.desc.samples == 1
-                && (texture.desc.array_layers > 1
-                    || v.dimension == api::TextureViewDimension::D2Array)
-            {
-                D3D12_RTV_DIMENSION_TEXTURE2DARRAY
-            } else if texture.desc.samples == 1 {
-                D3D12_RTV_DIMENSION_TEXTURE2D
-            } else if texture.desc.array_layers > 1
-                || v.dimension == api::TextureViewDimension::D2Array
-            {
-                D3D12_RTV_DIMENSION_TEXTURE2DMSARRAY
-            } else {
-                D3D12_RTV_DIMENSION_TEXTURE2DMS
-            },
-            Anonymous: if texture.desc.dimension == api::TextureDimension::D1 {
-                D3D12_RENDER_TARGET_VIEW_DESC_0 {
-                    Texture1D: D3D12_TEX1D_RTV {
-                        MipSlice: v.mips.start,
-                    },
-                }
-            } else if texture.desc.dimension == api::TextureDimension::D3 {
-                D3D12_RENDER_TARGET_VIEW_DESC_0 {
-                    Texture3D: D3D12_TEX3D_RTV {
-                        MipSlice: v.mips.start,
-                        FirstWSlice: 0,
-                        WSize: (texture.desc.extent[2] >> v.mips.start).max(1),
-                    },
-                }
-            } else if texture.desc.samples == 1
-                && (texture.desc.array_layers > 1
-                    || v.dimension == api::TextureViewDimension::D2Array)
-            {
-                D3D12_RENDER_TARGET_VIEW_DESC_0 {
-                    Texture2DArray: D3D12_TEX2D_ARRAY_RTV {
-                        MipSlice: v.mips.start,
-                        FirstArraySlice: v.layers.start,
-                        ArraySize: v.layers.end - v.layers.start,
-                        PlaneSlice: 0,
-                    },
-                }
-            } else if texture.desc.samples == 1 {
-                D3D12_RENDER_TARGET_VIEW_DESC_0 {
-                    Texture2D: D3D12_TEX2D_RTV {
-                        MipSlice: v.mips.start,
-                        PlaneSlice: 0,
-                    },
-                }
-            } else if texture.desc.array_layers > 1
-                || v.dimension == api::TextureViewDimension::D2Array
-            {
-                D3D12_RENDER_TARGET_VIEW_DESC_0 {
-                    Texture2DMSArray: D3D12_TEX2DMS_ARRAY_RTV {
-                        FirstArraySlice: v.layers.start,
-                        ArraySize: v.layers.end - v.layers.start,
-                    },
-                }
-            } else {
-                D3D12_RENDER_TARGET_VIEW_DESC_0 {
-                    Texture2DMS: D3D12_TEX2DMS_RTV {
-                        UnusedField_NothingToDefine: 0,
-                    },
-                }
-            },
-        };
-        // SAFETY: the validated RTV descriptor refers to retained texture
-        // storage and writes only into this view's retained descriptor heap.
-        unsafe {
-            dv.0.native
-                .CreateRenderTargetView(&texture.resource, Some(&desc), rtv)
-        };
-        (Some(lease), Some(rtv))
-    } else {
-        (None, None)
-    };
-    Ok(Dx12TextureView(Arc::new(TextureViewState {
-        texture,
-        srv_lease,
-        srv,
-        uav_lease,
-        uav,
-        rtv_lease,
-        rtv,
-        dsv_lease: None,
-        dsv: None,
-        dsv_read_only_depth: None,
-        dsv_read_only_stencil: None,
-        dsv_read_only_both: None,
-        desc: v.clone(),
-    })))
+    validate::view(dv, &t.0.desc, v, usage)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -159,6 +159,12 @@ Success on one says nothing about the others. The same applies to optional
 shader capabilities: admission combines the device fact, required Core
 feature, accepted stage/storage class, and translator support.
 
+`create_sampled_texture_view` can map each shader-visible color component to
+an ordinary view component or a constant zero or one. DX12 creates only a
+shader-resource descriptor for this view, even when the texture itself also
+allows storage or render-attachment usage. The support query checks the same
+sampled-view format, dimension, and subresource constraints as creation.
+
 ## Recording, submission, and completion
 
 The normal run path is:

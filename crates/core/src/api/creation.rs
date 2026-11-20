@@ -101,15 +101,52 @@ impl<B: ResourceBackend> Device<B> {
         desc: &TextureViewDesc,
     ) -> Result<TextureView<B>> {
         self.validate_view_request(texture, desc)?;
+        let native = B::create_view(&self.native, &texture.native, desc)?;
+        Ok(self.wrap_view(texture, native))
+    }
+    /// Checks admission for a sampled-only color view with a component mapping.
+    pub fn sampled_texture_view_support(
+        &self,
+        texture: &Texture<B>,
+        desc: &TextureViewDesc,
+        mapping: TextureComponentMapping,
+    ) -> Result<()> {
+        self.validate_sampled_texture_view_request(texture, desc)?;
+        B::sampled_texture_view_support(&self.native, &texture.native, desc, mapping)
+    }
+    /// Creates a color view usable for sampled bindings only. Storage and
+    /// attachment uses require a separate view, including with identity mapping.
+    pub fn create_sampled_texture_view(
+        &self,
+        texture: &Texture<B>,
+        desc: &TextureViewDesc,
+        mapping: TextureComponentMapping,
+    ) -> Result<TextureView<B>> {
+        self.validate_sampled_texture_view_request(texture, desc)?;
+        let native = B::create_sampled_texture_view(&self.native, &texture.native, desc, mapping)?;
+        Ok(self.wrap_view(texture, native))
+    }
+    fn validate_sampled_texture_view_request(
+        &self,
+        texture: &Texture<B>,
+        desc: &TextureViewDesc,
+    ) -> Result<()> {
+        self.validate_view_request(texture, desc)?;
+        if !self.caps.sampled_texture_component_mapping {
+            return Err(Error::Unsupported("sampled texture component mapping"));
+        }
+        if desc.aspects != TextureAspects::COLOR {
+            return Err(Error::Unsupported(
+                "sampled component mapping requires a color view",
+            ));
+        }
+        Ok(())
+    }
+    fn wrap_view(&self, texture: &Texture<B>, native: B::NativeTextureView) -> TextureView<B> {
         // SAFETY: `texture` was checked to belong to this device and SPI creates its view.
-        let mut view = unsafe {
-            TextureView::from_native(
-                self.id,
-                B::create_view(&self.native, &texture.native, desc)?,
-            )
-        };
+        let mut view = unsafe { TextureView::from_native(self.id, native) };
         view.texture_desc = texture.desc.clone();
-        Ok(view)
+        view
     }
     /// Checks descriptor admission without creating a sampler. Backends may
     /// support creation even when they do not expose a separate support query.

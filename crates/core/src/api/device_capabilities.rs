@@ -201,6 +201,8 @@ pub struct DeviceCapabilities {
     pub direct_buffer_upload: bool,
     /// Completion points support an explicit bounded host wait.
     pub completion_timeout: bool,
+    /// Sampled color texture views can remap their shader-visible components.
+    pub sampled_texture_component_mapping: bool,
     pub lanes: Arc<[LaneInfo]>,
     pub limits: DeviceLimits,
 }

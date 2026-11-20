@@ -385,6 +385,7 @@ impl Dx12 {
                 rect_attachment_clear: true,
                 direct_buffer_upload: true,
                 completion_timeout: true,
+                sampled_texture_component_mapping: true,
                 push_constants: true,
                 indirect_draw: true,
                 indirect_first_instance: true,

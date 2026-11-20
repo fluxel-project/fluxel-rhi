@@ -272,6 +272,30 @@ pub struct TextureViewDesc {
     pub mips: Range<u32>,
     pub layers: Range<u32>,
 }
+/// Source for one shader-visible component of a sampled color texture.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TextureComponent {
+    Red,
+    Green,
+    Blue,
+    Alpha,
+    Zero,
+    One,
+}
+
+/// The four shader-visible components in red, green, blue, alpha order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TextureComponentMapping(pub [TextureComponent; 4]);
+
+impl TextureComponentMapping {
+    pub const IDENTITY: Self = Self([
+        TextureComponent::Red,
+        TextureComponent::Green,
+        TextureComponent::Blue,
+        TextureComponent::Alpha,
+    ]);
+}
+
 #[derive(Clone, Debug)]
 pub struct SamplerDesc {
     pub label: Option<String>,
