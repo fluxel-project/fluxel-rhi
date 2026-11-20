@@ -310,6 +310,7 @@ fn compile_inner(
         || desc.required_features.iter().any(|x| {
             x != api::SHADER_FEATURE_RAY_QUERY
                 && x != api::SHADER_FEATURE_PUSH_CONSTANTS
+                && x != api::SHADER_FEATURE_POINTER_COMPOSITE_ACCESS
                 && x != api::SHADER_FEATURE_F16
                 && x != api::SHADER_FEATURE_PRIMITIVE_INDEX
                 && x != api::SHADER_FEATURE_EARLY_DEPTH_TEST

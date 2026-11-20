@@ -317,6 +317,11 @@ layout ranges for each stage using the block must cover its full byte span.
 Arrays, matrices, nested structures, and narrower member types remain
 outside this layout path.
 
+WGSL composite pointer access uses Naga's standard member and index
+lowering for pointers accepted by its frontend. The WGSL shader route
+can explicitly qualify the `pointer_composite_access` requirement.
+The vendored frontend rejects `unrestricted_pointer_parameters`.
+
 For WGSL packed 4×8 integer dot products, DX12 selects the native signed
 or unsigned HLSL intrinsic when the device supports Shader Model 6.4.
 The Shader Model 6.0 route keeps the equivalent integer lowering. Naga and

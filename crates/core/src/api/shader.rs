@@ -41,6 +41,8 @@ pub struct ShaderEntryPoint {
 pub const SHADER_FEATURE_RAY_QUERY: &str = "ray-query";
 /// The shader uses layout-declared inline constants.
 pub const SHADER_FEATURE_PUSH_CONSTANTS: &str = "push-constants";
+/// The WGSL shader requires implicit dereference for composite pointer access.
+pub const SHADER_FEATURE_POINTER_COMPOSITE_ACCESS: &str = "pointer_composite_access";
 /// The shader requires native half-precision floating-point types.
 pub const SHADER_FEATURE_F16: &str = "shader-f16";
 /// The shader requires exact native signed or unsigned 16-bit integers.

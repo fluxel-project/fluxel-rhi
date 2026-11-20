@@ -331,6 +331,14 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
     type DirectFuture<'a> = pipeline::worker::ColdFuture<Dx12Shader>;
     type NagaFuture<'a> = pipeline::worker::ColdFuture<Dx12Shader>;
     fn shader_route(device: &Dx12Device, desc: &api::ShaderDesc) -> api::ShaderRoute {
+        if desc.format != api::ShaderFormat::Wgsl
+            && desc
+                .required_features
+                .iter()
+                .any(|feature| feature == api::SHADER_FEATURE_POINTER_COMPOSITE_ACCESS)
+        {
+            return api::ShaderRoute::Unsupported;
+        }
         if shader_naga::requires_native_16bit(desc)
             && (!device.0.native_16bit_shader_ops
                 || desc.entries.is_empty()
@@ -592,6 +600,7 @@ fn shader_features_supported(
     features.iter().all(|feature| match feature.as_str() {
         api::SHADER_FEATURE_RAY_QUERY => ray_query_supported,
         api::SHADER_FEATURE_PUSH_CONSTANTS => true,
+        api::SHADER_FEATURE_POINTER_COMPOSITE_ACCESS => true,
         api::SHADER_FEATURE_F16 => true,
         api::SHADER_FEATURE_I16 => true,
         api::SHADER_FEATURE_F64 => true,

@@ -113,6 +113,17 @@ coverage and reserved register overlaps. Reopen complex aggregate layouts
 when their lowering preserves each member offset under DX12 root constant
 indexing restrictions.
 
+### DX12 WGSL composite pointer access
+
+**Status:** The WGSL shader route qualifies composite pointer access and
+the existing HLSL lowering consumes the resulting member or index access.
+The vendored frontend does not implement unrestricted pointer parameters.
+
+**Acceptance:** Verify implicit member and array dereference with a GPU
+readback, including storage access through a pointer expression. Reopen
+unrestricted arguments when frontend validation and HLSL lowering can
+preserve resource identity, offsets and aliasing semantics across calls.
+
 ### DX12 native 16-bit integer shaders
 
 **Status:** HLSL and DXIL use the Core ShaderI16 device requirement and
