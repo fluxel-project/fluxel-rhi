@@ -148,6 +148,9 @@ Only those allocation routes mark their resources eligible for committed
 residency. Placed, pool-backed, sparse and external resources require their
 actual physical owner. The native resource itself is retained for an accepted
 asynchronous residency request on a committed allocation.
+Explicit committed creation bypasses pool selection and retains the usual
+descriptor and allocation checks. Ordinary creation continues to pick its
+existing allocation route.
 When the opened device exposes `ID3D12Device3`, asynchronous residency uses
 `EnqueueMakeResident` with the caller's budget flag and a private operation
 fence. The fence does not advance either command timeline. The backend retains

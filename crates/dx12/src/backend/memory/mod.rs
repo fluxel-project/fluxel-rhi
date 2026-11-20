@@ -28,6 +28,12 @@ const DEFAULT_BUFFER_CLASS: u32 = 3;
 const DEFAULT_NON_RT_DS_TEXTURE_CLASS: u32 = 4;
 const DEFAULT_RT_DS_TEXTURE_CLASS: u32 = 5;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum AllocationRoute {
+    Automatic,
+    Committed,
+}
+
 /// Cold-path pool and DXGI process-segment observation.
 pub struct MemoryObservation;
 
@@ -288,6 +294,21 @@ fn committed_owner<'a>(
 
 impl MemoryBackend for Dx12 {
     type NativeHeap = Dx12Heap;
+
+    fn create_committed_buffer(device: &Dx12Device, desc: &api::BufferDesc) -> Result<Dx12Buffer> {
+        super::resource::create_committed_buffer(device, desc)
+    }
+
+    fn create_committed_texture(
+        device: &Dx12Device,
+        desc: &api::TextureDesc,
+    ) -> Result<Dx12Texture> {
+        device.require_active()?;
+        if desc.usage.contains(api::TextureUsage::TRANSIENT_ATTACHMENT) {
+            return Err(Error::InvalidState);
+        }
+        texture::create_with_route(device, desc, AllocationRoute::Committed)
+    }
 
     fn committed_residency_support(
         device: &Dx12Device,

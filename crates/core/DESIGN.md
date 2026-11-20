@@ -155,6 +155,8 @@ tile mappings still change only through explicit sparse operations.
 Committed-resource residency qualifies a resource through the backend's
 actual allocation provenance. The capability permits that query. A candidate
 must own its memory to change its own residency reference.
+The committed creation entry points request that ownership directly for
+default buffers and textures.
 Asynchronous residency produces host completion. A caller must observe
 success before relying on the new reference for later work. A completion
 point carries no queue-wait authority.

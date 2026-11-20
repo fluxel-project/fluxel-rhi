@@ -87,6 +87,31 @@ impl<B: MemoryBackend> Device<B> {
     }
 }
 impl<B: MemoryBackend> MemoryDomain<'_, B> {
+    /// Creates a device-memory buffer with its own committed allocation.
+    pub fn committed_buffer(&self, desc: &BufferDesc) -> Result<Buffer<B>> {
+        if !self.device.caps.committed_resource_residency || desc.memory != MemoryClass::Device {
+            return Err(Error::Unsupported("committed default buffers"));
+        }
+        let native = B::create_committed_buffer(&self.device.native, desc)?;
+        // SAFETY: the backend created this buffer for the checked device.
+        Ok(unsafe { Buffer::from_native(self.device.id, native) })
+    }
+
+    /// Creates a texture with its own committed default allocation.
+    pub fn committed_texture(&self, desc: &TextureDesc) -> Result<Texture<B>> {
+        if !self.device.caps.committed_resource_residency {
+            return Err(Error::Unsupported("committed default textures"));
+        }
+        if desc.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT) {
+            return Err(Error::InvalidState);
+        }
+        let native = B::create_committed_texture(&self.device.native, desc)?;
+        // SAFETY: the backend created this texture for the checked device.
+        let mut texture = unsafe { Texture::from_native(self.device.id, native) };
+        texture.desc = Some(desc.clone());
+        Ok(texture)
+    }
+
     fn committed_target<'a>(
         &self,
         resource: ResidencyResource<'a, B>,

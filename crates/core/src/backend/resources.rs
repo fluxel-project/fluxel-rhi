@@ -401,6 +401,18 @@ pub enum NativeResidencyResource<'a, B: Backend> {
 }
 
 pub trait MemoryBackend: ResourceBackend {
+    fn create_committed_buffer(
+        _device: &Self::NativeDevice,
+        _desc: &BufferDesc,
+    ) -> Result<Self::NativeBuffer> {
+        Err(Error::Unsupported("committed default buffers"))
+    }
+    fn create_committed_texture(
+        _device: &Self::NativeDevice,
+        _desc: &TextureDesc,
+    ) -> Result<Self::NativeTexture> {
+        Err(Error::Unsupported("committed default textures"))
+    }
     fn committed_residency_support(
         _device: &Self::NativeDevice,
         _resource: NativeResidencyResource<'_, Self>,

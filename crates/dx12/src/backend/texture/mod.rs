@@ -272,18 +272,29 @@ pub(crate) fn allocation_desc(dv: &Dx12Device, d: &api::TextureDesc) -> Result<A
 }
 
 pub(crate) fn create(dv: &Dx12Device, d: &api::TextureDesc) -> Result<Dx12Texture> {
+    create_with_route(dv, d, super::memory::AllocationRoute::Automatic)
+}
+
+pub(super) fn create_with_route(
+    dv: &Dx12Device,
+    d: &api::TextureDesc,
+    route: super::memory::AllocationRoute,
+) -> Result<Dx12Texture> {
     let allocation = allocation_desc(dv, d)?;
     let requirements = super::memory::requirements(
         dv,
         &allocation.resource,
         super::memory::texture_class_bits(dv, &allocation.resource),
     )?;
-    let class = (0..64)
-        .find(|bit| requirements.native_type_bits & (1u64 << bit) != 0)
-        .ok_or(Error::Unsupported("DX12 texture heap class"))?;
-    let pooled =
+    let pooled = if route == super::memory::AllocationRoute::Committed {
+        None
+    } else {
+        let class = (0..64)
+            .find(|bit| requirements.native_type_bits & (1u64 << bit) != 0)
+            .ok_or(Error::Unsupported("DX12 texture heap class"))?;
         dv.0.default_resources
-            .allocate(class, requirements.size, requirements.alignment)?;
+            .allocate(class, requirements.size, requirements.alignment)?
+    };
     let (resource, lease, backing_heap): (ID3D12Resource, _, _) = if let Some(pool) = pooled {
         let mut resource = None;
         // SAFETY: pool ranges use GetResourceAllocationInfo size/alignment and

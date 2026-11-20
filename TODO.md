@@ -193,8 +193,9 @@ For committed resource residency, exercise a locally committed default buffer
 and texture, including contents after eviction and restoration, private fence
 queue waits, and resource destruction during an accepted enqueue. Verify that
 pool-backed, explicitly placed, reserved, imported, and CPU-visible resources
-fail the committed residency query. Add deterministic committed allocation
-selection so the path does not rely on allocator fallback.
+fail the committed residency query. Verify that explicit committed creation
+bypasses pool allocation for shapes normally served by the default pool and
+rejects CPU-visible buffer classes and transient textures.
 
 **Pending native paths.** CPU-visible heaps require an ordering contract for
 active CPU mappings in addition to GPU completion. Keep their residency
