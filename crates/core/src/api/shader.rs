@@ -43,6 +43,9 @@ pub const SHADER_FEATURE_RAY_QUERY: &str = "ray-query";
 pub const SHADER_FEATURE_PUSH_CONSTANTS: &str = "push-constants";
 /// A vertex, fragment, or supported native mesh shader reads the view index.
 pub const SHADER_FEATURE_VIEW_INDEX: &str = "view-index";
+/// Native DXIL mesh shader needs DX12's full 11-bit render target array
+/// index range. Declare this when the shader can write an index above 7.
+pub const SHADER_FEATURE_DX12_MESH_FULL_ARRAY_INDEX: &str = "dx12-mesh-full-array-index";
 /// The WGSL shader requires implicit dereference for composite pointer access.
 pub const SHADER_FEATURE_POINTER_COMPOSITE_ACCESS: &str = "pointer_composite_access";
 /// The shader requires native half-precision floating-point types.
@@ -186,6 +189,19 @@ impl<B: ShaderBackend> Device<B> {
     pub fn shader_route(&self, desc: &ShaderDesc) -> ShaderRoute {
         if desc.required_features.iter().any(|feature| {
             (feature == SHADER_FEATURE_RAY_QUERY && !self.caps.ray_query)
+                || (feature == SHADER_FEATURE_DX12_MESH_FULL_ARRAY_INDEX
+                    && (desc.format != ShaderFormat::Dxil
+                        || !self.caps.mesh
+                        || self
+                            .caps
+                            .limits
+                            .mesh_shader_limits
+                            .is_none_or(|limits| limits.max_mesh_output_layers < 2048)
+                        || desc.entries.is_empty()
+                        || !desc
+                            .entries
+                            .iter()
+                            .all(|entry| entry.stage == ShaderStage::Mesh)))
                 || (feature == SHADER_FEATURE_EARLY_DEPTH_TEST
                     && (!self.caps.shader_early_depth_test
                         || !desc

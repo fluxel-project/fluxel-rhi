@@ -179,6 +179,7 @@ impl Dx12 {
             let ray_supported = ray_device.is_some();
             let ray_query_supported = dxr_1_1 && shader_model >= 65;
             let mesh_supported = mesh::probe(&native, shader_model);
+            let mesh_shader_limits = mesh_supported.then(|| mesh::shader_limits(&native));
             let texture_atomic_r32uint_compute = texture::format_supports_texture_atomic_add_native(
                 &native,
                 api::TextureFormat::R32Uint,
@@ -380,7 +381,7 @@ impl Dx12 {
                     } else {
                         0
                     },
-                    mesh_shader_limits: mesh_supported.then_some(mesh::SHADER_LIMITS),
+                    mesh_shader_limits,
                     max_ray_dispatch_count: if ray_supported {
                         D3D12_RAYTRACING_MAX_RAY_GENERATION_SHADER_THREADS
                     } else {

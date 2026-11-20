@@ -21,10 +21,36 @@ pub(super) const SHADER_LIMITS: api::MeshShaderLimits = api::MeshShaderLimits {
     max_task_workgroup_invocations: 128,
     max_mesh_output_vertices: 256,
     max_mesh_output_primitives: 256,
+    max_mesh_output_layers: 8,
     max_task_payload_bytes: 16 * 1024,
     max_mesh_output_bytes: 32 * 1024,
     max_task_payload_and_mesh_output_bytes: Some(47 * 1024),
 };
+
+pub(super) fn shader_limits(device: &ID3D12Device) -> api::MeshShaderLimits {
+    let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS9::default();
+    // SAFETY: OPTIONS9 matches the feature selector and remains writable
+    // through the synchronous query.
+    let full_range = unsafe {
+        device.CheckFeatureSupport(
+            D3D12_FEATURE_D3D12_OPTIONS9,
+            (&mut options as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS9).cast(),
+            std::mem::size_of_val(&options) as u32,
+        )
+    }
+    .is_ok()
+        && options
+            .MeshShaderSupportsFullRangeRenderTargetArrayIndex
+            .as_bool();
+    api::MeshShaderLimits {
+        max_mesh_output_layers: if full_range {
+            D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION
+        } else {
+            SHADER_LIMITS.max_mesh_output_layers
+        },
+        ..SHADER_LIMITS
+    }
+}
 
 pub(crate) struct MeshPipelineState {
     pub(crate) layout: Arc<PipelineLayoutState>,

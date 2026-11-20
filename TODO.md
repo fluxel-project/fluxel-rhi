@@ -115,6 +115,13 @@ reject unsupported topologies and shader/PSO topology mismatches.
 Check shader declaration admission against the reported invocation, output,
 and combined task payload limits.
 
+DX12 publishes the shader-written render target array index bound. Tier 1
+mesh devices report eight choices unless OPTIONS9 proves the full 2048
+layer range. A DXIL mesh artifact that can select index 8 or higher declares
+`SHADER_FEATURE_DX12_MESH_FULL_ARRAY_INDEX`. Verify rejection on devices
+without that fact and distinct writes to layers 7 and 8 where supported.
+The caller bounds shader indices to the actual view. Cover multiview separately.
+
 Verify the rasterizer-assigned primitive index in ordinary DX12 raster
 pipelines with WGSL, HLSL and DXIL fragment stages. Mesh pipelines reject
 that portable requirement. Reopen a portable mesh primitive ID only when a

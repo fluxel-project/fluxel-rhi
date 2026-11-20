@@ -642,6 +642,7 @@ fn shader_features_supported(
         api::SHADER_FEATURE_RAY_QUERY => ray_query_supported,
         api::SHADER_FEATURE_PUSH_CONSTANTS => true,
         api::SHADER_FEATURE_VIEW_INDEX => true,
+        api::SHADER_FEATURE_DX12_MESH_FULL_ARRAY_INDEX => true,
         api::SHADER_FEATURE_POINTER_COMPOSITE_ACCESS => true,
         api::SHADER_FEATURE_F16 => true,
         api::SHADER_FEATURE_I16 => true,

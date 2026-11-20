@@ -336,6 +336,9 @@ pub struct MeshShaderLimits {
     pub max_task_workgroup_invocations: u32,
     pub max_mesh_output_vertices: u32,
     pub max_mesh_output_primitives: u32,
+    /// Exclusive upper bound for shader-written render target array indices.
+    /// The bound attachment view may contain fewer layers.
+    pub max_mesh_output_layers: u32,
     pub max_task_payload_bytes: u32,
     pub max_mesh_output_bytes: u32,
     /// Combined payload and output budget when the backend uses a shared limit.
