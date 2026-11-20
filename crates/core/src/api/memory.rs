@@ -1,7 +1,7 @@
 //! Explicit memory allocation and placement contracts.
 //!
 //! Allocation ownership stays with one device. Suballocation strategy and
-//! eviction are backend or renderer decisions, not Core policy.
+//! the scheduling of residency changes belong to the caller.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -62,6 +62,36 @@ impl<B: MemoryBackend> MemoryDomain<'_, B> {
             device: self.device.id,
             native: B::create_heap(&self.device.native, desc)?,
         })
+    }
+    /// Checks whether this heap admits explicit residency operations.
+    pub fn heap_residency_support(&self, heap: &MemoryHeap<B>) -> Result<()> {
+        if heap.device != self.device.id {
+            return Err(Error::WrongDevice);
+        }
+        if !self.device.caps.explicit_heap_residency {
+            return Err(Error::Unsupported("explicit heap residency"));
+        }
+        B::heap_residency_support(&self.device.native, &heap.native)
+    }
+
+    /// Makes the heap resident synchronously and adds one residency reference.
+    /// A newly created eligible heap starts with one residency reference.
+    pub fn make_heap_resident(&self, heap: &MemoryHeap<B>) -> Result<()> {
+        self.heap_residency_support(heap)?;
+        B::make_heap_resident(&self.device.native, &heap.native)
+    }
+
+    /// Releases one residency reference. The final release permits eviction.
+    ///
+    /// # Safety
+    /// The caller must own a residency reference. Before releasing it, all GPU
+    /// uses of the heap and resources backed by it must have completed. The
+    /// caller must exclude new GPU uses until residency has been reestablished
+    /// or another reference guarantees residency through those uses.
+    pub unsafe fn evict_heap(&self, heap: &MemoryHeap<B>) -> Result<()> {
+        self.heap_residency_support(heap)?;
+        // SAFETY: device ownership was checked; the caller supplies ordering.
+        unsafe { B::evict_heap(&self.device.native, &heap.native) }
     }
     pub fn place_buffer(
         &self,

@@ -144,6 +144,12 @@ Those facts allow a consumer to reject an incompatible render-target or viewport
 
 Explicit transitions and cross-lane waits are input to the plan. A wait orders execution only; it does not manufacture memory visibility or infer a missing barrier. Completion checkpoints, mapping, query publication, and CPU reads are separate operations with separate native evidence. This avoids treating a successful submit, process exit, or presentation call as proof that GPU work completed.
 
+Explicit heap residency is an optional operation on an eligible `MemoryHeap`.
+Making it resident synchronously adds a residency reference. Eviction releases
+one reference and requires the caller to prove completion for all heap users
+and order any later access. The renderer holds those proofs and schedules both
+operations.
+
 `Device::stats()` is deliberately narrow: it counts successful Core requests and handoffs using atomic snapshots. It is neither a driver query nor a memory, residency, presentation, or profiling report.
 
 ## Design constraints for new API

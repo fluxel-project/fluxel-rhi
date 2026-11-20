@@ -408,6 +408,21 @@ pub trait MemoryBackend: ResourceBackend {
     ) -> Result<MemoryRequirements>;
     type NativeHeap: Clone;
     fn create_heap(device: &Self::NativeDevice, desc: &HeapDesc) -> Result<Self::NativeHeap>;
+    fn heap_residency_support(
+        _device: &Self::NativeDevice,
+        _heap: &Self::NativeHeap,
+    ) -> Result<()> {
+        Err(Error::Unsupported("explicit heap residency"))
+    }
+    fn make_heap_resident(_device: &Self::NativeDevice, _heap: &Self::NativeHeap) -> Result<()> {
+        Err(Error::Unsupported("explicit heap residency"))
+    }
+    /// # Safety
+    /// The caller must meet the synchronization and reference requirements of
+    /// `MemoryDomain::evict_heap`.
+    unsafe fn evict_heap(_device: &Self::NativeDevice, _heap: &Self::NativeHeap) -> Result<()> {
+        Err(Error::Unsupported("explicit heap residency"))
+    }
     fn place_buffer(
         device: &Self::NativeDevice,
         heap: &Self::NativeHeap,

@@ -168,6 +168,22 @@ format probes. Revisit if a native capability explicitly supports those
 families and specifies how to address their depth and stencil tile mappings.
 In Stage 8, check the rejection with attachment and sampled usages.
 
+### DX12 explicit heap residency
+
+**Acceptance gate.** In Stage 8, write a pattern to a resource placed in an
+explicit default heap, wait for its last uses on all lanes, evict the heap,
+make it resident again, and read the same bytes. Check the initial reference,
+balanced reference operations, wrong-device and removed-device errors, and the
+support result for CPU-visible heaps.
+
+**Pending native paths.** Add fence-completing asynchronous residency and
+review eligible physical owners outside explicit default heaps. CPU-visible
+heaps require an ordering contract for active CPU mappings in addition to GPU
+completion. Keep their residency operations gated until both are covered.
+Resolve owner identity for sparse allocations and committed resources before
+exposing residency operations on either. Placed resources use the existing
+heap operations.
+
 ### DX12 structured shader diagnostics
 
 **Status:** WGSL parse and validation errors preserve compiler messages and

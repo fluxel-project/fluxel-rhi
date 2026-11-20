@@ -17,6 +17,7 @@ use windows::Win32::Graphics::{
     Direct3D12::*,
     Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC},
 };
+use windows::core::Interface;
 
 const DEVICE_CLASS: u32 = 0;
 const UPLOAD_CLASS: u32 = 1;
@@ -299,6 +300,39 @@ impl MemoryBackend for Dx12 {
             size: desc.size,
             class: desc.native_memory_class,
         })
+    }
+
+    fn heap_residency_support(device: &Dx12Device, heap: &Dx12Heap) -> Result<()> {
+        device.require_active()?;
+        if !Arc::ptr_eq(&device.0, &heap.device) {
+            return Err(Error::WrongDevice);
+        }
+        if matches!(heap.class, UPLOAD_CLASS | READBACK_CLASS) {
+            return Err(Error::Unsupported("DX12 CPU-visible heap residency"));
+        }
+        Ok(())
+    }
+
+    fn make_heap_resident(device: &Dx12Device, heap: &Dx12Heap) -> Result<()> {
+        Self::heap_residency_support(device, heap)?;
+        let pageable = heap
+            .heap
+            .cast::<ID3D12Pageable>()
+            .map_err(super::native_error)?;
+        // SAFETY: the one eligible, same-device pageable stays live for the
+        // synchronous call. The operation adds a native residency reference.
+        unsafe { device.0.native.MakeResident(&[Some(pageable)]) }.map_err(super::native_error)
+    }
+
+    unsafe fn evict_heap(device: &Dx12Device, heap: &Dx12Heap) -> Result<()> {
+        Self::heap_residency_support(device, heap)?;
+        let pageable = heap
+            .heap
+            .cast::<ID3D12Pageable>()
+            .map_err(super::native_error)?;
+        // SAFETY: the pageable is same-device and live. The caller guarantees
+        // the native residency reference and excludes conflicting GPU uses.
+        unsafe { device.0.native.Evict(&[Some(pageable)]) }.map_err(super::native_error)
     }
 
     fn place_buffer(

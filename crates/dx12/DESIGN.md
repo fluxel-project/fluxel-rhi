@@ -135,6 +135,12 @@ also require native initialization. A full clear or full subresource copy
 establishes contents. Native discard can establish the resource metadata
 needed for later writes, with the texel contents left undefined.
 
+Explicit default heaps support synchronous `MakeResident` and `Evict` on the
+physical heap. A new heap starts with one residency reference. Placed resources
+share that heap's residency. The caller supplies ordering across all GPU lanes
+that access the heap. The residency methods touch the explicit heap only, so
+they add no tracking to submission or to the backend-owned allocator.
+
 The memory observation domain can report the number and largest size of
 contiguous free ranges across retained default-pool pages. The observation
 uses the pool lock and requires no GPU wait or native budget query. A request

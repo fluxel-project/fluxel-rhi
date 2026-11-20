@@ -517,6 +517,7 @@ impl Dx12 {
                 native_interop: true,
                 external_memory: true,
                 placed_memory: true,
+                explicit_heap_residency: true,
                 multiview,
                 mesh_multiview,
                 shader_view_index,

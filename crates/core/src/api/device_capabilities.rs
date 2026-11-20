@@ -216,6 +216,8 @@ pub struct DeviceCapabilities {
     /// Vertex and fragment shaders can read the native view index.
     pub shader_view_index: bool,
     pub placed_memory: bool,
+    /// Explicit residency operations are available for eligible memory heaps.
+    pub explicit_heap_residency: bool,
     pub external_memory: bool,
     pub secondary_commands: bool,
     pub native_interop: bool,
