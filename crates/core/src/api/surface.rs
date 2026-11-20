@@ -26,11 +26,9 @@ pub struct Surface<B: Backend> {
 ///
 /// The generation is sampled after `SurfaceBackend::configure` resolves, so
 /// an acquired image can carry the exact configuration that produced it.
-#[derive(Clone, Copy)]
 struct ConfiguredLeaseFacts {
     generation: u64,
-    format: TextureFormat,
-    extent: [u32; 2],
+    config: SurfaceConfig,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PresentMode {
@@ -113,6 +111,12 @@ impl<B: SurfaceBackend> Surface<B> {
     pub fn configuration_support(&self, desc: &SurfaceConfig) -> Support<()> {
         B::supports_config(&self.native, desc)
     }
+    /// Snapshot of the successful configuration for the current native
+    /// generation. Returns `None` before configuration or after invalidation.
+    pub fn configuration(&self) -> Option<&SurfaceConfig> {
+        let configured = self.configured.as_ref()?;
+        (configured.generation == self.generation()).then_some(&configured.config)
+    }
     pub async fn configure(&mut self, desc: &SurfaceConfig) -> Result<()> {
         if let Support::Unsupported(reason) = B::supports_config(&self.native, desc) {
             return Err(Error::Unsupported(reason));
@@ -120,8 +124,7 @@ impl<B: SurfaceBackend> Surface<B> {
         B::configure(&mut self.native, desc).await?;
         self.configured = Some(ConfiguredLeaseFacts {
             generation: self.generation(),
-            format: desc.format,
-            extent: desc.extent,
+            config: desc.clone(),
         });
         Ok(())
     }
@@ -131,7 +134,7 @@ impl<B: SurfaceBackend> Surface<B> {
         // transaction is the authority for the lease generation it returned.
         // Caching an earlier value would let a resize race mint a stale lease.
         let generation = self.generation();
-        let Some(configured) = self.configured else {
+        let Some(configured) = self.configured.as_ref() else {
             return Err(Error::InvalidState);
         };
         // A backend may observe an out-of-band resize while acquiring. Never
@@ -144,8 +147,8 @@ impl<B: SurfaceBackend> Surface<B> {
             device: self.device,
             surface: self.id,
             generation,
-            format: configured.format,
-            extent: configured.extent,
+            format: configured.config.format,
+            extent: configured.config.extent,
             native,
             stats: self.stats.clone(),
         })

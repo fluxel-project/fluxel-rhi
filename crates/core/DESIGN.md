@@ -121,6 +121,10 @@ the same point remains available for later observation.
 
 ## Surface leases
 
+`Surface::configuration()` exposes the successful configuration associated
+with the current native generation. This snapshot also supplies the format
+and extent that Core stamps on acquired image leases.
+
 Core models an acquired presentable image as an exclusive native lease. Surface configuration publishes a new generation only after native configuration succeeds. At that point Core records the configured format and extent with the generation. A successful `Surface::acquire` rechecks the native generation after it obtains the native lease; only a match publishes a `SurfaceImage`. The image's `format()` and `extent()` are therefore facts from the successful configuration that minted that lease, not independently supplied caller metadata.
 
 An error from `configure` does not replace Core's last successful facts. That is not a claim that the old native configuration remains usable: a backend whose failed attempt has already retired or unconfigured it must advance its native generation and reject acquisition as `Error::SurfaceOutdated`. A generation mismatch drops a newly acquired native lease and also returns `Error::SurfaceOutdated`.
