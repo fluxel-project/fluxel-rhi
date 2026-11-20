@@ -10,10 +10,12 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 **Status:** Configuration and acquisition retain the selected attachment view
 format, including sRGB views of supported UNORM flip buffers.
+DX12 also exposes current monitor color and luminance facts.
 
 **Acceptance:** Reconfigure a live HWND between linear and sRGB views and
 observe the format and generation on the acquired images. Exercise matching
 raster pipelines and verify sRGB encoding on a real presentation path.
+Compare output snapshots across a window move between distinct displays.
 
 ### DX12 upload, completion, and texture transfer verification
 

@@ -44,6 +44,8 @@ use windows::{
 
 use super::{Dx12, Dx12Device, Dx12Surface, Dx12SurfaceImage};
 
+mod output;
+
 pub(crate) struct SurfaceState {
     device: Dx12Device,
     hwnd: HWND,
@@ -182,6 +184,9 @@ impl fluxel_rhi_core::backend::SurfaceBackend for Dx12 {
     }
     fn capabilities(surface: &Dx12Surface) -> Result<api::SurfaceCapabilities> {
         Ok(caps(&surface.0))
+    }
+    fn output_info(surface: &Dx12Surface) -> Result<Option<api::SurfaceOutputInfo>> {
+        output::info(&surface.0)
     }
     fn supports_config(surface: &Dx12Surface, d: &api::SurfaceConfig) -> api::Support<()> {
         if d.extent.contains(&0)

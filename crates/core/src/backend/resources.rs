@@ -280,6 +280,9 @@ pub trait SurfaceBackend: Backend {
         Self: 'a;
     fn generation(surface: &Self::NativeSurface) -> u64;
     fn capabilities(surface: &Self::NativeSurface) -> Result<SurfaceCapabilities>;
+    fn output_info(_surface: &Self::NativeSurface) -> Result<Option<SurfaceOutputInfo>> {
+        Ok(None)
+    }
     fn supports_config(surface: &Self::NativeSurface, desc: &SurfaceConfig) -> Support<()>;
     /// Configuration and generation change in one native transaction. Failed or
     /// cancelled pending configuration must not publish a half-commit.

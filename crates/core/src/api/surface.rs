@@ -91,6 +91,20 @@ pub struct SurfaceCapabilities {
     pub min_extent: [u32; 2],
     pub max_extent: [u32; 2],
 }
+
+/// A snapshot of the output currently associated with a surface.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SurfaceOutputInfo {
+    /// Color space currently active at the operating-system output.
+    pub color_space: Option<ColorSpace>,
+    pub bits_per_color: u32,
+    /// CIE 1931 xy chromaticities in red, green, blue order.
+    pub primaries: [[f32; 2]; 3],
+    pub white_point: [f32; 2],
+    pub min_luminance_nits: f32,
+    pub max_luminance_nits: f32,
+    pub max_full_frame_luminance_nits: f32,
+}
 impl<B: SurfaceBackend> Surface<B> {
     /// # Safety: caller associates exactly one native surface with this Device.
     pub unsafe fn from_native(device: &Device<B>, id: SurfaceId, native: B::NativeSurface) -> Self {
@@ -107,6 +121,11 @@ impl<B: SurfaceBackend> Surface<B> {
     }
     pub fn capabilities(&self) -> Result<SurfaceCapabilities> {
         B::capabilities(&self.native)
+    }
+    /// Reads the current output independently of the swapchain configuration.
+    /// Returns `None` when the backend cannot identify or describe that output.
+    pub fn output_info(&self) -> Result<Option<SurfaceOutputInfo>> {
+        B::output_info(&self.native)
     }
     pub fn configuration_support(&self, desc: &SurfaceConfig) -> Support<()> {
         B::supports_config(&self.native, desc)
