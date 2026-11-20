@@ -8,6 +8,9 @@ mod adapter;
 mod descriptor_limits;
 mod shader_model;
 
+const MAX_BIND_GROUPS: u32 = 8;
+const MAX_BINDINGS_PER_GROUP: u32 = 64;
+
 use super::*;
 #[cfg(test)]
 use adapter::REQUESTED_ADAPTER_UNAVAILABLE;
@@ -274,9 +277,17 @@ impl Dx12 {
                     },
                 ]),
                 limits: DeviceLimits {
-                    max_bind_groups: 8,
+                    max_bind_groups: MAX_BIND_GROUPS,
                     descriptor_table_limits: Some(descriptor_table_limits),
-                    max_bindings_per_group: 64,
+                    max_bindings_per_group: MAX_BINDINGS_PER_GROUP,
+                    // Each dynamic storage slot uses one SRV or UAV table entry.
+                    max_dynamic_storage_buffers_per_pipeline_layout: (MAX_BIND_GROUPS
+                        * MAX_BINDINGS_PER_GROUP)
+                        .min(
+                            descriptor_table_limits.read_only_resources
+                                + descriptor_table_limits.writable_resources,
+                        )
+                        .min(descriptor_table_limits.total_resource_descriptors),
                     max_dynamic_uniform_buffers_per_pipeline_layout: if options.ResourceBindingTier
                         == D3D12_RESOURCE_BINDING_TIER_3
                     {

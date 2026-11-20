@@ -373,26 +373,33 @@ impl<B: ResourceBackend> Device<B> {
         if desc.groups.iter().any(|v| v.device != self.id) {
             return Err(Error::WrongDevice);
         }
-        let dynamic_uniform_limit = self
+        let uniform_limit = self
             .caps
             .limits
             .max_dynamic_uniform_buffers_per_pipeline_layout;
-        if dynamic_uniform_limit != 0 {
-            let dynamic_uniform_count = desc
-                .groups
-                .iter()
-                .flat_map(|group| group.entries.iter())
-                .filter(|entry| {
-                    matches!(
-                        entry.ty,
-                        BindingType::UniformBuffer {
-                            dynamic_offset: true,
-                            ..
-                        }
-                    )
-                })
-                .count();
-            if dynamic_uniform_count > dynamic_uniform_limit as usize {
+        let storage_limit = self
+            .caps
+            .limits
+            .max_dynamic_storage_buffers_per_pipeline_layout;
+        if uniform_limit != 0 || storage_limit != 0 {
+            let mut uniforms = 0usize;
+            let mut storage = 0usize;
+            for entry in desc.groups.iter().flat_map(|group| group.entries.iter()) {
+                match entry.ty {
+                    BindingType::UniformBuffer {
+                        dynamic_offset: true,
+                        ..
+                    } => uniforms += 1,
+                    BindingType::StorageBuffer {
+                        dynamic_offset: true,
+                        ..
+                    } => storage += 1,
+                    _ => {}
+                }
+            }
+            if (uniform_limit != 0 && uniforms > uniform_limit as usize)
+                || (storage_limit != 0 && storage > storage_limit as usize)
+            {
                 return Err(Error::InvalidRange);
             }
         }

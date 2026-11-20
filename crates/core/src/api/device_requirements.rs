@@ -96,6 +96,7 @@ pub enum DeviceCapacity {
     BindGroups(u32),
     BindingsPerGroup(u32),
     DynamicUniformBuffersPerPipelineLayout(u32),
+    DynamicStorageBuffersPerPipelineLayout(u32),
     UniformBufferBindingSize(u64),
     ColorAttachments(u32),
     VertexBuffers(u32),
@@ -129,6 +130,9 @@ impl DeviceCapacity {
             Self::BindingsPerGroup(min) => limits.max_bindings_per_group >= min,
             Self::DynamicUniformBuffersPerPipelineLayout(min) => {
                 limits.max_dynamic_uniform_buffers_per_pipeline_layout >= min
+            }
+            Self::DynamicStorageBuffersPerPipelineLayout(min) => {
+                limits.max_dynamic_storage_buffers_per_pipeline_layout >= min
             }
             Self::UniformBufferBindingSize(min) => limits.max_uniform_buffer_binding_size >= min,
             Self::ColorAttachments(min) => limits.max_color_attachments >= min,
