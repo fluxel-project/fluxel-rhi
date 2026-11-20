@@ -39,6 +39,7 @@ pub struct CommandEncoder<B: CommandBackend> {
     pub(crate) dynamic_depth_bias: bool,
     pub(crate) dynamic_depth_bias_clamp: bool,
     pub(crate) rect_attachment_clear: bool,
+    pub(crate) direct_buffer_upload: bool,
     pub(crate) native_interop: bool,
     pub(crate) debug_group_depth: u32,
 }
@@ -68,6 +69,7 @@ impl<B: CommandBackend> CommandEncoder<B> {
             dynamic_depth_bias: device.caps.dynamic_depth_bias,
             dynamic_depth_bias_clamp: device.caps.dynamic_depth_bias_clamp,
             rect_attachment_clear: device.caps.rect_attachment_clear,
+            direct_buffer_upload: device.caps.direct_buffer_upload,
             native_interop: device.caps.native_interop,
             debug_group_depth: 0,
         })
@@ -332,6 +334,33 @@ impl<B: CommandBackend> CommandEncoder<B> {
             self.stats.record_write();
         }
         result
+    }
+    /// Fills zero-initialized backend staging memory directly using the same
+    /// resource-state boundary as `write_buffer`. An error from the writer
+    /// cancels the upload while leaving the encoder usable.
+    pub fn write_buffer_with(
+        &mut self,
+        dst: &Buffer<B>,
+        offset: u64,
+        size: usize,
+        writer: impl FnOnce(&mut [u8]) -> Result<()>,
+    ) -> Result<()> {
+        if dst.device != self.device {
+            return Err(Error::WrongDevice);
+        }
+        if !self.direct_buffer_upload {
+            return Err(Error::Unsupported("direct staging write"));
+        }
+        let mut written = Ok(());
+        self.call(|encoder| {
+            B::write_buffer_with(encoder, &dst.native, offset, size, |bytes| {
+                written = writer(bytes);
+                written.is_ok()
+            })
+        })?;
+        written?;
+        self.stats.record_write();
+        Ok(())
     }
     pub fn write_texture(
         &mut self,

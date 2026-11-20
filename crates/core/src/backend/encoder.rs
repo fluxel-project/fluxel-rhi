@@ -70,6 +70,17 @@ pub trait CommandBackend: Backend {
         offset: u64,
         bytes: &[u8],
     ) -> Result<()>;
+    /// Exposes freshly initialized staging bytes to the writer. A false
+    /// result from the writer cancels the upload before recording a copy.
+    fn write_buffer_with(
+        _encoder: &mut Self::NativeEncoder,
+        _dst: &Self::NativeBuffer,
+        _offset: u64,
+        _size: usize,
+        _writer: impl FnOnce(&mut [u8]) -> bool,
+    ) -> Result<()> {
+        Err(Error::Unsupported("direct staging write"))
+    }
     /// A convenience upload with the same idle-state boundary as write_buffer.
     fn write_texture(
         encoder: &mut Self::NativeEncoder,

@@ -3,14 +3,94 @@
 //! An encoder exclusively owns its pages until dropped. Submitted encoders are
 //! retained until fence completion, including uncertain submissions; dropping an
 //! unsubmitted encoder returns its pages immediately.
-use crate::backend::native_error;
-use fluxel_rhi_core::api::{Error, Result};
+use super::{Dx12Encoder, barrier};
+use crate::backend::{Dx12Buffer, native_error};
+use fluxel_rhi_core::api::{BufferUsage, Error, MemoryClass, Result};
 use std::sync::{Arc, Mutex};
 use windows::Win32::Graphics::{Direct3D12::*, Dxgi::Common::*};
 
 const PAGE_SIZE: u64 = 64 * 1024;
 const MAX_CACHED_BYTES: u64 = 8 * 1024 * 1024;
 const ALIGNMENT: u64 = 16;
+
+pub(super) fn write_buffer(
+    encoder: &mut Dx12Encoder,
+    dst: &Dx12Buffer,
+    offset: u64,
+    bytes: &[u8],
+) -> Result<()> {
+    let size = validate_destination(dst, offset, bytes.len())?;
+    if size != 0 {
+        let source = encoder
+            .upload_arena
+            .write(&encoder.device.0.native, bytes)?;
+        record_copy(encoder, dst, offset, size, source);
+    }
+    Ok(())
+}
+
+pub(super) fn write_buffer_with(
+    encoder: &mut Dx12Encoder,
+    dst: &Dx12Buffer,
+    offset: u64,
+    size: usize,
+    writer: impl FnOnce(&mut [u8]) -> bool,
+) -> Result<()> {
+    let len = validate_destination(dst, offset, size)?;
+    if len == 0 {
+        writer(&mut []);
+    } else if let Some(source) =
+        encoder
+            .upload_arena
+            .write_with(&encoder.device.0.native, size, writer)?
+    {
+        record_copy(encoder, dst, offset, len, source);
+    }
+    Ok(())
+}
+
+fn validate_destination(dst: &Dx12Buffer, offset: u64, size: usize) -> Result<u64> {
+    if dst.memory != MemoryClass::Device || !dst.usage.contains(BufferUsage::COPY_DST) {
+        return Err(Error::Unsupported(
+            "DX12 write_buffer requires a device COPY_DST buffer",
+        ));
+    }
+    let size = u64::try_from(size).map_err(|_| Error::InvalidRange)?;
+    if size != 0 && offset.checked_add(size).is_none_or(|end| end > dst.size) {
+        return Err(Error::InvalidRange);
+    }
+    Ok(size)
+}
+
+fn record_copy(
+    encoder: &mut Dx12Encoder,
+    dst: &Dx12Buffer,
+    offset: u64,
+    size: u64,
+    (source, source_offset): (ID3D12Resource, u64),
+) {
+    // The write operation starts and ends at the explicit COMMON boundary.
+    barrier(
+        &encoder.list,
+        &dst.resource,
+        D3D12_RESOURCE_STATE_COMMON,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+    );
+    // SAFETY: both ranges were checked. The encoder retains the source page
+    // and destination buffer until the submitted copy has completed.
+    unsafe {
+        encoder
+            .list
+            .CopyBufferRegion(&dst.resource, offset, &source, source_offset, size);
+    }
+    barrier(
+        &encoder.list,
+        &dst.resource,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_COMMON,
+    );
+    encoder.buffers.push(dst.clone());
+}
 
 fn allocation_size(size: u64) -> Result<u64> {
     let size = PAGE_SIZE.max(size);
@@ -135,6 +215,34 @@ impl UploadArena {
         bytes: &[u8],
     ) -> Result<(ID3D12Resource, u64)> {
         let len = u64::try_from(bytes.len()).map_err(|_| Error::InvalidRange)?;
+        let (page, start) = self.reserve(device, len)?;
+        // SAFETY: reserve checked the mapped range and caller memory cannot
+        // alias this private arena.
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), page.ptr(start)?, bytes.len());
+        }
+        Ok(page.finish_write(start, len))
+    }
+
+    fn write_with(
+        &mut self,
+        device: &ID3D12Device,
+        size: usize,
+        writer: impl FnOnce(&mut [u8]) -> bool,
+    ) -> Result<Option<(ID3D12Resource, u64)>> {
+        let len = u64::try_from(size).map_err(|_| Error::InvalidRange)?;
+        let (page, start) = self.reserve(device, len)?;
+        let ptr = page.ptr(start)?;
+        // SAFETY: reserve checked this entire range is exclusively writable.
+        // Clear recycled storage before exposing an initialized slice.
+        let written = unsafe {
+            std::ptr::write_bytes(ptr, 0, size);
+            writer(std::slice::from_raw_parts_mut(ptr, size))
+        };
+        Ok(written.then(|| page.finish_write(start, len)))
+    }
+
+    fn reserve(&mut self, device: &ID3D12Device, len: u64) -> Result<(&mut Page, u64)> {
         if len == 0 {
             return Err(Error::InvalidRange);
         }
@@ -155,20 +263,21 @@ impl UploadArena {
             self.pages.push(self.pool.acquire(device, len)?);
             0
         };
-        let page = self.pages.last_mut().expect("page acquired");
-        let start_usize = usize::try_from(start).map_err(|_| Error::InvalidRange)?;
-        // SAFETY: the checked range fits the exclusive mapped page, and the
-        // source slice cannot alias this private mapping.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                bytes.as_ptr(),
-                (page.mapped as *mut u8).add(start_usize),
-                bytes.len(),
-            );
-        }
-        page.cursor = start + len;
+        Ok((self.pages.last_mut().expect("page acquired"), start))
+    }
+}
+
+impl Page {
+    fn ptr(&self, start: u64) -> Result<*mut u8> {
+        let start = usize::try_from(start).map_err(|_| Error::InvalidRange)?;
+        // SAFETY: reserve selected a byte offset within the live mapping.
+        Ok(unsafe { (self.mapped as *mut u8).add(start) })
+    }
+
+    fn finish_write(&mut self, start: u64, len: u64) -> (ID3D12Resource, u64) {
+        self.cursor = start + len;
         crate::diagnostics::record(crate::diagnostics::Operation::UploadBytes, len);
-        Ok((page.resource.clone(), start))
+        (self.resource.clone(), start)
     }
 }
 impl Drop for UploadArena {

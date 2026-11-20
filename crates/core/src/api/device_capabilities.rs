@@ -197,6 +197,8 @@ pub struct DeviceCapabilities {
     pub dynamic_depth_bias_clamp: bool,
     /// Clears selected color/depth/stencil attachments inside an active pass.
     pub rect_attachment_clear: bool,
+    /// Command encoders can populate backend-owned buffer upload staging directly.
+    pub direct_buffer_upload: bool,
     pub lanes: Arc<[LaneInfo]>,
     pub limits: DeviceLimits,
 }
