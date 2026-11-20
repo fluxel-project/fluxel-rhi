@@ -131,18 +131,10 @@ impl fluxel_rhi_core::backend::RayOps<Dx12> for Ray {
         dst: &Dx12Acceleration,
         scratch: &Dx12Buffer,
         desc: &api::AccelerationDesc<Dx12>,
-        output: &Dx12Buffer,
-        offset: u64,
-        kind: api::AccelerationSizeKind,
+        output: (&Dx12Buffer, u64, api::AccelerationSizeKind),
+        refit: bool,
     ) -> Result<()> {
-        super::build(
-            encoder,
-            dst,
-            scratch,
-            desc,
-            false,
-            Some((output, offset, kind)),
-        )
+        super::build(encoder, dst, scratch, desc, refit, Some(output))
     }
     fn trace(
         encoder: &mut Dx12Encoder,

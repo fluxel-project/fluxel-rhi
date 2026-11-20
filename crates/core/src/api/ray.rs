@@ -569,6 +569,41 @@ impl<B: Backend> RayDomain<'_, B> {
     where
         B: CommandBackend,
     {
+        self.record_with_size_output(encoder, dst, scratch, desc, output, false)
+    }
+    /// Refits a compatible build and writes its selected size in bytes.
+    /// Use `Compacted` for a build originally recorded with compaction enabled.
+    pub fn update_with_size_output(
+        &self,
+        encoder: &mut CommandEncoder<B>,
+        dst: &AccelerationStructure<B>,
+        scratch: &Buffer<B>,
+        desc: &AccelerationDesc<B>,
+        output: AccelerationSizeOutput<'_, B>,
+    ) -> Result<()>
+    where
+        B: CommandBackend,
+    {
+        if !self.device.caps.acceleration_structure_update {
+            return Err(Error::Unsupported("acceleration structure update"));
+        }
+        if !desc.allow_update {
+            return Err(Error::InvalidState);
+        }
+        self.record_with_size_output(encoder, dst, scratch, desc, output, true)
+    }
+    fn record_with_size_output(
+        &self,
+        encoder: &mut CommandEncoder<B>,
+        dst: &AccelerationStructure<B>,
+        scratch: &Buffer<B>,
+        desc: &AccelerationDesc<B>,
+        output: AccelerationSizeOutput<'_, B>,
+        refit: bool,
+    ) -> Result<()>
+    where
+        B: CommandBackend,
+    {
         if !self.device.caps.acceleration_build_size_output {
             return Err(Error::Unsupported("acceleration build size output"));
         }
@@ -592,9 +627,8 @@ impl<B: Backend> RayDomain<'_, B> {
                 &dst.native,
                 &scratch.native,
                 desc,
-                &output.buffer.native,
-                output.offset,
-                output.kind,
+                (&output.buffer.native, output.offset, output.kind),
+                refit,
             )
         })
     }

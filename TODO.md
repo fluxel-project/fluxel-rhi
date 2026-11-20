@@ -59,6 +59,8 @@ completion point. Compare it with the prebuild allocation bound and reject
 invalid offsets, capacity, or conflicting buffer roles.
 Verify compaction-enabled prebuild bounds and read back the compacted byte
 size for BLAS and TLAS. The compact copy and retention path remains open.
+Repeat the size query while refitting a compaction-enabled build and verify
+that submission rejects a refit with mismatched original build flags.
 
 ### DX12 conservative rasterization
 

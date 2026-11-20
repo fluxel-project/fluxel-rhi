@@ -339,9 +339,8 @@ pub trait RayOps<B: Backend> {
         _dst: &B::NativeAcceleration,
         _scratch: &B::NativeBuffer,
         _input: &AccelerationDesc<B>,
-        _output: &B::NativeBuffer,
-        _offset: u64,
-        _kind: AccelerationSizeKind,
+        _output: (&B::NativeBuffer, u64, AccelerationSizeKind),
+        _refit: bool,
     ) -> Result<()> {
         Err(Error::Unsupported("acceleration build size output"))
     }
