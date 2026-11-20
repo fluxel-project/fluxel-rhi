@@ -301,6 +301,15 @@ or unsigned HLSL intrinsic when the device supports Shader Model 6.4.
 The Shader Model 6.0 route keeps the equivalent integer lowering. Naga and
 DXC use the same selected shader model.
 
+Native F16 declarations require Shader Model 6.2 and
+`D3D12_OPTIONS4.Native16BitShaderOpsSupported`. DXC receives
+`-enable-16bit-types` for declared generated and direct HLSL. DXIL
+callers declare their bytecode's use of native F16. WGSL can use F16
+arithmetic, workgroup data, raw storage, shader interfaces and finite
+F16 overrides. WGSL uniform and push constant layouts containing F16
+are rejected because the current HLSL constant layout cannot express
+all two-byte member offsets.
+
 The implemented public route includes graphics and compute, multiple render
 targets, indirect drawing and dispatch, queries, secondary recording,
 standalone clears and resolves, placed memory, scoped native/external interop,

@@ -47,6 +47,7 @@ macro_rules! device_features {
 
 device_features! {
     Compute => compute, "compute";
+    ShaderF16 => shader_f16, "shader-f16";
     Sparse => sparse, "sparse";
     Mesh => mesh, "mesh";
     MeshMultiIndirect => mesh_multi_indirect, "mesh-multi-indirect";

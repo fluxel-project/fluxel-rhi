@@ -2,6 +2,41 @@
 
 use fluxel_rhi_core::api::{self, Error, Result};
 
+pub(in crate::backend) fn requires_f16(desc: &api::ShaderDesc) -> bool {
+    desc.required_features
+        .iter()
+        .any(|feature| feature == api::SHADER_FEATURE_F16)
+}
+
+pub(super) fn validate_f16_bindings(module: &naga::Module) -> Result<()> {
+    if module.global_variables.iter().any(|(_, global)| {
+        matches!(
+            global.space,
+            naga::AddressSpace::Uniform | naga::AddressSpace::PushConstant
+        ) && contains_f16(&module.types, global.ty)
+    }) {
+        return Err(Error::Unsupported(
+            "DX12 WGSL f16 uniform and immediate layout",
+        ));
+    }
+    Ok(())
+}
+
+fn contains_f16(types: &naga::UniqueArena<naga::Type>, ty: naga::Handle<naga::Type>) -> bool {
+    match &types[ty].inner {
+        naga::TypeInner::Scalar(scalar)
+        | naga::TypeInner::Vector { scalar, .. }
+        | naga::TypeInner::Matrix { scalar, .. } => *scalar == naga::Scalar::F16,
+        naga::TypeInner::Array { base, .. } | naga::TypeInner::BindingArray { base, .. } => {
+            contains_f16(types, *base)
+        }
+        naga::TypeInner::Struct { members, .. } => {
+            members.iter().any(|member| contains_f16(types, member.ty))
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn uses_packed_dot(module: &naga::Module) -> bool {
     let uses_dot = |arena: &naga::Arena<naga::Expression>| {
         arena.iter().any(|(_, expr)| {
@@ -30,6 +65,9 @@ pub(super) fn validation_capabilities(desc: &api::ShaderDesc) -> naga::valid::Ca
         | naga::valid::Capabilities::SAMPLER_NON_UNIFORM_INDEXING
         | naga::valid::Capabilities::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
         | naga::valid::Capabilities::STORAGE_TEXTURE_ARRAY_NON_UNIFORM_INDEXING;
+    if requires_f16(desc) {
+        caps |= naga::valid::Capabilities::SHADER_FLOAT16;
+    }
     if desc
         .required_features
         .iter()

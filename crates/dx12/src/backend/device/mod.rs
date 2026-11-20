@@ -19,7 +19,8 @@ use adapter::adapter_at;
 use adapter::adapter_name;
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, D3D12_FEATURE_ARCHITECTURE,
-    D3D12_FEATURE_DATA_ARCHITECTURE, D3D12_RAYTRACING_MAX_DECLARABLE_TRACE_RECURSION_DEPTH,
+    D3D12_FEATURE_D3D12_OPTIONS4, D3D12_FEATURE_DATA_ARCHITECTURE,
+    D3D12_FEATURE_DATA_D3D12_OPTIONS4, D3D12_RAYTRACING_MAX_DECLARABLE_TRACE_RECURSION_DEPTH,
     D3D12_RAYTRACING_MAX_GEOMETRIES_PER_BOTTOM_LEVEL_ACCELERATION_STRUCTURE,
     D3D12_RAYTRACING_MAX_INSTANCES_PER_TOP_LEVEL_ACCELERATION_STRUCTURE,
     D3D12_RAYTRACING_MAX_PRIMITIVES_PER_BOTTOM_LEVEL_ACCELERATION_STRUCTURE,
@@ -144,6 +145,18 @@ impl Dx12 {
                     min: wave.WaveLaneCountMin,
                     max: wave.WaveLaneCountMax,
                 });
+            let mut options4 = D3D12_FEATURE_DATA_D3D12_OPTIONS4::default();
+            // SAFETY: the output is the exact native type for OPTIONS4.
+            let shader_f16 = shader_model >= 62
+                && unsafe {
+                    native.CheckFeatureSupport(
+                        D3D12_FEATURE_D3D12_OPTIONS4,
+                        (&mut options4 as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS4).cast(),
+                        std::mem::size_of_val(&options4) as u32,
+                    )
+                }
+                .is_ok()
+                && options4.Native16BitShaderOpsSupported.as_bool();
             let mut gpu_va = windows::Win32::Graphics::Direct3D12::
                 D3D12_FEATURE_DATA_GPU_VIRTUAL_ADDRESS_SUPPORT::default();
             // SAFETY: the initialized structure has the exact type and size
@@ -278,6 +291,7 @@ impl Dx12 {
             let lane = LaneId { device, ordinal: 0 };
             let compute_lane = LaneId { device, ordinal: 1 };
             let caps = DeviceCapabilities {
+                shader_f16,
                 memory_topology,
                 subgroup_widths,
                 lanes: Arc::from([
@@ -494,6 +508,7 @@ impl Dx12 {
                     descriptor_table_limits,
                     texel_aligned_color_copies,
                     shader_model,
+                    shader_f16,
                     barycentrics_supported,
                     subgroup_widths,
                     max_buffer_bytes,

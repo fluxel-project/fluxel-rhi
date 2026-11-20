@@ -39,6 +39,8 @@ pub struct ShaderEntryPoint {
 /// `ray_query` capability. The caller must declare features used by opaque shader
 /// artifacts; Core does not inspect native bytecode.
 pub const SHADER_FEATURE_RAY_QUERY: &str = "ray-query";
+/// The shader requires native half-precision floating-point types.
+pub const SHADER_FEATURE_F16: &str = "shader-f16";
 /// A fragment shader requires the API's early depth-test semantics.
 ///
 /// This requirement is checked against `DeviceCapabilities::shader_early_depth_test`.

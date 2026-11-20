@@ -27,9 +27,20 @@ pub(in crate::backend) fn reflect(
             };
             let text = std::str::from_utf8(&desc.bytes)
                 .map_err(|_| Error::Shader("HLSL is not UTF-8".into()))?;
-            let bytes =
-                super::compile_direct_hlsl(text, &entry.entry, stage, model, &entry.constants)?;
-            return super::native_layout_reflection::reflect(&bytes, stage, runtime_arrays);
+            let compiled = super::compile_hlsl_with_report(
+                text,
+                &entry.entry,
+                stage,
+                model,
+                &entry.constants,
+                api::ShaderDiagnosticSource::Hlsl,
+                super::requires_f16(desc),
+            )?;
+            return super::native_layout_reflection::reflect(
+                &compiled.bytes,
+                stage,
+                runtime_arrays,
+            );
         }
         None => {
             if shader.entries.len() != 1 {

@@ -88,6 +88,7 @@ pub(super) fn compile_hlsl(
         profile,
         constants,
         ShaderDiagnosticSource::Hlsl,
+        false,
     )
     .map(|compiled| compiled.bytes)
 }
@@ -103,6 +104,7 @@ pub(super) fn compile_hlsl_with_origin(
     profile: &str,
     constants: &[(String, SpecializationValue)],
     origin: ShaderDiagnosticSource,
+    native_f16: bool,
 ) -> Result<CompiledHlsl> {
     let definitions = definitions(constants)?;
     let mut arguments = vec![
@@ -111,6 +113,9 @@ pub(super) fn compile_hlsl_with_origin(
         "-E".to_owned(),
         entry.to_owned(),
     ];
+    if native_f16 {
+        arguments.push("-enable-16bit-types".into());
+    }
     append_definitions(&mut arguments, definitions);
     let (_library, result) = invoke(source, &arguments, origin)?;
     let bytes = result_bytes(&result)?;
@@ -289,7 +294,7 @@ fn double_literal(value: f64) -> Result<String> {
     Ok(value)
 }
 
-fn f16_to_f32(bits: u16) -> f32 {
+pub(super) fn f16_to_f32(bits: u16) -> f32 {
     let sign = u32::from(bits >> 15) << 31;
     let exponent = u32::from((bits >> 10) & 0x1f);
     let fraction = u32::from(bits & 0x03ff);

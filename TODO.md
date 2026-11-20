@@ -101,6 +101,18 @@ discards, and reject nonfragment requirement declarations. WGSL conservative
 depth remains pending until its depth-output and interpolation rules are
 mapped per mode and verified with depth and storage readback.
 
+### DX12 native half-precision shader values
+
+**Status:** DX12 qualifies native F16 with Shader Model 6.2 and OPTIONS4.
+WGSL and HLSL use the native DXC type option and direct DXIL can declare
+the device requirement. WGSL F16 uniforms and push constants remain deferred.
+
+**Acceptance:** Verify WGSL arithmetic, storage, workgroup data and raster
+interfaces with exact half values and readback. Cover finite F16 overrides,
+invalid scalar widths, unsupported devices and insufficient HLSL profiles.
+Reopen uniform and push constants when their HLSL lowering preserves
+two-byte offsets and the declared aggregate layout.
+
 ### DX12 packed 4×8 integer dot products
 
 **Status:** WGSL raster and compute pipelines select the native intrinsic

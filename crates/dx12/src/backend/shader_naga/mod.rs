@@ -20,6 +20,7 @@ mod validation;
 mod wave_size;
 use binding::{validate_binding_type, wgsl_binding_shape};
 use fluxel_rhi_core::api::{self, Error, Result};
+pub(super) use validation::requires_f16;
 use validation::{texture_atomic_only, validation_capabilities};
 pub(crate) use wave_size::inject_direct_hlsl;
 
@@ -77,6 +78,7 @@ pub(crate) fn compile_hlsl_with_report(
     model: u16,
     constants: &[(String, api::SpecializationValue)],
     origin: api::ShaderDiagnosticSource,
+    native_f16: bool,
 ) -> Result<dxc::CompiledHlsl> {
     dxc::compile_hlsl_with_origin(
         source,
@@ -84,6 +86,7 @@ pub(crate) fn compile_hlsl_with_report(
         &hlsl_profile(stage, model)?,
         constants,
         origin,
+        native_f16,
     )
 }
 
@@ -105,6 +108,7 @@ pub(crate) fn validate_source(desc: &api::ShaderDesc) -> Result<()> {
     )
     .validate(&module)
     .map_err(|e| diagnostics::wgsl_validation(source, e))?;
+    validation::validate_f16_bindings(&module)?;
     for entry in &desc.entries {
         let stage = match entry.stage {
             api::ShaderStage::Compute => naga::ShaderStage::Compute,
@@ -294,6 +298,7 @@ fn compile_inner(
     if desc.format != api::ShaderFormat::Wgsl
         || desc.required_features.iter().any(|x| {
             x != api::SHADER_FEATURE_RAY_QUERY
+                && x != api::SHADER_FEATURE_F16
                 && x != api::SHADER_FEATURE_PRIMITIVE_INDEX
                 && x != api::SHADER_FEATURE_EARLY_DEPTH_TEST
                 && x != super::SUBGROUP_FEATURE
@@ -380,6 +385,7 @@ fn compile_inner(
     )
     .validate(&original)
     .map_err(|e| diagnostics::wgsl_validation(source, e))?;
+    validation::validate_f16_bindings(&original)?;
     let mut values = naga::back::PipelineConstants::default();
     if let Some(constants) = constants {
         for (name, value) in constants {
@@ -392,19 +398,27 @@ fn compile_inner(
                 })
                 .map(|(_, item)| item)
                 .ok_or_else(|| Error::Shader(format!("unknown override {name}")))?;
-            let (kind, value) = match value {
+            let (scalar, value) = match value {
                 api::SpecializationValue::Bool(v) => {
-                    (naga::ScalarKind::Bool, if *v { 1.0 } else { 0.0 })
+                    (naga::Scalar::BOOL, if *v { 1.0 } else { 0.0 })
                 }
-                api::SpecializationValue::U32(v) => (naga::ScalarKind::Uint, f64::from(*v)),
-                api::SpecializationValue::I32(v) => (naga::ScalarKind::Sint, f64::from(*v)),
+                api::SpecializationValue::U32(v) => (naga::Scalar::U32, f64::from(*v)),
+                api::SpecializationValue::I32(v) => (naga::Scalar::I32, f64::from(*v)),
                 api::SpecializationValue::F32(v) if v.is_finite() => {
-                    (naga::ScalarKind::Float, f64::from(*v))
+                    (naga::Scalar::F32, f64::from(*v))
+                }
+                api::SpecializationValue::F16Bits(bits) => {
+                    let value = dxc::f16_to_f32(*bits);
+                    if !value.is_finite() {
+                        return Err(Error::Unsupported(
+                            "DX12 WGSL non-finite f16 specialization",
+                        ));
+                    }
+                    (naga::Scalar::F16, f64::from(value))
                 }
                 _ => return Err(Error::Unsupported("DX12 WGSL specialization type")),
             };
-            if !matches!(original.types[item.ty].inner, naga::TypeInner::Scalar(s) if s.kind == kind && (kind == naga::ScalarKind::Bool || s.width == 4))
-            {
+            if !matches!(original.types[item.ty].inner, naga::TypeInner::Scalar(s) if s == scalar) {
                 return Err(Error::Shader(format!("override {name} type mismatch")));
             }
             if values.insert(name.clone(), value).is_some() {
@@ -481,6 +495,7 @@ fn compile_inner(
         array_samplers.push((binding.group, register, comparison, size, marker));
     }
     let required_wave_size = target.required_wave_size;
+    let native_f16 = requires_f16(desc);
     let mut options = naga::back::hlsl::Options {
         shader_model: if target.required_wave_size.is_some() {
             naga::back::hlsl::ShaderModel::V6_6
@@ -492,6 +507,8 @@ fn compile_inner(
             naga::back::hlsl::ShaderModel::V6_5
         } else if target.shader_model >= 64 && validation::uses_packed_dot(&module) {
             naga::back::hlsl::ShaderModel::V6_4
+        } else if native_f16 {
+            naga::back::hlsl::ShaderModel::V6_2
         } else {
             naga::back::hlsl::ShaderModel::V6_0
         },
@@ -731,6 +748,7 @@ fn compile_inner(
             &profile,
             &[],
             api::ShaderDiagnosticSource::GeneratedHlsl,
+            native_f16,
         )?;
         let raw_storage_bindings = module
             .global_variables

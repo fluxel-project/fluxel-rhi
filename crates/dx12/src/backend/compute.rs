@@ -439,6 +439,7 @@ fn create_pipeline(
                 model,
                 &desc.compute.constants,
                 origin,
+                super::shader_naga::requires_f16(source),
             )?;
             (Some(compiled.bytes), Vec::new(), false, compiled.report)
         }
