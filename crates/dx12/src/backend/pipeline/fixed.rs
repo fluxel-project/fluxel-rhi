@@ -30,6 +30,16 @@ fn validate_depth(state: Option<api::DepthStencilState>) -> Result<Option<api::D
         {
             Some(state)
         }
+        Some(state)
+            if state.format == api::TextureFormat::Stencil8
+                && !state.depth_write_enabled
+                && state.depth_compare == api::CompareFunction::Always
+                && state.depth_bias_constant == 0
+                && state.depth_bias_slope_scale == 0.0
+                && state.depth_bias_clamp == 0.0 =>
+        {
+            Some(state)
+        }
         Some(_) => {
             return Err(Error::Unsupported("DX12 depth/stencil pipeline format"));
         }
@@ -223,7 +233,11 @@ pub(crate) fn lower_depth(depth: Option<api::DepthStencilState>) -> D3D12_DEPTH_
         StencilFunc: D3D12_COMPARISON_FUNC_ALWAYS,
     };
     let depth_state = D3D12_DEPTH_STENCIL_DESC {
-        DepthEnable: if depth.is_some() { TRUE } else { FALSE },
+        DepthEnable: if depth.is_some_and(|d| d.format != api::TextureFormat::Stencil8) {
+            TRUE
+        } else {
+            FALSE
+        },
         DepthWriteMask: if depth.is_some_and(|d| d.depth_write_enabled) {
             D3D12_DEPTH_WRITE_MASK_ALL
         } else {
@@ -235,7 +249,9 @@ pub(crate) fn lower_depth(depth: Option<api::DepthStencilState>) -> D3D12_DEPTH_
         StencilEnable: if depth.is_some_and(|d| {
             matches!(
                 d.format,
-                api::TextureFormat::Depth24PlusStencil8 | api::TextureFormat::Depth32FloatStencil8
+                api::TextureFormat::Depth24PlusStencil8
+                    | api::TextureFormat::Depth32FloatStencil8
+                    | api::TextureFormat::Stencil8
             )
         }) {
             TRUE
@@ -251,13 +267,7 @@ pub(crate) fn lower_depth(depth: Option<api::DepthStencilState>) -> D3D12_DEPTH_
 }
 
 pub(crate) fn depth_format(depth: Option<api::DepthStencilState>) -> DXGI_FORMAT {
-    depth.map_or(DXGI_FORMAT_UNKNOWN, |d| match d.format {
-        api::TextureFormat::Depth16Unorm => DXGI_FORMAT_D16_UNORM,
-        api::TextureFormat::Depth32Float | api::TextureFormat::Depth24Plus => DXGI_FORMAT_D32_FLOAT,
-        api::TextureFormat::Depth24PlusStencil8 => DXGI_FORMAT_D24_UNORM_S8_UINT,
-        api::TextureFormat::Depth32FloatStencil8 => DXGI_FORMAT_D32_FLOAT_S8X24_UINT,
-        _ => unreachable!("validated depth format"),
-    })
+    depth.map_or(DXGI_FORMAT_UNKNOWN, |d| texture::dxgi_format(d.format))
 }
 
 pub(crate) fn per_face_stencil(

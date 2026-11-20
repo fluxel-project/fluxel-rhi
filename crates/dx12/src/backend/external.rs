@@ -254,6 +254,11 @@ fn import_texture(
     handle: OwnedHandle,
     desc: &api::TextureDesc,
 ) -> Result<Dx12Texture> {
+    if desc.format == api::TextureFormat::Stencil8 {
+        return Err(Error::Unsupported(
+            "DX12 external Stencil8 requires hidden depth state provenance",
+        ));
+    }
     if let api::Support::Unsupported(reason) = texture::support(device, desc) {
         return Err(Error::Unsupported(reason));
     }

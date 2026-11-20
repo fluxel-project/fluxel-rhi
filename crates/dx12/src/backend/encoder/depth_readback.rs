@@ -146,9 +146,10 @@ fn plane_footprints(
 ) -> Result<Vec<(u32, D3D12_PLACED_SUBRESOURCE_FOOTPRINT, u32, u64)>, Error> {
     let desc = &texture.desc;
     let stencil = region.aspect == api::TextureAspects::STENCIL;
-    if !(region.aspect == api::TextureAspects::DEPTH
-        || (stencil
-            && super::super::texture::depth_aspects(desc.format) != api::TextureAspects::DEPTH))
+    if !(matches!(
+        region.aspect,
+        api::TextureAspects::DEPTH | api::TextureAspects::STENCIL
+    ) && super::super::texture::depth_aspects(desc.format).0 & region.aspect.0 != 0)
     {
         return Err(Error::InvalidRange);
     }

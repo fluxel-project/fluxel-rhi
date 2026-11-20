@@ -7,9 +7,10 @@ pub(super) fn srv_format(format: api::TextureFormat, aspects: api::TextureAspect
         (api::TextureFormat::Depth24PlusStencil8, api::TextureAspects::DEPTH) => {
             DXGI_FORMAT_R24_UNORM_X8_TYPELESS
         }
-        (api::TextureFormat::Depth24PlusStencil8, api::TextureAspects::STENCIL) => {
-            DXGI_FORMAT_X24_TYPELESS_G8_UINT
-        }
+        (
+            api::TextureFormat::Depth24PlusStencil8 | api::TextureFormat::Stencil8,
+            api::TextureAspects::STENCIL,
+        ) => DXGI_FORMAT_X24_TYPELESS_G8_UINT,
         (api::TextureFormat::Depth32FloatStencil8, api::TextureAspects::DEPTH) => {
             DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS
         }
@@ -31,11 +32,9 @@ pub(super) fn create_depth_view(
         == depth_aspects(texture.desc.format)
         && usage.contains(api::TextureUsage::RENDER_ATTACHMENT)
     {
-        let slots = if depth_aspects(texture.desc.format) == api::TextureAspects::DEPTH {
-            2
-        } else {
-            4
-        };
+        let exposed = depth_aspects(texture.desc.format);
+        let combined = exposed == (api::TextureAspects::DEPTH | api::TextureAspects::STENCIL);
+        let slots = if combined { 4 } else { 2 };
         let lease =
             dv.0.cpu_descriptors
                 .allocate(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, slots)?;
@@ -63,26 +62,21 @@ pub(super) fn create_depth_view(
             };
             handle
         };
-        let read_depth = create_read_only(1, D3D12_DSV_FLAG_READ_ONLY_DEPTH);
-        let (read_stencil, read_both) =
-            if depth_aspects(texture.desc.format) == api::TextureAspects::DEPTH {
-                (None, None)
-            } else {
-                (
-                    Some(create_read_only(2, D3D12_DSV_FLAG_READ_ONLY_STENCIL)),
-                    Some(create_read_only(
-                        3,
-                        D3D12_DSV_FLAG_READ_ONLY_DEPTH | D3D12_DSV_FLAG_READ_ONLY_STENCIL,
-                    )),
-                )
-            };
-        (
-            Some(lease),
-            Some(dsv),
-            Some(read_depth),
-            read_stencil,
-            read_both,
-        )
+        let read_depth = (exposed.0 & api::TextureAspects::DEPTH.0 != 0)
+            .then(|| create_read_only(1, D3D12_DSV_FLAG_READ_ONLY_DEPTH));
+        let read_stencil = (exposed.0 & api::TextureAspects::STENCIL.0 != 0).then(|| {
+            create_read_only(
+                if combined { 2 } else { 1 },
+                D3D12_DSV_FLAG_READ_ONLY_STENCIL,
+            )
+        });
+        let read_both = combined.then(|| {
+            create_read_only(
+                3,
+                D3D12_DSV_FLAG_READ_ONLY_DEPTH | D3D12_DSV_FLAG_READ_ONLY_STENCIL,
+            )
+        });
+        (Some(lease), Some(dsv), read_depth, read_stencil, read_both)
     } else {
         (None, None, None, None, None)
     };

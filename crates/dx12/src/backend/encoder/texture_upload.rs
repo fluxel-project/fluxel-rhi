@@ -95,9 +95,10 @@ fn prepare<'a>(
         match (texture.0.desc.format, dst.aspect) {
             (F::Depth16Unorm, api::TextureAspects::DEPTH) => Some(2),
             (F::Depth32Float | F::Depth32FloatStencil8, api::TextureAspects::DEPTH) => Some(4),
-            (F::Depth24PlusStencil8 | F::Depth32FloatStencil8, api::TextureAspects::STENCIL) => {
-                Some(1)
-            }
+            (
+                F::Depth24PlusStencil8 | F::Depth32FloatStencil8 | F::Stencil8,
+                api::TextureAspects::STENCIL,
+            ) => Some(1),
             (F::Depth24Plus | F::Depth24PlusStencil8, api::TextureAspects::DEPTH) => {
                 return Err(Error::Unsupported(
                     "DX12 opaque Depth24Plus buffer representation",

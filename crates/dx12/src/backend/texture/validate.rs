@@ -48,12 +48,14 @@ pub(super) fn valid(d: &api::TextureDesc) -> std::result::Result<(), &'static st
                 | api::TextureFormat::Depth16Unorm
                 | api::TextureFormat::Depth24PlusStencil8
                 | api::TextureFormat::Depth32FloatStencil8
+                | api::TextureFormat::Stencil8
         ))
         || d.extent
             .iter()
             .zip(max_extent(d.dimension))
             .any(|(&extent, maximum)| extent == 0 || extent > maximum)
         || (d3 && depth)
+        || (d.format == api::TextureFormat::Stencil8 && d.dimension != api::TextureDimension::D2)
         || ((d1 || d3) && (compressed || d.samples != 1))
         || d.array_layers == 0
         || d.array_layers > max_array_layers(d)
@@ -133,10 +135,7 @@ pub(super) fn view(
             && v.mips.start.checked_add(1) != Some(v.mips.end))
         || if depth {
             let all = depth_aspects(desc.format);
-            v.aspects != all
-                && !(all != api::TextureAspects::DEPTH
-                    && (v.aspects == api::TextureAspects::DEPTH
-                        || v.aspects == api::TextureAspects::STENCIL))
+            v.aspects.0 == 0 || v.aspects.0 & !all.0 != 0
         } else {
             v.aspects != api::TextureAspects::COLOR
         }

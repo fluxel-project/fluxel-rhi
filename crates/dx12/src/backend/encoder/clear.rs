@@ -111,6 +111,9 @@ pub(crate) fn texture(
     let (aspect, depth) = match (desc.format, value) {
         (format, api::TextureClearValue::Depth(x))
             if super::super::texture::is_depth(format)
+                && super::super::texture::depth_aspects(format).0
+                    & api::TextureAspects::DEPTH.0
+                    != 0
                 && x.is_finite()
                 && (0.0..=1.0).contains(&x) =>
         {

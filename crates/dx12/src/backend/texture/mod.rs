@@ -66,6 +66,25 @@ pub(crate) struct TextureViewState {
     pub(super) attachment_depth_slice: Option<u32>,
 }
 
+impl TextureViewState {
+    pub(in crate::backend) fn depth_stencil_handle(
+        &self,
+        depth_read_only: bool,
+        stencil_read_only: bool,
+    ) -> Option<D3D12_CPU_DESCRIPTOR_HANDLE> {
+        use api::TextureAspects as A;
+        match (
+            depth_read_only && self.desc.aspects.0 & A::DEPTH.0 != 0,
+            stencil_read_only && self.desc.aspects.0 & A::STENCIL.0 != 0,
+        ) {
+            (false, false) => self.dsv,
+            (true, false) => self.dsv_read_only_depth,
+            (false, true) => self.dsv_read_only_stencil,
+            (true, true) => self.dsv_read_only_both,
+        }
+    }
+}
+
 pub(crate) fn support(dv: &Dx12Device, d: &api::TextureDesc) -> api::Support<api::TextureSupport> {
     match validate_allocation(dv, d) {
         Ok(format_support) => {
@@ -146,7 +165,9 @@ fn allocation_format(desc: &api::TextureDesc) -> Result<DXGI_FORMAT> {
     } else if is_depth(desc.format) && desc.usage.contains(api::TextureUsage::TEXTURE_BINDING) {
         Ok(match desc.format {
             api::TextureFormat::Depth16Unorm => DXGI_FORMAT_R16_TYPELESS,
-            api::TextureFormat::Depth24PlusStencil8 => DXGI_FORMAT_R24G8_TYPELESS,
+            api::TextureFormat::Depth24PlusStencil8 | api::TextureFormat::Stencil8 => {
+                DXGI_FORMAT_R24G8_TYPELESS
+            }
             api::TextureFormat::Depth32FloatStencil8 => DXGI_FORMAT_R32G8X24_TYPELESS,
             _ => DXGI_FORMAT_R32_TYPELESS,
         })

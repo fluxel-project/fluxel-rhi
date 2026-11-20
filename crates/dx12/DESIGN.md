@@ -222,6 +222,12 @@ memory uses L0 for both pool choices. Discrete device-local upload uses L1
 under the GPU upload capability. Each custom allocation retains the access
 and state contract of its selected profile.
 
+`Stencil8` uses a D24S8 allocation and exposes its stencil plane. Textures
+with sampled usage use `R24G8_TYPELESS` and an `X24_TYPELESS_G8_UINT` SRV.
+Depth testing, writes, clears and transitions are unavailable on `Stencil8`.
+The hidden depth plane of locally created textures stays in its initial
+native state. Sparse and shared imports remain gated.
+
 ## Shader and pipeline routes
 
 Shader route selection is explicit and precedes pipeline creation:

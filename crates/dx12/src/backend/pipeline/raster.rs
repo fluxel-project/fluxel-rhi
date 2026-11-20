@@ -118,6 +118,11 @@ fn create_raster(
         formats,
         blends,
     } = attachments;
+    if dynamic_depth_bias.is_some()
+        && depth.is_some_and(|state| state.format == api::TextureFormat::Stencil8)
+    {
+        return Err(Error::Unsupported("DX12 Stencil8 has no depth bias"));
+    }
     let (vs, mut raw_storage_bindings, vertex_index_constants, vertex_report) =
         stage(vertex, layout, device.0.shader_model)?;
     let ps = fragment

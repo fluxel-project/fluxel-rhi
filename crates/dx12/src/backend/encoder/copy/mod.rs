@@ -47,9 +47,10 @@ pub(super) fn validate_region(
     }
     let depth = super::super::texture::is_depth(desc.format);
     let aspect_valid = if depth {
-        region.aspect == api::TextureAspects::DEPTH
-            || (region.aspect == api::TextureAspects::STENCIL
-                && super::super::texture::depth_aspects(desc.format) != api::TextureAspects::DEPTH)
+        matches!(
+            region.aspect,
+            api::TextureAspects::DEPTH | api::TextureAspects::STENCIL
+        ) && super::super::texture::depth_aspects(desc.format).0 & region.aspect.0 != 0
     } else {
         region.aspect == api::TextureAspects::COLOR
     };

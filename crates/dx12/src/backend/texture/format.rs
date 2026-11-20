@@ -52,7 +52,9 @@ pub(crate) fn dxgi_format(format: api::TextureFormat) -> DXGI_FORMAT {
         api::TextureFormat::Depth32Float => DXGI_FORMAT_D32_FLOAT,
         api::TextureFormat::Depth24Plus => DXGI_FORMAT_D32_FLOAT,
         api::TextureFormat::Depth16Unorm => DXGI_FORMAT_D16_UNORM,
-        api::TextureFormat::Depth24PlusStencil8 => DXGI_FORMAT_D24_UNORM_S8_UINT,
+        api::TextureFormat::Depth24PlusStencil8 | api::TextureFormat::Stencil8 => {
+            DXGI_FORMAT_D24_UNORM_S8_UINT
+        }
         api::TextureFormat::Depth32FloatStencil8 => DXGI_FORMAT_D32_FLOAT_S8X24_UINT,
         api::TextureFormat::Bc1RgbaUnorm => DXGI_FORMAT_BC1_UNORM,
         api::TextureFormat::Bc1RgbaUnormSrgb => DXGI_FORMAT_BC1_UNORM_SRGB,
@@ -511,10 +513,13 @@ pub(crate) fn is_depth(format: api::TextureFormat) -> bool {
             | api::TextureFormat::Depth16Unorm
             | api::TextureFormat::Depth24PlusStencil8
             | api::TextureFormat::Depth32FloatStencil8
+            | api::TextureFormat::Stencil8
     )
 }
 pub(crate) fn depth_aspects(format: api::TextureFormat) -> api::TextureAspects {
-    if matches!(
+    if format == api::TextureFormat::Stencil8 {
+        api::TextureAspects::STENCIL
+    } else if matches!(
         format,
         api::TextureFormat::Depth32Float
             | api::TextureFormat::Depth16Unorm

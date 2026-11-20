@@ -294,7 +294,9 @@ impl fluxel_rhi_core::backend::SparseBackend for Dx12 {
         // The DXGI families that contain stencil do not support tiled resources.
         if matches!(
             desc.format,
-            api::TextureFormat::Depth24PlusStencil8 | api::TextureFormat::Depth32FloatStencil8
+            api::TextureFormat::Depth24PlusStencil8
+                | api::TextureFormat::Depth32FloatStencil8
+                | api::TextureFormat::Stencil8
         ) {
             return Err(api::Error::Unsupported("DX12 sparse stencil format"));
         }

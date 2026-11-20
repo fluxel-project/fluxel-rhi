@@ -380,11 +380,8 @@ pub(super) fn begin(
         };
         // SAFETY: Core validates device identity; the texture is retained.
         let n = unsafe { view.native_ref() };
-        if depth.stencil.is_some()
-            && !matches!(
-                n.0.texture.desc.format,
-                api::TextureFormat::Depth24PlusStencil8 | api::TextureFormat::Depth32FloatStencil8
-            )
+        if (depth.stencil.is_some() && n.0.desc.aspects.0 & api::TextureAspects::STENCIL.0 == 0)
+            || (depth.depth.is_some() && n.0.desc.aspects.0 & api::TextureAspects::DEPTH.0 == 0)
         {
             return Err(Error::InvalidState);
         }
@@ -427,20 +424,9 @@ pub(super) fn begin(
                 .ok_or(Error::Unsupported("DX12 depth/stencil DSV"))?
                 .clone(),
         );
-        let has_stencil = matches!(
-            n.0.texture.desc.format,
-            api::TextureFormat::Depth24PlusStencil8 | api::TextureFormat::Depth32FloatStencil8
-        );
-        let dsv = match (
-            depth.depth_read_only,
-            depth.stencil_read_only && has_stencil,
-        ) {
-            (false, false) => n.0.dsv,
-            (true, false) => n.0.dsv_read_only_depth,
-            (false, true) => n.0.dsv_read_only_stencil,
-            (true, true) => n.0.dsv_read_only_both,
-        }
-        .ok_or(Error::Unsupported("DX12 depth/stencil read-only DSV"))?;
+        let dsv =
+            n.0.depth_stencil_handle(depth.depth_read_only, depth.stencil_read_only)
+                .ok_or(Error::Unsupported("DX12 depth/stencil read-only DSV"))?;
         if (depth.depth_read_only && matches!(depth.depth, Some((api::LoadOp::Clear(_), _))))
             || (depth.stencil_read_only
                 && matches!(depth.stencil, Some((api::LoadOp::Clear(_), _))))

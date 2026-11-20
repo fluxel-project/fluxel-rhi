@@ -160,8 +160,8 @@ unmapping the tail and mapping a Tier 4 array slice affect only the requested
 range. Below Tier 4, verify that an array with a fully packed single-slice
 probe receives a structured unsupported error.
 
-**Rejected for DX12 reserved textures:** `Depth24PlusStencil8` and
-`Depth32FloatStencil8`. The [D3D12 DXGI format tables](https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/hardware-support-for-direct3d-12-1-formats)
+**Rejected for DX12 reserved textures:** `Depth24PlusStencil8`,
+`Depth32FloatStencil8`, and `Stencil8`. The [D3D12 DXGI format tables](https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/hardware-support-for-direct3d-12-1-formats)
 list no tiled resource support for the R24G8 and R32G8X24 depth/stencil
 families. Texture creation rejects these sparse descriptors before native
 format probes. Revisit if a native capability explicitly supports those
@@ -238,6 +238,21 @@ native depth and stencil SRV formats. Include single-sample and multisample
 D16, D24S8, D32 and D32S8, cube depth views, and a combined attachment view.
 Check the typeless allocation's dimension support and confirm that a
 depth/stencil plane does not depend on an unrelated scalar color format.
+For `Stencil8`, verify stencil attachment clear and stencil operations,
+sampled unsigned readback, copy and upload, MSAA admission, and read-only
+stencil views across arrays. Confirm that depth view, transition, load,
+clear, write and bias requests fail. Revisit shared `Stencil8` imports in
+D7.4 when the producer can certify the hidden native depth plane's state
+and preserve it across the ownership handoff.
+
+**64-bit image formats.** Keep `R64Uint` unavailable for general texture
+creation and standard WGSL. D4.5 evaluates a separately gated native HLSL
+or DXIL scalar atomic path. [Shader Model 6.6 typed atomics](https://microsoft.github.io/DirectX-Specs/d3d/HLSL_SM_6_6_Int64_and_Float_Atomics.html)
+specifies `R32G32_UINT` storage for those operations. Admit that route only
+after the device reports typed-resource int64 atomics and the shader,
+layout, descriptor and readback agree on the logical scalar. Reject
+`Rg64Uint` on DX12 until a native two-component 64-bit image ABI covers its
+view, access and copy semantics.
 
 ### DX12 structured shader diagnostics
 
