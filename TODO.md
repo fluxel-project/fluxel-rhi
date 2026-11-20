@@ -94,6 +94,8 @@ display paths identify an unambiguous target value.
 **Acceptance:** Reconfigure a live HWND between linear and sRGB views and
 observe the format and generation on the acquired images. Exercise matching
 raster pipelines and verify sRGB encoding on a real presentation path.
+Check SDR configuration suggestions against the exact configuration query,
+including immediate mode with tearing and FIFO fallback without tearing.
 Compare output snapshots across a window move between distinct displays.
 Verify HDR10 and scRGB output on an HDR-active monitor, early rejection of
 incorrect format/color-space pairs and HDR on SDR, and reconfiguration after

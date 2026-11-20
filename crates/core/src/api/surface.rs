@@ -36,6 +36,12 @@ pub enum PresentMode {
     Mailbox,
     Immediate,
 }
+/// Preference for choosing a configuration. The returned mode is explicit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PresentModePreference {
+    AutoVsync,
+    AutoNoVsync,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CompositeAlphaMode {
     Opaque,
@@ -147,6 +153,81 @@ impl<B: SurfaceBackend> Surface<B> {
     }
     pub fn configuration_support(&self, desc: &SurfaceConfig) -> Support<()> {
         B::supports_config(&self.native, desc)
+    }
+    /// Suggests an SDR render-attachment configuration for the given extent.
+    /// Prefers an sRGB attachment view when available. The result can be
+    /// inspected or modified before an explicit `configure` call.
+    pub fn suggest_configuration(
+        &self,
+        extent: [u32; 2],
+        preference: PresentModePreference,
+    ) -> Result<SurfaceConfig> {
+        let caps = self.capabilities()?;
+        if (0..2).any(|axis| {
+            extent[axis] < caps.min_extent[axis] || extent[axis] > caps.max_extent[axis]
+        }) {
+            return Err(Error::InvalidRange);
+        }
+        if !caps.color_spaces.contains(&ColorSpace::Srgb)
+            || caps.usages.0 & SurfaceUsage::RENDER_ATTACHMENT.0 == 0
+        {
+            return Err(Error::Unsupported("default SDR surface configuration"));
+        }
+        let modes: &[PresentMode] = match preference {
+            PresentModePreference::AutoVsync => &[PresentMode::Fifo, PresentMode::Mailbox],
+            PresentModePreference::AutoNoVsync => &[
+                PresentMode::Immediate,
+                PresentMode::Mailbox,
+                PresentMode::Fifo,
+            ],
+        };
+        let is_srgb = |format| {
+            matches!(
+                format,
+                TextureFormat::Rgba8UnormSrgb | TextureFormat::Bgra8UnormSrgb
+            )
+        };
+        let formats = caps
+            .formats
+            .iter()
+            .copied()
+            .filter(|&format| is_srgb(format))
+            .chain(
+                caps.formats
+                    .iter()
+                    .copied()
+                    .filter(|&format| !is_srgb(format)),
+            );
+        for mode in modes
+            .iter()
+            .copied()
+            .filter(|mode| caps.present_modes.contains(mode))
+        {
+            for format in formats.clone() {
+                for alpha_mode in [CompositeAlphaMode::Opaque, CompositeAlphaMode::Inherit]
+                    .into_iter()
+                    .filter(|mode| caps.alpha_modes.contains(mode))
+                {
+                    let mut config = SurfaceConfig {
+                        extent,
+                        format,
+                        present_mode: mode,
+                        alpha_mode,
+                        color_space: ColorSpace::Srgb,
+                        usage: SurfaceUsage::RENDER_ATTACHMENT,
+                        maximum_frame_latency: 2,
+                    };
+                    if matches!(self.configuration_support(&config), Support::Supported(())) {
+                        return Ok(config);
+                    }
+                    config.maximum_frame_latency = 1;
+                    if matches!(self.configuration_support(&config), Support::Supported(())) {
+                        return Ok(config);
+                    }
+                }
+            }
+        }
+        Err(Error::Unsupported("default SDR surface configuration"))
     }
     /// Snapshot of the successful configuration for the current native
     /// generation. Returns `None` before configuration or after invalidation.
