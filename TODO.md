@@ -362,6 +362,9 @@ sampled components, and reject sampled-only views as storage or attachments.
 Verify that a pending or failed completion prevents readback mapping, and
 that a DX12 readback ticket and a direct read lease cannot map the same
 buffer concurrently.
+Exercise mapping after a caller-supplied completion on a DX12 readback
+buffer. Cancel a pending wait before mapping, verify that a failed point
+does not open a lease, and remap after explicit release.
 Verify a fully initialized device buffer through an encoder upload and a
 covering readback. Reject a mismatched encoder, missing copy usage, or data
 that does not cover the whole buffer before allocating it.
@@ -549,6 +552,16 @@ and supplies a bounded workload:
   their native dependencies by ownership and completion evidence. Reopen when
   a consumer defines how destruction affects cloned devices, open encoders,
   and issued or indeterminate work, with an acceptance case for each.
+- Host-visible primary buffers on DX12 UMA. The existing device-memory
+  class uses native default heaps, and the topology report alone does not
+  qualify an allocation for host mapping. Reopen with explicit heap and
+  cache guarantees for a consumer's buffer usages, plus coherent and
+  non-coherent device evidence where applicable.
+- Submit-bound safe buffer mapping. A device-scoped completion point can
+  be awaited explicitly, but does not identify matching buffer accesses
+  or prevent later conflicting GPU work. Reopen with a contract for
+  matching the submitted resource range, excluding later GPU access,
+  and canceling registration on rejection or uncertain handoff.
 - DX12 native shader layout inference for bindings that need exact view or
   immediate metadata, and inference by export from DXIL libraries. The current
   path covers selected single-entry stages with representable binding metadata.

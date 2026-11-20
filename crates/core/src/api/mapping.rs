@@ -1,7 +1,7 @@
 //! Host mapping and readback contracts.
 //!
-//! Mapping is valid only after the caller has obtained the required completion
-//! evidence. This module exposes no implicit wait or resource-retirement rule.
+//! Mapping requires caller-supplied host/GPU ordering. The explicit wait
+//! helper observes a caller-selected completion point before mapping.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
 use std::{
@@ -57,12 +57,16 @@ impl<B: MappingBackend> MapLease<B> {
         }
         B::invalidate(self.native.as_mut().ok_or(Error::InvalidState)?, bytes)
     }
+
+    /// Ends host access and releases the native mapping. Publish any pending
+    /// writes with [`Self::flush`] before releasing the lease.
+    pub fn unmap(self) {
+        drop(self);
+    }
 }
 impl<B: MappingBackend> Drop for MapLease<B> {
     fn drop(&mut self) {
         if let Some(map) = self.native.take() {
-            // Taking first makes Drop idempotent if an explicit release path
-            // is added later; the native mapping still receives one unmap.
             B::unmap(map);
         }
     }
@@ -90,7 +94,7 @@ impl<B: MappingBackend> MappedBuffer<B> {
         } = self;
         let size = mapping.bytes_mut()?.len() as u64;
         mapping.flush(0..size)?;
-        drop(mapping);
+        mapping.unmap();
         Ok(buffer)
     }
 }
@@ -133,6 +137,34 @@ impl<B: MappingBackend> Device<B> {
             mode,
             native: Some(B::map(&self.native, &buffer.native, range, mode).await?),
         })
+    }
+}
+
+impl<B: MappingBackend + CompletionBackend> Device<B> {
+    /// Waits for the supplied completion before opening the mapping.
+    /// Dropping the future while it waits leaves the buffer unmapped.
+    ///
+    /// # Safety
+    /// The point must cover every GPU access that conflicts with this mode
+    /// and range. The caller must keep further conflicting GPU work from
+    /// executing until the lease is released.
+    pub async unsafe fn map_buffer_after(
+        &self,
+        buffer: &Buffer<B>,
+        range: Range<u64>,
+        mode: MapMode,
+        completed: &CompletionPoint<B>,
+    ) -> Result<MapLease<B>> {
+        if buffer.device != self.id || completed.device != self.id {
+            return Err(Error::WrongDevice);
+        }
+        if range.start >= range.end {
+            return Err(Error::InvalidRange);
+        }
+        self.wait_completion(completed).await?;
+        // SAFETY: the completed point and caller's exclusion obligation cover
+        // host access for this range.
+        unsafe { self.map_buffer(buffer, range, mode).await }
     }
 }
 pub struct ReadbackData {

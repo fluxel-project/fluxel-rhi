@@ -152,6 +152,12 @@ in initialized storage. A canceled write records no transitions or copy.
 Depth and stencil uploads require the direct lane because the helper
 restores the depth-write state.
 
+Host mappings use upload buffers for writes and readback buffers for reads.
+Clones share a single native mapping lease, including when a readback ticket
+copies bytes into host-owned storage. Callers may explicitly wait on a chosen
+completion before acquiring a lease and remain responsible for ordering later
+GPU work. Reported UMA topology does not change the buffer heap contract.
+
 ## Shader and pipeline routes
 
 Shader route selection is explicit and precedes pipeline creation:
