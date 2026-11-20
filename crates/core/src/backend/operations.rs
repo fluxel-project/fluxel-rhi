@@ -487,6 +487,14 @@ pub trait SparseBackend: Backend {
     ) -> Result<()> {
         Err(Error::Unsupported("sparse allocation residency"))
     }
+    /// Returns native completion and retains the physical owner until completion.
+    fn enqueue_sparse_allocation_residency(
+        _device: &Self::NativeDevice,
+        _allocation: &Self::NativeSparseAllocation,
+        _budget: ResidencyBudget,
+    ) -> Result<Self::NativeCompletion> {
+        Err(Error::Unsupported("asynchronous heap residency"))
+    }
     /// # Safety
     /// The caller must meet the residency and ordering requirements of
     /// `SparseDomain::evict_allocation`.

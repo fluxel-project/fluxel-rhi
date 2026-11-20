@@ -52,7 +52,7 @@ pub(crate) mod raster_snapshot;
 mod readback;
 mod record;
 mod resolve;
-mod retirement;
+pub(super) mod retirement;
 pub(crate) mod secondary;
 mod submit;
 pub(super) use submit::retire;

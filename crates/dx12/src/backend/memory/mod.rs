@@ -325,6 +325,15 @@ impl MemoryBackend for Dx12 {
         unsafe { residency::evict(device, &heap.heap) }
     }
 
+    fn enqueue_heap_residency(
+        device: &Dx12Device,
+        heap: &Dx12Heap,
+        budget: api::ResidencyBudget,
+    ) -> Result<super::encoder::Dx12Completion> {
+        Self::heap_residency_support(device, heap)?;
+        residency::enqueue(device, &heap.heap, budget)
+    }
+
     fn place_buffer(
         device: &Dx12Device,
         heap: &Dx12Heap,

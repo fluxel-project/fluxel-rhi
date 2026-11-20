@@ -17,7 +17,7 @@ use fluxel_rhi_core::api::{Error, Result};
 
 use windows::Win32::{
     Foundation::{CloseHandle, HANDLE},
-    Graphics::Direct3D12::ID3D12Fence,
+    Graphics::Direct3D12::{ID3D12Fence, ID3D12Heap},
     System::Threading::{
         CloseThreadpoolWait, CreateEventW, CreateThreadpoolWait,
         DisassociateCurrentThreadFromCallback, PTP_CALLBACK_INSTANCE, PTP_WAIT, SetThreadpoolWait,
@@ -38,6 +38,14 @@ struct RetirementContext {
     device: Dx12Device,
     event: Option<HANDLE>,
     wait: AtomicIsize,
+    residency: Option<(ID3D12Fence, u64, ID3D12Heap)>,
+}
+
+impl RetirementContext {
+    fn quarantine(&mut self, fence: ID3D12Fence, value: u64) {
+        let heap = self.residency.take().map(|(_, _, heap)| heap);
+        quarantine(&self.device, fence, value, self.event.take(), heap);
+    }
 }
 
 impl Drop for RetirementContext {
@@ -60,7 +68,7 @@ unsafe extern "system" fn retire_on_fence(
 ) {
     // The raw Arc is transferred exactly once to this one-shot callback. Its
     // strong device reference retains all native state until retirement.
-    let context = unsafe { Arc::from_raw(context.cast::<RetirementContext>()) };
+    let mut context = unsafe { Arc::from_raw(context.cast::<RetirementContext>()) };
     let wait = PTP_WAIT(context.wait.load(Ordering::Acquire));
     debug_assert_ne!(wait.0, 0);
     // Never drain this wait from its own callback: WaitForThreadpoolWaitCallbacks
@@ -70,7 +78,14 @@ unsafe extern "system" fn retire_on_fence(
         SetThreadpoolWait(wait, None, None);
         CloseThreadpoolWait(wait);
     }
-    retire(&context.device);
+    let owned = Arc::get_mut(&mut context).expect("one retirement context owner");
+    if let Some((fence, value, heap)) = owned.residency.take() {
+        if completed(&fence, value) != Some(true) {
+            quarantine(&owned.device, fence, value, owned.event.take(), Some(heap));
+        }
+    } else {
+        retire(&context.device);
+    }
     // Dropping context releases its final registration-owned Device Arc.
 }
 
@@ -89,7 +104,6 @@ fn completed(fence: &ID3D12Fence, value: u64) -> Option<bool> {
 /// work. No callback can race this path because `SetThreadpoolWait` has not
 /// run.
 fn failed_setup(
-    device: &Dx12Device,
     fence: ID3D12Fence,
     value: u64,
     raw: *const RetirementContext,
@@ -100,26 +114,25 @@ fn failed_setup(
     unsafe {
         CloseThreadpoolWait(wait);
         let mut context = Arc::from_raw(raw);
-        let event = Arc::get_mut(&mut context)
+        Arc::get_mut(&mut context)
             .expect("unarmed retirement context has one owner")
-            .event
-            .take()
-            .expect("retirement event ownership");
-        super::fence_wait::retain_quarantined_owner(device, fence, value, Some(event));
-        drop(context);
+            .quarantine(fence, value);
     }
     Err(error)
 }
 
-fn failed_before_wait(
+fn quarantine(
     device: &Dx12Device,
     fence: ID3D12Fence,
     value: u64,
     event: Option<HANDLE>,
-    error: Error,
-) -> Result<()> {
-    super::fence_wait::retain_quarantined_owner(device, fence, value, event);
-    Err(error)
+    heap: Option<ID3D12Heap>,
+) {
+    if let Some(heap) = heap {
+        super::fence_wait::retain_quarantined_heap(device, fence, value, event, heap);
+    } else {
+        super::fence_wait::retain_quarantined_owner(device, fence, value, event);
+    }
 }
 
 /// Registers one terminal lane fence without CPU polling or a user worker.
@@ -130,20 +143,40 @@ pub(super) fn register(device: &Dx12Device, ordinal: u32, value: u64) -> Result<
     if value == u64::MAX {
         return Ok(());
     }
-    let fence = match super::super::queue::fence(device, ordinal) {
-        Ok(fence) => fence.clone(),
-        Err(error) => return Err(error),
-    };
+    let fence = super::super::queue::fence(device, ordinal)?.clone();
+    register_fence(device, fence, value, None)
+}
+
+/// Retains an accepted residency operation independently of its host receipt.
+pub(in crate::backend) fn register_residency(
+    device: &Dx12Device,
+    fence: ID3D12Fence,
+    value: u64,
+    heap: ID3D12Heap,
+) {
+    // Native enqueue already succeeded. Host completion remains observable
+    // even when autonomous registration had to retain the heap in quarantine.
+    let _ = register_fence(device, fence, value, Some(heap));
+}
+
+fn register_fence(
+    device: &Dx12Device,
+    fence: ID3D12Fence,
+    value: u64,
+    heap: Option<ID3D12Heap>,
+) -> Result<()> {
     match completed(&fence, value) {
         Some(true) => {
-            retire(device);
+            if heap.is_none() {
+                retire(device);
+            }
             return Ok(());
         }
         None => {
             // Native handoff already happened. A sparse-only packet need not
             // own an encoder/device Arc, so loss also requires the error-only
             // owner quarantine before reporting uncertainty.
-            super::fence_wait::retain_quarantined_owner(device, fence, value, None);
+            quarantine(device, fence, value, None, heap);
             return Err(Error::DeviceLost);
         }
         Some(false) => {}
@@ -152,22 +185,21 @@ pub(super) fn register(device: &Dx12Device, ordinal: u32, value: u64) -> Result<
     // callback closes it or registration setup unwinds it.
     #[cfg(test)]
     if fail_here(FailureStage::Event) {
-        return failed_before_wait(
-            device,
-            fence,
-            value,
-            None,
-            Error::Backend("injected CreateEventW failure".into()),
-        );
+        quarantine(device, fence, value, None, heap);
+        return Err(Error::Backend("injected CreateEventW failure".into()));
     }
     let event = match unsafe { CreateEventW(None, false, false, None) } {
         Ok(event) => event,
-        Err(error) => return failed_before_wait(device, fence, value, None, native_error(error)),
+        Err(error) => {
+            quarantine(device, fence, value, None, heap);
+            return Err(native_error(error));
+        }
     };
     let context = Arc::new(RetirementContext {
         device: device.clone(),
         event: Some(event),
         wait: AtomicIsize::new(0),
+        residency: heap.map(|heap| (fence.clone(), value, heap)),
     });
     let raw = Arc::into_raw(context);
     // SAFETY: `raw` remains owned by this setup path until it is transferred to
@@ -176,18 +208,12 @@ pub(super) fn register(device: &Dx12Device, ordinal: u32, value: u64) -> Result<
     if fail_here(FailureStage::Wait) {
         // SAFETY: this setup path still exclusively owns the raw Arc.
         let mut context = unsafe { Arc::from_raw(raw) };
-        let event = Arc::get_mut(&mut context)
+        Arc::get_mut(&mut context)
             .expect("unarmed retirement context has one owner")
-            .event
-            .take();
-        drop(context);
-        return failed_before_wait(
-            device,
-            fence,
-            value,
-            event,
-            Error::Backend("injected CreateThreadpoolWait failure".into()),
-        );
+            .quarantine(fence, value);
+        return Err(Error::Backend(
+            "injected CreateThreadpoolWait failure".into(),
+        ));
     }
     let wait = match unsafe {
         CreateThreadpoolWait(Some(retire_on_fence), Some(raw.cast_mut().cast()), None)
@@ -197,12 +223,10 @@ pub(super) fn register(device: &Dx12Device, ordinal: u32, value: u64) -> Result<
             // SAFETY: no wait was created, so this setup path exclusively
             // owns the raw Arc and can transfer its event to quarantine.
             let mut context = unsafe { Arc::from_raw(raw) };
-            let event = Arc::get_mut(&mut context)
+            Arc::get_mut(&mut context)
                 .expect("unarmed retirement context has one owner")
-                .event
-                .take();
-            drop(context);
-            return failed_before_wait(device, fence, value, event, native_error(error));
+                .quarantine(fence, value);
+            return Err(native_error(error));
         }
     };
     // The wait is intentionally not armed yet. D3D12 owns the event
@@ -212,7 +236,6 @@ pub(super) fn register(device: &Dx12Device, ordinal: u32, value: u64) -> Result<
     #[cfg(test)]
     if fail_here(FailureStage::SetEvent) {
         return failed_setup(
-            device,
             fence,
             value,
             raw,
@@ -221,7 +244,7 @@ pub(super) fn register(device: &Dx12Device, ordinal: u32, value: u64) -> Result<
         );
     }
     if let Err(error) = unsafe { fence.SetEventOnCompletion(value, event) } {
-        return failed_setup(device, fence, value, raw, wait, native_error(error));
+        return failed_setup(fence, value, raw, wait, native_error(error));
     }
     // SAFETY: the native fence now owns event signaling. If it already
     // completed, arming observes the signaled event and the callback owns

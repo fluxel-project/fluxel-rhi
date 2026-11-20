@@ -146,6 +146,27 @@ impl<B: SparseBackend> SparseDomain<'_, B> {
         B::make_sparse_allocation_resident(&self.device.native, &allocation.native)
     }
 
+    /// Enqueues one residency reference for the physical backing allocation.
+    /// Observe host completion before relying on the reference for GPU uses,
+    /// mapping operations, or eviction. Dropping the point does not cancel it.
+    pub fn enqueue_allocation_residency(
+        &self,
+        allocation: &SparseAllocation<B>,
+        budget: ResidencyBudget,
+    ) -> Result<CompletionPoint<B>> {
+        self.validate_residency_allocation(allocation)?;
+        if !self.device.caps.async_heap_residency {
+            return Err(Error::Unsupported("asynchronous heap residency"));
+        }
+        let native = B::enqueue_sparse_allocation_residency(
+            &self.device.native,
+            &allocation.native,
+            budget,
+        )?;
+        // SAFETY: SPI returns native completion for this device and operation.
+        Ok(unsafe { CompletionPoint::from_native(self.device.id, native) })
+    }
+
     /// Releases one residency reference without changing existing tile mappings.
     ///
     /// # Safety

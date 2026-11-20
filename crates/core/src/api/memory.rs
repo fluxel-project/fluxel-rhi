@@ -20,6 +20,12 @@ pub struct HeapDesc {
     /// memory type index selected from the requirement's `native_type_bits`.
     pub native_memory_class: u32,
 }
+/// Budget behavior selected by the caller for native asynchronous residency.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidencyBudget {
+    AllowOverBudget,
+    DenyOverBudget,
+}
 #[derive(Clone, Copy, Debug)]
 pub struct MemoryRequirements {
     /// Required heap range size, including any backend placement padding.
@@ -79,6 +85,23 @@ impl<B: MemoryBackend> MemoryDomain<'_, B> {
     pub fn make_heap_resident(&self, heap: &MemoryHeap<B>) -> Result<()> {
         self.heap_residency_support(heap)?;
         B::make_heap_resident(&self.device.native, &heap.native)
+    }
+
+    /// Enqueues one residency reference. Observe the returned host completion
+    /// before relying on that reference for subsequent GPU use or eviction.
+    /// Dropping the completion point does not cancel the native operation.
+    pub fn enqueue_heap_residency(
+        &self,
+        heap: &MemoryHeap<B>,
+        budget: ResidencyBudget,
+    ) -> Result<CompletionPoint<B>> {
+        self.heap_residency_support(heap)?;
+        if !self.device.caps.async_heap_residency {
+            return Err(Error::Unsupported("asynchronous heap residency"));
+        }
+        let native = B::enqueue_heap_residency(&self.device.native, &heap.native, budget)?;
+        // SAFETY: SPI returns native completion for this device and operation.
+        Ok(unsafe { CompletionPoint::from_native(self.device.id, native) })
     }
 
     /// Releases one residency reference. The final release permits eviction.

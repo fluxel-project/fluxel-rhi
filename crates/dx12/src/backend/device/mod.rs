@@ -233,6 +233,9 @@ impl Dx12 {
             } else {
                 D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED
             };
+            let residency_device = native
+                .cast::<windows::Win32::Graphics::Direct3D12::ID3D12Device3>()
+                .ok();
             let conservative_raster = options_available && options.ConservativeRasterizationTier
                 != windows::Win32::Graphics::Direct3D12::D3D12_CONSERVATIVE_RASTERIZATION_TIER_NOT_SUPPORTED;
             let resource_heap_tier2 = options.ResourceHeapTier.0
@@ -520,6 +523,7 @@ impl Dx12 {
                 explicit_heap_residency: true,
                 sparse_allocation_residency: tiled_resources_tier
                     != D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED,
+                async_heap_residency: residency_device.is_some(),
                 multiview,
                 mesh_multiview,
                 shader_view_index,
@@ -580,6 +584,7 @@ impl Dx12 {
                     mesh_supported,
                     mesh_multiview,
                     tiled_resources_tier,
+                    residency_device,
                     resource_heap_tier2,
                     enhanced_barriers_supported,
                     dynamic_depth_bias_supported,

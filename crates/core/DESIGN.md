@@ -152,6 +152,9 @@ operations.
 Backends can separately expose the same residency references for a
 `SparseAllocation`. Its references govern the physical backing memory, while
 tile mappings still change only through explicit sparse operations.
+Asynchronous residency produces host completion. A caller must observe
+success before relying on the new reference for later work. A completion
+point carries no queue-wait authority.
 
 `Device::stats()` is deliberately narrow: it counts successful Core requests and handoffs using atomic snapshots. It is neither a driver query nor a memory, residency, presentation, or profiling report.
 

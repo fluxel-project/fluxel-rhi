@@ -417,6 +417,14 @@ pub trait MemoryBackend: ResourceBackend {
     fn make_heap_resident(_device: &Self::NativeDevice, _heap: &Self::NativeHeap) -> Result<()> {
         Err(Error::Unsupported("explicit heap residency"))
     }
+    /// Returns native completion and retains the physical owner until completion.
+    fn enqueue_heap_residency(
+        _device: &Self::NativeDevice,
+        _heap: &Self::NativeHeap,
+        _budget: ResidencyBudget,
+    ) -> Result<Self::NativeCompletion> {
+        Err(Error::Unsupported("asynchronous heap residency"))
+    }
     /// # Safety
     /// The caller must meet the synchronization and reference requirements of
     /// `MemoryDomain::evict_heap`.

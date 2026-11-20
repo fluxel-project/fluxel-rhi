@@ -143,6 +143,12 @@ they add no tracking to submission or to the backend-owned allocator.
 Sparse allocations use the same calls on their backing heaps. Their reserved
 textures and tile mappings are unchanged across residency changes. Completion
 must cover accesses through every mapping as well as queued mapping operations.
+When the opened device exposes `ID3D12Device3`, asynchronous residency uses
+`EnqueueMakeResident` with the caller's budget flag and a private operation
+fence. The fence does not advance either command timeline. The backend retains
+the physical heap until native completion, including when the caller drops the
+receipt. A failed observer registration quarantines the owner without changing
+the accepted enqueue or its fence.
 
 The memory observation domain can report the number and largest size of
 contiguous free ranges across retained default-pool pages. The observation

@@ -220,6 +220,8 @@ pub struct DeviceCapabilities {
     pub explicit_heap_residency: bool,
     /// Explicit residency operations are available for sparse backing allocations.
     pub sparse_allocation_residency: bool,
+    /// Native asynchronous residency can report host completion for eligible heaps.
+    pub async_heap_residency: bool,
     pub external_memory: bool,
     pub secondary_commands: bool,
     pub native_interop: bool,

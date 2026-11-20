@@ -100,6 +100,9 @@ pub(crate) struct AbandonedFenceEvent {
     // reached D3D12, so losing every public Device must not release native
     // owners without completion evidence.
     owner: Option<Dx12Device>,
+    // Residency registration can fail after native acceptance. Keep its
+    // physical heap alongside the fence on that error-only path.
+    _heap: Option<windows::Win32::Graphics::Direct3D12::ID3D12Heap>,
 }
 
 // A HANDLE is an OS value; this type only transfers and closes it. It never
@@ -141,7 +144,7 @@ pub(super) fn retain_abandoned_event(
     value: u64,
     event: HANDLE,
 ) {
-    retain_event(device, fence, value, Some(event), None);
+    retain_event(device, fence, value, Some(event), None, None);
 }
 
 /// Keeps the device alive for issued work without an autonomous retirement
@@ -152,7 +155,24 @@ pub(super) fn retain_quarantined_owner(
     value: u64,
     event: Option<HANDLE>,
 ) {
-    retain_event(device, fence, value, event, Some(device.clone()));
+    retain_event(device, fence, value, event, Some(device.clone()), None);
+}
+
+pub(super) fn retain_quarantined_heap(
+    device: &Dx12Device,
+    fence: ID3D12Fence,
+    value: u64,
+    event: Option<HANDLE>,
+    heap: windows::Win32::Graphics::Direct3D12::ID3D12Heap,
+) {
+    retain_event(
+        device,
+        fence,
+        value,
+        event,
+        Some(device.clone()),
+        Some(heap),
+    );
 }
 
 fn retain_event(
@@ -161,6 +181,7 @@ fn retain_event(
     value: u64,
     event: Option<HANDLE>,
     owner: Option<Dx12Device>,
+    heap: Option<windows::Win32::Graphics::Direct3D12::ID3D12Heap>,
 ) {
     // SAFETY: the caller transfers exclusive event ownership and the cloned
     // fence is valid for this read-only completion query.
@@ -178,6 +199,7 @@ fn retain_event(
                 fence,
                 event,
                 owner,
+                _heap: heap,
             });
     } else {
         // SAFETY: completion/loss means this event will not be observed by a

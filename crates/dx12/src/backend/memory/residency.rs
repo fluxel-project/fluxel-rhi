@@ -1,8 +1,11 @@
 //! Native residency calls for physical heaps, shared by placed and sparse memory.
 
-use super::super::{Dx12Device, native_error};
-use fluxel_rhi_core::api::Result;
-use windows::Win32::Graphics::Direct3D12::{ID3D12Heap, ID3D12Pageable};
+use super::super::{Dx12Device, encoder, native_error};
+use fluxel_rhi_core::api::{Error, ResidencyBudget, Result};
+use windows::Win32::Graphics::Direct3D12::{
+    D3D12_FENCE_FLAG_NONE, D3D12_RESIDENCY_FLAG_DENY_OVERBUDGET, D3D12_RESIDENCY_FLAG_NONE,
+    ID3D12Fence, ID3D12Heap, ID3D12Pageable,
+};
 use windows::core::Interface;
 
 pub(in crate::backend) fn make_resident(device: &Dx12Device, heap: &ID3D12Heap) -> Result<()> {
@@ -10,6 +13,34 @@ pub(in crate::backend) fn make_resident(device: &Dx12Device, heap: &ID3D12Heap) 
     // SAFETY: the caller checked heap eligibility and device provenance. The
     // pageable reference remains valid through the synchronous operation.
     unsafe { device.0.native.MakeResident(&[Some(pageable)]) }.map_err(native_error)
+}
+
+pub(in crate::backend) fn enqueue(
+    device: &Dx12Device,
+    heap: &ID3D12Heap,
+    budget: ResidencyBudget,
+) -> Result<encoder::Dx12Completion> {
+    let native = device
+        .0
+        .residency_device
+        .as_ref()
+        .ok_or(Error::Unsupported("asynchronous heap residency"))?;
+    let flags = match budget {
+        ResidencyBudget::AllowOverBudget => D3D12_RESIDENCY_FLAG_NONE,
+        ResidencyBudget::DenyOverBudget => D3D12_RESIDENCY_FLAG_DENY_OVERBUDGET,
+    };
+    let pageable = heap.cast::<ID3D12Pageable>().map_err(native_error)?;
+    // SAFETY: the live device creates a new fence private to this operation.
+    // A residency completion can never advance a submission lane timeline.
+    let fence: ID3D12Fence =
+        unsafe { native.CreateFence(0, D3D12_FENCE_FLAG_NONE) }.map_err(native_error)?;
+    let value = 1;
+    // SAFETY: heap and fence belong to this device. Accepted work keeps both
+    // objects alive independently of the caller's completion point.
+    unsafe { native.EnqueueMakeResident(flags, &[Some(pageable)], &fence, value) }
+        .map_err(native_error)?;
+    encoder::retirement::register_residency(device, fence.clone(), value, heap.clone());
+    Ok(encoder::Dx12Completion { fence, value })
 }
 
 /// The caller must own a residency reference and exclude conflicting GPU uses.

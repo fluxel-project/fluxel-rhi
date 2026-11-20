@@ -179,11 +179,18 @@ For sparse allocation residency, include both heap classes, verify the support
 gate on devices without tiled resources, and evict and restore a heap while
 its completed tile mappings remain installed. Verify data through a mapped
 tile after restoration and repeat with a mapping on another queue lane.
+For asynchronous residency, cover both budget modes, independent completion
+for two enqueues, receipt and wait cancellation, registration failure after
+native acceptance, and device loss. Verify that only native residency fence
+completion admits subsequent host-gated work and that neither queue's
+submission completion advances due to residency.
 
-**Pending native paths.** Add fence-completing asynchronous residency and
-review eligible physical owners outside explicit default heaps. CPU-visible
-heaps require an ordering contract for active CPU mappings in addition to GPU
-completion. Keep their residency operations gated until both are covered.
+**Pending native paths.** Queue-side residency dependencies need an explicit
+GPU-wait contract. Host completion cannot authorize a submission-plan wait.
+Resume this path when the plan can carry a residency dependency with its own
+native fence provenance and owner lifetime. CPU-visible heaps require an
+ordering contract for active CPU mappings in addition to GPU completion. Keep
+their residency operations gated until both are covered.
 Resolve physical owner identity for committed resources before exposing their
 residency operations. Placed resources use the existing heap operations.
 

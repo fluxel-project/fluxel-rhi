@@ -626,6 +626,15 @@ impl fluxel_rhi_core::backend::SparseBackend for Dx12 {
         super::memory::residency::make_resident(device, heap)
     }
 
+    fn enqueue_sparse_allocation_residency(
+        device: &Dx12Device,
+        allocation: &Dx12Sparse,
+        budget: api::ResidencyBudget,
+    ) -> api::Result<super::encoder::Dx12Completion> {
+        let heap = residency_heap(device, allocation)?;
+        super::memory::residency::enqueue(device, heap, budget)
+    }
+
     unsafe fn evict_sparse_allocation(
         device: &Dx12Device,
         allocation: &Dx12Sparse,
