@@ -40,9 +40,11 @@ pub(crate) fn create_bind_group(
                 if entry.binding != slot.binding {
                     return Err(Error::InvalidState);
                 }
-                if slot.class == DescriptorClass::Sampler
-                    || (slot.dynamic_offset && slot.class == DescriptorClass::Cbv)
-                {
+                if slot.class == DescriptorClass::Sampler {
+                    write::validate_sampler_binding(slot, &entry.resource)?;
+                    return Ok(count);
+                }
+                if slot.dynamic_offset && slot.class == DescriptorClass::Cbv {
                     return Ok(count);
                 }
                 if slot.view_dimension.is_some() {
@@ -145,7 +147,7 @@ pub(crate) fn create_bind_group(
             let Some(resource) = resource else {
                 write::write_hole(
                     device,
-                    slot.class,
+                    slot,
                     view_cpu(view_index),
                     sampler_start + sampler_index,
                 );
@@ -417,7 +419,6 @@ pub(crate) fn create_bind_group(
                     textures.push(native.clone());
                 }
                 (DescriptorClass::Sampler, api::BindingResource::Sampler(sampler)) => {
-                    write::validate_sampler_type(slot, sampler)?;
                     // SAFETY: Core validated sampler device identity; the native
                     // sampler descriptor heap is retained by the cloned sampler.
                     let native = unsafe { sampler.native_ref() };

@@ -137,6 +137,9 @@ comparison sampler in the same bind group.
 
 **Acceptance:** Read back a depth-comparison result with distinct passing and
 failing references, and verify that mismatched sampler modes are rejected.
+Exercise fixed and runtime sampler arrays, including partially bound arrays
+whose shaders access only initialized entries. Verify mode mismatches are
+rejected before descriptor table writes.
 
 ### P7-LOWERING-PROFILE — expose cost-bearing lowering facts to RenderGraph
 

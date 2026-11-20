@@ -14,14 +14,14 @@ use windows::Win32::Graphics::{Direct3D12::*, Dxgi::Common::DXGI_FORMAT_R32_TYPE
 /// Null views use a valid raw-buffer description; shaders must not access holes.
 pub(super) fn write_hole(
     device: &Dx12Device,
-    class: DescriptorClass,
+    slot: &BindingSlot,
     view: D3D12_CPU_DESCRIPTOR_HANDLE,
     sampler: u32,
 ) {
     // SAFETY: the caller reserved these destination heap entries. Null views
     // have a complete valid description and cannot reference a dead resource.
     unsafe {
-        match class {
+        match slot.class {
             DescriptorClass::Cbv => device.0.native.CreateConstantBufferView(None, view),
             DescriptorClass::Srv => {
                 let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
@@ -65,8 +65,19 @@ pub(super) fn write_hole(
                 );
             }
             DescriptorClass::Sampler => {
+                let comparison = matches!(
+                    slot.binding_type,
+                    api::BindingType::Sampler {
+                        comparison: true,
+                        ..
+                    }
+                );
                 let desc = D3D12_SAMPLER_DESC {
-                    Filter: D3D12_FILTER_MIN_MAG_MIP_POINT,
+                    Filter: if comparison {
+                        D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT
+                    } else {
+                        D3D12_FILTER_MIN_MAG_MIP_POINT
+                    },
                     AddressU: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
                     AddressV: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
                     AddressW: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
@@ -83,6 +94,22 @@ pub(super) fn write_hole(
                     .CreateSampler(&desc, device.0.descriptors.samplers.cpu(sampler));
             }
         }
+    }
+}
+
+pub(super) fn validate_sampler_binding(
+    slot: &BindingSlot,
+    resource: &api::BindingResource<'_, Dx12>,
+) -> Result<()> {
+    match resource {
+        api::BindingResource::Sampler(sampler) => validate_sampler_type(slot, sampler),
+        api::BindingResource::Array(entries) => entries.iter().flatten().try_for_each(|entry| {
+            let api::BindingResource::Sampler(sampler) = entry else {
+                return Err(Error::InvalidState);
+            };
+            validate_sampler_type(slot, sampler)
+        }),
+        _ => Err(Error::InvalidState),
     }
 }
 
@@ -107,10 +134,7 @@ pub(super) fn resource_descriptor_count(
 
 /// Checks the native sampler mode against the shader-layout declaration before
 /// its descriptor is copied into a shader-visible table.
-pub(super) fn validate_sampler_type(
-    slot: &BindingSlot,
-    sampler: &api::Sampler<Dx12>,
-) -> Result<()> {
+fn validate_sampler_type(slot: &BindingSlot, sampler: &api::Sampler<Dx12>) -> Result<()> {
     let api::BindingType::Sampler { comparison, .. } = &slot.binding_type else {
         return Err(Error::InvalidState);
     };
