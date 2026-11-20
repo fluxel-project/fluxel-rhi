@@ -340,7 +340,7 @@ pub enum TextureSampleType {
     Uint,
     Depth,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BindingType {
     UniformBuffer {
         /// When true, each bind operation consumes one dynamic offset for this
@@ -459,6 +459,14 @@ pub struct PipelineLayoutDesc<'a, B: Backend> {
 pub struct PipelineLayoutDescription<B: Backend> {
     pub groups: Vec<BindGroupLayout<B>>,
     pub push_constants: Vec<PushConstantRange>,
+}
+
+/// Descriptor count supplied by the caller for a reflected runtime array.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimeBindingCapacity {
+    pub group: u32,
+    pub binding: u32,
+    pub max_count: u32,
 }
 
 pub(crate) fn binding_resource_device<B: Backend>(

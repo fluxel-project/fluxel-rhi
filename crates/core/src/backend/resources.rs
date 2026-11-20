@@ -89,6 +89,15 @@ pub trait ResourceBackend: Backend {
 /// Cold shader operations: native direct route first, actual Naga frontend/output
 /// pair second, else error. No retry after a selected compiler fails.
 pub trait ShaderBackend: Backend {
+    /// Reflect portable layout entries for the selected stage only.
+    fn reflect_stage_layout(
+        _device: &Self::NativeDevice,
+        _stage: ShaderStage,
+        _entry: &PipelineStage<Self>,
+        _runtime_arrays: &[RuntimeBindingCapacity],
+    ) -> Result<Vec<(u32, BindGroupLayoutEntry)>> {
+        Err(Error::Unsupported("shader layout inference"))
+    }
     type DirectFuture<'a>: Future<Output = Result<Self::NativeShader>> + 'a
     where
         Self: 'a;

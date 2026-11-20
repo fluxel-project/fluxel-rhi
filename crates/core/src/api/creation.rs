@@ -15,6 +15,8 @@ use std::{
     },
 };
 
+mod inference;
+
 impl<B: ResourceBackend> Device<B> {
     pub fn buffer_support(&self, desc: &BufferDesc) -> Support<BufferSupport> {
         if desc.usage.contains(BufferUsage::STORAGE) && !self.caps.storage_buffers {

@@ -141,7 +141,7 @@ fn dimension_matches(
         )
     )
 }
-fn storage_format(format: naga::StorageFormat) -> api::TextureFormat {
+pub(super) fn storage_format(format: naga::StorageFormat) -> api::TextureFormat {
     match format {
         naga::StorageFormat::R8Unorm => api::TextureFormat::R8Unorm,
         naga::StorageFormat::R8Snorm => api::TextureFormat::R8Snorm,

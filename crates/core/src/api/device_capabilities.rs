@@ -7,6 +7,8 @@ use std::sync::Arc;
 /// requires these flags to match the implemented optional backend domains.
 #[derive(Clone, Default)]
 pub struct DeviceCapabilities {
+    /// Pipeline layout descriptions can be derived from supported shader sources.
+    pub shader_layout_inference: bool,
     /// Memory topology of the native node used by ordinary device work.
     /// This does not admit any particular buffer mapping or heap type.
     pub memory_topology: Option<DeviceMemoryTopology>,

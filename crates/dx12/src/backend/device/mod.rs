@@ -380,6 +380,7 @@ impl Dx12 {
                 acceleration_structure_update: ray_supported,
                 acceleration_geometry_transform: ray_supported,
                 acceleration_build_size_output: ray_supported,
+                shader_layout_inference: true,
                 acceleration_compaction_size: ray_supported,
                 acceleration_compaction: ray_supported,
                 acceleration_structure_binding_arrays: ray_supported && descriptor_indexing,

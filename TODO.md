@@ -27,10 +27,16 @@ verify the warning remains queryable, including when using a PSO cache.
 **Status:** Core-created raster, compute, mesh and ray pipelines retain the
 portable pipeline layout. Layout metadata exposes the original bind groups,
 entries and push-constant ranges.
+DX12 can infer portable layouts from selected WGSL raster and compute
+entries, including explicit capacities for runtime binding arrays. HLSL and
+DXIL inference remain open.
 
 **Acceptance:** Query cloned pipelines and reconstruct compatible bind groups
 from the returned metadata. Check that native imports omit unavailable
 metadata and absent indices return no bind-group layout.
+Build and execute raster and compute pipelines with inferred layouts. Check
+shared bindings across stages, omitted inactive resources, group gaps,
+filterability defaults, array capacities, and conflicting declarations.
 
 ### DX12 runtime and partially bound TLAS arrays
 

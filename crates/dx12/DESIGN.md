@@ -254,6 +254,13 @@ current DXGI color and luminance facts separately from the selected configuratio
 
 ## Capability boundaries
 
+WGSL layout inference reflects active globals for selected vertex, fragment
+or compute entries. Core combines compatible declarations before applying the
+ordinary layout admission checks. Runtime arrays require a supplied capacity.
+Inferred arrays allow divergent indexing where supported, and float textures
+sampled with samplers use a filterable default. Callers can specify those
+binding policies directly with explicit layouts.
+
 The implemented public route includes graphics and compute, multiple render
 targets, indirect drawing and dispatch, queries, secondary recording,
 standalone clears and resolves, placed memory, scoped native/external interop,

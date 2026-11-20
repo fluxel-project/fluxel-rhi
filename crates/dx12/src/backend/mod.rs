@@ -294,6 +294,14 @@ impl Backend for Dx12 {
 }
 
 impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
+    fn reflect_stage_layout(
+        _: &Dx12Device,
+        stage: api::ShaderStage,
+        entry: &api::PipelineStage<Self>,
+        runtime_arrays: &[api::RuntimeBindingCapacity],
+    ) -> Result<Vec<(u32, api::BindGroupLayoutEntry)>> {
+        shader_naga::reflect(stage, entry, runtime_arrays)
+    }
     type DirectFuture<'a> = pipeline::worker::ColdFuture<Dx12Shader>;
     type NagaFuture<'a> = pipeline::worker::ColdFuture<Dx12Shader>;
     fn shader_route(device: &Dx12Device, desc: &api::ShaderDesc) -> api::ShaderRoute {
