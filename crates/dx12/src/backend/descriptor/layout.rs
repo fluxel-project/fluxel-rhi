@@ -21,6 +21,7 @@ fn layout_state(
     device: &Dx12Device,
     desc: &api::BindGroupLayoutDesc,
 ) -> Result<BindGroupLayoutState> {
+    device.require_active()?;
     let mut slots = Vec::with_capacity(desc.entries.len());
     let mut previous = None;
     for entry in &desc.entries {

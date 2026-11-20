@@ -9,6 +9,12 @@ use std::{future::Future, ops::Range};
 
 /// Backend-native constructors and per-device support facts. No hazard tracker.
 pub trait ResourceBackend: Backend {
+    /// Checks whether the device can begin a new buffer or texture allocation.
+    /// Support queries still describe the capability of the requested shape.
+    fn check_resource_device(_device: &Self::NativeDevice) -> Result<()> {
+        Ok(())
+    }
+
     fn buffer_support(device: &Self::NativeDevice, desc: &BufferDesc) -> Support<BufferSupport>;
     fn storage_buffer_view_support(
         _buffer: &Self::NativeBuffer,

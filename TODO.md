@@ -129,6 +129,10 @@ device, verify texture view and sampler support and creation return
 Verify bind-group creation rejects before reserving descriptor slots. Use
 previously created resources and populated descriptor pages to exercise the
 reuse path that does not need to allocate a new native heap.
+Check that ordinary buffer and texture creation distinguish device removal
+from unsupported descriptors before entering native allocation. Verify
+bind-group and pipeline layout support and creation on the same removed
+device, including an empty layout that otherwise requires no format probes.
 
 **Counted indirect draw support:** Compare the query with DX12 recording
 for indexed and non-indexed argument strides and checked offsets, including

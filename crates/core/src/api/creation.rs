@@ -182,6 +182,7 @@ impl<B: ResourceBackend> Device<B> {
         B::texture_support(&self.native, desc)
     }
     pub fn create_buffer(&self, desc: &BufferDesc) -> Result<Buffer<B>> {
+        B::check_resource_device(&self.native)?;
         if let Support::Unsupported(reason) = self.buffer_support(desc) {
             return Err(Error::Unsupported(reason));
         }
@@ -190,6 +191,7 @@ impl<B: ResourceBackend> Device<B> {
     }
     pub fn create_texture(&self, desc: &TextureDesc) -> Result<Texture<B>> {
         validate_transient_texture_desc(desc)?;
+        B::check_resource_device(&self.native)?;
         if let Support::Unsupported(reason) = self.texture_support(desc) {
             return Err(Error::Unsupported(reason));
         }

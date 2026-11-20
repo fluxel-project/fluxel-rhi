@@ -7,6 +7,10 @@
 use super::*;
 
 impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
+    fn check_resource_device(device: &Dx12Device) -> Result<()> {
+        device.require_active()
+    }
+
     fn index_buffer_view_support(
         buffer: &Dx12Buffer,
         range: std::ops::Range<u64>,
@@ -168,64 +172,63 @@ impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
             requirements.size,
             requirements.alignment,
         )?;
-        let (resource, default_allocation, backing_heap): (ID3D12Resource, _, _) =
-            if let Some(pool) = pooled {
-                let mut resource = None;
-                // SAFETY: the pool allocation satisfies the native allocation
-                // size/alignment and heap class requirements for this buffer.
-                let placed = unsafe {
-                    device.0.native.CreatePlacedResource(
-                        &pool.heap,
-                        pool.offset,
-                        &native,
-                        initial_state,
-                        None,
-                        &mut resource,
-                    )
-                };
-                match placed {
-                    Ok(()) => (
-                        resource.ok_or(Error::OutOfMemory)?,
-                        Some(pool.lease),
-                        Some(pool.heap),
-                    ),
-                    Err(error) if memory::is_out_of_memory(&error) => {
-                        drop(pool);
-                        let mut resource = None;
-                        // SAFETY: the original resource descriptor remains valid;
-                        // a committed allocation is the OOM fallback for paging.
-                        unsafe {
-                            device.0.native.CreateCommittedResource(
-                                &heap,
-                                D3D12_HEAP_FLAG_NONE,
-                                &native,
-                                initial_state,
-                                None,
-                                &mut resource,
-                            )
-                        }
-                        .map_err(native_error)?;
-                        (resource.ok_or(Error::OutOfMemory)?, None, None)
-                    }
-                    Err(error) => return Err(native_error(error)),
-                }
-            } else {
-                let mut resource = None;
-                // SAFETY: heap and buffer descriptors are initialized local values;
-                // D3D12 writes the owned resource COM interface into `resource` only.
-                unsafe {
-                    device.0.native.CreateCommittedResource(
-                        &heap,
-                        D3D12_HEAP_FLAG_NONE,
-                        &native,
-                        initial_state,
-                        None,
-                        &mut resource,
-                    )
-                }
-                .map_err(native_error)?;
-                (resource.ok_or(Error::OutOfMemory)?, None, None)
+        let (resource, default_allocation, backing_heap): (ID3D12Resource, _, _) = if let Some(pool) = pooled {
+            let mut resource = None;
+            // SAFETY: the pool allocation satisfies the native allocation
+            // size/alignment and heap class requirements for this buffer.
+            let placed = unsafe {
+                device.0.native.CreatePlacedResource(
+                    &pool.heap,
+                    pool.offset,
+                    &native,
+                    initial_state,
+                    None,
+                    &mut resource,
+                )
             };
+            match placed {
+                Ok(()) => (
+                    resource.ok_or(Error::OutOfMemory)?,
+                    Some(pool.lease),
+                    Some(pool.heap),
+                ),
+                Err(error) if memory::is_out_of_memory(&error) => {
+                    drop(pool);
+                    let mut resource = None;
+                    // SAFETY: the original resource descriptor remains valid;
+                    // a committed allocation is the OOM fallback for paging.
+                    unsafe {
+                        device.0.native.CreateCommittedResource(
+                            &heap,
+                            D3D12_HEAP_FLAG_NONE,
+                            &native,
+                            initial_state,
+                            None,
+                            &mut resource,
+                        )
+                    }
+                    .map_err(native_error)?;
+                    (resource.ok_or(Error::OutOfMemory)?, None, None)
+                }
+                Err(error) => return Err(native_error(error)),
+            }
+        } else {
+            let mut resource = None;
+            // SAFETY: heap and buffer descriptors are initialized local values;
+            // D3D12 writes the owned resource COM interface into `resource` only.
+            unsafe {
+                device.0.native.CreateCommittedResource(
+                    &heap,
+                    D3D12_HEAP_FLAG_NONE,
+                    &native,
+                    initial_state,
+                    None,
+                    &mut resource,
+                )
+            }
+            .map_err(native_error)?;
+            (resource.ok_or(Error::OutOfMemory)?, None, None)
+        };
         set_debug_name(&resource, desc.label.as_deref());
         Ok(Dx12Buffer {
             resource,

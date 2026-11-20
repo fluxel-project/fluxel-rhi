@@ -125,6 +125,7 @@ fn prepare_layout(
     device: &Dx12Device,
     desc: &api::PipelineLayoutDesc<'_, Dx12>,
 ) -> Result<PreparedLayout> {
+    device.require_active()?;
     let slots = desc.groups.iter().flat_map(|layout| {
         // SAFETY: Core validates every group layout's device before calling
         // the SPI. This read borrows only its immutable descriptor metadata.
