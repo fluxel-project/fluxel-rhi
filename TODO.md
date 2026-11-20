@@ -101,6 +101,17 @@ discards, and reject nonfragment requirement declarations. WGSL conservative
 depth remains pending until its depth-output and interpolation rules are
 mapped per mode and verified with depth and storage readback.
 
+### DX12 native fragment barycentrics
+
+**Status:** The device capability and HLSL and DXIL shader routes admit
+native barycentrics. The device must expose shader model 6.1 and report
+native barycentric support. WGSL remains unavailable until the frontend and
+lowering support a specified fragment barycentric builtin.
+
+**Acceptance:** Compare perspective and linear barycentric weights from
+ordinary and mesh triangles with readback. Verify HLSL profile, fragment
+stage, source dialect and device capability rejection.
+
 ### DX12 acceleration structure refit
 
 **Status:** TLAS and non-indexed BLAS refit use DXR in-place updates. Ordered

@@ -257,14 +257,18 @@ impl Dx12 {
                 windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS3::default();
             // SAFETY: as above, this query receives the exact initialized
             // feature structure and does not retain its pointer.
-            let multiview = unsafe {
+            let options3_available = unsafe {
                 native.CheckFeatureSupport(
                     windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_D3D12_OPTIONS3,
                     (&mut options3 as *mut _) as *mut _,
                     std::mem::size_of_val(&options3) as u32,
                 )
             }
-            .is_ok()
+            .is_ok();
+            let barycentrics_supported = shader_model >= 61
+                && options3_available
+                && options3.BarycentricsSupported.as_bool();
+            let multiview = options3_available
                 && options3.ViewInstancingTier.0
                     >= windows::Win32::Graphics::Direct3D12::D3D12_VIEW_INSTANCING_TIER_1.0
                 && native
@@ -391,6 +395,7 @@ impl Dx12 {
                 ray_query: ray_query_supported,
                 shader_primitive_index: shader_model >= 60,
                 shader_early_depth_test: shader_model >= 60,
+                shader_barycentrics: barycentrics_supported,
                 storage_textures: true,
                 texture_atomic_r32uint_compute,
                 texture_atomic_r32sint_compute,
@@ -488,6 +493,7 @@ impl Dx12 {
                     descriptor_table_limits,
                     texel_aligned_color_copies,
                     shader_model,
+                    barycentrics_supported,
                     subgroup_widths,
                     max_buffer_bytes,
                     ray_device,

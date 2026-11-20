@@ -88,6 +88,7 @@ struct Dx12DeviceState {
     pub(super) descriptor_table_limits: api::DescriptorTableLimits,
     pub(super) texel_aligned_color_copies: bool,
     pub(super) shader_model: u16,
+    pub(super) barycentrics_supported: bool,
     pub(super) subgroup_widths: Option<api::SubgroupWidths>,
     /// Committed buffers consume the process GPU virtual-address range.
     pub(super) max_buffer_bytes: u64,
@@ -328,6 +329,22 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
         if desc
             .required_features
             .iter()
+            .any(|feature| feature == api::SHADER_FEATURE_BARYCENTRICS)
+            && (!device.0.barycentrics_supported
+                || !matches!(
+                    desc.format,
+                    api::ShaderFormat::Dxil | api::ShaderFormat::Hlsl(61..=69)
+                )
+                || !desc
+                    .entries
+                    .iter()
+                    .any(|entry| entry.stage == api::ShaderStage::Fragment))
+        {
+            return api::ShaderRoute::Unsupported;
+        }
+        if desc
+            .required_features
+            .iter()
             .any(|feature| feature == api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_ADD)
             && (desc.format != api::ShaderFormat::Wgsl
                 || desc.entries.is_empty()
@@ -529,6 +546,7 @@ fn shader_features_supported(
         api::SHADER_FEATURE_RAY_QUERY => ray_query_supported,
         api::SHADER_FEATURE_PRIMITIVE_INDEX => true,
         api::SHADER_FEATURE_EARLY_DEPTH_TEST => true,
+        api::SHADER_FEATURE_BARYCENTRICS => true,
         api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_ADD => true,
         api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_ADD => true,
         api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_MIN => true,

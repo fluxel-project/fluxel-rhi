@@ -51,7 +51,8 @@ pub const SHADER_FEATURE_PRIMITIVE_INDEX: &str = "primitive-index";
 /// A vertex shader reads the index of its draw within a multi-draw command.
 pub const SHADER_FEATURE_DRAW_INDEX: &str = "draw-index";
 /// A fragment shader reads standard perspective or linear barycentric
-/// coordinates. Vulkan KHR and NV SPIR-V variants have matching semantics.
+/// coordinates. Vulkan KHR and NV SPIR-V variants and DX12 `SV_Barycentrics`
+/// provide corresponding native routes.
 pub const SHADER_FEATURE_BARYCENTRICS: &str = "barycentrics";
 /// A fragment shader uses the additional AMD explicit interpolation
 /// barycentric built-ins. This is separate because its sample/centroid and

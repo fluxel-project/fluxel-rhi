@@ -283,6 +283,11 @@ callers declare the requirement for their native attribute or shader flag.
 WGSL conservative depth modes require distinct depth-output semantics and
 are currently rejected at shader creation.
 
+Native fragment barycentrics require shader model 6.1 and a successful
+`D3D12_OPTIONS3.BarycentricsSupported` query. The declared requirement is
+admitted for HLSL profiles at least 6.1 and for direct DXIL. The WGSL route
+has no barycentric builtin.
+
 The implemented public route includes graphics and compute, multiple render
 targets, indirect drawing and dispatch, queries, secondary recording,
 standalone clears and resolves, placed memory, scoped native/external interop,
