@@ -31,11 +31,11 @@ use windows::Win32::Graphics::{
         D3D12_MESSAGE_CATEGORY, D3D12_MESSAGE_ID, D3D12_MESSAGE_SEVERITY, D3D12_RESOURCE_DESC,
         D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON, D3D12CreateDevice,
         D3D12GetDebugInterface, ID3D12CommandQueue, ID3D12CommandSignature, ID3D12Debug,
-        ID3D12Device, ID3D12Fence, ID3D12InfoQueue1, ID3D12Resource,
+        ID3D12Device, ID3D12Fence, ID3D12InfoQueue1, ID3D12Object, ID3D12Resource,
     },
     Dxgi::{CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIFactory1},
 };
-use windows::core::Interface;
+use windows::core::{Interface, PCWSTR};
 
 mod compute;
 mod descriptor;
@@ -61,6 +61,18 @@ mod texture;
 
 pub use external::{Dx12ExternalHandle, Dx12ExternalSync};
 pub use memory::Dx12Heap;
+
+fn set_debug_name(object: &ID3D12Object, label: Option<&str>) {
+    let Some(label) = label else { return };
+    let name: Vec<u16> = label
+        .encode_utf16()
+        .map(|unit| if unit == 0 { 0xfffd } else { unit })
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: the object is live and the UTF-16 buffer is terminated and
+    // remains valid throughout the synchronous diagnostic call.
+    let _ = unsafe { object.SetName(PCWSTR(name.as_ptr())) };
+}
 
 /// Direct3D 12 selected once by the host.  Resource and command associated
 /// types stay concrete throughout the typed execution API.

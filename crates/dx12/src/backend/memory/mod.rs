@@ -297,8 +297,8 @@ impl MemoryBackend for Dx12 {
             )
         }
         .map_err(super::native_error)?;
-        let resource = resource.ok_or(Error::OutOfMemory)?;
-        super::resource::set_resource_label(&resource, desc.label.as_deref());
+        let resource: ID3D12Resource = resource.ok_or(Error::OutOfMemory)?;
+        super::set_debug_name(&resource, desc.label.as_deref());
         Ok(Dx12Buffer {
             resource,
             size: desc.size,
@@ -339,8 +339,8 @@ impl MemoryBackend for Dx12 {
             )
         }
         .map_err(super::native_error)?;
-        let resource = resource.ok_or(Error::OutOfMemory)?;
-        super::resource::set_resource_label(&resource, desc.label.as_deref());
+        let resource: ID3D12Resource = resource.ok_or(Error::OutOfMemory)?;
+        super::set_debug_name(&resource, desc.label.as_deref());
         Ok(Dx12Texture(Arc::new(texture::TextureState {
             resource,
             default_allocation: None,

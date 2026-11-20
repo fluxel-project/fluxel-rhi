@@ -416,9 +416,9 @@ pub(crate) fn create_pipeline_layout(
         tables,
         push_constants,
     } = prepare_layout(device, desc)?;
-    let (root, root_bytes) = create_root(device, &parameters)?;
+    let (root, root_bytes) = create_root(device, &parameters, desc.label)?;
     let (compute_root, compute_root_bytes) = if push_constants.is_some() {
-        create_root(device, &compute_parameters)?
+        create_root(device, &compute_parameters, desc.label)?
     } else {
         (root.clone(), root_bytes.clone())
     };
@@ -435,7 +435,7 @@ pub(crate) fn create_pipeline_layout(
             },
             ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
         });
-        match create_root(device, &compute_parameters) {
+        match create_root(device, &compute_parameters, desc.label) {
             Ok((root, bytes)) => Some((root, bytes, index)),
             Err(Error::Unsupported(_)) => None,
             Err(error) => return Err(error),
@@ -456,7 +456,7 @@ pub(crate) fn create_pipeline_layout(
             },
             ShaderVisibility: D3D12_SHADER_VISIBILITY_VERTEX,
         });
-        match create_root(device, &parameters) {
+        match create_root(device, &parameters, desc.label) {
             Ok((root, bytes)) => Some((root, bytes, index)),
             Err(Error::Unsupported(_)) => None,
             Err(error) => return Err(error),
@@ -502,6 +502,7 @@ fn validate_root_cost(parameters: &[D3D12_ROOT_PARAMETER]) -> Result<()> {
 fn create_root(
     device: &Dx12Device,
     parameters: &[D3D12_ROOT_PARAMETER],
+    label: Option<&str>,
 ) -> Result<(ID3D12RootSignature, Vec<u8>)> {
     validate_root_cost(parameters)?;
     let root_desc = D3D12_ROOT_SIGNATURE_DESC {
@@ -531,6 +532,7 @@ fn create_root(
             .CreateRootSignature::<ID3D12RootSignature>(0, bytes)
     }
     .map_err(native_error)?;
+    crate::backend::set_debug_name(&signature, label);
     Ok((signature, bytes.to_vec()))
 }
 fn native_error(e: windows::core::Error) -> Error {

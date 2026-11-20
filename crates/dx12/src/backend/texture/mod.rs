@@ -247,7 +247,7 @@ pub(crate) fn create(dv: &Dx12Device, d: &api::TextureDesc) -> Result<Dx12Textur
     let pooled =
         dv.0.default_resources
             .allocate(class, requirements.size, requirements.alignment)?;
-    let (resource, lease, backing_heap) = if let Some(pool) = pooled {
+    let (resource, lease, backing_heap): (ID3D12Resource, _, _) = if let Some(pool) = pooled {
         let mut resource = None;
         // SAFETY: pool ranges use GetResourceAllocationInfo size/alignment and
         // a heap class admitted by the same native placement contract.
@@ -318,7 +318,7 @@ pub(crate) fn create(dv: &Dx12Device, d: &api::TextureDesc) -> Result<Dx12Textur
         .map_err(err)?;
         (resource.ok_or(Error::OutOfMemory)?, None, None)
     };
-    super::resource::set_resource_label(&resource, d.label.as_deref());
+    super::set_debug_name(&resource, d.label.as_deref());
     Ok(Dx12Texture(Arc::new(TextureState {
         resource,
         default_allocation: lease,

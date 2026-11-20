@@ -337,6 +337,7 @@ fn create_raster(
     // releases exactly the COM clone stored in the ManuallyDrop field.
     unsafe { ManuallyDrop::drop(&mut pso.pRootSignature) };
     let state = state?;
+    crate::backend::set_debug_name(&state, desc.label.as_deref());
     if let (Some(cache), Some(key)) = (cache, key.as_ref()) {
         let _ = cache.0.store(key, &state);
     }

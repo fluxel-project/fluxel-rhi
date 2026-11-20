@@ -5,19 +5,6 @@
 //! resource uses, scheduling commands, or maintaining resource states.
 
 use super::*;
-use windows::core::PCWSTR;
-
-pub(super) fn set_resource_label(resource: &ID3D12Resource, label: Option<&str>) {
-    let Some(label) = label else { return };
-    let name: Vec<u16> = label
-        .encode_utf16()
-        .map(|unit| if unit == 0 { 0xfffd } else { unit })
-        .chain(std::iter::once(0))
-        .collect();
-    // SAFETY: the resource is live and the UTF-16 buffer is terminated and
-    // remains valid throughout the synchronous diagnostic call.
-    let _ = unsafe { resource.SetName(PCWSTR(name.as_ptr())) };
-}
 
 impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
     fn buffer_properties(buffer: &Dx12Buffer) -> Option<api::BufferProperties> {
@@ -154,7 +141,7 @@ impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
             requirements.size,
             requirements.alignment,
         )?;
-        let (resource, default_allocation, backing_heap) = if let Some(pool) = pooled {
+        let (resource, default_allocation, backing_heap): (ID3D12Resource, _, _) = if let Some(pool) = pooled {
             let mut resource = None;
             // SAFETY: the pool allocation satisfies the native allocation
             // size/alignment and heap class requirements for this buffer.
@@ -211,7 +198,7 @@ impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
             .map_err(native_error)?;
             (resource.ok_or(Error::OutOfMemory)?, None, None)
         };
-        set_resource_label(&resource, desc.label.as_deref());
+        set_debug_name(&resource, desc.label.as_deref());
         Ok(Dx12Buffer {
             resource,
             size: desc.size,

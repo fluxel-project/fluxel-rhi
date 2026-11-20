@@ -528,6 +528,7 @@ fn create_pipeline(
         ManuallyDrop::drop(&mut state_desc.pRootSignature);
     }
     let state = result.map_err(native_error)?;
+    super::set_debug_name(&state, desc.label.as_deref());
     if let (Some(cache), Some(key)) = (cache, key.as_ref()) {
         // Cache extraction is an optimization; successful PSO creation remains usable if extraction fails.
         let _ = cache.0.store(key, &state);
