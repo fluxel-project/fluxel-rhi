@@ -368,6 +368,9 @@ pub trait RayOps<B: Backend> {
     ) -> Result<()> {
         Err(Error::Unsupported("acceleration build size output"))
     }
+    fn trace_support(_: &ShaderTable<B>, _: [u32; 3]) -> Result<()> {
+        Err(Error::Unsupported("ray dispatch support query"))
+    }
     fn trace(
         encoder: &mut B::NativeEncoder,
         pipeline: &B::NativeRayPipeline,

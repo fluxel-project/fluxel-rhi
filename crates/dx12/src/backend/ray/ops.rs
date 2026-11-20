@@ -136,6 +136,9 @@ impl fluxel_rhi_core::backend::RayOps<Dx12> for Ray {
     ) -> Result<()> {
         super::build(encoder, dst, scratch, desc, refit, Some(output))
     }
+    fn trace_support(table: &api::ShaderTable<Dx12>, dims: [u32; 3]) -> Result<()> {
+        super::trace::prepare(table, dims).map(drop)
+    }
     fn trace(
         encoder: &mut Dx12Encoder,
         pipeline: &Dx12RayPipeline,

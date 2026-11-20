@@ -61,6 +61,12 @@ bundles agree on INDEX usage, element alignment, byte range, and the native
 32-bit view size. Include an aligned Uint16 range whose start is rejected
 for Uint32 and a valid range ending at the buffer boundary.
 
+**Ray dispatch support:** Match the DX12 support query with trace recording
+for valid shader tables and for missing SHADER_TABLE usage, misaligned
+sections, excessive stride, out-of-bounds ranges, and excessive dimensions.
+Verify raygen requires one record and a failed optional section leaves the
+encoder free of new buffer owners. Record and read back a supported dispatch.
+
 ### DX12 structured shader diagnostics
 
 **Status:** WGSL parse and validation errors preserve compiler messages and

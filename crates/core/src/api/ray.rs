@@ -690,6 +690,18 @@ impl<B: Backend> RayDomain<'_, B> {
         }
         Ok(())
     }
+    /// Checks dispatch dimensions and the shader table layout before recording.
+    /// The caller must bind the pipeline and prepare the table records.
+    pub fn trace_support(
+        &self,
+        pipeline: &RayPipeline<B>,
+        table: &ShaderTable<B>,
+        dims: [u32; 3],
+    ) -> Result<()> {
+        self.validate_trace(pipeline, table, dims)?;
+        B::Ray::trace_support(table, dims)
+    }
+
     pub fn trace(
         &self,
         encoder: &mut CommandEncoder<B>,
@@ -700,8 +712,25 @@ impl<B: Backend> RayDomain<'_, B> {
     where
         B: CommandBackend,
     {
+        if encoder.device != self.device.id {
+            return Err(Error::WrongDevice);
+        }
+        self.validate_trace(pipeline, table, dims)?;
+        let result = encoder.call(|e| B::Ray::trace(e, &pipeline.native, table, dims));
+        if result.is_ok() {
+            encoder.stats.record_ray_trace();
+        }
+        result
+    }
+
+    fn validate_trace(
+        &self,
+        pipeline: &RayPipeline<B>,
+        table: &ShaderTable<B>,
+        dims: [u32; 3],
+    ) -> Result<()> {
         self.require_pipeline()?;
-        if encoder.device != self.device.id || pipeline.device != self.device.id {
+        if pipeline.device != self.device.id {
             return Err(Error::WrongDevice);
         }
         let regions = std::iter::once(&table.raygen)
@@ -733,11 +762,7 @@ impl<B: Backend> RayDomain<'_, B> {
         {
             return Err(Error::InvalidRange);
         }
-        let result = encoder.call(|e| B::Ray::trace(e, &pipeline.native, table, dims));
-        if result.is_ok() {
-            encoder.stats.record_ray_trace();
-        }
-        result
+        Ok(())
     }
 
     fn require_pipeline(&self) -> Result<()> {

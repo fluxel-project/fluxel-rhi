@@ -4,12 +4,10 @@ use fluxel_rhi_core::api::{self, Error, Result};
 use windows::{Win32::Graphics::Direct3D12::*, core::Interface};
 
 fn region(
-    encoder: &mut Dx12Encoder,
     region: &api::ShaderTableRegion<Dx12>,
     raygen: bool,
 ) -> Result<D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE> {
-    // SAFETY: Core validates buffer device identity and the encoder retains
-    // the native buffer for the duration of GPU execution below.
+    // SAFETY: this query borrows the live buffer through the table region.
     let buffer = unsafe { region.buffer.native_ref() };
     if !buffer.usage.contains(api::BufferUsage::SHADER_TABLE)
         || region.offset % u64::from(D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT) != 0
@@ -30,7 +28,6 @@ fn region(
     let address = unsafe { buffer.resource.GetGPUVirtualAddress() }
         .checked_add(region.offset)
         .ok_or(Error::InvalidRange)?;
-    encoder.buffers.push(buffer.clone());
     Ok(D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE {
         StartAddress: address,
         SizeInBytes: region.size,
@@ -38,11 +35,10 @@ fn region(
     })
 }
 
-pub(super) fn dispatch(
-    encoder: &mut Dx12Encoder,
+pub(super) fn prepare(
     table: &api::ShaderTable<Dx12>,
     dims: [u32; 3],
-) -> Result<()> {
+) -> Result<D3D12_DISPATCH_RAYS_DESC> {
     if dims.contains(&0)
         || dims
             .iter()
@@ -51,15 +47,15 @@ pub(super) fn dispatch(
     {
         return Err(Error::InvalidRange);
     }
-    let raygen = region(encoder, &table.raygen, true)?;
-    let mut optional = |value: &Option<api::ShaderTableRegion<Dx12>>| -> Result<_> {
+    let raygen = region(&table.raygen, true)?;
+    let optional = |value: &Option<api::ShaderTableRegion<Dx12>>| -> Result<_> {
         value
             .as_ref()
-            .map(|r| region(encoder, r, false))
+            .map(|r| region(r, false))
             .transpose()
             .map(Option::unwrap_or_default)
     };
-    let native = D3D12_DISPATCH_RAYS_DESC {
+    Ok(D3D12_DISPATCH_RAYS_DESC {
         RayGenerationShaderRecord: D3D12_GPU_VIRTUAL_ADDRESS_RANGE {
             StartAddress: raygen.StartAddress,
             SizeInBytes: raygen.SizeInBytes,
@@ -70,11 +66,29 @@ pub(super) fn dispatch(
         Width: dims[0],
         Height: dims[1],
         Depth: dims[2],
-    };
+    })
+}
+
+pub(super) fn dispatch(
+    encoder: &mut Dx12Encoder,
+    table: &api::ShaderTable<Dx12>,
+    dims: [u32; 3],
+) -> Result<()> {
+    let native = prepare(table, dims)?;
     let list = encoder
         .list
         .cast::<ID3D12GraphicsCommandList4>()
         .map_err(super::super::native_error)?;
+    for region in std::iter::once(&table.raygen)
+        .chain(table.miss.iter())
+        .chain(table.hit.iter())
+        .chain(table.callable.iter())
+    {
+        // SAFETY: Core checked the device and the clone retains native storage.
+        encoder
+            .buffers
+            .push(unsafe { region.buffer.native_ref() }.clone());
+    }
     // SAFETY: all table sections are validated and retained by the encoder;
     // the native command list copies the initialized dispatch descriptor.
     unsafe { list.DispatchRays(&native) };
