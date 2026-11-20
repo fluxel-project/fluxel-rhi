@@ -6,6 +6,21 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 ## Active items
 
+### DX12 upload, completion, and texture view verification
+
+**Status:** Direct staging writes, bounded completion waits, sampled color
+component mapping, and descriptor-specific sample count reporting are wired.
+The implementation has passed a Windows MSVC workspace development build.
+Focused contract and GPU evidence are pending the implementation-stage report.
+
+**Acceptance:** Read back a direct staging write and verify canceled writes
+leave destination bytes and later command recording intact. Verify that a
+pending completion times out and remains positive completion evidence only
+after the native fence reaches it. Read back identity, rearranged, and constant
+sampled components, and reject sampled-only views as storage or attachments.
+Check the requested sample count and the reported alternatives against texture
+creation for the same format, dimension, mip count, and usage.
+
 ### DX12 comparison sampler integration
 
 Scalar comparison samplers use the existing RHI layout and sampler descriptors.
