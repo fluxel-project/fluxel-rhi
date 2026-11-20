@@ -278,6 +278,9 @@ encoder commands or at a chosen position in a raster or compute pass. A
 pass-local timestamp measures the position after preceding commands,
 including any already recorded pass setup, and uses the same slot tracking
 and resolve rules as encoder-level timestamps.
+Resolved values are raw ticks. Core can convert two samples from the
+same lane to nanoseconds using the native timestamp scale and counter
+width, including a single wrap shorter than the clock's full period.
 
 WGSL layout inference reflects active globals for selected vertex, fragment
 or compute entries. Core combines compatible declarations before applying the

@@ -78,6 +78,26 @@ pub struct TimestampClock {
     pub period_ns: f64,
     pub valid_bits: u32,
 }
+impl TimestampClock {
+    fn is_valid(self) -> bool {
+        self.period_ns.is_finite() && self.period_ns > 0.0 && (1..=64).contains(&self.valid_bits)
+    }
+
+    /// Converts two decoded samples from this clock to elapsed nanoseconds.
+    ///
+    /// Only the valid counter bits contribute. The original interval must be
+    /// shorter than one full counter wrap. Invalid clocks or overflow return
+    /// `None`.
+    pub fn elapsed_ns(self, start: u64, end: u64) -> Option<f64> {
+        if !self.is_valid() {
+            return None;
+        }
+        let mask = u64::MAX >> (64 - self.valid_bits);
+        let ticks = end.wrapping_sub(start) & mask;
+        let elapsed = ticks as f64 * self.period_ns;
+        elapsed.is_finite().then_some(elapsed)
+    }
+}
 /// Backend-defined interpretation of a resolved timestamp slot.
 ///
 /// Consumers must check the reserved value before performing timestamp
@@ -374,11 +394,27 @@ impl<B: QueryBackend> Queries<'_, B> {
             && self.device.lanes().iter().any(|info| info.id == lane))
         .then(|| B::timestamp_clock(&self.device.native, lane))
         .flatten()
-        .filter(|clock| {
-            clock.period_ns.is_finite()
-                && clock.period_ns > 0.0
-                && (1..=64).contains(&clock.valid_bits)
-        })
+        .filter(|clock| clock.is_valid())
+    }
+
+    /// Converts two raw resolved samples from the specified lane to elapsed
+    /// nanoseconds. Both samples must come from that lane and be less than
+    /// one full counter wrap apart.
+    pub fn elapsed_timestamp_ns(&self, lane: LaneId, start: u64, end: u64) -> Result<f64> {
+        self.require_kind(QueryKind::Timestamp)?;
+        if lane.device != self.device.id {
+            return Err(Error::WrongDevice);
+        }
+        if !self.device.lanes().iter().any(|info| info.id == lane) {
+            return Err(Error::WrongLane);
+        }
+        let format = B::timestamp_result_format(&self.device.native);
+        let start = format.decode(start).map_err(|_| Error::InvalidState)?;
+        let end = format.decode(end).map_err(|_| Error::InvalidState)?;
+        let clock = self
+            .timestamp_clock(lane)
+            .ok_or(Error::Unsupported("timestamp clock"))?;
+        clock.elapsed_ns(start, end).ok_or(Error::InvalidRange)
     }
     fn require_kind(&self, kind: QueryKind) -> Result<()> {
         if self.kind != kind {
@@ -459,12 +495,7 @@ impl<B: QueryBackend> Queries<'_, B> {
         pass.call(|encoder| B::write_timestamp(encoder, &set.native, slot))
     }
 
-    fn validate_timestamp(
-        &self,
-        device: DeviceId,
-        set: &QuerySet<B>,
-        slot: u32,
-    ) -> Result<()> {
+    fn validate_timestamp(&self, device: DeviceId, set: &QuerySet<B>, slot: u32) -> Result<()> {
         if device != self.device.id || set.device != self.device.id {
             return Err(Error::WrongDevice);
         }

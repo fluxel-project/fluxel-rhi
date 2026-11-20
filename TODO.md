@@ -204,6 +204,8 @@ resolves share query slot and native lane ordering rules.
 **Acceptance:** Write before, between and after pass commands, resolve the
 slots, and confirm their ticks on the producer lane. Cover graphics and
 compute queues, invalid slots and reset and reuse.
+Verify normalized durations use only the valid counter bits, handle one
+wrap, and reject the reserved invalid value before counter arithmetic.
 
 ### DX12 WGSL sample-frequency shading
 
