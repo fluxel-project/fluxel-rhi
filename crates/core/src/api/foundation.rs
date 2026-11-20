@@ -654,6 +654,11 @@ pub struct DeviceLimits {
     /// Maximum number of mesh indirect records consumed by one multi/count call.
     /// Zero means mesh multi-indirect execution is unavailable.
     pub max_mesh_indirect_count: u32,
+    /// Total outer workgroups accepted by a direct mesh dispatch.
+    /// This covers the task stage when the pipeline has one. Zero is unreported.
+    pub max_mesh_workgroup_total_count: u32,
+    /// Uniform ceiling for each axis of an outer mesh dispatch. Zero is unreported.
+    pub max_mesh_workgroups_per_dimension: u32,
     /// Maximum total number of ray-generation invocations in one trace.
     /// Zero means unreported or unavailable.
     pub max_ray_dispatch_count: u32,

@@ -450,6 +450,16 @@ impl Dx12 {
                     max_texture_array_layers: D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION,
                     max_multiview_views: if multiview { 4 } else { 0 },
                     max_mesh_indirect_count: if mesh_supported { u32::MAX } else { 0 },
+                    max_mesh_workgroup_total_count: if mesh_supported {
+                        mesh::MAX_DISPATCH_WORKGROUPS
+                    } else {
+                        0
+                    },
+                    max_mesh_workgroups_per_dimension: if mesh_supported {
+                        mesh::MAX_DISPATCH_WORKGROUPS_PER_DIMENSION
+                    } else {
+                        0
+                    },
                     max_ray_dispatch_count: if ray_supported {
                         D3D12_RAYTRACING_MAX_RAY_GENERATION_SHADER_THREADS
                     } else {

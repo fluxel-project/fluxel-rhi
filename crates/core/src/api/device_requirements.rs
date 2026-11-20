@@ -108,6 +108,8 @@ pub enum DeviceCapacity {
     PushConstantBytes(u32),
     MultiviewViews(u32),
     MeshIndirectCount(u32),
+    MeshWorkgroupTotalCount(u32),
+    MeshWorkgroupsPerDimension(u32),
     RayDispatchCount(u32),
     RayRecursionDepth(u32),
 }
@@ -149,6 +151,10 @@ impl DeviceCapacity {
             Self::PushConstantBytes(min) => limits.max_push_constant_bytes >= min,
             Self::MultiviewViews(min) => limits.max_multiview_views >= min,
             Self::MeshIndirectCount(min) => limits.max_mesh_indirect_count >= min,
+            Self::MeshWorkgroupTotalCount(min) => limits.max_mesh_workgroup_total_count >= min,
+            Self::MeshWorkgroupsPerDimension(min) => {
+                limits.max_mesh_workgroups_per_dimension >= min
+            }
             Self::RayDispatchCount(min) => limits.max_ray_dispatch_count >= min,
             Self::RayRecursionDepth(min) => limits.max_ray_recursion_depth >= min,
         }

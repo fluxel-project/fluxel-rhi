@@ -57,11 +57,13 @@ impl fluxel_rhi_core::backend::MeshOps<Dx12> for Mesh {
             return Err(Error::InvalidState);
         }
         if groups.contains(&0)
-            || groups.iter().any(|&n| n > 65535)
+            || groups
+                .iter()
+                .any(|&n| n > super::MAX_DISPATCH_WORKGROUPS_PER_DIMENSION)
             || groups
                 .iter()
                 .try_fold(1u64, |p, &n| p.checked_mul(u64::from(n)))
-                .is_none_or(|n| n > (1 << 22))
+                .is_none_or(|n| n > u64::from(super::MAX_DISPATCH_WORKGROUPS))
         {
             return Err(Error::InvalidRange);
         }

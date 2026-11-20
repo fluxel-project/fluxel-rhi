@@ -115,6 +115,19 @@ impl<B: Backend> MeshDomain<'_, B> {
         if pass.encoder.device != self.device.id {
             return Err(Error::WrongDevice);
         }
+        let limits = self.device.caps.limits;
+        if (limits.max_mesh_workgroups_per_dimension != 0
+            && groups
+                .iter()
+                .any(|&axis| axis == 0 || axis > limits.max_mesh_workgroups_per_dimension))
+            || (limits.max_mesh_workgroup_total_count != 0
+                && groups
+                    .into_iter()
+                    .try_fold(1u64, |count, axis| count.checked_mul(u64::from(axis)))
+                    .is_none_or(|count| count > u64::from(limits.max_mesh_workgroup_total_count)))
+        {
+            return Err(Error::InvalidRange);
+        }
         let result = pass.call(|e| B::Mesh::dispatch(e, groups));
         if result.is_ok() {
             pass.encoder.stats.record_dispatch();

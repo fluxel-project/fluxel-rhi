@@ -13,6 +13,10 @@ use windows::Win32::{
 };
 use windows::{Win32::Graphics::Direct3D12::*, core::Interface};
 
+pub(super) const MAX_DISPATCH_WORKGROUPS_PER_DIMENSION: u32 =
+    D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION;
+pub(super) const MAX_DISPATCH_WORKGROUPS: u32 = 1 << 22;
+
 pub(crate) struct MeshPipelineState {
     pub(crate) layout: Arc<PipelineLayoutState>,
     pub(crate) state: ID3D12PipelineState,
