@@ -204,11 +204,20 @@ impl<B: InstanceBackend> Instance<B> {
         B::adapter_properties(&self.native, adapter)
     }
     pub async fn open(&self, request: DeviceRequest) -> Result<Device<B>> {
+        self.open_with_capacities(request, &[]).await
+    }
+    /// Opens the requested adapter only if it satisfies the supplied minimum
+    /// capacities. This leaves the actual device limits unchanged.
+    pub async fn open_with_capacities(
+        &self,
+        request: DeviceRequest,
+        minimum: &[DeviceCapacity],
+    ) -> Result<Device<B>> {
         if request.adapter.instance != self.id {
             return Err(Error::WrongDevice);
         }
         let id = DeviceId::allocate()?;
-        let (native, caps) = B::open(&self.native, id, &request).await?;
+        let (native, caps) = B::open_with_capacities(&self.native, id, &request, minimum).await?;
         // SAFETY: `open` returned the native device and capabilities for allocated `id`.
         let mut device = unsafe { Device::from_native(id, native, caps) };
         device.adapter = Some(request.adapter);

@@ -93,6 +93,11 @@ are diagnostic values. Device opening queries the native subgroup width range
 once, and the required-wave-size pipeline path combines that range with its
 shader model and shader route checks.
 
+Opening checks named feature requirements and minimum capacities against the
+same capability snapshot returned to the caller. DX12 checks these requirements
+after native device probing and before creating queues, fences, or descriptor
+heaps.
+
 The optional debug callback is a diagnostic aid. It does not make driver
 validation output a substitute for completion or visual correctness.
 

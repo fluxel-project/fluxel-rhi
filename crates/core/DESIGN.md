@@ -83,6 +83,11 @@ Optional vendor, hardware model, driver version, and memory properties describe
 the adapter. Device capabilities, including a reported subgroup width range,
 come from the opened device.
 
+Device requirements qualify a selected adapter for a workload without rewriting
+the device's reported limits. Feature requirements describe device-wide facts.
+Resource descriptors, shader stages, layouts, and individual commands still
+have their own admission checks.
+
 Core cannot prove that a renderer's transition sequence is correct. It checks the declared operation shape and provenance, while the renderer keeps the graph-level resource state and hazard knowledge. This distinction allows a backend to preserve native state models without Core inventing a second one.
 
 ## Execution models and operation flow

@@ -207,10 +207,26 @@ impl InstanceBackend for Dx12 {
         device: DeviceId,
         request: &'a DeviceRequest,
     ) -> Self::OpenFuture<'a> {
+        Self::open_device(instance, device, request, &[])
+    }
+    fn open_with_capacities<'a>(
+        instance: &'a Dx12Instance,
+        device: DeviceId,
+        request: &'a DeviceRequest,
+        minimum: &'a [api::DeviceCapacity],
+    ) -> impl Future<Output = Result<(Dx12Device, DeviceCapabilities)>> + 'a {
+        Self::open_device(instance, device, request, minimum)
+    }
+}
+
+impl Dx12 {
+    fn open_device(
+        instance: &Dx12Instance,
+        device: DeviceId,
+        request: &DeviceRequest,
+        minimum: &[api::DeviceCapacity],
+    ) -> Ready<Result<(Dx12Device, DeviceCapabilities)>> {
         let result = (|| {
-            if !request.required_features.is_empty() {
-                return Err(Error::Unsupported("requested DX12 device features"));
-            }
             let diagnostics = std::env::var_os("FLUXEL_DX12_DEBUG").is_some();
             if diagnostics {
                 let mut debug: Option<ID3D12Debug> = None;
@@ -311,8 +327,16 @@ impl InstanceBackend for Dx12 {
             let mut options =
                 windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS::default();
             // SAFETY: this structure matches the feature query selector.
-            let sparse_supported = unsafe { native.CheckFeatureSupport(windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_D3D12_OPTIONS, &mut options as *mut _ as *mut _, std::mem::size_of_val(&options) as u32) }.is_ok()
-                && options.TiledResourcesTier != windows::Win32::Graphics::Direct3D12::D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED;
+            let sparse_supported = unsafe {
+            native.CheckFeatureSupport(
+                windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_D3D12_OPTIONS,
+                &mut options as *mut _ as *mut _,
+                std::mem::size_of_val(&options) as u32,
+            )
+        }
+        .is_ok()
+            && options.TiledResourcesTier
+                != windows::Win32::Graphics::Direct3D12::D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED;
             let resource_heap_tier2 = options.ResourceHeapTier.0
                 >= windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_HEAP_TIER_2.0;
             let mut options12 =
@@ -374,6 +398,109 @@ impl InstanceBackend for Dx12 {
                 && native
                     .cast::<windows::Win32::Graphics::Direct3D12::ID3D12Device2>()
                     .is_ok();
+            let lane = LaneId { device, ordinal: 0 };
+            let compute_lane = LaneId { device, ordinal: 1 };
+            let caps = DeviceCapabilities {
+                subgroup_widths,
+                lanes: Arc::from([
+                    LaneInfo {
+                        id: lane,
+                        class: LaneClass::Graphics,
+                        routes: vec![
+                            (lane, api::WaitRoute::SameQueue),
+                            (compute_lane, api::WaitRoute::NativeGpuWait),
+                        ],
+                    },
+                    LaneInfo {
+                        id: compute_lane,
+                        class: LaneClass::Compute,
+                        routes: vec![
+                            (compute_lane, api::WaitRoute::SameQueue),
+                            (lane, api::WaitRoute::NativeGpuWait),
+                        ],
+                    },
+                ]),
+                limits: DeviceLimits {
+                    max_bind_groups: 8,
+                    max_bindings_per_group: 64,
+                    max_color_attachments: 8,
+                    max_texture_dimension_1d: D3D12_REQ_TEXTURE1D_U_DIMENSION,
+                    max_texture_dimension_2d: D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION,
+                    max_texture_dimension_3d: D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION,
+                    max_texture_array_layers: D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION,
+                    max_multiview_views: if multiview { 4 } else { 0 },
+                    max_mesh_indirect_count: if mesh_supported { u32::MAX } else { 0 },
+                    max_buffer_bytes,
+                    max_vertex_buffers: 32,
+                    max_vertex_attributes: 32,
+                    max_compute_workgroups: compute::MAX_DISPATCH_GROUPS,
+                    max_compute_workgroup_size: compute::MAX_WORKGROUP_SIZE,
+                    max_compute_invocations_per_workgroup: compute::MAX_WORKGROUP_INVOCATIONS,
+                    uniform_offset_alignment: 256,
+                    max_push_constant_bytes: 128,
+                    ..Default::default()
+                },
+                compute: true,
+                multi_queue: true,
+                mesh: mesh_supported,
+                mesh_multi_indirect: mesh_supported,
+                mesh_indirect_count: mesh_supported,
+                sparse: sparse_supported,
+                ray: ray_supported,
+                acceleration_structure: ray_supported,
+                acceleration_structure_binding_arrays: ray_supported && descriptor_indexing,
+                ray_query: ray_query_supported,
+                storage_textures: true,
+                texture_atomic_r32uint_compute,
+                texture_atomic_r32sint_compute,
+                texture_atomic_r32sint_min_compute,
+                texture_atomic_r32sint_max_compute,
+                texture_atomic_r32uint_min_compute,
+                texture_atomic_r32uint_max_compute,
+                texture_atomic_r32uint_xor_compute,
+                texture_atomic_r32uint_and_compute,
+                texture_atomic_r32uint_or_compute,
+                storage_buffers: true,
+                timestamp: true,
+                occlusion: true,
+                pipeline_statistics: true,
+                debug_markers: true,
+                debug_markers_encoder: true,
+                debug_markers_raster_pass: true,
+                debug_markers_compute_pass: true,
+                memory_observation: true,
+                dynamic_depth_bias: dynamic_depth_bias_supported,
+                dynamic_depth_bias_clamp: dynamic_depth_bias_supported,
+                rect_attachment_clear: true,
+                push_constants: true,
+                indirect_draw: true,
+                indirect_first_instance: true,
+                multi_draw: true,
+                multi_draw_count: true,
+                binding_arrays: descriptor_indexing,
+                runtime_sized_binding_arrays: descriptor_indexing,
+                // The DX12-local Naga patch separates descriptor selection
+                // from raw-buffer addressing. Layout/shader admission bounds
+                // storage arrays to fixed, fully-bound compute bindings.
+                nonuniform_sampled_texture_and_storage_buffer_indexing: descriptor_indexing,
+                // Fixed CBV arrays use ConstantBuffer<T> declarations and
+                // explicit non-uniform selectors. Shared buffer-array
+                // admission enforces the same fully-bound compute scope.
+                nonuniform_uniform_buffer_indexing: descriptor_indexing,
+                nonuniform_storage_buffer_indexing: descriptor_indexing,
+                nonuniform_sampled_texture_indexing: descriptor_indexing,
+                nonuniform_storage_texture_indexing: descriptor_indexing,
+                nonuniform_sampler_indexing: descriptor_indexing,
+                nonuniform_acceleration_structure_indexing: ray_supported && descriptor_indexing,
+                secondary_commands: true,
+                native_interop: true,
+                external_memory: true,
+                placed_memory: true,
+                multiview,
+                ..Default::default()
+            };
+            caps.require_named_features(&request.required_features)?;
+            caps.limits.require_capacities(minimum)?;
             let queue_desc = D3D12_COMMAND_QUEUE_DESC {
                 Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
                 Priority: D3D12_COMMAND_QUEUE_PRIORITY_NORMAL.0,
@@ -388,8 +515,6 @@ impl InstanceBackend for Dx12 {
             // supplied initial value and no borrowed pointer arguments.
             let fence = unsafe { native.CreateFence::<ID3D12Fence>(0, D3D12_FENCE_FLAG_NONE) }
                 .map_err(native_error)?;
-            let lane = LaneId { device, ordinal: 0 };
-            let compute_lane = LaneId { device, ordinal: 1 };
             let descriptors = descriptor::create_heaps(&native)?;
             let cpu_descriptors = descriptor::CpuDescriptorPool::new(&native);
             let debug_info = if diagnostics {
@@ -447,106 +572,7 @@ impl InstanceBackend for Dx12 {
                     ),
                     _debug_info: debug_info,
                 })),
-                DeviceCapabilities {
-                    subgroup_widths,
-                    lanes: Arc::from([
-                        LaneInfo {
-                            id: lane,
-                            class: LaneClass::Graphics,
-                            routes: vec![
-                                (lane, api::WaitRoute::SameQueue),
-                                (compute_lane, api::WaitRoute::NativeGpuWait),
-                            ],
-                        },
-                        LaneInfo {
-                            id: compute_lane,
-                            class: LaneClass::Compute,
-                            routes: vec![
-                                (compute_lane, api::WaitRoute::SameQueue),
-                                (lane, api::WaitRoute::NativeGpuWait),
-                            ],
-                        },
-                    ]),
-                    limits: DeviceLimits {
-                        max_bind_groups: 8,
-                        max_bindings_per_group: 64,
-                        max_color_attachments: 8,
-                        max_texture_dimension_1d: D3D12_REQ_TEXTURE1D_U_DIMENSION,
-                        max_texture_dimension_2d: D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION,
-                        max_texture_dimension_3d: D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION,
-                        max_texture_array_layers: D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION,
-                        max_multiview_views: if multiview { 4 } else { 0 },
-                        max_mesh_indirect_count: if mesh_supported { u32::MAX } else { 0 },
-                        max_buffer_bytes,
-                        max_vertex_buffers: 32,
-                        max_vertex_attributes: 32,
-                        max_compute_workgroups: compute::MAX_DISPATCH_GROUPS,
-                        max_compute_workgroup_size: compute::MAX_WORKGROUP_SIZE,
-                        max_compute_invocations_per_workgroup: compute::MAX_WORKGROUP_INVOCATIONS,
-                        uniform_offset_alignment: 256,
-                        max_push_constant_bytes: 128,
-                        ..Default::default()
-                    },
-                    compute: true,
-                    multi_queue: true,
-                    mesh: mesh_supported,
-                    mesh_multi_indirect: mesh_supported,
-                    mesh_indirect_count: mesh_supported,
-                    sparse: sparse_supported,
-                    ray: ray_supported,
-                    acceleration_structure: ray_supported,
-                    acceleration_structure_binding_arrays: ray_supported && descriptor_indexing,
-                    ray_query: ray_query_supported,
-                    storage_textures: true,
-                    texture_atomic_r32uint_compute,
-                    texture_atomic_r32sint_compute,
-                    texture_atomic_r32sint_min_compute,
-                    texture_atomic_r32sint_max_compute,
-                    texture_atomic_r32uint_min_compute,
-                    texture_atomic_r32uint_max_compute,
-                    texture_atomic_r32uint_xor_compute,
-                    texture_atomic_r32uint_and_compute,
-                    texture_atomic_r32uint_or_compute,
-                    storage_buffers: true,
-                    timestamp: true,
-                    occlusion: true,
-                    pipeline_statistics: true,
-                    debug_markers: true,
-                    debug_markers_encoder: true,
-                    debug_markers_raster_pass: true,
-                    debug_markers_compute_pass: true,
-                    memory_observation: true,
-                    dynamic_depth_bias: dynamic_depth_bias_supported,
-                    dynamic_depth_bias_clamp: dynamic_depth_bias_supported,
-                    rect_attachment_clear: true,
-                    push_constants: true,
-                    indirect_draw: true,
-                    indirect_first_instance: true,
-                    multi_draw: true,
-                    multi_draw_count: true,
-                    binding_arrays: descriptor_indexing,
-                    runtime_sized_binding_arrays: descriptor_indexing,
-                    // The DX12-local Naga patch separates descriptor selection
-                    // from raw-buffer addressing. Layout/shader admission bounds
-                    // storage arrays to fixed, fully-bound compute bindings.
-                    nonuniform_sampled_texture_and_storage_buffer_indexing: descriptor_indexing,
-                    // Fixed CBV arrays use ConstantBuffer<T> declarations and
-                    // explicit non-uniform selectors. Shared buffer-array
-                    // admission enforces the same fully-bound compute scope.
-                    nonuniform_uniform_buffer_indexing: descriptor_indexing,
-                    nonuniform_storage_buffer_indexing: descriptor_indexing,
-                    nonuniform_sampled_texture_indexing: descriptor_indexing,
-                    nonuniform_storage_texture_indexing: descriptor_indexing,
-                    nonuniform_sampler_indexing: descriptor_indexing,
-                    nonuniform_acceleration_structure_indexing: ray_supported
-                        && descriptor_indexing,
-                    secondary_commands: true,
-                    native_interop: true,
-                    external_memory: true,
-                    placed_memory: true,
-                    multiview,
-                    ..Default::default()
-                },
+                caps,
             ))
         })();
         ready(result)

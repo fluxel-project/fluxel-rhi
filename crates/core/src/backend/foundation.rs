@@ -4,8 +4,8 @@
 //! intentionally separate from the renderer-facing values in `crate::api`.
 
 use crate::api::{
-    AdapterId, AdapterInfo, AdapterPreference, AdapterProperties, DeviceCapabilities, DeviceId,
-    DeviceRequest, Error, InstanceId, Result,
+    AdapterId, AdapterInfo, AdapterPreference, AdapterProperties, DeviceCapabilities,
+    DeviceCapacity, DeviceId, DeviceRequest, Error, InstanceId, Result,
 };
 use crate::backend::{ComputeOps, MemoryObservationOps, MeshOps, RasterExtrasOps, RayOps};
 use std::future::Future;
@@ -84,6 +84,20 @@ pub trait InstanceBackend: Backend {
         device: DeviceId,
         request: &'a DeviceRequest,
     ) -> Self::OpenFuture<'a>;
+    /// Backends may reject insufficient capacities during native probing so
+    /// queues and other device-wide resources do not need to be created.
+    fn open_with_capacities<'a>(
+        instance: &'a Self::NativeInstance,
+        device: DeviceId,
+        request: &'a DeviceRequest,
+        minimum: &'a [DeviceCapacity],
+    ) -> impl Future<Output = Result<(Self::NativeDevice, DeviceCapabilities)>> + 'a {
+        async move {
+            let opened = Self::open(instance, device, request).await?;
+            opened.1.limits.require_capacities(minimum)?;
+            Ok(opened)
+        }
+    }
 }
 
 /// Native SurfaceImage is an exclusive RAII lease. Dropping an unhanded lease
