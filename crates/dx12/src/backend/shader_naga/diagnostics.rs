@@ -65,3 +65,77 @@ fn wgsl_location(source: &str, span: naga::Span) -> Option<ShaderDiagnosticLocat
         byte_range: Some(range),
     })
 }
+
+pub(super) fn dxc_report(
+    source: ShaderDiagnosticSource,
+    rendered: String,
+) -> ShaderCompilationReport {
+    let mut diagnostics: Vec<_> = rendered.lines().filter_map(dxc_diagnostic).collect();
+    if !diagnostics
+        .iter()
+        .any(|note| note.severity == ShaderDiagnosticSeverity::Error)
+    {
+        diagnostics.insert(
+            0,
+            ShaderDiagnostic {
+                severity: ShaderDiagnosticSeverity::Error,
+                message: rendered.trim().into(),
+                location: None,
+            },
+        );
+    }
+    ShaderCompilationReport {
+        source,
+        diagnostics,
+        rendered,
+    }
+}
+
+fn dxc_diagnostic(line: &str) -> Option<ShaderDiagnostic> {
+    use ShaderDiagnosticSeverity::*;
+    for (marker, severity) in [
+        ("fatal error:", Error),
+        ("error:", Error),
+        ("warning:", Warning),
+        ("note:", Note),
+    ] {
+        let Some((prefix, message)) = line.split_once(marker) else {
+            continue;
+        };
+        let prefix = prefix.trim();
+        let location = if prefix.is_empty() || prefix == "dxc:" {
+            None
+        } else {
+            let Some(location) = dxc_location(prefix) else {
+                continue;
+            };
+            Some(location)
+        };
+        return Some(ShaderDiagnostic {
+            severity,
+            message: message.trim().into(),
+            location,
+        });
+    }
+    None
+}
+
+fn dxc_location(prefix: &str) -> Option<ShaderDiagnosticLocation> {
+    let (file_and_line, tail) = prefix.strip_suffix(':')?.rsplit_once(':')?;
+    let last = tail.parse::<u32>().ok().filter(|&value| value != 0)?;
+    let (file, line, column) = match file_and_line.rsplit_once(':') {
+        Some((file, line)) if line.parse::<u32>().is_ok() => {
+            (file, line.parse::<u32>().ok()?, Some(last))
+        }
+        _ => (file_and_line, last, None),
+    };
+    if line == 0 || file.is_empty() {
+        return None;
+    }
+    Some(ShaderDiagnosticLocation {
+        file: Some(file.into()),
+        line,
+        column,
+        byte_range: None,
+    })
+}

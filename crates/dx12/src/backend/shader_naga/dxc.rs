@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use fluxel_rhi_core::api::{Error, Result, SpecializationValue};
+use fluxel_rhi_core::api::{Error, Result, ShaderDiagnosticSource, SpecializationValue};
 use windows::Win32::Foundation::{FreeLibrary, HMODULE};
 use windows::Win32::Graphics::Direct3D::Dxc::{
     CLSID_DxcCompiler, DXC_CP_UTF8, DXC_OUT_HLSL, DxcBuffer, IDxcBlob, IDxcCompiler3, IDxcResult,
@@ -28,6 +28,22 @@ pub(super) fn compile_hlsl(
     profile: &str,
     constants: &[(String, SpecializationValue)],
 ) -> Result<Vec<u8>> {
+    compile_hlsl_with_origin(
+        source,
+        entry,
+        profile,
+        constants,
+        ShaderDiagnosticSource::Hlsl,
+    )
+}
+
+pub(super) fn compile_hlsl_with_origin(
+    source: &str,
+    entry: &str,
+    profile: &str,
+    constants: &[(String, SpecializationValue)],
+    origin: ShaderDiagnosticSource,
+) -> Result<Vec<u8>> {
     let definitions = definitions(constants)?;
     let mut arguments = vec![
         "-T".to_owned(),
@@ -36,7 +52,7 @@ pub(super) fn compile_hlsl(
         entry.to_owned(),
     ];
     append_definitions(&mut arguments, definitions);
-    let (_library, result) = invoke(source, &arguments)?;
+    let (_library, result) = invoke(source, &arguments, origin)?;
     result_bytes(&result)
 }
 
@@ -49,7 +65,7 @@ pub(super) fn preprocess_hlsl(
 ) -> Result<String> {
     let mut arguments = vec!["-P".to_owned()];
     append_definitions(&mut arguments, definitions(constants)?);
-    let (_library, result) = invoke(source, &arguments)?;
+    let (_library, result) = invoke(source, &arguments, ShaderDiagnosticSource::Hlsl)?;
     let mut name = None;
     let mut output = None::<IDxcBlob>;
     // SAFETY: DXC fills owned COM output storage synchronously; `result` and
@@ -72,7 +88,11 @@ fn append_definitions(arguments: &mut Vec<String>, definitions: Vec<String>) {
     }
 }
 
-fn invoke(source: &str, arguments: &[String]) -> Result<(Library, IDxcResult)> {
+fn invoke(
+    source: &str,
+    arguments: &[String],
+    origin: ShaderDiagnosticSource,
+) -> Result<(Library, IDxcResult)> {
     // SAFETY: LoadLibraryW receives a static nul-terminated DLL name.
     let library = Library(
         unsafe { LoadLibraryW(windows::core::w!("dxcompiler.dll")) }
@@ -110,15 +130,22 @@ fn invoke(source: &str, arguments: &[String]) -> Result<(Library, IDxcResult)> {
         // SAFETY: error blob data remains valid while the blob is alive.
         let detail = unsafe { result.GetErrorBuffer() }
             .ok()
-            .map(|blob| unsafe {
-                String::from_utf8_lossy(std::slice::from_raw_parts(
-                    blob.GetBufferPointer().cast(),
-                    blob.GetBufferSize(),
-                ))
-                .into_owned()
+            .and_then(|blob| {
+                // SAFETY: DXC owns this nonempty blob for the duration of the copy.
+                let (pointer, size) = unsafe { (blob.GetBufferPointer(), blob.GetBufferSize()) };
+                if pointer.is_null() || size == 0 {
+                    return None;
+                }
+                let bytes = unsafe { std::slice::from_raw_parts(pointer.cast(), size) };
+                let detail = String::from_utf8_lossy(bytes)
+                    .trim_end_matches('\0')
+                    .to_owned();
+                (!detail.trim().is_empty()).then_some(detail)
             })
             .unwrap_or_else(|| format!("{status:?}"));
-        return Err(Error::Shader(detail));
+        return Err(Error::ShaderCompilation(super::diagnostics::dxc_report(
+            origin, detail,
+        )));
     }
     Ok((library, result))
 }

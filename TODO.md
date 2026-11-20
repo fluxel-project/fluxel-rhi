@@ -10,9 +10,15 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 **Status:** WGSL parse and validation errors preserve compiler messages and
 source byte ranges, line and column when available.
+DXC failure reports preserve location, severity, and the raw report for
+direct HLSL and generated HLSL. Successful compilation warnings still need
+an observation route through the created artifact or pipeline.
 
 **Acceptance:** Exercise an invalid WGSL source with multiple diagnostic
 labels and verify UTF-8 spans and the original rendered report.
+Compile failing HLSL and verify location, severity, and fallback for
+unlocated diagnostics. Verify generated-source diagnostics are identified
+as HLSL positions rather than mapped to the input WGSL.
 
 ### Core pipeline layout inspection
 

@@ -681,7 +681,13 @@ fn compile_inner(
             }
             hlsl = wave_size::inject(&hlsl, &name, size)?;
         }
-        let bytes = dxc::compile_hlsl(&hlsl, &name, profile, &[])?;
+        let bytes = dxc::compile_hlsl_with_origin(
+            &hlsl,
+            &name,
+            profile,
+            &[],
+            api::ShaderDiagnosticSource::GeneratedHlsl,
+        )?;
         let raw_storage_bindings = module
             .global_variables
             .iter()
