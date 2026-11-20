@@ -123,6 +123,13 @@ device, check that valid raster, mesh, compute and ray descriptors return
 vertex format support. The active-device check precedes feature probes or
 artifact creation and runs once per pipeline admission.
 
+**Descriptor admission after device removal:** On an isolated removed DX12
+device, verify texture view and sampler support and creation return
+`DeviceLost`, including explicit usage, sampled mapping and a 3D slice view.
+Verify bind-group creation rejects before reserving descriptor slots. Use
+previously created resources and populated descriptor pages to exercise the
+reuse path that does not need to allocate a new native heap.
+
 **Counted indirect draw support:** Compare the query with DX12 recording
 for indexed and non-indexed argument strides and checked offsets, including
 shared argument/count storage and a zero maximum. Verify the reported direct,

@@ -26,7 +26,7 @@ impl Dx12Sampler {
 }
 
 pub(crate) fn create_sampler(device: &Dx12Device, desc: &api::SamplerDesc) -> Result<Dx12Sampler> {
-    validate(desc)?;
+    sampler_support(device, desc)?;
     let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
         Type: D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
         NumDescriptors: 1,
@@ -66,7 +66,8 @@ pub(crate) fn create_sampler(device: &Dx12Device, desc: &api::SamplerDesc) -> Re
     unsafe { device.0.native.CreateSampler(&native, cpu) };
     Ok(Dx12Sampler(Arc::new(SamplerState { heap, cpu, native })))
 }
-pub(super) fn validate(d: &api::SamplerDesc) -> Result<()> {
+pub(super) fn sampler_support(device: &Dx12Device, d: &api::SamplerDesc) -> Result<()> {
+    device.require_active()?;
     if !d.lod.start.is_finite() || !d.lod.end.is_finite() || d.lod.start > d.lod.end {
         return Err(Error::InvalidRange);
     }

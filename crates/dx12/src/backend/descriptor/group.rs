@@ -25,6 +25,8 @@ pub(crate) fn create_bind_group(
     device: &Dx12Device,
     desc: &api::BindGroupDesc<'_, Dx12>,
 ) -> Result<Dx12BindGroup> {
+    // Descriptor-table writes may use existing heaps and return no HRESULT.
+    device.require_active()?;
     // SAFETY: Core validated the same-device layout; cloning retains its
     // immutable native metadata independently of the descriptor borrow.
     let layout = unsafe { desc.layout.native_ref() }.0.clone();

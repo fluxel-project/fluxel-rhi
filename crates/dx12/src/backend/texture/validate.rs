@@ -94,6 +94,7 @@ pub(super) fn view(
     v: &api::TextureViewDesc,
     usage: api::TextureUsage,
 ) -> Result<()> {
+    dv.require_active()?;
     if desc.dimension == api::TextureDimension::D1 && desc.array_layers > 1 {
         return Err(Error::Unsupported("DX12 D1 array texture views"));
     }
