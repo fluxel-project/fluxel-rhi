@@ -63,13 +63,16 @@ fn is_software(desc: &DXGI_ADAPTER_DESC1) -> bool {
     desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0
 }
 
-fn supports_d3d12(adapter: &IDXGIAdapter1) -> bool {
+pub(super) fn probe_d3d12(adapter: &IDXGIAdapter1) -> windows::core::Result<()> {
     // SAFETY: a null output asks D3D12 to check the requested minimum feature
     // level without creating a device. The input adapter remains live.
     unsafe {
         D3D12CreateDevice::<_, ID3D12Device>(adapter, D3D_FEATURE_LEVEL_11_0, std::ptr::null_mut())
     }
-    .is_ok()
+}
+
+fn supports_d3d12(adapter: &IDXGIAdapter1) -> bool {
+    probe_d3d12(adapter).is_ok()
 }
 
 pub(super) fn select_adapter(

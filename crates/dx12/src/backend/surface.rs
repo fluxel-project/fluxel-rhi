@@ -90,15 +90,26 @@ impl ImageLease {
     }
 }
 
+pub(crate) fn live_hwnd(handle: RawWindowHandle) -> Result<HWND> {
+    let RawWindowHandle::Win32(Win32WindowHandle { hwnd, .. }) = handle else {
+        return Err(Error::Unsupported("a Win32 window handle"));
+    };
+    let hwnd = HWND(hwnd.get() as *mut _);
+    // SAFETY: IsWindow accepts arbitrary handle values and retains no pointer.
+    if unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindow(Some(hwnd)) }.as_bool() {
+        Ok(hwnd)
+    } else {
+        Err(Error::SurfaceLost)
+    }
+}
+
 // SAFETY: the caller supplies a live Win32 window handle and keeps its host
 // window alive until this surface and all outstanding images have retired.
 pub(crate) unsafe fn create_surface(
     device: &api::Device<Dx12>,
     handle: RawWindowHandle,
 ) -> Result<api::Surface<Dx12>> {
-    let RawWindowHandle::Win32(Win32WindowHandle { hwnd, .. }) = handle else {
-        return Err(Error::Unsupported("a Win32 window handle"));
-    };
+    let hwnd = live_hwnd(handle)?;
     // SAFETY: the device is the typed owner of its native state; cloning it
     // keeps device/queue/fence alive for the surface's entire lifetime.
     let native = unsafe { device.native_ref() }.clone();
@@ -108,8 +119,7 @@ pub(crate) unsafe fn create_surface(
         .map_err(error)?;
     // SAFETY: the host keeps this HWND alive for the surface lifetime. RHI
     // presents windowed flip chains; host window policy owns fullscreen changes.
-    unsafe { factory.MakeWindowAssociation(HWND(hwnd.get() as *mut _), DXGI_MWA_NO_ALT_ENTER) }
-        .map_err(error)?;
+    unsafe { factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER) }.map_err(error)?;
     let tearing_supported = factory.cast::<IDXGIFactory5>().ok().is_some_and(|factory| {
         let mut supported = 0i32;
         // SAFETY: the initialized BOOL-sized integer has the type and size required by
@@ -126,7 +136,7 @@ pub(crate) unsafe fn create_surface(
     });
     let state = Arc::new(SurfaceState {
         device: native,
-        hwnd: HWND(hwnd.get() as *mut _),
+        hwnd,
         factory,
         tearing_supported,
         inner: Mutex::new(Inner {

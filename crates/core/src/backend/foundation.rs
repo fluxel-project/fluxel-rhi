@@ -100,6 +100,17 @@ pub trait InstanceBackend: Backend {
     }
 }
 
+/// Optional cold-path probe that borrows a host target without opening a device.
+pub trait SurfaceProbeBackend: InstanceBackend {
+    type Target<'a>;
+
+    fn probe_surface(
+        instance: &Self::NativeInstance,
+        adapter: AdapterId,
+        target: Self::Target<'_>,
+    ) -> Result<crate::api::SurfaceCompatibility>;
+}
+
 /// Native SurfaceImage is an exclusive RAII lease. Dropping an unhanded lease
 /// abandons it once. Accepted or indeterminate native present handoff calls
 /// try_handoff at the irrevocable native boundary; rejected work returns it live.

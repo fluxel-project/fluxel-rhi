@@ -650,12 +650,13 @@ logical retirement. RHI executes the supplied transitions, waits and signals,
 retains native objects needed for issued work, and reports completion or
 device loss. Frame pacing and recovery belong to Renderer and Host.
 
-- **R01, DESIGNING — pre-device surface compatibility probe.** Add an
-  Instance/Adapter probe that borrows a Host handle and reports compatibility
-  before opening a device when a reliable fact is available. Return unknown
-  when enumeration cannot determine compatibility. The caller can then open
-  the device and try creation. `Surface<B>` remains bound to its `DeviceId`.
-  Cover handle lifetime, foreign adapters and post-open revalidation.
+- **R01, VERIFYING — pre-device surface compatibility probe.** DX12 now
+  borrows a Win32 window through `Instance::probe_surface`. An explicit D3D12
+  feature-level rejection yields incompatible. Output enumeration provides an
+  affinity hint with unknown compatibility. DXGI validates the live route
+  during device-bound surface creation and configuration. Verify missing or
+  changed output, invalid and foreign inputs, hybrid adapters, and post-open
+  revalidation.
 - **R02, DESIGNING — error correlation and terminal device loss.** Add
   correlation between a failed request, issued work, and completion facts.
   Automatic renderer reconstruction is `OUT_OF_SCOPE`: Renderer and Host own

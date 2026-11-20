@@ -37,6 +37,12 @@ owns a flip-model swapchain generation and its RTVs, and issues `Present` only
 when the acquired image lease is handed off. Host window lifetime and window
 policy remain outside the crate.
 
+Before opening a device, `Instance::probe_surface` accepts a borrowed Win32
+window handle and an adapter from that instance. DXGI can report whether
+the adapter lists the current monitor among its outputs. This information
+is advisory on hybrid systems. Device-bound surface configuration uses
+the actual D3D12 queue and HWND to qualify the swapchain.
+
 ## Layers
 
 The implementation is organized by responsibility rather than by a second

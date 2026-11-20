@@ -89,6 +89,27 @@ pub struct AdapterInfo {
     pub name: String,
 }
 
+/// Pre-device evidence for a particular adapter and host target.
+/// Creating and configuring the surface still qualifies the live native route.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SurfaceCompatibility {
+    Compatible,
+    Incompatible(&'static str),
+    Unknown(SurfaceProbeUncertainty),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SurfaceProbeUncertainty {
+    /// The adapter reports an attached output for the target's current monitor.
+    OutputOnAdapter,
+    /// The adapter does not report the target monitor among its outputs.
+    OutputNotReportedOnAdapter,
+    /// The current target or display topology could not be resolved.
+    OutputUnavailable,
+}
+
 /// Selection hint used during adapter discovery. Software explicitly requests
 /// a software adapter. The power hints do not authorize a software fallback.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -226,6 +247,21 @@ impl<B: InstanceBackend> Instance<B> {
         let mut device = unsafe { Device::from_native(id, native, caps) };
         device.adapter = Some(request.adapter);
         Ok(device)
+    }
+}
+
+impl<B: SurfaceProbeBackend> Instance<B> {
+    /// Borrows the target only for this query. Unknown allows the caller to
+    /// proceed with device opening and native surface creation.
+    pub fn probe_surface(
+        &self,
+        adapter: AdapterId,
+        target: B::Target<'_>,
+    ) -> Result<SurfaceCompatibility> {
+        if adapter.instance != self.id {
+            return Err(Error::WrongDevice);
+        }
+        B::probe_surface(&self.native, adapter, target)
     }
 }
 

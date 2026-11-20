@@ -7,6 +7,7 @@
 mod adapter;
 mod descriptor_limits;
 mod shader_model;
+mod surface_probe;
 
 const MAX_BIND_GROUPS: u32 = 8;
 const MAX_BINDINGS_PER_GROUP: u32 = 64;
