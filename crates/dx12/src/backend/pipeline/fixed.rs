@@ -5,6 +5,8 @@ use windows::Win32::{
     Graphics::{Direct3D12::*, Dxgi::Common::*},
 };
 
+use super::super::{Dx12Device, texture};
+
 pub(crate) fn validate_depth(
     state: Option<api::DepthStencilState>,
 ) -> Result<Option<api::DepthStencilState>> {
@@ -36,6 +38,7 @@ pub(crate) fn validate_depth(
 }
 
 pub(crate) fn lower_targets(
+    device: &Dx12Device,
     targets: &[Option<api::ColorTargetState>],
 ) -> Result<([DXGI_FORMAT; 8], [D3D12_RENDER_TARGET_BLEND_DESC; 8])> {
     if targets.len() > 8 {
@@ -56,6 +59,14 @@ pub(crate) fn lower_targets(
     }; 8];
     for (index, target) in targets.iter().enumerate() {
         let Some(target) = target else { continue };
+        formats[index] = color_format(target.format)?;
+        let mut required = D3D12_FORMAT_SUPPORT1_RENDER_TARGET;
+        if target.blend.is_some() {
+            required |= D3D12_FORMAT_SUPPORT1_BLENDABLE;
+        }
+        if !texture::format_has_support(device, target.format, required) {
+            return Err(Error::Unsupported("DX12 color target format or blending"));
+        }
         if let Some(blend) = target.blend {
             let dual_source = [
                 blend.color.src_factor,
@@ -76,7 +87,6 @@ pub(crate) fn lower_targets(
                 ));
             }
         }
-        formats[index] = color_format(target.format)?;
         if target.write_mask & !15 != 0 {
             return Err(Error::InvalidRange);
         }

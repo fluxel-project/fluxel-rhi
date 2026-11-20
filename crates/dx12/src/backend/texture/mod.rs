@@ -73,7 +73,12 @@ pub(crate) fn support(dv: &Dx12Device, d: &api::TextureDesc) -> api::Support<api
                 compatible_view_formats: permitted_view_formats(dv, d),
                 filterable: !depth
                     && format_has_support(dv, d.format, D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE),
-                blendable: !depth && d.usage.contains(api::TextureUsage::RENDER_ATTACHMENT),
+                blendable: !depth
+                    && format_has_support(
+                        dv,
+                        d.format,
+                        D3D12_FORMAT_SUPPORT1_RENDER_TARGET | D3D12_FORMAT_SUPPORT1_BLENDABLE,
+                    ),
                 storage: !depth && d.usage.contains(api::TextureUsage::STORAGE_BINDING),
             })
         }

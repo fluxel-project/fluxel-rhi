@@ -91,7 +91,7 @@ pub(super) fn create_pipeline(
         return Err(Error::InvalidState);
     }
     let depth = super::pipeline::fixed::validate_depth(desc.depth_stencil)?;
-    let (formats, blends) = super::pipeline::fixed::lower_targets(&desc.targets)?;
+    let (formats, blends) = super::pipeline::fixed::lower_targets(device, &desc.targets)?;
     let raster = super::pipeline::fixed::lower_raster(desc.primitive, desc.multisample, depth)?;
     let depth_state = super::pipeline::fixed::lower_depth(depth);
     let mesh = shader(&desc.mesh, api::ShaderStage::Mesh)?;

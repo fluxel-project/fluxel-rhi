@@ -92,9 +92,7 @@ fn create_raster(
     {
         return Err(Error::Unsupported("DX12 multiview view count"));
     }
-    if desc.color_targets.len() > 8 {
-        return Err(Error::InvalidRange);
-    }
+    let (formats, blends) = lower_targets(device, &desc.color_targets)?;
     // SAFETY: Core validated the layout belongs to this device.
     let layout = unsafe { desc.layout.native_ref() }.0.clone();
     let (vs, mut raw_storage_bindings, vertex_index_constants) =
@@ -164,7 +162,6 @@ fn create_raster(
         })
         .collect();
     let elements = elements?;
-    let (formats, blends) = lower_targets(&desc.color_targets)?;
     let mut raster = lower_raster(desc.primitive, desc.multisample, depth)?;
     if dynamic_depth_bias.is_some() {
         // D3D12 requires all three static rasterizer depth-bias fields to be
