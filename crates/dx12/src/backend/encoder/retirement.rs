@@ -105,7 +105,7 @@ fn failed_setup(
             .event
             .take()
             .expect("retirement event ownership");
-        super::fence_wait::retain_failed_retirement_event(device, fence, value, Some(event));
+        super::fence_wait::retain_quarantined_owner(device, fence, value, Some(event));
         drop(context);
     }
     Err(error)
@@ -118,7 +118,7 @@ fn failed_before_wait(
     event: Option<HANDLE>,
     error: Error,
 ) -> Result<()> {
-    super::fence_wait::retain_failed_retirement_event(device, fence, value, event);
+    super::fence_wait::retain_quarantined_owner(device, fence, value, event);
     Err(error)
 }
 
@@ -143,7 +143,7 @@ pub(super) fn register(device: &Dx12Device, ordinal: u32, value: u64) -> Result<
             // Native handoff already happened. A sparse-only packet need not
             // own an encoder/device Arc, so loss also requires the error-only
             // owner quarantine before reporting uncertainty.
-            super::fence_wait::retain_failed_retirement_event(device, fence, value, None);
+            super::fence_wait::retain_quarantined_owner(device, fence, value, None);
             return Err(Error::DeviceLost);
         }
         Some(false) => {}

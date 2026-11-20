@@ -96,9 +96,9 @@ pub(crate) struct AbandonedFenceEvent {
     pub(super) value: u64,
     pub(super) fence: ID3D12Fence,
     event: Option<HANDLE>,
-    // Only failed autonomous-retirement setup uses this.  Its submission has
-    // already reached D3D12, so losing every public Device must not release
-    // native owners before a later explicit recovery observes the fence.
+    // Only uncertain native work uses this. Its submission has already
+    // reached D3D12, so losing every public Device must not release native
+    // owners without completion evidence.
     owner: Option<Dx12Device>,
 }
 
@@ -123,10 +123,9 @@ impl Drop for AbandonedFenceEvent {
 
 impl AbandonedFenceEvent {
     pub(super) fn retain_after(&self, completed: u64) -> bool {
-        // A registration failure after native handoff is quarantined on device
-        // loss: there is no successful completion proof that can retire the
-        // already-issued owners. Ordinary cancelled futures do not carry an
-        // owner and may release their event on loss.
+        // On device loss, retain any owner of uncertain issued work because
+        // the sentinel supplies no completion proof. Ordinary cancelled
+        // futures carry no owner and may release their event on loss.
         (completed == u64::MAX && self.owner.is_some())
             || (completed != u64::MAX && self.value > completed)
     }
@@ -145,10 +144,9 @@ pub(super) fn retain_abandoned_event(
     retain_event(device, fence, value, Some(event), None);
 }
 
-/// Retains a failed autonomous-retirement registration. Unlike a cancelled
-/// future, native work was already accepted, so this narrow quarantine keeps
-/// the device alive until a later retirement pass has completion evidence.
-pub(super) fn retain_failed_retirement_event(
+/// Keeps the device alive for issued work without an autonomous retirement
+/// registration. A value of `u64::MAX` represents a missing completion fence.
+pub(super) fn retain_quarantined_owner(
     device: &Dx12Device,
     fence: ID3D12Fence,
     value: u64,

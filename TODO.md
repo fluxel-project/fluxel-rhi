@@ -358,6 +358,9 @@ sampled components, and reject sampled-only views as storage or attachments.
 On an isolated DX12 device, verify native removal wakes a pending completion
 with `DeviceLost`. Check that new encoders, idle waits, and submissions reject
 the removed device before allocating command objects or issuing queue work.
+Inject a terminal signal failure after a sparse-only handoff and verify
+that dropping public device and resource handles preserves quarantined
+texture and heap owners.
 Verify explicit sampled, storage and attachment usage against actual
 descriptor binding and attachment admission. Cover a sampled mip chain
 paired with single-mip storage views, and separate sampled depth/stencil

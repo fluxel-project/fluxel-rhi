@@ -257,6 +257,12 @@ fn retain_sparse(
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .push((value, retained));
+        if value == u64::MAX {
+            // Sparse mapping owners have no encoder to retain the Device.
+            // Without a completion fence they need a separate owner in
+            // quarantine even if the caller drops every public handle.
+            super::fence_wait::retain_quarantined_owner(device, device.0.fence.clone(), value, None);
+        }
     }
 }
 
