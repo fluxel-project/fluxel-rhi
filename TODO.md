@@ -764,10 +764,16 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   feedback readback. Capability reporting alone is insufficient.
 - **R24c, DESIGNING — geometry and tessellation stages.** Define shader-stage
   linkage, reflection, pipeline ABI, limits, and DXIL/HLSL/WGSL route facts.
-  Acceptance requires observable geometry and tessellation output.
+  Verify geometry-shader amplification and hull/domain patch evaluation with
+  separate outputs. Microsoft's PC DX12 Bézier sample supplies a tessellation
+  reference. [SimpleBezierPC12](https://github.com/microsoft/Xbox-ATG-Samples/tree/ff629a6e4876e38fe8761ead116a0e53f634ca67/PCSamples/IntroGraphics/SimpleBezierPC12)
 - **R24d, DESIGNING — programmable sample positions.** Define tier gate,
   sample-position descriptors, pipeline/pass compatibility, and lifetime.
-  Acceptance requires known sample-coverage readback.
+  Test a repeated one-pixel pattern on tier 1 and a four-pixel pattern on
+  tier 2. Read back known edge coverage. Exercise depth resolve and full
+  depth/stencil copy with the sample pattern used to write the source.
+  The caller supplies the pattern and resource dependencies.
+  [Programmable sample positions](https://github.com/microsoft/DirectX-Specs/blob/ae2cc81d8f97df9ce8597e25d84405273f09d08c/d3d/ProgrammableSamplePositions.md)
 - **R24e, DESIGNING — predication.** Define condition-buffer format, command
   range, queue ordering, and retained ownership. Acceptance requires true and
   false GPU cases with distinct output.

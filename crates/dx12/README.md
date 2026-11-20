@@ -44,6 +44,12 @@ the [examples guide](../rhi/examples/README.md) for runnable workloads; and the
 [verification guide](https://github.com/fluxel-project/fluxel-rhi/blob/main/documents/verification.md)
 for hardware-test requirements.
 
+Use the numbered examples to compare scene output with the native references
+recorded in their asset guides. Qualify each execution capability through its
+support query, applicable creation and encoding paths, and a focused GPU
+readback or presentation check. The [open design items](../../TODO.md) record
+the remaining acceptance conditions.
+
 The `hardware-tests` feature enables opt-in real-device fixtures. It is intended
 for backend development and is not needed by library consumers.
 
