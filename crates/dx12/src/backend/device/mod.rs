@@ -128,17 +128,19 @@ impl Dx12 {
                 windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS1::default();
             // SAFETY: the native device receives the exact initialized
             // OPTIONS1 structure for the duration of this synchronous call.
-            let wave_ops = unsafe {
+            let options1_available = unsafe {
                 native.CheckFeatureSupport(
                     windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_D3D12_OPTIONS1,
                     (&mut wave as *mut _) as *mut _,
                     std::mem::size_of_val(&wave) as u32,
                 )
             }
-            .is_ok()
-                && wave.WaveOps.as_bool();
+            .is_ok();
+            let shader_int64 =
+                shader_model >= 60 && options1_available && wave.Int64ShaderOps.as_bool();
             let subgroup_widths = (shader_model >= 60
-                && wave_ops
+                && options1_available
+                && wave.WaveOps.as_bool()
                 && wave.WaveLaneCountMin > 0
                 && wave.WaveLaneCountMin <= wave.WaveLaneCountMax)
                 .then_some(api::SubgroupWidths {
@@ -296,6 +298,7 @@ impl Dx12 {
             let caps = DeviceCapabilities {
                 shader_f16,
                 shader_f64,
+                shader_int64,
                 memory_topology,
                 subgroup_widths,
                 lanes: Arc::from([
@@ -514,6 +517,7 @@ impl Dx12 {
                     shader_model,
                     shader_f16,
                     shader_f64,
+                    shader_int64,
                     barycentrics_supported,
                     subgroup_widths,
                     max_buffer_bytes,

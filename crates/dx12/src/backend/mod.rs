@@ -90,6 +90,7 @@ struct Dx12DeviceState {
     pub(super) shader_model: u16,
     pub(super) shader_f16: bool,
     pub(super) shader_f64: bool,
+    pub(super) shader_int64: bool,
     pub(super) barycentrics_supported: bool,
     pub(super) subgroup_widths: Option<api::SubgroupWidths>,
     /// Committed buffers consume the process GPU virtual-address range.
@@ -337,17 +338,19 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
         {
             return api::ShaderRoute::Unsupported;
         }
-        if desc
-            .required_features
-            .iter()
-            .any(|feature| feature == api::SHADER_FEATURE_F64)
-            && (!device.0.shader_f64
+        if desc.required_features.iter().any(|feature| {
+            let supported = match feature.as_str() {
+                api::SHADER_FEATURE_F64 => device.0.shader_f64,
+                api::SHADER_FEATURE_INT64 => device.0.shader_int64,
+                _ => return false,
+            };
+            !supported
                 || desc.entries.is_empty()
                 || !matches!(
                     desc.format,
                     api::ShaderFormat::Dxil | api::ShaderFormat::Hlsl(_)
-                ))
-        {
+                )
+        }) {
             return api::ShaderRoute::Unsupported;
         }
         if desc
@@ -585,6 +588,7 @@ fn shader_features_supported(
         api::SHADER_FEATURE_RAY_QUERY => ray_query_supported,
         api::SHADER_FEATURE_F16 => true,
         api::SHADER_FEATURE_F64 => true,
+        api::SHADER_FEATURE_INT64 => true,
         api::SHADER_FEATURE_PRIMITIVE_INDEX => true,
         api::SHADER_FEATURE_EARLY_DEPTH_TEST => true,
         api::SHADER_FEATURE_BARYCENTRICS => true,

@@ -49,6 +49,7 @@ device_features! {
     Compute => compute, "compute";
     ShaderF16 => shader_f16, "shader-f16";
     ShaderF64 => shader_f64, "shader-f64";
+    ShaderInt64 => shader_int64, "shader-int64";
     Sparse => sparse, "sparse";
     Mesh => mesh, "mesh";
     MeshMultiIndirect => mesh_multi_indirect, "mesh-multi-indirect";

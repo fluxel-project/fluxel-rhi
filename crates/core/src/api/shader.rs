@@ -43,6 +43,9 @@ pub const SHADER_FEATURE_RAY_QUERY: &str = "ray-query";
 pub const SHADER_FEATURE_F16: &str = "shader-f16";
 /// The shader requires native double-precision floating-point types.
 pub const SHADER_FEATURE_F64: &str = "shader-f64";
+/// The shader requires native signed or unsigned 64-bit integer types.
+/// Atomic operations have separate requirements.
+pub const SHADER_FEATURE_INT64: &str = "shader-int64";
 /// A fragment shader requires the API's early depth-test semantics.
 ///
 /// This requirement is checked against `DeviceCapabilities::shader_early_depth_test`.

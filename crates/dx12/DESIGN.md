@@ -317,6 +317,10 @@ and native buffer access subject to the shader profile and exact resource
 description. Texture pixel formats and Input Assembler formats have their
 own capabilities.
 
+Native HLSL and DXIL signed and unsigned 64-bit computation require
+Shader Model 6 and `D3D12_OPTIONS1.Int64ShaderOps`. Atomic operations and
+64-bit resource formats keep separate admission.
+
 The implemented public route includes graphics and compute, multiple render
 targets, indirect drawing and dispatch, queries, secondary recording,
 standalone clears and resolves, placed memory, scoped native/external interop,

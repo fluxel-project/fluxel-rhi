@@ -101,6 +101,15 @@ discards, and reject nonfragment requirement declarations. WGSL conservative
 depth remains pending until its depth-output and interpolation rules are
 mapped per mode and verified with depth and storage readback.
 
+### DX12 native 64-bit integer shaders
+
+**Status:** Core device requests and DX12 HLSL and DXIL declarations
+qualify signed and unsigned 64-bit computation with native Int64ShaderOps.
+Int64 atomics, shader interfaces and WGSL lowering have separate contracts.
+
+**Acceptance:** Verify wide signed and unsigned arithmetic and buffer
+readback with values exceeding 32 bits, including device and profile rejection.
+
 ### DX12 native double-precision shaders
 
 **Status:** HLSL and DXIL shader declarations and Core device requests use
