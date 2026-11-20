@@ -132,6 +132,13 @@ rebuild between compact recording and submission.
 Repeat the size query while refitting a compaction-enabled build and verify
 that submission rejects a refit with mismatched original build flags.
 
+**Deferred GPU-generated TLAS instances:** The native DXR instance record
+embeds a BLAS address. Keep native addresses in the backend and retain typed,
+same-device BLAS dependencies through submission and TLAS use. Reopen when
+a consumer supplies a bounded workload and defines a GPU record with
+indices into a typed BLAS table, including invalid-index behavior, resource
+state, and update and refit semantics.
+
 ### DX12 conservative rasterization
 
 **Status:** Device capability reporting and graphics/mesh pipeline admission
