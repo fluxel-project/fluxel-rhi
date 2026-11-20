@@ -233,6 +233,7 @@ fn import_buffer(
         mapped: Arc::new(AtomicBool::new(false)),
         usage: desc.usage,
         memory,
+        owns_residency: false,
         indirect_signatures: device.0.indirect_signatures.clone(),
         backing_heap: None,
         default_allocation: None,
@@ -305,6 +306,7 @@ fn import_texture(
         desc: desc.clone(),
         sparse: None,
         backing_heap: None,
+        owns_residency: false,
         default_allocation: None,
     })))
 }

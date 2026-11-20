@@ -218,6 +218,8 @@ pub struct DeviceCapabilities {
     pub placed_memory: bool,
     /// Explicit residency operations are available for eligible memory heaps.
     pub explicit_heap_residency: bool,
+    /// Eligible committed resources can change their own residency references.
+    pub committed_resource_residency: bool,
     /// Explicit residency operations are available for sparse backing allocations.
     pub sparse_allocation_residency: bool,
     /// Native asynchronous residency can report host completion for eligible heaps.

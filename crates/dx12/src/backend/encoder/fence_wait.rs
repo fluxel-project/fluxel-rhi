@@ -101,8 +101,8 @@ pub(crate) struct AbandonedFenceEvent {
     // owners without completion evidence.
     owner: Option<Dx12Device>,
     // Residency registration can fail after native acceptance. Keep its
-    // physical heap alongside the fence on that error-only path.
-    _heap: Option<windows::Win32::Graphics::Direct3D12::ID3D12Heap>,
+    // native allocation owner alongside the fence on that error-only path.
+    _pageable: Option<windows::Win32::Graphics::Direct3D12::ID3D12Pageable>,
 }
 
 // A HANDLE is an OS value; this type only transfers and closes it. It never
@@ -158,12 +158,12 @@ pub(super) fn retain_quarantined_owner(
     retain_event(device, fence, value, event, Some(device.clone()), None);
 }
 
-pub(super) fn retain_quarantined_heap(
+pub(super) fn retain_quarantined_pageable(
     device: &Dx12Device,
     fence: ID3D12Fence,
     value: u64,
     event: Option<HANDLE>,
-    heap: windows::Win32::Graphics::Direct3D12::ID3D12Heap,
+    pageable: windows::Win32::Graphics::Direct3D12::ID3D12Pageable,
 ) {
     retain_event(
         device,
@@ -171,7 +171,7 @@ pub(super) fn retain_quarantined_heap(
         value,
         event,
         Some(device.clone()),
-        Some(heap),
+        Some(pageable),
     );
 }
 
@@ -181,7 +181,7 @@ fn retain_event(
     value: u64,
     event: Option<HANDLE>,
     owner: Option<Dx12Device>,
-    heap: Option<windows::Win32::Graphics::Direct3D12::ID3D12Heap>,
+    pageable: Option<windows::Win32::Graphics::Direct3D12::ID3D12Pageable>,
 ) {
     // SAFETY: the caller transfers exclusive event ownership and the cloned
     // fence is valid for this read-only completion query.
@@ -199,7 +199,7 @@ fn retain_event(
                 fence,
                 event,
                 owner,
-                _heap: heap,
+                _pageable: pageable,
             });
     } else {
         // SAFETY: completion/loss means this event will not be observed by a

@@ -12,7 +12,9 @@ pub(super) use default_pool::{DefaultAllocationLease, DefaultResourcePool};
 
 use super::{Dx12, Dx12Buffer, Dx12Device, Dx12DeviceState, Dx12Texture, texture};
 use fluxel_rhi_core::api::{self, Error, MemorySnapshot, Result, Support};
-use fluxel_rhi_core::backend::{MemoryBackend, MemoryObservationOps, ResourceBackend};
+use fluxel_rhi_core::backend::{
+    MemoryBackend, MemoryObservationOps, NativeResidencyResource, ResourceBackend,
+};
 use std::sync::{Arc, atomic::AtomicBool};
 use windows::Win32::Graphics::{
     Direct3D12::*,
@@ -259,8 +261,65 @@ fn validate(
     Ok(())
 }
 
+fn committed_owner<'a>(
+    device: &Dx12Device,
+    resource: NativeResidencyResource<'a, Dx12>,
+) -> Result<&'a ID3D12Resource> {
+    let native = match resource {
+        NativeResidencyResource::Buffer(buffer) if buffer.owns_residency => &buffer.resource,
+        NativeResidencyResource::Texture(texture) if texture.0.owns_residency => {
+            &texture.0.resource
+        }
+        _ => {
+            return Err(Error::Unsupported(
+                "DX12 resource does not own a committed default allocation",
+            ));
+        }
+    };
+    device.require_active()?;
+    let mut owner: Option<ID3D12Device> = None;
+    // SAFETY: the resource is live and the out parameter requests its base device interface.
+    unsafe { native.GetDevice(&mut owner) }.map_err(super::native_error)?;
+    if owner.as_ref() != Some(&device.0.native) {
+        return Err(Error::WrongDevice);
+    }
+    Ok(native)
+}
+
 impl MemoryBackend for Dx12 {
     type NativeHeap = Dx12Heap;
+
+    fn committed_residency_support(
+        device: &Dx12Device,
+        resource: NativeResidencyResource<'_, Self>,
+    ) -> Result<()> {
+        committed_owner(device, resource).map(drop)
+    }
+
+    fn make_committed_resident(
+        device: &Dx12Device,
+        resource: NativeResidencyResource<'_, Self>,
+    ) -> Result<()> {
+        residency::make_resident(device, committed_owner(device, resource)?)
+    }
+
+    fn enqueue_committed_residency(
+        device: &Dx12Device,
+        resource: NativeResidencyResource<'_, Self>,
+        budget: api::ResidencyBudget,
+    ) -> Result<super::encoder::Dx12Completion> {
+        residency::enqueue(device, committed_owner(device, resource)?, budget)
+    }
+
+    unsafe fn evict_committed(
+        device: &Dx12Device,
+        resource: NativeResidencyResource<'_, Self>,
+    ) -> Result<()> {
+        let owner = committed_owner(device, resource)?;
+        // SAFETY: this resource owns the checked same-device allocation. The
+        // caller guarantees the reference and orders every use around eviction.
+        unsafe { residency::evict(device, owner) }
+    }
 
     fn heap_support(device: &Dx12Device, desc: &api::HeapDesc) -> Result<()> {
         heap_desc(device, desc).map(drop)
@@ -366,6 +425,7 @@ impl MemoryBackend for Dx12 {
             mapped: Arc::new(AtomicBool::new(false)),
             usage: desc.usage,
             memory: desc.memory,
+            owns_residency: false,
             indirect_signatures: device.0.indirect_signatures.clone(),
             backing_heap: Some(heap.heap.clone()),
             default_allocation: None,
@@ -400,6 +460,7 @@ impl MemoryBackend for Dx12 {
             resource,
             default_allocation: None,
             backing_heap: Some(heap.heap.clone()),
+            owns_residency: false,
             desc: desc.clone(),
             sparse: None,
         })))

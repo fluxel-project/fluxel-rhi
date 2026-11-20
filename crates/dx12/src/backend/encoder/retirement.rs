@@ -17,7 +17,7 @@ use fluxel_rhi_core::api::{Error, Result};
 
 use windows::Win32::{
     Foundation::{CloseHandle, HANDLE},
-    Graphics::Direct3D12::{ID3D12Fence, ID3D12Heap},
+    Graphics::Direct3D12::{ID3D12Fence, ID3D12Pageable},
     System::Threading::{
         CloseThreadpoolWait, CreateEventW, CreateThreadpoolWait,
         DisassociateCurrentThreadFromCallback, PTP_CALLBACK_INSTANCE, PTP_WAIT, SetThreadpoolWait,
@@ -38,13 +38,13 @@ struct RetirementContext {
     device: Dx12Device,
     event: Option<HANDLE>,
     wait: AtomicIsize,
-    residency: Option<(ID3D12Fence, u64, ID3D12Heap)>,
+    residency: Option<(ID3D12Fence, u64, ID3D12Pageable)>,
 }
 
 impl RetirementContext {
     fn quarantine(&mut self, fence: ID3D12Fence, value: u64) {
-        let heap = self.residency.take().map(|(_, _, heap)| heap);
-        quarantine(&self.device, fence, value, self.event.take(), heap);
+        let pageable = self.residency.take().map(|(_, _, pageable)| pageable);
+        quarantine(&self.device, fence, value, self.event.take(), pageable);
     }
 }
 
@@ -79,9 +79,15 @@ unsafe extern "system" fn retire_on_fence(
         CloseThreadpoolWait(wait);
     }
     let owned = Arc::get_mut(&mut context).expect("one retirement context owner");
-    if let Some((fence, value, heap)) = owned.residency.take() {
+    if let Some((fence, value, pageable)) = owned.residency.take() {
         if completed(&fence, value) != Some(true) {
-            quarantine(&owned.device, fence, value, owned.event.take(), Some(heap));
+            quarantine(
+                &owned.device,
+                fence,
+                value,
+                owned.event.take(),
+                Some(pageable),
+            );
         }
     } else {
         retire(&context.device);
@@ -126,10 +132,10 @@ fn quarantine(
     fence: ID3D12Fence,
     value: u64,
     event: Option<HANDLE>,
-    heap: Option<ID3D12Heap>,
+    pageable: Option<ID3D12Pageable>,
 ) {
-    if let Some(heap) = heap {
-        super::fence_wait::retain_quarantined_heap(device, fence, value, event, heap);
+    if let Some(pageable) = pageable {
+        super::fence_wait::retain_quarantined_pageable(device, fence, value, event, pageable);
     } else {
         super::fence_wait::retain_quarantined_owner(device, fence, value, event);
     }
@@ -152,22 +158,22 @@ pub(in crate::backend) fn register_residency(
     device: &Dx12Device,
     fence: ID3D12Fence,
     value: u64,
-    heap: ID3D12Heap,
+    pageable: ID3D12Pageable,
 ) {
     // Native enqueue already succeeded. Host completion remains observable
-    // even when autonomous registration had to retain the heap in quarantine.
-    let _ = register_fence(device, fence, value, Some(heap));
+    // even when autonomous registration had to retain the pageable in quarantine.
+    let _ = register_fence(device, fence, value, Some(pageable));
 }
 
 fn register_fence(
     device: &Dx12Device,
     fence: ID3D12Fence,
     value: u64,
-    heap: Option<ID3D12Heap>,
+    pageable: Option<ID3D12Pageable>,
 ) -> Result<()> {
     match completed(&fence, value) {
         Some(true) => {
-            if heap.is_none() {
+            if pageable.is_none() {
                 retire(device);
             }
             return Ok(());
@@ -176,7 +182,7 @@ fn register_fence(
             // Native handoff already happened. A sparse-only packet need not
             // own an encoder/device Arc, so loss also requires the error-only
             // owner quarantine before reporting uncertainty.
-            quarantine(device, fence, value, None, heap);
+            quarantine(device, fence, value, None, pageable);
             return Err(Error::DeviceLost);
         }
         Some(false) => {}
@@ -185,13 +191,13 @@ fn register_fence(
     // callback closes it or registration setup unwinds it.
     #[cfg(test)]
     if fail_here(FailureStage::Event) {
-        quarantine(device, fence, value, None, heap);
+        quarantine(device, fence, value, None, pageable);
         return Err(Error::Backend("injected CreateEventW failure".into()));
     }
     let event = match unsafe { CreateEventW(None, false, false, None) } {
         Ok(event) => event,
         Err(error) => {
-            quarantine(device, fence, value, None, heap);
+            quarantine(device, fence, value, None, pageable);
             return Err(native_error(error));
         }
     };
@@ -199,7 +205,7 @@ fn register_fence(
         device: device.clone(),
         event: Some(event),
         wait: AtomicIsize::new(0),
-        residency: heap.map(|heap| (fence.clone(), value, heap)),
+        residency: pageable.map(|pageable| (fence.clone(), value, pageable)),
     });
     let raw = Arc::into_raw(context);
     // SAFETY: `raw` remains owned by this setup path until it is transferred to

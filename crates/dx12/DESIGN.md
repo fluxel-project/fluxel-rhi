@@ -143,6 +143,11 @@ they add no tracking to submission or to the backend-owned allocator.
 Sparse allocations use the same calls on their backing heaps. Their reserved
 textures and tile mappings are unchanged across residency changes. Completion
 must cover accesses through every mapping as well as queued mapping operations.
+Locally committed default buffers and textures own their implicit heaps.
+Only those allocation routes mark their resources eligible for committed
+residency. Placed, pool-backed, sparse and external resources require their
+actual physical owner. The native resource itself is retained for an accepted
+asynchronous residency request on a committed allocation.
 When the opened device exposes `ID3D12Device3`, asynchronous residency uses
 `EnqueueMakeResident` with the caller's budget flag and a private operation
 fence. The fence does not advance either command timeline. The backend retains

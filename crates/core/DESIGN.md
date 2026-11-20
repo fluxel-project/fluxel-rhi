@@ -152,6 +152,9 @@ operations.
 Backends can separately expose the same residency references for a
 `SparseAllocation`. Its references govern the physical backing memory, while
 tile mappings still change only through explicit sparse operations.
+Committed-resource residency qualifies a resource through the backend's
+actual allocation provenance. The capability permits that query. A candidate
+must own its memory to change its own residency reference.
 Asynchronous residency produces host completion. A caller must observe
 success before relying on the new reference for later work. A completion
 point carries no queue-wait authority.

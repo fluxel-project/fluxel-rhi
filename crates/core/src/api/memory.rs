@@ -53,6 +53,29 @@ pub struct MemoryHeap<B: MemoryBackend> {
     device: DeviceId,
     native: B::NativeHeap,
 }
+
+/// A candidate resource for residency operations on its own allocation.
+pub enum ResidencyResource<'a, B: Backend> {
+    Buffer(&'a Buffer<B>),
+    Texture(&'a Texture<B>),
+}
+
+impl<'a, B: Backend> ResidencyResource<'a, B> {
+    fn checked_native(
+        &self,
+        device: DeviceId,
+    ) -> Result<crate::backend::NativeResidencyResource<'a, B>> {
+        match *self {
+            Self::Buffer(buffer) if buffer.device == device => Ok(
+                crate::backend::NativeResidencyResource::Buffer(&buffer.native),
+            ),
+            Self::Texture(texture) if texture.device == device => Ok(
+                crate::backend::NativeResidencyResource::Texture(&texture.native),
+            ),
+            _ => Err(Error::WrongDevice),
+        }
+    }
+}
 pub struct MemoryDomain<'a, B: MemoryBackend> {
     device: &'a Device<B>,
 }
@@ -64,6 +87,69 @@ impl<B: MemoryBackend> Device<B> {
     }
 }
 impl<B: MemoryBackend> MemoryDomain<'_, B> {
+    fn committed_target<'a>(
+        &self,
+        resource: ResidencyResource<'a, B>,
+    ) -> Result<crate::backend::NativeResidencyResource<'a, B>> {
+        let native = resource.checked_native(self.device.id)?;
+        if !self.device.caps.committed_resource_residency {
+            return Err(Error::Unsupported("committed resource residency"));
+        }
+        Ok(native)
+    }
+
+    /// Checks whether the resource owns an eligible committed allocation.
+    pub fn committed_residency_support(&self, resource: ResidencyResource<'_, B>) -> Result<()> {
+        B::committed_residency_support(&self.device.native, self.committed_target(resource)?)
+    }
+
+    /// Makes an eligible committed resource resident, adding one reference.
+    pub fn make_committed_resident(&self, resource: ResidencyResource<'_, B>) -> Result<()> {
+        B::make_committed_resident(&self.device.native, self.committed_target(resource)?)
+    }
+
+    /// Enqueues residency and returns the operation's host observation point.
+    pub fn enqueue_committed_residency(
+        &self,
+        resource: ResidencyResource<'_, B>,
+        budget: ResidencyBudget,
+    ) -> Result<CompletionPoint<B>> {
+        let target = self.committed_target(resource)?;
+        if !self.device.caps.async_heap_residency {
+            return Err(Error::Unsupported(
+                "asynchronous committed resource residency",
+            ));
+        }
+        let native = B::enqueue_committed_residency(&self.device.native, target, budget)?;
+        // SAFETY: SPI returns native completion from this device and operation.
+        Ok(unsafe { CompletionPoint::from_native(self.device.id, native) })
+    }
+
+    /// Enqueues residency and returns a point for explicit queue waits.
+    pub fn enqueue_committed_residency_for_queue(
+        &self,
+        resource: ResidencyResource<'_, B>,
+        budget: ResidencyBudget,
+    ) -> Result<ResidencyPoint<B>> {
+        resource.checked_native(self.device.id)?;
+        if !self.device.caps.residency_queue_waits {
+            return Err(Error::Unsupported("residency queue waits"));
+        }
+        self.enqueue_committed_residency(resource, budget)
+            .map(|completion| ResidencyPoint { completion })
+    }
+
+    /// Releases one residency reference on an eligible committed resource.
+    ///
+    /// # Safety
+    /// The caller owns the reference and has observed completion of all uses
+    /// on every lane. It must exclude new uses until residency is restored or
+    /// another held reference guarantees residency through those uses.
+    pub unsafe fn evict_committed(&self, resource: ResidencyResource<'_, B>) -> Result<()> {
+        let native = self.committed_target(resource)?;
+        // SAFETY: Core checked provenance and the caller supplies ordering.
+        unsafe { B::evict_committed(&self.device.native, native) }
+    }
     /// Qualifies a heap class and size before allocation. The allocation may
     /// still fail due to runtime memory pressure.
     pub fn heap_support(&self, desc: &HeapDesc) -> Result<()> {

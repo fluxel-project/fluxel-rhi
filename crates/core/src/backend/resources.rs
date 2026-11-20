@@ -394,7 +394,42 @@ pub trait ReadbackBackend: CommandBackend + CompletionBackend {
     ) -> Self::ReadbackFuture<'a>;
 }
 
+/// Backend objects whose committed allocation provenance can be inspected.
+pub enum NativeResidencyResource<'a, B: Backend> {
+    Buffer(&'a B::NativeBuffer),
+    Texture(&'a B::NativeTexture),
+}
+
 pub trait MemoryBackend: ResourceBackend {
+    fn committed_residency_support(
+        _device: &Self::NativeDevice,
+        _resource: NativeResidencyResource<'_, Self>,
+    ) -> Result<()> {
+        Err(Error::Unsupported("committed resource residency"))
+    }
+    fn make_committed_resident(
+        _device: &Self::NativeDevice,
+        _resource: NativeResidencyResource<'_, Self>,
+    ) -> Result<()> {
+        Err(Error::Unsupported("committed resource residency"))
+    }
+    fn enqueue_committed_residency(
+        _device: &Self::NativeDevice,
+        _resource: NativeResidencyResource<'_, Self>,
+        _budget: ResidencyBudget,
+    ) -> Result<Self::NativeCompletion> {
+        Err(Error::Unsupported(
+            "asynchronous committed resource residency",
+        ))
+    }
+    /// # Safety
+    /// The caller must satisfy `MemoryDomain::evict_committed`.
+    unsafe fn evict_committed(
+        _device: &Self::NativeDevice,
+        _resource: NativeResidencyResource<'_, Self>,
+    ) -> Result<()> {
+        Err(Error::Unsupported("committed resource residency"))
+    }
     fn heap_support(_device: &Self::NativeDevice, _desc: &HeapDesc) -> Result<()> {
         Err(Error::Unsupported("explicit heap support query"))
     }

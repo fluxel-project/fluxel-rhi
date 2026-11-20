@@ -189,12 +189,16 @@ before a host wait, the same point on both lanes, and a direct-lane wait
 followed by sparse mapping. Verify order on both sides of the encoder
 boundary, wrong-device and unsupported devices, and fence retention across
 partial acceptance and cancellation of unsubmitted work.
+For committed resource residency, exercise a locally committed default buffer
+and texture, including contents after eviction and restoration, private fence
+queue waits, and resource destruction during an accepted enqueue. Verify that
+pool-backed, explicitly placed, reserved, imported, and CPU-visible resources
+fail the committed residency query. Add deterministic committed allocation
+selection so the path does not rely on allocator fallback.
 
 **Pending native paths.** CPU-visible heaps require an ordering contract for
 active CPU mappings in addition to GPU completion. Keep their residency
 operations gated until both are covered.
-Resolve physical owner identity for committed resources before exposing their
-residency operations. Placed resources use the existing heap operations.
 
 ### DX12 structured shader diagnostics
 

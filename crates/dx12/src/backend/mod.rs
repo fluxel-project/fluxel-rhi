@@ -243,6 +243,8 @@ pub struct Dx12Buffer {
     pub(super) mapped: Arc<std::sync::atomic::AtomicBool>,
     pub(super) usage: api::BufferUsage,
     pub(super) memory: api::MemoryClass,
+    /// True only for a locally committed default allocation.
+    pub(super) owns_residency: bool,
     pub(super) indirect_signatures: Arc<Mutex<HashMap<(bool, u32), ID3D12CommandSignature>>>,
     /// A placed resource keeps its native heap alive independently of the
     /// caller's `MemoryHeap` wrapper. Committed resources leave this empty.

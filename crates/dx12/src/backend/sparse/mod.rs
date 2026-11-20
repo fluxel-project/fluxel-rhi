@@ -574,6 +574,7 @@ impl fluxel_rhi_core::backend::SparseBackend for Dx12 {
             resource,
             default_allocation: None,
             backing_heap: None,
+            owns_residency: false,
             desc: desc.clone(),
             sparse: Some(SparseTextureState {
                 tiling,

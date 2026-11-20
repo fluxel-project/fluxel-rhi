@@ -42,6 +42,8 @@ pub(crate) struct TextureState {
     /// A placed resource retains the heap backing it until all texture/view
     /// and recorded-work references have retired.
     pub(super) backing_heap: Option<ID3D12Heap>,
+    /// True only for a locally committed default allocation.
+    pub(super) owns_residency: bool,
     pub(super) desc: api::TextureDesc,
     pub(super) sparse: Option<super::sparse::SparseTextureState>,
 }
@@ -357,6 +359,7 @@ pub(crate) fn create(dv: &Dx12Device, d: &api::TextureDesc) -> Result<Dx12Textur
     Ok(Dx12Texture(Arc::new(TextureState {
         resource,
         default_allocation: lease,
+        owns_residency: backing_heap.is_none(),
         backing_heap,
         desc: d.clone(),
         sparse: None,

@@ -408,6 +408,7 @@ fn allocate_buffer(
         mapped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         usage: desc.usage,
         memory: desc.memory,
+        owns_residency: backing_heap.is_none() && heap.Type == D3D12_HEAP_TYPE_DEFAULT,
         indirect_signatures: device.0.indirect_signatures.clone(),
         backing_heap,
         default_allocation,
