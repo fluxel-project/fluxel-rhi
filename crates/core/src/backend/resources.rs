@@ -173,6 +173,14 @@ pub trait PipelineBackend: Backend {
         desc: &'a RasterPipelineDesc<Self>,
         dynamic_depth_bias: Option<DynamicDepthBias>,
     ) -> Self::RasterPipelineFuture<'a>;
+    fn create_raster_pipeline_with_stencil_masks(
+        _device: &Self::NativeDevice,
+        _desc: &RasterPipelineDesc<Self>,
+        _dynamic_depth_bias: Option<DynamicDepthBias>,
+        _masks: StencilMasks,
+    ) -> impl Future<Output = Result<Self::NativeRasterPipeline>> {
+        std::future::ready(Err(Error::Unsupported("per-face stencil masks")))
+    }
 }
 
 pub trait CacheBackend: Backend {

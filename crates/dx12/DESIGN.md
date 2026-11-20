@@ -315,6 +315,10 @@ follow the ordinary multisample format checks.
 Per-face dynamic stencil references require the DX12 OPTIONS14 feature
 and the graphics command list 8 entry point. Raster state restoration
 replays the front and back references after internal draws or bundles.
+Independent static masks use the same OPTIONS14 feature. Vertex raster
+and mesh pipelines place the two mask pairs in the native depth-stencil 2
+stream subobject. The pairs are part of the pipeline cache key and stencil
+write admission considers each face's operations and write mask.
 
 The `subgroups` shader requirement uses the device's Shader Model 6 wave
 support and its reported minimum and maximum wave widths. WGSL admits

@@ -217,6 +217,8 @@ pub struct DeviceCapabilities {
     pub dynamic_depth_bias_clamp: bool,
     /// The raster pass may set different stencil references for the two faces.
     pub stencil_reference_per_face: bool,
+    /// Raster and mesh pipelines may have independent front and back stencil masks.
+    pub stencil_masks_per_face: bool,
     /// Clears selected color/depth/stencil attachments inside an active pass.
     pub rect_attachment_clear: bool,
     /// Conservative filled-triangle rasterization. `None` means the backend

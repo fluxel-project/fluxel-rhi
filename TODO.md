@@ -208,12 +208,15 @@ Cover the sample index and interpolation triggers separately.
 
 **Status:** Core raster passes can set independent dynamic front and
 back stencil references on devices that report the DX12 OPTIONS14
-feature. Graphics state restoration retains both values.
+feature. Graphics state restoration retains both values. Raster and mesh
+pipelines also admit independent static read and write masks.
 
 **Acceptance:** Render opposite-facing primitives against distinct
 references. Verify state restoration after internal draws and bundles,
 setting a shared value after a split value, and unsupported-device
-rejection. Independent static masks require separate PSO admission.
+rejection. Verify independent static masks, read-only attachment admission,
+and cache separation for distinct masks. Include mesh and multiview on
+devices that support the respective combinations.
 
 ### DX12 native fragment barycentrics
 

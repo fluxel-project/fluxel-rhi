@@ -42,7 +42,7 @@ struct Subobject<T> {
     value: T,
 }
 #[repr(C)]
-struct Stream {
+struct Stream<D> {
     root: Subobject<*mut std::ffi::c_void>,
     task: Subobject<D3D12_SHADER_BYTECODE>,
     mesh: Subobject<D3D12_SHADER_BYTECODE>,
@@ -50,12 +50,49 @@ struct Stream {
     blend: Subobject<D3D12_BLEND_DESC>,
     sample_mask: Subobject<u32>,
     raster: Subobject<D3D12_RASTERIZER_DESC>,
-    depth: Subobject<D3D12_DEPTH_STENCIL_DESC>,
+    depth: Subobject<D>,
     depth_format: Subobject<DXGI_FORMAT>,
     topology: Subobject<D3D12_PRIMITIVE_TOPOLOGY_TYPE>,
     formats: Subobject<D3D12_RT_FORMAT_ARRAY>,
     samples: Subobject<DXGI_SAMPLE_DESC>,
     cached: Subobject<D3D12_CACHED_PIPELINE_STATE>,
+}
+impl<D> Stream<D> {
+    fn with_depth<D2>(self, depth: Subobject<D2>) -> Stream<D2> {
+        Stream {
+            root: self.root,
+            task: self.task,
+            mesh: self.mesh,
+            fragment: self.fragment,
+            blend: self.blend,
+            sample_mask: self.sample_mask,
+            raster: self.raster,
+            depth,
+            depth_format: self.depth_format,
+            topology: self.topology,
+            formats: self.formats,
+            samples: self.samples,
+            cached: self.cached,
+        }
+    }
+
+    fn create(mut self, device: &ID3D12Device2, has_cache: bool) -> Result<ID3D12PipelineState> {
+        let create = |stream: &mut Self| {
+            let native = D3D12_PIPELINE_STATE_STREAM_DESC {
+                SizeInBytes: std::mem::size_of::<Self>(),
+                pPipelineStateSubobjectStream: (stream as *mut Self).cast(),
+            };
+            // SAFETY: the typed stream and all borrowed native payloads remain live through creation.
+            unsafe { device.CreatePipelineState::<ID3D12PipelineState>(&native) }
+        };
+        match create(&mut self) {
+            Err(error) if has_cache && super::pipeline::cache::is_compatibility_error(&error) => {
+                self.cached.value = D3D12_CACHED_PIPELINE_STATE::default();
+                create(&mut self).map_err(super::native_error)
+            }
+            result => result.map_err(super::native_error),
+        }
+    }
 }
 fn sub<T>(tag: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE, value: T) -> Subobject<T> {
     Subobject { tag, value }
@@ -105,7 +142,11 @@ fn topology(
 pub(super) fn create_pipeline(
     device: &Dx12Device,
     desc: &api::MeshPipelineDesc<Dx12>,
+    masks: Option<api::StencilMasks>,
 ) -> Result<Dx12MeshPipeline> {
+    if masks.is_some() && !device.0.stencil_reference_per_face {
+        return Err(Error::Unsupported("DX12 per-face stencil masks"));
+    }
     let topology = topology(device, desc.primitive.topology).map_err(Error::Unsupported)?;
     if desc.primitive.strip_index_format.is_some()
         || !matches!(desc.multisample.count, 1 | 2 | 4 | 8 | 16 | 32)
@@ -141,10 +182,13 @@ pub(super) fn create_pipeline(
         .cache
         .as_ref()
         .map(|cache| unsafe { cache.native_ref() });
-    let fixed = format!(
+    let mut fixed = format!(
         "{:?}|{:?}|{:?}|{:?}",
         desc.primitive, desc.depth_stencil, desc.multisample, desc.targets
     );
+    if let Some(masks) = masks {
+        fixed.push_str(&format!("|{masks:?}"));
+    }
     let key = cache
         .map(|_| {
             super::pipeline::cache::key(&[
@@ -161,7 +205,7 @@ pub(super) fn create_pipeline(
         (Some(cache), Some(key)) => cache.0.lookup(key)?,
         _ => None,
     };
-    let mut stream = Stream {
+    let stream = Stream {
         root: sub(
             D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE,
             layout.root.as_raw(),
@@ -230,31 +274,20 @@ pub(super) fn create_pipeline(
             },
         ),
     };
-    let native = D3D12_PIPELINE_STATE_STREAM_DESC {
-        SizeInBytes: std::mem::size_of_val(&stream),
-        pPipelineStateSubobjectStream: (&stream as *const Stream).cast_mut().cast(),
-    };
     let native_device = device
         .0
         .native
         .cast::<ID3D12Device2>()
         .map_err(super::native_error)?;
-    // SAFETY: stream, root signature, shader bytes and cached blob outlive the synchronous call.
-    let mut result = unsafe { native_device.CreatePipelineState::<ID3D12PipelineState>(&native) };
-    if cached.is_some()
-        && result
-            .as_ref()
-            .is_err_and(super::pipeline::cache::is_compatibility_error)
-    {
-        stream.cached.value = D3D12_CACHED_PIPELINE_STATE::default();
-        let retry = D3D12_PIPELINE_STATE_STREAM_DESC {
-            SizeInBytes: std::mem::size_of_val(&stream),
-            pPipelineStateSubobjectStream: (&mut stream as *mut Stream).cast(),
-        };
-        // SAFETY: the rebuilt descriptor points to the updated live stream.
-        result = unsafe { native_device.CreatePipelineState::<ID3D12PipelineState>(&retry) };
-    }
-    let state = result.map_err(super::native_error)?;
+    let state = match masks {
+        Some(masks) => stream
+            .with_depth(sub(
+                D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL2,
+                super::pipeline::fixed::per_face_stencil(depth_state, masks),
+            ))
+            .create(&native_device, cached.is_some())?,
+        None => stream.create(&native_device, cached.is_some())?,
+    };
     if let (Some(cache), Some(key)) = (cache, key.as_ref()) {
         // The usable pipeline is independent of whether cache extraction succeeds.
         let _ = cache.0.store(key, &state);
@@ -270,7 +303,7 @@ pub(super) fn create_pipeline(
         samples: desc.multisample.count,
         depth_format: depth.map(|d| d.format),
         depth_writes: depth.is_some_and(|d| d.depth_write_enabled),
-        stencil_writes: super::pipeline::fixed::stencil_writes(depth),
+        stencil_writes: super::pipeline::fixed::stencil_writes(depth, masks),
     })))
 }
 

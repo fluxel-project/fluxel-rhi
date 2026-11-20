@@ -22,7 +22,7 @@ use super::super::{Dx12, Dx12Device, Dx12RasterPipeline, Dx12ShaderSource};
 use super::fixed::{
     depth_format, lower_depth, lower_raster, lower_targets, stencil_writes, validate_depth,
 };
-use super::{PipelineLayoutState, create_view_instanced_pso};
+use super::{PipelineLayoutState, create_raster_pso_stream};
 
 pub(crate) struct RasterPipelineState {
     compilation_diagnostics: Vec<api::PipelineShaderDiagnostics>,
@@ -63,7 +63,19 @@ impl fluxel_rhi_core::backend::PipelineBackend for Dx12 {
     ) -> Self::RasterPipelineFuture<'a> {
         let device = (*device).clone();
         let desc = (*desc).clone();
-        super::worker::submit(move || create_raster(&device, &desc, dynamic_depth_bias))
+        super::worker::submit(move || create_raster(&device, &desc, dynamic_depth_bias, None))
+    }
+    fn create_raster_pipeline_with_stencil_masks(
+        device: &Dx12Device,
+        desc: &api::RasterPipelineDesc<Self>,
+        dynamic_depth_bias: Option<api::DynamicDepthBias>,
+        masks: api::StencilMasks,
+    ) -> impl std::future::Future<Output = Result<Dx12RasterPipeline>> {
+        let device = device.clone();
+        let desc = desc.clone();
+        super::worker::submit(move || {
+            create_raster(&device, &desc, dynamic_depth_bias, Some(masks))
+        })
     }
 }
 
@@ -71,7 +83,11 @@ fn create_raster(
     device: &Dx12Device,
     desc: &api::RasterPipelineDesc<Dx12>,
     dynamic_depth_bias: Option<api::DynamicDepthBias>,
+    masks: Option<api::StencilMasks>,
 ) -> Result<Dx12RasterPipeline> {
+    if masks.is_some() && !device.0.stencil_reference_per_face {
+        return Err(Error::Unsupported("DX12 per-face stencil masks"));
+    }
     if dynamic_depth_bias.is_some() && !device.0.dynamic_depth_bias_supported {
         return Err(Error::Unsupported("DX12 dynamic depth bias"));
     }
@@ -252,7 +268,7 @@ fn create_raster(
     if dynamic_depth_bias.is_some() {
         pso.Flags = D3D12_PIPELINE_STATE_FLAG_DYNAMIC_DEPTH_BIAS;
     }
-    let settings = format!(
+    let mut settings = format!(
         "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
         desc.vertex_buffers,
         desc.color_targets,
@@ -262,6 +278,9 @@ fn create_raster(
         desc.multiview,
         dynamic_depth_bias.is_some(),
     );
+    if let Some(masks) = masks {
+        settings.push_str(&format!("|{masks:?}"));
+    }
     let cache = desc.cache.as_ref().map(|c| unsafe { c.native_ref() });
     let key = cache
         .map(|_| {
@@ -286,12 +305,13 @@ fn create_raster(
         };
     }
     pso.pRootSignature = ManuallyDrop::new(Some(root.clone()));
-    let state = if desc.multiview.is_some() {
-        create_view_instanced_pso(
+    let state = if desc.multiview.is_some() || masks.is_some() {
+        create_raster_pso_stream(
             &device.0.native,
             &pso,
             &root,
-            &view_locations,
+            desc.multiview.map(|_| view_locations.as_slice()),
+            masks.map(|masks| super::fixed::per_face_stencil(pso.DepthStencilState, masks)),
             cached.as_deref(),
         )
     } else {
@@ -346,7 +366,7 @@ fn create_raster(
         vertex_index_root,
         vertex_indirect_signatures: Mutex::new([None, None]),
         depth_writes: depth.is_some_and(|d| d.depth_write_enabled),
-        stencil_writes: stencil_writes(depth),
+        stencil_writes: stencil_writes(depth, masks),
         vertex_strides,
         color_formats: desc
             .color_targets

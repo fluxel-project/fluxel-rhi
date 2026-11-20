@@ -210,13 +210,45 @@ pub(crate) fn depth_format(depth: Option<api::DepthStencilState>) -> DXGI_FORMAT
     })
 }
 
-pub(crate) fn stencil_writes(depth: Option<api::DepthStencilState>) -> bool {
+pub(crate) fn per_face_stencil(
+    depth: D3D12_DEPTH_STENCIL_DESC,
+    masks: api::StencilMasks,
+) -> D3D12_DEPTH_STENCIL_DESC2 {
+    let face = |op: D3D12_DEPTH_STENCILOP_DESC, read, write| D3D12_DEPTH_STENCILOP_DESC1 {
+        StencilFailOp: op.StencilFailOp,
+        StencilDepthFailOp: op.StencilDepthFailOp,
+        StencilPassOp: op.StencilPassOp,
+        StencilFunc: op.StencilFunc,
+        StencilReadMask: read,
+        StencilWriteMask: write,
+    };
+    D3D12_DEPTH_STENCIL_DESC2 {
+        DepthEnable: depth.DepthEnable,
+        DepthWriteMask: depth.DepthWriteMask,
+        DepthFunc: depth.DepthFunc,
+        StencilEnable: depth.StencilEnable,
+        FrontFace: face(depth.FrontFace, masks.front_read, masks.front_write),
+        BackFace: face(depth.BackFace, masks.back_read, masks.back_write),
+        DepthBoundsTestEnable: FALSE,
+    }
+}
+
+pub(crate) fn stencil_writes(
+    depth: Option<api::DepthStencilState>,
+    masks: Option<api::StencilMasks>,
+) -> bool {
     depth.is_some_and(|d| {
-        d.stencil_write_mask & 0xff != 0
-            && [d.stencil_front, d.stencil_back].iter().any(|f| {
-                !matches!(f.fail, api::StencilOperation::Keep)
-                    || !matches!(f.depth_fail, api::StencilOperation::Keep)
-                    || !matches!(f.pass, api::StencilOperation::Keep)
+        let write_masks = masks.map_or([d.stencil_write_mask as u8; 2], |masks| {
+            [masks.front_write, masks.back_write]
+        });
+        [d.stencil_front, d.stencil_back]
+            .into_iter()
+            .zip(write_masks)
+            .any(|(f, mask)| {
+                mask != 0
+                    && (!matches!(f.fail, api::StencilOperation::Keep)
+                        || !matches!(f.depth_fail, api::StencilOperation::Keep)
+                        || !matches!(f.pass, api::StencilOperation::Keep))
             })
     })
 }

@@ -246,6 +246,13 @@ pub trait MeshOps<B: Backend> {
         device: &'a B::NativeDevice,
         desc: &'a MeshPipelineDesc<B>,
     ) -> Self::PipelineFuture<'a>;
+    fn create_pipeline_with_stencil_masks(
+        _device: &B::NativeDevice,
+        _desc: &MeshPipelineDesc<B>,
+        _masks: StencilMasks,
+    ) -> impl Future<Output = Result<B::NativeMeshPipeline>> {
+        std::future::ready(Err(Error::Unsupported("per-face stencil masks")))
+    }
     fn bind_pipeline(
         encoder: &mut B::NativeEncoder,
         pipeline: &B::NativeMeshPipeline,

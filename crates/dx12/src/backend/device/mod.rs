@@ -456,6 +456,7 @@ impl Dx12 {
                 dynamic_depth_bias: dynamic_depth_bias_supported,
                 dynamic_depth_bias_clamp: dynamic_depth_bias_supported,
                 stencil_reference_per_face,
+                stencil_masks_per_face: stencil_reference_per_face,
                 rect_attachment_clear: true,
                 conservative_raster: Some(conservative_raster),
                 direct_buffer_upload: true,

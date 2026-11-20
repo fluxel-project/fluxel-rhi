@@ -81,6 +81,23 @@ impl<B: Backend> MeshDomain<'_, B> {
     }
 
     pub async fn create_pipeline(&self, desc: MeshPipelineDesc<B>) -> Result<MeshPipeline<B>> {
+        self.create_pipeline_inner(desc, None).await
+    }
+
+    /// Creates a mesh raster pipeline with independent front and back stencil masks.
+    pub async fn create_pipeline_with_stencil_masks(
+        &self,
+        desc: MeshPipelineDesc<B>,
+        masks: StencilMasks,
+    ) -> Result<MeshPipeline<B>> {
+        self.create_pipeline_inner(desc, Some(masks)).await
+    }
+
+    async fn create_pipeline_inner(
+        &self,
+        desc: MeshPipelineDesc<B>,
+        stencil_masks: Option<StencilMasks>,
+    ) -> Result<MeshPipeline<B>> {
         // Task, mesh, fragment, layout, and cache must share one device even
         // when an optional stage is omitted from the executable pipeline.
         if desc.layout.device != self.device.id
@@ -103,7 +120,14 @@ impl<B: Backend> MeshDomain<'_, B> {
         if desc.primitive.conservative && self.device.caps.conservative_raster == Some(false) {
             return Err(Error::Unsupported("conservative rasterization"));
         }
-        let native = B::Mesh::create_pipeline(&self.device.native, &desc).await?;
+        let native = match stencil_masks {
+            Some(masks) => {
+                self.device.validate_stencil_masks(desc.depth_stencil)?;
+                B::Mesh::create_pipeline_with_stencil_masks(&self.device.native, &desc, masks)
+                    .await?
+            }
+            None => B::Mesh::create_pipeline(&self.device.native, &desc).await?,
+        };
         // SAFETY: the SPI created this pipeline for this exact native device.
         let mut pipeline = unsafe { MeshPipeline::from_native(self.device.id, native) };
         pipeline.layout = Some(desc.layout);

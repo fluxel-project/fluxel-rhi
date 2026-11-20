@@ -19,7 +19,18 @@ impl fluxel_rhi_core::backend::MeshOps<Dx12> for Mesh {
     ) -> Self::PipelineFuture<'a> {
         let device = (*device).clone();
         let desc = (*desc).clone();
-        super::super::pipeline::worker::submit(move || super::create_pipeline(&device, &desc))
+        super::super::pipeline::worker::submit(move || super::create_pipeline(&device, &desc, None))
+    }
+    fn create_pipeline_with_stencil_masks(
+        device: &Dx12Device,
+        desc: &api::MeshPipelineDesc<Dx12>,
+        masks: api::StencilMasks,
+    ) -> impl std::future::Future<Output = Result<Dx12MeshPipeline>> {
+        let device = device.clone();
+        let desc = desc.clone();
+        super::super::pipeline::worker::submit(move || {
+            super::create_pipeline(&device, &desc, Some(masks))
+        })
     }
     fn bind_pipeline(encoder: &mut Dx12Encoder, pipeline: &Dx12MeshPipeline) -> Result<()> {
         if encoder.raster_state.as_ref().is_some_and(|state| {
