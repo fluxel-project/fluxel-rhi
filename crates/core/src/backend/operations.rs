@@ -296,6 +296,8 @@ pub trait MeshOps<B: Backend> {
 
 pub trait RayOps<B: Backend> {
     const AVAILABLE: bool;
+    /// A dispatch with a zero axis executes no threads on this route.
+    const EMPTY_DISPATCH: bool = false;
     type PipelineFuture<'a>: Future<Output = Result<B::NativeRayPipeline>> + 'a
     where
         B: 'a;

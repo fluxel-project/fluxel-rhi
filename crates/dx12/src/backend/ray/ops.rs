@@ -10,6 +10,7 @@ use windows::{Win32::Graphics::Direct3D12::*, core::Interface};
 pub struct Ray;
 impl fluxel_rhi_core::backend::RayOps<Dx12> for Ray {
     const AVAILABLE: bool = true;
+    const EMPTY_DISPATCH: bool = true;
     type PipelineFuture<'a> = super::super::pipeline::worker::ColdFuture<Dx12RayPipeline>;
     fn create_pipeline<'a>(
         device: &'a Dx12Device,

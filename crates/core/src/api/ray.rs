@@ -753,12 +753,18 @@ impl<B: Backend> RayDomain<'_, B> {
             return Err(Error::InvalidRange);
         }
         let max_count = self.device.caps.limits.max_ray_dispatch_count;
+        if dims.contains(&0) {
+            return if B::Ray::EMPTY_DISPATCH {
+                Ok(())
+            } else {
+                Err(Error::InvalidRange)
+            };
+        }
         if max_count != 0
-            && (dims.contains(&0)
-                || dims
-                    .into_iter()
-                    .try_fold(1u64, |count, axis| count.checked_mul(u64::from(axis)))
-                    .is_none_or(|count| count > u64::from(max_count)))
+            && dims
+                .into_iter()
+                .try_fold(1u64, |count, axis| count.checked_mul(u64::from(axis)))
+                .is_none_or(|count| count > u64::from(max_count))
         {
             return Err(Error::InvalidRange);
         }

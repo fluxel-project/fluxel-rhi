@@ -39,8 +39,8 @@ pub(super) fn prepare(
     table: &api::ShaderTable<Dx12>,
     dims: [u32; 3],
 ) -> Result<D3D12_DISPATCH_RAYS_DESC> {
-    if dims.contains(&0)
-        || dims
+    if !dims.contains(&0)
+        && dims
             .iter()
             .try_fold(1u64, |n, &x| n.checked_mul(u64::from(x)))
             .is_none_or(|n| n > u64::from(D3D12_RAYTRACING_MAX_RAY_GENERATION_SHADER_THREADS))
