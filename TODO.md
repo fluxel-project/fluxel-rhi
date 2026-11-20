@@ -6,6 +6,13 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 ## Active items
 
+### DX12 whole-pass statistics semantics
+
+DX12 exposes a native interval total for pipeline statistics on direct command
+lists. Core's whole-pass statistics API requires stage-boundary snapshots,
+which the DX12 interval query cannot provide. Reopen if a native snapshot
+route becomes available or Core defines a distinct pass-total contract.
+
 ### DX12 vertex input format admission
 
 **Status:** Input layout creation and vertex format queries share the D3D12
