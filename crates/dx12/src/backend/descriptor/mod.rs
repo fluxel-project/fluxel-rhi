@@ -50,7 +50,11 @@ const CPU_VIEW_PAGE_CAPACITY: u32 = 1_024;
 /// Keep one empty page of each CPU-only descriptor heap type ready for reuse.
 /// More would make idle RTV/DSV memory depend on historical demand.
 const MAX_EMPTY_CPU_VIEW_PAGES_PER_TYPE: usize = 1;
-const CBV_ALIGNMENT: u64 = 256;
+pub(super) const CBV_ALIGNMENT: u64 =
+    windows::Win32::Graphics::Direct3D12::D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT as u64;
+/// D3D12 addresses a constant buffer as up to 4096 four-DWORD registers.
+pub(super) const MAX_UNIFORM_BUFFER_BINDING_SIZE: u64 =
+    windows::Win32::Graphics::Direct3D12::D3D12_REQ_CONSTANT_BUFFER_ELEMENT_COUNT as u64 * 16;
 
 /// The two device-wide shader-visible heaps required by D3D12.  A command list
 /// can bind only one heap of each type, so groups reserve subranges here rather

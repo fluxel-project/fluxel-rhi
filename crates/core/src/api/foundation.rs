@@ -641,5 +641,8 @@ pub struct DeviceLimits {
     /// Zero means mesh multi-indirect execution is unavailable.
     pub max_mesh_indirect_count: u32,
     pub uniform_offset_alignment: u64,
+    /// Maximum range length of one uniform buffer binding, in bytes.
+    /// Zero leaves this limit to backend descriptor admission.
+    pub max_uniform_buffer_binding_size: u64,
     pub storage_offset_alignment: u64,
 }

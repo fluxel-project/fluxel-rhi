@@ -319,7 +319,10 @@ pub(crate) fn create_bind_group(
                         return Err(Error::InvalidRange);
                     }
                     let bytes = range.end - range.start;
-                    if bytes < slot.min_size || bytes == 0 {
+                    if bytes < slot.min_size
+                        || bytes == 0
+                        || bytes > MAX_UNIFORM_BUFFER_BINDING_SIZE
+                    {
                         return Err(Error::InvalidRange);
                     }
                     if slot.dynamic_offset {

@@ -121,6 +121,12 @@ impl<B: ResourceBackend> Device<B> {
                 return Err(Error::InvalidState);
             }
             last = Some(entry.binding);
+            if let BindingType::UniformBuffer { min_size, .. } = entry.ty {
+                let limit = self.caps.limits.max_uniform_buffer_binding_size;
+                if limit != 0 && min_size > limit {
+                    return Err(Error::InvalidRange);
+                }
+            }
             if matches!(entry.ty, BindingType::VideoFrame)
                 && (entry.count != BindingCount::One
                     || entry.partially_bound
@@ -287,6 +293,20 @@ impl<B: ResourceBackend> Device<B> {
             }
             if binding_resource_transient(&entry.resource) {
                 return Err(Error::InvalidState);
+            }
+            let uniform_limit = self.caps.limits.max_uniform_buffer_binding_size;
+            if uniform_limit != 0 && matches!(layout.ty, BindingType::UniformBuffer { .. }) {
+                let oversized = |resource: &BindingResource<'_, B>| {
+                    matches!(resource, BindingResource::Buffer { range, .. }
+                        if range.end.saturating_sub(range.start) > uniform_limit)
+                };
+                let oversized = match &entry.resource {
+                    BindingResource::Array(values) => values.iter().flatten().any(oversized),
+                    resource => oversized(resource),
+                };
+                if oversized {
+                    return Err(Error::InvalidRange);
+                }
             }
             let array = match &entry.resource {
                 BindingResource::Array(values) => Some(values),

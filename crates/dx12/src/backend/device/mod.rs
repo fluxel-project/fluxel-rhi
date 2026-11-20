@@ -438,7 +438,8 @@ impl Dx12 {
                     max_compute_workgroups: compute::MAX_DISPATCH_GROUPS,
                     max_compute_workgroup_size: compute::MAX_WORKGROUP_SIZE,
                     max_compute_invocations_per_workgroup: compute::MAX_WORKGROUP_INVOCATIONS,
-                    uniform_offset_alignment: 256,
+                    uniform_offset_alignment: descriptor::CBV_ALIGNMENT,
+                    max_uniform_buffer_binding_size: descriptor::MAX_UNIFORM_BUFFER_BINDING_SIZE,
                     max_push_constant_bytes: 128,
                     ..Default::default()
                 },
