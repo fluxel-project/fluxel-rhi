@@ -8,6 +8,36 @@ pub(in crate::backend) fn requires_f16(desc: &api::ShaderDesc) -> bool {
         .any(|feature| feature == api::SHADER_FEATURE_F16)
 }
 
+pub(super) fn requires_view_index(desc: &api::ShaderDesc) -> bool {
+    desc.required_features
+        .iter()
+        .any(|feature| feature == api::SHADER_FEATURE_VIEW_INDEX)
+}
+
+pub(super) fn uses_entry_builtin(
+    module: &naga::Module,
+    entry: &naga::EntryPoint,
+    builtins: &[naga::BuiltIn],
+) -> bool {
+    fn uses(
+        module: &naga::Module,
+        ty: naga::Handle<naga::Type>,
+        binding: Option<&naga::Binding>,
+        builtins: &[naga::BuiltIn],
+    ) -> bool {
+        if matches!(binding, Some(naga::Binding::BuiltIn(builtin)) if builtins.contains(builtin)) {
+            return true;
+        }
+        matches!(&module.types[ty].inner, naga::TypeInner::Struct { members, .. }
+            if members.iter().any(|member| uses(module, member.ty, member.binding.as_ref(), builtins)))
+    }
+    entry
+        .function
+        .arguments
+        .iter()
+        .any(|arg| uses(module, arg.ty, arg.binding.as_ref(), builtins))
+}
+
 pub(super) fn validate_f16_bindings(module: &naga::Module) -> Result<()> {
     if module.global_variables.iter().any(|(_, global)| {
         matches!(
@@ -75,6 +105,9 @@ pub(super) fn validation_capabilities(desc: &api::ShaderDesc) -> naga::valid::Ca
     }
     if requires_f16(desc) {
         caps |= naga::valid::Capabilities::SHADER_FLOAT16;
+    }
+    if requires_view_index(desc) {
+        caps |= naga::valid::Capabilities::MULTIVIEW;
     }
     if desc
         .required_features

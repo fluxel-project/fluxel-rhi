@@ -205,6 +205,8 @@ pub struct DeviceCapabilities {
     pub occlusion: bool,
     pub pipeline_statistics: bool,
     pub multiview: bool,
+    /// Vertex and fragment shaders can read the native view index.
+    pub shader_view_index: bool,
     pub placed_memory: bool,
     pub external_memory: bool,
     pub secondary_commands: bool,

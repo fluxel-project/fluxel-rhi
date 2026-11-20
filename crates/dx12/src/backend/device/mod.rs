@@ -308,6 +308,7 @@ impl Dx12 {
                 && native
                     .cast::<windows::Win32::Graphics::Direct3D12::ID3D12Device2>()
                     .is_ok();
+            let shader_view_index = multiview && shader_model >= 61;
             let lane = LaneId { device, ordinal: 0 };
             let compute_lane = LaneId { device, ordinal: 1 };
             let caps = DeviceCapabilities {
@@ -491,6 +492,7 @@ impl Dx12 {
                 external_memory: true,
                 placed_memory: true,
                 multiview,
+                shader_view_index,
                 ..Default::default()
             };
             caps.require_named_features(&request.required_features)?;
@@ -535,6 +537,7 @@ impl Dx12 {
                     descriptor_table_limits,
                     texel_aligned_color_copies,
                     shader_model,
+                    shader_view_index,
                     native_16bit_shader_ops,
                     shader_f64,
                     shader_int64,

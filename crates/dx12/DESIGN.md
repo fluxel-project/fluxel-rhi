@@ -307,6 +307,12 @@ Native fragment barycentrics require shader model 6.1 and a successful
 admitted for HLSL profiles at least 6.1 and for direct DXIL. The WGSL route
 has no barycentric builtin.
 
+Vertex and fragment WGSL shaders can declare `view-index` on a device
+with view instancing and Shader Model 6.1. The HLSL interface takes an
+unsigned `SV_ViewID` and converts it to the signed WGSL builtin at entry.
+The same requirement qualifies native HLSL and DXIL declarations. Native
+view IDs follow the pipeline's view ordinals.
+
 WGSL fragment sample index and sample interpolation lower to
 `SV_SampleIndex` and the HLSL `sample` modifier. They select native
 sample-frequency execution. Pipeline and attachment sample counts still

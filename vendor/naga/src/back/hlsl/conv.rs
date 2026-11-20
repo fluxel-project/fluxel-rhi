@@ -161,6 +161,7 @@ impl crate::BuiltIn {
             Self::FragDepth => "SV_Depth",
             Self::FrontFacing => "SV_IsFrontFace",
             Self::PrimitiveIndex => "SV_PrimitiveID",
+            Self::ViewIndex => "SV_ViewID",
             Self::SampleIndex => "SV_SampleIndex",
             Self::SampleMask => "SV_Coverage",
             // compute
@@ -180,7 +181,7 @@ impl crate::BuiltIn {
             Self::BaseInstance | Self::BaseVertex | Self::WorkGroupSize => {
                 return Err(Error::Unimplemented(format!("builtin {self:?}")))
             }
-            Self::PointSize | Self::ViewIndex | Self::PointCoord | Self::DrawID => {
+            Self::PointSize | Self::PointCoord | Self::DrawID => {
                 return Err(Error::Custom(format!("Unsupported builtin {self:?}")))
             }
         })

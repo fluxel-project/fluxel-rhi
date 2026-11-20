@@ -218,6 +218,16 @@ rejection. Verify independent static masks, read-only attachment admission,
 and cache separation for distinct masks. Include mesh and multiview on
 devices that support the respective combinations.
 
+### DX12 shader view index
+
+**Status:** WGSL vertex and fragment entries can read the signed view
+index through the native Shader Model 6.1 unsigned view ID. Native
+HLSL and DXIL declarations share device admission.
+
+**Acceptance:** Read view-dependent output from nonzero attachment
+layers with both vertex and fragment view-index inputs. Cover scalar
+and struct input declarations, sparse masks, and incapable devices.
+
 ### DX12 native fragment barycentrics
 
 **Status:** The device capability and HLSL and DXIL shader routes admit

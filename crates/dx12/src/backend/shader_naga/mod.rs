@@ -310,6 +310,7 @@ fn compile_inner(
         || desc.required_features.iter().any(|x| {
             x != api::SHADER_FEATURE_RAY_QUERY
                 && x != api::SHADER_FEATURE_PUSH_CONSTANTS
+                && x != api::SHADER_FEATURE_VIEW_INDEX
                 && x != api::SHADER_FEATURE_POINTER_COMPOSITE_ACCESS
                 && x != api::SHADER_FEATURE_F16
                 && x != api::SHADER_FEATURE_PRIMITIVE_INDEX
@@ -523,6 +524,8 @@ fn compile_inner(
             naga::back::hlsl::ShaderModel::V6_4
         } else if native_f16 {
             naga::back::hlsl::ShaderModel::V6_2
+        } else if validation::requires_view_index(desc) {
+            naga::back::hlsl::ShaderModel::V6_1
         } else {
             naga::back::hlsl::ShaderModel::V6_0
         },
@@ -682,13 +685,11 @@ fn compile_inner(
             }
         }
         let num_workgroups_constants = stage == naga::ShaderStage::Compute
-            && module.entry_points[index]
-                .function
-                .arguments
-                .iter()
-                .any(|argument| {
-                    uses_num_workgroups(&module, argument.ty, argument.binding.as_ref())
-                });
+            && validation::uses_entry_builtin(
+                &module,
+                &module.entry_points[index],
+                &[naga::BuiltIn::NumWorkGroups],
+            );
         if stage == naga::ShaderStage::Compute {
             super::compute::validate_workgroup_size(module.entry_points[index].workgroup_size)?;
             let entry_usage = info.get_entry_point(index);
@@ -714,11 +715,11 @@ fn compile_inner(
             return Err(Error::Shader("WGSL workgroup size mismatch".into()));
         }
         let vertex_index_constants = stage == naga::ShaderStage::Vertex
-            && module.entry_points[index]
-                .function
-                .arguments
-                .iter()
-                .any(|argument| uses_base_index(&module, argument.ty, argument.binding.as_ref()));
+            && validation::uses_entry_builtin(
+                &module,
+                &module.entry_points[index],
+                &[naga::BuiltIn::VertexIndex, naga::BuiltIn::InstanceIndex],
+            );
         if (vertex_index_constants || num_workgroups_constants)
             && module.global_variables.iter().any(|(_, global)| {
                 global
@@ -805,46 +806,4 @@ fn compile_inner(
         });
     }
     Ok(CompiledShader { entries })
-}
-
-/// Replace only Naga 27's exact sampler-array indirection with descriptor-table
-/// arrays. Unexpected generated syntax is rejected rather than miscompiled.
-fn uses_base_index(
-    module: &naga::Module,
-    ty: naga::Handle<naga::Type>,
-    binding: Option<&naga::Binding>,
-) -> bool {
-    if matches!(
-        binding,
-        Some(naga::Binding::BuiltIn(
-            naga::BuiltIn::VertexIndex | naga::BuiltIn::InstanceIndex
-        ))
-    ) {
-        return true;
-    }
-    if let naga::TypeInner::Struct { members, .. } = &module.types[ty].inner {
-        return members
-            .iter()
-            .any(|member| uses_base_index(module, member.ty, member.binding.as_ref()));
-    }
-    false
-}
-
-fn uses_num_workgroups(
-    module: &naga::Module,
-    ty: naga::Handle<naga::Type>,
-    binding: Option<&naga::Binding>,
-) -> bool {
-    if matches!(
-        binding,
-        Some(naga::Binding::BuiltIn(naga::BuiltIn::NumWorkGroups))
-    ) {
-        return true;
-    }
-    if let naga::TypeInner::Struct { members, .. } = &module.types[ty].inner {
-        return members
-            .iter()
-            .any(|member| uses_num_workgroups(module, member.ty, member.binding.as_ref()));
-    }
-    false
 }

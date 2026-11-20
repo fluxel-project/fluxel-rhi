@@ -576,6 +576,7 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
         stage: Option<(ShaderStage, Io)>,
     ) -> BackendResult {
         match *binding {
+            Some(crate::Binding::BuiltIn(crate::BuiltIn::ViewIndex)) if stage.is_none() => {}
             Some(crate::Binding::BuiltIn(builtin)) if !is_subgroup_builtin_binding(binding) => {
                 let builtin_str = builtin.to_hlsl_str()?;
                 write!(self.out, " : {builtin_str}")?;
@@ -624,7 +625,18 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
             if let Some(ref binding) = m.binding {
                 self.write_modifier(binding)?;
             }
-            self.write_type(module, m.ty)?;
+            if matches!(
+                m.binding,
+                Some(crate::Binding::BuiltIn(crate::BuiltIn::ViewIndex))
+            ) {
+                if self.options.shader_model < ShaderModel::V6_1 {
+                    return Err(Error::Custom("SV_ViewID requires Shader Model 6.1".into()));
+                }
+                // WGSL exposes a signed index while DXIL expects an unsigned system input.
+                write!(self.out, "uint")?;
+            } else {
+                self.write_type(module, m.ty)?;
+            }
             write!(self.out, " {}", &m.name)?;
             self.write_semantic(&m.binding, Some(shader_stage))?;
             writeln!(self.out, ";")?;
@@ -799,10 +811,21 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
         Ok(EntryPointInterface {
             input: if !func.arguments.is_empty()
                 && (stage == ShaderStage::Fragment
-                    || func
-                        .arguments
-                        .iter()
-                        .any(|arg| is_subgroup_builtin_binding(&arg.binding)))
+                    || func.arguments.iter().any(|arg| {
+                        let is_view_index = |binding: &Option<crate::Binding>| {
+                            matches!(
+                                binding,
+                                Some(crate::Binding::BuiltIn(crate::BuiltIn::ViewIndex))
+                            )
+                        };
+                        is_subgroup_builtin_binding(&arg.binding)
+                            || is_view_index(&arg.binding)
+                            || matches!(
+                                &module.types[arg.ty].inner,
+                                TypeInner::Struct { members, .. }
+                                    if members.iter().any(|member| is_view_index(&member.binding))
+                            )
+                    }))
             {
                 Some(self.write_ep_input_struct(module, func, stage, ep_name)?)
             } else {
@@ -824,6 +847,9 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
         fake_member: &EpStructMember,
     ) -> BackendResult {
         match fake_member.binding {
+            Some(crate::Binding::BuiltIn(crate::BuiltIn::ViewIndex)) => {
+                write!(self.out, "int({}.{})", ep_input.arg_name, fake_member.name)?
+            }
             Some(crate::Binding::BuiltIn(crate::BuiltIn::SubgroupSize)) => {
                 write!(self.out, "WaveGetLaneCount()")?
             }

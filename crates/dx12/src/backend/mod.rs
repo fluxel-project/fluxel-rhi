@@ -88,6 +88,7 @@ struct Dx12DeviceState {
     pub(super) descriptor_table_limits: api::DescriptorTableLimits,
     pub(super) texel_aligned_color_copies: bool,
     pub(super) shader_model: u16,
+    pub(super) shader_view_index: bool,
     pub(super) native_16bit_shader_ops: bool,
     pub(super) shader_f64: bool,
     pub(super) shader_int64: bool,
@@ -332,6 +333,21 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
     type DirectFuture<'a> = pipeline::worker::ColdFuture<Dx12Shader>;
     type NagaFuture<'a> = pipeline::worker::ColdFuture<Dx12Shader>;
     fn shader_route(device: &Dx12Device, desc: &api::ShaderDesc) -> api::ShaderRoute {
+        if desc
+            .required_features
+            .iter()
+            .any(|feature| feature == api::SHADER_FEATURE_VIEW_INDEX)
+            && (!device.0.shader_view_index
+                || matches!(desc.format, api::ShaderFormat::Hlsl(0..=60))
+                || !desc.entries.iter().any(|entry| {
+                    matches!(
+                        entry.stage,
+                        api::ShaderStage::Vertex | api::ShaderStage::Fragment
+                    )
+                }))
+        {
+            return api::ShaderRoute::Unsupported;
+        }
         if desc.format != api::ShaderFormat::Wgsl
             && desc
                 .required_features
@@ -601,6 +617,7 @@ fn shader_features_supported(
     features.iter().all(|feature| match feature.as_str() {
         api::SHADER_FEATURE_RAY_QUERY => ray_query_supported,
         api::SHADER_FEATURE_PUSH_CONSTANTS => true,
+        api::SHADER_FEATURE_VIEW_INDEX => true,
         api::SHADER_FEATURE_POINTER_COMPOSITE_ACCESS => true,
         api::SHADER_FEATURE_F16 => true,
         api::SHADER_FEATURE_I16 => true,
