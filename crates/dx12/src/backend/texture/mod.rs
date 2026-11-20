@@ -316,85 +316,23 @@ pub(crate) fn create(dv: &Dx12Device, d: &api::TextureDesc) -> Result<Dx12Textur
     })))
 }
 
+pub(crate) fn view_support(
+    dv: &Dx12Device,
+    t: &Dx12Texture,
+    v: &api::TextureViewDesc,
+) -> Result<()> {
+    validate::view(dv, &t.0.desc, v)
+}
+
 pub(crate) fn create_view(
     dv: &Dx12Device,
     t: &Dx12Texture,
     v: &api::TextureViewDesc,
 ) -> Result<Dx12TextureView> {
     let texture = t.0.clone();
-    if texture.desc.dimension == api::TextureDimension::D1 && texture.desc.array_layers > 1 {
-        return Err(Error::Unsupported("DX12 D1 array texture views"));
-    }
+    view_support(dv, t, v)?;
     let depth = is_depth(texture.desc.format);
     let array = texture.desc.array_layers > 1 || v.dimension == api::TextureViewDimension::D2Array;
-    if !view_format_available(dv, &texture.desc, v.format)
-        || !match texture.desc.dimension {
-            api::TextureDimension::D1 => v.dimension == api::TextureViewDimension::D1,
-            api::TextureDimension::D2 => matches!(
-                v.dimension,
-                api::TextureViewDimension::D2
-                    | api::TextureViewDimension::D2Array
-                    | api::TextureViewDimension::Cube
-                    | api::TextureViewDimension::CubeArray
-            ),
-            api::TextureDimension::D3 => v.dimension == api::TextureViewDimension::D3,
-        }
-        || (v.dimension == api::TextureViewDimension::D2 && v.layers.end != v.layers.start + 1)
-        || (matches!(
-            v.dimension,
-            api::TextureViewDimension::Cube | api::TextureViewDimension::CubeArray
-        ) && (texture.desc.extent[0] != texture.desc.extent[1]
-            || texture.desc.samples != 1
-            || v.layers.start % 6 != 0
-            || (v.layers.end.saturating_sub(v.layers.start)) % 6 != 0
-            || (v.dimension == api::TextureViewDimension::Cube
-                && (v.layers.start != 0 || v.layers.end != 6))
-            || texture
-                .desc
-                .usage
-                .contains(api::TextureUsage::STORAGE_BINDING)
-            || texture
-                .desc
-                .usage
-                .contains(api::TextureUsage::RENDER_ATTACHMENT)))
-        || v.mips.start >= v.mips.end
-        || v.mips.end > texture.desc.mip_levels
-        || v.layers.start >= v.layers.end
-        || v.layers.end > texture.desc.array_layers
-        || (texture
-            .desc
-            .usage
-            .contains(api::TextureUsage::STORAGE_BINDING)
-            && v.mips.end != v.mips.start + 1)
-        || if depth {
-            let all = depth_aspects(texture.desc.format);
-            v.aspects != all
-                && !(all != api::TextureAspects::DEPTH
-                    && (v.aspects == api::TextureAspects::DEPTH
-                        || v.aspects == api::TextureAspects::STENCIL))
-        } else {
-            v.aspects != api::TextureAspects::COLOR
-        }
-    {
-        return Err(Error::Unsupported("DX12 D2/D2Array texture view"));
-    }
-    // A D2 descriptor cannot select a slice of a native array resource.
-    // Storage arrays need a Texture2DArray UAV and matching shader binding.
-    if (array
-        && v.dimension == api::TextureViewDimension::D2
-        && texture
-            .desc
-            .usage
-            .contains(api::TextureUsage::TEXTURE_BINDING))
-        || (array
-            && v.dimension == api::TextureViewDimension::D2
-            && texture
-                .desc
-                .usage
-                .contains(api::TextureUsage::STORAGE_BINDING))
-    {
-        return Err(Error::Unsupported("DX12 array texture binding view"));
-    }
     if depth {
         return depth_view::create_depth_view(dv, texture, v, array);
     }
@@ -580,9 +518,6 @@ pub(crate) fn create_view(
         .usage
         .contains(api::TextureUsage::RENDER_ATTACHMENT)
     {
-        if v.mips.end != v.mips.start + 1 {
-            return Err(Error::Unsupported("DX12 RTV view requires one mip"));
-        }
         let lease =
             dv.0.cpu_descriptors
                 .allocate(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1)?;

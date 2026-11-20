@@ -27,6 +27,13 @@ pub trait ResourceBackend: Backend {
         texture: &Self::NativeTexture,
         desc: &TextureViewDesc,
     ) -> Result<Self::NativeTextureView>;
+    fn texture_view_support(
+        _device: &Self::NativeDevice,
+        _texture: &Self::NativeTexture,
+        _desc: &TextureViewDesc,
+    ) -> Result<()> {
+        Err(Error::Unsupported("texture view support query"))
+    }
     fn sampler_support(_device: &Self::NativeDevice, _desc: &SamplerDesc) -> Result<()> {
         Err(Error::Unsupported("sampler support query"))
     }

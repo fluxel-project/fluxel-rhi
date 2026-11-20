@@ -70,11 +70,7 @@ impl<B: ResourceBackend> Device<B> {
             B::texture_uses_native_transient_attachment(&texture.native);
         Ok(texture)
     }
-    pub fn create_view(
-        &self,
-        texture: &Texture<B>,
-        desc: &TextureViewDesc,
-    ) -> Result<TextureView<B>> {
+    fn validate_view_request(&self, texture: &Texture<B>, desc: &TextureViewDesc) -> Result<()> {
         if texture.device != self.id {
             return Err(Error::WrongDevice);
         }
@@ -91,6 +87,20 @@ impl<B: ResourceBackend> Device<B> {
                 return Err(Error::InvalidState);
             }
         }
+        Ok(())
+    }
+    /// Checks whether the view can be created on the given texture without
+    /// allocating descriptors. The backend may omit the query.
+    pub fn texture_view_support(&self, texture: &Texture<B>, desc: &TextureViewDesc) -> Result<()> {
+        self.validate_view_request(texture, desc)?;
+        B::texture_view_support(&self.native, &texture.native, desc)
+    }
+    pub fn create_view(
+        &self,
+        texture: &Texture<B>,
+        desc: &TextureViewDesc,
+    ) -> Result<TextureView<B>> {
+        self.validate_view_request(texture, desc)?;
         // SAFETY: `texture` was checked to belong to this device and SPI creates its view.
         let mut view = unsafe {
             TextureView::from_native(

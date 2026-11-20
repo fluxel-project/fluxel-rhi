@@ -83,3 +83,76 @@ pub(super) fn valid(d: &api::TextureDesc) -> std::result::Result<(), &'static st
 pub(super) fn max_mips(width: u32, height: u32) -> u32 {
     1 + width.max(height).ilog2()
 }
+
+pub(super) fn view(
+    dv: &Dx12Device,
+    desc: &api::TextureDesc,
+    v: &api::TextureViewDesc,
+) -> Result<()> {
+    if desc.dimension == api::TextureDimension::D1 && desc.array_layers > 1 {
+        return Err(Error::Unsupported("DX12 D1 array texture views"));
+    }
+    let depth = is_depth(desc.format);
+    let array = desc.array_layers > 1 || v.dimension == api::TextureViewDimension::D2Array;
+    if !match desc.dimension {
+        api::TextureDimension::D1 => v.dimension == api::TextureViewDimension::D1,
+        api::TextureDimension::D2 => matches!(
+            v.dimension,
+            api::TextureViewDimension::D2
+                | api::TextureViewDimension::D2Array
+                | api::TextureViewDimension::Cube
+                | api::TextureViewDimension::CubeArray
+        ),
+        api::TextureDimension::D3 => v.dimension == api::TextureViewDimension::D3,
+    } || (v.dimension == api::TextureViewDimension::D2
+        && v.layers.start.checked_add(1) != Some(v.layers.end))
+        || (matches!(
+            v.dimension,
+            api::TextureViewDimension::Cube | api::TextureViewDimension::CubeArray
+        ) && (desc.extent[0] != desc.extent[1]
+            || desc.samples != 1
+            || v.layers.start % 6 != 0
+            || (v.layers.end.saturating_sub(v.layers.start)) % 6 != 0
+            || (v.dimension == api::TextureViewDimension::Cube
+                && (v.layers.start != 0 || v.layers.end != 6))
+            || desc.usage.contains(api::TextureUsage::STORAGE_BINDING)
+            || desc.usage.contains(api::TextureUsage::RENDER_ATTACHMENT)))
+        || v.mips.start >= v.mips.end
+        || v.mips.end > desc.mip_levels
+        || v.layers.start >= v.layers.end
+        || v.layers.end > desc.array_layers
+        || (desc.usage.contains(api::TextureUsage::STORAGE_BINDING)
+            && v.mips.start.checked_add(1) != Some(v.mips.end))
+        || if depth {
+            let all = depth_aspects(desc.format);
+            v.aspects != all
+                && !(all != api::TextureAspects::DEPTH
+                    && (v.aspects == api::TextureAspects::DEPTH
+                        || v.aspects == api::TextureAspects::STENCIL))
+        } else {
+            v.aspects != api::TextureAspects::COLOR
+        }
+    {
+        return Err(Error::Unsupported("DX12 D2/D2Array texture view"));
+    }
+    // A D2 descriptor cannot select a slice of a native array resource.
+    // Storage arrays need a Texture2DArray UAV and matching shader binding.
+    if array
+        && v.dimension == api::TextureViewDimension::D2
+        && (desc.usage.contains(api::TextureUsage::TEXTURE_BINDING)
+            || desc.usage.contains(api::TextureUsage::STORAGE_BINDING))
+    {
+        return Err(Error::Unsupported("DX12 array texture binding view"));
+    }
+    if desc.usage.contains(api::TextureUsage::RENDER_ATTACHMENT) {
+        if depth && v.aspects == depth_aspects(desc.format) {
+            depth_dsv_desc(v, desc.samples, array)?;
+        } else if !depth && v.mips.start.checked_add(1) != Some(v.mips.end) {
+            return Err(Error::Unsupported("DX12 RTV view requires one mip"));
+        }
+    }
+    if !view_format_available(dv, desc, v.format) {
+        return Err(Error::Unsupported("DX12 texture view format"));
+    }
+    Ok(())
+}
