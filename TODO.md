@@ -139,6 +139,15 @@ for indexed and non-indexed argument strides and checked offsets, including
 shared argument/count storage and a zero maximum. Verify the reported direct,
 copy and pack routes on their corresponding pipelines and batch sizes.
 
+### DX12 explicit memory admission
+
+**Acceptance:** Compare explicit heap support with creation for valid heap
+classes, unknown classes, zero sizes, native alignment overflow, and mixed
+heaps on Resource Heap Tier 1 and Tier 2 devices. Include a non-aligned heap
+size and verify placement stays within its requested byte extent. Match the
+texture allocation requirements and placement paths for supported shapes,
+transient attachments, and removed devices.
+
 ### DX12 structured shader diagnostics
 
 **Status:** WGSL parse and validation errors preserve compiler messages and

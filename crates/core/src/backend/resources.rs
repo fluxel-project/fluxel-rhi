@@ -395,6 +395,9 @@ pub trait ReadbackBackend: CommandBackend + CompletionBackend {
 }
 
 pub trait MemoryBackend: ResourceBackend {
+    fn heap_support(_device: &Self::NativeDevice, _desc: &HeapDesc) -> Result<()> {
+        Err(Error::Unsupported("explicit heap support query"))
+    }
     fn buffer_requirements(
         device: &Self::NativeDevice,
         desc: &BufferDesc,

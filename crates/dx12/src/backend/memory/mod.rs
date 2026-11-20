@@ -83,12 +83,53 @@ fn heap_alignment(class: u32) -> Result<u64> {
     match class {
         // These heap classes may contain MSAA resources, which require the
         // 4 MiB native heap alignment. Size need not be a multiple of it.
-        DEVICE_CLASS | DEFAULT_RT_DS_TEXTURE_CLASS => Ok(4 * 1024 * 1024),
+        DEVICE_CLASS | DEFAULT_RT_DS_TEXTURE_CLASS => {
+            Ok(u64::from(D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT))
+        }
         UPLOAD_CLASS | READBACK_CLASS | DEFAULT_BUFFER_CLASS | DEFAULT_NON_RT_DS_TEXTURE_CLASS => {
-            Ok(64 * 1024)
+            Ok(u64::from(D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT))
         }
         _ => Err(Error::InvalidRange),
     }
+}
+
+fn heap_desc(device: &Dx12Device, desc: &api::HeapDesc) -> Result<D3D12_HEAP_DESC> {
+    device.require_active()?;
+    let class = desc.native_memory_class;
+    let alignment = heap_alignment(class)?;
+    // DX12 may round a non-aligned size up. Keep the caller's logical extent
+    // while rejecting a request whose aligned native size cannot fit in u64.
+    if desc.size == 0 || desc.size.checked_add(alignment - 1).is_none() {
+        return Err(Error::InvalidRange);
+    }
+    if class == DEVICE_CLASS && !device.0.resource_heap_tier2 {
+        return Err(Error::Unsupported(
+            "DX12 mixed resource heap requires Resource Heap Tier 2",
+        ));
+    }
+    Ok(D3D12_HEAP_DESC {
+        SizeInBytes: desc.size,
+        Properties: properties(class)?,
+        Alignment: alignment,
+        Flags: heap_flags(class)?,
+    })
+}
+
+fn texture_placement(
+    device: &Dx12Device,
+    desc: &api::TextureDesc,
+) -> Result<(texture::AllocationDesc, api::MemoryRequirements)> {
+    device.require_active()?;
+    if desc.usage.contains(api::TextureUsage::TRANSIENT_ATTACHMENT) {
+        return Err(Error::InvalidState);
+    }
+    let allocation = texture::allocation_desc(device, desc)?;
+    let requirements = requirements(
+        device,
+        &allocation.resource,
+        texture_class_bits(device, &allocation.resource),
+    )?;
+    Ok((allocation, requirements))
 }
 
 fn default_class_bits(device: &Dx12Device, specific: u32) -> u64 {
@@ -220,10 +261,15 @@ fn validate(
 impl MemoryBackend for Dx12 {
     type NativeHeap = Dx12Heap;
 
+    fn heap_support(device: &Dx12Device, desc: &api::HeapDesc) -> Result<()> {
+        heap_desc(device, desc).map(drop)
+    }
+
     fn buffer_requirements(
         device: &Dx12Device,
         desc: &api::BufferDesc,
     ) -> Result<api::MemoryRequirements> {
+        device.require_active()?;
         if !matches!(Self::buffer_support(device, desc), Support::Supported(_)) {
             return Err(Error::Unsupported("DX12 buffer descriptor"));
         }
@@ -238,31 +284,11 @@ impl MemoryBackend for Dx12 {
         device: &Dx12Device,
         desc: &api::TextureDesc,
     ) -> Result<api::MemoryRequirements> {
-        let native = texture::allocation_desc(device, desc)?;
-        requirements(
-            device,
-            &native.resource,
-            texture_class_bits(device, &native.resource),
-        )
+        texture_placement(device, desc).map(|(_, requirements)| requirements)
     }
 
     fn create_heap(device: &Dx12Device, desc: &api::HeapDesc) -> Result<Dx12Heap> {
-        if desc.size == 0 {
-            return Err(Error::InvalidRange);
-        }
-        if desc.native_memory_class == DEVICE_CLASS && !device.0.resource_heap_tier2 {
-            return Err(Error::Unsupported(
-                "DX12 shared heap requires Resource Heap Tier 2",
-            ));
-        }
-        let properties = properties(desc.native_memory_class)?;
-        let flags = heap_flags(desc.native_memory_class)?;
-        let native = D3D12_HEAP_DESC {
-            SizeInBytes: desc.size,
-            Properties: properties,
-            Alignment: heap_alignment(desc.native_memory_class)?,
-            Flags: flags,
-        };
+        let native = heap_desc(device, desc)?;
         let mut heap = None;
         // SAFETY: descriptor is initialized and D3D12 writes a new owned COM
         // reference to `heap` on success.
@@ -319,12 +345,7 @@ impl MemoryBackend for Dx12 {
         offset: u64,
         desc: &api::TextureDesc,
     ) -> Result<Dx12Texture> {
-        let allocation = texture::allocation_desc(device, desc)?;
-        let requirements = requirements(
-            device,
-            &allocation.resource,
-            texture_class_bits(device, &allocation.resource),
-        )?;
+        let (allocation, requirements) = texture_placement(device, desc)?;
         validate(device, heap, offset, requirements)?;
         let mut resource = None;
         // SAFETY: heap device identity, allocation metadata and range have

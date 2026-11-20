@@ -45,6 +45,12 @@ impl<B: MemoryBackend> Device<B> {
     }
 }
 impl<B: MemoryBackend> MemoryDomain<'_, B> {
+    /// Qualifies a heap class and size before allocation. The allocation may
+    /// still fail due to runtime memory pressure.
+    pub fn heap_support(&self, desc: &HeapDesc) -> Result<()> {
+        B::heap_support(&self.device.native, desc)
+    }
+
     pub fn buffer_requirements(&self, desc: &BufferDesc) -> Result<MemoryRequirements> {
         B::buffer_requirements(&self.device.native, desc)
     }
