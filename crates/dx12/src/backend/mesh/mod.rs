@@ -67,6 +67,11 @@ fn shader<'a>(stage: &'a api::PipelineStage<Dx12>, expected: api::ShaderStage) -
     }
     // SAFETY: Core validates that every shader belongs to the pipeline device.
     let shader = unsafe { stage.module.native_ref() };
+    if expected == api::ShaderStage::Fragment && shader.requires_raster_primitive_index {
+        return Err(Error::Unsupported(
+            "DX12 mesh shader cannot supply the rasterizer primitive index",
+        ));
+    }
     if !shader
         .entries
         .iter()

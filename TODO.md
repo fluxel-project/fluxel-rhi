@@ -85,6 +85,11 @@ reject unsupported topologies and shader/PSO topology mismatches.
 Check shader declaration admission against the reported invocation, output,
 and combined task payload limits.
 
+Verify the rasterizer-assigned primitive index in ordinary DX12 raster
+pipelines with WGSL, HLSL and DXIL fragment stages. Mesh pipelines reject
+that portable requirement. Reopen a portable mesh primitive ID only when a
+consumer defines the producer and consumer contract for a shader-written ID.
+
 ### DX12 acceleration structure refit
 
 **Status:** TLAS and non-indexed BLAS refit use DXR in-place updates. Ordered

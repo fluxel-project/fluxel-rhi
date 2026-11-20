@@ -21,6 +21,13 @@ pub(super) fn validation_capabilities(desc: &api::ShaderDesc) -> naga::valid::Ca
     {
         caps |= naga::valid::Capabilities::CLIP_DISTANCE;
     }
+    if desc
+        .required_features
+        .iter()
+        .any(|feature| feature == api::SHADER_FEATURE_PRIMITIVE_INDEX)
+    {
+        caps |= naga::valid::Capabilities::PRIMITIVE_INDEX;
+    }
     if desc.required_features.iter().any(|x| x == "subgroups") {
         caps |= naga::valid::Capabilities::SUBGROUP;
     }

@@ -271,6 +271,12 @@ typed UAVs, counter buffers, and native constants that share the immediate
 register require explicit layouts. Native register overlaps that cannot fit
 the Core binding namespace require distinct shader registers.
 
+Raster fragment shaders can require the rasterizer-assigned primitive index.
+WGSL lowers the declared builtin to `SV_PrimitiveID`; direct HLSL and DXIL
+declare the same requirement. DX12 mesh fragments that declare this portable
+requirement are rejected because their primitive ID would be a mesh shader
+output chosen by the shader author.
+
 The implemented public route includes graphics and compute, multiple render
 targets, indirect drawing and dispatch, queries, secondary recording,
 standalone clears and resolves, placed memory, scoped native/external interop,

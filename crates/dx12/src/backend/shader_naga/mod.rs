@@ -247,6 +247,7 @@ fn compile_inner(
     if desc.format != api::ShaderFormat::Wgsl
         || desc.required_features.iter().any(|x| {
             x != api::SHADER_FEATURE_RAY_QUERY
+                && x != api::SHADER_FEATURE_PRIMITIVE_INDEX
                 && x != "shaderClipDistance"
                 && x != api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_ADD
                 && x != api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_ADD

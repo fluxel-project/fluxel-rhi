@@ -389,6 +389,7 @@ impl Dx12 {
                 partially_bound_acceleration_structure_binding_arrays: ray_supported
                     && descriptor_indexing,
                 ray_query: ray_query_supported,
+                shader_primitive_index: shader_model >= 60,
                 storage_textures: true,
                 texture_atomic_r32uint_compute,
                 texture_atomic_r32sint_compute,

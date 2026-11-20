@@ -249,6 +249,7 @@ pub struct Dx12BindGroup(pub(crate) Arc<descriptor::BindGroupState>);
 pub struct Dx12Shader {
     pub(crate) bytes: Arc<[u8]>,
     pub(crate) entries: Vec<api::ShaderEntryPoint>,
+    pub(crate) requires_raster_primitive_index: bool,
     /// Source needs entry-specific DXC compilation only for dialects whose
     /// artifact depends on pipeline specialization or stage selection.
     pub(crate) source: Option<Dx12ShaderSource>,
@@ -454,6 +455,10 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
         _: &'a api::ShaderTarget,
     ) -> Self::DirectFuture<'a> {
         let desc = desc.clone();
+        let requires_raster_primitive_index = desc
+            .required_features
+            .iter()
+            .any(|feature| feature == api::SHADER_FEATURE_PRIMITIVE_INDEX);
         pipeline::worker::submit(move || match desc.format {
             api::ShaderFormat::Dxil if desc.bytes.is_empty() => {
                 Err(Error::Shader("empty DXIL artifact".into()))
@@ -461,6 +466,7 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
             api::ShaderFormat::Dxil => Ok(Dx12Shader {
                 bytes: desc.bytes.clone(),
                 entries: desc.entries.clone(),
+                requires_raster_primitive_index,
                 source: None,
             }),
             api::ShaderFormat::Hlsl(_) if desc.bytes.is_empty() => {
@@ -476,6 +482,7 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
                 Ok(_) => Ok(Dx12Shader {
                     bytes: Arc::from([]),
                     entries: desc.entries.clone(),
+                    requires_raster_primitive_index,
                     source: Some(Dx12ShaderSource::Hlsl(desc.clone())),
                 }),
                 Err(_) => Err(Error::Shader("HLSL is not UTF-8".into())),
@@ -493,6 +500,10 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
             shader_naga::validate_source(&desc).map(|()| Dx12Shader {
                 bytes: Arc::from([]),
                 entries: desc.entries.clone(),
+                requires_raster_primitive_index: desc
+                    .required_features
+                    .iter()
+                    .any(|feature| feature == api::SHADER_FEATURE_PRIMITIVE_INDEX),
                 source: Some(Dx12ShaderSource::Wgsl(desc)),
             })
         })
@@ -516,6 +527,7 @@ fn shader_features_supported(
 ) -> bool {
     features.iter().all(|feature| match feature.as_str() {
         api::SHADER_FEATURE_RAY_QUERY => ray_query_supported,
+        api::SHADER_FEATURE_PRIMITIVE_INDEX => true,
         api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_ADD => true,
         api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_ADD => true,
         api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_MIN => true,
