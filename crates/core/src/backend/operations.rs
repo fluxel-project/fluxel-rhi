@@ -249,6 +249,9 @@ pub trait MeshOps<B: Backend> {
     fn topology_support(_device: &B::NativeDevice, _topology: PrimitiveTopology) -> Support<()> {
         Support::Unsupported("mesh topology query")
     }
+    fn pipeline_support(_device: &B::NativeDevice, _desc: &MeshPipelineDesc<B>) -> Result<()> {
+        Err(Error::Unsupported("mesh pipeline support query"))
+    }
     fn create_pipeline<'a>(
         device: &'a B::NativeDevice,
         desc: &'a MeshPipelineDesc<B>,

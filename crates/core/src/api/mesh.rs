@@ -80,6 +80,14 @@ impl<B: Backend> MeshDomain<'_, B> {
         B::Mesh::topology_support(&self.device.native, topology)
     }
 
+    /// Checks an ordinary mesh pipeline descriptor using the selected device
+    /// and declared shader entries. Native artifact and linkage checks continue
+    /// during pipeline creation.
+    pub fn pipeline_support(&self, desc: &MeshPipelineDesc<B>) -> Result<()> {
+        self.validate_pipeline_desc(desc)?;
+        B::Mesh::pipeline_support(&self.device.native, desc)
+    }
+
     pub async fn create_pipeline(&self, desc: MeshPipelineDesc<B>) -> Result<MeshPipeline<B>> {
         self.create_pipeline_inner(desc, None, None).await
     }
@@ -111,31 +119,7 @@ impl<B: Backend> MeshDomain<'_, B> {
         views: Option<u32>,
         stencil_masks: Option<StencilMasks>,
     ) -> Result<MeshPipeline<B>> {
-        // Task, mesh, fragment, layout, and cache must share one device even
-        // when an optional stage is omitted from the executable pipeline.
-        if desc.layout.device != self.device.id
-            || desc.mesh.module.device != self.device.id
-            || desc
-                .task
-                .as_ref()
-                .is_some_and(|s| s.module.device != self.device.id)
-            || desc
-                .fragment
-                .as_ref()
-                .is_some_and(|s| s.module.device != self.device.id)
-            || desc
-                .cache
-                .as_ref()
-                .is_some_and(|c| c.device != self.device.id)
-        {
-            return Err(Error::WrongDevice);
-        }
-        if desc.targets.len() > self.device.caps.limits.max_color_attachments as usize {
-            return Err(Error::InvalidRange);
-        }
-        if desc.primitive.conservative && self.device.caps.conservative_raster == Some(false) {
-            return Err(Error::Unsupported("conservative rasterization"));
-        }
+        self.validate_pipeline_desc(&desc)?;
         if let Some(views) = views {
             if !self.device.caps.mesh_multiview {
                 return Err(Error::Unsupported("mesh multiview"));
@@ -161,6 +145,35 @@ impl<B: Backend> MeshDomain<'_, B> {
         let mut pipeline = unsafe { MeshPipeline::from_native(self.device.id, native) };
         pipeline.layout = Some(desc.layout);
         Ok(pipeline)
+    }
+
+    fn validate_pipeline_desc(&self, desc: &MeshPipelineDesc<B>) -> Result<()> {
+        // Task, mesh, fragment, layout, and cache must share one device even
+        // when an optional stage is omitted from the executable pipeline.
+        if desc.layout.device != self.device.id
+            || desc.mesh.module.device != self.device.id
+            || desc
+                .task
+                .as_ref()
+                .is_some_and(|s| s.module.device != self.device.id)
+            || desc
+                .fragment
+                .as_ref()
+                .is_some_and(|s| s.module.device != self.device.id)
+            || desc
+                .cache
+                .as_ref()
+                .is_some_and(|c| c.device != self.device.id)
+        {
+            return Err(Error::WrongDevice);
+        }
+        if desc.targets.len() > self.device.caps.limits.max_color_attachments as usize {
+            return Err(Error::InvalidRange);
+        }
+        if desc.primitive.conservative && self.device.caps.conservative_raster == Some(false) {
+            return Err(Error::Unsupported("conservative rasterization"));
+        }
+        Ok(())
     }
     pub fn bind_pipeline(&self, pass: &mut RasterPass<'_, B>, p: &MeshPipeline<B>) -> Result<()>
     where

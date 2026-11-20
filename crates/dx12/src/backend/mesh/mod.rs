@@ -3,7 +3,10 @@
 //! Hardware support is conditional on mesh tier and shader model; the public
 //! capability is enabled only after the full recording path is validated.
 mod ops;
-use super::{Dx12, Dx12Device, Dx12MeshPipeline, pipeline::PipelineLayoutState};
+use super::{
+    Dx12, Dx12Device, Dx12MeshPipeline,
+    pipeline::{PipelineLayoutState, fixed},
+};
 use fluxel_rhi_core::api::{self, Error, Result};
 pub use ops::Mesh;
 use std::sync::Arc;
@@ -216,6 +219,58 @@ fn topology(
     }
 }
 
+struct AdmittedMesh<'a> {
+    layout: &'a Arc<PipelineLayoutState>,
+    topology: D3D12_PRIMITIVE_TOPOLOGY_TYPE,
+    attachments: fixed::Attachments,
+    raster: D3D12_RASTERIZER_DESC,
+    mesh: &'a [u8],
+    task: Option<&'a [u8]>,
+    fragment: Option<&'a [u8]>,
+}
+
+fn pipeline_support(device: &Dx12Device, desc: &api::MeshPipelineDesc<Dx12>) -> Result<()> {
+    admit_pipeline(device, desc).map(drop)
+}
+
+fn admit_pipeline<'a>(
+    device: &Dx12Device,
+    desc: &'a api::MeshPipelineDesc<Dx12>,
+) -> Result<AdmittedMesh<'a>> {
+    let topology = topology(device, desc.primitive.topology).map_err(Error::Unsupported)?;
+    if desc.primitive.strip_index_format.is_some() {
+        return Err(Error::Unsupported("DX12 mesh pipeline state"));
+    }
+    let attachments =
+        fixed::lower_attachments(device, &desc.targets, desc.depth_stencil, desc.multisample)?;
+    let raster = fixed::lower_raster(desc.primitive, desc.multisample, attachments.depth)?;
+    let mesh = shader(&desc.mesh, api::ShaderStage::Mesh)?;
+    let task = desc
+        .task
+        .as_ref()
+        .map(|s| shader(s, api::ShaderStage::Task))
+        .transpose()?;
+    let fragment = desc
+        .fragment
+        .as_ref()
+        .map(|s| shader(s, api::ShaderStage::Fragment))
+        .transpose()?;
+    // SAFETY: Core checked layout provenance and the descriptor keeps it alive.
+    let layout = &unsafe { desc.layout.native_ref() }.0;
+    if !layout.native_abi_compatible {
+        return Err(Error::Unsupported("DX12 DXIL descriptor register overlap"));
+    }
+    Ok(AdmittedMesh {
+        layout,
+        topology,
+        attachments,
+        raster,
+        mesh,
+        task,
+        fragment,
+    })
+}
+
 pub(super) fn create_pipeline(
     device: &Dx12Device,
     desc: &api::MeshPipelineDesc<Dx12>,
@@ -233,38 +288,21 @@ pub(super) fn create_pipeline(
     if masks.is_some() && !device.0.stencil_reference_per_face {
         return Err(Error::Unsupported("DX12 per-face stencil masks"));
     }
-    let topology = topology(device, desc.primitive.topology).map_err(Error::Unsupported)?;
-    if desc.primitive.strip_index_format.is_some() {
-        return Err(Error::Unsupported("DX12 mesh pipeline state"));
-    }
-    let super::pipeline::fixed::Attachments {
+    let AdmittedMesh {
+        layout,
+        topology,
+        attachments,
+        raster,
+        mesh,
+        task,
+        fragment,
+    } = admit_pipeline(device, desc)?;
+    let fixed::Attachments {
         depth,
         formats,
         blends,
-    } = super::pipeline::fixed::lower_attachments(
-        device,
-        &desc.targets,
-        desc.depth_stencil,
-        desc.multisample,
-    )?;
-    let raster = super::pipeline::fixed::lower_raster(desc.primitive, desc.multisample, depth)?;
-    let depth_state = super::pipeline::fixed::lower_depth(depth);
-    let mesh = shader(&desc.mesh, api::ShaderStage::Mesh)?;
-    let task = desc
-        .task
-        .as_ref()
-        .map(|s| shader(s, api::ShaderStage::Task))
-        .transpose()?;
-    let fragment = desc
-        .fragment
-        .as_ref()
-        .map(|s| shader(s, api::ShaderStage::Fragment))
-        .transpose()?;
-    // SAFETY: the layout was validated by Core and the cloned Arc retains it.
-    let layout = unsafe { desc.layout.native_ref() }.0.clone();
-    if !layout.native_abi_compatible {
-        return Err(Error::Unsupported("DX12 DXIL descriptor register overlap"));
-    }
+    } = attachments;
+    let depth_state = fixed::lower_depth(depth);
     // SAFETY: Core validates that the cache belongs to the same device.
     let cache = desc
         .cache
@@ -385,7 +423,7 @@ pub(super) fn create_pipeline(
         let _ = cache.0.store(key, &state);
     }
     Ok(Dx12MeshPipeline(Arc::new(MeshPipelineState {
-        layout,
+        layout: layout.clone(),
         state,
         color_formats: desc
             .targets

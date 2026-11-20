@@ -83,6 +83,13 @@ entries. Verify native register overlap and DXIL specialization reject in the
 shared descriptor path. Confirm signature linkage and specialized shader
 validation still run during creation.
 
+**Mesh pipeline support:** Compare the ordinary descriptor query with mesh
+pipeline creation for same-device inputs, supported line and triangle output,
+invalid strip state, attachment admission, and declared mesh and task sizes.
+Cover wrong-stage entries, non-DXIL stages, native register overlap, and a
+fragment that requests the rasterizer primitive index. Native creation still
+validates the linked DXIL artifacts.
+
 **Compute pipeline support:** Compare the descriptor query and creation for a
 known compute entry, missing or non-compute entries, foreign shader, layout or
 cache objects, invalid declared workgroup sizes, and required subgroup sizes.

@@ -13,6 +13,9 @@ impl fluxel_rhi_core::backend::MeshOps<Dx12> for Mesh {
             Err(reason) => api::Support::Unsupported(reason),
         }
     }
+    fn pipeline_support(device: &Dx12Device, desc: &api::MeshPipelineDesc<Dx12>) -> Result<()> {
+        super::pipeline_support(device, desc)
+    }
     fn create_pipeline<'a>(
         device: &'a Dx12Device,
         desc: &'a api::MeshPipelineDesc<Dx12>,
