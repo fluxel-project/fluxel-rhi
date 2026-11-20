@@ -149,6 +149,9 @@ Making it resident synchronously adds a residency reference. Eviction releases
 one reference and requires the caller to prove completion for all heap users
 and order any later access. The renderer holds those proofs and schedules both
 operations.
+Backends can separately expose the same residency references for a
+`SparseAllocation`. Its references govern the physical backing memory, while
+tile mappings still change only through explicit sparse operations.
 
 `Device::stats()` is deliberately narrow: it counts successful Core requests and handoffs using atomic snapshots. It is neither a driver query nor a memory, residency, presentation, or profiling report.
 

@@ -218,6 +218,8 @@ pub struct DeviceCapabilities {
     pub placed_memory: bool,
     /// Explicit residency operations are available for eligible memory heaps.
     pub explicit_heap_residency: bool,
+    /// Explicit residency operations are available for sparse backing allocations.
+    pub sparse_allocation_residency: bool,
     pub external_memory: bool,
     pub secondary_commands: bool,
     pub native_interop: bool,

@@ -518,6 +518,8 @@ impl Dx12 {
                 external_memory: true,
                 placed_memory: true,
                 explicit_heap_residency: true,
+                sparse_allocation_residency: tiled_resources_tier
+                    != D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED,
                 multiview,
                 mesh_multiview,
                 shader_view_index,

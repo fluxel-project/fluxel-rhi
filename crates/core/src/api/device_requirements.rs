@@ -76,6 +76,7 @@ device_features! {
     MeshMultiview => mesh_multiview, "mesh-multiview";
     PlacedMemory => placed_memory, "placed-memory";
     ExplicitHeapResidency => explicit_heap_residency, "explicit-heap-residency";
+    SparseAllocationResidency => sparse_allocation_residency, "sparse-allocation-residency";
     ExternalMemory => external_memory, "external-memory";
     SecondaryCommands => secondary_commands, "secondary-commands";
     DynamicDepthBias => dynamic_depth_bias, "dynamic-depth-bias";

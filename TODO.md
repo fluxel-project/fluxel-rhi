@@ -175,14 +175,17 @@ explicit default heap, wait for its last uses on all lanes, evict the heap,
 make it resident again, and read the same bytes. Check the initial reference,
 balanced reference operations, wrong-device and removed-device errors, and the
 support result for CPU-visible heaps.
+For sparse allocation residency, include both heap classes, verify the support
+gate on devices without tiled resources, and evict and restore a heap while
+its completed tile mappings remain installed. Verify data through a mapped
+tile after restoration and repeat with a mapping on another queue lane.
 
 **Pending native paths.** Add fence-completing asynchronous residency and
 review eligible physical owners outside explicit default heaps. CPU-visible
 heaps require an ordering contract for active CPU mappings in addition to GPU
 completion. Keep their residency operations gated until both are covered.
-Resolve owner identity for sparse allocations and committed resources before
-exposing residency operations on either. Placed resources use the existing
-heap operations.
+Resolve physical owner identity for committed resources before exposing their
+residency operations. Placed resources use the existing heap operations.
 
 ### DX12 structured shader diagnostics
 

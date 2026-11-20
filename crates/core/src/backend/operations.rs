@@ -481,6 +481,21 @@ pub trait SparseBackend: Backend {
     ) -> Result<Self::NativeSparseAllocation> {
         Self::create_sparse_allocation(device, size)
     }
+    fn make_sparse_allocation_resident(
+        _device: &Self::NativeDevice,
+        _allocation: &Self::NativeSparseAllocation,
+    ) -> Result<()> {
+        Err(Error::Unsupported("sparse allocation residency"))
+    }
+    /// # Safety
+    /// The caller must meet the residency and ordering requirements of
+    /// `SparseDomain::evict_allocation`.
+    unsafe fn evict_sparse_allocation(
+        _device: &Self::NativeDevice,
+        _allocation: &Self::NativeSparseAllocation,
+    ) -> Result<()> {
+        Err(Error::Unsupported("sparse allocation residency"))
+    }
 }
 pub trait ImmediateSparseBackend: SparseBackend + ImmediateBackend {
     fn sparse_immediate(

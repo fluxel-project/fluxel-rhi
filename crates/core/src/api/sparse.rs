@@ -138,6 +138,36 @@ impl<B: SparseBackend> SparseDomain<'_, B> {
             )
         })
     }
+
+    /// Makes the backing allocation resident synchronously and adds one
+    /// residency reference. A new eligible allocation starts with one reference.
+    pub fn make_allocation_resident(&self, allocation: &SparseAllocation<B>) -> Result<()> {
+        self.validate_residency_allocation(allocation)?;
+        B::make_sparse_allocation_resident(&self.device.native, &allocation.native)
+    }
+
+    /// Releases one residency reference without changing existing tile mappings.
+    ///
+    /// # Safety
+    /// The caller must own a residency reference. All GPU uses and mapping work
+    /// involving the allocation must have completed on every relevant queue.
+    /// The caller must exclude new work until residency is restored or another
+    /// held reference guarantees residency through that work.
+    pub unsafe fn evict_allocation(&self, allocation: &SparseAllocation<B>) -> Result<()> {
+        self.validate_residency_allocation(allocation)?;
+        // SAFETY: Core checks provenance and the caller supplies ordering.
+        unsafe { B::evict_sparse_allocation(&self.device.native, &allocation.native) }
+    }
+
+    fn validate_residency_allocation(&self, allocation: &SparseAllocation<B>) -> Result<()> {
+        if allocation.device != self.device.id {
+            return Err(Error::WrongDevice);
+        }
+        if !self.device.caps.sparse_allocation_residency {
+            return Err(Error::Unsupported("sparse allocation residency"));
+        }
+        Ok(())
+    }
 }
 impl<B: ImmediateSparseBackend> SparseDomain<'_, B> {
     pub fn bind_immediate(

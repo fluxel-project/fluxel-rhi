@@ -7,6 +7,7 @@
 
 pub(super) mod cpu_visible;
 mod default_pool;
+pub(super) mod residency;
 pub(super) use default_pool::{DefaultAllocationLease, DefaultResourcePool};
 
 use super::{Dx12, Dx12Buffer, Dx12Device, Dx12DeviceState, Dx12Texture, texture};
@@ -17,7 +18,6 @@ use windows::Win32::Graphics::{
     Direct3D12::*,
     Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC},
 };
-use windows::core::Interface;
 
 const DEVICE_CLASS: u32 = 0;
 const UPLOAD_CLASS: u32 = 1;
@@ -315,24 +315,14 @@ impl MemoryBackend for Dx12 {
 
     fn make_heap_resident(device: &Dx12Device, heap: &Dx12Heap) -> Result<()> {
         Self::heap_residency_support(device, heap)?;
-        let pageable = heap
-            .heap
-            .cast::<ID3D12Pageable>()
-            .map_err(super::native_error)?;
-        // SAFETY: the one eligible, same-device pageable stays live for the
-        // synchronous call. The operation adds a native residency reference.
-        unsafe { device.0.native.MakeResident(&[Some(pageable)]) }.map_err(super::native_error)
+        residency::make_resident(device, &heap.heap)
     }
 
     unsafe fn evict_heap(device: &Dx12Device, heap: &Dx12Heap) -> Result<()> {
         Self::heap_residency_support(device, heap)?;
-        let pageable = heap
-            .heap
-            .cast::<ID3D12Pageable>()
-            .map_err(super::native_error)?;
-        // SAFETY: the pageable is same-device and live. The caller guarantees
-        // the native residency reference and excludes conflicting GPU uses.
-        unsafe { device.0.native.Evict(&[Some(pageable)]) }.map_err(super::native_error)
+        // SAFETY: the support check verified heap provenance and eligibility;
+        // the caller guarantees the residency reference and GPU ordering.
+        unsafe { residency::evict(device, &heap.heap) }
     }
 
     fn place_buffer(

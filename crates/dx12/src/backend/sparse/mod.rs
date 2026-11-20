@@ -2,7 +2,7 @@
 use super::*;
 #[path = "array.rs"]
 mod array;
-use std::sync::Mutex;
+use std::sync::{Mutex, Weak};
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R16_TYPELESS, DXGI_FORMAT_R16_UNORM, DXGI_FORMAT_R32_FLOAT,
@@ -13,6 +13,9 @@ pub(crate) struct SparseAllocationState {
     pub(crate) heap: ID3D12Heap,
     pub(crate) tiles: u64,
     render_target: bool,
+    // In-flight mappings may be retained by the device. Use a weak identity
+    // to avoid a cycle while checking native residency calls.
+    device: Weak<Dx12DeviceState>,
 }
 pub(crate) struct SparseTextureState {
     pub(crate) tiling: api::SparseTextureTiling,
@@ -614,6 +617,35 @@ impl fluxel_rhi_core::backend::SparseBackend for Dx12 {
                     .contains(api::TextureUsage::RENDER_ATTACHMENT),
         )
     }
+
+    fn make_sparse_allocation_resident(
+        device: &Dx12Device,
+        allocation: &Dx12Sparse,
+    ) -> api::Result<()> {
+        let heap = residency_heap(device, allocation)?;
+        super::memory::residency::make_resident(device, heap)
+    }
+
+    unsafe fn evict_sparse_allocation(
+        device: &Dx12Device,
+        allocation: &Dx12Sparse,
+    ) -> api::Result<()> {
+        let heap = residency_heap(device, allocation)?;
+        // SAFETY: this is the checked same-device physical heap and the caller
+        // guarantees both a residency reference and completion of GPU uses.
+        unsafe { super::memory::residency::evict(device, heap) }
+    }
+}
+
+fn residency_heap<'a>(
+    device: &Dx12Device,
+    allocation: &'a Dx12Sparse,
+) -> api::Result<&'a ID3D12Heap> {
+    if allocation.0.device.as_ptr() != Arc::as_ptr(&device.0) {
+        return Err(api::Error::WrongDevice);
+    }
+    device.require_active()?;
+    Ok(&allocation.0.heap)
 }
 
 fn allocate(device: &Dx12Device, size: u64, render_target: bool) -> api::Result<Dx12Sparse> {
@@ -647,5 +679,6 @@ fn allocate(device: &Dx12Device, size: u64, render_target: bool) -> api::Result<
         heap: heap.ok_or(api::Error::OutOfMemory)?,
         tiles: size / 65536,
         render_target,
+        device: Arc::downgrade(&device.0),
     })))
 }

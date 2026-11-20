@@ -140,6 +140,9 @@ physical heap. A new heap starts with one residency reference. Placed resources
 share that heap's residency. The caller supplies ordering across all GPU lanes
 that access the heap. The residency methods touch the explicit heap only, so
 they add no tracking to submission or to the backend-owned allocator.
+Sparse allocations use the same calls on their backing heaps. Their reserved
+textures and tile mappings are unchanged across residency changes. Completion
+must cover accesses through every mapping as well as queued mapping operations.
 
 The memory observation domain can report the number and largest size of
 contiguous free ranges across retained default-pool pages. The observation
