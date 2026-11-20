@@ -217,6 +217,9 @@ impl Dx12 {
                 )
             }
             .is_ok();
+            let shader_f64 = shader_model >= 60
+                && options_available
+                && options.DoublePrecisionFloatShaderOps.as_bool();
             let sparse_supported = options_available && options.TiledResourcesTier
                 != windows::Win32::Graphics::Direct3D12::D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED;
             let conservative_raster = options_available && options.ConservativeRasterizationTier
@@ -292,6 +295,7 @@ impl Dx12 {
             let compute_lane = LaneId { device, ordinal: 1 };
             let caps = DeviceCapabilities {
                 shader_f16,
+                shader_f64,
                 memory_topology,
                 subgroup_widths,
                 lanes: Arc::from([
@@ -509,6 +513,7 @@ impl Dx12 {
                     texel_aligned_color_copies,
                     shader_model,
                     shader_f16,
+                    shader_f64,
                     barycentrics_supported,
                     subgroup_widths,
                     max_buffer_bytes,

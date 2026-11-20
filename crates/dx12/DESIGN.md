@@ -310,6 +310,13 @@ F16 overrides. WGSL uniform and push constant layouts containing F16
 are rejected because the current HLSL constant layout cannot express
 all two-byte member offsets.
 
+Native shader F64 requires Shader Model 6 and
+`D3D12_OPTIONS.DoublePrecisionFloatShaderOps`. HLSL and DXIL declarations
+enable the double-precision shader route. The fact covers shader operations
+and native buffer access subject to the shader profile and exact resource
+description. Texture pixel formats and Input Assembler formats have their
+own capabilities.
+
 The implemented public route includes graphics and compute, multiple render
 targets, indirect drawing and dispatch, queries, secondary recording,
 standalone clears and resolves, placed memory, scoped native/external interop,

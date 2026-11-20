@@ -101,6 +101,16 @@ discards, and reject nonfragment requirement declarations. WGSL conservative
 depth remains pending until its depth-output and interpolation rules are
 mapped per mode and verified with depth and storage readback.
 
+### DX12 native double-precision shaders
+
+**Status:** HLSL and DXIL shader declarations and Core device requests use
+native DoublePrecisionFloatShaderOps. WGSL and raster interface forms have
+separate lowering and signature constraints.
+
+**Acceptance:** Verify feature and shader admission plus double arithmetic
+and raw buffer readback with values that distinguish F64 from F32. Keep
+native vertex formats and texture support independently qualified.
+
 ### DX12 native half-precision shader values
 
 **Status:** DX12 qualifies native F16 with Shader Model 6.2 and OPTIONS4.

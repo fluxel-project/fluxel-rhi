@@ -11,6 +11,8 @@ pub struct DeviceCapabilities {
     pub shader_layout_inference: bool,
     /// Shader routes can use native half-precision floating-point values.
     pub shader_f16: bool,
+    /// Native shaders can use double-precision floating-point values.
+    pub shader_f64: bool,
     /// Memory topology of the native node used by ordinary device work.
     /// This does not admit any particular buffer mapping or heap type.
     pub memory_topology: Option<DeviceMemoryTopology>,

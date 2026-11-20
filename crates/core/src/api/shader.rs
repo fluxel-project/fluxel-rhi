@@ -41,6 +41,8 @@ pub struct ShaderEntryPoint {
 pub const SHADER_FEATURE_RAY_QUERY: &str = "ray-query";
 /// The shader requires native half-precision floating-point types.
 pub const SHADER_FEATURE_F16: &str = "shader-f16";
+/// The shader requires native double-precision floating-point types.
+pub const SHADER_FEATURE_F64: &str = "shader-f64";
 /// A fragment shader requires the API's early depth-test semantics.
 ///
 /// This requirement is checked against `DeviceCapabilities::shader_early_depth_test`.
