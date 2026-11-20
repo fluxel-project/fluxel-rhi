@@ -119,6 +119,10 @@ Int64 atomics, shader interfaces and WGSL lowering have separate contracts.
 
 **Acceptance:** Verify wide signed and unsigned arithmetic and buffer
 readback with values exceeding 32 bits, including device and profile rejection.
+For WGSL, the current HLSL writer does not preserve signed overflow semantics
+for addition, subtraction or multiplication at this width. Enable those
+operations after exact wrapping lowering is in place and checked at the
+signed bounds.
 
 ### DX12 native double-precision shaders
 
@@ -129,6 +133,9 @@ separate lowering and signature constraints.
 **Acceptance:** Verify feature and shader admission plus double arithmetic
 and raw buffer readback with values that distinguish F64 from F32. Keep
 native vertex formats and texture support independently qualified.
+Before admitting WGSL 64-bit bitcasts, preserve the destination type and
+bit pattern instead of forwarding the source expression unchanged.
+Qualify WGSL buffer layout and stage signatures separately.
 
 ### DX12 native half-precision shader values
 
