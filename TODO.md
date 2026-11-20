@@ -6,6 +6,14 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 ## Active items
 
+### DX12 structured shader diagnostics
+
+**Status:** WGSL parse and validation errors preserve compiler messages and
+source byte ranges, line and column when available.
+
+**Acceptance:** Exercise an invalid WGSL source with multiple diagnostic
+labels and verify UTF-8 spans and the original rendered report.
+
 ### Core pipeline layout inspection
 
 **Status:** Core-created raster, compute, mesh and ray pipelines retain the

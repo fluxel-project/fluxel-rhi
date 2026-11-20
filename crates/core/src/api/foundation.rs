@@ -31,6 +31,7 @@ pub enum Error {
     SurfaceOutdated,
     OutOfMemory,
     Shader(String),
+    ShaderCompilation(ShaderCompilationReport),
     Backend(String),
 }
 
@@ -48,6 +49,7 @@ impl std::fmt::Display for Error {
             Self::SurfaceOutdated => f.write_str("surface outdated"),
             Self::OutOfMemory => f.write_str("out of memory"),
             Self::Shader(message) => write!(f, "shader error: {message}"),
+            Self::ShaderCompilation(report) => write!(f, "shader error: {}", report.rendered),
             Self::Backend(message) => write!(f, "backend error: {message}"),
         }
     }

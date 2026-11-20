@@ -6,6 +6,7 @@
 #[path = "binding.rs"]
 mod binding;
 mod buffer_array;
+mod diagnostics;
 #[path = "dxc.rs"]
 mod dxc;
 #[path = "validation.rs"]
@@ -74,15 +75,14 @@ pub(crate) fn preprocess_direct_hlsl(
 pub(crate) fn validate_source(desc: &api::ShaderDesc) -> Result<()> {
     let source =
         std::str::from_utf8(&desc.bytes).map_err(|_| Error::Shader("WGSL is not UTF-8".into()))?;
-    let module = naga::front::wgsl::parse_str(source)
-        .map_err(|e| Error::Shader(e.emit_to_string(source)))?;
+    let module = diagnostics::parse_wgsl(source)?;
     buffer_array::validate(&module, &desc.entries)?;
     naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
         validation_capabilities(desc),
     )
     .validate(&module)
-    .map_err(|e| Error::Shader(e.emit_to_string(source)))?;
+    .map_err(|e| diagnostics::wgsl_validation(source, e))?;
     for entry in &desc.entries {
         let stage = match entry.stage {
             api::ShaderStage::Compute => naga::ShaderStage::Compute,
@@ -243,8 +243,7 @@ fn compile_inner(
     }
     let source =
         std::str::from_utf8(&desc.bytes).map_err(|_| Error::Shader("WGSL is not UTF-8".into()))?;
-    let original = naga::front::wgsl::parse_str(source)
-        .map_err(|e| Error::Shader(e.emit_to_string(source)))?;
+    let original = diagnostics::parse_wgsl(source)?;
     buffer_array::validate(&original, &desc.entries)?;
     if require_layout {
         buffer_array::validate_bindings(&original, buffer_entries)?;
@@ -310,7 +309,7 @@ fn compile_inner(
         validation_capabilities(desc),
     )
     .validate(&original)
-    .map_err(|e| Error::Shader(e.emit_to_string(source)))?;
+    .map_err(|e| diagnostics::wgsl_validation(source, e))?;
     let mut values = naga::back::PipelineConstants::default();
     if let Some(constants) = constants {
         for (name, value) in constants {
@@ -371,7 +370,7 @@ fn compile_inner(
         validation_capabilities(desc),
     )
     .validate(&module)
-    .map_err(|e| Error::Shader(e.emit_to_string(source)))?;
+    .map_err(|e| diagnostics::wgsl_validation(source, e))?;
     let array_handles: Vec<_> = module
         .global_variables
         .iter()

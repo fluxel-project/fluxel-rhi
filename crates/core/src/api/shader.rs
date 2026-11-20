@@ -509,3 +509,42 @@ impl<B: ShaderBackend> Device<B> {
 #[cfg(test)]
 #[path = "../tests/api/shader/mod.rs"]
 mod tests;
+/// Source text to which a compiler diagnostic refers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShaderDiagnosticSource {
+    Wgsl,
+    Hlsl,
+    GeneratedHlsl,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShaderDiagnosticSeverity {
+    Error,
+    Warning,
+    Note,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShaderDiagnosticLocation {
+    pub file: Option<String>,
+    /// One-based source line and column as reported by the compiler.
+    pub line: u32,
+    pub column: Option<u32>,
+    /// Zero-based UTF-8 byte range, when the compiler provides exact bounds.
+    pub byte_range: Option<std::ops::Range<usize>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShaderDiagnostic {
+    pub severity: ShaderDiagnosticSeverity,
+    pub message: String,
+    pub location: Option<ShaderDiagnosticLocation>,
+}
+
+/// Structured diagnostics together with the compiler's original rendering.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShaderCompilationReport {
+    pub source: ShaderDiagnosticSource,
+    pub diagnostics: Vec<ShaderDiagnostic>,
+    pub rendered: String,
+}
