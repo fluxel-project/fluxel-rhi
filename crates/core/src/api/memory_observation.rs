@@ -45,6 +45,18 @@ pub struct AllocatorMemorySnapshot {
     pub live_allocation_count: u32,
 }
 
+/// Free-range distribution within the allocator's retained backing pages.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AllocatorFreeRanges {
+    /// Pool covered by this observation.
+    pub source: AllocatorMemorySource,
+    /// Number of contiguous free ranges, counted separately for each page.
+    pub range_count: u64,
+    /// Byte length of the largest free range, or zero when none remain.
+    /// Allocation eligibility also depends on heap class and alignment.
+    pub largest_range_bytes: u64,
+}
+
 /// Source and exact coverage of a pool summary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AllocatorMemorySource {
@@ -125,5 +137,14 @@ impl<B: Backend> MemoryObservationDomain<'_, B> {
     /// independently of RHI allocations.
     pub fn snapshot(&self) -> Result<MemorySnapshot> {
         B::MemoryObservation::snapshot(&self.device.native)
+    }
+
+    /// Reads the current free-range distribution without a native budget query.
+    ///
+    /// Returns `None` when the backend does not report the distribution.
+    /// This observation can change independently of a prior call to
+    /// [`Self::snapshot`] as resources are allocated and released.
+    pub fn allocator_free_ranges(&self) -> Result<Option<AllocatorFreeRanges>> {
+        B::MemoryObservation::allocator_free_ranges(&self.device.native)
     }
 }

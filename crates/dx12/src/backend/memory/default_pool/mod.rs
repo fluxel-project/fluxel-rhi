@@ -7,8 +7,8 @@
 
 use super::*;
 use fluxel_rhi_core::api::{
-    AllocatorMemorySnapshot, AllocatorMemorySource, MemoryReportScope, MemoryReportSource,
-    MemorySnapshot, NativeMemoryReport,
+    AllocatorFreeRanges, AllocatorMemorySnapshot, AllocatorMemorySource, MemoryReportScope,
+    MemoryReportSource, MemorySnapshot, NativeMemoryReport,
 };
 use std::sync::{Mutex, Weak};
 use windows::Win32::{
@@ -205,6 +205,23 @@ impl DefaultResourcePool {
         Ok(MemorySnapshot {
             allocator: Some(allocator),
             native_reports,
+        })
+    }
+
+    pub(crate) fn allocator_free_ranges(&self) -> Result<AllocatorFreeRanges> {
+        let state = self.inner.lock().map_err(|_| Error::InvalidState)?;
+        let mut range_count = 0u64;
+        let mut largest_range_bytes = 0;
+        for page in &state.pages {
+            range_count += page.free.len() as u64;
+            for &(_, size) in &page.free {
+                largest_range_bytes = largest_range_bytes.max(size);
+            }
+        }
+        Ok(AllocatorFreeRanges {
+            source: AllocatorMemorySource::Dx12DefaultResourcePool,
+            range_count,
+            largest_range_bytes,
         })
     }
 }

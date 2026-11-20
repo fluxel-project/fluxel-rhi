@@ -225,6 +225,10 @@ pub trait ComputeOps<B: Backend> {
 pub trait MemoryObservationOps<B: Backend> {
     const AVAILABLE: bool;
     fn snapshot(device: &B::NativeDevice) -> Result<MemorySnapshot>;
+
+    fn allocator_free_ranges(_: &B::NativeDevice) -> Result<Option<AllocatorFreeRanges>> {
+        Ok(None)
+    }
 }
 
 impl<B: Backend> MemoryObservationOps<B> for Unavailable {

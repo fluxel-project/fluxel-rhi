@@ -124,6 +124,12 @@ Committed resources and explicitly placed resources retain their independent
 native backing. The default allocator neither aliases resources on behalf of a
 caller nor decides when an aliasing barrier is safe.
 
+The memory observation domain can report the number and largest size of
+contiguous free ranges across retained default-pool pages. The observation
+uses the pool lock and requires no GPU wait or native budget query. A request
+fits a reported range only if it also meets the page's heap class and the
+resource's placement alignment.
+
 Descriptor layout, descriptor writing, and bind-group ownership are separate
 from command recording. Device-owned shader-visible heaps provide GPU tables;
 the CPU descriptor pool owns non-shader-visible views. Pipeline layout creation

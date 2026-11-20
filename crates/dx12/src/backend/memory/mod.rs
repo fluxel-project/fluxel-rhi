@@ -33,6 +33,10 @@ impl MemoryObservationOps<Dx12> for MemoryObservation {
     fn snapshot(device: &Dx12Device) -> Result<MemorySnapshot> {
         device.0.default_resources.snapshot()
     }
+
+    fn allocator_free_ranges(device: &Dx12Device) -> Result<Option<api::AllocatorFreeRanges>> {
+        device.0.default_resources.allocator_free_ranges().map(Some)
+    }
 }
 
 /// Native heap retained by explicitly placed DX12 resources.
