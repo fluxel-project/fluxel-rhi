@@ -165,7 +165,10 @@ pub(crate) fn integer_clear_bits(
     }
 }
 
-pub(super) fn format_available(device: &Dx12Device, desc: &api::TextureDesc) -> bool {
+pub(super) fn available_format_support(
+    device: &Dx12Device,
+    desc: &api::TextureDesc,
+) -> Option<D3D12_FORMAT_SUPPORT1> {
     if bc_block_bytes(desc.format).is_some() && (desc.extent[0] % 4 != 0 || desc.extent[1] % 4 != 0)
     {
         let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS8::default();
@@ -178,7 +181,7 @@ pub(super) fn format_available(device: &Dx12Device, desc: &api::TextureDesc) -> 
             )
         };
         if result.is_err() || !options.UnalignedBlockTexturesSupported.as_bool() {
-            return false;
+            return None;
         }
     }
     let mut support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
@@ -186,7 +189,7 @@ pub(super) fn format_available(device: &Dx12Device, desc: &api::TextureDesc) -> 
         ..Default::default()
     };
     // SAFETY: the feature query receives the matching initialized native structure.
-    unsafe {
+    let available = unsafe {
         device.0.native.CheckFeatureSupport(
             D3D12_FEATURE_FORMAT_SUPPORT,
             &mut support as *mut _ as *mut _,
@@ -254,7 +257,8 @@ pub(super) fn format_available(device: &Dx12Device, desc: &api::TextureDesc) -> 
                     .contains(D3D12_FORMAT_SUPPORT1_MULTISAMPLE_LOAD)
             })
         && (!desc.usage.contains(api::TextureUsage::STORAGE_BINDING)
-            || storage_available(device, desc))
+            || storage_available(device, desc));
+    available.then_some(support.Support1)
 }
 fn storage_available(device: &Dx12Device, desc: &api::TextureDesc) -> bool {
     let format = match desc.format {
@@ -509,13 +513,17 @@ pub(super) fn supported_sample_counts(dv: &Dx12Device, d: &api::TextureDesc) -> 
     let mut candidate = d.clone();
     let mut counts = Vec::new();
     candidate.samples = 1;
-    if d.samples == 1 || (super::valid(&candidate).is_ok() && format_available(dv, &candidate)) {
+    if d.samples == 1
+        || (super::valid(&candidate).is_ok() && available_format_support(dv, &candidate).is_some())
+    {
         counts.push(1);
     }
     // The structural and format gates are shared by all multisampled
     // counts. The native quality-level check then qualifies each count.
     candidate.samples = 2;
-    if d.samples > 1 || (super::valid(&candidate).is_ok() && format_available(dv, &candidate)) {
+    if d.samples > 1
+        || (super::valid(&candidate).is_ok() && available_format_support(dv, &candidate).is_some())
+    {
         counts.extend(
             [2, 4, 8, 16, 32]
                 .into_iter()

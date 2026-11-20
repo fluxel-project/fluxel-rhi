@@ -17,6 +17,7 @@ pub(super) use color_view::{
     volume_attachment_slice_support,
 };
 pub(super) use format::sample_count_supported;
+use format::{available_format_support, native_format_has_support, supported_sample_counts};
 pub(super) use format::{
     bc_block_bytes, color_texel_bytes, depth_aspects, dxgi_format, format_has_support,
     format_supports_texture_atomic_add_native, format_supports_texture_atomic_bitwise_native,
@@ -24,7 +25,6 @@ pub(super) use format::{
     format_supports_texture_atomic_unsigned_min_native, integer_clear_bits, integer_color,
     is_depth, storage_view_format_available, typed_storage_access,
 };
-use format::{format_available, supported_sample_counts};
 use validate::{max_array_layers, max_extent, max_mips, valid};
 
 use super::{Dx12Device, Dx12Texture, Dx12TextureView};
@@ -64,24 +64,29 @@ pub(crate) struct TextureViewState {
 
 pub(crate) fn support(dv: &Dx12Device, d: &api::TextureDesc) -> api::Support<api::TextureSupport> {
     match validate_allocation(dv, d) {
-        Ok(()) => {
+        Ok(format_support) => {
             let depth = is_depth(d.format);
+            let mip_ceiling = max_mips(d);
+            let max_mips = if d.mip_levels > 1
+                || (mip_ceiling > 1 && supports_mip_chain(dv, d, format_support))
+            {
+                mip_ceiling
+            } else {
+                1
+            };
             api::Support::Supported(api::TextureSupport {
                 max_extent: max_extent(d.dimension),
                 max_array_layers: max_array_layers(d),
-                max_mips: max_mips(d),
+                max_mips,
                 sample_counts: if d.dimension != api::TextureDimension::D2 {
                     vec![1]
                 } else {
                     supported_sample_counts(dv, d)
                 },
                 compatible_view_formats: permitted_view_formats(dv, d),
-                filterable: !depth
-                    && format_has_support(dv, d.format, D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE),
+                filterable: !depth && format_support.contains(D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE),
                 blendable: !depth
-                    && format_has_support(
-                        dv,
-                        d.format,
+                    && format_support.contains(
                         D3D12_FORMAT_SUPPORT1_RENDER_TARGET | D3D12_FORMAT_SUPPORT1_BLENDABLE,
                     ),
                 storage: !depth && d.usage.contains(api::TextureUsage::STORAGE_BINDING),
@@ -94,15 +99,45 @@ pub(crate) fn support(dv: &Dx12Device, d: &api::TextureDesc) -> api::Support<api
 fn validate_allocation(
     dv: &Dx12Device,
     d: &api::TextureDesc,
-) -> std::result::Result<(), &'static str> {
+) -> std::result::Result<D3D12_FORMAT_SUPPORT1, &'static str> {
     valid(d)?;
-    if !format_available(dv, d) {
-        return Err("DX12 texture format support");
+    let format_support = available_format_support(dv, d).ok_or("DX12 texture format support")?;
+    if d.mip_levels > 1 && !supports_mip_chain(dv, d, format_support) {
+        return Err("DX12 texture format has no mip chain support");
     }
     if !sample_count_supported(dv, d.format, d.samples) {
         return Err("DX12 texture sample count/format combination");
     }
-    Ok(())
+    Ok(format_support)
+}
+
+fn supports_mip_chain(
+    dv: &Dx12Device,
+    desc: &api::TextureDesc,
+    format_support: D3D12_FORMAT_SUPPORT1,
+) -> bool {
+    allocation_format(desc).is_ok_and(|native| {
+        if native == dxgi_format(desc.format) {
+            format_support.contains(D3D12_FORMAT_SUPPORT1_MIP)
+        } else {
+            native_format_has_support(dv, native, D3D12_FORMAT_SUPPORT1_MIP)
+        }
+    })
+}
+
+fn allocation_format(desc: &api::TextureDesc) -> Result<DXGI_FORMAT> {
+    if desc.view_formats.iter().any(|&view| view != desc.format) {
+        format::typeless_color(desc.format).ok_or(Error::InvalidState)
+    } else if is_depth(desc.format) && desc.usage.contains(api::TextureUsage::TEXTURE_BINDING) {
+        Ok(match desc.format {
+            api::TextureFormat::Depth16Unorm => DXGI_FORMAT_R16_TYPELESS,
+            api::TextureFormat::Depth24PlusStencil8 => DXGI_FORMAT_R24G8_TYPELESS,
+            api::TextureFormat::Depth32FloatStencil8 => DXGI_FORMAT_R32G8X24_TYPELESS,
+            _ => DXGI_FORMAT_R32_TYPELESS,
+        })
+    } else {
+        Ok(dxgi_format(desc.format))
+    }
 }
 
 // Share reinterpretation admission between capability reporting and view creation.
@@ -196,18 +231,7 @@ pub(crate) fn allocation_desc(dv: &Dx12Device, d: &api::TextureDesc) -> Result<A
         })
         .map_err(|_| Error::InvalidRange)?,
         MipLevels: u16::try_from(d.mip_levels).map_err(|_| Error::InvalidRange)?,
-        Format: if d.view_formats.iter().any(|&view| view != d.format) {
-            format::typeless_color(d.format).ok_or(Error::InvalidState)?
-        } else if is_depth(d.format) && d.usage.contains(api::TextureUsage::TEXTURE_BINDING) {
-            match d.format {
-                api::TextureFormat::Depth16Unorm => DXGI_FORMAT_R16_TYPELESS,
-                api::TextureFormat::Depth24PlusStencil8 => DXGI_FORMAT_R24G8_TYPELESS,
-                api::TextureFormat::Depth32FloatStencil8 => DXGI_FORMAT_R32G8X24_TYPELESS,
-                _ => DXGI_FORMAT_R32_TYPELESS,
-            }
-        } else {
-            dxgi_format(d.format)
-        },
+        Format: allocation_format(d)?,
         SampleDesc: DXGI_SAMPLE_DESC {
             Count: d.samples,
             Quality: 0,

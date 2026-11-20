@@ -55,6 +55,10 @@ query state are verified during command execution.
 for single-sample and multisampled textures of the same extent. Check a
 non-power-of-two extent and verify multisampling reports and admits one
 mip while rejecting a second mip.
+Check the native `MIP` flag against the actual allocation format, including
+typeless allocations used for reinterpreted color and sampled depth. When
+the device reports no mip support, the one-level descriptor must report a
+ceiling of one and the multi-level request must fail before allocation.
 For multisampled color attachments, compare texture and view support with
 creation for the base and reinterpreted formats. Check native multisampled
 render target support and the requested sample count for the view format.
