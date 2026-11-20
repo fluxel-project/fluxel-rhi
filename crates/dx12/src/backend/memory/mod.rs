@@ -297,8 +297,10 @@ impl MemoryBackend for Dx12 {
             )
         }
         .map_err(super::native_error)?;
+        let resource = resource.ok_or(Error::OutOfMemory)?;
+        super::resource::set_resource_label(&resource, desc.label.as_deref());
         Ok(Dx12Buffer {
-            resource: resource.ok_or(Error::OutOfMemory)?,
+            resource,
             size: desc.size,
             allocation_size,
             mapped: Arc::new(AtomicBool::new(false)),
@@ -337,8 +339,10 @@ impl MemoryBackend for Dx12 {
             )
         }
         .map_err(super::native_error)?;
+        let resource = resource.ok_or(Error::OutOfMemory)?;
+        super::resource::set_resource_label(&resource, desc.label.as_deref());
         Ok(Dx12Texture(Arc::new(texture::TextureState {
-            resource: resource.ok_or(Error::OutOfMemory)?,
+            resource,
             default_allocation: None,
             backing_heap: Some(heap.heap.clone()),
             desc: desc.clone(),

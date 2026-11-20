@@ -550,6 +550,7 @@ impl fluxel_rhi_core::backend::SparseBackend for Dx12 {
             packed_tail,
         }])
         .expect("one sparse aspect");
+        super::resource::set_resource_label(&resource, desc.label.as_deref());
         Ok(Dx12Texture(Arc::new(super::texture::TextureState {
             resource,
             default_allocation: None,

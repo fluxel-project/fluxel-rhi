@@ -318,6 +318,7 @@ pub(crate) fn create(dv: &Dx12Device, d: &api::TextureDesc) -> Result<Dx12Textur
         .map_err(err)?;
         (resource.ok_or(Error::OutOfMemory)?, None, None)
     };
+    super::resource::set_resource_label(&resource, d.label.as_deref());
     Ok(Dx12Texture(Arc::new(TextureState {
         resource,
         default_allocation: lease,
