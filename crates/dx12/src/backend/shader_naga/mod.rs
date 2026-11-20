@@ -65,6 +65,23 @@ pub(crate) fn compile_direct_hlsl(
     dxc::compile_hlsl(source, entry, &hlsl_profile(stage, model)?, constants)
 }
 
+pub(crate) fn compile_hlsl_with_report(
+    source: &str,
+    entry: &str,
+    stage: api::ShaderStage,
+    model: u16,
+    constants: &[(String, api::SpecializationValue)],
+    origin: api::ShaderDiagnosticSource,
+) -> Result<dxc::CompiledHlsl> {
+    dxc::compile_hlsl_with_origin(
+        source,
+        entry,
+        &hlsl_profile(stage, model)?,
+        constants,
+        origin,
+    )
+}
+
 pub(crate) fn preprocess_direct_hlsl(
     source: &str,
     constants: &[(String, api::SpecializationValue)],
@@ -106,6 +123,7 @@ pub(crate) fn validate_source(desc: &api::ShaderDesc) -> Result<()> {
 
 pub struct CompiledEntry {
     pub bytes: Vec<u8>,
+    pub report: Option<api::ShaderCompilationReport>,
     pub hlsl: String,
     pub name: String,
     pub stage: api::ShaderStage,
@@ -681,7 +699,7 @@ fn compile_inner(
             }
             hlsl = wave_size::inject(&hlsl, &name, size)?;
         }
-        let bytes = dxc::compile_hlsl_with_origin(
+        let compiled = dxc::compile_hlsl_with_origin(
             &hlsl,
             &name,
             profile,
@@ -705,7 +723,8 @@ fn compile_inner(
             })
             .collect();
         entries.push(CompiledEntry {
-            bytes,
+            bytes: compiled.bytes,
+            report: compiled.report,
             hlsl,
             name: entry.name.clone(),
             stage: entry.stage,

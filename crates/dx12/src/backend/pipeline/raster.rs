@@ -25,6 +25,7 @@ use super::fixed::{
 use super::{PipelineLayoutState, create_view_instanced_pso};
 
 pub(crate) struct RasterPipelineState {
+    compilation_diagnostics: Vec<api::PipelineShaderDiagnostics>,
     pub(in crate::backend) root: ID3D12RootSignature,
     pub(in crate::backend) layout: Arc<PipelineLayoutState>,
     pub(in crate::backend) state: ID3D12PipelineState,
@@ -46,6 +47,11 @@ pub(crate) struct RasterPipelineState {
     pub(in crate::backend) dynamic_depth_bias: bool,
 }
 impl fluxel_rhi_core::backend::PipelineBackend for Dx12 {
+    fn raster_compilation_diagnostics(
+        pipeline: &Dx12RasterPipeline,
+    ) -> &[api::PipelineShaderDiagnostics] {
+        &pipeline.0.compilation_diagnostics
+    }
     fn vertex_format_support(device: &Dx12Device, format: api::VertexFormat) -> Result<()> {
         admitted_vertex_format(device, format).map(|_| ())
     }
@@ -98,14 +104,14 @@ fn create_raster(
     let (formats, blends) = lower_targets(device, &desc.color_targets)?;
     // SAFETY: Core validated the layout belongs to this device.
     let layout = unsafe { desc.layout.native_ref() }.0.clone();
-    let (vs, mut raw_storage_bindings, vertex_index_constants) =
+    let (vs, mut raw_storage_bindings, vertex_index_constants, vertex_report) =
         stage(&desc.vertex, api::ShaderStage::Vertex, &layout)?;
     let ps = desc
         .fragment
         .as_ref()
         .map(|s| stage(s, api::ShaderStage::Fragment, &layout))
         .transpose()?;
-    if let Some((_, bindings, _)) = &ps {
+    if let Some((_, bindings, _, _)) = &ps {
         raw_storage_bindings.extend(bindings);
     }
     raw_storage_bindings.sort_unstable();
@@ -198,7 +204,7 @@ fn create_raster(
         VS: bytecode(&vs),
         PS: ps
             .as_ref()
-            .map_or_else(D3D12_SHADER_BYTECODE::default, |(bytes, _, _)| {
+            .map_or_else(D3D12_SHADER_BYTECODE::default, |(bytes, _, _, _)| {
                 bytecode(bytes)
             }),
         BlendState: D3D12_BLEND_DESC {
@@ -253,7 +259,7 @@ fn create_raster(
                 root_bytes,
                 &vs,
                 ps.as_ref()
-                    .map_or(&[][..], |(bytes, _, _)| bytes.as_slice()),
+                    .map_or(&[][..], |(bytes, _, _, _)| bytes.as_slice()),
                 settings.as_bytes(),
             ])
         })
@@ -314,7 +320,12 @@ fn create_raster(
     if vertex_index_root.is_some() {
         let _ = device.0.indirect_pack_cache.get_or_create(device)?;
     }
+    let compilation_diagnostics = vertex_report
+        .into_iter()
+        .chain(ps.and_then(|(_, _, _, report)| report))
+        .collect();
     Ok(Dx12RasterPipeline(Arc::new(RasterPipelineState {
+        compilation_diagnostics,
         root,
         layout,
         state,
@@ -342,7 +353,12 @@ fn stage(
     s: &api::PipelineStage<Dx12>,
     need: api::ShaderStage,
     layout: &super::layout::PipelineLayoutState,
-) -> Result<(Vec<u8>, Vec<(u32, u32)>, bool)> {
+) -> Result<(
+    Vec<u8>,
+    Vec<(u32, u32)>,
+    bool,
+    Option<api::PipelineShaderDiagnostics>,
+)> {
     // SAFETY: Core's pipeline descriptor validates device identity. The return
     // slice borrows the stage, which outlives PSO construction in create_raster.
     let n = unsafe { s.module.native_ref() };
@@ -356,6 +372,11 @@ fn stage(
                 need, s.entry
             ))
         })?;
+    let entry_report = |report| api::PipelineShaderDiagnostics {
+        stage: need,
+        entry: s.entry.clone(),
+        report,
+    };
     match &n.source {
         Some(Dx12ShaderSource::Wgsl(source)) => {
             let compiled = super::super::shader_naga::compile_variant_with_typed_map(
@@ -372,6 +393,7 @@ fn stage(
                 compiled.bytes,
                 compiled.raw_storage_bindings,
                 compiled.vertex_index_constants,
+                compiled.report.map(entry_report),
             ))
         }
         Some(Dx12ShaderSource::Hlsl(source)) => {
@@ -383,23 +405,26 @@ fn stage(
             };
             let text = std::str::from_utf8(&source.bytes)
                 .map_err(|_| Error::Shader("HLSL is not UTF-8".into()))?;
+            let compiled = super::super::shader_naga::compile_hlsl_with_report(
+                text,
+                &s.entry,
+                need,
+                model,
+                &s.constants,
+                api::ShaderDiagnosticSource::Hlsl,
+            )?;
             Ok((
-                super::super::shader_naga::compile_direct_hlsl(
-                    text,
-                    &s.entry,
-                    need,
-                    model,
-                    &s.constants,
-                )?,
+                compiled.bytes,
                 Vec::new(),
                 false,
+                compiled.report.map(entry_report),
             ))
         }
         None if !layout.native_abi_compatible => {
             Err(Error::Unsupported("DX12 DXIL descriptor register overlap"))
         }
         None if !s.constants.is_empty() => Err(Error::Unsupported("DX12 DXIL specialization")),
-        None => Ok((n.bytes.to_vec(), Vec::new(), false)),
+        None => Ok((n.bytes.to_vec(), Vec::new(), false, None)),
     }
 }
 fn bytecode(v: &[u8]) -> D3D12_SHADER_BYTECODE {

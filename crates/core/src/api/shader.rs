@@ -548,3 +548,11 @@ pub struct ShaderCompilationReport {
     pub diagnostics: Vec<ShaderDiagnostic>,
     pub rendered: String,
 }
+
+/// Compiler feedback for a specific entry of a successfully created pipeline.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PipelineShaderDiagnostics {
+    pub stage: ShaderStage,
+    pub entry: String,
+    pub report: ShaderCompilationReport,
+}

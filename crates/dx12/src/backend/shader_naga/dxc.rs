@@ -6,7 +6,9 @@
 
 use std::collections::BTreeSet;
 
-use fluxel_rhi_core::api::{Error, Result, ShaderDiagnosticSource, SpecializationValue};
+use fluxel_rhi_core::api::{
+    Error, Result, ShaderCompilationReport, ShaderDiagnosticSource, SpecializationValue,
+};
 use windows::Win32::Foundation::{FreeLibrary, HMODULE};
 use windows::Win32::Graphics::Direct3D::Dxc::{
     CLSID_DxcCompiler, DXC_CP_UTF8, DXC_OUT_HLSL, DxcBuffer, IDxcBlob, IDxcCompiler3, IDxcResult,
@@ -35,6 +37,12 @@ pub(super) fn compile_hlsl(
         constants,
         ShaderDiagnosticSource::Hlsl,
     )
+    .map(|compiled| compiled.bytes)
+}
+
+pub(crate) struct CompiledHlsl {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) report: Option<ShaderCompilationReport>,
 }
 
 pub(super) fn compile_hlsl_with_origin(
@@ -43,7 +51,7 @@ pub(super) fn compile_hlsl_with_origin(
     profile: &str,
     constants: &[(String, SpecializationValue)],
     origin: ShaderDiagnosticSource,
-) -> Result<Vec<u8>> {
+) -> Result<CompiledHlsl> {
     let definitions = definitions(constants)?;
     let mut arguments = vec![
         "-T".to_owned(),
@@ -53,7 +61,10 @@ pub(super) fn compile_hlsl_with_origin(
     ];
     append_definitions(&mut arguments, definitions);
     let (_library, result) = invoke(source, &arguments, origin)?;
-    result_bytes(&result)
+    let bytes = result_bytes(&result)?;
+    let report =
+        diagnostic_text(&result).map(|text| super::diagnostics::dxc_feedback(origin, text));
+    Ok(CompiledHlsl { bytes, report })
 }
 
 /// Expands conditionals and macro definitions in memory before the raw-HLSL
@@ -127,27 +138,27 @@ fn invoke(
     // SAFETY: the operation result is live and owns the returned blobs.
     let status = unsafe { result.GetStatus() }.map_err(|e| Error::Shader(e.to_string()))?;
     if status.is_err() {
-        // SAFETY: error blob data remains valid while the blob is alive.
-        let detail = unsafe { result.GetErrorBuffer() }
-            .ok()
-            .and_then(|blob| {
-                // SAFETY: DXC owns this nonempty blob for the duration of the copy.
-                let (pointer, size) = unsafe { (blob.GetBufferPointer(), blob.GetBufferSize()) };
-                if pointer.is_null() || size == 0 {
-                    return None;
-                }
-                let bytes = unsafe { std::slice::from_raw_parts(pointer.cast(), size) };
-                let detail = String::from_utf8_lossy(bytes)
-                    .trim_end_matches('\0')
-                    .to_owned();
-                (!detail.trim().is_empty()).then_some(detail)
-            })
-            .unwrap_or_else(|| format!("{status:?}"));
+        let detail = diagnostic_text(&result).unwrap_or_else(|| format!("{status:?}"));
         return Err(Error::ShaderCompilation(super::diagnostics::dxc_report(
             origin, detail,
         )));
     }
     Ok((library, result))
+}
+
+fn diagnostic_text(result: &IDxcResult) -> Option<String> {
+    // SAFETY: the live result owns the returned COM object and its buffer.
+    let blob = unsafe { result.GetErrorBuffer() }.ok()?;
+    // SAFETY: DXC owns this blob for the entire synchronous copy.
+    let (pointer, size) = unsafe { (blob.GetBufferPointer(), blob.GetBufferSize()) };
+    if pointer.is_null() || size == 0 {
+        return None;
+    }
+    // SAFETY: the nonempty compiler blob owns this data range.
+    let bytes = unsafe { std::slice::from_raw_parts(pointer.cast(), size) };
+    let text = String::from_utf8_lossy(bytes);
+    let text = text.trim_end_matches('\0');
+    (!text.trim().is_empty()).then(|| text.to_owned())
 }
 
 fn result_bytes(result: &IDxcResult) -> Result<Vec<u8>> {

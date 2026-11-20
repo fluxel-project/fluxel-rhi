@@ -109,6 +109,11 @@ pub trait ShaderBackend: Backend {
 }
 
 pub trait PipelineBackend: Backend {
+    fn raster_compilation_diagnostics(
+        _pipeline: &Self::NativeRasterPipeline,
+    ) -> &[PipelineShaderDiagnostics] {
+        &[]
+    }
     fn vertex_format_support(_device: &Self::NativeDevice, _format: VertexFormat) -> Result<()> {
         Err(Error::Unsupported("vertex format support query"))
     }

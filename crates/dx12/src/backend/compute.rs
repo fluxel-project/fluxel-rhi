@@ -37,6 +37,7 @@ pub(super) fn validate_workgroup_size(size: [u32; 3]) -> Result<()> {
 }
 
 pub(crate) struct ComputePipelineState {
+    compilation_diagnostics: Vec<api::PipelineShaderDiagnostics>,
     pub(crate) root: ID3D12RootSignature,
     pub(crate) layout: Arc<super::pipeline::PipelineLayoutState>,
     pub(crate) state: ID3D12PipelineState,
@@ -104,6 +105,11 @@ pub(crate) fn restore_compute_state(encoder: &mut super::encoder::Dx12Encoder) -
 pub struct Compute;
 
 impl fluxel_rhi_core::backend::ComputeOps<Dx12> for Compute {
+    fn compilation_diagnostics(
+        pipeline: &Dx12ComputePipeline,
+    ) -> &[api::PipelineShaderDiagnostics] {
+        &pipeline.0.compilation_diagnostics
+    }
     const AVAILABLE: bool = true;
     type PipelineFuture<'a> = super::pipeline::worker::ColdFuture<Dx12ComputePipeline>;
 
@@ -376,7 +382,7 @@ fn create_pipeline(
     // SAFETY: same-device layout native state is cloned to retain its root
     // signature independently of the caller's descriptor borrow.
     let layout = unsafe { desc.layout.native_ref() }.0.clone();
-    let (compiled, raw_storage_bindings, num_workgroups_constants) = match &shader.source {
+    let (compiled, raw_storage_bindings, num_workgroups_constants, report) = match &shader.source {
         Some(Dx12ShaderSource::Wgsl(source)) => {
             if let Some(size) = desc.required_subgroup_size {
                 validate_required_wave_size(device, size)?;
@@ -395,6 +401,7 @@ fn create_pipeline(
                 Some(compiled.bytes),
                 compiled.raw_storage_bindings,
                 compiled.num_workgroups_constants,
+                compiled.report,
             )
         }
         Some(Dx12ShaderSource::Hlsl(source)) => {
@@ -417,17 +424,20 @@ fn create_pipeline(
                 text = super::shader_naga::preprocess_direct_hlsl(&text, &desc.compute.constants)?;
                 text = super::shader_naga::inject_direct_hlsl(&text, &desc.compute.entry, size)?;
             }
-            (
-                Some(super::shader_naga::compile_direct_hlsl(
-                    &text,
-                    &desc.compute.entry,
-                    api::ShaderStage::Compute,
-                    model,
-                    &desc.compute.constants,
-                )?),
-                Vec::new(),
-                false,
-            )
+            let origin = if desc.required_subgroup_size.is_some() {
+                api::ShaderDiagnosticSource::GeneratedHlsl
+            } else {
+                api::ShaderDiagnosticSource::Hlsl
+            };
+            let compiled = super::shader_naga::compile_hlsl_with_report(
+                &text,
+                &desc.compute.entry,
+                api::ShaderStage::Compute,
+                model,
+                &desc.compute.constants,
+                origin,
+            )?;
+            (Some(compiled.bytes), Vec::new(), false, compiled.report)
         }
         None => {
             if !layout.native_abi_compatible {
@@ -441,7 +451,7 @@ fn create_pipeline(
                     "DX12 DXIL required subgroup size is immutable in native artifact",
                 ));
             }
-            (None, Vec::new(), false)
+            (None, Vec::new(), false, None)
         }
     };
     let bytes: &[u8] = compiled.as_deref().unwrap_or(&shader.bytes);
@@ -518,6 +528,14 @@ fn create_pipeline(
         let _ = cache.0.store(key, &state);
     }
     Ok(Dx12ComputePipeline(Arc::new(ComputePipelineState {
+        compilation_diagnostics: report
+            .into_iter()
+            .map(|report| api::PipelineShaderDiagnostics {
+                stage: api::ShaderStage::Compute,
+                entry: desc.compute.entry.clone(),
+                report,
+            })
+            .collect(),
         root,
         layout,
         state,

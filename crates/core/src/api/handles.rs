@@ -270,6 +270,18 @@ impl<B: Backend> RasterPipeline<B> {
     }
 }
 handle!(ComputePipeline, NativeComputePipeline, layout: PipelineLayout<B>);
+impl<B: crate::backend::PipelineBackend> RasterPipeline<B> {
+    /// Diagnostics retained from successful stage compilation.
+    pub fn compilation_diagnostics(&self) -> &[PipelineShaderDiagnostics] {
+        B::raster_compilation_diagnostics(&self.native)
+    }
+}
+impl<B: Backend> ComputePipeline<B> {
+    /// Diagnostics retained from successful stage compilation.
+    pub fn compilation_diagnostics(&self) -> &[PipelineShaderDiagnostics] {
+        <B::Compute as crate::backend::ComputeOps<B>>::compilation_diagnostics(&self.native)
+    }
+}
 handle!(MeshPipeline, NativeMeshPipeline, layout: PipelineLayout<B>);
 handle!(RayPipeline, NativeRayPipeline, layout: PipelineLayout<B>);
 handle!(PipelineCache, NativePipelineCache);

@@ -182,6 +182,11 @@ pub trait SecondaryBackend: RasterBackend + DeferredBackend {
 /// Per-backend fixed static domain implementation. Unavailable is one shared
 /// zero-size implementation, not a fake resource or a dynamic vtable.
 pub trait ComputeOps<B: Backend> {
+    fn compilation_diagnostics(
+        _pipeline: &B::NativeComputePipeline,
+    ) -> &[PipelineShaderDiagnostics] {
+        &[]
+    }
     const AVAILABLE: bool;
     type PipelineFuture<'a>: Future<Output = Result<B::NativeComputePipeline>> + 'a
     where

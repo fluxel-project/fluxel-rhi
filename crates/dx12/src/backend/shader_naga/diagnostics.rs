@@ -91,6 +91,18 @@ pub(super) fn dxc_report(
     }
 }
 
+pub(super) fn dxc_feedback(
+    source: ShaderDiagnosticSource,
+    rendered: String,
+) -> ShaderCompilationReport {
+    let diagnostics = rendered.lines().filter_map(dxc_diagnostic).collect();
+    ShaderCompilationReport {
+        source,
+        diagnostics,
+        rendered,
+    }
+}
+
 fn dxc_diagnostic(line: &str) -> Option<ShaderDiagnostic> {
     use ShaderDiagnosticSeverity::*;
     for (marker, severity) in [
