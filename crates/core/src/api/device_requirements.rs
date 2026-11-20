@@ -103,6 +103,7 @@ pub enum DeviceCapacity {
     ComputeWorkgroups([u32; 3]),
     ComputeWorkgroupSize([u32; 3]),
     ComputeInvocationsPerWorkgroup(u32),
+    ComputeWorkgroupStorageSize(u32),
     PushConstantBytes(u32),
     MultiviewViews(u32),
     MeshIndirectCount(u32),
@@ -135,6 +136,9 @@ impl DeviceCapacity {
                 .all(|(limit, min)| limit >= min),
             Self::ComputeInvocationsPerWorkgroup(min) => {
                 limits.max_compute_invocations_per_workgroup >= min
+            }
+            Self::ComputeWorkgroupStorageSize(min) => {
+                limits.max_compute_workgroup_storage_size >= min
             }
             Self::PushConstantBytes(min) => limits.max_push_constant_bytes >= min,
             Self::MultiviewViews(min) => limits.max_multiview_views >= min,

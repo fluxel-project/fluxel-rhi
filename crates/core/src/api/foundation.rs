@@ -635,6 +635,8 @@ pub struct DeviceLimits {
     /// Combined invocation limit across all axes of one compute workgroup.
     /// Zero means the backend has not published a separate limit.
     pub max_compute_invocations_per_workgroup: u32,
+    /// Maximum compute workgroup storage in bytes. Zero means unreported.
+    pub max_compute_workgroup_storage_size: u32,
     pub max_push_constant_bytes: u32,
     pub max_multiview_views: u32,
     /// Maximum number of mesh indirect records consumed by one multi/count call.

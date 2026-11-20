@@ -663,6 +663,21 @@ fn compile_inner(
                 });
         if stage == naga::ShaderStage::Compute {
             super::compute::validate_workgroup_size(module.entry_points[index].workgroup_size)?;
+            let entry_usage = info.get_entry_point(index);
+            let bytes = module
+                .global_variables
+                .iter()
+                .filter(|(handle, var)| {
+                    var.space == naga::AddressSpace::WorkGroup && !entry_usage[*handle].is_empty()
+                })
+                // WGSL accounts for each live workgroup variable in 16-byte units.
+                .map(|(_, var)| {
+                    u64::from(module.types[var.ty].inner.size(module.to_ctx())).next_multiple_of(16)
+                })
+                .fold(0, u64::saturating_add);
+            if bytes > u64::from(super::compute::MAX_WORKGROUP_STORAGE_SIZE) {
+                return Err(Error::InvalidRange);
+            }
         }
         if entry
             .workgroup_size

@@ -22,6 +22,7 @@ pub(super) const MAX_WORKGROUP_SIZE: [u32; 3] = [
     D3D12_CS_THREAD_GROUP_MAX_Z,
 ];
 pub(super) const MAX_WORKGROUP_INVOCATIONS: u32 = D3D12_CS_THREAD_GROUP_MAX_THREADS_PER_GROUP;
+pub(super) const MAX_WORKGROUP_STORAGE_SIZE: u32 = D3D12_CS_TGSM_REGISTER_COUNT * 4;
 
 pub(super) fn validate_workgroup_size(size: [u32; 3]) -> Result<()> {
     if size
