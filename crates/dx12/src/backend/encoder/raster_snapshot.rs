@@ -77,18 +77,10 @@ pub(crate) fn restore(encoder: &mut Dx12Encoder) -> Result<(), Error> {
             .list
             .IASetIndexBuffer(s.index.as_ref().map(|view| view as *const _));
         if let Some(v) = s.viewport {
-            if encoder.raster_multiview.is_some() {
-                encoder.list.RSSetViewports(&[v, v]);
-            } else {
-                encoder.list.RSSetViewports(&[v]);
-            }
+            encoder.list.RSSetViewports(&[v]);
         }
         if let Some(r) = s.scissor {
-            if encoder.raster_multiview.is_some() {
-                encoder.list.RSSetScissorRects(&[r, r]);
-            } else {
-                encoder.list.RSSetScissorRects(&[r]);
-            }
+            encoder.list.RSSetScissorRects(&[r]);
         }
         encoder
             .list

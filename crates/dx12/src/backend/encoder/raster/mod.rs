@@ -59,6 +59,18 @@ pub(super) fn index_format_matches(
         Some(api::IndexFormat::Uint32) => matches!(actual, Some(api::IndexFormat::Uint32)),
     }
 }
+
+/// The pass's highest active ordinal must fit the pipeline's declared views.
+pub(super) fn multiview_compatible(
+    required_views: Option<u32>,
+    pipeline_views: Option<u32>,
+) -> bool {
+    match (required_views, pipeline_views) {
+        (Some(required), Some(available)) => required <= available,
+        (None, None) => true,
+        _ => false,
+    }
+}
 #[cfg(test)]
 #[path = "../../../tests/backend/encoder/raster.rs"]
 mod topology_tests;
@@ -93,7 +105,7 @@ impl fluxel_rhi_core::backend::RasterBackend for Dx12 {
             || encoder
                 .raster_samples
                 .is_some_and(|samples| samples != pipeline.0.samples)
-            || encoder.raster_multiview != pipeline.0.multiview
+            || !multiview_compatible(encoder.raster_multiview, pipeline.0.multiview)
         {
             return Err(Error::InvalidState);
         }
@@ -328,31 +340,17 @@ impl fluxel_rhi_core::backend::RasterBackend for Dx12 {
     fn viewport(encoder: &mut Dx12Encoder, v: api::Viewport) -> Result<(), Error> {
         let viewport = validate_viewport(v)?;
         encoder.raster_snapshot.viewport = Some(viewport);
-        // View instancing selects viewport slots 0 and 1. Reapply both after
-        // the caller overrides the pass default, or the second view is clipped.
+        // Every view location in the PSO selects viewport slot zero.
         // SAFETY: `validate_viewport` checked finite dimensions and this open
         // command list is exclusively owned by the encoder.
-        unsafe {
-            if encoder.raster_multiview.is_some() {
-                encoder.list.RSSetViewports(&[viewport, viewport]);
-            } else {
-                encoder.list.RSSetViewports(&[viewport]);
-            }
-        }
+        unsafe { encoder.list.RSSetViewports(&[viewport]) };
         Ok(())
     }
     fn scissor(encoder: &mut Dx12Encoder, r: api::Rect) -> Result<(), Error> {
         let rect = validate_scissor(r)?;
         encoder.raster_snapshot.scissor = Some(rect);
-        // Match the two viewport slots selected by the view-instanced PSO.
         // SAFETY: `validate_scissor` checked integer bounds for this list.
-        unsafe {
-            if encoder.raster_multiview.is_some() {
-                encoder.list.RSSetScissorRects(&[rect, rect]);
-            } else {
-                encoder.list.RSSetScissorRects(&[rect]);
-            }
-        }
+        unsafe { encoder.list.RSSetScissorRects(&[rect]) };
         Ok(())
     }
     fn blend_constant(encoder: &mut Dx12Encoder, value: [f32; 4]) -> Result<(), Error> {

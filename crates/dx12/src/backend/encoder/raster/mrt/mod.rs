@@ -586,13 +586,10 @@ pub(super) fn begin(
             false,
             dsv.as_ref().map(|h| h as *const _),
         );
+        encoder.list.RSSetViewports(&[viewport]);
+        encoder.list.RSSetScissorRects(&[rect]);
         if let Some(view_list) = view_list {
-            encoder.list.RSSetViewports(&[viewport, viewport]);
-            encoder.list.RSSetScissorRects(&[rect, rect]);
             view_list.SetViewInstanceMask(desc.multiview_mask.unwrap());
-        } else {
-            encoder.list.RSSetViewports(&[viewport]);
-            encoder.list.RSSetScissorRects(&[rect]);
         }
         for (handle, color) in clears {
             encoder

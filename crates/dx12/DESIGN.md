@@ -312,6 +312,10 @@ with view instancing and Shader Model 6.1. The HLSL interface takes an
 unsigned `SV_ViewID` and converts it to the signed WGSL builtin at entry.
 The same requirement qualifies native HLSL and DXIL declarations. Native
 view IDs follow the pipeline's view ordinals.
+The pass mask selects a subset of those ordinals. All enabled ordinals
+must fit the pipeline and the attachment array views. Primary and
+secondary draws use the same admission rule, and all views use the
+pass's shared viewport and scissor.
 
 WGSL fragment sample index and sample interpolation lower to
 `SV_SampleIndex` and the HLSL `sample` modifier. They select native

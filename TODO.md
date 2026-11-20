@@ -227,6 +227,9 @@ HLSL and DXIL declarations share device admission.
 **Acceptance:** Read view-dependent output from nonzero attachment
 layers with both vertex and fragment view-index inputs. Cover scalar
 and struct input declarations, sparse masks, and incapable devices.
+Reuse a four-view pipeline with masks selecting only the low ordinals
+and nonadjacent views. Cover bundles and shared viewport and scissor
+restoration.
 
 ### DX12 native fragment barycentrics
 

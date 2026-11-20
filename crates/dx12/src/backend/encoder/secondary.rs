@@ -172,11 +172,13 @@ pub(crate) fn set_pipeline(
     if pipeline.0.color_formats != encoder.signature.color_formats
         || pipeline.0.depth_format != encoder.signature.depth_stencil_format
         || pipeline.0.samples != encoder.signature.samples
-        || pipeline.0.multiview
-            != encoder
+        || !super::raster::multiview_compatible(
+            encoder
                 .signature
                 .multiview_mask
-                .map(|mask| 32 - mask.leading_zeros())
+                .map(|mask| 32 - mask.leading_zeros()),
+            pipeline.0.multiview,
+        )
     {
         return Err(Error::InvalidState);
     }
