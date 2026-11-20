@@ -95,6 +95,15 @@ impl Dx12 {
 
 #[derive(Clone)]
 pub struct Dx12Device(Arc<Dx12DeviceState>);
+
+impl Dx12Device {
+    fn require_active(&self) -> Result<()> {
+        // SAFETY: the device is retained by self. This call only reads its
+        // removal status, and a failing HRESULT is the removal reason.
+        unsafe { self.0.native.GetDeviceRemovedReason() }.map_err(|_| Error::DeviceLost)
+    }
+}
+
 struct Dx12DeviceState {
     pub(super) native: ID3D12Device,
     pub(super) descriptor_table_limits: api::DescriptorTableLimits,

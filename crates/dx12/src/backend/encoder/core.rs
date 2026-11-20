@@ -263,6 +263,7 @@ impl fluxel_rhi_core::backend::RasterExtrasOps<Dx12> for RasterExtras {
 
 impl Dx12Encoder {
     pub(crate) fn new(device: &Dx12Device, lane: LaneId) -> Result<Self, Error> {
+        device.require_active()?;
         let is_compute = lane.ordinal == 1;
         let (allocator, list) = if is_compute {
             device.0.multi_queue.commands.acquire(&device.0.native)?

@@ -59,6 +59,7 @@ impl Dx12SecondaryEncoder {
         signature: &api::SecondaryRasterDesc,
     ) -> Result<Self, Error> {
         validate_signature(signature)?;
+        device.require_active()?;
         // SAFETY: the device owns both newly created bundle objects; allocator
         // stays inside this secondary encoder until its closed bundle is retained.
         let (allocator, list) = unsafe {

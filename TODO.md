@@ -355,6 +355,9 @@ leave destination bytes and later command recording intact. Verify that a
 pending completion times out and remains positive completion evidence only
 after the native fence reaches it. Read back identity, rearranged, and constant
 sampled components, and reject sampled-only views as storage or attachments.
+On an isolated DX12 device, verify native removal wakes a pending completion
+with `DeviceLost`. Check that new encoders, idle waits, and submissions reject
+the removed device before allocating command objects or issuing queue work.
 Verify explicit sampled, storage and attachment usage against actual
 descriptor binding and attachment admission. Cover a sampled mip chain
 paired with single-mip storage views, and separate sampled depth/stencil
@@ -529,6 +532,10 @@ and supplies a bounded workload:
   RenderGraph tile-local access and ordering contract.
 - Public shader compiler IR, portable error callbacks, allocation thresholds,
   automatic device-loss policy, and display-timing feedback.
+- Explicit device destruction. Resource and command owners currently retain
+  their native dependencies by ownership and completion evidence. Reopen when
+  a consumer defines how destruction affects cloned devices, open encoders,
+  and issued or indeterminate work, with an acceptance case for each.
 - DX12 native shader layout inference for bindings that need exact view or
   immediate metadata, and inference by export from DXIL libraries. The current
   path covers selected single-entry stages with representable binding metadata.

@@ -59,11 +59,14 @@ impl fluxel_rhi_core::backend::CompletionBackend for Dx12 {
             .query_submission_gate
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let result = super::super::queue::signal(device, 1)
+        use super::super::queue;
+        let result = device
+            .require_active()
+            .and_then(|()| queue::signal(device, 1))
             .and_then(|value| {
-                super::super::queue::wait(device, 0, &device.0.multi_queue.fence, value)
+                queue::wait(device, 0, &device.0.multi_queue.fence, value)
             })
-            .and_then(|()| signal_queue(device));
+            .and_then(|()| queue::signal(device, 0));
         let value = match result {
             Ok(value) => value,
             Err(error) => {
@@ -123,31 +126,6 @@ pub(in crate::backend) fn retire(device: &Dx12Device) {
 
 fn retain_after(completed: u64, value: u64) -> bool {
     completed == u64::MAX || value == u64::MAX || value > completed
-}
-
-// The queue gate serializes each fence allocation with its native Signal.
-// u64::MAX is reserved for device removal and never used as ordinary
-// completion evidence.
-fn signal_queue(device: &Dx12Device) -> Result<u64, Error> {
-    let _queue = device
-        .0
-        .queue_lock
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let value = device
-        .0
-        .next_fence
-        .fetch_update(
-            std::sync::atomic::Ordering::Relaxed,
-            std::sync::atomic::Ordering::Relaxed,
-            |next| next.checked_add(1),
-        )
-        .map_err(|_| Error::InvalidRange)?;
-    // SAFETY: `queue_lock` holds the queue's external synchronization boundary,
-    // and the device owns both queue and fence for their whole shared lifetime.
-    crate::diagnostics::record(crate::diagnostics::Operation::QueueSignal, 1);
-    unsafe { device.0.queue.Signal(&device.0.fence, value) }.map_err(native_error)?;
-    Ok(value)
 }
 
 fn checkpoint(
@@ -416,11 +394,7 @@ unsafe fn submit_packet(
     // it while the query/native handoff gate is held, alongside mutable query
     // admission, so no accepted query state races a removed device.
     let validate_under_gate = || -> Result<(), Error> {
-        if unsafe { device.0.fence.GetCompletedValue() } == u64::MAX
-            || unsafe { device.0.multi_queue.fence.GetCompletedValue() } == u64::MAX
-        {
-            return Err(Error::DeviceLost);
-        }
+        device.require_active()?;
         super::super::ray::validate_acceleration_builds(packet.work.steps.iter().flat_map(
             |step| {
                 let work = match &step.payload {

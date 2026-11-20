@@ -235,6 +235,11 @@ event remains owned until the native fence can no longer signal it. A value
 of `u64::MAX` represents device removal or indeterminate accepted work, so
 it is quarantined rather than treated as a canceled packet.
 
+New primary and secondary encoders, idle waits, and packet admission check
+the native device removal status before allocating command objects or
+handing work to a queue. A removal observed after admission still follows
+the native handoff and fence rules above.
+
 DXR in-place refits use the same structure address for source and destination.
 Submission checks the opted-in build signature against earlier native
 handoffs and earlier compatible commands in the current packet. The update
