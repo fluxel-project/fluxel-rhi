@@ -113,7 +113,7 @@ fn create_raster(
     }
     if desc
         .multiview
-        .is_some_and(|views| !(1..=4).contains(&views))
+        .is_some_and(|views| !(1..=D3D12_MAX_VIEW_INSTANCE_COUNT).contains(&views))
     {
         return Err(Error::Unsupported("DX12 multiview view count"));
     }
@@ -219,12 +219,7 @@ fn create_raster(
     };
     let depth_state = lower_depth(depth);
     let top = topology(desc.primitive.topology);
-    let view_locations: Vec<_> = (0..desc.multiview.unwrap_or(0))
-        .map(|index| D3D12_VIEW_INSTANCE_LOCATION {
-            ViewportArrayIndex: 0,
-            RenderTargetArrayIndex: index,
-        })
-        .collect();
+    let view_locations = desc.multiview.map(super::view_locations);
     let mut pso = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
         // Install the COM clone only after all fallible cache preparation.
         pRootSignature: ManuallyDrop::new(None),
@@ -310,7 +305,7 @@ fn create_raster(
             &device.0.native,
             &pso,
             &root,
-            desc.multiview.map(|_| view_locations.as_slice()),
+            view_locations.as_deref(),
             masks.map(|masks| super::fixed::per_face_stencil(pso.DepthStencilState, masks)),
             cached.as_deref(),
         )

@@ -72,6 +72,7 @@ device_features! {
     Occlusion => occlusion, "occlusion";
     PipelineStatistics => pipeline_statistics, "pipeline-statistics";
     Multiview => multiview, "multiview";
+    MeshMultiview => mesh_multiview, "mesh-multiview";
     PlacedMemory => placed_memory, "placed-memory";
     ExternalMemory => external_memory, "external-memory";
     SecondaryCommands => secondary_commands, "secondary-commands";

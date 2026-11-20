@@ -317,6 +317,12 @@ must fit the pipeline and the attachment array views. Primary and
 secondary draws use the same admission rule, and all views use the
 pass's shared viewport and scissor.
 
+Mesh multiview requires both native mesh shaders and view instancing.
+DXIL mesh pipelines use the same view ordinal mapping and mask admission
+as vertex raster pipelines. The mesh pipeline cache includes the view
+count and any per-face stencil masks. The native runtime checks shader
+output and shared-memory requirements for the selected view count.
+
 WGSL fragment sample index and sample interpolation lower to
 `SV_SampleIndex` and the HLSL `sample` modifier. They select native
 sample-frequency execution. Pipeline and attachment sample counts still

@@ -18,7 +18,7 @@ pub(crate) use layout::{
     PushConstantsRoot, create_pipeline_layout, pipeline_layout_support,
 };
 pub(crate) use raster::RasterPipelineState;
-pub(crate) use stream::create_raster_pso_stream;
+pub(crate) use stream::{create_raster_pso_stream, view_instancing_desc, view_locations};
 
 pub(super) const ROOT_DESCRIPTOR_DWORDS: u32 = 2;
 pub(super) const MAX_DYNAMIC_UNIFORM_BUFFERS: u32 =

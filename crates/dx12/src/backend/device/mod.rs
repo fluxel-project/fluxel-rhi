@@ -309,6 +309,7 @@ impl Dx12 {
                     .cast::<windows::Win32::Graphics::Direct3D12::ID3D12Device2>()
                     .is_ok();
             let shader_view_index = multiview && shader_model >= 61;
+            let mesh_multiview = multiview && mesh_supported;
             let lane = LaneId { device, ordinal: 0 };
             let compute_lane = LaneId { device, ordinal: 1 };
             let caps = DeviceCapabilities {
@@ -361,7 +362,11 @@ impl Dx12 {
                     max_texture_dimension_2d: D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION,
                     max_texture_dimension_3d: D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION,
                     max_texture_array_layers: D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION,
-                    max_multiview_views: if multiview { 4 } else { 0 },
+                    max_multiview_views: if multiview {
+                        windows::Win32::Graphics::Direct3D12::D3D12_MAX_VIEW_INSTANCE_COUNT
+                    } else {
+                        0
+                    },
                     max_mesh_indirect_count: if mesh_supported { u32::MAX } else { 0 },
                     max_mesh_workgroup_total_count: if mesh_supported {
                         mesh::MAX_DISPATCH_WORKGROUPS
@@ -492,6 +497,7 @@ impl Dx12 {
                 external_memory: true,
                 placed_memory: true,
                 multiview,
+                mesh_multiview,
                 shader_view_index,
                 ..Default::default()
             };
@@ -548,6 +554,7 @@ impl Dx12 {
                     dxr_1_1,
                     ray_query_supported,
                     mesh_supported,
+                    mesh_multiview,
                     sparse_supported,
                     resource_heap_tier2,
                     enhanced_barriers_supported,

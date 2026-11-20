@@ -81,7 +81,7 @@ impl<B: Backend> MeshDomain<'_, B> {
     }
 
     pub async fn create_pipeline(&self, desc: MeshPipelineDesc<B>) -> Result<MeshPipeline<B>> {
-        self.create_pipeline_inner(desc, None).await
+        self.create_pipeline_inner(desc, None, None).await
     }
 
     /// Creates a mesh raster pipeline with independent front and back stencil masks.
@@ -90,12 +90,25 @@ impl<B: Backend> MeshDomain<'_, B> {
         desc: MeshPipelineDesc<B>,
         masks: StencilMasks,
     ) -> Result<MeshPipeline<B>> {
-        self.create_pipeline_inner(desc, Some(masks)).await
+        self.create_pipeline_inner(desc, None, Some(masks)).await
+    }
+
+    /// Creates a mesh pipeline covering the declared view ordinals.
+    /// The raster pass selects the active views.
+    pub async fn create_multiview_pipeline(
+        &self,
+        desc: MeshPipelineDesc<B>,
+        views: u32,
+        stencil_masks: Option<StencilMasks>,
+    ) -> Result<MeshPipeline<B>> {
+        self.create_pipeline_inner(desc, Some(views), stencil_masks)
+            .await
     }
 
     async fn create_pipeline_inner(
         &self,
         desc: MeshPipelineDesc<B>,
+        views: Option<u32>,
         stencil_masks: Option<StencilMasks>,
     ) -> Result<MeshPipeline<B>> {
         // Task, mesh, fragment, layout, and cache must share one device even
@@ -120,13 +133,26 @@ impl<B: Backend> MeshDomain<'_, B> {
         if desc.primitive.conservative && self.device.caps.conservative_raster == Some(false) {
             return Err(Error::Unsupported("conservative rasterization"));
         }
-        let native = match stencil_masks {
-            Some(masks) => {
-                self.device.validate_stencil_masks(desc.depth_stencil)?;
+        if let Some(views) = views {
+            if !self.device.caps.mesh_multiview {
+                return Err(Error::Unsupported("mesh multiview"));
+            }
+            if views == 0 || views > self.device.caps.limits.max_multiview_views {
+                return Err(Error::InvalidRange);
+            }
+        }
+        if stencil_masks.is_some() {
+            self.device.validate_stencil_masks(desc.depth_stencil)?;
+        }
+        let native = match (views, stencil_masks) {
+            (Some(views), masks) => {
+                B::Mesh::create_multiview_pipeline(&self.device.native, &desc, views, masks).await?
+            }
+            (None, Some(masks)) => {
                 B::Mesh::create_pipeline_with_stencil_masks(&self.device.native, &desc, masks)
                     .await?
             }
-            None => B::Mesh::create_pipeline(&self.device.native, &desc).await?,
+            (None, None) => B::Mesh::create_pipeline(&self.device.native, &desc).await?,
         };
         // SAFETY: the SPI created this pipeline for this exact native device.
         let mut pipeline = unsafe { MeshPipeline::from_native(self.device.id, native) };

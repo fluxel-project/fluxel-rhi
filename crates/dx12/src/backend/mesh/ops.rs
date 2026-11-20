@@ -19,7 +19,9 @@ impl fluxel_rhi_core::backend::MeshOps<Dx12> for Mesh {
     ) -> Self::PipelineFuture<'a> {
         let device = (*device).clone();
         let desc = (*desc).clone();
-        super::super::pipeline::worker::submit(move || super::create_pipeline(&device, &desc, None))
+        super::super::pipeline::worker::submit(move || {
+            super::create_pipeline(&device, &desc, None, None)
+        })
     }
     fn create_pipeline_with_stencil_masks(
         device: &Dx12Device,
@@ -29,7 +31,19 @@ impl fluxel_rhi_core::backend::MeshOps<Dx12> for Mesh {
         let device = device.clone();
         let desc = desc.clone();
         super::super::pipeline::worker::submit(move || {
-            super::create_pipeline(&device, &desc, Some(masks))
+            super::create_pipeline(&device, &desc, Some(masks), None)
+        })
+    }
+    fn create_multiview_pipeline(
+        device: &Dx12Device,
+        desc: &api::MeshPipelineDesc<Dx12>,
+        views: u32,
+        masks: Option<api::StencilMasks>,
+    ) -> impl std::future::Future<Output = Result<Dx12MeshPipeline>> {
+        let device = device.clone();
+        let desc = desc.clone();
+        super::super::pipeline::worker::submit(move || {
+            super::create_pipeline(&device, &desc, masks, Some(views))
         })
     }
     fn bind_pipeline(encoder: &mut Dx12Encoder, pipeline: &Dx12MeshPipeline) -> Result<()> {
@@ -43,7 +57,10 @@ impl fluxel_rhi_core::backend::MeshOps<Dx12> for Mesh {
             || encoder
                 .raster_samples
                 .is_some_and(|samples| samples != pipeline.0.samples)
-            || encoder.raster_multiview.is_some()
+            || !super::super::encoder::multiview_compatible(
+                encoder.raster_multiview,
+                pipeline.0.multiview,
+            )
             || encoder.raster_depth_format != pipeline.0.depth_format
         {
             return Err(Error::InvalidState);

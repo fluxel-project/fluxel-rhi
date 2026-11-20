@@ -231,6 +231,18 @@ Reuse a four-view pipeline with masks selecting only the low ordinals
 and nonadjacent views. Cover bundles and shared viewport and scissor
 restoration.
 
+### DX12 mesh multiview
+
+**Status:** Mesh pipelines using DXIL admit native view instancing when
+both device capabilities are present. Mesh shader view IDs use the native
+artifact declaration. Raster masks and attachment layers follow the existing
+view ordinal contract.
+
+**Acceptance:** Verify distinct mesh and fragment results in enabled array
+layers, preserving masked layers. Cover task amplification, direct and
+indirect dispatch, depth attachments, and per-face stencil combinations
+where supported. Check PSO rejection for excess view-dependent output.
+
 ### DX12 native fragment barycentrics
 
 **Status:** The device capability and HLSL and DXIL shader routes admit

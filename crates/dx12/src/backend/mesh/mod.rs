@@ -34,14 +34,17 @@ pub(crate) struct MeshPipelineState {
     pub(crate) depth_format: Option<api::TextureFormat>,
     pub(crate) depth_writes: bool,
     pub(crate) stencil_writes: bool,
+    pub(crate) multiview: Option<u32>,
 }
 
 #[repr(C, align(8))]
+#[derive(Clone, Copy)]
 struct Subobject<T> {
     tag: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE,
     value: T,
 }
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct Stream<D> {
     root: Subobject<*mut std::ffi::c_void>,
     task: Subobject<D3D12_SHADER_BYTECODE>,
@@ -57,7 +60,26 @@ struct Stream<D> {
     samples: Subobject<DXGI_SAMPLE_DESC>,
     cached: Subobject<D3D12_CACHED_PIPELINE_STATE>,
 }
-impl<D> Stream<D> {
+#[repr(C)]
+struct MultiviewStream<D> {
+    base: Stream<D>,
+    view_instancing: Subobject<D3D12_VIEW_INSTANCING_DESC>,
+}
+
+fn create_native_stream<T>(
+    device: &ID3D12Device2,
+    stream: &T,
+) -> windows::core::Result<ID3D12PipelineState> {
+    let native = D3D12_PIPELINE_STATE_STREAM_DESC {
+        SizeInBytes: std::mem::size_of::<T>(),
+        pPipelineStateSubobjectStream: std::ptr::from_ref(stream).cast_mut().cast(),
+    };
+    // SAFETY: callers use a typed mesh stream and retain every borrowed native
+    // payload through the synchronous CreatePipelineState call.
+    unsafe { device.CreatePipelineState::<ID3D12PipelineState>(&native) }
+}
+
+impl<D: Copy> Stream<D> {
     fn with_depth<D2>(self, depth: Subobject<D2>) -> Stream<D2> {
         Stream {
             root: self.root,
@@ -76,19 +98,32 @@ impl<D> Stream<D> {
         }
     }
 
-    fn create(mut self, device: &ID3D12Device2, has_cache: bool) -> Result<ID3D12PipelineState> {
-        let create = |stream: &mut Self| {
-            let native = D3D12_PIPELINE_STATE_STREAM_DESC {
-                SizeInBytes: std::mem::size_of::<Self>(),
-                pPipelineStateSubobjectStream: (stream as *mut Self).cast(),
-            };
-            // SAFETY: the typed stream and all borrowed native payloads remain live through creation.
-            unsafe { device.CreatePipelineState::<ID3D12PipelineState>(&native) }
+    fn create(
+        mut self,
+        device: &ID3D12Device2,
+        has_cache: bool,
+        view_locations: Option<&[D3D12_VIEW_INSTANCE_LOCATION]>,
+    ) -> Result<ID3D12PipelineState> {
+        let create = |stream: &Self| {
+            if let Some(locations) = view_locations {
+                create_native_stream(
+                    device,
+                    &MultiviewStream {
+                        base: *stream,
+                        view_instancing: sub(
+                            D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VIEW_INSTANCING,
+                            super::pipeline::view_instancing_desc(locations),
+                        ),
+                    },
+                )
+            } else {
+                create_native_stream(device, stream)
+            }
         };
-        match create(&mut self) {
+        match create(&self) {
             Err(error) if has_cache && super::pipeline::cache::is_compatibility_error(&error) => {
                 self.cached.value = D3D12_CACHED_PIPELINE_STATE::default();
-                create(&mut self).map_err(super::native_error)
+                create(&self).map_err(super::native_error)
             }
             result => result.map_err(super::native_error),
         }
@@ -104,6 +139,11 @@ fn shader<'a>(stage: &'a api::PipelineStage<Dx12>, expected: api::ShaderStage) -
     }
     // SAFETY: Core validates that every shader belongs to the pipeline device.
     let shader = unsafe { stage.module.native_ref() };
+    if shader.source.is_some() {
+        return Err(Error::Unsupported(
+            "DX12 mesh pipeline requires DXIL shader stages",
+        ));
+    }
     if expected == api::ShaderStage::Fragment && shader.requires_raster_primitive_index {
         return Err(Error::Unsupported(
             "DX12 mesh shader cannot supply the rasterizer primitive index",
@@ -143,7 +183,16 @@ pub(super) fn create_pipeline(
     device: &Dx12Device,
     desc: &api::MeshPipelineDesc<Dx12>,
     masks: Option<api::StencilMasks>,
+    multiview: Option<u32>,
 ) -> Result<Dx12MeshPipeline> {
+    if let Some(views) = multiview {
+        if !device.0.mesh_multiview {
+            return Err(Error::Unsupported("DX12 mesh multiview"));
+        }
+        if !(1..=D3D12_MAX_VIEW_INSTANCE_COUNT).contains(&views) {
+            return Err(Error::InvalidRange);
+        }
+    }
     if masks.is_some() && !device.0.stencil_reference_per_face {
         return Err(Error::Unsupported("DX12 per-face stencil masks"));
     }
@@ -188,6 +237,9 @@ pub(super) fn create_pipeline(
     );
     if let Some(masks) = masks {
         fixed.push_str(&format!("|{masks:?}"));
+    }
+    if let Some(views) = multiview {
+        fixed.push_str(&format!("|views={views}"));
     }
     let key = cache
         .map(|_| {
@@ -279,14 +331,15 @@ pub(super) fn create_pipeline(
         .native
         .cast::<ID3D12Device2>()
         .map_err(super::native_error)?;
+    let view_locations = multiview.map(super::pipeline::view_locations);
     let state = match masks {
         Some(masks) => stream
             .with_depth(sub(
                 D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL2,
                 super::pipeline::fixed::per_face_stencil(depth_state, masks),
             ))
-            .create(&native_device, cached.is_some())?,
-        None => stream.create(&native_device, cached.is_some())?,
+            .create(&native_device, cached.is_some(), view_locations.as_deref())?,
+        None => stream.create(&native_device, cached.is_some(), view_locations.as_deref())?,
     };
     if let (Some(cache), Some(key)) = (cache, key.as_ref()) {
         // The usable pipeline is independent of whether cache extraction succeeds.
@@ -304,6 +357,7 @@ pub(super) fn create_pipeline(
         depth_format: depth.map(|d| d.format),
         depth_writes: depth.is_some_and(|d| d.depth_write_enabled),
         stencil_writes: super::pipeline::fixed::stencil_writes(depth, masks),
+        multiview,
     })))
 }
 

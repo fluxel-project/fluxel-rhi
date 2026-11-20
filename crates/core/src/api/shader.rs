@@ -41,7 +41,7 @@ pub struct ShaderEntryPoint {
 pub const SHADER_FEATURE_RAY_QUERY: &str = "ray-query";
 /// The shader uses layout-declared inline constants.
 pub const SHADER_FEATURE_PUSH_CONSTANTS: &str = "push-constants";
-/// A vertex or fragment shader reads the view index.
+/// A vertex, fragment, or supported native mesh shader reads the view index.
 pub const SHADER_FEATURE_VIEW_INDEX: &str = "view-index";
 /// The WGSL shader requires implicit dereference for composite pointer access.
 pub const SHADER_FEATURE_POINTER_COMPOSITE_ACCESS: &str = "pointer_composite_access";

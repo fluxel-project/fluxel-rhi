@@ -102,6 +102,7 @@ struct Dx12DeviceState {
     pub(super) dxr_1_1: bool,
     pub(super) ray_query_supported: bool,
     pub(super) mesh_supported: bool,
+    pub(super) mesh_multiview: bool,
     pub(super) sparse_supported: bool,
     /// Resource Heap Tier 2 permits a heap that mixes buffers and texture
     /// classes. Tier 1 requires the narrow heap flags selected by memory.rs.
@@ -343,7 +344,9 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
                     matches!(
                         entry.stage,
                         api::ShaderStage::Vertex | api::ShaderStage::Fragment
-                    )
+                    ) || (entry.stage == api::ShaderStage::Mesh
+                        && desc.format == api::ShaderFormat::Dxil
+                        && device.0.mesh_multiview)
                 }))
         {
             return api::ShaderRoute::Unsupported;

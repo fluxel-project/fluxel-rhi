@@ -64,6 +64,7 @@ pub use core::{Dx12Completion, Dx12Encoder, Dx12RecordedWork, RasterExtras};
 pub(crate) use mipmap::MipBlitCache;
 pub(super) use mipmap::{linear_mip_blit, validate_mip_blit};
 pub(super) use raster::barrier;
+pub(crate) use raster::multiview_compatible;
 pub(crate) use secondary::{Dx12SecondaryEncoder, Dx12SecondaryWork};
 pub(super) use transition::{
     barrier_sub, buffer_state, copy_location, needs_uav_barrier, texture_state,

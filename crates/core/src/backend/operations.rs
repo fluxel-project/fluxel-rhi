@@ -253,6 +253,14 @@ pub trait MeshOps<B: Backend> {
     ) -> impl Future<Output = Result<B::NativeMeshPipeline>> {
         std::future::ready(Err(Error::Unsupported("per-face stencil masks")))
     }
+    fn create_multiview_pipeline(
+        _device: &B::NativeDevice,
+        _desc: &MeshPipelineDesc<B>,
+        _views: u32,
+        _stencil_masks: Option<StencilMasks>,
+    ) -> impl Future<Output = Result<B::NativeMeshPipeline>> {
+        std::future::ready(Err(Error::Unsupported("mesh multiview")))
+    }
     fn bind_pipeline(
         encoder: &mut B::NativeEncoder,
         pipeline: &B::NativeMeshPipeline,

@@ -61,7 +61,7 @@ pub(super) fn index_format_matches(
 }
 
 /// The pass's highest active ordinal must fit the pipeline's declared views.
-pub(super) fn multiview_compatible(
+pub(crate) fn multiview_compatible(
     required_views: Option<u32>,
     pipeline_views: Option<u32>,
 ) -> bool {

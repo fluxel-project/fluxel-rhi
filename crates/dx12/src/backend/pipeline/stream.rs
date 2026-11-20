@@ -8,6 +8,25 @@ use fluxel_rhi_core::api::{Error, Result};
 use std::mem::{MaybeUninit, align_of, size_of};
 use windows::{Win32::Graphics::Direct3D12::*, core::Interface};
 
+pub(crate) fn view_locations(count: u32) -> Vec<D3D12_VIEW_INSTANCE_LOCATION> {
+    (0..count)
+        .map(|index| D3D12_VIEW_INSTANCE_LOCATION {
+            ViewportArrayIndex: 0,
+            RenderTargetArrayIndex: index,
+        })
+        .collect()
+}
+
+pub(crate) fn view_instancing_desc(
+    locations: &[D3D12_VIEW_INSTANCE_LOCATION],
+) -> D3D12_VIEW_INSTANCING_DESC {
+    D3D12_VIEW_INSTANCING_DESC {
+        ViewInstanceCount: locations.len() as u32,
+        pViewInstanceLocations: locations.as_ptr(),
+        Flags: D3D12_VIEW_INSTANCING_FLAG_ENABLE_VIEW_INSTANCE_MASKING,
+    }
+}
+
 pub(crate) fn create_raster_pso_stream(
     device: &ID3D12Device,
     pso: &D3D12_GRAPHICS_PIPELINE_STATE_DESC,
@@ -118,11 +137,7 @@ pub(crate) fn create_raster_pso_stream(
         push(
             &mut bytes,
             D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VIEW_INSTANCING,
-            D3D12_VIEW_INSTANCING_DESC {
-                ViewInstanceCount: locations.len() as u32,
-                pViewInstanceLocations: locations.as_ptr(),
-                Flags: D3D12_VIEW_INSTANCING_FLAG_ENABLE_VIEW_INSTANCE_MASKING,
-            },
+            view_instancing_desc(locations),
         );
     }
     if let Some(blob) = cached {
