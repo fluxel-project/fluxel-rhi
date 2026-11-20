@@ -180,12 +180,18 @@ fn create_raster(
         .map(|(slot, b, a)| {
             let name = &names[n];
             n += 1;
+            let offset = u32::try_from(a.offset).map_err(|_| Error::InvalidRange)?;
+            // Core offsets are literal bytes. DX12 reserves this bit pattern
+            // to compute the offset from the preceding input element.
+            if offset == D3D12_APPEND_ALIGNED_ELEMENT {
+                return Err(Error::InvalidRange);
+            }
             Ok(D3D12_INPUT_ELEMENT_DESC {
                 SemanticName: PCSTR(name.as_ptr()),
                 SemanticIndex: a.location,
                 Format: admitted_vertex_format(device, a.format)?,
                 InputSlot: slot as u32,
-                AlignedByteOffset: u32::try_from(a.offset).map_err(|_| Error::InvalidRange)?,
+                AlignedByteOffset: offset,
                 InputSlotClass: match b.step_mode {
                     api::VertexStepMode::Vertex => D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
                     api::VertexStepMode::Instance => D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
