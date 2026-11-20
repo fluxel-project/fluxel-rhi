@@ -42,7 +42,7 @@ mod tests;
 #[path = "write.rs"]
 mod write;
 pub(crate) use group::create_bind_group;
-pub(crate) use layout::create_bind_group_layout;
+pub(crate) use layout::{bind_group_layout_support, create_bind_group_layout};
 
 const VIEW_CAPACITY: u32 = 65_536;
 const SAMPLER_CAPACITY: u32 = 2_048;

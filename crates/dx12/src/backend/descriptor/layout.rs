@@ -7,6 +7,14 @@ pub(crate) fn create_bind_group_layout(
     _: &Dx12Device,
     desc: &api::BindGroupLayoutDesc,
 ) -> Result<Dx12BindGroupLayout> {
+    Ok(Dx12BindGroupLayout(Arc::new(layout_state(desc)?)))
+}
+
+pub(crate) fn bind_group_layout_support(desc: &api::BindGroupLayoutDesc) -> Result<()> {
+    layout_state(desc).map(drop)
+}
+
+fn layout_state(desc: &api::BindGroupLayoutDesc) -> Result<BindGroupLayoutState> {
     let mut slots = Vec::with_capacity(desc.entries.len());
     let mut previous = None;
     for entry in &desc.entries {
@@ -152,7 +160,7 @@ pub(crate) fn create_bind_group_layout(
             _ => return Err(Error::Unsupported("DX12 bind-group binding type")),
         }
     }
-    Ok(Dx12BindGroupLayout(Arc::new(BindGroupLayoutState {
+    Ok(BindGroupLayoutState {
         slots,
         buffer_entries: desc
             .entries
@@ -165,7 +173,7 @@ pub(crate) fn create_bind_group_layout(
             })
             .cloned()
             .collect(),
-    })))
+    })
 }
 
 /// The tested non-uniform buffer route is fixed, fully bound and compute.

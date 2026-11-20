@@ -45,6 +45,12 @@ pub trait ResourceBackend: Backend {
         device: &Self::NativeDevice,
         desc: &BindGroupLayoutDesc,
     ) -> Result<Self::NativeBindGroupLayout>;
+    fn bind_group_layout_support(
+        _device: &Self::NativeDevice,
+        _desc: &BindGroupLayoutDesc,
+    ) -> Result<()> {
+        Err(Error::Unsupported("bind group layout support query"))
+    }
     fn create_bind_group(
         device: &Self::NativeDevice,
         desc: &BindGroupDesc<'_, Self>,

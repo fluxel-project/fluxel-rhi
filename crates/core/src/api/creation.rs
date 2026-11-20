@@ -120,10 +120,7 @@ impl<B: ResourceBackend> Device<B> {
         // SAFETY: the SPI created the sampler for this device.
         Ok(unsafe { Sampler::from_native(self.id, B::create_sampler(&self.native, desc)?) })
     }
-    pub fn create_bind_group_layout(
-        &self,
-        desc: &BindGroupLayoutDesc,
-    ) -> Result<BindGroupLayout<B>> {
+    fn validate_bind_group_layout(&self, desc: &BindGroupLayoutDesc) -> Result<()> {
         if desc.entries.len() > self.caps.limits.max_bindings_per_group as usize {
             return Err(Error::InvalidRange);
         }
@@ -281,7 +278,19 @@ impl<B: ResourceBackend> Device<B> {
                 return Err(Error::Unsupported("nonuniform binding indexing"));
             }
         }
-        // SAFETY: the SPI created the validated layout for this device.
+        Ok(())
+    }
+    /// Checks layout admission without creating a backend layout object.
+    pub fn bind_group_layout_support(&self, desc: &BindGroupLayoutDesc) -> Result<()> {
+        self.validate_bind_group_layout(desc)?;
+        B::bind_group_layout_support(&self.native, desc)
+    }
+    pub fn create_bind_group_layout(
+        &self,
+        desc: &BindGroupLayoutDesc,
+    ) -> Result<BindGroupLayout<B>> {
+        self.validate_bind_group_layout(desc)?;
+        // SAFETY: the SPI creates the validated layout for this device.
         Ok(unsafe {
             BindGroupLayout::from_native(
                 self.id,
