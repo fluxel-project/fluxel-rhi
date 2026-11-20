@@ -25,7 +25,8 @@ pub(super) use format::{
     format_supports_texture_atomic_unsigned_min_native, integer_clear_bits, integer_color,
     is_depth, storage_view_format_available, typed_storage_access,
 };
-use validate::{max_array_layers, max_extent, max_mips, valid};
+use validate::valid;
+pub(super) use validate::{max_array_layers, max_extent, max_mips};
 
 use super::{Dx12Device, Dx12Texture, Dx12TextureView};
 use fluxel_rhi_core::api::{self, Error, Result};

@@ -55,7 +55,7 @@ pub(super) fn packet(
                         "DX12 sparse mappings require direct lane",
                     ));
                 }
-                if !device.0.sparse_supported || binds.is_empty() {
+                if !super::super::super::sparse::supported(device) || binds.is_empty() {
                     return Err(Error::InvalidRange);
                 }
                 binds

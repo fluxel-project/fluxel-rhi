@@ -1,7 +1,7 @@
 //! Structural DX12 texture descriptor validation.
 use super::*;
 
-pub(super) fn max_extent(dimension: api::TextureDimension) -> [u32; 3] {
+pub(in crate::backend) fn max_extent(dimension: api::TextureDimension) -> [u32; 3] {
     match dimension {
         api::TextureDimension::D1 => [D3D12_REQ_TEXTURE1D_U_DIMENSION, 1, 1],
         api::TextureDimension::D2 => [
@@ -13,7 +13,7 @@ pub(super) fn max_extent(dimension: api::TextureDimension) -> [u32; 3] {
     }
 }
 
-pub(super) fn max_array_layers(d: &api::TextureDesc) -> u32 {
+pub(in crate::backend) fn max_array_layers(d: &api::TextureDesc) -> u32 {
     match d.dimension {
         api::TextureDimension::D1
             if d.usage.0 & !(api::TextureUsage::COPY_SRC.0 | api::TextureUsage::COPY_DST.0)
@@ -79,7 +79,7 @@ pub(super) fn valid(d: &api::TextureDesc) -> std::result::Result<(), &'static st
     }
     Ok(())
 }
-pub(super) fn max_mips(desc: &api::TextureDesc) -> u32 {
+pub(in crate::backend) fn max_mips(desc: &api::TextureDesc) -> u32 {
     if desc.samples > 1 {
         1
     } else {

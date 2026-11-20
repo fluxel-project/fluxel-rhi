@@ -245,33 +245,37 @@ fn validate_array_tiling_metadata(
 #[path = "../../tests/backend/sparse.rs"]
 mod tests;
 
+pub(super) fn supported(device: &Dx12Device) -> bool {
+    device.0.tiled_resources_tier != D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED
+}
+
 impl fluxel_rhi_core::backend::SparseBackend for Dx12 {
     fn create_sparse_texture(
         device: &Dx12Device,
         desc: &api::TextureDesc,
     ) -> api::Result<Dx12Texture> {
-        if !device.0.sparse_supported {
+        device.require_active()?;
+        if !supported(device) {
             return Err(api::Error::Unsupported("DX12 tiled resources"));
         }
         let is_3d = desc.dimension == api::TextureDimension::D3;
+        if is_3d && device.0.tiled_resources_tier.0 < D3D12_TILED_RESOURCES_TIER_3.0 {
+            return Err(api::Error::Unsupported(
+                "DX12 sparse 3D textures require Tiled Resources Tier 3",
+            ));
+        }
         if !matches!(
             desc.dimension,
             api::TextureDimension::D2 | api::TextureDimension::D3
-        ) || desc.extent[0] == 0
-            || desc.extent[1] == 0
-            || desc.extent[0] > 16384
-            || desc.extent[1] > 16384
-            || desc.extent[2] == 0
-            || (is_3d && (desc.extent[2] > 2048 || desc.array_layers != 1))
-            || (!is_3d && desc.extent[2] != 1)
+        ) || desc
+            .extent
+            .iter()
+            .zip(super::texture::max_extent(desc.dimension))
+            .any(|(&extent, limit)| extent == 0 || extent > limit)
             || desc.array_layers == 0
-            || desc.array_layers > 2048
+            || desc.array_layers > super::texture::max_array_layers(desc)
             || desc.mip_levels == 0
-            || desc.mip_levels
-                > 1 + desc.extent[0]
-                    .max(desc.extent[1])
-                    .max(desc.extent[2])
-                    .ilog2()
+            || desc.mip_levels > super::texture::max_mips(desc)
             || desc.samples != 1
             || !desc.view_formats.is_empty()
             || desc.usage.0
@@ -282,7 +286,7 @@ impl fluxel_rhi_core::backend::SparseBackend for Dx12 {
                     | api::TextureUsage::RENDER_ATTACHMENT.0)
                 != 0
         {
-            return Err(api::Error::Unsupported("DX12 sparse D2 texture descriptor"));
+            return Err(api::Error::Unsupported("DX12 sparse texture descriptor"));
         }
         let block_bytes = super::texture::bc_block_bytes(desc.format);
         let depth = super::texture::is_depth(desc.format);
@@ -473,7 +477,7 @@ impl fluxel_rhi_core::backend::SparseBackend for Dx12 {
         let packed_mips = u32::from(packed.NumPackedMips);
         let packed_tiles = packed.NumTilesForPackedMips;
         let packed_arrays_allowed =
-            desc.array_layers == 1 || array::supports_packed_array_tails(device)?;
+            desc.array_layers == 1 || array::supports_packed_array_tails(device);
         if sub_count != expected_subresources
             || standard_count + packed_mips != desc.mip_levels
             || (!packed_arrays_allowed && desc.array_layers > 1 && packed_mips != 0)
@@ -601,7 +605,8 @@ impl fluxel_rhi_core::backend::SparseBackend for Dx12 {
 }
 
 fn allocate(device: &Dx12Device, size: u64, render_target: bool) -> api::Result<Dx12Sparse> {
-    if !device.0.sparse_supported {
+    device.require_active()?;
+    if !supported(device) {
         return Err(api::Error::Unsupported("DX12 tiled resources"));
     }
     if size == 0 || size % 65536 != 0 {

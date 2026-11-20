@@ -227,8 +227,12 @@ impl Dx12 {
             let shader_f64 = shader_model >= 60
                 && options_available
                 && options.DoublePrecisionFloatShaderOps.as_bool();
-            let sparse_supported = options_available && options.TiledResourcesTier
-                != windows::Win32::Graphics::Direct3D12::D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED;
+            use windows::Win32::Graphics::Direct3D12::D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED;
+            let tiled_resources_tier = if options_available {
+                options.TiledResourcesTier
+            } else {
+                D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED
+            };
             let conservative_raster = options_available && options.ConservativeRasterizationTier
                 != windows::Win32::Graphics::Direct3D12::D3D12_CONSERVATIVE_RASTERIZATION_TIER_NOT_SUPPORTED;
             let resource_heap_tier2 = options.ResourceHeapTier.0
@@ -435,7 +439,7 @@ impl Dx12 {
                 mesh: mesh_supported,
                 mesh_multi_indirect: mesh_supported,
                 mesh_indirect_count: mesh_supported,
-                sparse: sparse_supported,
+                sparse: tiled_resources_tier != D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED,
                 ray: ray_supported,
                 acceleration_structure: ray_supported,
                 acceleration_structure_update: ray_supported,
@@ -572,7 +576,7 @@ impl Dx12 {
                     ray_query_supported,
                     mesh_supported,
                     mesh_multiview,
-                    sparse_supported,
+                    tiled_resources_tier,
                     resource_heap_tier2,
                     enhanced_barriers_supported,
                     dynamic_depth_bias_supported,

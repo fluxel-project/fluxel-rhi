@@ -127,7 +127,8 @@ struct Dx12DeviceState {
     pub(super) ray_query_supported: bool,
     pub(super) mesh_supported: bool,
     pub(super) mesh_multiview: bool,
-    pub(super) sparse_supported: bool,
+    pub(super) tiled_resources_tier:
+        windows::Win32::Graphics::Direct3D12::D3D12_TILED_RESOURCES_TIER,
     /// Resource Heap Tier 2 permits a heap that mixes buffers and texture
     /// classes. Tier 1 requires the narrow heap flags selected by memory.rs.
     pub(super) resource_heap_tier2: bool,

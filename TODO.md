@@ -148,6 +148,11 @@ size and verify placement stays within its requested byte extent. Match the
 texture allocation requirements and placement paths for supported shapes,
 transient attachments, and removed devices.
 
+Verify that reserved 3D textures require Tiled Resources Tier 3 and reject
+oversized extents on each axis before allocation. Cover valid 2D arrays and 3D
+textures, the packed array tail restriction below Tier 4, and creation and
+allocation on a removed device.
+
 ### DX12 structured shader diagnostics
 
 **Status:** WGSL parse and validation errors preserve compiler messages and
