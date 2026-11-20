@@ -6,6 +6,14 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 ## Active items
 
+### DX12 conservative rasterization
+
+**Status:** Device capability reporting and graphics/mesh pipeline admission
+use the D3D12 conservative rasterization feature and filled triangle rules.
+
+**Acceptance:** Verify coverage on a supporting GPU. Check early rejection
+for point/line topology, wireframe, and a device without support.
+
 ### DX12 surface attachment formats and HDR
 
 **Status:** Configuration and acquisition retain the selected attachment view

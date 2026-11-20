@@ -95,6 +95,9 @@ impl<B: Backend> MeshDomain<'_, B> {
         {
             return Err(Error::WrongDevice);
         }
+        if desc.primitive.conservative && self.device.caps.conservative_raster == Some(false) {
+            return Err(Error::Unsupported("conservative rasterization"));
+        }
         let native = B::Mesh::create_pipeline(&self.device.native, &desc).await?;
         // SAFETY: the SPI created this pipeline for this exact native device.
         Ok(unsafe { MeshPipeline::from_native(self.device.id, native) })

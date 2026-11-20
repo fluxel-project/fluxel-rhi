@@ -275,6 +275,9 @@ impl<B: PipelineBackend> Device<B> {
         {
             return Err(Error::WrongDevice);
         }
+        if desc.primitive.conservative && self.caps.conservative_raster == Some(false) {
+            return Err(Error::Unsupported("conservative rasterization"));
+        }
         let stride_limit = u64::from(self.caps.limits.max_vertex_buffer_array_stride);
         if desc.color_targets.len() > self.caps.limits.max_color_attachments as usize
             || desc.vertex_buffers.len() > self.caps.limits.max_vertex_buffers as usize

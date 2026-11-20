@@ -195,16 +195,18 @@ impl Dx12 {
             let mut options =
                 windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS::default();
             // SAFETY: this structure matches the feature query selector.
-            let sparse_supported = unsafe {
-            native.CheckFeatureSupport(
-                windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_D3D12_OPTIONS,
-                &mut options as *mut _ as *mut _,
-                std::mem::size_of_val(&options) as u32,
-            )
-        }
-        .is_ok()
-            && options.TiledResourcesTier
+            let options_available = unsafe {
+                native.CheckFeatureSupport(
+                    windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_D3D12_OPTIONS,
+                    &mut options as *mut _ as *mut _,
+                    std::mem::size_of_val(&options) as u32,
+                )
+            }
+            .is_ok();
+            let sparse_supported = options_available && options.TiledResourcesTier
                 != windows::Win32::Graphics::Direct3D12::D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED;
+            let conservative_raster = options_available && options.ConservativeRasterizationTier
+                != windows::Win32::Graphics::Direct3D12::D3D12_CONSERVATIVE_RASTERIZATION_TIER_NOT_SUPPORTED;
             let resource_heap_tier2 = options.ResourceHeapTier.0
                 >= windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_HEAP_TIER_2.0;
             let descriptor_table_limits =
@@ -398,6 +400,7 @@ impl Dx12 {
                 dynamic_depth_bias: dynamic_depth_bias_supported,
                 dynamic_depth_bias_clamp: dynamic_depth_bias_supported,
                 rect_attachment_clear: true,
+                conservative_raster: Some(conservative_raster),
                 direct_buffer_upload: true,
                 completion_timeout: true,
                 sampled_texture_component_mapping: true,

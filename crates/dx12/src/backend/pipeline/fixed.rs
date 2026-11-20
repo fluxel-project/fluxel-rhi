@@ -123,6 +123,17 @@ pub(crate) fn lower_raster(
     multisample: api::MultisampleState,
     depth: Option<api::DepthStencilState>,
 ) -> Result<D3D12_RASTERIZER_DESC> {
+    if primitive.conservative
+        && (!matches!(primitive.polygon_mode, api::PolygonMode::Fill)
+            || !matches!(
+                primitive.topology,
+                api::PrimitiveTopology::TriangleList | api::PrimitiveTopology::TriangleStrip
+            ))
+    {
+        return Err(Error::Unsupported(
+            "DX12 conservative rasterization requires filled triangles",
+        ));
+    }
     let raster = D3D12_RASTERIZER_DESC {
         FillMode: match primitive.polygon_mode {
             api::PolygonMode::Fill => D3D12_FILL_MODE_SOLID,

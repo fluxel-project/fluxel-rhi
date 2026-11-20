@@ -197,6 +197,9 @@ pub struct DeviceCapabilities {
     pub dynamic_depth_bias_clamp: bool,
     /// Clears selected color/depth/stencil attachments inside an active pass.
     pub rect_attachment_clear: bool,
+    /// Conservative filled-triangle rasterization. `None` means the backend
+    /// leaves admission to its pipeline path.
+    pub conservative_raster: Option<bool>,
     /// Command encoders can populate backend-owned buffer upload staging directly.
     pub direct_buffer_upload: bool,
     /// Completion points support an explicit bounded host wait.
