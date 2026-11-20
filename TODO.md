@@ -197,6 +197,11 @@ Verify reconfiguration rejects acquired images and unretired attachment
 or resolve commands, then succeeds after their fence retires even while
 another surface has work in flight.
 
+**Deferred adaptive FIFO:** DXGI flip presentation with sync interval zero
+can interrupt the prior frame and discard queued frames. Reopen once Core
+defines the ordering and tearing rules for late frames and a DXGI route
+can demonstrate those guarantees with display evidence.
+
 ### DX12 upload, completion, and texture transfer verification
 
 **Status:** Direct staging writes, bounded completion waits, sampled color
