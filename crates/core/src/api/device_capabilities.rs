@@ -1,6 +1,6 @@
 //! Immutable capability and limit facts negotiated by a backend at device open.
 
-use super::{CooperativeMatrixConfiguration, LaneInfo};
+use super::{CooperativeMatrixConfiguration, IndirectCountProfile, LaneInfo};
 use std::sync::Arc;
 
 /// Immutable facts negotiated at device open. Unsafe Device::from_native
@@ -133,6 +133,8 @@ pub struct DeviceCapabilities {
     pub indirect_first_instance: bool,
     pub multi_draw: bool,
     pub multi_draw_count: bool,
+    /// Lowering facts when the backend has classified its supported routes.
+    pub multi_draw_count_profile: Option<IndirectCountProfile>,
     /// Native batching of multiple mesh indirect records.
     pub mesh_multi_indirect: bool,
     /// Native GPU count-buffer execution for mesh indirect records.

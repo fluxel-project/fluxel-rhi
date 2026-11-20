@@ -39,6 +39,8 @@ mod ray;
 pub use ray::*;
 mod raster_extras;
 pub use raster_extras::*;
+mod indirect_count_profile;
+pub use indirect_count_profile::*;
 mod submission;
 pub use submission::*;
 mod execution_facts;

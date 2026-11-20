@@ -1,0 +1,85 @@
+//! Immutable lowering facts for planning GPU-counted indirect draws.
+
+use super::{Device, Error, RasterBackend, RasterPipeline, Result};
+
+/// GPU work inserted before recording the native draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndirectCountPreprocess {
+    None,
+    CopyArguments,
+    ComputeArguments,
+}
+
+/// How CPU recording grows with the declared maximum draw count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndirectCountRecording {
+    Fixed,
+    PerBatch,
+    PerRecord,
+}
+
+/// Lowering of one nonempty multi-draw-count operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IndirectCountRoute {
+    /// The draw command consumes a GPU count buffer. The buffer can contain
+    /// the caller's count or a count derived by preprocessing on the GPU.
+    pub native_count: bool,
+    pub preprocess: IndirectCountPreprocess,
+    pub splits_raster_pass: bool,
+    pub uses_temporary_resources: bool,
+    pub recording: IndirectCountRecording,
+}
+
+/// If vertex/instance index adjustment is required by the selected pipeline,
+/// select a route using the declared maximum count rather than the GPU value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IndirectIndexAdjustment {
+    pub small_batch_max: u32,
+    pub small_batch: IndirectCountRoute,
+    pub large_batch: IndirectCountRoute,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IndirectCountProfile {
+    pub ordinary: IndirectCountRoute,
+    pub adjusted_indices: Option<IndirectIndexAdjustment>,
+}
+
+impl IndirectCountProfile {
+    /// A zero maximum emits no GPU work on routes publishing this profile.
+    pub fn route(self, adjusts_indices: bool, maximum: u32) -> Option<IndirectCountRoute> {
+        if maximum == 0 {
+            return None;
+        }
+        Some(match self.adjusted_indices.filter(|_| adjusts_indices) {
+            Some(adjustment) if maximum <= adjustment.small_batch_max => adjustment.small_batch,
+            Some(adjustment) => adjustment.large_batch,
+            None => self.ordinary,
+        })
+    }
+}
+
+impl<B: RasterBackend> Device<B> {
+    /// Looks up the lowering of an already-created pipeline without recording
+    /// commands, allocating resources, or reading the GPU count.
+    pub fn multi_draw_count_route(
+        &self,
+        pipeline: &RasterPipeline<B>,
+        maximum: u32,
+    ) -> Result<Option<IndirectCountRoute>> {
+        if pipeline.device != self.id {
+            return Err(Error::WrongDevice);
+        }
+        if !self.caps.multi_draw_count {
+            return Err(Error::Unsupported("multi draw count"));
+        }
+        let profile = self
+            .caps
+            .multi_draw_count_profile
+            .ok_or(Error::Unsupported("multi draw count lowering profile"))?;
+        Ok(profile.route(
+            B::adjusts_indirect_vertex_indices(&pipeline.native),
+            maximum,
+        ))
+    }
+}

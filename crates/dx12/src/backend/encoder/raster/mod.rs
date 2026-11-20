@@ -63,6 +63,9 @@ pub(super) fn index_format_matches(
 #[path = "../../../tests/backend/encoder/raster.rs"]
 mod topology_tests;
 impl fluxel_rhi_core::backend::RasterBackend for Dx12 {
+    fn adjusts_indirect_vertex_indices(pipeline: &super::Dx12RasterPipeline) -> bool {
+        pipeline.0.vertex_index_root.is_some()
+    }
     const DYNAMIC_DEPTH_BIAS_AVAILABLE: bool = true;
     const RECT_ATTACHMENT_CLEAR_AVAILABLE: bool = true;
     fn begin_raster(

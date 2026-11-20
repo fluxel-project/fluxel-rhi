@@ -40,6 +40,7 @@ pub(super) mod fence_wait;
 mod global_barrier;
 mod heaps;
 mod indirect;
+pub(super) use indirect::MULTI_DRAW_COUNT_PROFILE;
 pub(crate) mod indirect_pack;
 pub(crate) mod integer_clear;
 mod mipmap;

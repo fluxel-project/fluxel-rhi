@@ -6,6 +6,8 @@
 //! indirect arguments on the CPU or replays draws.
 
 use super::*;
+
+pub(super) const SMALL_COPY_MAX: u32 = 3;
 use std::{
     mem::ManuallyDrop,
     sync::{Arc, Mutex},
@@ -181,7 +183,7 @@ pub(crate) fn copy_small(
     stride: u32,
     indexed: bool,
 ) -> Result<Dx12Buffer, Error> {
-    debug_assert!((1..=3).contains(&count));
+    debug_assert!((1..=SMALL_COPY_MAX).contains(&count));
     let bytes = if indexed { 20u64 } else { 16 };
     let scratch = <Dx12 as fluxel_rhi_core::backend::ResourceBackend>::create_buffer(
         &encoder.device,

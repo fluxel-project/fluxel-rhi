@@ -1,6 +1,34 @@
 //! DX12 lowering for the public indexed/direct indirect-draw operations.
 use super::*;
 
+pub(in crate::backend) const MULTI_DRAW_COUNT_PROFILE: api::IndirectCountProfile =
+    api::IndirectCountProfile {
+        ordinary: api::IndirectCountRoute {
+            native_count: true,
+            preprocess: api::IndirectCountPreprocess::None,
+            splits_raster_pass: false,
+            uses_temporary_resources: false,
+            recording: api::IndirectCountRecording::Fixed,
+        },
+        adjusted_indices: Some(api::IndirectIndexAdjustment {
+            small_batch_max: super::indirect_pack::SMALL_COPY_MAX,
+            small_batch: api::IndirectCountRoute {
+                native_count: true,
+                preprocess: api::IndirectCountPreprocess::CopyArguments,
+                splits_raster_pass: false,
+                uses_temporary_resources: true,
+                recording: api::IndirectCountRecording::PerRecord,
+            },
+            large_batch: api::IndirectCountRoute {
+                native_count: true,
+                preprocess: api::IndirectCountPreprocess::ComputeArguments,
+                splits_raster_pass: false,
+                uses_temporary_resources: true,
+                recording: api::IndirectCountRecording::PerBatch,
+            },
+        }),
+    };
+
 fn execute(
     encoder: &mut Dx12Encoder,
     arguments: &Dx12Buffer,
@@ -210,7 +238,7 @@ fn execute_vertex_indices(
     if count == 0 {
         return Ok(());
     }
-    if count <= 3 {
+    if count <= super::indirect_pack::SMALL_COPY_MAX {
         let scratch =
             super::indirect_pack::copy_small(encoder, args, offset, count, stride, indexed)?;
         // SAFETY: the tiny fixed-size conversion restored INDIRECT_ARGUMENT;

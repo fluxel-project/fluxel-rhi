@@ -321,6 +321,10 @@ impl<B: Backend> Device<B> {
                 || B::Extras::AVAILABLE,
             "raster capability without implementation"
         );
+        assert!(
+            caps.multi_draw_count_profile.is_none() || caps.multi_draw_count,
+            "multi draw count profile without capability"
+        );
         Self {
             id,
             adapter: None,

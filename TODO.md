@@ -18,13 +18,12 @@ failing references, and verify that mismatched sampler modes are rejected.
 
 ### P7-LOWERING-PROFILE — expose cost-bearing lowering facts to RenderGraph
 
-**Status:** The Core capability model reports operation support but does not
-describe important execution differences such as native GPU-count draw,
-backend GPU preprocessing, internal pass split, temporary allocation, or CPU
-iteration. WebGPU `multi_draw_count` is currently reported as supported even
-though it preprocesses GPU arguments, may allocate temporary buffers, splits
-the pass, and emits repeated native draw calls. The P7 store-op guard prevents
-one incorrect combination but does not give graph compilation these cost facts.
+**Status:** Core exposes an optional per-device profile for GPU-count draws.
+DX12 publishes its direct native route and its two vertex-index adjustment
+routes. Route tests and classifications for the remaining backends are still
+pending. WebGPU currently preprocesses GPU arguments, may allocate temporary
+buffers, splits the pass, and emits repeated native draw calls. The P7 store-op
+guard prevents one incorrect combination.
 
 **Reopen/selection:** Keep scope limited to capabilities where a backend
 lowering changes graph correctness, resource planning, synchronization, or

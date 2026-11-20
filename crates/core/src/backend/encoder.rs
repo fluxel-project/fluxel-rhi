@@ -132,6 +132,11 @@ pub enum DebugMarkerOp<'a> {
 
 /// Native raster pass lowering contract.
 pub trait RasterBackend: CommandBackend {
+    /// Whether this pipeline rewrites indirect argument records to adjust its
+    /// vertex or instance index builtins.
+    fn adjusts_indirect_vertex_indices(_pipeline: &Self::NativeRasterPipeline) -> bool {
+        false
+    }
     /// Whether this backend has a native dynamic depth-bias route.
     const DYNAMIC_DEPTH_BIAS_AVAILABLE: bool = false;
     /// Whether this backend can clear attachments inside an active raster pass.

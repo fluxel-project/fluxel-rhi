@@ -388,6 +388,7 @@ impl Dx12 {
                 indirect_first_instance: true,
                 multi_draw: true,
                 multi_draw_count: true,
+                multi_draw_count_profile: Some(encoder::MULTI_DRAW_COUNT_PROFILE),
                 binding_arrays: descriptor_indexing,
                 runtime_sized_binding_arrays: descriptor_indexing,
                 // The DX12-local Naga patch separates descriptor selection
