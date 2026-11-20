@@ -277,6 +277,12 @@ declare the same requirement. DX12 mesh fragments that declare this portable
 requirement are rejected because their primitive ID would be a mesh shader
 output chosen by the shader author.
 
+For forced early depth and stencil tests, WGSL fragment entries lower
+`@early_depth_test(force)` to HLSL `[earlydepthstencil]`. HLSL and DXIL
+callers declare the requirement for their native attribute or shader flag.
+WGSL conservative depth modes require distinct depth-output semantics and
+are currently rejected at shader creation.
+
 The implemented public route includes graphics and compute, multiple render
 targets, indirect drawing and dispatch, queries, secondary recording,
 standalone clears and resolves, placed memory, scoped native/external interop,

@@ -90,6 +90,17 @@ pipelines with WGSL, HLSL and DXIL fragment stages. Mesh pipelines reject
 that portable requirement. Reopen a portable mesh primitive ID only when a
 consumer defines the producer and consumer contract for a shader-written ID.
 
+### DX12 forced early depth and stencil
+
+**Status:** DX12 supports the forced test mode for WGSL and declarations of
+the corresponding native HLSL attribute and DXIL flag.
+
+**Acceptance:** Verify that depth and stencil rejection suppresses fragment
+storage writes. Cover depth and stencil updates when the fragment later
+discards, and reject nonfragment requirement declarations. WGSL conservative
+depth remains pending until its depth-output and interpolation rules are
+mapped per mode and verified with depth and storage readback.
+
 ### DX12 acceleration structure refit
 
 **Status:** TLAS and non-indexed BLAS refit use DXR in-place updates. Ordered

@@ -507,6 +507,14 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
 
             self.write_wrapped_functions(module, &ctx)?;
 
+            match ep.early_depth_test {
+                Some(crate::EarlyDepthTest::Force) => writeln!(self.out, "[earlydepthstencil]")?,
+                Some(crate::EarlyDepthTest::Allow { .. }) => {
+                    return Err(Error::Unimplemented("HLSL conservative fragment depth".into()));
+                }
+                None => {}
+            }
+
             if ep.stage == ShaderStage::Compute {
                 // HLSL is calling workgroup size "num threads"
                 let num_threads = ep.workgroup_size;

@@ -528,6 +528,7 @@ fn shader_features_supported(
     features.iter().all(|feature| match feature.as_str() {
         api::SHADER_FEATURE_RAY_QUERY => ray_query_supported,
         api::SHADER_FEATURE_PRIMITIVE_INDEX => true,
+        api::SHADER_FEATURE_EARLY_DEPTH_TEST => true,
         api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_ADD => true,
         api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_ADD => true,
         api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_MIN => true,

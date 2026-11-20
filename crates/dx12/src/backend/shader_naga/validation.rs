@@ -28,6 +28,13 @@ pub(super) fn validation_capabilities(desc: &api::ShaderDesc) -> naga::valid::Ca
     {
         caps |= naga::valid::Capabilities::PRIMITIVE_INDEX;
     }
+    if desc
+        .required_features
+        .iter()
+        .any(|feature| feature == api::SHADER_FEATURE_EARLY_DEPTH_TEST)
+    {
+        caps |= naga::valid::Capabilities::EARLY_DEPTH_TEST;
+    }
     if desc.required_features.iter().any(|x| x == "subgroups") {
         caps |= naga::valid::Capabilities::SUBGROUP;
     }

@@ -390,6 +390,7 @@ impl Dx12 {
                     && descriptor_indexing,
                 ray_query: ray_query_supported,
                 shader_primitive_index: shader_model >= 60,
+                shader_early_depth_test: shader_model >= 60,
                 storage_textures: true,
                 texture_atomic_r32uint_compute,
                 texture_atomic_r32sint_compute,

@@ -112,15 +112,16 @@ pub(crate) fn validate_source(desc: &api::ShaderDesc) -> Result<()> {
             api::ShaderStage::Fragment => naga::ShaderStage::Fragment,
             _ => return Err(Error::Unsupported("DX12 WGSL shader stage")),
         };
-        if !module
+        let selected = module
             .entry_points
             .iter()
-            .any(|ep| ep.name == entry.name && ep.stage == stage)
-        {
-            return Err(Error::Shader(format!(
-                "missing shader entry {}",
-                entry.name
-            )));
+            .find(|ep| ep.name == entry.name && ep.stage == stage)
+            .ok_or_else(|| Error::Shader(format!("missing shader entry {}", entry.name)))?;
+        if matches!(
+            selected.early_depth_test,
+            Some(naga::EarlyDepthTest::Allow { .. })
+        ) {
+            return Err(Error::Unsupported("DX12 WGSL conservative fragment depth"));
         }
     }
     Ok(())
@@ -248,6 +249,7 @@ fn compile_inner(
         || desc.required_features.iter().any(|x| {
             x != api::SHADER_FEATURE_RAY_QUERY
                 && x != api::SHADER_FEATURE_PRIMITIVE_INDEX
+                && x != api::SHADER_FEATURE_EARLY_DEPTH_TEST
                 && x != "shaderClipDistance"
                 && x != api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_ADD
                 && x != api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_ADD
