@@ -261,7 +261,11 @@ texture's sampled, storage, and attachment uses. Support and creation share
 admission. Descriptor ownership follows that subset. This permits a mip
 chain for sampling alongside a single-mip storage or attachment view.
 Combined depth-stencil textures use aspect-specific sampled views and an
-all-aspect attachment view.
+all-aspect attachment view. When a default view inherits both usages, DX12
+keeps the sampled role for a single aspect and the attachment role for the
+combined aspect. If the requested aspects leave none of the texture's
+sampled or attachment roles available, creation fails before allocating a
+descriptor.
 
 A 3D color attachment slice selects one W coordinate in a single mip.
 The RTV carries that coordinate while resource transitions and attachment
