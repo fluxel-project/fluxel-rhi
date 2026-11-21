@@ -27,6 +27,9 @@ pub(in crate::backend) fn max_array_layers(d: &api::TextureDesc) -> u32 {
 }
 
 pub(super) fn valid(d: &api::TextureDesc) -> std::result::Result<(), &'static str> {
+    if planar::is_planar(d.format) {
+        return planar::validate_texture(d);
+    }
     let depth = is_depth(d.format);
     let compressed = bc_block_bytes(d.format).is_some();
     let d3 = d.dimension == api::TextureDimension::D3;
@@ -82,7 +85,7 @@ pub(super) fn valid(d: &api::TextureDesc) -> std::result::Result<(), &'static st
     Ok(())
 }
 pub(in crate::backend) fn max_mips(desc: &api::TextureDesc) -> u32 {
-    if desc.samples > 1 {
+    if desc.samples > 1 || planar::is_planar(desc.format) {
         1
     } else {
         let [width, height, depth] = desc.extent;
@@ -97,6 +100,9 @@ pub(super) fn view(
     usage: api::TextureUsage,
 ) -> Result<()> {
     dv.require_active()?;
+    if planar::is_planar(desc.format) {
+        return planar::validate_view(dv, desc, v, usage);
+    }
     if desc.dimension == api::TextureDimension::D1 && desc.array_layers > 1 {
         return Err(Error::Unsupported("DX12 D1 array texture views"));
     }

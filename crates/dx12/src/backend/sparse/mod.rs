@@ -261,6 +261,9 @@ impl fluxel_rhi_core::backend::SparseBackend for Dx12 {
         if !supported(device) {
             return Err(api::Error::Unsupported("DX12 tiled resources"));
         }
+        if super::texture::planar::is_planar(desc.format) {
+            return Err(api::Error::Unsupported("DX12 sparse planar textures"));
+        }
         let is_3d = desc.dimension == api::TextureDimension::D3;
         if is_3d && device.0.tiled_resources_tier.0 < D3D12_TILED_RESOURCES_TIER_3.0 {
             return Err(api::Error::Unsupported(

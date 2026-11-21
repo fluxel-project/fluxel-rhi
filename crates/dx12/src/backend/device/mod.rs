@@ -263,6 +263,8 @@ impl Dx12 {
                 && options13
                     .UnrestrictedBufferTextureCopyPitchSupported
                     .as_bool();
+            let planar_nv12 = texture::probe_planar_texture(&native, api::TextureFormat::Nv12);
+            let planar_p010 = texture::probe_planar_texture(&native, api::TextureFormat::P010);
             let mut options14 =
                 windows::Win32::Graphics::Direct3D12::D3D12_FEATURE_DATA_D3D12_OPTIONS14::default();
             // SAFETY: the initialized OPTIONS14 structure matches the query
@@ -488,6 +490,8 @@ impl Dx12 {
                 texture_view_usage: true,
                 texture_3d_attachment_slice: true,
                 texel_aligned_color_copies,
+                planar_nv12,
+                planar_p010,
                 push_constants: true,
                 indirect_draw: true,
                 indirect_first_instance: true,
@@ -566,6 +570,8 @@ impl Dx12 {
                     native: native.clone(),
                     descriptor_table_limits,
                     texel_aligned_color_copies,
+                    planar_nv12,
+                    planar_p010,
                     shader_model,
                     shader_view_index,
                     native_16bit_shader_ops,

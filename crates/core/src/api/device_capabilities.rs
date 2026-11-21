@@ -261,6 +261,10 @@ pub struct DeviceCapabilities {
     /// Explicit color buffer/texture copies permit offsets and row pitches
     /// aligned to one texel or compressed block.
     pub texel_aligned_color_copies: bool,
+    /// Native NV12 resources with explicit Y and UV views and copies.
+    pub planar_nv12: bool,
+    /// Native P010 resources with explicit Y and UV views and copies.
+    pub planar_p010: bool,
     pub lanes: Arc<[LaneInfo]>,
     pub limits: DeviceLimits,
 }

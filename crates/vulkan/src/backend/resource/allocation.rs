@@ -319,6 +319,7 @@ pub(crate) fn format(format: api::TextureFormat) -> Option<vk::Format> {
         api::TextureFormat::EacRg11Snorm => vk::Format::EAC_R11G11_SNORM_BLOCK,
         api::TextureFormat::R64Uint => vk::Format::R64_UINT,
         api::TextureFormat::Rg64Uint => vk::Format::R64G64_UINT,
+        api::TextureFormat::Nv12 | api::TextureFormat::P010 => return None,
         api::TextureFormat::Astc { block, srgb, hdr } => match (block, srgb, hdr) {
             ([4, 4], false, false) => vk::Format::ASTC_4X4_UNORM_BLOCK,
             ([4, 4], true, false) => vk::Format::ASTC_4X4_SRGB_BLOCK,

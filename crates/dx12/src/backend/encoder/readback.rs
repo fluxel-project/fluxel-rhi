@@ -26,16 +26,17 @@ fn validate_color_readback(
             "DX12 multisample texture to buffer copy",
         ));
     }
-    if src.aspect != api::TextureAspects::COLOR || !desc.usage.contains(api::TextureUsage::COPY_SRC)
-    {
-        return Err(Error::Unsupported("DX12 COPY_SRC color texture readback"));
+    if !desc.usage.contains(api::TextureUsage::COPY_SRC) {
+        return Err(Error::Unsupported("DX12 COPY_SRC texture readback"));
     }
     if !dst.usage.contains(api::BufferUsage::COPY_DST) || dst.memory == api::MemoryClass::Upload {
         return Err(Error::Unsupported("DX12 texture copy destination buffer"));
     }
     let subresource = validate_region(source, src)?;
     let footprint = color_copy_footprint(
-        desc.format,
+        desc.format
+            .planar_view_format(src.aspect)
+            .unwrap_or(desc.format),
         desc.dimension,
         layout,
         src.extent,

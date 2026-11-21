@@ -158,6 +158,23 @@ pub enum TextureFormat {
     },
     R64Uint,
     Rg64Uint,
+    /// Two-plane 8-bit 4:2:0 texture. Plane 0 is Y and plane 1 is interleaved UV.
+    Nv12,
+    /// Two-plane 10-bit 4:2:0 texture in 16-bit storage words, with Y then UV.
+    P010,
+}
+
+impl TextureFormat {
+    /// Returns the required sampled view format for one Y or UV plane.
+    pub fn planar_view_format(self, aspect: TextureAspects) -> Option<Self> {
+        match (self, aspect) {
+            (Self::Nv12, TextureAspects::PLANE_0) => Some(Self::R8Unorm),
+            (Self::Nv12, TextureAspects::PLANE_1) => Some(Self::Rg8Unorm),
+            (Self::P010, TextureAspects::PLANE_0) => Some(Self::R16Unorm),
+            (Self::P010, TextureAspects::PLANE_1) => Some(Self::Rg16Unorm),
+            _ => None,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TextureDimension {
@@ -174,13 +191,17 @@ pub enum TextureViewDimension {
     CubeArray,
     D3,
 }
-/// Texture aspects; combine depth and stencil with `|` when both are needed.
+/// Texture aspects; combine aspects with `|` for operations over multiple planes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TextureAspects(pub u8);
 impl TextureAspects {
     pub const COLOR: Self = Self(1);
     pub const DEPTH: Self = Self(2);
     pub const STENCIL: Self = Self(4);
+    /// Full-resolution luminance plane of a planar texture.
+    pub const PLANE_0: Self = Self(8);
+    /// Interleaved chrominance plane at half the width and height.
+    pub const PLANE_1: Self = Self(16);
 }
 resource_flag_ops!(TextureAspects);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

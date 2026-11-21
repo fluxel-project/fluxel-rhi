@@ -210,6 +210,12 @@ impl<B: ResourceBackend> Device<B> {
         Ok(unsafe { Buffer::from_native(self.id, native) })
     }
     pub fn texture_support(&self, desc: &TextureDesc) -> Support<TextureSupport> {
+        if matches!(desc.format, TextureFormat::Nv12) && !self.caps.planar_nv12 {
+            return Support::Unsupported("NV12 planar textures");
+        }
+        if matches!(desc.format, TextureFormat::P010) && !self.caps.planar_p010 {
+            return Support::Unsupported("P010 planar textures");
+        }
         if validate_transient_texture_desc(desc).is_err() {
             return Support::Unsupported("invalid transient attachment descriptor");
         }

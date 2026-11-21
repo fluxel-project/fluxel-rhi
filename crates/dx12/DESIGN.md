@@ -303,6 +303,16 @@ samplers. Nonfiltering layouts require ordinary point sampling for min,
 mag, and mip. Comparison layouts admit comparison samplers with point or
 linear filtering. These checks cover each populated array entry.
 
+Native NV12 and P010 are separately gated by the device's 2D texture
+support, native plane count, and both sampled view formats. They require
+even width and height, one mip, and one sample. A view selects one plane and
+its fixed UNORM format. NV12 uses `R8Unorm` and `Rg8Unorm`, while P010 uses
+`R16Unorm` and `Rg16Unorm`. Plane 1 coordinates and extents are measured in
+half-resolution chroma texels. Buffer copies preserve the native plane
+storage words, including P010's 16-bit words. Transitions address the
+selected native plane subresources. Callers supply synchronization and any
+color conversion. Sparse textures and shared import have separate admission.
+
 ## Recording, submission, and completion
 
 The normal run path is:

@@ -191,7 +191,7 @@ fn create_color_view(
                         MipLevels: v.mips.end - v.mips.start,
                         FirstArraySlice: v.layers.start,
                         ArraySize: v.layers.end - v.layers.start,
-                        PlaneSlice: 0,
+                        PlaneSlice: u32::from(v.aspects == api::TextureAspects::PLANE_1),
                         ResourceMinLODClamp: 0.0,
                     },
                 }
@@ -200,7 +200,7 @@ fn create_color_view(
                     Texture2D: D3D12_TEX2D_SRV {
                         MostDetailedMip: v.mips.start,
                         MipLevels: v.mips.end - v.mips.start,
-                        PlaneSlice: 0,
+                        PlaneSlice: u32::from(v.aspects == api::TextureAspects::PLANE_1),
                         ResourceMinLODClamp: 0.0,
                     },
                 }

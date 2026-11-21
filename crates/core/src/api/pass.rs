@@ -146,7 +146,8 @@ pub struct TextureUploadLayout {
 pub struct TextureRegion<'a, B: Backend> {
     pub texture: &'a Texture<B>,
     pub mip: u32,
-    /// Texel origin; for 2D images (0, 0) is upper-left and Y increases down.
+    /// Texel origin in the selected aspect. For 2D images (0, 0) is upper-left
+    /// and Y increases down. Planar extents also use the selected plane's texels.
     pub origin: [u32; 3],
     pub extent: [u32; 3],
     pub aspect: TextureAspects,

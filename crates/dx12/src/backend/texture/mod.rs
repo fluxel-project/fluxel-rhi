@@ -11,11 +11,13 @@
 mod color_view;
 mod depth_view;
 mod format;
+pub(super) mod planar;
 mod validate;
 pub(super) use color_view::{
     create_sampled_view, create_view, create_view_with_usage, create_volume_attachment_slice,
     volume_attachment_slice_support,
 };
+pub(super) use format::probe_planar_texture;
 pub(super) use format::sample_count_supported;
 use format::{available_format_support, native_format_has_support, supported_sample_counts};
 pub(super) use format::{
@@ -31,6 +33,18 @@ use super::{Dx12Device, Dx12Texture, Dx12TextureView};
 use fluxel_rhi_core::api::{self, Error, Result};
 use std::sync::Arc;
 use windows::Win32::Graphics::{Direct3D12::*, Dxgi::Common::*};
+
+pub(super) fn aspect_planes(format: api::TextureFormat) -> [api::TextureAspects; 2] {
+    use api::TextureAspects as A;
+    if planar::is_planar(format) {
+        [A::PLANE_0, A::PLANE_1]
+    } else if is_depth(format) {
+        let aspects = depth_aspects(format);
+        [A(aspects.0 & A::DEPTH.0), A(aspects.0 & A::STENCIL.0)]
+    } else {
+        [A::COLOR, A(0)]
+    }
+}
 
 pub(crate) struct TextureState {
     pub(super) resource: ID3D12Resource,
@@ -217,6 +231,13 @@ fn view_format_available(
 }
 
 fn permitted_view_formats(dv: &Dx12Device, desc: &api::TextureDesc) -> Vec<api::TextureFormat> {
+    if planar::is_planar(desc.format) {
+        return if desc.usage.contains(api::TextureUsage::TEXTURE_BINDING) {
+            planar::view_formats(desc.format).collect()
+        } else {
+            Vec::new()
+        };
+    }
     let mut formats = Vec::new();
     for view in std::iter::once(desc.format).chain(desc.view_formats.iter().copied()) {
         if !formats.contains(&view)

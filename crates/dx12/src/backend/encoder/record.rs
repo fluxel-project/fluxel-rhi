@@ -178,11 +178,8 @@ impl fluxel_rhi_core::backend::CommandBackend for Dx12 {
                     // and its clone enters encoder lifetime retention below.
                     let texture = unsafe { barrier_op.target.texture.native_ref() };
                     let desc = &texture.0.desc;
-                    let expected_aspect = if super::super::texture::is_depth(desc.format) {
-                        super::super::texture::depth_aspects(desc.format)
-                    } else {
-                        api::TextureAspects::COLOR
-                    };
+                    let planes = super::super::texture::aspect_planes(desc.format);
+                    let expected_aspect = planes[0] | planes[1];
                     let aspects = barrier_op.target.aspects.0;
                     if aspects == 0 || aspects & !expected_aspect.0 != 0 {
                         return Err(Error::Unsupported("DX12 texture transition aspect"));
@@ -198,9 +195,11 @@ impl fluxel_rhi_core::backend::CommandBackend for Dx12 {
                         "DX12 texture transition requires explicit layouts",
                     ))?;
                     let depth = super::super::texture::is_depth(desc.format);
+                    let planar = super::super::texture::planar::is_planar(desc.format);
                     if [from_layout, to_layout].into_iter().any(|layout| {
                         (depth && layout == api::ImageLayout::ColorAttachment)
                             || (!depth && layout == api::ImageLayout::DepthStencilAttachment)
+                            || (planar && !super::super::texture::planar::supports_layout(layout))
                     }) {
                         return Err(Error::Unsupported("DX12 texture layout/format mismatch"));
                     }
@@ -250,17 +249,8 @@ impl fluxel_rhi_core::backend::CommandBackend for Dx12 {
                     }
                     for layer in barrier_op.target.layers.clone() {
                         for mip in barrier_op.target.mips.clone() {
-                            for plane in 0..2 {
-                                let bit = if plane == 0 {
-                                    if depth {
-                                        api::TextureAspects::DEPTH.0
-                                    } else {
-                                        api::TextureAspects::COLOR.0
-                                    }
-                                } else {
-                                    api::TextureAspects::STENCIL.0
-                                };
-                                if aspects & bit == 0 {
+                            for (plane, aspect) in (0u32..).zip(planes) {
+                                if aspects & aspect.0 == 0 {
                                     continue;
                                 }
                                 let subresource = mip

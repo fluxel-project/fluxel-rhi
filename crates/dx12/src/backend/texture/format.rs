@@ -49,6 +49,8 @@ pub(crate) fn dxgi_format(format: api::TextureFormat) -> DXGI_FORMAT {
         api::TextureFormat::Rgb9e5Ufloat => DXGI_FORMAT_R9G9B9E5_SHAREDEXP,
         api::TextureFormat::Rgba8Unorm => DXGI_FORMAT_R8G8B8A8_UNORM,
         api::TextureFormat::Bgra8Unorm => DXGI_FORMAT_B8G8R8A8_UNORM,
+        api::TextureFormat::Nv12 => DXGI_FORMAT_NV12,
+        api::TextureFormat::P010 => DXGI_FORMAT_P010,
         api::TextureFormat::Depth32Float => DXGI_FORMAT_D32_FLOAT,
         api::TextureFormat::Depth24Plus => DXGI_FORMAT_D32_FLOAT,
         api::TextureFormat::Depth16Unorm => DXGI_FORMAT_D16_UNORM,
@@ -184,6 +186,9 @@ pub(super) fn available_format_support(
     }
     let format = dxgi_format(desc.format);
     let support = native_format_support(device, format)?.Support1;
+    if super::planar::is_planar(desc.format) {
+        return super::planar::device_supports(device, desc.format).then_some(support);
+    }
     let dimensions = texture_dimension_support(desc.dimension);
     let allocation = super::allocation_format(desc).ok()?;
     let depth = is_depth(desc.format);
@@ -344,6 +349,39 @@ fn query_format_support(
     }
     .is_ok()
     .then_some(support)
+}
+
+pub(in crate::backend) fn probe_planar_texture(
+    device: &ID3D12Device,
+    format: api::TextureFormat,
+) -> bool {
+    let native_format = dxgi_format(format);
+    let mut info = D3D12_FEATURE_DATA_FORMAT_INFO {
+        Format: native_format,
+        ..Default::default()
+    };
+    // SAFETY: the format-info query writes only the matching initialized struct.
+    let info_supported = unsafe {
+        device.CheckFeatureSupport(
+            D3D12_FEATURE_FORMAT_INFO,
+            &mut info as *mut _ as *mut _,
+            std::mem::size_of_val(&info) as u32,
+        )
+    }
+    .is_ok();
+    info_supported
+        && info.PlaneCount == 2
+        && query_format_support(device, native_format)
+            .is_some_and(|support| support.Support1.contains(D3D12_FORMAT_SUPPORT1_TEXTURE2D))
+        && super::planar::view_formats(format).all(|plane| {
+            query_format_support(device, dxgi_format(plane)).is_some_and(|support| {
+                support.Support1.contains(
+                    D3D12_FORMAT_SUPPORT1_TEXTURE2D
+                        | D3D12_FORMAT_SUPPORT1_SHADER_LOAD
+                        | D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE,
+                )
+            })
+        })
 }
 
 pub(in crate::backend) fn texture_atomic_support(

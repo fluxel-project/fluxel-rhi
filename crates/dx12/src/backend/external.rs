@@ -254,6 +254,9 @@ fn import_texture(
     handle: OwnedHandle,
     desc: &api::TextureDesc,
 ) -> Result<Dx12Texture> {
+    if texture::planar::is_planar(desc.format) {
+        return Err(Error::Unsupported("DX12 external planar textures"));
+    }
     if desc.format == api::TextureFormat::Stencil8 {
         return Err(Error::Unsupported(
             "DX12 external Stencil8 requires hidden depth state provenance",

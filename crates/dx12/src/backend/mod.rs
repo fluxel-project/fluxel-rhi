@@ -111,6 +111,8 @@ struct Dx12DeviceState {
     pub(super) cpu_visible_heaps: memory::cpu_visible::CpuVisibleHeapProfiles,
     pub(super) descriptor_table_limits: api::DescriptorTableLimits,
     pub(super) texel_aligned_color_copies: bool,
+    pub(super) planar_nv12: bool,
+    pub(super) planar_p010: bool,
     pub(super) shader_model: u16,
     pub(super) shader_view_index: bool,
     pub(super) native_16bit_shader_ops: bool,

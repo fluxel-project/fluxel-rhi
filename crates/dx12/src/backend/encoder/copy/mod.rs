@@ -45,26 +45,21 @@ pub(super) fn validate_region(
     {
         return Err(Error::InvalidRange);
     }
-    let depth = super::super::texture::is_depth(desc.format);
-    let aspect_valid = if depth {
-        matches!(
-            region.aspect,
-            api::TextureAspects::DEPTH | api::TextureAspects::STENCIL
-        ) && super::super::texture::depth_aspects(desc.format).0 & region.aspect.0 != 0
-    } else {
-        region.aspect == api::TextureAspects::COLOR
-    };
-    if !aspect_valid
-        || region.extent[0] == 0
+    let plane = super::super::texture::aspect_planes(desc.format)
+        .into_iter()
+        .position(|aspect| aspect.0 != 0 && aspect == region.aspect)
+        .ok_or(Error::InvalidRange)? as u32;
+    let chroma_shift = u32::from(region.aspect == api::TextureAspects::PLANE_1);
+    if region.extent[0] == 0
         || region.extent[1] == 0
         || region.extent[2] == 0
         || region.mip >= desc.mip_levels
         || region.origin[0]
             .checked_add(region.extent[0])
-            .is_none_or(|end| end > (desc.extent[0] >> region.mip).max(1))
+            .is_none_or(|end| end > (desc.extent[0] >> (region.mip + chroma_shift)).max(1))
         || region.origin[1]
             .checked_add(region.extent[1])
-            .is_none_or(|end| end > (desc.extent[1] >> region.mip).max(1))
+            .is_none_or(|end| end > (desc.extent[1] >> (region.mip + chroma_shift)).max(1))
         || if desc.dimension == api::TextureDimension::D3 {
             region.origin[2]
                 .checked_add(region.extent[2])
@@ -84,7 +79,7 @@ pub(super) fn validate_region(
         .checked_mul(desc.mip_levels)
         .and_then(|layer| layer.checked_add(region.mip))
         .and_then(|subresource| {
-            if region.aspect == api::TextureAspects::STENCIL {
+            if plane == 1 {
                 subresource.checked_add(desc.mip_levels.checked_mul(desc.array_layers)?)
             } else {
                 Some(subresource)
@@ -404,7 +399,9 @@ fn validate_color_upload(
     }
     let subresource = validate_region(target, dst)?;
     let footprint = color_copy_footprint(
-        desc.format,
+        desc.format
+            .planar_view_format(dst.aspect)
+            .unwrap_or(desc.format),
         desc.dimension,
         layout,
         dst.extent,
