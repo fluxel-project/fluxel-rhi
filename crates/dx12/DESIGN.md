@@ -324,6 +324,10 @@ Holes in sampled and storage texture descriptor arrays use null DX12 views
 with the binding's native view dimension and numeric type. Storage holes
 use the declared UAV format. Shader code selects only populated elements.
 
+DX12 storage buffer entries supply explicit raw or structured buffer views.
+Group creation validates the native view range and layout's minimum size
+before reserving any descriptors, including for dynamic storage bindings.
+
 ## Recording, submission, and completion
 
 The normal run path is:

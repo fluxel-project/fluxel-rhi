@@ -220,6 +220,40 @@ pub(super) fn validate_acceleration_binding(
     })
 }
 
+pub(super) fn validate_storage_binding(
+    slot: &BindingSlot,
+    resource: &api::BindingResource<'_, Dx12>,
+) -> Result<()> {
+    validate_entries(resource, |entry| {
+        let api::BindingResource::StorageBufferView {
+            buffer,
+            range,
+            view,
+        } = entry
+        else {
+            return Err(Error::Unsupported(
+                "DX12 storage binding requires a raw or structured view",
+            ));
+        };
+        if range
+            .end
+            .checked_sub(range.start)
+            .is_none_or(|bytes| bytes < slot.min_size)
+        {
+            return Err(Error::InvalidRange);
+        }
+        // SAFETY: Core checked the device identity of each populated binding.
+        let buffer = unsafe { buffer.native_ref() };
+        super::storage_view_range(
+            buffer,
+            range.clone(),
+            *view,
+            slot.class == DescriptorClass::Uav,
+        )?;
+        Ok(())
+    })
+}
+
 fn validate_entries(
     resource: &api::BindingResource<'_, Dx12>,
     validate: impl Fn(&api::BindingResource<'_, Dx12>) -> Result<()>,

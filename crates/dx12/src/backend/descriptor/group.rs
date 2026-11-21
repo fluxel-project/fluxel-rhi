@@ -55,6 +55,9 @@ pub(crate) fn create_bind_group(
                 if matches!(slot.binding_type, api::BindingType::AccelerationStructure) {
                     write::validate_acceleration_binding(&entry.resource)?;
                 }
+                if matches!(slot.binding_type, api::BindingType::StorageBuffer { .. }) {
+                    write::validate_storage_binding(slot, &entry.resource)?;
+                }
                 count
                     .checked_add(write::resource_descriptor_count(slot, &entry.resource)?)
                     .ok_or(Error::InvalidRange)
@@ -189,9 +192,6 @@ pub(crate) fn create_bind_group(
                     let native = unsafe { buffer.native_ref() };
                     let writable = class == DescriptorClass::Uav;
                     let storage = storage_view_range(native, range.clone(), *view, writable)?;
-                    if range.end - range.start < slot.min_size {
-                        return Err(Error::InvalidRange);
-                    }
                     // SAFETY: the group owns the destination slot and retains this buffer.
                     unsafe {
                         storage.write(&device.0.native, native, writable, view_cpu(view_index));

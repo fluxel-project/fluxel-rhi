@@ -353,6 +353,13 @@ type and draw or dispatch under GPU validation. Read back a populated slot
 after a hole and confirm that recording retains its resource through
 completion.
 
+### DX12 storage buffer binding admission
+
+Exercise static and dynamic storage bindings with raw and structured views.
+Verify that plain buffer entries, invalid native ranges, and wrong usage
+are rejected before descriptor-table reservation. Include a populated
+array entry following a hole and preserve the valid dynamic-offset order.
+
 ### DX12 secondary-source alpha blending
 
 **Status:** Both secondary-source alpha factors lower to their native DX12
