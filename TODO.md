@@ -323,8 +323,10 @@ verify the warning remains queryable, including when using a PSO cache.
 portable pipeline layout. Layout metadata exposes the original bind groups,
 entries and push-constant ranges.
 DX12 can infer portable layouts from selected WGSL raster and compute
-entries, including explicit capacities for runtime binding arrays. HLSL and
-DXIL inference remain open.
+entries, including explicit capacities for runtime binding arrays. Direct HLSL
+and standalone DXIL infer unambiguous native bindings. Storage-buffer
+reflection uses no static minimum byte size. Bind-group creation still
+qualifies the supplied view.
 
 **Acceptance:** Query cloned pipelines and reconstruct compatible bind groups
 from the returned metadata. Check that native imports omit unavailable
@@ -332,6 +334,9 @@ metadata and absent indices return no bind-group layout.
 Build and execute raster and compute pipelines with inferred layouts. Check
 shared bindings across stages, omitted inactive resources, group gaps,
 filterability defaults, array capacities, and conflicting declarations.
+Exercise reflected raw and structured native storage buffers with unknown
+minimum sizes. Verify that valid nonempty views can be bound and that empty
+or invalid ranges are rejected before descriptor writes.
 
 ### DX12 runtime and partially bound TLAS arrays
 

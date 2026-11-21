@@ -472,9 +472,11 @@ binding policies directly with explicit layouts.
 Direct HLSL uses reflection of the selected entry compiled with its pipeline
 constants. DXIL inference takes a single declared entry and checks the native
 shader stage. Both preserve the binding register and space. Native inference
-covers constant buffers, raw and structured storage buffers without an
-inferred minimum range, samplers, integer sampled textures and acceleration
-structures. Samplers default to filtering. Float and depth sampled textures,
+covers constant buffers, raw and structured storage buffers, samplers,
+integer sampled textures and acceleration structures. A reflected storage
+buffer with `min_size = 0` specifies no inferred minimum range. Bind-group
+creation still requires a nonempty raw or structured view with a valid
+native range. Samplers default to filtering. Float and depth sampled textures,
 typed UAVs, counter buffers, and native constants that share the immediate
 register require explicit layouts. Native register overlaps that cannot fit
 the Core binding namespace require distinct shader registers.

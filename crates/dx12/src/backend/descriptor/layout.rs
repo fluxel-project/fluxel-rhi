@@ -56,9 +56,7 @@ fn layout_state(
                 dynamic_offset,
                 min_size,
                 access,
-            } if min_size > 0
-                && (!dynamic_offset || matches!(entry.count, api::BindingCount::One)) =>
-            {
+            } if !dynamic_offset || matches!(entry.count, api::BindingCount::One) => {
                 slots.push(BindingSlot {
                     binding_type: entry.ty.clone(),
                     binding: entry.binding,
