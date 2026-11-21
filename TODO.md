@@ -768,6 +768,10 @@ failing references, and verify that mismatched sampler modes are rejected.
 Exercise fixed and runtime sampler arrays, including partially bound arrays
 whose shaders access only initialized entries. Verify mode mismatches are
 rejected before descriptor table writes.
+For ordinary samplers, exercise each linear filter and anisotropy against a
+nonfiltering layout, both in scalar entries and in populated array entries.
+Verify that filtering layouts accept ordinary point samplers and that
+comparison layouts accept both point and linear comparison samplers.
 
 ### P7-LOWERING-PROFILE — expose cost-bearing lowering facts to RenderGraph
 

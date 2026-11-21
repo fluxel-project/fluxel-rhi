@@ -23,6 +23,11 @@ impl Dx12Sampler {
     pub(super) fn is_comparison(&self) -> bool {
         self.0.native.ComparisonFunc != D3D12_COMPARISON_FUNC_NONE
     }
+
+    /// Whether every filter in this ordinary sampler selects a single texel.
+    pub(super) fn is_nonfiltering(&self) -> bool {
+        self.0.native.Filter == D3D12_FILTER_MIN_MAG_MIP_POINT
+    }
 }
 
 pub(crate) fn create_sampler(device: &Dx12Device, desc: &api::SamplerDesc) -> Result<Dx12Sampler> {

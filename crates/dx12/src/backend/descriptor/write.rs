@@ -185,16 +185,22 @@ pub(super) fn resource_descriptor_count(
     Ok(slot.descriptor_count)
 }
 
-/// Checks the native sampler mode against the shader-layout declaration before
+/// Checks the native sampler modes against the shader-layout declaration before
 /// its descriptor is copied into a shader-visible table.
 fn validate_sampler_type(slot: &BindingSlot, sampler: &api::Sampler<Dx12>) -> Result<()> {
-    let api::BindingType::Sampler { comparison, .. } = &slot.binding_type else {
+    let api::BindingType::Sampler {
+        filtering,
+        comparison,
+    } = &slot.binding_type
+    else {
         return Err(Error::InvalidState);
     };
     // SAFETY: Core checked the sampler's device identity before this backend
     // bind-group construction, and this only reads immutable sampler facts.
-    let actual = unsafe { sampler.native_ref() }.is_comparison();
-    if actual != *comparison {
+    let sampler = unsafe { sampler.native_ref() };
+    if sampler.is_comparison() != *comparison
+        || (!comparison && !filtering && !sampler.is_nonfiltering())
+    {
         return Err(Error::InvalidState);
     }
     Ok(())

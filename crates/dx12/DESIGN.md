@@ -297,6 +297,12 @@ same resource usage, subresources, and footprint bounds as recording.
 The queries neither record commands nor reserve GPU scratch storage.
 Buffer-texture copies require a single-sample texture.
 
+Bind-group creation checks sampler comparison mode and ordinary filtering
+before reserving descriptor tables. Filtering layouts accept ordinary point
+samplers. Nonfiltering layouts require ordinary point sampling for min,
+mag, and mip. Comparison layouts admit comparison samplers with point or
+linear filtering. These checks cover each populated array entry.
+
 ## Recording, submission, and completion
 
 The normal run path is:
