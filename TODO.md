@@ -366,6 +366,15 @@ and storage buffer declarations, including a selector in a reachable helper.
 Check that a divergent selector still requires nonuniform layout metadata
 and that generated HLSL applies `NonUniformResourceIndex` only when needed.
 
+### DX12 shader binding stage visibility
+
+Compile WGSL raster and compute pipelines with stage-matched layouts and
+with active bindings excluded from the selected entry's stage. Exercise
+sampled textures, storage views, samplers, scalar entries and arrays.
+Inactive bindings may be exclusive to another stage. Repeat negative cases
+with an existing PSO cache. Qualify the direct HLSL and DXIL routes from
+selected-entry reflection separately.
+
 ### DX12 secondary-source alpha blending
 
 **Status:** Both secondary-source alpha factors lower to their native DX12

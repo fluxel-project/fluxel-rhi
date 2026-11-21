@@ -35,9 +35,8 @@ pub(crate) struct PipelineLayoutState {
     pub(crate) vertex_index_root: Option<(ID3D12RootSignature, Vec<u8>, u32)>,
     pub(crate) num_workgroups_root: Option<(ID3D12RootSignature, Vec<u8>, u32)>,
     pub(crate) register_map: Vec<(u32, u32, u32, u8, u32)>,
-    pub(crate) binding_types: Vec<(u32, u32, api::BindingType)>,
-    /// Preserve exact array admission metadata through WGSL pipeline lowering.
-    pub(crate) buffer_entries: Vec<(u32, api::BindGroupLayoutEntry)>,
+    /// Preserve descriptor metadata through shader admission.
+    pub(crate) binding_entries: Vec<(u32, api::BindGroupLayoutEntry)>,
     /// Explicit capacities for public runtime-sized arrays.  This stays
     /// separate from `register_map`: a fixed array can reserve the same number
     /// of descriptors, but WGSL's dynamic binding-array syntax must not be
@@ -105,8 +104,7 @@ struct PreparedLayout {
     parameters: Vec<D3D12_ROOT_PARAMETER>,
     compute_parameters: Vec<D3D12_ROOT_PARAMETER>,
     register_map: Vec<(u32, u32, u32, u8, u32)>,
-    binding_types: Vec<(u32, u32, api::BindingType)>,
-    buffer_entries: Vec<(u32, api::BindGroupLayoutEntry)>,
+    binding_entries: Vec<(u32, api::BindGroupLayoutEntry)>,
     runtime_binding_capacities: Vec<(u32, u32, u32)>,
     native_abi_compatible: bool,
     groups: Vec<Arc<descriptor::BindGroupLayoutState>>,
@@ -139,8 +137,7 @@ fn prepare_layout(
     let mut tables = Vec::with_capacity(desc.groups.len());
     let mut groups = Vec::with_capacity(desc.groups.len());
     let mut register_map = Vec::new();
-    let mut binding_types = Vec::new();
-    let mut buffer_entries = Vec::new();
+    let mut binding_entries = Vec::new();
     let mut runtime_binding_capacities = Vec::new();
     let mut native_abi_compatible = true;
     for (group, layout) in desc.groups.iter().enumerate() {
@@ -149,16 +146,15 @@ fn prepare_layout(
         let native = unsafe { layout.native_ref() };
         groups.push(native.0.clone());
         let state = &native.0;
-        buffer_entries.extend(
+        binding_entries.extend(
             state
-                .buffer_entries
+                .entries
                 .iter()
                 .cloned()
                 .map(|entry| (group as u32, entry)),
         );
         let mut next_register = [0u32; 4];
         for slot in &state.slots {
-            binding_types.push((group as u32, slot.binding, slot.binding_type.clone()));
             let class = match slot.class {
                 descriptor::DescriptorClass::Cbv => 0,
                 descriptor::DescriptorClass::Srv => 1,
@@ -390,8 +386,7 @@ fn prepare_layout(
         parameters,
         compute_parameters,
         register_map,
-        binding_types,
-        buffer_entries,
+        binding_entries,
         runtime_binding_capacities,
         native_abi_compatible,
         groups,
@@ -409,8 +404,7 @@ pub(crate) fn create_pipeline_layout(
         mut parameters,
         mut compute_parameters,
         register_map,
-        binding_types,
-        buffer_entries,
+        binding_entries,
         runtime_binding_capacities,
         native_abi_compatible,
         groups,
@@ -473,8 +467,7 @@ pub(crate) fn create_pipeline_layout(
         vertex_index_root,
         num_workgroups_root,
         register_map,
-        binding_types,
-        buffer_entries,
+        binding_entries,
         runtime_binding_capacities,
         native_abi_compatible,
         groups,

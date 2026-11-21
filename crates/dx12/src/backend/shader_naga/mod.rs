@@ -153,16 +153,7 @@ pub struct CompiledShader {
 }
 
 pub fn compile(desc: &api::ShaderDesc) -> Result<CompiledShader> {
-    compile_inner(
-        desc,
-        None,
-        &[],
-        None,
-        None,
-        &[],
-        WgslTarget::default(),
-        false,
-    )
+    compile_inner(desc, None, &[], None, None, WgslTarget::default(), false)
 }
 
 /// Compile one pipeline variant. The caller must include the entry, stage,
@@ -179,7 +170,6 @@ pub fn compile_variant(
         &[],
         None,
         None,
-        &[],
         WgslTarget::default(),
         false,
     )
@@ -203,14 +193,35 @@ pub fn compile_variant_with_typed_map(
     buffer_entries: &[(u32, api::BindGroupLayoutEntry)],
     required_wave_size: Option<u32>,
 ) -> Result<CompiledEntry> {
+    let binding_entries = binding_types
+        .iter()
+        .map(|(group, binding, ty)| {
+            buffer_entries
+                .iter()
+                .find(|(other_group, layout)| group == other_group && *binding == layout.binding)
+                .cloned()
+                .unwrap_or_else(|| {
+                    (
+                        *group,
+                        api::BindGroupLayoutEntry {
+                            binding: *binding,
+                            ty: ty.clone(),
+                            visibility: vec![entry.stage],
+                            count: api::BindingCount::One,
+                            partially_bound: false,
+                            nonuniform_indexing: false,
+                        },
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
     compile_pipeline_variant(
         desc,
         entry,
         constants,
         register_map,
-        binding_types,
         runtime_binding_capacities,
-        buffer_entries,
+        &binding_entries,
         WgslTarget {
             required_wave_size,
             ..Default::default()
@@ -223,9 +234,8 @@ pub(super) fn compile_pipeline_variant(
     entry: &api::ShaderEntryPoint,
     constants: &[(String, api::SpecializationValue)],
     register_map: &[(u32, u32, u32, u8, u32)],
-    binding_types: &[(u32, u32, api::BindingType)],
     runtime_binding_capacities: &[(u32, u32, u32)],
-    buffer_entries: &[(u32, api::BindGroupLayoutEntry)],
+    binding_entries: &[(u32, api::BindGroupLayoutEntry)],
     target: WgslTarget<'_>,
 ) -> Result<CompiledEntry> {
     compile_variant_impl(
@@ -233,9 +243,8 @@ pub(super) fn compile_pipeline_variant(
         entry,
         constants,
         register_map,
-        Some(binding_types),
+        Some(binding_entries),
         Some(runtime_binding_capacities),
-        buffer_entries,
         target,
         true,
     )
@@ -255,7 +264,6 @@ pub fn compile_variant_with_map(
         register_map,
         None,
         None,
-        &[],
         WgslTarget::default(),
         true,
     )
@@ -266,9 +274,8 @@ fn compile_variant_impl(
     entry: &api::ShaderEntryPoint,
     constants: &[(String, api::SpecializationValue)],
     register_map: &[(u32, u32, u32, u8, u32)],
-    binding_types: Option<&[(u32, u32, api::BindingType)]>,
+    binding_entries: Option<&[(u32, api::BindGroupLayoutEntry)]>,
     runtime_binding_capacities: Option<&[(u32, u32, u32)]>,
-    buffer_entries: &[(u32, api::BindGroupLayoutEntry)],
     target: WgslTarget<'_>,
     require_layout: bool,
 ) -> Result<CompiledEntry> {
@@ -287,9 +294,8 @@ fn compile_variant_impl(
         &selected,
         Some(constants),
         register_map,
-        binding_types,
+        binding_entries,
         runtime_binding_capacities,
-        buffer_entries,
         target,
         require_layout,
     )?;
@@ -300,9 +306,8 @@ fn compile_inner(
     desc: &api::ShaderDesc,
     constants: Option<&[(String, api::SpecializationValue)]>,
     register_map: &[(u32, u32, u32, u8, u32)],
-    binding_types: Option<&[(u32, u32, api::BindingType)]>,
+    binding_entries: Option<&[(u32, api::BindGroupLayoutEntry)]>,
     runtime_binding_capacities: Option<&[(u32, u32, u32)]>,
-    buffer_entries: &[(u32, api::BindGroupLayoutEntry)],
     target: WgslTarget<'_>,
     require_layout: bool,
 ) -> Result<CompiledShader> {
@@ -473,7 +478,7 @@ fn compile_inner(
     .validate(&module)
     .map_err(|e| diagnostics::wgsl_validation(source, e))?;
     if require_layout {
-        buffer_array::validate_bindings(&module, &info, buffer_entries)?;
+        buffer_array::validate_bindings(&module, &info, binding_entries.unwrap_or_default())?;
     }
     let array_handles: Vec<_> = module
         .global_variables
@@ -666,17 +671,25 @@ fn compile_inner(
                     .ok_or_else(|| {
                         Error::Shader("WGSL resource missing from pipeline layout".into())
                     })?;
-                if let Some(types) = binding_types {
-                    let ty = types
+                if let Some(layout_entries) = binding_entries {
+                    let layout_entry = layout_entries
                         .iter()
-                        .find(|(group, slot, _)| {
-                            *group == binding.group && *slot == binding.binding
+                        .find(|(group, layout_entry)| {
+                            *group == binding.group && layout_entry.binding == binding.binding
                         })
-                        .map(|(_, _, ty)| ty)
+                        .map(|(_, layout_entry)| layout_entry)
                         .ok_or_else(|| {
-                            Error::Shader("WGSL binding type missing from pipeline layout".into())
+                            Error::Shader(
+                                "WGSL binding metadata missing from pipeline layout".into(),
+                            )
                         })?;
-                    validate_binding_type(&module, global, ty)?;
+                    if !layout_entry.visibility.contains(&entry.stage) {
+                        return Err(Error::Shader(format!(
+                            "WGSL binding {}:{} is not visible to {:?}",
+                            binding.group, binding.binding, entry.stage
+                        )));
+                    }
+                    validate_binding_type(&module, global, &layout_entry.ty)?;
                 }
                 let (class, count) = wgsl_binding_shape(&module, global)?;
                 if *actual_class != class || *actual_count < count {

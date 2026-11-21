@@ -333,6 +333,10 @@ constant or uniform descriptor selectors. A divergent selector requires
 nonuniform layout metadata. Admission uses the same Naga uniformity facts
 as the HLSL writer.
 
+WGSL pipeline compilation checks each active resource against the selected
+stage's bind-group layout visibility. It checks scalar and array bindings
+before native PSO creation or cache lookup.
+
 ## Recording, submission, and completion
 
 The normal run path is:

@@ -177,17 +177,7 @@ fn layout_state(
     validate_table_limits(slots.iter(), device.0.descriptor_table_limits)?;
     Ok(BindGroupLayoutState {
         slots,
-        buffer_entries: desc
-            .entries
-            .iter()
-            .filter(|entry| {
-                matches!(
-                    entry.ty,
-                    api::BindingType::StorageBuffer { .. } | api::BindingType::UniformBuffer { .. }
-                )
-            })
-            .cloned()
-            .collect(),
+        entries: desc.entries.clone(),
     })
 }
 

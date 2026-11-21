@@ -117,9 +117,8 @@ pub(super) fn create(
                 entry,
                 &desc.compute.constants,
                 &layout.register_map,
-                &layout.binding_types,
                 &layout.runtime_binding_capacities,
-                &layout.buffer_entries,
+                &layout.binding_entries,
                 super::super::shader_naga::WgslTarget {
                     shader_model: device.0.shader_model,
                     required_wave_size: desc.required_subgroup_size,

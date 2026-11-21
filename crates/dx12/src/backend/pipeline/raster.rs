@@ -338,9 +338,8 @@ fn stage(
                 entry,
                 &s.constants,
                 &layout.register_map,
-                &layout.binding_types,
                 &layout.runtime_binding_capacities,
-                &layout.buffer_entries,
+                &layout.binding_entries,
                 super::super::shader_naga::WgslTarget {
                     shader_model,
                     required_wave_size: None,
