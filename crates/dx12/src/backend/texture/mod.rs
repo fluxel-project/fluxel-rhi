@@ -194,6 +194,11 @@ fn view_format_available(
     view: api::TextureFormat,
     usage: api::TextureUsage,
 ) -> bool {
+    if usage.contains(api::TextureUsage::STORAGE_BINDING)
+        && !storage_view_format_available(dv, view, desc.dimension, None)
+    {
+        return false;
+    }
     if view == desc.format {
         return true;
     }
@@ -214,9 +219,12 @@ fn view_format_available(
 }
 
 fn permitted_view_formats(dv: &Dx12Device, desc: &api::TextureDesc) -> Vec<api::TextureFormat> {
-    let mut formats = vec![desc.format];
-    for &view in &desc.view_formats {
-        if !formats.contains(&view) && view_format_available(dv, desc, view, desc.usage) {
+    let mut formats = Vec::new();
+    for view in std::iter::once(desc.format).chain(desc.view_formats.iter().copied()) {
+        if !formats.contains(&view)
+            && default_view_usage(desc, view)
+                .is_ok_and(|usage| view_format_available(dv, desc, view, usage))
+        {
             formats.push(view);
         }
     }
@@ -424,7 +432,39 @@ pub(crate) fn view_support(
     t: &Dx12Texture,
     v: &api::TextureViewDesc,
 ) -> Result<()> {
-    validate::view(dv, &t.0.desc, v, t.0.desc.usage)
+    validated_default_view_usage(dv, t, v).map(drop)
+}
+
+fn default_view_usage(
+    desc: &api::TextureDesc,
+    format: api::TextureFormat,
+) -> Result<api::TextureUsage> {
+    use api::TextureUsage as U;
+    let mut usage = desc.usage;
+    if usage.contains(U::STORAGE_BINDING)
+        && matches!(
+            format,
+            api::TextureFormat::Rgba8UnormSrgb | api::TextureFormat::Bgra8UnormSrgb
+        )
+    {
+        // Legacy sRGB views provide SRV/RTV roles when available. A separate
+        // linear view supplies the UAV for the same typeless allocation.
+        usage.0 &= !U::STORAGE_BINDING.0;
+        if usage.0 & (U::TEXTURE_BINDING | U::RENDER_ATTACHMENT).0 == 0 {
+            return Err(Error::Unsupported("DX12 sRGB view has no descriptor role"));
+        }
+    }
+    Ok(usage)
+}
+
+fn validated_default_view_usage(
+    dv: &Dx12Device,
+    t: &Dx12Texture,
+    view: &api::TextureViewDesc,
+) -> Result<api::TextureUsage> {
+    let usage = default_view_usage(&t.0.desc, view.format)?;
+    validate::view(dv, &t.0.desc, view, usage)?;
+    Ok(usage)
 }
 
 fn cube_srv(
@@ -470,11 +510,6 @@ pub(super) fn view_usage_support(
         return Err(Error::InvalidState);
     }
     validate::view(dv, texture, view, usage)?;
-    if usage.contains(U::STORAGE_BINDING)
-        && !storage_view_format_available(dv, view.format, texture.dimension, None)
-    {
-        return Err(Error::Unsupported("DX12 storage texture view format"));
-    }
     if is_depth(texture.format) {
         let all_aspects = depth_aspects(texture.format);
         if usage.contains(U::RENDER_ATTACHMENT) && view.aspects != all_aspects {

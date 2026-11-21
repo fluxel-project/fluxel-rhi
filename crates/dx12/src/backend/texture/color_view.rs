@@ -2,7 +2,7 @@
 
 use super::{
     Dx12Device, Dx12Texture, Dx12TextureView, TextureState, TextureViewState, cube_srv, depth_view,
-    dxgi_format, is_depth, sampled_view_support, view_support, view_usage_support,
+    dxgi_format, is_depth, sampled_view_support, validated_default_view_usage, view_usage_support,
 };
 use fluxel_rhi_core::api::{self, Result};
 use std::sync::Arc;
@@ -13,8 +13,8 @@ pub(crate) fn create_view(
     t: &Dx12Texture,
     v: &api::TextureViewDesc,
 ) -> Result<Dx12TextureView> {
-    view_support(dv, t, v)?;
-    create_native_view(dv, t, v, t.0.desc.usage)
+    let usage = validated_default_view_usage(dv, t, v)?;
+    create_native_view(dv, t, v, usage)
 }
 
 pub(crate) fn create_view_with_usage(
@@ -216,11 +216,7 @@ fn create_color_view(
     } else {
         (None, None)
     };
-    let (uav_lease, uav) = if !matches!(
-        v.format,
-        api::TextureFormat::Rgba8UnormSrgb | api::TextureFormat::Bgra8UnormSrgb
-    ) && usage.contains(api::TextureUsage::STORAGE_BINDING)
-    {
+    let (uav_lease, uav) = if usage.contains(api::TextureUsage::STORAGE_BINDING) {
         let lease =
             dv.0.cpu_descriptors
                 .allocate(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1)?;

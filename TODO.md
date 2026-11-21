@@ -243,6 +243,10 @@ with the alternate declared. Sample the same compressed blocks through
 both views and verify the expected transfer-function difference. Check
 rejection of undeclared or different-family views and the unaligned base
 extent gate independently of the color-space choice.
+For RGBA8 and BGRA8 linear/sRGB pairs, compare the reported view formats
+with default view creation for storage-only and mixed sampled/storage
+usage. Check that explicit UAV requests qualify only the linear variant
+and that a mixed-use sRGB sampled view can span multiple mips.
 For `Stencil8`, verify stencil attachment clear and stencil operations,
 sampled unsigned readback, copy and upload, MSAA admission, and read-only
 stencil views across arrays. Confirm that depth view, transition, load,
