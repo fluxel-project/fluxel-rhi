@@ -238,6 +238,11 @@ native depth and stencil SRV formats. Include single-sample and multisample
 D16, D24S8, D32 and D32S8, cube depth views, and a combined attachment view.
 Check the typeless allocation's dimension support and confirm that a
 depth/stencil plane does not depend on an unrelated scalar color format.
+For BC1, BC2, BC3 and BC7, create each linear/sRGB pair in both directions
+with the alternate declared. Sample the same compressed blocks through
+both views and verify the expected transfer-function difference. Check
+rejection of undeclared or different-family views and the unaligned base
+extent gate independently of the color-space choice.
 For `Stencil8`, verify stencil attachment clear and stencil operations,
 sampled unsigned readback, copy and upload, MSAA admission, and read-only
 stencil views across arrays. Confirm that depth view, transition, load,

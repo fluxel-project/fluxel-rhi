@@ -75,15 +75,7 @@ pub(crate) fn dxgi_format(format: api::TextureFormat) -> DXGI_FORMAT {
 }
 
 pub(super) fn compatible_color_view(base: api::TextureFormat, view: api::TextureFormat) -> bool {
-    use api::TextureFormat::*;
-    base == view
-        || matches!(
-            (base, view),
-            (Rgba8Unorm, Rgba8UnormSrgb)
-                | (Rgba8UnormSrgb, Rgba8Unorm)
-                | (Bgra8Unorm, Bgra8UnormSrgb)
-                | (Bgra8UnormSrgb, Bgra8Unorm)
-        )
+    base == view || typeless_color(base).is_some_and(|format| typeless_color(view) == Some(format))
 }
 
 pub(super) fn typeless_color(format: api::TextureFormat) -> Option<DXGI_FORMAT> {
@@ -91,6 +83,10 @@ pub(super) fn typeless_color(format: api::TextureFormat) -> Option<DXGI_FORMAT> 
     match format {
         Rgba8Unorm | Rgba8UnormSrgb => Some(DXGI_FORMAT_R8G8B8A8_TYPELESS),
         Bgra8Unorm | Bgra8UnormSrgb => Some(DXGI_FORMAT_B8G8R8A8_TYPELESS),
+        Bc1RgbaUnorm | Bc1RgbaUnormSrgb => Some(DXGI_FORMAT_BC1_TYPELESS),
+        Bc2RgbaUnorm | Bc2RgbaUnormSrgb => Some(DXGI_FORMAT_BC2_TYPELESS),
+        Bc3RgbaUnorm | Bc3RgbaUnormSrgb => Some(DXGI_FORMAT_BC3_TYPELESS),
+        Bc7RgbaUnorm | Bc7RgbaUnormSrgb => Some(DXGI_FORMAT_BC7_TYPELESS),
         _ => None,
     }
 }
