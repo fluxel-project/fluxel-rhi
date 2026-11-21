@@ -121,7 +121,6 @@ pub(super) fn view(
         || (cube
             && (desc.extent[0] != desc.extent[1]
                 || desc.samples != 1
-                || v.layers.start % 6 != 0
                 || (v.layers.end.saturating_sub(v.layers.start)) % 6 != 0
                 || (v.dimension == api::TextureViewDimension::Cube
                     && (v.layers.start != 0 || v.layers.end != 6))

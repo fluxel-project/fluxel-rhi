@@ -274,7 +274,9 @@ view creates an SRV when sampled usage is present and a combined default
 view creates a DSV when attachment usage is present. Reject a sampled-only
 combined view or attachment-only single-plane view before allocation.
 Qualify explicit roles independently, including default and explicit cube
-sampling and array layers at nonzero offsets.
+sampling. For cube arrays, use distinct values per face and read back samples
+from ranges starting at both a cube boundary and a nonaligned face. Reject
+incomplete cubes and out-of-bounds ranges in support queries and creation.
 
 ### DX12 structured shader diagnostics
 
