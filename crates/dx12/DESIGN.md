@@ -313,6 +313,13 @@ storage words, including P010's 16-bit words. Transitions address the
 selected native plane subresources. Callers supply synchronization and any
 color conversion. Sparse textures and shared import have separate admission.
 
+Shared NV12 and P010 imports also validate the producer's resource format,
+dimensions, layout, and shader-resource flags. Each acquire or release
+selects both planes of the requested layers and supplies one known state
+pair for them. Acquire puts the producer fence wait before the transition.
+Release puts the signal after it. Queue segments retain the fence and
+recorded commands retain the imported native resource.
+
 ## Recording, submission, and completion
 
 The normal run path is:

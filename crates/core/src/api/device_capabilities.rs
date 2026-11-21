@@ -1,6 +1,6 @@
 //! Immutable capability and limit facts negotiated by a backend at device open.
 
-use super::{CooperativeMatrixConfiguration, IndirectCountProfile, LaneInfo};
+use super::{CooperativeMatrixConfiguration, IndirectCountProfile, LaneInfo, TextureFormat};
 use std::sync::Arc;
 
 /// Immutable facts negotiated at device open. Unsafe Device::from_native
@@ -267,6 +267,19 @@ pub struct DeviceCapabilities {
     pub planar_p010: bool,
     pub lanes: Arc<[LaneInfo]>,
     pub limits: DeviceLimits,
+}
+
+impl DeviceCapabilities {
+    pub(crate) fn unsupported_planar_format_reason(
+        &self,
+        format: TextureFormat,
+    ) -> Option<&'static str> {
+        match format {
+            TextureFormat::Nv12 if !self.planar_nv12 => Some("NV12 planar textures"),
+            TextureFormat::P010 if !self.planar_p010 => Some("P010 planar textures"),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

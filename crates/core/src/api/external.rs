@@ -147,12 +147,21 @@ impl<B: ExternalBackend> ExternalDomain<'_, B> {
     /// # Safety
     /// The bridge supplies a valid handle and exact producer allocation and
     /// texture metadata. It must provide matching ownership transfers, image
-    /// layouts and synchronization for every access.
+    /// layouts and synchronization for every access. Each plane selected by an
+    /// external transition must have the producer state described by that
+    /// transition.
     pub unsafe fn import_texture(
         &self,
         handle: B::NativeExternalHandle,
         desc: &TextureDesc,
     ) -> Result<ExternalTexture<B>> {
+        if let Some(reason) = self
+            .device
+            .caps
+            .unsupported_planar_format_reason(desc.format)
+        {
+            return Err(Error::Unsupported(reason));
+        }
         validate_transient_texture_desc(desc)?;
         if desc.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT) {
             return Err(Error::InvalidState);

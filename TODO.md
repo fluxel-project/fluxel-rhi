@@ -983,7 +983,7 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   public close operation remains `OUT_OF_SCOPE` until a consumer demonstrates
   a lifecycle need that RAII cannot express. Immediate native release is never
   a valid implementation.
-- **R04, IMPLEMENTING — native planar textures.** Scope Core/DX12 work to NV12 and
+- **R04, VERIFYING — native planar textures.** Scope Core/DX12 work to NV12 and
   P010 resource creation, plane views, copy, synchronization, readback, and
   externally owned native-resource import. Decoder ownership, color-policy,
   frame scheduling, and media-source lifecycle are `OUT_OF_SCOPE` to Host.
@@ -995,8 +995,13 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   nonzero plane origins, padded pitches, and copy/query agreement. Reject
   unsupported formats, wrong aspects or plane formats, attachment/storage
   usage, and odd extents. Reopen sparse planar allocation when a caller can
-  use a qualified native per-plane tiling and backing contract. Shared import
-  needs a separate acquire and release qualification with a producer fence.
+  use a qualified native per-plane tiling and backing contract. For shared
+  import, check both-plane acquire and release, distinct plane values,
+  wrong-format and wrong-layout rejection, and producer and consumer fences.
+  Verify that submitted work retains the texture after public handles are
+  dropped. A planar handoff supports one known state pair across both planes.
+  Reopen mixed-state handoffs when a producer needs them and an atomic
+  transition batch ordered by one external fence has an agreed contract.
 - **R05, UNSUPPORTED — direct MSAA resolve to a 3D slice.** DX12 resolve cannot
   represent that pair of shapes. A separately ordered 2D resolve followed by
   copy or compute may be introduced only with its own states, retention, cost,

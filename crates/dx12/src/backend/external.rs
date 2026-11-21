@@ -254,9 +254,6 @@ fn import_texture(
     handle: OwnedHandle,
     desc: &api::TextureDesc,
 ) -> Result<Dx12Texture> {
-    if texture::planar::is_planar(desc.format) {
-        return Err(Error::Unsupported("DX12 external planar textures"));
-    }
     if desc.format == api::TextureFormat::Stencil8 {
         return Err(Error::Unsupported(
             "DX12 external Stencil8 requires hidden depth state provenance",
@@ -310,6 +307,9 @@ fn import_texture(
     {
         return Err(Error::InvalidState);
     }
+    if texture::planar::is_planar(desc.format) && native.Layout != D3D12_TEXTURE_LAYOUT_UNKNOWN {
+        return Err(Error::Unsupported("DX12 external planar texture layout"));
+    }
     Ok(Dx12Texture(Arc::new(TextureState {
         resource,
         desc: desc.clone(),
@@ -320,17 +320,15 @@ fn import_texture(
     })))
 }
 
-fn transition_texture(
-    encoder: &mut encoder::Dx12Encoder,
+fn validate_texture_transition(
+    encoder: &encoder::Dx12Encoder,
     texture: &Dx12Texture,
     transition: &api::ExternalTextureTransition,
-) -> Result<()> {
+) -> Result<(D3D12_RESOURCE_STATES, D3D12_RESOURCE_STATES)> {
+    encoder.device.require_active()?;
     let desc = &texture.0.desc;
-    let expected = if texture::is_depth(desc.format) {
-        texture::depth_aspects(desc.format)
-    } else {
-        api::TextureAspects::COLOR
-    };
+    let planes = texture::aspect_planes(desc.format);
+    let expected = planes[0] | planes[1];
     if transition.aspects.0 == 0
         || transition.aspects.0 & !expected.0 != 0
         || transition.mips.start >= transition.mips.end
@@ -341,11 +339,20 @@ fn transition_texture(
         return Err(Error::InvalidRange);
     }
     let depth = texture::is_depth(desc.format);
+    let planar = texture::planar::is_planar(desc.format);
+    if planar && transition.aspects != expected {
+        return Err(Error::Unsupported(
+            "DX12 planar external ownership requires both planes",
+        ));
+    }
     if [transition.layout.0, transition.layout.1]
         .into_iter()
         .any(|layout| {
             (depth && layout == api::ImageLayout::ColorAttachment)
                 || (!depth && layout == api::ImageLayout::DepthStencilAttachment)
+                || (planar
+                    && (layout == api::ImageLayout::Undefined
+                        || !texture::planar::supports_layout(layout)))
         })
     {
         return Err(Error::Unsupported(
@@ -372,6 +379,17 @@ fn transition_texture(
             return Err(Error::Unsupported("DX12 compute queue resource state"));
         }
     }
+    Ok((before, after))
+}
+
+fn record_texture_transition(
+    encoder: &mut encoder::Dx12Encoder,
+    texture: &Dx12Texture,
+    transition: &api::ExternalTextureTransition,
+    (before, after): (D3D12_RESOURCE_STATES, D3D12_RESOURCE_STATES),
+) {
+    let desc = &texture.0.desc;
+    let planes = texture::aspect_planes(desc.format);
     // External textures use the same resource-wide ordering as Core textures.
     if encoder::needs_uav_barrier(
         before,
@@ -383,17 +401,8 @@ fn transition_texture(
     }
     for layer in transition.layers.clone() {
         for mip in transition.mips.clone() {
-            for plane in 0..2 {
-                let aspect = if plane == 0 {
-                    if texture::is_depth(desc.format) {
-                        api::TextureAspects::DEPTH.0
-                    } else {
-                        api::TextureAspects::COLOR.0
-                    }
-                } else {
-                    api::TextureAspects::STENCIL.0
-                };
-                if transition.aspects.0 & aspect == 0 {
+            for (plane, aspect) in (0u32..).zip(planes) {
+                if transition.aspects.0 & aspect.0 == 0 {
                     continue;
                 }
                 let subresource =
@@ -409,7 +418,6 @@ fn transition_texture(
         }
     }
     encoder.textures.push(texture.clone());
-    Ok(())
 }
 
 impl ExternalBackend for Dx12 {
@@ -492,12 +500,14 @@ impl ExternalBackend for Dx12 {
         sync: Dx12ExternalSync,
         transition: &api::ExternalTextureTransition,
     ) -> Result<()> {
+        let states = validate_texture_transition(encoder, texture, transition)?;
         let (fence, value) = sync.fence_value();
         encoder.split_queue_boundary(encoder::external_segment::QueueBoundary::Wait {
             fence: fence.clone(),
             value,
         })?;
-        transition_texture(encoder, texture, transition)
+        record_texture_transition(encoder, texture, transition, states);
+        Ok(())
     }
 
     fn release_external_texture(
@@ -505,8 +515,9 @@ impl ExternalBackend for Dx12 {
         texture: &Dx12Texture,
         transition: &api::ExternalTextureTransition,
     ) -> Result<Dx12ExternalSync> {
-        transition_texture(encoder, texture, transition)?;
+        let states = validate_texture_transition(encoder, texture, transition)?;
         let sync = exported_fence(&encoder.device)?;
+        record_texture_transition(encoder, texture, transition, states);
         let (fence, value) = sync.fence_value();
         encoder.split_queue_boundary(encoder::external_segment::QueueBoundary::Signal {
             fence: fence.clone(),
