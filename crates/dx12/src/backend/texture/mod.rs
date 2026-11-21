@@ -20,10 +20,8 @@ pub(super) use format::sample_count_supported;
 use format::{available_format_support, native_format_has_support, supported_sample_counts};
 pub(super) use format::{
     bc_block_bytes, color_texel_bytes, depth_aspects, dxgi_format, format_has_support,
-    format_supports_texture_atomic_add_native, format_supports_texture_atomic_bitwise_native,
-    format_supports_texture_atomic_signed_min_native,
-    format_supports_texture_atomic_unsigned_min_native, integer_clear_bits, integer_color,
-    is_depth, storage_view_format_available, typed_storage_access,
+    integer_clear_bits, integer_color, is_depth, storage_view_format_available,
+    texture_atomic_support, typed_storage_access,
 };
 pub(super) use format::{native_format_support, sample_load_requirement};
 use validate::valid;

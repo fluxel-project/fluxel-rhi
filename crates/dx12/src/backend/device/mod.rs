@@ -21,8 +21,11 @@ use adapter::adapter_name;
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, D3D12_FEATURE_ARCHITECTURE,
     D3D12_FEATURE_D3D12_OPTIONS4, D3D12_FEATURE_DATA_ARCHITECTURE,
-    D3D12_FEATURE_DATA_D3D12_OPTIONS4, D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT,
-    D3D12_IA_VERTEX_INPUT_STRUCTURE_ELEMENT_COUNT,
+    D3D12_FEATURE_DATA_D3D12_OPTIONS4, D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_ADD,
+    D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS,
+    D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_SIGNED_MIN_OR_MAX,
+    D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_UNSIGNED_MIN_OR_MAX,
+    D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT, D3D12_IA_VERTEX_INPUT_STRUCTURE_ELEMENT_COUNT,
     D3D12_RAYTRACING_MAX_DECLARABLE_TRACE_RECURSION_DEPTH,
     D3D12_RAYTRACING_MAX_GEOMETRIES_PER_BOTTOM_LEVEL_ACCELERATION_STRUCTURE,
     D3D12_RAYTRACING_MAX_INSTANCES_PER_TOP_LEVEL_ACCELERATION_STRUCTURE,
@@ -182,34 +185,24 @@ impl Dx12 {
             let ray_query_supported = dxr_1_1 && shader_model >= 65;
             let mesh_supported = mesh::probe(&native, shader_model);
             let mesh_shader_limits = mesh_supported.then(|| mesh::shader_limits(&native));
-            let texture_atomic_r32uint_compute = texture::format_supports_texture_atomic_add_native(
-                &native,
-                api::TextureFormat::R32Uint,
-            );
-            let texture_atomic_r32sint_compute = texture::format_supports_texture_atomic_add_native(
-                &native,
-                api::TextureFormat::R32Sint,
-            );
+            let uint_atomics =
+                texture::texture_atomic_support(&native, api::TextureFormat::R32Uint);
+            let sint_atomics =
+                texture::texture_atomic_support(&native, api::TextureFormat::R32Sint);
+            let texture_atomic_r32uint_compute =
+                uint_atomics.contains(D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_ADD);
+            let texture_atomic_r32sint_compute =
+                sint_atomics.contains(D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_ADD);
             let texture_atomic_r32sint_min_compute =
-                texture::format_supports_texture_atomic_signed_min_native(
-                    &native,
-                    api::TextureFormat::R32Sint,
-                );
+                sint_atomics.contains(D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_SIGNED_MIN_OR_MAX);
             let texture_atomic_r32sint_max_compute = texture_atomic_r32sint_min_compute;
+            // The native bits group min/max and bitwise operations, whereas
+            // Core reports the separately supported shader operations.
             let texture_atomic_r32uint_min_compute =
-                texture::format_supports_texture_atomic_unsigned_min_native(
-                    &native,
-                    api::TextureFormat::R32Uint,
-                );
-            // D3D12 exposes one format-support bit for unsigned texture min
-            // and max; keep the public operation capabilities separate while
-            // deriving both from that native fact.
+                uint_atomics.contains(D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_UNSIGNED_MIN_OR_MAX);
             let texture_atomic_r32uint_max_compute = texture_atomic_r32uint_min_compute;
             let texture_atomic_r32uint_bitwise_compute =
-                texture::format_supports_texture_atomic_bitwise_native(
-                    &native,
-                    api::TextureFormat::R32Uint,
-                );
+                uint_atomics.contains(D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS);
             let texture_atomic_r32uint_xor_compute = texture_atomic_r32uint_bitwise_compute;
             let texture_atomic_r32uint_and_compute = texture_atomic_r32uint_bitwise_compute;
             let texture_atomic_r32uint_or_compute = texture_atomic_r32uint_bitwise_compute;

@@ -247,6 +247,9 @@ For RGBA8 and BGRA8 linear/sRGB pairs, compare the reported view formats
 with default view creation for storage-only and mixed sampled/storage
 usage. Check that explicit UAV requests qualify only the linear variant
 and that a mixed-use sRGB sampled view can span multiple mips.
+Compare each advertised R32 texture atomic operation with its compute
+binding layout. Exercise a format support result with an atomic bit but
+without typed load or store and verify that it cannot enable the operation.
 For `Stencil8`, verify stencil attachment clear and stencil operations,
 sampled unsigned readback, copy and upload, MSAA admission, and read-only
 stencil views across arrays. Confirm that depth view, transition, load,
