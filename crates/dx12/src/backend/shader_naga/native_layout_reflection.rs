@@ -48,11 +48,7 @@ pub(in crate::backend) fn validate_visibility(
     stage: api::ShaderStage,
     layout: &PipelineLayoutState,
 ) -> Result<()> {
-    if layout
-        .binding_entries
-        .iter()
-        .all(|(_, entry)| entry.visibility.contains(&stage))
-    {
+    if !layout.has_stage_restricted_bindings(stage) {
         return Ok(());
     }
     visit_bindings(bytes, stage, |_, resource| {
@@ -62,24 +58,7 @@ pub(in crate::backend) fn validate_visibility(
             0 | u32::MAX => u64::from(u32::MAX) + 1,
             count => start + u64::from(count),
         };
-        for &(group, binding, register, register_class, count) in &layout.register_map {
-            let register = u64::from(register);
-            if group == resource.Space
-                && register_class == class
-                && register < end
-                && start < register + u64::from(count)
-                && layout.binding_entries.iter().any(|(space, entry)| {
-                    *space == group
-                        && entry.binding == binding
-                        && !entry.visibility.contains(&stage)
-                })
-            {
-                return Err(Error::Shader(format!(
-                    "HLSL binding {group}:{binding} is not visible to {stage:?}"
-                )));
-            }
-        }
-        Ok(())
+        layout.validate_register_visibility(stage, resource.Space, class, start..end)
     })
 }
 

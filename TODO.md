@@ -375,10 +375,13 @@ Inactive bindings may be exclusive to another stage. Repeat negative cases
 with an existing PSO cache. Exercise HLSL selected-entry reflection for
 vertex, fragment, and compute, including array ranges that intersect a
 stage-restricted binding and explicit layouts with ambiguous view formats.
-Direct DXIL still needs a stage-visibility contract that preserves artifacts
-without DXC reflection or a DXC runtime. D4.2 follows up with explicit
-metadata and a separate exact-export contract for DXIL libraries. Qualify
-mesh and task stages separately from vertex, fragment, and compute.
+For single-program DXIL, cover PSV register ranges, including an artifact
+without optional reflection and an environment without DXC. Exercise
+vertex, fragment, compute, mesh, and task visibility, reject a stage kind
+mismatch and malformed PSV length, and check an array's inclusive upper
+register bound. DXIL libraries need separate evidence for the selected
+export's resources. Reopen their visibility checks with exact export metadata
+that preserves the precompiled library contract.
 
 ### DX12 secondary-source alpha blending
 

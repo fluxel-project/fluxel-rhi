@@ -143,8 +143,11 @@ fn admit_stage<'a>(
             Some(Dx12ShaderSource::Wgsl(_)) => {}
         }
     }
-    if shader.source.is_none() && !desc.constants.is_empty() {
-        return Err(Error::Unsupported("DX12 DXIL specialization"));
+    if shader.source.is_none() {
+        if !desc.constants.is_empty() {
+            return Err(Error::Unsupported("DX12 DXIL specialization"));
+        }
+        crate::backend::shader_naga::validate_dxil_visibility(&shader.bytes, need, layout)?;
     }
     Ok(AdmittedStage {
         desc,

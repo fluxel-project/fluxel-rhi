@@ -342,6 +342,11 @@ layout has stage-restricted bindings. The check covers intersecting register
 ranges, including arrays, before PSO creation. Explicit layouts still
 provide view-type information that native reflection cannot infer.
 
+For single-program DXIL with stage-restricted bindings, DX12 checks the
+program kind and register ranges from the container's `PSV0` data. Compute,
+raster, and mesh admission can perform these checks without a DXC runtime
+or optional reflection data. DXIL libraries use their separate export ABI.
+
 ## Recording, submission, and completion
 
 The normal run path is:

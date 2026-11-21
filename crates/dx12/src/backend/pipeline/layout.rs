@@ -49,6 +49,41 @@ pub(crate) struct PipelineLayoutState {
     pub(crate) tables: Vec<GroupTables>,
     pub(crate) push_constants: Option<PushConstantsRoot>,
 }
+
+impl PipelineLayoutState {
+    pub(crate) fn has_stage_restricted_bindings(&self, stage: api::ShaderStage) -> bool {
+        self.binding_entries
+            .iter()
+            .any(|(_, entry)| !entry.visibility.contains(&stage))
+    }
+
+    pub(crate) fn validate_register_visibility(
+        &self,
+        stage: api::ShaderStage,
+        space: u32,
+        class: u8,
+        registers: std::ops::Range<u64>,
+    ) -> Result<()> {
+        for &(group, binding, register, register_class, count) in &self.register_map {
+            let register = u64::from(register);
+            if group == space
+                && register_class == class
+                && register < registers.end
+                && registers.start < register + u64::from(count)
+                && self.binding_entries.iter().any(|(space, entry)| {
+                    *space == group
+                        && entry.binding == binding
+                        && !entry.visibility.contains(&stage)
+                })
+            {
+                return Err(Error::Shader(format!(
+                    "DX12 binding {group}:{binding} is not visible to {stage:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
 pub(crate) struct PushConstantsRoot {
     graphics: Vec<(api::StageMask, u32)>,
     compute: Option<u32>,

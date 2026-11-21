@@ -260,6 +260,14 @@ fn admit_pipeline<'a>(
     if !layout.native_abi_compatible {
         return Err(Error::Unsupported("DX12 DXIL descriptor register overlap"));
     }
+    use super::shader_naga::validate_dxil_visibility;
+    validate_dxil_visibility(mesh, api::ShaderStage::Mesh, layout)?;
+    if let Some(task) = task {
+        validate_dxil_visibility(task, api::ShaderStage::Task, layout)?;
+    }
+    if let Some(fragment) = fragment {
+        validate_dxil_visibility(fragment, api::ShaderStage::Fragment, layout)?;
+    }
     Ok(AdmittedMesh {
         layout,
         topology,

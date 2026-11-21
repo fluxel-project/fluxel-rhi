@@ -92,6 +92,11 @@ fn admit<'a>(
                     "DX12 DXIL required subgroup size is immutable in native artifact",
                 ));
             }
+            super::super::shader_naga::validate_dxil_visibility(
+                &shader.bytes,
+                entry.stage,
+                layout,
+            )?;
         }
     }
     Ok(AdmittedPipeline {
