@@ -116,6 +116,134 @@ fn component_mapping(mapping: api::TextureComponentMapping) -> u32 {
     encoded
 }
 
+pub(in crate::backend) fn sampled_color_desc(
+    v: &api::TextureViewDesc,
+    multisampled: bool,
+    component_mapping: u32,
+) -> D3D12_SHADER_RESOURCE_VIEW_DESC {
+    let cube = cube_srv(v);
+    D3D12_SHADER_RESOURCE_VIEW_DESC {
+        Format: dxgi_format(v.format),
+        ViewDimension: if multisampled && v.dimension == api::TextureViewDimension::D2Array {
+            D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY
+        } else if multisampled {
+            D3D12_SRV_DIMENSION_TEXTURE2DMS
+        } else if let Some((dimension, _)) = cube {
+            dimension
+        } else if v.dimension == api::TextureViewDimension::D1 {
+            D3D12_SRV_DIMENSION_TEXTURE1D
+        } else if v.dimension == api::TextureViewDimension::D3 {
+            D3D12_SRV_DIMENSION_TEXTURE3D
+        } else if v.dimension == api::TextureViewDimension::D2Array {
+            D3D12_SRV_DIMENSION_TEXTURE2DARRAY
+        } else {
+            D3D12_SRV_DIMENSION_TEXTURE2D
+        },
+        Shader4ComponentMapping: component_mapping,
+        Anonymous: if multisampled && v.dimension == api::TextureViewDimension::D2Array {
+            D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                Texture2DMSArray: D3D12_TEX2DMS_ARRAY_SRV {
+                    FirstArraySlice: v.layers.start,
+                    ArraySize: v.layers.end - v.layers.start,
+                },
+            }
+        } else if multisampled {
+            D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                Texture2DMS: D3D12_TEX2DMS_SRV {
+                    UnusedField_NothingToDefine: 0,
+                },
+            }
+        } else if let Some((_, descriptor)) = cube {
+            descriptor
+        } else if v.dimension == api::TextureViewDimension::D1 {
+            D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                Texture1D: D3D12_TEX1D_SRV {
+                    MostDetailedMip: v.mips.start,
+                    MipLevels: v.mips.end - v.mips.start,
+                    ResourceMinLODClamp: 0.0,
+                },
+            }
+        } else if v.dimension == api::TextureViewDimension::D3 {
+            D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                Texture3D: D3D12_TEX3D_SRV {
+                    MostDetailedMip: v.mips.start,
+                    MipLevels: v.mips.end - v.mips.start,
+                    ResourceMinLODClamp: 0.0,
+                },
+            }
+        } else if v.dimension == api::TextureViewDimension::D2Array {
+            D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                Texture2DArray: D3D12_TEX2D_ARRAY_SRV {
+                    MostDetailedMip: v.mips.start,
+                    MipLevels: v.mips.end - v.mips.start,
+                    FirstArraySlice: v.layers.start,
+                    ArraySize: v.layers.end - v.layers.start,
+                    PlaneSlice: u32::from(v.aspects == api::TextureAspects::PLANE_1),
+                    ResourceMinLODClamp: 0.0,
+                },
+            }
+        } else {
+            D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                Texture2D: D3D12_TEX2D_SRV {
+                    MostDetailedMip: v.mips.start,
+                    MipLevels: v.mips.end - v.mips.start,
+                    PlaneSlice: u32::from(v.aspects == api::TextureAspects::PLANE_1),
+                    ResourceMinLODClamp: 0.0,
+                },
+            }
+        },
+    }
+}
+
+pub(in crate::backend) fn storage_color_desc(
+    v: &api::TextureViewDesc,
+    depth: u32,
+) -> D3D12_UNORDERED_ACCESS_VIEW_DESC {
+    D3D12_UNORDERED_ACCESS_VIEW_DESC {
+        Format: dxgi_format(v.format),
+        ViewDimension: if v.dimension == api::TextureViewDimension::D1 {
+            D3D12_UAV_DIMENSION_TEXTURE1D
+        } else if v.dimension == api::TextureViewDimension::D3 {
+            D3D12_UAV_DIMENSION_TEXTURE3D
+        } else if v.dimension == api::TextureViewDimension::D2Array {
+            D3D12_UAV_DIMENSION_TEXTURE2DARRAY
+        } else {
+            D3D12_UAV_DIMENSION_TEXTURE2D
+        },
+        Anonymous: if v.dimension == api::TextureViewDimension::D1 {
+            D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+                Texture1D: D3D12_TEX1D_UAV {
+                    MipSlice: v.mips.start,
+                },
+            }
+        } else if v.dimension == api::TextureViewDimension::D3 {
+            D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+                Texture3D: D3D12_TEX3D_UAV {
+                    MipSlice: v.mips.start,
+                    FirstWSlice: 0,
+                    WSize: depth,
+                },
+            }
+        } else if v.dimension == api::TextureViewDimension::D2Array {
+            D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+                Texture2DArray: D3D12_TEX2D_ARRAY_UAV {
+                    MipSlice: v.mips.start,
+                    FirstArraySlice: v.layers.start,
+                    ArraySize: v.layers.end - v.layers.start,
+                    PlaneSlice: 0,
+                },
+            }
+        } else {
+            D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+                Texture2D: D3D12_TEX2D_UAV {
+                    MipSlice: v.mips.start,
+                    PlaneSlice: 0,
+                },
+            }
+        },
+    }
+}
+
 fn create_color_view(
     dv: &Dx12Device,
     texture: Arc<TextureState>,
@@ -124,88 +252,12 @@ fn create_color_view(
     component_mapping: u32,
     attachment_depth_slice: Option<u32>,
 ) -> Result<Dx12TextureView> {
-    let array = texture.desc.array_layers > 1 || v.dimension == api::TextureViewDimension::D2Array;
     let (srv_lease, srv) = if usage.contains(api::TextureUsage::TEXTURE_BINDING) {
         let lease =
             dv.0.cpu_descriptors
                 .allocate(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1)?;
         let srv = lease.cpu(0);
-        let cube = cube_srv(v);
-        let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-            Format: dxgi_format(v.format),
-            ViewDimension: if texture.desc.samples > 1
-                && v.dimension == api::TextureViewDimension::D2Array
-            {
-                D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY
-            } else if texture.desc.samples > 1 {
-                D3D12_SRV_DIMENSION_TEXTURE2DMS
-            } else if let Some((dimension, _)) = cube {
-                dimension
-            } else if v.dimension == api::TextureViewDimension::D1 {
-                D3D12_SRV_DIMENSION_TEXTURE1D
-            } else if v.dimension == api::TextureViewDimension::D3 {
-                D3D12_SRV_DIMENSION_TEXTURE3D
-            } else if v.dimension == api::TextureViewDimension::D2Array {
-                D3D12_SRV_DIMENSION_TEXTURE2DARRAY
-            } else {
-                D3D12_SRV_DIMENSION_TEXTURE2D
-            },
-            Shader4ComponentMapping: component_mapping,
-            Anonymous: if texture.desc.samples > 1
-                && v.dimension == api::TextureViewDimension::D2Array
-            {
-                D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                    Texture2DMSArray: D3D12_TEX2DMS_ARRAY_SRV {
-                        FirstArraySlice: v.layers.start,
-                        ArraySize: v.layers.end - v.layers.start,
-                    },
-                }
-            } else if texture.desc.samples > 1 {
-                D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                    Texture2DMS: D3D12_TEX2DMS_SRV {
-                        UnusedField_NothingToDefine: 0,
-                    },
-                }
-            } else if let Some((_, descriptor)) = cube {
-                descriptor
-            } else if v.dimension == api::TextureViewDimension::D1 {
-                D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                    Texture1D: D3D12_TEX1D_SRV {
-                        MostDetailedMip: v.mips.start,
-                        MipLevels: v.mips.end - v.mips.start,
-                        ResourceMinLODClamp: 0.0,
-                    },
-                }
-            } else if v.dimension == api::TextureViewDimension::D3 {
-                D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                    Texture3D: D3D12_TEX3D_SRV {
-                        MostDetailedMip: v.mips.start,
-                        MipLevels: v.mips.end - v.mips.start,
-                        ResourceMinLODClamp: 0.0,
-                    },
-                }
-            } else if v.dimension == api::TextureViewDimension::D2Array {
-                D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                    Texture2DArray: D3D12_TEX2D_ARRAY_SRV {
-                        MostDetailedMip: v.mips.start,
-                        MipLevels: v.mips.end - v.mips.start,
-                        FirstArraySlice: v.layers.start,
-                        ArraySize: v.layers.end - v.layers.start,
-                        PlaneSlice: u32::from(v.aspects == api::TextureAspects::PLANE_1),
-                        ResourceMinLODClamp: 0.0,
-                    },
-                }
-            } else {
-                D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                    Texture2D: D3D12_TEX2D_SRV {
-                        MostDetailedMip: v.mips.start,
-                        MipLevels: v.mips.end - v.mips.start,
-                        PlaneSlice: u32::from(v.aspects == api::TextureAspects::PLANE_1),
-                        ResourceMinLODClamp: 0.0,
-                    },
-                }
-            },
-        };
+        let desc = sampled_color_desc(v, texture.desc.samples > 1, component_mapping);
         // SAFETY: the validated SRV range belongs to retained texture storage
         // and the destination CPU handle belongs to the retained heap.
         unsafe {
@@ -221,49 +273,8 @@ fn create_color_view(
             dv.0.cpu_descriptors
                 .allocate(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1)?;
         let uav = lease.cpu(0);
-        let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
-            Format: dxgi_format(v.format),
-            ViewDimension: if texture.desc.dimension == api::TextureDimension::D1 {
-                D3D12_UAV_DIMENSION_TEXTURE1D
-            } else if texture.desc.dimension == api::TextureDimension::D3 {
-                D3D12_UAV_DIMENSION_TEXTURE3D
-            } else if array {
-                D3D12_UAV_DIMENSION_TEXTURE2DARRAY
-            } else {
-                D3D12_UAV_DIMENSION_TEXTURE2D
-            },
-            Anonymous: if texture.desc.dimension == api::TextureDimension::D1 {
-                D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-                    Texture1D: D3D12_TEX1D_UAV {
-                        MipSlice: v.mips.start,
-                    },
-                }
-            } else if texture.desc.dimension == api::TextureDimension::D3 {
-                D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-                    Texture3D: D3D12_TEX3D_UAV {
-                        MipSlice: v.mips.start,
-                        FirstWSlice: 0,
-                        WSize: (texture.desc.extent[2] >> v.mips.start).max(1),
-                    },
-                }
-            } else if array {
-                D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-                    Texture2DArray: D3D12_TEX2D_ARRAY_UAV {
-                        MipSlice: v.mips.start,
-                        FirstArraySlice: v.layers.start,
-                        ArraySize: v.layers.end - v.layers.start,
-                        PlaneSlice: 0,
-                    },
-                }
-            } else {
-                D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-                    Texture2D: D3D12_TEX2D_UAV {
-                        MipSlice: v.mips.start,
-                        PlaneSlice: 0,
-                    },
-                }
-            },
-        };
+        let depth = (texture.desc.extent[2] >> v.mips.start).max(1);
+        let desc = storage_color_desc(v, depth);
         // SAFETY: validated UAV format/mip and retained resource/heap make
         // this descriptor write independent of caller lifetimes.
         unsafe {

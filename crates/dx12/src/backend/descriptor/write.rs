@@ -1,9 +1,7 @@
-//! Bind-group resource validation used while writing descriptor-table ranges.
+//! Bind-group resource validation and writes for null descriptors.
 //!
-//! This module validates only the resource-to-layout correspondence and never
-//! allocates heaps or writes descriptors.  Keeping it separate makes the
-//! parent descriptor module own heap ranges and bind-group lifetime, while the
-//! writer path owns the per-entry runtime-array and view-dimension contract.
+//! The group owns heap ranges and resource lifetimes. This module checks
+//! layout correspondence and initializes holes in the reserved tables.
 
 use fluxel_rhi_core::api::{self, Error, Result};
 
@@ -14,16 +12,65 @@ use windows::Win32::Graphics::{
 };
 
 /// Initializes an inaccessible array element without retaining a resource.
-/// Null views use a valid raw-buffer description; shaders must not access holes.
+/// Null views match the binding's native type. Shaders must not access holes.
 pub(super) fn write_hole(
     device: &Dx12Device,
     slot: &BindingSlot,
     view: D3D12_CPU_DESCRIPTOR_HANDLE,
     sampler: u32,
 ) {
-    if matches!(slot.binding_type, api::BindingType::AccelerationStructure) {
-        write_acceleration_view(device, view, 0);
-        return;
+    match slot.binding_type {
+        api::BindingType::AccelerationStructure => {
+            write_acceleration_view(device, view, 0);
+            return;
+        }
+        api::BindingType::SampledTexture {
+            sample,
+            dimension,
+            multisampled,
+        } => {
+            use api::TextureFormat as F;
+            let format = match sample {
+                api::TextureSampleType::Float => F::Rgba8Unorm,
+                api::TextureSampleType::Depth | api::TextureSampleType::UnfilterableFloat => {
+                    F::R32Float
+                }
+                api::TextureSampleType::Sint => F::R32Sint,
+                api::TextureSampleType::Uint => F::R32Uint,
+            };
+            let desc = super::super::texture::sampled_color_desc(
+                &null_texture_view(format, dimension),
+                multisampled,
+                D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+            );
+            // SAFETY: the null SRV has the shader's numeric type and dimension,
+            // and `view` belongs to the reserved descriptor range.
+            unsafe {
+                device
+                    .0
+                    .native
+                    .CreateShaderResourceView(None::<&ID3D12Resource>, Some(&desc), view)
+            };
+            return;
+        }
+        api::BindingType::StorageTexture {
+            format, dimension, ..
+        } => {
+            let desc =
+                super::super::texture::storage_color_desc(&null_texture_view(format, dimension), 1);
+            // SAFETY: layout admission qualified the UAV's format and dimension.
+            // The null UAV has no resource or counter to retain.
+            unsafe {
+                device.0.native.CreateUnorderedAccessView(
+                    None::<&ID3D12Resource>,
+                    None::<&ID3D12Resource>,
+                    Some(&desc),
+                    view,
+                )
+            };
+            return;
+        }
+        _ => {}
     }
     // SAFETY: the caller reserved these destination heap entries. Null views
     // have a complete valid description and cannot reference a dead resource.
@@ -101,6 +148,23 @@ pub(super) fn write_hole(
                     .CreateSampler(&desc, device.0.descriptors.samplers.cpu(sampler));
             }
         }
+    }
+}
+
+fn null_texture_view(
+    format: api::TextureFormat,
+    dimension: api::TextureViewDimension,
+) -> api::TextureViewDesc {
+    let layers = match dimension {
+        api::TextureViewDimension::Cube | api::TextureViewDimension::CubeArray => 0..6,
+        _ => 0..1,
+    };
+    api::TextureViewDesc {
+        format,
+        dimension,
+        mips: 0..1,
+        layers,
+        aspects: api::TextureAspects::COLOR,
     }
 }
 

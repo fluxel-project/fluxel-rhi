@@ -320,6 +320,10 @@ pair for them. Acquire puts the producer fence wait before the transition.
 Release puts the signal after it. Queue segments retain the fence and
 recorded commands retain the imported native resource.
 
+Holes in sampled and storage texture descriptor arrays use null DX12 views
+with the binding's native view dimension and numeric type. Storage holes
+use the declared UAV format. Shader code selects only populated elements.
+
 ## Recording, submission, and completion
 
 The normal run path is:

@@ -344,6 +344,15 @@ slots for fixed and runtime arrays, including nonuniform indexing and holes.
 Verify capacity and shader layout rejection, and TLAS/BLAS retention through
 submission completion. Qualify each supported shader route separately.
 
+### DX12 holes in texture descriptor arrays
+
+Exercise fixed arrays with holes and runtime arrays shorter than the native
+descriptor range. Cover sampled type, view dimension, and multisampling,
+plus exact typed storage format and dimension. Check the native descriptor
+type and draw or dispatch under GPU validation. Read back a populated slot
+after a hole and confirm that recording retains its resource through
+completion.
+
 ### DX12 secondary-source alpha blending
 
 **Status:** Both secondary-source alpha factors lower to their native DX12

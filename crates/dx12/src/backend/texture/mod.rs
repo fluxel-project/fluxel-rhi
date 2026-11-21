@@ -15,7 +15,7 @@ pub(super) mod planar;
 mod validate;
 pub(super) use color_view::{
     create_sampled_view, create_view, create_view_with_usage, create_volume_attachment_slice,
-    volume_attachment_slice_support,
+    sampled_color_desc, storage_color_desc, volume_attachment_slice_support,
 };
 pub(super) use format::probe_planar_texture;
 pub(super) use format::sample_count_supported;
