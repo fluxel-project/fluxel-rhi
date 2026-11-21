@@ -1,6 +1,31 @@
 //! Full depth/stencil plane readback using the native copyable footprint.
 use super::*;
+use crate::backend::texture::TextureState;
 use std::mem::ManuallyDrop;
+
+pub(super) struct PlaneFootprints {
+    first_subresource: u32,
+    mip_levels: u32,
+    layer_count: u32,
+    first_footprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
+    stride: u64,
+    rows: u32,
+    row_size: u64,
+}
+
+impl PlaneFootprints {
+    fn needs_scratch(&self) -> bool {
+        self.layer_count > 1 && self.stride % 512 != 0
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (u32, D3D12_PLACED_SUBRESOURCE_FOOTPRINT)> + '_ {
+        (0..self.layer_count).map(|layer| {
+            let mut footprint = self.first_footprint;
+            footprint.Offset += u64::from(layer) * self.stride;
+            (self.first_subresource + layer * self.mip_levels, footprint)
+        })
+    }
+}
 
 fn scratch_buffer(encoder: &Dx12Encoder, size: u64) -> Result<ID3D12Resource, Error> {
     let heap = D3D12_HEAP_PROPERTIES {
@@ -50,6 +75,23 @@ fn scratch_buffer(encoder: &Dx12Encoder, size: u64) -> Result<ID3D12Resource, Er
     Ok(resource)
 }
 
+pub(super) fn validate_readback(
+    encoder: &Dx12Encoder,
+    texture: &TextureState,
+    src: &api::TextureRegion<'_, Dx12>,
+    dst: &Dx12Buffer,
+    layout: api::TexelCopyBufferLayout,
+) -> Result<PlaneFootprints, Error> {
+    let desc = &texture.desc;
+    if !desc.usage.contains(api::TextureUsage::COPY_SRC)
+        || !dst.usage.contains(api::BufferUsage::COPY_DST)
+        || dst.memory == api::MemoryClass::Upload
+    {
+        return Err(Error::Unsupported("DX12 depth plane readback usage"));
+    }
+    plane_footprints(encoder, texture, src, layout, dst.size)
+}
+
 pub(super) fn texture_to_buffer(
     encoder: &mut Dx12Encoder,
     src: api::TextureRegion<'_, Dx12>,
@@ -58,23 +100,16 @@ pub(super) fn texture_to_buffer(
 ) -> Result<(), Error> {
     // SAFETY: Core checked device identity and the clone retains the resource.
     let texture = unsafe { src.texture.native_ref() }.0.clone();
-    let desc = &texture.desc;
-    if !desc.usage.contains(api::TextureUsage::COPY_SRC)
-        || !dst.usage.contains(api::BufferUsage::COPY_DST)
-        || dst.memory == api::MemoryClass::Upload
-    {
-        return Err(Error::Unsupported("DX12 depth plane readback usage"));
-    }
-    let copies = plane_footprints(encoder, &texture, &src, layout, dst.size)?;
-    let scratch = if copies.iter().any(|(_, fp, _, _)| fp.Offset % 512 != 0) {
+    let copies = validate_readback(encoder, &texture, &src, dst, layout)?;
+    let scratch = if copies.needs_scratch() {
         Some(scratch_buffer(
             encoder,
-            u64::from(layout.bytes_per_row) * u64::from(copies[0].2),
+            u64::from(layout.bytes_per_row) * u64::from(copies.rows),
         )?)
     } else {
         None
     };
-    for (subresource, mut footprint, rows, row_size) in copies {
+    for (subresource, mut footprint) in copies.iter() {
         let offset = footprint.Offset;
         let use_scratch = offset % 512 != 0;
         let target_resource = if use_scratch {
@@ -110,14 +145,14 @@ pub(super) fn texture_to_buffer(
             );
             // SAFETY: validated rows fit both buffers and resources remain retained.
             unsafe {
-                for row in 0..rows {
+                for row in 0..copies.rows {
                     let position = u64::from(row) * u64::from(layout.bytes_per_row);
                     encoder.list.CopyBufferRegion(
                         &dst.resource,
                         offset + position,
                         scratch,
                         position,
-                        row_size,
+                        copies.row_size,
                     );
                 }
             }
@@ -139,12 +174,18 @@ pub(super) fn texture_to_buffer(
 
 fn plane_footprints(
     encoder: &Dx12Encoder,
-    texture: &std::sync::Arc<super::super::texture::TextureState>,
+    texture: &TextureState,
     region: &api::TextureRegion<'_, Dx12>,
     layout: api::TexelCopyBufferLayout,
     buffer_size: u64,
-) -> Result<Vec<(u32, D3D12_PLACED_SUBRESOURCE_FOOTPRINT, u32, u64)>, Error> {
+) -> Result<PlaneFootprints, Error> {
+    encoder.device.require_active()?;
     let desc = &texture.desc;
+    if desc.samples != 1 {
+        return Err(Error::Unsupported(
+            "DX12 multisample depth plane buffer copy",
+        ));
+    }
     let stencil = region.aspect == api::TextureAspects::STENCIL;
     if !(matches!(
         region.aspect,
@@ -225,19 +266,33 @@ fn plane_footprints(
     if end > buffer_size {
         return Err(Error::InvalidRange);
     }
+    footprint.Offset = layout.offset;
     footprint.Footprint.RowPitch = layout.bytes_per_row;
-    Ok((0..region.extent[2])
-        .map(|layer| {
-            let mut placed = footprint;
-            placed.Offset = layout.offset + u64::from(layer) * stride;
-            (
-                subresource + layer * desc.mip_levels,
-                placed,
-                rows,
-                row_size,
-            )
-        })
-        .collect())
+    Ok(PlaneFootprints {
+        first_subresource: subresource,
+        mip_levels: desc.mip_levels,
+        layer_count: region.extent[2],
+        first_footprint: footprint,
+        stride,
+        rows,
+        row_size,
+    })
+}
+
+pub(super) fn validate_upload(
+    encoder: &Dx12Encoder,
+    texture: &TextureState,
+    src: &Dx12Buffer,
+    layout: api::TexelCopyBufferLayout,
+    dst: &api::TextureRegion<'_, Dx12>,
+) -> Result<PlaneFootprints, Error> {
+    if src.memory == api::MemoryClass::Readback
+        || !src.usage.contains(api::BufferUsage::COPY_SRC)
+        || !texture.desc.usage.contains(api::TextureUsage::COPY_DST)
+    {
+        return Err(Error::Unsupported("DX12 depth plane upload usage"));
+    }
+    plane_footprints(encoder, texture, dst, layout, src.size)
 }
 
 pub(super) fn buffer_to_texture(
@@ -248,36 +303,30 @@ pub(super) fn buffer_to_texture(
 ) -> Result<(), Error> {
     // SAFETY: Core validates the destination identity; retaining its native handle covers GPU use.
     let texture = unsafe { dst.texture.native_ref() }.0.clone();
-    if src.memory == api::MemoryClass::Readback
-        || !src.usage.contains(api::BufferUsage::COPY_SRC)
-        || !texture.desc.usage.contains(api::TextureUsage::COPY_DST)
-    {
-        return Err(Error::Unsupported("DX12 depth plane upload usage"));
-    }
-    let copies = plane_footprints(encoder, &texture, &dst, layout, src.size)?;
-    let scratch = if copies.iter().any(|(_, fp, _, _)| fp.Offset % 512 != 0) {
+    let copies = validate_upload(encoder, &texture, src, layout, &dst)?;
+    let scratch = if copies.needs_scratch() {
         Some(scratch_buffer(
             encoder,
-            u64::from(layout.bytes_per_row) * u64::from(copies[0].2),
+            u64::from(layout.bytes_per_row) * u64::from(copies.rows),
         )?)
     } else {
         None
     };
-    for (subresource, mut footprint, rows, row_size) in copies {
+    for (subresource, mut footprint) in copies.iter() {
         let offset = footprint.Offset;
         let use_scratch = offset % 512 != 0;
         let source_resource = if use_scratch {
             let scratch = scratch.as_ref().unwrap();
             // SAFETY: validated rows fit both resources, which are retained through completion.
             unsafe {
-                for row in 0..rows {
+                for row in 0..copies.rows {
                     let position = u64::from(row) * u64::from(layout.bytes_per_row);
                     encoder.list.CopyBufferRegion(
                         scratch,
                         position,
                         &src.resource,
                         offset + position,
-                        row_size,
+                        copies.row_size,
                     );
                 }
             }

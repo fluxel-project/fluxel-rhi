@@ -7,29 +7,24 @@ use windows::Win32::Graphics::Direct3D12::{D3D12_BOX, D3D12_PLACED_SUBRESOURCE_F
 
 use super::{
     Dx12Encoder,
-    copy::{color_copy_footprint, validate_region},
+    copy::{ColorCopyFootprint, color_copy_footprint, validate_region},
     copy_location,
 };
 use crate::backend::{Dx12Buffer, Dx12Texture};
 
-/// Copies a color region into a device or readback buffer without repacking.
-pub(crate) fn texture_to_buffer(
-    encoder: &mut Dx12Encoder,
-    src: api::TextureRegion<'_, crate::backend::Dx12>,
+fn validate_color_readback(
+    encoder: &Dx12Encoder,
+    source: &Dx12Texture,
+    src: &api::TextureRegion<'_, crate::backend::Dx12>,
     dst: &Dx12Buffer,
     layout: api::TexelCopyBufferLayout,
-) -> Result<()> {
-    // SAFETY: Core validated the source region's device identity; clone retains
-    // native texture storage through the command list and completion boundary.
-    let texture = unsafe { src.texture.native_ref() }.0.clone();
-    let desc = &texture.desc;
+) -> Result<(u32, ColorCopyFootprint)> {
+    encoder.device.require_active()?;
+    let desc = &source.0.desc;
     if desc.samples > 1 {
         return Err(Error::Unsupported(
             "DX12 multisample texture to buffer copy",
         ));
-    }
-    if super::super::texture::is_depth(desc.format) {
-        return super::depth_readback::texture_to_buffer(encoder, src, dst, layout);
     }
     if src.aspect != api::TextureAspects::COLOR || !desc.usage.contains(api::TextureUsage::COPY_SRC)
     {
@@ -38,10 +33,7 @@ pub(crate) fn texture_to_buffer(
     if !dst.usage.contains(api::BufferUsage::COPY_DST) || dst.memory == api::MemoryClass::Upload {
         return Err(Error::Unsupported("DX12 texture copy destination buffer"));
     }
-    let texture = Dx12Texture(texture);
-    let desc = &texture.0.desc;
-    let subresource = validate_region(&texture, &src)?;
-    let is_array = desc.dimension != api::TextureDimension::D3;
+    let subresource = validate_region(source, src)?;
     let footprint = color_copy_footprint(
         desc.format,
         desc.dimension,
@@ -52,6 +44,39 @@ pub(crate) fn texture_to_buffer(
     if footprint.byte_end > dst.size {
         return Err(Error::InvalidRange);
     }
+    Ok((subresource, footprint))
+}
+
+pub(super) fn texture_to_buffer_support(
+    encoder: &Dx12Encoder,
+    src: &api::TextureRegion<'_, crate::backend::Dx12>,
+    dst: &Dx12Buffer,
+    layout: api::TexelCopyBufferLayout,
+) -> Result<()> {
+    // SAFETY: Core validated the source region's device identity.
+    let texture = unsafe { src.texture.native_ref() };
+    if super::super::texture::is_depth(texture.0.desc.format) {
+        return super::depth_readback::validate_readback(encoder, &texture.0, src, dst, layout)
+            .map(drop);
+    }
+    validate_color_readback(encoder, texture, src, dst, layout).map(drop)
+}
+
+/// Copies a region into a device or readback buffer.
+pub(crate) fn texture_to_buffer(
+    encoder: &mut Dx12Encoder,
+    src: api::TextureRegion<'_, crate::backend::Dx12>,
+    dst: &Dx12Buffer,
+    layout: api::TexelCopyBufferLayout,
+) -> Result<()> {
+    // SAFETY: Core validated the source region's device identity; retention covers execution.
+    let texture = unsafe { src.texture.native_ref() };
+    let desc = &texture.0.desc;
+    if super::super::texture::is_depth(desc.format) {
+        return super::depth_readback::texture_to_buffer(encoder, src, dst, layout);
+    }
+    let (subresource, footprint) = validate_color_readback(encoder, texture, &src, dst, layout)?;
+    let is_array = desc.dimension != api::TextureDimension::D3;
     let layers = if is_array { src.extent[2] } else { 1 };
     for layer in 0..layers {
         let mut target = copy_location(&dst.resource, footprint.placed, true, 0);
@@ -88,7 +113,7 @@ pub(crate) fn texture_to_buffer(
             ManuallyDrop::drop(&mut source.pResource);
         }
     }
-    encoder.textures.push(texture);
+    encoder.textures.push(texture.clone());
     encoder.buffers.push(dst.clone());
     Ok(())
 }

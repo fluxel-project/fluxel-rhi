@@ -292,6 +292,10 @@ both directions. When `texel_aligned_color_copies` is reported, the offset
 and row pitch may each be aligned to a single texel or compressed block.
 Other DX12 devices use 512-byte offsets and 256-byte row pitches for those
 copies. Depth and stencil use their dedicated copy paths.
+`buffer_to_texture_support` and `texture_to_buffer_support` validate the
+same resource usage, subresources, and footprint bounds as recording.
+The queries neither record commands nor reserve GPU scratch storage.
+Buffer-texture copies require a single-sample texture.
 
 ## Recording, submission, and completion
 

@@ -282,6 +282,16 @@ type and selects the requested six faces in both WGSL and direct HLSL.
 Verify that copy-only textures still allocate and copy, report an empty
 compatible view format list, and reject default view queries and creation.
 
+### DX12 buffer-texture copy footprints
+
+Verify that `buffer_to_texture_support` and `texture_to_buffer_support`
+agree with recording for padded rows, partial and edge BC blocks, multiple
+array layers, 3D slices, and full depth or stencil planes. Compare queried
+and recorded admission for invalid offsets, pitches, aspects, usage,
+memory classes, buffer bounds, and multisample textures. Include devices
+with and without unrestricted buffer-texture copy pitch support. Verify
+that a failed query leaves the encoder usable for a subsequent valid copy.
+
 ### DX12 structured shader diagnostics
 
 **Status:** WGSL parse and validation errors preserve compiler messages and

@@ -77,6 +77,22 @@ pub trait CommandBackend: Backend {
         dst: &Self::NativeBuffer,
         layout: TexelCopyBufferLayout,
     ) -> Result<()>;
+    fn buffer_to_texture_support(
+        _: &Self::NativeEncoder,
+        _: &Self::NativeBuffer,
+        _: TexelCopyBufferLayout,
+        _: &TextureRegion<'_, Self>,
+    ) -> Result<()> {
+        Err(Error::Unsupported("buffer to texture copy support query"))
+    }
+    fn texture_to_buffer_support(
+        _: &Self::NativeEncoder,
+        _: &TextureRegion<'_, Self>,
+        _: &Self::NativeBuffer,
+        _: TexelCopyBufferLayout,
+    ) -> Result<()> {
+        Err(Error::Unsupported("texture to buffer copy support query"))
+    }
     /// A convenience upload with a backend-managed temporary copy state.
     /// The destination must be in its backend's documented idle state before
     /// the call and returns to that state afterwards.

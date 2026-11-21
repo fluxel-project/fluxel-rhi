@@ -380,40 +380,32 @@ pub(crate) fn texture(
     Ok(())
 }
 
-pub(crate) fn buffer_to_texture(
-    encoder: &mut Dx12Encoder,
+fn validate_color_upload(
+    encoder: &Dx12Encoder,
     src: &Dx12Buffer,
     layout: api::TexelCopyBufferLayout,
-    dst: api::TextureRegion<'_, crate::backend::Dx12>,
-) -> Result<()> {
-    // SAFETY: Core validated the destination region's device; clone retains
-    // its native resource until this command list retires.
-    let target = unsafe { dst.texture.native_ref() }.0.clone();
-    if super::super::texture::is_depth(target.desc.format) {
-        return super::depth_readback::buffer_to_texture(encoder, src, layout, dst);
-    }
+    dst: &api::TextureRegion<'_, crate::backend::Dx12>,
+    target: &Dx12Texture,
+) -> Result<(u32, ColorCopyFootprint)> {
+    encoder.device.require_active()?;
+    let desc = &target.0.desc;
     if src.memory == api::MemoryClass::Readback
         || !src.usage.contains(api::BufferUsage::COPY_SRC)
-        || !target.desc.usage.contains(api::TextureUsage::COPY_DST)
+        || !desc.usage.contains(api::TextureUsage::COPY_DST)
     {
         return Err(Error::Unsupported(
             "DX12 COPY_SRC buffer to COPY_DST texture",
         ));
     }
-    if !(super::super::texture::bc_block_bytes(target.desc.format).is_some()
-        || super::super::texture::color_texel_bytes(target.desc.format).is_some())
-        || target.desc.samples != 1
-    {
+    if desc.samples != 1 {
         return Err(Error::Unsupported(
-            "DX12 buffer-texture copies support single-sample RGBA8/BGRA8 2D textures",
+            "DX12 buffer to multisample texture copy",
         ));
     }
-    let target = Dx12Texture(target);
-    let subresource = validate_region(&target, &dst)?;
-    let is_array = target.0.desc.dimension != api::TextureDimension::D3;
+    let subresource = validate_region(target, dst)?;
     let footprint = color_copy_footprint(
-        target.0.desc.format,
-        target.0.desc.dimension,
+        desc.format,
+        desc.dimension,
         layout,
         dst.extent,
         encoder.device.0.texel_aligned_color_copies,
@@ -421,6 +413,37 @@ pub(crate) fn buffer_to_texture(
     if footprint.byte_end > src.size {
         return Err(Error::InvalidRange);
     }
+    Ok((subresource, footprint))
+}
+
+pub(super) fn buffer_to_texture_support(
+    encoder: &Dx12Encoder,
+    src: &Dx12Buffer,
+    layout: api::TexelCopyBufferLayout,
+    dst: &api::TextureRegion<'_, crate::backend::Dx12>,
+) -> Result<()> {
+    // SAFETY: Core validated the destination region's device.
+    let target = unsafe { dst.texture.native_ref() };
+    if super::super::texture::is_depth(target.0.desc.format) {
+        return super::depth_readback::validate_upload(encoder, &target.0, src, layout, dst)
+            .map(drop);
+    }
+    validate_color_upload(encoder, src, layout, dst, target).map(drop)
+}
+
+pub(crate) fn buffer_to_texture(
+    encoder: &mut Dx12Encoder,
+    src: &Dx12Buffer,
+    layout: api::TexelCopyBufferLayout,
+    dst: api::TextureRegion<'_, crate::backend::Dx12>,
+) -> Result<()> {
+    // SAFETY: Core validated the destination region's device; retention covers execution.
+    let target = unsafe { dst.texture.native_ref() };
+    if super::super::texture::is_depth(target.0.desc.format) {
+        return super::depth_readback::buffer_to_texture(encoder, src, layout, dst);
+    }
+    let (subresource, footprint) = validate_color_upload(encoder, src, layout, &dst, target)?;
+    let is_array = target.0.desc.dimension != api::TextureDimension::D3;
     let layers = if is_array { dst.extent[2] } else { 1 };
     for layer in 0..layers {
         let mut from = copy_location(&src.resource, footprint.placed, true, 0);
@@ -458,7 +481,7 @@ pub(crate) fn buffer_to_texture(
         }
     }
     encoder.buffers.push(src.clone());
-    encoder.textures.push(target);
+    encoder.textures.push(target.clone());
     Ok(())
 }
 

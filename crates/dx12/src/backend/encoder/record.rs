@@ -371,6 +371,14 @@ impl fluxel_rhi_core::backend::CommandBackend for Dx12 {
     ) -> Result<(), Error> {
         super::copy::buffer_to_texture(encoder, src, layout, dst)
     }
+    fn buffer_to_texture_support(
+        encoder: &Dx12Encoder,
+        src: &super::Dx12Buffer,
+        layout: api::TexelCopyBufferLayout,
+        dst: &api::TextureRegion<'_, Self>,
+    ) -> Result<(), Error> {
+        super::copy::buffer_to_texture_support(encoder, src, layout, dst)
+    }
     fn texture_to_buffer(
         encoder: &mut Dx12Encoder,
         src: api::TextureRegion<'_, Self>,
@@ -378,6 +386,14 @@ impl fluxel_rhi_core::backend::CommandBackend for Dx12 {
         layout: api::TexelCopyBufferLayout,
     ) -> Result<(), Error> {
         super::copy::texture_to_buffer(encoder, src, dst, layout)
+    }
+    fn texture_to_buffer_support(
+        encoder: &Dx12Encoder,
+        src: &api::TextureRegion<'_, Self>,
+        dst: &super::Dx12Buffer,
+        layout: api::TexelCopyBufferLayout,
+    ) -> Result<(), Error> {
+        super::readback::texture_to_buffer_support(encoder, src, dst, layout)
     }
     fn write_buffer(
         encoder: &mut Dx12Encoder,
