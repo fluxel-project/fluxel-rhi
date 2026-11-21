@@ -123,7 +123,7 @@ pub(super) fn view(
                 || desc.samples != 1
                 || (v.layers.end.saturating_sub(v.layers.start)) % 6 != 0
                 || (v.dimension == api::TextureViewDimension::Cube
-                    && (v.layers.start != 0 || v.layers.end != 6))
+                    && v.layers.start.checked_add(6) != Some(v.layers.end))
                 || usage.contains(api::TextureUsage::STORAGE_BINDING)
                 || usage.contains(api::TextureUsage::RENDER_ATTACHMENT)))
         || v.mips.start >= v.mips.end

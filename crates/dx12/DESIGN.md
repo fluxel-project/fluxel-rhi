@@ -186,7 +186,9 @@ Sampled cube and cube-array views preserve their native SRV dimensions for
 color and depth/stencil formats. View admission checks cube support on the
 typed SRV format. A sampled depth/stencil cube view selects one aspect.
 A cube-array SRV can start at any in-bounds face and covers a whole number
-of cubes. A single-cube SRV selects the first six faces.
+of cubes. A cube view selects exactly six faces. At a nonzero starting face,
+DX12 uses a cube-array SRV with one cube and preserves the public cube
+dimension and shader binding type.
 
 Upload and readback have dedicated paths. CPU writes are copied from upload
 storage into default resources; texture readback targets a compatible readback

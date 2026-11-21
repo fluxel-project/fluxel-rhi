@@ -487,7 +487,7 @@ fn cube_srv(
 ) -> Option<(D3D12_SRV_DIMENSION, D3D12_SHADER_RESOURCE_VIEW_DESC_0)> {
     let mip_levels = view.mips.end - view.mips.start;
     match view.dimension {
-        api::TextureViewDimension::Cube => Some((
+        api::TextureViewDimension::Cube if view.layers.start == 0 => Some((
             D3D12_SRV_DIMENSION_TEXTURECUBE,
             D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
                 TextureCube: D3D12_TEXCUBE_SRV {
@@ -497,7 +497,8 @@ fn cube_srv(
                 },
             },
         )),
-        api::TextureViewDimension::CubeArray => Some((
+        // The cube-array descriptor can address nonzero faces for a single cube.
+        api::TextureViewDimension::Cube | api::TextureViewDimension::CubeArray => Some((
             D3D12_SRV_DIMENSION_TEXTURECUBEARRAY,
             D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
                 TextureCubeArray: D3D12_TEXCUBE_ARRAY_SRV {
