@@ -360,6 +360,12 @@ Verify that plain buffer entries, invalid native ranges, and wrong usage
 are rejected before descriptor-table reservation. Include a populated
 array entry following a hole and preserve the valid dynamic-offset order.
 
+For fixed, fully bound WGSL compute buffer arrays, verify constant and
+dynamically uniform selectors with ordinary layouts. Exercise both uniform
+and storage buffer declarations, including a selector in a reachable helper.
+Check that a divergent selector still requires nonuniform layout metadata
+and that generated HLSL applies `NonUniformResourceIndex` only when needed.
+
 ### DX12 secondary-source alpha blending
 
 **Status:** Both secondary-source alpha factors lower to their native DX12

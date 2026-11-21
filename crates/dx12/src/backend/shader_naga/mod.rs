@@ -464,7 +464,6 @@ fn compile_inner(
     let mut module = module.into_owned();
     if require_layout {
         naga::compact::compact(&mut module, naga::compact::KeepUnused::No);
-        buffer_array::validate_bindings(&module, buffer_entries)?;
     }
     binding::specialize_runtime_arrays(&mut module, runtime_binding_capacities, require_layout)?;
     let info = naga::valid::Validator::new(
@@ -473,6 +472,9 @@ fn compile_inner(
     )
     .validate(&module)
     .map_err(|e| diagnostics::wgsl_validation(source, e))?;
+    if require_layout {
+        buffer_array::validate_bindings(&module, &info, buffer_entries)?;
+    }
     let array_handles: Vec<_> = module
         .global_variables
         .iter()

@@ -328,6 +328,11 @@ DX12 storage buffer entries supply explicit raw or structured buffer views.
 Group creation validates the native view range and layout's minimum size
 before reserving any descriptors, including for dynamic storage bindings.
 
+Fixed, fully bound WGSL compute buffer arrays can use ordinary layouts for
+constant or uniform descriptor selectors. A divergent selector requires
+nonuniform layout metadata. Admission uses the same Naga uniformity facts
+as the HLSL writer.
+
 ## Recording, submission, and completion
 
 The normal run path is:
