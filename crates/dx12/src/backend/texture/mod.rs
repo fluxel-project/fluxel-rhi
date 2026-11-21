@@ -460,8 +460,25 @@ fn validated_default_view_usage(
     t: &Dx12Texture,
     view: &api::TextureViewDesc,
 ) -> Result<api::TextureUsage> {
-    let usage = default_view_usage(&t.0.desc, view.format)?;
-    validate::view(dv, &t.0.desc, view, usage)?;
+    use api::TextureUsage as U;
+    let texture = &t.0.desc;
+    let mut usage = default_view_usage(texture, view.format)?;
+    if is_depth(texture.format) {
+        let roles = U::TEXTURE_BINDING | U::RENDER_ATTACHMENT;
+        let all_aspects = depth_aspects(texture.format);
+        if view.aspects != all_aspects {
+            usage.0 &= !U::RENDER_ATTACHMENT.0;
+        }
+        if view.aspects == (api::TextureAspects::DEPTH | api::TextureAspects::STENCIL) {
+            usage.0 &= !U::TEXTURE_BINDING.0;
+        }
+        if texture.usage.0 & roles.0 != 0 && usage.0 & roles.0 == 0 {
+            return Err(Error::Unsupported(
+                "DX12 depth/stencil view has no descriptor role",
+            ));
+        }
+    }
+    validate::view(dv, texture, view, usage)?;
     Ok(usage)
 }
 

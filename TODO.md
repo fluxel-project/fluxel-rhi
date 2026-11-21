@@ -250,6 +250,7 @@ and that a mixed-use sRGB sampled view can span multiple mips.
 Compare each advertised R32 texture atomic operation with its compute
 binding layout. Exercise a format support result with an atomic bit but
 without typed load or store and verify that it cannot enable the operation.
+
 For `Stencil8`, verify stencil attachment clear and stencil operations,
 sampled unsigned readback, copy and upload, MSAA admission, and read-only
 stencil views across arrays. Confirm that depth view, transition, load,
@@ -265,6 +266,15 @@ after the device reports typed-resource int64 atomics and the shader,
 layout, descriptor and readback agree on the logical scalar. Reject
 `Rg64Uint` on DX12 until a native two-component 64-bit image ABI covers its
 view, access and copy semantics.
+
+### DX12 view descriptor roles
+
+For a combined depth/stencil texture, verify that a default single-plane
+view creates an SRV when sampled usage is present and a combined default
+view creates a DSV when attachment usage is present. Reject a sampled-only
+combined view or attachment-only single-plane view before allocation.
+Qualify explicit roles independently, including default and explicit cube
+sampling and array layers at nonzero offsets.
 
 ### DX12 structured shader diagnostics
 
