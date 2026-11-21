@@ -292,6 +292,15 @@ memory classes, buffer bounds, and multisample textures. Include devices
 with and without unrestricted buffer-texture copy pitch support. Verify
 that a failed query leaves the encoder usable for a subsequent valid copy.
 
+**Deferred transfer shapes.** Standalone stencil clear has no value or
+aspect in `TextureClearValue`. Use a raster attachment stencil clear when
+that execution path fits. Reopen when a caller needs a standalone stencil
+clear and an explicit stencil/aspect contract has been agreed. A blit
+admission query needs a caller that must choose a fallback before recording.
+Reopen when that caller identifies the format, region and filter cases it
+must distinguish. Mip generation uses explicit per-level blits and caller
+supplied transitions. Keep whole-chain scheduling with RenderGraph.
+
 ### DX12 structured shader diagnostics
 
 **Status:** WGSL parse and validation errors preserve compiler messages and
