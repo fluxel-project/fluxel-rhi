@@ -368,6 +368,7 @@ fn stage(
                 api::ShaderDiagnosticSource::Hlsl,
                 super::super::shader_naga::requires_native_16bit(source),
             )?;
+            super::super::shader_naga::validate_native_visibility(&compiled.bytes, need, layout)?;
             Ok((
                 compiled.bytes,
                 Vec::new(),

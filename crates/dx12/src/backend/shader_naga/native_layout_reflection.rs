@@ -3,11 +3,111 @@
 use fluxel_rhi_core::api::{self, Error, Result};
 use windows::Win32::Graphics::{Direct3D::*, Direct3D12::*};
 
+use super::super::pipeline::PipelineLayoutState;
+
 pub(super) fn reflect(
     bytes: &[u8],
     stage: api::ShaderStage,
     runtime_arrays: &[api::RuntimeBindingCapacity],
 ) -> Result<Vec<(u32, api::BindGroupLayoutEntry)>> {
+    let mut entries = Vec::new();
+    visit_bindings(bytes, stage, |reflection, resource| {
+        let count = match resource.BindCount {
+            0 | u32::MAX => {
+                let capacity = runtime_arrays
+                    .iter()
+                    .find(|item| item.group == resource.Space && item.binding == resource.BindPoint)
+                    .ok_or(Error::Unsupported(
+                        "runtime array layout inference requires a capacity",
+                    ))?;
+                api::BindingCount::RuntimeSized {
+                    max_count: capacity.max_count,
+                }
+            }
+            1 => api::BindingCount::One,
+            count => api::BindingCount::Fixed(count),
+        };
+        entries.push((
+            resource.Space,
+            api::BindGroupLayoutEntry {
+                binding: resource.BindPoint,
+                visibility: vec![stage],
+                ty: binding_type(reflection, resource)?,
+                count,
+                partially_bound: false,
+                nonuniform_indexing: count != api::BindingCount::One,
+            },
+        ));
+        Ok(())
+    })?;
+    Ok(entries)
+}
+
+pub(in crate::backend) fn validate_visibility(
+    bytes: &[u8],
+    stage: api::ShaderStage,
+    layout: &PipelineLayoutState,
+) -> Result<()> {
+    if layout
+        .binding_entries
+        .iter()
+        .all(|(_, entry)| entry.visibility.contains(&stage))
+    {
+        return Ok(());
+    }
+    visit_bindings(bytes, stage, |_, resource| {
+        let class = register_class(resource.Type)?;
+        let start = u64::from(resource.BindPoint);
+        let end = match resource.BindCount {
+            0 | u32::MAX => u64::from(u32::MAX) + 1,
+            count => start + u64::from(count),
+        };
+        for &(group, binding, register, register_class, count) in &layout.register_map {
+            let register = u64::from(register);
+            if group == resource.Space
+                && register_class == class
+                && register < end
+                && start < register + u64::from(count)
+                && layout.binding_entries.iter().any(|(space, entry)| {
+                    *space == group
+                        && entry.binding == binding
+                        && !entry.visibility.contains(&stage)
+                })
+            {
+                return Err(Error::Shader(format!(
+                    "HLSL binding {group}:{binding} is not visible to {stage:?}"
+                )));
+            }
+        }
+        Ok(())
+    })
+}
+
+fn register_class(ty: D3D_SHADER_INPUT_TYPE) -> Result<u8> {
+    match ty {
+        D3D_SIT_CBUFFER => Ok(0),
+        D3D_SIT_TBUFFER
+        | D3D_SIT_TEXTURE
+        | D3D_SIT_STRUCTURED
+        | D3D_SIT_BYTEADDRESS
+        | D3D_SIT_RTACCELERATIONSTRUCTURE => Ok(1),
+        D3D_SIT_UAV_RWTYPED
+        | D3D_SIT_UAV_RWSTRUCTURED
+        | D3D_SIT_UAV_RWBYTEADDRESS
+        | D3D_SIT_UAV_APPEND_STRUCTURED
+        | D3D_SIT_UAV_CONSUME_STRUCTURED
+        | D3D_SIT_UAV_RWSTRUCTURED_WITH_COUNTER
+        | D3D_SIT_UAV_FEEDBACKTEXTURE => Ok(2),
+        D3D_SIT_SAMPLER => Ok(3),
+        _ => Err(Error::Unsupported("DXIL shader resource register class")),
+    }
+}
+
+fn visit_bindings(
+    bytes: &[u8],
+    stage: api::ShaderStage,
+    mut visit: impl FnMut(&ID3D12ShaderReflection, &D3D12_SHADER_INPUT_BIND_DESC) -> Result<()>,
+) -> Result<()> {
     let version_type = match stage {
         api::ShaderStage::Vertex => D3D12_SHVER_VERTEX_SHADER,
         api::ShaderStage::Fragment => D3D12_SHVER_PIXEL_SHADER,
@@ -23,42 +123,14 @@ pub(super) fn reflect(
                 "DXIL shader stage disagrees with the selected entry".into(),
             ));
         }
-        let mut entries = Vec::new();
         for index in 0..shader.BoundResources {
             let mut resource = D3D12_SHADER_INPUT_BIND_DESC::default();
             // SAFETY: the index is in the reported binding span and output is writable.
             unsafe { reflection.GetResourceBindingDesc(index, &mut resource) }
                 .map_err(reflection_error)?;
-            let count = match resource.BindCount {
-                0 | u32::MAX => {
-                    let capacity = runtime_arrays
-                        .iter()
-                        .find(|item| {
-                            item.group == resource.Space && item.binding == resource.BindPoint
-                        })
-                        .ok_or(Error::Unsupported(
-                            "runtime array layout inference requires a capacity",
-                        ))?;
-                    api::BindingCount::RuntimeSized {
-                        max_count: capacity.max_count,
-                    }
-                }
-                1 => api::BindingCount::One,
-                count => api::BindingCount::Fixed(count),
-            };
-            entries.push((
-                resource.Space,
-                api::BindGroupLayoutEntry {
-                    binding: resource.BindPoint,
-                    visibility: vec![stage],
-                    ty: binding_type(reflection, &resource)?,
-                    count,
-                    partially_bound: false,
-                    nonuniform_indexing: count != api::BindingCount::One,
-                },
-            ));
+            visit(reflection, &resource)?;
         }
-        Ok(entries)
+        Ok(())
     })
 }
 

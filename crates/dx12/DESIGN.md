@@ -337,6 +337,11 @@ WGSL pipeline compilation checks each active resource against the selected
 stage's bind-group layout visibility. It checks scalar and array bindings
 before native PSO creation or cache lookup.
 
+Direct HLSL uses resource reflection from the selected DXC entry when the
+layout has stage-restricted bindings. The check covers intersecting register
+ranges, including arrays, before PSO creation. Explicit layouts still
+provide view-type information that native reflection cannot infer.
+
 ## Recording, submission, and completion
 
 The normal run path is:

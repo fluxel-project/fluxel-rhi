@@ -372,8 +372,13 @@ Compile WGSL raster and compute pipelines with stage-matched layouts and
 with active bindings excluded from the selected entry's stage. Exercise
 sampled textures, storage views, samplers, scalar entries and arrays.
 Inactive bindings may be exclusive to another stage. Repeat negative cases
-with an existing PSO cache. Qualify the direct HLSL and DXIL routes from
-selected-entry reflection separately.
+with an existing PSO cache. Exercise HLSL selected-entry reflection for
+vertex, fragment, and compute, including array ranges that intersect a
+stage-restricted binding and explicit layouts with ambiguous view formats.
+Direct DXIL still needs a stage-visibility contract that preserves artifacts
+without DXC reflection or a DXC runtime. D4.2 follows up with explicit
+metadata and a separate exact-export contract for DXIL libraries. Qualify
+mesh and task stages separately from vertex, fragment, and compute.
 
 ### DX12 secondary-source alpha blending
 

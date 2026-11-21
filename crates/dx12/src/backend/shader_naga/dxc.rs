@@ -7,8 +7,7 @@
 use std::collections::BTreeSet;
 
 use fluxel_rhi_core::api::{
-    BindGroupLayoutEntry, Error, Result, ShaderCompilationReport, ShaderDiagnosticSource,
-    SpecializationValue,
+    Error, Result, ShaderCompilationReport, ShaderDiagnosticSource, SpecializationValue,
 };
 use windows::Win32::Foundation::{FreeLibrary, HMODULE};
 use windows::Win32::Graphics::Direct3D::Dxc::{
@@ -55,10 +54,10 @@ impl Drop for Library {
     }
 }
 
-pub(super) fn reflect_dxil(
+pub(super) fn reflect_dxil<T>(
     bytes: &[u8],
-    read: impl FnOnce(&ID3D12ShaderReflection) -> Result<Vec<(u32, BindGroupLayoutEntry)>>,
-) -> Result<Vec<(u32, BindGroupLayoutEntry)>> {
+    read: impl FnOnce(&ID3D12ShaderReflection) -> Result<T>,
+) -> Result<T> {
     let library = Library::load()?;
     let utils: IDxcUtils = library.create(&CLSID_DxcUtils)?;
     let input = DxcBuffer {
