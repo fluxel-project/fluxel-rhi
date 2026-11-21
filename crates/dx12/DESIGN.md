@@ -271,6 +271,10 @@ combined aspect. If the requested aspects leave none of the texture's
 sampled or attachment roles available, creation fails before allocating a
 descriptor.
 
+Default views require at least one sampled, storage, or attachment role.
+A copy-only texture exposes no compatible view formats. Copies address
+texture subresources directly.
+
 A 3D color attachment slice selects one W coordinate in a single mip.
 The RTV carries that coordinate while resource transitions and attachment
 alias checks still address the full mip. Pass clears, including integer

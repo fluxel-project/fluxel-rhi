@@ -438,6 +438,7 @@ fn default_view_usage(
     format: api::TextureFormat,
 ) -> Result<api::TextureUsage> {
     use api::TextureUsage as U;
+    let roles = U::TEXTURE_BINDING | U::STORAGE_BINDING | U::RENDER_ATTACHMENT;
     let mut usage = desc.usage;
     if usage.contains(U::STORAGE_BINDING)
         && matches!(
@@ -448,9 +449,11 @@ fn default_view_usage(
         // Legacy sRGB views provide SRV/RTV roles when available. A separate
         // linear view supplies the UAV for the same typeless allocation.
         usage.0 &= !U::STORAGE_BINDING.0;
-        if usage.0 & (U::TEXTURE_BINDING | U::RENDER_ATTACHMENT).0 == 0 {
-            return Err(Error::Unsupported("DX12 sRGB view has no descriptor role"));
-        }
+    }
+    if usage.0 & roles.0 == 0 {
+        return Err(Error::Unsupported(
+            "DX12 texture view has no descriptor role",
+        ));
     }
     Ok(usage)
 }
@@ -472,7 +475,7 @@ fn validated_default_view_usage(
         if view.aspects == (api::TextureAspects::DEPTH | api::TextureAspects::STENCIL) {
             usage.0 &= !U::TEXTURE_BINDING.0;
         }
-        if texture.usage.0 & roles.0 != 0 && usage.0 & roles.0 == 0 {
+        if usage.0 & roles.0 == 0 {
             return Err(Error::Unsupported(
                 "DX12 depth/stencil view has no descriptor role",
             ));

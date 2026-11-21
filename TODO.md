@@ -279,6 +279,8 @@ from ranges starting at both a cube boundary and a nonaligned face. Reject
 incomplete cubes and out-of-bounds ranges in support queries and creation.
 Verify that a single cube at a nonzero face retains the cube shader binding
 type and selects the requested six faces in both WGSL and direct HLSL.
+Verify that copy-only textures still allocate and copy, report an empty
+compatible view format list, and reject default view queries and creation.
 
 ### DX12 structured shader diagnostics
 
