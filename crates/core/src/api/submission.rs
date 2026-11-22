@@ -123,6 +123,8 @@ pub struct Checkpoint<B: Backend> {
 }
 pub struct PresentReceipt {
     pub step: Option<StepId>,
+    /// Whether the backend accepted presentation handoff. Visibility and
+    /// display timing are independent of handoff.
     pub accepted: bool,
 }
 pub struct SubmissionReceipt<B: Backend> {

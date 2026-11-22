@@ -15,7 +15,7 @@ use fluxel_rhi_core::api::{self, Error, Result};
 use raw_window_handle::{RawWindowHandle, Win32WindowHandle};
 use windows::{
     Win32::{
-        Foundation::HWND,
+        Foundation::{HWND, S_OK},
         Graphics::{
             Direct3D12::{
                 D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_DESC,
@@ -39,7 +39,7 @@ use windows::{
             },
         },
     },
-    core::Interface,
+    core::{HRESULT, Interface},
 };
 
 use super::{Dx12, Dx12Device, Dx12Surface, Dx12SurfaceImage};
@@ -47,6 +47,9 @@ use super::{Dx12, Dx12Device, Dx12Surface, Dx12SurfaceImage};
 mod metadata;
 mod output;
 mod sdr_white;
+
+// DXGI type status from dxgitype.h, omitted by the Windows bindings.
+const DXGI_STATUS_MODE_CHANGED: HRESULT = HRESULT(0x087a_0007);
 
 pub(crate) struct SurfaceState {
     device: Dx12Device,
@@ -186,17 +189,15 @@ unsafe impl fluxel_rhi_core::backend::NativeImageLease for Dx12SurfaceImage {
         } else {
             (1, DXGI_PRESENT(0))
         };
-        // SAFETY: the mutex proves this is the current generation's exclusive
-        // acquired image, and the swapchain COM object remains in `inner`.
-        unsafe {
-            inner
-                .chain
-                .as_ref()
-                .ok_or(Error::SurfaceLost)?
-                .Present(sync, flags)
-        }
-        .ok()
-        .map_err(error)?;
+        let result = inner
+            .chain
+            .as_ref()
+            .map_or(Err(Error::SurfaceLost), |chain| {
+                // SAFETY: the mutex proves this is the current generation's exclusive
+                // acquired image, and the swapchain COM object remains in `inner`.
+                present_result(unsafe { chain.Present(sync, flags) })
+            });
+        result.map_err(|error| handle_surface_failure(&mut inner, error))?;
         inner.acquired = false;
         self.0.handed = true;
         Ok(())
@@ -273,13 +274,13 @@ impl fluxel_rhi_core::backend::SurfaceBackend for Dx12 {
         // came from that chain, so GetBuffer returns an owned COM reference.
         let resource = match unsafe { chain.GetBuffer::<ID3D12Resource>(index) } {
             Ok(value) => value,
-            Err(e) => return ready(Err(handle_acquire_failure(&mut i, error(e)))),
+            Err(e) => return ready(Err(handle_surface_failure(&mut i, error(e)))),
         };
         let Some(views) = i.views.clone() else {
-            return ready(Err(handle_acquire_failure(&mut i, Error::SurfaceLost)));
+            return ready(Err(handle_surface_failure(&mut i, Error::SurfaceLost)));
         };
         let Some(rtv) = views.handles.get(index as usize).copied() else {
-            return ready(Err(handle_acquire_failure(&mut i, Error::SurfaceLost)));
+            return ready(Err(handle_surface_failure(&mut i, Error::SurfaceLost)));
         };
         i.acquired = true;
         let generation = i.generation;
@@ -295,7 +296,22 @@ impl fluxel_rhi_core::backend::SurfaceBackend for Dx12 {
     }
 }
 
-fn handle_acquire_failure(inner: &mut Inner, error: Error) -> Error {
+fn present_result(status: HRESULT) -> Result<()> {
+    if status == S_OK {
+        Ok(())
+    } else if status == DXGI_STATUS_MODE_CHANGED {
+        Err(Error::SurfaceOutdated)
+    } else if status.is_err() {
+        Err(error(windows::core::Error::from_hresult(status)))
+    } else {
+        // Flip-model Present has no documented occluded success result.
+        Err(Error::Backend(format!(
+            "Unexpected DXGI Present status: {status:?}"
+        )))
+    }
+}
+
+fn handle_surface_failure(inner: &mut Inner, error: Error) -> Error {
     if matches!(
         error,
         Error::SurfaceLost | Error::SurfaceOutdated | Error::DeviceLost
@@ -338,7 +354,7 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
     // query is the completion proof used before invalidating swapchain buffers.
     let completed = unsafe { s.0.device.0.fence.GetCompletedValue() };
     if completed == u64::MAX {
-        return Err(Error::DeviceLost);
+        return Err(handle_surface_failure(&mut i, Error::DeviceLost));
     }
     if i.views
         .as_ref()
@@ -350,7 +366,7 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
         // SAFETY: the current generation has no active leases or recorded
         // backbuffer owners. Unrelated work may remain in flight.
         unsafe { chain.ResizeBuffers(2, d.extent[0], d.extent[1], format, flags) }
-            .map_err(error)?;
+            .map_err(|e| handle_surface_failure(&mut i, error(e)))?;
         true
     } else {
         let desc = DXGI_SWAP_CHAIN_DESC1 {

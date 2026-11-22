@@ -572,6 +572,11 @@ BGRA8 configuration uses UNORM flip-model storage and an sRGB render-target
 view. The raster pipeline matches the leased view format. Render-pass resolve
 still requires compatibility with the underlying typed swapchain resource.
 
+An accepted Present receipt records DXGI handoff. A minimized or obscured
+window can still accept it. Terminal Present failures revoke the current
+surface generation. Once the native call has been attempted, the submission
+keeps its indeterminate handoff rules and cannot return the lease for retry.
+
 The DXGI configuration pairs `Rgba16Float` with linear scRGB. DWM can
 compose this pair on SDR and HDR outputs. Integer flip formats support sRGB.
 HDR10 requires `Rgb10a2Unorm`, an HDR-active output, and native support on the
