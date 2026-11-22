@@ -115,31 +115,7 @@ impl fluxel_rhi_core::backend::MeshOps<Dx12> for Mesh {
         Ok(())
     }
     fn dispatch_indirect(encoder: &mut Dx12Encoder, args: &Dx12Buffer, offset: u64) -> Result<()> {
-        if encoder.mesh_pipeline.is_none() {
-            return Err(Error::InvalidState);
-        }
-        if !args.usage.contains(api::BufferUsage::INDIRECT)
-            || offset % 4 != 0
-            || offset.checked_add(12).is_none_or(|end| end > args.size)
-        {
-            return Err(Error::InvalidRange);
-        }
-        let signature = indirect_signature(&encoder.device)?;
-        // SAFETY: caller supplies the resource transition, and both signature
-        // and buffer remain owned by the encoder until completion.
-        unsafe {
-            encoder.list.ExecuteIndirect(
-                &signature,
-                1,
-                &args.resource,
-                offset,
-                None::<&ID3D12Resource>,
-                0,
-            )
-        };
-        encoder.indirect_signatures.push(signature);
-        encoder.buffers.push(args.clone());
-        Ok(())
+        Self::dispatch_indirect_multi(encoder, args, offset, 1)
     }
 
     fn dispatch_indirect_multi(

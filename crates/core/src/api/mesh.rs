@@ -214,6 +214,9 @@ impl<B: Backend> MeshDomain<'_, B> {
         }
         result
     }
+    /// Executes one 12-byte `[u32; 3]` mesh dispatch record at a four-byte
+    /// aligned offset. The caller transitions the argument range to
+    /// `INDIRECT_READ` and provides valid dispatch group counts.
     pub fn dispatch_indirect(
         &self,
         pass: &mut RasterPass<'_, B>,
@@ -225,6 +228,9 @@ impl<B: Backend> MeshDomain<'_, B> {
     {
         if pass.encoder.device != self.device.id || buffer.device != self.device.id {
             return Err(Error::WrongDevice);
+        }
+        if !offset.is_multiple_of(4) {
+            return Err(Error::InvalidRange);
         }
         let result = pass.call(|e| B::Mesh::dispatch_indirect(e, &buffer.native, offset));
         if result.is_ok() {
