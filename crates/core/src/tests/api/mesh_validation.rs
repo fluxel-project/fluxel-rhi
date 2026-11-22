@@ -169,6 +169,7 @@ fn mesh_device(multi: bool, count: bool) -> Device<MeshMock> {
         mesh_multi_indirect: multi,
         mesh_indirect_count: count,
         limits: DeviceLimits {
+            max_color_attachments: 1,
             max_mesh_indirect_count: if multi { 2 } else { 0 },
             ..Default::default()
         },

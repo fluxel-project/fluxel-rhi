@@ -406,17 +406,11 @@ each half is extracted at its declared byte offset. Halves in the same
 DWORD are supplied together by the caller. Compatibility
 `var<push_constant>` uses its own ABI.
 
-Direct HLSL uses resource reflection from the selected DXC entry when the
-layout has stage-restricted bindings. The check covers intersecting register
-ranges, including arrays, before PSO creation. Explicit layouts still
-provide view-type information that native reflection cannot infer.
-
-For single-program DXIL with stage-restricted bindings, DX12 checks the
-program kind and register ranges from the container's `PSV0` data. Compute,
-raster, and mesh admission can perform these checks without a DXC runtime
-or optional reflection data. Ray pipelines look up the selected DXIL library
-export in RDAT and validate its name and shader kind before state-object
-creation. DXR validates the native library's resource bindings.
+DX12 validates stage kind and register ranges from `PSV0` for precompiled
+single-program DXIL and the selected artifact compiled from direct HLSL.
+Explicit layouts supply view types that native metadata cannot infer. Ray
+pipelines check the selected DXIL library export in RDAT before state-object
+creation. These artifact checks require no optional DXC reflection output.
 
 An explicit native register map assigns every logical binding to its exact
 register. The bind-group index supplies the register space and the binding

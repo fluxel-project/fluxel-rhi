@@ -8,11 +8,10 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 ### Windows Core test baseline
 
-The Core suite at `3637773` reproduced six failures seen during D4.5.
-The transient attachment and rectangle-clear fixtures now declare their
-one color slot and pass at `716d6cd`. Track acceleration-structure array
-admission in D6.3 and the three mesh-indirect cases in D6.4. Rerun the
-complete Core suite before final validation.
+The Windows Core baseline passes all 133 tests. The array fixture now uses
+a ray-capable mock to exercise the dedicated array gate. The raster and mesh
+fixtures declare their color attachment limit. Rerun the complete Core suite
+on the final candidate.
 
 ### DX12 render-pass color resolve
 
@@ -808,18 +807,14 @@ stage, source dialect and device capability rejection.
 
 **Status:** TLAS and non-indexed BLAS refit use DXR in-place updates. Ordered
 submission admission checks the prior build signature and the original
-update opt-in. Indexed BLAS refit is a D6 design task. It requires explicit
-immutable input evidence or a backend-owned snapshot retained from the first
-build through every update.
+update opt-in. Indexed BLAS refit accepts the immutable snapshot from the
+first build, as detailed in R18.
 
 **Acceptance:** Verify changed TLAS transforms and BLAS bounds by traversal
 readback. Cover build and update in one packet, repeated and separately
 submitted updates, a rejected update after an incompatible rebuild, and
-retention of old and replacement TLAS dependencies. Check that indexed refit
-is rejected before native recording while indexed builds remain available until
-its design task is complete. Any snapshot path accounts for its copy, barriers,
-memory overhead, and retention without implicit graph scheduling or
-synchronization.
+retention of old and replacement TLAS dependencies. Verify the indexed refit
+rules and cost against the R18 acceptance matrix.
 Verify triangle vertex layout queries and traversal for the added DXR SNORM,
 UNORM and tightly packed three-component formats. Verify Tier 1.0 rejects the
 formats that require Tier 1.1.
