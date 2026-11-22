@@ -92,6 +92,9 @@ query state are verified during command execution.
 After an indeterminate handoff, verify that only affected slots lose their
 ordering proof and that independent slots in the same heap remain usable.
 Check a resolve-only failure separately from a reset or write failure.
+For occlusion, reject a different set from the pass's declared set and
+reject finishing a raster pass with an open query. Verify the ordinary
+begin/end/resolve path with and without an explicit set on the pass.
 
 **Texture mip support:** Match the DX12 reported mip ceiling to creation
 for single-sample and multisampled textures of the same extent. Check a

@@ -48,6 +48,7 @@ pub(crate) struct RasterState {
     pub(crate) samples: Option<u32>,
     pub(crate) multiview: Option<u32>,
     pub(crate) multiview_mask: Option<u32>,
+    pub(crate) occlusion_query_set: Option<super::super::super::Dx12QuerySet>,
     pub(crate) depth_read_only: bool,
     pub(crate) stencil_read_only: bool,
     /// The bound descriptor sequence includes null RTVs for holes, so it can
@@ -67,6 +68,10 @@ pub(super) fn begin(
     if desc.colors.len() > D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT as usize {
         return Err(Error::InvalidRange);
     }
+    // SAFETY: Core checked that the optional query set belongs to this device.
+    let occlusion_query_set = desc
+        .occlusion_query_set
+        .map(|set| unsafe { set.native_ref() }.clone());
     let multiview = desc
         .multiview_mask
         .map(|mask| u32::BITS - mask.leading_zeros());
@@ -642,6 +647,7 @@ pub(super) fn begin(
         samples,
         multiview,
         multiview_mask: desc.multiview_mask,
+        occlusion_query_set,
         depth_read_only: desc
             .depth_stencil
             .as_ref()

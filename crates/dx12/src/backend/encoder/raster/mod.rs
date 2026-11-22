@@ -532,6 +532,9 @@ impl fluxel_rhi_core::backend::RasterBackend for Dx12 {
         Ok(())
     }
     fn end_raster(encoder: &mut Dx12Encoder) -> Result<(), Error> {
+        if encoder.active_occlusion.is_some() {
+            return Err(Error::InvalidState);
+        }
         let state = encoder.raster_state.take().ok_or(Error::InvalidState)?;
         mrt::end(encoder, state)?;
         encoder.mesh_pipeline = None;

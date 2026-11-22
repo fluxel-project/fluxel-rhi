@@ -544,6 +544,11 @@ Resolved values are raw ticks. Core can convert two samples from the
 same lane to nanoseconds using the native timestamp scale and counter
 width, including a single wrap shorter than the clock's full period.
 
+An occlusion query begins and ends in the same DX12 raster pass. If the
+pass declares a query set, its occlusion slots come from that set.
+An indeterminate handoff quarantines the affected query slots and
+preserves the ordering facts for other slots in the same heap.
+
 WGSL layout inference reflects active globals for selected vertex, fragment
 or compute entries. Core combines compatible declarations before applying the
 ordinary layout admission checks. Runtime arrays require a supplied capacity.

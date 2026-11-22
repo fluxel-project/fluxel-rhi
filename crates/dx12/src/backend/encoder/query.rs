@@ -281,6 +281,14 @@ pub(crate) fn begin_occlusion(
     if encoder.is_compute {
         return Err(Error::Unsupported("DX12 compute queue query"));
     }
+    let pass = encoder.raster_state.as_ref().ok_or(Error::InvalidState)?;
+    if pass
+        .occlusion_query_set
+        .as_ref()
+        .is_some_and(|declared| !std::sync::Arc::ptr_eq(&declared.0, &set.0))
+    {
+        return Err(Error::InvalidState);
+    }
     if set.0.kind != QueryKind::Occlusion
         || slot >= set.0.count
         || encoder.active_occlusion.is_some()
