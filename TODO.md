@@ -483,6 +483,24 @@ transitive resources of an export. Reopen DXR binding visibility when the
 complete internal and external call graph can be qualified without making
 optional DXC reflection a requirement for precompiled artifacts.
 
+### DX12 secondary indirect draws
+
+**Status:** Secondary recording accepts single and fixed-count indirect draws
+with the ordinary DX12 draw signatures. DX12 bundles require a null GPU count
+buffer and exactly one signature operation. The legacy WGSL vertex/instance
+index adjustment also needs a root-constant argument and is rejected in a bundle.
+
+**Restart condition:** Revisit GPU-counted execution if a native bundle command
+offers that count source, or a caller needs a separate explicitly planned
+execution path. Revisit legacy WGSL only with native index semantics or a
+documented lowering that fits a single-operation signature. Primary indirect
+recording remains available for both cases.
+
+**Acceptance:** Read back single and padded fixed-count records, indexed and
+non-indexed, across repeated execution after dropping the argument handle.
+Check wrong-device, usage, alignment, range, index format, zero count, and the
+legacy pipeline rejection. Verify the primary pass state after bundle replay.
+
 ### DX12 secondary-source alpha blending
 
 **Status:** Both secondary-source alpha factors lower to their native DX12

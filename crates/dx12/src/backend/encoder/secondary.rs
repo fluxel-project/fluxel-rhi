@@ -497,3 +497,52 @@ pub(crate) fn draw_indexed(
     encoder.has_draw = true;
     Ok(())
 }
+
+pub(crate) fn multi_draw(
+    encoder: &mut Dx12SecondaryEncoder,
+    args: &Dx12Buffer,
+    offset: u64,
+    count: u32,
+    stride: u32,
+    indexed: bool,
+) -> Result<(), Error> {
+    super::indirect::validate_arguments(args, offset, count, stride, indexed)?;
+    let pipeline = encoder.pipeline()?;
+    super::raster::validate_raw_bindings(pipeline, &encoder.bound_slots)?;
+    if count == 0 {
+        return Ok(());
+    }
+    if indexed
+        && (encoder.index_format.is_none()
+            || !super::raster::index_format_matches(
+                pipeline.0.strip_index_format,
+                encoder.index_format,
+            ))
+    {
+        return Err(Error::InvalidState);
+    }
+    if pipeline.0.vertex_index_root.is_some() {
+        // The legacy adjustment needs a root argument in addition to DRAW.
+        // A bundle's signature can contain only the draw operation.
+        return Err(Error::Unsupported(
+            "secondary indirect vertex index adjustment",
+        ));
+    }
+    let signature = super::indirect::signature(args, indexed, stride)?;
+    // SAFETY: the bundle has a compatible pipeline and uses a single-operation
+    // signature with no count buffer. Retaining args also retains the signature
+    // cache. The caller transitions args to INDIRECT_READ before execution.
+    unsafe {
+        encoder.list.ExecuteIndirect(
+            &signature,
+            count,
+            &args.resource,
+            offset,
+            None::<&ID3D12Resource>,
+            0,
+        );
+    }
+    encoder.buffers.push(args.clone());
+    encoder.has_draw = true;
+    Ok(())
+}

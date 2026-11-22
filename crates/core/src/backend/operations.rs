@@ -112,6 +112,8 @@ pub trait NativeInteropBackend: CommandBackend {
 pub trait SecondaryBackend: RasterBackend + DeferredBackend {
     /// Dynamic depth bias is implemented for secondary raster command lists.
     const SECONDARY_DYNAMIC_DEPTH_BIAS_AVAILABLE: bool = false;
+    /// Fixed-count indirect drawing is implemented for secondary raster work.
+    const SECONDARY_INDIRECT_AVAILABLE: bool = false;
     type NativeSecondaryEncoder;
     type NativeSecondaryWork;
     fn begin_secondary(
@@ -171,6 +173,17 @@ pub trait SecondaryBackend: RasterBackend + DeferredBackend {
         base_vertex: i32,
         instances: std::ops::Range<u32>,
     ) -> Result<()>;
+    /// Records `count` indirect draw records without a GPU count buffer.
+    fn secondary_multi_draw(
+        _: &mut Self::NativeSecondaryEncoder,
+        _: &Self::NativeBuffer,
+        _: u64,
+        _: u32,
+        _: u32,
+        _: bool,
+    ) -> Result<()> {
+        Err(Error::Unsupported("secondary indirect draw"))
+    }
     fn finish_secondary(encoder: Self::NativeSecondaryEncoder)
     -> Result<Self::NativeSecondaryWork>;
     fn execute_secondary(

@@ -29,7 +29,7 @@ pub(in crate::backend) const MULTI_DRAW_COUNT_PROFILE: api::IndirectCountProfile
         }),
     };
 
-fn validate_arguments(
+pub(super) fn validate_arguments(
     arguments: &Dx12Buffer,
     offset: u64,
     count: u32,
@@ -120,7 +120,7 @@ fn execute(
 /// Retrieves a device-lifetime native signature.  It is keyed solely by the
 /// public argument layout and stored with the buffer's owning device, so it
 /// cannot cross devices and does not retain recorded command lists.
-fn signature(
+pub(super) fn signature(
     arguments: &Dx12Buffer,
     indexed: bool,
     stride: u32,

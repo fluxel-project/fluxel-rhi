@@ -449,6 +449,10 @@ bind groups, draw/dispatch operations, queries, indirect commands, and
 secondary bundles to the command list. Secondary work is a D3D12 bundle with
 its own allocator; the direct encoder retains it after `ExecuteBundle` so the
 allocator, list, pipelines, descriptors, and resources survive execution.
+Fixed-count indirect draws in a bundle reuse the single-operation `DRAW` or
+`DRAW_INDEXED` signature from primary recording. The argument buffer also
+retains its device's signature cache. The calling plan transitions that buffer
+to `INDIRECT_READ` before executing the bundle.
 
 Submission preflight validates the packet before native handoff. It separates
 direct and compute segments, issues caller-specified native queue waits, and

@@ -40,6 +40,8 @@ pub struct SecondaryEncoder<B: SecondaryBackend> {
     push_constants: bool,
     dynamic_depth_bias: bool,
     dynamic_depth_bias_clamp: bool,
+    indirect_draw: bool,
+    multi_draw: bool,
     bound_dynamic_depth_bias: Option<DynamicDepthBias>,
     signature: SecondaryRasterDesc,
     stats: RhiStatsLocal,
@@ -220,6 +222,71 @@ impl<B: SecondaryBackend> SecondaryEncoder<B> {
         }
         result
     }
+
+    /// Records one indirect draw. The caller transitions `args` to
+    /// `INDIRECT_READ` before the primary pass executes this work.
+    /// The record's first instance must be zero unless `indirect_first_instance`
+    /// is supported by the device.
+    /// A backend may reject a pipeline that needs to modify bindings as part
+    /// of its indirect draw lowering.
+    pub fn draw_indirect(&mut self, args: &Buffer<B>, offset: u64, indexed: bool) -> Result<()> {
+        if !self.indirect_draw {
+            return Err(Error::Unsupported("secondary indirect draw"));
+        }
+        self.record_indirect(
+            args,
+            offset,
+            1,
+            encoder::indirect_argument_size(indexed),
+            indexed,
+        )
+    }
+
+    /// Records a fixed number of indirect draws. The argument state and
+    /// first-instance requirements are the same as for [`Self::draw_indirect`].
+    pub fn multi_draw(
+        &mut self,
+        args: &Buffer<B>,
+        offset: u64,
+        count: u32,
+        stride: u32,
+        indexed: bool,
+    ) -> Result<()> {
+        if !self.multi_draw {
+            return Err(Error::Unsupported("secondary multi draw"));
+        }
+        self.record_indirect(args, offset, count, stride, indexed)
+    }
+
+    fn record_indirect(
+        &mut self,
+        args: &Buffer<B>,
+        offset: u64,
+        count: u32,
+        stride: u32,
+        indexed: bool,
+    ) -> Result<()> {
+        if args.device != self.device {
+            return Err(Error::WrongDevice);
+        }
+        if offset % 4 != 0
+            || (count != 0
+                && (stride < encoder::indirect_argument_size(indexed) || stride % 4 != 0))
+        {
+            return Err(Error::InvalidRange);
+        }
+        let result = self.call(|encoder| {
+            B::secondary_multi_draw(encoder, &args.native, offset, count, stride, indexed)
+        });
+        if result.is_ok() && count != 0 {
+            if indexed {
+                self.stats.record_draw_indexed();
+            } else {
+                self.stats.record_draw();
+            }
+        }
+        result
+    }
 }
 pub struct SecondaryRasterWork<B: SecondaryBackend> {
     device: DeviceId,
@@ -237,6 +304,16 @@ impl<B: SecondaryBackend> Device<B> {
     }
 }
 impl<B: SecondaryBackend> SecondaryDomain<'_, B> {
+    /// Reports device support for one indirect draw in secondary raster work.
+    pub fn supports_indirect_draw(&self) -> bool {
+        B::SECONDARY_INDIRECT_AVAILABLE && self.device.caps.indirect_draw
+    }
+
+    /// Reports device support for fixed-count multi-draw in secondary raster work.
+    pub fn supports_multi_draw(&self) -> bool {
+        B::SECONDARY_INDIRECT_AVAILABLE && self.device.caps.multi_draw
+    }
+
     pub fn begin(&self, desc: &SecondaryRasterDesc) -> Result<SecondaryEncoder<B>> {
         Ok(SecondaryEncoder {
             device: self.device.id,
@@ -245,6 +322,8 @@ impl<B: SecondaryBackend> SecondaryDomain<'_, B> {
             push_constants: self.device.caps.push_constants,
             dynamic_depth_bias: self.device.caps.dynamic_depth_bias,
             dynamic_depth_bias_clamp: self.device.caps.dynamic_depth_bias_clamp,
+            indirect_draw: self.supports_indirect_draw(),
+            multi_draw: self.supports_multi_draw(),
             bound_dynamic_depth_bias: None,
             signature: desc.clone(),
             stats: self.device.stats.local(),

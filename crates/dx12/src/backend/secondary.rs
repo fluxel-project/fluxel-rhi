@@ -12,6 +12,7 @@ use fluxel_rhi_core::api::{self, Error, Result};
 use super::encoder::{Dx12SecondaryEncoder, Dx12SecondaryWork};
 
 impl fluxel_rhi_core::backend::SecondaryBackend for Dx12 {
+    const SECONDARY_INDIRECT_AVAILABLE: bool = true;
     type NativeSecondaryEncoder = Dx12SecondaryEncoder;
     type NativeSecondaryWork = Dx12SecondaryWork;
 
@@ -96,6 +97,17 @@ impl fluxel_rhi_core::backend::SecondaryBackend for Dx12 {
         instances: std::ops::Range<u32>,
     ) -> Result<()> {
         super::encoder::secondary::draw_indexed(encoder, indices, base_vertex, instances)
+    }
+
+    fn secondary_multi_draw(
+        encoder: &mut Self::NativeSecondaryEncoder,
+        args: &Self::NativeBuffer,
+        offset: u64,
+        count: u32,
+        stride: u32,
+        indexed: bool,
+    ) -> Result<()> {
+        super::encoder::secondary::multi_draw(encoder, args, offset, count, stride, indexed)
     }
 
     fn finish_secondary(
