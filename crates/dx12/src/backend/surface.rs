@@ -368,7 +368,7 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
         // SAFETY: latency is a cast of the retained current swapchain and the
         // configured value has already passed the RHI capability validation.
         unsafe { latency.SetMaximumFrameLatency(d.maximum_frame_latency) }.map_err(error)?;
-        if d.color_space != api::ColorSpace::Srgb && !output::hdr_active(&s.0)? {
+        if d.color_space == api::ColorSpace::Hdr10 && !output::hdr_active(&s.0)? {
             return Err(Error::SurfaceOutdated);
         }
         output::set_swapchain_color_space(
@@ -474,13 +474,13 @@ fn surface_format_supported(device: &Dx12Device, format: api::TextureFormat) -> 
 
 fn caps(surface: &SurfaceState) -> api::SurfaceCapabilities {
     let mut color_spaces = vec![api::ColorSpace::Srgb];
-    if output::hdr_active(surface).unwrap_or(false) {
-        if surface_format_supported(&surface.device, api::TextureFormat::Rgba16Float) {
-            color_spaces.push(api::ColorSpace::ExtendedLinearSrgb);
-        }
-        if surface_format_supported(&surface.device, api::TextureFormat::Rgb10a2Unorm) {
-            color_spaces.push(api::ColorSpace::Hdr10);
-        }
+    if surface_format_supported(&surface.device, api::TextureFormat::Rgba16Float) {
+        color_spaces.push(api::ColorSpace::ExtendedLinearSrgb);
+    }
+    if surface_format_supported(&surface.device, api::TextureFormat::Rgb10a2Unorm)
+        && output::hdr_active(surface).unwrap_or(false)
+    {
+        color_spaces.push(api::ColorSpace::Hdr10);
     }
     api::SurfaceCapabilities {
         formats: [

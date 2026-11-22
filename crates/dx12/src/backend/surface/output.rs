@@ -24,20 +24,29 @@ pub(super) fn hdr_active(surface: &SurfaceState) -> Result<bool> {
         .is_some_and(|output| output.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020))
 }
 
+fn format_accepts_color_space(format: TextureFormat, color_space: ColorSpace) -> bool {
+    match color_space {
+        ColorSpace::Srgb => format != TextureFormat::Rgba16Float,
+        ColorSpace::ExtendedLinearSrgb => format == TextureFormat::Rgba16Float,
+        ColorSpace::Hdr10 => format == TextureFormat::Rgb10a2Unorm,
+        ColorSpace::DisplayP3 => false,
+    }
+}
+
 pub(super) fn supports_color_space(
     surface: &SurfaceState,
     format: TextureFormat,
     color_space: ColorSpace,
 ) -> bool {
-    if color_space == ColorSpace::Srgb {
+    if !format_accepts_color_space(format, color_space) {
+        return false;
+    }
+    // DXGI's flip formats use these color spaces by default. DWM can
+    // compose an scRGB swapchain even on an SDR output.
+    if color_space != ColorSpace::Hdr10 {
         return true;
     }
-    if !matches!(
-        (format, color_space),
-        (TextureFormat::Rgba16Float, ColorSpace::ExtendedLinearSrgb)
-            | (TextureFormat::Rgb10a2Unorm, ColorSpace::Hdr10)
-    ) || !hdr_active(surface).unwrap_or(false)
-    {
+    if !hdr_active(surface).unwrap_or(false) {
         return false;
     }
     let chain = surface
@@ -65,7 +74,7 @@ pub(super) fn set_swapchain_color_space(
 ) -> Result<()> {
     let native =
         native_color_space(color_space).ok_or(Error::Unsupported("DXGI surface color space"))?;
-    if color_space != ColorSpace::Srgb && !supports_presentation(chain, native)? {
+    if color_space == ColorSpace::Hdr10 && !supports_presentation(chain, native)? {
         return Err(Error::Unsupported("DXGI swapchain HDR presentation"));
     }
     // SAFETY: the new/resized chain is retained and no image is acquired

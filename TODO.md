@@ -875,8 +875,9 @@ for point/line topology, wireframe, and a device without support.
 **Status:** Configuration and acquisition retain the selected attachment view
 format, including sRGB views of supported UNORM flip buffers.
 DX12 also exposes current monitor color and luminance facts.
-The HDR routes qualify scRGB and HDR10 against the current output and native
-swapchain. Their real display acceptance is pending.
+FP16 scRGB and RGB10 sRGB passed windowed configuration and present smoke.
+HDR10 still qualifies against the current output and native swapchain.
+HDR display and pixel acceptance are pending.
 The output snapshot includes the system SDR white level when the active
 display paths identify an unambiguous target value.
 HDR10 metadata write and clear are a planned opt-in narrow DXGI path. A

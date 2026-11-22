@@ -59,19 +59,44 @@ fn flip_formats_configure_acquire_and_present() {
     let mut surface = unsafe { Dx12::surface_from_raw_window_handle(&device, handle) }.unwrap();
     let modes = surface.capabilities().unwrap().present_modes;
     assert!(modes.contains(&PresentMode::Fifo));
-    for format in [TextureFormat::Rgb10a2Unorm, TextureFormat::Rgba16Float] {
+    for (format, color_space) in [
+        (TextureFormat::Rgb10a2Unorm, ColorSpace::Srgb),
+        (TextureFormat::Rgba16Float, ColorSpace::ExtendedLinearSrgb),
+    ] {
         assert!(surface.capabilities().unwrap().formats.contains(&format));
         for mode in modes.iter().copied() {
-            block(surface.configure(&SurfaceConfig {
+            let config = SurfaceConfig {
                 extent: [128, 96],
                 format,
                 present_mode: mode,
                 alpha_mode: CompositeAlphaMode::Opaque,
-                color_space: ColorSpace::Srgb,
+                color_space,
                 usage: SurfaceUsage::RENDER_ATTACHMENT,
                 maximum_frame_latency: 2,
-            }))
-            .unwrap();
+            };
+            assert!(matches!(
+                surface.configuration_support(&config),
+                Support::Supported(())
+            ));
+            block(surface.configure(&config)).unwrap();
+            let incompatible = SurfaceConfig {
+                color_space: match color_space {
+                    ColorSpace::Srgb => ColorSpace::ExtendedLinearSrgb,
+                    _ => ColorSpace::Srgb,
+                },
+                ..config.clone()
+            };
+            let generation = surface.generation();
+            assert!(matches!(
+                surface.configuration_support(&incompatible),
+                Support::Unsupported(_)
+            ));
+            assert!(matches!(
+                block(surface.configure(&incompatible)),
+                Err(Error::Unsupported(_))
+            ));
+            assert_eq!(surface.generation(), generation);
+            assert_eq!(surface.configuration().unwrap().color_space, color_space);
             for _ in 0..2 {
                 let image = block(surface.acquire()).unwrap();
                 let lane = device
