@@ -1055,7 +1055,7 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
 - **R06, OUT_OF_SCOPE — public Naga IR.** Compiler IR remains private. It would
   create a versioned public compiler contract without an RHI consumer. Reopen
   only for a demonstrated cross-backend compiler-tool contract.
-- **R07, IMPLEMENTING — explicit native binding metadata.** Retain inference
+- **R07, VERIFYING — explicit native binding metadata.** Retain inference
   for unambiguous binding shapes. Explicit DX12 layouts can assign native
   registers to logical bindings and keep the declared view type and constant
   range. Verify identical register numbers across distinct b/t/u/s classes,
