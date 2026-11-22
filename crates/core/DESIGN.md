@@ -157,6 +157,12 @@ RenderGraph and Renderer choose damage, redraw, and any pixel history they use.
 
 Explicit transitions and cross-lane waits are input to the plan. A wait orders execution only; it does not manufacture memory visibility or infer a missing barrier. Completion checkpoints, mapping, query publication, and CPU reads are separate operations with separate native evidence. This avoids treating a successful submit, process exit, or presentation call as proof that GPU work completed.
 
+The external domain can create a shared resource and return its typed owner
+and an independently owned export handle. Opening the handle does not order
+GPU work or transfer resource state. The bridge supplies matching import
+metadata, and the caller records state transitions and release/acquire
+boundaries. Recorded work retains its native references through completion.
+
 Explicit heap residency is an optional operation on an eligible `MemoryHeap`.
 Making it resident synchronously adds a residency reference. Eviction releases
 one reference and requires the caller to prove completion for all heap users

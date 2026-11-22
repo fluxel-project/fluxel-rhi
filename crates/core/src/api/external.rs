@@ -55,6 +55,64 @@ impl<B: ExternalBackend> Device<B> {
     }
 }
 impl<B: ExternalBackend> ExternalDomain<'_, B> {
+    /// Checks explicit shared allocation and owned handle export for a buffer.
+    pub fn shared_buffer_support(&self, desc: &BufferDesc) -> Support<()> {
+        B::shared_buffer_support(&self.device.native, desc)
+    }
+    /// Checks explicit shared allocation and owned handle export for a texture.
+    pub fn shared_texture_support(&self, desc: &TextureDesc) -> Support<()> {
+        if let Some(reason) = self
+            .device
+            .caps
+            .unsupported_planar_format_reason(desc.format)
+        {
+            return Support::Unsupported(reason);
+        }
+        if validate_transient_texture_desc(desc).is_err()
+            || desc.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT)
+        {
+            return Support::Unsupported("transient shared texture");
+        }
+        B::shared_texture_support(&self.device.native, desc)
+    }
+    /// Creates a shared buffer and an owned handle for a compatible importer.
+    /// The receiving bridge supplies matching metadata and coordinates release
+    /// and acquire before reusing the allocation from a different device.
+    pub fn create_shared_buffer(
+        &self,
+        desc: &BufferDesc,
+    ) -> Result<(ExternalMemory<B>, B::NativeExternalHandle)> {
+        if let Support::Unsupported(reason) = self.shared_buffer_support(desc) {
+            return Err(Error::Unsupported(reason));
+        }
+        let (native, handle) = B::create_shared_buffer(&self.device.native, desc)?;
+        Ok((
+            ExternalMemory {
+                device: self.device.id,
+                native,
+            },
+            handle,
+        ))
+    }
+    /// Creates a shared texture and an owned handle for a compatible importer.
+    /// Handle export leaves ownership and resource state with the caller.
+    pub fn create_shared_texture(
+        &self,
+        desc: &TextureDesc,
+    ) -> Result<(ExternalTexture<B>, B::NativeExternalHandle)> {
+        if let Support::Unsupported(reason) = self.shared_texture_support(desc) {
+            return Err(Error::Unsupported(reason));
+        }
+        let (native, handle) = B::create_shared_texture(&self.device.native, desc)?;
+        Ok((
+            ExternalTexture {
+                device: self.device.id,
+                native,
+                desc: desc.clone(),
+            },
+            handle,
+        ))
+    }
     /// Import producer synchronization. The handle must be compatible with
     /// the target device and its producer must signal it exactly once.
     ///
@@ -173,6 +231,8 @@ impl<B: ExternalBackend> ExternalDomain<'_, B> {
             desc: desc.clone(),
         })
     }
+    /// Records the external wait. The caller records any required buffer
+    /// state transition after this boundary and before the first use.
     pub fn acquire(
         &self,
         encoder: &mut CommandEncoder<B>,
@@ -195,6 +255,7 @@ impl<B: ExternalBackend> ExternalDomain<'_, B> {
     }
     /// Records an ownership release. The returned synchronization payload is
     /// signaled only after the recorded work is accepted and reaches the release.
+    /// Record any buffer transition required by the bridge before this call.
     pub fn release(
         &self,
         encoder: &mut CommandEncoder<B>,

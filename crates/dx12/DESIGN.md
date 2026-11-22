@@ -154,6 +154,14 @@ asynchronous residency request on a committed allocation.
 Explicit committed creation bypasses pool selection and retains the usual
 descriptor and allocation checks. Ordinary creation continues to pick its
 existing allocation route.
+
+Explicit shared buffer and texture creation uses a committed default heap with
+`D3D12_HEAP_FLAG_SHARED`, then exports an owned NT handle for a compatible
+device on the same adapter. Shared resources do not participate in the local
+committed residency path. The application supplies the matching import shape
+and orders ownership with explicit buffer or texture state transitions and
+the external fence. The backend puts waits and signals at the requested
+queue boundaries and retains their native owners through completion.
 Explicit upload and readback heaps share an access state with their placed
 buffers. Map leases keep their physical byte ranges registered until native
 `Unmap`. Residency changes require every map lease to end. Mapping requires

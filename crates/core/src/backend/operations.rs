@@ -12,6 +12,24 @@ pub trait ExternalBackend: CommandBackend {
     type NativeExternalMemory: Clone;
     type NativeExternalTexture: Clone;
     type NativeExternalSync;
+    fn shared_buffer_support(_device: &Self::NativeDevice, _desc: &BufferDesc) -> Support<()> {
+        Support::Unsupported("shared buffer allocation")
+    }
+    fn shared_texture_support(_device: &Self::NativeDevice, _desc: &TextureDesc) -> Support<()> {
+        Support::Unsupported("shared texture allocation")
+    }
+    fn create_shared_buffer(
+        _device: &Self::NativeDevice,
+        _desc: &BufferDesc,
+    ) -> Result<(Self::NativeExternalMemory, Self::NativeExternalHandle)> {
+        Err(Error::Unsupported("shared buffer allocation"))
+    }
+    fn create_shared_texture(
+        _device: &Self::NativeDevice,
+        _desc: &TextureDesc,
+    ) -> Result<(Self::NativeExternalTexture, Self::NativeExternalHandle)> {
+        Err(Error::Unsupported("shared texture allocation"))
+    }
     /// Returns the imported buffer usable by ordinary command operations.
     fn external_buffer(memory: &Self::NativeExternalMemory) -> Result<Self::NativeBuffer>;
     /// Returns the imported texture usable by ordinary view and command operations.

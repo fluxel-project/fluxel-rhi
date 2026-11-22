@@ -33,6 +33,17 @@ const DEFAULT_RT_DS_TEXTURE_CLASS: u32 = 5;
 pub(super) enum AllocationRoute {
     Automatic,
     Committed,
+    Shared,
+}
+
+impl AllocationRoute {
+    pub(super) fn committed_flags(self) -> D3D12_HEAP_FLAGS {
+        if self == Self::Shared {
+            D3D12_HEAP_FLAG_SHARED
+        } else {
+            D3D12_HEAP_FLAG_NONE
+        }
+    }
 }
 
 /// Cold-path pool and DXGI process-segment observation.

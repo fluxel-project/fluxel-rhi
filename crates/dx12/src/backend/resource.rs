@@ -359,6 +359,18 @@ pub(super) fn create_committed_buffer(
     )
 }
 
+pub(super) fn create_shared_buffer(
+    device: &Dx12Device,
+    desc: &api::BufferDesc,
+) -> Result<Dx12Buffer> {
+    allocate_buffer(
+        device,
+        desc,
+        standard_heap_properties(D3D12_HEAP_TYPE_DEFAULT),
+        AllocationRoute::Shared,
+    )
+}
+
 fn allocate_buffer(
     device: &Dx12Device,
     desc: &api::BufferDesc,
@@ -369,7 +381,7 @@ fn allocate_buffer(
     if allocation_size > device.0.max_buffer_bytes {
         return Err(Error::InvalidRange);
     }
-    let pooled = if route == AllocationRoute::Committed {
+    let pooled = if route != AllocationRoute::Automatic {
         None
     } else {
         let class_bits = memory::buffer_class_bits(device, desc.memory);
@@ -430,7 +442,7 @@ fn allocate_buffer(
             unsafe {
                 device.0.native.CreateCommittedResource(
                     &heap,
-                    D3D12_HEAP_FLAG_NONE,
+                    route.committed_flags(),
                     &native,
                     initial_state,
                     None,
@@ -448,7 +460,9 @@ fn allocate_buffer(
         mapped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         usage: desc.usage,
         memory: desc.memory,
-        owns_residency: backing_heap.is_none() && heap.Type == D3D12_HEAP_TYPE_DEFAULT,
+        owns_residency: route != AllocationRoute::Shared
+            && backing_heap.is_none()
+            && heap.Type == D3D12_HEAP_TYPE_DEFAULT,
         cpu_heap_access: None,
         indirect_signatures: device.0.indirect_signatures.clone(),
         backing_heap,

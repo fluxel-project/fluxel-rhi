@@ -356,7 +356,7 @@ pub(super) fn create_with_route(
         &allocation.resource,
         super::memory::texture_class_bits(dv, &allocation.resource),
     )?;
-    let pooled = if route == super::memory::AllocationRoute::Committed {
+    let pooled = if route != super::memory::AllocationRoute::Automatic {
         None
     } else {
         let class = (0..64)
@@ -426,7 +426,7 @@ pub(super) fn create_with_route(
         unsafe {
             dv.0.native.CreateCommittedResource(
                 &heap,
-                D3D12_HEAP_FLAG_NONE,
+                route.committed_flags(),
                 &allocation.resource,
                 allocation.initial_state,
                 allocation.clear.as_ref().map(|value| value as *const _),
@@ -440,7 +440,7 @@ pub(super) fn create_with_route(
     Ok(Dx12Texture(Arc::new(TextureState {
         resource,
         default_allocation: lease,
-        owns_residency: backing_heap.is_none(),
+        owns_residency: route != super::memory::AllocationRoute::Shared && backing_heap.is_none(),
         backing_heap,
         desc: d.clone(),
         sparse: None,

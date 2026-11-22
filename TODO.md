@@ -1380,8 +1380,13 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
 - **R24e, DESIGNING — predication.** Define condition-buffer format, command
   range, queue ordering, and retained ownership. Acceptance requires true and
   false GPU cases with distinct output.
-- **R25, VERIFYING — native interop.** Complete narrowly typed interop through
-  existing static backend boundaries where a real consumer needs it. A dynamic
+- **R25, VERIFYING — native interop.** Scoped native recording and explicit
+  shared allocation use static backend boundaries. Two independently opened
+  devices on one adapter exchanged a Core-created buffer and texture, including
+  release fence wait, wrong-device rejection and in-flight retention. Add
+  permanent coverage for these paths, invalid import metadata and handle
+  lifetime. Add cross-adapter export only with a concrete consumer, explicit
+  cross-adapter heap and fence semantics, and a two-adapter workload. A dynamic
   backend dispatcher is `OUT_OF_SCOPE`: it would weaken typed device identity
   and introduce runtime dispatch into the public RHI model.
 - **N01, VERIFYING — CPU-visible DX12 buffers.** Explicit standard upload

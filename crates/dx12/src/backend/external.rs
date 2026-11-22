@@ -8,6 +8,7 @@
 
 use super::{
     Dx12, Dx12Buffer, Dx12Device, Dx12Texture, encoder,
+    memory::AllocationRoute,
     texture::{self, TextureState},
 };
 use fluxel_rhi_core::api::{self, Error, Result, Support};
@@ -146,6 +147,22 @@ fn resource(device: &Dx12Device, handle: OwnedHandle) -> Result<ID3D12Resource> 
     }
     .map_err(super::native_error)?;
     resource.ok_or(Error::InvalidState)
+}
+
+fn export_resource(device: &Dx12Device, resource: &ID3D12Resource) -> Result<Dx12ExternalHandle> {
+    // SAFETY: callers provide a committed resource created for sharing on
+    // this device. DXGI receives no borrowed security descriptor or name.
+    let handle = unsafe {
+        device
+            .0
+            .native
+            .CreateSharedHandle(resource, None, GENERIC_ALL.0, PCWSTR::null())
+    }
+    .map_err(super::native_error)?;
+    // SAFETY: CreateSharedHandle returned a fresh owned NT handle.
+    Ok(Dx12ExternalHandle::Resource(unsafe {
+        owned_handle(handle)
+    }?))
 }
 
 fn imported_memory_class(resource: &ID3D12Resource) -> Result<api::MemoryClass> {
@@ -425,6 +442,54 @@ impl ExternalBackend for Dx12 {
     type NativeExternalMemory = Dx12Buffer;
     type NativeExternalTexture = Dx12Texture;
     type NativeExternalSync = Dx12ExternalSync;
+
+    fn shared_buffer_support(device: &Dx12Device, desc: &api::BufferDesc) -> Support<()> {
+        if !matches!(desc.memory, api::MemoryClass::Device) {
+            return Support::Unsupported("DX12 shared buffers require a default heap");
+        }
+        match Self::buffer_support(device, desc) {
+            Support::Supported(_) => Support::Supported(()),
+            Support::Unsupported(reason) => Support::Unsupported(reason),
+        }
+    }
+
+    fn shared_texture_support(device: &Dx12Device, desc: &api::TextureDesc) -> Support<()> {
+        if desc.format == api::TextureFormat::Stencil8
+            || desc.usage.contains(api::TextureUsage::TRANSIENT_ATTACHMENT)
+        {
+            return Support::Unsupported("DX12 shared texture format or usage");
+        }
+        match texture::support(device, desc) {
+            Support::Supported(_) => Support::Supported(()),
+            Support::Unsupported(reason) => Support::Unsupported(reason),
+        }
+    }
+
+    fn create_shared_buffer(
+        device: &Dx12Device,
+        desc: &api::BufferDesc,
+    ) -> Result<(Dx12Buffer, Dx12ExternalHandle)> {
+        device.require_active()?;
+        if let Support::Unsupported(reason) = Self::shared_buffer_support(device, desc) {
+            return Err(Error::Unsupported(reason));
+        }
+        let buffer = super::resource::create_shared_buffer(device, desc)?;
+        let handle = export_resource(device, &buffer.resource)?;
+        Ok((buffer, handle))
+    }
+
+    fn create_shared_texture(
+        device: &Dx12Device,
+        desc: &api::TextureDesc,
+    ) -> Result<(Dx12Texture, Dx12ExternalHandle)> {
+        device.require_active()?;
+        if let Support::Unsupported(reason) = Self::shared_texture_support(device, desc) {
+            return Err(Error::Unsupported(reason));
+        }
+        let texture = texture::create_with_route(device, desc, AllocationRoute::Shared)?;
+        let handle = export_resource(device, &texture.0.resource)?;
+        Ok((texture, handle))
+    }
 
     fn external_buffer(memory: &Dx12Buffer) -> Result<Dx12Buffer> {
         Ok(memory.clone())
