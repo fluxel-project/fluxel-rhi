@@ -499,7 +499,7 @@ pub(crate) fn draw_indexed(
         }
         encoder.list.DrawIndexedInstanced(
             indices.end - indices.start,
-            instances.end - indices.start,
+            instances.end - instances.start,
             indices.start,
             base_vertex,
             instances.start,

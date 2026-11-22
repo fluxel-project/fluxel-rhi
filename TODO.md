@@ -1117,8 +1117,8 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   For standard WGSL vertex and instance indices, compare Shader Model 6.8
   system values with the older root-constant path across direct, indexed,
   secondary, and GPU-counted draws. Include negative base vertex, nonzero
-  first instance, aggregate input passed to a helper, and lowering-profile
-  selection.
+  first instance, different index and instance starts in an indexed bundle,
+  aggregate input passed to a helper, and lowering-profile selection.
 - **DX12 draw index, DEFERRED — per-command ordinal.** Keep the device
   capability disabled. Standard WGSL has no draw-index builtin, and DXIL
   exposes no corresponding system value. ExecuteIndirect Tier 1.1 can
