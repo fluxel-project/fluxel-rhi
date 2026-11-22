@@ -15,7 +15,7 @@ use fluxel_rhi_core::api::{self, Error, Result};
 use raw_window_handle::{RawWindowHandle, Win32WindowHandle};
 use windows::{
     Win32::{
-        Foundation::{HWND, S_OK},
+        Foundation::HWND,
         Graphics::{
             Direct3D12::{
                 D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_DESC,
@@ -31,25 +31,23 @@ use windows::{
             },
             Dxgi::{
                 CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_FEATURE_PRESENT_ALLOW_TEARING,
-                DXGI_MWA_NO_ALT_ENTER, DXGI_PRESENT, DXGI_PRESENT_ALLOW_TEARING,
-                DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
+                DXGI_MWA_NO_ALT_ENTER, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
+                DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
                 DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, DXGI_SWAP_EFFECT_FLIP_DISCARD,
-                DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIFactory4, IDXGIFactory5, IDXGISwapChain2,
-                IDXGISwapChain3,
+                DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIFactory4,
+                IDXGIFactory5, IDXGISwapChain2, IDXGISwapChain3,
             },
         },
     },
-    core::{HRESULT, Interface},
+    core::Interface,
 };
 
 use super::{Dx12, Dx12Device, Dx12Surface, Dx12SurfaceImage};
 
 mod metadata;
 mod output;
+mod present;
 mod sdr_white;
-
-// DXGI type status from dxgitype.h, omitted by the Windows bindings.
-const DXGI_STATUS_MODE_CHANGED: HRESULT = HRESULT(0x087a_0007);
 
 pub(crate) struct SurfaceState {
     device: Dx12Device,
@@ -66,6 +64,8 @@ struct Inner {
     present_mode: api::PresentMode,
     color_space: api::ColorSpace,
     hdr10_metadata_set: bool,
+    preserved: bool,
+    full_presented: bool,
 }
 struct SurfaceViews {
     _heap: ID3D12DescriptorHeap,
@@ -154,6 +154,8 @@ pub(crate) unsafe fn create_surface(
             present_mode: api::PresentMode::Fifo,
             color_space: api::ColorSpace::Srgb,
             hdr10_metadata_set: false,
+            preserved: false,
+            full_presented: false,
         }),
     });
     // SAFETY: `state` is newly allocated for this same device id and becomes
@@ -173,41 +175,6 @@ impl Drop for ImageLease {
     }
 }
 
-// SAFETY: `SurfaceState` serializes generation changes with handoff and Drop;
-// each image owns exactly one acquired slot and releases it at most once.
-unsafe impl fluxel_rhi_core::backend::NativeImageLease for Dx12SurfaceImage {
-    fn try_handoff(&mut self, generation: u64) -> Result<()> {
-        if self.0.generation != generation || self.0.handed {
-            return Err(Error::SurfaceOutdated);
-        }
-        let mut inner = self.0.state.inner.lock().unwrap_or_else(|p| p.into_inner());
-        if inner.generation != generation || !inner.acquired {
-            return Err(Error::SurfaceOutdated);
-        }
-        let (sync, flags) = if inner.present_mode == api::PresentMode::Immediate {
-            (0, DXGI_PRESENT_ALLOW_TEARING)
-        } else {
-            (1, DXGI_PRESENT(0))
-        };
-        let result = inner
-            .chain
-            .as_ref()
-            .map_or(Err(Error::SurfaceLost), |chain| {
-                // SAFETY: the mutex proves this is the current generation's exclusive
-                // acquired image, and the swapchain COM object remains in `inner`.
-                present_result(unsafe { chain.Present(sync, flags) })
-            });
-        result.map_err(|error| handle_surface_failure(&mut inner, error))?;
-        inner.acquired = false;
-        self.0.handed = true;
-        Ok(())
-    }
-    fn is_current(&self, generation: u64) -> bool {
-        let inner = self.0.state.inner.lock().unwrap_or_else(|p| p.into_inner());
-        !self.0.handed && inner.acquired && inner.generation == generation
-    }
-}
-
 impl fluxel_rhi_core::backend::SurfaceBackend for Dx12 {
     type ConfigureFuture<'a> = Ready<Result<()>>;
     type AcquireFuture<'a> = Ready<Result<Dx12SurfaceImage>>;
@@ -218,6 +185,12 @@ impl fluxel_rhi_core::backend::SurfaceBackend for Dx12 {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .generation
+    }
+    fn supports_preserved_config(
+        surface: &Dx12Surface,
+        d: &api::SurfaceConfig,
+    ) -> api::Support<()> {
+        Self::supports_config(surface, d)
     }
     fn capabilities(surface: &Dx12Surface) -> Result<api::SurfaceCapabilities> {
         Ok(caps(&surface.0))
@@ -257,7 +230,13 @@ impl fluxel_rhi_core::backend::SurfaceBackend for Dx12 {
         surface: &'a mut Dx12Surface,
         d: &'a api::SurfaceConfig,
     ) -> Self::ConfigureFuture<'a> {
-        ready(configure(surface, d))
+        ready(configure(surface, d, false))
+    }
+    fn configure_preserved<'a>(
+        surface: &'a mut Dx12Surface,
+        d: &'a api::SurfaceConfig,
+    ) -> Result<Self::ConfigureFuture<'a>> {
+        Ok(ready(configure(surface, d, true)))
     }
     fn acquire<'a>(surface: &'a mut Dx12Surface) -> Self::AcquireFuture<'a> {
         let mut i = surface.0.inner.lock().unwrap_or_else(|p| p.into_inner());
@@ -296,21 +275,6 @@ impl fluxel_rhi_core::backend::SurfaceBackend for Dx12 {
     }
 }
 
-fn present_result(status: HRESULT) -> Result<()> {
-    if status == S_OK {
-        Ok(())
-    } else if status == DXGI_STATUS_MODE_CHANGED {
-        Err(Error::SurfaceOutdated)
-    } else if status.is_err() {
-        Err(error(windows::core::Error::from_hresult(status)))
-    } else {
-        // Flip-model Present has no documented occluded success result.
-        Err(Error::Backend(format!(
-            "Unexpected DXGI Present status: {status:?}"
-        )))
-    }
-}
-
 fn handle_surface_failure(inner: &mut Inner, error: Error) -> Error {
     if matches!(
         error,
@@ -321,7 +285,7 @@ fn handle_surface_failure(inner: &mut Inner, error: Error) -> Error {
     error
 }
 
-fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
+fn configure(s: &Dx12Surface, d: &api::SurfaceConfig, preserved: bool) -> Result<()> {
     if let api::Support::Unsupported(reason) =
         <Dx12 as fluxel_rhi_core::backend::SurfaceBackend>::supports_config(s, d)
     {
@@ -362,12 +326,18 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
     {
         return Err(Error::InvalidState);
     }
-    let resized = if let Some(chain) = i.chain.as_ref() {
+    // Changing the swap effect needs a new chain. Acquired and in-flight
+    // owners have been rejected above. Invalidate the prior generation even
+    // if creating the replacement fails.
+    let replace_chain = i.chain.is_some() && i.preserved != preserved;
+    if replace_chain {
+        invalidate(&mut i);
+    }
+    if let Some(chain) = i.chain.as_ref() {
         // SAFETY: the current generation has no active leases or recorded
         // backbuffer owners. Unrelated work may remain in flight.
         unsafe { chain.ResizeBuffers(2, d.extent[0], d.extent[1], format, flags) }
             .map_err(|e| handle_surface_failure(&mut i, error(e)))?;
-        true
     } else {
         let desc = DXGI_SWAP_CHAIN_DESC1 {
             Width: d.extent[0],
@@ -381,7 +351,11 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
             BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
             BufferCount: 2,
             Scaling: DXGI_SCALING_STRETCH,
-            SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+            SwapEffect: if preserved {
+                DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL
+            } else {
+                DXGI_SWAP_EFFECT_FLIP_DISCARD
+            },
             AlphaMode: DXGI_ALPHA_MODE_IGNORE,
             Flags: flags.0 as u32,
         };
@@ -393,8 +367,7 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
         }
         .map_err(error)?;
         i.chain = Some(chain.cast().map_err(error)?);
-        false
-    };
+    }
 
     // `ResizeBuffers` invalidates every old backbuffer and RTV immediately.
     // A later failure therefore cannot leave the former generation published:
@@ -416,15 +389,17 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
         rebuild_rtvs(&s.0.device, &mut i, d.format)
     })();
     if let Err(error) = post_resize {
-        if resized || i.chain.is_some() {
-            invalidate(&mut i);
-        }
+        invalidate(&mut i);
         return Err(error);
     }
-    i.generation += 1;
+    if !replace_chain {
+        i.generation += 1;
+    }
     i.present_mode = d.present_mode;
     i.color_space = d.color_space;
     i.hdr10_metadata_set = false;
+    i.preserved = preserved;
+    i.full_presented = false;
     Ok(())
 }
 
@@ -436,6 +411,7 @@ fn invalidate(inner: &mut Inner) {
     inner.chain = None;
     inner.acquired = false;
     inner.hdr10_metadata_set = false;
+    inner.full_presented = false;
     inner.generation = inner.generation.wrapping_add(1);
 }
 fn rebuild_rtvs(device: &Dx12Device, inner: &mut Inner, format: api::TextureFormat) -> Result<()> {

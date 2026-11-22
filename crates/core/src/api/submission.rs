@@ -293,16 +293,43 @@ impl<B: Backend> SurfaceImage<B> {
 pub struct PresentBinding<B: Backend> {
     pub(crate) image: SurfaceImage<B>,
     pub(crate) handed_off: bool,
+    damage: Vec<Rect>,
 }
 impl<B: Backend> PresentBinding<B> {
     pub fn new(image: SurfaceImage<B>) -> Self {
         Self {
             image,
             handed_off: false,
+            damage: Vec::new(),
         }
     }
     pub fn image(&self) -> &SurfaceImage<B> {
         &self.image
+    }
+    /// Declares the regions fully rewritten by the caller. All pixels inside
+    /// the rectangles must be up to date, and writes must stay within them.
+    /// An empty list selects a full-frame present. A rejected update leaves
+    /// the binding and any previous damage unchanged.
+    pub fn set_damage(&mut self, rectangles: Vec<Rect>) -> Result<()> {
+        if self.handed_off {
+            return Err(Error::InvalidState);
+        }
+        if !rectangles.is_empty() {
+            let [width, height] = self.image.extent;
+            if u32::try_from(rectangles.len()).is_err()
+                || rectangles.iter().any(|area| {
+                    area.width == 0
+                        || area.height == 0
+                        || area.x.checked_add(area.width).is_none_or(|x| x > width)
+                        || area.y.checked_add(area.height).is_none_or(|y| y > height)
+                })
+            {
+                return Err(Error::InvalidRange);
+            }
+            self.image.native.damage_support(self.image.generation)?;
+        }
+        self.damage = rectangles;
+        Ok(())
     }
     pub fn into_image(self) -> Result<SurfaceImage<B>> {
         if self.handed_off {
@@ -317,7 +344,13 @@ impl<B: Backend> PresentBinding<B> {
         if self.handed_off {
             return Err(Error::InvalidState);
         }
-        self.image.native.try_handoff(self.image.generation)?;
+        if self.damage.is_empty() {
+            self.image.native.try_handoff(self.image.generation)?;
+        } else {
+            self.image
+                .native
+                .try_handoff_with_damage(self.image.generation, &self.damage)?;
+        }
         self.image.stats.record_present_accepted();
         self.handed_off = true;
         Ok(())

@@ -577,6 +577,13 @@ window can still accept it. Terminal Present failures revoke the current
 surface generation. Once the native call has been attempted, the submission
 keeps its indeterminate handoff rules and cannot return the lease for retry.
 
+Opt-in `configure_preserved` uses `FLIP_SEQUENTIAL` and passes explicit
+damage to `Present1`. Ordinary configuration uses `FLIP_DISCARD` and rejects
+damage. The first accepted present after reconfiguration or an uncertain
+native present must cover the full image. A change of swap effect creates a
+new chain after the caller's leases and in-flight owners retire. The backend
+keeps no damage history and inserts no copies or waits for partial presents.
+
 The DXGI configuration pairs `Rgba16Float` with linear scRGB. DWM can
 compose this pair on SDR and HDR outputs. Integer flip formats support sRGB.
 HDR10 requires `Rgb10a2Unorm`, an HDR-active output, and native support on the

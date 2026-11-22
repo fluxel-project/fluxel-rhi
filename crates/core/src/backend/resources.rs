@@ -531,11 +531,24 @@ pub trait SurfaceBackend: Backend {
         Err(Error::Unsupported("HDR10 surface metadata"))
     }
     fn supports_config(surface: &Self::NativeSurface, desc: &SurfaceConfig) -> Support<()>;
+    fn supports_preserved_config(
+        _surface: &Self::NativeSurface,
+        _desc: &SurfaceConfig,
+    ) -> Support<()> {
+        Support::Unsupported("preserved surface content")
+    }
     /// Configuration and generation change in one native transaction. Failed or
     /// cancelled pending configuration must not publish a half-commit.
     fn configure<'a>(
         surface: &'a mut Self::NativeSurface,
         desc: &'a SurfaceConfig,
     ) -> Self::ConfigureFuture<'a>;
+    /// Publishes a preserved-content generation for explicit present damage.
+    fn configure_preserved<'a>(
+        _surface: &'a mut Self::NativeSurface,
+        _desc: &'a SurfaceConfig,
+    ) -> Result<Self::ConfigureFuture<'a>> {
+        Err(Error::Unsupported("preserved surface content"))
+    }
     fn acquire<'a>(surface: &'a mut Self::NativeSurface) -> Self::AcquireFuture<'a>;
 }

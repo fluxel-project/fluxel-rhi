@@ -5,7 +5,7 @@
 
 use crate::api::{
     AdapterId, AdapterInfo, AdapterPreference, AdapterProperties, DeviceCapabilities,
-    DeviceCapacity, DeviceId, DeviceRequest, Error, InstanceId, Result,
+    DeviceCapacity, DeviceId, DeviceRequest, Error, InstanceId, Rect, Result,
 };
 use crate::backend::{ComputeOps, MemoryObservationOps, MeshOps, RasterExtrasOps, RayOps};
 use std::future::Future;
@@ -120,6 +120,18 @@ pub trait SurfaceProbeBackend: InstanceBackend {
 /// mutually exclusive with native reconfiguration of the origin surface.
 pub unsafe trait NativeImageLease {
     fn try_handoff(&mut self, generation: u64) -> Result<()>;
+    /// Checks whether this lease can present a nonempty set of damage rectangles.
+    fn damage_support(&self, _generation: u64) -> Result<()> {
+        Err(Error::Unsupported("surface present damage"))
+    }
+    /// Presents explicitly updated regions, or the full image when empty.
+    fn try_handoff_with_damage(&mut self, generation: u64, damage: &[Rect]) -> Result<()> {
+        if damage.is_empty() {
+            self.try_handoff(generation)
+        } else {
+            Err(Error::Unsupported("surface present damage"))
+        }
+    }
     /// Checks the lease against its origin surface's current configuration.
     /// The lease keeps access to that native generation state; callers need
     /// not retain a mutable Surface merely to render or submit Present.

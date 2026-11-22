@@ -1348,11 +1348,13 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   Report DXGI acceptance separately from display delivery. Actual scanout
   timing is `OUT_OF_SCOPE` until a trustworthy timing source and
   visible-output evidence exist.
-- **R23, DESIGNING — damage rectangles.** Explore an opt-in preserved-content
-  surface route. Flip-discard cannot support it. Renderer owns prior-frame
-  history and redraw decisions. The RHI does not insert hidden copies or
-  synchronization. Acceptance requires pixels to remain correct across
-  back-buffer rotation, resize, and surface generation.
+- **R23, VERIFYING — damage rectangles.** Opt-in DX12 flip-sequential passes
+  explicit damage rectangles to `Present1`. The caller owns incremental
+  redraw and pixel history. The DX12 RGBA8 FIFO and BGRA8 Immediate desktop
+  probes verified rotation, overlapping updates, full redraw, and resize.
+  Add permanent contract and window tests for invalid damage, first-present
+  and generation recovery, and retain pixel evidence for the candidate.
+  Verify HDR format combinations on an HDR-active output.
 - **R24 — optional DX12 execution mechanisms.** Qualify each of the five
   shapes below independently. A bounded GPU workload can exercise a native
   mechanism. A shared Core operation also needs a meaningful caller contract.

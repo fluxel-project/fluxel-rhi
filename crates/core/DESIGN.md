@@ -146,6 +146,13 @@ carry the configuration generation to the backend, and a successful
 reconfiguration starts without metadata. Success reports backend acceptance.
 The caller supplies content metadata and chooses when to update or clear it.
 
+Opt-in preserved surface configuration admits explicit damage rectangles on a
+`PresentBinding`. The caller fully initializes the new generation, then fully
+rewrites the pixels inside its submitted damage rectangles and confines updates
+to them. A binding with no damage presents the full image. The backend checks
+generation and rectangle admission and performs the native present operation.
+RenderGraph and Renderer choose damage, redraw, and any pixel history they use.
+
 ## Synchronization and observations
 
 Explicit transitions and cross-lane waits are input to the plan. A wait orders execution only; it does not manufacture memory visibility or infer a missing barrier. Completion checkpoints, mapping, query publication, and CPU reads are separate operations with separate native evidence. This avoids treating a successful submit, process exit, or presentation call as proof that GPU work completed.

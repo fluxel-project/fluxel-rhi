@@ -193,6 +193,10 @@ impl<B: SurfaceBackend> Surface<B> {
     pub fn configuration_support(&self, desc: &SurfaceConfig) -> Support<()> {
         B::supports_config(&self.native, desc)
     }
+    /// Checks a configuration for explicit incremental presentation.
+    pub fn preserved_configuration_support(&self, desc: &SurfaceConfig) -> Support<()> {
+        B::supports_preserved_config(&self.native, desc)
+    }
     /// Checks whether the configured surface and current output accept an HDR10 metadata write.
     pub fn hdr10_metadata_support(&self) -> Support<()> {
         let Some(configured) = self.configured.as_ref() else {
@@ -307,11 +311,25 @@ impl<B: SurfaceBackend> Surface<B> {
             return Err(Error::Unsupported(reason));
         }
         B::configure(&mut self.native, desc).await?;
+        self.publish_configuration(desc);
+        Ok(())
+    }
+    /// Configures the surface for explicit damage rectangles. The first
+    /// accepted present of the new generation must fully initialize the image.
+    /// A normal `configure` selects the default presentation route again.
+    pub async fn configure_preserved(&mut self, desc: &SurfaceConfig) -> Result<()> {
+        if let Support::Unsupported(reason) = B::supports_preserved_config(&self.native, desc) {
+            return Err(Error::Unsupported(reason));
+        }
+        B::configure_preserved(&mut self.native, desc)?.await?;
+        self.publish_configuration(desc);
+        Ok(())
+    }
+    fn publish_configuration(&mut self, desc: &SurfaceConfig) {
         self.configured = Some(ConfiguredLeaseFacts {
             generation: self.generation(),
             config: desc.clone(),
         });
-        Ok(())
     }
     pub async fn acquire(&mut self) -> Result<SurfaceImage<B>> {
         let native = B::acquire(&mut self.native).await?;
