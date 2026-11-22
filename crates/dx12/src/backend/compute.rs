@@ -147,10 +147,12 @@ impl fluxel_rhi_core::backend::ComputeOps<Dx12> for Compute {
             .as_ref()
             .is_some_and(|old| old.0.root == pipeline.0.root)
         {
+            // A different root signature makes its previous arguments stale.
+            // Keep the native replay state and binding validation in sync.
             encoder.compute_snapshot = Default::default();
+            encoder.compute_bound_groups.clear();
         }
         encoder.compute_pipeline = Some(pipeline.clone());
-        encoder.compute_bound_groups.clear();
         encoder.compute_pipelines.push(pipeline.clone());
         encoder.ray_pipeline = None;
         encoder.mesh_pipeline = None;
