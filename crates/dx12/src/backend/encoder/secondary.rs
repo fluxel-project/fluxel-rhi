@@ -344,18 +344,7 @@ pub(crate) fn set_vertex_buffer(
         .vertex_strides
         .get(slot as usize)
         .ok_or(Error::InvalidRange)?;
-    if offset.checked_add(size).ok_or(Error::InvalidRange)? > buffer.size
-        || size > u64::from(u32::MAX)
-    {
-        return Err(Error::InvalidRange);
-    }
-    let view = D3D12_VERTEX_BUFFER_VIEW {
-        // SAFETY: retained same-device buffer has a stable GPU address and
-        // offset/size have been checked against its allocation above.
-        BufferLocation: unsafe { buffer.resource.GetGPUVirtualAddress() } + offset,
-        SizeInBytes: size as u32,
-        StrideInBytes: stride,
-    };
+    let view = super::vertex_view::make(buffer, offset, size, stride)?;
     // SAFETY: fully initialized view refers to a retained buffer and is copied
     // synchronously into this exclusively recorded bundle.
     unsafe {

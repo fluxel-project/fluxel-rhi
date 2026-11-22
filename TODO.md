@@ -468,9 +468,19 @@ Reopen boundary sampling when a native route can report each required sample.
 input-assembler format check. Packed RGB10A2 UNORM and BGRA8 UNORM are mapped
 when the device reports support for those vertex formats.
 
+Primary and bundle vertex views share the usage and byte-range checks.
+Offsets are byte offsets, including legal offsets that are not 16-byte
+aligned. Three-component 8/16-bit formats and 64-bit scalar vertex formats
+remain unavailable because DXGI has no matching input format. Reopen
+only with an exact native representation or an explicit vertex-pulling
+contract with shader linkage, layout, and cost evidence.
+[DXGI format definitions](https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format)
+
 **Acceptance:** Read back normalized and swizzled vertex data from an actual
 raster draw. Check query and pipeline agreement, including early rejection
-for unsupported packed and 64-bit formats.
+for unsupported packed and 64-bit formats. Check primary and bundle usage,
+overflow, non-16-byte offsets, zero stride, strip restart, and negative base
+vertex on indexed draws.
 
 ### DX12 mesh output topology
 

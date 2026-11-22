@@ -41,6 +41,7 @@ mod global_barrier;
 mod heaps;
 pub(super) mod index_view;
 mod indirect;
+mod vertex_view;
 pub(super) use indirect::MULTI_DRAW_COUNT_PROFILE;
 pub(crate) mod indirect_pack;
 pub(crate) mod integer_clear;

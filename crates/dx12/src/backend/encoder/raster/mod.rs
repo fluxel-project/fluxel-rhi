@@ -278,18 +278,7 @@ impl fluxel_rhi_core::backend::RasterBackend for Dx12 {
             .vertex_strides
             .get(slot as usize)
             .ok_or(Error::InvalidRange)?;
-        if offset.checked_add(size).ok_or(Error::InvalidRange)? > buffer.size
-            || size > u64::from(u32::MAX)
-        {
-            return Err(Error::InvalidRange);
-        }
-        let view = D3D12_VERTEX_BUFFER_VIEW {
-            // SAFETY: the buffer is a live same-device COM resource; querying
-            // its immutable GPU virtual address has no ownership side effect.
-            BufferLocation: unsafe { buffer.resource.GetGPUVirtualAddress() } + offset,
-            SizeInBytes: size as u32,
-            StrideInBytes: stride,
-        };
+        let view = super::vertex_view::make(buffer, offset, size, stride)?;
         // SAFETY: `view` names a checked byte range of the retained buffer and
         // this encoder exclusively records its open graphics list.
         unsafe {
