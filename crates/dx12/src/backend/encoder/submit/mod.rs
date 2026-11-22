@@ -241,15 +241,15 @@ unsafe fn submit_packet(
     // admission, so no accepted query state races a removed device.
     let validate_under_gate = || -> Result<(), Error> {
         device.require_active()?;
-        super::super::ray::validate_acceleration_builds(packet.work.steps.iter().flat_map(
+        super::super::ray::validate_acceleration_recordings(packet.work.steps.iter().flat_map(
             |step| {
                 let work = match &step.payload {
                     StepPayload::Commands(work) => work.as_slice(),
                     _ => &[],
                 };
-                work.iter().flat_map(|record| {
+                work.iter().map(|record| {
                     // SAFETY: packet preflight and Core checked recorded-work ownership.
-                    unsafe { record.native_ref() }.encoder.ray_builds.iter()
+                    &unsafe { record.native_ref() }.encoder
                 })
             },
         ))?;

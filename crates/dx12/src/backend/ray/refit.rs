@@ -7,7 +7,8 @@ use std::{
 
 use fluxel_rhi_core::api::{self, Error, Result};
 
-use super::{CopySource, Dx12, RecordedAccelerationBuild, committed_signature};
+use super::{CopySource, Dx12, committed_signature, index_snapshot::SnapshotAdmission};
+use crate::backend::encoder::Dx12Encoder;
 
 #[derive(Eq, PartialEq)]
 pub(super) struct RefitSignature {
@@ -30,6 +31,7 @@ enum GeometryShape {
         stride: u64,
         opaque: bool,
         transformed: bool,
+        indices: Option<super::IndexSnapshotId>,
     },
     Aabbs {
         count: u32,
@@ -90,6 +92,24 @@ impl GeometryShape {
                     geometry,
                     api::AccelerationGeometry::TransformedTriangles { .. }
                 ),
+                indices: None,
+            }),
+            api::AccelerationGeometry::SnapshotTriangles {
+                vertex_count,
+                vertex_format,
+                stride,
+                opaque,
+                indices,
+                transform,
+                ..
+            } => Some(Self::Triangles {
+                vertex_count: *vertex_count,
+                vertex_format: *vertex_format,
+                stride: *stride,
+                opaque: *opaque,
+                transformed: transform.is_some(),
+                // SAFETY: obtaining the snapshot identity does not mutate its storage.
+                indices: Some(unsafe { indices.native_ref() }.id.clone()),
             }),
             api::AccelerationGeometry::Triangles { .. }
             | api::AccelerationGeometry::TransformedTriangles { .. } => None,
@@ -110,63 +130,69 @@ impl GeometryShape {
 /// Checks source identity in recorded order while the submission gate is
 /// held. These signatures model build compatibility only. Queue waits and
 /// UAV barriers must still come from the caller's plan.
-pub(crate) fn validate_sequence<'a>(
-    builds: impl IntoIterator<Item = &'a RecordedAccelerationBuild>,
+pub(crate) fn validate_recordings<'a>(
+    recordings: impl IntoIterator<Item = &'a Dx12Encoder>,
 ) -> Result<()> {
     struct PendingBuild<'a> {
         signature: Option<Arc<RefitSignature>>,
         revision: Option<&'a Arc<()>>,
     }
     let mut pending = HashMap::<_, PendingBuild<'_>>::new();
-    for build in builds {
-        let identity = Arc::as_ptr(&build.target.0);
-        let mut signature = build.signature.clone();
-        if build.refit {
-            let required = build.signature.as_ref().ok_or(Error::InvalidState)?;
-            let compatible = match pending.get(&identity) {
-                Some(previous) => previous.signature.as_deref() == Some(required.as_ref()),
-                None => committed_signature(&build.target).as_deref() == Some(required.as_ref()),
-            };
-            if !compatible {
-                return Err(Error::InvalidState);
-            }
-        }
-        match &build.source {
-            Some(CopySource::Clone(source)) => {
-                signature = match pending.get(&Arc::as_ptr(&source.0)) {
-                    Some(previous) => previous.signature.clone(),
-                    None if source.0.committed_built.load(Ordering::Relaxed) => {
-                        committed_signature(source)
+    let mut snapshots = SnapshotAdmission::default();
+    for recording in recordings {
+        snapshots.validate(&recording.ray_index_snapshots)?;
+        for build in &recording.ray_builds {
+            let identity = Arc::as_ptr(&build.target.0);
+            let mut signature = build.signature.clone();
+            if build.refit {
+                let required = build.signature.as_ref().ok_or(Error::InvalidState)?;
+                let compatible = match pending.get(&identity) {
+                    Some(previous) => previous.signature.as_deref() == Some(required.as_ref()),
+                    None => {
+                        committed_signature(&build.target).as_deref() == Some(required.as_ref())
                     }
-                    None => return Err(Error::InvalidState),
-                };
-            }
-            Some(CopySource::Compaction(source, required)) => {
-                let compatible = match pending.get(&Arc::as_ptr(&source.0)) {
-                    Some(previous) => previous
-                        .revision
-                        .is_some_and(|revision| Arc::ptr_eq(revision, required)),
-                    None => source
-                        .0
-                        .committed_revision
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .as_ref()
-                        .is_some_and(|actual| Arc::ptr_eq(actual, required)),
                 };
                 if !compatible {
                     return Err(Error::InvalidState);
                 }
             }
-            None => {}
+            match &build.source {
+                Some(CopySource::Clone(source)) => {
+                    signature = match pending.get(&Arc::as_ptr(&source.0)) {
+                        Some(previous) => previous.signature.clone(),
+                        None if source.0.committed_built.load(Ordering::Relaxed) => {
+                            committed_signature(source)
+                        }
+                        None => return Err(Error::InvalidState),
+                    };
+                }
+                Some(CopySource::Compaction(source, required)) => {
+                    let compatible = match pending.get(&Arc::as_ptr(&source.0)) {
+                        Some(previous) => previous
+                            .revision
+                            .is_some_and(|revision| Arc::ptr_eq(revision, required)),
+                        None => source
+                            .0
+                            .committed_revision
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .as_ref()
+                            .is_some_and(|actual| Arc::ptr_eq(actual, required)),
+                    };
+                    if !compatible {
+                        return Err(Error::InvalidState);
+                    }
+                }
+                None => {}
+            }
+            pending.insert(
+                identity,
+                PendingBuild {
+                    signature,
+                    revision: build.receipt.as_ref().map(|receipt| &receipt.revision),
+                },
+            );
         }
-        pending.insert(
-            identity,
-            PendingBuild {
-                signature,
-                revision: build.receipt.as_ref().map(|receipt| &receipt.revision),
-            },
-        );
     }
     Ok(())
 }

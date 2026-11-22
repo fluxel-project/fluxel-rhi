@@ -168,6 +168,7 @@ impl MetalAcceleration {
 }
 
 impl RayOps<Metal> for MetalRay {
+    type NativeIndexSnapshot = ();
     const AVAILABLE: bool = true;
     type PipelineFuture<'a> = Ready<api::Result<()>>;
     fn create_pipeline<'a>(

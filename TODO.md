@@ -1310,11 +1310,14 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   where its fields are available. Do not advertise a DX12 boundary snapshot
   derived from interval totals. Acceptance covers query interval/readback and
   every claimed pass-statistics field.
-- **R18, DESIGNING — indexed BLAS refit.** Define an explicit immutable-input
-  contract or a backend-owned snapshot used by both the initial build and every
-  update. Buffer identity and count alone are insufficient. Caller/Renderer
-  owns scheduling and barriers. Acceptance requires the chosen input-mode
-  checks, lifetime retention, refit output, and measured snapshot cost.
+- **R18, VERIFYING — indexed BLAS refit.** Core records an explicit GPU copy
+  into an opaque immutable snapshot. DX12 checks initialization at submission
+  and requires the snapshot from the initial build for every refit. The graph
+  supplies source state and ordering. Ordinary mutable indexed input remains
+  available for builds. Reopen mutable-input refit only with an independently
+  provable immutability contract. Acceptance covers both index widths, source
+  overwrite, different-snapshot rejection, same-packet and cross-queue ordering,
+  owner lifetime, traversal readback, and the measured copy cost.
 - **R19, DESIGNING — GPU-generated TLAS instances.** Use logical GPU instance
   records and a bounded typed BLAS table. DX12 packs private native records and
   retains all referenced acceleration structures. Define invalid-index behavior.

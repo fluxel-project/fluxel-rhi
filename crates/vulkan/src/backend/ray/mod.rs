@@ -16,6 +16,7 @@ pub use pipeline::VulkanRayPipeline;
 
 pub struct VulkanRay;
 impl fluxel_rhi_core::backend::RayOps<Vulkan> for VulkanRay {
+    type NativeIndexSnapshot = ();
     const AVAILABLE: bool = true;
     type PipelineFuture<'a> = super::cold_worker::ColdFuture<VulkanRayPipeline>;
     fn create_pipeline<'a>(

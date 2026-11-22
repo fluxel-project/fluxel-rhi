@@ -338,6 +338,9 @@ pub trait RayOps<B: Backend> {
     const ZERO_STRIDE_SHADER_TABLES: bool = false;
     /// Direct acceleration structure cloning into separate storage is implemented.
     const ACCELERATION_CLONE_AVAILABLE: bool = false;
+    /// A dedicated GPU copy can create an immutable index snapshot for refit.
+    const INDEX_SNAPSHOTS_AVAILABLE: bool = false;
+    type NativeIndexSnapshot: Clone;
     fn pipeline_support(_device: &B::NativeDevice, _desc: &RayPipelineDesc<B>) -> Result<()> {
         Err(Error::Unsupported("ray pipeline support query"))
     }
@@ -401,6 +404,13 @@ pub trait RayOps<B: Backend> {
         _: &B::NativeAcceleration,
     ) -> Result<()> {
         Err(Error::Unsupported("acceleration structure clone"))
+    }
+    fn snapshot_indices(
+        _: &mut B::NativeEncoder,
+        _: &B::NativeBuffer,
+        _: std::ops::Range<u64>,
+    ) -> Result<Self::NativeIndexSnapshot> {
+        Err(Error::Unsupported("acceleration index snapshots"))
     }
     fn update_acceleration(
         _encoder: &mut B::NativeEncoder,

@@ -229,6 +229,9 @@ impl Inputs {
                                     }),
                             );
                         }
+                        api::AccelerationGeometry::SnapshotTriangles { .. } => {
+                            return Err(Error::Unsupported("Vulkan acceleration index snapshots"));
+                        }
                         api::AccelerationGeometry::TransformedTriangles { .. } => {
                             return Err(Error::Unsupported(
                                 "Vulkan acceleration geometry transform",

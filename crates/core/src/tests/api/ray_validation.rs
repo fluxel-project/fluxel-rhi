@@ -133,6 +133,7 @@ impl Backend for Mock {
     type MemoryObservation = Unavailable;
 }
 impl RayOps<Mock> for MockRay {
+    type NativeIndexSnapshot = ();
     const AVAILABLE: bool = true;
     type PipelineFuture<'a> = std::future::Ready<Result<()>>;
     fn create_pipeline<'a>(_: &'a (), _: &'a RayPipelineDesc<Mock>) -> Self::PipelineFuture<'a> {

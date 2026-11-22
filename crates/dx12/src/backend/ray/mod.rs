@@ -17,7 +17,9 @@ mod ops;
 pub use ops::Ray;
 pub(crate) mod pipeline;
 mod refit;
-pub(crate) use refit::validate_sequence as validate_acceleration_builds;
+pub(crate) use refit::validate_recordings as validate_acceleration_recordings;
+mod index_snapshot;
+pub(crate) use index_snapshot::{IndexSnapshotId, IndexSnapshotOp};
 mod trace;
 
 #[cfg(all(test, feature = "hardware-tests"))]
@@ -132,6 +134,7 @@ pub(crate) fn pin_batch(work: &mut [super::encoder::Dx12RecordedWork]) {
 
 /// Publishes just the builds whose native command-list segment was accepted.
 pub(crate) fn publish_segment(work: &super::encoder::Dx12RecordedWork, segment: usize) {
+    index_snapshot::publish(&work.encoder.ray_index_snapshots, segment);
     for build in work
         .encoder
         .ray_builds
@@ -525,6 +528,9 @@ fn build(
         )
     };
     encoder.buffers.extend(geometry.buffers);
+    encoder
+        .ray_index_snapshots
+        .extend(geometry.snapshots.into_iter().map(IndexSnapshotOp::Read));
     encoder.buffers.push(scratch.clone());
     if let Some((buffer, _, _)) = output {
         encoder.buffers.push(buffer.clone());

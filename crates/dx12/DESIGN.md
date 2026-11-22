@@ -461,6 +461,13 @@ TLAS BLAS addresses in a disjoint destination allocation. DX12 publishes the
 destination's owners when the clone's segment crosses native handoff. A clone
 does not consume a compaction receipt, and its ordering and barriers are
 explicit in the caller's plan.
+Indexed BLAS refits require the identity of the immutable snapshot used in
+the original build. The snapshot operation records one copy of `count × index
+width` bytes and two transitions on private destination storage. The caller
+supplies the source transition, queue dependencies, and the same snapshot
+for future refits. The DX12 submission gate accepts a snapshot read only
+after its initializing copy, and the backend retains the underlying storage
+while that copy or build is in flight.
 
 Recording applies explicit Core transitions, clears, copies, render passes,
 bind groups, draw/dispatch operations, queries, indirect commands, and

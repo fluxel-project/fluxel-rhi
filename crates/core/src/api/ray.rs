@@ -6,7 +6,10 @@
 use super::*;
 
 mod compaction;
+mod index_snapshot;
+mod input_validation;
 pub use compaction::AccelerationCompactionTicket;
+pub use index_snapshot::AccelerationIndexSnapshot;
 use std::{
     future::Future,
     marker::PhantomData,
@@ -56,6 +59,18 @@ pub enum AccelerationGeometry<B: Backend> {
         transform: Buffer<B>,
         transform_offset: u64,
     },
+    /// Indexed triangles sharing an immutable index snapshot between build and refit.
+    SnapshotTriangles {
+        vertices: Buffer<B>,
+        vertex_offset: u64,
+        vertex_count: u32,
+        vertex_format: VertexFormat,
+        stride: u64,
+        indices: AccelerationIndexSnapshot<B>,
+        opaque: bool,
+        /// Optional geometry-to-BLAS transform and its byte offset.
+        transform: Option<(Buffer<B>, u64)>,
+    },
     Aabbs {
         data: Buffer<B>,
         offset: u64,
@@ -72,6 +87,21 @@ pub struct AccelerationIndices<B: Backend> {
     pub count: u32,
     pub format: IndexFormat,
 }
+
+impl<B: Backend> AccelerationIndices<B> {
+    fn byte_range(&self) -> Option<Range<u64>> {
+        let width = match self.format {
+            IndexFormat::Uint16 => 2,
+            IndexFormat::Uint32 => 4,
+        };
+        if self.count == 0 || self.count % 3 != 0 || self.offset % width != 0 {
+            return None;
+        }
+        let end = self.offset.checked_add(u64::from(self.count) * width)?;
+        Some(self.offset..end)
+    }
+}
+
 /// Per-instance ray traversal behavior, independent of native API bit values.
 ///
 /// With no flags, the instance uses the default clockwise triangle front face,
@@ -125,138 +155,6 @@ pub struct AccelerationInstance<B: Backend> {
 pub enum AccelerationInput<B: Backend> {
     Blas(Vec<AccelerationGeometry<B>>),
     Tlas(Vec<AccelerationInstance<B>>),
-}
-impl<B: Backend> AccelerationInput<B> {
-    fn validate(&self, device: DeviceId, limits: &DeviceLimits) -> Result<()> {
-        let foreign = match self {
-            Self::Blas(geometries) => geometries.iter().any(|geometry| match geometry {
-                AccelerationGeometry::Triangles {
-                    vertices, indices, ..
-                } | AccelerationGeometry::TransformedTriangles { vertices, indices, .. } => {
-                    vertices.device != device
-                        || indices
-                            .as_ref()
-                            .is_some_and(|indices| indices.buffer.device != device)
-                        || matches!(geometry, AccelerationGeometry::TransformedTriangles { transform, .. } if transform.device != device)
-                }
-                AccelerationGeometry::Aabbs { data, .. } => data.device != device,
-            }),
-            Self::Tlas(instances) => instances
-                .iter()
-                .any(|instance| instance.blas.device != device),
-        };
-        if foreign {
-            return Err(Error::WrongDevice);
-        }
-        if let Self::Tlas(instances) = self {
-            if limits.max_tlas_instance_count != 0
-                && instances.len() > limits.max_tlas_instance_count as usize
-            {
-                return Err(Error::InvalidRange);
-            }
-            if instances.iter().any(|instance| !instance.flags.valid()) {
-                return Err(Error::InvalidState);
-            }
-        }
-        if let Self::Blas(geometries) = self {
-            if limits.max_blas_geometry_count != 0
-                && geometries.len() > limits.max_blas_geometry_count as usize
-            {
-                return Err(Error::InvalidRange);
-            }
-            let mut primitive_count = 0u64;
-            for geometry in geometries {
-                if limits.max_blas_primitive_count != 0 {
-                    let count = match geometry {
-                        AccelerationGeometry::Triangles {
-                            vertex_count,
-                            indices,
-                            ..
-                        }
-                        | AccelerationGeometry::TransformedTriangles {
-                            vertex_count,
-                            indices,
-                            ..
-                        } => {
-                            indices
-                                .as_ref()
-                                .map_or(*vertex_count, |indices| indices.count)
-                                / 3
-                        }
-                        AccelerationGeometry::Aabbs { count, .. } => *count,
-                    };
-                    primitive_count += u64::from(count);
-                    if primitive_count > u64::from(limits.max_blas_primitive_count) {
-                        return Err(Error::InvalidRange);
-                    }
-                }
-                let valid = match geometry {
-                    AccelerationGeometry::Triangles {
-                        vertex_offset,
-                        vertex_count,
-                        stride,
-                        indices,
-                        ..
-                    }
-                    | AccelerationGeometry::TransformedTriangles {
-                        vertex_offset,
-                        vertex_count,
-                        stride,
-                        indices,
-                        ..
-                    } => {
-                        *vertex_count != 0
-                            && *stride != 0
-                            && u64::from(*vertex_count - 1)
-                                .checked_mul(*stride)
-                                .and_then(|n| vertex_offset.checked_add(n))
-                                .is_some()
-                            && indices.as_ref().is_none_or(|indices| {
-                                let width = match indices.format {
-                                    IndexFormat::Uint16 => 2,
-                                    IndexFormat::Uint32 => 4,
-                                };
-                                indices.count != 0
-                                    && indices.count % 3 == 0
-                                    && indices.offset % width == 0
-                                    && u64::from(indices.count)
-                                        .checked_mul(width)
-                                        .and_then(|n| indices.offset.checked_add(n))
-                                        .is_some()
-                            })
-                    }
-                    AccelerationGeometry::Aabbs {
-                        offset,
-                        stride,
-                        count,
-                        ..
-                    } => {
-                        *count != 0
-                            && *stride >= 24
-                            && *stride % 8 == 0
-                            && *offset % 8 == 0
-                            && u64::from(*count - 1)
-                                .checked_mul(*stride)
-                                .and_then(|n| offset.checked_add(n))
-                                .and_then(|n| n.checked_add(24))
-                                .is_some()
-                    }
-                };
-                if !valid {
-                    return Err(Error::InvalidRange);
-                }
-                if let AccelerationGeometry::TransformedTriangles {
-                    transform_offset, ..
-                } = geometry
-                {
-                    if transform_offset % 16 != 0 || transform_offset.checked_add(48).is_none() {
-                        return Err(Error::InvalidRange);
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
 }
 #[derive(Clone)]
 pub struct AccelerationDesc<B: Backend> {
@@ -344,6 +242,7 @@ pub struct ShaderTable<B: Backend> {
 }
 
 impl<B: Backend> RayOps<B> for Unavailable {
+    type NativeIndexSnapshot = ();
     const AVAILABLE: bool = false;
     type PipelineFuture<'a>
         = std::future::Ready<Result<B::NativeRayPipeline>>
@@ -523,6 +422,7 @@ impl<B: Backend> RayDomain<'_, B> {
         self.validate_acceleration_input(&desc.input)?;
         B::Ray::acceleration_sizes(&self.device.native, desc)
     }
+
     /// Allocation and scratch bounds for a compaction-enabled build.
     pub fn compactable_sizes(&self, desc: &AccelerationDesc<B>) -> Result<AccelerationSizes> {
         self.require_compaction_size()?;
@@ -731,7 +631,7 @@ impl<B: Backend> RayDomain<'_, B> {
     fn validate_acceleration_input(&self, input: &AccelerationInput<B>) -> Result<()> {
         input.validate(self.device.id, &self.device.caps.limits)?;
         if !self.device.caps.acceleration_geometry_transform
-            && matches!(input, AccelerationInput::Blas(geometries) if geometries.iter().any(|g| matches!(g, AccelerationGeometry::TransformedTriangles { .. })))
+            && matches!(input, AccelerationInput::Blas(geometries) if geometries.iter().any(|g| matches!(g, AccelerationGeometry::TransformedTriangles { .. } | AccelerationGeometry::SnapshotTriangles { transform: Some(_), .. })))
         {
             return Err(Error::Unsupported("acceleration geometry transform"));
         }

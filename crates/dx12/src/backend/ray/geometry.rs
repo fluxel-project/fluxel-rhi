@@ -11,6 +11,7 @@ use super::super::{Dx12, Dx12Buffer};
 pub(super) struct GeometryInputs {
     geometries: Vec<D3D12_RAYTRACING_GEOMETRY_DESC>,
     pub(super) buffers: Vec<Dx12Buffer>,
+    pub(super) snapshots: Vec<super::IndexSnapshotId>,
     kind: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE,
     count: u32,
     flags: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS,
@@ -99,6 +100,7 @@ fn address(
 impl GeometryInputs {
     pub(super) fn new(desc: &api::AccelerationDesc<Dx12>, dxr_1_1: bool) -> Result<Self> {
         let mut buffers = Vec::new();
+        let mut snapshots = Vec::new();
         let mut geometries = Vec::new();
         let (kind, count) = match &desc.input {
             api::AccelerationInput::Tlas(instances) => (
@@ -114,8 +116,8 @@ impl GeometryInputs {
                             vertex_count,
                             vertex_format,
                             stride,
-                            indices,
                             opaque,
+                            ..
                         }
                         | api::AccelerationGeometry::TransformedTriangles {
                             vertices,
@@ -123,12 +125,45 @@ impl GeometryInputs {
                             vertex_count,
                             vertex_format,
                             stride,
-                            indices,
+                            opaque,
+                            ..
+                        }
+                        | api::AccelerationGeometry::SnapshotTriangles {
+                            vertices,
+                            vertex_offset,
+                            vertex_count,
+                            vertex_format,
+                            stride,
                             opaque,
                             ..
                         } => {
                             let (format, layout) = triangle_vertex_layout(*vertex_format, dxr_1_1)?;
-                            if indices.as_ref().map_or(*vertex_count, |i| i.count) % 3 != 0 {
+                            let indices = match item {
+                                api::AccelerationGeometry::Triangles { indices, .. }
+                                | api::AccelerationGeometry::TransformedTriangles {
+                                    indices, ..
+                                } => {
+                                    indices.as_ref().map(|indices| {
+                                        // SAFETY: Core checked the index buffer's device.
+                                        (
+                                            unsafe { indices.buffer.native_ref() },
+                                            indices.offset,
+                                            indices.count,
+                                            indices.format,
+                                        )
+                                    })
+                                }
+                                api::AccelerationGeometry::SnapshotTriangles {
+                                    indices, ..
+                                } => {
+                                    // SAFETY: geometry lowering only reads the private snapshot.
+                                    let snapshot = unsafe { indices.native_ref() };
+                                    snapshots.push(snapshot.id.clone());
+                                    Some((&snapshot.storage, 0, indices.count(), indices.format()))
+                                }
+                                _ => unreachable!(),
+                            };
+                            if indices.map_or(*vertex_count, |(_, _, count, _)| count) % 3 != 0 {
                                 return Err(Error::InvalidRange);
                             }
                             if layout
@@ -150,42 +185,38 @@ impl GeometryInputs {
                             )?;
                             buffers.push(vb.clone());
                             let (index_format, index_count, index_address) =
-                                if let Some(indices) = indices {
-                                    let (format, bytes) = match indices.format {
+                                if let Some((buffer, offset, count, index_format)) = indices {
+                                    let (format, bytes) = match index_format {
                                         api::IndexFormat::Uint16 => (DXGI_FORMAT_R16_UINT, 2),
                                         api::IndexFormat::Uint32 => (DXGI_FORMAT_R32_UINT, 4),
                                     };
-                                    // SAFETY: same Core identity invariant as the vertex buffer.
-                                    let ib = unsafe { indices.buffer.native_ref() };
-                                    let addr = address(
-                                        ib,
-                                        indices.offset,
-                                        indices.count,
-                                        bytes,
-                                        bytes,
-                                        bytes,
-                                    )?;
-                                    buffers.push(ib.clone());
-                                    (format, indices.count, addr)
+                                    let addr = address(buffer, offset, count, bytes, bytes, bytes)?;
+                                    buffers.push(buffer.clone());
+                                    (format, count, addr)
                                 } else {
                                     (DXGI_FORMAT_UNKNOWN, 0, 0)
                                 };
-                            let transform_address = match item {
+                            let transform = match item {
                                 api::AccelerationGeometry::TransformedTriangles {
                                     transform,
                                     transform_offset,
                                     ..
-                                } => {
-                                    // SAFETY: Core checked the transform buffer's device identity.
-                                    let buffer = unsafe { transform.native_ref() };
-                                    let alignment =
-                                        u64::from(D3D12_RAYTRACING_TRANSFORM3X4_BYTE_ALIGNMENT);
-                                    let address =
-                                        address(buffer, *transform_offset, 1, 48, 48, alignment)?;
-                                    buffers.push(buffer.clone());
-                                    address
-                                }
-                                _ => 0,
+                                } => Some((transform, *transform_offset)),
+                                api::AccelerationGeometry::SnapshotTriangles {
+                                    transform, ..
+                                } => transform.as_ref().map(|(buffer, offset)| (buffer, *offset)),
+                                _ => None,
+                            };
+                            let transform_address = if let Some((transform, offset)) = transform {
+                                // SAFETY: Core checked the transform buffer's device identity.
+                                let buffer = unsafe { transform.native_ref() };
+                                let alignment =
+                                    u64::from(D3D12_RAYTRACING_TRANSFORM3X4_BYTE_ALIGNMENT);
+                                let value = address(buffer, offset, 1, 48, 48, alignment)?;
+                                buffers.push(buffer.clone());
+                                value
+                            } else {
+                                0
                             };
                             (
                                 D3D12_RAYTRACING_GEOMETRY_DESC_0 {
@@ -233,7 +264,8 @@ impl GeometryInputs {
                     geometries.push(D3D12_RAYTRACING_GEOMETRY_DESC {
                         Type: match item {
                             api::AccelerationGeometry::Triangles { .. }
-                            | api::AccelerationGeometry::TransformedTriangles { .. } => {
+                            | api::AccelerationGeometry::TransformedTriangles { .. }
+                            | api::AccelerationGeometry::SnapshotTriangles { .. } => {
                                 D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES
                             }
                             _ => D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS,
@@ -266,6 +298,7 @@ impl GeometryInputs {
         Ok(Self {
             geometries,
             buffers,
+            snapshots,
             kind,
             count,
             flags,

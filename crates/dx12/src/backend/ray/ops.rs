@@ -13,6 +13,8 @@ impl fluxel_rhi_core::backend::RayOps<Dx12> for Ray {
     const EMPTY_DISPATCH: bool = true;
     const ZERO_STRIDE_SHADER_TABLES: bool = true;
     const ACCELERATION_CLONE_AVAILABLE: bool = true;
+    const INDEX_SNAPSHOTS_AVAILABLE: bool = true;
+    type NativeIndexSnapshot = super::index_snapshot::Dx12IndexSnapshot;
     fn pipeline_support(device: &Dx12Device, desc: &api::RayPipelineDesc<Dx12>) -> Result<()> {
         super::pipeline::pipeline_support(device, desc)
     }
@@ -130,6 +132,13 @@ impl fluxel_rhi_core::backend::RayOps<Dx12> for Ray {
         src: &Dx12Acceleration,
     ) -> Result<()> {
         super::copy::record_clone(encoder, dst, src)
+    }
+    fn snapshot_indices(
+        encoder: &mut Dx12Encoder,
+        source: &Dx12Buffer,
+        range: std::ops::Range<u64>,
+    ) -> Result<Self::NativeIndexSnapshot> {
+        super::index_snapshot::record(encoder, source, range)
     }
     fn update_acceleration(
         encoder: &mut Dx12Encoder,
