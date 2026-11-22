@@ -283,6 +283,8 @@ pub struct RayPipelineDesc<B: Backend> {
     pub layout: PipelineLayout<B>,
     pub shaders: Vec<PipelineStage<B>>,
     pub groups: Vec<RayGroup>,
+    /// Maximum trace recursion depth. Zero on a supporting backend permits
+    /// ray generation without `TraceRay` calls.
     pub max_recursion: u32,
     pub payload_bytes: u32,
     pub hit_attribute_bytes: u32,
@@ -446,7 +448,7 @@ impl<B: Backend> RayDomain<'_, B> {
             return Err(Error::WrongDevice);
         }
         let max_depth = self.device.caps.limits.max_ray_recursion_depth;
-        if max_depth != 0 && (desc.max_recursion == 0 || desc.max_recursion > max_depth) {
+        if max_depth != 0 && desc.max_recursion > max_depth {
             return Err(Error::InvalidRange);
         }
         if desc.groups.iter().any(|group| {

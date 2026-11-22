@@ -448,6 +448,8 @@ Native ray stages use DXIL libraries. DXR-capable devices also accept HLSL at
 shader model 6.3 or later. Ray pipeline creation compiles each referenced HLSL
 library once and checks the actual export stages before creating the state
 object. Pipeline support checks HLSL descriptors without compiling them.
+The native recursion limit includes zero for ray generation that makes no
+`TraceRay` calls.
 
 Recording applies explicit Core transitions, clears, copies, render passes,
 bind groups, draw/dispatch operations, queries, indirect commands, and

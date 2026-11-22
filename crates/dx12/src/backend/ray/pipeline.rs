@@ -98,7 +98,6 @@ fn admit_pipeline<'a>(
     }
     if desc.shaders.is_empty()
         || desc.groups.is_empty()
-        || desc.max_recursion == 0
         || desc.max_recursion > D3D12_RAYTRACING_MAX_DECLARABLE_TRACE_RECURSION_DEPTH
         || desc.hit_attribute_bytes > D3D12_RAYTRACING_MAX_ATTRIBUTE_SIZE_IN_BYTES
     {
