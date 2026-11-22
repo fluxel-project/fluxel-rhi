@@ -8,11 +8,20 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 ### Windows Core test baseline
 
-The Core suite at `3637773` reproduces six failures seen during D4.5.
-Track acceleration-structure array admission in D6.3, transient attachment
-and rectangle clear in D5.2, and the three mesh-indirect admission cases
-in D6.4. Review the contract and fixture in each owning group and rerun
-the complete Core suite before final validation.
+The Core suite at `3637773` reproduced six failures seen during D4.5.
+The transient attachment and rectangle-clear fixtures now declare their
+one color slot and pass at `716d6cd`. Track acceleration-structure array
+admission in D6.3 and the three mesh-indirect cases in D6.4. Rerun the
+complete Core suite before final validation.
+
+### DX12 render-pass color resolve
+
+Verify that a partial render area resolves into the same rectangle and
+preserves destination pixels outside it. Cover nonzero origins, a full
+render area, sparse multiview layers, and matching typed views on typed
+and typeless allocations. Reject mismatched view formats and integer
+color average resolves. Reopen integer resolve when an explicit integer
+resolve mode has defined cross-backend semantics.
 
 ### DX12 device limit verification
 

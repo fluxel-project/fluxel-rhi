@@ -32,15 +32,30 @@ pub(in crate::backend::encoder::raster) fn end(
                     destination_before,
                     D3D12_RESOURCE_STATE_RESOLVE_DEST,
                 );
-                // SAFETY: validated single subresources, matching typed formats and extents.
+                // SAFETY: the pass validated both subresources, view formats,
+                // and the render area against the matching attachment extents.
                 unsafe {
-                    encoder.list.ResolveSubresource(
-                        &resolve.resource,
-                        destination_subresource,
-                        &target.resource,
-                        source_subresource,
-                        target.format,
-                    );
+                    if let Some((list, rect)) = &state.partial_resolve {
+                        list.ResolveSubresourceRegion(
+                            &resolve.resource,
+                            destination_subresource,
+                            rect.left as u32,
+                            rect.top as u32,
+                            &target.resource,
+                            source_subresource,
+                            Some(rect),
+                            target.format,
+                            D3D12_RESOLVE_MODE_AVERAGE,
+                        );
+                    } else {
+                        encoder.list.ResolveSubresource(
+                            &resolve.resource,
+                            destination_subresource,
+                            &target.resource,
+                            source_subresource,
+                            target.format,
+                        );
+                    }
                 }
                 super::super::super::transition::barrier_sub(
                     &encoder.list,

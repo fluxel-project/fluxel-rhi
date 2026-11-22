@@ -41,6 +41,7 @@ pub(crate) struct IntegerClearTarget {
 
 pub(crate) struct RasterState {
     targets: Vec<Target>,
+    partial_resolve: Option<(ID3D12GraphicsCommandList1, RECT)>,
     end_timestamp: Option<(super::super::super::Dx12QuerySet, u32)>,
     pub(crate) formats: Vec<Option<api::TextureFormat>>,
     pub(crate) depth_format: Option<api::TextureFormat>,
@@ -287,11 +288,15 @@ pub(super) fn begin(
                     encoder.surface_attachments.push(n.0.retain_attachment());
                     let resource = n.0.resource.clone();
                     let d = unsafe { resource.GetDesc() };
+                    // Flip-model storage can be typed UNORM behind an sRGB RTV.
+                    if d.Format != native_format {
+                        return Err(Error::Unsupported("DX12 surface resolve storage format"));
+                    }
                     (
                         resource,
                         0,
                         true,
-                        d.Format,
+                        image.format(),
                         d.SampleDesc.Count,
                         (d.Width, d.Height),
                         1,
@@ -310,7 +315,6 @@ pub(super) fn begin(
                     }
                     let d = &n.0.texture.desc;
                     let resource = n.0.texture.resource.clone();
-                    let native = unsafe { resource.GetDesc() };
                     encoder.textures.push(Dx12Texture(n.0.texture.clone()));
                     encoder.view_descriptor_leases.push(
                         n.0.rtv_lease
@@ -322,7 +326,7 @@ pub(super) fn begin(
                         resource,
                         n.0.desc.mips.start + n.0.desc.layers.start * d.mip_levels,
                         false,
-                        native.Format,
+                        n.0.desc.format,
                         d.samples,
                         (
                             u64::from((d.extent[0] >> n.0.desc.mips.start).max(1)),
@@ -334,7 +338,7 @@ pub(super) fn begin(
                 }
             };
             if dst_samples != 1
-                || dst_format != native_format
+                || dst_format != format
                 || dst_extent != extent
                 || dst_layers != layer_count
             {
@@ -509,6 +513,19 @@ pub(super) fn begin(
         right: desc.render_area.x.saturating_add(desc.render_area.width) as i32,
         bottom: desc.render_area.y.saturating_add(desc.render_area.height) as i32,
     };
+    // A pass resolve writes the same rectangle that the pass renders to.
+    // Acquire the partial-resolve interface before recording any commands.
+    let partial_resolve = if targets.iter().any(|target| target.resolve.is_some())
+        && pass_extent != Some((u64::from(desc.render_area.width), desc.render_area.height))
+    {
+        let list = encoder
+            .list
+            .cast::<ID3D12GraphicsCommandList1>()
+            .map_err(|_| Error::Unsupported("DX12 partial raster resolve command list"))?;
+        Some((list, rect))
+    } else {
+        None
+    };
     let viewport = D3D12_VIEWPORT {
         TopLeftX: desc.render_area.x as f32,
         TopLeftY: desc.render_area.y as f32,
@@ -618,6 +635,7 @@ pub(super) fn begin(
     }
     Ok(RasterState {
         targets,
+        partial_resolve,
         end_timestamp,
         formats,
         depth_format,

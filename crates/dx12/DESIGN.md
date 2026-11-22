@@ -278,8 +278,9 @@ texture subresources directly.
 A 3D color attachment slice selects one W coordinate in a single mip.
 The RTV carries that coordinate while resource transitions and attachment
 alias checks still address the full mip. Pass clears, including integer
-load and rectangular clears, use the selected RTV. MSAA resolves use
-2D resources.
+load and rectangular clears, use the selected RTV. Render-pass MSAA resolves
+use matching typed 2D views and write only the render-area rectangle.
+Typeless allocations are admitted through compatible typed views.
 
 Storage texture allocation and view creation require a typed UAV and at
 least one typed access. Bind-group layout support and creation require the

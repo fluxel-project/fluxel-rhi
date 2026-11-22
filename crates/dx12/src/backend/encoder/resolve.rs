@@ -20,6 +20,7 @@ use windows::{
 
 pub(super) fn color_format_supported(dv: &Dx12Device, format: api::TextureFormat) -> bool {
     texture::color_texel_bytes(format).is_some()
+        && !texture::integer_color(format)
         && texture::format_has_support(dv, format, D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RESOLVE)
 }
 
