@@ -41,6 +41,8 @@ mod raster_extras;
 pub use raster_extras::*;
 mod shading_rate;
 pub use shading_rate::*;
+mod sampler_feedback;
+pub use sampler_feedback::*;
 mod indirect_count_profile;
 pub use indirect_count_profile::*;
 mod submission;

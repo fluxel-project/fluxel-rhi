@@ -624,6 +624,13 @@ supplies its `ShadingRateSource` transition. Binding retains the resource
 through completion. The pass resets the combiners and unbinds the image
 when used. DX12 supplies fine shading outside a smaller image's extent.
 
+Sampler feedback allocates a dedicated opaque map with the sampled texture's
+base dimensions, mip count and array size. Explicit map commands clear and
+decode that allocation, while the caller records unordered-access and resolve
+dependencies. Decoding writes ordinary R8Uint texels that can be copied and
+read through standard RHI operations. The backend retains the map, paired
+image, destination, and clear descriptor owners where those commands need them.
+
 Timestamp queries can be recorded on the graphics or compute queue, between
 encoder commands or at a chosen position in a raster or compute pass. A
 pass-local timestamp measures the position after preceding commands,

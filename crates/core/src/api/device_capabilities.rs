@@ -1,8 +1,8 @@
 //! Immutable capability and limit facts negotiated by a backend at device open.
 
 use super::{
-    CooperativeMatrixConfiguration, IndirectCountProfile, LaneInfo, ShadingRateCapabilities,
-    TextureFormat,
+    CooperativeMatrixConfiguration, IndirectCountProfile, LaneInfo, SamplerFeedbackTier,
+    ShadingRateCapabilities, TextureFormat,
 };
 use std::sync::Arc;
 
@@ -12,6 +12,8 @@ use std::sync::Arc;
 pub struct DeviceCapabilities {
     /// Explicit per-draw coarse pixel shading.
     pub shading_rate: Option<ShadingRateCapabilities>,
+    /// Opaque sampler-feedback maps and explicit native decode.
+    pub sampler_feedback: Option<SamplerFeedbackTier>,
     /// Standard WGSL immediate data may use explicit per-stage constant ranges.
     pub wgsl_immediate_data: bool,
     /// Pipeline layouts accept exact native register assignments.

@@ -54,6 +54,7 @@ mod ray;
 mod readback;
 mod resource;
 mod sampler;
+mod sampler_feedback;
 mod secondary;
 mod shader_atomics;
 mod shader_naga;
@@ -136,6 +137,7 @@ struct Dx12DeviceState {
     pub(super) mesh_supported: bool,
     pub(super) mesh_multiview: bool,
     pub(super) shading_rate: Option<api::ShadingRateCapabilities>,
+    pub(super) sampler_feedback: Option<api::SamplerFeedbackTier>,
     pub(super) tiled_resources_tier:
         windows::Win32::Graphics::Direct3D12::D3D12_TILED_RESOURCES_TIER,
     pub(super) residency_device: Option<windows::Win32::Graphics::Direct3D12::ID3D12Device3>,

@@ -355,6 +355,13 @@ impl DescriptorHeaps {
     pub(crate) fn sampler_heap(&self) -> &ID3D12DescriptorHeap {
         &self.samplers.native
     }
+    pub(crate) fn temporary_view(&self) -> Result<DynamicViewTable> {
+        Ok(DynamicViewTable {
+            heaps: self.clone(),
+            start: self.views.allocate(1)?,
+            count: 1,
+        })
+    }
 }
 
 /// One view and sampler slot in the device-wide heaps, retained until GPU completion.
@@ -498,6 +505,9 @@ impl Drop for DynamicViewTable {
     }
 }
 impl DynamicViewTable {
+    pub(crate) fn cpu(&self) -> D3D12_CPU_DESCRIPTOR_HANDLE {
+        self.heaps.views.cpu(self.start)
+    }
     pub(crate) fn gpu(&self) -> windows::Win32::Graphics::Direct3D12::D3D12_GPU_DESCRIPTOR_HANDLE {
         // SAFETY: the owned allocation remains alive for this table.
         let mut handle = unsafe { self.heaps.views.native.GetGPUDescriptorHandleForHeapStart() };

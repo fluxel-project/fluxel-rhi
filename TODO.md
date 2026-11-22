@@ -1372,9 +1372,11 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   that shape with a workload that needs mesh-generated rates. Secondary
   lists do not record their own rate state. Reopen if a caller needs that
   route and can qualify bundle inheritance and restoration.
-- **R24b, DESIGNING — sampler feedback.** Define feedback-map resources,
-  resolve, synchronization, and tier restrictions. Acceptance requires GPU
-  feedback readback. Capability reporting alone is insufficient.
+- **R24b, IMPLEMENTING — sampler feedback.** Opaque MinMip and MipRegionUsed
+  maps support explicit clear, state transitions, and decode. A Tier 1.0 GPU
+  probe read back the cleared `255` and `0` values, respectively. Finish the
+  paired feedback UAV binding and native shader path. Verify nonempty feedback
+  for a known mip and region, tier restrictions, and input lifetime.
 - **R24c, DESIGNING — geometry and tessellation stages.** Define shader-stage
   linkage, reflection, pipeline ABI, limits, and DXIL/HLSL/WGSL route facts.
   Verify geometry-shader amplification and hull/domain patch evaluation with

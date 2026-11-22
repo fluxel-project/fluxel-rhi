@@ -332,6 +332,7 @@ impl Dx12 {
             // routing failure recorded in TODO N04 is resolved.
             let mesh_multiview = false;
             let shading_rate = super::shading_rate::probe(&native);
+            let sampler_feedback = super::sampler_feedback::probe(&native, shader_model);
             let lane = LaneId { device, ordinal: 0 };
             let compute_lane = LaneId { device, ordinal: 1 };
             let caps = DeviceCapabilities {
@@ -577,6 +578,7 @@ impl Dx12 {
                 multiview,
                 mesh_multiview,
                 shading_rate,
+                sampler_feedback,
                 shader_view_index,
                 ..Default::default()
             };
@@ -641,6 +643,7 @@ impl Dx12 {
                     mesh_supported,
                     mesh_multiview,
                     shading_rate,
+                    sampler_feedback,
                     tiled_resources_tier,
                     residency_device,
                     resource_heap_tier2,
