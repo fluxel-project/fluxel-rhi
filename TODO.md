@@ -51,6 +51,15 @@ nonempty call can still execute in the same pass.
 Verify that same-root compute pipeline switches preserve bound raw buffer
 groups and immediates. A different root signature invalidates those
 bindings. Check direct and indirect dispatch after a compatible switch.
+Verify repeated and concurrent indirect recording with the ordinary and
+`num_workgroups` command signatures. Read back the WGSL workgroup count
+and verify the original indirect argument buffer can be used again.
+
+**Explicit bind-group clearing.** The current compute command takes a
+concrete group. There is no portable null-group operation with defined
+shader access semantics. Reopen when a caller needs an explicit clearing
+operation and the affected slots, null descriptors, and validation
+behavior can be specified.
 GPU-produced indirect arguments must obey the same native bounds.
 
 **Push constant range:** Match layout support and creation at the published

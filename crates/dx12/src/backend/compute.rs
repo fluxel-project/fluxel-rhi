@@ -7,12 +7,12 @@
 //! group clones are retained by the encoder solely until the submission fence
 //! proves D3D12 has stopped reading their native objects.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use fluxel_rhi_core::api::{self, Error, Result};
 use windows::{Win32::Graphics::Direct3D12::*, core::Interface};
 
-use super::{Dx12, Dx12ComputePipeline, Dx12Device};
+use super::{Dx12, Dx12ComputePipeline, Dx12Device, native_error};
 
 mod pipeline;
 
@@ -45,6 +45,7 @@ pub(crate) struct ComputePipelineState {
     pub(crate) state: ID3D12PipelineState,
     pub(crate) raw_storage_bindings: Vec<(u32, u32)>,
     pub(crate) num_workgroups_root: Option<u32>,
+    workgroups_dispatch_signature: Mutex<Option<ID3D12CommandSignature>>,
 }
 
 /// Current compute root arguments. Descriptor and pipeline owners stay in the encoder.
@@ -247,28 +248,11 @@ impl fluxel_rhi_core::backend::ComputeOps<Dx12> for Compute {
         {
             return dispatch_indirect_with_workgroups(encoder, buffer, offset);
         }
-        let argument = D3D12_INDIRECT_ARGUMENT_DESC {
-            Type: D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH,
-            Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0::default(),
-        };
-        let desc = D3D12_COMMAND_SIGNATURE_DESC {
-            ByteStride: 12,
-            NumArgumentDescs: 1,
-            pArgumentDescs: &argument,
-            NodeMask: 0,
-        };
-        let mut signature: Option<ID3D12CommandSignature> = None;
-        // SAFETY: the descriptor and argument live through creation; no root signature is required.
-        unsafe {
-            encoder.device.0.native.CreateCommandSignature(
-                &desc,
-                None::<&ID3D12RootSignature>,
-                &mut signature,
-            )
-        }
-        .map_err(native_error)?;
-        let signature =
-            signature.ok_or_else(|| Error::Backend("DX12 dispatch signature missing".into()))?;
+        let signature = dispatch_signature(
+            &encoder.device,
+            &encoder.device.0.dispatch_indirect_signature,
+            None,
+        )?;
         // SAFETY: Core requires the caller to transition the argument buffer to INDIRECT_READ.
         // The buffer and signature are retained by the encoder until the completion fence.
         unsafe {
@@ -362,7 +346,11 @@ fn dispatch_indirect_with_workgroups(
         .as_ref()
         .ok_or(Error::InvalidState)?;
     let index = pipeline.0.num_workgroups_root.ok_or(Error::InvalidState)?;
-    let root = pipeline.0.root.clone();
+    let signature = dispatch_signature(
+        &encoder.device,
+        &pipeline.0.workgroups_dispatch_signature,
+        Some((&pipeline.0.root, index)),
+    )?;
     let scratch = <Dx12 as fluxel_rhi_core::backend::ResourceBackend>::create_buffer(
         &encoder.device,
         &api::BufferDesc {
@@ -372,39 +360,6 @@ fn dispatch_indirect_with_workgroups(
             memory: api::MemoryClass::Device,
         },
     )?;
-    let arguments = [
-        D3D12_INDIRECT_ARGUMENT_DESC {
-            Type: D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT,
-            Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0 {
-                Constant: D3D12_INDIRECT_ARGUMENT_DESC_0_1 {
-                    RootParameterIndex: index,
-                    DestOffsetIn32BitValues: 0,
-                    Num32BitValuesToSet: 3,
-                },
-            },
-        },
-        D3D12_INDIRECT_ARGUMENT_DESC {
-            Type: D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH,
-            Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0::default(),
-        },
-    ];
-    let desc = D3D12_COMMAND_SIGNATURE_DESC {
-        ByteStride: 24,
-        NumArgumentDescs: 2,
-        pArgumentDescs: arguments.as_ptr(),
-        NodeMask: 0,
-    };
-    let mut signature = None;
-    // SAFETY: descriptor and root are live during signature creation.
-    unsafe {
-        encoder
-            .device
-            .0
-            .native
-            .CreateCommandSignature(&desc, Some(&root), &mut signature)
-    }
-    .map_err(native_error)?;
-    let signature: ID3D12CommandSignature = signature.ok_or(Error::InvalidState)?;
     super::encoder::barrier(
         &encoder.list,
         &buffer.resource,
@@ -454,8 +409,56 @@ fn dispatch_indirect_with_workgroups(
     Ok(())
 }
 
-fn native_error(error: windows::core::Error) -> Error {
-    crate::backend::native_error(error)
+fn dispatch_signature(
+    device: &Dx12Device,
+    cache: &Mutex<Option<ID3D12CommandSignature>>,
+    workgroups: Option<(&ID3D12RootSignature, u32)>,
+) -> Result<ID3D12CommandSignature> {
+    let mut cached = cache
+        .lock()
+        .map_err(|_| Error::Backend("DX12 dispatch signature cache poisoned".into()))?;
+    if let Some(signature) = cached.as_ref() {
+        return Ok(signature.clone());
+    }
+    let dispatch = D3D12_INDIRECT_ARGUMENT_DESC {
+        Type: D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH,
+        Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0::default(),
+    };
+    let mut arguments = [dispatch; 2];
+    let mut count = 1;
+    if let Some((_, index)) = workgroups {
+        arguments[0] = D3D12_INDIRECT_ARGUMENT_DESC {
+            Type: D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT,
+            Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0 {
+                Constant: D3D12_INDIRECT_ARGUMENT_DESC_0_1 {
+                    RootParameterIndex: index,
+                    DestOffsetIn32BitValues: 0,
+                    Num32BitValuesToSet: 3,
+                },
+            },
+        };
+        count = 2;
+    }
+    let desc = D3D12_COMMAND_SIGNATURE_DESC {
+        ByteStride: count * 12,
+        NumArgumentDescs: count,
+        pArgumentDescs: arguments.as_ptr(),
+        NodeMask: 0,
+    };
+    let mut signature: Option<ID3D12CommandSignature> = None;
+    // SAFETY: the descriptor, argument array and optional matching root
+    // signature remain live through native creation.
+    unsafe {
+        device.0.native.CreateCommandSignature(
+            &desc,
+            workgroups.map(|(root, _)| root),
+            &mut signature,
+        )
+    }
+    .map_err(native_error)?;
+    let signature = signature.ok_or(Error::InvalidState)?;
+    *cached = Some(signature.clone());
+    Ok(signature)
 }
 
 /// Install a compute-root bind group for both compute and ray pipelines.

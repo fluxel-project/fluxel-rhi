@@ -352,6 +352,13 @@ separate group-shared capability from OPTIONS9. Direct HLSL and single
 compute DXIL can declare the corresponding operation and address space.
 Callers provide correctly aligned offsets and record synchronization.
 
+Indirect compute dispatch reuses one immutable command signature per
+device. A WGSL pipeline that reads `num_workgroups` reuses its own
+root-specific signature. This path also copies the 12-byte argument
+record twice into a 24-byte temporary and restores the caller's indirect
+argument state before execution. Ordinary indirect dispatch uses the
+caller's argument buffer directly.
+
 Native compute can bind a single-mip, non-array R64Uint texture for
 atomic add and unsigned min/max. DX12 uses a `R32G32_UINT` resource and
 UAV with a shader-declared `RWTexture2D<uint64_t>`. Shader Model 6.6, Int64

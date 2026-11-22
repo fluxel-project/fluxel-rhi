@@ -169,6 +169,7 @@ struct Dx12DeviceState {
     /// Sharing this cache through each buffer avoids per-recording creation
     /// without introducing a command scheduler or retaining command streams.
     pub(super) indirect_signatures: Arc<Mutex<HashMap<(bool, u32), ID3D12CommandSignature>>>,
+    pub(super) dispatch_indirect_signature: Mutex<Option<ID3D12CommandSignature>>,
     /// Mesh indirect records always use the 12-byte DISPATCH_MESH signature.
     pub(super) mesh_indirect_signature: Mutex<Option<ID3D12CommandSignature>>,
     pub(super) descriptors: descriptor::DescriptorHeaps,

@@ -275,6 +275,7 @@ pub(super) fn create(
         layout: layout.clone(),
         state,
         num_workgroups_root,
+        workgroups_dispatch_signature: Default::default(),
         raw_storage_bindings,
     })))
 }

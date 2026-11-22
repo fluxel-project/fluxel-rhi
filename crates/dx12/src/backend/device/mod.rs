@@ -657,6 +657,7 @@ impl Dx12 {
                     integer_clear_cache: Arc::default(),
                     indirect_pack_cache: Arc::default(),
                     indirect_signatures: Arc::default(),
+                    dispatch_indirect_signature: Mutex::new(None),
                     mesh_indirect_signature: Mutex::new(None),
                     abandoned_fence_events: Mutex::new(Vec::new()),
                     descriptors,
