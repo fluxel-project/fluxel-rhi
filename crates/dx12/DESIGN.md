@@ -479,6 +479,10 @@ TLAS publication keeps every possible BLAS target alive.
 WGSL inline ray queries can read fixed or layout-sized TLAS descriptor arrays.
 The shader requires a matching acceleration binding and a nonuniform layout
 entry for divergent selectors. Partially filled slots use native null SRVs.
+Native shader artifacts validate the typed AS register span from PSV0 for a
+single program or from the selected export's RDAT resource list for a DXR
+library. Unbounded native declarations require a runtime capacity at the
+mapped register. Native shaders supply their own nonuniform annotation.
 
 Recording applies explicit Core transitions, clears, copies, render passes,
 bind groups, draw/dispatch operations, queries, indirect commands, and

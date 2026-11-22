@@ -468,6 +468,8 @@ selectors require a nonuniform layout entry.
 Native single-entry HLSL and DXIL require the reflected acceleration SRV
 span to fit a visible TLAS binding under both explicit and default register
 mapping. An unbounded declaration requires a matching runtime capacity.
+DXR libraries check the same span against the selected export's RDAT resource
+list, including when optional compiler reflection is stripped.
 
 **Acceptance:** Read back distinguishable results from multiple populated TLAS
 slots for fixed and runtime arrays, including nonuniform indexing and holes.

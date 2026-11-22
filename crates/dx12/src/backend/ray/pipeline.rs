@@ -106,6 +106,11 @@ fn admit_pipeline<'a>(
     {
         return Err(Error::Unsupported("DX12 ray pipeline descriptor"));
     }
+    // SAFETY: Core checked that the layout belongs to the pipeline device.
+    let layout = &unsafe { desc.layout.native_ref() }.0;
+    if !layout.native_abi_compatible {
+        return Err(Error::Unsupported("DX12 DXIL descriptor register overlap"));
+    }
     let stages: Vec<_> = desc
         .shaders
         .iter()
@@ -132,6 +137,7 @@ fn admit_pipeline<'a>(
                     &stage.entry,
                     entry.stage,
                     device.0.shader_model,
+                    layout,
                 )?,
                 Some(Dx12ShaderSource::Hlsl(source))
                     if matches!(source.format, api::ShaderFormat::Hlsl(model) if (63..=device.0.shader_model.min(69)).contains(&model)) => {}
@@ -140,11 +146,6 @@ fn admit_pipeline<'a>(
             Ok((shader, entry.stage))
         })
         .collect::<Result<_>>()?;
-    // SAFETY: Core checked that the layout belongs to the pipeline device.
-    let layout = &unsafe { desc.layout.native_ref() }.0;
-    if !layout.native_abi_compatible {
-        return Err(Error::Unsupported("DX12 DXIL descriptor register overlap"));
-    }
     for group in &desc.groups {
         if let Some(constants) = group.local_constants {
             if constants.size_bytes == 0
@@ -237,6 +238,7 @@ pub(crate) fn create_pipeline(
                 &desc.entry,
                 stage,
                 device.0.shader_model,
+                layout,
             )?;
             Ok(artifact.clone())
         })
