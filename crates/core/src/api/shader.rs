@@ -62,7 +62,7 @@ pub const SHADER_FEATURE_INT64: &str = "shader-int64";
 /// A fragment shader requires the API's early depth-test semantics.
 ///
 /// This requirement is checked against `DeviceCapabilities::shader_early_depth_test`.
-/// Shaders that use the WGSL `@early_depth_test` attribute, the DX12
+/// Shaders that use the compatibility WGSL `@early_depth_test` attribute, the DX12
 /// `[earlydepthstencil]` attribute or flag, or SPIR-V `EarlyFragmentTests`
 /// must declare it. Exact early-depth modes are backend-specific.
 pub const SHADER_FEATURE_EARLY_DEPTH_TEST: &str = "shader-early-depth-test";

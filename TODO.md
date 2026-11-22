@@ -445,14 +445,15 @@ consumer defines the producer and consumer contract for a shader-written ID.
 
 ### DX12 forced early depth and stencil
 
-**Status:** DX12 supports the forced test mode for WGSL and declarations of
-the corresponding native HLSL attribute and DXIL flag.
+**Status:** DX12 supports the forced test mode through compatibility WGSL
+and the corresponding native HLSL attribute and DXIL flag. Native
+HLSL/DXIL also preserve the declared conservative-depth output semantics.
 
 **Acceptance:** Verify that depth and stencil rejection suppresses fragment
 storage writes. Cover depth and stencil updates when the fragment later
-discards, and reject nonfragment requirement declarations. WGSL conservative
-depth remains pending until its depth-output and interpolation rules are
-mapped per mode and verified with depth and storage readback.
+discards, and reject nonfragment requirement declarations. For native
+conservative depth, check depth output, permitted position interpolation,
+and storage and discard effects separately from forced testing.
 
 ### DX12 WGSL inline constants
 
@@ -1113,9 +1114,26 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
 - **R14, VERIFYING — primitive index in mesh pipelines.** Raster primitive index
   remains supported. Mesh output needs a separately named, mesh-produced
   semantic if a consumer requires it, because it is not the same value.
+  For standard WGSL vertex and instance indices, compare Shader Model 6.8
+  system values with the older root-constant path across direct, indexed,
+  secondary, and GPU-counted draws. Include negative base vertex, nonzero
+  first instance, aggregate input passed to a helper, and lowering-profile
+  selection.
+- **DX12 draw index, DEFERRED — per-command ordinal.** Keep the device
+  capability disabled. Standard WGSL has no draw-index builtin, and DXIL
+  exposes no corresponding system value. ExecuteIndirect Tier 1.1 can
+  increment a root constant within a call. Reopen with a standardized shader
+  input and validation that proves the ordinal across a complete multi-draw
+  operation, including offsets, native count clamping, and any batch splits.
+  See the [WGSL builtin definitions](https://www.w3.org/TR/WGSL/#builtin-values)
+  and the [D3D12 indirect specification](https://microsoft.github.io/DirectX-Specs/d3d/IndirectDrawing.html#incrementing-constant).
 - **R15, VERIFYING — conservative depth.** Expose only modes whose early-depth,
   discard, depth-write, and side-effect observations are preserved. Force and
-  Allow modes remain separate admission paths.
+  Allow modes remain separate. Keep the compatibility WGSL Allow modes
+  unavailable on DX12. The WGSL standard does not define these attributes,
+  and DXC requires specific input interpolation for native conservative-depth
+  outputs. Reopen a portable source route when a standard extension defines
+  the modes and the frontend can prove equivalent depth and fragment inputs.
 - **R16, UNSUPPORTED — triangle point fill.** Point-list topology is not an
   equivalent rendering mode. Reopen only for an explicitly specified lowering
   with coverage, reuse, and cost evidence.

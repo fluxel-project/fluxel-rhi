@@ -26,6 +26,8 @@ const SPECIAL_CBUF_TYPE: &str = "NagaConstants";
 const SPECIAL_CBUF_VAR: &str = "_NagaConstants";
 const SPECIAL_FIRST_VERTEX: &str = "first_vertex";
 const SPECIAL_FIRST_INSTANCE: &str = "first_instance";
+const START_VERTEX_LOCATION: &str = "__naga_start_vertex_location";
+const START_INSTANCE_LOCATION: &str = "__naga_start_instance_location";
 const SPECIAL_OTHER: &str = "other";
 
 pub(crate) const MODF_FUNCTION: &str = "naga_modf";
@@ -514,7 +516,9 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
             match ep.early_depth_test {
                 Some(crate::EarlyDepthTest::Force) => writeln!(self.out, "[earlydepthstencil]")?,
                 Some(crate::EarlyDepthTest::Allow { .. }) => {
-                    return Err(Error::Unimplemented("HLSL conservative fragment depth".into()));
+                    return Err(Error::Unimplemented(
+                        "HLSL conservative fragment depth".into(),
+                    ));
                 }
                 None => {}
             }
@@ -644,6 +648,36 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
             write!(self.out, " {}", &m.name)?;
             self.write_semantic(&m.binding, Some(shader_stage))?;
             writeln!(self.out, ";")?;
+        }
+        if shader_stage == (ShaderStage::Vertex, Io::Input)
+            && self.options.wgsl_native_vertex_offsets
+        {
+            if self.options.shader_model < ShaderModel::V6_8 {
+                return Err(Error::Custom(
+                    "native vertex offsets require Shader Model 6.8".into(),
+                ));
+            }
+            for (builtin, field, ty, semantic) in [
+                (
+                    crate::BuiltIn::VertexIndex,
+                    START_VERTEX_LOCATION,
+                    "int",
+                    "SV_StartVertexLocation",
+                ),
+                (
+                    crate::BuiltIn::InstanceIndex,
+                    START_INSTANCE_LOCATION,
+                    "uint",
+                    "SV_StartInstanceLocation",
+                ),
+            ] {
+                if members
+                    .iter()
+                    .any(|arg| arg.binding == Some(crate::Binding::BuiltIn(builtin)))
+                {
+                    writeln!(self.out, "{}{ty} {field} : {semantic};", back::INDENT)?;
+                }
+            }
         }
         if members.iter().any(|arg| {
             matches!(
@@ -815,6 +849,9 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
         Ok(EntryPointInterface {
             input: if !func.arguments.is_empty()
                 && (stage == ShaderStage::Fragment
+                    || (stage == ShaderStage::Vertex
+                        && (self.options.wgsl_native_vertex_offsets
+                            || self.options.special_constants_binding.is_some()))
                     || func.arguments.iter().any(|arg| {
                         let is_view_index = |binding: &Option<crate::Binding>| {
                             matches!(
@@ -851,6 +888,22 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
         fake_member: &EpStructMember,
     ) -> BackendResult {
         match fake_member.binding {
+            Some(crate::Binding::BuiltIn(
+                crate::BuiltIn::VertexIndex | crate::BuiltIn::InstanceIndex,
+            )) if ep.stage == ShaderStage::Vertex => {
+                let (start, constant) = match fake_member.binding {
+                    Some(crate::Binding::BuiltIn(crate::BuiltIn::VertexIndex)) => {
+                        (START_VERTEX_LOCATION, SPECIAL_FIRST_VERTEX)
+                    }
+                    _ => (START_INSTANCE_LOCATION, SPECIAL_FIRST_INSTANCE),
+                };
+                if self.options.wgsl_native_vertex_offsets {
+                    write!(self.out, "uint({}.{}) + ", ep_input.arg_name, start)?;
+                } else if self.options.special_constants_binding.is_some() {
+                    write!(self.out, "uint({SPECIAL_CBUF_VAR}.{constant}) + ")?;
+                }
+                write!(self.out, "{}.{}", ep_input.arg_name, fake_member.name)?;
+            }
             Some(crate::Binding::BuiltIn(crate::BuiltIn::ViewIndex)) => {
                 write!(self.out, "int({}.{})", ep_input.arg_name, fake_member.name)?
             }
@@ -2991,36 +3044,25 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
     ) -> BackendResult {
         use crate::Expression;
 
-        // Handle the special semantics of vertex_index/instance_index
+        // Compute uses the special constants for the dispatch grid.
         let ff_input = if self.options.special_constants_binding.is_some() {
             func_ctx.is_fixed_function_input(expr, module)
         } else {
             None
         };
-        let closing_bracket = match ff_input {
-            Some(crate::BuiltIn::VertexIndex) => {
-                write!(self.out, "({SPECIAL_CBUF_VAR}.{SPECIAL_FIRST_VERTEX} + ")?;
-                ")"
-            }
-            Some(crate::BuiltIn::InstanceIndex) => {
-                write!(self.out, "({SPECIAL_CBUF_VAR}.{SPECIAL_FIRST_INSTANCE} + ",)?;
-                ")"
-            }
-            Some(crate::BuiltIn::NumWorkGroups) => {
-                // Note: despite their names (`FIRST_VERTEX` and `FIRST_INSTANCE`),
-                // in compute shaders the special constants contain the number
-                // of workgroups, which we are using here.
-                write!(
+        if ff_input == Some(crate::BuiltIn::NumWorkGroups) {
+            // Note: despite their names (`FIRST_VERTEX` and `FIRST_INSTANCE`),
+            // in compute shaders the special constants contain the number
+            // of workgroups, which we are using here.
+            write!(
                     self.out,
                     "uint3({SPECIAL_CBUF_VAR}.{SPECIAL_FIRST_VERTEX}, {SPECIAL_CBUF_VAR}.{SPECIAL_FIRST_INSTANCE}, {SPECIAL_CBUF_VAR}.{SPECIAL_OTHER})",
                 )?;
-                return Ok(());
-            }
-            _ => "",
-        };
+            return Ok(());
+        }
 
         if let Some(name) = self.named_expressions.get(&expr) {
-            write!(self.out, "{name}{closing_bracket}")?;
+            write!(self.out, "{name}")?;
             return Ok(());
         }
 
@@ -4413,9 +4455,6 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
             | Expression::SubgroupOperationResult { .. } => {}
         }
 
-        if !closing_bracket.is_empty() {
-            write!(self.out, "{closing_bracket}")?;
-        }
         Ok(())
     }
 

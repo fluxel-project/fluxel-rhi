@@ -337,6 +337,14 @@ WGSL pipeline compilation checks each active resource against the selected
 stage's bind-group layout visibility. It checks scalar and array bindings
 before native PSO creation or cache lookup.
 
+WGSL vertex and instance indices include the draw's starting offsets.
+Shader Model 6.8 vertex programs add `SV_StartVertexLocation` and
+`SV_StartInstanceLocation` to the corresponding native IDs. They use
+the ordinary root signature and indirect draw path. Earlier profiles
+apply the existing root constants to the same entry arguments, including
+members of an input structure passed to a helper. The indirect-count route
+query reports which pipeline needs argument adjustment.
+
 WGSL uniform layout minimum sizes cover the declared type's byte span.
 With the qualified `shader-f16` feature, uniforms containing halves lower
 to ordinary CBV bindings with 16-byte rows. Loads use the WGSL member,

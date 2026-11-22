@@ -260,6 +260,7 @@ pub enum ShaderModel {
     V6_5,
     V6_6,
     V6_7,
+    V6_8,
 }
 
 impl ShaderModel {
@@ -275,6 +276,7 @@ impl ShaderModel {
             Self::V6_5 => "6_5",
             Self::V6_6 => "6_6",
             Self::V6_7 => "6_7",
+            Self::V6_8 => "6_8",
         }
     }
 }
@@ -499,6 +501,8 @@ pub struct Options {
     /// Add special constants to `SV_VertexIndex` and `SV_InstanceIndex`,
     /// to make them work like in Vulkan/Metal, with help of the host.
     pub special_constants_binding: Option<BindTarget>,
+    /// Use SM 6.8 system values to apply WGSL vertex and instance offsets.
+    pub wgsl_native_vertex_offsets: bool,
 
     /// HLSL binding information for the [`PushConstant`] global, if present.
     ///
@@ -558,6 +562,7 @@ impl Default for Options {
             binding_map: BindingMap::default(),
             fake_missing_bindings: true,
             special_constants_binding: None,
+            wgsl_native_vertex_offsets: false,
             sampler_heap_target: SamplerHeapBindTargets::default(),
             sampler_buffer_binding_map: alloc::collections::BTreeMap::default(),
             push_constants_target: None,

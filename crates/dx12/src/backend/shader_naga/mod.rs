@@ -642,6 +642,7 @@ fn compile_inner(
         );
     }
     let mut entries = Vec::new();
+    let default_shader_model = options.shader_model;
     for entry in &desc.entries {
         let stage = match entry.stage {
             api::ShaderStage::Vertex => naga::ShaderStage::Vertex,
@@ -649,7 +650,6 @@ fn compile_inner(
             api::ShaderStage::Compute => naga::ShaderStage::Compute,
             _ => return Err(Error::Unsupported("DX12 WGSL shader stage")),
         };
-        let profile = format!("{}_{}", stage.to_hlsl_str(), options.shader_model.to_str());
         if entries.iter().any(|existing: &CompiledEntry| {
             existing.name == entry.name && existing.stage == entry.stage
         }) {
@@ -740,12 +740,20 @@ fn compile_inner(
         {
             return Err(Error::Shader("WGSL workgroup size mismatch".into()));
         }
-        let vertex_index_constants = stage == naga::ShaderStage::Vertex
+        let vertex_indices = stage == naga::ShaderStage::Vertex
             && validation::uses_entry_builtin(
                 &module,
                 &module.entry_points[index],
                 &[naga::BuiltIn::VertexIndex, naga::BuiltIn::InstanceIndex],
             );
+        options.wgsl_native_vertex_offsets = vertex_indices && target.shader_model >= 68;
+        options.shader_model = if options.wgsl_native_vertex_offsets {
+            naga::back::hlsl::ShaderModel::V6_8
+        } else {
+            default_shader_model
+        };
+        let profile = format!("{}_{}", stage.to_hlsl_str(), options.shader_model.to_str());
+        let vertex_index_constants = vertex_indices && !options.wgsl_native_vertex_offsets;
         if (vertex_index_constants || num_workgroups_constants)
             && module.global_variables.iter().any(|(_, global)| {
                 global

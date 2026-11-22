@@ -934,5 +934,6 @@ pub static RESERVED_CASE_INSENSITIVE_SET: RacyLock<CaseInsensitiveKeywordSet> =
 
 pub const RESERVED_PREFIXES: &[&str] = &[
     "__dynamic_buffer_offsets",
+    "__naga_start_",
     super::help::IMAGE_STORAGE_LOAD_SCALAR_WRAPPER,
 ];
