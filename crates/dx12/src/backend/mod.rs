@@ -372,6 +372,14 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
     type DirectFuture<'a> = pipeline::worker::ColdFuture<Dx12Shader>;
     type NagaFuture<'a> = pipeline::worker::ColdFuture<Dx12Shader>;
     fn shader_route(device: &Dx12Device, desc: &api::ShaderDesc) -> api::ShaderRoute {
+        if device.0.ray_device.is_none()
+            && desc
+                .entries
+                .iter()
+                .any(|entry| ray::pipeline::is_ray_stage(entry.stage))
+        {
+            return api::ShaderRoute::Unsupported;
+        }
         if desc.required_features.iter().any(|feature| {
             let Some((format, operation)) = shader_atomics::r32_texture_requirement(feature) else {
                 return false;

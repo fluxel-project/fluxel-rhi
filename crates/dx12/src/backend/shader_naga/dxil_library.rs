@@ -3,7 +3,7 @@
 use fluxel_rhi_core::api::{Error, Result, ShaderStage};
 use windows::Win32::Graphics::Direct3D12::*;
 
-use super::dxil_container::{parts, word};
+use super::dxil_container::{parts, shader_model, word};
 
 // Prefixes from DXC's DxilRuntimeReflection.h and RDAT_LibraryTypes.inl.
 const RDAT_VERSION: u32 = 0x10;
@@ -13,6 +13,7 @@ pub(in crate::backend) fn validate_export(
     bytes: &[u8],
     export: &str,
     stage: ShaderStage,
+    maximum_model: u16,
 ) -> Result<()> {
     let expected = match stage {
         ShaderStage::RayGeneration => D3D12_SHVER_RAY_GENERATION_SHADER,
@@ -24,10 +25,14 @@ pub(in crate::backend) fn validate_export(
         _ => return Err(Error::Unsupported("DX12 library export stage")),
     };
     let (program, rdat) = parts(bytes, *b"RDAT")?;
-    if word(program, 0)? >> 16 != D3D12_SHVER_LIBRARY.0 as u32 {
+    let version = word(program, 0)?;
+    if version >> 16 != D3D12_SHVER_LIBRARY.0 as u32 {
         return Err(Error::Shader(
             "DX12 ray pipeline requires a DXIL library".into(),
         ));
+    }
+    if !(63..=maximum_model).contains(&shader_model(version)) {
+        return Err(Error::Unsupported("DX12 ray library shader model"));
     }
     let rdat = rdat.ok_or(Error::Unsupported(
         "DX12 library export admission requires RDAT",

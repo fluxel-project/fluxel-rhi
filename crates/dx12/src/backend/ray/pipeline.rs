@@ -131,6 +131,7 @@ fn admit_pipeline<'a>(
                     &shader.bytes,
                     &stage.entry,
                     entry.stage,
+                    device.0.shader_model,
                 )?,
                 Some(Dx12ShaderSource::Hlsl(source))
                     if matches!(source.format, api::ShaderFormat::Hlsl(model) if (63..=device.0.shader_model.min(69)).contains(&model)) => {}
@@ -231,7 +232,12 @@ pub(crate) fn create_pipeline(
                     )?))
                 }
             };
-            shader_naga::validate_dxil_library_export(artifact, &desc.entry, stage)?;
+            shader_naga::validate_dxil_library_export(
+                artifact,
+                &desc.entry,
+                stage,
+                device.0.shader_model,
+            )?;
             Ok(artifact.clone())
         })
         .collect::<Result<_>>()?;

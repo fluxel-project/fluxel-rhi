@@ -70,13 +70,16 @@ pub(in crate::backend) fn validate_atomic_dxil(bytes: &[u8], maximum_model: u16)
     let version = word(program, 0)?;
     let stage = version >> 16;
     let compute = windows::Win32::Graphics::Direct3D12::D3D12_SHVER_COMPUTE_SHADER.0 as u32;
-    let model = (((version >> 4) & 0xf) * 10 + (version & 0xf)) as u16;
-    if stage != compute || !(66..=maximum_model).contains(&model) {
+    if stage != compute || !(66..=maximum_model).contains(&shader_model(version)) {
         return Err(Error::Unsupported(
             "DX12 Int64 atomics require compute DXIL at SM 6.6 or newer",
         ));
     }
     Ok(())
+}
+
+pub(super) fn shader_model(program_version: u32) -> u16 {
+    (((program_version >> 4) & 0xf) * 10 + (program_version & 0xf)) as u16
 }
 
 /// The native artifact must declare the typed-resource Int64 atomic feature.
