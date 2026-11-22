@@ -910,13 +910,10 @@ can interrupt the prior frame and discard queued frames. Reopen once Core
 defines the ordering and tearing rules for late frames and a DXGI route
 can demonstrate those guarantees with display evidence.
 
-**Mailbox mode (open).** Core already names this mode. Fluxel DX12 admits
-FIFO and, when tearing is supported, immediate presentation. The reference
-DX12 backend at wgpu revision `e801fa21` advertises mailbox and uses
-`Present(0, 0)`. Specify the observable replacement and tearing guarantees
-before enabling this mode. Check support, configuration, and presentation
-together on a real window with queued, identifiable frames. Keep mailbox
-closed on routes where those guarantees cannot be demonstrated.
+**Mailbox mode (deferred under N05).** The windowed DX12 route publishes
+FIFO and, when tearing is supported, Immediate. Reopen Mailbox once a
+windowed route shows replacement of queued frames without permitting
+tearing. See the conflict ledger for the three attempted paths and evidence.
 
 **Bounded surface acquisition (deferred).** Fluxel DX12 obtains the current
 backbuffer immediately and allows one outstanding image lease. Configuring
@@ -1173,7 +1170,7 @@ only when their owner supplies the required semantics and a bounded workload:
 
 ### Core and DX12 conflict delivery ledger
 
-The ledger covers 29 decisions, R01–R25 and N01–N04. R24 has five independent
+The ledger covers 30 decisions, R01–R25 and N01–N05. R24 has five independent
 workloads under the same parent decision. Design, implementation, verification
 and deferral describe the next work on an item. A completed item must become
 `IMPLEMENTED`, `LIMITED`, `UNSUPPORTED`, or `OUT_OF_SCOPE`, with its evidence
@@ -1422,6 +1419,15 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   different target device. Before making the capability available, verify
   single and sparse masks, nonzero attachment layer bases, per-view output
   from mesh and fragment, and untouched disabled layers.
+- **N05, DEFERRED — DX12 windowed mailbox.** On Radeon 780M driver
+  `32.0.31056.16`, a 120 Hz desktop showed all 81 marked frames from a
+  flip-discard swapchain using `Present(0, 0)` despite a backlog. A
+  flip-sequential probe also used `Present(0, 0)`. Missing markers coincided
+  with desktop capture losing samples, so those observations could not
+  establish replacement. Flip-discard plus `DXGI_PRESENT_RESTART` also
+  displayed every marker. Reopen with a new native path, device or driver,
+  or an unambiguous trace. Require lossless display observation of replaced
+  pending frames and a newer visible frame while tearing is disabled.
 
 Renderer algorithms, frame pacing, host and decoder lifecycle, cache eviction,
 and asset residency remain owned above RHI.

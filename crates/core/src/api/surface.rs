@@ -32,8 +32,13 @@ struct ConfiguredLeaseFacts {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PresentMode {
+    /// Present queued images in submission order with display synchronization.
     Fifo,
+    /// Present with display synchronization and allow a newer image to replace
+    /// one already queued for presentation. Acceptance does not establish
+    /// that the image was displayed.
     Mailbox,
+    /// Present without waiting for display synchronization, allowing tearing.
     Immediate,
 }
 /// Preference for choosing a configuration. The returned mode is explicit.
