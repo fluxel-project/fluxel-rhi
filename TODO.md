@@ -842,16 +842,18 @@ and update/refit semantics.
 
 ### DX12 acceleration structure clone
 
-**Status:** The DX12 compaction path already copies a built acceleration
-structure using a size ticket. Direct duplication into independent storage
-has no corresponding Core/SPI command. The pinned wgpu DX12 backend uses
-`CopyRaytracingAccelerationStructure` for both clone and compact.
+**Status:** Core records direct DX12 clones into a caller-provided allocation.
+The backend requires matching BLAS/TLAS kinds, disjoint ranges, and capacity
+at least equal to the source allocation. Submission checks that a source
+build or copy precedes the clone and transfers the accepted refit shape and
+TLAS dependencies. The graph supplies all queue ordering and barriers.
 
-**Acceptance:** Define an explicit same-device source and destination,
-destination capacity, supported BLAS/TLAS shapes, and required barriers.
-Keep referenced BLAS owners alive through TLAS use. Reject invalid aliasing
-and undersized storage before native recording. Trace the destination after
-releasing the source handle and compare hit/miss results with the original.
+**Acceptance:** Cover BLAS and TLAS clones after builds in the same recording
+and across submissions. Trace the destination after releasing the source and
+compare hit/miss results. Cover a clone of a clone, a compatible refit after
+cloning, a rejected submission and retry, and a later source rebuild with
+different BLAS owners. Reject unbuilt sources, mismatched kinds, wrong devices,
+invalid aliasing, and undersized storage.
 
 ### DX12 conservative rasterization
 

@@ -456,6 +456,11 @@ declared buffer range and transitions the buffer before dispatch.
 Local root constants can occupy the record bytes after its shader identifier,
 up to the native record limit. Pipeline admission rejects a local constant
 register occupied by a global CBV, including a range or compute immediate.
+Direct acceleration structure copies preserve the source's build shape and
+TLAS BLAS addresses in a disjoint destination allocation. DX12 publishes the
+destination's owners when the clone's segment crosses native handoff. A clone
+does not consume a compaction receipt, and its ordering and barriers are
+explicit in the caller's plan.
 
 Recording applies explicit Core transitions, clears, copies, render passes,
 bind groups, draw/dispatch operations, queries, indirect commands, and

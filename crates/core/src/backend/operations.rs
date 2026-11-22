@@ -336,6 +336,8 @@ pub trait RayOps<B: Backend> {
     const EMPTY_DISPATCH: bool = false;
     /// Optional shader table sections may select one record with zero stride.
     const ZERO_STRIDE_SHADER_TABLES: bool = false;
+    /// Direct acceleration structure cloning into separate storage is implemented.
+    const ACCELERATION_CLONE_AVAILABLE: bool = false;
     fn pipeline_support(_device: &B::NativeDevice, _desc: &RayPipelineDesc<B>) -> Result<()> {
         Err(Error::Unsupported("ray pipeline support query"))
     }
@@ -393,6 +395,13 @@ pub trait RayOps<B: Backend> {
         scratch: &B::NativeBuffer,
         input: &AccelerationDesc<B>,
     ) -> Result<()>;
+    fn clone_acceleration(
+        _: &mut B::NativeEncoder,
+        _: &B::NativeAcceleration,
+        _: &B::NativeAcceleration,
+    ) -> Result<()> {
+        Err(Error::Unsupported("acceleration structure clone"))
+    }
     fn update_acceleration(
         _encoder: &mut B::NativeEncoder,
         _dst: &B::NativeAcceleration,

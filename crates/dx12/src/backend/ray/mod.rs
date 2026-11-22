@@ -11,6 +11,7 @@ use windows::{
 };
 
 mod compaction;
+mod copy;
 mod geometry;
 mod ops;
 pub use ops::Ray;
@@ -25,7 +26,10 @@ mod retention_gpu;
 
 use super::{Dx12, Dx12Acceleration, Dx12Device};
 use fluxel_rhi_core::api::{self, Error, Result};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use windows::Win32::Graphics::{Direct3D12::*, Dxgi::Common::*};
 
 pub(crate) struct AccelerationState {
@@ -38,6 +42,7 @@ pub(crate) struct AccelerationState {
     committed_blas: Mutex<Vec<Dx12Acceleration>>,
     committed_signature: Mutex<Option<Arc<refit::RefitSignature>>>,
     committed_revision: Mutex<Option<Arc<()>>>,
+    committed_built: AtomicBool,
 }
 
 /// An acceleration build attached to the native list segment that records it.
@@ -49,7 +54,12 @@ pub(crate) struct RecordedAccelerationBuild {
     signature: Option<Arc<refit::RefitSignature>>,
     refit: bool,
     receipt: Option<Arc<compaction::CompactionReceipt>>,
-    required_source: Option<(Dx12Acceleration, Arc<()>)>,
+    source: Option<CopySource>,
+}
+
+enum CopySource {
+    Clone(Dx12Acceleration),
+    Compaction(Dx12Acceleration, Arc<()>),
 }
 
 fn extend_unique(
@@ -107,6 +117,11 @@ pub(crate) fn pin_batch(work: &mut [super::encoder::Dx12RecordedWork]) {
                 extend_unique(&mut dependencies, committed(&build.target));
             }
             extend_unique(&mut dependencies, build.blas.clone());
+            if let Some(CopySource::Clone(source)) = &build.source {
+                if source.0.is_top_level {
+                    extend_unique(&mut dependencies, committed(source));
+                }
+            }
         }
     }
     // One record in this accepted batch owns the union through the enclosing
@@ -123,20 +138,24 @@ pub(crate) fn publish_segment(work: &super::encoder::Dx12RecordedWork, segment: 
         .iter()
         .filter(|build| build.segment == segment)
     {
+        let (blas, signature) = match &build.source {
+            Some(CopySource::Clone(source)) => (committed(source), committed_signature(source)),
+            _ => (build.blas.clone(), build.signature.clone()),
+        };
         if build.target.0.is_top_level {
             *build
                 .target
                 .0
                 .committed_blas
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = build.blas.clone();
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = blas;
         }
         *build
             .target
             .0
             .committed_signature
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = build.signature.clone();
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = signature;
         *build
             .target
             .0
@@ -146,7 +165,21 @@ pub(crate) fn publish_segment(work: &super::encoder::Dx12RecordedWork, segment: 
             .receipt
             .as_ref()
             .map(|receipt| receipt.revision.clone());
+        // Both publication and admission read this bit under the submission gate.
+        build
+            .target
+            .0
+            .committed_built
+            .store(true, Ordering::Relaxed);
     }
+}
+
+fn committed_signature(src: &Dx12Acceleration) -> Option<Arc<refit::RefitSignature>> {
+    src.0
+        .committed_signature
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
 }
 
 pub(crate) fn seal_compaction_receipts(
@@ -270,6 +303,7 @@ fn allocate_acceleration(
         committed_blas: Mutex::new(Vec::new()),
         committed_signature: Mutex::new(None),
         committed_revision: Mutex::new(None),
+        committed_built: AtomicBool::new(false),
     })))
 }
 
@@ -505,7 +539,7 @@ fn build(
         signature,
         refit,
         receipt: None,
-        required_source: None,
+        source: None,
     });
     Ok(())
 }

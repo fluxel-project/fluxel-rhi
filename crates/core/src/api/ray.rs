@@ -575,6 +575,37 @@ impl<B: Backend> RayDomain<'_, B> {
         self.validate_acceleration_input(&desc.input)?;
         encoder.call(|e| B::Ray::build_acceleration(e, &dst.native, &scratch.native, desc))
     }
+
+    /// Reports whether the device can clone an acceleration structure.
+    pub fn supports_acceleration_clone(&self) -> bool {
+        self.device.caps.acceleration_structure && B::Ray::ACCELERATION_CLONE_AVAILABLE
+    }
+
+    /// Records a clone of a built acceleration structure into separate storage.
+    /// The destination must be of the same kind and at least as large as the
+    /// source allocation. A cloned TLAS references the same BLAS objects.
+    /// The caller provides the required barriers and queue ordering for both
+    /// structures. The source build must precede the clone at submission.
+    pub fn clone_acceleration(
+        &self,
+        encoder: &mut CommandEncoder<B>,
+        dst: &AccelerationStructure<B>,
+        src: &AccelerationStructure<B>,
+    ) -> Result<()>
+    where
+        B: CommandBackend,
+    {
+        if !self.supports_acceleration_clone() {
+            return Err(Error::Unsupported("acceleration structure clone"));
+        }
+        if encoder.device != self.device.id
+            || dst.device != self.device.id
+            || src.device != self.device.id
+        {
+            return Err(Error::WrongDevice);
+        }
+        encoder.call(|e| B::Ray::clone_acceleration(e, &dst.native, &src.native))
+    }
     /// Builds an acceleration structure and writes its selected size in
     /// bytes. For `Compacted`, allocate with `create_compactable_acceleration`
     /// and size scratch with `compactable_sizes`. Read the result after a

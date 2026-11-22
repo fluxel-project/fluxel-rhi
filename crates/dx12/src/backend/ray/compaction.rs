@@ -9,7 +9,8 @@ use fluxel_rhi_core::{
 use windows::{Win32::Graphics::Direct3D12::*, core::Interface};
 
 use super::{
-    Dx12, Dx12Acceleration, RecordedAccelerationBuild, allocate_acceleration, build, committed,
+    CopySource, Dx12, Dx12Acceleration, RecordedAccelerationBuild, allocate_acceleration, build,
+    committed,
 };
 use crate::backend::{
     Dx12Buffer,
@@ -177,7 +178,10 @@ impl AccelerationCompactionBackend for Dx12 {
             signature,
             refit: false,
             receipt: None,
-            required_source: Some((source.clone(), ticket.receipt.revision.clone())),
+            source: Some(CopySource::Compaction(
+                source.clone(),
+                ticket.receipt.revision.clone(),
+            )),
         });
         Ok(destination)
     }

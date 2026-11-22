@@ -12,6 +12,7 @@ impl fluxel_rhi_core::backend::RayOps<Dx12> for Ray {
     const AVAILABLE: bool = true;
     const EMPTY_DISPATCH: bool = true;
     const ZERO_STRIDE_SHADER_TABLES: bool = true;
+    const ACCELERATION_CLONE_AVAILABLE: bool = true;
     fn pipeline_support(device: &Dx12Device, desc: &api::RayPipelineDesc<Dx12>) -> Result<()> {
         super::pipeline::pipeline_support(device, desc)
     }
@@ -122,6 +123,13 @@ impl fluxel_rhi_core::backend::RayOps<Dx12> for Ray {
         desc: &api::AccelerationDesc<Dx12>,
     ) -> Result<()> {
         super::build(encoder, dst, scratch, desc, false, None)
+    }
+    fn clone_acceleration(
+        encoder: &mut Dx12Encoder,
+        dst: &Dx12Acceleration,
+        src: &Dx12Acceleration,
+    ) -> Result<()> {
+        super::copy::record_clone(encoder, dst, src)
     }
     fn update_acceleration(
         encoder: &mut Dx12Encoder,
