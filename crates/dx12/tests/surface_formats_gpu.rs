@@ -97,6 +97,14 @@ fn flip_formats_configure_acquire_and_present() {
             ));
             assert_eq!(surface.generation(), generation);
             assert_eq!(surface.configuration().unwrap().color_space, color_space);
+            let abandoned = block(surface.acquire()).unwrap();
+            assert_eq!(abandoned.format(), config.format);
+            assert_eq!(abandoned.extent(), config.extent);
+            assert!(matches!(
+                block(surface.configure(&config)),
+                Err(Error::InvalidState)
+            ));
+            drop(abandoned);
             for _ in 0..2 {
                 let image = block(surface.acquire()).unwrap();
                 let lane = device

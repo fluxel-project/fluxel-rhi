@@ -889,6 +889,9 @@ observe the format and generation on the acquired images. Exercise matching
 raster pipelines and verify sRGB encoding on a real presentation path.
 Check SDR configuration suggestions against the exact configuration query,
 including immediate mode with tearing and FIFO fallback without tearing.
+Inject terminal acquire errors and confirm that they invalidate the current
+configuration before another acquire. Confirm that a transient native
+error preserves the generation. Cover creation after device removal.
 Compare output snapshots across a window move between distinct displays.
 Verify HDR10 and scRGB output on an HDR-active monitor, early rejection of
 incorrect format/color-space pairs and HDR on SDR, and reconfiguration after

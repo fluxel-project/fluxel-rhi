@@ -113,6 +113,7 @@ pub(crate) unsafe fn create_surface(
     // SAFETY: the device is the typed owner of its native state; cloning it
     // keeps device/queue/fence alive for the surface's entire lifetime.
     let native = unsafe { device.native_ref() }.clone();
+    native.require_active()?;
     // SAFETY: factory creation has no borrowed input and returns a COM object
     // owned by this newly created SurfaceState.
     let factory = unsafe { CreateDXGIFactory2::<IDXGIFactory4>(DXGI_CREATE_FACTORY_FLAGS(0)) }
@@ -257,13 +258,13 @@ impl fluxel_rhi_core::backend::SurfaceBackend for Dx12 {
         // came from that chain, so GetBuffer returns an owned COM reference.
         let resource = match unsafe { chain.GetBuffer::<ID3D12Resource>(index) } {
             Ok(value) => value,
-            Err(e) => return ready(Err(error(e))),
+            Err(e) => return ready(Err(handle_acquire_failure(&mut i, error(e)))),
         };
         let Some(views) = i.views.clone() else {
-            return ready(Err(Error::SurfaceLost));
+            return ready(Err(handle_acquire_failure(&mut i, Error::SurfaceLost)));
         };
         let Some(rtv) = views.handles.get(index as usize).copied() else {
-            return ready(Err(Error::SurfaceLost));
+            return ready(Err(handle_acquire_failure(&mut i, Error::SurfaceLost)));
         };
         i.acquired = true;
         let generation = i.generation;
@@ -277,6 +278,16 @@ impl fluxel_rhi_core::backend::SurfaceBackend for Dx12 {
             handed: false,
         })))
     }
+}
+
+fn handle_acquire_failure(inner: &mut Inner, error: Error) -> Error {
+    if matches!(
+        error,
+        Error::SurfaceLost | Error::SurfaceOutdated | Error::DeviceLost
+    ) {
+        invalidate(inner);
+    }
+    error
 }
 
 fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
