@@ -12,10 +12,14 @@ use std::{ops::Range, sync::Arc};
 use windows::Win32::Graphics::Direct3D12::*;
 
 #[derive(Clone)]
-pub(crate) struct SlotSubmission {
-    pub(crate) lane: u32,
-    /// None means work was issued but its completion is not yet proven.
-    pub(crate) point: Option<(ID3D12Fence, u64)>,
+pub(crate) enum SlotSubmission {
+    Ordered {
+        lane: u32,
+        /// None means work was issued but the signal for this step is pending.
+        point: Option<(ID3D12Fence, u64)>,
+    },
+    /// No ordering proof remains after a failed native handoff.
+    Indeterminate,
 }
 
 pub(crate) struct QuerySetState {

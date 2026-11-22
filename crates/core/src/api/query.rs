@@ -575,7 +575,7 @@ impl<B: QueryBackend> Queries<'_, B> {
         B::query_resolve_support(lane, &set.native, &slots, &dst.native, offset)
     }
 
-    /// Resolves a nonempty slot range of this domain kind into a device-local buffer.
+    /// Resolves a nonempty slot range of this domain kind into a supported buffer.
     /// Each resolved slot must have been written in submission order after its
     /// most recent reset. Backends may validate this when the work is submitted.
     /// Buffer usage, alignment and pass state are checked by the backend.

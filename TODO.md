@@ -89,6 +89,9 @@ timestamps on direct and compute lanes and for occlusion and statistics on
 the direct lane. Check a foreign lane, slot bounds, offset alignment, wrong
 usage and the last byte of the destination. Producer ordering and active
 query state are verified during command execution.
+After an indeterminate handoff, verify that only affected slots lose their
+ordering proof and that independent slots in the same heap remain usable.
+Check a resolve-only failure separately from a reset or write failure.
 
 **Texture mip support:** Match the DX12 reported mip ceiling to creation
 for single-sample and multisampled textures of the same extent. Check a

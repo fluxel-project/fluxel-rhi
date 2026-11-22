@@ -1,5 +1,6 @@
 //! D3D12 occlusion-query command lowering.
 use super::*;
+use crate::backend::query::SlotSubmission;
 use crate::backend::{Dx12Buffer, Dx12QuerySet};
 use fluxel_rhi_core::api::{BufferUsage, Error, MemoryClass, QueryKind, Result};
 use std::ops::Range;
@@ -59,10 +60,7 @@ pub(crate) fn validate_ops<'a>(
     external_waits: &[Vec<(ID3D12Fence, u64)>],
 ) -> Result<()> {
     let mut states = std::collections::HashMap::<usize, Vec<bool>>::new();
-    let mut lanes = std::collections::HashMap::<
-        usize,
-        Vec<Option<crate::backend::query::SlotSubmission>>,
-    >::new();
+    let mut lanes = std::collections::HashMap::<usize, Vec<Option<SlotSubmission>>>::new();
     let mut packet_owners = std::collections::HashMap::<(usize, u32), (u32, usize)>::new();
     for (lane, step, op) in ops {
         let set = op.set();
@@ -86,13 +84,20 @@ pub(crate) fn validate_ops<'a>(
                     ));
                 }
             } else if let Some(previous) = owner {
-                if previous.lane != lane {
-                    let completed = previous.point.as_ref().is_some_and(|(fence, value)| {
+                let SlotSubmission::Ordered {
+                    lane: previous_lane,
+                    point,
+                } = previous
+                else {
+                    return Err(Error::InvalidState);
+                };
+                if *previous_lane != lane {
+                    let completed = point.as_ref().is_some_and(|(fence, value)| {
                         // SAFETY: the point owns the native fence for this query slot.
                         let completed = unsafe { fence.GetCompletedValue() };
                         completed != u64::MAX && completed >= *value
                     });
-                    let waited = previous.point.as_ref().is_some_and(|(fence, value)| {
+                    let waited = point.as_ref().is_some_and(|(fence, value)| {
                         fence_wait_covers(fence, *value, &external_waits[step])
                     });
                     if !completed && !waited {
@@ -103,7 +108,7 @@ pub(crate) fn validate_ops<'a>(
                 }
             }
             // A simulated packet operation invalidates any older completed point.
-            *owner = Some(crate::backend::query::SlotSubmission { lane, point: None });
+            *owner = Some(SlotSubmission::Ordered { lane, point: None });
             packet_owners.insert((key, slot), (lane, step));
         }
         let state = states.entry(key).or_insert_with(|| {
@@ -128,8 +133,7 @@ pub(crate) fn commit_ops(ops: &[QueryOp], lane: u32) {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         for slot in op.range() {
-            owners[slot as usize] =
-                Some(crate::backend::query::SlotSubmission { lane, point: None });
+            owners[slot as usize] = Some(SlotSubmission::Ordered { lane, point: None });
         }
         drop(owners);
         let mut slots = op
@@ -153,7 +157,7 @@ pub(crate) fn seal_ops(ops: &[QueryOp], lane: u32, fence: &ID3D12Fence, value: u
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         for slot in op.range() {
-            owners[slot as usize] = Some(crate::backend::query::SlotSubmission {
+            owners[slot as usize] = Some(SlotSubmission::Ordered {
                 lane,
                 point: Some((fence.clone(), value)),
             });
@@ -164,12 +168,21 @@ pub(crate) fn seal_ops(ops: &[QueryOp], lane: u32, fence: &ID3D12Fence, value: u
 /// A failed handoff or fence cannot establish which issued operations completed.
 pub(crate) fn invalidate_ops(ops: &[QueryOp]) {
     for op in ops {
-        op.set()
-            .0
-            .submitted_slots
+        let set = &op.set().0;
+        let range = op.range();
+        let slots = range.start as usize..range.end as usize;
+        // Lost ordering proof also affects reads, but resolving a result
+        // never overwrites the query heap itself.
+        set.submitted_lanes
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .fill(false);
+            .unwrap_or_else(|p| p.into_inner())[slots.clone()]
+        .fill(Some(SlotSubmission::Indeterminate));
+        if !matches!(op, QueryOp::Resolve(..)) {
+            set.submitted_slots
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())[slots]
+                .fill(false);
+        }
     }
 }
 
