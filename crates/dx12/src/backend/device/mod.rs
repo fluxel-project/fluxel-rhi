@@ -327,7 +327,10 @@ impl Dx12 {
                     .cast::<windows::Win32::Graphics::Direct3D12::ID3D12Device2>()
                     .is_ok();
             let shader_view_index = multiview && shader_model >= 61;
-            let mesh_multiview = multiview && mesh_supported;
+            // The independent native tiers do not establish correct layered
+            // mesh output. Keep this capability closed until the per-view
+            // routing failure recorded in TODO N04 is resolved.
+            let mesh_multiview = false;
             let lane = LaneId { device, ordinal: 0 };
             let compute_lane = LaneId { device, ordinal: 1 };
             let caps = DeviceCapabilities {

@@ -787,10 +787,9 @@ restoration.
 
 ### DX12 mesh multiview
 
-**Status:** Mesh pipelines using DXIL admit native view instancing when
-both device capabilities are present. Mesh shader view IDs use the native
-artifact declaration. Raster masks and attachment layers follow the existing
-view ordinal contract.
+**Status:** Deferred under N04. DX12 does not publish the combined mesh
+multiview capability. Ordinary mesh shaders and vertex raster multiview
+remain available independently when supported by the device.
 
 **Acceptance:** Verify distinct mesh and fragment results in enabled array
 layers, preserving masked layers. Cover task amplification, direct and
@@ -1170,7 +1169,7 @@ only when their owner supplies the required semantics and a bounded workload:
 
 ### Core and DX12 conflict delivery ledger
 
-The ledger covers 28 decisions, R01–R25 and N01–N03. R24 has five independent
+The ledger covers 29 decisions, R01–R25 and N01–N04. R24 has five independent
 workloads under the same parent decision. Design, implementation, verification
 and deferral describe the next work on an item. A completed item must become
 `IMPLEMENTED`, `LIMITED`, `UNSUPPORTED`, or `OUT_OF_SCOPE`, with its evidence
@@ -1409,6 +1408,16 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   wait, execute, signal and present handoffs never produce a retryable suffix.
   Verify one-shot external waits remain unconsumed when the step stops before
   handoff and are returned in the multi-queue diagnostic tail.
+- **N04, DEFERRED — DX12 mesh multiview layer routing.** On AMD Radeon 780M
+  with driver `32.0.31056.16`, a DXIL mesh dispatch with mask `0b1010`
+  overwrote layer zero with view three's output. The failure reproduced
+  with amplification, without amplification, and with an explicit zero
+  `SV_RenderTargetArrayIndex` output. The corresponding WGSL vertex and
+  fragment raster path placed both view IDs in the expected layers. The
+  root cause remains open. Reopen with a new native repro, a fix, or a
+  different target device. Before making the capability available, verify
+  single and sparse masks, nonzero attachment layer bases, per-view output
+  from mesh and fragment, and untouched disabled layers.
 
 Renderer algorithms, frame pacing, host and decoder lifecycle, cache eviction,
 and asset residency remain owned above RHI.

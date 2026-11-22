@@ -641,20 +641,15 @@ must fit the pipeline and the attachment array views. Primary and
 secondary draws use the same admission rule, and all views use the
 pass's shared viewport and scissor.
 
-Mesh multiview requires both native mesh shaders and view instancing.
 Mesh and amplification stages use precompiled DXIL. Their `PSV0` data
 qualifies shader model, thread group size when encoded, topology, output
 counts and the task-to-mesh payload size before native PSO creation. The
 driver validates payload linkage, packed signatures and shared output budgets.
-DXIL mesh pipelines use the same view ordinal mapping and mask admission
-as vertex raster pipelines. Each view location uses its ordinal as the array
-index within the attachment view and selects viewport zero. A meshlet
-instance selects scene geometry independently of this mapping.
-Verify a sparse view mask by reading back
-each enabled layer and a clear sentinel in the skipped layer.
-The mesh pipeline cache includes the view count and any per-face stencil
-masks. The native runtime checks shader output and shared-memory requirements
-for the selected view count.
+DX12 keeps mesh multiview unavailable pending per-view layer routing
+verification. The intended mapping uses each view ordinal as the array
+index within the attachment view and selects viewport zero. The experimental
+mesh PSO cache key includes the declared view count and per-face stencil
+masks. See [N04 in the conflict ledger](../../TODO.md#core-and-dx12-conflict-delivery-ledger).
 
 WGSL fragment sample index and sample interpolation lower to
 `SV_SampleIndex` and the HLSL `sample` modifier. They select native
