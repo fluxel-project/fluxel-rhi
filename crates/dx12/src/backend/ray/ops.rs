@@ -11,6 +11,7 @@ pub struct Ray;
 impl fluxel_rhi_core::backend::RayOps<Dx12> for Ray {
     const AVAILABLE: bool = true;
     const EMPTY_DISPATCH: bool = true;
+    const ZERO_STRIDE_SHADER_TABLES: bool = true;
     fn pipeline_support(device: &Dx12Device, desc: &api::RayPipelineDesc<Dx12>) -> Result<()> {
         super::pipeline::pipeline_support(device, desc)
     }

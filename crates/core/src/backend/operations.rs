@@ -334,6 +334,8 @@ pub trait RayOps<B: Backend> {
     const AVAILABLE: bool;
     /// A dispatch with a zero axis executes no threads on this route.
     const EMPTY_DISPATCH: bool = false;
+    /// Optional shader table sections may select one record with zero stride.
+    const ZERO_STRIDE_SHADER_TABLES: bool = false;
     fn pipeline_support(_device: &B::NativeDevice, _desc: &RayPipelineDesc<B>) -> Result<()> {
         Err(Error::Unsupported("ray pipeline support query"))
     }

@@ -11,11 +11,10 @@ fn region(
     let buffer = unsafe { region.buffer.native_ref() };
     if !buffer.usage.contains(api::BufferUsage::SHADER_TABLE)
         || region.offset % u64::from(D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT) != 0
-        || region.stride < u64::from(D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES)
         || region.stride > u64::from(D3D12_RAYTRACING_MAX_SHADER_RECORD_STRIDE)
         || region.stride % u64::from(D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT) != 0
-        || region.size == 0
-        || region.size % region.stride != 0
+        || region.size < u64::from(D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES)
+        || (region.stride != 0 && region.size % region.stride != 0)
         || (raygen && region.size != region.stride)
         || region
             .offset

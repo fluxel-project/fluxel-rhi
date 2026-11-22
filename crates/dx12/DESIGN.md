@@ -450,6 +450,9 @@ library once and checks the actual export stages before creating the state
 object. Pipeline support checks HLSL descriptors without compiling them.
 The native recursion limit includes zero for ray generation that makes no
 `TraceRay` calls.
+Miss, hit, and callable shader tables accept a zero byte stride to address the
+same record at every index. The caller supplies a complete record in the
+declared buffer range and transitions the buffer before dispatch.
 
 Recording applies explicit Core transitions, clears, copies, render passes,
 bind groups, draw/dispatch operations, queries, indirect commands, and

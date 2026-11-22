@@ -329,6 +329,8 @@ pub struct ShaderTableRegion<B: Backend> {
     pub buffer: Buffer<B>,
     pub offset: u64,
     pub size: u64,
+    /// Byte distance between records. On supporting backends a zero stride
+    /// in a miss, hit, or callable section selects one record at every index.
     pub stride: u64,
 }
 
@@ -756,8 +758,8 @@ impl<B: Backend> RayDomain<'_, B> {
                 return Err(Error::WrongDevice);
             }
             if region.size == 0
-                || region.stride == 0
-                || region.size % region.stride != 0
+                || (region.stride == 0 && !B::Ray::ZERO_STRIDE_SHADER_TABLES)
+                || (region.stride != 0 && region.size % region.stride != 0)
                 || region.offset.checked_add(region.size).is_none()
             {
                 return Err(Error::InvalidRange);

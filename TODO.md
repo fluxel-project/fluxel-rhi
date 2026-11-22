@@ -450,7 +450,9 @@ exports of one library, and compare ray generation, miss, hit, and callable
 readback. Reject wrong-stage exports, a non-library DXIL artifact, unsupported
 model, and DXR-disabled HLSL before native pipeline creation. Cover raygen
 readback at recursion depth zero, nested trace at a positive depth, and an
-out-of-range depth in both support and creation.
+out-of-range depth in both support and creation. For zero-stride optional tables,
+dispatch at distinct indices and read back the same record's output. Reject
+zero stride for raygen and optional regions smaller than one identifier.
 
 ### DX12 runtime and partially bound TLAS arrays
 
