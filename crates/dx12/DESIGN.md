@@ -345,7 +345,9 @@ provide view-type information that native reflection cannot infer.
 For single-program DXIL with stage-restricted bindings, DX12 checks the
 program kind and register ranges from the container's `PSV0` data. Compute,
 raster, and mesh admission can perform these checks without a DXC runtime
-or optional reflection data. DXIL libraries use their separate export ABI.
+or optional reflection data. Ray pipelines look up the selected DXIL library
+export in RDAT and validate its name and shader kind before state-object
+creation. DXR validates the native library's resource bindings.
 
 An explicit native register map assigns every logical binding to its exact
 register. The bind-group index supplies the register space and the binding

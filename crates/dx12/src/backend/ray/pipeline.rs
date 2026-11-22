@@ -120,6 +120,11 @@ fn admit_pipeline<'a>(
                 | api::ShaderStage::Intersection => (),
                 _ => return Err(Error::Unsupported("DX12 ray shader stage")),
             }
+            super::super::shader_naga::validate_dxil_library_export(
+                &shader.bytes,
+                &stage.entry,
+                entry.stage,
+            )?;
             Ok((shader, entry.stage))
         })
         .collect::<Result<_>>()?;

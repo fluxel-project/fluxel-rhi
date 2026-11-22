@@ -7,11 +7,14 @@
 mod binding;
 mod buffer_array;
 mod diagnostics;
+mod dxil_container;
+mod dxil_library;
 mod dxil_visibility;
 mod immediates;
 mod layout_reflection;
 mod native_layout_reflection;
 mod sampler_lowering;
+pub(super) use dxil_library::validate_export as validate_dxil_library_export;
 pub(super) use dxil_visibility::validate as validate_dxil_visibility;
 pub(super) use layout_reflection::reflect;
 pub(super) use native_layout_reflection::validate_visibility as validate_native_visibility;

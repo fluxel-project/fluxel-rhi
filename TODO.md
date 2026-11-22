@@ -384,9 +384,11 @@ For single-program DXIL, cover PSV register ranges, including an artifact
 without optional reflection and an environment without DXC. Exercise
 vertex, fragment, compute, mesh, and task visibility, reject a stage kind
 mismatch and malformed PSV length, and check an array's inclusive upper
-register bound. DXIL libraries need separate evidence for the selected
-export's resources. Reopen their visibility checks with exact export metadata
-that preserves the precompiled library contract.
+register bound. DXIL library admission checks the selected export and its
+shader kind in RDAT. RDAT's per-function resources do not establish the
+transitive resources of an export. Reopen DXR binding visibility when the
+complete internal and external call graph can be qualified without making
+optional DXC reflection a requirement for precompiled artifacts.
 
 ### DX12 secondary-source alpha blending
 
@@ -1061,7 +1063,9 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   or missing assignments, overlapping same-class spans and collisions with
   root constants. Exercise source and precompiled artifact pipelines under
   different maps and check layout inspection and PSO cache identity.
-  Continue selected-export metadata and ambiguous native view coverage.
+  For DXIL libraries, verify exact and unambiguous export names, shader kinds,
+  malformed RDAT, and missing exports. Keep explicit native view coverage
+  and resource visibility through library call graphs as separate checks.
 - **R08, VERIFYING — WGSL subgroup identity, count, and barrier.** Keep only
   operations with exact native wave semantics. Invocation index arithmetic and
   collectives do not derive wave identity/count or memory ordering. Each new
