@@ -83,6 +83,7 @@ impl fluxel_rhi_core::backend::MeshOps<Dx12> for Mesh {
             encoder.list.SetPipelineState(&pipeline.0.state);
         }
         encoder.mesh_pipeline = Some(pipeline.clone());
+        encoder.raster_snapshot.depth_bias = None;
         encoder.mesh_pipelines.push(pipeline.clone());
         encoder.pipeline = None;
         encoder.compute_pipeline = None;

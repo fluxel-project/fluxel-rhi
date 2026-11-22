@@ -123,9 +123,7 @@ impl fluxel_rhi_core::backend::RasterBackend for Dx12 {
             encoder.list.IASetPrimitiveTopology(pipeline.0.topology);
         }
         encoder.pipeline = Some(pipeline.clone());
-        if !pipeline.0.dynamic_depth_bias {
-            encoder.raster_snapshot.depth_bias = None;
-        }
+        encoder.raster_snapshot.depth_bias = None;
         encoder.raster_pipelines.push(pipeline.clone());
         encoder.ray_pipeline = None;
         encoder.mesh_pipeline = None;
@@ -451,16 +449,7 @@ impl fluxel_rhi_core::backend::RasterBackend for Dx12 {
         Ok(())
     }
     fn depth_bias(encoder: &mut Dx12Encoder, value: api::DynamicDepthBias) -> Result<(), Error> {
-        if !value.slope_scale.is_finite() || !value.clamp.is_finite() {
-            return Err(Error::InvalidRange);
-        }
-        let list9 = encoder
-            .list
-            .cast::<windows::Win32::Graphics::Direct3D12::ID3D12GraphicsCommandList9>()
-            .map_err(super::super::native_error)?;
-        // SAFETY: the active PSO was created with DYNAMIC_DEPTH_BIAS and the
-        // call copies finite scalar factors into this open command list.
-        unsafe { list9.RSSetDepthBias(value.constant as f32, value.clamp, value.slope_scale) };
+        super::raster_snapshot::write_depth_bias(&encoder.list, value)?;
         encoder.raster_snapshot.depth_bias = Some(value);
         Ok(())
     }
@@ -535,6 +524,7 @@ impl fluxel_rhi_core::backend::RasterBackend for Dx12 {
         mrt::end(encoder, state)?;
         encoder.mesh_pipeline = None;
         encoder.pipeline = None;
+        encoder.raster_snapshot.depth_bias = None;
         encoder.raster_snapshot.clear_roots();
         encoder.raster_bound_groups.clear();
         encoder.raster_formats.clear();

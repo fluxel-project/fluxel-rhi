@@ -44,11 +44,7 @@ pub(crate) fn restore(encoder: &mut Dx12Encoder) -> Result<(), Error> {
             encoder.list.SetPipelineState(&p.0.state);
         }
         if let Some(value) = s.depth_bias {
-            let list9 = encoder
-                .list
-                .cast::<ID3D12GraphicsCommandList9>()
-                .map_err(native_error)?;
-            list9.RSSetDepthBias(value.constant as f32, value.clamp, value.slope_scale);
+            write_depth_bias(&encoder.list, value)?;
         }
         for (&root, value) in &s.roots {
             match value {
@@ -115,5 +111,21 @@ pub(super) fn write_blend_constant(
     }
     // SAFETY: the list is open, and D3D12 copies the four values during the call.
     unsafe { list.OMSetBlendFactor(Some(&value)) };
+    Ok(())
+}
+
+pub(super) fn write_depth_bias(
+    list: &ID3D12GraphicsCommandList,
+    value: api::DynamicDepthBias,
+) -> Result<(), Error> {
+    if !value.slope_scale.is_finite() || !value.clamp.is_finite() {
+        return Err(Error::InvalidRange);
+    }
+    let list = list
+        .cast::<ID3D12GraphicsCommandList9>()
+        .map_err(|_| Error::Unsupported("DX12 dynamic depth bias entry point"))?;
+    // SAFETY: callers have bound a PSO created with DYNAMIC_DEPTH_BIAS on
+    // this open list. D3D12 copies the validated scalars during the call.
+    unsafe { list.RSSetDepthBias(value.constant as f32, value.clamp, value.slope_scale) };
     Ok(())
 }

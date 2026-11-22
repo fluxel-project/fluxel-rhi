@@ -457,6 +457,10 @@ Bundle draws inherit the primary blend constant and stencil references until
 the secondary work sets them. After the bundle, the primary encoder restores
 its saved values, including defaults. Independent front and back references
 use the same OPTIONS14 and command-list interface checks as primary recording.
+Dynamic depth bias in a bundle uses OPTIONS16 and the list9 entry point on a
+dynamic pipeline. A viewport or scissor change may split recording into two
+bundles. The new segment binds the pipeline again and replays the last bias
+because rebinding the pipeline resets the native bias.
 
 Submission preflight validates the packet before native handoff. It separates
 direct and compute segments, issues caller-specified native queue waits, and

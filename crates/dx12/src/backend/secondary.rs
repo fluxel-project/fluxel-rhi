@@ -12,6 +12,7 @@ use fluxel_rhi_core::api::{self, Error, Result};
 use super::encoder::{Dx12SecondaryEncoder, Dx12SecondaryWork};
 
 impl fluxel_rhi_core::backend::SecondaryBackend for Dx12 {
+    const SECONDARY_DYNAMIC_DEPTH_BIAS_AVAILABLE: bool = true;
     const SECONDARY_INDIRECT_AVAILABLE: bool = true;
     const SECONDARY_BLEND_AND_STENCIL_AVAILABLE: bool = true;
     const SECONDARY_PER_FACE_STENCIL_AVAILABLE: bool = true;
@@ -30,6 +31,13 @@ impl fluxel_rhi_core::backend::SecondaryBackend for Dx12 {
         pipeline: &Self::NativeRasterPipeline,
     ) -> Result<()> {
         super::encoder::secondary::set_pipeline(encoder, pipeline)
+    }
+
+    fn secondary_depth_bias(
+        encoder: &mut Self::NativeSecondaryEncoder,
+        value: api::DynamicDepthBias,
+    ) -> Result<()> {
+        super::encoder::secondary::depth_bias(encoder, value)
     }
 
     fn secondary_set_bind_group(

@@ -706,6 +706,18 @@ interpolation. HLSL uses native sample-frequency semantics.
 multisampled target and verify interpolation at sample positions.
 Cover the sample index and interpolation triggers separately.
 
+### DX12 secondary dynamic depth bias
+
+**Status:** Secondary work records dynamic depth bias on OPTIONS16 devices
+through the list9 entry point. Internal bundle splits restore the last value
+after rebinding the pipeline. Explicit pipeline binds apply the declared initial
+value, and secondary execution restores the primary pipeline's own bias.
+
+**Acceptance:** Read back draws before and after viewport and scissor splits,
+then after a pipeline rebind. Verify primary restoration with a dynamic raster
+pipeline and when executing a bundle after binding a mesh pipeline. Cover
+capability rejection, static pipelines, nonfinite values, and clamp admission.
+
 ### DX12 per-face stencil references
 
 **Status:** Core raster passes and DX12 secondary work can set independent

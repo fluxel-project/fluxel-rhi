@@ -63,7 +63,8 @@ impl<B: SecondaryBackend> SecondaryEncoder<B> {
             return Err(Error::WrongDevice);
         }
         if pipeline.dynamic_depth_bias.is_some()
-            && (!<B as RasterBackend>::DYNAMIC_DEPTH_BIAS_AVAILABLE
+            && (!self.dynamic_depth_bias
+                || !<B as RasterBackend>::DYNAMIC_DEPTH_BIAS_AVAILABLE
                 || !B::SECONDARY_DYNAMIC_DEPTH_BIAS_AVAILABLE)
         {
             return Err(Error::Unsupported("secondary dynamic depth bias"));

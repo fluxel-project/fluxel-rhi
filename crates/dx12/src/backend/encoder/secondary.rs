@@ -49,6 +49,7 @@ pub struct Dx12SecondaryEncoder {
     pub(crate) viewport: Option<api::Viewport>,
     pub(crate) scissor: Option<api::Rect>,
     pub(crate) closed: bool,
+    depth_bias: Option<api::DynamicDepthBias>,
     pub(crate) index_format: Option<api::IndexFormat>,
     pub(crate) bound_slots: Vec<Option<Dx12BindGroup>>,
 }
@@ -96,6 +97,7 @@ impl Dx12SecondaryEncoder {
             viewport: None,
             scissor: None,
             closed: false,
+            depth_bias: None,
             index_format: None,
             bound_slots: Vec::new(),
         })
@@ -130,8 +132,13 @@ impl Dx12SecondaryEncoder {
         self.has_draw = false;
         // Bundles do not inherit PSO or primitive topology. Root arguments and
         // buffer bindings propagate from the preceding bundle through the parent.
+        let bias = self.depth_bias;
         if let Some(pipeline) = self.pipeline.clone() {
             set_pipeline(self, &pipeline)?;
+        }
+        // Rebinding the PSO resets the bias even when the pipeline is unchanged.
+        if let Some(bias) = bias {
+            depth_bias(self, bias)?;
         }
         Ok(())
     }
@@ -198,6 +205,7 @@ pub(crate) fn set_pipeline(
         encoder.list.IASetPrimitiveTopology(pipeline.0.topology);
     }
     encoder.pipeline = Some(pipeline.clone());
+    encoder.depth_bias = None;
     encoder.pipelines.push(pipeline.clone());
     Ok(())
 }
@@ -429,6 +437,21 @@ pub(crate) fn set_push_constants(
             );
         }
     }
+    Ok(())
+}
+
+pub(crate) fn depth_bias(
+    encoder: &mut Dx12SecondaryEncoder,
+    value: api::DynamicDepthBias,
+) -> Result<(), Error> {
+    if !encoder.device.0.dynamic_depth_bias_supported {
+        return Err(Error::Unsupported("DX12 secondary dynamic depth bias"));
+    }
+    if !encoder.pipeline()?.0.dynamic_depth_bias {
+        return Err(Error::InvalidState);
+    }
+    super::raster_snapshot::write_depth_bias(&encoder.list, value)?;
+    encoder.depth_bias = Some(value);
     Ok(())
 }
 
