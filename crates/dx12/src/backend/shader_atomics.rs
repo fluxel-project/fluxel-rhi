@@ -3,6 +3,26 @@
 use fluxel_rhi_core::api;
 use windows::Win32::Graphics::Direct3D12::*;
 
+pub(super) fn r32_texture_requirement(
+    feature: &str,
+) -> Option<(api::TextureFormat, D3D12_FORMAT_SUPPORT2)> {
+    use api::*;
+    const EXCHANGE: D3D12_FORMAT_SUPPORT2 = D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE;
+    const COMPARE: D3D12_FORMAT_SUPPORT2 =
+        D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_COMPARE_STORE_OR_COMPARE_EXCHANGE;
+    match feature {
+        SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_EXCHANGE => Some((TextureFormat::R32Uint, EXCHANGE)),
+        SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_COMPARE_EXCHANGE => {
+            Some((TextureFormat::R32Uint, COMPARE))
+        }
+        SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_EXCHANGE => Some((TextureFormat::R32Sint, EXCHANGE)),
+        SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_COMPARE_EXCHANGE => {
+            Some((TextureFormat::R32Sint, COMPARE))
+        }
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 pub(super) struct Int64AtomicSupport {
     pub(super) buffer: bool,

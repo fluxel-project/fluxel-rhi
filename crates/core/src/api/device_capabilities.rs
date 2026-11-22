@@ -183,6 +183,14 @@ pub struct DeviceCapabilities {
     pub texture_atomic_r32uint_and_compute: bool,
     /// WGSL compute textureAtomicOr on R32Uint storage textures.
     pub texture_atomic_r32uint_or_compute: bool,
+    /// Native compute can atomically exchange an R32Uint storage texel.
+    pub texture_atomic_r32uint_exchange_compute: bool,
+    /// Native compute can atomically compare and exchange an R32Uint storage texel.
+    pub texture_atomic_r32uint_compare_exchange_compute: bool,
+    /// Native compute can atomically exchange an R32Sint storage texel.
+    pub texture_atomic_r32sint_exchange_compute: bool,
+    /// Native compute can atomically compare and exchange an R32Sint storage texel.
+    pub texture_atomic_r32sint_compare_exchange_compute: bool,
     pub binding_arrays: bool,
     /// A binding array whose count is chosen at bind-group creation time.
     /// This is deliberately separate from fixed-size binding arrays: shader

@@ -120,6 +120,8 @@ struct Dx12DeviceState {
     pub(super) shader_f64: bool,
     pub(super) shader_int64: bool,
     pub(super) int64_atomics: shader_atomics::Int64AtomicSupport,
+    pub(super) r32uint_atomics: windows::Win32::Graphics::Direct3D12::D3D12_FORMAT_SUPPORT2,
+    pub(super) r32sint_atomics: windows::Win32::Graphics::Direct3D12::D3D12_FORMAT_SUPPORT2,
     pub(super) barycentrics_supported: bool,
     pub(super) subgroup_widths: Option<api::SubgroupWidths>,
     /// Committed buffers consume the process GPU virtual-address range.
@@ -291,6 +293,7 @@ pub struct Dx12Shader {
     pub(crate) entries: Vec<api::ShaderEntryPoint>,
     pub(crate) requires_raster_primitive_index: bool,
     pub(crate) requires_r64uint_atomics: bool,
+    pub(crate) r32_atomic_formats: Vec<api::TextureFormat>,
     /// Source needs entry-specific DXC compilation only for dialects whose
     /// artifact depends on pipeline specialization or stage selection.
     pub(crate) source: Option<Dx12ShaderSource>,
@@ -368,6 +371,30 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
     type DirectFuture<'a> = pipeline::worker::ColdFuture<Dx12Shader>;
     type NagaFuture<'a> = pipeline::worker::ColdFuture<Dx12Shader>;
     fn shader_route(device: &Dx12Device, desc: &api::ShaderDesc) -> api::ShaderRoute {
+        if desc.required_features.iter().any(|feature| {
+            let Some((format, operation)) = shader_atomics::r32_texture_requirement(feature) else {
+                return false;
+            };
+            let facts = if format == api::TextureFormat::R32Uint {
+                device.0.r32uint_atomics
+            } else {
+                device.0.r32sint_atomics
+            };
+            device.0.shader_model < 60
+                || !facts.contains(operation)
+                || !matches!(
+                    desc.format,
+                    api::ShaderFormat::Dxil | api::ShaderFormat::Hlsl(60..=69)
+                )
+                || desc.entries.is_empty()
+                || !desc
+                    .entries
+                    .iter()
+                    .all(|entry| entry.stage == api::ShaderStage::Compute)
+                || (desc.format == api::ShaderFormat::Dxil && desc.entries.len() != 1)
+        }) {
+            return api::ShaderRoute::Unsupported;
+        }
         if desc.required_features.iter().any(|feature| {
             shader_atomics::memory(feature).is_some_and(|memory| {
                 !device.0.int64_atomics.supports(memory)
@@ -618,6 +645,16 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
         let requires_r64uint_atomics = desc.required_features.iter().any(|feature| {
             shader_atomics::memory(feature) == Some(shader_atomics::Memory::R64UintTexture)
         });
+        let mut r32_atomic_formats = Vec::new();
+        for (format, _) in desc
+            .required_features
+            .iter()
+            .filter_map(|feature| shader_atomics::r32_texture_requirement(feature))
+        {
+            if !r32_atomic_formats.contains(&format) {
+                r32_atomic_formats.push(format);
+            }
+        }
         let requires_raster_primitive_index = desc
             .required_features
             .iter()
@@ -635,6 +672,7 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
                     entries: desc.entries,
                     requires_raster_primitive_index,
                     requires_r64uint_atomics,
+                    r32_atomic_formats,
                     source: None,
                 })
             }
@@ -653,6 +691,7 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
                     entries: desc.entries.clone(),
                     requires_raster_primitive_index,
                     requires_r64uint_atomics,
+                    r32_atomic_formats,
                     source: Some(Dx12ShaderSource::Hlsl(desc.clone())),
                 }),
                 Err(_) => Err(Error::Shader("HLSL is not UTF-8".into())),
@@ -675,6 +714,7 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
                     .iter()
                     .any(|feature| feature == api::SHADER_FEATURE_PRIMITIVE_INDEX),
                 requires_r64uint_atomics: false,
+                r32_atomic_formats: Vec::new(),
                 source: Some(Dx12ShaderSource::Wgsl(desc)),
             })
         })
@@ -721,7 +761,10 @@ fn shader_features_supported(
         api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_OR => true,
         "shaderClipDistance" => true,
         SUBGROUP_FEATURE => wave_ops_supported,
-        other => shader_atomics::memory(other).is_some(),
+        other => {
+            shader_atomics::memory(other).is_some()
+                || shader_atomics::r32_texture_requirement(other).is_some()
+        }
     })
 }
 

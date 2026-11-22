@@ -23,7 +23,8 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_FEATURE_D3D12_OPTIONS4, D3D12_FEATURE_DATA_ARCHITECTURE,
     D3D12_FEATURE_DATA_D3D12_OPTIONS4, D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_ADD,
     D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS,
-    D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_SIGNED_MIN_OR_MAX,
+    D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_COMPARE_STORE_OR_COMPARE_EXCHANGE,
+    D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE, D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_SIGNED_MIN_OR_MAX,
     D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_UNSIGNED_MIN_OR_MAX,
     D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT, D3D12_IA_VERTEX_INPUT_STRUCTURE_ELEMENT_COUNT,
     D3D12_RAYTRACING_MAX_DECLARABLE_TRACE_RECURSION_DEPTH,
@@ -491,6 +492,18 @@ impl Dx12 {
                 texture_atomic_r32uint_xor_compute,
                 texture_atomic_r32uint_and_compute,
                 texture_atomic_r32uint_or_compute,
+                texture_atomic_r32uint_exchange_compute: shader_model >= 60
+                    && uint_atomics.contains(D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE),
+                texture_atomic_r32uint_compare_exchange_compute: shader_model >= 60
+                    && uint_atomics.contains(
+                        D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_COMPARE_STORE_OR_COMPARE_EXCHANGE,
+                    ),
+                texture_atomic_r32sint_exchange_compute: shader_model >= 60
+                    && sint_atomics.contains(D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE),
+                texture_atomic_r32sint_compare_exchange_compute: shader_model >= 60
+                    && sint_atomics.contains(
+                        D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_COMPARE_STORE_OR_COMPARE_EXCHANGE,
+                    ),
                 storage_buffers: true,
                 timestamp: true,
                 timestamp_raster_pass: true,
@@ -605,6 +618,8 @@ impl Dx12 {
                     shader_f64,
                     shader_int64,
                     int64_atomics,
+                    r32uint_atomics: uint_atomics,
+                    r32sint_atomics: sint_atomics,
                     barycentrics_supported,
                     subgroup_widths,
                     max_buffer_bytes,

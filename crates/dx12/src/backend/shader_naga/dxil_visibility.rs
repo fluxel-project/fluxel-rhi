@@ -3,7 +3,9 @@
 //! PSV0 is native pipeline validation metadata, independent of DXC's optional
 //! reflection output. A library has no single selected program to validate here.
 
-use fluxel_rhi_core::api::{BindingType, Error, Result, ShaderStage, StorageAccess, TextureFormat};
+use fluxel_rhi_core::api::{
+    BindingType, Error, Result, ShaderStage, StorageAccess, TextureFormat, TextureViewDimension,
+};
 use windows::Win32::Graphics::Direct3D12::*;
 
 use super::super::pipeline::PipelineLayoutState;
@@ -15,6 +17,47 @@ const RESOURCE_DETAILS_SIZE: usize = 24;
 const UAV_TYPED: u32 = 6;
 const TEXTURE_2D: u32 = 2;
 const USED_BY_ATOMIC_64: u32 = 1;
+
+fn atomic_texture_ranges(
+    layout: &PipelineLayoutState,
+    format: TextureFormat,
+) -> impl Iterator<Item = (u32, u64, u64)> + Clone + '_ {
+    layout
+        .register_map
+        .iter()
+        .filter_map(move |&(space, binding, register, class, count)| {
+            (class == 2
+                && layout.binding_entries.iter().any(|(group, entry)| {
+                    *group == space
+                        && entry.binding == binding
+                        && matches!(
+                            entry.ty,
+                            BindingType::StorageTexture {
+                                format: actual,
+                                dimension: TextureViewDimension::D2,
+                                access: StorageAccess::Atomic,
+                            } if actual == format
+                        )
+                }))
+            .then_some((
+                space,
+                u64::from(register),
+                u64::from(register) + u64::from(count),
+            ))
+        })
+}
+
+fn atomic_texture_coverage(
+    ranges: impl Iterator<Item = (u32, u64, u64)>,
+    space: u32,
+    start: u64,
+    end: u64,
+) -> u64 {
+    ranges
+        .filter(|&(group, ..)| group == space)
+        .map(|(_, first, limit)| end.min(limit).saturating_sub(start.max(first)))
+        .sum()
+}
 
 pub(in crate::backend) fn validate(
     bytes: &[u8],
@@ -49,24 +92,7 @@ pub(in crate::backend) fn validate_r64uint_bindings(
     layout: &PipelineLayoutState,
     declared: bool,
 ) -> Result<()> {
-    let r64_binding = |group, binding| {
-        layout.binding_entries.iter().any(|(space, entry)| {
-            *space == group
-                && entry.binding == binding
-                && matches!(
-                    entry.ty,
-                    BindingType::StorageTexture {
-                        format: TextureFormat::R64Uint,
-                        access: StorageAccess::Atomic,
-                        ..
-                    }
-                )
-        })
-    };
-    let ranges = layout
-        .register_map
-        .iter()
-        .filter(|&&(group, binding, _, class, _)| class == 2 && r64_binding(group, binding));
+    let ranges = atomic_texture_ranges(layout, TextureFormat::R64Uint);
     if !declared && ranges.clone().next().is_none() {
         return Ok(());
     }
@@ -85,15 +111,7 @@ pub(in crate::backend) fn validate_r64uint_bindings(
         if start >= end {
             return Err(malformed());
         }
-        let covered: u64 = ranges
-            .clone()
-            .filter(|&&(group, ..)| group == space)
-            .map(|&(_, _, register, _, count)| {
-                let register = u64::from(register);
-                end.min(register + u64::from(count))
-                    .saturating_sub(start.max(register))
-            })
-            .sum();
+        let covered = atomic_texture_coverage(ranges.clone(), space, start, end);
         let atomic = resource_type == UAV_TYPED
             && row.len() >= RESOURCE_DETAILS_SIZE
             && word(row, 20)? & USED_BY_ATOMIC_64 != 0;
@@ -149,4 +167,41 @@ fn resource_rows(bytes: &[u8], stage: ShaderStage) -> Result<core::slice::Chunks
         .and_then(|data| data.get(..byte_count))
         .ok_or_else(malformed)?;
     Ok(rows.chunks_exact(stride))
+}
+
+pub(in crate::backend) fn validate_r32_atomic_bindings(
+    bytes: &[u8],
+    layout: &PipelineLayoutState,
+    formats: &[TextureFormat],
+) -> Result<()> {
+    if formats.is_empty() {
+        return Ok(());
+    }
+    let resources = resource_rows(bytes, ShaderStage::Compute)?;
+    for &format in formats {
+        let ranges = atomic_texture_ranges(layout, format);
+        let mut found = false;
+        for row in resources.clone() {
+            if word(row, 0)? != UAV_TYPED
+                || row.len() < RESOURCE_DETAILS_SIZE
+                || word(row, 16)? != TEXTURE_2D
+            {
+                continue;
+            }
+            let space = word(row, 4)?;
+            let start = u64::from(word(row, 8)?);
+            let end = u64::from(word(row, 12)?) + 1;
+            if start >= end {
+                return Err(malformed());
+            }
+            let covered = atomic_texture_coverage(ranges.clone(), space, start, end);
+            found |= covered == end - start;
+        }
+        if !found {
+            return Err(Error::Unsupported(
+                "DX12 R32 atomic shader requires a matching 2D atomic UAV",
+            ));
+        }
+    }
+    Ok(())
 }

@@ -179,6 +179,11 @@ pub(super) fn create(
         None => (None, Vec::new(), false, None),
     };
     let bytes: &[u8] = compiled.as_deref().unwrap_or(&shader.bytes);
+    super::super::shader_naga::validate_r32_atomic_bindings(
+        bytes,
+        layout,
+        &shader.r32_atomic_formats,
+    )?;
     super::super::shader_naga::validate_r64uint_bindings(
         bytes,
         layout,

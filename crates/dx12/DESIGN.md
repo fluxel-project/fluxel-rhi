@@ -352,6 +352,13 @@ route. The pipeline compares the artifact's per-register atomic use in
 PSV0 with explicit R64Uint atomic bindings. Optional copies preserve
 eight-byte scalar texels. The texture has no sampled or attachment view.
 
+Native compute R32Uint and R32Sint exchange and compare-exchange have
+separate format capability bits. The caller declares the native shader's
+operation requirements and the logical format of each UAV. Pipeline
+creation verifies that each required format has a matching active typed 2D
+UAV register span. PSV0 identifies the register and view kind. The shader
+author supplies the operation and signedness contract for 32-bit atomics.
+
 WGSL vertex and instance indices include the draw's starting offsets.
 Shader Model 6.8 vertex programs add `SV_StartVertexLocation` and
 `SV_StartInstanceLocation` to the corresponding native IDs. They use

@@ -6,6 +6,14 @@ Unselected capabilities below are not an automatic implementation backlog.
 
 ## Active items
 
+### Windows Core test baseline
+
+The Core suite at `3637773` reproduces six failures seen during D4.5.
+Track acceleration-structure array admission in D6.3, transient attachment
+and rectangle clear in D5.2, and the three mesh-indirect admission cases
+in D6.4. Review the contract and fixture in each owning group and rerun
+the complete Core suite before final validation.
+
 ### DX12 device limit verification
 
 **Status:** Raster and mesh pipelines and raster pass recording use the
@@ -250,6 +258,11 @@ and that a mixed-use sRGB sampled view can span multiple mips.
 Compare each advertised R32 texture atomic operation with its compute
 binding layout. Exercise a format support result with an atomic bit but
 without typed load or store and verify that it cannot enable the operation.
+For the native R32Uint and R32Sint exchange and compare-exchange routes,
+check old and new values, successful and failed comparisons, signed and
+unsigned edge values, and rejection of wrong UAV formats and dimensions.
+Cover HLSL and stripped DXIL. The artifact's declared operation remains
+the caller's contract because PSV0 has no per-operation 32-bit atomic flag.
 
 For `Stencil8`, verify stencil attachment clear and stencil operations,
 sampled unsigned readback, copy and upload, MSAA admission, and read-only

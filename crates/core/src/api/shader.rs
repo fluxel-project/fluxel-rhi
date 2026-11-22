@@ -96,6 +96,16 @@ pub const SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_XOR: &str = "texture-atomic-r32u
 pub const SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_AND: &str = "texture-atomic-r32uint-and";
 /// WGSL compute `textureAtomicOr` on an R32Uint storage texture.
 pub const SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_OR: &str = "texture-atomic-r32uint-or";
+/// Native compute atomic exchange on an R32Uint storage texture.
+pub const SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_EXCHANGE: &str = "texture-atomic-r32uint-exchange";
+/// Native compute atomic compare-exchange on an R32Uint storage texture.
+pub const SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_COMPARE_EXCHANGE: &str =
+    "texture-atomic-r32uint-compare-exchange";
+/// Native compute atomic exchange on an R32Sint storage texture.
+pub const SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_EXCHANGE: &str = "texture-atomic-r32sint-exchange";
+/// Native compute atomic compare-exchange on an R32Sint storage texture.
+pub const SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_COMPARE_EXCHANGE: &str =
+    "texture-atomic-r32sint-compare-exchange";
 /// Direct SPIR-V compute Float32 `OpAtomicFAddEXT` on storage-buffer memory.
 pub const SHADER_FEATURE_FLOAT32_ATOMIC_BUFFER_ADD: &str = "float32-atomic-buffer-add";
 /// Direct SPIR-V compute Float32 `OpAtomicFAddEXT` on workgroup/shared memory.
@@ -189,6 +199,31 @@ pub enum ShaderRoute {
 
 impl<B: ShaderBackend> Device<B> {
     pub fn shader_route(&self, desc: &ShaderDesc) -> ShaderRoute {
+        let compute_only = !desc.entries.is_empty()
+            && desc
+                .entries
+                .iter()
+                .all(|entry| entry.stage == ShaderStage::Compute);
+        if desc.required_features.iter().any(|feature| {
+            let supported = match feature.as_str() {
+                SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_EXCHANGE => {
+                    self.caps.texture_atomic_r32uint_exchange_compute
+                }
+                SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_COMPARE_EXCHANGE => {
+                    self.caps.texture_atomic_r32uint_compare_exchange_compute
+                }
+                SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_EXCHANGE => {
+                    self.caps.texture_atomic_r32sint_exchange_compute
+                }
+                SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_COMPARE_EXCHANGE => {
+                    self.caps.texture_atomic_r32sint_compare_exchange_compute
+                }
+                _ => return false,
+            };
+            !supported || !compute_only
+        }) {
+            return ShaderRoute::Unsupported;
+        }
         if desc.required_features.iter().any(|feature| {
             (feature == SHADER_FEATURE_RAY_QUERY && !self.caps.ray_query)
                 || (feature == SHADER_FEATURE_DX12_MESH_FULL_ARRAY_INDEX

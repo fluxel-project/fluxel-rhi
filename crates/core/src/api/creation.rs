@@ -485,8 +485,8 @@ impl<B: ResourceBackend> Device<B> {
                 } => return Err(Error::InvalidState),
                 BindingType::StorageTexture {
                     format,
+                    dimension,
                     access: StorageAccess::Atomic,
-                    ..
                 } if *format == TextureFormat::R32Uint
                     && (!self.caps.texture_atomic_r32uint_compute
                         && !self.caps.texture_atomic_r32uint_min_compute
@@ -494,6 +494,11 @@ impl<B: ResourceBackend> Device<B> {
                         && !self.caps.texture_atomic_r32uint_xor_compute
                         && !self.caps.texture_atomic_r32uint_and_compute
                         && !self.caps.texture_atomic_r32uint_or_compute
+                        && (*dimension != TextureViewDimension::D2
+                            || (!self.caps.texture_atomic_r32uint_exchange_compute
+                                && !self
+                                    .caps
+                                    .texture_atomic_r32uint_compare_exchange_compute))
                         || entry.visibility.as_slice() != [ShaderStage::Compute]) =>
                 {
                     return Err(Error::Unsupported("R32Uint compute texture atomic binding"));
@@ -505,12 +510,17 @@ impl<B: ResourceBackend> Device<B> {
                 } => {}
                 BindingType::StorageTexture {
                     format,
+                    dimension,
                     access: StorageAccess::Atomic,
-                    ..
                 } if *format == TextureFormat::R32Sint
                     && (!self.caps.texture_atomic_r32sint_compute
                         && !self.caps.texture_atomic_r32sint_min_compute
                         && !self.caps.texture_atomic_r32sint_max_compute
+                        && (*dimension != TextureViewDimension::D2
+                            || (!self.caps.texture_atomic_r32sint_exchange_compute
+                                && !self
+                                    .caps
+                                    .texture_atomic_r32sint_compare_exchange_compute))
                         || entry.visibility.as_slice() != [ShaderStage::Compute]) =>
                 {
                     return Err(Error::Unsupported("R32Sint compute texture atomic binding"));

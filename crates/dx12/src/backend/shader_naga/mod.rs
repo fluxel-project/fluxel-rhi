@@ -16,7 +16,9 @@ mod native_layout_reflection;
 mod sampler_lowering;
 pub(super) use dxil_container::{validate_atomic_dxil, validate_typed_int64_atomics};
 pub(super) use dxil_library::validate_export as validate_dxil_library_export;
-pub(super) use dxil_visibility::{validate as validate_dxil_visibility, validate_r64uint_bindings};
+pub(super) use dxil_visibility::{
+    validate as validate_dxil_visibility, validate_r32_atomic_bindings, validate_r64uint_bindings,
+};
 pub(super) use layout_reflection::reflect;
 pub(super) use native_layout_reflection::validate_visibility as validate_native_visibility;
 use sampler_lowering::{lower_sampler_arrays, lower_scalar_samplers};
