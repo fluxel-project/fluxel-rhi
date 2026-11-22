@@ -96,10 +96,10 @@ pub(super) enum SubAccess {
     },
 }
 
-/// The storage global selected by an access chain.
+/// The storage or byte-addressed uniform global selected by an access chain.
 ///
-/// A storage binding array has two independent coordinates: its descriptor
-/// element selects a `ByteAddressBuffer`, while `temp_access_chain` computes
+/// A buffer binding array has two independent coordinates: its descriptor
+/// element selects the native buffer binding, while `temp_access_chain` computes
 /// the byte address inside that selected buffer. Keeping those coordinates
 /// separate prevents a descriptor index from being treated as a byte offset.
 #[derive(Clone, Copy)]
@@ -168,7 +168,7 @@ impl<W: fmt::Write> super::Writer<'_, W> {
         Ok(())
     }
 
-    fn write_storage_load_sequence<I: Iterator<Item = (TypeResolution, u32)>>(
+    fn write_buffer_load_sequence<I: Iterator<Item = (TypeResolution, u32)>>(
         &mut self,
         module: &crate::Module,
         storage: StorageAccess,
@@ -181,23 +181,16 @@ impl<W: fmt::Write> super::Writer<'_, W> {
             if i != 0 {
                 write!(self.out, ", ")?;
             };
-            self.write_storage_load(module, storage, ty_resolution, func_ctx)?;
+            self.write_buffer_load(module, storage, ty_resolution, func_ctx)?;
             self.temp_access_chain.pop();
         }
         Ok(())
     }
 
-    /// Emit code to access a [`Storage`] global's component.
+    /// Read a value at the accumulated byte offset in a storage buffer or raw CBV.
     ///
-    /// Emit HLSL to access the component of a storage global
-    /// variable in the [`Storage`] address space, whose type is
-    /// `result_ty` and whose location within the global is given by
-    /// [`self.temp_access_chain`]. See the [`storage`] module's
-    /// documentation for background.
-    ///
-    /// [`Storage`]: crate::AddressSpace::Storage
     /// [`self.temp_access_chain`]: super::Writer::temp_access_chain
-    pub(super) fn write_storage_load(
+    pub(super) fn write_buffer_load(
         &mut self,
         module: &crate::Module,
         storage: StorageAccess,
@@ -205,6 +198,22 @@ impl<W: fmt::Write> super::Writer<'_, W> {
         func_ctx: &FunctionCtx,
     ) -> BackendResult {
         match *result_ty.inner_with(&module.types) {
+            crate::TypeInner::Scalar(scalar) if self.raw_uniforms.contains_key(&storage.global) => {
+                self.write_raw_uniform_scalar(module, storage, scalar, func_ctx)?;
+            }
+            crate::TypeInner::Vector { size, scalar }
+                if self.raw_uniforms.contains_key(&storage.global) =>
+            {
+                write!(self.out, "{}{}(", scalar.to_hlsl_str()?, size as u8)?;
+                let components = (0..size as u32).map(|i| {
+                    (
+                        TypeResolution::Value(crate::TypeInner::Scalar(scalar)),
+                        i * u32::from(scalar.width),
+                    )
+                });
+                self.write_buffer_load_sequence(module, storage, components, func_ctx)?;
+                write!(self.out, ")")?;
+            }
             crate::TypeInner::Scalar(scalar) => {
                 // working around the borrow checker in `self.write_expr`
                 let chain = mem::take(&mut self.temp_access_chain);
@@ -212,11 +221,11 @@ impl<W: fmt::Write> super::Writer<'_, W> {
                 if scalar.width == 4 {
                     let cast = scalar.kind.to_hlsl_cast();
                     write!(self.out, "{cast}(")?;
-                    self.write_storage_buffer(module, storage, func_ctx)?;
+                    self.write_buffer_resource(module, storage, func_ctx)?;
                     write!(self.out, ".Load(")?;
                 } else {
                     let ty = scalar.to_hlsl_str()?;
-                    self.write_storage_buffer(module, storage, func_ctx)?;
+                    self.write_buffer_resource(module, storage, func_ctx)?;
                     write!(self.out, ".Load<{ty}>(")?;
                 }
                 self.write_storage_address(module, &chain, func_ctx)?;
@@ -234,11 +243,11 @@ impl<W: fmt::Write> super::Writer<'_, W> {
                 if scalar.width == 4 {
                     let cast = scalar.kind.to_hlsl_cast();
                     write!(self.out, "{cast}(")?;
-                    self.write_storage_buffer(module, storage, func_ctx)?;
+                    self.write_buffer_resource(module, storage, func_ctx)?;
                     write!(self.out, ".Load{size}(")?;
                 } else {
                     let ty = scalar.to_hlsl_str()?;
-                    self.write_storage_buffer(module, storage, func_ctx)?;
+                    self.write_buffer_resource(module, storage, func_ctx)?;
                     write!(self.out, ".Load<{ty}{size}>(")?;
                 }
                 self.write_storage_address(module, &chain, func_ctx)?;
@@ -267,7 +276,7 @@ impl<W: fmt::Write> super::Writer<'_, W> {
                     let ty_inner = crate::TypeInner::Vector { size: rows, scalar };
                     (TypeResolution::Value(ty_inner), i * row_stride)
                 });
-                self.write_storage_load_sequence(module, storage, iter, func_ctx)?;
+                self.write_buffer_load_sequence(module, storage, iter, func_ctx)?;
                 write!(self.out, ")")?;
             }
             crate::TypeInner::Array {
@@ -281,7 +290,7 @@ impl<W: fmt::Write> super::Writer<'_, W> {
                 self.write_wrapped_constructor_function_name(module, constructor)?;
                 write!(self.out, "(")?;
                 let iter = (0..size.get()).map(|i| (TypeResolution::Handle(base), stride * i));
-                self.write_storage_load_sequence(module, storage, iter, func_ctx)?;
+                self.write_buffer_load_sequence(module, storage, iter, func_ctx)?;
                 write!(self.out, ")")?;
             }
             crate::TypeInner::Struct { ref members, .. } => {
@@ -293,7 +302,7 @@ impl<W: fmt::Write> super::Writer<'_, W> {
                 let iter = members
                     .iter()
                     .map(|m| (TypeResolution::Handle(m.ty), m.offset));
-                self.write_storage_load_sequence(module, storage, iter, func_ctx)?;
+                self.write_buffer_load_sequence(module, storage, iter, func_ctx)?;
                 write!(self.out, ")")?;
             }
             _ => unreachable!(),
@@ -378,7 +387,7 @@ impl<W: fmt::Write> super::Writer<'_, W> {
                 // See note about DXC and Load/Store in the module's documentation.
                 if scalar.width == 4 {
                     write!(self.out, "{level}")?;
-                    self.write_storage_buffer(module, storage, func_ctx)?;
+                    self.write_buffer_resource(module, storage, func_ctx)?;
                     write!(self.out, ".Store(")?;
                     self.write_storage_address(module, &chain, func_ctx)?;
                     write!(self.out, ", asuint(")?;
@@ -386,7 +395,7 @@ impl<W: fmt::Write> super::Writer<'_, W> {
                     writeln!(self.out, "));")?;
                 } else {
                     write!(self.out, "{level}")?;
-                    self.write_storage_buffer(module, storage, func_ctx)?;
+                    self.write_buffer_resource(module, storage, func_ctx)?;
                     write!(self.out, ".Store(")?;
                     self.write_storage_address(module, &chain, func_ctx)?;
                     write!(self.out, ", ")?;
@@ -401,7 +410,7 @@ impl<W: fmt::Write> super::Writer<'_, W> {
                 // See note about DXC and Load/Store in the module's documentation.
                 if scalar.width == 4 {
                     write!(self.out, "{level}")?;
-                    self.write_storage_buffer(module, storage, func_ctx)?;
+                    self.write_buffer_resource(module, storage, func_ctx)?;
                     write!(self.out, ".Store{}(", size as u8)?;
                     self.write_storage_address(module, &chain, func_ctx)?;
                     write!(self.out, ", asuint(")?;
@@ -409,7 +418,7 @@ impl<W: fmt::Write> super::Writer<'_, W> {
                     writeln!(self.out, "));")?;
                 } else {
                     write!(self.out, "{level}")?;
-                    self.write_storage_buffer(module, storage, func_ctx)?;
+                    self.write_buffer_resource(module, storage, func_ctx)?;
                     write!(self.out, ".Store(")?;
                     self.write_storage_address(module, &chain, func_ctx)?;
                     write!(self.out, ", ")?;
@@ -450,7 +459,7 @@ impl<W: fmt::Write> super::Writer<'_, W> {
                             // See note about DXC and Load/Store in the module's documentation.
                             if scalar.width == 4 {
                                 write!(self.out, "{}", level.next())?;
-                                self.write_storage_buffer(module, storage, func_ctx)?;
+                                self.write_buffer_resource(module, storage, func_ctx)?;
                                 write!(self.out, ".Store{}(", rows as u8)?;
                                 self.write_storage_address(module, &chain, func_ctx)?;
                                 write!(self.out, ", asuint(")?;
@@ -458,7 +467,7 @@ impl<W: fmt::Write> super::Writer<'_, W> {
                                 writeln!(self.out, "));")?;
                             } else {
                                 write!(self.out, "{}", level.next())?;
-                                self.write_storage_buffer(module, storage, func_ctx)?;
+                                self.write_buffer_resource(module, storage, func_ctx)?;
                                 write!(self.out, ".Store(")?;
                                 self.write_storage_address(module, &chain, func_ctx)?;
                                 write!(self.out, ", ")?;
@@ -582,12 +591,12 @@ impl<W: fmt::Write> super::Writer<'_, W> {
         Ok(())
     }
 
-    /// Emit the `ByteAddressBuffer` selected by a storage access.
+    /// Emit the native buffer binding selected by a byte-addressed access.
     ///
     /// The descriptor selector is deliberately emitted independently from
     /// `temp_access_chain`, which only contains byte offsets within the
     /// selected buffer.
-    pub(super) fn write_storage_buffer(
+    pub(super) fn write_buffer_resource(
         &mut self,
         module: &crate::Module,
         storage: StorageAccess,
@@ -616,12 +625,11 @@ impl<W: fmt::Write> super::Writer<'_, W> {
     /// Set [`temp_access_chain`] to compute the byte offset of `cur_expr`.
     ///
     /// The `cur_expr` expression must be a reference to a global
-    /// variable in the [`Storage`] address space, or a chain of
+    /// buffer variable, or a chain of
     /// [`Access`] and [`AccessIndex`] expressions referring to some
     /// component of such a global.
     ///
     /// [`temp_access_chain`]: super::Writer::temp_access_chain
-    /// [`Storage`]: crate::AddressSpace::Storage
     /// [`Access`]: crate::Expression::Access
     /// [`AccessIndex`]: crate::Expression::AccessIndex
     pub(super) fn fill_access_chain(
@@ -656,20 +664,23 @@ impl<W: fmt::Write> super::Writer<'_, W> {
                             });
                         }
                     }
-                    if descriptor_index.is_some()
-                        && (!matches!(
+                    let byte_addressed = self.raw_uniforms.contains_key(&handle)
+                        || matches!(
                             module.global_variables[handle].space,
                             crate::AddressSpace::Storage { .. }
-                        ) || !matches!(
-                            module.types[module.global_variables[handle].ty].inner,
-                            crate::TypeInner::BindingArray {
-                                size: crate::ArraySize::Constant(_),
-                                ..
-                            }
-                        ))
+                        );
+                    if descriptor_index.is_some()
+                        && (!byte_addressed
+                            || !matches!(
+                                module.types[module.global_variables[handle].ty].inner,
+                                crate::TypeInner::BindingArray {
+                                    size: crate::ArraySize::Constant(_),
+                                    ..
+                                }
+                            ))
                     {
                         return Err(Error::Unimplemented(
-                            "binding arrays are only supported for storage buffers in storage access chains".into(),
+                            "binding arrays in byte-addressed accesses require fixed-size buffer bindings".into(),
                         ));
                     }
                     return Ok(StorageAccess {

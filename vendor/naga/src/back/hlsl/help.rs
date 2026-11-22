@@ -1914,14 +1914,16 @@ impl<W: Write> super::Writer<'_, W> {
                         self.write_wrapped_image_query_function(module, wiq, handle, func_ctx)?;
                     }
                 }
-                // Write `WrappedConstructor` for structs that are loaded from `AddressSpace::Storage`
-                // since they will later be used by the fn `write_storage_load`
+                // Byte-addressed reads reconstruct aggregates through these constructors.
                 crate::Expression::Load { pointer } => {
                     let pointer_space = func_ctx
                         .resolve_type(pointer, &module.types)
                         .pointer_space();
 
-                    if let Some(crate::AddressSpace::Storage { .. }) = pointer_space {
+                    if matches!(pointer_space, Some(crate::AddressSpace::Storage { .. }))
+                        || (pointer_space == Some(crate::AddressSpace::Uniform)
+                            && self.is_raw_uniform(pointer, func_ctx))
+                    {
                         if let Some(ty) = func_ctx.info[handle].ty.handle() {
                             write_wrapped_constructor(self, ty, module)?;
                         }

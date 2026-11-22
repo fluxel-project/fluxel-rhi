@@ -11,7 +11,18 @@ pub(super) fn validate_binding_type(
         ref inner => inner,
     };
     let matches = match (global.space, inner, ty) {
-        (naga::AddressSpace::Uniform, _, api::BindingType::UniformBuffer { .. }) => true,
+        (naga::AddressSpace::Uniform, _, api::BindingType::UniformBuffer { min_size, .. }) => {
+            let bytes = inner
+                .try_size(module.to_ctx())
+                .map(u64::from)
+                .ok_or(Error::Unsupported("DX12 WGSL uniform size overflow"))?;
+            if *min_size < bytes {
+                return Err(Error::Shader(format!(
+                    "WGSL uniform requires a minimum binding size of {bytes} bytes, layout declares {min_size}"
+                )));
+            }
+            true
+        }
         (
             naga::AddressSpace::Storage { access },
             _,

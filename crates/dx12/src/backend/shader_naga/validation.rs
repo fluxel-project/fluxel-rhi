@@ -38,32 +38,28 @@ pub(super) fn uses_entry_builtin(
         .any(|arg| uses(module, arg.ty, arg.binding.as_ref(), builtins))
 }
 
-pub(super) fn validate_f16_bindings(module: &naga::Module, standard_immediate: bool) -> Result<()> {
-    if module.global_variables.iter().any(|(_, global)| {
-        (global.space == naga::AddressSpace::Uniform
-            || (!standard_immediate && global.space == naga::AddressSpace::PushConstant))
-            && contains_f16(&module.types, global.ty)
-    }) {
-        return Err(Error::Unsupported(
-            "DX12 WGSL f16 uniform and immediate layout",
-        ));
+pub(super) fn validate_uniform_sizes(module: &naga::Module) -> Result<()> {
+    for (_, global) in module
+        .global_variables
+        .iter()
+        .filter(|(_, global)| global.space == naga::AddressSpace::Uniform)
+    {
+        let ty = match module.types[global.ty].inner {
+            naga::TypeInner::BindingArray { base, .. } => base,
+            _ => global.ty,
+        };
+        let size = module.types[ty]
+            .inner
+            .try_size(module.to_ctx())
+            .map(u64::from)
+            .ok_or(Error::Unsupported("DX12 WGSL uniform size overflow"))?;
+        if size > super::super::descriptor::MAX_UNIFORM_BUFFER_BINDING_SIZE {
+            return Err(Error::Unsupported(
+                "DX12 WGSL uniform exceeds the constant buffer size",
+            ));
+        }
     }
     Ok(())
-}
-
-fn contains_f16(types: &naga::UniqueArena<naga::Type>, ty: naga::Handle<naga::Type>) -> bool {
-    match &types[ty].inner {
-        naga::TypeInner::Scalar(scalar)
-        | naga::TypeInner::Vector { scalar, .. }
-        | naga::TypeInner::Matrix { scalar, .. } => *scalar == naga::Scalar::F16,
-        naga::TypeInner::Array { base, .. } | naga::TypeInner::BindingArray { base, .. } => {
-            contains_f16(types, *base)
-        }
-        naga::TypeInner::Struct { members, .. } => {
-            members.iter().any(|member| contains_f16(types, member.ty))
-        }
-        _ => false,
-    }
 }
 
 pub(super) fn uses_packed_dot(module: &naga::Module) -> bool {

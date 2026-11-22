@@ -526,15 +526,18 @@ a standardized scalar route and exact lowering exist.
 **Status:** DX12 qualifies native F16 with Shader Model 6.2 and OPTIONS4.
 WGSL and HLSL use the native DXC type option and direct DXIL can declare
 the device requirement. Standard WGSL immediates extract native half bits at
-their WGSL offsets, with explicit updates at DWORD granularity. WGSL F16
-uniforms remain unavailable pending lowering that preserves the declared
-layout across nesting, matrices, arrays, and dynamic indices.
+their WGSL offsets, with explicit updates at DWORD granularity. WGSL
+uniforms containing F16 read CBV words at byte offsets from WGSL types.
+Uniform binding arrays use the existing fixed, fully bound compute route.
 
 **Acceptance:** Verify WGSL arithmetic, storage, workgroup data and raster
 interfaces with exact half values and readback. Cover finite F16 overrides,
 invalid scalar widths, unsupported devices and insufficient HLSL profiles.
-Admit uniform and immediate layouts only when lowering preserves two-byte
-offsets and the declared aggregate layout.
+Verify uniform and immediate two-byte offsets, adjacent halves, padded
+matrices, nested aggregates, dynamic indices, and divergent fixed uniform
+binding-array selection. Cover a two-byte scalar binding, dynamic CBVs,
+the 64 KiB limit, and rejection of an explicit layout with a shorter logical
+range than the WGSL type requires.
 
 ### DX12 packed 4×8 integer dot products
 
@@ -1072,16 +1075,19 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   For DXIL libraries, verify exact and unambiguous export names, shader kinds,
   malformed RDAT, and missing exports. Keep explicit native view coverage
   and resource visibility through library call graphs as separate checks.
+  Explicit native CBV byte minima still need a separate check. Inference
+  reads the reflected size, while PSV0 register spans omit it. Reopen with
+  a reliable source of byte minima for stripped DXIL and verify both valid
+  stripped artifacts and undersized explicit layouts.
 - **R08, VERIFYING — WGSL subgroup identity, count, and barrier.** Keep only
   operations with exact native wave semantics. Invocation index arithmetic and
   collectives do not derive wave identity/count or memory ordering. Each new
   operation needs a standardized language route, a matching DX12 operation,
   and readback evidence.
-- **R09, IMPLEMENTING — WGSL F16 ABI in uniforms and immediates.** Standard
-  immediate lowering extracts either half of a DWORD without changing root
-  constant alignment. DXC has compiled nested and padded matrix layouts.
-  GPU readback must cover adjacent halves and explicit updates. Uniforms
-  still need byte-addressed lowering for two-byte offsets and nested layouts.
+- **R09, VERIFYING — WGSL F16 ABI in uniforms and immediates.** DXC has
+  compiled nested and padded matrices, whole aggregates, and F16 reads
+  through divergent fixed CBV arrays. Run the half-precision GPU acceptance
+  cases above, including partial DWORD updates for immediates.
 - **R10, UNSUPPORTED — WGSL I16/U16.** Fluxel accepts standard WGSL and
   standardized WGSL extensions. It will not import a backend-specific shader
   language extension for these types. Native HLSL/DXIL 16-bit integers remain

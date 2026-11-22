@@ -337,6 +337,15 @@ WGSL pipeline compilation checks each active resource against the selected
 stage's bind-group layout visibility. It checks scalar and array bindings
 before native PSO creation or cache lookup.
 
+WGSL uniform layout minimum sizes cover the declared type's byte span.
+With the qualified `shader-f16` feature, uniforms containing halves lower
+to ordinary CBV bindings with 16-byte rows. Loads use the WGSL member,
+matrix, and array offsets and extract the addressed half from its DWORD.
+Native UNIFORM allocations, including imported buffers, cover the
+256-byte-aligned CBV range while callers bind the logical WGSL range.
+Fixed uniform binding arrays retain their compute and descriptor-indexing
+requirements.
+
 WGSL shaders declaring `immediate_address_space` can use `var<immediate>`
 with host-shareable 32-bit scalars, F16, vectors, matrices, and array-free
 structures within 64 bytes. DX12 lowers accessible DWORDs to explicit

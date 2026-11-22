@@ -149,6 +149,7 @@ mod immediate;
 mod keywords;
 mod ray;
 mod storage;
+mod uniform;
 mod writer;
 
 use alloc::{string::String, vec::Vec};
@@ -511,6 +512,8 @@ pub struct Options {
     pub push_constants_target: Option<BindTarget>,
     /// Preserve WGSL immediate offsets with individually placed DWORDs.
     pub wgsl_immediate_data: bool,
+    /// Preserve WGSL byte offsets in uniform buffers that contain F16.
+    pub wgsl_f16_uniforms: bool,
 
     /// HLSL binding information for the sampler heap and comparison sampler heap.
     pub sampler_heap_target: SamplerHeapBindTargets,
@@ -559,6 +562,7 @@ impl Default for Options {
             sampler_buffer_binding_map: alloc::collections::BTreeMap::default(),
             push_constants_target: None,
             wgsl_immediate_data: false,
+            wgsl_f16_uniforms: false,
             dynamic_storage_buffer_offsets_targets: alloc::collections::BTreeMap::new(),
             external_texture_binding_map: ExternalTextureBindingMap::default(),
             zero_initialize_workgroup_memory: true,
@@ -734,6 +738,7 @@ pub struct Writer<'a, W> {
     /// Set of expressions that have associated temporary variables
     named_expressions: crate::NamedExpressions,
     immediate_loaders: Vec<(crate::Handle<crate::GlobalVariable>, String)>,
+    raw_uniforms: crate::FastHashMap<crate::Handle<crate::GlobalVariable>, uniform::RawUniform>,
     wrapped: Wrapped,
     written_committed_intersection: bool,
     written_candidate_intersection: bool,

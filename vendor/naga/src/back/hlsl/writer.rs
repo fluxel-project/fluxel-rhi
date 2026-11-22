@@ -142,6 +142,7 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
             entry_point_io: crate::FastHashMap::default(),
             named_expressions: crate::NamedExpressions::default(),
             immediate_loaders: Vec::new(),
+            raw_uniforms: crate::FastHashMap::default(),
             wrapped: super::Wrapped::default(),
             written_committed_intersection: false,
             written_candidate_intersection: false,
@@ -163,6 +164,7 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
         self.entry_point_io.clear();
         self.named_expressions.clear();
         self.immediate_loaders.clear();
+        self.raw_uniforms.clear();
         self.wrapped.clear();
         self.written_committed_intersection = false;
         self.written_candidate_intersection = false;
@@ -984,6 +986,13 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                 );
                 return Ok(());
             }
+        }
+
+        if self.options.wgsl_f16_uniforms
+            && global.space == crate::AddressSpace::Uniform
+            && super::uniform::contains_f16(&module.types, global.ty)
+        {
+            return self.write_raw_uniform(module, handle);
         }
 
         // Samplers are handled entirely differently, so defer entirely to that method.
@@ -2588,7 +2597,7 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                         // byte-address chain out first so that recursion cannot
                         // clear or append to the address of this atomic target.
                         let chain = mem::take(&mut self.temp_access_chain);
-                        self.write_storage_buffer(module, storage, func_ctx)?;
+                        self.write_buffer_resource(module, storage, func_ctx)?;
                         write!(self.out, ".Interlocked{fun_str}{width}(")?;
                         self.write_storage_address(module, &chain, func_ctx)?;
                         self.temp_access_chain = chain;
@@ -3602,10 +3611,14 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                     .resolve_type(pointer, &module.types)
                     .pointer_space()
                 {
-                    Some(crate::AddressSpace::Storage { .. }) => {
-                        let storage = self.fill_access_chain(module, pointer, func_ctx)?;
+                    Some(space)
+                        if matches!(space, crate::AddressSpace::Storage { .. })
+                            || (space == crate::AddressSpace::Uniform
+                                && self.is_raw_uniform(pointer, func_ctx)) =>
+                    {
+                        let buffer = self.fill_access_chain(module, pointer, func_ctx)?;
                         let result_ty = func_ctx.info[expr].ty.clone();
-                        self.write_storage_load(module, storage, result_ty, func_ctx)?;
+                        self.write_buffer_load(module, buffer, result_ty, func_ctx)?;
                     }
                     _ => {
                         let mut close_paren = false;
