@@ -131,14 +131,11 @@ pub struct DeviceCapabilities {
     pub shader_int64_atomic_workgroup_exchange: bool,
     /// Native compute Int64 atomic compare-exchange on workgroup/shared memory.
     pub shader_int64_atomic_workgroup_compare_exchange: bool,
-    /// Direct SPIR-V compute shaders may use `OpAtomicIAdd` on non-array,
-    /// single-sample 2D R64Uint storage images.
+    /// Native compute may use atomic add on non-array, single-sample 2D R64Uint images.
     pub shader_int64_atomic_image_r64uint_add: bool,
-    /// Direct SPIR-V compute shaders may use unsigned `OpAtomicUMin` on
-    /// non-array, single-sample 2D R64Uint storage images.
+    /// Native compute may use unsigned atomic min on non-array, single-sample 2D R64Uint images.
     pub shader_int64_atomic_image_r64uint_umin: bool,
-    /// Direct SPIR-V compute shaders may use unsigned `OpAtomicUMax` on
-    /// non-array, single-sample 2D R64Uint storage images.
+    /// Native compute may use unsigned atomic max on non-array, single-sample 2D R64Uint images.
     pub shader_int64_atomic_image_r64uint_umax: bool,
     /// The backend has validated the direct-SPIR-V GLSL450 `StorageBuffer`
     /// `Coherent` decoration route for compute shaders. This is route

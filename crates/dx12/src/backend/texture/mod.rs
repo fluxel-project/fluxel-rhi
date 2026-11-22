@@ -17,7 +17,6 @@ pub(super) use color_view::{
     create_sampled_view, create_view, create_view_with_usage, create_volume_attachment_slice,
     sampled_color_desc, storage_color_desc, volume_attachment_slice_support,
 };
-pub(super) use format::probe_planar_texture;
 pub(super) use format::sample_count_supported;
 use format::{available_format_support, native_format_has_support, supported_sample_counts};
 pub(super) use format::{
@@ -26,6 +25,7 @@ pub(super) use format::{
     texture_atomic_support, typed_storage_access,
 };
 pub(super) use format::{native_format_support, sample_load_requirement};
+pub(super) use format::{probe_planar_texture, probe_r64uint_atomic_texture};
 use validate::valid;
 pub(super) use validate::{max_array_layers, max_extent, max_mips};
 
@@ -121,6 +121,7 @@ pub(crate) fn support(dv: &Dx12Device, d: &api::TextureDesc) -> api::Support<api
                 compatible_view_formats: permitted_view_formats(dv, d),
                 filterable: filterable_color(d.format, d.samples, format_support),
                 blendable: !depth
+                    && d.format != api::TextureFormat::R64Uint
                     && format_support.contains(
                         D3D12_FORMAT_SUPPORT1_RENDER_TARGET | D3D12_FORMAT_SUPPORT1_BLENDABLE,
                     ),

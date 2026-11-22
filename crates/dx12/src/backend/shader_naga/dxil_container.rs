@@ -21,6 +21,22 @@ pub(in crate::backend) fn validate_atomic_dxil(bytes: &[u8], maximum_model: u16)
     Ok(())
 }
 
+/// The native artifact must declare the typed-resource Int64 atomic feature.
+pub(in crate::backend) fn validate_typed_int64_atomics(bytes: &[u8]) -> Result<()> {
+    use windows::Win32::Graphics::Direct3D12::D3D_SHADER_REQUIRES_ATOMIC_INT64_ON_TYPED_RESOURCE;
+    let (_, flags) = parts(bytes, *b"SFI0")?;
+    let flags = flags.ok_or_else(malformed)?;
+    if flags.len() < 8 {
+        return Err(malformed());
+    }
+    if word(flags, 0)? & D3D_SHADER_REQUIRES_ATOMIC_INT64_ON_TYPED_RESOURCE == 0 {
+        return Err(Error::Unsupported(
+            "DX12 artifact does not use typed Int64 atomics",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn parts(bytes: &[u8], tag: [u8; 4]) -> Result<(&[u8], Option<&[u8]>)> {
     if !bytes.starts_with(b"DXBC") {
         return Err(malformed());

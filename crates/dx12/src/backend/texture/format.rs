@@ -37,7 +37,7 @@ pub(crate) fn dxgi_format(format: api::TextureFormat) -> DXGI_FORMAT {
         api::TextureFormat::R32Uint => DXGI_FORMAT_R32_UINT,
         api::TextureFormat::R32Sint => DXGI_FORMAT_R32_SINT,
         api::TextureFormat::R32Float => DXGI_FORMAT_R32_FLOAT,
-        api::TextureFormat::Rg32Uint => DXGI_FORMAT_R32G32_UINT,
+        api::TextureFormat::Rg32Uint | api::TextureFormat::R64Uint => DXGI_FORMAT_R32G32_UINT,
         api::TextureFormat::Rg32Sint => DXGI_FORMAT_R32G32_SINT,
         api::TextureFormat::Rg32Float => DXGI_FORMAT_R32G32_FLOAT,
         api::TextureFormat::Rgba32Uint => DXGI_FORMAT_R32G32B32A32_UINT,
@@ -113,7 +113,7 @@ pub(crate) fn color_texel_bytes(format: api::TextureFormat) -> Option<u32> {
         | Bgra8UnormSrgb | Rg16Unorm | Rg16Snorm | Rg16Uint | Rg16Sint | Rg16Float | R32Uint
         | R32Sint | R32Float | Rgb10a2Unorm | Rgb10a2Uint | Rg11b10Ufloat | Rgb9e5Ufloat => 4,
         Rgba16Unorm | Rgba16Snorm | Rgba16Uint | Rgba16Sint | Rgba16Float | Rg32Uint | Rg32Sint
-        | Rg32Float => 8,
+        | Rg32Float | R64Uint => 8,
         Rgba32Uint | Rgba32Sint | Rgba32Float => 16,
         _ => return None,
     })
@@ -139,6 +139,7 @@ pub(crate) fn integer_color(format: api::TextureFormat) -> bool {
             | R32Sint
             | Rg32Uint
             | Rg32Sint
+            | R64Uint
             | Rgba32Uint
             | Rgba32Sint
             | Rgb10a2Uint
@@ -255,6 +256,11 @@ pub(crate) fn storage_view_format_available(
     dimension: api::TextureDimension,
     access: Option<api::StorageAccess>,
 ) -> bool {
+    if format == api::TextureFormat::R64Uint {
+        return device.0.int64_atomics.r64uint_texture
+            && dimension == api::TextureDimension::D2
+            && matches!(access, None | Some(api::StorageAccess::Atomic));
+    }
     if color_texel_bytes(format).is_none()
         || matches!(
             format,
@@ -268,6 +274,13 @@ pub(crate) fn storage_view_format_available(
             .Support1
             .contains(texture_dimension_support(dimension))
             && typed_storage_access(&support, access)
+    })
+}
+
+pub(in crate::backend) fn probe_r64uint_atomic_texture(device: &ID3D12Device) -> bool {
+    query_format_support(device, DXGI_FORMAT_R32G32_UINT).is_some_and(|facts| {
+        facts.Support1.contains(D3D12_FORMAT_SUPPORT1_TEXTURE2D)
+            && typed_storage_access(&facts, Some(api::StorageAccess::Atomic))
     })
 }
 

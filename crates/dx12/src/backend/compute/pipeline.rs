@@ -179,6 +179,11 @@ pub(super) fn create(
         None => (None, Vec::new(), false, None),
     };
     let bytes: &[u8] = compiled.as_deref().unwrap_or(&shader.bytes);
+    super::super::shader_naga::validate_r64uint_bindings(
+        bytes,
+        layout,
+        shader.requires_r64uint_atomics,
+    )?;
     let (root, root_bytes, num_workgroups_root) = if num_workgroups_constants {
         let (root, bytes, index) =
             layout

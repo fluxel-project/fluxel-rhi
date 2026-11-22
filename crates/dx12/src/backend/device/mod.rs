@@ -354,6 +354,9 @@ impl Dx12 {
                 shader_int64_atomic_workgroup_xor: int64_atomics.workgroup,
                 shader_int64_atomic_workgroup_exchange: int64_atomics.workgroup,
                 shader_int64_atomic_workgroup_compare_exchange: int64_atomics.workgroup,
+                shader_int64_atomic_image_r64uint_add: int64_atomics.r64uint_texture,
+                shader_int64_atomic_image_r64uint_umin: int64_atomics.r64uint_texture,
+                shader_int64_atomic_image_r64uint_umax: int64_atomics.r64uint_texture,
                 memory_topology,
                 subgroup_widths,
                 lanes: Arc::from([

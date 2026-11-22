@@ -290,6 +290,7 @@ pub struct Dx12Shader {
     pub(crate) bytes: Arc<[u8]>,
     pub(crate) entries: Vec<api::ShaderEntryPoint>,
     pub(crate) requires_raster_primitive_index: bool,
+    pub(crate) requires_r64uint_atomics: bool,
     /// Source needs entry-specific DXC compilation only for dialects whose
     /// artifact depends on pipeline specialization or stage selection.
     pub(crate) source: Option<Dx12ShaderSource>,
@@ -614,6 +615,9 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
             .required_features
             .iter()
             .any(|feature| shader_atomics::memory(feature).is_some());
+        let requires_r64uint_atomics = desc.required_features.iter().any(|feature| {
+            shader_atomics::memory(feature) == Some(shader_atomics::Memory::R64UintTexture)
+        });
         let requires_raster_primitive_index = desc
             .required_features
             .iter()
@@ -630,6 +634,7 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
                     bytes: desc.bytes,
                     entries: desc.entries,
                     requires_raster_primitive_index,
+                    requires_r64uint_atomics,
                     source: None,
                 })
             }
@@ -647,6 +652,7 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
                     bytes: Arc::from([]),
                     entries: desc.entries.clone(),
                     requires_raster_primitive_index,
+                    requires_r64uint_atomics,
                     source: Some(Dx12ShaderSource::Hlsl(desc.clone())),
                 }),
                 Err(_) => Err(Error::Shader("HLSL is not UTF-8".into())),
@@ -668,6 +674,7 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
                     .required_features
                     .iter()
                     .any(|feature| feature == api::SHADER_FEATURE_PRIMITIVE_INDEX),
+                requires_r64uint_atomics: false,
                 source: Some(Dx12ShaderSource::Wgsl(desc)),
             })
         })

@@ -344,6 +344,14 @@ separate group-shared capability from OPTIONS9. Direct HLSL and single
 compute DXIL can declare the corresponding operation and address space.
 Callers provide correctly aligned offsets and record synchronization.
 
+Native compute can bind a single-mip, non-array R64Uint texture for
+atomic add and unsigned min/max. DX12 uses a `R32G32_UINT` resource and
+UAV with a shader-declared `RWTexture2D<uint64_t>`. Shader Model 6.6, Int64
+instructions, OPTIONS9 typed atomics, and typed format support qualify the
+route. The pipeline compares the artifact's per-register atomic use in
+PSV0 with explicit R64Uint atomic bindings. Optional copies preserve
+eight-byte scalar texels. The texture has no sampled or attachment view.
+
 WGSL vertex and instance indices include the draw's starting offsets.
 Shader Model 6.8 vertex programs add `SV_StartVertexLocation` and
 `SV_StartInstanceLocation` to the corresponding native IDs. They use

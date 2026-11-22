@@ -14,6 +14,9 @@ pub(in crate::backend) fn max_extent(dimension: api::TextureDimension) -> [u32; 
 }
 
 pub(in crate::backend) fn max_array_layers(d: &api::TextureDesc) -> u32 {
+    if d.format == api::TextureFormat::R64Uint {
+        return 1;
+    }
     match d.dimension {
         api::TextureDimension::D1
             if d.usage.0 & !(api::TextureUsage::COPY_SRC.0 | api::TextureUsage::COPY_DST.0)
@@ -29,6 +32,18 @@ pub(in crate::backend) fn max_array_layers(d: &api::TextureDesc) -> u32 {
 pub(super) fn valid(d: &api::TextureDesc) -> std::result::Result<(), &'static str> {
     if planar::is_planar(d.format) {
         return planar::validate_texture(d);
+    }
+    if d.format == api::TextureFormat::R64Uint {
+        use api::TextureUsage as U;
+        let permitted = U::STORAGE_BINDING | U::COPY_SRC | U::COPY_DST;
+        if d.dimension != api::TextureDimension::D2
+            || d.samples != 1
+            || !d.usage.contains(U::STORAGE_BINDING)
+            || d.usage.0 & !permitted.0 != 0
+            || d.view_formats.iter().any(|&view| view != d.format)
+        {
+            return Err("DX12 R64Uint requires a single-sample 2D atomic texture");
+        }
     }
     let depth = is_depth(d.format);
     let compressed = bc_block_bytes(d.format).is_some();
@@ -85,7 +100,10 @@ pub(super) fn valid(d: &api::TextureDesc) -> std::result::Result<(), &'static st
     Ok(())
 }
 pub(in crate::backend) fn max_mips(desc: &api::TextureDesc) -> u32 {
-    if desc.samples > 1 || planar::is_planar(desc.format) {
+    if desc.samples > 1
+        || planar::is_planar(desc.format)
+        || desc.format == api::TextureFormat::R64Uint
+    {
         1
     } else {
         let [width, height, depth] = desc.extent;
@@ -102,6 +120,15 @@ pub(super) fn view(
     dv.require_active()?;
     if planar::is_planar(desc.format) {
         return planar::validate_view(dv, desc, v, usage);
+    }
+    if desc.format == api::TextureFormat::R64Uint
+        && (v.format != desc.format
+            || v.dimension != api::TextureViewDimension::D2
+            || !usage.contains(api::TextureUsage::STORAGE_BINDING)
+            || usage.contains(api::TextureUsage::TEXTURE_BINDING)
+            || usage.contains(api::TextureUsage::RENDER_ATTACHMENT))
+    {
+        return Err(Error::Unsupported("DX12 R64Uint atomic UAV"));
     }
     if desc.dimension == api::TextureDimension::D1 && desc.array_layers > 1 {
         return Err(Error::Unsupported("DX12 D1 array texture views"));

@@ -147,11 +147,11 @@ pub const SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_EXCHANGE: &str = "int64-atomic-w
 /// Native compute Int64 workgroup/shared atomic compare-exchange.
 pub const SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_COMPARE_EXCHANGE: &str =
     "int64-atomic-workgroup-compare-exchange";
-/// Direct SPIR-V compute atomic add on a non-array, single-sample 2D R64Uint image.
+/// Native compute atomic add on a non-array, single-sample 2D R64Uint image.
 pub const SHADER_FEATURE_INT64_ATOMIC_IMAGE_R64UINT_ADD: &str = "int64-atomic-image-r64uint-add";
-/// Direct SPIR-V compute unsigned atomic minimum on a non-array, single-sample 2D R64Uint image.
+/// Native compute unsigned atomic minimum on a non-array, single-sample 2D R64Uint image.
 pub const SHADER_FEATURE_INT64_ATOMIC_IMAGE_R64UINT_UMIN: &str = "int64-atomic-image-r64uint-umin";
-/// Direct SPIR-V compute unsigned atomic maximum on a non-array, single-sample 2D R64Uint image.
+/// Native compute unsigned atomic maximum on a non-array, single-sample 2D R64Uint image.
 pub const SHADER_FEATURE_INT64_ATOMIC_IMAGE_R64UINT_UMAX: &str = "int64-atomic-image-r64uint-umax";
 /// Direct-SPIR-V GLSL450 compute `StorageBuffer` route using the SPIR-V
 /// `Coherent` decoration. This requests validated shader admission only; it

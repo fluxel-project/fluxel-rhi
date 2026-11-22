@@ -258,13 +258,15 @@ clear, write and bias requests fail. Revisit shared `Stencil8` imports in
 D7.4 when the producer can certify the hidden native depth plane's state
 and preserve it across the ownership handoff.
 
-**64-bit image formats.** Keep `R64Uint` unavailable for general texture
-creation and standard WGSL. D4.5 evaluates a separately gated native HLSL
-or DXIL scalar atomic path. [Shader Model 6.6 typed atomics](https://microsoft.github.io/DirectX-Specs/d3d/HLSL_SM_6_6_Int64_and_Float_Atomics.html)
-specifies `R32G32_UINT` storage for those operations. Admit that route only
-after the device reports typed-resource int64 atomics and the shader,
-layout, descriptor and readback agree on the logical scalar. Reject
-`Rg64Uint` on DX12 until a native two-component 64-bit image ABI covers its
+**64-bit image formats.** The native DX12 compute route qualifies R64Uint
+atomic add and unsigned min/max independently of storage-buffer or workgroup
+atomics. The logical scalar uses an R32G32_UINT UAV with eight-byte copy
+texels. Verify 64-bit old and new values, initialization and copy readback,
+absent device support, wrong register or binding format, and typed UAVs
+without the artifact's atomic-use flag. Cover both HLSL and stripped DXIL.
+General image uses and standard WGSL remain unavailable for this format
+until there is a scalar format and shader contract for those uses.
+Reject Rg64Uint until a native two-component 64-bit image ABI covers its
 view, access and copy semantics.
 
 ### DX12 native Int64 buffer and workgroup atomics
