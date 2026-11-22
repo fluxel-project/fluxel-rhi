@@ -40,6 +40,7 @@ pub struct SecondaryEncoder<B: SecondaryBackend> {
     push_constants: bool,
     dynamic_depth_bias: bool,
     dynamic_depth_bias_clamp: bool,
+    stencil_reference_per_face: bool,
     indirect_draw: bool,
     multi_draw: bool,
     bound_dynamic_depth_bias: Option<DynamicDepthBias>,
@@ -185,6 +186,46 @@ impl<B: SecondaryBackend> SecondaryEncoder<B> {
         }
         result
     }
+
+    /// Sets the blend constant for subsequent draws in this secondary work.
+    pub fn blend_constant(&mut self, value: [f32; 4]) -> Result<()> {
+        if !B::SECONDARY_BLEND_AND_STENCIL_AVAILABLE {
+            return Err(Error::Unsupported("secondary blend constant"));
+        }
+        if value.iter().any(|component| !component.is_finite()) {
+            return Err(Error::InvalidRange);
+        }
+        let result = self.call(|encoder| B::secondary_blend_constant(encoder, value));
+        if result.is_ok() {
+            self.stats.record_blend_constant_set();
+        }
+        result
+    }
+
+    /// Sets the stencil reference for both faces using the low eight bits.
+    pub fn stencil_reference(&mut self, value: u32) -> Result<()> {
+        if !B::SECONDARY_BLEND_AND_STENCIL_AVAILABLE {
+            return Err(Error::Unsupported("secondary stencil reference"));
+        }
+        let result = self.call(|encoder| B::secondary_stencil_reference(encoder, value));
+        if result.is_ok() {
+            self.stats.record_stencil_reference_set();
+        }
+        result
+    }
+
+    /// Sets the front and back stencil references, each using its low eight bits.
+    pub fn stencil_reference_faces(&mut self, front: u32, back: u32) -> Result<()> {
+        if !self.stencil_reference_per_face {
+            return Err(Error::Unsupported("secondary per-face stencil reference"));
+        }
+        let result =
+            self.call(|encoder| B::secondary_stencil_reference_faces(encoder, front, back));
+        if result.is_ok() {
+            self.stats.record_stencil_reference_set();
+        }
+        result
+    }
     pub fn push_constants(&mut self, stages: StageMask, offset: u32, bytes: &[u8]) -> Result<()> {
         if !self.push_constants {
             return Err(Error::Unsupported("push constants"));
@@ -304,6 +345,11 @@ impl<B: SecondaryBackend> Device<B> {
     }
 }
 impl<B: SecondaryBackend> SecondaryDomain<'_, B> {
+    /// Reports device support for distinct front and back references in secondary work.
+    pub fn supports_stencil_reference_per_face(&self) -> bool {
+        B::SECONDARY_PER_FACE_STENCIL_AVAILABLE && self.device.caps.stencil_reference_per_face
+    }
+
     /// Reports device support for one indirect draw in secondary raster work.
     pub fn supports_indirect_draw(&self) -> bool {
         B::SECONDARY_INDIRECT_AVAILABLE && self.device.caps.indirect_draw
@@ -322,6 +368,7 @@ impl<B: SecondaryBackend> SecondaryDomain<'_, B> {
             push_constants: self.device.caps.push_constants,
             dynamic_depth_bias: self.device.caps.dynamic_depth_bias,
             dynamic_depth_bias_clamp: self.device.caps.dynamic_depth_bias_clamp,
+            stencil_reference_per_face: self.supports_stencil_reference_per_face(),
             indirect_draw: self.supports_indirect_draw(),
             multi_draw: self.supports_multi_draw(),
             bound_dynamic_depth_bias: None,

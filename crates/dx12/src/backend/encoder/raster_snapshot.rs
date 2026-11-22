@@ -105,3 +105,15 @@ pub(super) fn write_stencil_references(
     }
     Ok(())
 }
+
+pub(super) fn write_blend_constant(
+    list: &ID3D12GraphicsCommandList,
+    value: [f32; 4],
+) -> Result<(), Error> {
+    if value.iter().any(|component| !component.is_finite()) {
+        return Err(Error::InvalidRange);
+    }
+    // SAFETY: the list is open, and D3D12 copies the four values during the call.
+    unsafe { list.OMSetBlendFactor(Some(&value)) };
+    Ok(())
+}

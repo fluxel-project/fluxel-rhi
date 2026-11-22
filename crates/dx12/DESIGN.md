@@ -453,6 +453,10 @@ Fixed-count indirect draws in a bundle reuse the single-operation `DRAW` or
 `DRAW_INDEXED` signature from primary recording. The argument buffer also
 retains its device's signature cache. The calling plan transitions that buffer
 to `INDIRECT_READ` before executing the bundle.
+Bundle draws inherit the primary blend constant and stencil references until
+the secondary work sets them. After the bundle, the primary encoder restores
+its saved values, including defaults. Independent front and back references
+use the same OPTIONS14 and command-list interface checks as primary recording.
 
 Submission preflight validates the packet before native handoff. It separates
 direct and compute segments, issues caller-specified native queue waits, and

@@ -13,6 +13,8 @@ use super::encoder::{Dx12SecondaryEncoder, Dx12SecondaryWork};
 
 impl fluxel_rhi_core::backend::SecondaryBackend for Dx12 {
     const SECONDARY_INDIRECT_AVAILABLE: bool = true;
+    const SECONDARY_BLEND_AND_STENCIL_AVAILABLE: bool = true;
+    const SECONDARY_PER_FACE_STENCIL_AVAILABLE: bool = true;
     type NativeSecondaryEncoder = Dx12SecondaryEncoder;
     type NativeSecondaryWork = Dx12SecondaryWork;
 
@@ -71,6 +73,28 @@ impl fluxel_rhi_core::backend::SecondaryBackend for Dx12 {
         rect: api::Rect,
     ) -> Result<()> {
         super::encoder::secondary::set_scissor(encoder, rect)
+    }
+
+    fn secondary_blend_constant(
+        encoder: &mut Self::NativeSecondaryEncoder,
+        value: [f32; 4],
+    ) -> Result<()> {
+        super::encoder::secondary::blend_constant(encoder, value)
+    }
+
+    fn secondary_stencil_reference(
+        encoder: &mut Self::NativeSecondaryEncoder,
+        value: u32,
+    ) -> Result<()> {
+        super::encoder::secondary::stencil_reference(encoder, value)
+    }
+
+    fn secondary_stencil_reference_faces(
+        encoder: &mut Self::NativeSecondaryEncoder,
+        front: u32,
+        back: u32,
+    ) -> Result<()> {
+        super::encoder::secondary::stencil_reference_faces(encoder, front, back)
     }
 
     fn secondary_set_push_constants(

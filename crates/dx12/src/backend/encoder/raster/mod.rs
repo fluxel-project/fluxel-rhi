@@ -324,11 +324,7 @@ impl fluxel_rhi_core::backend::RasterBackend for Dx12 {
         Ok(())
     }
     fn blend_constant(encoder: &mut Dx12Encoder, value: [f32; 4]) -> Result<(), Error> {
-        if value.iter().any(|v| !v.is_finite()) {
-            return Err(Error::InvalidRange);
-        }
-        // SAFETY: D3D12 copies the values into this encoder's command list.
-        unsafe { encoder.list.OMSetBlendFactor(Some(&value)) };
+        super::raster_snapshot::write_blend_constant(&encoder.list, value)?;
         encoder.raster_snapshot.blend = Some(value);
         Ok(())
     }

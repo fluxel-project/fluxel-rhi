@@ -708,17 +708,19 @@ Cover the sample index and interpolation triggers separately.
 
 ### DX12 per-face stencil references
 
-**Status:** Core raster passes can set independent dynamic front and
-back stencil references on devices that report the DX12 OPTIONS14
-feature. Graphics state restoration retains both values. Raster and mesh
-pipelines also admit independent static read and write masks.
+**Status:** Core raster passes and DX12 secondary work can set independent
+dynamic front and back stencil references on devices that report the DX12
+OPTIONS14 feature. Secondary work also records blend constants and shared
+stencil references. Graphics state restoration replays the primary values.
+Raster and mesh pipelines admit independent static read and write masks.
 
 **Acceptance:** Render opposite-facing primitives against distinct
-references. Verify state restoration after internal draws and bundles,
-setting a shared value after a split value, and unsupported-device
-rejection. Verify independent static masks, read-only attachment admission,
-and cache separation for distinct masks. Include mesh and multiview on
-devices that support the respective combinations.
+references. Verify state restoration after internal draws and repeated bundles
+with both default and explicitly set primary references and blend constants.
+Cover setting a shared value after a split value, nonfinite blend values,
+and unsupported-device rejection. Verify independent static masks, read-only
+attachment admission, and cache separation for distinct masks. Include mesh
+and multiview on devices that support the respective combinations.
 
 ### DX12 shader view index
 

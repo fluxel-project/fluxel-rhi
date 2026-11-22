@@ -432,6 +432,31 @@ pub(crate) fn set_push_constants(
     Ok(())
 }
 
+pub(crate) fn blend_constant(
+    encoder: &mut Dx12SecondaryEncoder,
+    value: [f32; 4],
+) -> Result<(), Error> {
+    super::raster_snapshot::write_blend_constant(&encoder.list, value)
+}
+
+pub(crate) fn stencil_reference(
+    encoder: &mut Dx12SecondaryEncoder,
+    value: u32,
+) -> Result<(), Error> {
+    super::raster_snapshot::write_stencil_references(&encoder.list, [value & 0xff; 2])
+}
+
+pub(crate) fn stencil_reference_faces(
+    encoder: &mut Dx12SecondaryEncoder,
+    front: u32,
+    back: u32,
+) -> Result<(), Error> {
+    if !encoder.device.0.stencil_reference_per_face {
+        return Err(Error::Unsupported("DX12 per-face stencil reference"));
+    }
+    super::raster_snapshot::write_stencil_references(&encoder.list, [front & 0xff, back & 0xff])
+}
+
 pub(crate) fn draw(
     encoder: &mut Dx12SecondaryEncoder,
     vertices: std::ops::Range<u32>,

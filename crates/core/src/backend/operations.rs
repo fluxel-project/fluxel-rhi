@@ -114,6 +114,10 @@ pub trait SecondaryBackend: RasterBackend + DeferredBackend {
     const SECONDARY_DYNAMIC_DEPTH_BIAS_AVAILABLE: bool = false;
     /// Fixed-count indirect drawing is implemented for secondary raster work.
     const SECONDARY_INDIRECT_AVAILABLE: bool = false;
+    /// Blend constants and a shared stencil reference are implemented for secondary work.
+    const SECONDARY_BLEND_AND_STENCIL_AVAILABLE: bool = false;
+    /// Per-face stencil references are implemented for secondary work on capable devices.
+    const SECONDARY_PER_FACE_STENCIL_AVAILABLE: bool = false;
     type NativeSecondaryEncoder;
     type NativeSecondaryWork;
     fn begin_secondary(
@@ -156,6 +160,19 @@ pub trait SecondaryBackend: RasterBackend + DeferredBackend {
         viewport: Viewport,
     ) -> Result<()>;
     fn secondary_scissor(encoder: &mut Self::NativeSecondaryEncoder, rect: Rect) -> Result<()>;
+    fn secondary_blend_constant(_: &mut Self::NativeSecondaryEncoder, _: [f32; 4]) -> Result<()> {
+        Err(Error::Unsupported("secondary blend constant"))
+    }
+    fn secondary_stencil_reference(_: &mut Self::NativeSecondaryEncoder, _: u32) -> Result<()> {
+        Err(Error::Unsupported("secondary stencil reference"))
+    }
+    fn secondary_stencil_reference_faces(
+        _: &mut Self::NativeSecondaryEncoder,
+        _: u32,
+        _: u32,
+    ) -> Result<()> {
+        Err(Error::Unsupported("secondary per-face stencil reference"))
+    }
     fn secondary_set_push_constants(
         encoder: &mut Self::NativeSecondaryEncoder,
         stages: StageMask,
