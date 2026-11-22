@@ -65,6 +65,9 @@ struct AdmittedRay<'a> {
     stages: Vec<(&'a Dx12Shader, api::ShaderStage)>,
 }
 
+const MAX_LOCAL_CONSTANT_BYTES: u32 =
+    D3D12_RAYTRACING_MAX_SHADER_RECORD_STRIDE - D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+
 pub(in crate::backend) fn is_ray_stage(stage: api::ShaderStage) -> bool {
     matches!(
         stage,
@@ -136,11 +139,24 @@ fn admit_pipeline<'a>(
             Ok((shader, entry.stage))
         })
         .collect::<Result<_>>()?;
+    // SAFETY: Core checked that the layout belongs to the pipeline device.
+    let layout = &unsafe { desc.layout.native_ref() }.0;
+    if !layout.native_abi_compatible {
+        return Err(Error::Unsupported("DX12 DXIL descriptor register overlap"));
+    }
     for group in &desc.groups {
-        if group.local_constants.is_some_and(|constants| {
-            constants.size_bytes == 0 || constants.size_bytes % 4 != 0 || constants.size_bytes > 256
-        }) {
-            return Err(Error::InvalidRange);
+        if let Some(constants) = group.local_constants {
+            if constants.size_bytes == 0
+                || constants.size_bytes % 4 != 0
+                || constants.size_bytes > MAX_LOCAL_CONSTANT_BYTES
+            {
+                return Err(Error::InvalidRange);
+            }
+            if layout.global_ray_cbv_occupied(constants.group, constants.binding) {
+                return Err(Error::Unsupported(
+                    "DX12 local ray constants overlap a global CBV",
+                ));
+            }
         }
         if let Some(index) = group.general {
             if group.closest_hit.is_some()
@@ -177,11 +193,6 @@ fn admit_pipeline<'a>(
                 }
             }
         }
-    }
-    // SAFETY: Core checked that the layout belongs to the pipeline device.
-    let layout = &unsafe { desc.layout.native_ref() }.0;
-    if !layout.native_abi_compatible {
-        return Err(Error::Unsupported("DX12 DXIL descriptor register overlap"));
     }
     Ok(AdmittedRay { layout, stages })
 }

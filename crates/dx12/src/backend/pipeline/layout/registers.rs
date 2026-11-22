@@ -6,6 +6,21 @@ use std::collections::BTreeMap;
 use super::{IMMEDIATE_REGISTER, IMMEDIATE_SPACE, PipelineLayoutState};
 
 impl PipelineLayoutState {
+    /// DXR uses the compute root signature as its global root signature.
+    pub(in crate::backend) fn global_ray_cbv_occupied(&self, space: u32, binding: u32) -> bool {
+        self.register_map
+            .iter()
+            .any(|&(group, _, register, class, count)| {
+                space == group && class == 0 && register <= binding && binding - register < count
+            })
+            || (space == u32::from(IMMEDIATE_SPACE)
+                && binding == IMMEDIATE_REGISTER
+                && self
+                    .push_constants
+                    .as_ref()
+                    .is_some_and(|root| root.compute.is_some()))
+    }
+
     pub(crate) fn requires_native_binding_validation(&self, stage: api::ShaderStage) -> bool {
         self.explicit_native_registers
             || self

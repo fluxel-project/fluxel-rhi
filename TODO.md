@@ -453,6 +453,9 @@ readback at recursion depth zero, nested trace at a positive depth, and an
 out-of-range depth in both support and creation. For zero-stride optional tables,
 dispatch at distinct indices and read back the same record's output. Reject
 zero stride for raygen and optional regions smaller than one identifier.
+Read back a value at the end of a maximum-sized local constant block. Reject
+overlap with a global CBV range or compute immediate and a block above the
+record limit.
 
 ### DX12 runtime and partially bound TLAS arrays
 

@@ -453,6 +453,9 @@ The native recursion limit includes zero for ray generation that makes no
 Miss, hit, and callable shader tables accept a zero byte stride to address the
 same record at every index. The caller supplies a complete record in the
 declared buffer range and transitions the buffer before dispatch.
+Local root constants can occupy the record bytes after its shader identifier,
+up to the native record limit. Pipeline admission rejects a local constant
+register occupied by a global CBV, including a range or compute immediate.
 
 Recording applies explicit Core transitions, clears, copies, render passes,
 bind groups, draw/dispatch operations, queries, indirect commands, and
