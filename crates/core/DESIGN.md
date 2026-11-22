@@ -140,6 +140,12 @@ Those facts allow a consumer to reject an incompatible render-target or viewport
 
 `NativeImageLease` is the narrow backend contract for this rule. It combines generation validation, irreversible native handoff, and abandonment without making the host transfer ownership of its window or canvas. The host remains responsible for resize, visibility, foreground/background, and restoration; the platform adapter translates those events into surface operations.
 
+Static HDR10 metadata is an explicit surface operation. Its write support is
+queried against the current HDR10 configuration and output. Writes and clears
+carry the configuration generation to the backend, and a successful
+reconfiguration starts without metadata. Success reports backend acceptance.
+The caller supplies content metadata and chooses when to update or clear it.
+
 ## Synchronization and observations
 
 Explicit transitions and cross-lane waits are input to the plan. A wait orders execution only; it does not manufacture memory visibility or infer a missing barrier. Completion checkpoints, mapping, query publication, and CPU reads are separate operations with separate native evidence. This avoids treating a successful submit, process exit, or presentation call as proof that GPU work completed.

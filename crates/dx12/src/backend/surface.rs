@@ -44,6 +44,7 @@ use windows::{
 
 use super::{Dx12, Dx12Device, Dx12Surface, Dx12SurfaceImage};
 
+mod metadata;
 mod output;
 mod sdr_white;
 
@@ -60,6 +61,8 @@ struct Inner {
     generation: u64,
     acquired: bool,
     present_mode: api::PresentMode,
+    color_space: api::ColorSpace,
+    hdr10_metadata_set: bool,
 }
 struct SurfaceViews {
     _heap: ID3D12DescriptorHeap,
@@ -146,6 +149,8 @@ pub(crate) unsafe fn create_surface(
             generation: 0,
             acquired: false,
             present_mode: api::PresentMode::Fifo,
+            color_space: api::ColorSpace::Srgb,
+            hdr10_metadata_set: false,
         }),
     });
     // SAFETY: `state` is newly allocated for this same device id and becomes
@@ -218,6 +223,16 @@ impl fluxel_rhi_core::backend::SurfaceBackend for Dx12 {
     }
     fn output_info(surface: &Dx12Surface) -> Result<Option<api::SurfaceOutputInfo>> {
         output::info(&surface.0)
+    }
+    fn hdr10_metadata_support(surface: &Dx12Surface, generation: u64) -> api::Support<()> {
+        metadata::support(&surface.0, generation)
+    }
+    fn set_hdr10_metadata(
+        surface: &mut Dx12Surface,
+        generation: u64,
+        value: Option<&api::Hdr10Metadata>,
+    ) -> Result<()> {
+        metadata::set(&surface.0, generation, value)
     }
     fn supports_config(surface: &Dx12Surface, d: &api::SurfaceConfig) -> api::Support<()> {
         if d.extent.contains(&0)
@@ -370,22 +385,18 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
     // discard the native chain and make acquire report SurfaceLost. A later
     // configure is allowed to construct a fresh chain for the same HWND.
     let post_resize = (|| {
-        let latency: IDXGISwapChain2 = i
-            .chain
-            .as_ref()
-            .ok_or(Error::SurfaceLost)?
-            .cast()
-            .map_err(error)?;
+        let chain = i.chain.as_ref().ok_or(Error::SurfaceLost)?;
+        if i.hdr10_metadata_set {
+            metadata::clear(chain)?;
+        }
+        let latency: IDXGISwapChain2 = chain.cast().map_err(error)?;
         // SAFETY: latency is a cast of the retained current swapchain and the
         // configured value has already passed the RHI capability validation.
         unsafe { latency.SetMaximumFrameLatency(d.maximum_frame_latency) }.map_err(error)?;
         if d.color_space == api::ColorSpace::Hdr10 && !output::hdr_active(&s.0)? {
             return Err(Error::SurfaceOutdated);
         }
-        output::set_swapchain_color_space(
-            i.chain.as_ref().ok_or(Error::SurfaceLost)?,
-            d.color_space,
-        )?;
+        output::set_swapchain_color_space(chain, d.color_space)?;
         rebuild_rtvs(&s.0.device, &mut i, d.format)
     })();
     if let Err(error) = post_resize {
@@ -396,6 +407,8 @@ fn configure(s: &Dx12Surface, d: &api::SurfaceConfig) -> Result<()> {
     }
     i.generation += 1;
     i.present_mode = d.present_mode;
+    i.color_space = d.color_space;
+    i.hdr10_metadata_set = false;
     Ok(())
 }
 
@@ -406,6 +419,7 @@ fn invalidate(inner: &mut Inner) {
     inner.views = None;
     inner.chain = None;
     inner.acquired = false;
+    inner.hdr10_metadata_set = false;
     inner.generation = inner.generation.wrapping_add(1);
 }
 fn rebuild_rtvs(device: &Dx12Device, inner: &mut Inner, format: api::TextureFormat) -> Result<()> {

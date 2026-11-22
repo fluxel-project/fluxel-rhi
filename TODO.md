@@ -880,9 +880,9 @@ HDR10 still qualifies against the current output and native swapchain.
 HDR display and pixel acceptance are pending.
 The output snapshot includes the system SDR white level when the active
 display paths identify an unambiguous target value.
-HDR10 metadata write and clear are a planned opt-in narrow DXGI path. A
-successful call means DXGI accepted the metadata. It does not establish that
-the display received it.
+Opt-in HDR10 metadata write and clear use the current swapchain generation.
+The SDR window probe confirmed that the route is unavailable on its output.
+Success means DXGI accepted the metadata. The display can ignore it.
 
 **Acceptance:** Reconfigure a live HWND between linear and sRGB views and
 observe the format and generation on the acquired images. Exercise matching
@@ -1340,12 +1340,14 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
 - **R21, UNSUPPORTED — FIFO-relaxed present mode.** DXGI interval zero may drop
   queued frames and cannot prove FIFO order. Reopen only with a route that
   proves ordering, late-frame behavior, and the tearing policy.
-- **R22, DESIGNING — opt-in HDR10 metadata.** Add a narrow write/clear path
-  after defining its color-space, output-selection, and resize lifetime
-  contract. Its result means only that DXGI accepted the request. Actual
-  scanout timing is `OUT_OF_SCOPE` until a trustworthy timing source and
-  visible-output evidence exist. Present receipts and metadata acceptance do
-  not prove display delivery.
+- **R22, VERIFYING — opt-in HDR10 metadata.** Core validates the fixed-unit
+  payload and generation. DX12 requires HDR10 on the current output for a
+  write, permits a clear across an output change, and clears any applied
+  metadata during reconfiguration. Verify valid write, explicit clear, stale
+  generation, and clear across reconfigure on an HDR-active Windows output.
+  Report DXGI acceptance separately from display delivery. Actual scanout
+  timing is `OUT_OF_SCOPE` until a trustworthy timing source and
+  visible-output evidence exist.
 - **R23, DESIGNING — damage rectangles.** Explore an opt-in preserved-content
   surface route. Flip-discard cannot support it. Renderer owns prior-frame
   history and redraw decisions. The RHI does not insert hidden copies or

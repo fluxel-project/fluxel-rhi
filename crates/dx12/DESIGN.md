@@ -580,6 +580,14 @@ the current monitor and reconfigure after movement or a change to the system
 HDR setting. Output snapshots report DXGI color and luminance facts separately
 from the selected configuration.
 
+An explicit HDR10 metadata write requires the current HDR10 generation, an
+HDR-active output, the native HDR10 presentation bit, and `IDXGISwapChain4`.
+A clear is available on that generation after a move to SDR. Reconfiguration
+clears any metadata written by the application before publishing the next
+generation, and an error after resize invalidates the old configuration.
+The DXGI result reports metadata acceptance. Windows may ignore metadata
+when presenting to the display.
+
 ## Capability boundaries
 
 Timestamp queries can be recorded on the graphics or compute queue, between

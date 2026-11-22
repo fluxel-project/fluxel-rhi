@@ -97,6 +97,14 @@ fn supports_presentation(chain: &IDXGISwapChain3, native: DXGI_COLOR_SPACE_TYPE)
     Ok(support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT.0 as u32 != 0)
 }
 
+pub(super) fn hdr10_presentation_supported(
+    surface: &SurfaceState,
+    chain: &IDXGISwapChain3,
+) -> Result<bool> {
+    Ok(hdr_active(surface)?
+        && supports_presentation(chain, DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020)?)
+}
+
 pub(super) fn info(surface: &SurfaceState) -> Result<Option<SurfaceOutputInfo>> {
     Ok(current_output(surface)?.map(|output| SurfaceOutputInfo {
         color_space: match output.ColorSpace {

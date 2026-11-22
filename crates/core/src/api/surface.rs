@@ -103,6 +103,40 @@ pub struct SurfaceCapabilities {
     pub max_extent: [u32; 2],
 }
 
+/// Static HDR10 mastering and content-light metadata for a presentable surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hdr10Metadata {
+    /// CIE 1931 xy primaries in red, green, blue order, in units of 1/50,000.
+    pub primaries: [[u16; 2]; 3],
+    /// CIE 1931 xy white point, in units of 1/50,000.
+    pub white_point: [u16; 2],
+    /// Peak luminance of the mastering display, in nits.
+    pub max_mastering_nits: u32,
+    /// Minimum luminance of the mastering display, in units of 1/10,000 nit.
+    pub min_mastering_nits_x10000: u32,
+    /// Maximum content light level, in nits. Zero means unspecified.
+    pub max_content_nits: u16,
+    /// Maximum frame-average light level, in nits. Zero means unspecified.
+    pub max_frame_average_nits: u16,
+}
+
+impl Hdr10Metadata {
+    fn validate(&self) -> Result<()> {
+        if self
+            .primaries
+            .iter()
+            .chain([&self.white_point])
+            .any(|&[x, y]| u32::from(x) + u32::from(y) > 50_000)
+            || u64::from(self.min_mastering_nits_x10000)
+                > u64::from(self.max_mastering_nits) * 10_000
+            || (self.max_content_nits != 0 && self.max_frame_average_nits > self.max_content_nits)
+        {
+            return Err(Error::InvalidRange);
+        }
+        Ok(())
+    }
+}
+
 /// A snapshot of the output currently associated with a surface.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SurfaceOutputInfo {
@@ -158,6 +192,34 @@ impl<B: SurfaceBackend> Surface<B> {
     }
     pub fn configuration_support(&self, desc: &SurfaceConfig) -> Support<()> {
         B::supports_config(&self.native, desc)
+    }
+    /// Checks whether the configured surface and current output accept an HDR10 metadata write.
+    pub fn hdr10_metadata_support(&self) -> Support<()> {
+        let Some(configured) = self.configured.as_ref() else {
+            return Support::Unsupported("configured HDR10 surface");
+        };
+        if configured.config.color_space != ColorSpace::Hdr10
+            || configured.generation != self.generation()
+        {
+            return Support::Unsupported("configured HDR10 surface");
+        }
+        B::hdr10_metadata_support(&self.native, configured.generation)
+    }
+    /// Writes static HDR10 metadata for the current configuration. Pass `None`
+    /// to clear it, including after moving away from an HDR-active output.
+    /// Reconfiguration clears the metadata. Success reports backend acceptance.
+    pub fn set_hdr10_metadata(&mut self, metadata: Option<&Hdr10Metadata>) -> Result<()> {
+        let configured = self.configured.as_ref().ok_or(Error::InvalidState)?;
+        if configured.generation != self.generation() {
+            return Err(Error::SurfaceOutdated);
+        }
+        if configured.config.color_space != ColorSpace::Hdr10 {
+            return Err(Error::Unsupported("configured HDR10 surface"));
+        }
+        if let Some(metadata) = metadata {
+            metadata.validate()?;
+        }
+        B::set_hdr10_metadata(&mut self.native, configured.generation, metadata)
     }
     /// Suggests an SDR render-attachment configuration for the given extent.
     /// Prefers an sRGB attachment view when available. The result can be

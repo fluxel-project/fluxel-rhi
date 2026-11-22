@@ -518,6 +518,18 @@ pub trait SurfaceBackend: Backend {
     fn output_info(_surface: &Self::NativeSurface) -> Result<Option<SurfaceOutputInfo>> {
         Ok(None)
     }
+    fn hdr10_metadata_support(_surface: &Self::NativeSurface, _generation: u64) -> Support<()> {
+        Support::Unsupported("HDR10 surface metadata")
+    }
+    /// Applies validated static metadata to the given configured generation.
+    /// A successful configuration must reset metadata from the prior generation.
+    fn set_hdr10_metadata(
+        _surface: &mut Self::NativeSurface,
+        _generation: u64,
+        _metadata: Option<&Hdr10Metadata>,
+    ) -> Result<()> {
+        Err(Error::Unsupported("HDR10 surface metadata"))
+    }
     fn supports_config(surface: &Self::NativeSurface, desc: &SurfaceConfig) -> Support<()>;
     /// Configuration and generation change in one native transaction. Failed or
     /// cancelled pending configuration must not publish a half-commit.
